@@ -6,10 +6,23 @@ namespace TypeLay.Runtime;
 
 public sealed class ModelClient : ITranslationService, IDisposable
 {
-    private sealed class Connection(IChildProcess child, ModelLoadPlan plan)
+    private sealed class Connection(IChildProcess child, ModelLoadPlan plan, long admission)
     {
         public IChildProcess Child { get; } = child;
         public ModelLoadPlan Plan { get; } = plan;
+        public long Admission { get; } = admission;
+        public StyledTranslationCapability? StyledTranslationCapability
+        {
+            get; set;
+        }
+        public GlossaryTranslationCapability? GlossaryTranslationCapability
+        {
+            get; set;
+        }
+        public VerifiedModelIdentity? VerifiedIdentity
+        {
+            get; set;
+        }
         public IReadOnlyList<string> Directions { get; set; } = NoDirections;
         public CancellationTokenSource ExchangeCancellation { get; } = new();
         public long Sequence;
@@ -28,7 +41,7 @@ public sealed class ModelClient : ITranslationService, IDisposable
     }
     private readonly object _owner = new();
     private readonly SemaphoreSlim _lifecycle = new(1, 1), _serial = new(1, 1);
-    private readonly Func<ProcessStartInfo, IChildProcess> _startProcess;
+    private readonly Func<ProcessStartInfo, ModelLoadPlan, IChildProcess> _startProcess;
     private readonly HashSet<IChildProcess> _retiring = [];
     private ModelRuntimePaths _paths;
     private Connection? _active, _candidate;
@@ -40,7 +53,14 @@ public sealed class ModelClient : ITranslationService, IDisposable
     private static readonly IReadOnlyList<string> NoDirections = Array.AsReadOnly(Array.Empty<string>());
 
     public ModelClient(ModelRuntimePaths paths, Func<ProcessStartInfo, IChildProcess> startProcess)
+        : this(paths, (info, _) => startProcess(info))
     {
+        ArgumentNullException.ThrowIfNull(startProcess);
+    }
+    public ModelClient(ModelRuntimePaths paths, Func<ProcessStartInfo, ModelLoadPlan, IChildProcess> startProcess)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        ArgumentNullException.ThrowIfNull(startProcess);
         _paths = paths;
         _startProcess = startProcess;
     }
@@ -58,6 +78,66 @@ public sealed class ModelClient : ITranslationService, IDisposable
         {
             lock (_owner)
                 return _switching || _active?.Requests > 0;
+        }
+    }
+    public VerifiedModelIdentity? VerifiedIdentity
+    {
+        get
+        {
+            lock (_owner)
+            {
+                if (_disposed || _switching || _operation is not null || _active is not { } active
+                    || active.ExchangeCancellation.IsCancellationRequested)
+                    return null;
+                try
+                {
+                    return active.Child.Process.HasExited ? null : active.VerifiedIdentity;
+                }
+                catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+                {
+                    return null;
+                }
+            }
+        }
+    }
+    public StyledTranslationCapability? StyledTranslationCapability
+    {
+        get
+        {
+            lock (_owner)
+            {
+                if (_disposed || _switching || _operation is not null || _active is not { } active
+                    || active.ExchangeCancellation.IsCancellationRequested || active.StyledTranslationCapability is null)
+                    return null;
+                try
+                {
+                    return active.Child.Process.HasExited ? null : active.StyledTranslationCapability;
+                }
+                catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+                {
+                    return null;
+                }
+            }
+        }
+    }
+    public GlossaryTranslationCapability? GlossaryTranslationCapability
+    {
+        get
+        {
+            lock (_owner)
+            {
+                if (_disposed || _switching || _operation is not null || _active is not { } active
+                    || active.ExchangeCancellation.IsCancellationRequested || active.GlossaryTranslationCapability is null)
+                    return null;
+                try
+                {
+                    return active.Child.Process.HasExited ? null : active.GlossaryTranslationCapability;
+                }
+                catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+                {
+                    return null;
+                }
+            }
         }
     }
     public string Status
@@ -432,7 +512,7 @@ public sealed class ModelClient : ITranslationService, IDisposable
                 RequireOwner(operation);
             try
             {
-                connection = new(_startProcess(info), plan);
+                connection = new(_startProcess(info, plan), plan, _admission);
             }
             catch (ChildProcessCleanupUnconfirmedException error)
             {
@@ -447,13 +527,25 @@ public sealed class ModelClient : ITranslationService, IDisposable
         var hello = await ExchangeAsync(connection, new(0, "hello"), TimeSpan.FromSeconds(120), ct);
         ct.ThrowIfCancellationRequested();
         ValidateHello(plan, hello);
+        // Legacy hello has no package-version attestation: ordinary Ready remains
+        // compatible, but cannot authorize a product-released special operation.
+        if (plan.InventorySchema == 3)
+            connection.VerifiedIdentity = new(plan);
         connection.Directions = Array.AsReadOnly(hello.Directions!.ToArray());
+        if (hello.StyledTranslationVersion == 1)
+            connection.StyledTranslationCapability = new(connection.Admission);
+        if (hello.GlossaryTranslationVersion == 1)
+            connection.GlossaryTranslationCapability = new(connection.Admission);
         return connection;
     }
     private static void ValidateHello(ModelLoadPlan plan, ModelResponse hello)
     {
         if (hello.Status != "ready")
             throw new IOException("model-hello-status");
+        if (hello.StyledTranslationVersion is { } styledVersion && (styledVersion != 1 || !plan.UsesHy))
+            throw new IOException("model-hello-capabilities");
+        if (hello.GlossaryTranslationVersion is { } glossaryVersion && (glossaryVersion != 1 || !plan.UsesHy))
+            throw new IOException("model-hello-capabilities");
         if (hello.Directions is not { Length: > 0 } directions || directions.Any(string.IsNullOrEmpty)
             || directions.Distinct(StringComparer.Ordinal).Count() != directions.Length
             || !directions.ToHashSet(StringComparer.Ordinal).SetEquals(plan.Directions))
@@ -527,22 +619,52 @@ public sealed class ModelClient : ITranslationService, IDisposable
                 : error is IOException && error.Message is "model-hello-packages" or "model-hello-directions" or "model-sequence" or "model-inventory"
                     ? error.Message : "model-start-failed";
     }
-    public Task<ModelResponse> TranslateAsync(TranslationJob job) => TranslateRequestAsync(
-        new(0, "translate", job.SourceText, job.Direction.Source, job.Direction.Target, job.PreservedManualText));
+    public Task<ModelResponse> TranslateAsync(TranslationJob job) => TranslateAsync(job, null);
+
+    public Task<ModelResponse> TranslateAsync(TranslationJob job, VerifiedModelIdentity? expectedIdentity)
+    {
+        if (job.Style is { } style && (!Enum.IsDefined(style)
+            || job.Kind == TranslationKind.Alternative || job.PreviousCandidate is not null))
+            return Task.FromResult(new ModelResponse(0, "error", Code: "invalid-request"));
+        ModelGlossary? glossary = job.Glossary?.CouldApply(job.Direction) == true
+            ? new(job.Glossary.Version, job.Glossary.Rules.Select(rule => new ModelGlossaryRule(
+                rule.SourceTerm, rule.TargetTerm, rule.SourceLanguage, rule.TargetLanguage)).ToArray()) : null;
+        if (glossary is not null && (job.Style is not null || job.Kind == TranslationKind.Alternative || job.PreviousCandidate is not null))
+            return Task.FromResult(new ModelResponse(0, "error", Code: "glossary-combination-unavailable"));
+        string? wireStyle = job.Style switch
+        {
+            TranslationStyle.Natural => "natural",
+            TranslationStyle.Formal => "formal",
+            _ => null
+        };
+        return TranslateRequestAsync(new(0, glossary is not null ? "translate-glossary-v1" : wireStyle is not null ? "translate-styled-v1"
+            : job.Kind == TranslationKind.Alternative ? "translate-alternative" : "translate",
+            job.SourceText, job.Direction.Source, job.Direction.Target, job.PreservedManualText,
+            job.PreviousCandidate, wireStyle, glossary), expectedIdentity);
+    }
     public Task<ModelResponse> TranslateTextAsync(string text, LanguageDirection direction) => TranslateRequestAsync(
         new(0, "translate", text, direction.Source, direction.Target));
-    private async Task<ModelResponse> TranslateRequestAsync(ModelRequest request)
+    private async Task<ModelResponse> TranslateRequestAsync(ModelRequest request, VerifiedModelIdentity? expectedIdentity = null)
     {
         Connection connection;
         long admission;
         lock (_owner)
         {
-            if (_disposed || _active is null || _operation is not null)
+            if (_disposed || _active is null || _operation is not null
+                || expectedIdentity is not null && !ReferenceEquals(expectedIdentity, _active.VerifiedIdentity))
                 return new(0, "error", Code: "not-ready");
+            if (request.Op == "translate-glossary-v1" && (!_active.Plan.UsesHy || _active.GlossaryTranslationCapability is null))
+                return new(0, "error", Code: "glossary-unavailable");
+            if (request.Op == "translate-styled-v1" && !_active.Plan.UsesHy)
+                return new(0, "error", Code: "style-unavailable");
+            if (request.Op == "translate-alternative" && _active.Plan.UsesHy)
+                return new(0, "error", Code: "alternative-unavailable");
             bool valid = _active.Plan.InventorySchema == 3
                 ? ModelCatalog.IsSupportedPackageRequest(request.Source, request.Target)
                 : ModelCatalog.IsSupportedLegacySetting(request.Source, request.Target);
-            if (!valid)
+            if (!valid || request.Op == "translate-alternative"
+                && (!WriteSafety.ValidReplacement(request.Text) || !WriteSafety.ValidReplacement(request.PreviousCandidate ?? "")
+                    || request.Preserved is not null))
                 return new(0, "error", Code: "invalid-request");
             connection = _active;
             admission = _admission;
@@ -557,7 +679,26 @@ public sealed class ModelClient : ITranslationService, IDisposable
                     return new(0, "error", Code: "not-ready");
             try
             {
-                return await ExchangeAsync(connection, request, TimeSpan.FromSeconds(90), CancellationToken.None);
+                var response = await ExchangeAsync(connection, request, TimeSpan.FromSeconds(90), CancellationToken.None);
+                if (request.Op is "translate-alternative" or "translate-styled-v1" or "translate-glossary-v1")
+                {
+                    lock (_owner)
+                        if (!ReferenceEquals(_active, connection) || admission != _admission || _operation is not null)
+                            return new(0, "error", Code: "not-ready");
+                    bool valid = response.Directions is null && response.Packages is null && response.StyledTranslationVersion is null && response.GlossaryTranslationVersion is null
+                        && double.IsFinite(response.ElapsedMs) && response.ElapsedMs >= 0
+                        && (response.Status switch
+                        {
+                            "translated" => WriteSafety.ValidReplacement(response.Text) && response.Code == "",
+                            "no-alternative" => request.Op == "translate-alternative" && response.Text == "" && response.Code == "",
+                            "no-translation" => request.Op is ("translate-styled-v1" or "translate-glossary-v1") && response.Text == "" && response.Code == "",
+                            "error" => response.Text == "" && !string.IsNullOrWhiteSpace(response.Code),
+                            _ => false
+                        });
+                    if (!valid)
+                        throw new IOException("model-translation-response");
+                }
+                return response;
             }
             catch
             {
@@ -591,12 +732,30 @@ public sealed class ModelClient : ITranslationService, IDisposable
         long id = ++connection.Sequence;
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct, connection.ExchangeCancellation.Token);
         deadline.CancelAfter(timeout);
-        await Wire.WriteAsync(connection.Child.Process.StandardInput.BaseStream, request with
+        var exchange = ExchangeFrameAsync(connection, request with
         {
             Id = id
         }, deadline.Token);
-        var result = await Wire.ReadAsync<ModelResponse>(connection.Child.Process.StandardOutput.BaseStream, deadline.Token);
-        if (result.Id != id)
+        try
+        {
+            // A synchronous native pipe may ignore managed cancellation. The same
+            // deadline releases the lifecycle gate; callers retire this entire owner.
+            return await exchange.WaitAsync(deadline.Token);
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+        {
+            // Owned termination closes the peer's pipe ends. Observe any eventual
+            // I/O failure without logging or reusing the abandoned connection.
+            _ = exchange.ContinueWith(static failed => { _ = failed.Exception; }, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            throw;
+        }
+    }
+    private static async Task<ModelResponse> ExchangeFrameAsync(Connection connection, ModelRequest request, CancellationToken ct)
+    {
+        await Wire.WriteAsync(connection.Child.StandardInput, request, ct);
+        var result = await Wire.ReadAsync<ModelResponse>(connection.Child.StandardOutput, ct);
+        if (result.Id != request.Id)
             throw new IOException("model-sequence");
         return result;
     }

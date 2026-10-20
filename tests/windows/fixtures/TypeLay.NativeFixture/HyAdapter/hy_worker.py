@@ -15,10 +15,11 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-# -I excludes the script directory; add only this private checked-in directory.
+# -I excludes script/PYTHONPATH entries; add only the two checked-in source roots.
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT))
-from cpu_selector import WindowsRuntime  # noqa: E402
+sys.path.insert(0, str(ROOT.parents[4] / "src/shared/TypeLay.Worker"))
+from typelay_worker.hy_cpu_windows import WindowsRuntime  # noqa: E402
 from verify_assets import verify  # noqa: E402
 
 MAX_WIRE = 16384
@@ -47,7 +48,7 @@ class Metrics(ctypes.Structure):
     def __init__(self):
         super().__init__()
         self.struct_size = ctypes.sizeof(self)
-        self.abi_version = 3
+        self.abi_version = 5
 
     def data(self):
         return {name: getattr(self, name) for name, _ in self._fields_}
@@ -83,17 +84,30 @@ def run():
         raise RuntimeError("Windows x64 required")
     _, verified = verify(args.assets, args.runtime, args.adapter)
     verification_seconds = round(time.monotonic() - startup_start, 6)
-    loader = WindowsRuntime(verified, args.adapter)
-    cpu_path, cpu_selection = loader.select_cpu_backend(verified)
-    lib = loader.load(args.adapter)
-    lib.hy_open_v3.argtypes = [
+    loader = WindowsRuntime(verified)
+    scores = []
+    selection_start = time.monotonic()
+    cpu_path = loader.select_cpu_backend(on_score=scores.append)
+    cpu_selection = {
+        "policy": "b11717-official-score-max-positive-cpu-only-v1",
+        "scores": [
+            {"library": r["file"], "bytes": r["bytes"], "sha256": r["sha256"], "score": r["score"]}
+            for r in scores
+        ],
+        "selected": cpu_path.name,
+        "selected_score": next(r["score"] for r in scores if r["file"] == cpu_path.name),
+        "selection_seconds": round(time.monotonic() - selection_start, 6),
+        "runtime_lock_sha256": verified["cpu_runtime"]["lock_sha256"],
+    }
+    lib = loader.load_adapter()
+    lib.hy_open_v5.argtypes = [
         ctypes.c_char_p,
         ctypes.c_char_p,
         ctypes.POINTER(ctypes.c_void_p),
         ctypes.c_void_p,
         ctypes.c_uint32,
     ]
-    lib.hy_open_v3.restype = ctypes.c_int32
+    lib.hy_open_v5.restype = ctypes.c_int32
     lib.hy_close.argtypes = [ctypes.c_void_p]
     lib.hy_close.restype = None
     lib.hy_translate.argtypes = [
@@ -123,7 +137,7 @@ def run():
     handle = ctypes.c_void_p()
     error = ctypes.create_string_buffer(512)
     open_start = time.monotonic()
-    rc = lib.hy_open_v3(
+    rc = lib.hy_open_v5(
         os.fsencode(cpu_path),
         os.fsencode(verified["model_path"]),
         ctypes.byref(handle),
@@ -139,11 +153,11 @@ def run():
         emit(
             {
                 "event": "ready",
-                "abi": 3,
+                "abi": 5,
                 "asset_verification_seconds": verification_seconds,
                 "model_open_seconds": open_seconds,
                 "adapter_sha256": verified["adapter_sha256"],
-                "loaded_runtime": loader.loaded_identity(cpu_selection["selected"]),
+                "loaded_runtime": loader.verify_loaded(cpu_path),
                 "model_sha256": verified["model_full_hash"],
                 "runtime_sha256": verified["runtime_archive_full_hash"],
                 "template_sha256": verified["template_sha256"],

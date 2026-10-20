@@ -48,6 +48,24 @@ public sealed class ApplicationSupportPresentationTests
     }
 
     [Fact]
+    public void PackageConfirmationNamesTheActualPlatformRuntimeSources()
+    {
+        ModelPackageManagementFact facts = new(null, true, [], [], [], false, "native-unavailable", "auto", "en", false,
+            RuntimeDownloadSources: "NuGet、PyPI");
+        var windows = ApplicationSupportPresentation.Preparation(new(false, false, Packages: facts));
+        var install = Assert.Single(windows.PackageRows.Single(row => row.Id == "argos-zh-en").Actions);
+        Assert.Contains("NuGet、PyPI", install.ConfirmationText);
+        Assert.DoesNotContain("Astral", install.ConfirmationText);
+        Assert.Empty(windows.PackageRows.Single(row => row.Id == "hy-mt2-1-8b-q4-k-m").Actions);
+        var linux = ApplicationSupportPresentation.Preparation(new(false, false,
+            Packages: facts with
+            {
+                RuntimeDownloadSources = "Astral、PyPI"
+            }));
+        Assert.Contains("Astral、PyPI", Assert.Single(linux.PackageRows.Single(row => row.Id == "argos-zh-en").Actions).ConfirmationText);
+    }
+
+    [Fact]
     public void PackageManagementKeepsInstalledCurrentAndActualHelloDirectionsDistinct()
     {
         var installed = PackageSelections("argos-zh-en", "hy-mt2-1-8b-q4-k-m");
@@ -175,18 +193,6 @@ public sealed class ApplicationSupportPresentationTests
         var expected = ApplicationSupportPresentation.Preparation(new(true, true, phase));
         var actual = ApplicationSupportPresentation.Preparation(new(true, true, phase, Packages: facts));
         Assert.Equal(expected.Guidance, actual.Guidance);
-    }
-
-    [Fact]
-    public void WindowsCanDescribeAnUnavailablePreviewWithoutFabricatingInventory()
-    {
-        var row = ApplicationSupportPresentation.UnavailableModelPackage("hy-mt2-1-8b-q4-k-m", "windows-unavailable");
-        Assert.Equal("Windows 当前版本未开放", row.AvailabilityText);
-        Assert.True(row.Preview);
-        Assert.False(row.Installed);
-        Assert.False(row.Current);
-        Assert.False(row.Ready);
-        Assert.Empty(row.Actions);
     }
 
     [Theory]

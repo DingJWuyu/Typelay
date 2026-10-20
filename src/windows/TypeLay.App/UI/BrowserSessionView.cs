@@ -16,6 +16,9 @@ internal sealed class BrowserSessionView : ISessionView
     private string _theme = "system";
     private string[] _excluded = [];
     private bool _renewing;
+    private SessionState _state;
+    private SessionGlossaryEntry? _glossary;
+    private bool _savingGlossary, _glossaryOutcomeUnknown, _glossarySaved;
     public Func<SessionViewToken, bool>? BeginEditing
     {
         get; set;
@@ -36,6 +39,28 @@ internal sealed class BrowserSessionView : ISessionView
     {
         get; set;
     }
+    public Action<SessionViewToken>? AlternativeRequested
+    {
+        get; set;
+    }
+    public Func<SessionStyleRequest, Task<StyleChangeResult>>? StyleRequested
+    {
+        get; set;
+    }
+    public Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
+    {
+        get; set;
+    }
+    public Func<SessionGlossaryRequest, Task<GlossaryChangeResult>>? AddGlossaryRequested
+    {
+        get; set;
+    }
+    public Action<Guid>? CloseGlossaryRequested
+    {
+        get; set;
+    }
+    public SessionGlossaryFocus? GlossaryEntryFocus => _glossary is { } entry && _context?.Token == entry.Token
+        && _input.GlossaryFocus is { } focus && focus.FormId == entry.FormId && focus.Token == entry.Token ? focus : null;
     public Action? ExcludeRequested
     {
         get; set;
@@ -71,6 +96,10 @@ internal sealed class BrowserSessionView : ISessionView
         }
         _record = record;
         _context = context;
+        _state = session.State;
+        if (_glossary is { } entry && (entry.Token != context.Token || session.State != SessionState.EditingTranslation
+            || context.TranslationActions?.GlossaryReleased != true))
+            CloseGlossary(entry.FormId);
         var view = new
         {
             presentation,
@@ -171,6 +200,8 @@ internal sealed class BrowserSessionView : ISessionView
     public void RenderPaused(PauseAnchor anchor, long revision) => HideQuietly();
     public void HideQuietly()
     {
+        if (_glossary is { } entry)
+            CloseGlossary(entry.FormId);
         _input.CancelEditorTransition();
         _record?.Peer.Send("overlay-hide");
         _record = null;
@@ -180,7 +211,7 @@ internal sealed class BrowserSessionView : ISessionView
     }
     public void ResumeEditor()
     {
-        if (_record is { } record && _context is { } context)
+        if (_glossary is null && _record is { } record && _context is { } context)
             record.Peer.Send("overlay-resume", new
             {
                 target = record.Target.Value,
@@ -199,7 +230,31 @@ internal sealed class BrowserSessionView : ISessionView
         var value = message.Data.TryGetProperty("value", out var result) ? result : default;
         switch (BrowserInput.String(message.Data, "operation"))
         {
+            case "sessionGlossaryBegin":
+                _ = OpenGlossaryAsync(record, context);
+                break;
+            case "sessionGlossaryFocus":
+                if (_glossary is not { } currentEntry)
+                    break;
+                if (value.ValueKind == JsonValueKind.Null)
+                    _input.SetGlossaryFocus(null);
+                else if (TryGlossaryValue<SessionGlossaryFocus>(value, 3, out var focus)
+                    && focus.FormId == currentEntry.FormId && focus.Token == token && Enum.IsDefined(focus.Ime))
+                    _input.SetGlossaryFocus(focus);
+                break;
+            case "sessionGlossaryAdd":
+                if (TryGlossaryValue<SessionGlossaryRequest>(value, 4, out var glossaryRequest)
+                    && _glossary is { } active && glossaryRequest.FormId == active.FormId && glossaryRequest.Token == active.Token
+                    && glossaryRequest.SettingsRevision == active.SettingsRevision)
+                    _ = SaveGlossaryAsync(record, active, glossaryRequest);
+                break;
+            case "sessionGlossaryClose":
+                if (value.ValueKind == JsonValueKind.String && Guid.TryParse(value.GetString(), out var formId))
+                    CloseGlossary(formId);
+                break;
             case "beginEdit":
+                if (_glossary is not null)
+                    break;
                 bool allowed = BeginEditing?.Invoke(token) == true;
                 // BeginEditing synchronously renders the new exact editor token.
                 if (allowed && _context is { } edited && edited.Token.Target == token.Target
@@ -214,6 +269,8 @@ internal sealed class BrowserSessionView : ISessionView
                     });
                 break;
             case "draft":
+                if (_input.GlossaryFocus is not null)
+                    break;
                 if (value.ValueKind == JsonValueKind.String && value.GetString() is { Length: <= Limits.MaxTextUnits } text)
                     DraftChanged?.Invoke(text);
                 break;
@@ -224,13 +281,25 @@ internal sealed class BrowserSessionView : ISessionView
                 _input.EditorFocus(token, value.ValueKind == JsonValueKind.True);
                 break;
             case "return":
-                ReturnRequested?.Invoke(token);
+                if (_glossary is null)
+                    ReturnRequested?.Invoke(token);
                 break;
             case "escape":
-                EscapeRequested?.Invoke(token);
+                if (_glossary is null)
+                    EscapeRequested?.Invoke(token);
                 break;
             case "regenerate":
                 RegenerateRequested?.Invoke();
+                break;
+            case "alternative":
+                if (context.TranslationActions is { AlternativeReleased: true }
+                    && !EditingComposition)
+                    AlternativeRequested?.Invoke(token);
+                break;
+            case "style":
+                if (!EditingComposition && context.TranslationActions is { StyleReleased: true }
+                    && TryStyleRequest(value, token, out var request))
+                    _ = StyleRequested?.Invoke(request);
                 break;
             case "exclude":
                 ExcludeRequested?.Invoke();
@@ -239,5 +308,145 @@ internal sealed class BrowserSessionView : ISessionView
                 _settings();
                 break;
         }
+    }
+
+    private async Task OpenGlossaryAsync(BrowserObservation record, SessionViewContext context)
+    {
+        var token = context.Token;
+        SessionGlossaryEntry? entry = null;
+        try
+        {
+            if (_glossary is null && !EditingComposition && _state == SessionState.EditingTranslation
+                && context.TranslationActions is { GlossaryReleased: true, CanOpenGlossary: true })
+                entry = BeginGlossaryRequested?.Invoke(token);
+            if (entry is not null && (entry.Token != token || _context?.Token != token || !_input.OpenGlossaryEntry(entry)))
+            {
+                CloseGlossaryRequested?.Invoke(entry.FormId);
+                entry = null;
+            }
+            if (entry is null)
+            {
+                record.Peer.Send("overlay-glossary-open", new
+                {
+                    target = token.Target.Value,
+                    generation = token.CommandGeneration,
+                    revision = token.Revision,
+                    entry = (SessionGlossaryEntry?)null
+                });
+                return;
+            }
+            _glossary = entry;
+            _savingGlossary = _glossaryOutcomeUnknown = _glossarySaved = false;
+            var reply = await record.Peer.RequestAsync("overlay-glossary-open", new
+            {
+                target = token.Target.Value,
+                generation = token.CommandGeneration,
+                revision = token.Revision,
+                entry
+            }, 1000);
+            if (_glossary == entry && (reply is null || reply.Route != record.Route
+                || !BrowserInput.Boolean(reply.Data, "opened") || _context?.Token != token))
+                CloseGlossary(entry.FormId);
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            if (entry is not null)
+                CloseGlossary(entry.FormId);
+            else
+                record.Peer.Send("overlay-glossary-open", new
+                {
+                    target = token.Target.Value,
+                    generation = token.CommandGeneration,
+                    revision = token.Revision,
+                    entry = (SessionGlossaryEntry?)null
+                });
+        }
+    }
+
+    private static bool TryGlossaryValue<T>(JsonElement value, int properties, out T result) where T : class
+    {
+        result = null!;
+        if (value.ValueKind != JsonValueKind.Object || value.EnumerateObject().Count() != properties)
+            return false;
+        try
+        {
+            result = value.Deserialize<T>(BrowserServer.Json)!;
+            return result is not null;
+        }
+        catch (JsonException) { return false; }
+    }
+
+    private async Task SaveGlossaryAsync(BrowserObservation record, SessionGlossaryEntry entry, SessionGlossaryRequest request)
+    {
+        if (_savingGlossary || _glossaryOutcomeUnknown || _glossarySaved)
+            return;
+        _savingGlossary = true;
+        GlossaryChangeResult result;
+        try
+        {
+            result = _state != SessionState.EditingTranslation ? new(false, "glossary-stale")
+                : GlossaryEntryFocus is not { } focus || focus.FormId != entry.FormId ? new(false, "glossary-entry-focus")
+                : focus.Ime != ImeState.Clear ? new(false, "glossary-entry-ime")
+                : AddGlossaryRequested is not { } add ? new(false, "glossary-unavailable") : await add(request);
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            result = new(false, "glossary-unconfirmed");
+        }
+        if (_glossary != entry || _context?.Token != entry.Token || _record?.Peer != record.Peer || _record.Route != record.Route)
+            return;
+        _savingGlossary = false;
+        _glossarySaved = result.Saved;
+        _glossaryOutcomeUnknown = result.Code == "glossary-unconfirmed";
+        record.Peer.Send("overlay-glossary-result", new
+        {
+            target = entry.Token.Target.Value,
+            generation = entry.Token.CommandGeneration,
+            revision = entry.Token.Revision,
+            formId = entry.FormId,
+            result = new
+            {
+                result.Saved,
+                result.Code,
+                message = GlossaryEntryPresentation.Message(result.Code)
+            }
+        });
+    }
+
+    private void CloseGlossary(Guid formId)
+    {
+        if (_glossary is not { } entry || entry.FormId != formId)
+            return;
+        _glossary = null;
+        _input.CloseGlossaryEntry(formId);
+        CloseGlossaryRequested?.Invoke(formId);
+        _record?.Peer.Send("overlay-glossary-close", new
+        {
+            target = entry.Token.Target.Value,
+            generation = entry.Token.CommandGeneration,
+            revision = entry.Token.Revision,
+            formId
+        });
+    }
+
+    private static bool TryStyleRequest(JsonElement value, SessionViewToken token, out SessionStyleRequest request)
+    {
+        request = null!;
+        if (value.ValueKind != JsonValueKind.Object || value.EnumerateObject().Count() != 2
+            || !value.TryGetProperty("settingsRevision", out var revision)
+            || revision.ValueKind != JsonValueKind.Number || !revision.TryGetInt64(out long settingsRevision) || settingsRevision < 0
+            || !value.TryGetProperty("style", out var style))
+            return false;
+        TranslationStyle? parsed = style.ValueKind == JsonValueKind.Null ? null
+            : style.ValueKind == JsonValueKind.String ? style.GetString() switch
+            {
+                "Natural" => TranslationStyle.Natural,
+                "Formal" => TranslationStyle.Formal,
+                _ => (TranslationStyle)0
+            } : (TranslationStyle)0;
+        if (parsed is { } selected && !Enum.IsDefined(selected))
+            return false;
+        request = new(token, settingsRevision, parsed);
+        return true;
     }
 }

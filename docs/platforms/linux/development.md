@@ -34,7 +34,7 @@ finalize 校验主包原始清单、构建提交、合作组件的固定来源�
 
 默认模型准备继续使用原 Argos。CI 的正式 Linux 候选包通过固定 b11717 官方 CPU 闭包加入 Hy 运行资产，仍需用户在设置中显式选择下载并使用 Hy。手动开发构建只有传入 `python eng/linux/build.py --hy-runtime <已有CPU目录>` 才包含这些资产；该参数不下载、不编译 llama.cpp、不安装模型。设置始终显示固定 Hy 十二方向预览包；只有发行包的 native 闭包通过只读完整性检查后，才开放下载、使用与修复。该目录必须与 `src/shared/TypeLay.Worker/native/hy/cpu-runtime.lock.json` 的17项文件逐字节匹配。
 
-只编生产 adapter 可执行 `python eng/linux/hy/build.py --runtime <已有CPU目录> --output <空输出目录>`。输出包含唯一共享 C++ 源编出的三导出 adapter、固定 CPU 库、模型/CPU 锁、production-adapter 清单与许可证；发布包不带 C++、headers 或 fixture 门。Hy 模型数据单独位于 `models/packages/<id>/<version>/`，精确包含锁定 GGUF 与 `model_LICENSE.txt`。缺少运行资产或固定模型数据时，active Hy 明确启动失败。
+只编生产 adapter 可执行 `python eng/linux/hy/build.py --runtime <已有CPU目录> --output <空输出目录>`。输出包含唯一共享 C++ 源编出的固定 ABI5 导出的 adapter、固定 CPU 库、模型/CPU 锁、production-adapter 清单与许可证；发布包不带 C++、headers 或 fixture 门。Hy 模型数据单独位于 `models/packages/<id>/<version>/`，精确包含锁定 GGUF 与 `model_LICENSE.txt`。缺少运行资产或固定模型数据时，active Hy 明确启动失败。
 
 发布者显式准备 CPU 资产的入口是 `python eng/linux/hy/prepare_runtime.py --cache artifacts/linux/hy-cpu-download --output artifacts/linux/hy-cpu-runtime`。它只获取固定官方 `llama-b11717-bin-ubuntu-x64.tar.gz`，完整校验下载锁和生产17文件锁后，把实际 ELF 复制为普通文件；不带工具、服务器、其他后端或模型。`--offline` 仅复验已有精确缓存。完整候选包的发行回归设置 `TYPELAY_REQUIRE_HY_RUNTIME=1`，要求搬迁后的 native 可用并拒绝包内 GGUF。
 
@@ -42,9 +42,9 @@ finalize 校验主包原始清单、构建提交、合作组件的固定来源�
 
 本地执行该链先按现正式安装入口准备 Argos 与 CPython 3.13.16，再显式运行 `python tests/linux/hy_package_e2e.py --prepare-cache --package artifacts/linux/package --cache artifacts/linux/hy-model-cache`。随后在隔离 XDG 数据与缓存、现嵌套桌面环境中运行 `tests/linux/native_e2e.py --desktop --desktop-scope model-packages`。该场景从搬迁后的实际用户安装启动，操作 GTK 确认下载并使用、回切 Argos、选择已安装 Hy、再次回切与移除；观察实际包身份和十二方向 hello、一个中译法请求、退出及清理。固定模型缓存准备独立于 GTK 期限；禁止通过改安装标记或换成旧 Python 跳过正式安装。未实际运行的新场景保持未验收，单句成功也不代表十二方向质量或物理桌面验收。
 
-无模型的实际 ELF/搬迁校验可设置 `TYPELAY_HY_CPU_RUNTIME=<已有CPU目录>` 后运行 `python -m unittest discover -s tests/linux -p test_hy_runtime.py -v`；它只核库加载、导出和隔离，不调用 hy_open_v3 或模型推理。
+无模型的实际 ELF/搬迁校验可设置 `TYPELAY_HY_CPU_RUNTIME=<已有CPU目录>` 后运行 `python -m unittest discover -s tests/linux -p test_hy_runtime.py -v`；它只核库加载、导出和隔离，不调用 hy_open_v5 或模型推理。
 
-ABI3 真实生产长度帧已在云端 Linux 通过：重新构建生产 adapter 后，普通 hello 精确返回 active 包身份及十二方向且不推理，随后唯一原句“我没有同意删除备份。”中译法以真实 EOG 完成，进程正常退出并回收。测试使用隔离 Python 3.13.5，官方 CPU 库动态选择 zen4；固定2线程、context1024、输出192 token、地址空间上限2.5 GiB、请求60秒/总180秒。本机采样译文耗时1.89秒，峰值 RSS 约1.19 GiB、地址空间约1.43 GiB；唯一临时模型副本已清理，原缓存完整性不变。这只验证精确库存布局下的 worker 加载和单句请求，不作为性能保证、十二方向质量认证、正式 Python 3.13.16 安装事务、包管理交互、物理桌面或 Windows 生产路径验收。
+当前 ABI5 增加结构化术语词对并保留内部自然/正式指令请求，软件合同与无模型 ELF 检查不构成模型质量验证，用户入口仍未开放。此前 ABI3 真实生产长度帧已在云端 Linux 通过：重新构建生产 adapter 后，普通 hello 精确返回 active 包身份及十二方向且不推理，随后唯一原句“我没有同意删除备份。”中译法以真实 EOG 完成，进程正常退出并回收。测试使用隔离 Python 3.13.5，官方 CPU 库动态选择 zen4；固定2线程、context1024、输出192 token、地址空间上限2.5 GiB、请求60秒/总180秒。本机采样译文耗时1.89秒，峰值 RSS 约1.19 GiB、地址空间约1.43 GiB；唯一临时模型副本已清理，原缓存完整性不变。这只验证精确库存布局下的 worker 加载和单句请求，不作为性能保证、十二方向质量认证、正式 Python 3.13.16 安装事务、包管理交互、物理桌面或 Windows 生产路径验收。
 
 ## 模型包事务
 

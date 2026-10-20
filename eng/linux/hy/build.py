@@ -85,7 +85,7 @@ def build(runtime, output):
     )
     exports = sorted(line.split()[-1] for line in symbols.splitlines() if line.strip())
     if exports != EXPORTS:
-        raise ValueError("production adapter must export exactly hy_open_v3/translate/close")
+        raise ValueError("production adapter must export exactly the fixed ABI5 exports")
     dynamic = subprocess.check_output(["readelf", "--dynamic", str(adapter)], text=True, timeout=30)
     runpaths = re.findall(r"\(RUNPATH\).*\[([^]]*)\]", dynamic)
     if runpaths != ["$ORIGIN/cpu-runtime"] or "(RPATH)" in dynamic:

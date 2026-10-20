@@ -109,6 +109,30 @@ def main():
             await asyncio.wait_for(owned.wait(), 3)
             await asyncio.wait_for(notice_owned.wait(), 3)
             directory = Path(temporary.name)
+            (directory / "config").mkdir()
+            (directory / "config/settings.json").write_text(
+                json.dumps(
+                    {
+                        "Styles": {
+                            "Default": "formal",
+                            "Applications": {"editor": "natural", "mail": "formal"},
+                        },
+                        "Glossary": {
+                            "Version": 1,
+                            "Rules": [
+                                {"SourceTerm": "TypeLay", "TargetTerm": "TypeLay"},
+                                {
+                                    "SourceTerm": "projet",
+                                    "TargetTerm": "项目",
+                                    "SourceLanguage": "fr",
+                                    "TargetLanguage": "zh",
+                                },
+                                {"SourceTerm": "PR", "TargetTerm": "PR"},
+                            ],
+                        },
+                    }
+                )
+            )
             process = subprocess.Popen(
                 [
                     str(package / "native/typelay-supervise"),
@@ -151,12 +175,16 @@ def main():
                 return future
 
             async def settled():
-                pending = list(jobs)
-                await asyncio.wait_for(asyncio.gather(*pending), 3)
-                jobs.difference_update(pending)
-                settled_jobs.append(len(pending))
+                async with asyncio.timeout(3):
+                    while jobs:
+                        pending = list(jobs)
+                        await asyncio.gather(*pending)
+                        jobs.difference_update(pending)
+                        settled_jobs.append(len(pending))
 
             class ObservedLink(Link):
+                unknown_translation_reply = False
+                unavailable_translation_state = False
                 settings_after_tray_reply = None
                 held_tray_id = None
                 held_tray_reply = None
@@ -180,6 +208,13 @@ def main():
                     super().receive(frame)
 
                 async def ask(self, operation, data=None, **options):
+                    if (
+                        operation in ("getStyleSettings", "getGlossarySettings")
+                        and self.unavailable_translation_state
+                    ):
+                        raise TimeoutError("controlled-state-timeout")
+                    if operation == "changeGlossary" and self.unknown_translation_reply:
+                        return {"saved": True, "code": "unknown-future-result"}
                     if operation == "traySettings" and self.settings_after_tray_reply is not None:
                         self.held_tray_id = self.sequence + 1
                     started = asyncio.get_running_loop().time()
@@ -694,6 +729,177 @@ def main():
             assert actions == ["settings", "quit"]
             saved = json.loads((directory / "config/settings.json").read_text())
             assert saved["Mode"] == 1 and saved["Source"] == "en" and saved["Target"] == "zh"
+            # Dedicated recovery is exercised through real GTK controls and the
+            # published host. Production release remains closed throughout.
+            settings_surface.show()
+            await settled()
+            translation = settings_surface.translation
+            await translation.load(translation.load_revision)
+            settings_surface.pages.set_visible_child_name("language")
+            assert translation.style_state["isReleased"] is False
+            assert translation.glossary_state["isReleased"] is False
+            assert not translation.style.get_visible()
+            assert not translation.editor.get_visible()
+            assert len(translation.applications.get_children()) == 2
+            assert len(translation.rules.get_children()) == 3
+
+            def row_button(listing, index=0):
+                return next(
+                    widget
+                    for widget in listing.get_children()[index].get_child().get_children()
+                    if isinstance(widget, Gtk.Button)
+                )
+
+            async def question(title):
+                async with asyncio.timeout(3):
+                    while True:
+                        dialog = next(
+                            (
+                                window
+                                for window in Gtk.Window.list_toplevels()
+                                if isinstance(window, Gtk.MessageDialog)
+                                and window.get_visible()
+                                and window.get_property("text") == title
+                            ),
+                            None,
+                        )
+                        if dialog is not None:
+                            return dialog
+                        await asyncio.sleep(0.01)
+
+            # App deletion is staged, never inferred from the focused/last app.
+            row_button(translation.applications).clicked()
+            assert translation.dirty
+            assert len((await host.ask("getStyleSettings"))["applications"]) == 2
+            settings_surface.save_button.clicked()
+            await settled()
+            assert not translation.dirty
+            assert [
+                item["application"] for item in (await host.ask("getStyleSettings"))["applications"]
+            ] == ["mail"]
+            translation.reset.clicked()
+            dialog = await question("重置翻译风格？")
+            assert "全局风格和所有应用风格覆盖" in dialog.get_property("secondary-text")
+            dialog.response(Gtk.ResponseType.CANCEL)
+            assert (await host.ask("getStyleSettings"))["savedPreferences"] is not None
+            translation.reset.clicked()
+            (await question("重置翻译风格？")).response(Gtk.ResponseType.OK)
+            await settled()
+            assert (await host.ask("getStyleSettings"))["savedPreferences"] is None
+            assert len((await host.ask("getGlossarySettings"))["savedSnapshot"]["rules"]) == 3
+
+            # A real filesystem failure and an unknown response preserve the
+            # exact local draft. Retrying reads the dedicated saved state.
+            original_rules = (await host.ask("getGlossarySettings"))["savedSnapshot"]["rules"]
+            row_button(translation.rules).clicked()
+            await settled()
+            draft_rules = [dict(rule) for rule in translation.rules_draft]
+            blocker = settings_file.with_suffix(".json.tmp")
+            before = settings_file.read_bytes()
+            blocker.mkdir()
+            settings_surface.save_button.clicked()
+            await settled()
+            assert translation.rules_draft == draft_rules
+            assert settings_file.read_bytes() == before
+            blocker.rmdir()
+            host.unknown_translation_reply = True
+            settings_surface.save_button.clicked()
+            await settled()
+            assert translation.rules_draft == draft_rules
+            assert "未确认" in settings_surface.message.get_text()
+            assert settings_file.read_bytes() == before
+            host.unknown_translation_reply = False
+            host.unavailable_translation_state = True
+            settings_surface.save_button.clicked()
+            await settled()
+            assert translation.rules_draft == draft_rules
+            assert settings_surface.save_button.get_sensitive()
+            host.unavailable_translation_state = False
+            settings_surface.dismiss()
+            dialog = await question(settings_surface.draft_messages["closeTitle"])
+            dialog.response(Gtk.ResponseType.CANCEL)
+            assert translation.rules_draft == draft_rules
+            settings_surface.dismiss()
+            (await question(settings_surface.draft_messages["closeTitle"])).response(
+                Gtk.ResponseType.OK
+            )
+            assert not translation.dirty
+            settings_surface.show()
+            await settled()
+            assert translation.current_rules() == original_rules
+
+            # Unrelated settings revisions are safe to rebase. A genuinely
+            # changed rule list requires explicit, revision-bound replacement.
+            row_button(translation.rules).clicked()
+            row_button(translation.rules).clicked()
+            await settled()
+            expected_rules = [original_rules[2]]
+            assert translation.rules_draft == expected_rules
+            current = await host.ask("getGlossarySettings")
+            external = {
+                "session": "00000000-0000-0000-0000-000000000001",
+                "request": 1,
+                "expectedSettingsRevision": current["settingsRevision"],
+                "rules": original_rules[1:],
+            }
+            assert (await host.ask("changeGlossary", external))["saved"] is True
+            settings_surface.save_button.clicked()
+            dialog = await question("术语规则已更改")
+            assert "替换整个术语表" in dialog.get_property("secondary-text")
+            dialog.response(Gtk.ResponseType.CANCEL)
+            await settled()
+            assert translation.rules_draft == expected_rules
+            assert (await host.ask("getGlossarySettings"))["savedSnapshot"][
+                "rules"
+            ] == original_rules[1:]
+            settings_surface.save_button.clicked()
+            dialog = await question("术语规则已更改")
+            # The rule list does not change here, but its confirmed revision does.
+            assert (
+                await host.ask(
+                    "settings", {**state, "theme": "light" if state["theme"] != "light" else "dark"}
+                )
+                is True
+            )
+            dialog.response(Gtk.ResponseType.OK)
+            await settled()
+            assert translation.rules_draft == expected_rules
+            assert (await host.ask("getGlossarySettings"))["savedSnapshot"][
+                "rules"
+            ] == original_rules[1:]
+            settings_surface.save_button.clicked()
+            (await question("术语规则已更改")).response(Gtk.ResponseType.OK)
+            await settled()
+            assert not translation.dirty
+            assert (await host.ask("getGlossarySettings"))["savedSnapshot"][
+                "rules"
+            ] == expected_rules
+            row_button(translation.rules).clicked()
+            await settled()
+            assert (
+                await host.ask(
+                    "settings", {**state, "theme": "dark" if state["theme"] != "dark" else "light"}
+                )
+                is True
+            )
+            settings_surface.save_button.clicked()
+            await settled()
+            assert not translation.dirty
+            assert (await host.ask("getGlossarySettings"))["savedSnapshot"]["rules"] == []
+            assert not translation.box.get_visible()
+            settings_surface.window.hide()
+            settings_surface.show()
+            await settled()
+            assert not translation.style.get_visible() and not translation.editor.get_visible()
+            assert not translation.box.get_visible()
+            assert any(item["operation"] == "removeStyleOverride" for item in request_results)
+            assert any(item["operation"] == "resetTranslationStyle" for item in request_results)
+            assert any(item["operation"] == "changeGlossary" for item in request_results)
+            print(
+                "PASS: GTK dedicated translation recovery, drafts, failure/retry, closed release and revision-bound conflict confirmation",
+                flush=True,
+            )
+
             tray.close()
             assert tray.indicator.get_status() == tray.backend.IndicatorStatus.PASSIVE
             print(

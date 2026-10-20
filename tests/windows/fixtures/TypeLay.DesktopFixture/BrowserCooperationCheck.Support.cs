@@ -11,7 +11,7 @@ using TypeLay.Windows.Testing;
 
 internal static partial class BrowserCooperationCheck
 {
-    private static async Task CopyModelAsync(string directory, string destination, CancellationToken ct)
+    internal static async Task CopyModelAsync(string directory, string destination, CancellationToken ct)
     {
         string previous = Path.Combine(Path.GetDirectoryName(directory)!, "continuous-translation");
         string source = Path.Combine(previous, "data");
@@ -35,8 +35,21 @@ internal static partial class BrowserCooperationCheck
                 continue;
             Require(File.Exists(Path.Combine(root, "runtime", "python", "tools", "python.exe"))
                 && File.Exists(Path.Combine(root, "models", "installed.json")), "verified-model-generation-incomplete");
-            foreach (string component in new[] { "runtime", "models" })
-                await CopyTreeAsync(Path.Combine(root, component), Path.Combine(target, component), ct);
+            if (id != "legacy")
+                // A generation is a single installer-owned unit. Its runtime inventory,
+                // dependency lock and use marker are required by later real operations.
+                await CopyTreeAsync(root, target, ct);
+            else
+            {
+                foreach (string component in new[] { "runtime", "models" })
+                    await CopyTreeAsync(Path.Combine(root, component), Path.Combine(target, component), ct);
+                foreach (string name in new[] { "runtime-inventory.json", "dependency-lock.json", "setup-self-check.json", "model-use.lock" })
+                    if (File.Exists(Path.Combine(root, name)))
+                    {
+                        Require((File.GetAttributes(Path.Combine(root, name)) & FileAttributes.ReparsePoint) == 0, "model-source-is-link");
+                        await File.WriteAllBytesAsync(Path.Combine(target, name), await File.ReadAllBytesAsync(Path.Combine(root, name), ct), ct);
+                    }
+            }
             byte[] original = await File.ReadAllBytesAsync(Path.Combine(root, "models", "installed.json"), ct);
             byte[] copied = await File.ReadAllBytesAsync(Path.Combine(target, "models", "installed.json"), ct);
             Require(SHA256.HashData(original).SequenceEqual(SHA256.HashData(copied)), "model-inventory-copy-changed");
@@ -504,6 +517,8 @@ internal static partial class BrowserCooperationCheck
         return await reader.ReadToEndAsync(ct);
     }
     private static void SendChord(ushort[] keys, List<CleanupError> cleanupErrors)
+        => SendChord(keys, () => cleanupErrors.Add(new("injected-keys", "key-release-incomplete")));
+    internal static void SendChord(ushort[] keys, Action keyReleaseFailed)
     {
         Require(new ushort[] { 0x11, 0x10, 0x12, 0x5b, 0x5c }.All(key => (Native.GetAsyncKeyState(key) & 0x8000) == 0), "modifier-already-held");
         // The browser's physical press identity comes from the scan code.
@@ -528,7 +543,7 @@ internal static partial class BrowserCooperationCheck
                 held.RemoveAll(press => press.Scan == input.Scan);
         var release = held.AsEnumerable().Reverse().Select(input => input with { Flags = input.Flags | 2 }).ToArray();
         if (release.Length > 0 && SendInput((uint)release.Length, release, Marshal.SizeOf<KeyInput>()) != release.Length)
-            cleanupErrors.Add(new("injected-keys", "key-release-incomplete"));
+            keyReleaseFailed();
         throw new Failure("single-shortcut-injection-incomplete");
     }
     [StructLayout(LayoutKind.Explicit, Size = 40)]

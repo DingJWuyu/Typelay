@@ -10,7 +10,7 @@ from pathlib import Path
 
 # Isolated mode ignores user site packages and PYTHONPATH. This package is an explicit code input.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from typelay_worker.engine import LocalEngine
+from typelay_worker.engine import LocalEngine, Result
 from typelay_worker.protocol import read_frame, write_frame
 
 
@@ -72,13 +72,73 @@ def serve(engine, self_check):
                 response = {"id": request_id, "status": "ready", "directions": engine.directions}
                 if engine.schema == 3:
                     response["packages"] = engine.packages
-            elif operation == "translate":
-                result = engine.translate(
-                    request.get("text"),
-                    request.get("source"),
-                    request.get("target"),
-                    request.get("preserved"),
-                )
+                if engine.styled_translation_version is not None:
+                    response["styledTranslationVersion"] = engine.styled_translation_version
+                if engine.glossary_translation_version is not None:
+                    response["glossaryTranslationVersion"] = engine.glossary_translation_version
+            elif operation in (
+                "translate",
+                "translate-alternative",
+                "translate-styled-v1",
+                "translate-glossary-v1",
+            ):
+                if operation == "translate-glossary-v1":
+                    if set(request) - {
+                        "id",
+                        "op",
+                        "text",
+                        "source",
+                        "target",
+                        "preserved",
+                        "glossary",
+                    }:
+                        result = Result("error", code="invalid-request")
+                    else:
+                        result = engine.translate_glossary(
+                            request.get("text"),
+                            request.get("source"),
+                            request.get("target"),
+                            request.get("glossary"),
+                            request.get("preserved"),
+                        )
+                elif "glossary" in request or "terms" in request:
+                    result = Result("error", code="invalid-request")
+                elif operation == "translate-styled-v1":
+                    if set(request) - {
+                        "id",
+                        "op",
+                        "text",
+                        "source",
+                        "target",
+                        "style",
+                        "preserved",
+                    }:
+                        result = Result("error", code="invalid-request")
+                    else:
+                        result = engine.translate_styled(
+                            request.get("text"),
+                            request.get("source"),
+                            request.get("target"),
+                            request.get("style"),
+                            request.get("preserved"),
+                        )
+                elif "style" in request:
+                    result = Result("error", code="invalid-request")
+                elif operation == "translate-alternative":
+                    result = engine.translate_alternative(
+                        request.get("text"),
+                        request.get("source"),
+                        request.get("target"),
+                        request.get("previousCandidate"),
+                        request.get("preserved"),
+                    )
+                else:
+                    result = engine.translate(
+                        request.get("text"),
+                        request.get("source"),
+                        request.get("target"),
+                        request.get("preserved"),
+                    )
                 response = {
                     "id": request_id,
                     "status": result.status,
@@ -92,7 +152,12 @@ def serve(engine, self_check):
             # Do not keep the last request/result alive while waiting for the next pipe frame.
             request.clear()
             response.clear()
-            if operation == "translate":
+            if operation in (
+                "translate",
+                "translate-alternative",
+                "translate-styled-v1",
+                "translate-glossary-v1",
+            ):
                 del result
         except EOFError:
             return 0

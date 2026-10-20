@@ -1,6 +1,7 @@
 """Source-bound native overlay bridge for the shared session controller."""
 
 import asyncio
+import copy
 import json
 import os
 import sys
@@ -21,6 +22,8 @@ class Overlay:
         self.visual_expansion = None
         self.edit_trace_count = 0
         self.pending = False
+        self.glossary = None
+        self.glossary_begin_pending = False
         self.lock = asyncio.Lock()
         self.input.ui_event = self.event
         self.timer = self.input.glib.timeout_add(200, self.renew)
@@ -94,8 +97,9 @@ class Overlay:
             return None
         return record
 
-    def schedule(self, visual_expansion_from=None):
-        self.revision += 1
+    def schedule(self, visual_expansion_from=None, *, retain_revision=False):
+        if not retain_revision:
+            self.revision += 1
         # A later schedule replaces this one-use visual hint, even if its view
         # happens to have identical text. It grants no input/display authority.
         self.visual_expansion = (self.revision, visual_expansion_from)
@@ -104,8 +108,45 @@ class Overlay:
             self.tasks(self.update())
 
     def render(self, value):
+        def editor_view(view):
+            if not isinstance(view, dict) or not isinstance(view.get("viewContext"), dict):
+                return view
+            return {
+                **view,
+                "viewContext": {
+                    key: item
+                    for key, item in view["viewContext"].items()
+                    if key != "translationActions"
+                },
+            }
+
+        # Menu availability/feedback is read-only presentation, not a new editor
+        # authority. Every older view field still participates in its identity.
+        retain_revision = (
+            self.value is not None
+            and self.value != value
+            and editor_view(self.value) == editor_view(value)
+        )
+        if self.glossary and not retain_revision and self.value:
+            previous, following = (
+                copy.deepcopy(editor_view(self.value)),
+                copy.deepcopy(editor_view(value)),
+            )
+            for projection in (previous, following):
+                projection.pop("editable", None)
+                projection.get("viewContext", {}).pop("canEdit", None)
+            # Auxiliary focus intentionally withdraws the editor ACK. That is
+            # not a replacement form, source token, or translation buffer.
+            retain_revision = previous == following
+        if self.glossary and (
+            value.get("state") != "EditingTranslation"
+            or value.get("viewContext", {}).get("token") != self.glossary["entry"]["token"]
+            or not retain_revision
+            and value != self.value
+        ):
+            self.close_glossary()
         self.value = value
-        self.schedule()
+        self.schedule(retain_revision=retain_revision)
 
     async def send_view(self):
         async with self.lock:
@@ -162,10 +203,10 @@ class Overlay:
     async def update(self):
         try:
             while self.value:
-                revision = self.revision
+                revision, view = self.revision, self.value
                 if not await self.send_view():
                     break
-                if revision == self.revision:
+                if revision == self.revision and view is self.value:
                     break
         except (OSError, EOFError, TimeoutError):
             self.conceal("transport-unavailable")
@@ -259,12 +300,62 @@ class Overlay:
             editor = self.input.practice_editor
             if not editor or editor["phase"] == "editor":
                 self.input.set_overlay_focus(value is True and peer is self.input.focused_peer())
+                if value is not True:
+                    self.close_glossary()
+        elif operation == "sessionGlossaryBegin":
+            if value is None and self.value.get("state") == "EditingTranslation":
+                self.tasks(self.begin_glossary(peer, event["revision"], copy.deepcopy(token)))
+        elif operation == "sessionGlossaryFocus":
+            form = self.glossary
+            if form and (value is None or self.glossary_focus_valid(value, form)):
+                form["focus"] = copy.deepcopy(value)
+                if value is not None:
+                    self.input.set_overlay_focus(True)
+                self.host.send("sessionGlossaryFocus", value)
+        elif operation == "sessionGlossaryClose":
+            if self.glossary and value == self.glossary["entry"]["formId"]:
+                self.close_glossary(notify_peer=False)
+        elif operation == "sessionGlossaryAdd":
+            form = self.glossary
+            if (
+                form
+                and not form["pending"]
+                and not form["unknown"]
+                and form["focus"]
+                and form["focus"]["ime"] == "Clear"
+                and isinstance(value, dict)
+                and set(value) == {"formId", "token", "settingsRevision", "rule"}
+                and all(
+                    value[key] == form["entry"][key]
+                    for key in ("formId", "token", "settingsRevision")
+                )
+                and isinstance(value["rule"], dict)
+                and set(value["rule"])
+                == {"sourceTerm", "targetTerm", "sourceLanguage", "targetLanguage"}
+            ):
+                form["pending"] = True
+                self.tasks(self.add_glossary(form, copy.deepcopy(value)))
         elif operation == "beginEdit":
             self.tasks(self.begin_edit(peer, event["target"], token))
         elif operation == "settings":
             self.settings_requested()
         elif operation == "languages":
             self.tasks(self.set_languages(value))
+        elif operation == "alternative":
+            self.host.send("alternative", copy.deepcopy(token))
+        elif operation == "style":
+            if (
+                isinstance(value, dict)
+                and set(value) == {"settingsRevision", "style"}
+                and type(value["settingsRevision"]) is int
+                and 0 <= value["settingsRevision"] <= 9223372036854775807
+                and (value["style"] is None or value["style"] in ("Natural", "Formal"))
+            ):
+                self.tasks(
+                    self.set_session_style(
+                        peer, event["revision"], copy.deepcopy(token), dict(value)
+                    )
+                )
         elif operation == "expand":
             self.schedule(visual_expansion_from=event["revision"])
         elif operation in ("return", "escape"):
@@ -381,6 +472,165 @@ class Overlay:
             if editor is not None and editor["phase"] != "editor":
                 self.input.retire_practice(editor["runId"])
 
+    def glossary_current(self, form):
+        return (
+            self.glossary is form
+            and self.peer is form["peer"]
+            and self.revision == form["revision"]
+            and self.session_token() == form["entry"]["token"]
+            and self.value.get("state") == "EditingTranslation"
+            and self.current_record() is not None
+        )
+
+    @staticmethod
+    def glossary_focus_valid(value, form):
+        return (
+            isinstance(value, dict)
+            and set(value) == {"formId", "token", "ime"}
+            and value["formId"] == form["entry"]["formId"]
+            and value["token"] == form["entry"]["token"]
+            and value["ime"] in ("Clear", "Composing", "Unknown")
+        )
+
+    def glossary_command(self, form, operation, **payload):
+        form["peer"].link.command(
+            operation,
+            {
+                "target": form["entry"]["token"]["target"]["value"],
+                "generation": form["entry"]["token"]["commandGeneration"],
+                "revision": form["revision"],
+                "formId": form["entry"]["formId"],
+                **payload,
+            },
+        )
+
+    def close_glossary(self, *, notify_peer=True):
+        form, self.glossary = self.glossary, None
+        if form:
+            self.host.send("sessionGlossaryFocus", None)
+            self.host.send("sessionGlossaryClose", form["entry"]["formId"])
+            if notify_peer and form["peer"].link.channel.alive:
+                self.glossary_command(form, "overlay-glossary-close")
+
+    async def begin_glossary(self, peer, revision, token):
+        if (
+            self.glossary
+            or self.glossary_begin_pending
+            or self.peer is not peer
+            or self.revision != revision
+            or self.session_token() != token
+            or self.value.get("state") != "EditingTranslation"
+            or self.current_record() is None
+        ):
+            return
+        self.glossary_begin_pending = True
+        try:
+            entry = await self.host.ask("sessionGlossaryBegin", token)
+            if not isinstance(entry, dict) or not isinstance(entry.get("formId"), str):
+                if (
+                    self.peer is peer
+                    and self.revision == revision
+                    and self.session_token() == token
+                ):
+                    peer.link.command(
+                        "overlay-glossary-open",
+                        {
+                            "target": token["target"]["value"],
+                            "generation": token["commandGeneration"],
+                            "revision": revision,
+                            "entry": None,
+                        },
+                    )
+                return
+            if (
+                entry.get("token") != token
+                or self.peer is not peer
+                or self.revision != revision
+                or self.session_token() != token
+                or self.value.get("state") != "EditingTranslation"
+                or self.current_record() is None
+            ):
+                self.host.send("sessionGlossaryClose", entry["formId"])
+                return
+            self.glossary = {
+                "entry": copy.deepcopy(entry),
+                "peer": peer,
+                "revision": revision,
+                "focus": None,
+                "pending": False,
+                "unknown": False,
+            }
+            form = self.glossary
+            response = await peer.link.ask(
+                "overlay-glossary-open",
+                {
+                    "target": token["target"]["value"],
+                    "generation": token["commandGeneration"],
+                    "revision": revision,
+                    "entry": entry,
+                },
+            )
+            if self.glossary is form and (
+                not self.glossary_current(form)
+                or not isinstance(response, dict)
+                or response.get("opened") is not True
+            ):
+                self.close_glossary()
+        except (OSError, ValueError, EOFError, TimeoutError):
+            if (
+                self.glossary
+                and self.glossary["peer"] is peer
+                and self.glossary["entry"]["token"] == token
+            ):
+                self.close_glossary()
+            elif self.peer is peer and self.revision == revision and self.session_token() == token:
+                peer.link.command(
+                    "overlay-glossary-open",
+                    {
+                        "target": token["target"]["value"],
+                        "generation": token["commandGeneration"],
+                        "revision": revision,
+                        "entry": None,
+                    },
+                )
+        finally:
+            self.glossary_begin_pending = False
+
+    async def add_glossary(self, form, request):
+        if not self.glossary_current(form):
+            form["pending"] = False
+            return
+        # A later focus/IME notification is rechecked by the controller. Return
+        # its definite refusal so the form can unlock the original inputs.
+        try:
+            result = await self.host.ask("sessionGlossaryAdd", request)
+        except (OSError, ValueError, EOFError, TimeoutError):
+            result = None
+        if self.glossary_current(form):
+            form["pending"] = False
+            form["unknown"] = (
+                not isinstance(result, dict)
+                or type(result.get("saved")) is not bool
+                or result.get("code") in ("glossary-unconfirmed", "glossary-outcome-unknown")
+            )
+            self.glossary_command(form, "overlay-glossary-result", result=result)
+
+    async def set_session_style(self, peer, revision, token, value):
+        if (
+            self.peer is not peer
+            or self.revision != revision
+            or self.session_token() != token
+            or self.current_record() is None
+        ):
+            return
+        try:
+            # The shared controller owns qualification, persistence and feedback.
+            # Never rebuild this request from a newer token after an await.
+            await self.host.ask("sessionStyle", {"token": token, **value})
+        except (OSError, ValueError, EOFError, TimeoutError):
+            if self.peer is peer and self.revision == revision and self.session_token() == token:
+                self.conceal("transport-unavailable")
+
     async def set_languages(self, value):
         if (
             self.settings
@@ -426,6 +676,7 @@ class Overlay:
         # a current, focused native observation, with a new display authority.
         if self.value and self.peer and os.environ.get("TYPELAY_TRACE"):
             print(f"typelay-overlay conceal reason={reason} atMs={now_ms()}", file=sys.stderr)
+        self.close_glossary()
         self.revision += 1
         if self.peer and self.peer.link.channel.alive:
             self.peer.link.command("overlay-hide")

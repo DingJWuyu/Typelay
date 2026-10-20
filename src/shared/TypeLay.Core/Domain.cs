@@ -51,9 +51,13 @@ public enum FocusMember
 {
     Source, Overlay, Other
 }
+public enum TranslationStyle
+{
+    Natural = 1, Formal = 2
+}
 public enum TranslationKind
 {
-    FullOrSelection, AppendToManual
+    FullOrSelection, AppendToManual, Alternative
 }
 public enum Denial
 {
@@ -118,7 +122,7 @@ public sealed record LanguageDirection(string Source, string Target)
 
 public sealed record TranslationJob(Guid Id, Guid SessionId, long Revision, long ConfigurationRevision,
     InputSnapshot Basis, TextRange? Scope, string SourceText, LanguageDirection Direction,
-    TranslationKind Kind, string? PreservedManualText)
+    TranslationKind Kind, string? PreservedManualText, string? PreviousCandidate = null, TranslationStyle? Style = null, GlossarySnapshot? Glossary = null)
 {
     public override string ToString() => "TranslationJob { content = [redacted] }";
 }

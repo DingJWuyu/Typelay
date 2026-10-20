@@ -303,7 +303,14 @@ def run_qt(
                         else None,
                         f"actual Qt overlay control was unavailable: {name}",
                     )
-                    click_rectangle(actual, actual["overlayControls"][name]["geometry"], name)
+                    # Radio layouts include blank space outside their style's
+                    # hit area. Click the observed native hit area, not that space.
+                    geometry_key = (
+                        "styleClickGeometry"
+                        if name in ("typelay-source-auto", "typelay-source-en")
+                        else "geometry"
+                    )
+                    click_rectangle(actual, actual["overlayControls"][name][geometry_key], name)
 
                 def settled(value):
                     # Missing diagnostics remain unknown, never an invented zero.

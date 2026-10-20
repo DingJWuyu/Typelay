@@ -1,32 +1,33 @@
-"""Fixture-only Windows CPU selection and verified private DLL loading.
+"""Verified private Windows CPU loading, shared by production and the audit fixture.
 
-Use b11717's maximum-positive score rule without PATH/cwd search or fallback.
-The Windows production worker does not import or load this fixture runtime.
+Only construction changes DLL search policy, inside an owned Hy worker process.
+Use b11717's maximum-positive official score with no PATH/cwd search or fallback.
 """
 
 import _ctypes
 import ctypes
 import os
-import time
+import sys
 from pathlib import Path
 
-from verify_assets import verify_file
+from .hy_assets import WINDOWS_DEPENDENCIES, plain_path, verify_file
 
 SEARCH_SYSTEM32 = 0x00000800
 SEARCH = SEARCH_SYSTEM32
 
 
 class WindowsRuntime:
-    def __init__(self, verified, adapter):
-        if os.name != "nt" or ctypes.sizeof(ctypes.c_void_p) != 8:
+    def __init__(self, verified):
+        if sys.platform != "win32" or ctypes.sizeof(ctypes.c_void_p) != 8:
             raise RuntimeError("Windows x64 required")
-        self.runtime = Path(verified["cpu_runtime"]["directory"])
+        self.runtime = plain_path(verified["cpu_runtime"]["directory"], directory=True)
         self.records = {item["file"]: item for item in verified["cpu_runtime"]["files"]}
-        self.adapter = Path(adapter)
-        self.adapter_record = {
-            "bytes": self.adapter.stat().st_size,
-            "sha256": verified["adapter_sha256"],
-        }
+        self.variants = verified["cpu_runtime"]["variants"]
+        self.adapter = plain_path(verified["adapter_path"])
+        self.adapter_record = verified["adapter_record"]
+        self.dependencies = []
+        self.adapter_library = None
+        self.selected = None
         self.kernel = ctypes.WinDLL("kernel32", use_last_error=True, winmode=SEARCH_SYSTEM32)
         self.kernel.SetDefaultDllDirectories.argtypes = [ctypes.c_uint32]
         self.kernel.SetDefaultDllDirectories.restype = ctypes.c_int
@@ -53,14 +54,26 @@ class WindowsRuntime:
             raise ctypes.WinError(ctypes.get_last_error())
         if self._relevant_modules():
             raise RuntimeError("runtime DLL was loaded before the verified loader")
-        self.dependencies = []
-        for name in ("libomp.dll", "ggml-base.dll", "ggml.dll", "llama.dll"):
-            self.dependencies.append(self.load(self.runtime / name))
-        self._verify_loaded({"ggml-base.dll", "libomp.dll", "ggml.dll", "llama.dll"})
+        try:
+            expected = set()
+            for name in WINDOWS_DEPENDENCIES:
+                self.dependencies.append(self._load(self.runtime / name))
+                expected.add(name)
+                self._verify_loaded(expected)
+        except BaseException:
+            self.close()
+            raise
+
+    def _load(self, path):
+        record = self.adapter_record if path == self.adapter else self.records[path.name]
+        verify_file(path, record)
+        return ctypes.CDLL(str(path), winmode=SEARCH)
 
     @staticmethod
-    def load(path):
-        return ctypes.CDLL(str(path), winmode=SEARCH)
+    def _unload(library):
+        if library._handle:
+            _ctypes.FreeLibrary(library._handle)
+            library._handle = 0
 
     def _relevant_modules(self):
         modules = (ctypes.c_void_p * 1024)()
@@ -79,7 +92,7 @@ class WindowsRuntime:
                 raise RuntimeError("loaded module path bound")
             path = Path(value.value)
             name = path.name.lower()
-            if name.startswith(("ggml", "llama")) or name in ("libomp.dll", "typelay_hy.dll"):
+            if name.startswith(("ggml", "llama", "typelay_hy")) or name == "libomp.dll":
                 if name in found:
                     raise RuntimeError("duplicate runtime DLL basename")
                 found[name] = path
@@ -106,55 +119,57 @@ class WindowsRuntime:
             )
         return result
 
-    def select_cpu_backend(self, verified):
-        start = time.monotonic()
-        scores, selected, best_score = [], None, 0
-        baseline = {"ggml-base.dll", "libomp.dll", "ggml.dll", "llama.dll"}
-        for record in verified["cpu_runtime"]["variants"]:
-            library = self.load(self.runtime / record["file"])
+    def select_cpu_backend(self, *, on_score=None):
+        """Return one CPU path. The fixture may observe scores without owning loading."""
+        if self.selected is not None or self.adapter_library is not None:
+            raise RuntimeError("CPU selection already completed")
+        selected, best_score = None, 0
+        baseline = set(WINDOWS_DEPENDENCIES)
+        for record in self.variants:
+            library = self._load(self.runtime / record["file"])
             try:
+                # Verify mapped dependencies before invoking any probe function.
+                self._verify_loaded(baseline | {record["file"]})
                 score_function = library.ggml_backend_score
                 score_function.argtypes = []
                 score_function.restype = ctypes.c_int
                 score = score_function()
                 del score_function
-                self._verify_loaded(baseline | {record["file"]})
-                scores.append(
-                    {
-                        "library": record["file"],
-                        "sha256": record["sha256"],
-                        "bytes": record["bytes"],
-                        "score": score,
-                    }
-                )
+                if on_score is not None:
+                    on_score({**record, "score": score})
                 if score > best_score:
                     selected, best_score = record["file"], score
             finally:
-                # CDLL does not automatically FreeLibrary. No function survives.
                 library.__dict__.pop("ggml_backend_score", None)
-                _ctypes.FreeLibrary(library._handle)
-                library._handle = 0
+                self._unload(library)
             self._verify_loaded(baseline)
         if selected is None:
             raise RuntimeError("no positive official CPU backend score")
-        return self.runtime / selected, {
-            "policy": "b11717-official-score-max-positive-cpu-only-v1",
-            "scores": scores,
-            "selected": selected,
-            "selected_score": best_score,
-            "selection_seconds": round(time.monotonic() - start, 6),
-            "runtime_lock_sha256": verified["cpu_runtime"]["lock_sha256"],
-        }
+        self.selected = self.runtime / selected
+        return self.selected
 
-    def loaded_identity(self, selected):
-        return self._verify_loaded(
-            {"ggml-base.dll", "libomp.dll", "ggml.dll", "llama.dll", "typelay_hy.dll", selected}
-        )
+    def load_adapter(self):
+        if self.selected is None or self.adapter_library is not None:
+            raise RuntimeError("select CPU once before loading the adapter")
+        self.adapter_library = self._load(self.adapter)
+        try:
+            self._verify_loaded(set(WINDOWS_DEPENDENCIES) | {self.adapter.name})
+        except BaseException:
+            self._unload(self.adapter_library)
+            self.adapter_library = None
+            raise
+        return self.adapter_library
+
+    def verify_loaded(self, selected):
+        if selected != self.selected or self.adapter_library is None:
+            raise RuntimeError("selected CPU identity mismatch")
+        return self._verify_loaded(set(WINDOWS_DEPENDENCIES) | {self.adapter.name, selected.name})
 
     def close(self):
-        # Release only this loader's own preload references after hy_close.
-        # Native dependency/registry references remain owned by their DLLs.
+        # Caller must finish hy_close before releasing these owned DLL references.
+        if self.adapter_library is not None:
+            self._unload(self.adapter_library)
+            self.adapter_library = None
         for library in reversed(self.dependencies):
-            _ctypes.FreeLibrary(library._handle)
-            library._handle = 0
+            self._unload(library)
         self.dependencies.clear()

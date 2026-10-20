@@ -2,13 +2,18 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('help', 'restore', 'build', 'test', 'check', 'format', 'pack', 'run', 'e2e', 'native-e2e', 'hy-adapter-prepare', 'hy-adapter-e2e')]
+    [ValidateSet('help', 'restore', 'build', 'test', 'check', 'format', 'pack', 'run', 'e2e', 'native-e2e', 'hy-adapter-prepare', 'hy-adapter-e2e', 'hy-runtime-prepare', 'hy-product-prepare')]
     [string]$Task = 'help',
     [ValidateSet('Debug', 'Release')]
-    [string]$Configuration = 'Release'
+    [string]$Configuration = 'Release',
+    [string]$HyRuntime
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($HyRuntime -and $Task -notin @('pack', 'run')) {
+    throw '-HyRuntime is only valid with pack or run.'
+}
+if ($HyRuntime) { $HyRuntime = [IO.Path]::GetFullPath($HyRuntime) }
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 . (Join-Path $PSScriptRoot '../shared/commands.ps1')
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
@@ -71,6 +76,13 @@ function Publish-Distribution([bool]$SelfContained) {
     New-Item -ItemType Directory -Force (Join-Path $stage 'worker/typelay_worker') | Out-Null
     Copy-Item 'src/shared/TypeLay.Worker/run_worker.py', 'src/shared/TypeLay.Worker/requirements.txt', 'src/shared/TypeLay.Worker/model-catalog.json' (Join-Path $stage 'worker')
     Copy-Item 'src/shared/TypeLay.Worker/typelay_worker/*.py' (Join-Path $stage 'worker/typelay_worker')
+    if ($HyRuntime) {
+        Invoke-Checked python @('eng/windows/hy/build.py', '--runtime', $HyRuntime,
+            '--output', (Join-Path $stage 'worker/native/hy'))
+        Write-Output 'Included verified production Hy native payload. Models are installed separately with user confirmation.'
+    } else {
+        Write-Output 'Argos-only distribution: Hy native payload is not included.'
+    }
     New-Item -ItemType Directory -Force (Join-Path $stage 'bootstrap') | Out-Null
     Copy-Item 'packaging/windows/start.ps1' (Join-Path $stage 'bootstrap/start.ps1')
     Copy-Item 'packaging/windows/Start-TypeLay.cmd' $stage
@@ -105,11 +117,14 @@ Push-Location $root
 try {
     switch ($Task) {
         help {
-            Write-Output 'Usage: ./dev.ps1 <restore|build|test|check|shared-check|format|pack|run|e2e|native-e2e|hy-adapter-prepare|hy-adapter-e2e> [-Configuration Debug|Release]'
+            Write-Output 'Usage: ./dev.ps1 <restore|build|test|check|shared-check|format|pack|run|e2e|native-e2e|hy-adapter-prepare|hy-adapter-e2e|hy-runtime-prepare|hy-product-prepare> [-Configuration Debug|Release] [-HyRuntime <verified CPU directory>]'
             Write-Output 'check: build, behavior/contract tests, Python tests, compiler/analyzer checks and formatting.'
             Write-Output 'shared-check: portable Core/Runtime/Protocol and worker tests; no Windows desktop or model installation.'
             Write-Output 'pack: self-contained Windows distribution, checksum and relocated-package/process E2E.'
             Write-Output 'native-e2e: controlled Win32 fixture adapter contracts; requires an unlocked Windows desktop.'
+            Write-Output 'hy-runtime-prepare: explicitly download/hash only the fixed official Windows CPU ZIP; no model or inference.'
+            Write-Output 'pack/run -HyRuntime <directory>: build and include the production ABI5 payload; no model download.'
+            Write-Output 'hy-product-prepare: verify fixed model/CPU test assets without compiling the audit adapter (600s cap).'
             Write-Output 'hy-adapter-prepare: explicitly download/hash pinned optional Hy fixture assets and build its adapter (600s cap).'
             Write-Output 'hy-adapter-e2e: explicit isolated Hy Job/cancellation/single-sentence fixture (180s cap); never changes installed models.'
         }
@@ -132,6 +147,14 @@ try {
         pack { Publish-Distribution $true }
         run { Publish-Distribution $false }
         e2e { Test-Distribution }
+        hy-runtime-prepare {
+            Invoke-Checked python @('eng/windows/hy/prepare_runtime.py',
+                '--cache', (Join-Path $artifacts 'hy-production-cache'),
+                '--output', (Join-Path $artifacts 'hy-production-runtime'))
+        }
+        hy-product-prepare {
+            & (Join-Path $PSScriptRoot 'verify-hy-adapter.ps1') -Phase prepare-product -Configuration $Configuration
+        }
         hy-adapter-prepare {
             & (Join-Path $PSScriptRoot 'verify-hy-adapter.ps1') -Phase prepare -Configuration $Configuration
         }

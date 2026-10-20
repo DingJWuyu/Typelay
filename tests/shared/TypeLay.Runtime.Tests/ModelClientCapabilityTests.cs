@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Xunit;
+using TypeLay.Core;
 
 namespace TypeLay.Runtime.Tests;
 
@@ -17,6 +18,155 @@ public sealed class ModelClientCapabilityTests
         {"status":"ready","directions":["zh_ja"],"packages":[
           {"id":"hy-mt2-1-8b-q4-k-m","version":"a0c709d9fac510f2c807aa3af52872340dc37a4a","directions":["zh_ja"]}]}
         """;
+
+    [Fact]
+    public async Task LegacyHelloKeepsOrdinaryTranslationWithoutInventingVersionIdentity()
+    {
+        using var peer = new ProtocolPeer("""{"status":"ready","directions":["zh_en","en_zh"]}""",
+            """{"status":"translated","text":"ordinary"}""");
+        Assert.Null(peer.Client.VerifiedIdentity);
+        await peer.Client.StartAsync();
+        Assert.True(peer.Client.Ready);
+        Assert.Null(peer.Client.VerifiedIdentity);
+        Assert.Equal("ordinary", (await peer.Client.TranslateTextAsync("你好", new("zh", "en"))).Text);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SpecialDispatchRejectsAnIdentityFromBeforeReplacementOrRestoration(bool restore)
+    {
+        using var peer = new ProtocolPeer(HyHello, """{"status":"translated","text":"ordinary"}""", HyInventory);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        var old = Assert.IsType<VerifiedModelIdentity>(peer.Client.VerifiedIdentity);
+        var outcome = restore ? ModelPublicationOutcome.Unchanged : ModelPublicationOutcome.Confirmed;
+        Assert.Equal(outcome, await peer.Client.ReloadAsync(peer.CreateLoadPlan(), () => outcome, _ => restore, TestContext.Current.CancellationToken));
+        var current = Assert.IsType<VerifiedModelIdentity>(peer.Client.VerifiedIdentity);
+        Assert.NotSame(old, current);
+        Assert.NotEqual(old.ConnectionId, current.ConnectionId);
+        var job = AlternativeJob() with
+        {
+            Kind = TranslationKind.FullOrSelection,
+            PreviousCandidate = null,
+            Direction = new("zh", "ja"),
+            Style = TranslationStyle.Formal
+        };
+        Assert.Equal("not-ready", (await peer.Client.TranslateAsync(job, old)).Code);
+        // Rejection happened before the new connection received any translation.
+        Assert.Equal(2, (await peer.Client.TranslateTextAsync("你好", new("zh", "ja"))).Id);
+        peer.Client.Dispose();
+        Assert.Null(peer.Client.VerifiedIdentity);
+    }
+
+    [Fact]
+    public async Task AdvertisedStyledCapabilityIsStableOnlyForItsLiveConnection()
+    {
+        using var peer = new ProtocolPeer(HyHello.Replace("\"status\":\"ready\"",
+            "\"status\":\"ready\",\"styledTranslationVersion\":1"),
+            """{"status":"translated","text":"Ordinary result"}""", HyInventory);
+        ITranslationService service = peer.Client;
+        Assert.Null(service.StyledTranslationCapability);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        var first = Assert.IsType<StyledTranslationCapability>(service.StyledTranslationCapability);
+        Assert.True(first.Revision > 0);
+        Assert.Same(first, service.StyledTranslationCapability);
+        Assert.Equal("Ordinary result", (await peer.Client.TranslateTextAsync("你好", new("zh", "ja"))).Text);
+        Assert.Same(first, service.StyledTranslationCapability);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () =>
+            {
+                Assert.Null(service.StyledTranslationCapability);
+                return ModelPublicationOutcome.Confirmed;
+            }, _ => false, TestContext.Current.CancellationToken));
+        var replacement = Assert.IsType<StyledTranslationCapability>(service.StyledTranslationCapability);
+        Assert.NotSame(first, replacement);
+        Assert.True(replacement.Revision > first.Revision);
+        peer.Client.Dispose();
+        Assert.Null(service.StyledTranslationCapability);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LegacyHyHelloRetainsOrdinaryTranslationWithoutGrantingStyle(bool explicitNull)
+    {
+        string hello = explicitNull ? HyHello.Replace("\"status\":\"ready\"",
+            "\"status\":\"ready\",\"styledTranslationVersion\":null") : HyHello;
+        using var peer = new ProtocolPeer(hello, """{"status":"translated","text":"Ordinary result"}""", HyInventory);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        Assert.True(peer.Client.Ready);
+        Assert.Null(peer.Client.StyledTranslationCapability);
+        Assert.Equal("Ordinary result", (await peer.Client.TranslateTextAsync("你好", new("zh", "ja"))).Text);
+        Assert.Null(peer.Client.StyledTranslationCapability);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("2")]
+    [InlineData("1.5")]
+    [InlineData("true")]
+    [InlineData("\"1\"")]
+    public async Task InvalidStyleVersionCannotPublishAWorkerOrGrantCapability(string version)
+    {
+        using var peer = new ProtocolPeer(HyHello.Replace("\"status\":\"ready\"",
+            "\"status\":\"ready\",\"styledTranslationVersion\":" + version), inventory: HyInventory);
+        Assert.Equal(ModelPublicationOutcome.Unchanged, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => throw new InvalidOperationException("must-not-publish"), _ => false, TestContext.Current.CancellationToken));
+        Assert.False(peer.Client.Ready);
+        Assert.Null(peer.Client.StyledTranslationCapability);
+    }
+
+    [Fact]
+    public async Task ArgosCannotAdvertiseTheHyStyleCapability()
+    {
+        using var peer = new ProtocolPeer("""{"status":"ready","directions":["zh_en","en_zh"],"styledTranslationVersion":1}""");
+        await peer.Client.StartAsync().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.False(peer.Client.Ready);
+        Assert.Null(peer.Client.StyledTranslationCapability);
+    }
+
+    [Fact]
+    public async Task AStoppedWorkerRevokesItsAdvertisedStyleCapability()
+    {
+        using var peer = new ProtocolPeer(HyHello.Replace("\"status\":\"ready\"",
+            "\"status\":\"ready\",\"styledTranslationVersion\":1"), inventory: HyInventory);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        Assert.NotNull(peer.Client.StyledTranslationCapability);
+        Assert.Equal("worker-stopped", (await peer.Client.TranslateTextAsync("你好", new("zh", "ja"))).Code);
+        Assert.Null(peer.Client.StyledTranslationCapability);
+        Assert.False(peer.Client.Ready);
+    }
+
+    [Fact]
+    public async Task AWorkerThatExitsAfterHelloLosesStyleCapabilityWithoutATranslationRequest()
+    {
+        using var peer = new ProtocolPeer(HyHello.Replace("\"status\":\"ready\"",
+            "\"status\":\"ready\",\"styledTranslationVersion\":1"), inventory: HyInventory, exitAfterHello: true);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        await peer.WaitForExit();
+        Assert.Null(peer.Client.StyledTranslationCapability);
+    }
+
+    [Fact]
+    public async Task RestoringTheOldPackageCreatesANewConnectionCapability()
+    {
+        using var peer = new ProtocolPeer(HyHello.Replace("\"status\":\"ready\"",
+            "\"status\":\"ready\",\"styledTranslationVersion\":1"), inventory: HyInventory);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        var first = Assert.IsType<StyledTranslationCapability>(peer.Client.StyledTranslationCapability);
+        Assert.Equal(ModelPublicationOutcome.Unchanged, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Unchanged, _ => true, TestContext.Current.CancellationToken));
+        var restored = Assert.IsType<StyledTranslationCapability>(peer.Client.StyledTranslationCapability);
+        Assert.NotSame(first, restored);
+        Assert.True(restored.Revision > first.Revision);
+    }
 
     [Theory]
     [InlineData("missing")]
@@ -227,10 +377,367 @@ public sealed class ModelClientCapabilityTests
         Assert.True(revoked);
     }
 
+    private static TranslationJob AlternativeJob()
+    {
+        var source = new InputSnapshot(new("controlled", "field", Guid.NewGuid()), "你好", new(2, 2),
+            new(1, 1, 100, 20), false, FieldAccess.Supported, ImeState.Clear, 1000, 1, 1);
+        return new(Guid.NewGuid(), Guid.NewGuid(), 2, 1, source, null, source.Text,
+            new("auto", "en"), TranslationKind.Alternative, null, "Hello");
+    }
+
+    [Fact]
+    public async Task LoadedHyDoesNotReceiveAnAlternativeRequest()
+    {
+        using var peer = new ProtocolPeer(HyHello, inventory: HyInventory);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        var result = await peer.Client.TranslateAsync(AlternativeJob());
+        Assert.Equal("alternative-unavailable", result.Code);
+        Assert.True(peer.Client.Ready);
+        Assert.Equal(["zh_ja"], peer.Client.AvailableDirections);
+    }
+
+    [Theory]
+    [InlineData("translated", "Greetings", "")]
+    [InlineData("no-alternative", "", "")]
+    [InlineData("error", "", "unknown-operation")]
+    public async Task AlternativeUsesADistinctOperationAndNeverFallsBack(string status, string text, string code)
+    {
+        string replies = JsonSerializer.Serialize(new
+        {
+            alternative = new
+            {
+                status,
+                text,
+                code
+            },
+            ordinary = new
+            {
+                status = "translated",
+                text = "Ordinary result"
+            }
+        });
+        using var peer = new ProtocolPeer("""{"status":"ready","directions":["zh_en","en_zh"]}""", replies,
+            expectedRequest: """{"op":"translate-alternative","text":"你好","source":"auto","target":"en","preserved":null,"previousCandidate":"Hello"}""");
+        await peer.Client.StartAsync().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        var response = await peer.Client.TranslateAsync(AlternativeJob());
+        Assert.Equal((2, status, text, code), (response.Id, response.Status, response.Text, response.Code));
+        Assert.True(peer.Client.Ready);
+        var ordinary = await peer.Client.TranslateTextAsync("你好", new("auto", "en"));
+        Assert.Equal((3, "Ordinary result"), (ordinary.Id, ordinary.Text));
+    }
+
+    [Theory]
+    [InlineData("{\"status\":\"no-translation\"}")]
+    [InlineData("{\"status\":\"no-alternative\",\"text\":\"fabricated\"}")]
+    [InlineData("{\"status\":\"no-alternative\",\"text\":null}")]
+    [InlineData("{\"status\":\"translated\",\"text\":\" \"}")]
+    [InlineData("{\"status\":\"translated\",\"text\":\"valid\",\"code\":\"conflicting\"}")]
+    [InlineData("{\"status\":\"error\",\"text\":\"fabricated\",\"code\":\"failure\"}")]
+    [InlineData("{\"status\":\"error\"}")]
+    [InlineData("{\"status\":\"no-alternative\",\"directions\":[\"zh_en\"]}")]
+    public async Task AlternativeRejectsMalformedResponsesWithoutProducingText(string response)
+    {
+        using var peer = new ProtocolPeer("""{"status":"ready","directions":["zh_en","en_zh"]}""", response);
+        await peer.Client.StartAsync().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        var result = await peer.Client.TranslateAsync(AlternativeJob());
+        Assert.Equal("worker-stopped", result.Code);
+        Assert.Empty(result.Text);
+        Assert.False(peer.Client.Ready);
+    }
+
+    [Fact]
+    public async Task ModelReplacementRetiresAnAlreadyDispatchedAlternativeResponse()
+    {
+        using var peer = new ProtocolPeer("""{"status":"ready","directions":["zh_en","en_zh"]}""",
+            """{"status":"translated","text":"Obsolete result"}""", holdAlternative: true);
+        await peer.Client.StartAsync().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        var pending = peer.Client.TranslateAsync(AlternativeJob());
+        await peer.WaitForAlternative();
+        var replacement = peer.Client.ReloadAsync(peer.CreateLoadPlan(), () => ModelPublicationOutcome.Confirmed,
+            _ => false, TestContext.Current.CancellationToken);
+        await peer.ReleaseAlternative();
+        var result = await pending.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.Equal("not-ready", result.Code);
+        Assert.Empty(result.Text);
+        Assert.Equal(ModelPublicationOutcome.Confirmed,
+            await replacement.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        Assert.True(peer.Client.Ready);
+    }
+
+    [Theory]
+    [InlineData(TranslationStyle.Natural, "natural", "translated", "Styled result", "")]
+    [InlineData(TranslationStyle.Formal, "formal", "error", "", "unknown-operation")]
+    public async Task StyledJobsUseTheFrozenStyleAndNeverFallbackToOrdinary(
+        TranslationStyle style, string wireStyle, string status, string text, string code)
+    {
+        string replies = JsonSerializer.Serialize(new
+        {
+            styled = new
+            {
+                status,
+                text,
+                code
+            },
+            ordinary = new
+            {
+                status = "translated",
+                text = "Ordinary result"
+            }
+        });
+        using var peer = new ProtocolPeer(HyHello, replies, HyInventory,
+            expectedRequest: "{\"op\":\"translate-styled-v1\",\"text\":\"你好\",\"source\":\"zh\",\"target\":\"ja\",\"preserved\":null,\"style\":\"" + wireStyle + "\"}");
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        var job = AlternativeJob() with
+        {
+            Direction = new("zh", "ja"),
+            Kind = TranslationKind.FullOrSelection,
+            PreviousCandidate = null,
+            Style = style
+        };
+        var result = await peer.Client.TranslateAsync(job);
+        Assert.Equal((2, status, text, code), (result.Id, result.Status, result.Text, result.Code));
+        Assert.True(peer.Client.Ready);
+        var ordinary = await peer.Client.TranslateTextAsync("你好", new("zh", "ja"));
+        Assert.Equal((3, "Ordinary result"), (ordinary.Id, ordinary.Text));
+    }
+
+    [Theory]
+    [InlineData("auto")]
+    [InlineData("en")]
+    public async Task ArgosDoesNotReceiveStyledRequestsEvenForSameLanguage(string source)
+    {
+        using var peer = new ProtocolPeer("""{"status":"ready","directions":["zh_en","en_zh"]}""");
+        await peer.Client.StartAsync().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        var job = AlternativeJob() with
+        {
+            Direction = new(source, "en"),
+            Kind = TranslationKind.FullOrSelection,
+            PreviousCandidate = null,
+            Style = TranslationStyle.Formal
+        };
+        Assert.Equal("style-unavailable", (await peer.Client.TranslateAsync(job)).Code);
+        Assert.True(peer.Client.Ready);
+    }
+
+    [Theory]
+    [InlineData(0, false, false)]
+    [InlineData(99, false, false)]
+    [InlineData(1, true, false)]
+    [InlineData(2, false, true)]
+    public async Task InvalidOrMixedStyledJobsNeverReachTheWorker(int style, bool alternative, bool previous)
+    {
+        using var peer = new ProtocolPeer(HyHello, inventory: HyInventory);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        var job = AlternativeJob() with
+        {
+            Direction = new("zh", "ja"),
+            Kind = alternative ? TranslationKind.Alternative : TranslationKind.FullOrSelection,
+            PreviousCandidate = previous ? "old" : null,
+            Style = (TranslationStyle)style
+        };
+        Assert.Equal("invalid-request", (await peer.Client.TranslateAsync(job)).Code);
+        Assert.True(peer.Client.Ready);
+    }
+
+    [Theory]
+    [InlineData("""{"status":"no-alternative"}""")]
+    [InlineData("""{"status":"no-translation","text":"fabricated"}""")]
+    [InlineData("""{"status":"translated","text":" "}""")]
+    [InlineData("""{"status":"translated","text":"valid","code":"conflicting"}""")]
+    [InlineData("""{"status":"error","text":"fabricated","code":"failure"}""")]
+    [InlineData("""{"status":"error"}""")]
+    [InlineData("""{"status":"no-translation","directions":["zh_ja"]}""")]
+    [InlineData("""{"status":"no-translation","styledTranslationVersion":1}""")]
+    public async Task StyledRequestsRejectMalformedResponses(string response)
+    {
+        using var peer = new ProtocolPeer(HyHello, response, HyInventory);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        var job = AlternativeJob() with
+        {
+            Direction = new("zh", "ja"),
+            Kind = TranslationKind.FullOrSelection,
+            PreviousCandidate = null,
+            Style = TranslationStyle.Natural
+        };
+        var result = await peer.Client.TranslateAsync(job);
+        Assert.Equal("worker-stopped", result.Code);
+        Assert.Empty(result.Text);
+        Assert.False(peer.Client.Ready);
+    }
+
+    [Fact]
+    public async Task ModelReplacementRetiresAnAlreadyDispatchedStyledResponse()
+    {
+        using var peer = new ProtocolPeer(HyHello.Replace("\"status\":\"ready\"",
+            "\"status\":\"ready\",\"styledTranslationVersion\":1"), """{"status":"translated","text":"Obsolete result"}""",
+            HyInventory, holdAlternative: true);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        var job = AlternativeJob() with
+        {
+            Direction = new("zh", "ja"),
+            Kind = TranslationKind.FullOrSelection,
+            PreviousCandidate = null,
+            Style = TranslationStyle.Formal
+        };
+        var capability = Assert.IsType<StyledTranslationCapability>(peer.Client.StyledTranslationCapability);
+        var pending = peer.Client.TranslateAsync(job);
+        await peer.WaitForAlternative();
+        var replacement = peer.Client.ReloadAsync(peer.CreateLoadPlan(), () => ModelPublicationOutcome.Confirmed,
+            _ => false, TestContext.Current.CancellationToken);
+        Assert.Null(peer.Client.StyledTranslationCapability);
+        // Hy replacement cancels and terminates the old peer while its response
+        // is still held. Completion must not depend on releasing that response.
+        var result = await pending.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.Equal("not-ready", result.Code);
+        Assert.Empty(result.Text);
+        Assert.Equal(ModelPublicationOutcome.Confirmed,
+            await replacement.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        Assert.True(peer.Client.Ready);
+        var replacementCapability = Assert.IsType<StyledTranslationCapability>(peer.Client.StyledTranslationCapability);
+        Assert.NotSame(capability, replacementCapability);
+    }
+
+
+    private static string GlossaryHello(string version = "1") => HyHello.Replace("\"status\":\"ready\"",
+        "\"status\":\"ready\",\"glossaryTranslationVersion\":" + version);
+    private static TranslationJob GlossaryJob(string source = "zh", string target = "ja", GlossarySnapshot? glossary = null) => AlternativeJob() with
+    {
+        Kind = TranslationKind.FullOrSelection,
+        PreviousCandidate = null,
+        Direction = new(source, target),
+        Glossary = glossary ?? new(7, [new("你好", "固定", "zh", "ja")])
+    };
+
+    [Theory]
+    [InlineData("zh")]
+    [InlineData("auto")]
+    public async Task GlossaryFramesFreezeVersionAndRulesForWorkerDirectionResolution(string source)
+    {
+        string expected = JsonSerializer.Serialize(new
+        {
+            op = "translate-glossary-v1",
+            text = "你好",
+            source,
+            target = "ja",
+            preserved = (string?)null,
+            glossary = new
+            {
+                version = 7,
+                rules = new[] { new { sourceTerm = "你好", targetTerm = "固定", sourceLanguage = "zh", targetLanguage = "ja" } }
+            }
+        });
+        using var peer = new ProtocolPeer(GlossaryHello(), """{"status":"translated","text":"固定"}""", HyInventory, expected);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        Assert.NotNull(peer.Client.GlossaryTranslationCapability);
+        var result = await peer.Client.TranslateAsync(GlossaryJob(source));
+        Assert.Equal((2, "translated", "固定"), (result.Id, result.Status, result.Text));
+    }
+
+    [Theory]
+    [InlineData("zh", "en", "ja", "zh")]
+    [InlineData("auto", "en", "zh", "ja")]
+    public async Task UnrelatedDirectionRulesPreserveOrdinaryArgosRequests(string source, string target, string ruleSource, string ruleTarget)
+    {
+        using var peer = new ProtocolPeer("""{"status":"ready","directions":["zh_en","en_zh"]}""",
+            """{"status":"translated","text":"ordinary"}""");
+        await peer.Client.StartAsync().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        var job = GlossaryJob(source, target, new(1, [new("hello", "fixed", ruleSource, ruleTarget)]));
+        var result = await peer.Client.TranslateAsync(job);
+        Assert.Equal((2, "ordinary"), (result.Id, result.Text));
+    }
+
+    [Theory]
+    [InlineData("zh")]
+    [InlineData("auto")]
+    public async Task PotentiallyApplicableRulesRejectNonHyWithoutFallback(string source)
+    {
+        using var peer = new ProtocolPeer("""{"status":"ready","directions":["zh_en","en_zh"]}""",
+            """{"status":"translated","text":"must not be received"}""");
+        await peer.Client.StartAsync().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.Equal("glossary-unavailable", (await peer.Client.TranslateAsync(GlossaryJob(source, "en", new(1, [new("hello", "fixed")])))).Code);
+        Assert.Equal(2, (await peer.Client.TranslateTextAsync("hello", new("zh", "en"))).Id);
+    }
+
+    [Fact]
+    public async Task OldHyDoesNotReceiveGlossaryAndStyleCombinationNeverDropsEitherChoice()
+    {
+        using var old = new ProtocolPeer(HyHello, """{"status":"translated","text":"ordinary"}""", HyInventory);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await old.Client.ReloadAsync(old.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        Assert.Equal("glossary-unavailable", (await old.Client.TranslateAsync(GlossaryJob())).Code);
+        Assert.Equal(2, (await old.Client.TranslateTextAsync("你好", new("zh", "ja"))).Id);
+        using var peer = new ProtocolPeer(GlossaryHello(), """{"status":"translated","text":"ordinary"}""", HyInventory);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        Assert.Equal("glossary-combination-unavailable", (await peer.Client.TranslateAsync(GlossaryJob() with
+        {
+            Style = TranslationStyle.Formal
+        })).Code);
+        Assert.Equal(2, (await peer.Client.TranslateTextAsync("你好", new("zh", "ja"))).Id);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("2")]
+    [InlineData("true")]
+    [InlineData("\"1\"")]
+    public async Task GlossaryHelloRequiresTheExactNumericVersion(string version)
+    {
+        using var peer = new ProtocolPeer(GlossaryHello(version), inventory: HyInventory);
+        Assert.Equal(ModelPublicationOutcome.Unchanged, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        Assert.False(peer.Client.Ready);
+        Assert.Null(peer.Client.GlossaryTranslationCapability);
+    }
+
+    [Theory]
+    [InlineData("{\"status\":\"translated\",\"text\":\" \"}")]
+    [InlineData("{\"status\":\"translated\",\"text\":\"valid\",\"code\":\"bad\"}")]
+    [InlineData("{\"status\":\"no-translation\",\"glossaryTranslationVersion\":1}")]
+    [InlineData("{\"status\":\"no-alternative\"}")]
+    public async Task GlossaryRejectsMalformedResponsesWithoutOrdinaryFallback(string response)
+    {
+        using var peer = new ProtocolPeer(GlossaryHello(), response, HyInventory);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        Assert.Equal("error", (await peer.Client.TranslateAsync(GlossaryJob())).Status);
+        Assert.False(peer.Client.Ready);
+    }
+
+    // Exercise the actual handshake validator, but only with a controlled protocol
+    // peer. This projection is test-port input, never inference or quality evidence.
+    internal static VerifiedModelIdentity VerifyTestIdentity(bool hy) => Task.Run(async () =>
+    {
+        string hello = hy ? HyHello.Replace("[\"zh_ja\"]", "[\"zh_ja\",\"ja_zh\",\"fr_zh\"]")
+            : """{"status":"ready","directions":["zh_en","en_zh"],"packages":[{"id":"argos-zh-en","version":"1.9","directions":["zh_en"]},{"id":"argos-en-zh","version":"1.9","directions":["en_zh"]}]}""";
+        string inventory = hy ? HyInventory.Replace("[\"zh_ja\"]", "[\"zh_ja\",\"ja_zh\",\"fr_zh\"]") : """{"schema":3,"activePackages":["argos-zh-en","argos-en-zh"],"packages":[{"id":"argos-zh-en","version":"1.9","directions":["zh_en"],"files":[{"path":"metadata.json","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}]},{"id":"argos-en-zh","version":"1.9","directions":["en_zh"],"files":[{"path":"metadata.json","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}]}]}""";
+        using var peer = new ProtocolPeer(hello, inventory: inventory);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        return Assert.IsType<VerifiedModelIdentity>(peer.Client.VerifiedIdentity);
+    }).GetAwaiter().GetResult();
+
     private sealed class ProtocolPeer : IDisposable
     {
         private readonly string _directory = Path.Combine(Path.GetTempPath(), "typelay-model-protocol-" + Guid.NewGuid().ToString("N"));
         private ModelRuntimePaths _paths = null!;
+        private Process _process = null!;
+        public async Task WaitForAlternative() => Assert.Equal("alternative",
+            await _process.StandardError.ReadLineAsync(TestContext.Current.CancellationToken).AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        public async Task WaitForExit() => await _process.WaitForExitAsync(TestContext.Current.CancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        public async Task ReleaseAlternative()
+        {
+            await _process.StandardInput.BaseStream.WriteAsync(new byte[] { 1 }, TestContext.Current.CancellationToken);
+            await _process.StandardInput.BaseStream.FlushAsync(TestContext.Current.CancellationToken);
+        }
         public ModelLoadPlan CreateLoadPlan()
         {
             using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(_directory, "installed.json")));
@@ -241,7 +748,8 @@ public sealed class ModelClientCapabilityTests
             get;
         }
 
-        public ProtocolPeer(string response, string? translationResponse = null, string inventory = "{\"schema\":1}")
+        public ProtocolPeer(string response, string? translationResponse = null, string inventory = "{\"schema\":1}",
+            string? expectedRequest = null, bool holdAlternative = false, bool exitAfterHello = false)
         {
             Directory.CreateDirectory(_directory);
             string python = Path.Combine(_directory, "python-marker");
@@ -251,16 +759,30 @@ public sealed class ModelClientCapabilityTests
             File.WriteAllText(script, """
                 import json, struct, sys
                 hello = json.loads(sys.argv[1])
-                translation = json.loads(sys.argv[2]) if len(sys.argv) > 2 else None
+                translation = json.loads(sys.argv[2])
+                expected = json.loads(sys.argv[3])
+                hold = sys.argv[4] == "true"
+                exit_after_hello = sys.argv[5] == "true"
                 while header := sys.stdin.buffer.read(4):
                     request = json.loads(sys.stdin.buffer.read(struct.unpack("<I", header)[0]))
+                    if request["op"] in ("translate-alternative", "translate-styled-v1", "translate-glossary-v1"):
+                        if expected is not None:
+                            assert {k: v for k, v in request.items() if k != "id"} == expected
+                        if hold:
+                            print("alternative", file=sys.stderr, flush=True)
+                            assert sys.stdin.buffer.read(1) == bytes([1])
                     response = hello if request["op"] == "hello" else translation
+                    if response is not None and "alternative" in response:
+                        response = response["alternative" if request["op"] == "translate-alternative" else "ordinary"]
+                    if response is not None and "styled" in response:
+                        response = response["styled" if request["op"] == "translate-styled-v1" else "ordinary"]
                     # Without a translation response, exercise the client's loss path.
                     if response is None: break
                     response["id"] = request["id"]
                     encoded = json.dumps(response).encode("utf-8")
                     sys.stdout.buffer.write(struct.pack("<I", len(encoded)) + encoded)
                     sys.stdout.buffer.flush()
+                    if exit_after_hello and request["op"] == "hello": break
                 """);
             _paths = new(python, script, _directory);
             Client = new(_paths, _ =>
@@ -277,9 +799,12 @@ public sealed class ModelClientCapabilityTests
                 start.ArgumentList.Add("-B");
                 start.ArgumentList.Add(script);
                 start.ArgumentList.Add(response);
-                if (translationResponse is not null)
-                    start.ArgumentList.Add(translationResponse);
-                return new OwnedProcess(Process.Start(start)!);
+                start.ArgumentList.Add(translationResponse ?? "null");
+                start.ArgumentList.Add(expectedRequest ?? "null");
+                start.ArgumentList.Add(holdAlternative ? "true" : "false");
+                start.ArgumentList.Add(exitAfterHello ? "true" : "false");
+                _process = Process.Start(start)!;
+                return new OwnedProcess(_process);
             });
         }
 

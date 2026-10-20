@@ -10,6 +10,52 @@ namespace TypeLay.App.Tests;
 
 public sealed class BrowserContractTests
 {
+    [Fact]
+    public void CurrentAuxiliaryObservationRetainsReadOnlyAcknowledgementWithoutSourceOrEditorTickets()
+    {
+        var target = new TargetId("windows-browser", Document + ":1", Guid.NewGuid());
+        var token = new SessionViewToken(target, Guid.NewGuid(), 4);
+        var entry = new SessionGlossaryEntry(Guid.NewGuid(), token, 2, []);
+        var focus = new SessionGlossaryFocus(entry.FormId, token, ImeState.Clear);
+        JsonElement Description(SessionGlossaryFocus? reported, int version = 0) => JsonSerializer.SerializeToElement(new
+        {
+            sessionBindings = new
+            {
+                sourceReady = false,
+                editorReady = false,
+                sourceLocalAcceptanceVersion = version,
+                target = target.Value
+            },
+            glossaryFocus = reported
+        }, BrowserServer.Json);
+        var description = Description(focus);
+        var ack = BrowserInput.ApproveObservationRoles(description, target, token.CommandGeneration,
+            SessionShortcutBindings.Default, entry, focus, focus);
+        Assert.NotNull(ack);
+        Assert.Equal(target, ack.Target);
+        Assert.False(ack.SourceReady);
+        Assert.False(ack.EditorReady);
+        Assert.Equal(0, ack.SourceLocalAcceptanceVersion);
+        Assert.Null(BrowserInput.ApproveObservationRoles(description, target, token.CommandGeneration, SessionShortcutBindings.Default));
+        Assert.Null(BrowserInput.ApproveObservationRoles(description, target, token.CommandGeneration,
+            SessionShortcutBindings.Default, entry, focus, null));
+        Assert.Null(BrowserInput.ApproveObservationRoles(Description(focus with
+        {
+            FormId = Guid.NewGuid()
+        }), target,
+            token.CommandGeneration, SessionShortcutBindings.Default, entry, focus, focus));
+        Assert.Null(BrowserInput.ApproveObservationRoles(Description(focus with
+        {
+            Token = token with
+            {
+                Revision = 5
+            }
+        }), target,
+            token.CommandGeneration, SessionShortcutBindings.Default, entry, focus, focus));
+        Assert.Null(BrowserInput.ApproveObservationRoles(Description(focus, 1), target, token.CommandGeneration,
+            SessionShortcutBindings.Default, entry, focus, focus));
+    }
+
     private const string Extension = "abcdefghijklmnopabcdefghijklmnop";
     private const string Document = "10000000-0000-0000-0000-000000000001";
     private static BrowserRoute Route => new(Extension, "chrome-document-1", Document, 1, 2, 0, "https:");

@@ -10,7 +10,7 @@
 #include <vector>
 
 namespace {
-constexpr uint32_t ABI=3, MAX_SOURCE=8192, MAX_OUTPUT=8192, CONTEXT=1024, NEW_TOKENS=192;
+constexpr uint32_t ABI=5, MAX_SOURCE=8192, MAX_OUTPUT=8192, CONTEXT=1024, NEW_TOKENS=192;
 constexpr const char *TEMPLATE=R"HY({% if messages[0]['role'] == 'system' %}{% set loop_messages = messages[1:] %}{% set system_message = messages[0]['content'] %}<｜hy_begin▁of▁sentence｜>{{ system_message }}<｜hy_place▁holder▁no▁3｜>{% else %}{% set loop_messages = messages %}<｜hy_begin▁of▁sentence｜>{% endif %}{% for message in loop_messages %}{% if message['role'] == 'user' %}<｜hy_User｜>{{ message['content'] }}{% elif message['role'] == 'assistant' %}<｜hy_Assistant｜>{{ message['content'] }}<｜hy_place▁holder▁no▁2｜>{% endif %}{% endfor %}{% if add_generation_prompt %}<｜hy_Assistant｜>{% else %}<｜hy_place▁holder▁no▁8｜>{% endif %})HY";
 // Only this fixed native enum selects trusted instruction text. Source bytes
 // are tokenized separately and never supply a language name or prompt fragment.
@@ -44,6 +44,34 @@ bool utf8(const std::string &s) {
   if(v<min||v>0x10ffff||(v>=0xd800&&v<=0xdfff))return false;
  }return true;
 }
+// Unicode White_Space, without locale-dependent classification. Cc controls
+// (including Python's additional U+001C..001F whitespace) are rejected below.
+bool term_whitespace(uint32_t c) {
+ return c==0x20||c==0x85||c==0xa0||c==0x1680||(c>=0x2000&&c<=0x200a)||c==0x2028||c==0x2029||c==0x202f||c==0x205f||c==0x3000;
+}
+void validate_term(const uint8_t *p,uint32_t len) {
+ require(p&&len&&len<=128,HY_INVALID,"term must be 1..128 UTF-8 bytes");
+ std::string s(reinterpret_cast<const char*>(p),len);
+ require(utf8(s),HY_INVALID,"term is not strict UTF-8");
+ for(size_t i=0;i<s.size();){
+  const size_t start=i;auto c=static_cast<unsigned char>(s[i++]);uint32_t value=c;
+  if(c>=0x80){
+   uint32_t remaining=c<0xe0?1:c<0xf0?2:3;value=c&((1u<<(6-remaining))-1);
+   while(remaining--){value=(value<<6)|(static_cast<unsigned char>(s[i++])&63);}
+  }
+  require(value>0x1f&&(value<0x7f||value>0x9f),HY_INVALID,"term contains a control character");
+  require((start!=0&&i!=s.size())||!term_whitespace(value),HY_INVALID,"term has surrounding whitespace");
+ }
+}
+void validate_terms(const hy_term *terms,uint32_t count) {
+ require(terms&&count&&count<=64,HY_INVALID,"glossary must contain 1..64 term pairs");
+ uint32_t total=0;
+ for(uint32_t i=0;i<count;++i){
+  const auto &term=terms[i];validate_term(term.source_term,term.source_length);validate_term(term.target_term,term.target_length);
+  total+=term.source_length+term.target_length;
+  require(total<=8192,HY_INVALID,"glossary exceeds 8192 UTF-8 bytes");
+ }
+}
 std::vector<llama_token> tokenize(const llama_vocab *v,const std::string &s,bool special){
  std::vector<llama_token> out(s.size()+32);
  int32_t n=llama_tokenize(v,s.data(),static_cast<int32_t>(s.size()),out.data(),static_cast<int32_t>(out.size()),false,special);
@@ -71,6 +99,7 @@ struct hy_handle {
 };
 namespace {
 std::vector<llama_token> source_tokens(hy_handle *h,const uint8_t *p,uint32_t len,hy_metrics *m){
+ m->roundtrip_ok=0;
  require(h&&p&&len&&len<=MAX_SOURCE,HY_INVALID,"source must be 1..8192 UTF-8 bytes");
  std::string original(reinterpret_cast<const char*>(p),len);
  require(utf8(original),HY_INVALID,"source is not strict UTF-8");
@@ -93,7 +122,7 @@ std::vector<llama_token> source_tokens(hy_handle *h,const uint8_t *p,uint32_t le
  }
  std::vector<llama_token> tokens;size_t prev=0;
  for(auto end:cuts){if(end==0)continue;auto part=tokenize(h->vocab,s.substr(prev,end-prev),false);tokens.insert(tokens.end(),part.begin(),part.end());prev=end;}
- m->split_count=static_cast<uint32_t>(cuts.size()-2);m->source_tokens=static_cast<uint32_t>(tokens.size());
+ m->split_count+=static_cast<uint32_t>(cuts.size()-2);m->source_tokens+=static_cast<uint32_t>(tokens.size());
  m->reserved_spelling_count=static_cast<uint32_t>(h->reserved.size());m->user_defined_vocab_count=h->user_defined;
  for(auto t:tokens)if(h->forbidden(t))++m->forbidden_source_tokens;
  require(m->forbidden_source_tokens==0,HY_LITERAL_UNSAFE,"source produced a reserved token ID");
@@ -105,7 +134,7 @@ bool decode_abort(void *p){auto *d=static_cast<decode_control*>(p);++d->metrics-
 struct reset_guard {hy_handle *h;~reset_guard(){llama_set_abort_callback(h->ctx,nullptr,nullptr);llama_memory_clear(llama_get_memory(h->ctx),true);}};
 int32_t caught(char *e,uint32_t cap) noexcept {try{throw;}catch(const failure &x){error_text(e,cap,x.what());return x.code;}catch(const std::bad_alloc &){error_text(e,cap,"allocation failed");return HY_RESOURCE;}catch(const std::exception &){error_text(e,cap,"internal native exception");return HY_INTERNAL;}catch(...){error_text(e,cap,"unknown native exception");return HY_INTERNAL;}}
 }
-extern "C" HY_API int32_t hy_open_v3(const char *cpu_backend_path,const char *model_path,hy_handle **out,char *e,uint32_t cap){
+extern "C" HY_API int32_t hy_open_v5(const char *cpu_backend_path,const char *model_path,hy_handle **out,char *e,uint32_t cap){
  if(out){*out=nullptr;}
  error_text(e,cap,"");bool owned=false;
  try{
@@ -125,14 +154,40 @@ extern "C" HY_API int32_t hy_open_v3(const char *cpu_backend_path,const char *mo
   h->ctx=llama_init_from_model(h->model,cp);require(h->ctx,HY_RESOURCE,"context creation failed");require(llama_n_ctx(h->ctx)==CONTEXT,HY_IDENTITY,"context size mismatch");*out=h.release();return HY_OK;
  }catch(...){if(owned)live=false;return caught(e,cap);}
 }
-extern "C" HY_API int32_t hy_translate(hy_handle *h,uint32_t dir,const uint8_t *p,uint32_t len,uint8_t *out,uint32_t outcap,uint32_t *outlen,hy_metrics *m,hy_cancel_fn cancel,void *data,char *e,uint32_t cap){
+namespace {
+int32_t translate(hy_handle *h,uint32_t dir,const uint8_t *p,uint32_t len,uint8_t *out,uint32_t outcap,uint32_t *outlen,hy_metrics *m,hy_cancel_fn cancel,void *data,char *e,uint32_t cap,bool styled,uint32_t style,bool glossary,const hy_term *terms,uint32_t term_count){
  if(outlen){*outlen=0;}
  error_text(e,cap,"");
  try{
-  init_metrics(m);const char *target=target_language(dir);require(h&&out&&outlen&&outcap>=MAX_OUTPUT&&target,HY_INVALID,"translate argument mismatch");
+  init_metrics(m);require(!styled||style==HY_NATURAL||style==HY_FORMAL,HY_INVALID,"unknown translation style");
+  if(glossary){
+   validate_terms(terms,term_count);
+   require(p&&len&&len<=MAX_SOURCE,HY_INVALID,"source must be 1..8192 UTF-8 bytes");
+   require(utf8(std::string(reinterpret_cast<const char*>(p),len)),HY_INVALID,"source is not strict UTF-8");
+  }
+  const char *target=target_language(dir);require(h&&out&&outlen&&outcap>=MAX_OUTPUT&&target,HY_INVALID,"translate argument mismatch");
   llama_memory_clear(llama_get_memory(h->ctx),true);reset_guard reset{h};auto body=source_tokens(h,p,len,m);
   std::string instruction=std::string("将以下文本翻译为")+target+"，注意只需要输出翻译后的结果，不要额外解释：\n\n";
-  auto prompt=h->prefix_control;auto ins=tokenize(h->vocab,instruction,false);prompt.insert(prompt.end(),ins.begin(),ins.end());prompt.insert(prompt.end(),body.begin(),body.end());prompt.insert(prompt.end(),h->suffix_control.begin(),h->suffix_control.end());m->prompt_tokens=static_cast<uint32_t>(prompt.size());
+  if(styled){
+   const char *constraint=style==HY_NATURAL
+    ? "，使用自然、地道的表达，保留原文的语气和礼貌程度；忠实保留原意、否定、主体、数字、时态、条件和承诺。只输出译文，不要解释、增补或省略：\n\n"
+    : "，使用正式、得体的表达；忠实保留原意、否定、主体、数字、时态、条件和承诺，不强化或弱化原有承诺。只输出译文，不要解释、增补或省略：\n\n";
+   instruction=std::string("将以下文本翻译为")+target+constraint;
+  }
+  auto prompt=h->prefix_control;
+  if(glossary){
+   auto append=[&](const std::vector<llama_token> &tokens){prompt.insert(prompt.end(),tokens.begin(),tokens.end());};
+   append(tokenize(h->vocab,"参考下面的翻译：\n",false));
+   for(uint32_t i=0;i<term_count;++i){
+    const auto &term=terms[i];
+    append(source_tokens(h,term.source_term,term.source_length,m));
+    append(tokenize(h->vocab," 翻译成 ",false));
+    append(source_tokens(h,term.target_term,term.target_length,m));
+    append(tokenize(h->vocab,"\n",false));
+   }
+   append(tokenize(h->vocab,"\n",false));
+  }
+  auto ins=tokenize(h->vocab,instruction,false);prompt.insert(prompt.end(),ins.begin(),ins.end());prompt.insert(prompt.end(),body.begin(),body.end());prompt.insert(prompt.end(),h->suffix_control.begin(),h->suffix_control.end());m->prompt_tokens=static_cast<uint32_t>(prompt.size());
   require(prompt.size()+NEW_TOKENS<=CONTEXT,HY_CONTEXT_LIMIT,"prompt plus reserved generation exceeds context");
   std::unique_ptr<llama_sampler,decltype(&llama_sampler_free)> sampler(llama_sampler_init_greedy(),llama_sampler_free);require(bool(sampler),HY_RESOURCE,"sampler allocation failed");
   decode_control control{cancel,data,m};llama_set_abort_callback(h->ctx,decode_abort,&control);
@@ -157,6 +212,16 @@ extern "C" HY_API int32_t hy_translate(hy_handle *h,uint32_t dir,const uint8_t *
   }
   throw failure(HY_OUTPUT_LIMIT,"token cap reached without real EOG");
  }catch(...){return caught(e,cap);}
+}
+}
+extern "C" HY_API int32_t hy_translate(hy_handle *h,uint32_t dir,const uint8_t *p,uint32_t len,uint8_t *out,uint32_t outcap,uint32_t *outlen,hy_metrics *m,hy_cancel_fn cancel,void *data,char *e,uint32_t cap){
+ return translate(h,dir,p,len,out,outcap,outlen,m,cancel,data,e,cap,false,0,false,nullptr,0);
+}
+extern "C" HY_API int32_t hy_translate_styled_v5(hy_handle *h,uint32_t dir,uint32_t style,const uint8_t *p,uint32_t len,uint8_t *out,uint32_t outcap,uint32_t *outlen,hy_metrics *m,hy_cancel_fn cancel,void *data,char *e,uint32_t cap){
+ return translate(h,dir,p,len,out,outcap,outlen,m,cancel,data,e,cap,true,style,false,nullptr,0);
+}
+extern "C" HY_API int32_t hy_translate_glossary_v5(hy_handle *h,uint32_t dir,const hy_term *terms,uint32_t term_count,const uint8_t *p,uint32_t len,uint8_t *out,uint32_t outcap,uint32_t *outlen,hy_metrics *m,hy_cancel_fn cancel,void *data,char *e,uint32_t cap){
+ return translate(h,dir,p,len,out,outcap,outlen,m,cancel,data,e,cap,false,0,true,terms,term_count);
 }
 extern "C" HY_API void hy_close(hy_handle *h){if(h){try{delete h;llama_backend_free();}catch(...){}live=false;}}
 #ifdef HY_ENABLE_AUDIT

@@ -19,7 +19,8 @@ public interface ISessionLoop
 // Commands return the identity actually displayed, never a freshly substituted
 // token. Revision belongs to the controller's session lifecycle, not repainting.
 public sealed record SessionViewToken(TargetId Target, Guid CommandGeneration, long Revision);
-public sealed record SessionViewContext(SessionViewToken Token, SessionShortcutBindings Bindings, bool CanEdit);
+public sealed record SessionViewContext(SessionViewToken Token, SessionShortcutBindings Bindings, bool CanEdit,
+    TranslationMenuState? TranslationActions = null);
 
 public interface ISessionView
 {
@@ -39,9 +40,33 @@ public interface ISessionView
     {
         get; set;
     }
+    Action<SessionViewToken>? AlternativeRequested
+    {
+        get; set;
+    }
+    Func<SessionStyleRequest, Task<StyleChangeResult>>? StyleRequested
+    {
+        get; set;
+    }
     Action? RegenerateRequested
     {
         get; set;
+    }
+    Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
+    {
+        get; set;
+    }
+    Func<SessionGlossaryRequest, Task<GlossaryChangeResult>>? AddGlossaryRequested
+    {
+        get; set;
+    }
+    Action<Guid>? CloseGlossaryRequested
+    {
+        get; set;
+    }
+    SessionGlossaryFocus? GlossaryEntryFocus
+    {
+        get;
     }
     Action? ExcludeRequested
     {
@@ -67,8 +92,15 @@ public interface ISessionView
     bool IsEditorExitPrearmed(SessionViewToken token) => false;
 }
 
+// A negotiated protocol feature for one worker connection, not a quality claim.
+public sealed record StyledTranslationCapability(long Revision);
+public sealed record GlossaryTranslationCapability(long Revision);
+
 public interface ITranslationService
 {
+    VerifiedModelIdentity? VerifiedIdentity => null;
+    StyledTranslationCapability? StyledTranslationCapability => null;
+    GlossaryTranslationCapability? GlossaryTranslationCapability => null;
     bool Ready
     {
         get;
@@ -78,4 +110,67 @@ public interface ITranslationService
         get;
     }
     Task<ModelResponse> TranslateAsync(TranslationJob job);
+    // Special operations must bind dispatch to the exact qualified live connection.
+    // An adapter that has not implemented this atomic binding fails closed.
+    Task<ModelResponse> TranslateAsync(TranslationJob job, VerifiedModelIdentity expectedIdentity) =>
+        Task.FromResult(new ModelResponse(0, "error", Code: "not-ready"));
 }
+
+// Created only after this connection's strict hello matched its immutable load plan.
+// Schema 1/2 hello omits package versions and therefore grants no such projection.
+public sealed class VerifiedModelIdentity
+{
+    internal VerifiedModelIdentity(ModelLoadPlan plan)
+    {
+        Packages = Array.AsReadOnly(plan.ActivePackages.Select(item => new VerifiedModelPackage(item)).ToArray());
+    }
+    public Guid ConnectionId { get; } = Guid.NewGuid();
+    public IReadOnlyList<VerifiedModelPackage> Packages
+    {
+        get;
+    }
+}
+public sealed class VerifiedModelPackage
+{
+    internal VerifiedModelPackage(ModelPackageSelection selected)
+    {
+        Id = selected.Package.Id;
+        Version = selected.Package.Version;
+        Directions = Array.AsReadOnly(selected.Directions.ToArray());
+    }
+    public string Id
+    {
+        get;
+    }
+    public string Version
+    {
+        get;
+    }
+    public IReadOnlyList<ModelDirection> Directions
+    {
+        get;
+    }
+}
+public enum TranslationOperation
+{
+    Style, Glossary, Alternative
+}
+public sealed record TranslationRelease(TranslationOperation Operation, string PackageId, string Version, string Direction);
+
+// A compiled product decision, not hello negotiation or a configurable flag system.
+// This release has no accepted quality rows. Constructor injection is for controlled tests.
+public sealed class TranslationReleasePolicy(IEnumerable<TranslationRelease> releases)
+{
+    private readonly TranslationRelease[] _releases = releases.ToArray();
+    public static TranslationReleasePolicy Current { get; } = new([]);
+    public bool IsReleased(TranslationOperation operation) => _releases.Any(row => row.Operation == operation);
+    public bool Allows(TranslationOperation operation, VerifiedModelIdentity identity, LanguageDirection direction)
+    {
+        var possible = identity.Packages.SelectMany(package => package.Directions
+            .Where(pair => pair.Target == direction.Target && (direction.Source == "auto" || pair.Source == direction.Source))
+            .Select(pair => new TranslationRelease(operation, package.Id, package.Version, pair.Id))).ToArray();
+        // Auto cannot borrow acceptance from a single direction. No new detection RPC.
+        return possible.Length > 0 && possible.All(row => _releases.Contains(row));
+    }
+}
+public sealed record AlternativeState(SessionViewToken? Session, bool CanRequest, string? UnavailableReason, bool IsReleased);

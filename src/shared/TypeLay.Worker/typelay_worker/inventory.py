@@ -71,10 +71,11 @@ def verify_inventory(models: Path, catalog=None) -> VerifiedInventory:
                     raise ValueError("model-inventory")
                 native = None
             else:
-                # This release deliberately does not activate Windows Hy.
+                # Admission only; the fixed production gate below still verifies the
+                # exact OS/architecture, full native closure and model hashes.
                 import sys
 
-                if sys.platform != "linux":
+                if sys.platform not in ("linux", "win32"):
                     raise ValueError("hy-platform-unavailable")
                 from .hy_assets import verify_production
 

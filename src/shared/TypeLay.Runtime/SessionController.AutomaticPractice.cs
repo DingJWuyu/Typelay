@@ -267,6 +267,8 @@ public sealed partial class SessionController
     // operation may report success. The ordinary settings path remains unchanged.
     public async Task<bool> PrepareSettingsChangeAsync(UserSettings next)
     {
+        if (!_settings.CanUpdateOrdinary(next))
+            return false;
         if (!_settings.HasChanges(next))
             return true;
         return await RetireAutomaticPracticeAsync();

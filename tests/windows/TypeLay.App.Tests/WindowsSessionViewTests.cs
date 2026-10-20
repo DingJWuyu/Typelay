@@ -39,6 +39,88 @@ public sealed class WindowsSessionViewTests
         browser.DraftChanged!("hidden draft");
         Assert.Equal(1, drafts);
     }
+    [Fact]
+    public async Task TranslationActionsReachOnlyTheActiveSurfaceWithTheirOriginalContext()
+    {
+        var native = new View();
+        var browser = new View();
+        var router = new WindowsSessionView(native, browser);
+        var settings = new UserSettings();
+        var session = new Session(settings.Direction);
+        var styles = new List<SessionStyleRequest>();
+        var alternatives = new List<SessionViewToken>();
+        router.StyleRequested = request =>
+        {
+            styles.Add(request);
+            return Task.FromResult(new StyleChangeResult(true, "saved"));
+        };
+        router.AlternativeRequested = alternatives.Add;
+        var source = Source("native");
+        session.Observe(source, FocusMember.Source, 1);
+        router.Render(session, settings, false);
+        var original = new SessionViewToken(source.Target, Guid.NewGuid(), 7);
+        var request = new SessionStyleRequest(original, 12, TranslationStyle.Formal);
+        Assert.True((await native.StyleRequested!(request)).Saved);
+        native.AlternativeRequested!(original);
+        Assert.Equal(request, Assert.Single(styles));
+        Assert.Equal(original, Assert.Single(alternatives));
+        source = Source("windows-browser");
+        session.Observe(source, FocusMember.Source, 2);
+        router.Render(session, settings, false);
+        Assert.False((await native.StyleRequested!(request)).Saved);
+        native.AlternativeRequested!(original);
+        Assert.Single(styles);
+        Assert.Single(alternatives);
+        var browserToken = new SessionViewToken(source.Target, Guid.NewGuid(), 8);
+        var inherit = new SessionStyleRequest(browserToken, 13, null);
+        Assert.True((await browser.StyleRequested!(inherit)).Saved);
+        browser.AlternativeRequested!(browserToken);
+        Assert.Equal(inherit, styles[1]);
+        Assert.Equal(browserToken, alternatives[1]);
+        router.HideQuietly();
+        Assert.False((await browser.StyleRequested!(inherit)).Saved);
+        browser.AlternativeRequested!(browserToken);
+        Assert.Equal(2, styles.Count);
+        Assert.Equal(2, alternatives.Count);
+    }
+
+    [Fact]
+    public async Task AuxiliaryEntryAndFocusBelongOnlyToTheActiveSurface()
+    {
+        var native = new View();
+        var browser = new View();
+        var router = new WindowsSessionView(native, browser);
+        var session = new Session(new("auto", "en"));
+        var source = Source("native");
+        session.Observe(source, FocusMember.Source, 1);
+        var token = new SessionViewToken(source.Target, Guid.NewGuid(), 7);
+        var entry = new SessionGlossaryEntry(Guid.NewGuid(), token, 4, []);
+        var request = new SessionGlossaryRequest(entry.FormId, token, 4, new("PR", "PR"));
+        int saves = 0, closes = 0;
+        router.BeginGlossaryRequested = _ => entry;
+        router.AddGlossaryRequested = _ => { saves++; return Task.FromResult(new GlossaryChangeResult(true, "glossary-saved")); };
+        router.CloseGlossaryRequested = _ => closes++;
+        router.Render(session, new(), false);
+        native.GlossaryEntryFocus = new(entry.FormId, token, ImeState.Composing);
+        Assert.Equal(native.GlossaryEntryFocus, router.GlossaryEntryFocus);
+        Assert.Same(entry, native.BeginGlossaryRequested!(token));
+        Assert.True((await native.AddGlossaryRequested!(request)).Saved);
+        session.Observe(Source("windows-browser"), FocusMember.Source, 2);
+        router.Render(session, new(), false);
+        Assert.Null(router.GlossaryEntryFocus);
+        Assert.Null(native.BeginGlossaryRequested!(token));
+        Assert.False((await native.AddGlossaryRequested!(request)).Saved);
+        native.CloseGlossaryRequested!(entry.FormId);
+        Assert.Equal(1, saves);
+        Assert.Equal(0, closes);
+        browser.CloseGlossaryRequested!(entry.FormId);
+        Assert.Equal(1, closes);
+        router.HideQuietly();
+        Assert.Null(browser.BeginGlossaryRequested!(token));
+        Assert.False((await browser.AddGlossaryRequested!(request)).Saved);
+        Assert.Equal(1, saves);
+    }
+
     private static InputSnapshot Source(string backend) => new(new(backend, "field", Guid.NewGuid()), "source", new(0, 0),
         new(0, 0, 100, 20), false, FieldAccess.Supported, ImeState.Clear, 1, 1, 1);
     private sealed class View : ISessionView
@@ -61,6 +143,30 @@ public sealed class WindowsSessionViewTests
             get; set;
         }
         public Action? RegenerateRequested
+        {
+            get; set;
+        }
+        public Action<SessionViewToken>? AlternativeRequested
+        {
+            get; set;
+        }
+        public Func<SessionStyleRequest, Task<StyleChangeResult>>? StyleRequested
+        {
+            get; set;
+        }
+        public Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
+        {
+            get; set;
+        }
+        public Func<SessionGlossaryRequest, Task<GlossaryChangeResult>>? AddGlossaryRequested
+        {
+            get; set;
+        }
+        public Action<Guid>? CloseGlossaryRequested
+        {
+            get; set;
+        }
+        public SessionGlossaryFocus? GlossaryEntryFocus
         {
             get; set;
         }

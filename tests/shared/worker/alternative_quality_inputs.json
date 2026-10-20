@@ -1,0 +1,183 @@
+{
+  "schema": 1,
+  "samples": [
+    {
+      "id": "zh-daily-01",
+      "direction": "zh_en",
+      "category": "日常",
+      "text": "你方便明天下午把文件发给我吗？",
+      "semantic_anchors": [
+        "问对方是否方便",
+        "明天下午",
+        "把文件发给我"
+      ]
+    },
+    {
+      "id": "zh-daily-02",
+      "direction": "zh_en",
+      "category": "日常",
+      "text": "谢谢你的提醒，我们晚点再聊。",
+      "semantic_anchors": [
+        "感谢提醒",
+        "双方晚点再聊"
+      ]
+    },
+    {
+      "id": "zh-negation-01",
+      "direction": "zh_en",
+      "category": "否定状态",
+      "text": "我还没有收到你的邮件，请先不要取消会议。",
+      "semantic_anchors": [
+        "尚未收到邮件",
+        "请求暂不取消会议"
+      ]
+    },
+    {
+      "id": "zh-state-02",
+      "direction": "zh_en",
+      "category": "否定状态",
+      "text": "这台电脑已经修好了，但打印机仍然无法使用。",
+      "semantic_anchors": [
+        "电脑已经修好",
+        "打印机仍不可用",
+        "转折关系"
+      ]
+    },
+    {
+      "id": "zh-tense-01",
+      "direction": "zh_en",
+      "category": "时态条件",
+      "text": "我昨天已经提交申请，明天会再确认一次。",
+      "semantic_anchors": [
+        "我",
+        "昨天已提交申请",
+        "明天将再次确认"
+      ]
+    },
+    {
+      "id": "zh-condition-02",
+      "direction": "zh_en",
+      "category": "时态条件",
+      "text": "如果周五之前收到回复，我们就按原计划出发。",
+      "semantic_anchors": [
+        "收到回复是条件",
+        "周五之前",
+        "我们按原计划出发"
+      ]
+    },
+    {
+      "id": "zh-roles-01",
+      "direction": "zh_en",
+      "category": "主体数字语气",
+      "text": "李明给了王芳三本书，但王芳只借给我两本。",
+      "semantic_anchors": [
+        "李明给王芳",
+        "三本书",
+        "王芳借给我",
+        "只有两本",
+        "赠予与借出区别"
+      ]
+    },
+    {
+      "id": "zh-tone-02",
+      "direction": "zh_en",
+      "category": "主体数字语气",
+      "text": "请把会议从下午三点改到四点，尽量不要超过三十分钟。",
+      "semantic_anchors": [
+        "请求语气",
+        "下午三点改到四点",
+        "尽量",
+        "不超过三十分钟"
+      ]
+    },
+    {
+      "id": "en-daily-01",
+      "direction": "en_zh",
+      "category": "日常",
+      "text": "Could you leave the package at the front desk?",
+      "semantic_anchors": [
+        "礼貌请求",
+        "包裹",
+        "放在前台"
+      ]
+    },
+    {
+      "id": "en-daily-02",
+      "direction": "en_zh",
+      "category": "日常",
+      "text": "Thanks for your help. I'll get back to you after lunch.",
+      "semantic_anchors": [
+        "感谢帮助",
+        "我稍后回复你",
+        "午餐之后"
+      ]
+    },
+    {
+      "id": "en-negation-01",
+      "direction": "en_zh",
+      "category": "否定状态",
+      "text": "I haven't approved the changes, so please don't publish them yet.",
+      "semantic_anchors": [
+        "我尚未批准改动",
+        "因果关系",
+        "请求暂不发布"
+      ]
+    },
+    {
+      "id": "en-state-02",
+      "direction": "en_zh",
+      "category": "否定状态",
+      "text": "The door is closed, but it isn't locked.",
+      "semantic_anchors": [
+        "门关着",
+        "门没有锁",
+        "转折关系"
+      ]
+    },
+    {
+      "id": "en-tense-01",
+      "direction": "en_zh",
+      "category": "时态条件",
+      "text": "By the time she arrived, we had already sent the report.",
+      "semantic_anchors": [
+        "她到达",
+        "我们发送报告",
+        "发送早于她到达"
+      ]
+    },
+    {
+      "id": "en-condition-02",
+      "direction": "en_zh",
+      "category": "时态条件",
+      "text": "If it rains tomorrow, we'll meet online instead.",
+      "semantic_anchors": [
+        "明天下雨是条件",
+        "我们",
+        "改为线上见面"
+      ]
+    },
+    {
+      "id": "en-roles-01",
+      "direction": "en_zh",
+      "category": "主体数字语气",
+      "text": "Maria sent Alex three invoices, but he paid only two of them.",
+      "semantic_anchors": [
+        "Maria发送给Alex",
+        "三张发票",
+        "Alex只支付其中两张"
+      ]
+    },
+    {
+      "id": "en-tone-02",
+      "direction": "en_zh",
+      "category": "主体数字语气",
+      "text": "Please move our meeting from 2:30 to 3:00 and keep it under 20 minutes.",
+      "semantic_anchors": [
+        "请求语气",
+        "我们的会议",
+        "2:30改到3:00",
+        "严格少于20分钟"
+      ]
+    }
+  ]
+}

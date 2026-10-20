@@ -150,7 +150,8 @@ public sealed record ModelPackageManagementFact(
     string? HyUnavailableReason,
     string Source,
     string Target,
-    bool OperationInProgress);
+    bool OperationInProgress,
+    string RuntimeDownloadSources = "Astral、PyPI");
 
 public enum ModelPackageOperation
 {

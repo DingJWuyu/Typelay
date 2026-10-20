@@ -25,7 +25,8 @@ internal sealed class QuickPanel : Window
     private Grid? _statusRow;
     private Border? _statusDot;
     private TextBlock? _statusText, _operationFeedback;
-    private bool _saveFailed, _saving;
+    private bool _saving;
+    private string? _saveError;
     public QuickPanel(SettingsStore settings, ModelClient model, SessionController session, Action showSettings, Action quit)
     {
         _settings = settings;
@@ -50,12 +51,12 @@ internal sealed class QuickPanel : Window
         _body.SizeChanged += (_, _) => _body.Clip = new RectangleGeometry(new Rect(0, 0, _body.ActualWidth, _body.ActualHeight), 17, 17);
         Content = outer;
         _sourceLanguage = new(true, _settings.Value.Source,
-            async code => await SaveAsync(_settings.Value with { Source = code }))
+            async code => await SaveAsync(_settings.Value with { Source = code }), _model.Ready ? _model.AvailableDirections : null)
         {
             MinWidth = 0
         };
         _targetLanguage = new(false, _settings.Value.Target,
-            async code => await SaveAsync(_settings.Value with { Target = code }))
+            async code => await SaveAsync(_settings.Value with { Target = code }), _model.Ready ? _model.AvailableDirections : null)
         {
             MinWidth = 0
         };
@@ -130,20 +131,21 @@ internal sealed class QuickPanel : Window
             EnableContent();
             if (!prepared || !ReferenceEquals(expected, _settings.Value))
             {
-                _saveFailed = true;
+                _saveError = SettingsDraftPresentation.SaveUnconfirmedMessage;
                 Refresh();
                 return false;
             }
             _settings.Update(value);
             // A confirmed write of the same settings does not publish Changed.
-            _saveFailed = false;
+            _saveError = null;
             Refresh();
             return true;
         }
-        catch (SettingsPersistenceException)
+        catch (Exception error) when (error is SettingsPersistenceException or ArgumentException)
         {
             EnableContent();
-            _saveFailed = true;
+            _saveError = error is ArgumentException && !ModelCatalog.IsSupportedSetting(value.Source, value.Target)
+                ? "请选择支持的源语言和目标语言。" : SettingsDraftPresentation.SaveUnconfirmedMessage;
             Refresh();
             return false;
         }
@@ -256,12 +258,13 @@ internal sealed class QuickPanel : Window
         }
         modes.Children.Add(UiTheme.Border(choices, 8, "Panel2", 3));
         _body.Children.Insert(1, modes);
-        _sourceLanguage.Synchronize(_settings.Value.Source);
-        _targetLanguage.Synchronize(_settings.Value.Target);
+        var directions = _model.Ready ? _model.AvailableDirections : null;
+        _sourceLanguage.Synchronize(_settings.Value.Source, directions);
+        _targetLanguage.Synchronize(_settings.Value.Target, directions);
         _swapLanguages.IsEnabled = _settings.Value.Source != "auto";
-        if (_saveFailed)
+        if (_saveError is { } message)
         {
-            var error = UiTheme.Text(SettingsDraftPresentation.SaveUnconfirmedMessage, 11.5);
+            var error = UiTheme.Text(message, 11.5);
             error.Margin = new(14, 0, 14, 12);
             _body.Children.Add(error);
         }

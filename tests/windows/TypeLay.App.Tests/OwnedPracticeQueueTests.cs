@@ -194,6 +194,27 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         {
             get; set;
         }
+        public Action<SessionViewToken>? AlternativeRequested
+        {
+            get; set;
+        }
+        public Func<SessionStyleRequest, Task<StyleChangeResult>>? StyleRequested
+        {
+            get; set;
+        }
+        public Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
+        {
+            get; set;
+        }
+        public Func<SessionGlossaryRequest, Task<GlossaryChangeResult>>? AddGlossaryRequested
+        {
+            get; set;
+        }
+        public Action<Guid>? CloseGlossaryRequested
+        {
+            get; set;
+        }
+        public SessionGlossaryFocus? GlossaryEntryFocus => null;
         public Action? ExcludeRequested
         {
             get; set;

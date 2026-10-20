@@ -9,13 +9,20 @@ import hashlib
 import json
 import os
 import platform
+import re
 import stat
 from pathlib import Path
 
 NATIVE_ROOT = Path(__file__).resolve().parents[1] / "native" / "hy"
 CHUNK = 1024 * 1024
-ABI = 3
-EXPORTS = ["hy_close", "hy_open_v3", "hy_translate"]
+ABI = 5
+EXPORTS = [
+    "hy_close",
+    "hy_open_v5",
+    "hy_translate",
+    "hy_translate_glossary_v5",
+    "hy_translate_styled_v5",
+]
 DIRECTIONS = (
     "zh_ja",
     "ja_zh",
@@ -48,6 +55,10 @@ VARIANTS = (
     "zen4",
 )
 DEPENDENCIES = ("libggml-base.so.0", "libggml.so.0", "libllama.so.0")
+WINDOWS_DEPENDENCIES = ("libomp.dll", "ggml-base.dll", "ggml.dll", "llama.dll")
+WINDOWS_CPU_LOCK = "cpu-runtime.win-x64.lock.json"
+WINDOWS_ARCHIVE_SHA256 = "ccb5971d01c039bb90ff90957678adada36b9eba639f2e6d6697a09fc75a1404"
+TEMPLATE_SHA256 = "b7491ec0e9c869dfce20f2176758099bf248d979dd05530ede99deb21698acee"
 
 
 def digest(path):
@@ -115,34 +126,55 @@ def read_json(path):
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
 
 
-def read_cpu_lock():
-    lock = read_json(NATIVE_ROOT / "cpu-runtime.lock.json")
+def read_cpu_lock(platform_name="linux-x86_64"):
+    windows = platform_name == "win-x64"
+    if platform_name not in ("win-x64", "linux-x86_64"):
+        raise ValueError("unsupported CPU runtime platform")
+    lock = read_json(NATIVE_ROOT / (WINDOWS_CPU_LOCK if windows else "cpu-runtime.lock.json"))
     if (
         lock["schema"] != 1
-        or lock["platform"] != "linux-x86_64"
+        or lock["platform"] != platform_name
         or lock["upstream_revision"] != UPSTREAM
         or lock["upstream_tag"] != "b11717"
     ):
         raise ValueError("unsupported fixed CPU runtime lock")
     records = lock["files"]
     names = [safe_name(record["file"]) for record in records]
-    expected = {f"libggml-cpu-{name}.so" for name in VARIANTS}
+    expected = {
+        (f"ggml-cpu-{name}.dll" if windows else f"libggml-cpu-{name}.so") for name in VARIANTS
+    }
     variants = {record["file"] for record in records if record["kind"] == "cpu_variant"}
     dependencies = {record["file"] for record in records if record["kind"] == "dependency"}
     if (
-        len(names) != len(set(names))
+        len(names) != len(set(name.casefold() if windows else name for name in names))
         or variants != expected
-        or dependencies != set(DEPENDENCIES)
-        or set(names) != expected | set(DEPENDENCIES)
+        or dependencies != set(WINDOWS_DEPENDENCIES if windows else DEPENDENCIES)
+        or set(names)
+        != expected
+        | set(WINDOWS_DEPENDENCIES if windows else DEPENDENCIES)
+        | ({"LICENSE-LLVM-OpenMP"} if windows else set())
     ):
         raise ValueError("fixed CPU-only runtime closure mismatch")
+    if windows and (
+        type(lock["schema"]) is not int
+        or lock["runtime_archive_sha256"] != WINDOWS_ARCHIVE_SHA256
+        or {r["file"] for r in records if r["kind"] == "license"} != {"LICENSE-LLVM-OpenMP"}
+        or any(
+            type(r["bytes"]) is not int
+            or r["bytes"] <= 0
+            or not isinstance(r["sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", r["sha256"])
+            for r in records
+        )
+    ):
+        raise ValueError("fixed Windows CPU runtime identity mismatch")
     return lock
 
 
-def verify_cpu_runtime(directory):
-    """Validate the fixed CPU-only directory without loading any ELF library."""
+def verify_cpu_runtime(directory, platform_name="linux-x86_64"):
+    """Validate the fixed CPU-only directory without loading any native library."""
     directory = plain_path(directory, directory=True)
-    lock = read_cpu_lock()
+    lock = read_cpu_lock(platform_name)
     if {path.name for path in directory.iterdir()} != {item["file"] for item in lock["files"]}:
         raise ValueError("runtime has missing or unexpected files")
     for record in lock["files"]:
@@ -154,35 +186,58 @@ def verify_cpu_runtime(directory):
             (item for item in lock["files"] if item["kind"] == "cpu_variant"),
             key=lambda item: item["file"],
         ),
-        "lock_sha256": digest(NATIVE_ROOT / "cpu-runtime.lock.json"),
+        "lock_sha256": digest(
+            NATIVE_ROOT
+            / (WINDOWS_CPU_LOCK if platform_name == "win-x64" else "cpu-runtime.lock.json")
+        ),
     }
 
 
 def verify_native():
     """Check only shipped production inputs, never source/ZIP/fixture reports."""
-    if platform.system() != "Linux" or platform.machine() != "x86_64":
-        raise ValueError("Hy production runtime requires Linux x86_64")
+    windows = platform.system() == "Windows" and platform.machine().lower() in ("amd64", "x86_64")
+    if not windows and (platform.system() != "Linux" or platform.machine() != "x86_64"):
+        raise ValueError("Hy native runtime requires Linux x86_64 or Windows x64")
     root = plain_path(NATIVE_ROOT, directory=True)
+    cpu_lock = WINDOWS_CPU_LOCK if windows else "cpu-runtime.lock.json"
     manifest = read_json(root / "production-adapter.json")
     if (
         manifest["schema"] != 1
         or manifest["abi"] != ABI
-        or manifest["platform"] != "linux-x86_64"
+        or manifest["platform"] != ("win-x64" if windows else "linux-x86_64")
         or manifest["exports"] != EXPORTS
         or manifest["upstream_revision"] != UPSTREAM
         or manifest["model_lock_sha256"] != digest(root / "model.lock.json")
-        or manifest["cpu_runtime_lock_sha256"] != digest(root / "cpu-runtime.lock.json")
-        or manifest["adapter"]["file"] != "libtypelay_hy.so"
+        or manifest["cpu_runtime_lock_sha256"] != digest(root / cpu_lock)
+        or manifest["adapter"]["file"] != ("typelay_hy.dll" if windows else "libtypelay_hy.so")
         or manifest["license"]["file"] != "LICENSE.llama.cpp"
     ):
         raise ValueError("production adapter manifest identity mismatch")
+    if windows and (
+        type(manifest["schema"]) is not int
+        or type(manifest["abi"]) is not int
+        or manifest["template_sha256"] != TEMPLATE_SHA256
+        or read_json(root / "model.lock.json")["template_sha256"] != TEMPLATE_SHA256
+        or {path.name for path in root.iterdir()}
+        != {
+            "typelay_hy.dll",
+            "production-adapter.json",
+            "model.lock.json",
+            cpu_lock,
+            "LICENSE.llama.cpp",
+            "cpu-runtime",
+        }
+    ):
+        raise ValueError("Windows production payload or template identity mismatch")
     adapter = verify_file(root / manifest["adapter"]["file"], manifest["adapter"])
     verify_file(root / manifest["license"]["file"], manifest["license"])
     return {
         "adapter_path": str(adapter),
         "adapter_sha256": manifest["adapter"]["sha256"],
         "adapter_record": manifest["adapter"],
-        "cpu_runtime": verify_cpu_runtime(root / "cpu-runtime"),
+        "cpu_runtime": verify_cpu_runtime(
+            root / "cpu-runtime", "win-x64" if windows else "linux-x86_64"
+        ),
     }
 
 

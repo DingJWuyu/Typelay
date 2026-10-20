@@ -72,7 +72,7 @@ internal static class Program
             session = WindowsRuntime.CreateSession(settings, model, overlay, automationTest, support: support, practice: practiceHost);
             practiceHost.Bind(session);
             var window = new SettingsWindow(settings, model,
-                () => practiceHost.Open(Path.Combine(AppPaths.Data, "settings.json")), support)
+                () => practiceHost.Open(Path.Combine(AppPaths.Data, "settings.json")), support, controller: session)
             {
                 SessionMustEnd = session.StopSession,
                 PrepareSettingsChange = session.PrepareSettingsChangeAsync,

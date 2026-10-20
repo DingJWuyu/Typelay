@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('prepare', 'run')]
+    [ValidateSet('prepare', 'prepare-product', 'run')]
     [string]$Phase,
     [ValidateSet('Release')]
     [string]$Configuration = 'Release'
@@ -22,7 +22,7 @@ if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
     throw 'The selected Python application does not exist.'
 }
 
-if ($Phase -eq 'prepare') {
+if ($Phase -ne 'run') {
     # Reserve ten seconds within the 600-second wall budget for terminating and
     # waiting for this owned preparation process tree. Hashing and SDK discovery
     # run inside it, so they cannot evade the outer deadline.
@@ -32,9 +32,11 @@ if ($Phase -eq 'prepare') {
     $start.FileName = $python
     $start.UseShellExecute = $false
     $start.WorkingDirectory = $root
-    foreach ($argument in @('-I', '-B', (Join-Path $PSScriptRoot 'hy/prepare_assets.py'),
-            '--artifacts', $artifacts, '--budget-seconds',
-            $seconds.ToString('F3', [Globalization.CultureInfo]::InvariantCulture))) {
+    $arguments = @('-I', '-B', (Join-Path $PSScriptRoot 'hy/prepare_assets.py'),
+        '--artifacts', $artifacts, '--budget-seconds',
+        $seconds.ToString('F3', [Globalization.CultureInfo]::InvariantCulture))
+    if ($Phase -eq 'prepare-product') { $arguments += '--assets-only' }
+    foreach ($argument in $arguments) {
         $start.ArgumentList.Add($argument)
     }
     $process = [Diagnostics.Process]::new()

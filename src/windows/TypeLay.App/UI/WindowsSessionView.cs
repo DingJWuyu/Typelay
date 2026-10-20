@@ -18,6 +18,13 @@ internal sealed class WindowsSessionView : ISessionView
             view.ReturnRequested = token => { if (ReferenceEquals(_active, view)) ReturnRequested?.Invoke(token); };
             view.EscapeRequested = token => { if (ReferenceEquals(_active, view)) EscapeRequested?.Invoke(token); };
             view.RegenerateRequested = () => { if (ReferenceEquals(_active, view)) RegenerateRequested?.Invoke(); };
+            view.AlternativeRequested = token => { if (ReferenceEquals(_active, view)) AlternativeRequested?.Invoke(token); };
+            view.StyleRequested = request => ReferenceEquals(_active, view) && StyleRequested is { } change
+                ? change(request) : Task.FromResult(new StyleChangeResult(false, "style-stale"));
+            view.BeginGlossaryRequested = token => ReferenceEquals(_active, view) ? BeginGlossaryRequested?.Invoke(token) : null;
+            view.AddGlossaryRequested = request => ReferenceEquals(_active, view) && AddGlossaryRequested is { } add
+                ? add(request) : Task.FromResult(new GlossaryChangeResult(false, "glossary-stale"));
+            view.CloseGlossaryRequested = formId => { if (ReferenceEquals(_active, view)) CloseGlossaryRequested?.Invoke(formId); };
             view.ExcludeRequested = () => { if (ReferenceEquals(_active, view)) ExcludeRequested?.Invoke(); };
             view.ResumeRequested = revision => { if (ReferenceEquals(_active, view)) ResumeRequested?.Invoke(revision); };
         }
@@ -42,6 +49,27 @@ internal sealed class WindowsSessionView : ISessionView
     {
         get; set;
     }
+    public Action<SessionViewToken>? AlternativeRequested
+    {
+        get; set;
+    }
+    public Func<SessionStyleRequest, Task<StyleChangeResult>>? StyleRequested
+    {
+        get; set;
+    }
+    public Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
+    {
+        get; set;
+    }
+    public Func<SessionGlossaryRequest, Task<GlossaryChangeResult>>? AddGlossaryRequested
+    {
+        get; set;
+    }
+    public Action<Guid>? CloseGlossaryRequested
+    {
+        get; set;
+    }
+    public SessionGlossaryFocus? GlossaryEntryFocus => _active?.GlossaryEntryFocus;
     public Action? ExcludeRequested
     {
         get; set;

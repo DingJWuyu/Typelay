@@ -14,6 +14,10 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length == 4 && args[0] == "--verify-hy-production")
+            return HyPackageCheck.Run(args[1], args[2], args[3]);
+        if (args.Length == 5 && args[0] == "--verify-hy-packages")
+            return HyPackageCheck.Run(args[1], args[2], args[3], args[4]);
         if (args.Length == 4 && args[0] == "--verify-browser-cooperation")
             return BrowserCooperationCheck.Run(args[1], args[2], args[3]);
         if (args.Length == 4 && args[0] == "--verify-continuous")

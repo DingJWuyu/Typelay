@@ -30,29 +30,33 @@ public sealed class DirectTranslation
         get;
     }
 
-    private DirectTranslation(InputSnapshot source, LanguageDirection direction, long triggeredAtMs)
+    private DirectTranslation(InputSnapshot source, LanguageDirection direction, long triggeredAtMs,
+        TranslationStyle? style, long configurationRevision, GlossarySnapshot? glossary)
     {
         Guid id = Guid.NewGuid();
-        Job = new(id, id, 1, 0, source, source.TranslationScope, source.SourceText,
-            direction, TranslationKind.FullOrSelection, null);
+        Job = new(id, id, 1, configurationRevision, source, source.TranslationScope, source.SourceText,
+            direction, TranslationKind.FullOrSelection, null, Style: style, Glossary: glossary);
         TriggeredAtMs = triggeredAtMs;
     }
 
     public static (DirectTranslation? Operation, Denial Reason) Start(InputSnapshot source,
-        LanguageDirection direction, long triggeredAtMs)
+        LanguageDirection direction, long triggeredAtMs, TranslationStyle? style = null, long configurationRevision = 0, GlossarySnapshot? glossary = null)
     {
+        ValidateStyle(style);
         direction.Validate();
         Denial reason = WriteSafety.CheckSnapshot(source, triggeredAtMs);
         if (reason != Denial.None)
             return (null, reason);
         if (string.IsNullOrWhiteSpace(source.SourceText))
             return (null, Denial.NoCandidate);
-        return (new(source, direction, triggeredAtMs), Denial.None);
+        return (new(source, direction, triggeredAtMs, style, configurationRevision, glossary), Denial.None);
     }
 
     public static (DirectTranslation? Operation, Denial Reason) StartFromCommandCapture(InputSnapshot source,
-        LanguageDirection direction, CommandCaptureEvidence capture, long admittedAtMs)
+        LanguageDirection direction, CommandCaptureEvidence capture, long admittedAtMs,
+        TranslationStyle? style = null, long configurationRevision = 0, GlossarySnapshot? glossary = null)
     {
+        ValidateStyle(style);
         Denial reason = capture.Check(source, admittedAtMs);
         if (reason != Denial.None)
             return (null, reason);
@@ -62,7 +66,13 @@ public sealed class DirectTranslation
             return (null, reason);
         if (string.IsNullOrWhiteSpace(source.SourceText))
             return (null, Denial.NoCandidate);
-        return (new(source, direction, capture.TriggeredAtMs), Denial.None);
+        return (new(source, direction, capture.TriggeredAtMs, style, configurationRevision, glossary), Denial.None);
+    }
+
+    private static void ValidateStyle(TranslationStyle? style)
+    {
+        if (style is { } value && !Enum.IsDefined(value))
+            throw new ArgumentOutOfRangeException(nameof(style));
     }
 
     // Focus does not participate in this completion. The backend must independently

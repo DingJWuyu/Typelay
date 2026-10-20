@@ -727,7 +727,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             return true;
         }
         _notices.Enqueue(new(command.Action, AcceptedAtMs: now, ForegroundEpoch: foregroundEpoch, Source: lease.Source,
-            CommandGeneration: configuration.Generation, CommandSequence: sequence));
+            CommandGeneration: configuration.Generation, CommandSequence: sequence, Application: lease.Application));
         QueueShortcutTrace("key", "notice-enqueued", lease, command.Action,
             contentEpoch: contentEpoch, foregroundEpoch: foregroundEpoch, evaluatedAtMs: now,
             commandGeneration: configuration.Generation, commandSequence: sequence,

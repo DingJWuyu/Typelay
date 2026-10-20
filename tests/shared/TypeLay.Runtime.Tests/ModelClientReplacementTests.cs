@@ -8,6 +8,35 @@ namespace TypeLay.Runtime.Tests;
 public sealed class ModelClientReplacementTests
 {
     [Fact]
+    public async Task OwnedStreamsServeWithoutProcessRedirectProperties()
+    {
+        using var peers = new Peers();
+        using var client = peers.Client(ownedStreams: true);
+        await client.StartAsync();
+        Assert.True(client.Ready);
+        Assert.Equal("old", (await client.TranslateTextAsync("hello", new("en", "zh"))).Text);
+    }
+
+    [Fact]
+    public async Task FactoryReceivesFrozenCandidateAndOriginalRecoveryPlan()
+    {
+        using var peers = new Peers();
+        using var client = peers.Client();
+        var original = peers.Plan("old", hy: false);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await client.ReloadAsync(original,
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        var rejected = peers.Plan("invalid-hy");
+        Assert.Equal(ModelPublicationOutcome.Unchanged, await client.ReloadAsync(rejected,
+            () => throw new Exception("must-not-publish"), previous => ReferenceEquals(original, previous),
+            TestContext.Current.CancellationToken));
+        Assert.Equal(3, peers.FactoryPlans.Count);
+        Assert.Same(original, peers.FactoryPlans[0]);
+        Assert.Same(rejected, peers.FactoryPlans[1]);
+        Assert.Same(original, peers.FactoryPlans[2]);
+        Assert.Equal("old", (await client.TranslateTextAsync("later", new("en", "zh"))).Text);
+    }
+
+    [Fact]
     public async Task ExpectedDirectionsMustMatchTheServingCandidateBeforePublication()
     {
         using var peers = new Peers();
@@ -234,11 +263,13 @@ public sealed class ModelClientReplacementTests
         Assert.False(client.Busy);
     }
 
-    [Fact]
-    public async Task HySwitchWithdrawsReadyAndCancelsOldExchangeBeforeWaitingForOwnedExit()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task HySwitchWithdrawsReadyAndCancelsOldExchangeBeforeWaitingForOwnedExit(bool uncancellableReads)
     {
         using var peers = new Peers();
-        using var client = peers.Client();
+        using var client = peers.Client(uncancellableReads: uncancellableReads);
         await client.StartAsync();
         var old = peers.Started[0];
         old.ExitGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -357,11 +388,13 @@ public sealed class ModelClientReplacementTests
         Assert.All(peers.Started, peer => Assert.True(peer.Exited));
     }
 
-    [Fact]
-    public async Task CancelledHyHelloReclaimsCandidateAndRestartsOldWithoutReplayingRequests()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CancelledHyHelloReclaimsCandidateAndRestartsOldWithoutReplayingRequests(bool uncancellableReads)
     {
         using var peers = new Peers();
-        using var client = peers.Client();
+        using var client = peers.Client(uncancellableReads: uncancellableReads);
         await client.StartAsync();
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var replacing = client.ReloadAsync(peers.Plan("held-hello-hy"), () => throw new Exception("must-not-publish"),
@@ -423,6 +456,7 @@ public sealed class ModelClientReplacementTests
         private readonly string _script;
         private readonly Channel<int> _starts = Channel.CreateUnbounded<int>();
         public List<Peer> Started { get; } = [];
+        public List<ModelLoadPlan> FactoryPlans { get; } = [];
         public Action<string, Peer>? BeforeStart
         {
             get; set;
@@ -493,8 +527,9 @@ public sealed class ModelClientReplacementTests
             using var document = JsonDocument.Parse(inventory);
             return ModelLoadPlan.Create(paths, document.RootElement);
         }
-        public ModelClient Client(string name = "old") => new(Paths(name), info =>
+        public ModelClient Client(string name = "old", bool ownedStreams = false, bool uncancellableReads = false) => new(Paths(name), (info, plan) =>
         {
+            FactoryPlans.Add(plan);
             var start = new ProcessStartInfo(OperatingSystem.IsWindows() ? "python" : "python3")
             {
                 UseShellExecute = false,
@@ -510,7 +545,7 @@ public sealed class ModelClientReplacementTests
             BeforeStart?.Invoke(Path.GetFileName(info.ArgumentList[^1]), peer);
             Started.Add(peer);
             _starts.Writer.TryWrite(Started.Count);
-            return peer;
+            return ownedStreams || uncancellableReads ? new StreamOwner(peer, uncancellableReads) : peer;
         });
         public async Task NextStarted(int count)
         {
@@ -525,6 +560,44 @@ public sealed class ModelClientReplacementTests
             Directory.Delete(_root, true);
         }
     }
+    // The process remains a liveness observer; its redirection properties are unavailable.
+    private sealed class StreamOwner(Peer peer, bool uncancellableReads) : IChildProcess
+    {
+        public Process Process { get; } = Process.GetProcessById(peer.Process.Id);
+        public Stream StandardInput => peer.Process.StandardInput.BaseStream;
+        public Stream StandardOutput
+        {
+            get;
+        } = uncancellableReads
+            ? new UncancellableReadStream(peer.Process.StandardOutput.BaseStream) : peer.Process.StandardOutput.BaseStream;
+        public Task TerminateAndWaitAsync(CancellationToken cancellationToken) => peer.TerminateAndWaitAsync(cancellationToken);
+        public void Dispose()
+        {
+            peer.Dispose();
+            Process.Dispose();
+        }
+    }
+
+    // Synchronous native anonymous-pipe reads need not observe managed cancellation.
+    private sealed class UncancellableReadStream(Stream stream) : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException(); set => throw new NotSupportedException();
+        }
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            stream.ReadAsync(buffer, CancellationToken.None);
+        public override int Read(byte[] buffer, int offset, int count) => stream.Read(buffer, offset, count);
+        public override void Flush() => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
     private sealed class Peer(Process process) : IChildProcess
     {
         private bool _disposed;

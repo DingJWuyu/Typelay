@@ -200,10 +200,12 @@ dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows
 
 此入口仅验证固定 C ABI、原文控制 token 边界和自有 worker 生命周期，不修改产品 catalog、默认模型、设置、发行包或已安装模型。普通 native fixture 模式不会运行 Hy。
 
-显式运行 `./dev.ps1 build` 后，`./dev.ps1 hy-adapter-prepare` 在600秒总限内下载/完整校验固定 Hy-MT2 GGUF、官方 llama.cpp b11717 Windows CPU ZIP及许可，构造CPU-only私有目录并用官方SDK编译小adapter；`./dev.ps1 hy-adapter-e2e` 在180秒内执行取消/恢复和原中文到日文句子一次真实EOG，再做已有canonical literal/孤立CR拒绝审计。当前实际Windows执行尚未完成；Linux编译不能证明Windows Job、DLL加载或推理通过。
+显式运行 `./dev.ps1 build` 后，`./dev.ps1 hy-adapter-prepare` 在600秒总限内下载/完整校验固定 Hy-MT2 GGUF、官方 llama.cpp b11717 Windows CPU ZIP及许可，构造CPU-only私有目录并用官方SDK编译小adapter；`./dev.ps1 hy-adapter-e2e` 在180秒内执行取消/恢复和原中文到日文句子一次真实EOG，再做已有canonical literal/孤立CR拒绝审计。ABI3 隔离版本已取得 Windows 真实执行证据；当前 ABI5 生产发行链仍待独立验证，旧结果不替代新版本检查。
 
 冷GGUF+ZIP+模型许可总1,152,754,477字节；缓存命中仍全量SHA核验，坏缓存明确失败。模型/runtime下载仅进独立 `artifacts/hy-download/`，不进入发行包或artifact上传。CPU按固定上游实际最高正score动态选取，不按机器型号猜ISA。源码仅保留必要头文件及许可，不编译上游llama.cpp，不增加模型框架依赖。
 
 worker先以CREATE_SUSPENDED创建；设置Job的KILL_ON_JOB_CLOSE、ActiveProcessLimit=1、process/job committed-memory 2.5GiB并确认归属后再Resume。真实decode中取消后确认Job活动进程为0且根进程已发信号，再开始下一实例；只发送合成正文到有界stdin，不把正文放argv或临时prompt文件。ctx1024、2计算线程、greedy、192输出token、每请求60秒，只有真实EOG成功，失败不输出部分成功。Windows committed-memory限额不是Linux RLIMIT_AS或RSS硬限。
 
-现有check job在其它真实模型步骤结束后串行调用同一入口，总35分钟不变。缓存restore/save各2分钟、准备10分钟、执行3分钟，另预留2分钟给尾部上传和runner前置计时误差；剩余时间不足则明确失败/未运行，不静默跳过报成功。最早步骤计时不能精确覆盖此前runner初始化，35分钟job硬上限仍保留。仅上传 `artifacts/hy-results/` 中明确的JSON和有界stderr，不上传权重、runtime库或整个artifacts目录。
+上述隔离审计保留为手动入口。正式 check job 改用实际 ABI5 发行链：固定资产准备后，唯一 `pack -HyRuntime` 构建生产闭包；真实 ModelClient/ModelChildProcess 检查候选 hello 和退出，再由设置窗口执行安装、切回、再选择、中法预览及移除。两个独立 fixture 进程启动前，测试输出中的五份生产程序集（App、Runtime、Core、Protocol、Windows.Contracts）与发行包对齐，并逐一核实际加载位置的 SHA；不改发行包或运行中程序集。生产前置不重复推理，中法句只在实际 App 激活后生成一次预览。原无使用标记的 Argos 旧代不伪造可删除证明；移除必须核实本轮 Hy 退休代及精确下载缓存已回收。
+
+Windows job 上限75分钟，准入要求仍余50分钟：准备10分钟、既有浏览器10分钟、生产前置6分钟、设置链16分钟、缓存与尾部7分钟、打包预留1分钟。各步骤原有硬上限和模型请求/退出期限不延长；不足时明确记录未运行。现浏览器场景须成功后才进入 Hy 前置；其失败结果尚不足以独立证明全部自有进程退出，不能仅凭空 cleanupErrors 继续。模型源须来自同轮 continuous 已确认的真实 Ready 库存，缺失则后续未运行。实际完成即结束。仅上传列明的小结果 JSON、有界诊断及发行 ZIP，不上传 GGUF、下载缓存或整个 artifacts 目录。

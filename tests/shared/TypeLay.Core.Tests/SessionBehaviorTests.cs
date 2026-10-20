@@ -6,6 +6,127 @@ namespace TypeLay.Core.Tests;
 
 public sealed class SessionBehaviorTests
 {
+    [Fact]
+    public void AlternativeKeepsTheOriginalSourceAndRevokesThePreviousCandidate()
+    {
+        var (session, source) = Ready("前缀你好后缀", new(2, 4));
+        var oldPlan = Plan(session, source);
+        var job = Assert.IsType<TranslationJob>(session.BeginAlternative());
+        Assert.Equal(TranslationKind.Alternative, job.Kind);
+        Assert.Equal("你好", job.SourceText);
+        Assert.Equal(new LanguageDirection("auto", "en"), job.Direction);
+        Assert.Equal("Hello", job.PreviousCandidate);
+        Assert.Null(job.PreservedManualText);
+        Assert.Equal(oldPlan.Revision + 1, session.Revision);
+        Assert.Equal(SessionState.Translating, session.State);
+        Assert.Empty(session.Candidate);
+        Assert.Equal("Hello", session.Preview);
+        Assert.False(session.BeginWrite(oldPlan));
+        Assert.Null(session.BeginAlternative());
+        Assert.Null(session.TakeTranslationJob(2000));
+        Assert.True(session.Complete(job, "Greetings"));
+        Assert.Equal("Greetings", session.Candidate);
+        Assert.Equal("前缀Greetings后缀", Plan(session, source).ResultText);
+    }
+
+    [Theory]
+    [InlineData("no-alternative")]
+    [InlineData("error")]
+    [InlineData("duplicate")]
+    [InlineData("invalid")]
+    public void UnavailableAlternativeRestoresTextWithoutRevivingOldPlans(string result)
+    {
+        var (session, source) = Ready();
+        var oldPlan = Plan(session, source);
+        var job = Assert.IsType<TranslationJob>(session.BeginAlternative());
+        if (result == "no-alternative")
+            Assert.True(session.CompleteNoAlternative(job));
+        else if (result == "error")
+            Assert.True(session.Fail(job));
+        else
+            Assert.False(session.Complete(job, result == "duplicate" ? " h E L L o !!! " : ""));
+        Assert.Equal(SessionState.ValidTranslation, session.State);
+        Assert.Equal("Hello", session.Candidate);
+        Assert.Equal("Hello", session.Preview);
+        Assert.False(session.BeginWrite(oldPlan));
+        Assert.NotEqual(oldPlan.Revision, Plan(session, source).Revision);
+        Assert.False(session.Complete(job, "Late duplicate callback"));
+    }
+
+    [Theory]
+    [InlineData("append")]
+    [InlineData("selection")]
+    [InlineData("epoch")]
+    [InlineData("target")]
+    [InlineData("ime")]
+    [InlineData("direction")]
+    [InlineData("pause")]
+    [InlineData("escape")]
+    public void AnObsoleteAlternativeCannotRestoreOrReplaceAnyCurrentDisplay(string change)
+    {
+        var (session, source) = Ready();
+        var job = Assert.IsType<TranslationJob>(session.BeginAlternative());
+        switch (change)
+        {
+            case "direction":
+                session.SetDirection(new("en", "zh"), 1400);
+                break;
+            case "pause":
+                session.SetPaused(true);
+                break;
+            case "escape":
+                session.Escape();
+                break;
+            default:
+                var next = change switch
+                {
+                    "append" => source with { Text = source.Text + "更多", Selection = new(4, 4), InputEpoch = 2 },
+                    "selection" => source with { Selection = new(0, 1) },
+                    "epoch" => source with { InputEpoch = 2 },
+                    "target" => source with { Target = B },
+                    _ => source with { Ime = ImeState.Unknown, PreviewText = source.Text }
+                };
+                session.Observe(next, FocusMember.Source, 1400);
+                break;
+        }
+        string preview = session.Preview;
+        var state = session.State;
+        Assert.False(session.Complete(job, "Obsolete alternative"));
+        Assert.False(session.CompleteNoAlternative(job));
+        Assert.False(session.Fail(job));
+        Assert.Equal(preview, session.Preview);
+        Assert.Equal(state, session.State);
+        Assert.Empty(session.Candidate);
+    }
+
+    [Fact]
+    public void AnAbandonedAlternativeWaitsForANewObservationAndNeverRevivesItsCandidate()
+    {
+        var (session, source) = Ready();
+        var job = Assert.IsType<TranslationJob>(session.BeginAlternative());
+        Assert.True(session.AbandonAlternative(job));
+        Assert.Equal(SessionState.Invalid, session.State);
+        Assert.Empty(session.Candidate);
+        Assert.Null(session.TakeTranslationJob(2000));
+        Assert.False(session.Fail(job));
+        session.Observe(source, FocusMember.Source, 2000);
+        Assert.Equal(TranslationKind.FullOrSelection, session.TakeTranslationJob(2300)!.Kind);
+    }
+
+    [Fact]
+    public void AlternativeDoesNotReplaceAManualDraftOrItsReturnedSeed()
+    {
+        var (session, source) = Ready();
+        Assert.True(session.BeginEdit());
+        session.ChangeDraft("My wording");
+        Assert.Null(session.BeginAlternative());
+        Assert.True(session.RequestSourceReturn());
+        Assert.Null(session.BeginAlternative());
+        Assert.True(session.ConfirmSourceReturn(source, 1300));
+        Assert.Null(session.BeginAlternative());
+        Assert.Equal("My wording", session.Candidate);
+    }
+
     [Fact(DisplayName = "injected-tab-is-not-user-acceptance")]
     public void InjectedTabIsNotUserAcceptance()
     {

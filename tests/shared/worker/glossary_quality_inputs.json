@@ -1,0 +1,123 @@
+{
+  "schema": 1,
+  "samples": [
+    {
+      "id": "zh-fr-directed-priority",
+      "category": "directed-over-global",
+      "request": {
+        "op": "translate-glossary-v1",
+        "text": "这个项目包含3份资料，但我还没有批准其中的第二份。",
+        "source": "zh",
+        "target": "fr",
+        "glossary": {
+          "version": 1,
+          "rules": [
+            {"sourceTerm": "项目", "targetTerm": "projet"},
+            {"sourceTerm": "项目", "targetTerm": "dossier", "sourceLanguage": "zh", "targetLanguage": "fr"}
+          ]
+        }
+      },
+      "expectedResponse": {"status": "translated", "code": ""},
+      "semantic_anchors": [
+        "这个项目包含3份资料",
+        "我尚未批准第二份资料，不是已拒绝或已批准",
+        "项目使用zh到fr专属译法dossier；全局projet不覆盖专属规则"
+      ],
+      "protected_literals": []
+    },
+    {
+      "id": "fr-zh-numbers-negation",
+      "category": "numbers-and-negation",
+      "request": {
+        "op": "translate-glossary-v1",
+        "text": "Je n’ai pas encore confirmé les 2 réservations. La réunion passe de 15 h à 16 h.",
+        "source": "fr",
+        "target": "zh",
+        "glossary": {
+          "version": 1,
+          "rules": [
+            {"sourceTerm": "réservations", "targetTerm": "预约"},
+            {"sourceTerm": "réunion", "targetTerm": "会议"}
+          ]
+        }
+      },
+      "expectedResponse": {"status": "translated", "code": ""},
+      "semantic_anchors": [
+        "我尚未确认两项预约，不能变成已经确认或取消",
+        "会议由15点改为16点，不能倒置时间",
+        "预约和会议是两个不同对象",
+        "réservations使用预约，réunion使用会议"
+      ],
+      "protected_literals": []
+    },
+    {
+      "id": "zh-fr-preserved-structure",
+      "category": "protected-preserved",
+      "request": {
+        "op": "translate-glossary-v1",
+        "text": "项目尚未确认。\r\nhttps://example.com/project @alice #42 🙂",
+        "source": "zh",
+        "target": "fr",
+        "glossary": {
+          "version": 1,
+          "rules": [
+            {"sourceTerm": "项目", "targetTerm": "dossier"},
+            {"sourceTerm": "example", "targetTerm": "example"}
+          ]
+        }
+      },
+      "expectedResponse": {"status": "translated", "code": ""},
+      "semantic_anchors": [
+        "项目尚未确认，使用dossier",
+        "CRLF、网址、提及、问题编号和emoji保持原字节及相对顺序",
+        "网址内example恒等规则不允许更改受保护内容"
+      ],
+      "protected_literals": ["\r\n", "https://example.com/project", "@alice", "#42", "🙂"]
+    },
+    {
+      "id": "zh-fr-protected-conflict",
+      "category": "protected-refusal",
+      "request": {
+        "op": "translate-glossary-v1",
+        "text": "请查看项目 https://example.com/project",
+        "source": "zh",
+        "target": "fr",
+        "glossary": {
+          "version": 1,
+          "rules": [
+            {"sourceTerm": "example", "targetTerm": "autre"}
+          ]
+        }
+      },
+      "expectedResponse": {"status": "error", "code": "glossary-protected-conflict"},
+      "semantic_anchors": [
+        "术语规则要求改动受保护网址时明确拒绝",
+        "拒绝响应text为空，不得发布部分翻译或修改后的网址"
+      ],
+      "protected_literals": ["https://example.com/project"]
+    },
+    {
+      "id": "zh-fr-style-glossary-refusal",
+      "category": "style-glossary-refusal",
+      "request": {
+        "op": "translate-glossary-v1",
+        "text": "项目尚未确认。",
+        "source": "zh",
+        "target": "fr",
+        "style": "formal",
+        "glossary": {
+          "version": 1,
+          "rules": [
+            {"sourceTerm": "项目", "targetTerm": "dossier"}
+          ]
+        }
+      },
+      "expectedResponse": {"status": "error", "code": "invalid-request"},
+      "semantic_anchors": [
+        "同一术语帧附带风格字段时明确拒绝，不能忽略其中一项",
+        "拒绝响应text为空，不得普通翻译回退"
+      ],
+      "protected_literals": []
+    }
+  ]
+}

@@ -456,6 +456,8 @@ async def desktop(paths, background, lock, tutorial=False):
         elif operation == "settings":
             first_settings = settings.value is None
             settings.configure(value)
+            if settings.window.get_visible() and not settings.translation.saving:
+                settings.translation.refresh()
             overlay.configure(value)
             components["tray"].configure(value)
             if (
@@ -464,6 +466,9 @@ async def desktop(paths, background, lock, tutorial=False):
                 and not settings.tutorial.window.get_visible()
             ):
                 settings.show()
+        elif operation == "translationSettingsChanged":
+            if not settings.translation.saving:
+                settings.translation.refresh()
         elif operation == "settingsGuidance":
             settings.render_guidance(value)
             overlay.render_guidance(value)

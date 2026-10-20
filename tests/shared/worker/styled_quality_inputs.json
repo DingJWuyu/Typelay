@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "samples": [
+    {
+      "id": "zh-ja-delivery",
+      "direction": "zh_ja",
+      "text": "我还没答应周五前送到，但我会尽量在下午三点前把两份资料发给你。",
+      "semantic_anchors": [
+        "我尚未承诺周五前送到",
+        "我发给你两份资料",
+        "下午三点前",
+        "尽量是努力意向，不是保证",
+        "送到与发送资料不能合并成同一承诺"
+      ]
+    },
+    {
+      "id": "ja-zh-plans",
+      "direction": "ja_zh",
+      "text": "私はまだ変更に同意していません。担当者が明日二つの案を確認する予定ですが、確約ではありません。",
+      "semantic_anchors": [
+        "我尚未同意变更",
+        "负责人计划明天确认两个方案",
+        "确认方案的主体是负责人，不是我",
+        "计划并非保证"
+      ]
+    },
+    {
+      "id": "zh-fr-books",
+      "direction": "zh_fr",
+      "text": "我已经把三本书交给店员了，但她只答应帮我找另外两本，没有保证明天能拿到。",
+      "semantic_anchors": [
+        "我已经把三本书交给店员",
+        "她指店员",
+        "店员只答应帮我找另外两本",
+        "没有保证明天拿到",
+        "答应寻找不等于保证找到或交付"
+      ]
+    },
+    {
+      "id": "fr-zh-reservation",
+      "direction": "fr_zh",
+      "text": "Je n’ai pas encore confirmé la réservation pour deux personnes. Si tu es libre vendredi, j’essaierai de décaler le rendez-vous de 15 h à 16 h.",
+      "semantic_anchors": [
+        "我尚未确认两人的预订",
+        "你周五有空是条件",
+        "我会尝试调整约会时间，不是保证改成",
+        "从15点改到16点"
+      ]
+    }
+  ]
+}

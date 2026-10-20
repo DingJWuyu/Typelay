@@ -75,7 +75,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.windows == 'true'
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 75
     steps:
       - name: Record the Windows check budget start
         shell: pwsh
@@ -124,6 +124,7 @@ jobs:
         shell: pwsh
         run: ./dev.ps1 native-e2e
       - name: Verify continuous translation with the real local model
+        id: windows-continuous
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         timeout-minutes: 25
         shell: pwsh
@@ -168,36 +169,20 @@ jobs:
       # The metadata-only browser research probe is paused at an unresolved CI startup
       # precondition. Run its documented script explicitly when new evidence warrants it;
       # the ordinary Chrome product regression above remains required and keeps its result.
-      - name: Package and test the relocated distribution
-        id: windows-package
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        shell: pwsh
-        env:
-          TYPELAY_BROWSER_REGISTRATION_E2E: "1"
-        run: ./dev.ps1 pack
-      - name: Verify cooperative browser input with the shipped app and real model
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' && steps.cooperative-browser-prepare.outcome == 'success' }}
-        timeout-minutes: 10
-        shell: pwsh
-        env:
-          TYPELAY_BROWSER_REGISTRATION_E2E: "1"
-        run: |
-          dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-browser-cooperation artifacts/browser-cooperation artifacts/package/TypeLay '${{ steps.cooperative-browser-prepare.outputs.chrome }}'
-          exit $LASTEXITCODE
-      # Serialized after all existing Argos, package and browser-model consumers.
-      - name: Admit the bounded optional Hy adapter fixture
+      # Prepare fixed assets before the sole production package; inference stays serialized.
+      - name: Admit the bounded production Hy package chain
         id: hy-admission
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $elapsed = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [long]$env:TYPELAY_WINDOWS_CHECK_START
-          $remaining = 35 * 60 - $elapsed
-          $required = 19 * 60 # cache 2+2m, prepare 10m, execution 3m, tail/setup reserve 2m
+          $remaining = 75 * 60 - $elapsed
+          $required = 50 * 60 # prepare 10m, browser 10m, production 6m, settings 16m, cache/tail 7m, pack 1m
           New-Item -ItemType Directory -Force artifacts/hy-results | Out-Null
           @{ admitted = ($remaining -ge $required); elapsedSeconds = $elapsed; remainingSeconds = $remaining; requiredSeconds = $required } |
             ConvertTo-Json | Set-Content artifacts/hy-results/admission.json -Encoding utf8
-          if ($remaining -lt $required) { throw 'Insufficient unchanged 35-minute job budget for the bounded Hy fixture.' }
+          if ($remaining -lt $required) { throw 'Insufficient 75-minute job budget for the bounded production Hy chain.' }
           $pin = Get-Content src/shared/TypeLay.Worker/native/hy/assets.lock.json -Raw | ConvertFrom-Json
           "cache-key=typelay-hy-win-$($pin.model.sha256)-$($pin.runtime_archive.sha256)" >> $env:GITHUB_OUTPUT
       - name: Restore the fixed Hy model and CPU archive cache
@@ -208,17 +193,12 @@ jobs:
         with:
           path: artifacts/hy-download/
           key: ${{ steps.hy-admission.outputs.cache-key }}
-      - name: Prepare and compile the fixed Hy adapter
+      - name: Prepare fixed Hy assets without an audit adapter
         id: hy-prepare
         if: ${{ !cancelled() && steps.hy-admission.outcome == 'success' && steps.hy-cache.outcome == 'success' }}
         timeout-minutes: 10
         shell: pwsh
-        run: ./dev.ps1 hy-adapter-prepare
-      - name: Verify Hy within one owned Windows Job at a time
-        if: ${{ !cancelled() && steps.hy-prepare.outcome == 'success' }}
-        timeout-minutes: 3
-        shell: pwsh
-        run: ./dev.ps1 hy-adapter-e2e
+        run: ./dev.ps1 hy-product-prepare
       - name: Save only verified Hy download assets to cache
         if: ${{ !cancelled() && steps.hy-prepare.outcome == 'success' && steps.hy-cache.outputs.cache-hit != 'true' }}
         timeout-minutes: 2
@@ -226,6 +206,49 @@ jobs:
         with:
           path: artifacts/hy-download/
           key: ${{ steps.hy-cache.outputs.cache-primary-key }}
+      - name: Package and test the relocated distribution
+        id: windows-package
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' && steps.hy-prepare.outcome == 'success' }}
+        shell: pwsh
+        env:
+          TYPELAY_BROWSER_REGISTRATION_E2E: "1"
+        run: ./dev.ps1 pack -HyRuntime artifacts/hy-runtime
+      - name: Verify cooperative browser input with the shipped app and real model
+        id: windows-browser
+        if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && steps.cooperative-browser-prepare.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          TYPELAY_BROWSER_REGISTRATION_E2E: "1"
+        run: |
+          dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-browser-cooperation artifacts/browser-cooperation artifacts/package/TypeLay '${{ steps.cooperative-browser-prepare.outputs.chrome }}'
+          exit $LASTEXITCODE
+      # All earlier model consumers have exited before this production-only chain.
+      - name: Verify the shipped Hy ABI5 worker and production process owner
+        id: hy-production
+        if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && steps.windows-browser.outcome == 'success' }}
+        timeout-minutes: 6
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixture = 'tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows'
+          foreach ($assembly in @('TypeLay.App', 'TypeLay.Runtime', 'TypeLay.Core', 'TypeLay.Protocol', 'TypeLay.Windows.Contracts')) {
+            Copy-Item -LiteralPath "artifacts/package/TypeLay/app/$assembly.dll" -Destination "$fixture/$assembly.dll" -Force
+          }
+          dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-hy-production artifacts/hy-production artifacts/package/TypeLay artifacts/hy-download
+          exit $LASTEXITCODE
+      - name: Verify Hy install select preview and remove through Settings
+        if: ${{ !cancelled() && steps.hy-production.outcome == 'success' }}
+        timeout-minutes: 16
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixture = 'tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows'
+          foreach ($assembly in @('TypeLay.App', 'TypeLay.Runtime', 'TypeLay.Core', 'TypeLay.Protocol', 'TypeLay.Windows.Contracts')) {
+            Copy-Item -LiteralPath "artifacts/package/TypeLay/app/$assembly.dll" -Destination "$fixture/$assembly.dll" -Force
+          }
+          dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-hy-packages artifacts/hy-packages artifacts/package/TypeLay artifacts/hy-download tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll
+          exit $LASTEXITCODE
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -240,6 +263,8 @@ jobs:
             artifacts/browser-cooperation/trace*.jsonl
             artifacts/hy-results/*.json
             artifacts/hy-results/*.stderr
+            artifacts/hy-production/*.json
+            artifacts/hy-packages/*.json
             artifacts/TypeLay-Windows-preview.zip
             artifacts/TypeLay-Windows-preview.zip.sha256
           if-no-files-found: warn

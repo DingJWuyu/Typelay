@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.IO;
+using System.Text.Json;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Automation;
@@ -25,7 +27,7 @@ public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
     [InlineData("es", "Español")]
     [InlineData("de", "Deutsch")]
     [InlineData("pt", "Português")]
-    public Task APreviouslySavedChoiceIsVisibleButCannotAdvertiseNewWindowsSupport(string code, string label) => desktop.RunAsync(async () =>
+    public Task APreviouslySavedChoiceStaysReadOnlyUntilItsModelIsReady(string code, string label) => desktop.RunAsync(async () =>
     {
         var saved = new List<string>();
         var picker = new LanguagePicker(source: false, code, saved.Add);
@@ -34,20 +36,106 @@ public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
         {
             window.Show();
             await DrainAsync(window);
-            Assert.Equal(label + "（当前版本未开放）", picker.SelectedItem?.ToString());
+            Assert.Equal(label + "（当前不可用）", picker.SelectedItem?.ToString());
             picker.IsDropDownOpen = true;
             await DrainAsync(window);
             var selected = Assert.IsType<ComboBoxItem>(picker.ItemContainerGenerator.ContainerFromItem(picker.SelectedItem));
             Assert.False(selected.IsEnabled);
             Assert.Empty(saved);
             picker.Synchronize(code);
-            Assert.Equal(label + "（当前版本未开放）", picker.SelectedItem?.ToString());
+            Assert.Equal(label + "（当前不可用）", picker.SelectedItem?.ToString());
             picker.SelectedIndex = 0;
             Assert.Equal(["zh"], saved);
             Assert.Equal("中文", picker.SelectedItem?.ToString());
         }
         finally { window.Close(); }
     });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task OnlyActiveLanguagesAreOfferedAndInvalidPairsRestoreTheSavedChoice(bool quickPanel) => desktop.RunAsync(async () =>
+    {
+        using var fixture = new LanguageWindowFixture(quickPanel, protocolModel: true);
+        string persisted = File.ReadAllText(fixture.Path);
+        await fixture.SwitchModelAsync(["zh_ja"]);
+        var source = Language(fixture.Window, source: true);
+        var target = Language(fixture.Window, source: false);
+        Assert.Equal(["Auto", "中文", "日本語"], Labels(source));
+        Assert.Equal(["中文", "日本語", "English（当前不可用）"], Labels(target));
+        Assert.Equal("English（当前不可用）", target.SelectedItem?.ToString());
+        Assert.Equal(persisted, File.ReadAllText(fixture.Path));
+        target.IsDropDownOpen = true;
+        await DrainAsync(fixture.Window);
+        Assert.False(Assert.IsType<ComboBoxItem>(target.ItemContainerGenerator.ContainerFromItem(target.SelectedItem)).IsEnabled);
+        target.IsDropDownOpen = false;
+
+        // Japanese to English is not a catalog direct pair. Its rejected save
+        // must return to the confirmed Chinese source, without changing target.
+        source.SelectedItem = source.Items.Cast<object>().Single(item => item.ToString() == "日本語");
+        await DrainAsync(fixture.Window);
+        Assert.Equal("中文", source.SelectedItem?.ToString());
+        Assert.Equal(persisted, File.ReadAllText(fixture.Path));
+        Assert.Contains(Descendants(fixture.Window).OfType<TextBlock>(), text => text.IsVisible
+            && text.Text.Contains("请选择支持的源语言和目标语言。", StringComparison.Ordinal));
+
+        target.SelectedItem = target.Items.Cast<object>().Single(item => item.ToString() == "日本語");
+        await DrainAsync(fixture.Window);
+        Assert.Equal("ja", new SettingsStore(fixture.Path).Value.Target);
+        source.SelectedItem = source.Items.Cast<object>().Single(item => item.ToString() == "日本語");
+        await DrainAsync(fixture.Window);
+        Assert.Equal("ja", new SettingsStore(fixture.Path).Value.Source); // Same-language remains valid.
+        source.SelectedIndex = 0;
+        await DrainAsync(fixture.Window);
+        Assert.Equal("auto", new SettingsStore(fixture.Path).Value.Source);
+        Assert.Equal(["中文", "日本語"], Labels(target));
+        Assert.Same(source, Language(fixture.Window, source: true));
+        Assert.Same(target, Language(fixture.Window, source: false));
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task ActiveRefreshPreservesSearchUntilTheAvailableLanguagesChange(bool quickPanel) => desktop.RunAsync(async () =>
+    {
+        using var fixture = new LanguageWindowFixture(quickPanel, protocolModel: true);
+        fixture.Settings.Update(fixture.Settings.Value with
+        {
+            Target = "ja"
+        });
+        await fixture.SwitchModelAsync(["zh_ja", "ja_zh"]);
+        var combo = Language(fixture.Window, source: false);
+        var choices = combo.ItemsSource;
+        var editor = Editor(combo);
+        Assert.True(editor.Focus());
+        await PressKeyAsync(fixture.Window, 0x73);
+        editor.SelectAll();
+        await TypeTextAsync(fixture.Window, editor, "zz");
+        editor.Select(1, 1);
+        fixture.Settings.Update(fixture.Settings.Value with
+        {
+            Enabled = false
+        });
+        await DrainAsync(fixture.Window);
+        AssertSearch(fixture.Window, source: false, editor);
+        Assert.Same(choices, combo.ItemsSource);
+        string persisted = File.ReadAllText(fixture.Path);
+        await fixture.SwitchModelAsync(["zh_fr"]);
+        Assert.Same(combo, Language(fixture.Window, source: false));
+        Assert.Same(editor, Keyboard.FocusedElement);
+        Assert.True(combo.IsDropDownOpen);
+        Assert.Equal(["中文", "Français", "日本語（当前不可用）"], Labels(combo));
+        Assert.Equal("日本語（当前不可用）", combo.SelectedItem?.ToString());
+        Assert.Equal("日本語（当前不可用）", editor.Text);
+        Assert.False(Assert.IsType<ComboBoxItem>(combo.ItemContainerGenerator.ContainerFromItem(combo.SelectedItem)).IsEnabled);
+        Assert.Equal(persisted, File.ReadAllText(fixture.Path));
+
+        await fixture.SwitchModelAsync(["zh_en", "en_zh"]);
+        Assert.Equal(["中文", "English", "日本語（当前不可用）"], Labels(combo));
+        Assert.Equal(persisted, File.ReadAllText(fixture.Path));
+    });
+
+    private static string[] Labels(ComboBox picker) => picker.Items.Cast<object>().Select(item => Assert.IsType<string>(item.ToString())).ToArray();
 
     [Theory]
     [InlineData(false, true)]
@@ -336,7 +424,7 @@ public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
         private readonly ModelClient _model;
         private readonly OverlayWindow? _overlay;
         private readonly SessionController? _session;
-        private readonly string _python, _models;
+        private readonly string _python, _models, _worker;
         public string Path
         {
             get;
@@ -349,7 +437,7 @@ public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
         {
             get;
         }
-        public LanguageWindowFixture(bool quickPanel)
+        public LanguageWindowFixture(bool quickPanel, bool protocolModel = false)
         {
             Path = System.IO.Path.Combine(_directory, "settings.json");
             Settings = new SettingsStore(Path);
@@ -363,9 +451,25 @@ public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
             File.WriteAllText(_python, "not an executable");
             Directory.CreateDirectory(_models);
             File.WriteAllText(System.IO.Path.Combine(_models, "installed.json"), "{\"schema\":1}");
-            var worker = System.IO.Path.Combine(_directory, "worker.py");
-            File.WriteAllText(worker, "# The invalid interpreter fails before this fixture worker can run.");
-            _model = new(new(_python, worker, _models), info => new ChildProcess(info));
+            _worker = System.IO.Path.Combine(_directory, "worker.py");
+            File.WriteAllText(_worker, "# The invalid interpreter fails before this fixture worker can run.");
+            _model = new(new(_python, _worker, _models), info =>
+            {
+                if (!protocolModel)
+                    return new ChildProcess(info);
+                var start = new ProcessStartInfo("python")
+                {
+                    UseShellExecute = false,
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                };
+                start.ArgumentList.Add("-I");
+                start.ArgumentList.Add("-B");
+                start.ArgumentList.Add(_worker);
+                return new ChildProcess(start);
+            });
             if (quickPanel)
             {
                 _overlay = new OverlayWindow(automationTest: true);
@@ -381,6 +485,52 @@ public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
                 settingsWindow.ShowPage("language");
             }
             Window.UpdateLayout();
+        }
+        // A framed process peer drives the real ModelClient and windows. This
+        // checks language presentation only, not model loading or inference.
+        public async Task SwitchModelAsync(string[] directions)
+        {
+            var packages = ModelCatalog.Packages.Packages.Where(package => package.Directions.Any(direction => directions.Contains(direction.Id)))
+                .Select(package => new
+                {
+                    id = package.Id,
+                    version = package.Version,
+                    directions = package.Directions.Where(direction => directions.Contains(direction.Id)).Select(direction => direction.Id).ToArray(),
+                    files = new[] { new { path = "model.bin", sha256 = new string('0', 64) } }
+                }).ToArray();
+            using var inventory = JsonDocument.Parse(JsonSerializer.Serialize(new
+            {
+                schema = 3,
+                activePackages = packages.Select(package => package.id).ToArray(),
+                packages
+            }));
+            File.WriteAllText(System.IO.Path.Combine(_models, "installed.json"), inventory.RootElement.GetRawText());
+            string reply = JsonSerializer.Serialize(new
+            {
+                status = "ready",
+                directions,
+                packages
+            });
+            File.WriteAllText(_worker, """
+                import json, struct, sys
+                size = struct.unpack('<I', sys.stdin.buffer.read(4))[0]
+                request = json.loads(sys.stdin.buffer.read(size))
+                assert request['op'] == 'hello'
+                """ + "\nresponse = json.loads(" + JsonSerializer.Serialize(reply) + ")\n" + """
+                response['id'] = request['id']
+                encoded = json.dumps(response).encode()
+                sys.stdout.buffer.write(struct.pack('<I', len(encoded)) + encoded)
+                sys.stdout.buffer.flush()
+                sys.stdin.buffer.read()
+                """);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(10));
+            Assert.Equal(ModelPublicationOutcome.Confirmed, await _model.ReloadAsync(
+                ModelLoadPlan.Create(new(_python, _worker, _models), inventory.RootElement),
+                () => ModelPublicationOutcome.Confirmed, _ => false, timeout.Token));
+            await DrainAsync(Window);
+            Assert.True(_model.Ready);
+            Assert.Equal(directions.Order(), _model.AvailableDirections.Order());
         }
         public async Task FailModelStartAsync()
         {

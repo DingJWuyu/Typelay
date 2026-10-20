@@ -8,9 +8,11 @@
 
 `tests/shared/TypeLay.Runtime.Tests` 用确定性串行宿主和受控输入/模型端口执行生产控制器，覆盖激活、异步结果隔离、草稿、直接替换和能力拒绝；设置测试使用真实临时文件。它们不证明桌面、真实模型或原子写入。浮层顶部保留简短的会话状态；编辑入口由原译文控件的悬停、键盘焦点和无障碍名称呈现，不增加常驻解释行。完整候选、可用源框及当前编辑确认仍由 Session 原有判定控制，短期接受许可到期不应使编辑入口闪烁；翻译中、部分预览、IME 锁定和回源中保留原状态。Windows 的 OverlayRendering 回归另检查窄宽浮层中的完整文本可见性及已有状态覆盖优先，仍需在 Windows 桌面实际执行。`shared-check` 在非 Windows 环境构建并运行共享层，完整 Windows check/pack 保留。
 
-设置保存回归区分真实持久化与配置变化通知：规范化后的有效值完全相同时仍写入文件并报告写入失败，但不重配会话；覆盖人工草稿、按需激活、练习进度及待派发直接替换。排除列表按原顺序和大小写比较，外部修改数组后再次保存仍应识别变化。任何实际设置变化与真实焦点离开仍执行原失效规则；这不是跨窗口保留人工稿的承诺。
+设置保存回归区分真实持久化与配置变化通知：规范化后的有效值完全相同时仍写入文件并报告写入失败，但不重配会话；覆盖人工草稿、按需激活、练习进度及待派发直接替换。排除列表按原顺序和大小写比较，外部修改数组后再次保存仍应识别变化。普通设置的实际变化与真实焦点离开仍执行原失效规则；这不是跨窗口保留人工稿的承诺。风格使用独立控制器保存入口与通知：真实临时文件回归验证继承/删除覆盖、人工稿保存前拒绝、当前源及能力变化、退休等待失效、同步提交后的通知异常、原旧表单不能覆写，以及原命令应用身份和未知身份全局继承。风格仅重绘而不广播普通 settings/Configure；原自动教程保存与退休回归继续保留。
 
 共享生产规则与协议回归位于 tests/shared/；平台测试分别位于 tests/windows/ 和 tests/linux/。fixtures 保存受控宿主/资源，support 保存本平台多个测试消费的库；不为目录对称建立没有实际消费者的共享 fixture/support。
+
+术语回归使用现公开边界：真实临时settings文件验证损坏新字段不丢隐私排除、原子保存/失败/取消及旧表单拒覆盖；生产SessionController端口验证机器原源重译、迟到结果拒绝、长时间人工编辑保存不毁稿、原人工稿接受、Append冻结新规则与旧prefix、Direct提交前取消/提交中拒存。真实管道peer验证精确hello、专用op、Auto候选方向、无关方向保持普通、非Hy/旧worker拒绝和组合拒绝；worker帧与纯匹配验证冲突/边界/最长命中/保护段/每段缺词及统一deadline。native无模型回归验证结构化ABI边界与旧版本拒绝，不能证明真实tokenization、推理或质量。
 
 ## 平台验证入口
 
@@ -20,6 +22,53 @@
 受控端口、构建、进程、嵌套桌面、真实模型与物理桌面是不同层次的证据，不能互相替代。控制器状态与原生焦点是异步观察，断言等待实际用户结果，不以任一状态通知代替另一个进程已经完成操作。
 
 测试失败保留命令、提交 SHA、平台、退出码和最小失败输出。只使用合成测试文本；TRX、临时包、日志与截图进入 artifacts/ 或 CI artifact，不将执行快照、阶段报告提交到源码树。
+
+## Argos 另述真实质量采集
+
+`tests/shared/worker/alternative_quality.py` 属于共享 worker 的人工质量采集，当前只在 Linux 执行；它不在 shared-check 或 CI 自动运行。仅复用正式安装器成功得到的同一代合法 schema1/2 或 schema3 Argos 双向模型和 venv，不下载依赖或权重、不改 installed.json、不手造 Ready，也不接受替代来源。固定输入 `alternative_quality_inputs.json` 的 SHA-256 为 `87452b28c414bc964afbd84542480dd46a65c0b4e15c42ad36422270413bcbe5`；文件只保留 schema 与 samples，16句、方向、顺序和语义锚点保持固定。生产 op 不暴露原始双候选，因此只启动一次生产 worker，完整校验后各方向初始化一次；schema1/2 hello 核对双向方向，schema3 还核对精确包身份；hello 不推理，每句原普通翻译后请求一次另述，最多32次翻译请求。无重试、重启、改题或挑选。每请求默认90秒、采集总计600秒，退出另有最多7秒的自有进程组清理，清理期间延后处理 Ctrl-C/TERM；失败仍保存已完成结果、失败阶段和进程退出码，未确认退出不算完成。正式 CI 的现有 `Install and verify actual local translation components` 步骤成功后可手动复用以下路径，当前不接入工作流：
+
+```sh
+components="$PWD/artifacts/linux/desktop-data/typelay/components/current"
+python tests/shared/worker/alternative_quality.py \
+  --python "$components/runtime/venv/bin/python" --models "$components/models" \
+  --output artifacts/argos-alternative-quality/result.json
+```
+
+`--validate-only --output artifacts/argos-alternative-quality/inputs-check.json` 只检查固定输入、参数并生成 not-run JSON，不启动 worker；有意返回2，不能把退出0冒充推理证据。输出禁止覆盖，失败后保留原文件。JSON 分别记录每次请求的方向、状态/code、worker/端到端耗时、原候选和实际筛选后的另述；未暴露的原始 n-best 不伪造。自动比较仅限精确重复、大小写/空白/标点差异与文本不同；`completed` 只表示采集和清理完成，`no-alternative` 不是质量通过。每句的 ordinary/alternative 人工复核字段初始为 null，须对照固定锚点审查否定、数字、主体、时态/条件、语气、增漏义、自然度与严重错义；不得从文本不同推断语义保持。真实质量目前 not-run；现有受控端口回归、参数检查均不能替代该复核，也不能证明 UI、人工稿、结构保护或产品另述功能已交付。
+
+## Hy 自然/正式成对质量采集
+
+`tests/shared/worker/styled_quality.py` 是独立于原 Argos 16 句的窄采集入口，不接入 shared-check 或 CI。固定 `styled_quality_inputs.json` 的 SHA-256 为 `6d5a77c5369be23cec23e526cb89f102e7c2726e3d84221e48d6572c9b62576c`，只含四个合成日常原句，依次覆盖 zh_ja、ja_zh、zh_fr、fr_zh；每句原源依次请求 Natural、Formal，最多8次翻译，无重试、重启、改题或普通翻译回退。语义锚点用于人工检查否定、主体、数字、状态、时态/条件及承诺强度，不是参考译文或自动评分。
+
+实际执行只接受正式安装器已成功得到的同一代 venv Python 与 models，库存必须是合法 schema3、仅一个 active Hy 包，已选方向须包含这四个方向。`--worker` 指向同期实际发行包的 `worker/run_worker.py`；脚本先逐字节核对入口、Python 模块闭包、requirements/catalog 与模型/CPU固定锁，拒绝额外 Python 包或字节码遮蔽。它不复制资产、安装依赖、下载权重、改库存或制造 Ready。发行 worker 必须自验 runtime-only production-adapter、CPU 库及模型文件并实际加载；真实 hello 必须精确匹配 active 包 id/version/方向及 `styledTranslationVersion=1`。旧源码、旧 ABI adapter、缺失资源或能力均停止，不把旧模型单句结果视为本轮风格证据。
+
+仅启动一个 Linux 独立进程组，地址空间上限2.5 GiB（已有更低限制保持）；实际生产 ABI5 固定单模型、2线程、greedy、context1024、最多192新 token及每请求60秒。外层仅给每次翻译65秒收帧预算，加载与 hello 90秒，总采集600秒含加载；退出另有原有最多7秒的 EOF/TERM/KILL 自有进程组清理，不扩大模型配置。以下路径均须来自已完成的正式安装及同期含 ABI5 native 资产的发行包；脚本不会准备它们：
+
+```sh
+components="$PWD/artifacts/linux/desktop-data/typelay/components/current"
+bundle="$PWD/artifacts/linux/package"
+python tests/shared/worker/styled_quality.py \
+  --python "$components/runtime/venv/bin/python" --models "$components/models" \
+  --worker "$bundle/worker/run_worker.py" \
+  --output artifacts/hy-styled-quality/result.json
+```
+
+`--validate-only --output artifacts/hy-styled-quality/inputs-check.json` 只验证固定输入、参数与源码身份记录，不查看安装、不加载 native、不启动 worker；生成 `status=not-run`、`quality=not-run`、`workerStarts=0` JSON 并有意返回2。输出禁止覆盖。正式采集记录完整原源、Natural/Formal原始响应、hello、输入/源码/库存/adapter清单身份、固定预算、逐请求状态/code、worker及端到端耗时、失败阶段与退出证明；未暴露的 native token 指标不伪造。所有逐输出及成对人工复核字段保持 null；`completed` 仅代表8请求采集及清理完成，质量仍为 `not-reviewed`，不是质量 pass。失败保留已完成响应，未确认退出不能完成。
+
+当前实际 ABI5 成对推理、资源峰值、语言质量与人工复核均为 not-run。本入口准备及参数检查不构成任何方向的语言质量验收，也不开放四方向、十二方向或用户界面；原 Frozen 产品规格与 Argos 16句保持不变。
+
+## Hy 术语窄采集准备
+
+`tests/shared/worker/glossary_quality.py` 复用上节 runner 的正式库存/发行包/ABI5 核验、单进程所有权、精确 hello 与原资源/时间预算；仅要求 active 方向包含 zh_fr、fr_zh，hello 另须精确整数 `glossaryTranslationVersion=1`。固定 `glossary_quality_inputs.json` 的 SHA-256 为 `4330b0d550f16080b577561ef871077253d9d3b9a661ae78faceb36482a3e6b9`。五个合成用例依次覆盖有向规则优先于全局、术语伴随数字/否定、CRLF/URL/提及/编号/emoji保护、修改保护内容的明确拒绝，以及风格与术语组合的明确拒绝。最多五次请求，不扩方向矩阵、不改原风格或 Argos 语料。
+
+```sh
+python tests/shared/worker/glossary_quality.py --validate-only \
+  --output artifacts/hy-glossary-quality/inputs-check.json
+```
+
+当前只准备代码与样例，实际采集 not-run。`--validate-only` 不查看安装、不加载 native 或模型、不启动 worker，写出 `status=not-run`、`quality=not-run`、`workerStarts=0` 并有意返回2。以后经授权实际采集时使用上节相同来源的 `--python`、`--models`、`--worker` 参数；不下载、不安装、不改库存、不接 CI。预算保持2.5 GiB地址空间、单模型、2线程、greedy、context1024、192新token、worker每请求60秒、收帧65秒、加载/hello90秒、总计600秒及另计最多7秒清理。
+
+报告保留完整原始请求（原源、术语、方向及组合字段）、每次完整响应、身份/hello、耗时、拒绝code和退出证明，输出文件禁止覆盖。预期拒绝必须为空text并匹配明确code；意外结果保留后停止，不重试、换题、回退或硬替换输出。`completed` 只表示固定响应采集及清理完成，质量仍为 `not-reviewed`；术语、专属优先、结构、拒绝合理性、原义/数字/否定等人工复核字段始终初始化为null，不能把术语出现或协议拒绝当成质量通过。准备回归仅检查schema、无资产的validate-only及禁止覆盖，不证明真实ABI5推理、资源峰值、语言质量或用户界面可用。
 
 ## 结果表述
 

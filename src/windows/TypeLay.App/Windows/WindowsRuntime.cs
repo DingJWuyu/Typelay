@@ -13,7 +13,7 @@ internal static class WindowsRuntime
         app => Path.GetFileNameWithoutExtension(app).Trim().ToLowerInvariant());
 
     public static ModelClient CreateModel() => new(AppPaths.ModelPaths,
-        info => new ChildProcess(info));
+        (info, plan) => new ModelChildProcess(info, plan));
 
     public static Task StartModelAsync(ModelClient model, CancellationToken ct) =>
         new ModelInstallationStore(AppPaths.Data, AppPaths.Worker).StartModelAsync(model, ct);

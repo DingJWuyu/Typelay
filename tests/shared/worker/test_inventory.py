@@ -164,6 +164,7 @@ class InventoryTests(unittest.TestCase):
         result, response, loaded = self.start_worker()
         self.assertEqual((result, loaded), (0, ["zh_en"]))
         self.assertEqual(response["directions"], ["zh_en"])
+        self.assertNotIn("styledTranslationVersion", response)
         self.assertEqual(
             response["packages"], [{"id": "argos-zh-en", "version": "1.9", "directions": ["zh_en"]}]
         )
@@ -296,6 +297,7 @@ class InventoryTests(unittest.TestCase):
                 self.assertEqual(loaded, ["zh_en", "en_zh"])
                 self.assertEqual(response["status"], "ready")
                 self.assertNotIn("packages", response)
+                self.assertNotIn("styledTranslationVersion", response)
                 self.assertEqual(response["directions"], ["zh_en", "en_zh"])
 
     def test_schema2_loads_and_advertises_only_its_nonempty_selection(self):
@@ -310,6 +312,7 @@ class InventoryTests(unittest.TestCase):
                 self.assertEqual(loaded, expected)
                 self.assertEqual(response["status"], "ready")
                 self.assertEqual(response["directions"], expected)
+                self.assertNotIn("styledTranslationVersion", response)
 
     def test_second_native_model_load_failure_never_advertises_any_direction(self):
         for schema in (1, 2):

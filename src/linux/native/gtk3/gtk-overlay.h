@@ -4,6 +4,10 @@
 /* Presentation is parent-relative; product state and edit authorization stay in Runtime. */
 gboolean tl_overlay_contains(GtkWidget *widget);
 gboolean tl_overlay_bindings_ready(Target *target);
+/* Only this target's current inline form retires source acceptance readiness. */
+gboolean tl_overlay_auxiliary_active(Target *target);
+/* Fresh physical down only, after dispatcher ownership and before the IME. */
+gboolean tl_overlay_auxiliary_key(guint keyval, GdkModifierType modifiers);
 void tl_overlay_hide(void);
 void tl_overlay_forget(Target *target);
 void tl_overlay_sync(void);

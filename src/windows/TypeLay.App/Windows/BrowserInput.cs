@@ -46,6 +46,13 @@ internal sealed partial class BrowserInput : IDisposable
     private Guid _configurationGeneration;
     private long _lastWindowEpoch;
     private bool _editorFocused;
+    private SessionGlossaryEntry? _glossaryEntry;
+    private SessionGlossaryFocus? _glossaryFocus;
+    internal SessionGlossaryFocus? GlossaryFocus => _glossaryFocus is { } focus
+        && _glossaryEntry?.FormId == focus.FormId && _glossaryEntry.Token == focus.Token
+        && _current is { } current && current.Target == focus.Token.Target
+        && focus.Token.CommandGeneration == _hook.CommandGeneration && ForegroundCurrent(current)
+        && AcknowledgementCurrent(current) ? focus : null;
     private sealed record EditorTransition(SessionViewToken Token, long Deadline, TaskCompletionSource<bool> Completion);
     private EditorTransition? _editorTransition;
     private SessionViewToken? _editorToken;
@@ -132,9 +139,10 @@ internal sealed partial class BrowserInput : IDisposable
         && ProcessFor(observation.Root) == observation.Peer.BrowserProcessId
         && observation.Epochs.Window == _hook.WindowEpoch;
     public FocusMember GetFocus(TargetId target) => _current is { } current && current.Target == target
-        && ForegroundCurrent(current) ? _editorFocused ? FocusMember.Overlay : FocusMember.Source : FocusMember.Other;
+        && ForegroundCurrent(current) ? _editorFocused || GlossaryFocus is not null
+            ? FocusMember.Overlay : FocusMember.Source : FocusMember.Other;
     public bool CanIntercept => _current is { } current && GetFocus(current.Target) != FocusMember.Other
-        && AcknowledgementCurrent(current) && current.Acknowledgement.SourceReady;
+        && GlossaryFocus is null && AcknowledgementCurrent(current) && current.Acknowledgement.SourceReady;
     private bool AcknowledgementCurrent(BrowserObservation record) => _sessionEnabled
         && record.Acknowledgement.Generation == _hook.CommandGeneration && record.Acknowledgement.Bindings == _bindings;
     public void Start() => _server.Start();
@@ -211,7 +219,9 @@ internal sealed partial class BrowserInput : IDisposable
         _commandExcluded = context.Excluded.ToArray();
         PollCommandOwner(WindowsInterruptClock.NowMs);
         var bound = context.BoundTarget is { } target && Owns(target) ? Latest(target) : null;
-        bool editor = bound is not null && _editorFocused && GetFocus(bound.Target) == FocusMember.Overlay;
+        bool editor = bound is not null && (_editorFocused || GlossaryFocus is not null)
+            && GetFocus(bound.Target) == FocusMember.Overlay;
+        var glossary = GlossaryFocus;
         var owner = _commandOwner;
         long ownerFocusRevision = owner?.FocusRevision ?? 0;
         bool sharedDescription = !editor && owner is { Active: true } && owner.Peer == peer
@@ -225,10 +235,12 @@ internal sealed partial class BrowserInput : IDisposable
                 target = bound!.Target.Value
             } : null);
         if (!Approved(peer, description, context.Excluded, out var authority, out var metadata, out var id, out var ack,
-            ObservationStage.Describe))
+            ObservationStage.Describe, glossary))
             return new(null);
         if (sharedDescription && !PolicyContextCurrent(owner!, ownerFocusRevision, epochs.Foreground))
             return CaptureRejected(ObservationReason.ForegroundEpochChanged, description, editor);
+        if (glossary is not null && !GlossaryEvidence(description!.Data, glossary))
+            return CaptureRejected(ObservationReason.EditorAcknowledgement, description, editor);
         if (!editor && !Boolean(description!.Data, "focused"))
             return CaptureRejected(ObservationReason.SourceNotFocused, description, editor);
         if (ForegroundRoot() != root)
@@ -272,12 +284,14 @@ internal sealed partial class BrowserInput : IDisposable
         if (active != result.Route)
             return CaptureRejected(ObservationReason.ActiveDocumentChanged, result, editor);
         if (!Approved(peer, result, context.Excluded, out var capturedAuthority, out metadata, out var capturedId, out ack,
-            ObservationStage.Capture))
+            ObservationStage.Capture, glossary))
             return new(null);
         if (capturedId != id)
             return CaptureRejected(ObservationReason.TargetChanged, result, editor);
         if (!SameAuthority(authority, capturedAuthority))
             return CaptureRejected(ObservationReason.AuthorityChanged, result, editor);
+        if (glossary is not null && !GlossaryEvidence(result.Data, glossary))
+            return CaptureRejected(ObservationReason.EditorAcknowledgement, result, editor);
         if (!editor && !Boolean(result.Data, "focused"))
             return CaptureRejected(ObservationReason.SourceNotFocused, result, editor);
         var snapshot = Snapshot(result.Data, id, metadata!, ObservationStage.Snapshot);
@@ -302,7 +316,7 @@ internal sealed partial class BrowserInput : IDisposable
     }
     private bool Approved(BrowserPeer peer, BrowserReply? reply, string[] excluded,
         out JsonElement authority, out FieldMetadata? metadata, out TargetId id, out SessionShortcutAcknowledgement? acknowledgement,
-        ObservationStage stage = ObservationStage.None)
+        ObservationStage stage = ObservationStage.None, SessionGlossaryFocus? glossary = null)
     {
         authority = default;
         metadata = null;
@@ -355,21 +369,52 @@ internal sealed partial class BrowserInput : IDisposable
                 return ApprovalRejected(stage, ObservationReason.AcceptKeyMismatch, reply);
             if (String(applied, "exit") != _bindings.Exit)
                 return ApprovalRejected(stage, ObservationReason.ExitKeyMismatch, reply);
-            if (!Boolean(applied, "sourceReady"))
-                return ApprovalRejected(stage, ObservationReason.SourceNotReady, reply);
-            if (!Boolean(applied, "editorReady"))
-                return ApprovalRejected(stage, ObservationReason.EditorNotReady, reply);
             id = new("windows-browser", target, peer.ConnectionId);
-            // The authenticated connection and document route own this target.
-            // Legacy/mismatched acknowledgements retain preview, never this capability.
-            int sourceLocalVersion = Number(applied, "sourceLocalAcceptanceVersion") == 1
-                && String(applied, "target") == target ? 1 : 0;
-            acknowledgement = new(id, generation, _bindings, true, true, sourceLocalVersion);
-            return true;
+            if (glossary is not null && (_current is not { } current || current.Peer != peer
+                || current.Route != reply.Route || current.Target != id))
+                return ApprovalRejected(stage, ObservationReason.EditorAcknowledgement, reply);
+            acknowledgement = ApproveObservationRoles(data, id, generation, _bindings, _glossaryEntry, glossary, GlossaryFocus);
+            return acknowledgement is not null || ApprovalRejected(stage, glossary is not null
+                ? ObservationReason.EditorAcknowledgement : !Boolean(applied, "sourceReady")
+                    ? ObservationReason.SourceNotReady : ObservationReason.EditorNotReady, reply);
         }
         catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
         {
             return ApprovalRejected(stage, ObservationReason.MalformedReply, reply);
+        }
+    }
+    // The caller already authenticated the peer/route, source authority, current
+    // generation and configured keys. This grants observation roles only.
+    internal static SessionShortcutAcknowledgement? ApproveObservationRoles(JsonElement data, TargetId target,
+        Guid generation, SessionShortcutBindings bindings, SessionGlossaryEntry? entry = null,
+        SessionGlossaryFocus? expected = null, SessionGlossaryFocus? current = null)
+    {
+        try
+        {
+            var applied = data.GetProperty("sessionBindings");
+            var source = applied.GetProperty("sourceReady").ValueKind;
+            var editor = applied.GetProperty("editorReady").ValueKind;
+            if (expected is null)
+            {
+                if (current is not null || source != JsonValueKind.True || editor != JsonValueKind.True
+                    || data.TryGetProperty("glossaryFocus", out var raw) && raw.ValueKind != JsonValueKind.Null)
+                    return null;
+                int version = Number(applied, "sourceLocalAcceptanceVersion") == 1
+                    && String(applied, "target") == target.Value ? 1 : 0;
+                return new(target, generation, bindings, true, true, version);
+            }
+            if (current != expected || entry is null || entry.FormId != expected.FormId || entry.Token != expected.Token
+                || expected.Token.Target != target || expected.Token.CommandGeneration != generation
+                || source != JsonValueKind.False || editor != JsonValueKind.False
+                || !applied.TryGetProperty("sourceLocalAcceptanceVersion", out var capability)
+                || !capability.TryGetInt32(out int localVersion) || localVersion != 0
+                || String(applied, "target") != target.Value || MatchingGlossaryFocus(data, expected) is null)
+                return null;
+            return new(target, generation, bindings, false, false, 0);
+        }
+        catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
+        {
+            return null;
         }
     }
     internal static bool ValidAuthority(JsonElement value) => value.ValueKind == JsonValueKind.Object

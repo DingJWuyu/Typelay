@@ -108,24 +108,13 @@ public static class ApplicationSupportPresentation
         };
     }
 
-    // A platform without a package workflow can still describe a real catalog entry without inventing inventory.
-    public static ModelPackageRow UnavailableModelPackage(string packageId, string reason)
-    {
-        var package = ModelCatalog.Packages.Packages.Single(item => item.Id == packageId);
-        return PackageRow(package, null) with
-        {
-            AvailabilityText = PackageUnavailableText(reason),
-            Actions = []
-        };
-    }
-
     private static ModelPackageRow PackageRow(ModelPackage package, ModelPackageManagementFact? facts)
     {
         var installed = facts?.InstalledPackages.FirstOrDefault(item => SamePackage(item, package));
         var current = facts?.CurrentPackages.FirstOrDefault(item => SamePackage(item, package));
         var ready = facts?.ReadyPackages.FirstOrDefault(item => SamePackage(item, package));
         bool available = package.Backend == "argos" || facts is { HyRuntimeAvailable: true, HyUnavailableReason: null };
-        string unavailable = available ? "" : PackageUnavailableText(facts?.HyUnavailableReason);
+        string unavailable = available ? "" : "当前安装包不含可用的 Hy 运行组件";
         string status = facts is { InventoryKnown: false }
             ? "安装状态无法确认" + (unavailable.Length > 0 ? " · " + unavailable : "")
             : unavailable.Length > 0 ? unavailable
@@ -160,8 +149,6 @@ public static class ApplicationSupportPresentation
         return string.Join("、", package.Directions.Select(DirectionLabel));
     }
     private static string DirectionLabel(ModelDirection direction) => direction.SourceName + " → " + direction.TargetName;
-    private static string PackageUnavailableText(string? reason) => reason == "windows-unavailable"
-        ? "Windows 当前版本未开放" : "当前安装包不含可用的 Hy 运行组件";
 
     private static ModelPackageActionView[] PackageActions(ModelPackage package, ModelPackageManagementFact facts,
         bool installed, bool current, bool available)
@@ -183,7 +170,7 @@ public static class ApplicationSupportPresentation
             actions.Add(Action(ModelPackageOperation.Install, "下载并使用…", [package.Id], selected,
                 "将从 " + (package.Backend == "hy-mt-llama-cpu" ? "Hugging Face" : "Argos")
                 + " 下载并使用 " + PackageTitle(package) + "。" + size
-                + "缺少的私有运行组件由 Astral、PyPI 准备。安装还需要运行组件、缓存和切换副本空间，开始前会检查可用空间。现有模型保留；语言设置不变。"
+                + "缺少的私有运行组件由 " + facts.RuntimeDownloadSources + " 准备。安装还需要运行组件、缓存和切换副本空间，开始前会检查可用空间。现有模型保留；语言设置不变。"
                 + (package.Preview ? "这是预览版，请核对译文。" : "")
                 + "翻译在本机运行，输入内容不会上传。"));
         else if (installed)

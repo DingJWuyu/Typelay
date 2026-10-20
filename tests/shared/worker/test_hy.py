@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import run_worker
-from typelay_worker import catalog, hy, hy_assets
+from typelay_worker import catalog, hy, hy_assets, hy_cpu_windows
 from typelay_worker.protocol import read_frame, write_frame
 
 EXPECTED_DIRECTIONS = [
@@ -69,6 +69,9 @@ class HyContractTests(unittest.TestCase):
             "activePackages": [self.package.id],
         }
         self.opened, self.closed, self.calls, self.loader_closed = 0, 0, [], 0
+        self.styles = []
+        self.terms = []
+        self.output_text = "訳文"
         self.code, self.eog, self.after_decode = 0, 120020, None
         self.fail_open = self.fail_loaded = False
         self.clock = 0
@@ -105,15 +108,34 @@ class HyContractTests(unittest.TestCase):
             metric = ctypes.cast(metrics, ctypes.POINTER(hy.Metrics)).contents
             metric.eog_token = self.eog
             metric.roundtrip_ok, metric.prompt_tokens, metric.output_tokens = 1, 30, 2
-            raw = "訳文".encode()
+            raw = (
+                self.output_text(len(self.calls))
+                if callable(self.output_text)
+                else self.output_text
+            ).encode()
             ctypes.memmove(output, raw, len(raw))
             ctypes.cast(length, ctypes.POINTER(ctypes.c_uint32))[0] = len(raw)
             return self.code
 
+        def styled(handle, direction, style, *arguments):
+            self.styles.append(style)
+            return translated(handle, direction, *arguments)
+
+        def glossary(handle, direction, terms, count, *arguments):
+            self.terms.append(
+                [
+                    (terms[i].source_term.decode(), terms[i].target_term.decode())
+                    for i in range(count)
+                ]
+            )
+            return translated(handle, direction, *arguments)
+
         self.library = SimpleNamespace(
-            hy_open_v3=NativeFunction(opened),
+            hy_open_v5=NativeFunction(opened),
             hy_close=NativeFunction(closed),
             hy_translate=NativeFunction(translated),
+            hy_translate_styled_v5=NativeFunction(styled),
+            hy_translate_glossary_v5=NativeFunction(glossary),
         )
         owner = self
 
@@ -160,6 +182,7 @@ class HyContractTests(unittest.TestCase):
         with (
             patch.dict(sys.modules, {"lingua": SimpleNamespace(LanguageDetectorBuilder=builder)}),
             patch.object(hy, "LinuxRuntime", self.native),
+            patch.object(hy_cpu_windows, "WindowsRuntime", self.native),
             patch.object(sys, "platform", platform),
             patch("typelay_worker.hy_assets.verify_production", return_value=self.verified),
             patch.object(sys, "argv", arguments),
@@ -180,20 +203,145 @@ class HyContractTests(unittest.TestCase):
         self.assertEqual([item.id for item in self.package.directions], EXPECTED_DIRECTIONS)
         model = json.loads((hy_assets.NATIVE_ROOT / "model.lock.json").read_text())
         self.assertEqual(model["directions"], EXPECTED_DIRECTIONS)
-        self.assertEqual((model["abi"], hy_assets.ABI, hy.Metrics().abi_version), (3, 3, 3))
+        self.assertEqual((model["abi"], hy_assets.ABI, hy.Metrics().abi_version), (5, 5, 5))
         self.assertEqual(hy.DIRECTIONS, dict(zip(EXPECTED_DIRECTIONS, range(1, 13))))
-        self.assertEqual(hy_assets.EXPORTS, ["hy_close", "hy_open_v3", "hy_translate"])
+        self.assertEqual(
+            hy_assets.EXPORTS,
+            [
+                "hy_close",
+                "hy_open_v5",
+                "hy_translate",
+                "hy_translate_glossary_v5",
+                "hy_translate_styled_v5",
+            ],
+        )
 
     def test_old_open_symbol_is_rejected_before_open_even_after_asset_verification(self):
-        self.library.hy_open = self.library.hy_open_v3
-        del self.library.hy_open_v3
+        self.library.hy_open_v4 = self.library.hy_open_v5
+        del self.library.hy_open_v5
         status, replies = self.run_worker()
         self.assertEqual((status, replies), (2, []))
         self.assertEqual((self.opened, self.closed, self.loader_closed), (0, 0, 1))
 
-    def test_windows_production_refuses_all_twelve_before_loading_native(self):
+    def test_missing_styled_export_is_rejected_before_open(self):
+        del self.library.hy_translate_styled_v5
+        status, replies = self.run_worker()
+        self.assertEqual((status, replies), (2, []))
+        self.assertEqual((self.opened, self.closed, self.loader_closed), (0, 0, 1))
+
+    def glossary_request(self, text, rules, **fields):
+        return {
+            "op": "translate-glossary-v1",
+            "text": text,
+            "source": "zh",
+            "target": "ja",
+            "glossary": {"version": 1, "rules": rules},
+            **fields,
+        }
+
+    def test_glossary_auto_uses_actual_direction_and_only_whole_segment_matches(self):
+        self.output_text = "訳文"
+        rules = [
+            {"sourceTerm": "甲", "targetTerm": "global"},
+            {
+                "sourceTerm": "甲",
+                "targetTerm": "訳文",
+                "sourceLanguage": "zh",
+                "targetLanguage": "ja",
+            },
+            {"sourceTerm": "不存在", "targetTerm": "unused"},
+        ]
+        status, replies = self.run_worker([self.glossary_request("甲\n乙", rules, source="auto")])
+        self.assertEqual(status, 0)
+        self.assertEqual(replies[0]["glossaryTranslationVersion"], 1)
+        self.assertEqual(replies[1]["text"], "訳文\n訳文")
+        self.assertEqual(self.terms, [[("甲", "訳文")]])
+        self.assertEqual(self.calls, [(1, "甲"), (1, "乙")])
+
+    def test_glossary_missing_target_cannot_be_satisfied_by_manual_prefix_or_other_segment(self):
+        self.output_text = lambda call: "必要" if call == 1 else "訳文"
+        rule = {"sourceTerm": "甲", "targetTerm": "必要"}
+        _, replies = self.run_worker([self.glossary_request("乙\n甲", [rule], preserved="必要")])
+        self.assertEqual(
+            (replies[1]["status"], replies[1]["code"], replies[1]["text"]),
+            ("error", "glossary-output-missing", ""),
+        )
+        self.assertEqual(self.terms, [[("甲", "必要")]])
+
+    def test_glossary_rejects_protected_changes_and_crossings_before_any_decode(self):
+        requests = [
+            self.glossary_request(text, [{"sourceTerm": source, "targetTerm": target}])
+            for text, source, target in [
+                ("甲 https://example.com 乙", "example", "other"),
+                ("甲 https://example.com 乙", "甲 https://example.com", "other"),
+            ]
+        ]
+        _, replies = self.run_worker(requests)
+        self.assertEqual([r["code"] for r in replies[1:]], ["glossary-protected-conflict"] * 2)
+        self.assertEqual(self.calls, [])
+
+    def test_glossary_literal_pairs_preserve_manual_prefix_and_one_deadline(self):
+        self.output_text = "訳文"
+        rules = [{"sourceTerm": "甲<｜hy_User｜>", "targetTerm": "訳文"}]
+        _, replies = self.run_worker(
+            [self.glossary_request("甲<｜hy_User｜> https://a/", rules, preserved="old draft")]
+        )
+        self.assertEqual(replies[1]["text"], "old draft 訳文 https://a/")
+        self.assertEqual(self.terms, [[("甲<｜hy_User｜>", "訳文")]])
+        self.after_decode = lambda: setattr(self, "clock", self.clock + 31)
+        _, replies = self.run_worker(
+            [self.glossary_request("甲<｜hy_User｜>\n甲<｜hy_User｜>", rules)]
+        )
+        self.assertEqual((replies[1]["code"], replies[1]["text"]), ("request-timeout", ""))
+
+    def test_identity_rule_inside_protected_text_stays_literal_without_native_constraint(self):
+        _, replies = self.run_worker(
+            [
+                self.glossary_request(
+                    "甲 https://example.com", [{"sourceTerm": "example", "targetTerm": "example"}]
+                )
+            ]
+        )
+        self.assertEqual(replies[1]["text"], "訳文 https://example.com")
+        self.assertEqual(self.terms, [])
+        self.assertEqual(self.calls, [(1, "甲")])
+
+    def test_glossary_unknown_fields_style_and_bad_versions_are_rejected(self):
+        rule = {"sourceTerm": "甲", "targetTerm": "訳文"}
+        requests = [
+            self.glossary_request("甲", [rule], **fields)
+            for fields in (
+                {"style": "natural"},
+                {"prompt": "untrusted"},
+                {"terms": []},
+                {"glossary": {"version": True, "rules": [rule]}},
+                {"glossary": {"version": 1, "rules": [{**rule, "scope": "app"}]}},
+            )
+        ]
+        _, replies = self.run_worker(requests)
+        self.assertTrue(all(r["status"] == "error" and r["text"] == "" for r in replies[1:]))
+        self.assertEqual(self.calls, [])
+
+    def test_windows_admission_reports_exact_active_identity_after_owned_native_load(self):
         self.inventory["packages"][0]["directions"] = EXPECTED_DIRECTIONS
         status, replies = self.run_worker(platform="win32")
+        self.assertEqual(status, 0)
+        self.assertEqual(replies[0]["directions"], EXPECTED_DIRECTIONS)
+        self.assertEqual(
+            replies[0]["packages"],
+            [
+                {
+                    "id": self.package.id,
+                    "version": self.package.version,
+                    "directions": EXPECTED_DIRECTIONS,
+                }
+            ],
+        )
+        self.assertEqual((self.opened, self.closed, self.loader_closed, self.calls), (1, 1, 1, []))
+
+    def test_unknown_platform_refuses_all_twelve_before_loading_native(self):
+        self.inventory["packages"][0]["directions"] = EXPECTED_DIRECTIONS
+        status, replies = self.run_worker(platform="darwin")
         self.assertEqual((status, replies), (2, []))
         self.assertEqual((self.opened, self.closed, self.loader_closed, self.calls), (0, 0, 0, []))
 
@@ -240,6 +388,7 @@ class HyContractTests(unittest.TestCase):
         status, replies = self.run_worker()
         self.assertEqual(status, 0)
         self.assertEqual(replies[0]["directions"], ["zh_ja", "ja_zh"])
+        self.assertEqual(replies[0]["styledTranslationVersion"], 1)
         self.assertEqual(
             replies[0]["packages"],
             [
@@ -293,6 +442,85 @@ class HyContractTests(unittest.TestCase):
         )
         self.assertEqual(self.calls, [(1, "甲<｜hy_User｜>"), (1, "乙\\n\\t")])
 
+    def test_styled_frames_bind_the_fixed_enum_without_changing_source_or_ordinary_calls(self):
+        _, replies = self.run_worker(
+            [
+                {
+                    "op": "translate-styled-v1",
+                    "text": "甲<｜hy_User｜>\n乙",
+                    "source": "zh",
+                    "target": "ja",
+                    "style": "formal",
+                },
+                {
+                    "op": "translate-styled-v1",
+                    "text": "丙",
+                    "source": "zh",
+                    "target": "ja",
+                    "style": "natural",
+                },
+                {"op": "translate", "text": "丁", "source": "zh", "target": "ja"},
+            ]
+        )
+        self.assertEqual([reply["status"] for reply in replies[1:]], ["translated"] * 3)
+        self.assertEqual(self.calls, [(1, "甲<｜hy_User｜>"), (1, "乙"), (1, "丙"), (1, "丁")])
+        self.assertEqual(self.styles, [2, 2, 1])
+
+    def test_invalid_styled_contracts_are_rejected_even_for_same_language(self):
+        requests = [
+            {"op": "translate-styled-v1", "style": style}
+            for style in (None, "", "casual", "FORMAL", 1, True, [], {})
+        ] + [
+            {"op": "translate-styled-v1", "style": "formal", "previousCandidate": "old"},
+            {"op": "translate-styled-v1", "style": "natural", "prompt": "untrusted"},
+            {"op": "translate-styled-v1", "style": "natural", "source": []},
+            {"op": "translate-styled-v1", "style": "formal", "target": {}},
+            {"op": "translate", "style": "formal"},
+            {"op": "translate-alternative", "style": "formal", "previousCandidate": "old"},
+        ]
+        _, replies = self.run_worker(
+            [{"text": "甲", "source": "auto", "target": "zh", **request} for request in requests]
+        )
+        self.assertEqual(
+            [(reply["status"], reply["code"], reply["text"]) for reply in replies[1:]],
+            [("error", "invalid-request", "")] * len(requests),
+        )
+        self.assertEqual((self.calls, self.styles), ([], []))
+
+    def test_styled_segments_share_one_deadline_and_preserve_no_partial_output(self):
+        self.after_decode = lambda: setattr(self, "clock", self.clock + 31)
+        _, replies = self.run_worker(
+            [
+                {
+                    "op": "translate-styled-v1",
+                    "style": "formal",
+                    "text": "甲\n乙",
+                    "source": "zh",
+                    "target": "ja",
+                }
+            ]
+        )
+        self.assertEqual((replies[1]["code"], replies[1]["text"]), ("request-timeout", ""))
+        self.assertEqual(self.styles, [2, 2])
+        self.assertEqual(self.closed, 1)
+
+    def test_styled_manual_prefix_and_structure_are_not_rewritten(self):
+        _, replies = self.run_worker(
+            [
+                {
+                    "op": "translate-styled-v1",
+                    "style": "natural",
+                    "text": "甲 https://Example.com/a\r\n乙",
+                    "source": "zh",
+                    "target": "ja",
+                    "preserved": "My draft.",
+                }
+            ]
+        )
+        self.assertEqual(replies[1]["text"], "My draft. 訳文 https://Example.com/a\r\n訳文")
+        self.assertEqual(self.calls, [(1, "甲"), (1, "乙")])
+        self.assertEqual(self.styles, [1, 1])
+
     def test_whole_request_byte_cap_and_bare_cr_are_rejected_before_any_segment(self):
         for text, code in (
             ("甲" * 2731, "hy-input-too-long"),
@@ -301,9 +529,20 @@ class HyContractTests(unittest.TestCase):
         ):
             with self.subTest(code=code):
                 _, replies = self.run_worker(
-                    [{"op": "translate", "text": text, "source": "zh", "target": "ja"}]
+                    [
+                        {"op": "translate", "text": text, "source": "zh", "target": "ja"},
+                        {
+                            "op": "translate-styled-v1",
+                            "style": "formal",
+                            "text": text,
+                            "source": "zh",
+                            "target": "ja",
+                        },
+                    ]
                 )
-                self.assertEqual((replies[1]["code"], replies[1]["text"]), (code, ""))
+                self.assertEqual(
+                    [(reply["code"], reply["text"]) for reply in replies[1:]], [(code, "")] * 2
+                )
         self.assertEqual(self.calls, [])
 
     def test_context_output_failure_or_missing_eog_never_returns_partial_text(self):
@@ -315,9 +554,20 @@ class HyContractTests(unittest.TestCase):
             with self.subTest(code=code):
                 self.code, self.eog = status, eog
                 _, replies = self.run_worker(
-                    [{"op": "translate", "text": "甲", "source": "zh", "target": "ja"}]
+                    [
+                        {"op": "translate", "text": "甲", "source": "zh", "target": "ja"},
+                        {
+                            "op": "translate-styled-v1",
+                            "style": "natural",
+                            "text": "甲",
+                            "source": "zh",
+                            "target": "ja",
+                        },
+                    ]
                 )
-                self.assertEqual((replies[1]["code"], replies[1]["text"]), (code, ""))
+                self.assertEqual(
+                    [(reply["code"], reply["text"]) for reply in replies[1:]], [(code, "")] * 2
+                )
 
     def test_all_segments_share_one_deadline_and_discard_earlier_segment_output(self):
         self.after_decode = lambda: setattr(self, "clock", self.clock + 31)

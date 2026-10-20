@@ -226,9 +226,16 @@ def verify(assets, runtime, adapter):
         raise ValueError("fixed adapter name mismatch")
     report_path = plain_path(adapter.parent / "build-verification.json")
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    if report["asset_lock_sha256"] != digest(LOCK) or report["abi"] != 3:
+    if report["asset_lock_sha256"] != digest(LOCK) or report["abi"] != 5:
         raise ValueError("adapter build input identity mismatch")
-    if report["adapter_exports"] != ["hy_audit", "hy_close", "hy_open_v3", "hy_translate"]:
+    if report["adapter_exports"] != [
+        "hy_audit",
+        "hy_close",
+        "hy_open_v5",
+        "hy_translate",
+        "hy_translate_glossary_v5",
+        "hy_translate_styled_v5",
+    ]:
         raise ValueError("adapter fixture export identity mismatch")
     verify_file(adapter, report["adapter"])
     return lock, {
@@ -238,5 +245,7 @@ def verify(assets, runtime, adapter):
         "template_sha256": lock["template_sha256"],
         "cpu_runtime": cpu,
         "adapter_sha256": report["adapter"]["sha256"],
+        "adapter_path": str(adapter),
+        "adapter_record": report["adapter"],
         "model_path": str(Path(assets) / lock["model"]["file"]),
     }

@@ -6,6 +6,294 @@ namespace TypeLay.Runtime.Tests;
 public sealed class SessionControllerTests
 {
     [Fact]
+    public void ProductionAlternativeStateAndCommandStayClosedForAVerifiedArgosModel()
+    {
+        using var s = new SessionScenario(modelIdentity: SessionScenario.ArgosIdentity);
+        s.ReadyCandidate();
+        var state = s.Controller.GetAlternativeState();
+        Assert.False(state.IsReleased);
+        Assert.False(state.CanRequest);
+        Assert.Equal("alternative-not-released", state.UnavailableReason);
+        Assert.False(s.Controller.RequestAlternative(state.Session!));
+        Assert.Single(s.Model.Jobs);
+    }
+
+    [Fact]
+    public void AlternativeFreezesTheCurrentCandidateAndNeedsANewCaptureForAcceptance()
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.ArgosRelease, modelIdentity: SessionScenario.ArgosIdentity);
+        s.ReadyCandidate();
+        var previousPermit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        var token = s.View.Token;
+        Assert.True(s.Controller.GetAlternativeState().CanRequest);
+        Assert.True(s.Controller.RequestAlternative(token));
+        Assert.False(s.Controller.GetAlternativeState().CanRequest);
+        var job = s.Model.Jobs[^1];
+        Assert.Equal(TranslationKind.Alternative, job.Kind);
+        Assert.Equal("hello", job.SourceText);
+        Assert.Equal("translated", job.PreviousCandidate);
+        Assert.Null(job.PreservedManualText);
+        Assert.Equal("translated", s.View.Preview);
+        Assert.Equal(SessionState.Translating, s.View.State);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.Controller.RequestAlternative(token));
+        Assert.False(s.Controller.RequestAlternative(s.View.Token));
+        s.CompleteTranslation("Another wording");
+        Assert.Equal("Another wording", s.View.Preview);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.View.CanAccept);
+        s.Tick();
+        var current = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        Assert.NotEqual(previousPermit.Plan.Revision, current.Plan.Revision);
+        Assert.Equal("Another wording", current.Plan.Replacement);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData("no-alternative", "")]
+    [InlineData("error", "")]
+    [InlineData("translated", "TRANSLATED!!!")]
+    [InlineData("translated", "")]
+    public void FailedAlternativeRestoresTheCandidateWithoutRestoringAnOldPermit(string status, string text)
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.ArgosRelease, modelIdentity: SessionScenario.ArgosIdentity);
+        s.ReadyCandidate();
+        var previous = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        Assert.True(s.Controller.RequestAlternative(s.View.Token));
+        s.CompleteTranslation(text, status);
+        Assert.Equal(SessionState.ValidTranslation, s.View.State);
+        Assert.Equal("translated", s.View.Preview);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.View.CanAccept);
+        s.Input.Notices.Enqueue(new("accept", previous, s.Loop.NowMs, s.Input.UserEpoch,
+            s.Input.ForegroundEpoch, CommandGeneration: s.Input.CommandGeneration));
+        s.Tick();
+        Assert.Empty(s.Service.Writes);
+        Assert.NotEqual(previous.Plan.Revision, Assert.IsType<AcceptancePermit>(s.Input.Permit).Plan.Revision);
+    }
+
+    [Theory]
+    [InlineData("token")]
+    [InlineData("ime")]
+    [InlineData("not-ready")]
+    [InlineData("manual")]
+    [InlineData("focus")]
+    [InlineData("acknowledgement")]
+    public void AlternativeRequiresCurrentSafeReadySourceAndView(string change)
+    {
+        using var s = new SessionScenario(translationRelease: SessionScenario.ArgosRelease, modelIdentity: SessionScenario.ArgosIdentity);
+        s.ReadyCandidate();
+        var token = s.View.Token;
+        switch (change)
+        {
+            case "token":
+                token = token with
+                {
+                    Revision = token.Revision - 1
+                };
+                break;
+            case "ime":
+                s.View.EditingComposition = true;
+                break;
+            case "not-ready":
+                s.Model.Ready = false;
+                break;
+            case "manual":
+                Assert.True(s.View.BeginEditing!(token));
+                break;
+            case "focus":
+                s.FocusAnotherField();
+                break;
+            default:
+                s.Service.TransformAcknowledgement = _ => null;
+                s.Tick();
+                break;
+        }
+        Assert.False(s.Controller.RequestAlternative(token));
+        Assert.Single(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData("source")]
+    [InlineData("content")]
+    [InlineData("foreground")]
+    [InlineData("window")]
+    public void AlternativeCannotStartFromAnObservationThatPredatesInputAuthority(string change)
+    {
+        using var s = new SessionScenario(translationRelease: SessionScenario.ArgosRelease, modelIdentity: SessionScenario.ArgosIdentity);
+        s.ReadyCandidate();
+        switch (change)
+        {
+            case "source":
+                s.Input.SourceUserEpoch++;
+                break;
+            case "content":
+                s.Input.ContentEpoch++;
+                break;
+            case "foreground":
+                s.Input.ForegroundEpoch++;
+                break;
+            default:
+                s.Input.WindowEpoch++;
+                break;
+        }
+        Assert.False(s.Controller.RequestAlternative(s.View.Token));
+        Assert.Single(s.Model.Jobs);
+    }
+
+    [Fact]
+    public void AnOldCaptureCannotStampNewInputAuthorityOntoTheAlternativeSource()
+    {
+        using var s = new SessionScenario(translationRelease: SessionScenario.ArgosRelease, modelIdentity: SessionScenario.ArgosIdentity);
+        s.ReadyCandidate();
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.Input.SourceUserEpoch++;
+        s.Input.ContentEpoch++;
+        s.CompleteCapture(new(s.Fresh, FocusMember.Source, UserEpoch: s.Input.UserEpoch,
+            ForegroundEpoch: s.Input.ForegroundEpoch,
+            SessionShortcuts: new(s.Source.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true)));
+        Assert.False(s.Controller.RequestAlternative(s.View.Token));
+        Assert.Single(s.Model.Jobs);
+        s.Tick();
+        Assert.True(s.Controller.RequestAlternative(s.View.Token));
+        Assert.Equal(2, s.Model.Jobs.Count);
+    }
+
+    [Theory]
+    [InlineData("translated", "Late alternative")]
+    [InlineData("no-alternative", "")]
+    [InlineData("error", "")]
+    public void LateAlternativeCannotReplaceAnAppendOnlyPreviewOrNewerFeedback(string status, string text)
+    {
+        using var s = new SessionScenario(translationRelease: SessionScenario.ArgosRelease, modelIdentity: SessionScenario.ArgosIdentity);
+        s.ReadyCandidate();
+        Assert.True(s.Controller.RequestAlternative(s.View.Token));
+        s.Source = s.Source with
+        {
+            Text = "hello more",
+            Selection = new(10, 10),
+            InputEpoch = 2
+        };
+        s.Tick();
+        string? feedback = s.Controller.OperationStatus;
+        Assert.Equal(SessionState.Translating, s.View.State);
+        s.CompleteTranslation(text, status);
+        Assert.Equal("translated", s.View.Preview);
+        Assert.Equal(SessionState.Translating, s.View.State);
+        Assert.Equal(feedback, s.Controller.OperationStatus);
+        Assert.Null(s.Input.Permit);
+        s.Tick(Limits.DebounceMs);
+        Assert.Equal(TranslationKind.FullOrSelection, s.Model.Jobs[^1].Kind);
+        s.CompleteTranslation("Current translation");
+        Assert.Equal("Current translation", s.View.Preview);
+    }
+
+    [Theory]
+    [InlineData("source", "translated")]
+    [InlineData("content", "no-alternative")]
+    [InlineData("foreground", "error")]
+    [InlineData("window", "translated")]
+    [InlineData("command", "no-alternative")]
+    public void ChangedInputAuthorityDiscardsAlternativeWhileCaptureIsStillPending(string change, string status)
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.ArgosRelease, modelIdentity: SessionScenario.ArgosIdentity);
+        s.ReadyCandidate();
+        Assert.True(s.Controller.RequestAlternative(s.View.Token));
+        switch (change)
+        {
+            case "source":
+                s.Input.SourceUserEpoch++;
+                break;
+            case "content":
+                s.Input.ContentEpoch++;
+                break;
+            case "foreground":
+                s.Input.ForegroundEpoch++;
+                break;
+            case "window":
+                s.Input.WindowEpoch++;
+                break;
+            default:
+                s.Input.ConfigureShortcuts(false, "F9", "F10", s.Input.SessionBindings, true);
+                break;
+        }
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteTranslation(status == "translated" ? "Obsolete wording" : "", status);
+        Assert.Equal(SessionState.Invalid, s.View.State);
+        Assert.Equal("translated", s.View.Preview);
+        Assert.Null(s.Input.Permit);
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.Equal(2, s.Model.Jobs.Count);
+        s.CompleteCapture(new(s.Fresh, FocusMember.Source, UserEpoch: s.Input.UserEpoch,
+            ForegroundEpoch: s.Input.ForegroundEpoch,
+            SessionShortcuts: new(s.Source.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true)));
+        s.Tick(Limits.DebounceMs);
+        Assert.Equal(3, s.Model.Jobs.Count);
+        Assert.Equal(TranslationKind.FullOrSelection, s.Model.Jobs[^1].Kind);
+    }
+
+    [Fact]
+    public void ANewAlternativeClearsOnlyThePreviousAttemptFeedbackAfterItStarts()
+    {
+        using var s = new SessionScenario(translationRelease: SessionScenario.ArgosRelease, modelIdentity: SessionScenario.ArgosIdentity);
+        s.ReadyCandidate();
+        Assert.True(s.Controller.RequestAlternative(s.View.Token));
+        s.CompleteTranslation("", "no-alternative");
+        Assert.NotNull(s.Controller.OperationStatus);
+        var obsolete = s.View.Token with
+        {
+            Revision = s.View.Token.Revision - 1
+        };
+        Assert.False(s.Controller.RequestAlternative(obsolete));
+        Assert.NotNull(s.Controller.OperationStatus);
+        s.Tick();
+        int changes = 0;
+        s.Controller.Changed += () => changes++;
+        Assert.True(s.Controller.RequestAlternative(s.View.Token));
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.Equal(1, changes);
+        s.CompleteTranslation("New wording");
+        Assert.Null(s.Controller.OperationStatus);
+    }
+
+    [Fact]
+    public void AlternativeFailureCannotReplaceFeedbackFromANewerExplicitCommand()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand, translationRelease: SessionScenario.ArgosRelease, modelIdentity: SessionScenario.ArgosIdentity);
+        s.Tick();
+        s.Command("wake", 1);
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        s.CompleteTranslation("translated");
+        s.Tick();
+        Assert.True(s.Controller.RequestAlternative(s.View.Token));
+        s.Input.Notices.Enqueue(new("direct", Rejection: Denial.Unsupported,
+            CommandGeneration: s.Input.CommandGeneration, CommandSequence: 2));
+        s.Tick();
+        string newer = Assert.IsType<string>(s.Controller.OperationStatus);
+        Assert.Contains("直接替换", newer);
+        s.CompleteTranslation("", "error");
+        Assert.Equal("translated", s.View.Preview);
+        Assert.Equal(newer, s.Controller.OperationStatus);
+    }
+
+    [Fact]
+    public async Task ModelChangeRetiresAlternativeWithoutRestoringItsCandidate()
+    {
+        using var s = new SessionScenario(translationRelease: SessionScenario.ArgosRelease, modelIdentity: SessionScenario.ArgosIdentity);
+        s.ReadyCandidate();
+        Assert.True(s.Controller.RequestAlternative(s.View.Token));
+        Assert.True(await s.Controller.PrepareModelChangeAsync());
+        s.CompleteTranslation("Retired wording");
+        Assert.False(s.View.Visible);
+        Assert.Null(s.Input.Permit);
+        Assert.Null(s.Controller.OperationStatus);
+    }
+
+    [Fact]
     public void ShortcutReadinessStatusChangesNotifyOnceWithoutCreatingInputWork()
     {
         using var s = new SessionScenario(WorkMode.OnDemand, initiallyAvailable: true);

@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "file": "llama-b11717-bin-win-cpu-x64.zip",
+  "bytes": 19662390,
+  "sha256": "ccb5971d01c039bb90ff90957678adada36b9eba639f2e6d6697a09fc75a1404",
+  "tag": "b11717",
+  "commit": "848bbda9041decd87904f7eb5a2990863ecce03b",
+  "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11717/llama-b11717-bin-win-cpu-x64.zip"
+}

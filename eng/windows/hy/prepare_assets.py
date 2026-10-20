@@ -1,6 +1,6 @@
-"""Prepare the fixed Windows fixture assets and compile only its small adapter.
+"""Prepare fixed Windows Hy assets, optionally compile the manual audit adapter.
 
-The sole external entry is eng/windows/verify-hy-adapter.ps1 -Phase prepare.
+The external entry is eng/windows/verify-hy-adapter.ps1 (prepare or prepare-product).
 There is no inference, model package installation or llama.cpp compilation.
 """
 
@@ -22,6 +22,8 @@ WINDOWS_ROOT = Path(__file__).resolve().parent
 REPOSITORY = WINDOWS_ROOT.parents[2]
 ROOT = REPOSITORY / "src/shared/TypeLay.Worker/native/hy"
 sys.dont_write_bytecode = True
+sys.path.insert(0, str(REPOSITORY))
+sys.path.insert(0, str(REPOSITORY / "src/shared/TypeLay.Worker"))
 sys.path.insert(0, str(REPOSITORY / "tests/windows/fixtures/TypeLay.NativeFixture/HyAdapter"))
 from verify_assets import (  # noqa: E402
     CHUNK,
@@ -34,6 +36,8 @@ from verify_assets import (  # noqa: E402
     verify_runtime,
     verify_sources,
 )
+
+from eng.windows.hy.toolchain import sdk_environment  # noqa: E402
 
 
 class Preparation:
@@ -144,58 +148,8 @@ class Preparation:
         self.remaining()
         return result.stdout
 
-    def sdk_environment(self):
-        program_files = os.environ.get("ProgramFiles(x86)")
-        if not program_files:
-            raise RuntimeError("Visual Studio Installer path unavailable")
-        vswhere = plain_path(
-            Path(program_files) / "Microsoft Visual Studio/Installer/vswhere.exe",
-            allow_hardlink=True,
-        )
-        raw = self.command(
-            [
-                str(vswhere),
-                "-latest",
-                "-products",
-                "*",
-                "-requires",
-                "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-                "-property",
-                "installationPath",
-                "-utf8",
-            ]
-        )
-        installation = Path(raw.decode("utf-8", "strict").strip())
-        if not installation.is_absolute():
-            raise RuntimeError("installed Visual Studio path unavailable")
-        script = plain_path(installation / "Common7/Tools/VsDevCmd.bat", allow_hardlink=True)
-        comspec = plain_path(
-            Path(os.environ["SystemRoot"]) / "System32/cmd.exe", allow_hardlink=True
-        )
-        # A raw command line keeps cmd.exe's nested quote rules intact with spaces.
-        command = f'"{comspec}" /d /u /s /c "call "{script}" -no_logo -arch=x64 -host_arch=x64 >nul && set"'
-        raw = self.command(command, shell_command=True)
-        # /u makes cmd's built-in set output UTF-16LE, including Unicode paths.
-        env = {}
-        for line in raw.decode("utf-16le", "strict").splitlines():
-            name, separator, value = line.partition("=")
-            if separator and name:
-                env[name.upper()] = value
-        if env.get("VSCMD_ARG_TGT_ARCH") != "x64":
-            raise RuntimeError("Visual Studio did not select x64")
-        for name in ("CL", "_CL_", "LINK", "_LINK_", "LIBPATH"):
-            # CL/LINK can inject unreviewed flags. LIBPATH is irrelevant to the
-            # native link and must not introduce managed build search locations.
-            env.pop(name, None)
-        for tool in ("cl.exe", "lib.exe", "dumpbin.exe"):
-            resolved = shutil.which(tool, path=env.get("PATH"))
-            if not resolved or not Path(resolved).is_relative_to(installation):
-                raise RuntimeError("installed Visual Studio x64 tools unavailable")
-            plain_path(resolved, allow_hardlink=True)
-        return env
-
-    def run(self):
-        if os.name != "nt" or ctypes.sizeof(ctypes.c_void_p) != 8:
+    def run(self, *, assets_only=False):
+        if not assets_only and (os.name != "nt" or ctypes.sizeof(ctypes.c_void_p) != 8):
             raise RuntimeError("preparation requires Windows x64")
         self.stage = "directories"
         for path in (self.artifacts, self.download, self.build, self.results):
@@ -210,8 +164,6 @@ class Preparation:
         self.stage = "verify_sources"
         lock = read_lock()
         verify_sources(lock)
-        self.stage = "resolve_sdk"
-        env = self.sdk_environment()
         self.stage = "validate_cache"
         expected = {lock[key]["file"] for key in ("model", "model_license", "runtime_archive")}
         if not {path.name for path in self.download.iterdir()} <= expected:
@@ -244,6 +196,13 @@ class Preparation:
         (self.results / "asset-verification.json").write_text(
             json.dumps(identity, indent=2) + "\n", encoding="utf-8"
         )
+        if assets_only:
+            self.remaining()
+            self.stage = "complete"
+            print(json.dumps({"event": "assets_prepared", "inference_executed": False}))
+            return
+        self.stage = "resolve_sdk"
+        env = sdk_environment(self.command)
         lib = shutil.which("lib.exe", path=env["PATH"])
         cl = shutil.which("cl.exe", path=env["PATH"])
         for name in ("llama", "ggml"):
@@ -300,11 +259,18 @@ class Preparation:
                 flags=re.MULTILINE,
             )
         )
-        if exports != [b"hy_audit", b"hy_close", b"hy_open_v3", b"hy_translate"]:
-            raise ValueError("built adapter must expose exactly four fixture ABI exports")
+        if exports != [
+            b"hy_audit",
+            b"hy_close",
+            b"hy_open_v5",
+            b"hy_translate",
+            b"hy_translate_glossary_v5",
+            b"hy_translate_styled_v5",
+        ]:
+            raise ValueError("built adapter must expose exactly six fixture ABI5 exports")
         self.stage = "write_build_identity"
         report = {
-            "abi": 3,
+            "abi": 5,
             "asset_lock_sha256": digest(LOCK),
             "source_files": lock["source_files"],
             "windows_source_files": lock["windows_source_files"],
@@ -323,7 +289,7 @@ class Preparation:
         (self.build / "build-verification.json").write_text(text, encoding="utf-8")
         (self.results / "build-verification.json").write_text(text, encoding="utf-8")
         self.stage = "complete"
-        print(json.dumps({"event": "prepared", "abi": 3, "seconds": report["prepare_seconds"]}))
+        print(json.dumps({"event": "prepared", "abi": 5, "seconds": report["prepare_seconds"]}))
 
 
 def main():
@@ -333,6 +299,7 @@ def main():
         parser = argparse.ArgumentParser(allow_abbrev=False, add_help=False, exit_on_error=False)
         parser.add_argument("--artifacts", type=Path)
         parser.add_argument("--budget-seconds", type=float)
+        parser.add_argument("--assets-only", action="store_true")
         args, extra = parser.parse_known_args()
         if (
             extra
@@ -343,7 +310,7 @@ def main():
         ):
             raise ValueError("invalid fixed preparation arguments")
         preparation = Preparation(args.artifacts, args.budget_seconds)
-        preparation.run()
+        preparation.run(assets_only=args.assets_only)
         return 0
     except Exception as error:
         name = type(error).__name__

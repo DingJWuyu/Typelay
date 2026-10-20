@@ -1,4 +1,9 @@
 using System.Diagnostics;
+using System.ComponentModel;
+using System.IO;
+using System.Text;
+using System.Text.Json;
+using TypeLay.Runtime;
 using TypeLay.App;
 using Xunit;
 
@@ -31,5 +36,185 @@ public sealed class ChildProcessTests
         await owner.TerminateAndWaitAsync(deadline.Token);
         Assert.True(owner.Process.HasExited);
         await owner.TerminateAndWaitAsync(cancelled);
+    }
+
+    [Fact]
+    public async Task LegacyModelOwnerProvidesPrivatePipesWithoutAddingBackendLimits()
+    {
+        string python = (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator)
+            .Select(directory => Path.Combine(directory.Trim('"'), "python.exe")).First(File.Exists);
+        var start = new ProcessStartInfo(Path.GetFullPath(python))
+        {
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        start.ArgumentList.Add("-I");
+        start.ArgumentList.Add("-B");
+        start.ArgumentList.Add("-c");
+        start.ArgumentList.Add("""
+            import ctypes as c, json, os, sys
+            class Basic(c.Structure):
+                _fields_ = [('process_time', c.c_int64), ('job_time', c.c_int64),
+                    ('flags', c.c_uint32), ('min_working_set', c.c_size_t),
+                    ('max_working_set', c.c_size_t), ('active', c.c_uint32),
+                    ('affinity', c.c_size_t), ('priority', c.c_uint32), ('scheduling', c.c_uint32)]
+            class Io(c.Structure):
+                _fields_ = [(name, c.c_uint64) for name in ('read_ops', 'write_ops', 'other_ops',
+                    'read_bytes', 'write_bytes', 'other_bytes')]
+            class Limits(c.Structure):
+                _fields_ = [('basic', Basic), ('io', Io), ('process', c.c_size_t),
+                    ('job', c.c_size_t), ('peak_process', c.c_size_t), ('peak_job', c.c_size_t)]
+            limits = Limits()
+            # NULL queries this process's immediate job, including under a nested CI job.
+            if not c.windll.kernel32.QueryInformationJobObject(None, 9, c.byref(limits), c.sizeof(limits), None):
+                raise SystemExit(3)
+            os.write(2, b'synthetic-error-body' * 1024)
+            source = sys.stdin.buffer.readline().decode('utf-8').strip()
+            result = dict(flags=limits.basic.flags, active=limits.basic.active,
+                process=limits.process, job=limits.job, argument=sys.argv[1],
+                environment=os.environ['TYPELAY_OWNER_TEST'], source=source)
+            sys.stdout.buffer.write(json.dumps(result).encode('utf-8') + b'\n')
+            sys.stdout.buffer.flush()
+            sys.stdin.buffer.read(1)
+            """);
+        string argument = "空 格 \" quoted \\";
+        start.ArgumentList.Add(argument);
+        start.Environment["TYPELAY_OWNER_TEST"] = "环境 value";
+        using var inventory = JsonDocument.Parse("{\"schema\":1}");
+        var plan = ModelLoadPlan.Create(new(start.FileName, Path.GetFullPath("unused-worker"),
+            Path.GetFullPath("unused-models")), inventory.RootElement);
+        using var owner = new ModelChildProcess(start, plan);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => owner.TerminateAndWaitAsync(new CancellationToken(true)));
+        Assert.False(owner.Process.HasExited);
+        // Observation-only Process deliberately has no managed redirected stdio.
+        Assert.Throws<InvalidOperationException>(() => owner.Process.StandardOutput);
+        await owner.StandardInput.WriteAsync(Encoding.UTF8.GetBytes("synthetic-source\n"), deadline.Token);
+        await owner.StandardInput.FlushAsync(deadline.Token);
+        using var reader = new StreamReader(owner.StandardOutput, Encoding.UTF8, leaveOpen: true);
+        string? line = await reader.ReadLineAsync(deadline.Token).AsTask().WaitAsync(deadline.Token);
+        Assert.NotNull(line);
+        using var result = JsonDocument.Parse(line);
+        var value = result.RootElement;
+        Assert.Equal(0x2000, value.GetProperty("flags").GetInt32());
+        Assert.Equal(0, value.GetProperty("active").GetInt32());
+        Assert.Equal(0L, value.GetProperty("process").GetInt64());
+        Assert.Equal(0L, value.GetProperty("job").GetInt64());
+        Assert.Equal(argument, value.GetProperty("argument").GetString());
+        Assert.Equal("环境 value", value.GetProperty("environment").GetString());
+        Assert.Equal("synthetic-source", value.GetProperty("source").GetString());
+        await owner.TerminateAndWaitAsync(deadline.Token);
+        Assert.True(owner.Process.HasExited);
+        await owner.TerminateAndWaitAsync(new CancellationToken(true));
+    }
+
+    [Fact]
+    public async Task GenerationStaysProtectedUntilEveryOwnerHasConfirmedExit()
+    {
+        using var generation = new Generation();
+        using var first = new ModelChildProcess(generation.StartInfo(), generation.Plan());
+        using var second = new ModelChildProcess(generation.StartInfo(), generation.Plan());
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        Assert.False(first.Process.HasExited);
+        Assert.False(second.Process.HasExited);
+        Assert.Throws<IOException>(() => { using var exclusive = generation.ExclusiveUse(); });
+        Assert.Throws<IOException>(() => File.Delete(generation.UsePath));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first.TerminateAndWaitAsync(new CancellationToken(true)));
+        Assert.Throws<IOException>(() => { using var exclusive = generation.ExclusiveUse(); });
+        await first.TerminateAndWaitAsync(deadline.Token);
+        Assert.Throws<IOException>(() => { using var exclusive = generation.ExclusiveUse(); });
+        await second.TerminateAndWaitAsync(deadline.Token);
+        // Both owners still exist: release belongs to successful exit proof, not Dispose.
+        using var reclaimed = generation.ExclusiveUse();
+    }
+
+    [Fact]
+    public void FailureBeforeAChildExistsReleasesTheExactGeneration()
+    {
+        using var generation = new Generation();
+        File.WriteAllText(generation.Python, "not-an-executable");
+        Assert.Throws<Win32Exception>(() => new ModelChildProcess(generation.StartInfo(), generation.Plan()));
+        using var reclaimed = generation.ExclusiveUse();
+    }
+
+    [Theory]
+    [InlineData("executable")]
+    [InlineData("models")]
+    [InlineData("marker")]
+    public void AGenerationCannotBorrowAnotherExecutableOrAnAbsentUseMarker(string invalid)
+    {
+        using var generation = new Generation();
+        var start = generation.StartInfo();
+        var plan = generation.Plan(invalid == "models" ? Path.Combine(generation.Root, "other", "models") : null);
+        if (invalid == "executable")
+            start.FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        if (invalid == "marker")
+            File.Delete(generation.UsePath);
+        if (invalid == "marker")
+            Assert.Throws<FileNotFoundException>(() => new ModelChildProcess(start, plan));
+        else
+            Assert.Throws<InvalidDataException>(() => new ModelChildProcess(start, plan));
+        if (invalid != "marker")
+        {
+            using var reclaimed = generation.ExclusiveUse();
+        }
+    }
+
+    // A copied system command interpreter is only a controlled process/lock probe.
+    // It is not a Python runtime, model worker, inference or backend-quality claim.
+    private sealed class Generation : IDisposable
+    {
+        private readonly string _data = Path.Combine(Path.GetTempPath(), "typelay-model-owner-" + Guid.NewGuid().ToString("N"));
+        public string Root
+        {
+            get;
+        }
+        public string Python => Path.Combine(Root, "runtime", "python", "tools", "python.exe");
+        public string UsePath => Path.Combine(Root, "model-use.lock");
+        public Generation()
+        {
+            Root = Path.Combine(_data, "components", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path.GetDirectoryName(Python)!);
+            Directory.CreateDirectory(Path.Combine(Root, "models"));
+            File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), Python);
+            using var marker = new FileStream(UsePath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+        }
+        public ModelLoadPlan Plan(string? models = null)
+        {
+            using var inventory = JsonDocument.Parse(JsonSerializer.Serialize(new
+            {
+                schema = 3,
+                packages = ModelCatalog.Packages.Packages.Where(package => package.Backend == "hy-mt-llama-cpu").Select(package => new
+                {
+                    id = package.Id,
+                    version = package.Version,
+                    directions = new[] { "zh_ja" },
+                    files = new[] { new { path = "unused-test-marker", sha256 = new string('0', 64) } }
+                }),
+                activePackages = new[] { "hy-mt2-1-8b-q4-k-m" }
+            }));
+            return ModelLoadPlan.Create(new(Python, Path.Combine(_data, "unused-worker"), models ?? Path.Combine(Root, "models")), inventory.RootElement);
+        }
+        public ProcessStartInfo StartInfo()
+        {
+            var info = new ProcessStartInfo(Python)
+            {
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            foreach (string argument in new[] { "/d", "/q", "/c", "set /p owned=" })
+                info.ArgumentList.Add(argument);
+            return info;
+        }
+        public FileStream ExclusiveUse() => new(UsePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        public void Dispose() => Directory.Delete(_data, true);
     }
 }

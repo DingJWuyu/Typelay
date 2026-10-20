@@ -10,11 +10,77 @@ internal static class Program
     private sealed record SettingsDraftRequest(Guid Session, long Request, ShortcutSettingsDraft Shortcuts,
         ExclusionSettingsDraft? Exclusions = null);
     private sealed record SettingsDraftCancellation(Guid Session, long Request);
+    private sealed record TranslationSettingsRequest(Guid Session, long Request, long ExpectedSettingsRevision,
+        TranslationStyle? Style = null, string? Application = null, GlossaryRule[]? Rules = null);
     private sealed record PlacementRequest(RectPx Input, RectPx Work, double Width, double Height, double Gap, double MinimumHeight);
     private sealed record ApplicationSupportRequest(ApplicationSupportFact[] Facts);
     private sealed record TranslationPreparationRequest(TranslationPreparationPhase Phase,
         string? FailureCode = null, bool HyRuntimeAvailable = false, string? HyUnavailableReason = null);
     private sealed record PracticeBindingRequest(Guid RunId, TargetId Target);
+    private static bool TranslationRequestValid(JsonElement value, string? payload)
+    {
+        if (value.ValueKind != JsonValueKind.Object)
+            return false;
+        string[] names = payload is null ? ["session", "request", "expectedSettingsRevision"]
+            : ["session", "request", "expectedSettingsRevision", payload];
+        var properties = value.EnumerateObject().ToArray();
+        if (properties.Length != names.Length || properties.Select(item => item.Name).Distinct().Count() != names.Length
+            || properties.Any(item => !names.Contains(item.Name))
+            || !value.TryGetProperty("session", out var session) || session.ValueKind != JsonValueKind.String
+            || !session.TryGetGuid(out var identity) || identity == Guid.Empty
+            || !value.TryGetProperty("request", out var request) || request.ValueKind != JsonValueKind.Number || !request.TryGetInt64(out long sequence) || sequence <= 0
+            || !value.TryGetProperty("expectedSettingsRevision", out var revision) || revision.ValueKind != JsonValueKind.Number || !revision.TryGetInt64(out long version) || version < 0)
+            return false;
+        return payload switch
+        {
+            "style" => value.GetProperty(payload).ValueKind == JsonValueKind.String
+                && value.GetProperty(payload).GetString() is "Natural" or "Formal",
+            "application" => value.GetProperty(payload).ValueKind == JsonValueKind.String,
+            "rules" => value.GetProperty(payload).ValueKind == JsonValueKind.Array,
+            _ => true
+        };
+    }
+    private static object SessionGlossaryResponse(GlossaryChangeResult result) => new
+    {
+        result.Saved,
+        result.Code,
+        message = GlossaryEntryPresentation.Message(result.Code)
+    };
+    private static bool SessionGlossaryRequestValid(JsonElement value)
+    {
+        if (!ExactObject(value, "formId", "token", "settingsRevision", "rule")
+            || value.GetProperty("formId").ValueKind != JsonValueKind.String
+            || !value.GetProperty("formId").TryGetGuid(out var formId) || formId == Guid.Empty
+            || !ValidSessionToken(value.GetProperty("token"))
+            || value.GetProperty("settingsRevision").ValueKind != JsonValueKind.Number
+            || !value.GetProperty("settingsRevision").TryGetInt64(out long revision) || revision < 0)
+            return false;
+        var rule = value.GetProperty("rule");
+        return ExactObject(rule, "sourceTerm", "targetTerm", "sourceLanguage", "targetLanguage")
+            && rule.GetProperty("sourceTerm").ValueKind == JsonValueKind.String
+            && rule.GetProperty("targetTerm").ValueKind == JsonValueKind.String
+            && rule.GetProperty("sourceLanguage").ValueKind is JsonValueKind.String or JsonValueKind.Null
+            && rule.GetProperty("targetLanguage").ValueKind is JsonValueKind.String or JsonValueKind.Null;
+    }
+    private static bool ExactObject(JsonElement value, params string[] keys) => value.ValueKind == JsonValueKind.Object
+        && value.EnumerateObject().Count() == keys.Length
+        && value.EnumerateObject().Select(property => property.Name).Distinct().Count() == keys.Length
+        && keys.All(key => value.TryGetProperty(key, out _));
+    private static bool ValidSessionToken(JsonElement value)
+    {
+        if (!ExactObject(value, "target", "commandGeneration", "revision")
+            || value.GetProperty("commandGeneration").ValueKind != JsonValueKind.String
+            || !value.GetProperty("commandGeneration").TryGetGuid(out var generation) || generation == Guid.Empty
+            || value.GetProperty("revision").ValueKind != JsonValueKind.Number
+            || !value.GetProperty("revision").TryGetInt64(out long revision) || revision <= 0)
+            return false;
+        var target = value.GetProperty("target");
+        return ExactObject(target, "backend", "value", "lifetime")
+            && target.GetProperty("backend").ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(target.GetProperty("backend").GetString())
+            && target.GetProperty("value").ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(target.GetProperty("value").GetString())
+            && target.GetProperty("lifetime").ValueKind == JsonValueKind.String && target.GetProperty("lifetime").TryGetGuid(out var lifetime)
+            && lifetime != Guid.Empty;
+    }
     public static int Main(string[] args)
     {
         if (args is ["--version"])
@@ -44,7 +110,7 @@ internal static class Program
         SynchronizationContext.SetSynchronizationContext(loop);
         using var link = new DesktopLink(loop);
         using var input = new DesktopInput(link);
-        var view = new DesktopView(link);
+        var view = new DesktopView(link, input);
         var settings = new SettingsStore(Path.Combine(config, "settings.json"),
             enabled => SetStartup(enabled, home, config), app => Path.GetFileName(app.Trim()).ToLowerInvariant());
         using var model = LinuxModelFactory.Create(home, data);
@@ -55,6 +121,99 @@ internal static class Program
         using var controller = new SessionController(settings, model, view, input, input, loop,
             async binding => (await link.Ask("retireAutomaticPractice", binding, timeoutMs: 2000)).ValueKind == JsonValueKind.True);
         SettingsDraftRequest? pendingSettingsDraft = null;
+        (TranslationSettingsRequest Request, CancellationTokenSource Cancellation)? translationChange = null;
+        settings.StyleChanged += () => link.Send("translationSettingsChanged");
+        settings.GlossarySaved += () => link.Send("translationSettingsChanged");
+
+        object StyleSettings()
+        {
+            var state = controller.GetStyleSettingsState();
+            return new
+            {
+                state.SettingsRevision,
+                state.SavedPreferences,
+                state.IsReleased,
+                canChange = state.CanChange && state.Session is null,
+                unavailableReason = state.Session is not null ? "style-stale" : state.UnavailableReason,
+                canReset = state.CanReset && state.Session is null,
+                resetUnavailableReason = state.Session is not null ? "style-stale" : state.ResetUnavailableReason,
+                applications = (state.SavedPreferences?.Applications ?? new Dictionary<string, TranslationStyle>())
+                    .Select(item => new
+                    {
+                        application = item.Key,
+                        style = item.Value,
+                        removal = controller.GetStyleOverrideRemovalState(item.Key)
+                    }).ToArray()
+            };
+        }
+        object GlossarySettings(JsonElement value)
+        {
+            var rules = value.ValueKind == JsonValueKind.Null ? null : DesktopLink.Decode<GlossaryRule[]>(value);
+            var state = controller.GetGlossarySettingsState(rules);
+            return new
+            {
+                state.SettingsRevision,
+                state.SavedSnapshot,
+                state.IsReleased,
+                directions = ModelCatalog.Packages.Packages.SelectMany(package => package.Directions)
+                    .DistinctBy(direction => direction.Id).Select(direction => new
+                    {
+                        direction.Source,
+                        direction.Target,
+                        direction.SourceName,
+                        direction.TargetName
+                    }).ToArray(),
+                canSave = state.CanSave && state.Session is null,
+                unavailableReason = state.Session is not null ? "glossary-stale" : state.UnavailableReason
+            };
+        }
+        async Task<object> SaveTranslationSettings(string operation, JsonElement value)
+        {
+            string? payload = operation switch
+            {
+                "changeStyle" => "style",
+                "removeStyleOverride" => "application",
+                "changeGlossary" => "rules",
+                _ => null
+            };
+            if (!TranslationRequestValid(value, payload))
+                return new
+                {
+                    saved = false,
+                    code = "invalid-translation-settings"
+                };
+            var request = DesktopLink.Decode<TranslationSettingsRequest>(value);
+            if (translationChange is not null)
+                return new
+                {
+                    saved = false,
+                    code = "translation-settings-busy"
+                };
+            using var cancellation = new CancellationTokenSource();
+            translationChange = (request, cancellation);
+            try
+            {
+                // Settings owns no source session. Never reuse the last overlay token
+                // or application; shared qualification rejects a still-live source.
+                return operation switch
+                {
+                    "changeStyle" => await controller.ChangeStyleAsync(StyleScope.Global, request.Style,
+                        request.ExpectedSettingsRevision, cancellationToken: cancellation.Token),
+                    "resetTranslationStyle" => await controller.ResetTranslationStyleAsync(
+                        request.ExpectedSettingsRevision, cancellationToken: cancellation.Token),
+                    "removeStyleOverride" => await controller.RemoveStyleOverrideAsync(request.Application!,
+                        request.ExpectedSettingsRevision, cancellation.Token),
+                    "changeGlossary" => await controller.ChangeGlossaryAsync(request.Rules!,
+                        request.ExpectedSettingsRevision, cancellationToken: cancellation.Token),
+                    _ => new { saved = false, code = "invalid-translation-settings" }
+                };
+            }
+            finally
+            {
+                if (translationChange?.Cancellation == cancellation)
+                    translationChange = null;
+            }
+        }
         bool hyRuntimeAvailable = false;
         string? hyUnavailableReason = "native-unavailable";
         ModelPackageManagementFact PackageFacts(bool busy = false)
@@ -108,8 +267,31 @@ internal static class Program
         link.Notification = (operation, value) =>
         {
             input.Receive(operation, value);
+            if (operation == "state")
+                view.RefreshGlossaryFocus();
             switch (operation)
             {
+                case "sessionGlossaryFocus":
+                    if (value.ValueKind == JsonValueKind.Null)
+                        view.SetGlossaryFocus(null);
+                    else if (ExactObject(value, "formId", "token", "ime")
+                        && value.GetProperty("formId").ValueKind == JsonValueKind.String
+                        && value.GetProperty("formId").TryGetGuid(out var focusForm) && focusForm != Guid.Empty
+                        && ValidSessionToken(value.GetProperty("token"))
+                        && value.GetProperty("ime").ValueKind == JsonValueKind.String
+                        && value.GetProperty("ime").GetString() is "Clear" or "Composing" or "Unknown")
+                        view.SetGlossaryFocus(DesktopLink.Decode<SessionGlossaryFocus>(value));
+                    else
+                        view.SetGlossaryFocus(null);
+                    break;
+                case "sessionGlossaryClose":
+                    if (value.ValueKind == JsonValueKind.String && value.TryGetGuid(out var closeForm) && closeForm != Guid.Empty)
+                    {
+                        if (view.GlossaryEntryFocus?.FormId == closeForm)
+                            view.SetGlossaryFocus(null);
+                        view.CloseGlossaryRequested?.Invoke(closeForm);
+                    }
+                    break;
                 case "cancelEditorSnapshot":
                     if (value.ValueKind == JsonValueKind.String && editorSnapshot is { } editor
                         && editor.Identity == value.GetString())
@@ -119,6 +301,14 @@ internal static class Program
                     if (value.ValueKind == JsonValueKind.String && activation is { } cancelling
                         && cancelling.Identity == value.GetString())
                         cancelling.Cancellation.Cancel();
+                    break;
+                case "cancelTranslationSettings":
+                    if (value.ValueKind == JsonValueKind.Object
+                        && value.TryGetProperty("session", out var cancelSession) && cancelSession.ValueKind == JsonValueKind.String && cancelSession.TryGetGuid(out var cancelId)
+                        && value.TryGetProperty("request", out var cancelRequest) && cancelRequest.ValueKind == JsonValueKind.Number && cancelRequest.TryGetInt64(out var cancelNumber)
+                        && translationChange is { } change && change.Request.Session == cancelId
+                        && change.Request.Request == cancelNumber)
+                        change.Cancellation.Cancel();
                     break;
                 case "cancelSettingsDraft":
                     var cancellation = DesktopLink.Decode<SettingsDraftCancellation>(value);
@@ -137,6 +327,9 @@ internal static class Program
                     break;
                 case "escape":
                     view.EscapeRequested?.Invoke(DesktopLink.Decode<SessionViewToken>(value));
+                    break;
+                case "alternative":
+                    view.AlternativeRequested?.Invoke(DesktopLink.Decode<SessionViewToken>(value));
                     break;
                 case "regenerate":
                     view.RegenerateRequested?.Invoke();
@@ -178,6 +371,45 @@ internal static class Program
                         allowed,
                         token = allowed ? view.Token : null
                     };
+                case "sessionGlossaryBegin":
+                    return ValidSessionToken(value)
+                        ? view.BeginGlossaryRequested?.Invoke(DesktopLink.Decode<SessionViewToken>(value)) : null;
+                case "sessionGlossaryAdd":
+                    if (!SessionGlossaryRequestValid(value))
+                        return SessionGlossaryResponse(new(false, "invalid-session-glossary"));
+                    return SessionGlossaryResponse(view.AddGlossaryRequested is { } addGlossary
+                        ? await addGlossary(DesktopLink.Decode<SessionGlossaryRequest>(value))
+                        : new GlossaryChangeResult(false, "glossary-unavailable"));
+                case "sessionStyle":
+                    if (value.ValueKind != JsonValueKind.Object || value.EnumerateObject().Count() != 3
+                        || !value.TryGetProperty("token", out var styleToken) || styleToken.ValueKind != JsonValueKind.Object
+                        || !value.TryGetProperty("settingsRevision", out var styleRevision)
+                        || styleRevision.ValueKind != JsonValueKind.Number || !styleRevision.TryGetInt64(out long expectedRevision)
+                        || expectedRevision < 0 || !value.TryGetProperty("style", out var styleValue)
+                        || !(styleValue.ValueKind == JsonValueKind.Null || styleValue.ValueKind == JsonValueKind.String
+                            && styleValue.GetString() is "Natural" or "Formal"))
+                        return new
+                        {
+                            saved = false,
+                            code = "invalid-session-style"
+                        };
+                    var styleRequest = DesktopLink.Decode<SessionStyleRequest>(value);
+                    return view.StyleRequested is { } styleRequested
+                        ? await styleRequested(styleRequest)
+                        : new
+                        {
+                            saved = false,
+                            code = "style-unavailable"
+                        };
+                case "getStyleSettings":
+                    return StyleSettings();
+                case "getGlossarySettings":
+                    return GlossarySettings(value);
+                case "changeStyle":
+                case "resetTranslationStyle":
+                case "removeStyleOverride":
+                case "changeGlossary":
+                    return await SaveTranslationSettings(operation, value);
                 case "settingsDraft":
                     return SettingsDraftPresentation.Create();
                 case "sessionShortcutSettings":
@@ -401,7 +633,17 @@ internal static class Program
                         return false;
                     }
                 case "settings":
-                    var next = DesktopLink.Decode<UserSettings>(value);
+                    // The ordinary DTO cannot write or clear dedicated preferences,
+                    // even when an old form was opened before a dedicated save.
+                    if (value.ValueKind != JsonValueKind.Object || value.EnumerateObject().Any(property =>
+                        property.Name.Equals("styles", StringComparison.OrdinalIgnoreCase)
+                        || property.Name.Equals("glossary", StringComparison.OrdinalIgnoreCase)))
+                        return false;
+                    var next = DesktopLink.Decode<UserSettings>(value) with
+                    {
+                        Styles = settings.Value.Styles,
+                        Glossary = settings.Value.Glossary
+                    };
                     if (next.Schema != 1 || next.Theme is not ("system" or "light" or "dark")
                         || next.Excluded.Length > 256 || next.Excluded.Any(app => string.IsNullOrWhiteSpace(app) || app.Length > 128))
                         return false;
@@ -489,7 +731,7 @@ internal static class Program
             Console.Error.WriteLine("TypeLay: desktop session stopped safely.");
             return 1;
         }
-        finally { activation?.Cancellation.Cancel(); editorSnapshot?.Cancellation.Cancel(); }
+        finally { activation?.Cancellation.Cancel(); editorSnapshot?.Cancellation.Cancel(); translationChange?.Cancellation.Cancel(); }
     }
     private static async Task<int> ActivateModel(string home, string data, string generation)
     {

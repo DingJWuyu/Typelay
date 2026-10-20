@@ -7,21 +7,22 @@ namespace TypeLay.App;
 
 internal sealed class LanguagePicker : ComboBox
 {
+    private readonly bool _source;
     private string _selectionCode;
     private bool _synchronizing;
 
-    public LanguagePicker(bool source, string selectedCode, Action<string> save)
+    public LanguagePicker(bool source, string selectedCode, Action<string> save, IReadOnlyList<string>? availableDirections = null)
     {
+        _source = source;
         _selectionCode = selectedCode;
-        ItemsSource = (source ? ModelCatalog.SourceChoices : ModelCatalog.TargetChoices)
-            .Select(choice => new LanguageChoice(choice.Code, choice.Label)).ToArray();
+        ItemsSource = Choices(selectedCode, availableDirections);
         MinWidth = 126;
         IsEditable = true;
         IsTextSearchEnabled = true;
         StaysOpenOnEdit = true;
         SetResourceReference(StyleProperty, typeof(ComboBox));
         AutomationProperties.SetName(this, source ? "源语言" : "目标语言");
-        SelectedItem = ConfirmedChoice(selectedCode);
+        SelectedItem = Items.Cast<LanguageChoice>().Single(choice => choice.Code == selectedCode);
         SelectionChanged += (_, _) =>
         {
             if (_synchronizing || SelectedItem is not LanguageChoice { Available: true } choice)
@@ -34,32 +35,51 @@ internal sealed class LanguagePicker : ComboBox
         LostKeyboardFocus += (_, _) => { if (SelectedItem is LanguageChoice choice) Text = choice.Label; };
     }
 
-    public void Synchronize(string confirmedCode)
+    public void Synchronize(string confirmedCode, IReadOnlyList<string>? availableDirections = null)
     {
-        if (_selectionCode == confirmedCode)
+        var choices = Choices(confirmedCode, availableDirections);
+        bool sameChoices = Items.Cast<LanguageChoice>().SequenceEqual(choices);
+        if (_selectionCode == confirmedCode && sameChoices)
             return;
         _synchronizing = true;
         try
         {
             _selectionCode = confirmedCode;
-            SelectedItem = ConfirmedChoice(confirmedCode);
+            if (!sameChoices)
+                ItemsSource = choices;
+            // A changed active language set retires stale search text. Only an
+            // unchanged list and confirmed value preserve the in-progress search.
+            SelectedItem = Items.Cast<LanguageChoice>().Single(choice => choice.Code == confirmedCode);
         }
         finally { _synchronizing = false; }
     }
 
-    private LanguageChoice ConfirmedChoice(string code)
+    private LanguageChoice[] Choices(string confirmedCode, IReadOnlyList<string>? availableDirections)
     {
-        var choices = Items.Cast<LanguageChoice>().ToArray();
-        var choice = choices.FirstOrDefault(item => item.Code == code);
-        if (choice is not null)
-            return choice;
-        string label = ModelCatalog.Packages.Packages.SelectMany(package => package.Directions)
-            .SelectMany(direction => new[] { new ModelLanguageChoice(direction.Source, direction.SourceName),
-                new ModelLanguageChoice(direction.Target, direction.TargetName) })
-            .FirstOrDefault(item => item.Code == code)?.Label ?? code;
-        choice = new(code, label + "（当前版本未开放）", false);
-        ItemsSource = choices.Append(choice).ToArray();
-        return choice;
+        var directions = ModelCatalog.Packages.Packages.SelectMany(package => package.Directions);
+        // Null means the model is not ready. Preserve the original offline
+        // configuration experience without advertising unconfirmed Hy languages.
+        var languages = availableDirections is null
+            ? (_source ? ModelCatalog.SourceChoices : ModelCatalog.TargetChoices)
+            : directions.Where(direction => availableDirections.Contains(direction.Id))
+                .SelectMany(direction => new[] { new ModelLanguageChoice(direction.Source, direction.SourceName),
+                    new ModelLanguageChoice(direction.Target, direction.TargetName) });
+        if (_source)
+            languages = new[] { new ModelLanguageChoice("auto", "Auto") }.Concat(languages);
+        // Both endpoints allow the existing same-language/manual path. This is
+        // not a promise of every pair; the normal settings validation still runs.
+        var choices = languages.DistinctBy(choice => choice.Code)
+            .Select(choice => new LanguageChoice(choice.Code, choice.Label)).ToList();
+        if (choices.All(choice => choice.Code != confirmedCode))
+        {
+            string label = directions.SelectMany(direction => new[]
+                {
+                    new ModelLanguageChoice(direction.Source, direction.SourceName),
+                    new ModelLanguageChoice(direction.Target, direction.TargetName)
+                }).FirstOrDefault(choice => choice.Code == confirmedCode)?.Label ?? confirmedCode;
+            choices.Add(new(confirmedCode, label + "（当前不可用）", false));
+        }
+        return choices.ToArray();
     }
 
     protected override void PrepareContainerForItemOverride(DependencyObject element, object item)

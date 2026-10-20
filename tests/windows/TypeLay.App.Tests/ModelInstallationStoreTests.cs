@@ -2,12 +2,482 @@ using System.IO;
 using System.Diagnostics;
 using TypeLay.Runtime;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using TypeLay.App;
 using Xunit;
 namespace TypeLay.App.Tests;
 
 public sealed class ModelInstallationStoreTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConfirmedHyRemovalDeletesOnlyItsLockedCacheEvenWhenAnOldGenerationIsInUse(bool inUse)
+    {
+        using var files = new StoreFiles();
+        string first;
+        using (var lease = await files.Store.AcquireAsync(TestContext.Current.CancellationToken))
+        using (var prepared = lease.PreparePackages(new(1, ModelPackageOperation.Install, ["argos-zh-en"], ["argos-zh-en"], null)))
+        {
+            files.Mark(prepared);
+            WriteArgosInventory(prepared.Paths.Models, includeInactiveHy: true);
+            first = prepared.Root;
+            Assert.Equal(ModelPublicationOutcome.Confirmed, prepared.PublishConfirmed());
+        }
+        string[] caches = WriteHyCaches(files.Root);
+        string other = Path.Combine(files.Root, "downloads", "zh_en-1.9.argosmodel");
+        File.WriteAllText(other, "other package cache");
+        string unlisted = caches[0] + ".unlisted";
+        File.WriteAllText(unlisted, "not a locked asset name");
+        using var use = inUse ? new FileStream(Path.Combine(first, ModelInstallationStore.ModelUseLockName),
+            FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite) : null;
+        var store = files.WithReplace((source, target) => File.Move(source, target, true));
+        using var next = await store.AcquireAsync(TestContext.Current.CancellationToken);
+        using var remove = next.PreparePackages(new(1, ModelPackageOperation.Remove,
+            [HyPackage.Id], ["argos-zh-en"], Path.GetFileName(first)));
+        files.Mark(remove);
+        WriteArgosInventory(remove.Paths.Models);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, remove.PublishConfirmed());
+        remove.Complete();
+        Assert.All(caches, path => Assert.False(File.Exists(path)));
+        Assert.Equal("other package cache", File.ReadAllText(other));
+        Assert.Equal("not a locked asset name", File.ReadAllText(unlisted));
+        Assert.Equal(inUse, Directory.Exists(first));
+        Assert.Equal(inUse, remove.CleanupPending);
+    }
+
+    [Theory]
+    [InlineData("referenced")]
+    [InlineData("invalid-inventory")]
+    [InlineData("blocked-cache")]
+    [InlineData("unknown-publication")]
+    public async Task HyRemovalRetainsCachesAndReportsPendingWhenCleanupCannotBeProvenSafe(string failure)
+    {
+        using var files = new StoreFiles();
+        string first;
+        using (var lease = await files.Store.AcquireAsync(TestContext.Current.CancellationToken))
+        using (var prepared = lease.PreparePackages(new(1, ModelPackageOperation.Install, ["argos-zh-en"], ["argos-zh-en"], null)))
+        {
+            files.Mark(prepared);
+            WriteArgosInventory(prepared.Paths.Models, includeInactiveHy: true);
+            first = prepared.Root;
+            Assert.Equal(ModelPublicationOutcome.Confirmed, prepared.PublishConfirmed());
+        }
+        string[] caches = WriteHyCaches(files.Root);
+        if (failure == "blocked-cache")
+        {
+            File.Delete(caches[0]);
+            Directory.CreateDirectory(caches[0]);
+        }
+        var store = files.WithReplace((source, target) =>
+        {
+            if (failure == "unknown-publication")
+            {
+                File.WriteAllText(target, "unreadable");
+                throw new IOException("controlled-publication-failure");
+            }
+            File.Move(source, target, true);
+        });
+        using var next = await store.AcquireAsync(TestContext.Current.CancellationToken);
+        using var remove = next.PreparePackages(new(1, ModelPackageOperation.Remove,
+            [HyPackage.Id], ["argos-zh-en"], Path.GetFileName(first)));
+        files.Mark(remove);
+        WriteArgosInventory(remove.Paths.Models, includeInactiveHy: failure == "referenced");
+        var outcome = remove.PublishConfirmed();
+        if (failure == "unknown-publication")
+            Assert.Equal(ModelPublicationOutcome.Unconfirmed, outcome);
+        else
+        {
+            Assert.Equal(ModelPublicationOutcome.Confirmed, outcome);
+            if (failure == "invalid-inventory")
+                File.WriteAllText(Path.Combine(remove.Paths.Models, "installed.json"), "unreadable");
+            remove.Complete();
+        }
+        Assert.All(caches, path => Assert.True(Path.Exists(path)));
+        Assert.True(remove.CleanupPending);
+    }
+
+    private static ModelPackage HyPackage => ModelCatalog.Packages.Packages.Single(item => item.Backend == "hy-mt-llama-cpu");
+    private static string[] WriteHyCaches(string root)
+    {
+        using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.HyModelLock.json")!;
+        using var modelLock = JsonDocument.Parse(stream);
+        string downloads = Path.Combine(root, "downloads");
+        Directory.CreateDirectory(downloads);
+        string[] paths = new[] { "model", "model_license" }.SelectMany(kind =>
+        {
+            string name = HyPackage.Id + "-" + HyPackage.Version + "-" + modelLock.RootElement.GetProperty(kind).GetProperty("file").GetString();
+            return new[] { Path.Combine(downloads, name), Path.Combine(downloads, name + ".part") };
+        }).ToArray();
+        foreach (string path in paths)
+            File.WriteAllText(path, "controlled cached bytes, not model evidence");
+        return paths;
+    }
+
+    [Theory]
+    [InlineData(1, "null", "null")]
+    [InlineData(2, "null", "null")]
+    [InlineData(2, "17", "null")]
+    [InlineData(2, "\"zh_en/model/model.bin\"", "null")]
+    [InlineData(2, "\"zh_en/model/model.bin\"", "17")]
+    [InlineData(2, "\"zh_en/model/model.bin\"", "\"bad-hash\"")]
+    [InlineData(2, "\"unknown/model.bin\"", "valid")]
+    [InlineData(2, "\"zh_en/../model.bin\"", "valid")]
+    [InlineData(2, "\"zh_en/\"", "valid")]
+    public async Task MalformedLegacyFilesRemainUnknownAndCannotStartPackageMigration(int schema, string path, string hash)
+    {
+        using var files = new StoreFiles();
+        string models = files.Store.InitialPaths().Models;
+        Directory.CreateDirectory(models);
+        hash = hash == "valid" ? JsonSerializer.Serialize(new string('0', 64)) : hash;
+        string directions = schema == 1 ? "[\"zh_en\",\"en_zh\"]" : "[\"zh_en\"]";
+        string valid = "{\"path\":\"zh_en/model/model.bin\",\"sha256\":\"" + new string('0', 64) + "\"}";
+        if (schema == 1)
+            valid += ",{\"path\":\"en_zh/model/model.bin\",\"sha256\":\"" + new string('0', 64) + "\"}";
+        File.WriteAllText(Path.Combine(models, "installed.json"),
+            "{\"schema\":" + schema + ",\"directions\":" + directions + ",\"files\":[" + valid + ",{\"path\":" + path + ",\"sha256\":" + hash + "}]}");
+        var state = files.Store.ReadInstallationState();
+        Assert.False(state.InventoryKnown);
+        Assert.Empty(state.InstalledPackages);
+        Assert.Empty(state.CurrentPackages);
+        using var lease = await files.Store.AcquireAsync(TestContext.Current.CancellationToken);
+        Assert.Throws<InvalidDataException>(() => lease.PreparePackages(new(1, ModelPackageOperation.Repair,
+            ["argos-zh-en"], schema == 1 ? ["argos-zh-en", "argos-en-zh"] : ["argos-zh-en"], "legacy")));
+        Assert.False(Directory.Exists(Path.Combine(files.Root, "components")));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RetiredKnownPackageGenerationRequiresItsExclusiveUseHandle(bool inUse)
+    {
+        using var files = new StoreFiles();
+        string first;
+        using (var lease = await files.Store.AcquireAsync(TestContext.Current.CancellationToken))
+        using (var prepared = lease.PreparePackages(new(1, ModelPackageOperation.Install, ["argos-zh-en"], ["argos-zh-en"], null)))
+        {
+            first = prepared.Root;
+            files.Mark(prepared);
+            WriteArgosInventory(prepared.Paths.Models);
+            prepared.PublishConfirmed();
+        }
+        using var use = inUse ? new FileStream(Path.Combine(first, ModelInstallationStore.ModelUseLockName),
+            FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite) : null;
+        // Each new setup owns a fresh store, as in Settings. Only exact manifest
+        // generations are eligible; no orphan discovery or process substitute.
+        var next = files.WithReplace((source, target) => File.Move(source, target, true));
+        string second;
+        using (var lease = await next.AcquireAsync(TestContext.Current.CancellationToken))
+        using (var prepared = lease.PreparePackages(new(1, ModelPackageOperation.Repair, ["argos-zh-en"], ["argos-zh-en"], Path.GetFileName(first))))
+        {
+            second = prepared.Root;
+            files.Mark(prepared);
+            WriteArgosInventory(prepared.Paths.Models);
+            prepared.PublishConfirmed();
+            prepared.Complete();
+        }
+        var third = files.WithReplace((source, target) => File.Move(source, target, true));
+        using (var lease = await third.AcquireAsync(TestContext.Current.CancellationToken))
+        using (var prepared = lease.PreparePackages(new(1, ModelPackageOperation.Repair, ["argos-zh-en"], ["argos-zh-en"], Path.GetFileName(second))))
+        {
+            files.Mark(prepared);
+            WriteArgosInventory(prepared.Paths.Models);
+            prepared.PublishConfirmed();
+            prepared.Complete();
+            Assert.Equal(inUse, prepared.CleanupPending);
+        }
+        Assert.Equal(inUse, Directory.Exists(first));
+        Assert.True(Directory.Exists(second));
+    }
+
+    private static void WriteArgosInventory(string models, bool includeInactiveHy = false) =>
+        File.WriteAllText(Path.Combine(models, "installed.json"), JsonSerializer.Serialize(new
+        {
+            schema = 3,
+            packages = ModelCatalog.Packages.Packages.Where(package => package.Id == "argos-zh-en"
+                || includeInactiveHy && package.Id == HyPackage.Id).Select(package => new
+                {
+                    id = package.Id,
+                    version = package.Version,
+                    directions = package.Directions.Select(direction => direction.Id),
+                    files = new[] { new { path = "model/model.bin", sha256 = new string('0', 64) } }
+                }),
+            activePackages = new[] { "argos-zh-en" }
+        }));
+
+    [Fact]
+    public async Task ActivationUsesOneCandidateAndPublishesOnlyAfterItsHello()
+    {
+        using var files = new StoreFiles();
+        using var lease = await files.Store.AcquireAsync(TestContext.Current.CancellationToken);
+        using var prepared = lease.Prepare();
+        files.Mark(prepared);
+        using var peers = new StartupPeers(files.Root, prepared.Root);
+        using var model = new ModelClient(files.Store.InitialPaths(), peers.Start);
+        int preparations = 0;
+        var result = await prepared.ActivateAsync(model, () =>
+        {
+            preparations++;
+            Assert.Empty(peers.Children);
+            Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
+            return Task.FromResult(true);
+        }, TestContext.Current.CancellationToken);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, result);
+        Assert.Equal(1, preparations);
+        Assert.Single(peers.Children);
+        Assert.True(model.Ready);
+        Assert.Equal(prepared.Paths, files.Store.InitialPaths());
+    }
+
+    [Fact]
+    public async Task RejectedModelChangeDeletesNeverStartedCandidate()
+    {
+        using var files = new StoreFiles();
+        string root;
+        using (var lease = await files.Store.AcquireAsync(TestContext.Current.CancellationToken))
+        using (var prepared = lease.Prepare())
+        {
+            files.Mark(prepared);
+            root = prepared.Root;
+            using var model = new ModelClient(files.Store.InitialPaths(), _ => throw new InvalidOperationException("must-not-start"));
+            await Assert.ThrowsAsync<ModelSetupException>(() => prepared.ActivateAsync(model,
+                () => Task.FromResult(false), TestContext.Current.CancellationToken));
+        }
+        Assert.False(Directory.Exists(root));
+        Assert.False(files.Store.CleanupPending);
+    }
+
+    [Fact]
+    public async Task PackageRequestIsFrozenAndMissingHyComponentsCannotCreateCandidate()
+    {
+        using var files = new StoreFiles();
+        using var lease = await files.Store.AcquireAsync(TestContext.Current.CancellationToken);
+        var ids = new[] { "argos-zh-en" };
+        var active = new[] { "argos-zh-en" };
+        using var prepared = lease.PreparePackages(new(1, ModelPackageOperation.Install, ids, active, null));
+        ids[0] = "argos-en-zh";
+        active[0] = "argos-en-zh";
+        Assert.Equal(new[] { "zh_en" }, prepared.Directions);
+        Assert.Equal("argos-zh-en", Assert.Single(prepared.Request!.PackageIds));
+        string hy = ModelCatalog.Packages.Packages.Single(item => item.Backend == "hy-mt-llama-cpu").Id;
+        Assert.Equal("model-platform-unavailable", Assert.Throws<InvalidDataException>(() =>
+            lease.PreparePackages(new(1, ModelPackageOperation.Install, [hy], [hy], null))).Message);
+    }
+
+    [Fact]
+    public async Task CompleteHyComponentsPermitPreparationWithoutClaimingLoadedPackages()
+    {
+        using var files = new StoreFiles();
+        files.WriteHyComponents();
+        Assert.True(files.Store.CanPrepareWindowsHy);
+        var row = HyPreparationRow(files.Store);
+        Assert.False(row.Ready);
+        Assert.False(row.Installed);
+        Assert.Equal(ModelPackageOperation.Install, Assert.Single(row.Actions).Request.Operation);
+        string hy = ModelCatalog.Packages.Packages.Single(item => item.Backend == "hy-mt-llama-cpu").Id;
+        using var lease = await files.Store.AcquireAsync(TestContext.Current.CancellationToken);
+        using var prepared = lease.PreparePackages(new(1, ModelPackageOperation.Install, [hy], [hy], null));
+        files.Mark(prepared);
+        WriteHyInventory(prepared.Paths.Models);
+        Assert.Equal(hy, Assert.Single(prepared.CreateLoadPlan().ActivePackages).Package.Id);
+        Assert.Empty(files.Store.ReadInstallationState().InstalledPackages);
+        using var model = new ModelClient(files.Store.InitialPaths(), _ => throw new InvalidOperationException("must-not-launch"));
+        Assert.False(model.Ready);
+        Assert.Empty(model.AvailablePackages);
+    }
+
+    [Theory]
+    [InlineData("old-abi")]
+    [InlineData("boolean-abi")]
+    [InlineData("wrong-platform")]
+    [InlineData("old-exports")]
+    [InlineData("extra-export")]
+    [InlineData("wrong-template")]
+    [InlineData("model-template")]
+    [InlineData("adapter-path")]
+    [InlineData("license-path")]
+    [InlineData("size")]
+    [InlineData("hash-shape")]
+    [InlineData("duplicate-key")]
+    [InlineData("oversized-manifest")]
+    [InlineData("missing-manifest")]
+    [InlineData("missing-cpu")]
+    [InlineData("cpu-omitted-from-lock")]
+    [InlineData("duplicate-cpu")]
+    [InlineData("cpu-path")]
+    [InlineData("cpu-directory")]
+    [InlineData("extra-cpu")]
+    [InlineData("extra-source")]
+    public async Task IncompleteOrIncompatibleHyComponentsDisablePreparationAndLoadPlans(string change)
+    {
+        using var files = new StoreFiles();
+        files.WriteHyComponents();
+        string root = Path.Combine(files.Root, "native", "hy");
+        string manifestPath = Path.Combine(root, "production-adapter.json");
+        string cpuPath = Path.Combine(root, "cpu-runtime.win-x64.lock.json");
+        var manifest = JsonNode.Parse(File.ReadAllText(manifestPath))!;
+        var cpu = JsonNode.Parse(File.ReadAllText(cpuPath))!;
+        switch (change)
+        {
+            case "old-abi":
+                manifest["abi"] = 4;
+                break;
+            case "boolean-abi":
+                manifest["abi"] = true;
+                break;
+            case "wrong-platform":
+                manifest["platform"] = "linux-x86_64";
+                break;
+            case "old-exports":
+                manifest["exports"]![1] = "hy_open_v4";
+                break;
+            case "extra-export":
+                manifest["exports"]!.AsArray().Add("hy_audit");
+                break;
+            case "wrong-template":
+                manifest["template_sha256"] = new string('0', 64);
+                break;
+            case "model-template":
+                File.WriteAllText(Path.Combine(root, "model.lock.json"), "{\"schema\":1,\"abi\":5,\"template_sha256\":\"wrong\"}");
+                break;
+            case "adapter-path":
+                manifest["adapter"]!["file"] = "../typelay_hy.dll";
+                break;
+            case "license-path":
+                manifest["license"]!["file"] = "C:/LICENSE.llama.cpp";
+                break;
+            case "size":
+                manifest["adapter"]!["bytes"] = 1;
+                break;
+            case "hash-shape":
+                manifest["adapter"]!["sha256"] = "unknown";
+                break;
+            case "cpu-omitted-from-lock":
+                cpu["files"]!.AsArray().RemoveAt(0);
+                break;
+            case "duplicate-cpu":
+                cpu["files"]!.AsArray().Add(cpu["files"]![0]!.DeepClone());
+                break;
+            case "cpu-path":
+                cpu["files"]![0]!["file"] = "../libomp.dll";
+                break;
+            case "cpu-directory":
+                File.Delete(Path.Combine(root, "cpu-runtime", "libomp.dll"));
+                Directory.CreateDirectory(Path.Combine(root, "cpu-runtime", "libomp.dll"));
+                break;
+            case "missing-cpu":
+                File.Delete(Path.Combine(root, "cpu-runtime", "libomp.dll"));
+                break;
+            case "extra-cpu":
+                File.WriteAllText(Path.Combine(root, "cpu-runtime", "ggml-vulkan.dll"), "unexpected");
+                break;
+            case "extra-source":
+                File.WriteAllText(Path.Combine(root, "hy_adapter.cpp"), "unexpected");
+                break;
+        }
+        File.WriteAllText(cpuPath, cpu.ToJsonString());
+        File.WriteAllText(manifestPath, manifest.ToJsonString());
+        if (change == "duplicate-key")
+            File.WriteAllText(manifestPath, "{\"abi\":5," + manifest.ToJsonString()[1..]);
+        if (change == "oversized-manifest")
+            File.WriteAllText(manifestPath, new string(' ', 128 * 1024) + manifest.ToJsonString());
+        if (change == "missing-manifest")
+            File.Delete(manifestPath);
+        Assert.False(files.Store.CanPrepareWindowsHy);
+        Assert.Empty(HyPreparationRow(files.Store).Actions);
+        using var lease = await files.Store.AcquireAsync(TestContext.Current.CancellationToken);
+        string hy = ModelCatalog.Packages.Packages.Single(item => item.Backend == "hy-mt-llama-cpu").Id;
+        Assert.Equal("model-platform-unavailable", Assert.Throws<InvalidDataException>(() =>
+            lease.PreparePackages(new(1, ModelPackageOperation.Install, [hy], [hy], null))).Message);
+        using var prepared = lease.Prepare();
+        files.Mark(prepared);
+        WriteHyInventory(prepared.Paths.Models);
+        Assert.Equal("model-platform-unavailable", Assert.Throws<InvalidDataException>(prepared.CreateLoadPlan).Message);
+    }
+
+    [Fact]
+    public void HyComponentPresenceIsRecheckedAndRejectsLinkedAncestors()
+    {
+        using var files = new StoreFiles();
+        files.WriteHyComponents();
+        Assert.True(files.Store.CanPrepareWindowsHy);
+        string native = Path.Combine(files.Root, "native");
+        string moved = Path.Combine(files.Root, "moved-native");
+        Directory.Move(native, moved);
+        Assert.False(files.Store.CanPrepareWindowsHy);
+        // Windows junctions need no symlink privilege; Unix uses a directory symlink.
+        if (OperatingSystem.IsWindows())
+        {
+            using var junction = Process.Start(new ProcessStartInfo("cmd.exe")
+            {
+                ArgumentList = { "/d", "/c", "mklink", "/J", "native", "moved-native" },
+                WorkingDirectory = files.Root,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            })!;
+            try
+            {
+                Assert.True(junction.WaitForExit(5000));
+                Assert.Equal(0, junction.ExitCode);
+            }
+            finally
+            {
+                if (!junction.HasExited)
+                {
+                    junction.Kill();
+                    Assert.True(junction.WaitForExit(5000));
+                }
+            }
+        }
+        else
+            Directory.CreateSymbolicLink(native, moved);
+        try
+        {
+            Assert.False(files.Store.CanPrepareWindowsHy);
+        }
+        finally { Directory.Delete(native); }
+    }
+
+    private static ModelPackageRow HyPreparationRow(ModelInstallationStore store)
+    {
+        var state = store.ReadInstallationState();
+        bool canPrepare = store.CanPrepareWindowsHy;
+        var view = ApplicationSupportPresentation.Preparation(new(false, false, Packages: new(state.Generation,
+            state.InventoryKnown, state.InstalledPackages, state.CurrentPackages, [], canPrepare,
+            canPrepare ? null : "native-unavailable", "zh", "ja", false, "NuGet、PyPI")));
+        return Assert.Single(view.PackageRows, row => row.Preview);
+    }
+
+    [Fact]
+    public async Task UnknownGenerationIsNeverPrunedByAnotherStore()
+    {
+        using var files = new StoreFiles();
+        string orphan = Path.Combine(files.Root, "components", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(orphan);
+        File.WriteAllText(Path.Combine(orphan, "owned-by-other-session"), "keep");
+        await files.Publish();
+        await files.Publish();
+        Assert.True(Directory.Exists(orphan));
+    }
+
+    [Fact]
+    public async Task AttemptedCandidateWithoutExitReceiptRetainsBytesAndReportsCleanupPending()
+    {
+        using var files = new StoreFiles();
+        string root;
+        using (var lease = await files.Store.AcquireAsync(TestContext.Current.CancellationToken))
+        using (var prepared = lease.Prepare())
+        {
+            files.Mark(prepared);
+            root = prepared.Root;
+            using var model = new ModelClient(files.Store.InitialPaths(), _ => throw new IOException("failed-start"));
+            Assert.Equal(ModelPublicationOutcome.Unchanged,
+                await prepared.ActivateAsync(model, () => Task.FromResult(true), TestContext.Current.CancellationToken));
+        }
+        Assert.True(Directory.Exists(root));
+        Assert.True(files.Store.CleanupPending);
+    }
+
     [Fact]
     public async Task EmptyFirstStartupKeepsTheNotInstalledState()
     {
@@ -43,7 +513,7 @@ public sealed class ModelInstallationStoreTests
     }
 
     [Fact]
-    public async Task WindowsHyInventoryIsRejectedBeforePlanCreationOrStartup()
+    public async Task MissingHyComponentsRejectInventoryBeforePlanCreationOrStartup()
     {
         using var files = new StoreFiles();
         using (var lease = await files.Store.AcquireAsync(TestContext.Current.CancellationToken))
@@ -96,7 +566,7 @@ public sealed class ModelInstallationStoreTests
     }
 
     [Fact]
-    public async Task LegacyComponentsRemainRollbackableUntilTheyAreNoLongerPrevious()
+    public async Task LegacyComponentsWithoutThisInstanceOwnershipAreNeverDeleted()
     {
         using var files = new StoreFiles();
         var legacy = files.Store.InitialPaths();
@@ -107,8 +577,8 @@ public sealed class ModelInstallationStoreTests
         await files.Publish();
         Assert.Equal("old", File.ReadAllText(legacy.Python));
         await files.Publish();
-        Assert.False(File.Exists(legacy.Python));
-        Assert.False(Directory.Exists(legacy.Models));
+        Assert.True(File.Exists(legacy.Python));
+        Assert.True(Directory.Exists(legacy.Models));
     }
 
     [Fact]
@@ -251,7 +721,8 @@ public sealed class ModelInstallationStoreTests
         string next = await files.Publish();
         Assert.Equal(Path.GetFileName(good), files.Manifest().GetProperty("previous").GetString());
         Assert.True(Directory.Exists(next));
-        Assert.False(Directory.Exists(bad));
+        Assert.True(Directory.Exists(bad));
+        Assert.True(files.Store.CleanupPending);
     }
 
     [Theory]
@@ -400,6 +871,51 @@ public sealed class ModelInstallationStoreTests
             Directory.CreateDirectory(Root);
             File.WriteAllText(Path.Combine(Root, "worker.py"), "controlled worker port");
             Store = new(Root, Path.Combine(Root, "worker.py"));
+        }
+        public void WriteHyComponents()
+        {
+            // Component-presence fixture only. These bytes are never loaded as native code.
+            string root = Path.Combine(Root, "native", "hy");
+            string cpu = Path.Combine(root, "cpu-runtime");
+            Directory.CreateDirectory(cpu);
+            string[] names = ["libomp.dll", "ggml-base.dll", "ggml.dll", "llama.dll", "LICENSE-LLVM-OpenMP",
+                "ggml-cpu-alderlake.dll", "ggml-cpu-cannonlake.dll", "ggml-cpu-cascadelake.dll", "ggml-cpu-cooperlake.dll",
+                "ggml-cpu-haswell.dll", "ggml-cpu-icelake.dll", "ggml-cpu-ivybridge.dll", "ggml-cpu-piledriver.dll",
+                "ggml-cpu-sandybridge.dll", "ggml-cpu-sapphirerapids.dll", "ggml-cpu-skylakex.dll", "ggml-cpu-sse42.dll",
+                "ggml-cpu-x64.dll", "ggml-cpu-zen4.dll"];
+            foreach (string name in names)
+                File.WriteAllText(Path.Combine(cpu, name), "component-presence");
+            object Record(string directory, string name) => new
+            {
+                file = name,
+                bytes = new FileInfo(Path.Combine(directory, name)).Length,
+                sha256 = new string('0', 64)
+            };
+            File.WriteAllText(Path.Combine(root, "cpu-runtime.win-x64.lock.json"), JsonSerializer.Serialize(new
+            {
+                schema = 1,
+                platform = "win-x64",
+                files = names.Select(name => Record(cpu, name))
+            }));
+            const string template = "b7491ec0e9c869dfce20f2176758099bf248d979dd05530ede99deb21698acee";
+            File.WriteAllText(Path.Combine(root, "model.lock.json"), JsonSerializer.Serialize(new
+            {
+                schema = 1,
+                abi = 5,
+                template_sha256 = template
+            }));
+            File.WriteAllText(Path.Combine(root, "typelay_hy.dll"), "component-presence");
+            File.WriteAllText(Path.Combine(root, "LICENSE.llama.cpp"), "component-presence");
+            File.WriteAllText(Path.Combine(root, "production-adapter.json"), JsonSerializer.Serialize(new
+            {
+                schema = 1,
+                platform = "win-x64",
+                abi = 5,
+                template_sha256 = template,
+                exports = new[] { "hy_close", "hy_open_v5", "hy_translate", "hy_translate_glossary_v5", "hy_translate_styled_v5" },
+                adapter = Record(root, "typelay_hy.dll"),
+                license = Record(root, "LICENSE.llama.cpp")
+            }));
         }
         public ModelInstallationStore WithReplace(Action<string, string> replace) => new(Root, Path.Combine(Root, "worker.py"), replace);
         public void Mark(ModelInstallationStore.PreparedInstallation prepared)

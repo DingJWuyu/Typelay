@@ -23,6 +23,12 @@ public sealed class Session
     private bool _editInvalid;
     private long _editConfiguration;
     private LanguageDirection _direction;
+    private TranslationStyle? _style;
+    private GlossarySnapshot? _glossary;
+    public GlossarySnapshot? AppliedGlossary
+    {
+        get; private set;
+    }
     private FocusMember _focus;
 
     public Session(LanguageDirection direction)
@@ -37,6 +43,14 @@ public sealed class Session
     public string Preview => _preview;
     public string Draft => _draft;
     public long Revision => _revision;
+    public TranslationStyle? Style => _style;
+    public bool ManualStyleLocked => State is SessionState.EditingTranslation or SessionState.ReturningToSource
+        or SessionState.EditedTranslationPending || _manualSeed is not null || _manualBasis is not null || _draft.Length != 0;
+
+    public bool ManualSourceCurrent => State is not (SessionState.EditingTranslation or SessionState.ReturningToSource)
+        || !_editInvalid && _editBasis is { } basis && _current is { } current
+            && basis.Target == current.Target && basis.Text == current.Text && basis.InputEpoch == current.InputEpoch;
+
     public bool CanBeginEdit => State is SessionState.ValidTranslation or SessionState.EditedTranslationPending
         && _current is { IsUsable: true };
 
@@ -193,9 +207,40 @@ public sealed class Session
             : _scope is { } r ? source.Text[r.Start..r.End] : source.Text;
         _job = new(Guid.NewGuid(), _id, _revision, _configurationRevision, source, _scope, input,
             _direction, append ? TranslationKind.AppendToManual : TranslationKind.FullOrSelection,
-            append ? _manualSeed : null);
+            append ? _manualSeed : null, Style: _style, Glossary: _glossary);
+        AppliedGlossary = _glossary;
         _pendingSince = nowMs;
         return _job;
+    }
+
+    public bool CanBeginAlternative => _style is null && _glossary?.CouldApply(_direction) != true
+        && State == SessionState.ValidTranslation && _current is { IsUsable: true }
+        && _job is null && !ManualStyleLocked && WriteSafety.ValidReplacement(_candidate);
+
+    public TranslationJob? BeginAlternative()
+    {
+        if (!CanBeginAlternative)
+            return null;
+        var source = _current!;
+        string previous = _candidate;
+        _revision++;
+        _candidate = "";
+        _translationPending = false;
+        State = SessionState.Translating;
+        _job = new(Guid.NewGuid(), _id, _revision, _configurationRevision, source, _scope,
+            _scope is { } scope ? source.Text[scope.Start..scope.End] : source.Text,
+            _direction, TranslationKind.Alternative, null, previous);
+        return _job;
+    }
+
+    public bool AbandonAlternative(TranslationJob job)
+    {
+        if (job.Kind != TranslationKind.Alternative || !IsCurrent(job))
+            return false;
+        _job = null;
+        _translationPending = false;
+        State = SessionState.Invalid;
+        return true; // Only a new source observation may schedule more work.
     }
 
     private bool IsCurrent(TranslationJob job) => State == SessionState.Translating
@@ -207,10 +252,14 @@ public sealed class Session
     public bool Complete(TranslationJob job, string text)
     {
         bool exact = IsCurrent(job);
+        if (job.Kind == TranslationKind.Alternative && !exact)
+            return false;
         bool valid = WriteSafety.ValidReplacement(text) && (job.Basis.Multiline
             || (!text.Contains('\n') && !text.Contains('\r')));
         if (job.PreservedManualText is { } prefix)
             valid &= text.StartsWith(prefix, StringComparison.Ordinal);
+        if (job.Kind == TranslationKind.Alternative)
+            valid = valid && job.PreviousCandidate is { } previous && AlternativeKey(text) != AlternativeKey(previous);
         if (!valid)
         {
             if (exact)
@@ -258,8 +307,12 @@ public sealed class Session
         return true;
     }
 
+    public bool CompleteNoAlternative(TranslationJob job) => job.Kind == TranslationKind.Alternative && Fail(job);
+
     public bool CompleteNoTranslation(TranslationJob job)
     {
+        if (job.Kind == TranslationKind.Alternative)
+            return false;
         if (IsCurrentPreview(job))
         {
             _candidate = "";
@@ -282,6 +335,18 @@ public sealed class Session
 
     public bool Fail(TranslationJob job)
     {
+        if (job.Kind == TranslationKind.Alternative)
+        {
+            if (!IsCurrent(job) || job.PreviousCandidate is not { } previous)
+                return false;
+            _candidate = previous;
+            _preview = previous;
+            _previewRevision = _revision;
+            _job = null;
+            _translationPending = false;
+            State = SessionState.ValidTranslation;
+            return true;
+        }
         if (IsCurrentPreview(job))
         {
             _job = null;
@@ -295,6 +360,10 @@ public sealed class Session
         State = SessionState.TranslationFailed;
         return true;
     }
+
+    private static string AlternativeKey(string text) => string.Concat(text.EnumerateRunes()
+        .Where(rune => !System.Text.Rune.IsWhiteSpace(rune) && !System.Text.Rune.IsPunctuation(rune))
+        .Select(System.Text.Rune.ToUpperInvariant));
 
     private bool IsCurrentPreview(TranslationJob job) => State == SessionState.Invalid
         && _current?.Ime != ImeState.Clear && _previewSource is { } source
@@ -484,6 +553,46 @@ public sealed class Session
         _translationPending = State != SessionState.IdleCapsule;
     }
 
+    // Saving during manual editing updates only the next machine generation.
+    // The current job, candidate, draft, seed and acceptance basis retain their snapshot.
+    public bool SetGlossary(GlossarySnapshot? glossary, long nowMs)
+    {
+        if (ReferenceEquals(_glossary, glossary))
+            return false;
+        _glossary = glossary;
+        if (ManualStyleLocked)
+            return false;
+        return SetStyle(_style, nowMs, configurationChanged: true);
+    }
+
+    // A style change reuses the source and its scope, never the previous translation.
+    // Explicit Retranslate remains the only operation that discards a manual seed.
+    public bool SetStyle(TranslationStyle? style, long nowMs, bool configurationChanged = false)
+    {
+        if (style is { } value && !Enum.IsDefined(value))
+            throw new ArgumentOutOfRangeException(nameof(style));
+        if (style == _style && !configurationChanged)
+            return true;
+        if (ManualStyleLocked || State is SessionState.Applying or SessionState.OutcomeUnknown)
+            return false;
+        _style = style;
+        _configurationRevision++;
+        _revision++;
+        _job = null;
+        _candidate = "";
+        _suppressed = null;
+        _changedAt = _pendingSince = nowMs;
+        ClearPreview();
+        if (State == SessionState.Paused)
+            return true;
+        var source = _current is { IsUsable: true } current ? current : _previewSource;
+        State = _current is { IsUsable: true }
+            ? string.IsNullOrWhiteSpace(source!.SourceText) ? SessionState.IdleCapsule : SessionState.Translating
+            : source is { IsUsable: true } ? SessionState.Invalid : SessionState.NoSession;
+        _translationPending = State is SessionState.Translating or SessionState.Invalid;
+        return true;
+    }
+
     public bool CancelSourceReturn()
     {
         if (State != SessionState.ReturningToSource)
@@ -530,6 +639,7 @@ public sealed class Session
         if (_pendingWrite is { } outstanding)
             _quarantined.Add(outstanding.Expected.Target);
         _id = Guid.NewGuid();
+        AppliedGlossary = null;
         _revision++;
         _current = null;
         _scope = null;

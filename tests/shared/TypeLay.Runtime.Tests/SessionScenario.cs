@@ -7,6 +7,22 @@ namespace TypeLay.Runtime.Tests;
 // No sleeps, native handles, reflection or alternate implementation of Session/WriteSafety.
 internal sealed class SessionScenario : IDisposable
 {
+    private static readonly Lazy<VerifiedModelIdentity> Hy = new(() => ModelClientCapabilityTests.VerifyTestIdentity(true));
+    private static readonly Lazy<VerifiedModelIdentity> Argos = new(() => ModelClientCapabilityTests.VerifyTestIdentity(false));
+    public static VerifiedModelIdentity HyIdentity => Hy.Value;
+    public static VerifiedModelIdentity ArgosIdentity => Argos.Value;
+    public static TranslationReleasePolicy HyRelease
+    {
+        get;
+    } = new([
+        new(TranslationOperation.Style, "hy-mt2-1-8b-q4-k-m", "a0c709d9fac510f2c807aa3af52872340dc37a4a", "zh_ja"),
+        new(TranslationOperation.Glossary, "hy-mt2-1-8b-q4-k-m", "a0c709d9fac510f2c807aa3af52872340dc37a4a", "zh_ja")]);
+    public static TranslationReleasePolicy ArgosRelease
+    {
+        get;
+    } = new([
+        new(TranslationOperation.Alternative, "argos-zh-en", "1.9", "zh_en"),
+        new(TranslationOperation.Alternative, "argos-en-zh", "1.9", "en_zh")]);
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "typelay-runtime-" + Guid.NewGuid().ToString("N"));
     private readonly SynchronizationContext? _previous = SynchronizationContext.Current;
     private readonly SerialContext _context = new();
@@ -34,8 +50,13 @@ internal sealed class SessionScenario : IDisposable
     public SessionScenario(WorkMode mode = WorkMode.Automatic, bool experimental = false,
         bool initiallyAvailable = false, bool inputReady = true, bool start = true, Action<bool>? setStartup = null,
         Func<OwnedPracticeBinding, Task<bool>>? retireOwnedPractice = null,
-        Func<OwnedPracticeBinding, Task<bool>>? confirmRetiredOwnedPractice = null)
+        Func<OwnedPracticeBinding, Task<bool>>? confirmRetiredOwnedPractice = null,
+        TranslationReleasePolicy? translationRelease = null, VerifiedModelIdentity? modelIdentity = null,
+        LanguageDirection? direction = null, bool glossaryAvailable = false,
+        TranslationStyles? initialStyles = null, GlossarySnapshot? initialGlossary = null)
     {
+        Model.VerifiedIdentity = modelIdentity;
+        Model.GlossaryTranslationCapability = glossaryAvailable ? new(1) : null;
         SynchronizationContext.SetSynchronizationContext(_context);
         Source = new(new("controlled", "field-a", Guid.NewGuid()), "hello", new(5, 5),
             new(10, 20, 300, 40), true, FieldAccess.Supported, ImeState.Clear, Loop.NowMs, 1, 1,
@@ -46,14 +67,22 @@ internal sealed class SessionScenario : IDisposable
             Available = initiallyAvailable
         };
         Input.Ready = inputReady;
+        if (initialStyles is not null || initialGlossary is not null)
+        {
+            Directory.CreateDirectory(_directory);
+            File.WriteAllText(Path.Combine(_directory, "settings.json"), System.Text.Json.JsonSerializer.Serialize(
+                new UserSettings(Styles: initialStyles, Glossary: initialGlossary)));
+        }
         Settings = new(Path.Combine(_directory, "settings.json"), setStartup);
         Settings.Update(Settings.Value with
         {
             Mode = mode,
+            Source = direction?.Source ?? Settings.Value.Source,
+            Target = direction?.Target ?? Settings.Value.Target,
             ExperimentalWriteback = experimental
         });
         Controller = new(Settings, Model, View, Input, Service, Loop, retireOwnedPractice ?? (_ => Task.FromResult(true)),
-            confirmRetiredOwnedPractice);
+            confirmRetiredOwnedPractice, translationRelease);
         if (start)
             Controller.StartAsync().GetAwaiter().GetResult();
     }
@@ -113,9 +142,9 @@ internal sealed class SessionScenario : IDisposable
         _context.Drain();
     }
     public InputSnapshot Fresh => Source with { ObservedAtMs = Loop.NowMs };
-    public void Command(string kind, long sequence = 0) => Input.Notices.Enqueue(new(kind, AcceptedAtMs: Loop.NowMs,
+    public void Command(string kind, long sequence = 0, string? application = "org.typelay.ControlledApp") => Input.Notices.Enqueue(new(kind, AcceptedAtMs: Loop.NowMs,
         UserEpoch: Input.UserEpoch, ForegroundEpoch: Input.ForegroundEpoch,
-        Source: Fresh, CommandGeneration: Input.CommandGeneration, CommandSequence: sequence, Target: Source.Target, SessionRevision: View.Token.Revision));
+        Source: Fresh, CommandGeneration: Input.CommandGeneration, CommandSequence: sequence, Target: Source.Target, SessionRevision: View.Token.Revision, Application: application));
     public void FocusAnotherField()
     {
         Source = Source with
@@ -166,6 +195,10 @@ internal sealed class SessionScenario : IDisposable
     }
     internal sealed class InputMonitor : IInputMonitor
     {
+        public GlossaryTranslationCapability? GlossaryTranslationCapability
+        {
+            get; set;
+        }
         public bool Ready { get; set; } = true;
         public OwnedPracticeBinding? PracticeForegroundSuspension
         {
@@ -320,12 +353,13 @@ internal sealed class SessionScenario : IDisposable
                 await pending.Task;
             Available = true;
         }
+        public string? Application { get; set; } = "org.typelay.ControlledApp";
         public Func<SessionShortcutAcknowledgement, SessionShortcutAcknowledgement?> TransformAcknowledgement { get; set; } = value => value;
         public Task<InputCapture> CaptureAsync(InputContext context)
         {
             Captures++;
             return PendingCapture?.Task ?? Task.FromResult(new InputCapture(host.Fresh,
-                host.Input.GetFocus(host.Source.Target), "org.typelay.ControlledApp", context.UserEpoch, context.ForegroundEpoch,
+                host.Input.GetFocus(host.Source.Target), Application, context.UserEpoch, context.ForegroundEpoch,
                 TransformAcknowledgement(new(host.Source.Target, host.Input.CommandGeneration, host.Input.SessionBindings,
                     host.Input.SessionEnabled, host.Input.SessionEnabled)),
                 OwnedSource: context.PracticeRead is { } practice ? new(practice, host.Loop.NowMs, false) : null));
@@ -391,6 +425,18 @@ internal sealed class SessionScenario : IDisposable
     }
     internal sealed class Translator : ITranslationService
     {
+        public VerifiedModelIdentity? VerifiedIdentity
+        {
+            get; set;
+        }
+        public StyledTranslationCapability? StyledTranslationCapability
+        {
+            get; set;
+        }
+        public GlossaryTranslationCapability? GlossaryTranslationCapability
+        {
+            get; set;
+        }
         public bool Ready { get; set; } = true;
         public bool Busy => Pending is not null;
         public List<TranslationJob> Jobs { get; } = [];
@@ -398,6 +444,9 @@ internal sealed class SessionScenario : IDisposable
         {
             get; private set;
         }
+        public Task<ModelResponse> TranslateAsync(TranslationJob job, VerifiedModelIdentity expectedIdentity) =>
+            ReferenceEquals(expectedIdentity, VerifiedIdentity) ? TranslateAsync(job)
+                : Task.FromResult(new ModelResponse(0, "error", Code: "not-ready"));
         public Task<ModelResponse> TranslateAsync(TranslationJob job)
         {
             Jobs.Add(job);
@@ -429,7 +478,31 @@ internal sealed class SessionScenario : IDisposable
         {
             get; set;
         }
+        public Action<SessionViewToken>? AlternativeRequested
+        {
+            get; set;
+        }
+        public Func<SessionStyleRequest, Task<StyleChangeResult>>? StyleRequested
+        {
+            get; set;
+        }
         public Action? RegenerateRequested
+        {
+            get; set;
+        }
+        public Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
+        {
+            get; set;
+        }
+        public Func<SessionGlossaryRequest, Task<GlossaryChangeResult>>? AddGlossaryRequested
+        {
+            get; set;
+        }
+        public Action<Guid>? CloseGlossaryRequested
+        {
+            get; set;
+        }
+        public SessionGlossaryFocus? GlossaryEntryFocus
         {
             get; set;
         }
@@ -477,8 +550,13 @@ internal sealed class SessionScenario : IDisposable
         {
             get; private set;
         }
+        public int Configurations
+        {
+            get; private set;
+        }
         public void Configure(UserSettings settings)
         {
+            Configurations++;
         }
         public SessionViewContext? Context
         {

@@ -1715,11 +1715,309 @@ class InputFeedbackTests(unittest.TestCase):
                                 },
                             }
                         )
+                    elif frame["op"] == "overlay-glossary-open" and "id" in frame:
+                        self.peer.link.receive({"id": frame["id"], "data": {"opened": True}})
                 for job in jobs:
                     if job.done():
                         job.result()
         received.extend(self.native_frames(self.peer))
         return received
+
+    def test_inline_glossary_dispatches_one_rule_only_from_current_clear_auxiliary_focus(self):
+        async def exercise():
+            overlay, jobs, token, view = await self.overlay_scenario()
+            overlay.render({**view, "state": "EditingTranslation"})
+            await self.settle_overlay(jobs)
+            entry = {
+                "formId": str(uuid.uuid4()),
+                "token": token,
+                "settingsRevision": 12,
+                "directions": [],
+            }
+            original_ask = self.host.ask
+
+            async def ask(operation, value=None):
+                if operation == "sessionGlossaryBegin":
+                    self.host.requests.append((operation, value))
+                    return entry
+                if operation == "sessionGlossaryAdd":
+                    self.host.requests.append((operation, value))
+                    return {"saved": False, "code": "glossary-conflict"}
+                return await original_ask(operation, value)
+
+            self.host.ask = ask
+            event = {
+                "target": "ordinary-field",
+                "revision": overlay.revision,
+                "generation": self.generation,
+            }
+            self.peer.event("ui", {**event, "operation": "sessionGlossaryBegin"})
+            frames = await self.settle_overlay(jobs)
+            opened = next(
+                frame["data"] for frame in frames if frame["op"] == "overlay-glossary-open"
+            )
+            self.assertEqual(opened["entry"], entry)
+            self.assertNotIn("beginEdit", [operation for operation, _ in self.host.requests])
+            # The real auxiliary route withdraws editor capability, not the
+            # approved form or ownership of the unchanged translation buffer.
+            overlay.render(
+                {
+                    **view,
+                    "state": "EditingTranslation",
+                    "editable": False,
+                    "viewContext": {**view["viewContext"], "canEdit": False},
+                }
+            )
+            frames = await self.settle_overlay(jobs)
+            self.assertEqual(
+                next(
+                    frame["data"]["revision"] for frame in frames if frame["op"] == "overlay-render"
+                ),
+                event["revision"],
+            )
+            self.assertNotIn(("sessionGlossaryClose", entry["formId"]), self.host.events)
+            request = {
+                **entry,
+                "rule": {
+                    "sourceTerm": "PR",
+                    "targetTerm": "pull request",
+                    "sourceLanguage": "en",
+                    "targetLanguage": "zh",
+                },
+            }
+            del request["directions"]
+            for ime in (None, "Unknown", "Composing"):
+                focus = {"formId": entry["formId"], "token": token, "ime": ime} if ime else None
+                self.peer.event(
+                    "ui", {**event, "operation": "sessionGlossaryFocus", "value": focus}
+                )
+                self.peer.event(
+                    "ui", {**event, "operation": "sessionGlossaryAdd", "value": request}
+                )
+                await self.settle_overlay(jobs)
+                self.assertNotIn(
+                    "sessionGlossaryAdd", [operation for operation, _ in self.host.requests]
+                )
+            focus = {"formId": entry["formId"], "token": token, "ime": "Clear"}
+            self.peer.event("ui", {**event, "operation": "sessionGlossaryFocus", "value": focus})
+            self.assertEqual(self.input.focus(), "Overlay")
+            self.peer.event("ui", {**event, "operation": "sessionGlossaryAdd", "value": request})
+            self.peer.event("ui", {**event, "operation": "sessionGlossaryAdd", "value": request})
+            frames = await self.settle_overlay(jobs)
+            self.assertEqual(
+                [item for item in self.host.requests if item[0] == "sessionGlossaryAdd"],
+                [("sessionGlossaryAdd", request)],
+            )
+            result = next(
+                frame["data"] for frame in frames if frame["op"] == "overlay-glossary-result"
+            )
+            self.assertEqual(result["result"], {"saved": False, "code": "glossary-conflict"})
+            self.peer.event(
+                "ui", {**event, "operation": "sessionGlossaryClose", "value": entry["formId"]}
+            )
+            self.assertIn(("sessionGlossaryClose", entry["formId"]), self.host.events)
+            self.assertNotIn("escape", [operation for operation, _ in self.host.events])
+            self.peer.event("ui", {**event, "operation": "sessionGlossaryAdd", "value": request})
+            await self.settle_overlay(jobs)
+            self.assertEqual(
+                len([item for item in self.host.requests if item[0] == "sessionGlossaryAdd"]), 1
+            )
+
+        asyncio.run(exercise())
+
+    def test_inline_glossary_discards_stale_open_and_does_not_retry_unknown_save(self):
+        async def exercise():
+            overlay, jobs, token, view = await self.overlay_scenario()
+            overlay.render({**view, "state": "EditingTranslation"})
+            await self.settle_overlay(jobs)
+            entry = {
+                "formId": str(uuid.uuid4()),
+                "token": token,
+                "settingsRevision": 12,
+                "directions": [],
+            }
+            opening = asyncio.Future()
+            original_ask = self.host.ask
+
+            async def ask(operation, value=None):
+                if operation == "sessionGlossaryBegin":
+                    self.host.requests.append((operation, value))
+                    return await opening
+                if operation == "sessionGlossaryAdd":
+                    self.host.requests.append((operation, value))
+                    raise TimeoutError()
+                return await original_ask(operation, value)
+
+            self.host.ask = ask
+            event = {
+                "target": "ordinary-field",
+                "revision": overlay.revision,
+                "generation": self.generation,
+            }
+            self.peer.event("ui", {**event, "operation": "sessionGlossaryBegin"})
+            await asyncio.sleep(0)
+            overlay.render({**view, "state": "EditingTranslation", "status": "changed"})
+            opening.set_result(entry)
+            frames = await self.settle_overlay(jobs)
+            self.assertFalse(any(frame["op"] == "overlay-glossary-open" for frame in frames))
+            self.assertIn(("sessionGlossaryClose", entry["formId"]), self.host.events)
+            event["revision"] = overlay.revision
+            self.peer.event("ui", {**event, "operation": "sessionGlossaryBegin"})
+            await self.settle_overlay(jobs)
+            focus = {"formId": entry["formId"], "token": token, "ime": "Clear"}
+            request = {
+                "formId": entry["formId"],
+                "token": token,
+                "settingsRevision": 12,
+                "rule": {
+                    "sourceTerm": "PR",
+                    "targetTerm": "PR",
+                    "sourceLanguage": None,
+                    "targetLanguage": None,
+                },
+            }
+            self.peer.event("ui", {**event, "operation": "sessionGlossaryFocus", "value": focus})
+            self.peer.event("ui", {**event, "operation": "sessionGlossaryAdd", "value": request})
+            frames = await self.settle_overlay(jobs)
+            self.assertIsNone(
+                next(
+                    frame["data"]["result"]
+                    for frame in frames
+                    if frame["op"] == "overlay-glossary-result"
+                )
+            )
+            self.peer.event("ui", {**event, "operation": "sessionGlossaryAdd", "value": request})
+            await self.settle_overlay(jobs)
+            self.assertEqual(
+                len([item for item in self.host.requests if item[0] == "sessionGlossaryAdd"]), 1
+            )
+            overlay.hide()
+            self.assertIn(("sessionGlossaryClose", entry["formId"]), self.host.events)
+            self.assertIn(("sessionGlossaryFocus", None), self.host.events)
+
+        asyncio.run(exercise())
+
+    def test_overlay_translation_actions_keep_identity_and_dispatch_frozen_session(self):
+        async def exercise():
+            overlay, jobs, token, view = await self.overlay_scenario()
+            original_revision = overlay.revision
+            actions = {
+                "settingsRevision": 12,
+                "styleReleased": True,
+                "canChangeStyle": True,
+                "canInheritStyle": True,
+                "applicationStyle": None,
+                "alternativeReleased": True,
+                "canRequestAlternative": True,
+            }
+            current = {
+                **view,
+                "viewContext": {**view["viewContext"], "translationActions": actions},
+            }
+            overlay.render(current)
+            frames = await self.settle_overlay(jobs)
+            rendered = next(frame["data"] for frame in frames if frame["op"] == "overlay-render")
+            self.assertEqual(rendered["revision"], original_revision)
+            self.assertEqual(rendered["view"]["viewContext"]["token"], token)
+            event = {
+                "target": "ordinary-field",
+                "revision": original_revision,
+                "generation": self.generation,
+            }
+            for style in (None, "Natural", "Formal"):
+                self.peer.event(
+                    "ui",
+                    {
+                        **event,
+                        "operation": "style",
+                        "value": {
+                            "settingsRevision": 12,
+                            "style": style,
+                        },
+                    },
+                )
+                await self.settle_overlay(jobs)
+                self.assertEqual(
+                    self.host.requests[-1],
+                    (
+                        "sessionStyle",
+                        {
+                            "token": token,
+                            "settingsRevision": 12,
+                            "style": style,
+                        },
+                    ),
+                )
+            self.peer.event("ui", {**event, "operation": "alternative"})
+            self.assertIn(("alternative", token), self.host.events)
+            for change in (
+                {"status": "IME 正在输入"},
+                {"text": "changed"},
+                {
+                    "viewContext": {**current["viewContext"], "canEdit": False},
+                },
+            ):
+                overlay.render({**current, **change})
+                await self.settle_overlay(jobs)
+                self.assertGreater(overlay.revision, original_revision)
+                before = len(self.host.requests), len(self.host.events)
+                self.peer.event(
+                    "ui",
+                    {
+                        **event,
+                        "operation": "style",
+                        "value": {
+                            "settingsRevision": 12,
+                            "style": "Formal",
+                        },
+                    },
+                )
+                self.peer.event("ui", {**event, "operation": "alternative"})
+                await self.settle_overlay(jobs)
+                self.assertEqual((len(self.host.requests), len(self.host.events)), before)
+
+        asyncio.run(exercise())
+
+    def test_overlay_translation_actions_reject_unknown_payloads_and_delayed_dispatch(self):
+        async def exercise():
+            overlay, jobs, token, view = await self.overlay_scenario()
+            event = {
+                "target": "ordinary-field",
+                "revision": overlay.revision,
+                "generation": self.generation,
+                "operation": "style",
+            }
+            before = len(self.host.requests)
+            for value in (
+                None,
+                {},
+                {"settingsRevision": True, "style": "Natural"},
+                {"settingsRevision": -1, "style": None},
+                {"settingsRevision": 1, "style": 1},
+                {"settingsRevision": 1, "style": "natural"},
+                {"settingsRevision": 1, "style": "Formal", "application": "other"},
+            ):
+                self.peer.event("ui", {**event, "value": value})
+            await self.settle_overlay(jobs)
+            self.assertEqual(len(self.host.requests), before)
+            # A queued action must not silently adopt the next source render.
+            self.peer.event("ui", {**event, "value": {"settingsRevision": 12, "style": None}})
+            overlay.render(
+                {
+                    **view,
+                    "viewContext": {
+                        **view["viewContext"],
+                        "token": {
+                            **token,
+                            "revision": token["revision"] + 1,
+                        },
+                    },
+                }
+            )
+            await self.settle_overlay(jobs)
+            self.assertEqual(len(self.host.requests), before)
+
+        asyncio.run(exercise())
 
     def test_overlay_language_options_refresh_without_changing_saved_direction(self):
         async def exercise():
@@ -2380,6 +2678,8 @@ class InputFeedbackTests(unittest.TestCase):
         refusal = {
             **command,
             "reason": "EpochChanged",
+            "application": "untrusted-app",
+            "native": {"application": "untrusted-native-app"},
             "diagnostic": {"phase": "ime", "gate": "input-revision"},
         }
         with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}), contextlib.redirect_stderr(output):
@@ -2400,6 +2700,7 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertEqual(len(self.host.notices), 1)
         self.assertEqual(self.host.notices[0]["rejection"], "EpochChanged")
         self.assertNotIn("diagnostic", self.host.notices[0])
+        self.assertNotIn("application", self.host.notices[0])
 
     def test_invalid_or_missing_refusal_diagnostic_cannot_change_rejection_or_log_text(self):
         output = io.StringIO()
@@ -2612,10 +2913,14 @@ class InputFeedbackTests(unittest.TestCase):
             {"bounds": {"x": 0, "y": 0, "width": 20, "height": 10}},
         )
         self.native_frames(self.peer)
-        publication = {"lease": {"source": source}, "generation": self.generation}
+        publication = {
+            "lease": {"source": source, "application": "verified-editor"},
+            "generation": self.generation,
+        }
         self.input.notification("publishShortcut", publication)
         frames = self.native_frames(self.peer)
         self.assertEqual([frame["op"] for frame in frames], ["publish-shortcut"])
+        self.assertEqual(set(frames[0]["data"]), {"target", "authority", "generation"})
         self.assertEqual(frames[0]["data"]["generation"], self.generation)
         self.assertIsNotNone(self.peer.shortcut)
 
@@ -2958,15 +3263,18 @@ class InputFeedbackTests(unittest.TestCase):
 
     def test_qt_result_stays_bound_to_the_approval_at_command_start(self):
         self.focus(self.peer)
+        self.peer.application = "verified-editor"
         self.peer.shortcut = {"target": {"value": "original"}, "window": {"id": 1}}
-        command = self.command()
+        command = self.command(kind="direct")
         self.peer.shortcut = {"target": {"value": "newer"}, "window": {"id": 2}}
         self.peer.event(
             "shortcut",
             {
                 **command,
                 "acceptedAtMs": 200,
+                "application": "untrusted-outer-app",
                 "native": {
+                    "application": "untrusted-native-app",
                     "target": "original",
                     "text": "original test text",
                     "selection": {"start": 0, "length": 0},
@@ -2987,6 +3295,7 @@ class InputFeedbackTests(unittest.TestCase):
         )
         self.assertEqual(len(self.host.notices), 1)
         self.assertEqual(self.host.notices[0]["source"]["text"], "original test text")
+        self.assertEqual(self.host.notices[0]["application"], "verified-editor")
         self.assertEqual(self.host.notices[0]["source"]["target"]["value"], "original")
         self.assertEqual(self.host.notices[0]["commandSequence"], 1)
 

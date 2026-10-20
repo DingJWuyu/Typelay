@@ -76,6 +76,9 @@ public interface IChildProcess : IDisposable
     {
         get;
     }
+    // Native owners may own pipes independently of the Process liveness observer.
+    Stream StandardInput => Process.StandardInput.BaseStream;
+    Stream StandardOutput => Process.StandardOutput.BaseStream;
     // Successful completion proves the platform's owned process family exited.
     // Cancellation/failure retains the owner so the same proof can be retried.
     Task TerminateAndWaitAsync(CancellationToken cancellationToken);

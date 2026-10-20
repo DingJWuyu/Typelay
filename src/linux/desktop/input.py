@@ -2092,6 +2092,8 @@ class Input:
                 )
                 notice["source"] = snapshot
                 notice["acceptedAtMs"] = value["acceptedAtMs"]
+                if peer.application is not None:
+                    notice["application"] = peer.application
         self.host.send("notice", notice)
         if rejected and os.environ.get("TYPELAY_TRACE"):
             diagnostic = value.get("diagnostic")

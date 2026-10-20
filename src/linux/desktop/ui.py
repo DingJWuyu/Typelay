@@ -1037,6 +1037,728 @@ class LanguagePicker(Gtk.ComboBoxText):
             self.synchronizing = False
 
 
+class TranslationSettings:
+    """Dedicated drafts in the existing language page; no source-session authority."""
+
+    def __init__(self, owner, grid, row):
+        self.owner = owner
+        self.style_state = self.glossary_state = None
+        self.style_draft = None
+        self.removed_applications = set()
+        self.rules_draft = None
+        self.baseline = None
+        self.baseline_styles = None
+        self.baseline_rules = None
+        self.pending = None
+        self.saving = False
+        self.load_revision = 0
+        self.state_confirmed = False
+        self.directions = []
+        self.direction_targets = []
+        self.application_rows = None
+        self.glossary_rows = None
+        self.configuring = False
+        self.box = Gtk.Grid(column_spacing=24, row_spacing=12)
+        self.box.set_no_show_all(True)
+        grid.attach(self.box, 0, row, 2, 1)
+        self.style_box = Gtk.Grid(column_spacing=24, row_spacing=10)
+        self.style_box.set_no_show_all(True)
+        self.box.attach(self.style_box, 0, 0, 2, 1)
+        self.style_box.attach(Gtk.Separator(), 0, 0, 2, 1)
+        self.style_box.attach(Gtk.Label(label="翻译风格", xalign=0), 0, 1, 1, 1)
+        self.style = Gtk.ComboBoxText()
+        self.style.set_no_show_all(True)
+        self.style.get_accessible().set_name("全局翻译风格")
+        for key, title in (("Natural", "自然"), ("Formal", "正式")):
+            self.style.append(key, title)
+        self.style.connect("changed", self.style_changed)
+        self.style_box.attach(self.style, 1, 1, 1, 1)
+        self.style_notice = Gtk.Label(xalign=0)
+        self.style_notice.set_line_wrap(True)
+        self.style_notice.set_max_width_chars(48)
+        self.style_box.attach(self.style_notice, 0, 2, 2, 1)
+        self.applications = Gtk.ListBox()
+        self.applications.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.applications.get_accessible().set_name("已保存的应用风格覆盖")
+        self.style_box.attach(self.applications, 0, 3, 2, 1)
+        self.reset = Gtk.Button(label="重置翻译风格…")
+        self.reset.get_accessible().set_name("重置全局及所有应用翻译风格")
+        self.reset.set_no_show_all(True)
+        self.reset.connect("clicked", self.confirm_reset)
+        self.style_box.attach(self.reset, 0, 4, 2, 1)
+        self.glossary_box = Gtk.Grid(column_spacing=24, row_spacing=10)
+        self.glossary_box.set_no_show_all(True)
+        self.box.attach(self.glossary_box, 0, 1, 2, 1)
+        self.glossary_box.attach(Gtk.Separator(), 0, 0, 2, 1)
+        self.glossary_box.attach(Gtk.Label(label="术语表", xalign=0), 0, 1, 2, 1)
+        self.glossary_notice = Gtk.Label(xalign=0)
+        self.glossary_notice.set_line_wrap(True)
+        self.glossary_notice.set_max_width_chars(48)
+        self.glossary_box.attach(self.glossary_notice, 0, 2, 2, 1)
+        self.rules = Gtk.ListBox()
+        self.rules.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.rules.get_accessible().set_name("本地术语规则")
+        self.glossary_box.attach(self.rules, 0, 3, 2, 1)
+        self.editor = Gtk.Grid(column_spacing=12, row_spacing=8)
+        self.editor.set_no_show_all(True)
+        self.glossary_box.attach(self.editor, 0, 4, 2, 1)
+        self.source_term, self.target_term = Gtk.Entry(), Gtk.Entry()
+        for index, (title, entry) in enumerate(
+            (("源词", self.source_term), ("指定译法", self.target_term))
+        ):
+            entry.get_accessible().set_name("术语：" + title)
+            entry.set_max_length(128)
+            entry.connect("changed", lambda *_: self.changed())
+            self.editor.attach(Gtk.Label(label=title, xalign=0), 0, index, 1, 1)
+            self.editor.attach(entry, 1, index, 1, 1)
+        self.scope = Gtk.ComboBoxText()
+        self.scope.get_accessible().set_name("术语作用范围")
+        self.scope.append("global", "全局")
+        self.scope.append("directed", "指定语言方向")
+        self.scope.set_active_id("global")
+        self.scope.connect("changed", lambda *_: self.render_scope())
+        self.editor.attach(self.scope, 0, 2, 2, 1)
+        self.source_language, self.target_language = Gtk.ComboBoxText(), Gtk.ComboBoxText()
+        self.source_language.connect("changed", lambda *_: self.render_direction_targets())
+        self.source_language.get_accessible().set_name("术语源语言")
+        self.target_language.get_accessible().set_name("术语目标语言")
+        for index, widget in enumerate((self.source_language, self.target_language)):
+            widget.set_no_show_all(True)
+            self.editor.attach(widget, index, 3, 1, 1)
+        self.add = Gtk.Button(label="加入草稿")
+        self.add.get_accessible().set_name("添加明确术语规则")
+        self.add.connect("clicked", lambda *_: self.add_rule())
+        self.editor.attach(self.add, 0, 4, 2, 1)
+        self.render()
+
+    @staticmethod
+    def unavailable_message(code):
+        return {
+            "style-unavailable": "当前模型暂不支持风格。",
+            "style-not-released": "当前方向尚未开放风格。",
+            "manual-style-locked": "人工稿存在，暂不能更改风格。",
+            "style-busy": "翻译操作尚未结束，暂不能更改风格。",
+            "glossary-busy": "翻译操作尚未结束，暂不能保存术语。",
+            "glossary-unavailable": "当前模型暂不支持术语应用。",
+            "glossary-not-released": "新增术语尚未开放。",
+            "glossary-combination-unavailable": "当前不支持同时应用风格和术语。",
+            "invalid-glossary": "请检查源词、指定译法和语言方向。",
+            "style-save-failed": "风格未保存，请检查权限或磁盘空间。",
+            "glossary-save-failed": "术语未保存，请检查权限或磁盘空间。",
+            "style-stale": "设置已更改，请检查后再次保存。",
+            "glossary-stale": "设置已更改，请检查后再次保存。",
+        }.get(code, "当前无法保存这项翻译设置。")
+
+    @property
+    def dirty(self):
+        return (
+            self.style_draft is not None
+            or bool(self.removed_applications)
+            or self.rules_draft is not None
+            or bool(self.source_term.get_text())
+            or bool(self.target_term.get_text())
+        )
+
+    def changed(self):
+        if self.configuring:
+            return
+        if self.baseline is None and self.style_state is not None:
+            self.baseline = self.style_state["settingsRevision"]
+            self.baseline_styles = self.style_state.get("savedPreferences")
+            self.baseline_rules = ((self.glossary_state or {}).get("savedSnapshot") or {}).get(
+                "rules", []
+            )
+        self.owner.render_draft()
+
+    def refresh(self):
+        self.load_revision += 1
+        self.owner.tasks(self.load(self.load_revision))
+
+    async def load(self, revision):
+        session = self.owner.draft_session
+        proposed = (
+            [dict(rule) for rule in self.rules_draft] if self.rules_draft is not None else None
+        )
+        try:
+            style = await self.owner.host.ask("getStyleSettings", timeout=2)
+            glossary = await self.owner.host.ask("getGlossarySettings", proposed, timeout=2)
+            if revision != self.load_revision or session != self.owner.draft_session:
+                return False
+            if (
+                not isinstance(style, dict)
+                or not isinstance(glossary, dict)
+                or type(style.get("settingsRevision")) is not int
+                or style.get("settingsRevision") != glossary.get("settingsRevision")
+                or type(style.get("isReleased")) is not bool
+                or type(glossary.get("isReleased")) is not bool
+            ):
+                raise ValueError("translation-settings-unconfirmed")
+            self.style_state, self.glossary_state = style, glossary
+            self.state_confirmed = True
+            self.render()
+            return True
+        except (OSError, ValueError, EOFError, TimeoutError):
+            if revision == self.load_revision and session == self.owner.draft_session:
+                self.state_confirmed = False
+                self.render()
+                self.owner.report_save_result(
+                    False, "无法确认翻译设置。草稿仍保留，请重试保存或重新打开设置检查。"
+                )
+            return False
+
+    def render(self):
+        style, glossary = self.style_state, self.glossary_state
+        self.configuring = True
+        try:
+            saved = style.get("savedPreferences") if style else None
+            self.style_box.set_visible(bool(style and (style["isReleased"] or saved)))
+            self.style.set_visible(bool(style and style["isReleased"]))
+            self.style.set_sensitive(
+                bool(
+                    style
+                    and style.get("canChange")
+                    and self.pending is None
+                    and not self.saving
+                    and self.state_confirmed
+                )
+            )
+            self.style.set_active_id(self.style_draft or (saved or {}).get("default"))
+            current_style = {"Natural": "自然", "Formal": "正式"}.get(
+                (saved or {}).get("default"), "未设置"
+            )
+            self.style_notice.set_text(
+                "已保存全局："
+                + current_style
+                + (
+                    "。新增风格尚未开放。"
+                    if style and not style["isReleased"]
+                    else "。" + self.unavailable_message(style.get("unavailableReason"))
+                    if style and not style.get("canChange")
+                    else ""
+                )
+            )
+            self.reset.set_visible(bool(saved))
+            self.reset.set_sensitive(
+                bool(
+                    style
+                    and style.get("canReset")
+                    and not self.dirty
+                    and self.pending is None
+                    and not self.saving
+                    and self.state_confirmed
+                )
+            )
+            applications = (
+                [
+                    item
+                    for item in style.get("applications", [])
+                    if item["application"] not in self.removed_applications
+                ]
+                if style
+                else []
+            )
+            application_rows = [(item["application"], item["style"]) for item in applications]
+            if application_rows != self.application_rows:
+                self.application_rows = application_rows
+                for child in self.applications.get_children():
+                    self.applications.remove(child)
+                for item in style.get("applications", []) if style else []:
+                    application = item["application"]
+                    if application in self.removed_applications:
+                        continue
+                    row = Gtk.Box(spacing=12)
+                    label = Gtk.Label(
+                        label=application
+                        + " · "
+                        + {"Natural": "自然", "Formal": "正式"}.get(item["style"], item["style"]),
+                        xalign=0,
+                    )
+                    label.set_line_wrap(True)
+                    label.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+                    label.set_max_width_chars(35)
+                    row.pack_start(label, True, True, 0)
+                    button = Gtk.Button(label="移除覆盖")
+                    button.get_accessible().set_name("移除风格覆盖：" + application)
+                    button.set_sensitive(
+                        item.get("removal", {}).get("canRemove") is True
+                        and self.pending is None
+                        and not self.saving
+                        and self.state_confirmed
+                    )
+                    button.connect(
+                        "clicked", lambda *_, key=application: self.remove_application(key)
+                    )
+                    row.pack_end(button, False, False, 0)
+                    self.applications.add(row)
+            for row, item in zip(self.applications.get_children(), applications):
+                button = row.get_child().get_children()[-1]
+                button.set_sensitive(
+                    item.get("removal", {}).get("canRemove") is True
+                    and self.pending is None
+                    and not self.saving
+                    and self.state_confirmed
+                )
+            self.applications.show_all()
+            rules = self.current_rules()
+            self.glossary_box.set_visible(
+                bool(glossary and (glossary["isReleased"] or rules or self.rules_draft is not None))
+            )
+            self.editor.set_visible(bool(glossary and glossary["isReleased"]))
+            self.editor.set_sensitive(
+                self.pending is None and not self.saving and self.state_confirmed
+            )
+            self.glossary_notice.set_text(
+                ""
+                if glossary and glossary["isReleased"]
+                else "新增术语尚未开放；可删除已保存规则。"
+            )
+            if rules != self.glossary_rows:
+                self.glossary_rows = [dict(rule) for rule in rules]
+                for child in self.rules.get_children():
+                    self.rules.remove(child)
+                for index, rule in enumerate(rules):
+                    row = Gtk.Box(spacing=12)
+                    scope = (
+                        (rule.get("sourceLanguage") + " → " + rule.get("targetLanguage"))
+                        if rule.get("sourceLanguage")
+                        else "全局"
+                    )
+                    label = Gtk.Label(
+                        label=f"{rule['sourceTerm']} → {rule['targetTerm']} · {scope}", xalign=0
+                    )
+                    label.set_line_wrap(True)
+                    label.set_max_width_chars(35)
+                    label.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+                    row.pack_start(label, True, True, 0)
+                    button = Gtk.Button(label="删除")
+                    button.get_accessible().set_name(
+                        "删除术语：" + rule["sourceTerm"] + " · " + scope
+                    )
+                    button.set_sensitive(
+                        self.pending is None and not self.saving and self.state_confirmed
+                    )
+                    button.connect("clicked", lambda *_, position=index: self.remove_rule(position))
+                    row.pack_end(button, False, False, 0)
+                    self.rules.add(row)
+            for row in self.rules.get_children():
+                row.get_child().get_children()[-1].set_sensitive(
+                    self.pending is None and not self.saving and self.state_confirmed
+                )
+            self.rules.show_all()
+            directions = (glossary or {}).get("directions", [])
+            if directions != self.directions:
+                self.directions = directions
+                selected = self.source_language.get_active_id()
+                self.source_language.remove_all()
+                for code, label in dict(
+                    (item["source"], item["sourceName"]) for item in directions
+                ).items():
+                    self.source_language.append(code, label)
+                self.source_language.set_active_id(selected)
+                self.render_direction_targets()
+            self.box.set_visible(self.style_box.get_visible() or self.glossary_box.get_visible())
+            # The containing sections use no-show-all so closed release controls
+            # cannot be exposed by reopening the ordinary Settings window.
+            for section in (self.style_box, self.glossary_box):
+                for child in section.get_children():
+                    if child not in (self.style, self.reset, self.editor):
+                        child.show_all()
+            if glossary and glossary["isReleased"]:
+                self.editor.show_all()
+            self.render_scope()
+            self.glossary_notice.set_visible(bool(self.glossary_notice.get_text()))
+        finally:
+            self.configuring = False
+        self.owner.render_draft()
+
+    def render_direction_targets(self):
+        choices = [
+            (item["target"], item["targetName"])
+            for item in self.directions
+            if item["source"] == self.source_language.get_active_id()
+        ]
+        if choices == self.direction_targets:
+            return
+        self.direction_targets = choices
+        selected = self.target_language.get_active_id()
+        self.target_language.remove_all()
+        for code, label in choices:
+            self.target_language.append(code, label)
+        self.target_language.set_active_id(selected)
+
+    def render_scope(self):
+        directed = self.scope.get_active_id() == "directed"
+        self.source_language.set_visible(directed)
+        self.target_language.set_visible(directed)
+
+    def style_changed(self, *_):
+        if (
+            self.configuring
+            or not self.style_state
+            or not self.style_state.get("isReleased")
+            or not self.style_state.get("canChange")
+        ):
+            return
+        self.style_draft = self.style.get_active_id()
+        self.changed()
+
+    def remove_application(self, application):
+        if not self.style_state or not any(
+            item["application"] == application and item.get("removal", {}).get("canRemove") is True
+            for item in self.style_state["applications"]
+        ):
+            return
+        self.removed_applications.add(application)
+        self.changed()
+        self.render()
+
+    def current_rules(self):
+        if self.rules_draft is not None:
+            return self.rules_draft
+        return ((self.glossary_state or {}).get("savedSnapshot") or {}).get("rules", [])
+
+    def remove_rule(self, index):
+        if self.pending is not None or not self.glossary_state:
+            return
+        self.rules_draft = [dict(rule) for rule in self.current_rules()]
+        self.rules_draft.pop(index)
+        self.changed()
+        self.render()
+        self.refresh()
+
+    def add_rule(self):
+        if (
+            not self.glossary_state
+            or not self.glossary_state.get("isReleased")
+            or self.pending is not None
+        ):
+            return False
+        rule = {
+            "sourceTerm": self.source_term.get_text(),
+            "targetTerm": self.target_term.get_text(),
+            "sourceLanguage": None,
+            "targetLanguage": None,
+        }
+        if self.scope.get_active_id() == "directed":
+            rule.update(
+                sourceLanguage=self.source_language.get_active_id(),
+                targetLanguage=self.target_language.get_active_id(),
+            )
+        if (
+            not rule["sourceTerm"]
+            or not rule["targetTerm"]
+            or self.scope.get_active_id() == "directed"
+            and (
+                not rule["sourceLanguage"]
+                or not rule["targetLanguage"]
+                or rule["sourceLanguage"] == rule["targetLanguage"]
+            )
+        ):
+            self.owner.report_save_result(
+                False, "请填写源词、指定译法，并明确选择不同的源语言和目标语言。草稿仍保留。"
+            )
+            return False
+        self.rules_draft = [*self.current_rules(), rule]
+        self.changed()
+        self.source_term.set_text("")
+        self.target_term.set_text("")
+        self.render()
+        self.refresh()
+        return True
+
+    async def submit(self, operation, payload, revision):
+        if self.pending is not None:
+            return False
+        self.owner.draft_request += 1
+        identity = {"session": self.owner.draft_session, "request": self.owner.draft_request}
+        self.pending = identity
+        self.render()
+        try:
+            response = await self.owner.host.ask(
+                operation, {**identity, "expectedSettingsRevision": revision, **payload}, timeout=3
+            )
+            if self.pending is not identity:
+                return False
+            code = response.get("code") if isinstance(response, dict) else None
+            success_codes = (
+                ("glossary-saved", "glossary-saved-notification-failed")
+                if operation == "changeGlossary"
+                else ("style-saved", "style-saved-notification-failed", "style-unchanged")
+            )
+            saved = (
+                isinstance(response, dict)
+                and response.get("saved") is True
+                and code in success_codes
+            )
+            if not saved:
+                message = self.unavailable_message(code) + "草稿仍保留。"
+                if (
+                    not isinstance(response, dict)
+                    or type(response.get("saved")) is not bool
+                    or response.get("saved") is True
+                ):
+                    message = "保存结果未确认。草稿仍保留，请重新打开设置检查。"
+                self.owner.report_save_result(False, message)
+            elif code in ("style-saved-notification-failed", "glossary-saved-notification-failed"):
+                self.owner.message.set_text(
+                    "翻译设置已保存，但状态通知未完成。请重新打开设置检查。"
+                )
+            return saved
+        except (OSError, ValueError, EOFError, TimeoutError):
+            if self.pending is identity:
+                try:
+                    self.owner.host.send("cancelTranslationSettings", identity)
+                except (OSError, ValueError, EOFError):
+                    pass
+                self.owner.report_save_result(
+                    False, "保存结果未确认。草稿仍保留，请重新打开设置检查。"
+                )
+            return False
+        finally:
+            if self.pending is identity:
+                self.pending = None
+                self.render()
+
+    async def save(self):
+        if self.saving or self.pending is not None or not self.dirty:
+            return
+        self.saving = True
+        self.owner.render_draft()
+        try:
+            await self.save_draft()
+        finally:
+            self.saving = False
+            self.render()
+
+    async def save_draft(self):
+        self.load_revision += 1
+        if not await self.load(self.load_revision):
+            return
+        if (self.source_term.get_text() or self.target_term.get_text()) and not self.add_rule():
+            return
+        session = self.owner.draft_session
+        operations = []
+        if self.style_draft is not None:
+            operations.append(("changeStyle", {"style": self.style_draft}))
+        operations.extend(
+            ("removeStyleOverride", {"application": app})
+            for app in sorted(self.removed_applications)
+        )
+        if self.rules_draft is not None:
+            operations.append(
+                ("changeGlossary", {"rules": [dict(rule) for rule in self.rules_draft]})
+            )
+        async with self.owner.settings_lock:
+            for operation, payload in operations:
+                if session != self.owner.draft_session:
+                    return
+                self.load_revision += 1
+                loaded = await self.load(self.load_revision)
+                if not loaded or session != self.owner.draft_session or self.style_state is None:
+                    return
+                latest_revision = self.style_state["settingsRevision"]
+                latest_rules = (self.glossary_state.get("savedSnapshot") or {}).get("rules", [])
+                latest_styles = self.style_state.get("savedPreferences")
+                already_current = (
+                    payload["rules"] == latest_rules
+                    if operation == "changeGlossary"
+                    else (latest_styles or {}).get("default") == payload["style"]
+                    if operation == "changeStyle"
+                    else payload["application"]
+                    not in ((latest_styles or {}).get("applications") or {})
+                )
+                if not already_current:
+                    changed = (
+                        latest_rules != self.baseline_rules
+                        if operation == "changeGlossary"
+                        else latest_styles != self.baseline_styles
+                    )
+                    if changed and not await self.confirm_conflict(
+                        operation, payload, latest_rules, latest_styles
+                    ):
+                        return
+                    if session != self.owner.draft_session:
+                        return
+                available = (
+                    self.glossary_state.get("canSave") is True
+                    if operation == "changeGlossary"
+                    else self.style_state.get("isReleased") is True
+                    and self.style_state.get("canChange") is True
+                    if operation == "changeStyle"
+                    else any(
+                        item["application"] == payload["application"]
+                        and item.get("removal", {}).get("canRemove") is True
+                        for item in self.style_state["applications"]
+                    )
+                )
+                if not already_current and not available:
+                    reason = (
+                        self.glossary_state.get("unavailableReason")
+                        if operation == "changeGlossary"
+                        else self.style_state.get("unavailableReason")
+                    )
+                    self.owner.report_save_result(
+                        False, self.unavailable_message(reason) + "草稿仍保留。"
+                    )
+                    return
+                # The exact state displayed in the confirmation owns this request.
+                # A change during that dialog is rejected by the shared revision gate.
+                saved = already_current or await self.submit(operation, payload, latest_revision)
+                if session != self.owner.draft_session:
+                    return
+                if saved:
+                    if operation == "changeStyle" and self.style_draft == payload["style"]:
+                        self.style_draft = None
+                    elif operation == "removeStyleOverride":
+                        self.removed_applications.discard(payload["application"])
+                    elif operation == "changeGlossary" and self.rules_draft == payload["rules"]:
+                        self.rules_draft = None
+                self.load_revision += 1
+                await self.load(self.load_revision)
+                if saved:
+                    # Advance only the content this exact operation confirmed.
+                    # A notification/read may already contain another writer's changes.
+                    if operation == "changeGlossary":
+                        self.baseline_rules = payload["rules"]
+                    elif operation == "changeStyle":
+                        self.baseline_styles = {
+                            **(latest_styles or {"applications": {}}),
+                            "default": payload["style"],
+                        }
+                    else:
+                        self.baseline_styles = {
+                            **(latest_styles or {}),
+                            "applications": {
+                                app: style
+                                for app, style in (
+                                    (latest_styles or {}).get("applications") or {}
+                                ).items()
+                                if app != payload["application"]
+                            },
+                        }
+                    if not self.dirty:
+                        self.baseline = None
+                if not saved or self.style_state is None:
+                    return
+        self.owner.report_save_result(True, "")
+        self.render()
+
+    async def confirm_conflict(self, operation, payload, latest_rules, latest_styles):
+        glossary = operation == "changeGlossary"
+        dialog = Gtk.MessageDialog(
+            transient_for=self.owner.window,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE,
+            text="术语规则已更改" if glossary else "风格设置已更改",
+        )
+        description = (
+            "以下是最新已保存的规则。继续会用本次草稿替换整个术语表。取消会保留草稿。"
+            if glossary
+            else "以下是最新风格设置。继续会保存本次全局风格选择。其他应用覆盖保持不变。"
+            if operation == "changeStyle"
+            else "以下是最新风格设置。继续会移除“"
+            + payload["application"]
+            + "”的当前覆盖。其他风格设置保持不变。"
+        )
+        dialog.format_secondary_text(description)
+        if glossary:
+            lines = [
+                f"{rule['sourceTerm']} → {rule['targetTerm']} · "
+                + (
+                    rule["sourceLanguage"] + " → " + rule["targetLanguage"]
+                    if rule.get("sourceLanguage")
+                    else "全局"
+                )
+                for rule in latest_rules
+            ]
+        else:
+            styles = latest_styles or {}
+            lines = [
+                "全局：" + str(styles.get("default", "未设置")),
+                *(app + "：" + value for app, value in (styles.get("applications") or {}).items()),
+            ]
+        listing = Gtk.TextView()
+        listing.set_editable(False)
+        listing.set_cursor_visible(False)
+        listing.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        listing.get_accessible().set_name(
+            "最新已保存的术语规则" if glossary else "最新已保存的风格设置"
+        )
+        listing.get_buffer().set_text("\n".join(lines) or "没有已保存规则")
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_size_request(440, 180)
+        scroll.add(listing)
+        dialog.get_content_area().pack_start(scroll, True, True, 8)
+        dialog.add_button("继续编辑", Gtk.ResponseType.CANCEL)
+        dialog.add_button(
+            "替换全部术语规则" if glossary else "保存本次风格修改", Gtk.ResponseType.OK
+        )
+        dialog.set_default_response(Gtk.ResponseType.CANCEL)
+        result = asyncio.get_running_loop().create_future()
+
+        def response(widget, choice):
+            widget.destroy()
+            if not result.done():
+                result.set_result(choice == Gtk.ResponseType.OK)
+
+        dialog.connect("response", response)
+        dialog.show_all()
+        return await result
+
+    def confirm_reset(self, *_):
+        if (
+            not self.style_state
+            or not self.style_state.get("canReset")
+            or self.dirty
+            or self.pending
+        ):
+            return
+        revision = self.style_state["settingsRevision"]
+        session = self.owner.draft_session
+        dialog = Gtk.MessageDialog(
+            transient_for=self.owner.window,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE,
+            text="重置翻译风格？",
+        )
+        dialog.format_secondary_text("将清除全局风格和所有应用风格覆盖。术语规则保持不变。")
+        dialog.add_button("继续保留", Gtk.ResponseType.CANCEL)
+        dialog.add_button("重置全部风格", Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.CANCEL)
+
+        async def reset():
+            async with self.owner.settings_lock:
+                if session != self.owner.draft_session:
+                    return
+                await self.submit("resetTranslationStyle", {}, revision)
+                self.refresh()
+
+        def response(widget, result):
+            widget.destroy()
+            if result == Gtk.ResponseType.OK:
+                self.owner.tasks(reset())
+
+        dialog.connect("response", response)
+        dialog.show_all()
+
+    def discard(self):
+        if self.pending is not None:
+            self.owner.host.send("cancelTranslationSettings", self.pending)
+        self.pending = None
+        self.load_revision += 1
+        self.style_draft = self.rules_draft = self.baseline = None
+        self.baseline_styles = self.baseline_rules = None
+        self.removed_applications.clear()
+        self.configuring = True
+        self.source_term.set_text("")
+        self.target_term.set_text("")
+        self.configuring = False
+        self.render()
+
+
 class Settings:
     function_keys = tuple(
         f"{prefix}F{number}" for prefix in ("", "Ctrl+") for number in range(1, 25)
@@ -1487,6 +2209,7 @@ class Settings:
         self.application_support.widget.get_style_context().add_class("settings-page")
         self.application_support.widget.get_accessible().set_name("设置页：应用支持")
         self.pages.add_titled(self.application_support.widget, "application-support", "应用支持")
+        self.translation = TranslationSettings(self, grids["language"], next_rows["language"])
         self.tasks(self.load_draft_messages())
 
     def add_page(self, name, title):
@@ -1565,9 +2288,13 @@ class Settings:
             self.loading_draft_messages = False
 
     def render_draft(self):
-        dirty = bool(self.dirty_controls)
+        translation = getattr(self, "translation", None)
+        dirty = bool(self.dirty_controls) or bool(translation and translation.dirty)
         self.save_button.set_sensitive(
-            dirty and self.draft_messages is not None and self.pending_draft is None
+            dirty
+            and self.draft_messages is not None
+            and self.pending_draft is None
+            and not (translation and (translation.pending or translation.saving))
         )
         self.draft_notice.set_text(
             self.draft_messages["unsavedNotice"] if dirty and self.draft_messages else ""
@@ -1815,6 +2542,17 @@ class Settings:
 
     async def save(self):
         if (
+            self.translation.pending is not None
+            or self.translation.saving
+            or self.pending_draft is not None
+        ):
+            return
+        await self.translation.save()
+        if not self.translation.dirty:
+            await self.save_ordinary()
+
+    async def save_ordinary(self):
+        if (
             self.value is None
             or not self.dirty_controls
             or self.draft_messages is None
@@ -1893,7 +2631,11 @@ class Settings:
                 self.render_draft()
 
     def dismiss(self, *_, quit_requested=None):
-        if not self.dirty_controls:
+        if (
+            not self.dirty_controls
+            and not self.translation.dirty
+            and self.translation.pending is None
+        ):
             if quit_requested:
                 quit_requested()
             else:
@@ -1927,6 +2669,11 @@ class Settings:
                     except (OSError, ValueError, EOFError):
                         self.report_save_result(False, "保存结果未确认。草稿仍保留，请检查设置。")
                         return
+                try:
+                    self.translation.discard()
+                except (OSError, ValueError, EOFError):
+                    self.report_save_result(False, "保存结果未确认。草稿仍保留，请检查设置。")
+                    return
                 self.draft_session = str(uuid.uuid4())
                 self.pending_draft = None
                 self.submitted_draft = {}
@@ -1945,6 +2692,8 @@ class Settings:
         return True
 
     def report(self, value):
+        if self.window.get_visible() and not self.translation.saving:
+            self.translation.refresh()
         self.model_ready = value.get("modelReady", False)
         self.model_status = value.get("model") or ""
         self.render_preparation_notice()
@@ -2204,6 +2953,7 @@ class Settings:
         self.window.present()
         self.tasks(self.load_draft_messages())
         self.tasks(self.application_support.refresh())
+        self.translation.refresh()
         self.refresh_preparation()
 
     def confirm_install(self, install, directions):

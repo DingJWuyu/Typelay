@@ -33,6 +33,23 @@ public sealed class BrowserRoutingTests(WpfDesktopFixture desktop)
         });
         Assert.Equal(1, broker.Calls); // Native non-browser discovery still has its original route.
     });
+    [Fact]
+    public Task AnAuxiliaryFocusReportCannotCreateAnEditorOrSourceBinding() => desktop.RunAsync(() =>
+    {
+        using var hook = new KeyboardHook();
+        using var browser = new BrowserInput(new BrowserServer(Dispatcher.CurrentDispatcher), hook);
+        browser.Configure(true, "Ctrl+Shift+F9", "Ctrl+Shift+F10", SessionShortcutBindings.Default, true);
+        var target = new TargetId("windows-browser", "absent-document:1", Guid.NewGuid());
+        var token = new SessionViewToken(target, hook.CommandGeneration, 1);
+        var entry = new SessionGlossaryEntry(Guid.NewGuid(), token, 1, []);
+        Assert.False(browser.OpenGlossaryEntry(entry));
+        browser.SetGlossaryFocus(new(entry.FormId, token, ImeState.Clear));
+        Assert.Null(browser.GlossaryFocus);
+        Assert.Equal(FocusMember.Other, browser.GetFocus(target));
+        browser.CloseGlossaryEntry(entry.FormId);
+        Assert.Equal(FocusMember.Other, browser.GetFocus(target));
+    });
+
     private sealed class CountingBroker : IInputBroker
     {
         public int Calls

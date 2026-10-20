@@ -16,6 +16,10 @@ internal sealed class ModelInstaller
 {
     private readonly string _data, _worker, _cache, _localPackages;
     private string? _sourceModels;
+    public bool CleanupPending
+    {
+        get; private set;
+    }
 
     public ModelInstaller() : this(AppPaths.Data, AppPaths.Worker) { }
     internal ModelInstaller(string data, string worker, HttpMessageHandler? handler = null,
@@ -39,7 +43,7 @@ internal sealed class ModelInstaller
     }
 
     private static readonly HashSet<string> AllowedHosts = new(StringComparer.OrdinalIgnoreCase)
-    { "api.nuget.org", "globalcdn.nuget.org", "pypi.org", "files.pythonhosted.org", "argos-net.com" };
+    { "api.nuget.org", "globalcdn.nuget.org", "pypi.org", "files.pythonhosted.org", "argos-net.com", "huggingface.co", "cdn-lfs.huggingface.co", "cdn-lfs-us-1.hf.co", "cas-bridge.xethub.hf.co" };
     private readonly HttpClient _http;
     private readonly Func<ProcessStartInfo, IChildProcess> _startProcess;
     private readonly TimeSpan _selfCheckTimeout;
@@ -75,6 +79,9 @@ internal sealed class ModelInstaller
                 throw new InvalidDataException("model-directions");
             ct.ThrowIfCancellationRequested();
             lease = await new ModelInstallationStore(_data, _worker).AcquireAsync(ct);
+            // The legacy direction workflow must never overwrite a schema3 inventory.
+            if (lease.UsesPackageInventory)
+                throw new InvalidDataException("model-package-request-required");
             IReadOnlyList<string> committed;
             try
             {
@@ -93,57 +100,7 @@ internal sealed class ModelInstaller
             string staging = prepared.Root;
             Directory.CreateDirectory(_cache);
             stage = ModelSetupStage.Runtime;
-            const string pythonVersion = "3.13.16";
-            progress.Report(new("读取 CPython 官方包元数据"));
-            using var index = await Json(new Uri("https://api.nuget.org/v3/index.json"), ct);
-            string registration = index.RootElement.GetProperty("resources").EnumerateArray()
-                .First(e => e.GetProperty("@type").GetString() == "RegistrationsBaseUrl/3.6.0")
-                .GetProperty("@id").GetString()!;
-            using var leaf = await Json(new Uri(registration + $"python/{pythonVersion}.json"), ct);
-            string pythonUrl = leaf.RootElement.GetProperty("packageContent").GetString()!;
-            var entry = leaf.RootElement.GetProperty("catalogEntry");
-            string catalogUrl = entry.ValueKind == JsonValueKind.String ? entry.GetString()! : entry.GetProperty("@id").GetString()!;
-            using var catalog = await Json(new Uri(catalogUrl), ct);
-            if (catalog.RootElement.GetProperty("id").GetString() != "python"
-                || catalog.RootElement.GetProperty("version").GetString() != pythonVersion
-                || catalog.RootElement.GetProperty("packageHashAlgorithm").GetString() != "SHA512")
-                throw new InvalidDataException("python-metadata");
-            byte[] expectedPython = Convert.FromBase64String(catalog.RootElement.GetProperty("packageHash").GetString()!);
-            string pythonZip = await Download(pythonUrl, "python-" + pythonVersion + ".zip", null, "下载私有 Python 运行组件", progress, ct);
-            byte[] actualPython;
-            await using (var file = File.OpenRead(pythonZip))
-                actualPython = await SHA512.HashDataAsync(file, ct);
-            if (!CryptographicOperations.FixedTimeEquals(actualPython, expectedPython))
-            {
-                File.Delete(pythonZip);
-                throw new InvalidDataException("python-integrity");
-            }
-            string pythonStage = Path.Combine(staging, "runtime", "python");
-            progress.Report(new("准备私有运行组件"));
-            await Task.Run(() => Extract(pythonZip, pythonStage, stage, ct), ct);
-            if (!File.Exists(Path.Combine(pythonStage, "tools", "python.exe")))
-                throw new InvalidDataException("python-layout");
-            string pythonTarget = pythonStage;
-            _locks.Add(new("python", pythonVersion, pythonUrl, await Hash(pythonZip, ct)));
-            string site = Path.Combine(pythonTarget, "tools", "Lib", "site-packages");
-            Directory.CreateDirectory(site);
-            stage = ModelSetupStage.Dependencies;
-            foreach (var (name, version) in Wheels)
-            {
-                ct.ThrowIfCancellationRequested();
-                using var response = await Get(new Uri($"https://pypi.org/pypi/{name}/{version}/json"), null, ct);
-                response.EnsureSuccessStatusCode();
-                using var metadata = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
-                var wheel = metadata.RootElement.GetProperty("urls").EnumerateArray().FirstOrDefault(e =>
-                    !e.GetProperty("yanked").GetBoolean() && Compatible(e.GetProperty("filename").GetString()!));
-                if (wheel.ValueKind != JsonValueKind.Object)
-                    throw new InvalidDataException("wheel-unavailable");
-                string filename = wheel.GetProperty("filename").GetString()!, url = wheel.GetProperty("url").GetString()!;
-                string checksum = wheel.GetProperty("digests").GetProperty("sha256").GetString()!;
-                string archive = await Download(url, filename, checksum, "下载本地组件 · " + name, progress, ct);
-                await Task.Run(() => Extract(archive, site, stage, ct), ct);
-                _locks.Add(new(name, version, url, checksum));
-            }
+            await PrepareRuntime(staging, progress, ct);
             string modelStage = Path.Combine(staging, "models");
             Directory.CreateDirectory(modelStage);
             foreach (var direction in directions)
@@ -225,12 +182,15 @@ internal sealed class ModelInstaller
             start.ArgumentList.Add("--models");
             start.ArgumentList.Add(modelStage);
             start.ArgumentList.Add("--self-check");
+            prepared.StartingSelfCheck();
             using (var child = _startProcess(start))
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 timeout.CancelAfter(_selfCheckTimeout);
                 string result = await child.Process.StandardOutput.ReadToEndAsync(timeout.Token);
                 await child.Process.WaitForExitAsync(timeout.Token);
+                await child.TerminateAndWaitAsync(timeout.Token);
+                prepared.SelfCheckExited();
                 if (child.Process.ExitCode != 0 || result.Length > 16384)
                     throw new InvalidDataException("cpu-self-check-failed");
                 using var check = JsonDocument.Parse(result);
@@ -256,7 +216,346 @@ internal sealed class ModelInstaller
             {
                 prepared?.Dispose();
                 lease?.Dispose();
+                CleanupPending |= lease?.CleanupPending == true;
             }
+        }
+    }
+    private async Task PrepareRuntime(string staging, IProgress<SetupProgress> progress, CancellationToken ct)
+    {
+        var stage = ModelSetupStage.Runtime;
+        try
+        {
+            const string pythonVersion = "3.13.16";
+            progress.Report(new("读取 CPython 官方包元数据"));
+            using var index = await Json(new Uri("https://api.nuget.org/v3/index.json"), ct);
+            string registration = index.RootElement.GetProperty("resources").EnumerateArray()
+                .First(e => e.GetProperty("@type").GetString() == "RegistrationsBaseUrl/3.6.0")
+                .GetProperty("@id").GetString()!;
+            using var leaf = await Json(new Uri(registration + $"python/{pythonVersion}.json"), ct);
+            string pythonUrl = leaf.RootElement.GetProperty("packageContent").GetString()!;
+            var entry = leaf.RootElement.GetProperty("catalogEntry");
+            string catalogUrl = entry.ValueKind == JsonValueKind.String ? entry.GetString()! : entry.GetProperty("@id").GetString()!;
+            using var catalog = await Json(new Uri(catalogUrl), ct);
+            if (catalog.RootElement.GetProperty("id").GetString() != "python"
+                || catalog.RootElement.GetProperty("version").GetString() != pythonVersion
+                || catalog.RootElement.GetProperty("packageHashAlgorithm").GetString() != "SHA512")
+                throw new InvalidDataException("python-metadata");
+            byte[] expectedPython = Convert.FromBase64String(catalog.RootElement.GetProperty("packageHash").GetString()!);
+            string pythonZip = await Download(pythonUrl, "python-" + pythonVersion + ".zip", null, "下载私有 Python 运行组件", progress, ct);
+            byte[] actualPython;
+            await using (var file = File.OpenRead(pythonZip))
+                actualPython = await SHA512.HashDataAsync(file, ct);
+            if (!CryptographicOperations.FixedTimeEquals(actualPython, expectedPython))
+            {
+                File.Delete(pythonZip);
+                throw new InvalidDataException("python-integrity");
+            }
+            string pythonStage = Path.Combine(staging, "runtime", "python");
+            progress.Report(new("准备私有运行组件"));
+            await Task.Run(() => Extract(pythonZip, pythonStage, stage, ct), ct);
+            if (!File.Exists(Path.Combine(pythonStage, "tools", "python.exe")))
+                throw new InvalidDataException("python-layout");
+            string pythonTarget = pythonStage;
+            _locks.Add(new("python", pythonVersion, pythonUrl, await Hash(pythonZip, ct)));
+            string site = Path.Combine(pythonTarget, "tools", "Lib", "site-packages");
+            Directory.CreateDirectory(site);
+            stage = ModelSetupStage.Dependencies;
+            foreach (var (name, version) in Wheels)
+            {
+                ct.ThrowIfCancellationRequested();
+                using var response = await Get(new Uri($"https://pypi.org/pypi/{name}/{version}/json"), null, ct);
+                response.EnsureSuccessStatusCode();
+                using var metadata = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+                var wheel = metadata.RootElement.GetProperty("urls").EnumerateArray().FirstOrDefault(e =>
+                    !e.GetProperty("yanked").GetBoolean() && Compatible(e.GetProperty("filename").GetString()!));
+                if (wheel.ValueKind != JsonValueKind.Object)
+                    throw new InvalidDataException("wheel-unavailable");
+                string filename = wheel.GetProperty("filename").GetString()!, url = wheel.GetProperty("url").GetString()!;
+                string checksum = wheel.GetProperty("digests").GetProperty("sha256").GetString()!;
+                string archive = await Download(url, filename, checksum, "下载本地组件 · " + name, progress, ct);
+                await Task.Run(() => Extract(archive, site, stage, ct), ct);
+                _locks.Add(new(name, version, url, checksum));
+            }
+            await WriteRuntimeInventory(staging, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            throw ModelSetupException.From(error, stage);
+        }
+    }
+    private sealed record FileEntry(string Path, string Sha256);
+    private sealed record PackageEntry(string Id, string Version, string[] Directions, FileEntry[] Files);
+    private static readonly JsonSerializerOptions InventoryJson = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+    private static string[] SafeFiles(string root)
+    {
+        var files = new List<string>();
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.TryPop(out string? path))
+        {
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("component-link");
+            if (Directory.Exists(path))
+                foreach (string entry in Directory.EnumerateFileSystemEntries(path))
+                    pending.Push(entry);
+            else
+                files.Add(path);
+        }
+        return files.ToArray();
+    }
+    private static string FilePath(string root, string relative)
+    {
+        if (relative.Length == 0 || relative.Split('/').Any(part => part.Length == 0 || part is "." or ".."
+            || part.EndsWith('.') || part.EndsWith(' ') || part.Any(character => character < 32 || "\\:\0<>\"|?*".Contains(character))))
+            throw new InvalidDataException("component-path");
+        return Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar));
+    }
+    private static async Task<FileEntry[]> InventoryFiles(string root, CancellationToken ct)
+    {
+        var result = new List<FileEntry>();
+        foreach (string file in SafeFiles(root).Order(StringComparer.Ordinal))
+        {
+            ct.ThrowIfCancellationRequested();
+            result.Add(new(Path.GetRelativePath(root, file).Replace('\\', '/'), await Hash(file, ct)));
+        }
+        return result.ToArray();
+    }
+    private static async Task WriteRuntimeInventory(string root, CancellationToken ct)
+    {
+        var files = await InventoryFiles(Path.Combine(root, "runtime"), ct);
+        await File.WriteAllTextAsync(Path.Combine(root, "runtime-inventory.json"),
+            JsonSerializer.Serialize(new
+            {
+                schema = 1,
+                files
+            }, InventoryJson), ct);
+    }
+    private static async Task CopyVerified(string source, string target, IReadOnlyList<FileEntry> expected, CancellationToken ct)
+    {
+        if (expected.Count == 0 || expected.Count > 30000
+            || expected.Select(file => file.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != expected.Count)
+            throw new InvalidDataException("component-inventory");
+        var actual = SafeFiles(source).Select(file => Path.GetRelativePath(source, file).Replace('\\', '/')).ToHashSet(StringComparer.Ordinal);
+        if (!actual.SetEquals(expected.Select(file => file.Path)))
+            throw new InvalidDataException("component-inventory");
+        foreach (var file in expected)
+        {
+            ct.ThrowIfCancellationRequested();
+            string input = FilePath(source, file.Path), output = FilePath(target, file.Path);
+            if (file.Sha256.Length != 64 || !file.Sha256.All(Uri.IsHexDigit)
+                || !string.Equals(await Hash(input, ct), file.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("component-integrity");
+            Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+            await using (var from = File.OpenRead(input))
+            await using (var to = new FileStream(output, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, true))
+                await from.CopyToAsync(to, ct);
+            if (!string.Equals(await Hash(output, ct), file.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("component-integrity");
+        }
+    }
+    private static async Task CopyRuntime(string source, string target, CancellationToken ct)
+    {
+        string marker = Path.Combine(source, "runtime-inventory.json");
+        if (!File.Exists(marker) || new FileInfo(marker).Length > 8 * 1024 * 1024
+            || (File.GetAttributes(marker) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("runtime-repair-required");
+        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(marker, ct));
+        if (document.RootElement.GetProperty("schema").GetInt32() != 1)
+            throw new InvalidDataException("runtime-repair-required");
+        var files = document.RootElement.GetProperty("files").Deserialize<FileEntry[]>(InventoryJson)
+            ?? throw new InvalidDataException("runtime-repair-required");
+        if (!files.Any(file => file.Path == "python/tools/python.exe"))
+            throw new InvalidDataException("runtime-repair-required");
+        await CopyVerified(Path.Combine(source, "runtime"), Path.Combine(target, "runtime"), files, ct);
+        File.Copy(marker, Path.Combine(target, "runtime-inventory.json"));
+    }
+    private void Preflight(string sourceRoot, ModelInstallationStore.PreparedInstallation prepared)
+    {
+        long bytes = 64L * 1024 * 1024;
+        foreach (string name in new[] { "runtime", "models" })
+            if (Directory.Exists(Path.Combine(sourceRoot, name)))
+                foreach (string file in SafeFiles(Path.Combine(sourceRoot, name)))
+                    bytes = checked(bytes + new FileInfo(file).Length);
+        var request = prepared.Request!;
+        if (request.Operation is ModelPackageOperation.Install or ModelPackageOperation.Repair)
+        {
+            // Runtime extraction is bounded at 2 GiB; allow its archive/cache and copy,
+            // plus each selected model's bounded extraction or exact locked assets.
+            bytes = checked(bytes + 4L * 1024 * 1024 * 1024);
+            foreach (string id in request.PackageIds)
+            {
+                var package = ModelCatalog.Packages.Packages.Single(item => item.Id == id);
+                bytes = checked(bytes + (ModelCatalog.PackageDownloadBytes(package) is { } size
+                    ? checked(size * 2) : 3L * 1024 * 1024 * 1024));
+            }
+        }
+        var volume = DriveInfo.GetDrives().Where(drive => _data == drive.Name.TrimEnd(Path.DirectorySeparatorChar)
+            || _data.StartsWith(drive.Name.EndsWith(Path.DirectorySeparatorChar) ? drive.Name : drive.Name + Path.DirectorySeparatorChar,
+                StringComparison.OrdinalIgnoreCase)).OrderByDescending(drive => drive.Name.Length).First();
+        if (volume.AvailableFreeSpace < bytes)
+            throw new IOException("component-disk-space", unchecked((int)0x80070070));
+    }
+    public Task<ModelInstallationStore.PreparedInstallation> PreparePackagesAsync(ModelPackageRequest request,
+        IProgress<SetupProgress> progress, CancellationToken ct) =>
+        // Preparation owns only bytes and an installation lease. Keep extraction,
+        // inventory traversal and failed-candidate cleanup off the caller's UI thread.
+        Task.Run(() => PreparePackagesCoreAsync(request, progress, ct), ct);
+    private async Task<ModelInstallationStore.PreparedInstallation> PreparePackagesCoreAsync(ModelPackageRequest request,
+        IProgress<SetupProgress> progress, CancellationToken ct)
+    {
+        ModelInstallationStore.Lease? lease = null;
+        ModelInstallationStore.PreparedInstallation? prepared = null;
+        bool complete = false;
+        var stage = ModelSetupStage.Prepare;
+        try
+        {
+            lease = await new ModelInstallationStore(_data, _worker).AcquireAsync(ct);
+            prepared = lease.PreparePackages(request);
+            request = prepared.Request!;
+            var state = prepared.Source!;
+            string sourceRoot = Path.GetDirectoryName(lease.ActivePaths.Models)!;
+            Preflight(sourceRoot, prepared);
+            stage = ModelSetupStage.Runtime;
+            if (request.Operation is ModelPackageOperation.Select or ModelPackageOperation.Remove)
+                await CopyRuntime(sourceRoot, prepared.Root, ct);
+            else
+            {
+                Directory.CreateDirectory(_cache);
+                // Repair is explicit network consent. A trustworthy runtime may be
+                // reused; missing or damaged runtime bytes are repaired here only.
+                try
+                {
+                    await CopyRuntime(sourceRoot, prepared.Root, ct);
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException
+                    or JsonException or KeyNotFoundException or InvalidOperationException)
+                {
+                    string runtime = Path.Combine(prepared.Root, "runtime");
+                    if (Directory.Exists(runtime))
+                        Directory.Delete(runtime, true);
+                    await PrepareRuntime(prepared.Root, progress, ct);
+                }
+            }
+            stage = ModelSetupStage.ModelVerify;
+            using var original = state.InstalledPackages.Count > 0
+                ? JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(lease.ActivePaths.Models, "installed.json"), ct)) : null;
+            bool legacy = original is not null && original.RootElement.GetProperty("schema").GetInt32() is 1 or 2;
+            var packages = new List<PackageEntry>();
+            foreach (var item in state.InstalledPackages)
+            {
+                if (request.PackageIds.Contains(item.Package.Id, StringComparer.Ordinal)
+                    && request.Operation is ModelPackageOperation.Remove or ModelPackageOperation.Repair)
+                    continue;
+                string source = legacy ? Path.Combine(lease.ActivePaths.Models, item.Directions.Single().Id)
+                    : PackageRoot(lease.ActivePaths.Models, item.Package);
+                var files = item.Files.Select(file => new FileEntry(file.Path, file.Sha256)).ToArray();
+                await CopyVerified(source, PackageRoot(prepared.Paths.Models, item.Package), files, ct);
+                packages.Add(new(item.Package.Id, item.Package.Version, item.Directions.Select(direction => direction.Id).ToArray(), files));
+            }
+            if (request.Operation is ModelPackageOperation.Install or ModelPackageOperation.Repair)
+                foreach (string id in request.PackageIds)
+                {
+                    var package = ModelCatalog.Packages.Packages.Single(item => item.Id == id);
+                    string destination = PackageRoot(prepared.Paths.Models, package);
+                    stage = ModelSetupStage.ModelDownload;
+                    if (package.Backend == "hy-mt-llama-cpu")
+                        await StageHy(package, destination, progress, ct);
+                    else
+                        await StageArgos(package, destination, prepared.Root, progress, ct);
+                    stage = ModelSetupStage.ModelVerify;
+                    var directions = state.InstalledPackages.FirstOrDefault(item => item.Package.Id == id)?.Directions ?? package.Directions;
+                    packages.Add(new(id, package.Version, directions.Select(direction => direction.Id).ToArray(), await InventoryFiles(destination, ct)));
+                }
+            Directory.CreateDirectory(prepared.Paths.Models);
+            string inventory = JsonSerializer.Serialize(new
+            {
+                schema = 3,
+                packages,
+                activePackages = request.ActivePackages
+            }, InventoryJson);
+            using (var validated = JsonDocument.Parse(inventory))
+            {
+                ModelCatalog.ReadInstallationSelection(validated.RootElement);
+                ModelCatalog.ReadActiveSelection(validated.RootElement);
+            }
+            await File.WriteAllTextAsync(Path.Combine(prepared.Paths.Models, "installed.json"), inventory, ct);
+            await File.WriteAllTextAsync(Path.Combine(prepared.Root, "dependency-lock.json"), JsonSerializer.Serialize(_locks, InventoryJson), ct);
+            // Byte preparation never starts another Hy worker while the old one serves.
+            // Only ActivateAsync owns the single candidate and its exact hello.
+            progress.Report(new("本地组件已校验，正在等待切换"));
+            complete = true;
+            return prepared;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (InvalidDataException error) when (error.Message == "installation-changed") { throw; }
+        catch (Exception error) when (error is not OutOfMemoryException) { throw ModelSetupException.From(error, stage); }
+        finally
+        {
+            _http.Dispose();
+            if (!complete)
+            {
+                prepared?.Dispose();
+                lease?.Dispose();
+                CleanupPending |= lease?.CleanupPending == true;
+            }
+        }
+    }
+    private static string PackageRoot(string models, ModelPackage package) => Path.Combine(models, "packages", package.Id, package.Version);
+    private async Task StageArgos(ModelPackage package, string destination, string staging,
+        IProgress<SetupProgress> progress, CancellationToken ct)
+    {
+        var direction = package.Directions.Single();
+        string archive = await Download(package.Url, direction.Id + "-" + package.Version + ".argosmodel", null,
+            "下载 " + direction.SourceName + " → " + direction.TargetName, progress, ct);
+        string extraction = Path.Combine(staging, "extract-" + package.Id);
+        Extract(archive, extraction, ModelSetupStage.ModelExtract, ct);
+        try
+        {
+            var metadataPaths = Directory.GetFiles(extraction, "metadata.json", SearchOption.AllDirectories);
+            if (metadataPaths.Length != 1)
+                throw new InvalidDataException("model-layout");
+            using var metadata = JsonDocument.Parse(await File.ReadAllTextAsync(metadataPaths[0], ct));
+            if (metadata.RootElement.GetProperty("from_code").GetString() != direction.Source
+                || metadata.RootElement.GetProperty("to_code").GetString() != direction.Target
+                || metadata.RootElement.GetProperty("package_version").GetString() != package.Version)
+                throw new InvalidDataException("model-direction");
+            string root = Path.GetDirectoryName(metadataPaths[0])!;
+            foreach (string relative in ModelFiles)
+                RequireModelFile(Path.Combine(root, relative));
+            await CopyVerified(root, destination, await InventoryFiles(root, ct), ct);
+            _locks.Add(new(package.Id, package.Version, package.Url, await Hash(archive, ct)));
+        }
+        catch (Exception error) when (error is InvalidDataException or JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            throw new ModelSetupException(SetupFailureCategory.Integrity, ModelSetupStage.ModelVerify, DeleteDamagedArchive(archive));
+        }
+        Directory.Delete(extraction, true);
+    }
+    private async Task StageHy(ModelPackage package, string destination, IProgress<SetupProgress> progress, CancellationToken ct)
+    {
+        using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.HyModelLock.json")
+            ?? throw new InvalidDataException("model-lock-missing");
+        using var document = JsonDocument.Parse(stream);
+        var fixedModel = document.RootElement;
+        if (fixedModel.GetProperty("package_id").GetString() != package.Id || fixedModel.GetProperty("version").GetString() != package.Version)
+            throw new InvalidDataException("model-lock");
+        Directory.CreateDirectory(destination);
+        foreach (string kind in new[] { "model", "model_license" })
+        {
+            var asset = fixedModel.GetProperty(kind);
+            string name = asset.GetProperty("file").GetString()!, sha = asset.GetProperty("sha256").GetString()!;
+            long size = asset.GetProperty("bytes").GetInt64();
+            string url = kind == "model" ? package.Url : new Uri(new Uri(package.Url), "LICENSE.txt").AbsoluteUri;
+            string archive = await Download(url, package.Id + "-" + package.Version + "-" + name, sha,
+                "下载 Hy 本地模型", progress, ct, size);
+            string target = FilePath(destination, name);
+            await using (var input = File.OpenRead(archive))
+            await using (var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, true))
+                await input.CopyToAsync(output, ct);
+            if (new FileInfo(target).Length != size || await Hash(target, ct) != sha)
+                throw new InvalidDataException("model-integrity");
+            _locks.Add(new(package.Id + "-" + kind, package.Version, url, sha));
         }
     }
     private static string? FindLocalPackage(ModelDirection direction, string models, string localPackages)
@@ -401,22 +700,29 @@ internal sealed class ModelInstaller
         throw new HttpRequestException("redirect-limit");
     }
     private async Task<string> Download(string url, string name, string? expectedHash, string label,
-        IProgress<SetupProgress> progress, CancellationToken ct)
+        IProgress<SetupProgress> progress, CancellationToken ct, long? exactBytes = null)
     {
+        long limit = exactBytes ?? 1024L * 1024 * 1024;
         string destination = Path.Combine(_cache, Path.GetFileName(name));
         if (File.Exists(destination))
         {
-            if (expectedHash is null || (await Hash(destination, ct)).Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
+            if ((exactBytes is null || new FileInfo(destination).Length == exactBytes)
+                && (expectedHash is null || (await Hash(destination, ct)).Equals(expectedHash, StringComparison.OrdinalIgnoreCase)))
                 return destination;
             File.Delete(destination);
         }
         string partial = destination + ".part";
         long offset = File.Exists(partial) ? new FileInfo(partial).Length : 0;
+        if (offset > limit)
+        {
+            File.Delete(partial);
+            offset = 0;
+        }
         using var response = await Get(new Uri(url), offset, ct);
         if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable && offset > 0)
         {
             File.Delete(partial);
-            return await Download(url, name, expectedHash, label, progress, ct);
+            return await Download(url, name, expectedHash, label, progress, ct, exactBytes);
         }
         response.EnsureSuccessStatusCode();
         bool append = offset > 0 && response.StatusCode == HttpStatusCode.PartialContent
@@ -426,7 +732,7 @@ internal sealed class ModelInstaller
         if (!append)
             offset = 0;
         long? total = response.Content.Headers.ContentLength is { } length ? length + offset : null;
-        if (total is > 1024L * 1024 * 1024)
+        if (total > limit || exactBytes is not null && total is not null && total != exactBytes)
             throw new InvalidDataException("download-size");
         await using (var source = await response.Content.ReadAsStreamAsync(ct))
         await using (var file = new FileStream(partial, append ? FileMode.Append : FileMode.Create, FileAccess.Write,
@@ -439,7 +745,7 @@ internal sealed class ModelInstaller
             {
                 await file.WriteAsync(buffer.AsMemory(0, read), ct);
                 offset += read;
-                if (offset > 1024L * 1024 * 1024)
+                if (offset > limit)
                     throw new InvalidDataException("download-size");
                 if (Environment.TickCount64 - lastProgress >= 80)
                 {
@@ -450,6 +756,8 @@ internal sealed class ModelInstaller
             await file.FlushAsync(ct);
             progress.Report(new(label, offset, total));
         }
+        if (exactBytes is { } pinnedLength && offset != pinnedLength)
+            throw new InvalidDataException("download-size");
         if (total is { } expectedLength && offset != expectedLength)
             throw new HttpRequestException("download-incomplete");
         if (expectedHash is not null && !(await Hash(partial, ct)).Equals(expectedHash, StringComparison.OrdinalIgnoreCase))

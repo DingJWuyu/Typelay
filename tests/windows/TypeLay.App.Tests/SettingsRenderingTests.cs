@@ -41,7 +41,8 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
             var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
             using var model = new ModelClient(new(Path.Combine(directory, "missing-python"),
                 Path.Combine(directory, "missing-worker"), Path.Combine(directory, "models")), info => new ChildProcess(info));
-            var window = new SettingsWindow(settings, model, () => { });
+            var window = new SettingsWindow(settings, model, () => { },
+                installations: new ModelInstallationStore(directory, Path.Combine(directory, "missing-worker")));
             try
             {
                 window.ShowPage("apps");
@@ -52,7 +53,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                 window.UpdateLayout();
                 var package = Descendants(window).OfType<StackPanel>().Single(item =>
                     AutomationProperties.GetAutomationId(item) == "ModelPackage_hy-mt2-1-8b-q4-k-m");
-                Assert.Contains(Descendants(package).OfType<TextBlock>(), text => text.Text == "Windows 当前版本未开放");
+                Assert.Contains(Descendants(package).OfType<TextBlock>(), text => text.Text == "当前安装包不含可用的 Hy 运行组件");
                 Assert.Contains(Descendants(package).OfType<TextBlock>(), text => text.Text.Contains("1.13 GB"));
                 Assert.Empty(Descendants(package).OfType<Button>());
                 Assert.Contains(Descendants(package).OfType<Expander>(), item => Equals(item.Header, "模型详情与许可"));
@@ -94,7 +95,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                     Assert.Equal("中文", languages[1].SelectedItem?.ToString());
                     Assert.All(languages, language => Assert.True(language.IsEnabled));
                     Assert.Contains(Descendants(window).OfType<TextBlock>(), text =>
-                        text.Text == "Auto 使用本地语言检测。当前提供中文与英文模型。");
+                        text.Text == "Auto 使用本地语言检测。可选语言跟随当前已就绪模型。");
                     Assert.False(model.Ready);
                     Assert.False(model.Installed);
                     Assert.Empty(model.AvailableDirections);

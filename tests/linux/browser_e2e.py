@@ -13,6 +13,7 @@ import os
 import shutil
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -2105,6 +2106,257 @@ class BrowserContract(unittest.TestCase):
     def motion_frames(self):
         self.page.wait_for_function("window.fixtureMotionDone === true")
         return self.page.evaluate("fixtureMotionFrames")
+
+    @staticmethod
+    def translation_menu_state(**changes):
+        return {
+            "settingsRevision": 12,
+            "styleReleased": True,
+            "canChangeStyle": True,
+            "canInheritStyle": True,
+            "applicationStyle": None,
+            "styleUnavailableReason": None,
+            "inheritUnavailableReason": None,
+            "alternativeReleased": True,
+            "canRequestAlternative": True,
+            "alternativeUnavailableReason": None,
+            "feedback": None,
+            **changes,
+        }
+
+    def set_translation_menu(self, data, actions, accept="Tab", exit_key="Esc"):
+        data["view"]["viewContext"] = {
+            "token": {
+                "target": {"backend": "linux-browser", "value": data["target"], "lifetime": "test"},
+                "commandGeneration": self.page.evaluate("fixtureBindings.generation"),
+                "revision": data["revision"],
+            },
+            "bindings": {"accept": accept, "exit": exit_key},
+            "canEdit": bool(data["view"]["editable"]),
+            "translationActions": actions,
+        }
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+
+    def test_translation_menu_uses_shared_state_and_freezes_opened_settings_revision(self):
+        data = self.motion_view()
+        self.page.emulate_media(reduced_motion="reduce")
+        # Missing/released-off/unknown payloads must not advertise an action.
+        for actions in (
+            None,
+            self.translation_menu_state(styleReleased=False, alternativeReleased=False),
+            self.translation_menu_state(applicationStyle="unknown"),
+        ):
+            self.set_translation_menu(data, actions)
+            self.click_overlay_control("更多")
+            names = [
+                node.get("name", {}).get("value")
+                for node in self.cdp.send("Accessibility.getFullAXTree")["nodes"]
+                if not node.get("ignored")
+            ]
+            self.assertNotIn("换种说法", names)
+            self.assertNotIn("当前应用风格", names)
+            self.click_overlay_control("更多")
+        self.set_translation_menu(data, self.translation_menu_state(canChangeStyle=False))
+        self.click_overlay_control("更多")
+        inherit = self.overlay_control("✓ 继承")
+        self.assertEqual(
+            self.overlay_dom(inherit, "function() { return this.getAttribute('aria-pressed'); }"),
+            "true",
+        )
+        self.set_translation_menu(
+            data, self.translation_menu_state(settingsRevision=13, applicationStyle="Formal")
+        )
+        self.click_overlay_control("自然")
+        event = self.page.evaluate("""fixtureMessages.findLast(message =>
+          message.event === 'ui' && message.data.operation === 'style').data""")
+        self.assertEqual(event["value"], {"settingsRevision": 12, "style": "Natural"})
+        self.assertEqual(event["revision"], data["revision"])
+        self.click_overlay_control("更多")
+        self.click_overlay_control("换种说法")
+        self.assertTrue(
+            self.page.evaluate("""fixtureMessages.some(message =>
+          message.event === 'ui' && message.data.operation === 'alternative')""")
+        )
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
+    def test_translation_menu_disables_unavailable_actions_and_rejects_stale_open_menu(self):
+        data = self.motion_view()
+        self.page.emulate_media(reduced_motion="reduce")
+        self.set_translation_menu(
+            data,
+            self.translation_menu_state(
+                canChangeStyle=False,
+                canInheritStyle=True,
+                canRequestAlternative=False,
+                styleUnavailableReason="style-unavailable",
+                alternativeUnavailableReason="alternative-busy",
+                feedback="没有找到不同的说法。",
+            ),
+        )
+        self.click_overlay_control("更多")
+        for name, reason in (("自然", "style-unavailable"), ("换种说法", "alternative-busy")):
+            self.assertEqual(
+                self.overlay_dom(
+                    self.overlay_control(name), "function() { return [this.disabled, this.title]; }"
+                ),
+                [True, reason],
+            )
+        self.overlay_control("译文就绪", "StaticText")
+        self.assertFalse(
+            self.overlay_dom(self.overlay_control("✓ 继承"), "function() { return this.disabled; }")
+        )
+        self.click_overlay_control("更多")
+        self.set_translation_menu(data, self.translation_menu_state())
+        self.click_overlay_control("更多")
+        data["revision"] += 1
+        self.set_translation_menu(data, self.translation_menu_state(settingsRevision=13))
+        self.click_overlay_control("自然")
+        self.assertFalse(
+            self.page.evaluate("""fixtureMessages.some(message =>
+          message.event === 'ui' && ['style', 'alternative'].includes(message.data.operation))""")
+        )
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
+    def test_translation_menu_feedback_does_not_retire_existing_editor_control_ticket(self):
+        _snapshot, data = self.open_editor("Ctrl+F7", "Ctrl+F8")
+        self.set_translation_menu(data, self.translation_menu_state(), "Ctrl+F7", "Ctrl+F8")
+        self.page.keyboard.down("Control")
+        self.set_translation_menu(
+            data,
+            self.translation_menu_state(canChangeStyle=False, feedback="没有找到不同的说法。"),
+            "Ctrl+F7",
+            "Ctrl+F8",
+        )
+        self.page.keyboard.down("F7")
+        self.page.keyboard.up("Control")
+        self.page.keyboard.up("F7")
+        self.assertEqual(
+            self.page.evaluate("""fixtureMessages.filter(message =>
+          message.event === 'ui' && message.data.operation === 'return').length"""),
+            1,
+        )
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
+    def test_inline_glossary_preserves_editor_and_requires_clear_separate_auxiliary_fields(self):
+        snapshot, data = self.open_editor("Ctrl+F7", "Ctrl+F8")
+        self.page.emulate_media(reduced_motion="reduce")
+        actions = self.translation_menu_state(
+            glossaryReleased=True, canOpenGlossary=True, glossaryUnavailableReason=None
+        )
+        self.set_translation_menu(data, actions, "Ctrl+F7", "Ctrl+F8")
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        self.page.keyboard.press("Control+A")
+        self.page.keyboard.insert_text("Human draft")
+        self.overlay_dom(editor, "function() { this.setSelectionRange(2, 5); }")
+        self.click_overlay_control("更多")
+        self.click_overlay_control("加入术语表")
+        entry = {
+            "formId": str(uuid.uuid4()),
+            "token": data["view"]["viewContext"]["token"],
+            "settingsRevision": 12,
+            "directions": [
+                {"source": "en", "target": "zh", "sourceName": "英语", "targetName": "中文"}
+            ],
+        }
+        # The owner's Begin render withdraws CanOpen before acknowledging this request.
+        self.set_translation_menu(data, {**actions, "canOpenGlossary": False}, "Ctrl+F7", "Ctrl+F8")
+        envelope = {
+            "target": snapshot["target"],
+            "generation": entry["token"]["commandGeneration"],
+            "revision": data["revision"],
+        }
+        self.assertTrue(
+            self.command("overlay-glossary-open", {**envelope, "entry": entry})["opened"]
+        )
+        description = self.command("describe", {"target": snapshot["target"]})
+        self.assertFalse(description["focused"])
+        self.assertFalse(description["sessionBindings"]["sourceReady"])
+        self.assertFalse(description["sessionBindings"]["editorReady"])
+        self.assertEqual(
+            description["glossaryFocus"],
+            {"formId": entry["formId"], "token": entry["token"], "ime": "Unknown"},
+        )
+        self.page.keyboard.insert_text("PR")
+        self.page.keyboard.press("Tab")
+        self.page.keyboard.press("Escape")
+        self.assertFalse(
+            self.page.evaluate(
+                "fixtureMessages.some(message => message.event === 'ui' && message.data.operation === 'sessionGlossaryClose')"
+            )
+        )
+        self.page.keyboard.insert_text("pull request")
+        self.page.keyboard.press("Control+F7")
+        self.assertFalse(
+            self.page.evaluate(
+                "fixtureMessages.some(message => message.event === 'ui' && message.data.operation === 'return')"
+            )
+        )
+        self.command("overlay-renew", {**envelope, "authority": snapshot["authority"]})
+        self.click_overlay_control("保存")
+        request = self.page.evaluate(
+            "fixtureMessages.findLast(message => message.event === 'ui' && message.data.operation === 'sessionGlossaryAdd').data.value"
+        )
+        self.assertEqual(
+            request,
+            {
+                "formId": entry["formId"],
+                "token": entry["token"],
+                "settingsRevision": 12,
+                "rule": {
+                    "sourceTerm": "PR",
+                    "targetTerm": "pull request",
+                    "sourceLanguage": None,
+                    "targetLanguage": None,
+                },
+            },
+        )
+        self.assertEqual(
+            self.command("describe", {"target": snapshot["target"]})["glossaryFocus"]["ime"],
+            "Clear",
+        )
+        self.command(
+            "overlay-glossary-result",
+            {
+                **envelope,
+                "formId": entry["formId"],
+                "result": {
+                    "saved": False,
+                    "code": "glossary-unconfirmed",
+                    "message": "保存结果尚未确认，请检查术语表",
+                },
+            },
+        )
+        self.click_overlay_control("保存")
+        self.assertEqual(
+            self.page.evaluate(
+                "fixtureMessages.filter(message => message.event === 'ui' && message.data.operation === 'sessionGlossaryAdd').length"
+            ),
+            1,
+        )
+        self.assertEqual(
+            self.overlay_dom(
+                self.overlay_control("源词", "textbox"), "function() { return this.value; }"
+            ),
+            "PR",
+        )
+        self.click_overlay_control("取消")
+        self.assertEqual(
+            self.overlay_dom(
+                editor,
+                "function() { return [this.isConnected, this.value, this.selectionStart, this.selectionEnd, this.matches(':focus')]; }",
+            ),
+            [True, "Human draft", 2, 5, True],
+        )
+        self.page.keyboard.press("Control+Z")
+        self.assertEqual(
+            self.overlay_dom(editor, "function() { return this.value; }"), "Initial candidate"
+        )
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
 
     def test_overlay_language_title_uses_host_labels_without_advertising_extra_browser_choices(
         self,

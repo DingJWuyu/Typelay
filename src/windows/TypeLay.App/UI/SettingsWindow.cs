@@ -17,6 +17,13 @@ internal sealed class SettingsWindow : Window
 {
     private readonly SettingsStore _settings;
     private readonly ModelClient _model;
+    private readonly SessionController? _controller;
+    private CancellationTokenSource? _translationRequest;
+    private bool _savingTranslation;
+    private Action? _refreshTranslationSettings, _refreshGlossarySettings;
+    private List<GlossaryRule>? _glossaryDraft;
+    private long _glossaryDraftRevision;
+    private IReadOnlyList<GlossaryRule> _glossaryDraftBaseline = [];
     private readonly StackPanel _content;
     private readonly StackPanel _nav;
     private readonly Border _draftBar;
@@ -31,6 +38,9 @@ internal sealed class SettingsWindow : Window
     private readonly HashSet<string> _selectedPreparationDirections = ModelCatalog.Directions
         .Select(direction => direction.Id).ToHashSet(StringComparer.Ordinal);
     private IReadOnlyList<string>? _preparationRequest;
+    private ModelPackageRequest? _packageRequest;
+    private StackPanel? _preparationPackages;
+    private bool _cleanupPending;
     private bool _repairInstallation, _updatingPreparationDirections;
     private readonly SettingsDraftMessages _draftMessages = SettingsDraftPresentation.Create();
     private string _page = "general", _setupStatus = "";
@@ -42,11 +52,13 @@ internal sealed class SettingsWindow : Window
     private ShortcutSettingsDraft? _shortcutDraft;
     private ExclusionSettingsDraft? _exclusionDraft;
     private long _draftSubmissionGeneration;
-    private bool HasDraft => _shortcutDraft is not null || _exclusionDraft is not null;
+    private bool HasOrdinaryDraft => _shortcutDraft is not null || _exclusionDraft is not null;
+    private bool HasDraft => HasOrdinaryDraft || _glossaryDraft is not null;
     private TextBox? _wakeShortcutInput, _directShortcutInput;
     private ComboBox? _acceptShortcutInput, _exitShortcutInput;
     private LanguagePicker? _sourceLanguage, _targetLanguage;
     private Button? _swapLanguages;
+    private TextBlock? _languageAvailability;
     private TextBlock? _returnShortcutHint;
     private TextBlock? _shortcutStatus;
     private Window? _closeDialog;
@@ -110,10 +122,11 @@ internal sealed class SettingsWindow : Window
     private bool _savingSettings;
     public SettingsWindow(SettingsStore settings, ModelClient model, Action openPractice, WindowsApplicationSupport? support = null,
         Func<ModelInstaller>? createInstaller = null, Func<Window, string?>? selectApplication = null,
-        ModelInstallationStore? installations = null)
+        ModelInstallationStore? installations = null, SessionController? controller = null)
     {
         _settings = settings;
         _model = model;
+        _controller = controller;
         _openPractice = openPractice;
         _support = support;
         if (support is not null)
@@ -208,8 +221,25 @@ internal sealed class SettingsWindow : Window
             RequestClose();
         };
         settings.Changed += Refresh;
+        settings.StyleChanged += Refresh;
+        settings.GlossarySaved += Refresh;
+        if (controller is not null)
+            controller.Changed += RefreshTranslationAvailability;
         model.Changed += RefreshModel;
         Refresh();
+    }
+    private void RefreshTranslationAvailability()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(RefreshTranslationAvailability));
+            return;
+        }
+        if (_page == "translation")
+            _refreshTranslationSettings?.Invoke();
+        if (_page == "glossary")
+            _refreshGlossarySettings?.Invoke();
+        RefreshDraftBar();
     }
     private void RefreshModel()
     {
@@ -221,6 +251,7 @@ internal sealed class SettingsWindow : Window
         if (_renderedPage == _page && (_page is "apps" or "translation" || _page == "general" && _preparationCard is not null))
         {
             RefreshPreparation();
+            RefreshTranslationAvailability();
             if (_modelStatus is not null)
                 _modelStatus.Text = _model.Status;
             return;
@@ -237,18 +268,25 @@ internal sealed class SettingsWindow : Window
         if (HasDraft && !ConfirmDiscard())
             return false;
         _startupPresentationAllowed = false;
+        _translationRequest?.Cancel();
         _shortcutDraft = null;
         _exclusionDraft = null;
+        _glossaryDraft = null;
         _draftFeedback = null;
         _settingsError = null;
         _support?.CancelCheck();
         RefreshDraftBar();
+        _renderedPage = null;
         Hide();
         return true;
     }
     // An exceptional stop must not leave input services running behind a prompt.
     // Normal settings closure and explicit Quit go through RequestClose instead.
-    public void PrepareForEmergencyShutdown() => _emergencyShutdown = true;
+    public void PrepareForEmergencyShutdown()
+    {
+        _emergencyShutdown = true;
+        _translationRequest?.Cancel();
+    }
     private bool ConfirmDiscard()
     {
         var dialog = new Window
@@ -271,6 +309,7 @@ internal sealed class SettingsWindow : Window
             // Invalidate only draft submissions, before closing the modal can
             // dispatch a retirement ACK. Already persisted settings stay saved.
             _draftSubmissionGeneration++;
+            _translationRequest?.Cancel();
             dialog.DialogResult = true;
         });
         keep.Margin = new(0, 0, 10, 0);
@@ -327,7 +366,15 @@ internal sealed class SettingsWindow : Window
             RefreshDraftBar();
             return;
         }
+        if (_page is "translation" or "glossary" && _renderedPage == _page)
+        {
+            RefreshTranslationAvailability();
+            if (_page == "translation")
+                RefreshPreparation();
+            return;
+        }
         _refreshBrowserRow = null;
+        _refreshTranslationSettings = _refreshGlossarySettings = null;
         _renderedPage = _page;
         _nav.Children.Clear();
         foreach (var (key, title) in new[] { ("general", "⌂  常规"), ("language", "文  语言"), ("shortcuts", "⌨  快捷键"),
@@ -358,6 +405,7 @@ internal sealed class SettingsWindow : Window
         _content.Children.Clear();
         _sourceLanguage = _targetLanguage = null;
         _swapLanguages = null;
+        _languageAvailability = null;
         _themeChoices.Clear();
         _progress = null;
         _progressLabel = null;
@@ -518,7 +566,9 @@ internal sealed class SettingsWindow : Window
             EnableContent();
             if (!IsCurrentSubmission())
                 return false;
-            _settingsError = "请使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，排除 F12。两个按需快捷键不能相同。";
+            _settingsError = !ModelCatalog.IsSupportedSetting(value.Source, value.Target)
+                ? "请选择支持的源语言和目标语言。"
+                : "请使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，排除 F12。两个按需快捷键不能相同。";
             Refresh();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
@@ -769,21 +819,26 @@ internal sealed class SettingsWindow : Window
     {
         Heading("语言", "Auto 只用于源语言，目标语言始终明确指定。");
         _sourceLanguage = new(true, _settings.Value.Source,
-            async code => await SaveAsync(_settings.Value with { Source = code }));
+            async code => await SaveAsync(_settings.Value with { Source = code }), _model.Ready ? _model.AvailableDirections : null);
         _targetLanguage = new(false, _settings.Value.Target,
-            async code => await SaveAsync(_settings.Value with { Target = code }));
-        Row("源语言", "Auto 使用本地语言检测。当前提供中文与英文模型。", _sourceLanguage);
+            async code => await SaveAsync(_settings.Value with { Target = code }), _model.Ready ? _model.AvailableDirections : null);
+        Row("源语言", "Auto 使用本地语言检测。可选语言跟随当前已就绪模型。", _sourceLanguage);
         Row("目标语言", "选择希望写回的语言。", _targetLanguage);
         _swapLanguages = UiTheme.Button("交换", async () => await SaveAsync(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
         Row("交换语言", "只改变语言配置，不修改当前原文或译文。", _swapLanguages);
         Rule();
-        Note("当前支持范围", "中文 ⇄ English。其他语言方向、下载选择器和更多语言模型尚未开放，界面不会把未安装的模型标成可用。");
+        _languageAvailability = Note("当前支持范围", "");
         RefreshLanguages();
     }
     private void RefreshLanguages()
     {
-        _sourceLanguage?.Synchronize(_settings.Value.Source);
-        _targetLanguage?.Synchronize(_settings.Value.Target);
+        var directions = _model.Ready ? _model.AvailableDirections : null;
+        _sourceLanguage?.Synchronize(_settings.Value.Source, directions);
+        _targetLanguage?.Synchronize(_settings.Value.Target, directions);
+        if (_languageAvailability is not null)
+            _languageAvailability.Text = directions is null
+                ? "模型尚未就绪"
+                : "当前模型支持 " + directions.Count + " 个翻译方向";
         if (_swapLanguages is not null)
             _swapLanguages.IsEnabled = _settings.Value.Source != "auto";
     }
@@ -853,8 +908,13 @@ internal sealed class SettingsWindow : Window
     }
     private async Task SaveDraftAsync()
     {
-        if (_savingSettings || !HasDraft)
+        if (_savingSettings || _savingTranslation || !HasDraft)
             return;
+        if (!HasOrdinaryDraft)
+        {
+            await SaveGlossaryDraftAsync();
+            return;
+        }
         var shortcuts = _shortcutDraft ?? ShortcutSettingsDraft.From(_settings.Value);
         if (!shortcuts.TryApply(_settings.Value, out var latest, out var error))
         {
@@ -879,6 +939,8 @@ internal sealed class SettingsWindow : Window
             _shortcutDraft = null;
             _exclusionDraft = null;
             _draftFeedback = _draftMessages.SavedMessage;
+            if (_glossaryDraft is not null)
+                await SaveGlossaryDraftAsync();
         }
         else
             _draftFeedback = _draftMessages.InvalidMessage;
@@ -891,7 +953,7 @@ internal sealed class SettingsWindow : Window
             : _draftFeedback ?? (HasDraft ? _draftMessages.UnsavedNotice : "");
         _draftBar.Visibility = HasDraft || _draftFeedback is not null || _settingsError is not null
             ? Visibility.Visible : Visibility.Collapsed;
-        _saveDraftButton.IsEnabled = HasDraft && !_savingSettings;
+        _saveDraftButton.IsEnabled = HasDraft && !_savingSettings && !_savingTranslation;
     }
     private void SetExclusionDraft(IReadOnlyList<string> baseline, IEnumerable<string> values)
     {
@@ -1216,8 +1278,8 @@ internal sealed class SettingsWindow : Window
     }
     private void Translation()
     {
-        Heading("翻译", "控制本地模型状态。当前模型采用自然、忠实的单一候选。");
-        Row("默认风格", "其他风格尚未接入模型，不提供虚假切换。", new ComboBox { MinWidth = 155, ItemsSource = new[] { "自然" }, SelectedIndex = 0, IsEnabled = false });
+        Heading("翻译");
+        TranslationStyles();
         Row("本地翻译模型", "CTranslate2 · Argos 中英模型 · CPU INT8", _modelStatus = UiTheme.Text(_model.Status, 12, true));
         InstallCard();
         Rule();
@@ -1271,27 +1333,8 @@ internal sealed class SettingsWindow : Window
             : "准备私有运行组件与中英模型。仅在本机推理；无需自行安装 Python，也不上传输入文字。", 12, true);
         intro.Margin = new(0, 8, 0, 8);
         detailsBody.Children.Add(intro);
-        foreach (var package in ModelCatalog.Packages.Packages.Where(package => package.Preview))
-        {
-            var row = ApplicationSupportPresentation.UnavailableModelPackage(package.Id, "windows-unavailable");
-            var packageBody = new StackPanel { Margin = new(0, 8, 0, 12) };
-            AutomationProperties.SetAutomationId(packageBody, "ModelPackage_" + row.Id);
-            packageBody.Children.Add(UiTheme.Text(row.Title + " · 预览", 13, bold: true));
-            packageBody.Children.Add(UiTheme.Text(row.CoverageText + " · " + row.DownloadText, 12, true));
-            packageBody.Children.Add(UiTheme.Text(row.AvailabilityText, 12, true));
-            var packageDetails = new StackPanel();
-            packageDetails.Children.Add(UiTheme.Text(row.Details, 12, true));
-            if (row.LicenseUrl.Length > 0)
-            {
-                var license = new Hyperlink(new Run("模型许可证"));
-                license.Click += (_, _) => OpenUri(row.LicenseUrl);
-                var label = UiTheme.Text("", 12);
-                label.Inlines.Add(license);
-                packageDetails.Children.Add(label);
-            }
-            packageBody.Children.Add(new Expander { Header = "模型详情与许可", Content = packageDetails });
-            detailsBody.Children.Add(packageBody);
-        }
+        _preparationPackages = new StackPanel();
+        detailsBody.Children.Add(_preparationPackages);
         _preparationDirections = new StackPanel { Margin = new(0, 0, 0, 8) };
         detailsBody.Children.Add(_preparationDirections);
         var runtime = UiTheme.Button("微软运行库说明", () => OpenUri("https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist"));
@@ -1315,14 +1358,103 @@ internal sealed class SettingsWindow : Window
             : _setupPaused ? TranslationPreparationPhase.Paused
             : _setupFailure is not null ? TranslationPreparationPhase.Failed
             : TranslationPreparationPhase.Idle;
-        var installed = _installations.ReadCommittedDirections();
-        bool needsFullRepair = installed is null && _preparationRequest is null;
-        return ApplicationSupportPresentation.Preparation(new(_model.Ready, installed is { Count: > 0 },
-            needsFullRepair ? TranslationPreparationPhase.Idle : phase,
-            !needsFullRepair && _setupFailure is { } failure ? SetupFailurePresentation.CategoryFromCode(failure.Code) : null,
-            !needsFullRepair && _setupRecoveryFailure is { } recovery ? SetupFailurePresentation.CategoryFromCode(recovery.Code) : null,
-            installed, _model.AvailableDirections, InstallationIntentKnown: installed is not null));
+        var state = _installations.ReadInstallationState();
+        bool canPrepareHy = _installations.CanPrepareWindowsHy;
+        var installed = state.InstalledPackages.SelectMany(item => item.Directions).Select(direction => direction.Id).ToArray();
+        var view = ApplicationSupportPresentation.Preparation(new(_model.Ready, installed.Length > 0, phase,
+            _setupFailure is { } failure ? SetupFailurePresentation.CategoryFromCode(failure.Code) : null,
+            _setupRecoveryFailure is { } recovery ? SetupFailurePresentation.CategoryFromCode(recovery.Code) : null,
+            installed, _model.AvailableDirections, InstallationIntentKnown: state.InventoryKnown,
+            Packages: new(state.Generation, state.InventoryKnown, state.InstalledPackages, state.CurrentPackages,
+                _model.AvailablePackages, canPrepareHy,
+                canPrepareHy ? null : "native-unavailable",
+                _settings.Value.Source, _settings.Value.Target, _install is not null, "NuGet、PyPI")));
+        if (state.InventoryKnown && _model.Ready && _model.AvailablePackages.Count == 0
+            && phase == TranslationPreparationPhase.Idle && _model.AvailableDirections.Count > 0)
+        {
+            // Legacy hello proves ordinary directions, not exact package identity.
+            // Keep that working readiness without inventing schema3 ReadyPackages.
+            var ready = _model.AvailableDirections.Select(ModelCatalog.Get).ToArray();
+            bool covered = _settings.Value.Source == _settings.Value.Target || ready.Any(direction =>
+                direction.Target == _settings.Value.Target && (_settings.Value.Source == "auto" || direction.Source == _settings.Value.Source));
+            view = view with
+            {
+                StatusText = "本地翻译已就绪 · " + string.Join("、", ready.Select(direction => direction.SourceName + " → " + direction.TargetName)),
+                Guidance = covered ? "旧安装尚未提供精确包身份，可明确选择修复以升级安装记录。" : "当前模型不包含这个方向。请切换模型或调整语言。",
+                PackageRows = view.PackageRows.Select(row => row.Current ? row with
+                {
+                    AvailabilityText = "当前 · 旧版方向已加载，包身份未验证"
+                } : row).ToArray()
+            };
+        }
+        return _setupFailure is not null && _packageRequest is null && installed.Length > 0
+            ? view with
+            {
+                PrimaryAction = new(TranslationPreparationAction.Repair, "请在下方选择修复", false)
+            }
+            : view;
     }
+    private void RefreshPackageRows(TranslationPreparationView view)
+    {
+        if (_preparationPackages is null)
+            return;
+        _preparationPackages.Children.Clear();
+        _preparationPackages.Children.Add(UiTheme.Text(view.CurrentModelText, 12, true));
+        if (_cleanupPending || _installations.CleanupPending)
+            _preparationPackages.Children.Add(UiTheme.Text("旧组件退出或清理尚未确认，暂保留旧副本，未释放对应磁盘空间。", 12, true));
+        foreach (var row in view.PackageRows)
+        {
+            var body = new StackPanel { Margin = new(0, 8, 0, 12) };
+            AutomationProperties.SetAutomationId(body, "ModelPackage_" + row.Id);
+            body.Children.Add(UiTheme.Text(row.Title + (row.Preview ? " · 预览" : ""), 13, bold: true));
+            body.Children.Add(UiTheme.Text(row.CoverageText + (row.DownloadText.Length > 0 ? " · " + row.DownloadText : ""), 12, true));
+            body.Children.Add(UiTheme.Text(row.AvailabilityText, 12, true));
+            var actions = new WrapPanel();
+            foreach (var action in row.Actions)
+            {
+                var button = UiTheme.Button(action.Label, () => RunPackageAction(action));
+                button.IsEnabled = action.Enabled && _packageRequest is null;
+                AutomationProperties.SetAutomationId(button, "ModelPackage_" + row.Id + "_" + action.Request.Operation);
+                actions.Children.Add(button);
+            }
+            body.Children.Add(actions);
+            var details = new StackPanel();
+            details.Children.Add(UiTheme.Text(row.Details, 12, true));
+            if (row.LicenseUrl.Length > 0)
+            {
+                var license = new Hyperlink(new Run("模型许可证"));
+                license.Click += (_, _) => OpenUri(row.LicenseUrl);
+                var label = UiTheme.Text("", 12);
+                label.Inlines.Add(license);
+                details.Children.Add(label);
+            }
+            body.Children.Add(new Expander { Header = "模型详情与许可", Content = details });
+            _preparationPackages.Children.Add(body);
+        }
+    }
+    private void RunPackageAction(ModelPackageActionView action)
+    {
+        if (_install is not null || _packageRequest is not null || !action.Enabled)
+            return;
+        var frozen = action.Request with
+        {
+            PackageIds = action.Request.PackageIds.ToArray(),
+            ActivePackages = action.Request.ActivePackages.ToArray()
+        };
+        string confirmation = action.ConfirmationText + "\n\n本次操作需要复制保留的模型和运行组件。旧副本未确认退出时会继续保留，不会立即释放磁盘空间。";
+        if (MessageBox.Show(this, confirmation, "本地模型", MessageBoxButton.OKCancel,
+                MessageBoxImage.Question, MessageBoxResult.Cancel) != MessageBoxResult.OK)
+            return;
+        if (_install is not null || _packageRequest is not null || _installations.ReadInstallationState().Generation != frozen.ExpectedCurrent)
+        {
+            _setupStatus = "安装记录已变化，请刷新后重新确认。";
+            RefreshPreparation();
+            return;
+        }
+        _packageRequest = frozen;
+        _ = Install(TranslationPreparationAction.Prepare, PreparationView());
+    }
+
     private void RunPreparationAction(TranslationPreparationActionView action)
     {
         var view = PreparationView();
@@ -1349,6 +1481,7 @@ internal sealed class SettingsWindow : Window
             return;
         var view = PreparationView();
         RefreshPreparationDirections(view);
+        RefreshPackageRows(view);
         if (_preparationCard is not null)
             _preparationCard.Visibility = _page == "general" && view.PrimaryAction.Id == TranslationPreparationAction.NextStep
                 ? Visibility.Collapsed : Visibility.Visible;
@@ -1359,7 +1492,7 @@ internal sealed class SettingsWindow : Window
         AutomationProperties.SetName(_preparationPrimary, view.PrimaryAction.Label);
         _preparationPrimary.IsEnabled = view.PrimaryAction.Enabled;
         _progressLabel.Text = _setupStatus;
-        _progressLabel.Visibility = _install is { IsCancellationRequested: false } && !_startingModel ? Visibility.Visible : Visibility.Collapsed;
+        _progressLabel.Visibility = _setupStatus.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         _progress.Visibility = _install is not null ? Visibility.Visible : Visibility.Collapsed;
         _progress.IsIndeterminate = _install is not null;
         if (!_preparationSecondary.Children.OfType<Button>().Select(button => button.Tag)
@@ -1452,8 +1585,8 @@ internal sealed class SettingsWindow : Window
     {
         if (_install is not null)
             return;
-        if (action is not (TranslationPreparationAction.Resume or TranslationPreparationAction.Retry)
-            || _preparationRequest is null)
+        if (_packageRequest is null && (action is not (TranslationPreparationAction.Resume or TranslationPreparationAction.Retry)
+            || _preparationRequest is null))
         {
             var installed = view.Directions.Where(direction => direction.Installed).Select(direction => direction.Id).ToArray();
             IEnumerable<string> requested = action == TranslationPreparationAction.CompleteDirections
@@ -1471,6 +1604,8 @@ internal sealed class SettingsWindow : Window
         _setupPaused = false;
         _setupStatus = "正在准备本地翻译组件…";
         bool acceptingProgress = true;
+        ModelInstallationStore.PreparedInstallation? prepared = null;
+        ModelInstaller? installer = null;
         RefreshPreparation();
         try
         {
@@ -1488,26 +1623,25 @@ internal sealed class SettingsWindow : Window
                         _progress.Value = 100.0 * update.Downloaded / update.Total.Value;
                 }
             });
-            using var prepared = await _createInstaller().PrepareAsync(progress, operation.Token,
-                _preparationRequest, repair: _repairInstallation);
+            installer = _createInstaller();
+            prepared = _packageRequest is { } request
+                ? await installer.PreparePackagesAsync(request, progress, operation.Token)
+                : await installer.PrepareAsync(progress, operation.Token, _preparationRequest, repair: _repairInstallation);
             acceptingProgress = false;
-            operation.Token.ThrowIfCancellationRequested();
-            var plan = prepared.CreateLoadPlan();
-            if (PrepareModelChange is not null)
-            {
-                if (!await PrepareModelChange())
-                    throw new ModelSetupException(SetupFailureCategory.Runtime, ModelSetupStage.Activate);
-            }
-            else
-                SessionMustEnd?.Invoke();
             operation.Token.ThrowIfCancellationRequested();
             _startingModel = true;
             _setupStatus = "正在启动本地翻译…";
             RefreshPreparation();
-            var outcome = await _model.ReloadAsync(plan, prepared.PublishConfirmed, prepared.ConfirmCurrent, operation.Token);
+            var outcome = await prepared.ActivateAsync(_model, async () =>
+            {
+                if (PrepareModelChange is not null)
+                    return await PrepareModelChange();
+                SessionMustEnd?.Invoke();
+                return true;
+            }, operation.Token);
             if (outcome == ModelPublicationOutcome.Confirmed)
             {
-                prepared.Complete();
+                _packageRequest = null;
                 _preparationRequest = null;
                 _repairInstallation = false;
                 await SaveAsync(_settings.Value with
@@ -1525,13 +1659,38 @@ internal sealed class SettingsWindow : Window
             _setupPaused = true;
             _setupStatus = SetupFailurePresentation.PausedMessage;
         }
-        catch (ModelSetupException failure) { SetupFailed(failure.Category, failure.Stage.ToString(), failure.RecoveryFailureCategory); }
+        catch (InvalidDataException error) when (error.Message == "installation-changed")
+        {
+            _packageRequest = null;
+            _setupPaused = false;
+            _setupStatus = "安装记录已变化，请刷新后重新确认。";
+        }
+        catch (ModelSetupException failure)
+        {
+            SetupFailed(failure.Category, failure.Stage.ToString(), failure.RecoveryFailureCategory);
+            if (_packageRequest?.Operation is ModelPackageOperation.Select or ModelPackageOperation.Remove)
+            {
+                _packageRequest = null;
+                _setupStatus += "\n本次操作没有联网。请在下方明确选择修复，完成后重新确认操作。";
+            }
+        }
         catch (OperationCanceledException) { SetupFailed(SetupFailureCategory.Runtime, "Preparation"); }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             SetupFailed(SetupFailureCategory.Unknown, "Preparation");
         }
-        finally { acceptingProgress = false; _startingModel = false; _install = null; RefreshPreparation(); }
+        finally
+        {
+            acceptingProgress = false;
+            // Cleanup keeps its installation/use locks until it finishes, even after
+            // cancellation. Its disk work must not freeze pause, close or repaint.
+            if (prepared is not null)
+                await Task.Run(prepared.Dispose);
+            _cleanupPending |= prepared?.CleanupPending == true || installer?.CleanupPending == true;
+            _startingModel = false;
+            _install = null;
+            RefreshPreparation();
+        }
     }
     internal void CancelPreparation() => _install?.Cancel();
     internal void ReportSetupFailure(ModelSetupException failure)
@@ -1547,14 +1706,403 @@ internal sealed class SettingsWindow : Window
         _setupStatus = _setupFailure.Message + "\n" + (_setupRecoveryFailure is { } obstruction
             ? obstruction.Message + "\n" + obstruction.NextStep : _setupFailure.NextStep);
     }
+    private void TranslationStyles()
+    {
+        var state = _controller?.GetStyleSettingsState();
+        if (state is null)
+            return;
+        var choices = new ComboBox { MinWidth = 155, ItemsSource = new[] { "自然", "正式" } };
+        AutomationProperties.SetName(choices, "默认翻译风格");
+        bool updating = false;
+        var savedChoice = UiTheme.Text("", 12, true);
+        if (state.IsReleased)
+            Row("默认风格", "", choices);
+        else if (state.SavedPreferences is not null)
+            Row("默认风格", "", savedChoice);
+        var applications = new StackPanel();
+        var reset = UiTheme.Button("重置翻译风格", async () =>
+        {
+            var current = _controller!.GetStyleSettingsState();
+            if (_savingTranslation || !current.CanReset || current.Session is not null || !ConfirmStyleReset())
+                return;
+            await SaveTranslationChangeAsync(ct => _controller.ResetTranslationStyleAsync(current.SettingsRevision,
+                cancellationToken: ct));
+        });
+        reset.HorizontalAlignment = HorizontalAlignment.Left;
+        _content.Children.Add(applications);
+        _content.Children.Add(reset);
+        choices.SelectionChanged += async (_, _) =>
+        {
+            if (updating || _savingTranslation || choices.SelectedIndex < 0)
+                return;
+            var current = _controller!.GetStyleSettingsState();
+            if (!current.IsReleased || !current.CanChange || current.Session is not null)
+            {
+                RefreshTranslationAvailability();
+                return;
+            }
+            var selected = choices.SelectedIndex == 1 ? TranslationStyle.Formal : TranslationStyle.Natural;
+            await SaveTranslationChangeAsync(ct => _controller.ChangeStyleAsync(StyleScope.Global, selected,
+                current.SettingsRevision, cancellationToken: ct));
+        };
+        TranslationStyles? displayed = null;
+        _refreshTranslationSettings = () =>
+        {
+            var current = _controller!.GetStyleSettingsState();
+            updating = true;
+            choices.SelectedIndex = current.SavedPreferences is { } preferences ? preferences.Default == TranslationStyle.Formal ? 1 : 0 : -1;
+            choices.IsEnabled = current.IsReleased && current.CanChange && current.Session is null && !_savingTranslation;
+            savedChoice.Text = current.SavedPreferences is null ? "未设置"
+                : current.SavedPreferences.Default == TranslationStyle.Formal ? "正式" : "自然";
+            updating = false;
+            reset.Visibility = current.SavedPreferences is null ? Visibility.Collapsed : Visibility.Visible;
+            reset.IsEnabled = current.CanReset && current.Session is null && !_savingTranslation;
+            if (!ReferenceEquals(displayed, current.SavedPreferences))
+            {
+                displayed = current.SavedPreferences;
+                applications.Children.Clear();
+                foreach (var pair in current.SavedPreferences?.Applications ?? new Dictionary<string, TranslationStyle>())
+                {
+                    string application = pair.Key;
+                    var row = new DockPanel { Margin = new(0, 6, 0, 6) };
+                    var remove = UiTheme.Button("移除", async () =>
+                    {
+                        var removal = _controller.GetStyleOverrideRemovalState(application);
+                        if (_savingTranslation || !removal.CanRemove)
+                            return;
+                        await SaveTranslationChangeAsync(ct => _controller.RemoveStyleOverrideAsync(application,
+                            removal.SettingsRevision, ct));
+                    });
+                    AutomationProperties.SetName(remove, "移除风格覆盖 " + application);
+                    remove.Tag = application;
+                    DockPanel.SetDock(remove, Dock.Right);
+                    row.Children.Add(remove);
+                    row.Children.Add(UiTheme.Text(application + " · " + (pair.Value == TranslationStyle.Formal ? "正式" : "自然"), 12));
+                    applications.Children.Add(row);
+                }
+            }
+            foreach (var remove in applications.Children.OfType<DockPanel>().SelectMany(row => row.Children.OfType<Button>()))
+                remove.IsEnabled = !_savingTranslation && _controller.GetStyleOverrideRemovalState((string)remove.Tag).CanRemove;
+        };
+        _refreshTranslationSettings();
+    }
+    private bool ConfirmStyleReset()
+    {
+        var dialog = new Window
+        {
+            Owner = this,
+            Title = "重置翻译风格",
+            Width = 430,
+            SizeToContent = SizeToContent.Height,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            ShowInTaskbar = false
+        };
+        dialog.SetResourceReference(BackgroundProperty, "Panel");
+        var body = new StackPanel { Margin = new(22) };
+        body.Children.Add(UiTheme.Text("清除全局风格和所有应用的风格覆盖？", 13));
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 22, 0, 0) };
+        var cancel = UiTheme.Button("取消", () => dialog.DialogResult = false, primary: true);
+        cancel.IsCancel = cancel.IsDefault = true;
+        cancel.Margin = new(0, 0, 10, 0);
+        actions.Children.Add(cancel);
+        actions.Children.Add(UiTheme.Button("重置翻译风格", () => dialog.DialogResult = true));
+        body.Children.Add(actions);
+        dialog.Content = body;
+        dialog.Loaded += (_, _) => cancel.Focus();
+        _closeDialog = dialog;
+        try
+        {
+            return dialog.ShowDialog() == true;
+        }
+        finally { _closeDialog = null; }
+    }
+    private async Task SaveTranslationChangeAsync(Func<CancellationToken, Task<StyleChangeResult>> save)
+    {
+        if (_savingTranslation)
+            return;
+        using var request = new CancellationTokenSource();
+        _translationRequest = request;
+        _savingTranslation = true;
+        _settingsError = _draftFeedback = null;
+        string page = _page;
+        string? focusedSetting = Keyboard.FocusedElement is Control focused && focused.IsDescendantOf(_content)
+            ? AutomationProperties.GetName(focused) : null;
+        bool restoreFocus = IsActive;
+        void FocusLeft(object? sender, EventArgs args) => restoreFocus = false;
+        void FocusMoved(object sender, KeyboardFocusChangedEventArgs args) => restoreFocus = false;
+        void PointerUsed(object sender, MouseButtonEventArgs args) => restoreFocus = false;
+        RefreshTranslationAvailability();
+        Deactivated += FocusLeft;
+        GotKeyboardFocus += FocusMoved;
+        PreviewMouseDown += PointerUsed;
+        try
+        {
+            var result = await save(request.Token);
+            if (request.IsCancellationRequested || !ReferenceEquals(_translationRequest, request))
+                return;
+            bool confirmed = result.Saved && result.Code is "style-saved" or "style-unchanged" or "style-saved-notification-failed";
+            _draftFeedback = confirmed ? result.Code == "style-saved-notification-failed"
+                ? "已保存，请重新打开设置确认当前状态。" : _draftMessages.SavedMessage : _draftMessages.InvalidMessage;
+            _settingsError = confirmed ? null : TranslationSettingsError(result.Code);
+            if (confirmed && HasDraft)
+                _draftFeedback = _draftMessages.UnsavedNotice;
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            if (!request.IsCancellationRequested)
+                _settingsError = "保存结果未确认，请重新打开设置检查当前值。";
+        }
+        finally
+        {
+            Deactivated -= FocusLeft;
+            GotKeyboardFocus -= FocusMoved;
+            PreviewMouseDown -= PointerUsed;
+            if (ReferenceEquals(_translationRequest, request))
+                _translationRequest = null;
+            _savingTranslation = false;
+            RefreshTranslationAvailability();
+            if (!request.IsCancellationRequested && restoreFocus && IsActive && _page == page)
+                RestoreSettingFocus(focusedSetting);
+        }
+    }
+    private static string TranslationSettingsError(string code) => code switch
+    {
+        "invalid-glossary" or "glossary-too-large" => "请检查术语内容、长度和语言方向。",
+        "glossary-conflict" => "同一范围内的源词已有不同译法，请修改后再保存。",
+        "glossary-stale" or "style-stale" => "设置已更新，当前修改未保存。请检查当前值后重试。",
+        "glossary-save-failed" or "style-save-failed" => "请检查当前用户目录与组织策略。",
+        "glossary-canceled" or "style-canceled" => "保存已取消，修改尚未保存。",
+        "style-not-released" or "style-unavailable" or "style-busy" or "glossary-busy" or "glossary-not-released"
+            or "glossary-unavailable" or "manual-style-locked" or "glossary-combination-unavailable"
+            or "style-application-unavailable" or "practice-retirement-unconfirmed" => "当前无法保存，请检查翻译设置后重试。",
+        _ => "保存结果未确认，请检查当前值后重试。"
+    };
     private void Glossary()
     {
-        Heading("术语表", "显式术语能力计划保留；本次开发版尚未接入。");
-        Note("当前不保存或应用术语规则", "人工编辑只属于当前会话，不会自动学习。为避免误导，此页面暂不提供可保存的编辑表格。");
-        var add = UiTheme.Button("添加术语", () => { });
-        add.IsEnabled = false;
+        Heading("术语表");
+        var state = _controller?.GetGlossarySettingsState();
+        if (state is null || !state.IsReleased && state.SavedSnapshot?.Rules.Count is not > 0)
+        {
+            Note("当前版本未开放", "人工编辑不会自动学习为术语规则。");
+            return;
+        }
+        var labels = new Grid { Margin = new(0, 0, 0, 4) };
+        labels.ColumnDefinitions.Add(new());
+        labels.ColumnDefinitions.Add(new());
+        labels.Children.Add(UiTheme.Text("源词", 12, true));
+        var targetLabel = UiTheme.Text("译词", 12, true);
+        targetLabel.Margin = new(6, 0, 0, 0);
+        Grid.SetColumn(targetLabel, 1);
+        labels.Children.Add(targetLabel);
+        _content.Children.Add(labels);
+        var rows = new StackPanel();
+        _content.Children.Add(rows);
+        var scopes = new[] { new GlossaryScope("全局", null, null) }.Concat(ModelCatalog.Packages.Packages
+            .SelectMany(package => package.Directions).DistinctBy(direction => direction.Id)
+            .Select(direction => new GlossaryScope(direction.SourceName + " → " + direction.TargetName, direction.Source, direction.Target))).ToArray();
+        GlossarySnapshot? displayed = state.SavedSnapshot;
+        long displayedRevision = state.SettingsRevision;
+        IReadOnlyList<GlossaryRule> mountedRules = [];
+        var add = UiTheme.Button("添加术语", () =>
+        {
+            if (_savingTranslation || _controller?.GetGlossarySettingsState().IsReleased != true)
+                return;
+            BeginGlossaryDraft();
+            _glossaryDraft!.Add(new("", ""));
+            RenderRows();
+            DraftChanged();
+        });
         add.HorizontalAlignment = HorizontalAlignment.Left;
+        add.Visibility = state.IsReleased ? Visibility.Visible : Visibility.Collapsed;
         _content.Children.Add(add);
+        IReadOnlyList<GlossaryRule> DisplayedRules() => _glossaryDraft ?? (IReadOnlyList<GlossaryRule>?)displayed?.Rules ?? [];
+        void BeginGlossaryDraft()
+        {
+            if (_glossaryDraft is not null)
+                return;
+            _glossaryDraft = DisplayedRules().ToList();
+            _glossaryDraftRevision = displayedRevision;
+            _glossaryDraftBaseline = displayed?.Rules.ToArray() ?? [];
+        }
+        void DraftChanged()
+        {
+            _draftFeedback = _settingsError = null;
+            RefreshDraftBar();
+        }
+        void RenderRows()
+        {
+            rows.Children.Clear();
+            var rules = DisplayedRules();
+            mountedRules = rules.ToArray();
+            for (int index = 0; index < rules.Count; index++)
+            {
+                int selectedIndex = index;
+                var rule = rules[index];
+                var row = new StackPanel { Margin = new(0, 4, 0, 12) };
+                var terms = new Grid();
+                terms.ColumnDefinitions.Add(new());
+                terms.ColumnDefinitions.Add(new());
+                var source = new TextBox { Text = rule.SourceTerm, Margin = new(0, 0, 6, 0), IsReadOnly = !state.IsReleased };
+                var target = new TextBox { Text = rule.TargetTerm, Margin = new(6, 0, 0, 0), IsReadOnly = !state.IsReleased };
+                AutomationProperties.SetName(source, "源词 " + (index + 1));
+                AutomationProperties.SetName(target, "译词 " + (index + 1));
+                terms.Children.Add(source);
+                Grid.SetColumn(target, 1);
+                terms.Children.Add(target);
+                row.Children.Add(terms);
+                var actions = new DockPanel { Margin = new(0, 6, 0, 0) };
+                var remove = UiTheme.Button("删除", () =>
+                {
+                    if (_savingTranslation)
+                        return;
+                    BeginGlossaryDraft();
+                    _glossaryDraft!.RemoveAt(selectedIndex);
+                    RenderRows();
+                    DraftChanged();
+                });
+                AutomationProperties.SetName(remove, "删除术语 " + (index + 1));
+                DockPanel.SetDock(remove, Dock.Right);
+                actions.Children.Add(remove);
+                var selectedScope = scopes.SingleOrDefault(item => item.Source == rule.SourceLanguage && item.Target == rule.TargetLanguage)
+                    ?? new GlossaryScope(rule.SourceLanguage + " → " + rule.TargetLanguage, rule.SourceLanguage, rule.TargetLanguage);
+                var scope = new ComboBox
+                {
+                    ItemsSource = scopes.Contains(selectedScope) ? scopes : scopes.Append(selectedScope).ToArray(),
+                    DisplayMemberPath = nameof(GlossaryScope.Label),
+                    SelectedItem = selectedScope,
+                    IsEnabled = state.IsReleased,
+                    MinWidth = 155,
+                    HorizontalAlignment = HorizontalAlignment.Left
+                };
+                AutomationProperties.SetName(scope, "术语范围 " + (index + 1));
+                actions.Children.Add(scope);
+                row.Children.Add(actions);
+                rows.Children.Add(row);
+                void Edit()
+                {
+                    if (_controller?.GetGlossarySettingsState().IsReleased != true || scope.SelectedItem is not GlossaryScope selected)
+                        return;
+                    BeginGlossaryDraft();
+                    _glossaryDraft![selectedIndex] = new(source.Text, target.Text, selected.Source, selected.Target);
+                    mountedRules = _glossaryDraft.ToArray();
+                    DraftChanged();
+                }
+                source.TextChanged += (_, _) => Edit();
+                target.TextChanged += (_, _) => Edit();
+                scope.SelectionChanged += (_, _) => Edit();
+            }
+        }
+        _refreshGlossarySettings = () =>
+        {
+            var current = _controller!.GetGlossarySettingsState();
+            if (_glossaryDraft is null && !ReferenceEquals(displayed, current.SavedSnapshot))
+            {
+                bool sameDisplayedRules = mountedRules.SequenceEqual(current.SavedSnapshot?.Rules ?? []);
+                displayed = current.SavedSnapshot;
+                if (!sameDisplayedRules)
+                    RenderRows();
+            }
+            if (_glossaryDraft is null)
+                displayedRevision = current.SettingsRevision;
+
+            add.IsEnabled = !_savingTranslation && current.IsReleased && DisplayedRules().Count < GlossarySnapshot.MaxRules;
+        };
+        RenderRows();
+        _refreshGlossarySettings();
+    }
+    private bool ConfirmGlossaryReplacement(IReadOnlyList<GlossaryRule> savedRules)
+    {
+        var dialog = new Window
+        {
+            Owner = this,
+            Title = "术语表已更新",
+            Width = 460,
+            SizeToContent = SizeToContent.Height,
+            MaxHeight = 500,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            ShowInTaskbar = false
+        };
+        dialog.SetResourceReference(BackgroundProperty, "Panel");
+        var body = new StackPanel { Margin = new(22) };
+        body.Children.Add(UiTheme.Text("用当前修改替换最新的完整术语表？", 13));
+        var latest = new StackPanel { Margin = new(0, 12, 0, 12) };
+        latest.Children.Add(UiTheme.Text("最新已保存的术语", 12, bold: true));
+        if (savedRules.Count == 0)
+            latest.Children.Add(UiTheme.Text("无术语", 12, true));
+        foreach (var rule in savedRules)
+            latest.Children.Add(UiTheme.Text(rule.SourceTerm + " → " + rule.TargetTerm + " · "
+                + (rule.SourceLanguage is null ? "全局" : rule.SourceLanguage + " → " + rule.TargetLanguage), 12));
+        body.Children.Add(new ScrollViewer { Content = latest, MaxHeight = 260, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        var keep = UiTheme.Button("继续编辑", () => dialog.DialogResult = false, primary: true);
+        keep.IsCancel = keep.IsDefault = true;
+        keep.Margin = new(0, 0, 10, 0);
+        actions.Children.Add(keep);
+        actions.Children.Add(UiTheme.Button("替换并保存", () => dialog.DialogResult = true));
+        body.Children.Add(actions);
+        dialog.Content = body;
+        dialog.Loaded += (_, _) => keep.Focus();
+        _closeDialog = dialog;
+        try
+        {
+            return dialog.ShowDialog() == true;
+        }
+        finally { _closeDialog = null; }
+    }
+    private sealed record GlossaryScope(string Label, string? Source, string? Target);
+    private async Task SaveGlossaryDraftAsync()
+    {
+        if (_controller is null || _glossaryDraft is null || _savingTranslation)
+            return;
+        var rules = _glossaryDraft.ToArray();
+        using var request = new CancellationTokenSource();
+        _translationRequest = request;
+        _savingTranslation = true;
+        RefreshTranslationAvailability();
+        try
+        {
+            var current = _controller.GetGlossarySettingsState();
+            if (_glossaryDraftRevision != current.SettingsRevision)
+            {
+                // An unrelated ordinary setting can advance the revision. A
+                // changed glossary requires reviewing exactly what will be replaced.
+                var savedRules = current.SavedSnapshot?.Rules ?? [];
+                if (!_glossaryDraftBaseline.SequenceEqual(savedRules) && !ConfirmGlossaryReplacement(savedRules))
+                    return;
+                _glossaryDraftRevision = current.SettingsRevision;
+                _glossaryDraftBaseline = savedRules.ToArray();
+            }
+            var result = await _controller.ChangeGlossaryAsync(rules, _glossaryDraftRevision, cancellationToken: request.Token);
+            if (request.IsCancellationRequested || !ReferenceEquals(_translationRequest, request))
+                return;
+            bool confirmed = result.Saved && result.Code is "glossary-saved" or "glossary-saved-notification-failed";
+            if (confirmed)
+            {
+                if (_glossaryDraft?.SequenceEqual(rules) == true)
+                    _glossaryDraft = null;
+                else
+                    _glossaryDraftBaseline = rules;
+            }
+            _draftFeedback = confirmed ? result.Code == "glossary-saved-notification-failed"
+                ? "已保存，请重新打开设置确认当前状态。" : _draftMessages.SavedMessage : _draftMessages.InvalidMessage;
+            _settingsError = confirmed ? null : TranslationSettingsError(result.Code);
+            if (confirmed && HasDraft)
+                _draftFeedback = _draftMessages.UnsavedNotice;
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            if (!request.IsCancellationRequested)
+                _settingsError = "保存结果未确认，术语修改已保留。请重新打开设置检查当前值。";
+        }
+        finally
+        {
+            if (ReferenceEquals(_translationRequest, request))
+                _translationRequest = null;
+            _savingTranslation = false;
+            RefreshTranslationAvailability();
+        }
     }
     private void About()
     {

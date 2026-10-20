@@ -4,9 +4,36 @@ using TypeLay.Runtime;
 
 namespace TypeLay.Linux;
 
-internal sealed class DesktopView(DesktopLink link) : ISessionView
+internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessionView
 {
     private string? _last;
+    private bool _editing;
+    private SessionGlossaryFocus? _glossaryFocus;
+    public Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
+    {
+        get; set;
+    }
+    public Func<SessionGlossaryRequest, Task<GlossaryChangeResult>>? AddGlossaryRequested
+    {
+        get; set;
+    }
+    public Action<Guid>? CloseGlossaryRequested
+    {
+        get; set;
+    }
+    public SessionGlossaryFocus? GlossaryEntryFocus => _glossaryFocus is { } focus
+        && _editing && focus.Token == Token && input.GetFocus(focus.Token.Target) == FocusMember.Overlay ? focus : null;
+    public void SetGlossaryFocus(SessionGlossaryFocus? focus)
+    {
+        _glossaryFocus = focus;
+        if (GlossaryEntryFocus is null)
+            _glossaryFocus = null;
+    }
+    public void RefreshGlossaryFocus()
+    {
+        if (GlossaryEntryFocus is null)
+            _glossaryFocus = null;
+    }
     private ModelPackageManagementFact? _packages;
     public SessionViewToken? Token
     {
@@ -28,6 +55,14 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
     {
         get; set;
     }
+    public Action<SessionViewToken>? AlternativeRequested
+    {
+        get; set;
+    }
+    public Func<SessionStyleRequest, Task<StyleChangeResult>>? StyleRequested
+    {
+        get; set;
+    }
     public Action? RegenerateRequested
     {
         get; set;
@@ -46,7 +81,23 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
     }
     public void Configure(UserSettings settings)
     {
-        link.Send("settings", settings);
+        link.Send("settings", new
+        {
+            settings.Schema,
+            settings.Enabled,
+            settings.Source,
+            settings.Target,
+            settings.ExcludedApplications,
+            settings.Startup,
+            settings.Theme,
+            settings.OnboardingComplete,
+            settings.ExperimentalWriteback,
+            settings.Mode,
+            settings.WakeShortcut,
+            settings.DirectShortcut,
+            settings.AcceptShortcut,
+            settings.ExitShortcut
+        });
         ConfigureGuidance(settings);
     }
     public void ConfigureModelPackages(ModelPackageManagementFact packages, UserSettings settings)
@@ -111,6 +162,8 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
             return;
         }
         Token = context?.Token;
+        _editing = session.State == SessionState.EditingTranslation;
+        RefreshGlossaryFocus();
         var value = new
         {
             presentation,
@@ -140,6 +193,8 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
     public void RenderPaused(PauseAnchor anchor, long revision)
     {
         Token = null;
+        _editing = false;
+        _glossaryFocus = null;
         var value = new
         {
             presentation = Presentation.From(SessionState.Paused, false, hasPauseAnchor: true),
@@ -162,6 +217,8 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
     public void HideQuietly()
     {
         Token = null;
+        _editing = false;
+        _glossaryFocus = null;
         if (_last == "hidden")
             return;
         _last = "hidden";

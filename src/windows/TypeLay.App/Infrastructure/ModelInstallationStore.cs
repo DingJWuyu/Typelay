@@ -11,6 +11,19 @@ internal sealed class ModelInstallationStore(string data, string worker,
     private readonly Action<string, string>? _replaceFile = replaceFile;
     private readonly string _data = Path.GetFullPath(data);
     private readonly string _worker = Path.GetFullPath(worker);
+    // This is only a shipped-component preparation hint. Ready still requires
+    // the worker's full production verification and exact hello.
+    internal bool CanPrepareWindowsHy => WindowsHyPayload.CanPrepare(_worker);
+    internal const string ModelUseLockName = "model-use.lock";
+    private readonly HashSet<string> _owned = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _started = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _knownPackages = new(StringComparer.Ordinal);
+    public bool CleanupPending
+    {
+        get; private set;
+    }
+    internal sealed record InstallationState(string? Generation, bool InventoryKnown,
+        IReadOnlyList<ModelPackageSelection> InstalledPackages, IReadOnlyList<ModelPackageSelection> CurrentPackages);
     private string Pointer => Path.Combine(_data, "components.json");
     private string Components => Path.Combine(_data, "components");
     internal sealed record Manifest(int Format, string Active, string? Previous);
@@ -36,6 +49,7 @@ internal sealed class ModelInstallationStore(string data, string worker,
                 return;
             if (Plan(installation.ActiveId) is { } active)
             {
+                installation.Started(installation.ActiveId);
                 var result = await model.ReloadAsync(active,
                     () => installation.ConfirmCurrent(active) ? ModelPublicationOutcome.Confirmed : ModelPublicationOutcome.Unconfirmed,
                     installation.ConfirmCurrent, ct);
@@ -44,6 +58,7 @@ internal sealed class ModelInstallationStore(string data, string worker,
             }
             if (installation.PreviousId is { } previous && Plan(previous) is { } prior)
             {
+                installation.Started(previous);
                 var result = await model.ReloadAsync(prior, () => installation.PublishConfirmed(previous), installation.ConfirmCurrent, ct);
                 if (result == ModelPublicationOutcome.Confirmed)
                     return;
@@ -83,6 +98,85 @@ internal sealed class ModelInstallationStore(string data, string worker,
             return null;
         }
     }
+    public InstallationState ReadInstallationState()
+    {
+        string? generation = null;
+        try
+        {
+            var manifest = Read();
+            generation = manifest.Active;
+            return ReadInstallationState(manifest);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException
+            or JsonException or ArgumentException or KeyNotFoundException or InvalidOperationException)
+        {
+            return new(generation, false, [], []);
+        }
+    }
+    private InstallationState ReadInstallationState(Manifest manifest)
+    {
+        var paths = Paths(manifest.Active);
+        if (manifest.Active == "legacy" && !Path.Exists(paths.Models)
+            && !Path.Exists(Path.Combine(_data, "runtime")) && !File.Exists(Pointer))
+            return new(null, true, [], []);
+        using var inventory = ReadInventory(manifest.Active);
+        var root = inventory.RootElement;
+        var installed = ModelCatalog.ReadInstallationSelection(root);
+        var current = ModelCatalog.ReadActiveSelection(root);
+        if (root.GetProperty("schema").GetInt32() is 1 or 2)
+        {
+            // Legacy directions are intent only. Preserve their exact file manifest
+            // when migrating; never substitute catalog coverage or scan model files.
+            if (!root.TryGetProperty("files", out var entries) || entries.ValueKind != JsonValueKind.Array
+                || entries.GetArrayLength() is 0 or > 40000)
+                throw new InvalidDataException("model-inventory");
+            var files = new List<ModelPackageFile>();
+            foreach (var entry in entries.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.Object
+                    || !entry.TryGetProperty("path", out var pathValue) || pathValue.ValueKind != JsonValueKind.String
+                    || !entry.TryGetProperty("sha256", out var hashValue) || hashValue.ValueKind != JsonValueKind.String)
+                    throw new InvalidDataException("model-inventory");
+                string path = pathValue.GetString()!, hash = hashValue.GetString()!;
+                if (hash.Length != 64 || !hash.All(Uri.IsHexDigit)
+                    || !installed.Any(item => path.StartsWith(item.Directions.Single().Id + "/", StringComparison.Ordinal)
+                        && path.Length > item.Directions.Single().Id.Length + 1))
+                    throw new InvalidDataException("model-inventory");
+                // Validate every entry before grouping so malformed/unselected paths
+                // cannot disappear during migration. The shared schema3 parser below
+                // also checks each relative path and duplicate file identity.
+                files.Add(new(path, hash));
+            }
+            using var migrated = JsonDocument.Parse(JsonSerializer.Serialize(new
+            {
+                schema = 3,
+                packages = installed.Select(item => new
+                {
+                    id = item.Package.Id,
+                    version = item.Package.Version,
+                    directions = item.Directions.Select(direction => direction.Id),
+                    files = files.Where(file => file.Path.StartsWith(item.Directions.Single().Id + "/", StringComparison.Ordinal))
+                        .Select(file => new
+                        {
+                            path = file.Path[(item.Directions.Single().Id.Length + 1)..],
+                            sha256 = file.Sha256
+                        })
+                }),
+                activePackages = current.Select(item => item.Package.Id)
+            }));
+            installed = ModelCatalog.ReadInstallationSelection(migrated.RootElement);
+            current = ModelCatalog.ReadActiveSelection(migrated.RootElement);
+        }
+        return new(manifest.Active, true, installed, current);
+    }
+    private JsonDocument ReadInventory(string id)
+    {
+        string marker = Path.Combine(Paths(id).Models, "installed.json");
+        CheckPath(marker);
+        if (new FileInfo(marker).Length > 8 * 1024 * 1024)
+            throw new InvalidDataException("model-inventory");
+        return JsonDocument.Parse(File.ReadAllText(marker));
+    }
     private IReadOnlyList<string> ReadDirections(Manifest manifest)
     {
         var paths = Paths(manifest.Active);
@@ -105,9 +199,9 @@ internal sealed class ModelInstallationStore(string data, string worker,
         if (new FileInfo(marker).Length > 8 * 1024 * 1024)
             throw new InvalidDataException("model-inventory");
         using var inventory = JsonDocument.Parse(File.ReadAllText(marker));
-        // Windows Hy has not passed its real backend gate. Reject before a load
-        // plan or child can exist, including startup and previous-generation repair.
-        if (ModelCatalog.ReadActiveSelection(inventory.RootElement).Any(item => item.Package.Backend == "hy-mt-llama-cpu"))
+        // A missing production closure cannot enter startup or previous-generation
+        // repair. Presence alone never bypasses worker verification or hello.
+        if (ModelCatalog.ReadActiveSelection(inventory.RootElement).Any(item => item.Package.Backend == "hy-mt-llama-cpu") && !CanPrepareWindowsHy)
             throw new InvalidDataException("model-platform-unavailable");
         if (!File.Exists(paths.Python) || !File.Exists(paths.Worker))
             throw new InvalidDataException("model-inventory");
@@ -202,6 +296,29 @@ internal sealed class ModelInstallationStore(string data, string worker,
             _store = store;
             _handle = handle;
             _manifest = manifest;
+            // Only the two exact manifest references can become known old package
+            // generations. Do not discover candidates by scanning directories.
+            foreach (string id in new[] { manifest.Active, manifest.Previous }.OfType<string>())
+            {
+                if (id == "legacy")
+                    continue;
+                try
+                {
+                    string marker = Path.Combine(store.Root(id), ModelUseLockName);
+                    store.CheckPath(marker);
+                    if (!File.Exists(marker) || new FileInfo(marker).Length != 0)
+                        continue;
+                    using var inventory = store.ReadInventory(id);
+                    if (inventory.RootElement.GetProperty("schema").GetInt32() != 3)
+                        continue;
+                    ModelCatalog.ReadActiveSelection(inventory.RootElement);
+                    store._knownPackages.Add(id);
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException
+                    or JsonException or KeyNotFoundException or InvalidOperationException)
+                {
+                }
+            }
         }
         public bool IsEmptyLegacy
         {
@@ -242,7 +359,114 @@ internal sealed class ModelInstallationStore(string data, string worker,
             string id = Guid.NewGuid().ToString("N");
             string root = _store.Root(id);
             Directory.CreateDirectory(root);
+            _store._owned.Add(id);
             return new(this, id, root, _store.Paths(id), Array.AsReadOnly(snapshot));
+        }
+        public InstallationState InstallationState
+        {
+            get
+            {
+                RequireOwner();
+                VerifyActive();
+                return _store.ReadInstallationState(_manifest);
+            }
+        }
+        public bool UsesPackageInventory
+        {
+            get
+            {
+                RequireOwner();
+                // A cancelled first preparation can leave the components container.
+                // Only the selected inventory/runtime matters here, never that container.
+                if (_manifest.Active == "legacy" && _manifest.Previous is null && !File.Exists(_store.Pointer)
+                    && !Path.Exists(ActivePaths.Models) && !Path.Exists(Path.Combine(_store._data, "runtime")))
+                    return false;
+                using var inventory = _store.ReadInventory(_manifest.Active);
+                return inventory.RootElement.GetProperty("schema").GetInt32() switch
+                {
+                    1 or 2 => false,
+                    3 => true,
+                    _ => throw new InvalidDataException("model-inventory")
+                };
+            }
+        }
+        public PreparedInstallation PreparePackages(ModelPackageRequest request)
+        {
+            RequireOwner();
+            ArgumentNullException.ThrowIfNull(request);
+            var frozen = request with
+            {
+                PackageIds = request.PackageIds?.ToArray()!,
+                ActivePackages = request.ActivePackages?.ToArray()!
+            };
+            var state = InstallationState;
+            if (frozen.ExpectedCurrent != state.Generation)
+                throw new InvalidDataException("installation-changed");
+            bool ValidIds(string[]? ids) => ids is not null && ids.Distinct(StringComparer.Ordinal).Count() == ids.Length
+                && ids.All(id => ModelCatalog.Packages.Packages.Any(package => package.Id == id));
+            if (frozen.Format != 1 || !Enum.IsDefined(frozen.Operation) || !ValidIds(frozen.PackageIds)
+                || !ValidIds(frozen.ActivePackages) || frozen.ActivePackages.Length == 0)
+                throw new InvalidDataException("model-package-request");
+            var installed = state.InstalledPackages.Select(item => item.Package.Id).ToHashSet(StringComparer.Ordinal);
+            var active = state.CurrentPackages.Select(item => item.Package.Id).ToHashSet(StringComparer.Ordinal);
+            if (frozen.Operation == ModelPackageOperation.Select)
+            {
+                if (frozen.PackageIds.Length != 0 || frozen.ActivePackages.Any(id => !installed.Contains(id))
+                    || active.SetEquals(frozen.ActivePackages))
+                    throw new InvalidDataException("model-package-request");
+            }
+            else
+            {
+                if (frozen.PackageIds.Length != 1)
+                    throw new InvalidDataException("model-package-request");
+                string target = frozen.PackageIds[0];
+                if (frozen.Operation == ModelPackageOperation.Install)
+                {
+                    if (installed.Contains(target) || !frozen.ActivePackages.Contains(target, StringComparer.Ordinal)
+                        || frozen.ActivePackages.Any(id => id != target && !installed.Contains(id)))
+                        throw new InvalidDataException("model-package-request");
+                    installed.Add(target);
+                }
+                else if (!installed.Contains(target) || !active.SetEquals(frozen.ActivePackages)
+                    || frozen.Operation == ModelPackageOperation.Remove && active.Contains(target))
+                    throw new InvalidDataException("model-package-request");
+            }
+            var selected = ModelCatalog.Packages.Packages.Where(package => frozen.ActivePackages.Contains(package.Id, StringComparer.Ordinal)).ToArray();
+            if (!(selected.All(package => package.Backend == "argos")
+                || selected.Length == 1 && selected[0].Backend == "hy-mt-llama-cpu"))
+                throw new InvalidDataException("model-package-request");
+            if ((selected.Any(package => package.Backend == "hy-mt-llama-cpu")
+                || frozen.Operation is ModelPackageOperation.Install or ModelPackageOperation.Repair
+                    && frozen.PackageIds.Any(id => ModelCatalog.Packages.Packages.Single(package => package.Id == id).Backend == "hy-mt-llama-cpu"))
+                && !_store.CanPrepareWindowsHy)
+                throw new InvalidDataException("model-platform-unavailable");
+            string[] directions = selected.SelectMany(package => state.InstalledPackages.FirstOrDefault(item => item.Package.Id == package.Id)
+                ?.Directions ?? package.Directions).Select(direction => direction.Id).ToArray();
+            string id = Guid.NewGuid().ToString("N");
+            string root = _store.Root(id);
+            Directory.CreateDirectory(root);
+            _store._owned.Add(id);
+            try
+            {
+                using var use = new FileStream(Path.Combine(root, ModelUseLockName), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+                use.Flush(flushToDisk: true);
+                _store._knownPackages.Add(id);
+            }
+            catch
+            {
+                DeleteGeneration(id);
+                throw;
+            }
+            return new(this, id, root, _store.Paths(id), Array.AsReadOnly(directions), frozen, state);
+        }
+        internal void Started(string id) => _store._started.Add(id);
+        internal void Exited(string id) => _store._started.Remove(id);
+        public bool CleanupPending => _store.CleanupPending;
+        internal void CleanupFailed() => _store.CleanupPending = true;
+        internal void Retain(string id)
+        {
+            if (_store._started.Contains(id) || _uncertain)
+                _store.CleanupPending = true;
         }
         private void RequireOwner()
         {
@@ -267,11 +491,11 @@ internal sealed class ModelInstallationStore(string data, string worker,
             RequireOwner();
             return _store.ReadPlan(id);
         }
-        internal ModelPublicationOutcome PublishConfirmed(string id)
+        internal ModelPublicationOutcome PublishConfirmed(string id, bool remove = false)
         {
             try
             {
-                Publish(id);
+                Publish(id, remove);
                 return ModelPublicationOutcome.Confirmed;
             }
             catch (ModelSetupException error) when (error.RecoveryFailureCategory is null)
@@ -281,14 +505,23 @@ internal sealed class ModelInstallationStore(string data, string worker,
             catch (Exception error) when (error is not OutOfMemoryException)
             {
                 _uncertain = true;
+                _store.CleanupPending = true;
                 return ModelPublicationOutcome.Unconfirmed;
             }
         }
-        private void Publish(string id)
+        private void Publish(string id, bool remove)
         {
             RequireOwner();
             var before = _manifest;
-            var after = new Manifest(1, id, before.Active == id ? before.Previous : before.Active);
+            var after = new Manifest(1, id, remove ? null : before.Active == id ? before.Previous : before.Active);
+            void RetainedOldCopies()
+            {
+                foreach (string old in new[] { before.Active, before.Previous }.OfType<string>())
+                    if ((old != "legacy" || Path.Exists(Path.Combine(_store._data, "runtime")) || Path.Exists(Path.Combine(_store._data, "models")))
+                        && old != after.Active && old != after.Previous
+                        && (!_store._owned.Contains(old) && !_store._knownPackages.Contains(old) || _store._started.Contains(old)))
+                        _store.CleanupPending = true;
+            }
             string temp = Path.Combine(_store._data, "components-" + Guid.NewGuid().ToString("N") + ".tmp");
             try
             {
@@ -306,6 +539,7 @@ internal sealed class ModelInstallationStore(string data, string worker,
                 if (_store.Read() != after)
                     throw new IOException("installation-publication-unconfirmed");
                 _manifest = after;
+                RetainedOldCopies();
             }
             catch (Exception error) when (error is not OutOfMemoryException)
             {
@@ -318,6 +552,7 @@ internal sealed class ModelInstallationStore(string data, string worker,
                 if (actual == after)
                 {
                     _manifest = after;
+                    RetainedOldCopies();
                     return;
                 }
                 var failure = ModelSetupException.From(error, ModelSetupStage.Activate);
@@ -341,30 +576,119 @@ internal sealed class ModelInstallationStore(string data, string worker,
         {
             RequireOwner();
             VerifyActive();
-            if (Directory.Exists(_store.Components))
-                foreach (string root in Directory.GetDirectories(_store.Components))
-                {
-                    string id = Path.GetFileName(root);
-                    if (ValidId(id) && id != "legacy" && id != _manifest.Active && id != _manifest.Previous)
-                        DeleteGeneration(id);
-                }
-            // Legacy is a real previous generation until two confirmed upgrades.
-            // Only private component paths are retired, never settings/downloads or Argos packages.
-            if (_manifest.Active != "legacy" && _manifest.Previous != "legacy")
+            // The Local\ mutex is session-local. A different session may own
+            // any old generation; never scan or prune unknown installations.
+            foreach (string id in _store._owned.Concat(_store._knownPackages).Distinct(StringComparer.Ordinal).ToArray())
+                if (id != _manifest.Active && id != _manifest.Previous)
+                    DeleteGeneration(id);
+        }
+        internal void DeleteRemovedPackageCache(ModelPackage package)
+        {
+            RequireOwner();
+            VerifyActive();
+            // Cache bytes are not generation bytes: an old model's use handle
+            // protects its private copy, while this lease excludes cache writers.
+            if (package.Backend != "hy-mt-llama-cpu")
+                return;
+            using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.HyModelLock.json")
+                ?? throw new InvalidDataException("model-lock-missing");
+            using var modelLock = JsonDocument.Parse(stream);
+            var fixedModel = modelLock.RootElement;
+            if (fixedModel.GetProperty("package_id").GetString() != package.Id
+                || fixedModel.GetProperty("version").GetString() != package.Version)
+                throw new InvalidDataException("model-lock");
+            foreach (string reference in new[] { _manifest.Active, _manifest.Previous }.OfType<string>())
             {
-                DeleteTree(Path.Combine(_store._data, "runtime"));
-                DeleteTree(Path.Combine(_store._data, "models"));
+                var state = _store.ReadInstallationState(new Manifest(1, reference, null));
+                if (!state.InventoryKnown || state.InstalledPackages.Any(item => item.Package.Id == package.Id))
+                    throw new InvalidDataException("model-cache-still-referenced");
             }
+            string downloads = Path.Combine(_store._data, "downloads");
+            _store.CheckPath(downloads);
+            if (!Path.Exists(downloads))
+                return;
+            if (!Directory.Exists(downloads))
+                throw new InvalidDataException("model-cache-path");
+            var paths = new List<string>();
+            foreach (string kind in new[] { "model", "model_license" })
+            {
+                var value = fixedModel.GetProperty(kind).GetProperty("file");
+                if (value.ValueKind != JsonValueKind.String)
+                    throw new InvalidDataException("model-lock");
+                string name = value.GetString()!;
+                if (name.Length == 0 || name is "." or ".." || name.EndsWith('.') || name.EndsWith(' ')
+                    || name.Any(character => character < 32 || "\\/:<>\"|?*".Contains(character)))
+                    throw new InvalidDataException("model-lock");
+                string cache = Path.GetFullPath(Path.Combine(downloads, package.Id + "-" + package.Version + "-" + name));
+                if (!string.Equals(Path.GetDirectoryName(cache), downloads, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("model-cache-path");
+                paths.Add(cache);
+                paths.Add(cache + ".part");
+            }
+            // Check all exact lock-derived paths before deleting anything. Never
+            // scan the cache, follow a reparse point, or erase an unrelated version.
+            foreach (string path in paths)
+            {
+                _store.CheckPath(path);
+                if (Directory.Exists(path))
+                    throw new InvalidDataException("model-cache-path");
+            }
+            VerifyActive();
+            foreach (string path in paths)
+                File.Delete(path);
         }
         internal void DeleteGeneration(string id)
         {
-            if (_uncertain || id == "legacy" || id == _manifest.Active || id == _manifest.Previous)
+            if (_uncertain || _store._started.Contains(id))
+            {
+                _store.CleanupPending = true;
+                return;
+            }
+            if (!_store._owned.Contains(id) && !_store._knownPackages.Contains(id) || id == "legacy" || id == _manifest.Active || id == _manifest.Previous)
                 return;
             try
             {
-                DeleteTree(_store.Root(id));
+                string root = _store.Root(id);
+                if (_store._knownPackages.Contains(id))
+                {
+                    string marker = Path.Combine(root, ModelUseLockName);
+                    _store.CheckPath(marker);
+                    // Keep the exact generation's exclusive handle throughout
+                    // deletion of its contents. Another session's owner blocks it.
+                    using (var use = new FileStream(marker, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                    {
+                        if (use.Length != 0)
+                            throw new InvalidDataException("model-use-lock");
+                        ValidateTree(root);
+                        foreach (string entry in Directory.EnumerateFileSystemEntries(root))
+                            if (entry != marker)
+                            {
+                                if (Directory.Exists(entry))
+                                    Directory.Delete(entry, true);
+                                else
+                                    File.Delete(entry);
+                            }
+                    }
+                    // The installation lease still excludes a new startup here.
+                    File.Delete(marker);
+                    Directory.Delete(root);
+                }
+                else
+                    DeleteTree(root);
             }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException) { }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException) { _store.CleanupPending = true; }
+        }
+        private void ValidateTree(string root)
+        {
+            var pending = new Stack<string>();
+            pending.Push(root);
+            while (pending.TryPop(out string? directory))
+                foreach (string entry in Directory.EnumerateFileSystemEntries(directory))
+                {
+                    _store.CheckPath(entry);
+                    if (Directory.Exists(entry))
+                        pending.Push(entry);
+                }
         }
         private void DeleteTree(string root)
         {
@@ -373,20 +697,11 @@ internal sealed class ModelInstallationStore(string data, string worker,
                 _store.CheckPath(root);
                 if (Directory.Exists(root))
                 {
-                    // Inspect without following links before recursive deletion.
-                    var pending = new Stack<string>();
-                    pending.Push(root);
-                    while (pending.TryPop(out string? directory))
-                        foreach (string entry in Directory.EnumerateFileSystemEntries(directory))
-                        {
-                            _store.CheckPath(entry);
-                            if (Directory.Exists(entry))
-                                pending.Push(entry);
-                        }
+                    ValidateTree(root);
                     Directory.Delete(root, recursive: true);
                 }
             }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException) { }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException) { _store.CleanupPending = true; }
         }
         public void Dispose()
         {
@@ -394,15 +709,28 @@ internal sealed class ModelInstallationStore(string data, string worker,
             _handle = null;
         }
     }
-    internal sealed class PreparedInstallation(Lease lease, string id, string root, ModelRuntimePaths paths, IReadOnlyList<string> directions) : IDisposable
+    internal sealed class PreparedInstallation(Lease lease, string id, string root, ModelRuntimePaths paths,
+        IReadOnlyList<string> directions, ModelPackageRequest? request = null, InstallationState? source = null) : IDisposable
     {
         private bool _published;
+        internal ModelPackageRequest? Request => request is null ? null : request with
+        {
+            PackageIds = request.PackageIds.ToArray(),
+            ActivePackages = request.ActivePackages.ToArray()
+        };
+        internal InstallationState? Source { get; } = source;
         public string Root { get; } = root;
         public ModelRuntimePaths Paths { get; } = paths;
         public IReadOnlyList<string> Directions { get; } = directions;
+        public bool CleanupPending => lease.CleanupPending;
+        internal void StartingSelfCheck() => lease.Started(id);
+        internal void SelfCheckExited() => lease.Exited(id);
         public ModelLoadPlan CreateLoadPlan()
         {
             var plan = lease.ReadPlan(id);
+            // Callers of the original preparation API may launch this plan directly.
+            // With no exact exit receipt, treat any handed-out plan conservatively.
+            lease.Started(id);
             if (!plan.Directions.ToHashSet(StringComparer.Ordinal).SetEquals(Directions))
                 throw new InvalidDataException("model-directions");
             return plan;
@@ -410,8 +738,28 @@ internal sealed class ModelInstallationStore(string data, string worker,
         public bool ConfirmCurrent(ModelLoadPlan plan) => lease.ConfirmCurrent(plan);
         public ModelPublicationOutcome PublishConfirmed()
         {
-            var outcome = lease.PublishConfirmed(id);
+            var outcome = lease.PublishConfirmed(id, request?.Operation == ModelPackageOperation.Remove);
             _published = outcome == ModelPublicationOutcome.Confirmed;
+            return outcome;
+        }
+        public async Task<ModelPublicationOutcome> ActivateAsync(ModelClient model, Func<Task<bool>> prepareModelChange, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            lease.VerifyActive();
+            var plan = lease.ReadPlan(id);
+            if (!plan.Directions.ToHashSet(StringComparer.Ordinal).SetEquals(Directions))
+                throw new InvalidDataException("model-directions");
+            if (!await prepareModelChange())
+                throw new ModelSetupException(SetupFailureCategory.Runtime, ModelSetupStage.Activate);
+            ct.ThrowIfCancellationRequested();
+            lease.Started(id);
+            var outcome = await model.ReloadAsync(plan, PublishConfirmed, ConfirmCurrent, ct);
+            if (outcome == ModelPublicationOutcome.Confirmed)
+                // Keep the lease until retention finishes; cancellation cannot release
+                // it halfway through deletion or bring this disk work onto the UI.
+                await Task.Run(Complete);
+            else
+                lease.Retain(id);
             return outcome;
         }
         public void Complete()
@@ -422,8 +770,10 @@ internal sealed class ModelInstallationStore(string data, string worker,
             try
             {
                 lease.Prune();
+                if (request?.Operation == ModelPackageOperation.Remove)
+                    lease.DeleteRemovedPackageCache(Source!.InstalledPackages.Single(item => item.Package.Id == request.PackageIds.Single()).Package);
             }
-            catch (Exception error) when (error is not OutOfMemoryException) { }
+            catch (Exception error) when (error is not OutOfMemoryException) { lease.CleanupFailed(); }
         }
         public void Dispose()
         {

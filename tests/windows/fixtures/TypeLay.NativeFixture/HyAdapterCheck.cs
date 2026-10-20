@@ -33,7 +33,7 @@ internal static class HyAdapterCheck
         var records = new List<object>();
         var report = new Dictionary<string, object?>
         {
-            ["scope"] = "Windows isolated ABI3: real-decode cancellation, job-zero/reap, restart and one original zh-ja EOG plus canonical audits; not product or quality certification",
+            ["scope"] = "Windows isolated ABI5: real-decode cancellation, job-zero/reap, restart and one original zh-ja EOG plus canonical audits; not product or quality certification",
             ["passed"] = false,
             ["started_utc"] = DateTimeOffset.UtcNow,
             ["events"] = events,
@@ -227,7 +227,7 @@ internal static class HyAdapterCheck
         }) + "\n"), cancellation);
     private static void CheckReady(JsonElement ready, HyOwnedWorker worker, string runtime)
     {
-        Require(ready.GetProperty("event").GetString() == "ready" && ready.GetProperty("abi").GetInt32() == 3 &&
+        Require(ready.GetProperty("event").GetString() == "ready" && ready.GetProperty("abi").GetInt32() == 5 &&
             ready.GetProperty("model_sha256").GetString() == ModelHash && ready.GetProperty("runtime_sha256").GetString() == RuntimeHash &&
             ready.GetProperty("template_sha256").GetString() == TemplateHash && ready.GetProperty("ctx").GetInt32() == 1024 &&
             ready.GetProperty("threads").GetInt32() == 2, "ready-identity");

@@ -67,14 +67,15 @@
   const editorConfigured = field => sourceConfigured(field) && (!field?.richText
     || rich?.modelFocus === 1 && field.richFocusSupported === true);
   function sessionBindings(field) {
-    const source = sourceConfigured(field);
+    const auxiliary = overlay?.field === field && glossaryFocus() !== null;
+    const source = !auxiliary && sourceConfigured(field);
     const sourceLocal = configuration?.sourceLocalAcceptanceVersion === 1
       && (["native", "source-local"].includes(shortcutDispatch()) || configuration.shortcutDispatch === "page")
       && source && alive && !!field && !field.richText && !field.dead && !field.quarantined
       && allowedElement(field.element) && field.element.isConnected && field.element.getRootNode() === document
       && typeof (field.element instanceof HTMLTextAreaElement ? areaReplace : inputReplace) === "function";
     return {generation: configuration?.generation ?? null, accept: configuration?.accept ?? null,
-      exit: configuration?.exit ?? null, sourceReady: source, editorReady: editorConfigured(field),
+      exit: configuration?.exit ?? null, sourceReady: source, editorReady: !auxiliary && editorConfigured(field),
       shortcutDispatch: shortcutDispatch(), target: field?.id ?? null,
       sourceLocalAcceptanceVersion: sourceLocal ? 1 : 0};
   }
@@ -471,7 +472,8 @@
     if (!meta || meta.password || !meta.enabled || meta.readOnly || meta.offscreen) return null;
     return {target: field.id, metadata: meta, authority: authority(field, meta),
       geometry: geometry(field), focused: focused(field), diagnostics: diagnostics(),
-      publication: publicationState(field, meta), sessionBindings: sessionBindings(field)};
+      publication: publicationState(field, meta), sessionBindings: sessionBindings(field),
+      glossaryFocus: overlay?.field === field ? glossaryFocus() : null};
   }
   function approved(field, basis, domOnly = false) {
     const meta = field && metadata(field, domOnly);
@@ -742,6 +744,7 @@
     clearTimeout(hintTimer); hintTimer = null;
     if (!overlay) return;
     const previous = overlay;
+    closeGlossary(false);
     ui("visible", false);
     overlay = null;
     cancelMotion(previous);
@@ -844,6 +847,9 @@
         .more-actions{flex:none;display:flex;flex-direction:column;gap:4px;margin:0 12px;padding:8px 0;
           border-top:1px solid var(--line);color:var(--muted);font-size:12px}
         .more-actions button{text-align:left}
+        .more-actions input,.more-actions select{box-sizing:border-box;min-width:0;width:100%;font:inherit;
+          color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:5px}
+        .more-actions input:focus,.more-actions select:focus{outline:1px solid var(--accent)}
         textarea{box-sizing:border-box;display:block;resize:none;width:calc(100% - 16px);margin:0 8px;
           min-height:64px;max-height:160px;border:1px solid transparent;border-radius:6px;padding:6px;
           outline:none;font:15px/1.58 system-ui;background:transparent;color:var(--ink)}
@@ -911,8 +917,15 @@
           if (event.isTrusted) ui("composition", overlay.composing);
         });
       }
-      editor.addEventListener("focus", () => { retireEditorControl(); ui("focus", true); });
-      editor.addEventListener("blur", () => { retireEditorControl(); ui("focus", false); });
+      editor.addEventListener("focus", () => {
+        retireEditorControl(); ui("focus", true); if (overlay?.glossary) ui("sessionGlossaryFocus", null);
+      });
+      editor.addEventListener("blur", event => {
+        retireEditorControl();
+        // A verified move to this approved form stays in the overlay family.
+        // The auxiliary field is never registered as a translation editor.
+        if (!glossaryControl(overlay?.glossary, event.relatedTarget)) ui("focus", false);
+      });
       const footer = document.createElement("footer"), hint = document.createElement("span");
       hint.className = "hint";
       footer.append(hint);
@@ -939,6 +952,10 @@
       menu.setAttribute("aria-label", "更多操作");
       menu.hidden = true;
       const setMoreOpen = (open, previous = overlay?.host.getBoundingClientRect()) => {
+        if (overlay) overlay.menuContext = open ? {
+          field: overlay.field, generation: overlay.generation, revision: overlay.revision,
+          token: JSON.stringify(overlay.viewToken), actions: overlay.translationActions
+        } : null;
         menu.hidden = !open;
         more.setAttribute("aria-expanded", String(open));
         position(previous);
@@ -972,16 +989,78 @@
         button.addEventListener("pointerdown", event => event.preventDefault());
         button.addEventListener("click", () => { setMoreOpen(false); ui(operation); }); menu.append(button);
       }
+      const styleActions = document.createElement("div"), styleLabel = document.createElement("span");
+      styleActions.setAttribute("role", "group");
+      styleActions.setAttribute("aria-label", "当前应用风格");
+      styleLabel.textContent = "当前应用风格";
+      styleActions.append(styleLabel);
+      const styleButtons = new Map();
+      const translationAction = (event, operation, selectedStyle = null) => {
+        const current = overlay, opened = current?.menuContext, actions = current?.translationActions;
+        if (!event.isTrusted || event.currentTarget.disabled || !opened || !liveDeadline(current)
+          || current.field !== opened.field || current.revision !== opened.revision
+          || current.generation !== opened.generation || JSON.stringify(current.viewToken) !== opened.token
+          || !opened.actions || !actions || (operation === "alternative"
+            ? !actions.alternativeReleased || !actions.canRequestAlternative
+            : !actions.styleReleased || !(selectedStyle === null
+              ? actions.canInheritStyle : actions.canChangeStyle))) return;
+        const value = operation === "style" ? {
+          settingsRevision: opened.actions.settingsRevision, style: selectedStyle
+        } : null;
+        setMoreOpen(false);
+        send("ui", {target: opened.field.id, generation: opened.generation,
+          revision: opened.revision, operation, value});
+      };
+      for (const selectedStyle of [null, "Natural", "Formal"]) {
+        const button = document.createElement("button");
+        button.addEventListener("pointerdown", event => event.preventDefault());
+        button.addEventListener("click", event => translationAction(event, "style", selectedStyle));
+        styleButtons.set(selectedStyle, button); styleActions.append(button);
+      }
+      const alternative = document.createElement("button");
+      alternative.textContent = "换种说法";
+      alternative.addEventListener("pointerdown", event => event.preventDefault());
+      alternative.addEventListener("click", event => translationAction(event, "alternative"));
+      const translationFeedback = document.createElement("span");
+      translationFeedback.className = "hint";
+      translationFeedback.setAttribute("role", "status");
+      const glossary = document.createElement("button");
+      glossary.textContent = "加入术语表";
+      glossary.addEventListener("pointerdown", event => event.preventDefault());
+      glossary.addEventListener("click", event => {
+        const current = overlay, opened = current?.menuContext, actions = current?.translationActions;
+        if (!event.isTrusted || !opened || !actions?.glossaryReleased || !actions.canOpenGlossary
+          || !current.editing || current.composing || current.glossary || current.glossaryOpening || !liveDeadline(current)
+          || current.field !== opened.field || current.revision !== opened.revision
+          || current.generation !== opened.generation || JSON.stringify(current.viewToken) !== opened.token
+          || actions.settingsRevision !== opened.actions?.settingsRevision) return;
+        current.glossaryOpening = {tokenKey: opened.token, generation: opened.generation, revision: opened.revision};
+        setMoreOpen(false);
+        ui("sessionGlossaryBegin");
+      });
+      menu.append(styleActions, alternative, glossary, translationFeedback);
       panel.append(header, editor, footer, menu); shadow.append(style, panel);
       document.documentElement.append(host);
-      overlay = {field, host, shadow, panel, editor, language, status, resume, hint, footer, more, menu, expand, collapse, editing: false, composing: false, expanded: false};
+      overlay = {field, host, shadow, panel, editor, language, status, resume, hint, footer, more, menu, expand, collapse,
+        styleActions, styleButtons, alternative, glossaryButton: glossary, translationFeedback, editing: false, composing: false, expanded: false};
     }
     if (data.revision < (overlay.revision || 0)) return {visible: true, editing: overlay.editing};
     // A new view is authoritative immediately, including during a resize.
     // Land at its current layout rather than carrying an older revision's motion.
     cancelMotion(overlay);
-    const viewIdentity = JSON.stringify({generation: data.generation, revision: data.revision, view});
-    if (overlay.viewIdentity !== viewIdentity) retireEditorControl();
+    const identityView = {...view};
+    if (view.viewContext && typeof view.viewContext === "object") {
+      identityView.viewContext = {...view.viewContext};
+      delete identityView.viewContext.translationActions;
+    }
+    const viewIdentity = JSON.stringify({generation: data.generation, revision: data.revision, view: identityView});
+    if (overlay.viewIdentity !== viewIdentity) {
+      retireEditorControl();
+      if (overlay.glossaryOpening && (data.revision !== overlay.glossaryOpening.revision
+        || JSON.stringify(view.viewContext?.token) !== overlay.glossaryOpening.tokenKey)) overlay.glossaryOpening = null;
+      if (overlay.glossary && (data.revision !== overlay.glossary.revision
+        || JSON.stringify(view.viewContext?.token) !== overlay.glossary.tokenKey)) closeGlossary(false);
+    }
     overlay.viewIdentity = viewIdentity;
     // Only successful display updates set the bounds for a future Ctrl. An
     // existing editor ticket keeps its original copied bounds through renewal.
@@ -991,6 +1070,9 @@
     if (overlay.revision !== data.revision) overlay.resumePending = false;
     overlay.revision = data.revision;
     overlay.generation = data.generation;
+    overlay.viewToken = view.viewContext?.token;
+    overlay.translationActions = translationActions(view);
+    renderTranslationActions(overlay);
     overlay.shortcuts = view.sessionShortcuts;
     overlay.collapse.textContent = view.sessionShortcuts?.exitHint || "收起";
     overlay.paused = paused;
@@ -1010,7 +1092,7 @@
     const languageName = (code, label) => typeof label === "string" && label.length > 0 && label.length <= 80
       ? label : ({auto: "Auto", zh: "中文", en: "EN"})[code] || `${code || ""}（当前不可用）`;
     overlay.language.textContent = `${languageName(view.sourceLanguage, view.sourceLanguageLabel)} → ${languageName(view.targetLanguage, view.targetLanguageLabel)}`;
-    overlay.status.textContent = paused ? "已暂停" : view.status || "";
+    overlay.status.textContent = paused ? "已暂停" : view.status || overlay.translationActions?.feedback || "";
     overlay.tabHint = view.presentation.tabHint;
     overlay.editor.hidden = paused || !view.text && view.state === "IdleCapsule";
     overlay.footer.hidden = overlay.editor.hidden;
@@ -1018,6 +1100,7 @@
     overlay.expand.hidden = overlay.editor.hidden;
     if (overlay.footer.hidden) {
       overlay.menu.hidden = true;
+      overlay.menuContext = null;
       overlay.more.setAttribute("aria-expanded", "false");
     }
     if (paused || !view.presentation.editorOwnsText) {
@@ -1026,6 +1109,170 @@
     } else if (!overlay.editing) overlay.editor.value = view.text || "";
     sizeEditor(); position();
     return {visible: !!overlay, editing: !!overlay?.editing};
+  }
+  function translationActions(view) {
+    const value = view.viewContext?.translationActions;
+    if (!value || typeof value !== "object" || Array.isArray(value)
+      || !Number.isSafeInteger(value.settingsRevision) || value.settingsRevision < 0
+      || ["styleReleased", "canChangeStyle", "canInheritStyle", "alternativeReleased", "canRequestAlternative"]
+        .some(key => typeof value[key] !== "boolean")
+      || ["styleUnavailableReason", "inheritUnavailableReason", "alternativeUnavailableReason", "feedback"]
+        .some(key => value[key] !== null && typeof value[key] !== "string")
+      || ![null, "Natural", "Formal", 1, 2].includes(value.applicationStyle)
+      || ["glossaryReleased", "canOpenGlossary", "glossaryUnavailableReason"].some(key => key in value)
+        && (typeof value.glossaryReleased !== "boolean" || typeof value.canOpenGlossary !== "boolean"
+          || value.glossaryUnavailableReason !== null && typeof value.glossaryUnavailableReason !== "string")) return null;
+    // Windows serializes the enum numerically; Linux uses its exact names.
+    const applicationStyle = ({1: "Natural", 2: "Formal"})[value.applicationStyle] ?? value.applicationStyle;
+    return {...value, applicationStyle};
+  }
+  function renderTranslationActions(current) {
+    const actions = current.translationActions;
+    current.styleActions.hidden = actions?.styleReleased !== true;
+    for (const [style, button] of current.styleButtons) {
+      button.disabled = (style === null ? actions?.canInheritStyle : actions?.canChangeStyle) !== true;
+      button.setAttribute("aria-pressed", String(!!actions && actions.applicationStyle === style));
+      button.textContent = `${actions && actions.applicationStyle === style ? "✓ " : ""}${({Natural: "自然", Formal: "正式"})[style] || "继承"}`;
+      button.title = (style === null ? actions?.inheritUnavailableReason : actions?.styleUnavailableReason) || "";
+    }
+    current.alternative.hidden = actions?.alternativeReleased !== true;
+    current.alternative.disabled = actions?.canRequestAlternative !== true;
+    current.alternative.title = actions?.alternativeUnavailableReason || "";
+    current.glossaryButton.hidden = actions?.glossaryReleased !== true;
+    current.glossaryButton.disabled = actions?.canOpenGlossary !== true;
+    current.glossaryButton.title = actions?.glossaryUnavailableReason || "";
+    current.translationFeedback.textContent = actions?.feedback || "";
+    current.translationFeedback.hidden = !actions?.feedback;
+  }
+  // One explicitly approved, source-bound auxiliary form. These identities are
+  // separate from both the source field registry and the translation editor.
+  function glossaryControl(form, control) {
+    return !!form && [form.source, form.target, form.scope, form.save, form.cancel].includes(control);
+  }
+  function glossaryCurrent(form = overlay?.glossary) {
+    return !!form && overlay?.glossary === form && overlay.editing && !overlay.paused
+      && overlay.revision === form.revision && overlay.generation === form.generation
+      && JSON.stringify(overlay.viewToken) === form.tokenKey && liveDeadline(overlay)
+      && sessionCurrent(form.generation) && form.box.isConnected;
+  }
+  function glossaryFocus() {
+    const current = overlay, form = current?.glossary;
+    if (!glossaryCurrent(form) || document.visibilityState !== "visible" || !document.hasFocus()
+      || document.activeElement !== current.host || !glossaryControl(form, current.shadow.activeElement)) return null;
+    const states = [form.states.get(form.source), form.states.get(form.target)];
+    const ime = states.includes("Composing") ? "Composing" : states.every(value => value === "Clear") ? "Clear" : "Unknown";
+    return {formId: form.entry.formId, token: form.entry.token, ime};
+  }
+  function publishGlossaryFocus() {
+    const focus = glossaryFocus();
+    ui("sessionGlossaryFocus", focus);
+    return focus;
+  }
+  function closeGlossary(restore = true, notify = true) {
+    const current = overlay, form = current?.glossary;
+    if (!form) return;
+    const resume = restore && glossaryCurrent(form) && glossaryFocus() !== null;
+    retireEditorControl();
+    current.glossary = null;
+    // The real editor focus event must precede Close/aux-loss. No timeout or
+    // temporary family claim substitutes for a successful DOM focus change.
+    form.restoring = resume;
+    if (resume) current.editor.focus({preventScroll: true});
+    form.restoring = false;
+    if (notify) ui("sessionGlossaryClose", form.entry.formId);
+    ui("sessionGlossaryFocus", null);
+    form.box.remove();
+    if (overlay === current && document.hasFocus() && liveDeadline(current)) position();
+  }
+  function openGlossary(data) {
+    const current = overlay, entry = data.entry, opening = current?.glossaryOpening;
+    const tokenKey = JSON.stringify(entry?.token);
+    if (!current || !overlayCurrent(data) || !opening || opening.revision !== current.revision
+      || opening.generation !== current.generation || opening.tokenKey !== JSON.stringify(current.viewToken)) return false;
+    current.glossaryOpening = null;
+    if (current.glossary || !current.editing || current.composing || current.paused
+      || !current.translationActions?.glossaryReleased
+      || !document.hasFocus() || document.activeElement !== current.host || current.shadow.activeElement !== current.editor
+      || typeof entry?.formId !== "string" || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(entry.formId)
+      || !Number.isSafeInteger(entry.settingsRevision) || entry.settingsRevision < 0
+      || tokenKey !== JSON.stringify(current.viewToken) || !Array.isArray(entry.directions)
+      || entry.directions.length > 64 || entry.directions.some(direction => !direction
+        || ["source", "target", "sourceName", "targetName"].some(key => typeof direction[key] !== "string" || !direction[key])
+        || direction.source === "auto" || direction.target === "auto" || direction.source === direction.target)) return false;
+    const box = document.createElement("div");
+    box.className = "more-actions"; box.setAttribute("role", "group"); box.setAttribute("aria-label", "加入术语表");
+    const source = document.createElement("input"), target = document.createElement("input");
+    source.type = target.type = "text";
+    source.setAttribute("aria-label", "源词"); target.setAttribute("aria-label", "译词");
+    source.placeholder = "源词"; target.placeholder = "译词";
+    const scope = document.createElement("select"); scope.setAttribute("aria-label", "术语作用范围");
+    scope.append(new Option("全局", ""));
+    entry.directions.forEach((direction, index) => scope.append(new Option(`${direction.sourceName} → ${direction.targetName}`, String(index))));
+    const save = document.createElement("button"), cancel = document.createElement("button"), status = document.createElement("span");
+    save.textContent = "保存"; cancel.textContent = "取消"; status.setAttribute("role", "status");
+    const form = {entry, tokenKey, generation: current.generation, revision: current.revision,
+      box, source, target, scope, save, cancel, status, pending: false, states: new Map([[source, "Unknown"], [target, "Unknown"]])};
+    for (const field of [source, target]) {
+      for (const kind of ["compositionstart", "compositionupdate", "compositionend", "beforeinput", "input"]) {
+        field.addEventListener(kind, event => {
+          if (!glossaryCurrent(form)) return;
+          retireEditorControl();
+          if (kind.startsWith("composition")) form.states.set(field, event.isTrusted && kind === "compositionend" ? "Clear" : "Composing");
+          else if (event.isComposing) form.states.set(field, "Composing");
+          else if (event.isTrusted && form.states.get(field) !== "Composing") form.states.set(field, "Clear");
+          publishGlossaryFocus();
+        });
+      }
+    }
+    for (const control of [source, target, scope, save, cancel]) {
+      control.addEventListener("focus", () => { retireEditorControl(); publishGlossaryFocus(); });
+      control.addEventListener("blur", event => {
+        retireEditorControl();
+        if (!glossaryControl(form, event.relatedTarget)) {
+          if (form.restoring && event.relatedTarget === current.editor) return;
+          ui("sessionGlossaryFocus", null);
+          if (event.relatedTarget !== current.editor) ui("focus", false);
+        }
+      });
+    }
+    cancel.addEventListener("click", event => { if (event.isTrusted && glossaryCurrent(form)) closeGlossary(); });
+    save.addEventListener("click", event => {
+      if (!event.isTrusted || !glossaryCurrent(form) || form.pending || form.saved || form.unknown) return;
+      const focus = publishGlossaryFocus();
+      if (focus?.ime !== "Clear") { status.textContent = "请先完成两个词的输入。"; return; }
+      const direction = scope.value === "" ? null : entry.directions[Number(scope.value)];
+      if (scope.value !== "" && !direction) return;
+      save.focus({preventScroll: true});
+      if (!glossaryCurrent(form) || current.shadow.activeElement !== save || publishGlossaryFocus()?.ime !== "Clear") return;
+      form.pending = true; source.readOnly = target.readOnly = true; scope.disabled = true;
+      save.setAttribute("aria-disabled", "true"); status.textContent = "正在保存…";
+      ui("sessionGlossaryAdd", {formId: entry.formId, token: entry.token, settingsRevision: entry.settingsRevision,
+        rule: {sourceTerm: source.value, targetTerm: target.value,
+          sourceLanguage: direction?.source ?? null, targetLanguage: direction?.target ?? null}});
+    });
+    box.append(source, target, scope, save, cancel, status);
+    retireEditorControl(); current.glossary = form; current.panel.append(box); source.focus({preventScroll: true});
+    publishGlossaryFocus(); position();
+    return glossaryFocus() !== null;
+  }
+  function glossaryResult(data) {
+    const current = overlay, form = current?.glossary;
+    if (!glossaryCurrent(form) || !overlayCurrent(data) || data.formId !== form.entry.formId) return;
+    form.pending = false;
+    const result = data.result;
+    if (result?.saved === true) {
+      const message = result.code === "glossary-saved-notification-failed" ? "术语已保存，刷新通知失败。" : "术语已保存。";
+      form.saved = true; form.save.setAttribute("aria-disabled", "true"); form.cancel.textContent = "关闭";
+      form.status.textContent = typeof result.message === "string" ? result.message : message;
+    } else if (result?.saved === false && !["glossary-unconfirmed", "glossary-outcome-unknown"].includes(result.code)) {
+      form.source.readOnly = form.target.readOnly = false; form.scope.disabled = false;
+      form.save.removeAttribute("aria-disabled");
+      form.status.textContent = typeof result.message === "string" ? result.message : "术语未保存，请检查词条或重新打开表单。";
+    } else {
+      // An unknown transport result may already have committed. Never retry it.
+      form.unknown = true; form.save.setAttribute("aria-disabled", "true");
+      form.status.textContent = typeof result?.message === "string" ? result.message : "保存结果未确认，请关闭表单后在设置中检查。";
+    }
   }
   function sizeEditor() {
     if (!overlay) return;
@@ -1261,6 +1508,11 @@
           overlay.authority = data.authority;
           overlay.renewed = data.expiresAtMs - 800; position();
         } else hide();
+        return null;
+      case "overlay-glossary-open": return {opened: openGlossary(data)};
+      case "overlay-glossary-result": glossaryResult(data); return null;
+      case "overlay-glossary-close":
+        if (overlayCurrent(data) && data.formId === overlay?.glossary?.entry.formId) closeGlossary(false, false);
         return null;
       case "overlay-edit":
         if (editorConfigured(field) && overlay?.field === field && overlayCurrent(data) && overlay.editable && !overlay.paused
@@ -1565,6 +1817,29 @@
     const press = {consumed: false};
     observeHeld(press, event);
     held.set(event.code, press);
+    if (overlay && event.target === overlay.host && glossaryFocus()) {
+      // Form navigation and IME own these keys, including configured Fn keys.
+      retireOrdered(); retireEditorControl();
+      const form = overlay.glossary, control = overlay.shadow.activeElement;
+      if (event.isComposing || event.keyCode === 229) {
+        if (form.states.has(control)) form.states.set(control, "Composing");
+        publishGlossaryFocus(); return;
+      }
+      if (event.isTrusted && form.states.get(control) === "Unknown") {
+        form.states.set(control, "Clear"); publishGlossaryFocus();
+        // This first Escape only establishes the field's clear input state.
+        // A later Escape may close the form once both fields were already Clear.
+        if (event.key === "Escape") return;
+      }
+      const focus = glossaryFocus();
+      if (event.key === "Escape" && focus?.ime === "Clear") { consume(event); closeGlossary(); }
+      else if (event.key === "Tab" && focus?.ime !== "Composing") {
+        const controls = [form.source, form.target, form.scope, form.save, form.cancel].filter(item => !item.disabled);
+        const index = controls.indexOf(control);
+        if (index >= 0) { consume(event); controls[(index + (event.shiftKey ? controls.length - 1 : 1)) % controls.length].focus(); }
+      }
+      return;
+    }
     // A closed shadow root retargets to the host at window capture. Handle the
     // installed editor here so one physical key has one owner across focus/config.
     if (overlay && event.target === overlay.host && overlay.editing

@@ -5,6 +5,7 @@ public sealed partial class SessionController : IDisposable
 {
     private readonly SettingsStore _settings;
     private readonly ITranslationService _model;
+    private readonly TranslationReleasePolicy _translationRelease;
     private readonly ISessionView _overlay;
     private readonly IInputMonitor _hook;
     private readonly IInputService _broker;
@@ -22,7 +23,13 @@ public sealed partial class SessionController : IDisposable
     private long _lastCommandSequence, _commandSequence, _commandFeedbackRevision, _pendingDirectFeedbackRevision, _pendingDirectSequence;
     private Guid _lastCommandGeneration, _pendingDirectCommandGeneration;
     private long _configurationRevision;
+    private sealed record StyleObservation(TargetId Target, string? Application, long SessionRevision,
+        Guid CommandGeneration, long SourceEpoch, long ContentEpoch, long ForegroundEpoch, long WindowEpoch);
+    private StyleObservation? _styleObservation;
+    private bool _styleChangeRunning;
     private SessionShortcutAcknowledgement? _sessionShortcuts;
+    // Provenance of the latest source observation, without retaining another text snapshot.
+    private (long Revision, long SourceEpoch, long ContentEpoch, long ForegroundEpoch, long WindowEpoch) _alternativeObservation;
     private readonly ISessionLoop _loop;
     private long _generation, _nextCapture, _permitUntil, _editTransitionUntil, _retryBrokerAt;
     private AcceptancePermit? _presentationPermit;
@@ -150,24 +157,32 @@ public sealed partial class SessionController : IDisposable
     public SessionController(SettingsStore settings, ITranslationService model, ISessionView overlay,
         IInputMonitor input, IInputService broker, ISessionLoop loop,
         Func<OwnedPracticeBinding, Task<bool>>? retireOwnedPractice = null,
-        Func<OwnedPracticeBinding, Task<bool>>? confirmRetiredOwnedPractice = null)
+        Func<OwnedPracticeBinding, Task<bool>>? confirmRetiredOwnedPractice = null,
+        TranslationReleasePolicy? translationRelease = null)
     {
         _retireOwnedPractice = retireOwnedPractice;
         _confirmRetiredOwnedPractice = confirmRetiredOwnedPractice;
         _broker = broker;
         _settings = settings;
         _model = model;
+        _translationRelease = translationRelease ?? TranslationReleasePolicy.Current;
         _overlay = overlay;
         _hook = input;
         _lastShortcutStatus = ShortcutStatus;
         _loop = loop;
         _session = new Session(settings.Value.Direction);
+        _session.SetGlossary(settings.Value.Glossary, _loop.NowMs);
         _activation = new TranslationActivation(settings.Value.Mode);
         _loop.Tick += Tick;
         overlay.BeginEditing = BeginEdit;
         overlay.DraftChanged = ChangePracticeDraft;
         overlay.ReturnRequested = token => { if (ViewCommandIsCurrent(token, true)) _ = ReturnFromEditor(); };
         overlay.EscapeRequested = token => { if (ViewCommandIsCurrent(token, false)) _ = Escape(); };
+        overlay.AlternativeRequested = token => RequestAlternative(token, fromView: true);
+        overlay.StyleRequested = ChangeViewStyleAsync;
+        overlay.BeginGlossaryRequested = BeginGlossaryEntry;
+        overlay.AddGlossaryRequested = AddGlossaryEntryAsync;
+        overlay.CloseGlossaryRequested = CloseGlossaryEntry;
         overlay.RegenerateRequested = () => _ = Regenerate();
         overlay.ExcludeRequested = () => _ = ExcludeCurrentApplication();
         overlay.ResumeRequested = revision => _ = ResumePause(revision);
@@ -255,6 +270,7 @@ public sealed partial class SessionController : IDisposable
     }
     private void Configure()
     {
+        _styleObservation = null;
         _pendingPracticeCompletion = null;
         RetireAutomaticPractice(false);
         if (PracticeProgress is { } practice)
@@ -484,6 +500,13 @@ public sealed partial class SessionController : IDisposable
         if (!_translationRunning && !_directRunning && _pendingDirect is null && !_model.Busy && _model.Ready && !_writing)
         {
             var job = _session.TakeTranslationJob(now);
+            // A manual seed can retain a dormant style while newly saved rules
+            // apply to its next addition. Freeze both choices for explicit rejection.
+            if (job?.Glossary?.CouldApply(job.Direction) == true && job.Style is null && _settings.Value.Styles is { } styles)
+                job = job with
+                {
+                    Style = styles.Resolve(_styleObservation?.Application)
+                };
             if (job is not null)
                 _ = Translate(job);
         }
@@ -771,6 +794,7 @@ public sealed partial class SessionController : IDisposable
                 && acknowledgement.Target == snapshot.Target && acknowledgement.Generation == _hook.CommandGeneration
                 && acknowledgement.Bindings == CurrentSessionBindings ? acknowledgement : null;
             LastApplication = result.Application;
+            string? styleApplication = _settings.NormalizeStyleApplication(result.Application);
             bool active = _activation.Observe(snapshot.Target, result.Focus);
             if (!active)
             {
@@ -784,7 +808,7 @@ public sealed partial class SessionController : IDisposable
                 _hook.Publish(new(snapshot, request.UserEpoch, request.ForegroundEpoch, false, _hook.CommandGeneration, _generation), null);
                 if (result.Focus == FocusMember.Source)
                 {
-                    _hook.PublishShortcut(new(snapshot, contentEpoch, request.ForegroundEpoch));
+                    _hook.PublishShortcut(new(snapshot, contentEpoch, request.ForegroundEpoch, styleApplication));
                     captureExit = "shortcut-publish-called";
                     if (traceCapture)
                         _practiceCaptureTracePublished = true;
@@ -803,6 +827,19 @@ public sealed partial class SessionController : IDisposable
                 _permitUntil = 0;
             }
             _session.Observe(snapshot, result.Focus, now);
+            bool styled = _settings.Value.Styles is not null && (_model.StyledTranslationCapability is not null
+                || _settings.Value.Glossary?.CouldApply(_settings.Value.Direction) == true);
+            TranslationStyle? effectiveStyle = styled ? _settings.Value.Styles!.Resolve(styleApplication) : null;
+            bool applicationChanged = styled && _styleObservation is { } priorStyle
+                && priorStyle.Target == snapshot.Target && priorStyle.Application != styleApplication;
+            if (_session.SetStyle(effectiveStyle, now, applicationChanged) && applicationChanged)
+            {
+                _generation++;
+                RevokeInput("style-application-changed");
+                _permitUntil = 0;
+            }
+            _styleObservation = new(snapshot.Target, styleApplication, _session.Revision, _hook.CommandGeneration,
+                request.SourceUserEpoch, contentEpoch, request.ForegroundEpoch, windowEpoch);
             if (_awaitingPracticeReturn is not null && _session.State != SessionState.EditedTranslationPending)
             {
                 StopSession("practice-return-source-changed");
@@ -818,6 +855,9 @@ public sealed partial class SessionController : IDisposable
             // A keystroke arriving during a remote read must revoke acceptance, but
             // must not starve preview capture while the user continues typing.
             bool inputUnchanged = result.UserEpoch == _hook.UserEpoch && result.ForegroundEpoch == _hook.ForegroundEpoch;
+            _alternativeObservation = inputUnchanged
+                ? (_session.Revision, request.SourceUserEpoch, contentEpoch, request.ForegroundEpoch, windowEpoch)
+                : default;
             var practiceBinding = AutomaticPracticeFor(snapshot.Target);
             if (inputUnchanged && result.Focus == FocusMember.Source && _model.Ready
                 && !RetiredAutomaticTarget(snapshot.Target)
@@ -841,7 +881,7 @@ public sealed partial class SessionController : IDisposable
                 practiceBinding?.RunId, practiceBinding?.ConnectionId), permit);
             if (result.Focus == FocusMember.Source)
             {
-                _hook.PublishShortcut(new(snapshot, contentEpoch, request.ForegroundEpoch));
+                _hook.PublishShortcut(new(snapshot, contentEpoch, request.ForegroundEpoch, styleApplication));
                 captureExit = "shortcut-publish-called";
                 if (traceCapture)
                     _practiceCaptureTracePublished = true;
@@ -989,9 +1029,12 @@ public sealed partial class SessionController : IDisposable
             SetServiceStatus("本地模型尚未就绪，未执行直接替换。", "model-not-ready");
             return;
         }
+        TranslationStyle? style = _settings.Value.Styles is { } preferences && (_model.StyledTranslationCapability is not null
+            || _settings.Value.Glossary?.CouldApply(_settings.Value.Direction) == true)
+            ? preferences.Resolve(_settings.NormalizeStyleApplication(notice.Application)) : null;
         var (operation, reason) = notice.CommandCapture is { } capture
-            ? DirectTranslation.StartFromCommandCapture(source, _settings.Value.Direction, capture, _loop.NowMs)
-            : DirectTranslation.Start(source, _settings.Value.Direction, notice.AcceptedAtMs);
+            ? DirectTranslation.StartFromCommandCapture(source, _settings.Value.Direction, capture, _loop.NowMs, style, _configurationRevision, _settings.Value.Glossary)
+            : DirectTranslation.Start(source, _settings.Value.Direction, notice.AcceptedAtMs, style, _configurationRevision, _settings.Value.Glossary);
         if (operation is null)
         {
             SetServiceStatus(reason == Denial.NoCandidate ? "没有需要直接翻译的文本。" : "无法确认原输入内容的安全状态，未执行直接替换。", "shortcut-" + reason.ToString().ToLowerInvariant());
@@ -1014,13 +1057,15 @@ public sealed partial class SessionController : IDisposable
         var practiceCommand = _pendingDirectPractice;
         try
         {
-            var response = await _model.TranslateAsync(operation.Job);
-            if (_disposed || configuration != _configurationRevision)
+            var response = await DispatchTranslationAsync(operation.Job);
+            if (_disposed || configuration != _configurationRevision || !ReferenceEquals(_pendingDirect, operation))
                 return;
             if (response.Status != "translated")
             {
                 if (response.Code == "language-unavailable")
                     SetCommandStatus("尚未准备本次翻译所需方向，请到“准备翻译”补充模型；原文未作替换。", feedbackRevision, "language-unavailable");
+                else if (response.Code.StartsWith("glossary-", StringComparison.Ordinal))
+                    SetCommandStatus("术语规则未能应用，未执行直接替换。", feedbackRevision, response.Code);
                 else
                     SetCommandStatus(response.Status == "no-translation" ? "当前文本无需翻译，未作替换。" : "直接翻译未完成，原文未作替换。", feedbackRevision,
                         response.Status == "no-translation" ? "no-translation" : "translation-failed");
@@ -1092,6 +1137,300 @@ public sealed partial class SessionController : IDisposable
                 commandSequence ?? _commandSequence, feedbackCode, status));
         Changed?.Invoke();
     }
+    // No platform entry is opened here. State and commands share qualification.
+    public StyleSettingsState GetStyleSettingsState(StyleScope scope = StyleScope.Global,
+        TranslationStyle? style = TranslationStyle.Natural)
+    {
+        string? application = _styleObservation is { } observation && observation.Target == _session.Current?.Target
+            ? observation.Application : null;
+        var token = CurrentTranslationToken();
+        string? reason = QualifyStyleChange(scope, style, _settings.Revision, token, false, default);
+        string? resetReason = QualifyStyleChange(StyleScope.Global, null, _settings.Revision, token, true, default);
+        bool available = TechnicalTranslationAvailable(TranslationOperation.Style);
+        return new(_settings.Revision, _settings.Value.Styles, StyleApplicationProblem() is null ? _settings.Value.Styles?.Resolve(application) : null,
+            application, token, available, reason, reason is null, resetReason is null, resetReason,
+            _translationRelease.IsReleased(TranslationOperation.Style));
+    }
+
+    private SessionViewToken? CurrentTranslationToken() => _session.Current is { } source
+        ? new(source.Target, _hook.CommandGeneration, _generation) : null;
+
+    private string? QualifyStyleChange(StyleScope scope, TranslationStyle? style, long expectedRevision,
+        SessionViewToken? token, bool reset, CancellationToken cancellationToken, bool ownsChange = false,
+        string? savedApplication = null)
+    {
+        if (_disposed || cancellationToken.IsCancellationRequested)
+            return "style-canceled";
+        if (_settings.Revision != expectedRevision || _settings.HasChanges(_settings.Value))
+            return "style-stale";
+        if (reset && _settings.Value.Styles is null)
+            return "style-unchanged";
+        if (savedApplication is not null && (_session.Current is not null
+            || _settings.Value.Styles?.Applications?.ContainsKey(savedApplication) != true))
+            return "style-application-unavailable";
+        if (!reset && savedApplication is null && (!Enum.IsDefined(scope) || style is { } selected && !Enum.IsDefined(selected)
+            || scope == StyleScope.Global && style is null))
+            return "invalid-style";
+        bool removal = reset || savedApplication is not null || scope == StyleScope.CurrentApplication && style is null;
+        if (!removal)
+        {
+            if (StyleApplicationProblem() is { } unavailable)
+                return unavailable;
+        }
+        if (_session.ManualStyleLocked || _overlay.EditingComposition)
+            return "manual-style-locked";
+        if (!ownsChange && _styleChangeRunning || _glossaryChangeRunning || TranslationSettingsBusy()
+            || _directRunning || _pendingDirect is not null || _returningToSource)
+            return "style-busy";
+        if (_session.Current is null)
+            return (reset || scope == StyleScope.Global) && token is null ? null : "style-stale";
+        if (!reset && scope == StyleScope.CurrentApplication && _styleObservation?.Application is null)
+            return "style-application-unavailable";
+        return token is not null && StyleSourceCurrent(token) ? null : "style-stale";
+    }
+
+    private string? StyleApplicationProblem() =>
+        QualifyTranslationOperation(TranslationOperation.Style, _settings.Value.Direction)
+            ?? (_settings.Value.Glossary?.CouldApply(_settings.Value.Direction) == true ? "glossary-combination-unavailable" : null);
+
+    private bool TranslationSettingsBusy() => AutomaticPracticeProgress is not null || PracticeProgress is not null
+        || _pendingPracticeCompletion is not null || _ownedPractice is not null || _awaitingPractice is not null
+        || _awaitingPracticeReturn is not null || _writing || _directWriteSubmitted
+        || _session.State is SessionState.Applying or SessionState.OutcomeUnknown;
+
+    public Task<StyleChangeResult> ChangeStyleAsync(StyleScope scope, TranslationStyle? style,
+        long expectedSettingsRevision, SessionViewToken? token = null, CancellationToken cancellationToken = default) =>
+        SaveStyleAsync(scope, style, expectedSettingsRevision, token, false, cancellationToken);
+
+    // The host must explicitly confirm clearing the global choice AND every app override.
+    // Natural is an explicit style choice and must never call this recovery action.
+    public Task<StyleChangeResult> ResetTranslationStyleAsync(long expectedSettingsRevision,
+        SessionViewToken? token = null, CancellationToken cancellationToken = default) =>
+        SaveStyleAsync(StyleScope.Global, null, expectedSettingsRevision, token, true, cancellationToken);
+
+    // Settings can remove a named, already saved override after the source session
+    // ended. This never identifies a current application or creates an override.
+    public StyleOverrideRemovalState GetStyleOverrideRemovalState(string application)
+    {
+        string? reason = string.IsNullOrWhiteSpace(application) ? "style-application-unavailable"
+            : QualifyStyleChange(StyleScope.Global, null, _settings.Revision, null, false, default,
+                savedApplication: application);
+        return new(_settings.Revision, reason is null, reason);
+    }
+
+    public Task<StyleChangeResult> RemoveStyleOverrideAsync(string application, long expectedSettingsRevision,
+        CancellationToken cancellationToken = default) => string.IsNullOrWhiteSpace(application)
+        ? Task.FromResult(new StyleChangeResult(false, "style-application-unavailable"))
+        : SaveStyleAsync(StyleScope.Global, null, expectedSettingsRevision, null, false, cancellationToken, application);
+
+    private async Task<StyleChangeResult> SaveStyleAsync(StyleScope scope, TranslationStyle? style,
+        long expectedSettingsRevision, SessionViewToken? token, bool reset, CancellationToken cancellationToken,
+        string? savedApplication = null)
+    {
+        var capability = _model.StyledTranslationCapability;
+        var identity = _model.VerifiedIdentity;
+        var observation = _styleObservation;
+        long generation = _generation, configuration = _configurationRevision;
+        bool removal = reset || savedApplication is not null || scope == StyleScope.CurrentApplication && style is null;
+        string? Check(bool ownsChange = false)
+        {
+            if (QualifyStyleChange(scope, style, expectedSettingsRevision, token, reset, cancellationToken, ownsChange, savedApplication) is { } reason)
+                return reason;
+            if (generation != _generation || configuration != _configurationRevision || observation != _styleObservation)
+                return "style-stale";
+            if (!removal && (!ReferenceEquals(capability, _model.StyledTranslationCapability)
+                || !ReferenceEquals(identity, _model.VerifiedIdentity)))
+                return "style-unavailable";
+            return null;
+        }
+        if (Check() is { } rejection)
+            return new(reset && rejection == "style-unchanged", rejection);
+        _styleChangeRunning = true;
+        try
+        {
+            if (_automaticRetirement is not null || _automaticRetirementUnconfirmed)
+            {
+                if (!await RetireAutomaticPracticeAsync())
+                    return new(false, "practice-retirement-unconfirmed");
+                if (Check(true) is { } stale)
+                    return new(false, stale);
+            }
+            TranslationStyles? next = null;
+            if (!reset)
+            {
+                var current = _settings.Value.Styles ?? new TranslationStyles();
+                var applications = new Dictionary<string, TranslationStyle>(current.Applications
+                    ?? new Dictionary<string, TranslationStyle>(), StringComparer.OrdinalIgnoreCase);
+                if (savedApplication is not null)
+                    applications.Remove(savedApplication);
+                else if (scope == StyleScope.CurrentApplication)
+                {
+                    string application = observation!.Application!;
+                    if (style is { } value)
+                        applications[application] = value;
+                    else
+                        applications.Remove(application);
+                }
+                if (applications.Count > 256)
+                    return new(false, "style-settings-full");
+                next = _settings.Value.Styles is null && scope == StyleScope.CurrentApplication && style is null
+                    ? null : new(scope == StyleScope.Global && savedApplication is null ? style!.Value : current.Default, applications);
+            }
+            long before = _settings.Revision;
+            try
+            {
+                _settings.CommitStyles(expectedSettingsRevision, next, ApplyStyleSettings);
+            }
+            catch (SettingsPersistenceException) { return new(false, "style-save-failed"); }
+            catch (Exception error) when (error is not OutOfMemoryException && _settings.Revision != before)
+            {
+                return new(true, "style-saved-notification-failed");
+            }
+            return new(true, "style-saved");
+        }
+        finally { _styleChangeRunning = false; }
+    }
+
+    private bool TechnicalTranslationAvailable(TranslationOperation operation) =>
+        TechnicalTranslationAvailable(operation, _model.VerifiedIdentity);
+
+    private bool TechnicalTranslationAvailable(TranslationOperation operation, VerifiedModelIdentity? identity) => _model.Ready
+        && identity is not null && operation switch
+        {
+            TranslationOperation.Style => _model.StyledTranslationCapability is not null,
+            TranslationOperation.Glossary => _model.GlossaryTranslationCapability is not null,
+            TranslationOperation.Alternative => identity.Packages.Count > 0 && identity.Packages.All(package =>
+                package.Version == "1.9" && package.Id is "argos-zh-en" or "argos-en-zh"),
+            _ => false
+        };
+
+    private string? QualifyTranslationOperation(TranslationOperation operation, LanguageDirection direction) =>
+        QualifyTranslationOperation(operation, direction, out _);
+
+    private string? QualifyTranslationOperation(TranslationOperation operation, LanguageDirection direction, out VerifiedModelIdentity? identity)
+    {
+        identity = _model.VerifiedIdentity;
+        string name = operation.ToString().ToLowerInvariant();
+        if (!TechnicalTranslationAvailable(operation, identity) || !ReferenceEquals(identity, _model.VerifiedIdentity))
+            return name + "-unavailable";
+        return _translationRelease.IsReleased(operation)
+            && _translationRelease.Allows(operation, identity!, direction) ? null : name + "-not-released";
+    }
+
+    private string? QualifyTranslationJob(TranslationJob job, out VerifiedModelIdentity? identity)
+    {
+        identity = null;
+        bool glossary = job.Glossary?.CouldApply(job.Direction) == true;
+        if (glossary && (job.Style is not null || job.Kind == TranslationKind.Alternative))
+            return "glossary-combination-unavailable";
+        if (job.Kind == TranslationKind.Alternative)
+            return job.Style is not null ? "alternative-unavailable" : QualifyTranslationOperation(TranslationOperation.Alternative, job.Direction, out identity);
+        return glossary ? QualifyTranslationOperation(TranslationOperation.Glossary, job.Direction, out identity)
+            : job.Style is not null ? QualifyTranslationOperation(TranslationOperation.Style, job.Direction, out identity) : null;
+    }
+
+    private async Task<TypeLay.Protocol.ModelResponse> DispatchTranslationAsync(TranslationJob job)
+    {
+        if (QualifyTranslationJob(job, out var identity) is { } reason)
+            return new(0, "error", Code: reason);
+        bool special = job.Style is not null || job.Glossary?.CouldApply(job.Direction) == true || job.Kind == TranslationKind.Alternative;
+        var result = special ? await _model.TranslateAsync(job, identity!) : await _model.TranslateAsync(job);
+        return special && !ReferenceEquals(identity, _model.VerifiedIdentity) ? new(0, "error", Code: "not-ready") : result;
+    }
+
+    private bool StyleSourceCurrent(SessionViewToken token) => _styleObservation is { } observation
+        && token.Revision == _generation && token.CommandGeneration == _hook.CommandGeneration
+        && observation.CommandGeneration == _hook.CommandGeneration && observation.Target == token.Target
+        && _session.Current is { IsUsable: true } source && source.Target == token.Target
+        && observation.SessionRevision == _session.Revision
+        && observation.SourceEpoch == _hook.SourceUserEpoch && observation.ContentEpoch == _hook.ContentEpoch
+        && observation.ForegroundEpoch == _hook.ForegroundEpoch && observation.WindowEpoch == _hook.WindowEpoch
+        && _hook.GetFocus(token.Target) != FocusMember.Other
+        && _loop.NowMs >= source.ObservedAtMs && _loop.NowMs - source.ObservedAtMs <= Limits.ObservationMaxAgeMs;
+
+    private void ApplyStyleSettings()
+    {
+        _configurationRevision++;
+        _commandFeedbackRevision++;
+        _generation++;
+        _permitUntil = 0;
+        _presentationPermit = null;
+        _statusOverride = null;
+        TranslationStyle? style = _settings.Value.Styles?.Resolve(_styleObservation?.Application);
+        try
+        {
+            RevokeInput("style-settings");
+        }
+        finally
+        {
+            // Even a failing host revoke callback cannot retain a Core candidate
+            // from the previous persisted configuration.
+            _session.SetStyle(style, _loop.NowMs, configurationChanged: true);
+            if (_styleObservation is { } observation)
+                _styleObservation = observation with
+                {
+                    SessionRevision = _session.Revision
+                };
+            _nextCapture = 0;
+        }
+        Render();
+        Changed?.Invoke();
+    }
+
+    public AlternativeState GetAlternativeState()
+    {
+        var token = CurrentTranslationToken();
+        string? reason = QualifyAlternative(token);
+        return new(token, reason is null, reason, _translationRelease.IsReleased(TranslationOperation.Alternative));
+    }
+
+    private string? QualifyAlternative(SessionViewToken? token)
+    {
+        if (QualifyTranslationOperation(TranslationOperation.Alternative, _settings.Value.Direction) is { } unavailable)
+            return unavailable;
+        if (!_session.CanBeginAlternative || _session.ManualStyleLocked)
+            return "alternative-unavailable";
+        if (token is null || !ViewCommandIsCurrent(token, true) || _overlay.EditingComposition
+            || _alternativeObservation != (_session.Revision, _hook.SourceUserEpoch, _hook.ContentEpoch,
+                _hook.ForegroundEpoch, _hook.WindowEpoch)
+            || _session.Current is not { IsUsable: true } source
+            || _hook.GetFocus(source.Target) == FocusMember.Other)
+            return "alternative-source-unavailable";
+        if (_model.Busy || _translationRunning || _directRunning || _pendingDirect is not null || _returningToSource
+            || TranslationSettingsBusy() || _styleChangeRunning || _glossaryChangeRunning
+            || _automaticRetirement is not null || _automaticRetirementUnconfirmed)
+            return "alternative-busy";
+        return null;
+    }
+
+    public bool RequestAlternative(SessionViewToken token) => RequestAlternative(token, fromView: false);
+
+    private bool RequestAlternative(SessionViewToken token, bool fromView)
+    {
+        if (QualifyAlternative(token) is { } rejection)
+        {
+            if (fromView)
+                SetTranslationMenuFeedback(token, _commandFeedbackRevision, TranslationMenuPresentation.Reason(rejection));
+            return false;
+        }
+        var job = _session.BeginAlternative();
+        if (job is null)
+            return false;
+        _generation++;
+        _commandFeedbackRevision++;
+        _alternativeMenuRequest = fromView ? (CurrentTranslationToken()!, _commandFeedbackRevision) : null;
+        _translationMenuFeedback = null;
+        RevokeInput("alternative");
+        _permitUntil = 0;
+        bool feedbackChanged = OperationStatus is not null;
+        OperationStatus = null;
+        Render();
+        _ = Translate(job);
+        if (feedbackChanged && OperationStatus is null)
+            Changed?.Invoke();
+        return true;
+    }
+
     private async Task Translate(TranslationJob job)
     {
         _translationRunning = true;
@@ -1099,12 +1438,43 @@ public sealed partial class SessionController : IDisposable
         Trace("translate-start");
         var practiceCommand = _practiceWakeCommand;
         var automaticPractice = AutomaticPracticeFor(job.Basis.Target);
+        long generation = _generation, feedbackRevision = _commandFeedbackRevision;
+        var commandGeneration = _hook.CommandGeneration;
+        long sourceEpoch = _hook.SourceUserEpoch, contentEpoch = _hook.ContentEpoch,
+            foregroundEpoch = _hook.ForegroundEpoch, windowEpoch = _hook.WindowEpoch;
         bool completed = false;
         try
         {
-            var result = await _model.TranslateAsync(job);
+            var result = await DispatchTranslationAsync(job);
             if (_disposed)
                 return;
+            if (job.Kind == TranslationKind.Alternative)
+            {
+                if (generation != _generation || commandGeneration != _hook.CommandGeneration
+                    || sourceEpoch != _hook.SourceUserEpoch || contentEpoch != _hook.ContentEpoch
+                    || foregroundEpoch != _hook.ForegroundEpoch || windowEpoch != _hook.WindowEpoch
+                    || result.Code == "not-ready" || !SessionBindingsReady(job.Basis.Target, true)
+                    || _hook.GetFocus(job.Basis.Target) == FocusMember.Other)
+                {
+                    if (_session.AbandonAlternative(job))
+                    {
+                        RevokeInput("alternative-obsolete");
+                        _permitUntil = 0;
+                        _nextCapture = 0;
+                        Render();
+                    }
+                    return;
+                }
+                if (result.Status == "translated")
+                    _session.Complete(job, result.Text);
+                else if (result.Status == "no-alternative" && _session.CompleteNoAlternative(job))
+                    SetAlternativeMenuStatus("未找到不同说法，已保留原译文。", generation, commandGeneration, job.Basis.Target, feedbackRevision);
+                else if (_session.Fail(job))
+                    SetAlternativeMenuStatus("暂时无法换种说法，已保留原译文。", generation, commandGeneration, job.Basis.Target, feedbackRevision);
+                Render();
+                Trace("translate-done");
+                return; // Alternative generation never earns tutorial progress.
+            }
             if (result.Status == "translated")
                 completed = _session.Complete(job, result.Text);
             else if (result.Status == "no-translation")
@@ -1114,6 +1484,13 @@ public sealed partial class SessionController : IDisposable
                 {
                     "segment-too-long" => "文本较长，请缩短选区",
                     "language-unavailable" => "尚未准备本次翻译所需方向，请到“准备翻译”补充模型",
+                    "style-not-released" => "当前模型方向尚未开放翻译风格",
+                    "glossary-not-released" => "当前模型方向尚未开放术语应用",
+                    "style-unavailable" => "当前模型不支持翻译风格",
+                    "glossary-unavailable" => "当前模型不支持应用术语表",
+                    "glossary-combination-unavailable" => "暂不支持同时应用风格与术语表",
+                    "glossary-protected-conflict" => "术语命中受保护内容或跨越分段，无法应用",
+                    "glossary-output-missing" => "译文未包含指定译法，未提供可接受候选",
                     _ => "暂时无法翻译"
                 };
             Render();
@@ -1350,6 +1727,8 @@ public sealed partial class SessionController : IDisposable
     public void StopSession() => StopSession("stop-session");
     private void StopSession(string reason)
     {
+        CancelGlossaryEntry();
+        _styleObservation = null;
         if (_ownedPractice is not null || _awaitingPractice is not null || _awaitingPracticeReturn is not null)
             RetireAutomaticPractice();
         if (_session.Current is not null)
@@ -1385,6 +1764,7 @@ public sealed partial class SessionController : IDisposable
     }
     private void Render()
     {
+        RetireInvalidGlossaryEntry();
         if (_disposed)
             return;
         if (!_settings.Value.Enabled && PauseAnchorIsCurrent(_loop.NowMs))
@@ -1399,7 +1779,7 @@ public sealed partial class SessionController : IDisposable
         // or permission. Every action separately checks the target-bound ACK.
         SessionViewContext? context = _session.Current is { } source
             ? new(new(source.Target, _hook.CommandGeneration, _generation), CurrentSessionBindings,
-                SessionBindingsReady(source.Target, true)) : null;
+                SessionBindingsReady(source.Target, true), GetTranslationMenuState()) : null;
         _renderedAcceptanceReady = CanPresentAcceptance(_loop.NowMs);
         _overlay.Render(_session, _settings.Value, _renderedAcceptanceReady, status, context);
     }
@@ -1471,6 +1851,7 @@ public sealed partial class SessionController : IDisposable
     }
     public void Dispose()
     {
+        CancelGlossaryEntry();
         _pendingPracticeCompletion = null;
         RetireAutomaticPractice(false);
         if (PracticeProgress is { } practice)

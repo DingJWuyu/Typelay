@@ -26,10 +26,21 @@ def named(pid, name):
             node = pending.pop()
             if node is None:
                 continue  # A child can disappear between count and lookup.
-            node.clear_cache()
-            if node.get_name() == name:
-                return node
-            pending.extend(node.get_child_at_index(i) for i in range(node.get_child_count()))
+            try:
+                node.clear_cache()
+                if node.get_name() == name:
+                    return node
+                pending.extend(node.get_child_at_index(i) for i in range(node.get_child_count()))
+            except GLib.Error as error:
+                if (
+                    "as object /org/a11y/atspi/accessible/" not in error.message
+                    or " does not exist" not in error.message
+                ):
+                    raise
+                # A settings refresh can retire this exact proxy while its
+                # siblings remain valid. The caller keeps its original deadline
+                # and obtains a fresh tree on its next ordinary observation.
+                continue
     return None
 
 

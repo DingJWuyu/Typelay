@@ -966,7 +966,9 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                         assert state()["first"]["text"] == "Original source"
                         result["same_candidate_renewal_receipt_keeps_original_plan"] = True
 
-                def render_view(publication, state, text, owns_text, revision):
+                def render_view(
+                    publication, state, text, owns_text, revision, translation_actions=None
+                ):
                     target = publication["target"]
                     identity = publication["permit"]["plan"]["expected"]["target"]
                     view = {
@@ -984,6 +986,8 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                         },
                         "presentation": {"visible": True, "editorOwnsText": owns_text},
                     }
+                    if translation_actions is not None:
+                        view["viewContext"]["translationActions"] = translation_actions
                     return native.call(
                         "overlay-render",
                         {
@@ -1057,6 +1061,47 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                         for event in native.events
                         if event.get("event") == "ui" and event["data"].get("operation") == "return"
                     ]
+
+                publication = editor_view()
+                initial_returns = len(returns())
+                original_source = state()["first"]
+                controls = state()["keys"].get("controlPress", 0)
+                run(["xdotool", "keydown", "--delay", "0", "Control_L"], env=environment)
+                try:
+                    wait(
+                        lambda: state()["keys"].get("controlPress", 0) > controls and settled(),
+                        "original editor Ctrl delivered before menu-only feedback",
+                    )
+                    assert render_view(
+                        publication,
+                        "EditingTranslation",
+                        "Exact manual translation",
+                        True,
+                        1,
+                        {
+                            "settingsRevision": 12,
+                            "styleReleased": True,
+                            "canChangeStyle": False,
+                            "canInheritStyle": False,
+                            "applicationStyle": None,
+                            "styleUnavailableReason": "请先完成当前编辑",
+                            "inheritUnavailableReason": "请先完成当前编辑",
+                            "alternativeReleased": True,
+                            "canRequestAlternative": False,
+                            "alternativeUnavailableReason": "请先完成当前编辑",
+                            "feedback": "请先完成当前编辑",
+                        },
+                    )["editing"]
+                    run(["xdotool", "keydown", "--delay", "0", "F7"], env=environment)
+                    wait(
+                        lambda: len(returns()) == initial_returns + 1 and settled(),
+                        "menu-only feedback preserves the original no-write editor command",
+                    )
+                    assert state()["first"] == original_source
+                finally:
+                    run(["xdotool", "keyup", "F7", "Control_L"], env=environment)
+                native.call("overlay-hide")
+                result["menu_feedback_preserves_original_editor_control_ticket"] = True
 
                 publication = editor_view()
                 initial_returns = len(returns())

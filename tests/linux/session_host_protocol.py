@@ -1292,6 +1292,346 @@ while True:
         with (root.parent / "install.lock").open("r+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
+    async def test_translation_settings_closed_release_has_no_additions_and_ordinary_dto_is_separate(
+        self,
+    ):
+        style = await self.ask("getStyleSettings")
+        self.assertIsInstance(style, dict)
+        self.assertFalse(style["isReleased"])
+        self.assertFalse(style["canChange"])
+        glossary = await self.ask("getGlossarySettings")
+        self.assertFalse(glossary["isReleased"])
+        self.assertFalse(glossary["canSave"])
+        directions = {(item["source"], item["target"]) for item in glossary["directions"]}
+        self.assertIn(("fr", "zh"), directions)
+        self.assertNotIn(("fr", "en"), directions)
+        identity = {
+            "session": str(uuid.uuid4()),
+            "request": 1,
+            "expectedSettingsRevision": style["settingsRevision"],
+        }
+        result = await self.ask("changeStyle", {**identity, "style": "Natural"})
+        self.assertEqual(result, {"saved": False, "code": "style-unavailable"})
+        result = await self.ask(
+            "changeGlossary",
+            {**identity, "rules": [{"sourceTerm": "TypeLay", "targetTerm": "TypeLay"}]},
+        )
+        self.assertEqual(result, {"saved": False, "code": "glossary-not-released"})
+        self.assertFalse(await self.ask("settings", {"styles": None}))
+        self.assertFalse(await self.ask("settings", {"glossary": None}))
+        self.assertTrue(await self.ask("settings", {"theme": "dark"}))
+        ordinary = self.latest("settings")
+        self.assertNotIn("styles", ordinary)
+        self.assertNotIn("glossary", ordinary)
+
+    async def test_overlay_style_route_accepts_only_frozen_session_payload_and_keeps_release_closed(
+        self,
+    ):
+        before = await self.ask("getStyleSettings")
+        token = {
+            "target": {
+                "backend": "linux-gtk3",
+                "value": str(uuid.uuid4()),
+                "lifetime": str(uuid.uuid4()),
+            },
+            "commandGeneration": str(uuid.uuid4()),
+            "revision": 1,
+        }
+        request = {"token": token, "settingsRevision": before["settingsRevision"], "style": None}
+        for style in (None, "Natural", "Formal"):
+            self.assertEqual(
+                await self.ask("sessionStyle", {**request, "style": style}),
+                {"saved": False, "code": "style-not-released"},
+            )
+        for invalid in (
+            None,
+            {},
+            {**request, "style": 1},
+            {**request, "style": "natural"},
+            {**request, "settingsRevision": -1},
+            {**request, "settingsRevision": True},
+            {**request, "application": "other"},
+            {**request, "scope": "Global"},
+        ):
+            self.assertEqual(
+                await self.ask("sessionStyle", invalid),
+                {"saved": False, "code": "invalid-session-style"},
+            )
+        await self.send({"event": "alternative", "data": token})
+        self.assertEqual(await self.ask("getStyleSettings"), before)
+        self.assertFalse((self.home / "config/settings.json").exists())
+
+    async def test_inline_glossary_route_rejects_forged_forms_and_keeps_settings_separate(self):
+        before = await self.ask("getGlossarySettings")
+        token = {
+            "target": {
+                "backend": "linux-gtk3",
+                "value": str(uuid.uuid4()),
+                "lifetime": str(uuid.uuid4()),
+            },
+            "commandGeneration": str(uuid.uuid4()),
+            "revision": 1,
+        }
+        self.assertIsNone(await self.ask("sessionGlossaryBegin", token))
+        request = {
+            "formId": str(uuid.uuid4()),
+            "token": token,
+            "settingsRevision": before["settingsRevision"],
+            "rule": {
+                "sourceTerm": "PR",
+                "targetTerm": "PR",
+                "sourceLanguage": None,
+                "targetLanguage": None,
+            },
+        }
+        result = await self.ask("sessionGlossaryAdd", request)
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["code"], "glossary-stale")
+        self.assertTrue(result["message"])
+        for invalid in (
+            None,
+            {},
+            {**request, "formId": 3},
+            {**request, "rules": [request["rule"]]},
+            {**request, "settingsRevision": True},
+            {**request, "rule": {**request["rule"], "application": "mail"}},
+            {**request, "token": {**token, "revision": 0}},
+        ):
+            result = await self.ask("sessionGlossaryAdd", invalid)
+            self.assertFalse(result["saved"])
+            self.assertEqual(result["code"], "invalid-session-glossary")
+        await self.send(
+            {
+                "event": "sessionGlossaryFocus",
+                "data": {"formId": request["formId"], "token": token, "ime": "Clear"},
+            }
+        )
+        self.assertEqual((await self.ask("sessionGlossaryAdd", request))["code"], "glossary-stale")
+        await self.send({"event": "sessionGlossaryClose", "data": request["formId"]})
+        self.assertEqual(await self.ask("getGlossarySettings"), before)
+        self.assertFalse((self.home / "config/settings.json").exists())
+
+    async def seed_translation_preferences(self):
+        await self.asyncTearDown()
+        settings_file = self.home / "config/settings.json"
+        settings_file.parent.mkdir(exist_ok=True)
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "Styles": {
+                        "Default": "formal",
+                        "Applications": {"editor": "natural", "mail": "formal"},
+                    },
+                    "Glossary": {
+                        "Version": 1,
+                        "Rules": [
+                            {"SourceTerm": "TypeLay", "TargetTerm": "TypeLay"},
+                            {
+                                "SourceTerm": "projet",
+                                "TargetTerm": "项目",
+                                "SourceLanguage": "fr",
+                                "TargetLanguage": "zh",
+                            },
+                        ],
+                    },
+                    "ExcludedApplications": ["private-editor"],
+                }
+            )
+        )
+        self.events.clear()
+        await self.start_host()
+        return settings_file
+
+    @staticmethod
+    def translation_request(revision, **payload):
+        return {
+            "session": str(uuid.uuid4()),
+            "request": 1,
+            "expectedSettingsRevision": revision,
+            **payload,
+        }
+
+    async def test_saved_translation_preferences_recover_offline_without_opening_additions(self):
+        settings_file = await self.seed_translation_preferences()
+        style = await self.ask("getStyleSettings")
+        self.assertFalse(style["isReleased"])
+        self.assertTrue(style["canReset"])
+        self.assertEqual(style["savedPreferences"]["default"], "Formal")
+        self.assertEqual(
+            [item["application"] for item in style["applications"]], ["editor", "mail"]
+        )
+        self.assertTrue(all(item["removal"]["canRemove"] for item in style["applications"]))
+        glossary = await self.ask("getGlossarySettings")
+        rules = glossary["savedSnapshot"]["rules"]
+        before = settings_file.read_bytes()
+        rejected = await self.ask(
+            "removeStyleOverride",
+            self.translation_request(style["settingsRevision"], application="not-saved"),
+        )
+        self.assertFalse(rejected["saved"], "an unknown app identity must not remove a stored key")
+        self.assertEqual(settings_file.read_bytes(), before)
+        removed = await self.ask(
+            "removeStyleOverride",
+            self.translation_request(style["settingsRevision"], application="editor"),
+        )
+        self.assertTrue(removed["saved"])
+        state = await self.ask("getStyleSettings")
+        self.assertEqual(
+            state["savedPreferences"], {"default": "Formal", "applications": {"mail": "Formal"}}
+        )
+        self.assertEqual((await self.ask("getGlossarySettings"))["savedSnapshot"]["rules"], rules)
+        self.assertTrue(await self.ask("settings", {"theme": "dark"}))
+        self.assertNotIn("styles", self.latest("settings"))
+        self.assertNotIn("glossary", self.latest("settings"))
+        self.assertEqual(
+            (await self.ask("getStyleSettings"))["savedPreferences"], state["savedPreferences"]
+        )
+        state = await self.ask("getStyleSettings")
+        reset = await self.ask(
+            "resetTranslationStyle", self.translation_request(state["settingsRevision"])
+        )
+        self.assertTrue(reset["saved"])
+        self.assertIsNone((await self.ask("getStyleSettings"))["savedPreferences"])
+        glossary = await self.ask("getGlossarySettings", [rules[1]])
+        self.assertTrue(glossary["canSave"])
+        self.assertFalse(glossary["isReleased"])
+        result = await self.ask(
+            "changeGlossary",
+            self.translation_request(glossary["settingsRevision"], rules=[rules[1]]),
+        )
+        self.assertTrue(result["saved"])
+        self.assertEqual(
+            (await self.ask("getGlossarySettings"))["savedSnapshot"]["rules"], [rules[1]]
+        )
+        saved = json.loads(settings_file.read_text())
+        self.assertNotIn("Styles", saved)
+        self.assertEqual(saved["Glossary"]["Rules"][0]["SourceLanguage"], "fr")
+        self.assertEqual(saved["Theme"], "dark")
+
+    async def test_translation_recovery_conflicts_invalid_fields_and_failed_write_leave_preferences(
+        self,
+    ):
+        settings_file = await self.seed_translation_preferences()
+        state = await self.ask("getGlossarySettings")
+        rules = state["savedSnapshot"]["rules"]
+        draft = self.translation_request(state["settingsRevision"], rules=[rules[0]])
+        self.assertTrue(await self.ask("settings", {"theme": "dark"}))
+        before = settings_file.read_bytes()
+        stale = await self.ask("changeGlossary", draft)
+        self.assertEqual(stale, {"saved": False, "code": "glossary-stale"})
+        state = await self.ask("getGlossarySettings")
+        draft["expectedSettingsRevision"] = state["settingsRevision"]
+        for payload in (
+            {**draft, "session": ""},
+            {**draft, "request": "1"},
+            {**draft, "request": 0},
+            {**draft, "token": {}},
+            {**draft, "expectedSettingsRevision": -1},
+        ):
+            self.assertEqual(
+                await self.ask("changeGlossary", payload),
+                {"saved": False, "code": "invalid-translation-settings"},
+            )
+        altered = [{**rules[0], "targetTerm": "altered"}]
+        self.assertFalse((await self.ask("getGlossarySettings", altered))["canSave"])
+        self.assertEqual(
+            await self.ask("changeGlossary", {**draft, "rules": altered}),
+            {"saved": False, "code": "glossary-not-released"},
+        )
+        obstruction = settings_file.with_suffix(".json.tmp")
+        obstruction.mkdir()
+        self.assertEqual(
+            await self.ask("changeGlossary", draft),
+            {"saved": False, "code": "glossary-save-failed"},
+        )
+        self.assertEqual(settings_file.read_bytes(), before)
+        self.assertEqual((await self.ask("getGlossarySettings"))["savedSnapshot"]["rules"], rules)
+        obstruction.rmdir()
+        self.assertTrue((await self.ask("changeGlossary", draft))["saved"])
+        self.assertEqual(
+            (await self.ask("getGlossarySettings"))["savedSnapshot"]["rules"], [rules[0]]
+        )
+
+    async def test_translation_cancel_during_retirement_is_exact_and_prevents_late_commit(self):
+        settings_file = await self.seed_translation_preferences()
+        for operation, payload in (
+            ("resetTranslationStyle", {}),
+            ("removeStyleOverride", {"application": "editor"}),
+            ("changeGlossary", {"rules": []}),
+        ):
+            with self.subTest(operation=operation):
+                binding = await self.bind_automatic_practice()
+                self.sequence += 1
+                end_id = self.sequence
+                await self.send(
+                    {"id": end_id, "op": "endAutomaticPractice", "data": binding["runId"]}
+                )
+                retirement = await self.receive_until(
+                    lambda item: item.get("op") == "retireAutomaticPractice"
+                )
+                state = await self.ask("getStyleSettings")
+                before = settings_file.read_bytes()
+                request = self.translation_request(state["settingsRevision"], **payload)
+                self.sequence += 1
+                save_id = self.sequence
+                await self.send({"id": save_id, "op": operation, "data": request})
+                await self.ask("settingsDraft")
+                await self.send(
+                    {
+                        "event": "cancelTranslationSettings",
+                        "data": {"session": request["session"], "request": request["request"]},
+                    }
+                )
+                # Drains the real owner loop while the dedicated save awaits ACK.
+                await self.ask("settingsDraft")
+                await self.send({"reply": retirement["id"], "data": True})
+                replies = {}
+                while len(replies) < 2:
+                    reply = await self.receive_until(lambda item: "reply" in item)
+                    replies[reply["reply"]] = reply["data"]
+                self.assertTrue(replies[end_id])
+                self.assertFalse(replies[save_id]["saved"])
+                self.assertIn(replies[save_id]["code"], ("style-canceled", "glossary-canceled"))
+                self.assertEqual(settings_file.read_bytes(), before)
+
+    async def test_wrong_translation_cancel_and_late_cancel_do_not_undo_confirmed_save(self):
+        settings_file = await self.seed_translation_preferences()
+        binding = await self.bind_automatic_practice()
+        self.sequence += 1
+        end_id = self.sequence
+        await self.send({"id": end_id, "op": "endAutomaticPractice", "data": binding["runId"]})
+        retirement = await self.receive_until(
+            lambda item: item.get("op") == "retireAutomaticPractice"
+        )
+        state = await self.ask("getStyleSettings")
+        request = self.translation_request(state["settingsRevision"])
+        self.sequence += 1
+        save_id = self.sequence
+        await self.send({"id": save_id, "op": "resetTranslationStyle", "data": request})
+        for cancellation in (
+            {"session": str(uuid.uuid4()), "request": request["request"]},
+            {"session": request["session"], "request": request["request"] + 1},
+        ):
+            await self.send({"event": "cancelTranslationSettings", "data": cancellation})
+        await self.ask("settingsDraft")
+        await self.send({"reply": retirement["id"], "data": True})
+        replies = {}
+        while len(replies) < 2:
+            reply = await self.receive_until(lambda item: "reply" in item)
+            replies[reply["reply"]] = reply["data"]
+        self.assertTrue(replies[end_id])
+        self.assertTrue(replies[save_id]["saved"])
+        saved = settings_file.read_bytes()
+        await self.send(
+            {
+                "event": "cancelTranslationSettings",
+                "data": {"session": request["session"], "request": request["request"]},
+            }
+        )
+        await self.ask("settingsDraft")
+        self.assertEqual(settings_file.read_bytes(), saved)
+        self.assertIsNone((await self.ask("getStyleSettings"))["savedPreferences"])
+
     @staticmethod
     def draft(accept="F7", exit_key="F8"):
         return {
@@ -1595,7 +1935,7 @@ while True:
             {"target": "auto"},
             {"source": "fr", "target": "en"},
             {"source": "en", "target": "fr"},
-            {"source": "unknown", "target": "unknown"},
+            {"source": "xx", "target": "xx"},
             {},
         ):
             with self.subTest(patch=patch):
@@ -1610,6 +1950,14 @@ while True:
         self.assertIs(reply["data"], False)
         self.assertEqual(settings_file.stat().st_mtime_ns, before)
         self.assertEqual(self.events, [])
+
+    async def test_tray_preserves_a_known_same_language_choice_offline(self):
+        self.assertTrue(await self.ask("traySettings", {"source": "fr", "target": "fr"}))
+        self.assertEqual(self.latest("settings")["source"], "fr")
+        self.assertEqual(self.latest("settings")["target"], "fr")
+        self.assertFalse(self.latest("status")["modelReady"])
+        saved = json.loads((self.home / "config/settings.json").read_text())
+        self.assertEqual((saved["Source"], saved["Target"]), ("fr", "fr"))
 
     async def test_support_summary_crosses_the_host_pipe_without_losing_failure_reason(self):
         fact = {

@@ -1,9 +1,10 @@
-"""The fixed Hy ABI3 CPU model, owned once per worker for twelve directions."""
+"""The fixed Hy ABI5 CPU model, owned once per worker for twelve directions."""
 
 from __future__ import annotations
 
 import ctypes
 import os
+import sys
 import time
 
 from .engine import EngineError
@@ -14,7 +15,17 @@ from .protocol import valid_text
 
 MAX_BYTES = 8192
 DIRECTIONS = {identity: number for number, identity in enumerate(DIRECTION_IDS, 1)}
+STYLES = {"natural": 1, "formal": 2}
 CANCEL = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p)
+
+
+class Term(ctypes.Structure):
+    _fields_ = [
+        ("source_term", ctypes.c_char_p),
+        ("source_length", ctypes.c_uint32),
+        ("target_term", ctypes.c_char_p),
+        ("target_length", ctypes.c_uint32),
+    ]
 
 
 class Metrics(ctypes.Structure):
@@ -49,17 +60,22 @@ class HyModel:
         self._lib = None
         self._handle = ctypes.c_void_p()
         try:
-            self._loader = LinuxRuntime(verified)
+            if sys.platform == "win32":
+                from .hy_cpu_windows import WindowsRuntime
+
+                self._loader = WindowsRuntime(verified)
+            else:
+                self._loader = LinuxRuntime(verified)
             selected = self._loader.select_cpu_backend()
             self._lib = self._loader.load_adapter()
-            self._lib.hy_open_v3.argtypes = [
+            self._lib.hy_open_v5.argtypes = [
                 ctypes.c_char_p,
                 ctypes.c_char_p,
                 ctypes.POINTER(ctypes.c_void_p),
                 ctypes.c_void_p,
                 ctypes.c_uint32,
             ]
-            self._lib.hy_open_v3.restype = ctypes.c_int32
+            self._lib.hy_open_v5.restype = ctypes.c_int32
             self._lib.hy_close.argtypes = [ctypes.c_void_p]
             self._lib.hy_close.restype = None
             self._lib.hy_translate.argtypes = [
@@ -77,8 +93,21 @@ class HyModel:
                 ctypes.c_uint32,
             ]
             self._lib.hy_translate.restype = ctypes.c_int32
+            self._lib.hy_translate_styled_v5.argtypes = [
+                *self._lib.hy_translate.argtypes[:2],
+                ctypes.c_uint32,
+                *self._lib.hy_translate.argtypes[2:],
+            ]
+            self._lib.hy_translate_styled_v5.restype = ctypes.c_int32
+            self._lib.hy_translate_glossary_v5.argtypes = [
+                *self._lib.hy_translate.argtypes[:2],
+                ctypes.POINTER(Term),
+                ctypes.c_uint32,
+                *self._lib.hy_translate.argtypes[2:],
+            ]
+            self._lib.hy_translate_glossary_v5.restype = ctypes.c_int32
             error = ctypes.create_string_buffer(512)
-            code = self._lib.hy_open_v3(
+            code = self._lib.hy_open_v5(
                 os.fsencode(selected),
                 os.fsencode(verified["model_path"]),
                 ctypes.byref(self._handle),
@@ -108,7 +137,9 @@ class HyModel:
                 self._loader.close()
                 self._loader = None
 
-    def translate(self, text: str, direction: int, deadline: float) -> str:
+    def translate(
+        self, text: str, direction: int, deadline: float, style: int | None = None, terms=()
+    ) -> str:
         if time.monotonic() >= deadline:
             raise EngineError("request-timeout")
         source = text.encode("utf-8", "strict")
@@ -124,9 +155,17 @@ class HyModel:
             except Exception:
                 return 1
 
-        code = self._lib.hy_translate(
-            self._handle,
-            direction,
+        translate = self._lib.hy_translate if style is None else self._lib.hy_translate_styled_v5
+        prefix = (self._handle, direction) if style is None else (self._handle, direction, style)
+        if terms:
+            if style is not None:
+                raise EngineError("glossary-combination-unavailable")
+            encoded = [(a.encode("utf-8", "strict"), b.encode("utf-8", "strict")) for a, b in terms]
+            pairs = (Term * len(encoded))(*(Term(a, len(a), b, len(b)) for a, b in encoded))
+            translate = self._lib.hy_translate_glossary_v5
+            prefix = (self._handle, direction, pairs, len(pairs))
+        code = translate(
+            *prefix,
             source,
             len(source),
             output,
@@ -171,19 +210,31 @@ class HyDirection:
     def __init__(self, model: HyModel, direction: int):
         self._model, self._direction = model, direction
 
-    def request(self, original: str, deadline: float):
+    def request(self, original: str, deadline: float, style: str | None = None):
+        if style is not None and (type(style) is not str or style not in STYLES):
+            raise EngineError("invalid-request")
         # Bound the entire input before protected fragments are split. Derive no
         # replacement source here: the ABI applies CRLF -> LF only per segment.
         if len(original.encode("utf-8", "strict")) > MAX_BYTES:
             raise EngineError("hy-input-too-long")
         if "\r" in original.replace("\r\n", "\n"):
             raise EngineError("hy-literal-unsafe")
-        return HyRequest(self._model, self._direction, deadline)
+        return HyRequest(
+            self._model, self._direction, deadline, STYLES[style] if style is not None else None
+        )
 
 
 class HyRequest:
-    def __init__(self, model: HyModel, direction: int, deadline: float):
-        self._model, self._direction, self._deadline = model, direction, deadline
+    def __init__(self, model: HyModel, direction: int, deadline: float, style: int | None):
+        self._model, self._direction, self._deadline, self._style = (
+            model,
+            direction,
+            deadline,
+            style,
+        )
 
     def translate(self, text: str) -> str:
-        return self._model.translate(text, self._direction, self._deadline)
+        return self._model.translate(text, self._direction, self._deadline, self._style)
+
+    def translate_glossary(self, text: str, terms) -> str:
+        return self._model.translate(text, self._direction, self._deadline, self._style, terms)

@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using TypeLay.Core;
 
 namespace TypeLay.Runtime;
@@ -8,10 +9,12 @@ namespace TypeLay.Runtime;
 // sequences increase across all targets in one monitor/configuration generation;
 // a reconnect must create a new generation before resetting its sequence. Zero
 // preserves legacy adapters without asserting ordering or duplicate protection.
+// Application is metadata from the accepted capture, never a target or write authority.
 public sealed record InputNotice(string Kind, AcceptancePermit? Permit = null, long AcceptedAtMs = 0,
     long UserEpoch = 0, long ForegroundEpoch = 0, InputSnapshot? Source = null, Guid CommandGeneration = default,
     WriteReceipt? CompletedReceipt = null, Denial Rejection = Denial.None, long CommandSequence = 0, TargetId? Target = null, long SessionRevision = 0,
-    Guid? PracticeRunId = null, Guid? PracticeConnectionId = null, CommandCaptureEvidence? CommandCapture = null);
+    Guid? PracticeRunId = null, Guid? PracticeConnectionId = null, CommandCaptureEvidence? CommandCapture = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Application = null);
 // Only an explicit command's refusal, cancellation or failure is broadcast.
 // Revision identifies every command, including legacy sequence zero. Hosts may
 // use it for queued UI de-duplication; messages and codes never contain field text.
@@ -27,7 +30,8 @@ public sealed record SessionShortcutAcknowledgement(TargetId Target, Guid Genera
 public sealed record InputLease(InputSnapshot Source, long UserEpoch, long ForegroundEpoch, bool EscapeAllowed,
     Guid CommandGeneration = default, long SessionRevision = 0,
     Guid? PracticeRunId = null, Guid? PracticeConnectionId = null);
-public sealed record ShortcutLease(InputSnapshot Source, long ContentEpoch, long ForegroundEpoch);
+public sealed record ShortcutLease(InputSnapshot Source, long ContentEpoch, long ForegroundEpoch,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Application = null);
 
 // Observation epochs and timestamps belong to the platform observation domain. A platform
 // must map its clock into the session loop's monotonic milliseconds before returning a capture.

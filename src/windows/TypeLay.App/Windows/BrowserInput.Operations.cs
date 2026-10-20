@@ -133,7 +133,7 @@ internal sealed partial class BrowserInput
             rejection = ObservationReason.AcknowledgementNotCurrent;
         else if (!lease.Source.DirectWriteSupported)
             rejection = ObservationReason.DirectWriteUnsupported;
-        else if (_editorFocused)
+        else if (_editorFocused || GlossaryFocus is not null)
             rejection = ObservationReason.EditorFocused;
         if (rejection != ObservationReason.Ready)
         {
@@ -561,7 +561,7 @@ internal sealed partial class BrowserInput
         _commandOwner == owner && owner.Active && owner.RetiredAt == long.MaxValue
         && owner.FocusRevision == focusRevision && _hook.ForegroundEpoch == foregroundEpoch
         && owner.Generation == _configurationGeneration && OwnerForeground(owner)
-        && _commandsEnabled && _sessionEnabled && !_editorFocused && _editorTransition is null
+        && _commandsEnabled && _sessionEnabled && !_editorFocused && GlossaryFocus is null && _editorTransition is null
         && _commandExcluded is not null && owner.Excluded.SequenceEqual(_commandExcluded);
     private static void InvalidateCommandPolicy(CommandOwner owner)
     {
@@ -773,7 +773,7 @@ internal sealed partial class BrowserInput
         if (kind == "direct")
             _frozen.TryAdd((target, capturedAt), new(record, owner.Generation, sequence, t0 + 212000));
         _notices.Enqueue((new(kind!, AcceptedAtMs: t0, UserEpoch: epochs.User, ForegroundEpoch: epochs.Foreground,
-            Source: source, CommandGeneration: owner.Generation, CommandSequence: sequence, CommandCapture: evidence),
+            Source: source, CommandGeneration: owner.Generation, CommandSequence: sequence, CommandCapture: evidence, Application: "chrome"),
             t0 + Limits.ObservationMaxAgeMs));
         TraceCommandPath(CommandPathStage.Ingress, CommandPathReason.Queued, kind, hasNative: true, ageMs: now - t0);
     }
@@ -852,17 +852,19 @@ internal sealed partial class BrowserInput
         if (token.Target != original.Target || token.CommandGeneration != _hook.CommandGeneration
             || GetFocus(original.Target) != FocusMember.Overlay || !ForegroundCurrent(original))
             return null;
+        var glossary = GlossaryFocus;
         var description = await original.Peer.RequestAsync("describe", new
         {
             target = original.Target.Value
         });
-        if (!Approved(original.Peer, description, excluded, out var authority, out _, out var target, out _)
+        if (!Approved(original.Peer, description, excluded, out var authority, out _, out var target, out _, glossary: glossary)
             || target != original.Target || description!.Route != original.Route
             || token.CommandGeneration != _hook.CommandGeneration || !ForegroundCurrent(original)
             || GetFocus(original.Target) != FocusMember.Overlay
             || String(authority, "metadataKey") != String(original.Authority, "metadataKey")
             || Number(authority, "contentRevision") != Number(original.Authority, "contentRevision")
-            || Number(authority, "inputRevision") != Number(original.Authority, "inputRevision"))
+            || Number(authority, "inputRevision") != Number(original.Authority, "inputRevision")
+            || glossary is not null && !GlossaryEvidence(description.Data, glossary))
             return null;
         return authority; // Metadata-only UI clock evidence. Never a new source snapshot.
     }
@@ -931,6 +933,7 @@ internal sealed partial class BrowserInput
             if (changed && _current?.Peer == peer)
             {
                 _editorFocused = false;
+                _glossaryFocus = null;
                 _hook.NotifyBrowserChange(false, true);
                 Revoke(true);
                 TraceObservation(ObservationStage.Lifecycle, ObservationReason.DocumentFocusChanged);
@@ -1060,6 +1063,8 @@ internal sealed partial class BrowserInput
         _editorTransition = null;
         _editorToken = null;
         _editorFocused = false;
+        _glossaryEntry = null;
+        _glossaryFocus = null;
     }
     internal void EditorFocus(SessionViewToken token, bool focused)
     {
@@ -1081,7 +1086,66 @@ internal sealed partial class BrowserInput
             return;
         if (_editorFocused != focused && _commandOwner is { } owner)
             InvalidateCommandPolicy(owner);
+        // Only the original editor's actual focus event uses this route. The
+        // auxiliary form reports its independent role and never sends true here.
+        if (focused)
+            _glossaryFocus = null;
         _editorFocused = focused;
         _hook.NotifyBrowserChange(false, false, source: false);
     }
+    internal bool OpenGlossaryEntry(SessionGlossaryEntry entry)
+    {
+        if (_glossaryEntry is not null || entry.FormId == Guid.Empty || _editorToken != entry.Token
+            || GetFocus(entry.Token.Target) != FocusMember.Overlay)
+            return false;
+        _glossaryEntry = entry;
+        return true;
+    }
+    internal void CloseGlossaryEntry(Guid formId)
+    {
+        if (_glossaryEntry?.FormId != formId)
+            return;
+        // A user close is sent after the page's actual editor focus event.
+        // Clearing the auxiliary role never manufactures or restores that event.
+        _glossaryEntry = null;
+        _glossaryFocus = null;
+    }
+    internal void SetGlossaryFocus(SessionGlossaryFocus? focus)
+    {
+        if (focus is not null && (_glossaryEntry is not { } entry || entry.FormId != focus.FormId
+            || entry.Token != focus.Token || !Enum.IsDefined(focus.Ime)
+            || _current is not { } current || current.Target != focus.Token.Target || !ForegroundCurrent(current)))
+            return;
+        if (_glossaryFocus == focus)
+            return;
+        _glossaryFocus = focus;
+        if (focus is not null)
+            _editorFocused = false;
+        if (_commandOwner is { } owner)
+            InvalidateCommandPolicy(owner);
+        _hook.NotifyBrowserChange(false, false, source: false);
+    }
+    private bool GlossaryEvidence(JsonElement data, SessionGlossaryFocus expected)
+    {
+        if (GlossaryFocus != expected || _glossaryEntry?.FormId != expected.FormId || _glossaryEntry.Token != expected.Token
+            || MatchingGlossaryFocus(data, expected) is not { } current)
+            return false;
+        _glossaryFocus = current;
+        return true;
+    }
+    private static SessionGlossaryFocus? MatchingGlossaryFocus(JsonElement data, SessionGlossaryFocus expected)
+    {
+        if (!data.TryGetProperty("glossaryFocus", out var raw))
+            return null;
+        try
+        {
+            var current = raw.Deserialize<SessionGlossaryFocus>(BrowserServer.Json);
+            if (current is null || current.FormId != expected.FormId || current.Token != expected.Token
+                || !Enum.IsDefined(current.Ime))
+                return null;
+            return current;
+        }
+        catch (JsonException) { return null; }
+    }
+
 }

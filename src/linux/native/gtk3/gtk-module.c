@@ -116,6 +116,7 @@ JsonObject *tl_session_bindings(Target *target) {
     json_object_set_string_member(bindings, "exit", tl_string(shortcut_configuration, "exit"));
     GtkWidget *top = target && !target->dead ? gtk_widget_get_toplevel(target->widget) : NULL;
     gboolean source = initialized && target && !target->dead && GTK_IS_WINDOW(top)
+        && !tl_overlay_auxiliary_active(target)
         && boolean(shortcut_configuration, "sessionEnabled")
         && (!control_pair() || tl_prefix_supported(target));
     json_object_set_boolean_member(bindings, "sourceReady", source);
@@ -1401,6 +1402,12 @@ gboolean tl_dispatch_key(GdkEvent *event) {
     held_keys[empty].keyval = keyval;
     held_keys[empty].sequence = sequence;
     held_keys[empty].consumed = FALSE;
+    if (tl_overlay_auxiliary_key(keyval, state)) {
+        if (held_keys[empty].keycode == keycode && held_keys[empty].sequence == sequence)
+            held_keys[empty].consumed = TRUE;
+        trace_session_key(keyval, "press", TRUE);
+        return TRUE;
+    }
     if (keyval == GDK_KEY_Control_L || keyval == GDK_KEY_Control_R) {
         tl_overlay_control_cancel();
         gboolean single_control = TRUE;

@@ -15,6 +15,225 @@ namespace TypeLay.App.Tests;
 
 public sealed class ModelInstallerTests
 {
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"schema\":4}")]
+    [InlineData("{\"schema\":null}")]
+    [InlineData("{\"schema\":3,\"packages\":null}")]
+    public async Task LegacyRetryCannotOverwriteAnUnknownOrDamagedPackageInventory(string inventory)
+    {
+        using var files = new SetupFiles();
+        string marker = Path.Combine(files.Root, "models", "installed.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(marker)!);
+        File.WriteAllText(marker, inventory);
+        var network = new ResponseHandler(_ => throw new InvalidOperationException("must-not-download"));
+        await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(network)
+            .PrepareAsync(NoProgress, TestContext.Current.CancellationToken, repair: true));
+        Assert.Empty(network.Requests);
+        Assert.Equal(inventory, File.ReadAllText(marker));
+        Assert.False(Directory.Exists(Path.Combine(files.Root, "components")));
+    }
+
+    [Fact]
+    public async Task PackageBytePreparationDoesNotRunOnTheCallingSynchronizationContext()
+    {
+        using var files = new SetupFiles();
+        var caller = new SynchronizationContext();
+        var original = SynchronizationContext.Current;
+        var observed = new List<SynchronizationContext?>();
+        var progress = new SetupProgressSink(_ => observed.Add(SynchronizationContext.Current));
+        Task<ModelInstallationStore.PreparedInstallation> preparation;
+        try
+        {
+            SynchronizationContext.SetSynchronizationContext(caller);
+            preparation = files.Installer(files.Responses(ModelArchive)).PreparePackagesAsync(new(1,
+                ModelPackageOperation.Install, ["argos-zh-en"], ["argos-zh-en"], null), progress, TestContext.Current.CancellationToken);
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(original); }
+        using var prepared = await preparation;
+        Assert.NotEmpty(observed);
+        Assert.DoesNotContain(caller, observed);
+        Assert.True(File.Exists(Path.Combine(prepared.Paths.Models, "packages", "argos-zh-en", "1.9", "model", "model.bin")));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FailedPackagePreparationReportsRetainedBytesWithoutLosingCancellation(bool cancelOperation)
+    {
+        using var files = new SetupFiles();
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        FileStream? use = null;
+        string? candidate = null;
+        var installer = files.Installer(new ResponseHandler(_ => throw new InvalidOperationException("must-not-download")));
+        var progress = new SetupProgressSink(_ =>
+        {
+            candidate = Assert.Single(Directory.GetDirectories(Path.Combine(files.Root, "components")));
+            use = new FileStream(Path.Combine(candidate, ModelInstallationStore.ModelUseLockName),
+                FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
+            if (cancelOperation)
+            {
+                cancel.Cancel();
+                cancel.Token.ThrowIfCancellationRequested();
+            }
+            throw new IOException("controlled-preparation-failure");
+        });
+        try
+        {
+            var prepare = installer.PreparePackagesAsync(new(1, ModelPackageOperation.Install,
+                ["argos-zh-en"], ["argos-zh-en"], null), progress, cancel.Token);
+            if (cancelOperation)
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => prepare);
+            else
+                await Assert.ThrowsAsync<ModelSetupException>(() => prepare);
+            Assert.NotNull(candidate);
+            Assert.True(Directory.Exists(candidate));
+            Assert.True(installer.CleanupPending);
+            Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
+        }
+        finally { use?.Dispose(); }
+    }
+
+    [Fact]
+    public async Task FirstPreparationCanRetryAfterCancellationLeavesOnlyAnEmptyComponentsDirectory()
+    {
+        using var files = new SetupFiles();
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var waiting = new WaitingHandler();
+        var first = files.Installer(waiting).PrepareAsync(NoProgress, cancel.Token);
+        await waiting.Started.Task.WaitAsync(TestContext.Current.CancellationToken);
+        cancel.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+        Assert.Empty(Directory.GetFileSystemEntries(Path.Combine(files.Root, "components")));
+        var retry = new ResponseHandler(_ => throw new HttpRequestException("controlled-offline"));
+        var failure = await Assert.ThrowsAsync<ModelSetupException>(() =>
+            files.Installer(retry).PrepareAsync(NoProgress, TestContext.Current.CancellationToken));
+        Assert.NotEmpty(retry.Requests);
+        Assert.Equal(SetupFailureCategory.Network, failure.Category);
+        Assert.Equal(ModelSetupStage.Runtime, failure.Stage);
+    }
+
+    [Fact]
+    public async Task LegacySingleDirectionMigrationKeepsOnlyItsActualPackageBeforeAddingTheOther()
+    {
+        using var files = new SetupFiles();
+        var store = new ModelInstallationStore(files.Root, Path.Combine(files.Root, "worker.py"));
+        using (var first = await files.Installer(files.Responses(ModelArchive))
+            .PreparePackagesAsync(new(1, ModelPackageOperation.Install, ["argos-zh-en"], ["argos-zh-en"], null), NoProgress, TestContext.Current.CancellationToken))
+            first.PublishConfirmed();
+        string models = store.InitialPaths().Models;
+        using (var current = JsonDocument.Parse(File.ReadAllText(Path.Combine(models, "installed.json"))))
+        {
+            var filesList = current.RootElement.GetProperty("packages")[0].GetProperty("files").EnumerateArray().Select(item => new
+            {
+                path = "zh_en/" + item.GetProperty("path").GetString(),
+                sha256 = item.GetProperty("sha256").GetString()
+            }).ToArray();
+            File.WriteAllText(Path.Combine(models, "installed.json"), JsonSerializer.Serialize(new
+            {
+                schema = 2,
+                directions = new[] { "zh_en" },
+                files = filesList
+            }));
+        }
+        Directory.Move(Path.Combine(models, "packages", "argos-zh-en", "1.9"), Path.Combine(models, "zh_en"));
+        Directory.Delete(Path.Combine(models, "packages"), true);
+        var migrated = store.ReadInstallationState();
+        Assert.True(migrated.InventoryKnown);
+        Assert.Equal("argos-zh-en", Assert.Single(migrated.InstalledPackages).Package.Id);
+        Assert.Equal("zh_en", Assert.Single(Assert.Single(migrated.CurrentPackages).Directions).Id);
+        using var added = await files.Installer(files.Responses(ModelArchive))
+            .PreparePackagesAsync(new(1, ModelPackageOperation.Install, ["argos-en-zh"], ["argos-en-zh"], migrated.Generation), NoProgress, TestContext.Current.CancellationToken);
+        added.PublishConfirmed();
+        Assert.Equal(2, store.ReadInstallationState().InstalledPackages.Count);
+        Assert.Equal("argos-en-zh", Assert.Single(store.ReadInstallationState().CurrentPackages).Package.Id);
+        Assert.Equal("controlled model", File.ReadAllText(Path.Combine(added.Paths.Models, "packages", "argos-zh-en", "1.9", "model", "model.bin")));
+    }
+
+    [Fact]
+    public async Task PackageInstallSelectAndRemovePreserveInactiveBytesWithoutStartingOrDownloadingOffline()
+    {
+        using var files = new SetupFiles();
+        var store = new ModelInstallationStore(files.Root, Path.Combine(files.Root, "worker.py"));
+        // Tiny authenticated archives exercise preparation and inventory, never model readiness.
+        using (var first = await files.Installer(files.Responses(ModelArchive),
+            startProcess: _ => throw new InvalidOperationException("preparation-must-not-start-worker"))
+            .PreparePackagesAsync(new(1, ModelPackageOperation.Install, ["argos-zh-en"], ["argos-zh-en"], null),
+                NoProgress, TestContext.Current.CancellationToken))
+            Assert.Equal(ModelPublicationOutcome.Confirmed, first.PublishConfirmed());
+        string firstGeneration = store.ReadInstallationState().Generation!;
+        using (var second = await files.Installer(files.Responses(ModelArchive))
+            .PreparePackagesAsync(new(1, ModelPackageOperation.Install, ["argos-en-zh"], ["argos-en-zh"], firstGeneration),
+                NoProgress, TestContext.Current.CancellationToken))
+            Assert.Equal(ModelPublicationOutcome.Confirmed, second.PublishConfirmed());
+        var state = store.ReadInstallationState();
+        Assert.Equal(new[] { "argos-zh-en", "argos-en-zh" }, state.InstalledPackages.Select(item => item.Package.Id));
+        Assert.Equal("argos-en-zh", Assert.Single(state.CurrentPackages).Package.Id);
+        using (var select = await files.Installer(new ResponseHandler(_ => throw new InvalidOperationException("offline-no-network")))
+            .PreparePackagesAsync(new(1, ModelPackageOperation.Select, [], ["argos-zh-en"], state.Generation),
+                NoProgress, TestContext.Current.CancellationToken))
+        {
+            Assert.Equal("controlled model", File.ReadAllText(Path.Combine(select.Paths.Models, "packages", "argos-zh-en", "1.9", "model", "model.bin")));
+            Assert.True(File.Exists(Path.Combine(select.Paths.Models, "packages", "argos-en-zh", "1.9", "model", "model.bin")));
+            Assert.Equal(ModelPublicationOutcome.Confirmed, select.PublishConfirmed());
+        }
+        state = store.ReadInstallationState();
+        using (var remove = await files.Installer(new ResponseHandler(_ => throw new InvalidOperationException("offline-no-network")))
+            .PreparePackagesAsync(new(1, ModelPackageOperation.Remove, ["argos-en-zh"], ["argos-zh-en"], state.Generation),
+                NoProgress, TestContext.Current.CancellationToken))
+        {
+            Assert.False(Directory.Exists(Path.Combine(remove.Paths.Models, "packages", "argos-en-zh")));
+            Assert.Equal(ModelPublicationOutcome.Confirmed, remove.PublishConfirmed());
+        }
+        Assert.Equal("argos-zh-en", Assert.Single(store.ReadInstallationState().InstalledPackages).Package.Id);
+        using var pointer = JsonDocument.Parse(File.ReadAllText(Path.Combine(files.Root, "components.json")));
+        Assert.Equal(JsonValueKind.Null, pointer.RootElement.GetProperty("previous").ValueKind);
+    }
+
+    [Fact]
+    public async Task PackageRepairKeepsSelectionAndLegacyEntryCannotEraseInventory()
+    {
+        using var files = new SetupFiles();
+        var store = new ModelInstallationStore(files.Root, Path.Combine(files.Root, "worker.py"));
+        using (var first = await files.Installer(files.Responses(ModelArchive))
+            .PreparePackagesAsync(new(1, ModelPackageOperation.Install, ["argos-zh-en"], ["argos-zh-en"], null), NoProgress, TestContext.Current.CancellationToken))
+            first.PublishConfirmed();
+        string before = File.ReadAllText(Path.Combine(files.Root, "components.json"));
+        await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(new ResponseHandler(_ => throw new InvalidOperationException("no-network")))
+            .PrepareAsync(NoProgress, TestContext.Current.CancellationToken));
+        Assert.Equal(before, File.ReadAllText(Path.Combine(files.Root, "components.json")));
+        using var repaired = await files.Installer(files.Responses(ModelArchive))
+            .PreparePackagesAsync(new(1, ModelPackageOperation.Repair, ["argos-zh-en"], ["argos-zh-en"], store.ReadInstallationState().Generation),
+                NoProgress, TestContext.Current.CancellationToken);
+        Assert.Equal(new[] { "zh_en" }, repaired.Directions);
+        repaired.PublishConfirmed();
+        Assert.Equal("argos-zh-en", Assert.Single(store.ReadInstallationState().CurrentPackages).Package.Id);
+    }
+
+    [Fact]
+    public async Task OfflinePackageChangeRejectsDamagedRuntimeAndStaleConfirmationBeforeNetwork()
+    {
+        using var files = new SetupFiles();
+        var store = new ModelInstallationStore(files.Root, Path.Combine(files.Root, "worker.py"));
+        using (var first = await files.Installer(files.Responses(ModelArchive))
+            .PreparePackagesAsync(new(1, ModelPackageOperation.Install, ["argos-zh-en"], ["argos-zh-en"], null), NoProgress, TestContext.Current.CancellationToken))
+            first.PublishConfirmed();
+        using (var second = await files.Installer(files.Responses(ModelArchive))
+            .PreparePackagesAsync(new(1, ModelPackageOperation.Install, ["argos-en-zh"], ["argos-en-zh"], store.ReadInstallationState().Generation),
+                NoProgress, TestContext.Current.CancellationToken))
+            second.PublishConfirmed();
+        var state = store.ReadInstallationState();
+        string before = File.ReadAllText(Path.Combine(files.Root, "components.json"));
+        File.AppendAllText(store.InitialPaths().Python, "damaged");
+        var failed = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(new ResponseHandler(_ => throw new InvalidOperationException("no-network")))
+            .PreparePackagesAsync(new(1, ModelPackageOperation.Select, [], ["argos-zh-en"], state.Generation), NoProgress, TestContext.Current.CancellationToken));
+        Assert.Equal(ModelSetupStage.Runtime, failed.Stage);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(files.Root, "components.json")));
+        var stale = await Assert.ThrowsAsync<InvalidDataException>(() => files.Installer(new ResponseHandler(_ => throw new InvalidOperationException("no-network")))
+            .PreparePackagesAsync(new(1, ModelPackageOperation.Select, [], ["argos-zh-en"], "legacy"), NoProgress, TestContext.Current.CancellationToken));
+        Assert.Equal("installation-changed", stale.Message);
+    }
+
     [Fact]
     public async Task FailedCpuCheckLeavesThePreviousRuntimeAndInventoryUntouched()
     {
