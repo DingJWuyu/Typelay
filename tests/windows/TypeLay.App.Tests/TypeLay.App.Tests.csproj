@@ -18,6 +18,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../support/BrowserWindows.cs" Link="BrowserWindows.cs" />
+    <Compile Include="../support/SettingsPackageActions.cs" Link="SettingsPackageActions.cs" />
   </ItemGroup>
   <Target Name="CopyProductionBrokerForDesktopTests" AfterTargets="Build">
     <ItemGroup>

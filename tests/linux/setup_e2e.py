@@ -524,6 +524,66 @@ class PackageInstallationTests(unittest.TestCase):
         self.assertTrue(setup.cleanup_packages(self.home, self.data, self.cache))
         self.assertFalse(cached.exists())
 
+    def test_single_direction_cleanup_keeps_referenced_archive_and_allows_same_bytes_again(self):
+        source = self.old / "models/packages/argos-zh-en/1.9"
+        source.rename(self.old / "models/zh_en")
+        shutil.rmtree(self.old / "models/packages")
+        marker = self.old / "models/installed.json"
+        marker.write_text(
+            json.dumps(
+                {
+                    "schema": 2,
+                    "directions": ["zh_en"],
+                    "files": [
+                        {"path": "zh_en/fixture", "sha256": hashlib.sha256(b"zh_en").hexdigest()}
+                    ],
+                }
+            )
+        )
+        (self.old / "activation.json").write_text(
+            json.dumps({"schema": 2, "previous": None, "directions": ["zh_en"]})
+        )
+        installed = marker.read_bytes()
+        download_cache = self.cache / "components"
+        download_cache.mkdir(parents=True)
+        archives = {
+            direction: download_cache / f"{direction}-1.9.argosmodel"
+            for direction in ("zh_en", "en_zh")
+        }
+        for direction, archive in archives.items():
+            archive.write_bytes(("inert-cache-" + direction).encode())
+            os.utime(archive, ns=(1_000_000_000, 1_000_000_000))
+
+        def identities():
+            return {
+                direction: (setup.digest(archive), archive.stat().st_mtime_ns)
+                for direction, archive in archives.items()
+            }
+
+        before = identities()
+        self.assertTrue(setup.cleanup_packages(self.home, self.data, self.cache))
+        self.assertEqual(setup.digest(archives["zh_en"]), before["zh_en"][0])
+        self.assertEqual(archives["zh_en"].stat().st_mtime_ns, before["zh_en"][1])
+        self.assertFalse(archives["en_zh"].exists())
+        requests = []
+
+        def open_response(request, timeout):
+            requests.append(request.full_url)
+            return Response(b"inert-cache-en_zh")
+
+        with patch.object(
+            setup.urllib.request, "build_opener", return_value=SimpleNamespace(open=open_response)
+        ):
+            setup.download(DIRECTIONS["zh_en"], download_cache)
+            setup.download(DIRECTIONS["en_zh"], download_cache)
+        self.assertEqual(requests, [DIRECTIONS["en_zh"].url])
+        after = identities()
+        self.assertEqual(after["zh_en"], before["zh_en"])
+        self.assertEqual(after["en_zh"][0], before["en_zh"][0])
+        self.assertNotEqual(after["en_zh"][1], before["en_zh"][1])
+        self.assertEqual(marker.read_bytes(), installed)
+        self.assertEqual((self.old / "models/zh_en/fixture").read_bytes(), b"zh_en")
+
     def test_schema_three_cannot_fall_back_to_legacy_full_repair(self):
         (self.old / "activation.json").unlink()
         with contextlib.redirect_stdout(io.StringIO()):

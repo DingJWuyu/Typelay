@@ -13,6 +13,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../../support/BrowserWindows.cs" Link="BrowserWindows.cs" />
+    <Compile Include="../../support/SettingsPackageActions.cs" Link="SettingsPackageActions.cs" />
   </ItemGroup>
   <Target Name="CopyProductionBrokerForContinuousCheck" AfterTargets="Build">
     <ItemGroup>

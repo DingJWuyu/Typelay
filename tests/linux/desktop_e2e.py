@@ -428,6 +428,9 @@ def verify_direction_installation(arguments, environment):
                     item("下载并安装本地翻译组件？")
                     activate(gettext.dgettext("gtk30", "_OK").replace("_", ""))
                     single = installed(["zh_en"], 2)
+                    assert cache_identity(archives["zh_en"]) == cached["zh_en"], (
+                        "single-direction preparation changed its referenced archive"
+                    )
                     result["singleDirections"] = ["zh_en"]
                     result["stage"] = "infer-single"
                     translated, same, missing = inference(
@@ -518,9 +521,22 @@ def verify_direction_installation(arguments, environment):
                             "",
                             sample,
                         )
-                    assert {
+                    result["stage"] = "verify-completed-cache"
+                    completed_cache = {
                         identity: cache_identity(path) for identity, path in archives.items()
-                    } == cached
+                    }
+                    # Confirmed single-direction activation may remove the unreferenced
+                    # en_zh cache. Completion can fetch the same bytes again, but must
+                    # preserve the already-referenced zh_en archive and both full hashes.
+                    assert completed_cache["zh_en"] == cached["zh_en"], (
+                        "direction completion changed its retained archive"
+                    )
+                    assert {key: value[0] for key, value in completed_cache.items()} == {
+                        key: value[0] for key, value in cached.items()
+                    }, "direction completion changed model archive contents"
+                    result["unreferencedModelArchiveIdentityChanged"] = (
+                        completed_cache["en_zh"] != cached["en_zh"]
+                    )
                     result["completedDirections"] = ["zh_en", "en_zh"]
                     assert control(paths, "quit") is True
                     assert process.wait(timeout=7) == 0
@@ -541,7 +557,8 @@ def verify_direction_installation(arguments, environment):
                 outcome="passed",
                 stage="complete",
                 writeAttempts=0,
-                modelArchivesUnchanged=True,
+                modelArchiveContentsUnchanged=True,
+                retainedModelArchiveUnchanged=True,
                 sourceFieldsExercised=False,
                 f10Exercised=False,
             )

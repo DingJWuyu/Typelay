@@ -8,6 +8,7 @@ using TypeLay.App;
 using TypeLay.Core;
 using TypeLay.Platform.Windows;
 using TypeLay.Runtime;
+using TypeLay.Windows.Testing;
 using N = TypeLay.Platform.Windows.NativeMethods;
 
 internal static partial class HyPackageCheck
@@ -487,15 +488,9 @@ internal static partial class HyPackageCheck
     private static async Task PackageActionAsync(Process app, AutomationElement settings, string package,
         ModelPackageOperation operation, Scene scene, CancellationToken ct)
     {
-        scene.Stage = "find-package-action";
-        AutomationElement? button = null;
-        await WaitAsync(async () => await UiAsync(() =>
-        {
-            button = Find(settings, AutomationElement.AutomationIdProperty, "ModelPackage_" + package + "_" + operation, ControlType.Button);
-            return button is not null && button.Current.IsEnabled;
-        }, ct), ct);
+        var button = await SettingsPackageActions.FindAsync(settings, package, operation, stage => scene.Stage = stage, ct);
         scene.Stage = "invoke-package-action";
-        Task invoke = Task.Run(() => ((InvokePattern)button!.GetCurrentPattern(InvokePattern.Pattern)).Invoke(), ct);
+        Task invoke = Task.Run(() => ((InvokePattern)button.GetCurrentPattern(InvokePattern.Pattern)).Invoke(), ct);
         AutomationElement? confirmation = null;
         scene.Stage = "confirm-package-action";
         await WaitAsync(async () => await UiAsync(() =>

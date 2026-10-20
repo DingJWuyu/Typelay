@@ -499,6 +499,40 @@ def run(arguments):
         def activate(name, *, package_control=False):
             node = wait(lambda: named(process.pid, name), "GTK package control missing: " + name)
 
+            def snapshot():
+                observed = []
+                ancestor = node
+                for _ in range(16):
+                    if ancestor is None:
+                        break
+                    ancestor.clear_cache()
+                    states = ancestor.get_state_set()
+                    value = {
+                        "role": ancestor.get_role_name(),
+                        "owned": ancestor.get_process_id() == process.pid,
+                        "states": {
+                            state: states.contains(getattr(Atspi.StateType, state))
+                            for state in (
+                                "VISIBLE",
+                                "SHOWING",
+                                "FOCUSED",
+                                "EXPANDED",
+                                "SENSITIVE",
+                                "ENABLED",
+                                "DEFUNCT",
+                            )
+                        },
+                    }
+                    component = ancestor.get_component_iface()
+                    if component is not None:
+                        area = Atspi.Component.get_extents(component, Atspi.CoordType.SCREEN)
+                        value["bounds"] = [area.x, area.y, area.width, area.height]
+                    observed.append(value)
+                    if ancestor.get_role() == Atspi.Role.FRAME:
+                        break
+                    ancestor = ancestor.get_parent()
+                return {"control": name, "ancestry": observed}
+
             def enabled():
                 node.clear_cache()
                 states = node.get_state_set()
@@ -511,21 +545,53 @@ def run(arguments):
                 )
 
             wait(enabled, "GTK package control not enabled: " + name)
+            visibility_deadline = time.monotonic() + min(30, remaining())
             if package_control:
                 # The ready view can collapse this section while publishing
                 # the new action. Observe that action before revealing it.
                 manager = wait(
                     lambda: named(process.pid, "本地翻译组件管理"), "package management missing"
                 )
+                manager.clear_cache()
                 if not manager.get_state_set().contains(Atspi.StateType.EXPANDED):
                     activate("本地翻译组件管理")
+
+                def expanded():
+                    manager.clear_cache()
+                    return manager.get_state_set().contains(Atspi.StateType.EXPANDED)
+
+                wait(
+                    expanded,
+                    "GTK package management did not finish expanding",
+                    visibility_deadline - time.monotonic(),
+                )
             assert Atspi.Component.grab_focus(node.get_component_iface()), name
 
             def showing():
                 node.clear_cache()
-                return node.get_state_set().contains(Atspi.StateType.SHOWING)
+                states = node.get_state_set()
+                return all(
+                    states.contains(value)
+                    for value in (
+                        Atspi.StateType.SHOWING,
+                        Atspi.StateType.FOCUSED,
+                        Atspi.StateType.SENSITIVE,
+                        Atspi.StateType.ENABLED,
+                    )
+                )
 
-            wait(showing, "GTK package control not visible after focus: " + name)
+            try:
+                wait(
+                    showing,
+                    "GTK package control not visible and focused: " + name,
+                    visibility_deadline - time.monotonic(),
+                )
+            except AssertionError:
+                try:
+                    report["failedControlObservation"] = snapshot()
+                except Exception:
+                    pass  # Diagnostics must not replace the original visibility failure.
+                raise
             assert Atspi.Action.do_action(node.get_action_iface(), 0), name
 
         def action(title, label):

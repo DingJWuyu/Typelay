@@ -17,6 +17,7 @@ using TypeLay.Core;
 using System.Windows.Media;
 using TypeLay.App;
 using TypeLay.Runtime;
+using TypeLay.Windows.Testing;
 using Xunit;
 
 namespace TypeLay.App.Tests;
@@ -24,6 +25,53 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
 {
+    [Fact]
+    public Task PackageActionsOpenTheCollapsedDetailsAndScrollIntoViewAfterNavigation() => desktop.RunAsync(async () =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-package-navigation-" + Guid.NewGuid().ToString("N"));
+        SettingsWindow? window = null;
+        try
+        {
+            var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
+            using var model = Model(directory);
+            window = new SettingsWindow(settings, model, () => { }, installations: Installations(directory),
+                createInstaller: () => throw new InvalidOperationException("Finding an action must not start installation."));
+            foreach (string page in new[] { "apps", "translation" })
+            {
+                window.ShowPage(page);
+                window.UpdateLayout();
+                nint handle = new WindowInteropHelper(window).Handle;
+                var root = await Task.Run(() =>
+                {
+                    var root = AutomationElement.FromHandle(handle);
+                    var details = root.FindFirst(TreeScope.Descendants, new AndCondition(
+                        new PropertyCondition(AutomationElement.NameProperty, "组件与安装说明"),
+                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Group)));
+                    Assert.NotNull(details);
+                    Assert.Equal(ExpandCollapseState.Collapsed,
+                        ((ExpandCollapsePattern)details.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Current.ExpandCollapseState);
+                    return root;
+                });
+                var button = await SettingsPackageActions.FindAsync(root, "argos-en-zh", ModelPackageOperation.Install,
+                    _ => { }, TestContext.Current.CancellationToken);
+                await Task.Run(() =>
+                {
+                    Assert.Equal("ModelPackage_argos-en-zh_Install", button.Current.AutomationId);
+                    Assert.True(button.Current.IsEnabled);
+                    Assert.False(button.Current.IsOffscreen);
+                    Assert.True(button.TryGetClickablePoint(out Point point));
+                    var viewport = root.FindFirst(TreeScope.Descendants,
+                        new PropertyCondition(AutomationElement.ClassNameProperty, "ScrollViewer"));
+                    Assert.NotNull(viewport);
+                    Assert.True(viewport.Current.BoundingRectangle.Contains(point));
+                });
+            }
+            Assert.False(model.Ready);
+            Assert.False(Directory.Exists(Path.Combine(directory, "components")));
+        }
+        finally { await ClosePreparation(window, directory); }
+    });
+
     [Fact]
     public Task DownloadTimeoutOffersRecoveryAndRetryWithoutClaimingUserPause() => desktop.RunAsync(async () =>
     {
