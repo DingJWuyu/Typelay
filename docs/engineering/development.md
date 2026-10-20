@@ -1,6 +1,6 @@
 # 共享开发流程
 
-开发从 trunk 开始；分支权限与 preview 保留规则见根 AGENTS.md。模块归属见[工程架构](architecture.md)。Windows 实际构建与桌面命令见[Windows 开发](../platforms/windows/development.md)，Linux 依赖、构建与验收命令见[Linux 开发](../platforms/linux/development.md)。
+开发从 trunk 开始；分支权限与清理规则见根 AGENTS.md。模块归属见[工程架构](architecture.md)。Windows 实际构建与桌面命令见[Windows 开发](../platforms/windows/development.md)，Linux 依赖、构建与验收命令见[Linux 开发](../platforms/linux/development.md)。
 
 根 dev.ps1 提供用户命令入口；Windows 命令实现在 eng/windows/dev.ps1，共享检查在 eng/shared/check.ps1。Linux 构建入口是 eng/linux/build.py，合作组件生产构建在 eng/linux/cooperative/。CI 复用这些入口，不维护第二套构建语义。
 

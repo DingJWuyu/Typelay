@@ -2508,6 +2508,10 @@ class BrowserContract(unittest.TestCase):
                 },
             },
         )
+        # These are separate user interactions after host feedback. Keep the
+        # ordinary display lease alive so a stale form cannot satisfy the
+        # no-retry assertion merely by rejecting all clicks.
+        self.command("overlay-renew", {**envelope, "authority": snapshot["authority"]})
         self.click_overlay_control("保存")
         self.assertEqual(
             self.page.evaluate(
@@ -2521,7 +2525,16 @@ class BrowserContract(unittest.TestCase):
             ),
             "PR",
         )
+        source_term = self.overlay_control("源词", "textbox")
+        self.command("overlay-renew", {**envelope, "authority": snapshot["authority"]})
         self.click_overlay_control("取消")
+        self.assertEqual(
+            self.page.evaluate(
+                "fixtureMessages.filter(message => message.event === 'ui' && message.data.operation === 'sessionGlossaryClose').map(message => message.data.value)"
+            ),
+            [entry["formId"]],
+        )
+        self.assertFalse(self.overlay_dom(source_term, "function() { return this.isConnected; }"))
         self.assertEqual(
             self.overlay_dom(
                 editor,

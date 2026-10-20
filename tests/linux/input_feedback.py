@@ -667,6 +667,74 @@ class InputFeedbackTests(unittest.TestCase):
         ):
             asyncio.run(exercise())
 
+    def practice_capture_identity_change(self, *, context_changed, focus_changed):
+        self.peer = self.connect_peer("gtk3")
+        original = self.description
+
+        def description():
+            value = original()
+            value["geometry"]["space"] = "gtk-toplevel"
+            value["authority"]["contextStamp"] = {"context": 7}
+            return value
+
+        self.description = description
+
+        async def exercise():
+            publication = (await self.publish_acceptance(pause=False))[0]["data"]
+            binding = {
+                "runId": str(uuid.uuid4()),
+                "target": publication["lease"]["source"]["target"],
+                "connectionId": self.peer.connection_id,
+                "commandGeneration": self.generation,
+                "nativeFocusRevision": 1,
+                "contextGeneration": 7,
+            }
+            self.assertTrue(self.authorize_practice(binding, lambda _: True))
+            retired = []
+            self.input.practice_retired = retired.append
+            operation = asyncio.create_task(
+                self.input.request("capture", {"practiceRead": binding})
+            )
+            native = {
+                **description(),
+                "text": "Translation",
+                "selection": {"start": 11, "end": 11},
+                "ime": "Clear",
+                "observedAtMs": 1000,
+                "writeSupported": True,
+            }
+            native["authority"]["contextStamp"]["context"] += int(context_changed)
+            native["authority"]["focusRevision"] += int(focus_changed)
+            for expected, value in (("describe", description()), ("capture", native)):
+                async with asyncio.timeout(1):
+                    while not (frames := self.native_frames(self.peer)):
+                        await asyncio.sleep(0)
+                self.assertEqual([frame["op"] for frame in frames], [expected])
+                self.peer.link.receive({"id": frames[0]["id"], "data": value})
+            self.assertIsNone(await asyncio.wait_for(operation, 1))
+            self.assertIsNone(self.input.practice_authorization)
+            self.assertEqual(retired, [binding["runId"]])
+            failure = self.input.diagnostics()["captureFailures"][-1]
+            self.assertEqual(failure["reason"], "practice-identity-lost")
+            self.assertEqual(
+                failure["nativeFailure"],
+                {
+                    "contextChanged": context_changed,
+                    "focusChanged": focus_changed,
+                },
+            )
+
+        asyncio.run(exercise())
+
+    def test_practice_capture_retires_and_reports_context_change(self):
+        self.practice_capture_identity_change(context_changed=True, focus_changed=False)
+
+    def test_practice_capture_retires_and_reports_focus_change(self):
+        self.practice_capture_identity_change(context_changed=False, focus_changed=True)
+
+    def test_practice_capture_reports_both_identity_changes(self):
+        self.practice_capture_identity_change(context_changed=True, focus_changed=True)
+
     def owned_context_advance(
         self,
         invalidation=None,

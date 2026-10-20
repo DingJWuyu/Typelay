@@ -199,9 +199,35 @@ internal static partial class HyPackageCheck
                         return matched;
                     }, ct);
                 }, ct);
-                // Navigation can end a session but cannot grant source readiness.
+                // Public shortcut registration does not establish source focus.
+                // Posting the fixture request proves queueing, not foreground transfer.
+                scene.Stage = "request-source-refocus";
+                scene.Facts = null;
                 Require(N.PostMessage(root, N.FixtureFocus, (nuint)field, 0), "source-refocus-request");
-                await WaitAsync(() => Task.FromResult(N.Focused() == (root, field)), ct);
+                scene.Stage = "wait-source-refocus";
+                await WaitAsync(() =>
+                {
+                    // ReadFocus is the same native observation used by Focused().
+                    // Preserve the exact root/control predicate and retain only
+                    // ownership comparisons and query outcomes, never HWNDs or text.
+                    var focus = N.ReadFocus();
+                    bool rootMatched = focus.Root == root, controlMatched = focus.Control == field;
+                    scene.Facts = new
+                    {
+                        publicShortcutStatusMatched = true,
+                        rootMatched,
+                        controlMatched,
+                        foregroundPresent = focus.Root != 0,
+                        focusedControlPresent = focus.Control != 0,
+                        foregroundIsSourceProcess = focus.ProcessId == host.ProcessId,
+                        foregroundIsAppProcess = focus.ProcessId == app!.Process.Id,
+                        threadKnown = focus.ThreadId != 0,
+                        focus.ThreadLookupError,
+                        focus.GuiThreadInfoSucceeded,
+                        focus.GuiThreadInfoError
+                    };
+                    return Task.FromResult(rootMatched && controlMatched);
+                }, ct);
                 scene.Stage = "single-wake-real-preview";
                 SendWakeOnce();
                 string translation = "";

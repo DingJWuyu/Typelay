@@ -71,7 +71,11 @@
 
 ### 当前可验证候选
 
-这是开发候选，不是通用输入验收已完成的正式发布。[已核对的显式质量运行](https://github.com/DingJWuyu/Typelay/actions/runs/39415329820)对应源码 `54c12e1fe2e689c6cebff860bef7e20a303a3682`；[下载 Windows artifact](https://github.com/DingJWuyu/Typelay/actions/runs/39415329820/artifacts/12261732456)，名称为 `typelay-windows-54c12e1fe2e689c6cebff860bef7e20a303a3682`，与 [Linux 当前候选](../linux/README.md#当前可验证候选)来自同一次运行。取出内层 `TypeLay-Windows-preview.zip`，再完整解压启动；同提交的不同运行仍须分别核对包摘要和检查结果。
+当前开发源码为 `b114469bc0bb31f661e4d2496a11d36b695f13a6`。[普通运行](https://github.com/DingJWuyu/Typelay/actions/runs/39434470371)与[显式质量运行](https://github.com/DingJWuyu/Typelay/actions/runs/39439291108)的共享检查通过，Windows 完整检查仍失败。最新显式运行中持续真实模型链通过，合作浏览器的 F10 选区替换因 `NativeMissing` / `PolicyAuthorityMissing` 被拒绝，后续 Windows Hy 未运行；App 404/408 项通过，仍有原生消息、焦点等待和探针 DLL 清理失败。普通运行的 Hy 生产闭包与进程所有者检查通过，Settings 安装及模型切换通过，普通预览停在快捷键就绪/源字段回焦边界，未完成整个生命周期。不同运行的局部通过不能拼成全链稳定；Linux 的53次质量采集也不能代替 Windows 验收，质量结论见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
+
+以下保留的是此前已核对的 `54c12e1f` 下载包及其校验证据，不是当前开发分支的最新产物。
+
+这是开发候选，不是通用输入验收已完成的正式发布。[已核对的显式质量运行](https://github.com/DingJWuyu/Typelay/actions/runs/39415329820)对应源码 `54c12e1fe2e689c6cebff860bef7e20a303a3682`；[下载 Windows artifact](https://github.com/DingJWuyu/Typelay/actions/runs/39415329820/artifacts/12261732456)，名称为 `typelay-windows-54c12e1fe2e689c6cebff860bef7e20a303a3682`，与 [Linux 包校验记录](../linux/README.md#当前可验证候选)中的同版旧包来自同一次运行。取出内层 `TypeLay-Windows-preview.zip`，再完整解压启动；同提交的不同运行仍须分别核对包摘要和检查结果。
 
 此包包含 Chrome 明确接入与移除、独立字段策略维护和有序消息读取、浮层直接展开、可选单向 Argos 安装，以及 Windows Hy ABI5 生产闭包与模型包操作代码。默认仍为中英 Argos，正式商店扩展身份为空。显式运行的持续翻译链通过，合作浏览器在 F10 选区直接替换时因 `PolicyAuthorityExpired` 拒绝，后续 Windows Hy 检查未运行。同提交普通运行的浏览器七场景通过，但持续翻译与 Hy Settings 均失败，具体阶段见下文；两次结果不能拼成一次全链通过，也不能据此认定不稳定性已修复。Linux 已完成全部 45 次质量响应，仍发现保义问题，风格、术语与换种说法质量门均保持关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
 

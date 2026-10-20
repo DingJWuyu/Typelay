@@ -4,7 +4,7 @@ TypeLay 是跨平台本地输入框翻译浮层。先保持既有产品行为，
 
 ## 不变量
 
-- `DingJWuyu/Typelay` 的长期集成分支是 `trunk`，Windows/Linux 共用同一主线。临时平台或功能分支从 `trunk` 切出并合回；`main` 保留为稳定分支，只按明确发布授权更新。现有 `windows-preview`、`cachyos-preview` 保留不改、不删、不重命名。推送前检查远端，禁止覆盖他人提交或 force push，不自动创建 PR。
+- `DingJWuyu/Typelay` 的长期集成分支是 `trunk`，Windows/Linux 共用同一主线。临时平台或功能分支从 `trunk` 切出并合回；`main` 保留为稳定分支，只按明确发布授权更新。分支删除、重命名与稳定分支更新均须明确授权。推送前检查远端，禁止覆盖他人提交或 force push，不自动创建 PR。
 - 用中文沟通；使用普通连字符，不使用长破折号。提交信息不添加 Agent 署名或 co-author。
 - 不手动修改 CHANGELOG.md、自动生成文件或上游 skills。生成物通过相应工具更新；产品规格与已确认原型的行为变更须有用户明确授权。
 - 优先质量、简单性、健壮性和长期维护；不为单次操作建立平台、策略层或多余抽象。

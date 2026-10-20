@@ -1897,12 +1897,21 @@ class Input:
         if authorization is not None and authorization["peer"] is peer:
             authority = native.get("authority", {})
             baseline = authorization.get("contextGeneration", 0)
-            if (baseline > 0 and authority.get("contextStamp", {}).get("context") != baseline) or (
-                authorization.get("nativeFocusRevision", 0) > 0
-                and authority.get("focusRevision") != authorization.get("nativeFocusRevision")
-            ):
+            context_changed = (
+                baseline > 0 and authority.get("contextStamp", {}).get("context") != baseline
+            )
+            focus_changed = authorization.get("nativeFocusRevision", 0) > 0 and authority.get(
+                "focusRevision"
+            ) != authorization.get("nativeFocusRevision")
+            if context_changed or focus_changed:
                 self.retire_practice(authorization["runId"])
-                return self.captured("practice-identity-lost")
+                return self.captured(
+                    "practice-identity-lost",
+                    native_failure={
+                        "contextChanged": context_changed,
+                        "focusChanged": focus_changed,
+                    },
+                )
         if practice is not None and practice.get("foregroundExpired"):
             expired = self.expired_practice_capture(practice, native)
             if expired is not None:

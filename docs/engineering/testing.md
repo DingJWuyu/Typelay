@@ -57,7 +57,7 @@ python tests/shared/worker/styled_quality.py \
 
 `--validate-only --output artifacts/hy-styled-quality/inputs-check.json` 只验证固定输入、参数与源码身份记录，不查看安装、不加载 native、不启动 worker；可同时传 `--include-holdout` 检查16请求计划。生成 `status=not-run`、`quality=not-run`、`workerStarts=0` JSON 并有意返回2。输出禁止覆盖。正式采集记录完整原源、Natural/Formal原始响应、hello、输入/源码/库存/adapter清单身份、固定预算、逐请求状态/code、worker及端到端耗时、失败阶段与退出证明；未暴露的 native token 指标不伪造。所有逐输出及成对人工复核字段保持 null；`completed` 仅代表所选8或16请求采集及清理完成，质量仍为 `not-reviewed`，不是质量 pass。失败保留已完成响应，未确认退出不能完成。
 
-[既有实际采集](https://github.com/DingJWuyu/Typelay/actions/runs/39415329820)已完成原四句的8个 ABI5 响应，保留为原提示基线；原始质量字段仍为 `not-reviewed`。逐句审阅发现自然中译日反转否定、正式中译法增加交付含义，不能视为质量通过。当前候选仅把显式风格前缀调整为[固定官方两行风格骨架](https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF/blob/a0c709d9fac510f2c807aa3af52872340dc37a4a/README.md)，保留可信枚举、各自保义要求、普通/术语提示、literal隔离和greedy预算。提示格式差异与错译的因果尚未建立，候选及新四句真实推理均为 not-run。后续逐项对照原锚点和独立样本，不从文本不同、官方指导或软件合同推断质量，不开放四方向、十二方向或用户界面；原 Frozen 产品规格与 Argos 16句保持不变。
+[候选实际采集](https://github.com/DingJWuyu/Typelay/actions/runs/39439291108)已在 `b114469b` 完成原四句及预先冻结四句的16个 ABI5 响应，原始质量字段保持 `not-reviewed`。发布 adapter 的 SHA-256 与报告清单一致，二进制含本次官方风格骨架和保义约束。逐句审阅仍发现自然中译日否定翻转与承诺增强，3/8 对全文相同，不能据此开放风格门；具体结论见[共同产品缺口](../product/README.md#当前共同开发缺口)。[原提示基线](https://github.com/DingJWuyu/Typelay/actions/runs/39415329820)仅有原四句8响应，新增样本没有旧版对照；输出变化不能单独建立提示格式与质量的因果。后续须有明确实现假设再做对照，不从官方指导或软件合同推断质量。
 
 ## Hy 术语窄采集准备
 
@@ -68,7 +68,7 @@ python tests/shared/worker/glossary_quality.py --validate-only \
   --output artifacts/hy-glossary-quality/inputs-check.json
 ```
 
-[既有实际采集](https://github.com/DingJWuyu/Typelay/actions/runs/39415329820)已完成五个响应及退出，包含三个翻译结果与两个预期拒绝；原始质量字段仍为 `not-reviewed`，不构成术语能力放行。当前候选的新采集未运行。`--validate-only` 不查看安装、不加载 native 或模型、不启动 worker，写出 `status=not-run`、`quality=not-run`、`workerStarts=0` 并有意返回2。经授权实际采集时使用上节相同来源的 `--python`、`--models`、`--worker` 参数；不下载、不安装、不改库存、不接自动 CI。预算保持2.5 GiB地址空间、单模型、2线程、greedy、context1024、192新token、worker每请求60秒、收帧65秒、加载/hello90秒、总计600秒及另计最多7秒清理。
+[当前实际采集](https://github.com/DingJWuyu/Typelay/actions/runs/39439291108)已完成五个响应及退出，包含三个符合局部语义锚点的翻译结果与两个预期拒绝；原始质量字段仍为 `not-reviewed`，该小样本不构成术语能力放行。`--validate-only` 不查看安装、不加载 native 或模型、不启动 worker，写出 `status=not-run`、`quality=not-run`、`workerStarts=0` 并有意返回2。经授权实际采集时使用上节相同来源的 `--python`、`--models`、`--worker` 参数；不下载、不安装、不改库存、不接自动 CI。预算保持2.5 GiB地址空间、单模型、2线程、greedy、context1024、192新token、worker每请求60秒、收帧65秒、加载/hello90秒、总计600秒及另计最多7秒清理。
 
 报告保留完整原始请求（原源、术语、方向及组合字段）、每次完整响应、身份/hello、耗时、拒绝code和退出证明，输出文件禁止覆盖。预期拒绝必须为空text并匹配明确code；意外结果保留后停止，不重试、换题、回退或硬替换输出。`completed` 只表示固定响应采集及清理完成，质量仍为 `not-reviewed`；术语、专属优先、结构、拒绝合理性、原义/数字/否定等人工复核字段始终初始化为null，不能把术语出现或协议拒绝当成质量通过。准备回归仅检查schema、无资产的validate-only及禁止覆盖，不证明真实ABI5推理、资源峰值、语言质量或用户界面可用。
 

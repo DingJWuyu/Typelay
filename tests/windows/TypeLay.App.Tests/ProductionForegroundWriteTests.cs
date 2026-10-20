@@ -10,6 +10,7 @@ using TypeLay.Platform.Windows;
 using TypeLay.Protocol;
 using TypeLay.Windows;
 using TypeLay.Windows.Contracts;
+using TypeLay.Windows.Testing;
 using Xunit;
 using N = TypeLay.Platform.Windows.NativeMethods;
 
@@ -837,11 +838,18 @@ public sealed class ProductionForegroundWriteTests
         using (process)
         using (var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
         {
+            var handle = process.SafeHandle;
             if (!process.HasExited)
             {
                 process.Kill(true);
                 await process.WaitForExitAsync(cleanup.Token);
             }
+            // HasExited/WaitForExitAsync can observe the exit code before the
+            // kernel signals completion. The retirement probe stays loaded for
+            // the fixture lifetime, so prove that exact process has terminated
+            // before its caller deletes the DLL. Keep the same cleanup budget.
+            while (!ProcessImage.Exited(handle))
+                await Task.Delay(10, cleanup.Token);
         }
     }
     private static string Repository()
