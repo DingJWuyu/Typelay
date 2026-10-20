@@ -464,6 +464,7 @@ def quality_exit(arguments, compositor, work_deadline, result, failure):
         COLLECTIONS,
         inspect_report,
         process_identity,
+        process_status,
     )
 
     cancelled = False
@@ -488,12 +489,21 @@ def quality_exit(arguments, compositor, work_deadline, result, failure):
                     assert isinstance(owner["startTime"], str) and owner["startTime"].isdigit()
                 except (OSError, ValueError, KeyError, TypeError, AssertionError):
                     owner = None  # Missing/partial/invalid owner is never permission to signal.
+            terminated = False
             try:
-                identity = process_identity(owner["pid"]) if owner is not None else None
+                status = process_status(owner["pid"]) if owner is not None else None
+                identity = status[0] if status is not None else None
+                # An exact unreaped inside process has exited, but its workers
+                # still require every independent exit proof below.
+                terminated = owner is not None and status == (owner["startTime"], "Z")
             except (OSError, ValueError, IndexError):
                 identity = "unknown"  # Read failure cannot prove the recorded process exited.
             barrier = result.exists() or failure.exists()
-            if owner is not None and barrier and identity not in ("unknown", owner["startTime"]):
+            if (
+                owner is not None
+                and barrier
+                and (terminated or identity not in ("unknown", owner["startTime"]))
+            ):
                 report = json.loads((arguments.output / "hy-package-result.json").read_text())
                 quality = report["translationQuality"]
                 assert report["hostExitConfirmed"] is True, "host exit unconfirmed; preserve data"
@@ -525,7 +535,13 @@ def quality_exit(arguments, compositor, work_deadline, result, failure):
                 # this run's recorded inside process, even if niri already exited.
                 cancelled = True
                 cleanup_deadline = min(cleanup_deadline, time.monotonic() + CLEANUP_SECONDS - 3)
-            if cancelled and not signalled and owner is not None and identity == owner["startTime"]:
+            if (
+                cancelled
+                and not signalled
+                and not terminated
+                and owner is not None
+                and identity == owner["startTime"]
+            ):
                 # Recheck immediately before signalling; never chase a reused PID.
                 try:
                     if process_identity(owner["pid"]) == owner["startTime"]:
@@ -557,6 +573,9 @@ def outer(arguments, script=None):
     command = [
         "/usr/bin/python3",
         "-I",
+        # Every scope reads the same immutable bundle. Earlier setup imports
+        # must not leave bytecode for a later strict quality identity check.
+        "-B",
         str(Path(script or __file__).resolve()),
         "--inside",
         "--native",
@@ -568,9 +587,6 @@ def outer(arguments, script=None):
     if quality:
         from support.translation_quality_capture import WORK_SECONDS
 
-        # -I ignores the workflow's bytecode environment setting. This process
-        # reads the exact shipped worker closure before the quality runners do.
-        command.insert(2, "-B")
         quality_deadline = time.monotonic() + WORK_SECONDS
         command.extend(
             ["--collect-translation-quality", "--quality-work-deadline", str(quality_deadline)]

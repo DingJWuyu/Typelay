@@ -87,7 +87,9 @@ internal static partial class BrowserCooperationCheck
             }
         }
     }
-    private static async Task FocusPageAsync(Cdp cdp, BrowserWindows windows, CancellationToken ct)
+    private static Task FocusPageAsync(Cdp cdp, BrowserWindows windows, CancellationToken ct) =>
+        BringPageToForegroundAsync(cdp, windows, requireDocumentFocus: true, ct);
+    private static async Task BringPageToForegroundAsync(Cdp cdp, BrowserWindows windows, bool requireDocumentFocus, CancellationToken ct)
     {
         await cdp.PageCallAsync("Page.bringToFront", new
         {
@@ -102,7 +104,8 @@ internal static partial class BrowserCooperationCheck
                 nint window = matches[0].Handle;
                 if (Native.GetForegroundWindow() != window)
                     Native.SetForegroundWindow(window);
-                if (Native.GetForegroundWindow() == window && (await cdp.StateAsync("", ct)).PageFocused)
+                if (Native.GetForegroundWindow() == window
+                    && (!requireDocumentFocus || (await cdp.StateAsync("", ct)).PageFocused))
                     return;
             }
             await Task.Delay(40, ct);
@@ -110,7 +113,9 @@ internal static partial class BrowserCooperationCheck
     }
     private static async Task<System.Windows.Rect> FocusCommandFieldAsync(Cdp cdp, BrowserWindows windows, AutomationElement settings, CancellationToken ct)
     {
-        await FocusPageAsync(cdp, windows, ct);
+        // The one visible field click below establishes document focus after
+        // Settings. Waiting for that focus first would prevent the user action.
+        await BringPageToForegroundAsync(cdp, windows, requireDocumentFocus: false, ct);
         var pages = windows.Read().Where(window => window.Page).ToArray();
         Require(pages.Length == 1, "owned-page-window-unavailable");
         nint page = pages[0].Handle;
@@ -494,21 +499,25 @@ internal static partial class BrowserCooperationCheck
             Require(shortcuts is not null && shortcuts.TryGetCurrentPattern(InvokePattern.Pattern, out _), "settings-shortcuts-unavailable");
             ct.ThrowIfCancellationRequested();
             ((InvokePattern)shortcuts!.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
-            nint settingsHandle = window.Current.NativeWindowHandle;
-            Native.GetWindowThreadProcessId(settingsHandle, out uint settingsProcess);
-            Require(settingsProcess == app.Id, "settings-window-ownership-changed");
-            var monitor = new Native.MonitorInfo { Size = Marshal.SizeOf<Native.MonitorInfo>() };
-            Require(Native.GetMonitorInfoW(Native.MonitorFromWindow(settingsHandle, 2), ref monitor), "settings-monitor-unavailable");
-            int width = (int)Math.Ceiling(WindowBounds(settingsHandle).Width);
-            int height = monitor.Work.Bottom - monitor.Work.Top;
-            Require(width <= monitor.Work.Right - monitor.Work.Left && height > 0, "settings-command-layout-unavailable");
-            ct.ThrowIfCancellationRequested();
-            // Only this fixture-owned settings window is kept above Chrome,
-            // without activating it. The real source receives focus next.
-            Require(Native.SetWindowPos(settingsHandle, -1, monitor.Work.Right - width, monitor.Work.Top, width, height,
-                0x0010), "settings-command-layout-failed"); // TOPMOST | NOACTIVATE
+            ArrangeSettingsBesideSource(app, window, ct);
         }, ct).WaitAsync(ct);
         return window;
+    }
+    private static void ArrangeSettingsBesideSource(Process app, AutomationElement window, CancellationToken ct)
+    {
+        nint settingsHandle = window.Current.NativeWindowHandle;
+        Native.GetWindowThreadProcessId(settingsHandle, out uint settingsProcess);
+        Require(settingsProcess == app.Id, "settings-window-ownership-changed");
+        var monitor = new Native.MonitorInfo { Size = Marshal.SizeOf<Native.MonitorInfo>() };
+        Require(Native.GetMonitorInfoW(Native.MonitorFromWindow(settingsHandle, 2), ref monitor), "settings-monitor-unavailable");
+        int width = (int)Math.Ceiling(WindowBounds(settingsHandle).Width);
+        int height = monitor.Work.Bottom - monitor.Work.Top;
+        Require(width <= monitor.Work.Right - monitor.Work.Left && height > 0, "settings-command-layout-unavailable");
+        ct.ThrowIfCancellationRequested();
+        // Only this fixture-owned settings window is kept above Chrome,
+        // without activating it. The real source receives focus next.
+        Require(Native.SetWindowPos(settingsHandle, -1, monitor.Work.Right - width, monitor.Work.Top, width, height,
+            0x0010), "settings-command-layout-failed"); // TOPMOST | NOACTIVATE
     }
     private static async Task<string> ReadSharedTextAsync(string path, CancellationToken ct)
     {

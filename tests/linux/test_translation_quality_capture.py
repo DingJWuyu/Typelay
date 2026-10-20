@@ -62,7 +62,7 @@ class CaptureHandoffTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.output = Path(temporary.name)
 
-    def test_quality_inside_keeps_imported_bundle_free_of_bytecode(self):
+    def test_setup_then_quality_preparation_keeps_bundle_free_of_bytecode(self):
         from importlib.util import module_from_spec, spec_from_file_location
 
         spec = spec_from_file_location("typelay_test_build", ROOT / "eng/linux/build.py")
@@ -74,8 +74,10 @@ class CaptureHandoffTests(unittest.TestCase):
         probe.write_text(
             "import sys\nfrom pathlib import Path\n"
             f"sys.path.insert(0, {str(ROOT / 'src/linux/desktop')!r})\n"
-            "from setup import hy_assets\n"
-            f"hy_assets(Path({str(package)!r}))\n"
+            "from setup import hy_assets, model_catalog\n"
+            f"package = Path({str(package)!r})\n"
+            "assert {item.id for item in model_catalog(package)} == {'zh_en', 'en_zh'}\n"
+            "hy_assets(package)\n"
         )
         arguments = types.SimpleNamespace(
             output=self.output / "capture",
@@ -109,13 +111,25 @@ class CaptureHandoffTests(unittest.TestCase):
                 process.wait(timeout=3)
             raise ProbeFinished
 
-        with (
-            patch.dict(os.environ, DISPLAY=":unused"),
-            patch("native_e2e.subprocess.Popen", side_effect=compositor),
-            self.assertRaises(ProbeFinished),
-        ):
-            outer(arguments, script=probe)
-        self.assertEqual(list((package / "worker").rglob("__pycache__")), [])
+        # The setup scope runs earlier against the same immutable package in CI.
+        # A later -B quality child must not inherit bytecode left by that read.
+        for quality, scope in ((False, "setup"), (True, "model-packages")):
+            with self.subTest(scope=scope):
+                arguments.collect_translation_quality = quality
+                arguments.desktop_scope = scope
+                arguments.output = self.output / scope
+                with (
+                    patch.dict(os.environ, DISPLAY=":unused"),
+                    patch("native_e2e.subprocess.Popen", side_effect=compositor),
+                    self.assertRaises(ProbeFinished),
+                ):
+                    outer(arguments, script=probe)
+                expected = {
+                    path.name
+                    for path in (ROOT / "src/shared/TypeLay.Worker/typelay_worker").glob("*.py")
+                }
+                actual = {path.name for path in (package / "worker/typelay_worker").iterdir()}
+                self.assertEqual(actual, expected)
 
     def test_actual_validate_only_is_isolated_from_imported_bundle_and_restores_modules(self):
         sentinel = types.ModuleType("typelay_worker.catalog")
@@ -191,6 +205,65 @@ class CaptureHandoffTests(unittest.TestCase):
         with patch.object(Path, "read_text", return_value="invalid"):
             with self.assertRaises(IndexError):
                 process_identity(os.getpid())
+
+    def test_exited_inside_with_unreaped_pid_reports_failed_cleanup_promptly(self):
+        # niri may leave the exited inside process for the container's reaper.
+        # This is a real owned zombie, never a substitute for model-exit proof.
+        script = """import json, pathlib, os, sys
+root = pathlib.Path(sys.argv[1])
+identity = pathlib.Path(f"/proc/{os.getpid()}/stat").read_text().rsplit(")", 1)[1].split()[19]
+(root / "quality-inside-owner.json").write_text(json.dumps({"pid":os.getpid(),"startTime":identity}))
+report = {"status":"failed", "hostExitConfirmed":True, "workerExitConfirmed":True,
+          "translationQuality":{"workerExitConfirmed":False,"collections":[]}}
+(root / "hy-package-result.json").write_text(json.dumps(report))
+(root / "inside.failed").touch()
+"""
+        child = subprocess.Popen([sys.executable, "-c", script, str(self.output)])
+        compositor = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+        try:
+            deadline = time.monotonic() + 3
+            stat = Path(f"/proc/{child.pid}/stat")
+            while time.monotonic() < deadline:
+                if stat.read_text().rsplit(")", 1)[1].split()[0] == "Z":
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("controlled inside did not exit")
+            owner = json.loads((self.output / "quality-inside-owner.json").read_text())
+            self.assertEqual(process_identity(child.pid), owner["startTime"])
+            failure = self.output / "inside.failed"
+            failure.unlink()
+            with (
+                patch("support.translation_quality_capture.CLEANUP_SECONDS", 3),
+                self.assertRaisesRegex(RuntimeError, "quality inside exit unconfirmed"),
+            ):
+                quality_exit(
+                    types.SimpleNamespace(output=self.output),
+                    compositor,
+                    time.monotonic() + 0.05,
+                    self.output / "desktop-result.json",
+                    failure,
+                )
+            failure.touch()
+            report = (self.output / "hy-package-result.json").read_bytes()
+            with (
+                patch("support.translation_quality_capture.CLEANUP_SECONDS", 3),
+                self.assertRaisesRegex(AssertionError, "quality exit unconfirmed; preserve data"),
+            ):
+                quality_exit(
+                    types.SimpleNamespace(output=self.output),
+                    compositor,
+                    time.monotonic() + 0.3,
+                    self.output / "desktop-result.json",
+                    failure,
+                )
+            self.assertEqual((self.output / "hy-package-result.json").read_bytes(), report)
+            self.assertEqual(process_identity(child.pid), owner["startTime"])
+            self.assertIsNone(compositor.poll())
+        finally:
+            child.wait(timeout=3)
+            compositor.terminate()
+            compositor.wait(timeout=3)
 
     def test_compositor_exit_cancels_exact_inside_and_waits_for_its_final_barrier(self):
         # A small owned process stands in for the fixture, never a model worker.

@@ -17,11 +17,49 @@ import time
 from pathlib import Path
 
 
+def visible_terminal_notification(page):
+    """Observe only fixed terminal messages owned by the isolated TypeLay extension."""
+    messages = {
+        "unsupported-environment": "TypeLay 编辑器命令仅支持本机 Linux 的受信任工作区。",
+        "host-not-configured": (
+            "请在用户设置 typelay.hostPath 中填写已安装 TypeLay 启动器的绝对路径。"
+        ),
+        "unsupported-editor": (
+            "TypeLay：仅支持本地纯文本或 Markdown 单选区。"
+            "代码、终端、远程文档和未知编辑器不读取正文。"
+        ),
+        "invalid-text": "TypeLay：正文为空、包含无效字符或超过 8192 UTF-16 单位，未翻译。",
+        "disabled": "TypeLay：TypeLay 当前已暂停。请在 TypeLay 设置中启用后重试。",
+        "not-ready": "TypeLay：本机模型未就绪。请先在 TypeLay 中完成模型安装。",
+        "no-translation": "TypeLay：本机模型没有为当前文本提供译文，原文未修改。",
+        "translation-incomplete": (
+            "TypeLay：本机翻译未完成。请检查 TypeLay 启动器和已安装模型；原文未由此命令替换。"
+        ),
+    }
+    rows = page.locator(".notifications-list-container .monaco-list-row:visible")
+    for status, message in messages.items():
+        # VS Code's notification row label retains the extension displayName
+        # even when its source/details row is collapsed. Require that owner and
+        # the exact rendered message; never read generic alerts or editor text.
+        label = re.compile(
+            "^Warning: "
+            + re.escape(message)
+            + r", source: TypeLay Editor, notification(?:, [^\r\n]*)?$"
+        )
+        notice = rows.and_(page.get_by_label(label)).locator(
+            ".notification-list-item-message:visible"
+        )
+        if notice.filter(has_text=re.compile("^" + re.escape(message) + "$")).first.is_visible():
+            return status
+    return None
+
+
 def drive_preview_ui(port, process, output, source):
     """Exercise the installed extension in normal Code, not extension-test mode."""
     from playwright.sync_api import Error, TimeoutError, sync_playwright
 
     original = "你好，世界。\n保留原文"
+    terminal_notification = None
     with sync_playwright() as playwright:
         deadline = time.monotonic() + 45
         while True:
@@ -67,6 +105,7 @@ def drive_preview_ui(port, process, output, source):
             box.wait_for(state="hidden", timeout=10000)
 
         def dialog(title):
+            nonlocal terminal_notification
             value = page.get_by_role("dialog").filter(has_text=title)
             deadline = time.monotonic() + 215
             while True:
@@ -76,6 +115,15 @@ def drive_preview_ui(port, process, output, source):
                     value.wait_for(state="visible", timeout=1000)
                     return value
                 except TimeoutError:
+                    terminal_notification = visible_terminal_notification(page)
+                    if terminal_notification is not None:
+                        (output / "typelay-terminal-notification.json").write_text(
+                            json.dumps({"status": "failed", "notification": terminal_notification}),
+                            encoding="utf-8",
+                        )
+                        raise RuntimeError(
+                            f"TypeLay reported a terminal notification: {terminal_notification}"
+                        ) from None
                     if time.monotonic() >= deadline:
                         page.screenshot(path=str(output / "ui-failure.png"))
                         (output / "dialog-roles.json").write_text(
@@ -143,6 +191,9 @@ def drive_preview_ui(port, process, output, source):
             save_and_expect(lambda text: text == original)
             assert "你好，世界。" in editor.inner_text() and "保留原文" in editor.inner_text()
         except Exception:
+            if terminal_notification is not None:
+                # The finite notification state is sufficient for this failure.
+                raise
             page.screenshot(path=str(output / "ui-failure.png"))
             (output / "ui-failure.txt").write_text(
                 page.locator("body").inner_text(), encoding="utf-8"

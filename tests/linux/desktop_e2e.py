@@ -4383,13 +4383,13 @@ def run(arguments):
                 ), "connection choice is clipped before the user scrolls or focuses it"
             calibrate_settings_scroll(trial)
             assert preparation["secondaryActions"] == []
-            package = next(row for row in preparation["packageRows"] if row["current"])
+            current_package = next(row for row in preparation["packageRows"] if row["current"])
             repair = next(
                 action
-                for action in package["actions"]
+                for action in current_package["actions"]
                 if action["request"]["operation"] == "Repair"
             )
-            repair_name = package["title"] + "：" + repair["label"]
+            repair_name = current_package["title"] + "：" + repair["label"]
             repair_button = named(process.pid, repair_name)
             assert repair_button is None or not repair_button.get_state_set().contains(
                 Atspi.StateType.SHOWING

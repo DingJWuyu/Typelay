@@ -21,17 +21,23 @@ CLEANUP_SECONDS = 30
 COLLECTIONS = {"alternative": 32, "styled": 8, "glossary": 5}
 
 
-def process_identity(pid):
+def process_status(pid):
     try:
         process = Path("/proc") / str(pid)
         if process.stat().st_uid != os.getuid():
             raise PermissionError("process owner changed")
-        value = int((process / "stat").read_text().rsplit(")", 1)[1].split()[19])
+        fields = (process / "stat").read_text().rsplit(")", 1)[1].split()
+        value = int(fields[19])
         if value <= 0:
             raise ValueError("invalid process start time")
-        return str(value)
+        return str(value), fields[0]
     except FileNotFoundError:
         return None
+
+
+def process_identity(pid):
+    status = process_status(pid)
+    return status[0] if status is not None else None
 
 
 @contextmanager

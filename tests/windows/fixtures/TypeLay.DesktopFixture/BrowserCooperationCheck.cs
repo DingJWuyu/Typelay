@@ -292,8 +292,10 @@ internal static partial class BrowserCooperationCheck
                 Require(await Task.Run(() => connectionWindow.FindFirst(TreeScope.Descendants,
                     new PropertyCondition(AutomationElement.AutomationIdProperty, "ChromeConnectionPrimary"))?.Current.Name == "移除连接", ct).WaitAsync(ct),
                     "registered-connect-action-remained");
+                setup.Stage = "confirm-connect-arrange-source";
+                await Task.Run(() => ArrangeSettingsBesideSource(app.Process, connectionWindow, ct), ct).WaitAsync(ct);
                 setup.Stage = "confirm-connect-return-to-page";
-                await FocusPageAsync(cdp!, windows!, ct);
+                await FocusCommandFieldAsync(cdp!, windows!, connectionWindow, ct);
                 setup.Stage = "confirm-connect-wait-connected";
                 await WaitBrowserConnectionStatusAsync(app.Process, "已连接", ct);
             });
