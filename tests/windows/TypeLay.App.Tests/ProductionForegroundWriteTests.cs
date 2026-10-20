@@ -70,7 +70,7 @@ public sealed class ProductionForegroundWriteTests
     [InlineData("success")]
     [InlineData("timeout")]
     [InlineData("cookie-lost")]
-    public async Task NativeReturnWaitsForOneRootMessageAndRechecksOriginalBinding(string change)
+    public async Task NativeReturnCompletesRootActivationBeforeCorrectingAnotherField(string change)
     {
         await using var desktop = await Desktop.Start();
         await desktop.Prepare(desktop.A, "A🙂你好Z", new(3, 5));
@@ -116,6 +116,51 @@ public sealed class ProductionForegroundWriteTests
         Assert.Equal(source.Text, N.ReadText(desktop.A, Limits.MaxTextUnits));
         Assert.Equal(otherText, N.ReadText(desktop.B, Limits.MaxTextUnits));
         Assert.Equal(source.Selection, N.ReadSelection(desktop.A));
+        desktop.AssertZeroSubmits();
+    }
+
+    [Theory]
+    [InlineData("success")]
+    [InlineData("timeout")]
+    [InlineData("cookie-lost")]
+    public async Task NativeReturnPreservesTheExactFieldRestoredByRootActivation(string change)
+    {
+        await using var desktop = await Desktop.Start();
+        await desktop.Prepare(desktop.A, "A🙂你好Z", new(3, 5));
+        var source = await desktop.Capture();
+        string otherFieldText = N.ReadText(desktop.B, Limits.MaxTextUnits);
+        await using var elsewhere = await StockFixture.Start(desktop.Token);
+        await elsewhere.Focus(elsewhere.A, desktop.Token);
+        string elsewhereText = N.ReadText(elsewhere.A, Limits.MaxTextUnits);
+        using var entered = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(desktop.FixtureProcessId, "entered"));
+        using var release = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(desktop.FixtureProcessId, "release"));
+        Assert.Equal((nuint)1, N.Send(desktop.Root, N.FixtureArmNullBarrier));
+        var pending = desktop.Call(new(BrokerProtocol.Version, 0, "return", "", BoundTarget: source.Target,
+            OverlayHwnd: (long)elsewhere.Root, ExpiresAtMs: WindowsInterruptClock.NowMs + 800));
+        try
+        {
+            Assert.True(await Task.Run(() => entered.WaitOne(TimeSpan.FromSeconds(2)), desktop.Token));
+            // The actual host restored A during its one root activation. The
+            // completion message must not first refocus A through UIA.
+            Assert.Equal((desktop.Root, desktop.A), N.Focused());
+            if (change == "timeout")
+                Assert.Equal("denied", (await pending).Status);
+            else
+            {
+                Assert.False(pending.IsCompleted);
+                if (change == "cookie-lost")
+                    Assert.NotEqual(nint.Zero, N.RemoveProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2"));
+                release.Set();
+                Assert.Equal(change == "success" ? "focused" : "denied", (await pending).Status);
+            }
+        }
+        finally { release.Set(); }
+        Assert.Equal((nuint)1, N.Send(desktop.Root, N.FixtureBarrierStatus));
+        Assert.Equal((desktop.Root, desktop.A), N.Focused());
+        Assert.Equal(source.Text, N.ReadText(desktop.A, Limits.MaxTextUnits));
+        Assert.Equal(source.Selection, N.ReadSelection(desktop.A));
+        Assert.Equal(otherFieldText, N.ReadText(desktop.B, Limits.MaxTextUnits));
+        Assert.Equal(elsewhereText, N.ReadText(elsewhere.A, Limits.MaxTextUnits));
         desktop.AssertZeroSubmits();
     }
 

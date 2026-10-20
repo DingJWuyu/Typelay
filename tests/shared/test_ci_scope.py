@@ -16,6 +16,7 @@ FULL = {
     "quality_only": "false",
     "practice": "false",
     "collect_quality": "false",
+    "hy_decode_comparison": "false",
 }
 LINUX = {**FULL, "windows": "false"}
 WINDOWS = {**FULL, "linux": "false"}
@@ -95,6 +96,7 @@ class ScopeTests(unittest.TestCase):
                 "BRANCH": branch,
                 "BEFORE": before,
                 "AFTER": self.git("rev-parse", "HEAD"),
+                "HY_DECODE_COMPARISON": "false",
                 "CREATED": "false",
                 "FORCED": "false",
                 **event,
@@ -316,6 +318,116 @@ class ScopeTests(unittest.TestCase):
             {**FULL, "collect_quality": "true"},
             self.select(self.base, GITHUB_EVENT_PATH=str(payload)),
         )
+
+    def test_explicit_comparison_footer_keeps_all_checks(self):
+        message = (
+            "decode experiment\n\nTypeLay-Quality-Capture: true\nTypeLay-Hy-Decode-Comparison: true"
+        )
+        head = self.commit({"docs/note.md": "experiment"}, message=message)
+        payload = self.root / "event.json"
+        payload.write_text(json.dumps({"head_commit": {"id": head, "message": message}}))
+        self.assertEqual(
+            {**FULL, "collect_quality": "true", "hy_decode_comparison": "true"},
+            self.select(self.base, GITHUB_EVENT_PATH=str(payload)),
+        )
+
+    def test_comparison_requires_both_exact_current_footers(self):
+        quality = "TypeLay-Quality-Capture: true"
+        comparison = "TypeLay-Hy-Decode-Comparison: true"
+        payload = self.root / "event.json"
+        for message, expected in (
+            (f"experiment\n\n{comparison}", FULL),
+            (f"experiment\n\n{comparison}\n{quality}", FULL),
+            (f"experiment\n\n{quality}\n{comparison}\n{comparison}", FULL),
+            (f"experiment\n\n{quality}\n{quality}\n{comparison}", FULL),
+            (f"experiment\n\n{quality}\nTypeLay-Hy-Decode-Comparison: false", FULL),
+            (f"experiment\n\n{quality}\nTypeLay-Hy-Decode-Comparison: yes", FULL),
+            (f"experiment\n\n{quality}\nTypeLay-Hy-Decode-Comparison:", FULL),
+            (f"experiment\n\n{quality}\n{comparison} ", FULL),
+            (f"experiment\n\n{quality}\n{comparison}\n\nMore prose.", FULL),
+            (f"experiment\n{quality}\n{comparison}", FULL),
+            (f"Discuss {comparison}", SHARED_ONLY),
+            (f"quoted\n\n> {comparison}", SHARED_ONLY),
+            (f"indented\n\n {comparison}", SHARED_ONLY),
+            (f"example\n\n```text\n{quality}\n{comparison}\n```", SHARED_ONLY),
+            (f"unclosed example\n\n~~~\n\n{quality}\n{comparison}", SHARED_ONLY),
+        ):
+            with self.subTest(message=message):
+                self.reset(self.base)
+                head = self.commit({"docs/note.md": "example"}, message=message)
+                payload.write_text(json.dumps({"head_commit": {"id": head, "message": message}}))
+                self.assertEqual(expected, self.select(self.base, GITHUB_EVENT_PATH=str(payload)))
+
+    def test_comparison_requires_verified_push_not_environment_or_old_history(self):
+        message = "experiment\n\nTypeLay-Quality-Capture: true\nTypeLay-Hy-Decode-Comparison: true"
+        head = self.commit({"docs/note.md": "experiment"}, message=message)
+        payload = self.root / "event.json"
+        payload.write_text(json.dumps({"head_commit": {"id": head, "message": message}}))
+        for event in (
+            {"CREATED": "true"},
+            {"FORCED": "true"},
+            {"AFTER": self.base},
+            {"BEFORE": head},
+            {"BEFORE": "0" * 40},
+            {"BEFORE": "a" * 40},
+            {"EVENT_NAME": "pull_request"},
+            {"GITHUB_EVENT_PATH": str(self.root / "missing.json")},
+        ):
+            with self.subTest(event=event):
+                self.assertEqual(
+                    FULL, self.select(self.base, **{"GITHUB_EVENT_PATH": str(payload), **event})
+                )
+        for branch in ("trunk", "work/windows-experience", "other"):
+            self.assertEqual(FULL, self.select(self.base, branch, GITHUB_EVENT_PATH=str(payload)))
+        for value in (
+            {},
+            [],
+            {"head_commit": None},
+            {"head_commit": {"id": self.base, "message": message}},
+            {"head_commit": {"id": head, "message": message + " not exact"}},
+        ):
+            payload.write_text(json.dumps(value))
+            self.assertEqual(FULL, self.select(self.base, GITHUB_EVENT_PATH=str(payload)))
+        for raw in ("{", " " * (4 * 1024 * 1024 + 1)):
+            payload.write_text(raw)
+            self.assertEqual(FULL, self.select(self.base, GITHUB_EVENT_PATH=str(payload)))
+        self.commit({"docs/current.md": "ordinary follow-up"})
+        self.assertEqual(SHARED_ONLY, self.select(head, GITHUB_EVENT_PATH=str(payload)))
+
+    def test_manual_comparison_boolean_is_exact_and_requires_collection(self):
+        for mode in ("full", "quality-only"):
+            self.assertEqual(
+                {
+                    **(FULL if mode == "full" else QUALITY_ONLY),
+                    "collect_quality": "true",
+                    "hy_decode_comparison": "true",
+                },
+                self.select(
+                    self.base,
+                    EVENT_NAME="workflow_dispatch",
+                    CHECK_MODE=mode,
+                    COLLECT_TRANSLATION_QUALITY="true",
+                    HY_DECODE_COMPARISON="true",
+                ),
+            )
+        for event, collect, comparison in (
+            ("workflow_dispatch", "false", "true"),
+            ("workflow_dispatch", "", "true"),
+            ("workflow_dispatch", "TRUE", "true"),
+            ("push", "true", "true"),
+            ("pull_request", "true", "true"),
+            ("workflow_dispatch", "true", "yes"),
+            ("workflow_dispatch", "true", "TRUE"),
+            ("workflow_dispatch", "true", " true"),
+        ):
+            with self.subTest(event=event, collect=collect, comparison=comparison):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.select(
+                        self.base,
+                        EVENT_NAME=event,
+                        COLLECT_TRANSLATION_QUALITY=collect,
+                        HY_DECODE_COMPARISON=comparison,
+                    )
 
     def test_quality_push_requires_exact_current_event_and_valid_branch_history(self):
         message = "experiment\n\nTypeLay-Quality-Capture: true"

@@ -94,7 +94,7 @@ class PracticeSession:
                 else:
                     await self.retire()
 
-    async def retire(self):
+    async def retire(self, failure=None):
         run, automatic = self.run, self.lesson == "automatic"
         self.completion_pending = None
         if self.end_unconfirmed:
@@ -108,6 +108,8 @@ class PracticeSession:
             # permit is retired only when its original connection acknowledges.
             needs_ack = self.input.retire_practice(run, notify=False)
         self.pid = self.run = self.target = None
+        if failure is not None:
+            self.input.record_practice_failure("progress", failure)
         try:
             ended = await self.host.ask(self.operation("end"), run)
             confirmed = not automatic or ended is True
@@ -167,7 +169,7 @@ class PracticeSession:
             ):
                 return None
             if not self.support.owns_practice(self.pid):
-                await self.retire()
+                await self.retire("process-not-owned")
                 return None
             if pid != self.pid:
                 return None
@@ -190,7 +192,7 @@ class PracticeSession:
                     return progress
                 return None
             if not isinstance(progress, dict) or progress.get("runId") != self.run:
-                await self.retire()
+                await self.retire("runtime-progress-lost")
                 return None
             automatic = self.lesson == "automatic"
             if automatic and self.input.practice_editing(self.run):
@@ -217,10 +219,10 @@ class PracticeSession:
                 else await self.input.practice_target(pid, self.target)
             )
             if not self.support.owns_practice(pid):
-                await self.retire()
+                await self.retire("process-not-owned")
                 return None
             if self.target is not None and target != self.target:
-                await self.retire()
+                await self.retire("target-unavailable" if target is None else "target-changed")
                 return None
             if target is not None and (
                 self.target is None or (automatic and progress.get("awaitingFreshSource"))
@@ -231,16 +233,16 @@ class PracticeSession:
                     else {"runId": self.run, "target": target}
                 )
                 if automatic and not self.input.prepare_practice(data, self.support.owns_practice):
-                    await self.retire()
+                    await self.retire("prepare-rejected")
                     return None
                 pending = self.input.practice_pending if automatic else None
                 if await self.host.ask(self.operation("bind"), data) is not True:
-                    await self.retire()
+                    await self.retire("runtime-bind-rejected")
                     return None
                 if automatic and not self.input.authorize_practice(
                     data, self.support.owns_practice, pending
                 ):
-                    await self.retire()
+                    await self.retire("authorize-rejected")
                     return None
                 self.target = target
                 progress = await self.host.ask(self.operation("") + "Progress")
@@ -249,7 +251,7 @@ class PracticeSession:
                 or progress.get("runId") != self.run
                 or progress.get("target") != self.target
             ):
-                await self.retire()
+                await self.retire("bound-progress-lost")
                 return None
             return progress
 

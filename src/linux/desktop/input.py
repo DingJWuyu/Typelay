@@ -217,6 +217,7 @@ class Input:
         self.shortcut_command = None
         self.shortcut_diagnostic_count = 0
         self.publish_diagnostics = []
+        self.practice_failures = []
         self.practice_authorization = None
         self.practice_pending = None
         self.practice_retirement = None
@@ -496,36 +497,68 @@ class Input:
         }
         return True
 
+    def record_practice_failure(self, stage, reason):
+        # Fixed local call-site codes only. Keep the last failures across ordinary
+        # captures so a later working preview cannot erase a lost lesson binding.
+        pending = self.practice_pending
+        self.practice_failures.append(
+            {
+                "atMs": now_ms(),
+                "stage": stage,
+                "reason": reason,
+                "windowEpoch": self.window_epoch,
+                "pendingWindowEpoch": pending["windowEpoch"] if pending else None,
+                "pending": pending is not None,
+                "authorized": self.practice_authorization is not None,
+                "retiring": self.practice_retirement is not None,
+            }
+        )
+        del self.practice_failures[:-16]
+
     def authorize_practice(self, binding, owns_process, expected_pending=None):
         pending = self.practice_pending
-        if (
-            pending is None
-            or (expected_pending is not None and pending is not expected_pending)
-            or self.practice_retirement is not None
-            or any(
-                binding.get(key) != pending.get(key)
-                for key in (
-                    "runId",
-                    "target",
-                    "connectionId",
-                    "commandGeneration",
-                    "nativeFocusRevision",
-                    "contextGeneration",
-                )
+        # Preserve the original short-circuit gate order. The first failed gate
+        # is evidence, not permission to refresh, retry or adopt a newer identity.
+        if pending is None:
+            reason = "pending-missing"
+        elif expected_pending is not None and pending is not expected_pending:
+            reason = "pending-replaced"
+        elif self.practice_retirement is not None:
+            reason = "retirement-pending"
+        elif any(
+            binding.get(key) != pending.get(key)
+            for key in (
+                "runId",
+                "target",
+                "connectionId",
+                "commandGeneration",
+                "nativeFocusRevision",
+                "contextGeneration",
             )
-            or pending["settingsGeneration"] != self.settings_generation
-            or pending["windowEpoch"] != self.window_epoch
-            or pending["peer"] not in self.peers
-            or not pending["peer"].link.channel.alive
-            or not owns_process(pending["peer"].pid)
-            or self.bound != pending["target"]
-            or self.shortcut_config.get("generation") != pending["commandGeneration"]
-            or self.focus() not in ("Source", "Overlay")
         ):
-            return False
-        self.practice_pending = None
-        self.practice_authorization = pending
-        return True
+            reason = "binding-changed"
+        elif pending["settingsGeneration"] != self.settings_generation:
+            reason = "settings-changed"
+        elif pending["windowEpoch"] != self.window_epoch:
+            reason = "window-changed"
+        elif pending["peer"] not in self.peers:
+            reason = "peer-lost"
+        elif not pending["peer"].link.channel.alive:
+            reason = "channel-closed"
+        elif not owns_process(pending["peer"].pid):
+            reason = "process-not-owned"
+        elif self.bound != pending["target"]:
+            reason = "target-changed"
+        elif self.shortcut_config.get("generation") != pending["commandGeneration"]:
+            reason = "command-changed"
+        elif self.focus() not in ("Source", "Overlay"):
+            reason = "focus-left"
+        else:
+            self.practice_pending = None
+            self.practice_authorization = pending
+            return True
+        self.record_practice_failure("authorize", reason)
+        return False
 
     def retire_practice(self, run, *, notify=True):
         returned = self.practice_return
@@ -1590,6 +1623,7 @@ class Input:
             "captureStatus": self.capture_status,
             "captureCounts": dict(self.capture_counts),
             "captureFailures": list(self.capture_failures),
+            "practiceFailures": [dict(value) for value in self.practice_failures],
             "timingMs": {key: dict(value) for key, value in self.timing_metrics.items()},
             "nativePublications": [dict(value) for value in self.publish_diagnostics],
             "browser": self.browser_diagnostics,

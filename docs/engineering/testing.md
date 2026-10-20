@@ -80,7 +80,7 @@ python tests/shared/worker/glossary_quality.py --validate-only \
 
 明确选择 `check_mode=quality-only` 且 `collect_translation_quality=true` 才启用非验收采集；未同时确认采集或未知模式直接失败，不默认为缩减检查。该模式保留共享检查、同一 SHA 的 Linux 构建与完整包组装、原生 ABI/manifest/模型固定锁验证、正式 Argos 安装、GTK 运行基础及原 Hy 安装/切换/退出与53响应采集。包组装依赖的 Fcitx/Qt 构建探针仍运行；仅跳过 Windows 和无关浏览器、托盘、教程、GTK/Qt真实模型及 VS Code 交互场景。不复制模型或制造库存，不增加旁路质量执行器；名称与摘要明确标注不构成完整产品验收。该显式模式不改变 push/PR 的分流和失败封闭规则。
 
-没有手动 dispatch 入口时，可在已授权的 `work/linux-usability` 新提交的纯文本正文末尾，以空行分隔的最后一段仅写 `TypeLay-Quality-Capture: true`，明确请求同一次完整检查附带采集。仅已存在分支的非强推、有效祖先到新 HEAD、push 的 `after` 与 HEAD 相同，且事件 `head_commit` 的 ID 和完整正文与 Git HEAD 一致时生效。它强制保留共享、Windows 和 Linux 完整检查，不启用 Qt/练习部分验收，也不是 quality-only。普通提交、旧历史中的标记、正文中途/标题/引用/缩进文本、含反引号或波浪线代码围栏的正文、重复标记、PR、其它分支及证据不全均不启用采集；未验证的显式请求仍保留完整检查。采集布尔值由同一个 scope 输出驱动原有预算、无字节码准备及正式生命周期入口，不新增模型或另一套 runner。只为已有明确实验假设添加标记；后续普通提交不会继承采集请求。仍须等待同分支上一轮完成，避免并发组取消有价值的验证。
+默认53次采集没有手动 dispatch 入口时，可在已授权的 `work/linux-usability` 新提交的纯文本正文末尾，以空行分隔的最后一段仅写 `TypeLay-Quality-Capture: true`，明确请求同一次完整检查附带采集。仅已存在分支的非强推、有效祖先到新 HEAD、push 的 `after` 与 HEAD 相同，且事件 `head_commit` 的 ID 和完整正文与 Git HEAD 一致时生效。它强制保留共享、Windows 和 Linux 完整检查，不启用 Qt/练习部分验收，也不是 quality-only。普通提交、旧历史中的标记、正文中途/标题/引用/缩进文本、含反引号或波浪线代码围栏的正文、重复标记、PR、其它分支及证据不全均不启用采集；未验证的显式请求仍保留完整检查。采集布尔值由同一个 scope 输出驱动原有预算、无字节码准备及正式生命周期入口，不新增模型或另一套 runner。只为已有明确实验假设添加标记；后续普通提交不会继承采集请求。仍须等待同分支上一轮完成，避免并发组取消有价值的验证。
 
 ```sh
 # 明确的非验收采集；不会修改默认 full 模式。
@@ -110,7 +110,7 @@ python tests/linux/native_e2e.py --desktop --desktop-scope model-packages \
 
 ### 可选的 Hy 解码对照
 
-仅手动运行时，可在上述 `quality-only` 与 `collect_translation_quality=true` 之外明确设置 `hy_decode_comparison=true`。默认仍采集53次；该选项将风格槽扩为 A/B 各16次，总计69次。它不改变发行模型或生产默认：A 使用同次实际发行 worker 的 greedy，B 在隔离产物目录中复用已验证 CPU 库编译另一个 adapter。两组使用同一安装代、模型、提示和固定样本，但 native/manifest 摘要必须分别记录，不能冒称同一二进制。
+手动运行时，可在 `full` 或上述 `quality-only` 与 `collect_translation_quality=true` 之外明确设置 `hy_decode_comparison=true`。没有 dispatch 入口时，可在上述经验证的 push 采集 footer 同一末尾段中，紧接 `TypeLay-Quality-Capture: true` 下一行仅写 `TypeLay-Hy-Decode-Comparison: true`。两行各出现一次且顺序固定；对照标记单独出现、重复、换序、错误值或不在尾段均不启用采集，并保留完整检查。push 对照仍运行全部共享、Windows、Linux 检查，不提供 quality-only 捷径。默认仍采集53次；该选项将风格槽扩为 A/B 各16次，总计69次。它不改变发行模型或生产默认：A 使用同次实际发行 worker 的 greedy，B 在隔离产物目录中复用已验证 CPU 库编译另一个 adapter。两组使用同一安装代、模型、提示和固定样本，但 native/manifest 摘要必须分别记录，不能冒称同一二进制。
 
 B 采用明确的 Transformers v5.6.0 顺序：repetition penalty 1.05、temperature 0.7、top-k 20、top-p 0.6，最后用逐请求重置的固定 seed `20261020` 采样。这只是原产品资源预算下的四参数对照，不是原厂完整运行配置；ctx1024、新生成192 token、CPU2、2.5 GiB及原 EOG/截断拒绝保持不变。
 

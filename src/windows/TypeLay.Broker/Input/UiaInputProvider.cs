@@ -585,6 +585,21 @@ internal sealed class UiaInputProvider : IDisposable
             GetWindow(foreground, 4) == (nint)binding.RootHwnd, child, kind);
     }
 
+    private static bool CompleteReturnActivation(BrokerRequest request, WindowsTarget binding, out string reason)
+    {
+        long remaining = request.ExpiresAtMs - WindowsInterruptClock.NowMs;
+        reason = "return-expired";
+        if (remaining <= 0 || remaining > 800)
+            return false;
+        reason = "activation-barrier";
+        // ABORTIFHUNG | ERRORONEXIT, never NOTIMEOUTIFNOTHUNG. Only the original
+        // source root receives WM_NULL; this cannot activate or authorize a write.
+        if (SendMessageTimeoutW((nint)binding.RootHwnd, 0, 0, 0, 0x22, (uint)remaining, out _) == 0)
+            return false;
+        reason = "return-expired";
+        return WindowsInterruptClock.NowMs < request.ExpiresAtMs;
+    }
+
     public bool ReturnToSource(BrokerRequest request, out string reason, out ReturnForegroundFacts? foregroundFacts)
     {
         foregroundFacts = null;
@@ -669,24 +684,35 @@ internal sealed class UiaInputProvider : IDisposable
         reason = "return-expired";
         if (!glossary && WindowsInterruptClock.NowMs >= request.ExpiresAtMs)
             return false;
+        bool nativeFocusRestored = false;
+        if (!glossary && binding.Provider == NativeEditTransactions.Provider)
+        {
+            // Finish the one root activation before deciding whether the source
+            // already restored the exact registered field. Avoid a redundant
+            // focus operation after that exact native state has been verified.
+            if (!CompleteReturnActivation(request, binding, out reason))
+                return false;
+            reason = "native-source-changed";
+            if (!_edits.ConfirmsReturnIdentity(binding))
+                return false;
+            nativeFocusRestored = _edits.ConfirmsReturnFocus(binding);
+            // A failed focus check is not permission to correct a changed lifetime.
+            if (!nativeFocusRestored && !_edits.ConfirmsReturnIdentity(binding))
+                return false;
+        }
+        reason = "return-expired";
+        if (!glossary && WindowsInterruptClock.NowMs >= request.ExpiresAtMs)
+            return false;
         reason = "set-focus";
-        // A glossary return never corrects another field's focus. The native
-        // host must have restored this exact original control on activation.
-        if (!glossary)
+        // Glossary returns never correct field focus. Ordinary non-native or
+        // not-yet-restored fields keep the existing UIA correction path.
+        if (!glossary && !nativeFocusRestored)
             _element.SetFocus();
         if (!glossary)
         {
-            // Cross-input-queue activation is asynchronous. A single no-op sent
-            // to the already validated root completes the original focus operations;
-            // it is not another activation attempt and grants no write authority.
-            long remaining = request.ExpiresAtMs - WindowsInterruptClock.NowMs;
-            reason = "return-expired";
-            if (remaining <= 0 || remaining > 800)
-                return false;
-            reason = "activation-barrier";
-            // ABORTIFHUNG | ERRORONEXIT; never NOTIMEOUTIFNOTHUNG. The target is
-            // one exact source root, not a broadcast or a newly observed HWND.
-            if (SendMessageTimeoutW((nint)binding.RootHwnd, 0, 0, 0, 0x22, (uint)remaining, out _) == 0)
+            // A correction needs its own completion, not a second activation.
+            // Both bounded no-ops share the original absolute request deadline.
+            if (!nativeFocusRestored && !CompleteReturnActivation(request, binding, out reason))
                 return false;
             reason = "return-expired";
             if (WindowsInterruptClock.NowMs >= request.ExpiresAtMs)

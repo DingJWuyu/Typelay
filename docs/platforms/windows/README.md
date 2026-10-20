@@ -79,14 +79,14 @@
 
 ### 当前可验证候选
 
-最近核对的验证基线为 [`88878d2a`](https://github.com/DingJWuyu/Typelay/actions/runs/39493873911)，该运行已结束。共享检查与 Windows 整体构建、格式检查及发行打包通过；完整 Windows 检查仍失败。
+最近核对的验证基线为 [`245339db`](https://github.com/DingJWuyu/Typelay/actions/runs/39498694524)，该运行已结束，Windows 完整检查失败。
 
-- App.Tests：527 项中 504 项通过、23 项失败。术语原有两项保存回源、一项控制器及新增 18 项 barrier 回归失败；其中新增 barrier 在 WM_NULL 前报告 `return-canceled`；另有外进程鼠标前台预检与空容器目录锁边界各一项失败。目录属性句柄未阻止重命名，不能据此声称锁边界已验证。两项 Ready 与自然退出所有权本轮通过，不外推为长期稳定。
-- 连续翻译的首次 Tab、自有编辑、Tab 与鼠标回源、人工稿接受及完成流程均通过；普通连续翻译、直接替换及 Chrome 冷启动/新标签页也通过。仅普通字段编辑回源仍失败于 `activation-foreground-other-source-process`。
-- 未改发行配置的真实浏览器接入整链通过：标准 profile 只读发现扩展 ID、保持原 `releaseConnection` 配置、设置取消/确认/移除、真实模型 Tab 接受/直接替换，以及切焦后仅修改原字段、保持另一字段正文与焦点，预置空根目录保留。上述成功不覆盖仍失败的目录锁边界单测。
-- 真实记事本已通过精确 System32 旧版 Edit 预检，随后在 `settings-and-model` 阶段约 70 秒处发生 COMException；之后的记事本流程与 Hy 阶段均未运行。编译或受控 Runtime 测试不等于桌面通过；本轮没有重新采集模型质量，最近结论见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
+- App.Tests：527 项中 526 项通过、1 项失败。术语保存/控制器/barrier、鼠标前台预检与目录锁边界本轮通过；仍失败的 Ready 检查涉及 100ms 接受资格到期，尚未修复，不能据局部通过宣称完整可用。
+- 连续翻译的普通字段编辑回源时，前台身份变成原 Edit 子控件，未通过要求原顶层窗口为前台的校验。
+- 分发 smoke 因新增 trace 中的 `foreground: null` 与预期对象不符而失败，包验收仍红；真实浏览器接入、记事本与 Hy 本轮均未运行。最近完整浏览器接入通过证据属于 88878，不属于本提交。
+- 后继候选尚未重新验证。本轮没有重新采集模型质量，最近结论见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
 
-当前可下载的是上述同提交开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39493873911)下载 [`typelay-windows-88878d2a30ad2d1590b979e2d7b2138fa95991e5`](https://github.com/DingJWuyu/Typelay/actions/runs/39493873911/artifacts/12296729805)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
+以下保留最近已核对摘要的 88878 开发包下载，不是 245339 的包，也不是通过完整验收的稳定版；245339 的新生成包不作为本页推荐候选。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39493873911)下载 [`typelay-windows-88878d2a30ad2d1590b979e2d7b2138fa95991e5`](https://github.com/DingJWuyu/Typelay/actions/runs/39493873911/artifacts/12296729805)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
 
 - 源码提交：`88878d2a30ad2d1590b979e2d7b2138fa95991e5`。
 - 内层 ZIP：87,015,848 字节。

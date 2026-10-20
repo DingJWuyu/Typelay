@@ -84,6 +84,7 @@ class InputPort:
         self.continuing = False
         self.foreground_fresh = True
         self.binding_reads = 0
+        self.failures = []
         self.editing = False
         self.practice_pending = None
         self.ack_gate = None
@@ -92,6 +93,9 @@ class InputPort:
     @property
     def practice_authorization(self):
         return self.authorization
+
+    def record_practice_failure(self, stage, reason):
+        self.failures.append((stage, reason))
 
     async def practice_target(self, pid, target=None):
         return dict(self.target) if self.available else None
@@ -256,6 +260,7 @@ class PracticeSessionTests(unittest.IsolatedAsyncioTestCase):
         self.input.available = False
         self.assertIsNone((await self.practice.progress(100, lesson="automatic"))["target"])
         self.assertIsNone(self.input.authorization)
+        self.assertEqual(self.input.failures, [], "An unbound pending run is not a retirement.")
         self.input.available = True
         progress = await self.practice.progress(100, lesson="automatic")
         self.assertEqual(progress["runId"], run)
@@ -276,6 +281,15 @@ class PracticeSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(
             await self.practice.progress(100), "F9/F10 progress adopted an automatic run"
         )
+
+    async def test_bound_progress_missing_target_records_retirement_not_initial_pending(self):
+        await self.automatic()
+        self.assertIsNotNone(await self.practice.progress(100, lesson="automatic"))
+        self.input.available = False
+        self.assertIsNone(await self.practice.progress(100, lesson="automatic"))
+        self.assertEqual(self.input.failures, [("progress", "target-unavailable")])
+        self.assertIsNone(self.practice.run)
+        self.assertIsNone(self.input.authorization)
 
     async def test_continuity_waits_for_new_capture_and_only_then_binds_the_same_run(self):
         run = await self.automatic()

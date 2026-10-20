@@ -45,6 +45,14 @@ internal sealed partial class PracticeHost
         // release advances the direct predecessor used for ACK identity.
         public long RenewalAttemptFloor => AttemptFloorSequence > 0 ? AttemptFloorSequence : Plan.PlanSequence;
         public string State { get; set; } = "install";
+        public long? InstalledHandledAtMs
+        {
+            get; set;
+        }
+        public long? HookInstallReturnedAtMs
+        {
+            get; set;
+        }
         public bool Received
         {
             get; set;
@@ -244,6 +252,8 @@ internal sealed partial class PracticeHost
             witnessPoisoned = _witnessWriter?.Poisoned,
             queuedPlan = _nextAcceptance is not null,
             acceptanceState = current?.State,
+            installedHandledAtMs = current?.InstalledHandledAtMs,
+            hookInstallReturnedAtMs = current?.HookInstallReturnedAtMs,
             planMatches = current?.Plan.Permit.Plan.Id == permit.Plan.Id,
             leaseMatches = current is not null && SameAcceptanceLease(current.Lease, lease),
             descriptorMatches = current is not null && _descriptor == current.Plan.Descriptor,
@@ -625,12 +635,19 @@ internal sealed partial class PracticeHost
         {
             if (current.State == "install")
             {
+                current.InstalledHandledAtMs = WindowsInterruptClock.NowMs;
                 current.State = "installed";
                 if (SourceReady(current.Lease.Source.Target)
                     && (current.AttemptFloorSequence == 0 || RenewalCurrent(current.Lease, current.Plan.Permit,
                         current.AttemptFloorSequence, current.ContentEpoch)))
                 {
-                    _monitor?.InstallOwnedPlan(current.Plan.PlanSequence, current.Lease, current.Plan.Permit, current.Plan.Descriptor);
+                    if (_monitor is { } monitor)
+                    {
+                        monitor.InstallOwnedPlan(current.Plan.PlanSequence, current.Lease, current.Plan.Permit, current.Plan.Descriptor);
+                        // A returned call can have refused installation. This is
+                        // a UI boundary only; inspect the existing hook facts too.
+                        current.HookInstallReturnedAtMs = WindowsInterruptClock.NowMs;
+                    }
                     _session?.RefreshAcceptancePresentation();
                 }
                 else

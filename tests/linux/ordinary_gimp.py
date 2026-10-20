@@ -30,12 +30,21 @@ def launched_application(child, executable):
 
 def validate_nested_output(outputs, output_size):
     assert len(outputs) == 1, "ordinary click requires one observed nested output"
-    logical = next(iter(outputs.values()))["logical"]
+    name, output = next(iter(outputs.items()))
+    assert name == output.get("name") == "winit", "nested output is not winit"
+    assert output.get("make") == "Smithay" and output.get("model") == "Winit", (
+        "nested output backend is not verified"
+    )
+    logical = output["logical"]
     assert logical is not None, "nested output is disabled"
     assert [logical["width"], logical["height"]] == output_size, "nested output size mismatch"
     assert logical["x"] == logical["y"] == 0, "nested output origin mismatch"
     assert logical["scale"] == 1, f"nested output scale mismatch: {logical['scale']!r}"
-    assert logical["transform"] == "Normal", (
+    # niri 8ed0da4 input/backend_ext.rs: WinitVirtualDevice deliberately uses
+    # unflipped global pointer coordinates although its render output is
+    # Flipped180 (niri.rs add_output). Applying the render flip again would
+    # misdirect XTest input. This exception is only for that exact backend.
+    assert logical["transform"] == "Flipped180", (
         f"nested output transform mismatch: {logical['transform']!r}"
     )
 
@@ -346,6 +355,10 @@ def run_gimp(
             "nestedXWindow": nested_window,
             "xGeometry": geometry,
             "logicalOutputs": {name: value.get("logical") for name, value in outputs.items()},
+            "outputBackends": {
+                name: {field: value.get(field) for field in ("name", "make", "model")}
+                for name, value in outputs.items()
+            },
         }
         diagnostic_record()
         validate_nested_output(outputs, expected)

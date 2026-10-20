@@ -77,37 +77,6 @@ class DecodeComparisonAdmissionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("requires --collect-translation-quality", result.stderr)
 
-    def test_dispatch_boolean_is_exact_and_requires_manual_collection(self):
-        for event, enabled, comparison, success in (
-            ("push", "", "false", True),
-            ("pull_request", "", "false", True),
-            ("workflow_dispatch", "false", "false", True),
-            ("workflow_dispatch", "true", "true", True),
-            ("workflow_dispatch", "false", "true", False),
-            ("push", "true", "true", False),
-            ("pull_request", "true", "true", False),
-            ("workflow_dispatch", "true", "yes", False),
-        ):
-            with self.subTest(event=event, collect=enabled, comparison=comparison):
-                result = subprocess.run(
-                    [
-                        sys.executable,
-                        "-B",
-                        str(ROOT / "tests/shared/worker/hy_decode_comparison.py"),
-                        "--check-dispatch",
-                    ],
-                    env={
-                        **os.environ,
-                        "EVENT_NAME": event,
-                        "COLLECT_TRANSLATION_QUALITY": enabled,
-                        "HY_DECODE_COMPARISON": comparison,
-                    },
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                self.assertEqual(result.returncode == 0, success, result.stderr)
-
 
 class CaptureHandoffTests(unittest.TestCase):
     def setUp(self):

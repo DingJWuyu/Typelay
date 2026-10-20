@@ -1113,11 +1113,22 @@ def check_language_options(
     view.pop("languageChoices")
     actual = render()
     assert actual[trigger]["text"] == "ja（当前不可用） → ko（当前不可用）"
+    # Invalidating the focused choices safely closes the menu onto its trigger.
+    # Reopen it through the public button before testing the disabled action.
+    assert not actual[menu]["visible"] and actual[trigger]["focused"]
+    toggle(True, renew=False)
+    actual = controls()
+    for name in (source_control, target_control, apply_control):
+        assert actual[name]["visible"] and not actual[name]["enabled"], name
     click(apply_control)
     assert events() == before_events, "invalid choices emitted a language change"
     if client.hello["backend"] in ("gtk3", "gtk4"):
+        # With both selectors disabled, the trigger still owns focus. Close
+        # before renewing; an open-menu trigger is not a retained focus proof.
+        toggle(False, renew=False)
         view["languageChoices"] = choices
         render()
+        toggle(True, renew=False)
         click(source_control)
         wait_for(
             lambda: controls()[source_control]["popupVisible"], "language popup did not reopen"

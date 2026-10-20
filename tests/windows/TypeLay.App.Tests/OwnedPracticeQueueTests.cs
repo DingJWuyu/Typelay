@@ -825,9 +825,20 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             }
             async Task UntilReady((InputLease Lease, AcceptancePermit Permit, long CapturedAtMs) plan, long publishedAtMs)
             {
+                // These are probe/dispatcher boundaries, not pipe arrival times.
+                long lastProbeStartedAtMs = publishedAtMs, lastProbeCompletedAtMs = publishedAtMs, maxProbeGapMs = 0;
+                bool Probe()
+                {
+                    long started = WindowsInterruptClock.NowMs;
+                    maxProbeGapMs = Math.Max(maxProbeGapMs, started - lastProbeCompletedAtMs);
+                    bool ready = Ready(plan);
+                    lastProbeStartedAtMs = started;
+                    lastProbeCompletedAtMs = WindowsInterruptClock.NowMs;
+                    return ready;
+                }
                 // One original plan only: after its exact deadline no later ACK
                 // can make this readiness predicate true. Never refresh or retry.
-                while (!Ready(plan))
+                while (!Probe())
                 {
                     long now = WindowsInterruptClock.NowMs;
                     if (now > plan.Permit.ExpiresAtMs)
@@ -835,6 +846,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                         $"Original acceptance expired before Ready; injected={allowInjectedInput}; "
                         + $"observed={plan.Permit.ObservedAtMs}; captured={plan.CapturedAtMs}; "
                         + $"published={publishedAtMs}; expires={plan.Permit.ExpiresAtMs}; now={now}; "
+                        + $"probeStarted={lastProbeStartedAtMs}; probeCompleted={lastProbeCompletedAtMs}; maxProbeGap={maxProbeGapMs}; "
                         + $"userEpochMatched={hook.UserEpoch == plan.Lease.UserEpoch}; "
                         + $"foregroundEpochMatched={hook.ForegroundEpoch == plan.Lease.ForegroundEpoch}; "
                         + $"focus={hook.GetFocus(plan.Lease.Source.Target)}; "

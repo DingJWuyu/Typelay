@@ -38,6 +38,7 @@ jobs:
       qt: ${{ steps.select.outputs.qt }}
       quality_only: ${{ steps.select.outputs.quality_only }}
       collect_quality: ${{ steps.select.outputs.collect_quality }}
+      hy_decode_comparison: ${{ steps.select.outputs.hy_decode_comparison }}
       practice: ${{ steps.select.outputs.practice }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -58,7 +59,6 @@ jobs:
           CREATED: ${{ github.event.created }}
           FORCED: ${{ github.event.forced }}
         run: |
-          python -B tests/shared/worker/hy_decode_comparison.py --check-dispatch
           python eng/shared/ci_scope.py
   shared:
     runs-on: ubuntu-latest
@@ -808,7 +808,7 @@ jobs:
         if: ${{ !cancelled() && steps.hy-model-prepare.outcome == 'success' }}
         timeout-minutes: ${{ needs.scope.outputs.collect_quality == 'true' && 36 || 5 }}
         env:
-          HY_DECODE_COMPARISON: ${{ inputs.hy_decode_comparison }}
+          HY_DECODE_COMPARISON: ${{ needs.scope.outputs.hy_decode_comparison }}
         run: |
           export DISPLAY=:99
           export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"

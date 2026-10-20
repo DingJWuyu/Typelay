@@ -99,6 +99,25 @@ class OrdinaryDesktopLifecycleTests(unittest.TestCase):
 
 
 class OrdinaryDesktopGeometryTests(unittest.TestCase):
+    def output(self, logical):
+        return {"winit": {"name": "winit", "make": "Smithay", "model": "Winit", "logical": logical}}
+
+    def test_render_flip_is_accepted_only_for_exact_nested_winit_backend(self):
+        # Actual 245339 IPC values, not an invented rotation workaround.
+        logical = dict(x=0, y=0, width=1280, height=800, scale=1.0, transform="Flipped180")
+        validate_nested_output(self.output(logical), [1280, 800])
+        for field, value in (("name", "HDMI-A-1"), ("make", "other"), ("model", "other")):
+            output = self.output(logical)
+            output["winit"][field] = value
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                validate_nested_output(output, [1280, 800])
+        window = dict(id=12, pid=345, is_focused=True, layout=self.layout())
+        measured = ((10, 20, 100, 40), (0, 0, 400, 540))
+        # The logical point remains y=170, not render-buffer mirrored y=630.
+        self.assertEqual(
+            properties_click_point(window, window, measured, measured, [1280, 800]), (500, 170)
+        )
+
     def layout(self):
         return dict(
             tile_size=[1280, 800],
@@ -108,13 +127,11 @@ class OrdinaryDesktopGeometryTests(unittest.TestCase):
         )
 
     def test_click_requires_actual_single_unit_scale_output(self):
-        logical = dict(x=0, y=0, width=1280, height=800, scale=1, transform="Normal")
-        validate_nested_output({"nested": {"logical": logical}}, [1280, 800])
+        logical = dict(x=0, y=0, width=1280, height=800, scale=1, transform="Flipped180")
+        validate_nested_output(self.output(logical), [1280, 800])
         for field, value in (("x", 10), ("width", 1200), ("scale", 2), ("transform", "90")):
             with self.subTest(field=field), self.assertRaises(AssertionError):
-                validate_nested_output(
-                    {"nested": {"logical": dict(logical, **{field: value})}}, [1280, 800]
-                )
+                validate_nested_output(self.output(dict(logical, **{field: value})), [1280, 800])
         with self.assertRaises(AssertionError):
             validate_nested_output({}, [1280, 800])
         with self.assertRaises(AssertionError):
@@ -123,15 +140,13 @@ class OrdinaryDesktopGeometryTests(unittest.TestCase):
             )
 
     def test_output_failure_identifies_observed_scale_or_transform(self):
-        logical = dict(x=0, y=0, width=1280, height=800, scale=1, transform="Normal")
+        logical = dict(x=0, y=0, width=1280, height=800, scale=1, transform="Flipped180")
         for field, value, message in (
             ("scale", 1.25, "nested output scale mismatch: 1.25"),
-            ("transform", "Flipped180", "nested output transform mismatch: 'Flipped180'"),
+            ("transform", "Normal", "nested output transform mismatch: 'Normal'"),
         ):
             with self.subTest(field=field), self.assertRaises(AssertionError) as failure:
-                validate_nested_output(
-                    {"nested": {"logical": dict(logical, **{field: value})}}, [1280, 800]
-                )
+                validate_nested_output(self.output(dict(logical, **{field: value})), [1280, 800])
             self.assertEqual(str(failure.exception), message)
 
     def test_click_point_uses_content_offset_and_rejects_changed_identity_or_frame(self):

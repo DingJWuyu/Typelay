@@ -66,45 +66,67 @@ def valid_push(before, after):
 
 
 def quality_collection():
-    """Return collection and full-check requirements; never infer a past request."""
+    """Return collection, comparison, and full-check requirements for this event."""
     event = os.environ.get("EVENT_NAME")
+    comparison = os.environ.get("HY_DECODE_COMPARISON", "false")
+    if comparison not in ("", "false", "true"):
+        raise ValueError("hy_decode_comparison must be an exact boolean")
+    if comparison == "true" and (
+        event != "workflow_dispatch" or os.environ.get("COLLECT_TRANSLATION_QUALITY") != "true"
+    ):
+        raise ValueError(
+            "hy_decode_comparison input requires manual translation quality collection"
+        )
     if event == "workflow_dispatch":
-        return os.environ.get("COLLECT_TRANSLATION_QUALITY") == "true", False
+        return os.environ.get("COLLECT_TRANSLATION_QUALITY") == "true", comparison == "true", False
     if event != "push":
-        return False, False
+        return False, False, False
     try:
         message = git("show", "-s", "--format=%B", "HEAD").decode("utf-8")
         marker = "TypeLay-Quality-Capture: true"
+        comparison_key = "TypeLay-Hy-Decode-Comparison:"
+        comparison_marker = comparison_key + " true"
         lines = message.rstrip("\n").split("\n")
-        # Only a final plain-text footer is an explicit request. Treat fenced
-        # examples (even unclosed ones) conservatively as documentation, not a
-        # command; no Markdown parser or interpretation of quoted prose needed.
-        if marker not in lines or lines[-1] != marker or "```" in message or "~~~" in message:
-            return False, False
-        if lines.count(marker) != 1:
-            return False, True
-        if len(lines) < 3 or lines[-2] != "":
-            return False, False
-        # A malformed or unverified explicit request never narrows normal checks.
+        # Fenced/quoted/indented examples are documentation, not requests.
+        if "```" in message or "~~~" in message:
+            return False, False, False
+        comparison_lines = [line for line in lines if line.startswith(comparison_key)]
+        compare = bool(comparison_lines)
+        if compare:
+            if (
+                comparison_lines != [comparison_marker]
+                or lines.count(marker) != 1
+                or len(lines) < 4
+                or lines[-3:] != ["", marker, comparison_marker]
+            ):
+                return False, False, True
+        else:
+            if marker not in lines or lines[-1] != marker:
+                return False, False, False
+            if lines.count(marker) != 1:
+                return False, False, True
+            if len(lines) < 3 or lines[-2] != "":
+                return False, False, False
+        # An unverified explicit request never narrows normal checks.
         if os.environ.get("BRANCH") != "work/linux-usability":
-            return False, True
+            return False, False, True
         before, after = os.environ.get("BEFORE", ""), os.environ.get("AFTER", "")
         if before == after or not valid_push(before, after):
-            return False, True
+            return False, False, True
         event_path = Path(os.environ["GITHUB_EVENT_PATH"])
         if event_path.stat().st_size > 4 * 1024 * 1024:
-            return False, True
+            return False, False, True
         payload = json.loads(event_path.read_text(encoding="utf-8"))
         head = payload.get("head_commit")
-        return (
+        verified = (
             isinstance(head, dict)
             and head.get("id") == after
             and isinstance(head.get("message"), str)
-            and head["message"].rstrip("\n") == message.rstrip("\n"),
-            True,
+            and head["message"].rstrip("\n") == message.rstrip("\n")
         )
+        return verified, verified and compare, True
     except (OSError, ValueError, KeyError, AttributeError, subprocess.CalledProcessError):
-        return False, True
+        return False, False, True
 
 
 def neutral(path):
@@ -185,13 +207,14 @@ def select():
 
 def main():
     selection = select()
-    collect, require_full = quality_collection()
+    collect, comparison, require_full = quality_collection()
     if require_full:
         selection = True, True, False, False, False
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
         for name, value in zip(("windows", "linux", "qt", "quality_only", "practice"), selection):
             stream.write(f"{name}={str(value).lower()}\n")
         stream.write(f"collect_quality={str(collect).lower()}\n")
+        stream.write(f"hy_decode_comparison={str(comparison).lower()}\n")
 
 
 if __name__ == "__main__":

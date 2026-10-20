@@ -1455,7 +1455,7 @@ class InputFeedbackTests(unittest.TestCase):
         await asyncio.wait_for(binding_started.wait(), 1)
         self.assertIsNone(self.input.practice_authorization)
         if leave_source:
-            for focused in (False, True):
+            for focused in (True,) if leave_source == "same-source" else (False, True):
                 self.peer.event(
                     "input",
                     {
@@ -1495,6 +1495,39 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertIsNone(self.input.practice_authorization)
         self.assertIsNone(practice.run)
         self.assertFalse(practice.end_unconfirmed)
+        self.assertEqual(
+            self.input.diagnostics()["practiceFailures"][0]["reason"], "pending-missing"
+        )
+
+    def test_rejected_practice_bindings_keep_a_bounded_detached_failure_snapshot(self):
+        for stamp in range(1000, 1020):
+            self.clock.return_value = stamp
+            self.assertFalse(self.input.authorize_practice({}, lambda _: False))
+        snapshot = self.input.diagnostics()["practiceFailures"]
+        self.assertEqual([row["atMs"] for row in snapshot], list(range(1004, 1020)))
+        self.assertTrue(all(row["reason"] == "pending-missing" for row in snapshot))
+        snapshot[0]["reason"] = "caller-change"
+        snapshot.clear()
+        retained = self.input.diagnostics()["practiceFailures"]
+        self.assertEqual(len(retained), 16)
+        self.assertEqual(retained[0]["reason"], "pending-missing")
+
+    def test_owned_binding_diagnostic_distinguishes_window_advance_from_missing_pending(self):
+        practice, progress, authorized = asyncio.run(
+            self.bind_practice_with_held_reply(leave_source="same-source")
+        )
+        self.assertIsNone(progress)
+        self.assertFalse(authorized)
+        self.assertIsNone(practice.run)
+        failures = self.input.diagnostics()["practiceFailures"]
+        self.assertEqual(
+            [(x["stage"], x["reason"]) for x in failures],
+            [("authorize", "window-changed"), ("progress", "authorize-rejected")],
+        )
+        self.assertTrue(failures[0]["pending"])
+        self.assertLess(failures[0]["pendingWindowEpoch"], failures[0]["windowEpoch"])
+        self.assertFalse(failures[-1]["authorized"])
+        self.assertNotIn(self.peer.connection_id, json.dumps(failures))
 
     def test_rejected_runtime_binding_still_waits_for_its_pending_peer_ack(self):
         practice, progress, authorized = asyncio.run(
@@ -1506,6 +1539,9 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertFalse(practice.end_unconfirmed)
         self.assertIsNone(self.input.practice_retirement)
         self.assertIsNotNone(self.input.practice_retirement_ack)
+        self.assertEqual(
+            self.input.diagnostics()["practiceFailures"][-1]["reason"], "runtime-bind-rejected"
+        )
 
     def test_owned_practice_bind_reply_keeps_unchanged_source_eligible(self):
         practice, progress, authorized = asyncio.run(

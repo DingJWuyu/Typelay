@@ -21,18 +21,6 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import styled_quality as styled  # noqa: E402
 
-
-def check_dispatch():
-    value = os.environ.get("HY_DECODE_COMPARISON", "false")
-    if value not in ("", "false", "true"):
-        raise ValueError("hy_decode_comparison must be an exact boolean")
-    if value == "true" and (
-        os.environ.get("EVENT_NAME") != "workflow_dispatch"
-        or os.environ.get("COLLECT_TRANSLATION_QUALITY") != "true"
-    ):
-        raise ValueError("hy_decode_comparison requires manual translation quality collection")
-
-
 SEED = 20261020
 RECIPE = {
     "sampling": "penalties-temperature-top_k-top_p-dist",
@@ -291,9 +279,7 @@ def collect_main(*, variant, work_deadline, experiment):
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["--check-dispatch"]:
-        check_dispatch()
-    elif len(sys.argv) == 4 and sys.argv[1] == "--build":
+    if len(sys.argv) == 4 and sys.argv[1] == "--build":
         build_variant(Path(sys.argv[2]), Path(sys.argv[3]))
     else:
-        raise SystemExit("requires --check-dispatch or private --build")
+        raise SystemExit("requires private --build")

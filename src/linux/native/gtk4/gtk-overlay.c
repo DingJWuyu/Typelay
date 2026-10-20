@@ -349,7 +349,10 @@ static void language_selection_changed(GObject *selection, GParamSpec *spec, gpo
     GtkWidget *button = data;
     if (!overlay.popover || (button != overlay.source && button != overlay.destination)) return;
     GObject *item = gtk_single_selection_get_selected_item(GTK_SINGLE_SELECTION(selection));
-    gtk_menu_button_set_label(GTK_MENU_BUTTON(button), item ? gtk_string_object_get_string(GTK_STRING_OBJECT(item)) : "");
+    /* GtkMenuButton.set_label rebuilds its hit-test children on every call.
+     * Keep the public custom label stable while the pointer stays on this button. */
+    GtkWidget *label = gtk_menu_button_get_child(GTK_MENU_BUTTON(button));
+    gtk_label_set_text(GTK_LABEL(label), item ? gtk_string_object_get_string(GTK_STRING_OBJECT(item)) : "");
     refresh_language_apply();
 }
 static void language_item_setup(GtkSignalListItemFactory *factory, GtkListItem *item, gpointer data) {
@@ -435,6 +438,11 @@ static gboolean language_popup_key(GtkEventControllerKey *keys, guint keyval, gu
 }
 static GtkWidget *language_button(void) {
     GtkWidget *button = gtk_menu_button_new(), *popup = gtk_popover_new();
+    GtkWidget *label = gtk_label_new("");
+    gtk_widget_set_hexpand(label, TRUE);
+    gtk_menu_button_set_child(GTK_MENU_BUTTON(button), label);
+    gtk_menu_button_set_always_show_arrow(GTK_MENU_BUTTON(button), TRUE);
+    gtk_accessible_update_relation(GTK_ACCESSIBLE(button), GTK_ACCESSIBLE_RELATION_LABELLED_BY, label, NULL, -1);
     gtk_popover_set_autohide(GTK_POPOVER(popup), FALSE);
     g_object_set_data(G_OBJECT(popup), "typelay-overlay", GINT_TO_POINTER(1));
     GtkSingleSelection *selection = gtk_single_selection_new(G_LIST_MODEL(gtk_string_list_new(NULL)));

@@ -75,7 +75,7 @@ internal static class Program
                 {
                     try
                     {
-                        File.AppendAllText(returnTracePath + ".broker.jsonl", System.Text.Json.JsonSerializer.Serialize(new
+                        var outcome = System.Text.Json.JsonSerializer.SerializeToNode(new
                         {
                             atMs = WindowsInterruptClock.NowMs,
                             operation = "return",
@@ -83,7 +83,10 @@ internal static class Program
                             reason = returnReason,
                             errorType = returnErrorType,
                             foreground = returnForeground
-                        }) + Environment.NewLine);
+                        })!;
+                        if (returnForeground is null)
+                            outcome.AsObject().Remove("foreground");
+                        File.AppendAllText(returnTracePath + ".broker.jsonl", outcome.ToJsonString() + Environment.NewLine);
                     }
                     catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
                 }
