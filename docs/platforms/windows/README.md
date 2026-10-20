@@ -71,33 +71,31 @@
 
 ### 当前可验证候选
 
-这是开发候选，不是通用输入验收已完成的正式发布。[已核对的 Actions 运行](https://github.com/DingJWuyu/Typelay/actions/runs/39391934587)对应源码 `7269f520e5cb365ef987fbbf5aebf2b2c650285c`；[下载 Windows artifact](https://github.com/DingJWuyu/Typelay/actions/runs/39391934587/artifacts/12250621333)，名称为 `typelay-windows-7269f520e5cb365ef987fbbf5aebf2b2c650285c`。取出内层 `TypeLay-Windows-preview.zip`，再完整解压启动。artifact 预计于 **2026-11-03 08:23:58 UTC** 到期；以本节源码及摘要配对识别构建。
+这是开发候选，不是通用输入验收已完成的正式发布。[已核对的 Actions 运行](https://github.com/DingJWuyu/Typelay/actions/runs/39404115339)对应源码 `494cfa4bb55f15b4a5fbad59c0e34bfab38cfd6f`；[下载 Windows artifact](https://github.com/DingJWuyu/Typelay/actions/runs/39404115339/artifacts/12257180398)，名称为 `typelay-windows-494cfa4bb55f15b4a5fbad59c0e34bfab38cfd6f`。取出内层 `TypeLay-Windows-preview.zip`，再完整解压启动；以本节源码及摘要配对识别构建。
 
-同提交的[后续手动质量运行](https://github.com/DingJWuyu/Typelay/actions/runs/39395814894)中，Windows 合作浏览器接入与自动 Tab 通过，但单次 F10 被 `PolicyAuthorityExpired` 拒绝且零写入，后续 Windows Hy 验证未运行。普通连续预览与冷页预览通过，自有编辑首次交接超时、按需练习的观察已过期及新标签页按需输入 epoch 变化仍使完整检查失败；上次新标签页两模式通过的证据不等于重复运行稳定性已经确认。本次真实质量采集位于 Linux，部分输出与失败边界见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
-
-此包包含 Chrome 明确接入与移除、独立字段策略维护和有序消息读取、浮层直接展开、可选单向 Argos 安装，以及 Windows Hy ABI5 生产闭包与模型包操作代码。默认仍为中英 Argos，正式商店扩展身份为空。Hy 入口须组件齐备；本轮合作浏览器前置失败，正式 ABI5 后端与 Settings 生命周期检查均未运行，历史证据和当前边界见下文。风格、术语与换种说法代码已接线，质量发布门保持关闭；完整 45 次翻译响应采集及质量验收尚未完成。
+此包包含 Chrome 明确接入与移除、独立字段策略维护和有序消息读取、浮层直接展开、可选单向 Argos 安装，以及 Windows Hy ABI5 生产闭包与模型包操作代码。默认仍为中英 Argos，正式商店扩展身份为空。本轮持续翻译与合作浏览器全链通过，Hy 正式后端加载、十二方向 hello 与退出通过；Settings 已实际安装并就绪，但选择法语失败，后续阶段未运行，详见下文。风格、术语与换种说法代码已接线，质量发布门保持关闭；本轮默认 push 未启动质量采集，此前部分采集与仍待显式运行的完整 45 次响应见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
 
 <details>
 <summary>包校验与版本配对</summary>
 
-- 源码提交：`7269f520e5cb365ef987fbbf5aebf2b2c650285c`
-- 内层安装 ZIP：86,984,739 字节；SHA-256：`566422a2067152ce59ec98f093f2fb64da54ccacac9b78be89f7e3f9008bedf3`。已与包旁 `.sha256` 核对。
-- 外层 Actions artifact：88,606,939 字节；SHA-256：`c8e31c8296eaf53f19006bacc82a84f82803fa6d0101ff6cb016617fb08d4874`。已与 Actions 摘要核对，勿混用内外层值。
-- App、Broker、Practice 与 BrowserHost 必须来自同一个完整包；仅看 `0.2.0.0` 不能区分开发包。
+- 源码提交：`494cfa4bb55f15b4a5fbad59c0e34bfab38cfd6f`
+- 内层安装 ZIP：86,984,738 字节；SHA-256：`23c3ebd4641c7a865cf8f92777f232b6024648799a7e70f7eca594d22cd4de14`。已与包旁 `.sha256` 核对。
+- 外层 Actions artifact：88,599,548 字节；SHA-256：`cf157e0c418f28f20314e84aa9364e15bf456a8933fb092471ef1581cfa15ae5`。已与 Actions 摘要核对，勿混用内外层值。
+- 包内无独立 `build-info.json`；App、Broker、Practice 与 BrowserHost 的 DLL 版本元数据均包含 `0.2.0-dev+494cfa4bb55f15b4a5fbad59c0e34bfab38cfd6f`。四者必须来自同一个完整包；仅看 `0.2.0.0` 不能区分开发包。
 
 可用 `Get-FileHash .\TypeLay-Windows-preview.zip -Algorithm SHA256` 核对内层包。
 
 </details>
 
-本轮共享检查通过，Windows/Linux 完整检查均失败。Windows 的 Core **290**、Protocol **17**、Windows.Contracts **31**、Runtime **1019** 项通过；App **404/407 项通过、3 项失败**。剩余失败仍为密码字段测试的 `NativeMessageException`、清理 `TypeLay.WinEventProbe.dll` 时访问被拒，以及普通编辑回源失败后第二次按键测试的取消超时，仍须按真实需求处理。
+本轮共享检查通过，Windows/Linux 完整检查均失败。Windows 的 Core **290**、Protocol **17**、Windows.Contracts **31**、Runtime **1019** 项通过；App **403/407 项通过、4 项失败**。失败分别为禁止注入输入场景等待编辑资格时取消超时、密码字段变化后 `ReadText` 的 `NativeMessageException`、清理 `TypeLay.WinEventProbe.dll` 时访问被拒，以及普通编辑回源失败后下一次按键测试的取消超时，仍须按真实需求处理。
 
-本轮中英实际安装、自检、模型握手与单向补装链通过：仅中文→英文安装后，Auto 同语无须翻译、缺方向无输出；补装保留旧方向并验证双向翻译。该场景验证正式安装器及模型 API，Hy 动态语言选项仍待真实 Windows 验证。安装库存损坏时会保留原数据并禁用修改；目前缺少用户可执行的库存恢复入口，重启本身不能修复损坏清单。
+本轮中英实际安装、自检、模型握手与单向补装链通过：仅中文→英文安装后，Auto 同语无须翻译、缺方向无输出；补装保留旧方向并验证双向翻译。该场景验证正式安装器及模型 API，Hy 选择法语的真实 Windows 失败见下文。安装库存损坏时会保留原数据并禁用修改；目前缺少用户可执行的库存恢复入口，重启本身不能修复损坏清单。
 
-真实模型持续预览、自有首次自动接受、编辑身份、Tab 与鼠标回源、人工稿接受和完成，以及普通系统 Edit 组合、按需直接替换和按需练习本轮通过。普通 Chrome 冷页预览及清理也已通过。新标签页在无障碍预热后，自动与按需模式的首次/刷新预览分别为 826/1693 ms、1752/2896 ms，原文与源焦点保持、写请求为零，清理无错误。这是本轮软件输入的只读预览证据，不是新标签页接受或直接写回验收，也不是长期延迟保证。
+真实模型持续预览、自有首次自动接受、编辑身份、Tab 与鼠标回源、人工稿接受和完成，以及普通系统 Edit 组合键零写入、按需直接替换和按需练习本轮通过。普通 Chrome 冷页预览及清理也已通过。新标签页在无障碍预热后，自动与按需模式的首次/刷新预览分别为 890/1704 ms、1842/2797 ms，原文与源焦点保持、写请求为零，清理无错误。这是本轮软件输入的只读预览证据，不是新标签页接受或直接写回验收，也不是长期延迟保证。
 
-Chrome 合作本轮已完成真实 UI 取消与确认注册，随后在 `confirm-connect-return-to-page` 等待 120007 ms 后达到期限；快捷键按下次数为零，尚未观察到真实模型预览，后续六个场景全部未运行。清理错误列表为空不代表合作链通过。[1820fa77 的七场景通过](https://github.com/DingJWuyu/Typelay/actions/runs/39383637980)仍是该旧提交的证据，不能移用于当前包。这些检查使用独立 profile、发行 App/Host/扩展和本地模型的软件输入，不代表物理输入法、品牌 Chrome 商店安装或长期稳定性验收。
+Chrome 合作本轮七个场景全部通过：接入设置、自动预览与 Tab 接受、按需设置、选区直接替换、切换焦点后仅替换原字段、移除连接后零写入拒绝，以及提交计数正向对照。原字段切换场景保持另一字段正文与焦点不变，翻译操作均未提交表单，清理错误列表为空。这些检查使用独立 profile、发行 App/Host/扩展和本地模型的软件输入，不代表物理输入法、品牌 Chrome 商店安装或长期稳定性验收。
 
-Hy 官方资源准备与 ABI5 生产包构建通过；正式后端检查以合作浏览器通过为前置，因此本轮 ABI5 生产加载与退出、Settings 安装、选择法语、中法预览、切换、移除及普通退出均未运行。[1820fa77 的检查](https://github.com/DingJWuyu/Typelay/actions/runs/39383637980)曾通过零推理的十二方向 hello、旧进程退出和使用锁释放，Settings 则观察到公开就绪后停在就绪行计数并超时；这些历史结果不证明当前包或完整 Settings 生命周期通过。
+Hy 正式 ABI5 生产检查通过：实际模型所有者完成十二方向 hello，握手推理请求为零，旧 worker 退出，随后全部自有 worker 退出并释放使用锁。Settings 生命周期的 setup 用时 10.109 秒，install-hy 用时 94.309 秒，已真正 Ready、保持唯一 worker 并确认十二方向；`choose-french` 在 349 ms 后以 `InvalidOperationException` 失败，切回 Argos、再选 Hy、普通预览、返回 Argos、移除 Hy 和普通退出均未运行。两项检查的清理错误列表均为空；握手与安装就绪不代表语言质量或完整 Settings 生命周期通过。
 
 ## 工作模式与按需操作
 

@@ -13,6 +13,7 @@ using System.Windows.Threading;
 using TypeLay.App;
 using TypeLay.Core;
 using TypeLay.Runtime;
+using TypeLay.Windows.Testing;
 using Xunit;
 
 namespace TypeLay.App.Tests;
@@ -20,6 +21,35 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
 {
+    [Fact]
+    public Task PublicTargetSelectionUsesThePickerItemAfterItsActiveLanguagesChange() => desktop.RunAsync(async () =>
+    {
+        using var fixture = new LanguageWindowFixture(quickPanel: false, protocolModel: true);
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        limit.CancelAfter(TimeSpan.FromSeconds(10));
+        var ct = limit.Token;
+        await fixture.SwitchModelAsync(["zh_ja", "ja_zh", "zh_fr", "fr_zh"]);
+        Assert.Contains("Français", Labels(Language(fixture.Window, source: true)));
+        Assert.Contains("Français", Labels(Language(fixture.Window, source: false)));
+        Assert.Equal("English（当前不可用）", Language(fixture.Window, source: false).SelectedItem?.ToString());
+        int changes = 0;
+        fixture.Settings.Changed += () => changes++;
+        nint handle = new WindowInteropHelper(fixture.Window).Handle;
+        var root = await Task.Run(() => AutomationElement.FromHandle(handle), ct).WaitAsync(ct);
+
+        await SettingsLanguageActions.SelectTargetAsync(root, "Français", _ => { }, ct);
+        while (new SettingsStore(fixture.Path).Value.Target != "fr")
+            await Task.Delay(40, ct);
+        await DrainAsync(fixture.Window);
+
+        var saved = new SettingsStore(fixture.Path).Value;
+        Assert.Equal("zh", saved.Source);
+        Assert.Equal("fr", saved.Target);
+        Assert.Equal("中文", Language(fixture.Window, source: true).SelectedItem?.ToString());
+        Assert.Equal("Français", Language(fixture.Window, source: false).Text);
+        Assert.Equal(1, changes);
+    });
+
     [Theory]
     [InlineData("ja", "日本語")]
     [InlineData("ko", "한국어")]

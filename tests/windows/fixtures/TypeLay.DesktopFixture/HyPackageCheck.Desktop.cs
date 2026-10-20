@@ -115,28 +115,12 @@ internal static partial class HyPackageCheck
             });
             await report.Phase("choose-french", async scene =>
             {
+                scene.Stage = "navigate-to-languages";
                 await NavigateAsync(settings!, "文  语言", ct);
-                await UiAsync(() =>
-                {
-                    var picker = Find(settings!, AutomationElement.NameProperty, "目标语言", ControlType.ComboBox);
-                    Require(picker is not null && picker.Current.IsEnabled, "target-language-picker-unavailable");
-                    ((ExpandCollapsePattern)picker!.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Expand();
-                }, ct);
-                await WaitAsync(async () => await UiAsync(() =>
-                {
-                    // WPF's popup can be a separate owned UIA root. Require the App PID
-                    // and actual enabled list item, never set SelectedItem privately.
-                    var french = AutomationElement.RootElement.FindFirst(TreeScope.Descendants, new AndCondition(
-                        new PropertyCondition(AutomationElement.ProcessIdProperty, app!.Process.Id),
-                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ListItem),
-                        new PropertyCondition(AutomationElement.NameProperty, "Français"),
-                        new PropertyCondition(AutomationElement.IsEnabledProperty, true)));
-                    if (french is null)
-                        return false;
-                    ((SelectionItemPattern)french.GetCurrentPattern(SelectionItemPattern.Pattern)).Select();
-                    return true;
-                }, ct), ct);
+                await SettingsLanguageActions.SelectTargetAsync(settings!, "Français", stage => scene.Stage = stage, ct);
+                scene.Stage = "await-french-settings-save";
                 await WaitAsync(() => Task.FromResult(ReadSettings(data) is { Source: "zh", Target: "fr" }), ct);
+                scene.Stage = "return-to-package-settings";
                 await NavigateAsync(settings!, "▦  " + ApplicationSupportPresentation.Create([]).Title, ct);
                 scene.Facts = new
                 {

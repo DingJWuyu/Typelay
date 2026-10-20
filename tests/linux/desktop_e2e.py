@@ -5398,10 +5398,20 @@ def run(arguments):
             chromium = next(row for row in choices if row["id"] == "chromium")
             selector = settings_control(desktop_support["title"])
             assert selector.get_role() == Atspi.Role.COMBO_BOX
-            assert Atspi.Component.grab_focus(selector.get_component_iface())
+            states = selector.get_state_set()
+            assert all(
+                states.contains(state)
+                for state in (
+                    Atspi.StateType.SHOWING,
+                    Atspi.StateType.ENABLED,
+                    Atspi.StateType.SENSITIVE,
+                )
+            )
             assert Atspi.Selection.select_child(
                 selector.get_selection_iface(), choices.index(chromium)
             )
+            selected = Atspi.Selection.get_selected_child(selector.get_selection_iface(), 0)
+            assert selected and selected.get_name() == chromium["title"]
             activate_setting(support["labels"]["details"])
             instructions = next(
                 action

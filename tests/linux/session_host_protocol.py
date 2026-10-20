@@ -25,6 +25,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from input import Input  # noqa: E402
+from vscode_e2e import profile_data_home  # noqa: E402
 
 HOST = None
 SUPERVISOR = None
@@ -1093,6 +1094,40 @@ while True:
 
         self.addAsyncCleanup(stop)
         return process
+
+    async def test_vscode_profile_reaches_existing_model_store_without_directory_aliases(self):
+        installed = self.home / "installed-data" / "typelay"
+        (installed / "components").mkdir(parents=True)
+        profile = self.home / "vscode-profile"
+        data_home = profile_data_home(profile, installed)
+        process = await asyncio.create_subprocess_exec(
+            str(HOST),
+            "--editor-host",
+            str(self.home / "package"),
+            str(profile / "config" / "typelay"),
+            str(data_home / "typelay"),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        request = self.editor_request()
+        raw = json.dumps(request).encode()
+        try:
+            output, error = await asyncio.wait_for(
+                process.communicate(struct.pack("<I", len(raw)) + raw), 5
+            )
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await asyncio.wait_for(process.communicate(), 3)
+        self.assertEqual(struct.unpack("<I", output[:4])[0], len(output) - 4)
+        # No model exists. Reaching the real store must report not-ready, rather
+        # than the consumer's previous alias causing an earlier host-failed.
+        self.assertEqual(json.loads(output[4:]), {"id": request["id"], "error": "not-ready"})
+        self.assertEqual(process.returncode, 0, error)
+        self.assertEqual(data_home / "typelay", installed)
+        self.assertTrue((installed / "components" / "install.lock").is_file())
+        self.assertFalse((profile / "share" / "typelay" / "components").exists())
 
     async def test_editor_cli_uses_private_desktop_snapshot_and_never_falls_back_on_connection_failure(
         self,

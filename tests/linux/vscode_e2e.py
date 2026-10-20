@@ -17,6 +17,17 @@ import time
 from pathlib import Path
 
 
+def profile_data_home(profile, model_data):
+    if model_data is None:
+        return profile / "share"
+    model_data = model_data.resolve(strict=True)
+    if not model_data.is_dir() or model_data.name != "typelay":
+        raise ValueError("--model-data must identify the existing test XDG data directory typelay")
+    # The production store rejects a symlinked components root. Use the existing
+    # test installation directly; HOME, config, cache and runtime stay isolated.
+    return model_data.parent
+
+
 def visible_terminal_notification(page):
     """Observe only fixed terminal messages owned by the isolated TypeLay extension."""
     messages = {
@@ -213,7 +224,7 @@ def main():
     parser.add_argument(
         "--model-data",
         type=Path,
-        help="Existing test TypeLay data directory; used only with --host",
+        help="Existing test XDG data directory ending in typelay; used only with --host",
     )
     parser.add_argument(
         "--app", type=Path, help="Code application root for a split Electron package"
@@ -253,12 +264,9 @@ def main():
         runtime.mkdir(mode=0o700)
         port = None
         source = profile / "source.txt"
+        data_home = profile_data_home(profile, arguments.model_data)
         if arguments.host:
             source.write_text("你好，世界。\n保留原文", encoding="utf-8")
-            model_data = arguments.model_data.resolve(strict=True)
-            data = profile / "share" / "typelay"
-            data.mkdir(parents=True)
-            (data / "components").symlink_to(model_data / "components", target_is_directory=True)
             settings_directory = profile / "data" / "User"
             settings_directory.mkdir(parents=True)
             (settings_directory / "settings.json").write_text(
@@ -302,7 +310,7 @@ def main():
         environment.update(
             HOME=str(home),
             XDG_CONFIG_HOME=str(profile / "config"),
-            XDG_DATA_HOME=str(profile / "share"),
+            XDG_DATA_HOME=str(data_home),
             XDG_CACHE_HOME=str(profile / "cache"),
             XDG_RUNTIME_DIR=str(runtime),
             TYPELAY_VSCODE_RESULT=str(result_file),
