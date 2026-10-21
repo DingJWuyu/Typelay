@@ -6,9 +6,9 @@
 
 namespace probe {
 constexpr uint32_t kMagic = 0x46535450;
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;
 constexpr size_t kMaxText = 4096;
-constexpr wchar_t kMessage[] = L"TypeLay.Isolated.TsfReadOnly.v1";
+constexpr wchar_t kMessage[] = L"TypeLay.Isolated.TsfReadOnly.v2";
 constexpr wchar_t kText[] = L"TypeLay isolated read-only probe\r\nThis document belongs to this test only: \u4e2d\u6587 \U0001F600.\r\n";
 constexpr uint32_t kTextLength = static_cast<uint32_t>(sizeof(kText) / sizeof(wchar_t) - 1);
 enum Status : LONG { Pending = 0, Observed = 1, Unsupported = 2, Rejected = 3, Fault = 4 };
@@ -17,11 +17,12 @@ enum Reason : LONG {
     NoManager, NoClient, NoContext, AmbiguousWindow, Transitory, SessionDenied,
     ReadFailed, TooLong, Composing, ContentMismatch, CallbackException
 };
+enum Phase : LONG { OwnedEntry = 1, ValidationPassed = 2, SubmitEntered = 4, RequestCalled = 8, RequestReturned = 16 };
 struct Exchange {
     uint32_t magic, version, size, parentPid, targetPid, targetThread;
     uint64_t parentCreated, targetCreated, root, field, deadline;
     GUID client;
-    volatile LONG cancelled, status, reason, sessionDestroyed, callbackCount;
+    volatile LONG cancelled, status, reason, sessionDestroyed, callbackCount, phases;
     LONG requestHr, sessionHr;
     uint32_t textLength, selectionStart, selectionLength, compositionCount;
     uint64_t fingerprint;

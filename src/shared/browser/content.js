@@ -250,10 +250,11 @@
   }
   const ownerIdValid = id => typeof id === "string" && id.length > 0 && id.length <= 128;
   const grantValid = sequence => Number.isSafeInteger(sequence) && sequence > 0;
-  function commandOwnerAck(data, state, bindings = configuration, policy = null) {
+  function commandOwnerAck(data, state, bindings = configuration, policy = null, rejectionReason = null) {
     send("command-owner", {ownerId: data.ownerId, generation: data.generation,
       grantSequence: data.grantSequence, expiresAtMs: data.expiresAtMs, state,
       wake: bindings?.wake, direct: bindings?.direct,
+      ...(rejectionReason ? {rejectionReason} : {}),
       ...(data.traceOwner === true ? {diagnostic: ownerDiagnostic || {stage: "Retire", firstReason: "Lifecycle"}} : {}),
       ...(policy ? {target: policy.field.id, policyToken: policy.authority.token} : {})});
   }
@@ -1448,15 +1449,17 @@
           && ownerCheck(Number.isSafeInteger(data.expiresAtMs), "ExpiryInvalid")
           && ownerCheck(Number.isSafeInteger(data.releasedAtMs), "ReleaseInvalid")
           && ownerCheck(data.releasedAtMs >= 0, "ReleaseNegative")
-          && ownerCheck(data.releasedAtMs <= commandClock.boottimeMs, "ReleaseFuture")
-          && ownerCheck([...held.values()].every(press => Number.isSafeInteger(press.latestObservedUpperMs)
-            && press.latestObservedUpperMs <= data.releasedAtMs), "KeysHeld");
+          && ownerCheck(data.releasedAtMs <= commandClock.boottimeMs, "ReleaseFuture");
         const expiresAtPerformanceMs = valid ? deadline(data.expiresAtMs, 800) : NaN;
         const candidate = {...data, configuration, expiresAtPerformanceMs,
           expiresAtWallMs: data.expiresAtMs - clock?.upperWall, activateMono: monoNow()};
-        if (!valid || !ownerCheck(liveDeadline(candidate), "Deadline")) {
+        const current = valid && ownerCheck(liveDeadline(candidate), "Deadline");
+        const released = current && ownerCheck([...held.values()].every(press => Number.isSafeInteger(press.latestObservedUpperMs)
+            && press.latestObservedUpperMs <= data.releasedAtMs), "KeysHeld");
+        if (!released) {
           if (commandOwner?.ownerId === data.ownerId) retireCommandOwner(false);
-          commandOwnerAck(data, "rejected"); return null;
+          // This narrow protocol result is available without optional tracing.
+          commandOwnerAck(data, "rejected", configuration, null, current ? "KeysHeld" : null); return null;
         }
         // Only this host's proved real all-up transition can retire keys whose
         // key-up was missed while unfocused. Newer observed presses stay held.

@@ -3,6 +3,7 @@
 import asyncio
 import io
 import json
+import signal
 import subprocess
 import sys
 import tempfile
@@ -372,7 +373,15 @@ class StyledGlossaryPreparationTests(unittest.TestCase):
 
 
 class StyledGlossaryCollectionTests(unittest.IsolatedAsyncioTestCase):
-    async def capture(self, *, missing=None, failure_at=None, stalled=False):
+    async def capture(
+        self,
+        *,
+        missing=None,
+        failure_at=None,
+        stalled=False,
+        cancel_signal=False,
+        cleanup_signal=False,
+    ):
         import styled_glossary_quality as combined
         import styled_quality
 
@@ -416,11 +425,38 @@ class StyledGlossaryCollectionTests(unittest.IsolatedAsyncioTestCase):
             async def drain(self):
                 pass
 
-        writer = Input()
+        loop = asyncio.get_running_loop()
+        handlers = {}
+        previous = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
+
+        def register(number, callback):
+            handlers[number] = callback
+
+        def remove(number):
+            return handlers.pop(number, None) is not None
+
+        class SignalInput(Input):
+            drains = 0
+
+            async def drain(self):
+                self.drains += 1
+                if cancel_signal and self.drains == 2:
+                    # Exercise the collector's registered callback, not task.cancel
+                    # from the test and not a platform-specific OS signal delivery.
+                    loop.call_soon(handlers[signal.SIGTERM])
+
+        writer = SignalInput()
         process = SimpleNamespace(stdin=writer, stdout=reader)
 
         async def cleaned(_process, value):
             self.assertIs(_process, process)
+            if cleanup_signal:
+                task = asyncio.current_task()
+                cancelling = task.cancelling()
+                handlers[signal.SIGINT]()
+                await asyncio.sleep(0)
+                self.assertEqual(task.cancelling(), cancelling)
+                self.assertTrue(value["cleanupInterrupted"])
             value.update(workerExitConfirmed=True, workerExitCode=0)
 
         spawn = AsyncMock(return_value=process)
@@ -433,11 +469,23 @@ class StyledGlossaryCollectionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(styled_quality, "production_worker", return_value={}),
             patch.object(styled_quality.asyncio, "create_subprocess_exec", spawn),
             patch.object(styled_quality, "cleanup", cleanup),
-            patch.object(styled_quality, "TOTAL_TIMEOUT", 0.05 if stalled else 600),
+            patch.object(
+                styled_quality, "TOTAL_TIMEOUT", 0.05 if stalled and not cancel_signal else 600
+            ),
+            patch.object(loop, "add_signal_handler", side_effect=register) as added,
+            patch.object(loop, "remove_signal_handler", side_effect=remove) as removed,
+            patch.object(styled_quality.signal, "signal", wraps=signal.signal) as restored,
         ):
             await combined.collect(args, report)
         spawn.assert_awaited_once()
         cleanup.assert_awaited_once()
+        self.assertEqual(added.call_count, 4)
+        self.assertEqual(removed.call_count, 2)
+        self.assertEqual(restored.call_count, 2)
+        self.assertEqual(handlers, {})
+        for number, original in previous.items():
+            restored.assert_any_call(number, original)
+            self.assertEqual(signal.getsignal(number), original)
         writer.seek(0)
         requests = []
         while writer.tell() < len(writer.getvalue()):
@@ -498,6 +546,59 @@ class StyledGlossaryCollectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(requests), 2)
         self.assertTrue(report["workerExitConfirmed"])
         self.assertEqual(report["cases"][0]["response"], None)
+
+    async def test_registered_cancel_callback_enters_cleanup_and_second_signal_cannot_interrupt_it(
+        self,
+    ):
+        report, requests, _, _ = await self.capture(
+            stalled=True, cancel_signal=True, cleanup_signal=True
+        )
+        self.assertEqual(report["status"], "interrupted")
+        self.assertEqual(report["failureCode"], "cancelled")
+        self.assertEqual(len(requests), 2)
+        self.assertTrue(report["cleanupInterrupted"])
+        self.assertTrue(report["workerExitConfirmed"])
+
+    async def test_signal_during_completed_capture_cleanup_marks_interrupted_not_passed(self):
+        report, requests, _, _ = await self.capture(cleanup_signal=True)
+        self.assertEqual(len(requests), 9)
+        self.assertEqual(report["status"], "interrupted")
+        self.assertEqual(report["failureCode"], "cancelled-during-cleanup")
+        self.assertTrue(report["workerExitConfirmed"])
+
+    async def test_non_linux_cli_rejects_before_collection_or_worker_start(self):
+        import styled_glossary_quality as combined
+        import styled_quality
+
+        (ROOT / "artifacts").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as directory:
+            output = Path(directory) / "unstarted.json"
+            argv = [
+                "styled_glossary_quality.py",
+                "--python",
+                "absent-python",
+                "--models",
+                "absent-models",
+                "--worker",
+                "absent-worker",
+                "--output",
+                str(output),
+            ]
+            stderr = io.StringIO()
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(sys, "platform", "win32"),
+                patch.object(sys, "stderr", stderr),
+                patch.object(
+                    styled_quality.asyncio, "create_subprocess_exec", new_callable=AsyncMock
+                ) as spawn,
+            ):
+                with self.assertRaises(SystemExit) as error:
+                    styled_quality.main(combined.prepare_report, combined.collect)
+            self.assertEqual(error.exception.code, 2)
+            self.assertIn("require Linux", stderr.getvalue())
+            spawn.assert_not_awaited()
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

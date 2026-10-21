@@ -862,6 +862,9 @@ def _gtk4_source_glossary(out, environment, deadline):
                                 is None
                             )
                             after_refusal = state()
+                            if finish == "external-focus":
+                                assert after_refusal["secondEntry"]["focused"]
+                                assert not after_refusal["firstEntry"]["focused"]
                             assert after_refusal["first"] == invalidated["first"]
                             for name in ("start", "end", "insertions", "deletions"):
                                 assert (

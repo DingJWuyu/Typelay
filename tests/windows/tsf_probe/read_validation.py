@@ -28,7 +28,92 @@ def environment_observed(report, sha):
     )
 
 
+def diagnostics_valid(detail):
+    bounds = {
+        "protocolVersion": (2, 2),
+        "targetPhases": (0, 31),
+        "signatureError": (0, 2**32 - 1),
+        "signatureFlags": (0, 31),
+        "dynamicError": (0, 2**32 - 1),
+        "dynamicFlags": (0, 15),
+        "sendReturn": (-(2**63), 2**63 - 1),
+        "sendLastError": (0, 2**32 - 1),
+        "sendStartedTick": (0, 2**64 - 1),
+        "sendEndedTick": (0, 2**64 - 1),
+    }
+    booleans = {
+        "policyQueried",
+        "signatureKnown",
+        "dynamicKnown",
+        "sendAttempted",
+        "sendReturned",
+        "messageResultValid",
+    }
+    if type(detail) is not dict or set(detail) != set(bounds) | booleans | {"messageResult"}:
+        return False
+    if any(type(detail[key]) is not bool for key in booleans):
+        return False
+    if any(
+        type(detail[key]) is not int or not lo <= detail[key] <= hi
+        for key, (lo, hi) in bounds.items()
+    ):
+        return False
+    if detail["targetPhases"] not in (0, 1, 3, 7, 15, 31):
+        return False
+    if not detail["policyQueried"] and any(
+        detail[key]
+        for key in (
+            "signatureKnown",
+            "dynamicKnown",
+            "signatureError",
+            "dynamicError",
+            "signatureFlags",
+            "dynamicFlags",
+        )
+    ):
+        return False
+    if not detail["signatureKnown"] and detail["signatureFlags"] != 0:
+        return False
+    if not detail["dynamicKnown"] and detail["dynamicFlags"] != 0:
+        return False
+    if detail["sendAttempted"]:
+        if not (detail["policyQueried"] and detail["signatureKnown"] and detail["dynamicKnown"]):
+            return False
+        if detail["signatureFlags"] & 7 or detail["sendEndedTick"] < detail["sendStartedTick"]:
+            return False
+    elif any(
+        detail[key]
+        for key in (
+            "targetPhases",
+            "sendReturn",
+            "sendLastError",
+            "sendStartedTick",
+            "sendEndedTick",
+        )
+    ):
+        return False
+    if detail["sendReturned"] and not detail["sendAttempted"]:
+        return False
+    if not detail["sendReturned"] and any(
+        detail[key] for key in ("sendReturn", "sendLastError", "sendEndedTick")
+    ):
+        return False
+    valid = detail["sendAttempted"] and detail["sendReturned"] and detail["sendReturn"] != 0
+    if detail["messageResultValid"] != valid:
+        return False
+    result = detail["messageResult"]
+    return (type(result) is int and 0 <= result < 2**64) if valid else result is None
+
+
 def read_observed(report):
+    return native_observed(report, read=True)
+
+
+def lifecycle_observed(report):
+    return native_observed(report, read=False)
+
+
+def native_observed(report, *, read):
     expected = {
         "kind": "isolated-tsf-native",
         "status": "observed-not-acceptance",
@@ -53,7 +138,18 @@ def read_observed(report):
         "compositionCount": 0,
         "syntheticExactMatch": True,
     }
+    if not read:
+        expected.update(
+            reason="lifecycle-observed",
+            requestDispatched=False,
+            readSnapshotValid=False,
+            readStatus=0,
+            sessionHr=0,
+            callbackCount=0,
+            syntheticExactMatch=False,
+        )
     extras = {
+        "diagnostics",
         "sessionDestroyed",
         "textLength",
         "selectionStart",
@@ -70,12 +166,30 @@ def read_observed(report):
     for key in ("sessionHr", "sessionDestroyed", "textLength", "selectionStart", "selectionLength"):
         if type(report[key]) is not int:
             return False
+    detail = report["diagnostics"]
+    if not diagnostics_valid(detail):
+        return False
+    if read:
+        if (
+            not detail["sendAttempted"]
+            or not detail["sendReturned"]
+            or detail["targetPhases"] != 31
+        ):
+            return False
+    elif (
+        detail["policyQueried"]
+        or detail["sendAttempted"]
+        or report["sessionDestroyed"] != 0
+        or any(report[key] != 0 for key in ("textLength", "selectionStart", "selectionLength"))
+        or report["noncryptographicFingerprint"] != "0000000000000000"
+    ):
+        return False
     length, start, selected = (
         report[key] for key in ("textLength", "selectionStart", "selectionLength")
     )
     return (
         report["sessionDestroyed"] in (0, 1)
-        and 0 < length <= 4096
+        and (0 < length <= 4096 if read else length == 0)
         and 0 <= start <= length
         and 0 <= selected <= length - start
         and isinstance(report["noncryptographicFingerprint"], str)
@@ -85,7 +199,7 @@ def read_observed(report):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--kind", choices=("environment", "read"), required=True)
+    parser.add_argument("--kind", choices=("environment", "read", "lifecycle"), required=True)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--sha")
     args = parser.parse_args(argv)
@@ -96,7 +210,7 @@ def main(argv=None):
         valid = (
             environment_observed(report, args.sha)
             if args.kind == "environment"
-            else read_observed(report)
+            else (read_observed(report) if args.kind == "read" else lifecycle_observed(report))
         )
     except (OSError, ValueError, TypeError, AttributeError, KeyError):
         valid = False

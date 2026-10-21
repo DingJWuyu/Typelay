@@ -557,7 +557,23 @@ internal sealed partial class BrowserInput
             TraceOwner(stage, OwnerReason.GrantMismatch, owner, page: data);
             return;
         }
-        if (String(data, "state") == "retired")
+        string? state = String(data, "state");
+        long now = WindowsInterruptClock.NowMs;
+        bool releaseRejected = state == "rejected" && !owner.EverActive && sequence > 0 && sequence == owner.PendingGrant
+            && String(data, "rejectionReason") == "KeysHeld"
+            && now - owner.LastGrantAt <= 200 && now <= owner.EstablishUntil
+            && owner.Grants.TryGetValue(sequence, out long rejectedExpiry)
+            && Number(data, "expiresAtMs") == rejectedExpiry && now <= rejectedExpiry
+            && OwnerForeground(owner);
+        if (data.TryGetProperty("rejectionReason", out _) && !releaseRejected)
+        {
+            // Unknown or contradictory reasons cannot acknowledge authority or retirement.
+            if (_commandOwner == owner)
+                RetireCommandOwner(OwnerReason.PageNotActive);
+            TraceOwner(stage, OwnerReason.PageNotActive, owner, page: data);
+            return;
+        }
+        if (state == "retired")
         {
             owner.RetirementAcknowledged = true;
             if (_commandOwner == owner)
@@ -570,8 +586,7 @@ internal sealed partial class BrowserInput
             TraceOwner(stage, OwnerReason.Retired, owner, page: data);
             return;
         }
-        long now = WindowsInterruptClock.NowMs;
-        if (String(data, "state") != "active")
+        if (state != "active")
             reason = OwnerReason.PageNotActive;
         else if (sequence != owner.PendingGrant)
             reason = OwnerReason.PendingGrantMismatch;
@@ -593,6 +608,10 @@ internal sealed partial class BrowserInput
         if (reason != OwnerReason.Ready)
         {
             RetireCommandOwner(reason);
+            // The matched initial activation was consumed by the page. Retire it;
+            // only a fresh owner may be prepared after real key release.
+            if (reason == OwnerReason.PageNotActive && releaseRejected)
+                _ownerRefreshRequested = true;
             TraceOwner(stage, reason, owner, now, page: data);
             return;
         }

@@ -1063,6 +1063,15 @@ static void glossary_close(gboolean restore, gboolean notify) {
     gboolean owned = overlay.glossary == form;
     if (owned) overlay.glossary = NULL;
     form->closing = TRUE;
+    if (!restore && owned && form->source_origin && overlay.top) {
+        GtkWindow *top = g_object_ref(GTK_WINDOW(overlay.top));
+        /* Removing a focused child lets GTK navigate to another field and
+         * select its text. Release only our exact auxiliary focus before
+         * unparenting; invalidation must not choose a source focus or selection. */
+        if (glossary_contains(form, gtk_window_get_focus(top)))
+            gtk_window_set_focus(top, NULL);
+        g_object_unref(top);
+    }
     if (return_editor) {
         /* The host can retire editor readiness while aux owns focus. Return to
          * its original read-only widget; fresh binding/IME ACK enables editing. */

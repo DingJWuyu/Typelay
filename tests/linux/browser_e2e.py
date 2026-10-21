@@ -726,13 +726,38 @@ class BrowserContract(unittest.TestCase):
         self.page.keyboard.down("Shift")
         result = self.activate_source_command_owner()
         self.assertEqual(result["ack"]["state"], "rejected")
+        self.assertEqual(result["ack"]["rejectionReason"], "KeysHeld")
+        self.assertNotIn("diagnostic", result["ack"])
+        # A simultaneous deadline failure is not a recoverable release rejection.
+        expired_ack = self.page.evaluate("""() => {
+          const prepared = fixtureCommand({id: 7804, op: 'prepare-command-owner',
+            data: {ownerId: fixtureOwner.ownerId, generation: fixtureOwner.generation}});
+          fixtureCommand({id: 7805, op: 'activate-command-owner', data: {
+            ...fixtureOwner, authority: prepared.authority, expiresAtMs: 0}});
+          return fixtureMessages.filter(item => item.event === 'command-owner').at(-1).data;
+        }""")
+        self.assertEqual(expired_ack["state"], "rejected")
+        self.assertNotIn("rejectionReason", expired_ack)
         self.page.keyboard.up("Shift")
+        # Release does not restore the consumed preparation or the old owner.
+        self.page.evaluate("""() => fixtureCommand({id: 7803,
+          op: 'activate-command-owner', data: fixtureOwner})""")
+        old_ack = self.page.evaluate(
+            "fixtureMessages.filter(item => item.event === 'command-owner').at(-1).data"
+        )
+        self.assertEqual(old_ack["state"], "rejected")
+        self.assertNotIn("rejectionReason", old_ack)
         self.page.keyboard.down("Shift")
         result = self.activate_source_command_owner(released_at=0)
         self.assertEqual(result["ack"]["state"], "rejected")
+        self.assertEqual(result["ack"]["rejectionReason"], "KeysHeld")
+        self.assertNotIn("diagnostic", result["ack"])
         self.page.keyboard.up("Shift")
         result = self.activate_source_command_owner("released-owner")
         self.assertEqual(result["ack"]["state"], "active")
+        self.assertEqual(result["ack"]["ownerId"], "released-owner")
+        self.assertNotIn("rejectionReason", result["ack"])
+        self.assertNotIn("diagnostic", result["ack"])
         self.page.keyboard.press("F10")
         self.assertEqual(len(self.source_commands()), 1)
         self.assertIn("native", self.source_commands()[0]["data"])

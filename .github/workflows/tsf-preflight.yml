@@ -88,19 +88,26 @@ jobs:
         run: |
           python -B -m unittest discover -s tests/windows/tsf_probe -p 'test_*.py' -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Verify each native source blob equals the compiled lifecycle baseline
+      - name: Record candidate blobs and enforce the verified baseline for Read
         if: steps.gate.outputs.eligible == 'true'
         shell: pwsh
         run: |
           $sources = @('tests/windows/tsf_probe/native/observer.cpp', 'tests/windows/tsf_probe/native/runner.cpp',
             'tests/windows/tsf_probe/native/test_outcome.cpp', 'tests/windows/tsf_probe/native/protocol.h',
             'tests/windows/tsf_probe/native/outcome.h', 'tests/windows/tsf_probe/build_native.py')
-          git diff --exit-code 8d5e3f922266b6f3a754dbfee967a9665106c425 HEAD -- @sources
-          if ($LASTEXITCODE -ne 0) { throw 'Native source differs from the verified lifecycle baseline' }
+          if ('${{ steps.gate.outputs.level }}' -eq 'read') {
+            git diff --exit-code 8d5e3f922266b6f3a754dbfee967a9665106c425 HEAD -- @sources
+            if ($LASTEXITCODE -ne 0) { throw 'Native source differs from the verified lifecycle baseline' }
+          }
           git diff --exit-code HEAD -- @sources
           if ($LASTEXITCODE -ne 0) { throw 'Native working tree differs from the checked commit' }
-          git ls-tree -r HEAD -- @sources
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $blobs = @(git ls-tree -r HEAD -- @sources)
+          if ($LASTEXITCODE -ne 0 -or $blobs.Count -ne 6) { throw 'Six native source blobs required' }
+          New-Item -ItemType Directory -Path artifacts/tsf-native/reports -ErrorAction Stop | Out-Null
+          @{ schemaVersion = 1; kind = 'native-source-blobs'; commit = $env:GITHUB_SHA;
+             level = '${{ steps.gate.outputs.level }}'; blobs = $blobs } |
+            ConvertTo-Json -Depth 3 | Set-Content -Encoding utf8 artifacts/tsf-native/reports/source-baseline.json
+          $blobs
       - name: Compile test sources with an already installed x64 MSVC toolchain
         if: steps.gate.outputs.eligible == 'true'
         timeout-minutes: 3
@@ -121,7 +128,6 @@ jobs:
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
-          New-Item -ItemType Directory -Path artifacts/tsf-native/reports -ErrorAction Stop | Out-Null
           & artifacts/tsf-native/bin/runner.exe --protocol-selftest | Set-Content -Encoding utf8 artifacts/tsf-native/reports/protocol.json
           if ($LASTEXITCODE -ne 0) { throw 'Native protocol selftest failed' }
           & artifacts/tsf-native/bin/test_outcome.exe
@@ -150,16 +156,8 @@ jobs:
           & artifacts/tsf-native/bin/runner.exe --lifecycle-only $directory $dll | Set-Content -Encoding utf8 artifacts/tsf-native/reports/lifecycle.json
           $code = $LASTEXITCODE
           if ($code -ne 0) { throw "Notepad lifecycle incomplete: exit $code" }
-          $report = Get-Content -LiteralPath artifacts/tsf-native/reports/lifecycle.json -Raw | ConvertFrom-Json
-          if ($report.kind -ne 'isolated-tsf-native' -or $report.status -ne 'observed-not-acceptance' -or
-              $report.reason -ne 'lifecycle-observed' -or $report.targetStarted -ne $true -or
-              $report.requestDispatched -ne $false -or $report.normalExit -ne $true -or
-              $report.forcedCleanup -ne $false -or $report.ownedJobEmpty -ne $true -or
-              $report.syntheticFileRemoved -ne $true -or $report.removalProvenByProcessExit -ne $true -or
-              $report.readSnapshotValid -ne $false -or $report.callbackCount -ne 0 -or
-              $report.imeVerified -ne $false -or $report.writebackAllowed -ne $false) {
-            throw 'No-DLL lifecycle contract not demonstrated'
-          }
+          python -B tests/windows/tsf_probe/read_validation.py --kind lifecycle --report artifacts/tsf-native/reports/lifecycle.json
+          if ($LASTEXITCODE -ne 0) { throw 'No-DLL lifecycle contract not demonstrated' }
           'Owned Notepad lifecycle only. No observer loaded; no TSF/IME/read/write acceptance.' >> $env:GITHUB_STEP_SUMMARY
       - name: Execute exactly one owned synthetic read (not IME or write acceptance)
         if: steps.gate.outputs.eligible == 'true' && steps.gate.outputs.level == 'read'

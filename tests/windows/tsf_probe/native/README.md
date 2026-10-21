@@ -26,7 +26,7 @@ IPC 不携带正文，只有有界状态、长度、选区和 fingerprint。fing
 
 ## 证据边界与待验证
 
-本版本不是支持能力。真实编译、纯合同测试和 no-DLL 正常启动/退出已在隔离 Windows 验证；缺 manager/context、取消/过期、父进程退出、目标销毁与晚到回调等只读阶段仍未在 Windows 上验证。缺中文 IME 环境只能建立无组合时的单次合成文档观察，不能建立中文组合/共存/连续观察或任何 Tab/写回能力。
+本版本不是支持能力。旧基线的真实编译、纯合同测试和 no-DLL 正常启动/退出已在隔离 Windows 验证；当前诊断协议 v2 候选尚未完成 Windows 编译与生命周期验证，不能继承旧基线证据；缺 manager/context、取消/过期、父进程退出、目标销毁与晚到回调等只读阶段仍未在 Windows 上验证。缺中文 IME 环境只能建立无组合时的单次合成文档观察，不能建立中文组合/共存/连续观察或任何 Tab/写回能力。
 
 源代码内 guard 不是实测证据；后续具体只读生命周期反例的执行编排仍须单独审查，不使用模拟 TSF 替代。
 
@@ -57,3 +57,13 @@ SetWindowsHookEx 使用 TID，不接受持有的线程句柄/创建时间。runn
 4. 再审核该结果及环境后，才能批准同样隔离条件下的 `--single-read`，不能由 exit 0 自动授权。
 
 `test_outcome.cpp` 无 Windows 依赖，可用现成 Linux C++ 编译器在临时输出目录单独编译并运行，实际断言同一 `LifecycleObserved` 函数；这只证明报告逻辑。Windows runner/observer 已编译，但模块加载与 TSF 读取未执行。`lifecycleValidated` 仅在输入就绪和唯一字段检查全部完成后置真，清理成功不能弥补先前失败。
+
+## 发送与入口诊断
+
+协议版本与注册消息名均为 v2。SendMessageTimeout 前记录单调时刻并 SetLastError(0)，返回后紧邻保存 GetLastError，再记录返回时刻。sendAttempted/sendReturned/sendReturn 区分尝试、API 返回与 API 成败；messageResult 仅在非零 API 返回时有效，否则为 null。有效消息结果 0 不是失败，API 返回 0 且 LastError 0 只能表示通用失败。API 结果不能替代异步目标观察：发送超时后目标可能已经完成有效读取；反之发送成功不证明读取发生。[官方合同](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendmessagetimeoutw)
+
+目标仅在 header/版本/大小与当前目标进程创建身份、线程、字段匹配后原子 OR OwnedEntry(1)；父进程创建身份与模块引用取得后加 ValidationPassed(2)；进入 Submit 加 SubmitEntered(4)，调用/返回 RequestEditSession 分别加 RequestCalled(8)/RequestReturned(16)。阶段位不清零、不覆盖，允许值为 0/1/3/7/15/31。现有 BasicGuard、TSF READ、3 秒期限及正文/选区读取不变。入口位 0 仍无法区分 DLL 未进入、映射失败或 header 拒绝，绝不向未验证映射写日志。完成 callback、完整快照与正常清理仍是原验收条件。
+
+在 hook 前，使用 held 自有目标进程句柄只读查询签名与动态代码 policy，记录 query/known、数值错误及已定义标志位。任何查询失败停止；MicrosoftSignedOnly/StoreSignedOnly/MitigationOptIn 不兼容本次未签名实验 DLL 时停止。动态代码禁止位只约束动态生成/修改可执行代码，不等于普通 DLL 加载被禁止，也不是加载安全证明；不调用策略修改/放宽接口，不提权或绕过。[查询合同](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessmitigationpolicy)、[签名策略](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-process_mitigation_binary_signature_policy)、[动态代码策略](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-process_mitigation_dynamic_code_policy)
+
+所有新增字段都是固定有界元数据，无正文/地址/句柄。报告消费者严格校验版本、阶段、类型与范围；Lifecycle 要求全部发送/阶段为未开始且原清理成立，不能将全零诊断当读取成功。新候选先经独立 Lifecycle 编译、selftests、no-DLL 验证并保留六个源码 blob；Read 继续固定旧基线，只有原报告经审后才可另批固定新基线与单次 Read。没有自动重试或写锁升级。

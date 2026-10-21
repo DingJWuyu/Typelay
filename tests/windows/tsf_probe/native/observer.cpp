@@ -187,6 +187,7 @@ public:
     }
 };
 void Submit(State* s) {
+    InterlockedOr(&s->exchange->phases, SubmitEntered);
     auto reason = BasicGuard(s);
     if (reason != None) { Finish(s, Rejected, reason); return; }
     const HMODULE tsf = LoadLibraryExW(L"msctf.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -212,9 +213,11 @@ void Submit(State* s) {
     auto* session = new(std::nothrow) Session(s, manager, context);
     if (!session) { context->Release(); manager->Release(); Finish(s, Fault, CallbackException); return; }
     HRESULT sessionHr = E_FAIL;
+    InterlockedOr(&s->exchange->phases, RequestCalled);
     hr = context->RequestEditSession(id, session, TF_ES_ASYNC | TF_ES_READ, &sessionHr);
     s->exchange->requestHr = hr;
     s->exchange->sessionHr = sessionHr;
+    InterlockedOr(&s->exchange->phases, RequestReturned);
     if (FAILED(hr) || sessionHr != TF_S_ASYNC) Finish(s, Unsupported, SessionDenied);
     session->Release();
 }
@@ -233,11 +236,13 @@ extern "C" __declspec(dllexport) LRESULT CALLBACK TypeLayTsfReadOnlyHook(int cod
                 if (e && probe::HeaderValid(*e) && e->targetPid == GetCurrentProcessId()
                     && e->targetThread == GetCurrentThreadId() && e->field == reinterpret_cast<uint64_t>(message->hwnd)
                     && e->targetCreated == probe::Created(GetCurrentProcess())) {
+                    InterlockedOr(&e->phases, OwnedEntry);
                     HANDLE parent = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, e->parentPid);
                     HMODULE self = nullptr;
                     if (parent && probe::Created(parent) == e->parentCreated
                         && GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
                             reinterpret_cast<LPCWSTR>(&TypeLayTsfReadOnlyHook), &self)) {
+                        InterlockedOr(&e->phases, ValidationPassed);
                         state = new State{e, parent, self, reinterpret_cast<HWND>(e->root), reinterpret_cast<HWND>(e->field), e->targetThread};
                         CloseHandle(mapping);
                         Submit(state);

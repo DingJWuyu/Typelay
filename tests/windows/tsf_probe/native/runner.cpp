@@ -44,6 +44,41 @@ bool Env(const wchar_t* name, const wchar_t* expected) noexcept {
     const DWORD size = GetEnvironmentVariableW(name, value, 128);
     return size && size < 128 && std::wcscmp(value, expected) == 0;
 }
+struct Diagnostics {
+    bool policyQueried = false, signatureKnown = false, dynamicKnown = false;
+    DWORD signatureError = 0, dynamicError = 0, signatureFlags = 0, dynamicFlags = 0;
+    bool sendReturned = false;
+    LRESULT sendReturn = 0;
+    DWORD sendError = 0;
+    DWORD_PTR messageResult = 0;
+    ULONGLONG sendStarted = 0, sendEnded = 0;
+    void QueryPolicies(HANDLE process) noexcept {
+        policyQueried = true;
+        PROCESS_MITIGATION_BINARY_SIGNATURE_POLICY signature{};
+        SetLastError(ERROR_SUCCESS);
+        signatureKnown = GetProcessMitigationPolicy(process, ProcessSignaturePolicy, &signature, sizeof(signature)) != FALSE;
+        signatureError = GetLastError();
+        if (signatureKnown) signatureFlags = signature.Flags & 0x1f;
+        PROCESS_MITIGATION_DYNAMIC_CODE_POLICY dynamic{};
+        SetLastError(ERROR_SUCCESS);
+        dynamicKnown = GetProcessMitigationPolicy(process, ProcessDynamicCodePolicy, &dynamic, sizeof(dynamic)) != FALSE;
+        dynamicError = GetLastError();
+        if (dynamicKnown) dynamicFlags = dynamic.Flags & 0x0f;
+    }
+    void Print(LONG phases, bool attempted) const noexcept {
+        std::printf("\"diagnostics\":{\"protocolVersion\":%u,\"targetPhases\":%ld,"
+            "\"policyQueried\":%s,\"signatureKnown\":%s,\"signatureError\":%lu,\"signatureFlags\":%lu,"
+            "\"dynamicKnown\":%s,\"dynamicError\":%lu,\"dynamicFlags\":%lu,"
+            "\"sendAttempted\":%s,\"sendReturned\":%s,\"sendReturn\":%lld,\"sendLastError\":%lu,"
+            "\"sendStartedTick\":%llu,\"sendEndedTick\":%llu,\"messageResultValid\":%s,\"messageResult\":",
+            kVersion, phases, policyQueried ? "true" : "false", signatureKnown ? "true" : "false", signatureError, signatureFlags,
+            dynamicKnown ? "true" : "false", dynamicError, dynamicFlags, attempted ? "true" : "false", sendReturned ? "true" : "false",
+            static_cast<long long>(sendReturn), sendError, sendStarted, sendEnded, attempted && sendReturned && sendReturn != 0 ? "true" : "false");
+        if (attempted && sendReturned && sendReturn != 0) std::printf("%llu", static_cast<unsigned long long>(messageResult));
+        else std::printf("null");
+        std::printf("}");
+    }
+};
 struct Owned {
     HANDLE job = nullptr, process = nullptr, thread = nullptr, targetThread = nullptr, mapping = nullptr;
     Exchange* exchange = nullptr;
@@ -120,7 +155,8 @@ int ProtocolSelfTest() {
     e.parentCreated = 1; e.targetCreated = 2; e.root = 3; e.field = 4; e.deadline = 5;
     Require(HeaderValid(e), "valid-header-refused");
     --e.size; Require(!HeaderValid(e), "truncated-header-accepted");
-    ++e.size; ++e.version; Require(!HeaderValid(e), "unknown-version-accepted");
+    ++e.size; e.version = 1; Require(!HeaderValid(e), "old-version-accepted");
+    e.version = kVersion + 1; Require(!HeaderValid(e), "unknown-version-accepted");
     Require(kTextLength < kMaxText, "synthetic-input-too-long");
     Require(LifetimeReason(false, 9, 10, true, false) == None, "live-request-refused");
     Require(LifetimeReason(false, 10, 10, true, false) == Expired, "deadline-accepted");
@@ -150,6 +186,7 @@ int wmain(int argc, wchar_t** argv) {
     if (!read && std::wcscmp(argv[1], L"--lifecycle-only") != 0) return 2;
     Owned owned;
     Exchange result{};
+    Diagnostics diagnostics;
     const char* reason = "not-run";
     bool started = false, lifecycleValidated = false, dispatched = false, syntheticCreated = false;
     std::wstring synthetic;
@@ -211,6 +248,12 @@ int wmain(int argc, wchar_t** argv) {
         lifecycleValidated = true;
         reason = "lifecycle-observed";
         if (read) {
+            // Query only the held, newly created owned process. Never relax policy.
+            diagnostics.QueryPolicies(owned.process);
+            Require(diagnostics.signatureKnown && diagnostics.dynamicKnown, "target-policy-unknown");
+            // These signature restrictions cannot admit this locally built unsigned DLL.
+            Require((diagnostics.signatureFlags & 7) == 0, "target-signature-policy-incompatible");
+            // Dynamic-code prohibition alone is not proof that image loading is blocked.
             DWORD targetPid = 0;
             const DWORD thread = GetWindowThreadProcessId(windows.field, &targetPid);
             Require(thread && targetPid == owned.pid, "target-thread-mismatch");
@@ -240,14 +283,18 @@ int wmain(int argc, wchar_t** argv) {
             Require(owned.hook != nullptr, "target-hook-unavailable");
             HANDLE remoteMapping = nullptr;
             Require(DuplicateHandle(GetCurrentProcess(), owned.mapping, owned.process, &remoteMapping, 0, FALSE, DUPLICATE_SAME_ACCESS) != FALSE, "mapping-transfer-failed");
-            DWORD_PTR ignored = 0;
             const UINT message = RegisterWindowMessageW(kMessage);
             Require(message != 0, "message-unavailable");
             dispatched = true;
             // Timeout is not cancellation; remote handle/state belongs to target
             // lifetime. Never close a possibly already-consumed remote handle.
-            SendMessageTimeoutW(windows.field, message, reinterpret_cast<WPARAM>(remoteMapping), 0,
-                SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT, 500, &ignored);
+            diagnostics.sendStarted = GetTickCount64();
+            SetLastError(ERROR_SUCCESS);
+            diagnostics.sendReturn = SendMessageTimeoutW(windows.field, message, reinterpret_cast<WPARAM>(remoteMapping), 0,
+                SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT, 500, &diagnostics.messageResult);
+            diagnostics.sendError = GetLastError(); // No intervening API may overwrite this.
+            diagnostics.sendReturned = true;
+            diagnostics.sendEnded = GetTickCount64();
             while (GetTickCount64() < e->deadline && WaitForSingleObject(owned.process, 0) == WAIT_TIMEOUT) {
                 if (InterlockedCompareExchange(&e->status, 0, 0) != Pending) break;
                 Sleep(10);
@@ -276,12 +323,14 @@ int wmain(int argc, wchar_t** argv) {
         "\"syntheticFileRemoved\":%s,\"removalProvenByProcessExit\":%s,\"liveUnloadProven\":false,\"imeVerified\":false,\"writebackAllowed\":false,"
         "\"readSnapshotValid\":%s,\"readStatus\":%ld,\"readReason\":%ld,\"requestHr\":%ld,\"sessionHr\":%ld,\"callbackCount\":%ld,\"sessionDestroyed\":%ld,"
         "\"textLength\":%u,\"selectionStart\":%u,\"selectionLength\":%u,\"compositionCount\":%u,"
-        "\"syntheticExactMatch\":%s,\"noncryptographicFingerprint\":\"%016llx\"}\n",
+        "\"syntheticExactMatch\":%s,\"noncryptographicFingerprint\":\"%016llx\",",
         observed ? "observed-not-acceptance" : "not-supported-or-incomplete", reason,
         started ? "true" : "false", dispatched ? "true" : "false", owned.normalExit ? "true" : "false",
         owned.forced ? "true" : "false", owned.jobEmpty ? "true" : "false", syntheticRemoved ? "true" : "false", removed ? "true" : "false",
         result.status == Observed ? "true" : "false", result.status, result.reason, result.requestHr, result.sessionHr, result.callbackCount, result.sessionDestroyed,
         result.textLength, result.selectionStart, result.selectionLength, result.compositionCount,
         result.exactSyntheticMatch ? "true" : "false", result.fingerprint);
+    diagnostics.Print(result.phases, dispatched);
+    std::puts("}");
     return observed ? 0 : 2;
 }
