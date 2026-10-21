@@ -138,3 +138,7 @@ Qt 的原生实现、provider FIFO、实际版本核对、构建和验证边界�
 trunk、两个保留的 preview 分支、Pull Request 与手动 workflow 使用共享、Windows 和 Linux 的完整检查；分支触发器不改变根 AGENTS.md 的分支权限。
 
 本地定位可以选用上述发行包、托盘、浏览器、Fcitx、Qt 或 VS Code 的现役独立命令；检查范围由实际改动决定。共享 Core/Runtime/Protocol、宿主、启动、生产构建或打包变更仍需对应完整验证。单场景通过只证明该场景，不能代替整个平台或物理桌面验收。
+
+### 真实 GIMP 的隔离验收坐标
+
+`ordinary-gimp` scope 仅在自己的嵌套 niri 配置中关闭 compositor 动画，其他 scope 与产品配置不变。锁定 niri 26.04 的 tiled IPC 不提供窗口位置；该验收仅在同一聚焦非浮动窗口、唯一活动输出/工作区、无 overview、窗口和 tile 均精确占满输出且内容偏移为零时证明全屏原点。配置摘要和约束记录在结果 JSON 中。此路径不证明动画过程中的真实用户定位能力，不把任意缺失坐标当成零。

@@ -277,13 +277,20 @@ def worker_limits():
     resource.setrlimit(resource.RLIMIT_AS, (bound, bound))
 
 
-async def request(process, report, case=None, style=None, *, capability="styledTranslationVersion"):
+async def request(
+    process, report, case=None, style=None, *, capability="styledTranslationVersion", ordinary=False
+):
     payload = {"id": len(report["requests"]) + 1, "op": "hello"}
     if case is not None:
         source, target = case["direction"].split("_")
         payload.update(
-            op="translate-styled-v1", text=case["text"], source=source, target=target, style=style
+            op="translate" if ordinary else "translate-styled-v1",
+            text=case["text"],
+            source=source,
+            target=target,
         )
+        if not ordinary:
+            payload["style"] = style
     record = {
         "id": payload["id"],
         "op": payload["op"],
@@ -325,7 +332,11 @@ async def request(process, report, case=None, style=None, *, capability="styledT
                 or response.get("code") != ""
                 or not valid_text(response.get("text"))
             ):
-                raise CollectionError("styled-translation-not-completed-no-fallback")
+                raise CollectionError(
+                    "ordinary-translation-not-completed-no-fallback"
+                    if ordinary
+                    else "styled-translation-not-completed-no-fallback"
+                )
             report["quality"] = "not-reviewed"
     except TimeoutError:
         record.update(status="timeout", code="request-transport-timeout")

@@ -59,9 +59,57 @@ def validate_nested_output(outputs, output_size):
     )
 
 
-def fullscreen_content_origin(layout, output_size):
+def full_output_origin_proven(
+    window,
+    output_size,
+    workspaces,
+    overview,
+    requested_window,
+    version,
+    *,
+    animations_disabled=False,
+):
+    """CI-only proof for niri 26.04 tiled IPC, whose position field stays null.
+
+    8ed0da4 layout/tile.rs:864 and scrolling.rs:2420 leave tiled positions
+    unset; scrolling.rs:552 puts the active fullscreen column at view offset 0.
+    A request alone is not proof: current full allocation and session scope
+    must agree. Unknown/small/floating/inactive geometry cannot use this path.
+    """
+    if not animations_disabled or version != "26.04 (8ed0da4)" or overview != {"is_open": False}:
+        return False
+    if window.get("id") != requested_window or window.get("is_focused") is not True:
+        return False
+    if window.get("is_floating") is not False:
+        return False
+    active = [w for w in workspaces if w.get("is_active")]
+    if len(active) != 1:
+        return False
+    if not (
+        active[0].get("id") == window.get("workspace_id")
+        and active[0].get("output") == "winit"
+        and active[0].get("is_focused") is True
+    ):
+        return False
+    layout = window["layout"]
+    return (
+        layout.get("tile_pos_in_workspace_view") is None
+        and layout.get("tile_size") == output_size
+        and layout.get("window_size") == output_size
+        and layout.get("window_offset_in_tile") == [0, 0]
+    )
+
+
+def fullscreen_content_origin(layout, output_size, *, full_output_proven=False):
     """Fixed-size fullscreen content can be centered inside the output tile."""
-    if layout.get("tile_size") != output_size or layout.get("tile_pos_in_workspace_view") != [0, 0]:
+    if layout.get("tile_size") != output_size:
+        return None
+    if layout.get("tile_pos_in_workspace_view") != [0, 0] and not (
+        full_output_proven
+        and layout.get("tile_pos_in_workspace_view") is None
+        and layout.get("window_size") == output_size
+        and layout.get("window_offset_in_tile") == [0, 0]
+    ):
         return None
     size = layout.get("window_size")
     offset = layout.get("window_offset_in_tile")
@@ -75,7 +123,9 @@ def fullscreen_content_origin(layout, output_size):
     return tuple(int(v) for v in offset)
 
 
-def properties_click_point(window, current, measured, remeasured, output_size):
+def properties_click_point(
+    window, current, measured, remeasured, output_size, *, full_output_proven=False
+):
     assert current == window and current.get("is_focused"), (
         "GIMP identity/layout changed before click"
     )
@@ -86,7 +136,9 @@ def properties_click_point(window, current, measured, remeasured, output_size):
     x, y, width, height = area
     assert 0 < width <= size[0] and 0 < height <= size[1]
     assert 0 <= x <= size[0] - width and 0 <= y <= size[1] - height
-    origin = fullscreen_content_origin(current["layout"], output_size)
+    origin = fullscreen_content_origin(
+        current["layout"], output_size, full_output_proven=full_output_proven
+    )
     assert origin is not None, "fullscreen tile disappeared before click"
     point = (origin[0] + x + width // 2, origin[1] + y + height // 2)
     assert all(0 <= point[i] < output_size[i] for i in range(2))
@@ -372,6 +424,16 @@ def run_gimp(
         }
         diagnostic_record()
         validate_nested_output(outputs, expected)
+        niri_version = contents(request("Version"), "Version")
+        compositor_config = (arguments.output / "niri.kdl").read_bytes()
+        animations_disabled = b"animations { off; }" in compositor_config.splitlines()
+        report["compositorConfiguration"] = {
+            "sha256": hashlib.sha256(compositor_config).hexdigest(),
+            "animationsDisabled": animations_disabled,
+        }
+        assert animations_disabled, (
+            "fullscreen origin proof requires isolated compositor animations off"
+        )
         if fullscreen_properties != properties["id"]:
             request({"Action": {"FullscreenWindow": {"id": properties["id"]}}})
             fullscreen_properties = properties["id"]
@@ -384,10 +446,33 @@ def run_gimp(
             report["clickOutputSize"] = expected
             if current is None or not current.get("is_focused"):
                 return None
-            origin = fullscreen_content_origin(current["layout"], expected)
-            return (current, origin) if origin is not None else None
+            workspaces = contents(request("Workspaces"), "Workspaces")
+            overview = contents(request("OverviewState"), "OverviewState")
+            proof = full_output_origin_proven(
+                current,
+                expected,
+                workspaces,
+                overview,
+                fullscreen_properties,
+                niri_version,
+                animations_disabled=animations_disabled,
+            )
+            report["clickOriginEvidence"] = {
+                "version": niri_version,
+                "workspaces": workspaces,
+                "overview": overview,
+                "requestedWindow": fullscreen_properties,
+                "fullOutputProven": proof,
+                "source": "niri-8ed0da4-active-fullscreen-allocation"
+                if proof
+                else "explicit-tile-position",
+            }
+            origin = fullscreen_content_origin(
+                current["layout"], expected, full_output_proven=proof
+            )
+            return (current, origin, proof) if origin is not None else None
 
-        current, _ = wait_for(
+        current, _, _ = wait_for(
             observed_fullscreen, "GIMP properties did not reach the observed full-output tile"
         )
         measured = bounds(node, application["pid"], current["layout"]["window_size"])
@@ -397,7 +482,9 @@ def run_gimp(
         )
         observed = observed_fullscreen()
         assert observed is not None, "GIMP fullscreen geometry disappeared before click"
-        point = properties_click_point(current, observed[0], measured, remeasured, expected)
+        point = properties_click_point(
+            current, observed[0], measured, remeasured, expected, full_output_proven=observed[2]
+        )
         assert process_identity(application["pid"]) == application
         subprocess.run(
             [

@@ -12,9 +12,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from desktop_session import process_identity
-from ordinary_gimp import (
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "src/linux/desktop"))
+
+from desktop_session import process_identity  # noqa: E402
+from ordinary_gimp import (  # noqa: E402
     acceptable_candidate,
+    full_output_origin_proven,
     fullscreen_content_origin,
     launched_application,
     properties_click_point,
@@ -229,6 +233,96 @@ class OrdinaryDesktopGeometryTests(unittest.TestCase):
             layout[field] = value
             with self.subTest(field=field, value=value), self.assertRaises(AssertionError):
                 fullscreen_content_origin(layout, [1280, 800])
+
+
+class FullscreenOriginProofTests(unittest.TestCase):
+    def setUp(self):
+        # a27 actual current window allocation, not a fabricated tile origin.
+        self.window = dict(
+            id=12,
+            pid=34683,
+            workspace_id=1,
+            is_focused=True,
+            is_floating=False,
+            layout=dict(
+                tile_size=[1280.0, 800.0],
+                window_size=[1280, 800],
+                window_offset_in_tile=[0.0, 0.0],
+                tile_pos_in_workspace_view=None,
+            ),
+        )
+        self.workspaces = [dict(id=1, output="winit", is_active=True, is_focused=True)]
+
+    def proof(
+        self, window=None, workspaces=None, overview=None, requested=12, version="26.04 (8ed0da4)"
+    ):
+        return full_output_origin_proven(
+            self.window if window is None else window,
+            [1280, 800],
+            self.workspaces if workspaces is None else workspaces,
+            {"is_open": False} if overview is None else overview,
+            requested,
+            version,
+            animations_disabled=True,
+        )
+
+    def test_current_full_allocation_proves_origin_only_with_complete_scope(self):
+        self.assertIsNone(fullscreen_content_origin(self.window["layout"], [1280, 800]))
+        self.assertTrue(self.proof())
+        self.assertFalse(
+            full_output_origin_proven(
+                self.window, [1280, 800], self.workspaces, {"is_open": False}, 12, "26.04 (8ed0da4)"
+            )
+        )
+        measured = ((754, 480, 510, 50), (0, 0, 1280, 800))
+        self.assertEqual(
+            properties_click_point(
+                self.window,
+                self.window,
+                measured,
+                measured,
+                [1280, 800],
+                full_output_proven=self.proof(),
+            ),
+            (1009, 505),
+        )
+
+    def test_request_unknown_version_overview_and_other_workspace_cannot_prove_origin(self):
+        self.assertFalse(self.proof(requested=13))
+        self.assertFalse(self.proof(version="unknown"))
+        self.assertFalse(self.proof(overview={"is_open": True}))
+        self.assertFalse(self.proof(overview={}))
+        self.assertFalse(self.proof(workspaces=[]))
+        self.assertFalse(self.proof(workspaces=self.workspaces * 2))
+        for field, value in (
+            ("output", "other"),
+            ("id", 2),
+            ("is_active", False),
+            ("is_focused", False),
+        ):
+            with self.subTest(field=field):
+                self.assertFalse(
+                    self.proof(workspaces=[dict(self.workspaces[0], **{field: value})])
+                )
+
+    def test_small_shifted_floating_and_unfocused_windows_never_infer_null_origin(self):
+        for field, value in (("id", 13), ("is_focused", False), ("is_floating", True)):
+            with self.subTest(field=field):
+                self.assertFalse(self.proof(window=dict(self.window, **{field: value})))
+        for field, value in (
+            ("window_size", [400, 540]),
+            ("tile_size", [400, 540]),
+            ("window_offset_in_tile", [1, 0]),
+            ("tile_pos_in_workspace_view", [20, 0]),
+        ):
+            with self.subTest(field=field):
+                window = dict(self.window, layout=dict(self.window["layout"], **{field: value}))
+                self.assertFalse(self.proof(window=window))
+                self.assertIsNone(
+                    fullscreen_content_origin(
+                        window["layout"], [1280, 800], full_output_proven=True
+                    )
+                )
 
 
 if __name__ == "__main__":

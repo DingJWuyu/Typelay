@@ -66,9 +66,18 @@ def valid_push(before, after):
 
 
 def quality_collection():
-    """Return collection, comparison, and full-check requirements for this event."""
+    """Return collection, comparison, diagnostics, and full-check requirements for this event."""
     event = os.environ.get("EVENT_NAME")
     comparison = os.environ.get("HY_DECODE_COMPARISON", "false")
+    diagnostic = os.environ.get("FIXED_MODEL_DIAGNOSTICS", "false")
+    if diagnostic not in ("", "false", "true"):
+        raise ValueError("fixed_model_diagnostics must be an exact boolean")
+    if diagnostic == "true" and (
+        event != "workflow_dispatch"
+        or os.environ.get("COLLECT_TRANSLATION_QUALITY") != "true"
+        or comparison == "true"
+    ):
+        raise ValueError("fixed diagnostics requires collection and excludes comparison")
     if comparison not in ("", "false", "true"):
         raise ValueError("hy_decode_comparison must be an exact boolean")
     if comparison == "true" and (
@@ -78,9 +87,14 @@ def quality_collection():
             "hy_decode_comparison input requires manual translation quality collection"
         )
     if event == "workflow_dispatch":
-        return os.environ.get("COLLECT_TRANSLATION_QUALITY") == "true", comparison == "true", False
+        return (
+            os.environ.get("COLLECT_TRANSLATION_QUALITY") == "true",
+            comparison == "true",
+            diagnostic == "true",
+            False,
+        )
     if event != "push":
-        return False, False, False
+        return False, False, False, False
     try:
         message = git("show", "-s", "--format=%B", "HEAD").decode("utf-8")
         marker = "TypeLay-Quality-Capture: true"
@@ -89,33 +103,46 @@ def quality_collection():
         lines = message.rstrip("\n").split("\n")
         # Fenced/quoted/indented examples are documentation, not requests.
         if "```" in message or "~~~" in message:
-            return False, False, False
+            return False, False, False, False
         comparison_lines = [line for line in lines if line.startswith(comparison_key)]
+        diagnostic_key = "TypeLay-Fixed-Model-Diagnostics:"
+        diagnostic_marker = diagnostic_key + " true"
+        diagnostic_lines = [line for line in lines if line.startswith(diagnostic_key)]
+        diagnose = bool(diagnostic_lines)
         compare = bool(comparison_lines)
-        if compare:
+        if diagnose:
+            if (
+                compare
+                or diagnostic_lines != [diagnostic_marker]
+                or lines.count(marker) != 1
+                or len(lines) < 4
+                or lines[-3:] != ["", marker, diagnostic_marker]
+            ):
+                return False, False, False, True
+        elif compare:
             if (
                 comparison_lines != [comparison_marker]
                 or lines.count(marker) != 1
                 or len(lines) < 4
                 or lines[-3:] != ["", marker, comparison_marker]
             ):
-                return False, False, True
+                return False, False, False, True
         else:
             if marker not in lines or lines[-1] != marker:
-                return False, False, False
+                return False, False, False, False
             if lines.count(marker) != 1:
-                return False, False, True
+                return False, False, False, True
             if len(lines) < 3 or lines[-2] != "":
-                return False, False, False
+                return False, False, False, False
         # An unverified explicit request never narrows normal checks.
         if os.environ.get("BRANCH") != "work/linux-usability":
-            return False, False, True
+            return False, False, False, True
         before, after = os.environ.get("BEFORE", ""), os.environ.get("AFTER", "")
         if before == after or not valid_push(before, after):
-            return False, False, True
+            return False, False, False, True
         event_path = Path(os.environ["GITHUB_EVENT_PATH"])
         if event_path.stat().st_size > 4 * 1024 * 1024:
-            return False, False, True
+            return False, False, False, True
         payload = json.loads(event_path.read_text(encoding="utf-8"))
         head = payload.get("head_commit")
         verified = (
@@ -124,9 +151,9 @@ def quality_collection():
             and isinstance(head.get("message"), str)
             and head["message"].rstrip("\n") == message.rstrip("\n")
         )
-        return verified, verified and compare, True
+        return verified, verified and compare, verified and diagnose, True
     except (OSError, ValueError, KeyError, AttributeError, subprocess.CalledProcessError):
-        return False, False, True
+        return False, False, False, True
 
 
 def neutral(path):
@@ -207,7 +234,7 @@ def select():
 
 def main():
     selection = select()
-    collect, comparison, require_full = quality_collection()
+    collect, comparison, diagnostic, require_full = quality_collection()
     if require_full:
         selection = True, True, False, False, False
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
@@ -215,6 +242,7 @@ def main():
             stream.write(f"{name}={str(value).lower()}\n")
         stream.write(f"collect_quality={str(collect).lower()}\n")
         stream.write(f"hy_decode_comparison={str(comparison).lower()}\n")
+        stream.write(f"fixed_model_diagnostics={str(diagnostic).lower()}\n")
 
 
 if __name__ == "__main__":

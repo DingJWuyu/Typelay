@@ -21,7 +21,11 @@ CLEANUP_SECONDS = 30
 COLLECTIONS = {"alternative": 32, "styled": 16, "glossary": 5}
 
 
-def collections(comparison=False):
+def collections(comparison=False, diagnostics=False):
+    if comparison and diagnostics:
+        raise ValueError("comparison and fixed diagnostics are mutually exclusive")
+    if diagnostics:
+        return {"alternative": 32, "ordinary": 8}
     return (
         {"alternative": 32, "styled": 16, "styled-b": 16, "glossary": 5}
         if comparison
@@ -67,7 +71,7 @@ def exclusive_inventory(paths, generation):
         yield
 
 
-def invoke_runner(name, arguments, *, comparison=None):
+def invoke_runner(name, arguments, *, comparison=None, shipped_worker=None):
     """The runner keeps its own SIG/asyncio cleanup and sole worker process group."""
 
     def related(key):
@@ -75,7 +79,13 @@ def invoke_runner(name, arguments, *, comparison=None):
             key == "typelay_worker"
             or key.startswith("typelay_worker.")
             or key
-            in {"alternative_quality", "styled_quality", "glossary_quality", "hy_decode_comparison"}
+            in {
+                "alternative_quality",
+                "styled_quality",
+                "glossary_quality",
+                "ordinary_quality",
+                "hy_decode_comparison",
+            }
         )
 
     saved_modules = {key: value for key, value in sys.modules.items() if related(key)}
@@ -87,6 +97,14 @@ def invoke_runner(name, arguments, *, comparison=None):
         source_name = "styled" if name == "styled-b" else name
         sys.argv = [str(RUNNERS / f"{source_name}_quality.py"), *arguments]
         try:
+            if shipped_worker is not None:
+                from types import SimpleNamespace
+
+                from styled_quality import production_worker, source_hashes
+
+                # The observer imports checkout Python. Require the exact shipped
+                # module closure before instrumentation can start its worker.
+                production_worker(SimpleNamespace(worker=shipped_worker), source_hashes())
             if comparison is not None:
                 import hy_decode_comparison
 
@@ -133,8 +151,10 @@ def inspect_report(name, output):
         "output": str(output),
         "status": report.get("status"),
         "quality": report.get("quality", "not-run"),
-        "maximumTranslationRequests": collections(name == "styled-b")[name],
+        "maximumTranslationRequests": collections(name == "styled-b", name == "ordinary")[name],
         "actualTranslationRequests": count,
+        "actualHelloRequests": operations.count("hello"),
+        "method": report.get("method"),
         "workerStarts": report.get("workerStarts"),
         "workerExitConfirmed": report.get("workerExitConfirmed"),
         "workerExitCode": report.get("workerExitCode"),
@@ -144,9 +164,10 @@ def inspect_report(name, output):
 
 
 class Capture:
-    def __init__(self, output, work_deadline, *, comparison=False):
+    def __init__(self, output, work_deadline, *, comparison=False, diagnostics=False):
         self.comparison = comparison
-        self.collections = collections(comparison)
+        self.diagnostics = diagnostics
+        self.collections = collections(comparison, diagnostics)
         self.output = output
         self.work_deadline = work_deadline
         self.elapsed = 0.0
@@ -155,6 +176,8 @@ class Capture:
             "quality": "not-run",
             "maximumTranslationRequests": sum(self.collections.values()),
             "actualTranslationRequests": 0,
+            "maximumHelloRequests": len(self.collections),
+            "actualHelloRequests": 0,
             "requestCountComplete": True,
             "workerExitConfirmed": True,
             "collections": [],
@@ -209,6 +232,8 @@ class Capture:
         python = generation / "runtime/venv/bin/python"
         inventory = (models / "installed.json").read_bytes()
         arguments = ["--python", str(python), "--models", str(models), "--output", str(output)]
+        if name == "alternative" and self.diagnostics:
+            arguments.append("--capture-decoding-boundary")
         if name != "alternative":
             arguments.extend(["--worker", str(worker)])
         if name in ("styled", "styled-b"):
@@ -226,11 +251,16 @@ class Capture:
         started = time.monotonic()
         code = None
         try:
-            code = (
-                invoke_runner(name, arguments, comparison=comparison)
-                if comparison is not None
-                else invoke_runner(name, arguments)
-            )
+            if comparison is not None:
+                code = invoke_runner(name, arguments, comparison=comparison)
+            elif self.diagnostics and name == "alternative":
+                code = invoke_runner(name, arguments, shipped_worker=worker)
+                entry["observerProductionSource"] = {
+                    "shippedWorker": str(worker),
+                    "sourceMatchesCheckout": True,
+                }
+            else:
+                code = invoke_runner(name, arguments)
         finally:
             elapsed = time.monotonic() - started
             self.elapsed += elapsed
@@ -242,6 +272,9 @@ class Capture:
             entry.update(runnerExitCode=code, wallSeconds=round(elapsed, 3))
             self.report["actualTranslationRequests"] = sum(
                 item["actualTranslationRequests"] or 0 for item in self.report["collections"]
+            )
+            self.report["actualHelloRequests"] = sum(
+                item.get("actualHelloRequests", 0) for item in self.report["collections"]
             )
             self.report["requestCountComplete"] = all(
                 item["actualTranslationRequests"] is not None for item in self.report["collections"]
@@ -256,11 +289,11 @@ class Capture:
             )
         if report is None:
             raise RuntimeError("quality report missing or unreadable; preserve all data")
-        source_name = "styled" if name == "styled-b" else name
+        source_name = "styled" if name in ("styled-b", "ordinary") else name
         inputs = (RUNNERS / f"{source_name}_quality_inputs.json").read_bytes()
         expected = json.loads(inputs)["samples"]
         holdout_matches = True
-        if name in ("styled", "styled-b"):
+        if name in ("styled", "styled-b", "ordinary"):
             holdout = (RUNNERS / "styled_quality_holdout_inputs.json").read_bytes()
             expected.extend(json.loads(holdout)["samples"])
             holdout_matches = (
@@ -279,8 +312,21 @@ class Capture:
             and entry["actualTranslationRequests"] == self.collections[name]
             and len(report["requests"]) == self.collections[name] + 1
             and report["requests"][0].get("op") == "hello"
+            and entry["actualHelloRequests"] == 1
             and report.get("inputSha256") == hashlib.sha256(inputs).hexdigest()
             and holdout_matches
+            and (
+                not (self.diagnostics and name == "alternative")
+                or (
+                    report.get("rawNBestExposed") is True
+                    and report.get("boundaryObserverSha256")
+                    == hashlib.sha256(
+                        (RUNNERS / "alternative_boundary_worker.py").read_bytes()
+                    ).hexdigest()
+                    and report.get("method")
+                    == "instrumented-production-translate-then-translate-alternative"
+                )
+            )
             and len(report.get("cases", [])) == len(expected)
             and all(
                 {key: case.get(key) for key in sample} == sample

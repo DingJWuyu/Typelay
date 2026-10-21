@@ -55,6 +55,31 @@ class CaptureModeTests(unittest.TestCase):
         )
 
 
+class FixedDiagnosticAdmissionTests(unittest.TestCase):
+    def test_diagnostics_rejects_missing_collection_and_comparison_before_startup(self):
+        for extra in ([], ["--collect-translation-quality", "--hy-decode-comparison"]):
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tests/linux/native_e2e.py"),
+                    "--fixed-model-diagnostics",
+                    "--desktop",
+                    "--desktop-scope",
+                    "model-packages",
+                    "--native",
+                    "/absent",
+                    "--output",
+                    "/absent",
+                    *extra,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("requires collection and excludes comparison", result.stderr)
+
+
 class DecodeComparisonAdmissionTests(unittest.TestCase):
     def test_comparison_requires_original_collection_mode(self):
         result = subprocess.run(
@@ -176,6 +201,128 @@ class CaptureHandoffTests(unittest.TestCase):
             self.assertIs(sys.argv, before_argv)
         finally:
             sys.modules["typelay_worker.catalog"] = original
+
+    def test_fixed_diagnostics_only_selects_32_boundary_and_8_ordinary_requests(self):
+        capture = Capture(self.output, time.monotonic() + 1500, diagnostics=True)
+        self.assertEqual(capture.collections, {"alternative": 32, "ordinary": 8})
+        self.assertEqual(capture.report["maximumTranslationRequests"], 40)
+        self.assertEqual(Capture(self.output, 0).report["maximumTranslationRequests"], 53)
+        self.assertEqual(
+            Capture(self.output, 0, comparison=True).report["maximumTranslationRequests"], 69
+        )
+        with self.assertRaisesRegex(ValueError, "exclusive"):
+            Capture(self.output, 0, comparison=True, diagnostics=True)
+        for name in ("styled", "styled-b", "glossary"):
+            with self.assertRaisesRegex(ValueError, "not selected"):
+                capture.run(name, self.output / "absent", self.output / "absent")
+        generation = self.output / "generation"
+        (generation / "models").mkdir(parents=True)
+        (generation / "models/installed.json").write_text('{"schema":1}')
+        with self.assertRaisesRegex(RuntimeError, "incomplete"):
+            capture.run("ordinary", generation, self.output / "absent-worker")
+        report = json.loads((self.output / "ordinary-quality.json").read_text())
+        self.assertEqual(report["workerStarts"], 0)
+        self.assertEqual(report["maximumTranslationRequests"], 8)
+        self.assertEqual(len(report["cases"]), 8)
+        with self.assertRaisesRegex(RuntimeError, "continued"):
+            capture.run("alternative", generation, self.output / "absent-worker")
+
+    def test_fixed_capture_counts_two_hellos_and_requires_each_normal_exit(self):
+        # Controlled collector evidence tests orchestration, never model quality.
+        import alternative_quality
+        import ordinary_quality
+
+        for unknown_exit in (False, True):
+            output = self.output / str(unknown_exit)
+            output.mkdir()
+            generation = output / "generation"
+            (generation / "models").mkdir(parents=True)
+            marker = generation / "models/installed.json"
+            marker.write_text('{"schema":3}')
+            seen = []
+
+            def collector(name, arguments, **options):
+                seen.append(name)
+                if name == "alternative":
+                    self.assertIn("--capture-decoding-boundary", arguments)
+                    self.assertEqual(options["shipped_worker"], output / "worker")
+                    report = alternative_quality.prepare_report(
+                        types.SimpleNamespace(
+                            request_timeout=90, total_timeout=600, capture_decoding_boundary=True
+                        )
+                    )
+                    operations = ["translate", "translate-alternative"] * 16
+                else:
+                    report = ordinary_quality.prepare_report()
+                    operations = ["translate"] * 8
+                report.update(
+                    status="completed",
+                    quality="not-reviewed",
+                    workerStarts=1,
+                    workerExitCode=0,
+                    workerExitConfirmed=not unknown_exit,
+                )
+                report["requests"] = [{"op": op} for op in ["hello", *operations]]
+                report["installation"] = {
+                    "models": str(generation / "models"),
+                    "python": str(generation / "runtime/venv/bin/python"),
+                    "inventorySha256": hashlib.sha256(marker.read_bytes()).hexdigest(),
+                }
+                (output / f"{name}-quality.json").write_text(json.dumps(report))
+                return 0
+
+            capture = Capture(output, time.monotonic() + 1500, diagnostics=True)
+            with patch("support.translation_quality_capture.invoke_runner", side_effect=collector):
+                if unknown_exit:
+                    with self.assertRaisesRegex(RuntimeError, "incomplete"):
+                        capture.run("alternative", generation, output / "worker")
+                    with self.assertRaisesRegex(RuntimeError, "continued"):
+                        capture.run("ordinary", generation, output / "worker")
+                    self.assertEqual(seen, ["alternative"])
+                else:
+                    capture.run("alternative", generation, output / "worker")
+                    capture.run("ordinary", generation, output / "worker")
+                    self.assertEqual(seen, ["alternative", "ordinary"])
+                    self.assertEqual(capture.report["actualTranslationRequests"], 40)
+                    self.assertEqual(capture.report["actualHelloRequests"], 2)
+                    self.assertTrue(capture.report["workerExitConfirmed"])
+                    self.assertEqual(capture.report["quality"], "not-reviewed")
+
+    def test_boundary_runner_requires_exact_shipped_python_before_zero_model_validation(self):
+        from eng.linux.build import package_worker
+
+        package = self.output / "package"
+        package_worker(package)
+        manifest = package / "worker/native/hy/production-adapter.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(json.dumps({"abi": 5, "adapter": "not-loaded-test-adapter"}))
+        worker = package / "worker/run_worker.py"
+        output = self.output / "boundary.json"
+        arguments = ["--validate-only", "--capture-decoding-boundary", "--output", str(output)]
+        self.assertEqual(invoke_runner("alternative", arguments, shipped_worker=worker), 2)
+        report = json.loads(output.read_text())
+        self.assertEqual((report["workerStarts"], report["maximumTranslationRequests"]), (0, 32))
+        self.assertTrue(report["rawNBestExposed"])
+        self.assertIn("typelay_worker/protocol.py", report["workerSourceSha256"])
+        self.assertIn("native/hy/model.lock.json", report["workerSourceSha256"])
+        for name, digest in report["workerSourceSha256"].items():
+            self.assertEqual(
+                hashlib.sha256((worker.parent / name).read_bytes()).hexdigest(), digest
+            )
+        self.assertEqual(
+            report["method"], "instrumented-production-translate-then-translate-alternative"
+        )
+        output.unlink()
+        engine = package / "worker/typelay_worker/engine.py"
+        engine.write_bytes(engine.read_bytes() + b"# different source\n")
+        with self.assertRaisesRegex(Exception, "source-or-lock-mismatch"):
+            invoke_runner("alternative", arguments, shipped_worker=worker)
+        self.assertFalse(output.exists())
+        extra = package / "worker/typelay_worker/extra.py"
+        extra.write_text("pass")
+        with self.assertRaisesRegex(Exception, "module-set-mismatch"):
+            invoke_runner("alternative", arguments, shipped_worker=worker)
+        self.assertFalse(output.exists())
 
     def test_insufficient_total_time_starts_nothing(self):
         capture = Capture(self.output, time.monotonic() + 606)

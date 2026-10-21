@@ -495,6 +495,10 @@ internal static partial class HyPackageCheck
         () => throw new Failure("ordinary-key-release-incomplete"));
     private static async Task EnableNotepadWriteback(AutomationElement settings, int app, Action<string> stage, CancellationToken ct)
     {
+        const string title = "TypeLay · 实验性写回";
+        nint settingsWindow = await UiAsync(() => (nint)settings.Current.NativeWindowHandle, ct);
+        Require(settingsWindow != 0 && N.GetWindowThreadProcessId(settingsWindow, out uint ownerPid) != 0
+            && ownerPid == app, "ordinary-settings-owner-unavailable");
         stage("start-public-writeback-toggle");
         Task toggle = Task.Run(() =>
         {
@@ -502,7 +506,7 @@ internal static partial class HyPackageCheck
             Require(checkbox is not null, "ordinary-writeback-toggle-missing");
             ((TogglePattern)checkbox!.GetCurrentPattern(TogglePattern.Pattern)).Toggle();
         }, ct);
-        AutomationElement? confirmation = null;
+        nint confirmationWindow = 0;
         stage("await-public-writeback-confirmation");
         await WaitAsync(async () =>
         {
@@ -513,20 +517,20 @@ internal static partial class HyPackageCheck
                 stage("public-writeback-toggle-failed");
                 await toggle;
             }
-            return await UiAsync(() =>
-        {
-            confirmation = AutomationElement.RootElement.FindFirst(TreeScope.Children, new AndCondition(
-                new PropertyCondition(AutomationElement.ProcessIdProperty, app),
-                new PropertyCondition(AutomationElement.NameProperty, "TypeLay · 实验性写回"),
-                new PropertyCondition(AutomationElement.ClassNameProperty, "#32770")));
-            return confirmation is not null;
-        }, ct);
+            confirmationWindow = OwnedConfirmationDialog.Find((uint)app, settingsWindow, title);
+            return confirmationWindow != 0;
         }, ct);
         stage("invoke-public-writeback-confirmation");
         await UiAsync(() =>
         {
-            var yes = Find(confirmation!, AutomationElement.AutomationIdProperty, "6", ControlType.Button);
-            Require(yes is not null && yes.Current.IsEnabled, "ordinary-writeback-confirmation-missing");
+            Require(OwnedConfirmationDialog.Matches(confirmationWindow, (uint)app, settingsWindow, title),
+                "ordinary-writeback-confirmation-identity-changed");
+            var confirmation = AutomationElement.FromHandle(confirmationWindow);
+            var yes = Find(confirmation, AutomationElement.AutomationIdProperty, "6", ControlType.Button);
+            Require(yes is not null && yes.Current.IsEnabled && yes.Current.ProcessId == app,
+                "ordinary-writeback-confirmation-missing");
+            Require(OwnedConfirmationDialog.Matches(confirmationWindow, (uint)app, settingsWindow, title),
+                "ordinary-writeback-confirmation-identity-changed");
             ((InvokePattern)yes!.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
         }, ct);
         stage("await-public-writeback-toggle-return");

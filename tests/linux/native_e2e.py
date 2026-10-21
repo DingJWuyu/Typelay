@@ -637,6 +637,8 @@ def run_outer(arguments, script=None):
         command.extend(
             ["--collect-translation-quality", "--quality-work-deadline", str(quality_deadline)]
         )
+    if getattr(arguments, "fixed_model_diagnostics", False):
+        command.append("--fixed-model-diagnostics")
     if getattr(arguments, "hy_decode_comparison", False):
         command.append("--hy-decode-comparison")
     if getattr(arguments, "gtk_refusal", False):
@@ -663,6 +665,11 @@ def run_outer(arguments, script=None):
     # focused-window IPC state. This disposable test session has no help UI.
     config.write_text(
         "hotkey-overlay { skip-at-startup; }\n"
+        + (
+            "animations { off; }\n"
+            if getattr(arguments, "desktop_scope", None) == "ordinary-gimp"
+            else ""
+        )
         + "spawn-at-startup "
         + " ".join(json.dumps(item, ensure_ascii=False) for item in command)
         + "\n"
@@ -745,6 +752,7 @@ if __name__ == "__main__":
     parser.add_argument("--desktop", action="store_true")
     parser.add_argument("--collect-translation-quality", action="store_true")
     parser.add_argument("--hy-decode-comparison", action="store_true")
+    parser.add_argument("--fixed-model-diagnostics", action="store_true")
     parser.add_argument("--quality-work-deadline", type=float, help=argparse.SUPPRESS)
     parser.add_argument(
         "--desktop-scope",
@@ -780,6 +788,10 @@ if __name__ == "__main__":
     parser.add_argument("--native", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.fixed_model_diagnostics and (
+        not args.collect_translation_quality or args.hy_decode_comparison
+    ):
+        parser.error("--fixed-model-diagnostics requires collection and excludes comparison")
     if args.hy_decode_comparison and not args.collect_translation_quality:
         parser.error("--hy-decode-comparison requires --collect-translation-quality")
     if args.collect_translation_quality and (

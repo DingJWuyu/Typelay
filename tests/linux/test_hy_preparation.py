@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from hy_package_e2e import disk_budget  # noqa: E402
+from hy_package_e2e import disk_budget, hy_assets, prepare_cache  # noqa: E402
 
 from eng.linux.build import package_worker  # noqa: E402
 from eng.linux.hy.prepare_runtime import extract_runtime, prepare  # noqa: E402
@@ -48,6 +48,71 @@ class RuntimePreparationTests(unittest.TestCase):
             archive.addfile(link)
             if duplicate:
                 archive.addfile(link)
+
+    def test_cache_only_verifies_real_files_and_never_downloads_missing_or_corrupt_assets(self):
+        # Synthetic hashed files exercise the real disk verifier, not native loading
+        # or model quality. No production lock in the checkout is modified.
+        package = self.root / "package"
+        package_worker(package)
+        assets = hy_assets(package)
+        native = package / "worker/native/hy"
+        native.mkdir(parents=True, exist_ok=True)
+
+        def record(path, content=b"synthetic verification bytes"):
+            path.write_bytes(content)
+            return {
+                "file": path.name,
+                "bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+
+        fixed = json.loads((native / "model.lock.json").read_text())
+        cache = self.root / "cache"
+        folder = cache / "typelay/components" / fixed["package_id"] / fixed["version"]
+        folder.mkdir(parents=True)
+        for kind in ("model", "model_license"):
+            fixed[kind].update(record(folder / fixed[kind]["file"]))
+        (native / "model.lock.json").write_text(json.dumps(fixed))
+        cpu = json.loads((native / "cpu-runtime.lock.json").read_text())
+        (native / "cpu-runtime").mkdir()
+        for item in cpu["files"]:
+            item.update(record(native / "cpu-runtime" / item["file"]))
+        (native / "cpu-runtime.lock.json").write_text(json.dumps(cpu))
+        (native / "production-adapter.json").write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "abi": assets.ABI,
+                    "platform": "linux-x86_64",
+                    "exports": assets.EXPORTS,
+                    "upstream_revision": assets.UPSTREAM,
+                    "model_lock_sha256": assets.digest(native / "model.lock.json"),
+                    "cpu_runtime_lock_sha256": assets.digest(native / "cpu-runtime.lock.json"),
+                    "adapter": record(native / "libtypelay_hy.so"),
+                    "license": record(native / "LICENSE.llama.cpp"),
+                }
+            )
+        )
+        model = folder / fixed["model"]["file"]
+        original = model.read_bytes()
+        with patch(
+            "hy_package_e2e.download_resource", side_effect=AssertionError("network forbidden")
+        ) as download:
+            self.assertEqual(prepare_cache(package, cache, cache_only=True)["status"], "verified")
+            model.unlink()
+            with self.assertRaisesRegex(FileNotFoundError, "existing Hy cache"):
+                prepare_cache(package, cache, cache_only=True)
+            self.assertFalse(model.exists())
+            model.write_bytes(b"bad")
+            with self.assertRaisesRegex(ValueError, "hash mismatch"):
+                prepare_cache(package, cache, cache_only=True)
+            model.unlink()
+            target = self.root / "other-model"
+            target.write_bytes(original)
+            model.symlink_to(target)
+            with self.assertRaisesRegex(ValueError, "linked"):
+                prepare_cache(package, cache, cache_only=True)
+            download.assert_not_called()
 
     def test_lifecycle_disk_budget_reserves_all_generations_and_cache(self):
         package = self.root / "package"

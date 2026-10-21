@@ -42,6 +42,23 @@ class QualityPreparationTests(unittest.TestCase):
             check=False,
         )
 
+    def test_ordinary_diagnostic_validate_only_never_loads_assets(self):
+        (ROOT / "artifacts").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as temporary:
+            output = Path(temporary) / "ordinary.json"
+            result = self.validate("ordinary_quality.py", output)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            report = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(report["workerStarts"], 0)
+            self.assertEqual(report["quality"], "not-run")
+            self.assertEqual(report["requests"], [])
+            self.assertEqual(report["maximumTranslationRequests"], 8)
+            expected = []
+            for name in ("styled_quality_inputs.json", "styled_quality_holdout_inputs.json"):
+                expected.extend(json.loads((RUNNERS / name).read_text())["samples"])
+            self.assertEqual([c["text"] for c in report["cases"]], [c["text"] for c in expected])
+            self.assertTrue(all(c["ordinary"] is None for c in report["cases"]))
+
     def test_glossary_preparation_keeps_full_inputs_and_review_unset_without_assets(self):
         (ROOT / "artifacts").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as temporary:

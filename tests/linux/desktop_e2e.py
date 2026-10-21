@@ -1952,7 +1952,7 @@ def run(arguments):
                             "trigger-authority",
                             "trigger-permissions",
                             "trigger-external-focus",
-                            "trigger-expired",
+                            "trigger-expired-render",
                         ]
                         for refusal in refusals:
                             with tempfile.TemporaryDirectory(

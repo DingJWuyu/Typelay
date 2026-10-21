@@ -36,6 +36,14 @@ python tests/shared/worker/alternative_quality.py \
 
 `--validate-only --output artifacts/argos-alternative-quality/inputs-check.json` 只检查固定输入、参数并生成 not-run JSON，不启动 worker；有意返回2，不能把退出0冒充推理证据。输出禁止覆盖，失败后保留原文件。JSON 分别记录每次请求的方向、状态/code、worker/端到端耗时、原候选和实际筛选后的另述；未暴露的原始 n-best 不伪造。自动比较仅限精确重复、大小写/空白/标点差异与文本不同；`completed` 只表示采集和清理完成，`no-alternative` 不是质量通过。每句的 ordinary/alternative 人工复核字段初始为 null，须对照固定锚点审查否定、数字、主体、时态/条件、语气、增漏义、自然度与严重错义；不得从文本不同推断语义保持。[首次实际采集](https://github.com/DingJWuyu/Typelay/actions/runs/39395814894)已完成全部32响应及退出，逐句审阅发现保义问题，发布门保持关闭；原始输出的 `not-reviewed` 不被改写为自动质量通过，审阅结论见[产品缺口](../product/README.md#当前共同开发缺口)。现有受控端口回归、参数检查均不能替代该复核，也不能证明 UI、人工稿、结构保护或产品另述功能已交付。
 
+### Argos 固定合成语料的解码边界诊断
+
+在上述同代正式安装参数上显式添加 `--capture-decoding-boundary`，才由测试目录的 `alternative_boundary_worker.py --fixed-fixture` 代理外部 CT2 API。默认仍启动未插桩的生产 worker；发行 worker 和普通用户路径不增加原文/token日志。诊断入口核验原16句文件SHA，只接受 hello 后固定顺序的32请求，逐字核对原文、方向、字段和上一普通响应；额外、变序或非fixture请求在分词/推理前拒绝。
+
+诊断保持生产编码、解码参数、候选顺序和筛选不变，CT2返回对象原样交回生产adapter；不增加候选、评分请求、重试或模型。报告以 instrumented 方法和 observer源码SHA明确区别，`requests[].decodingBoundary` 保存实际source pieces、调用参数、原始hypotheses及仅join/空格转换后的文本；对照同请求最终text/status判断转换差异，不把候选存在或文本不同当成保义。hello附带已验证包的metadata哈希、方向/版本、target_prefix是否存在及原值、SentencePiece哈希，库存验证与原运行库来源不变。
+
+仍为一个worker、最多32翻译、原90/600秒预算及7秒退出清理；原固定输入、人工复核空字段和质量门不变。`--validate-only --capture-decoding-boundary` 不查看模型/启动worker，只记录计划并返回2。实际raw候选、性能及模型错误来源必须经真实采集建立，受控端口测试不能代替。诊断只用于本合成fixture，不暴露通用用户文本日志开关，不从未保存原始候选的旧报告猜测所有候选都错。
+
 ## Hy 自然/正式成对质量采集
 
 `tests/shared/worker/styled_quality.py` 是独立于原 Argos 16 句的窄采集入口，不接入 shared-check 或自动 CI。固定 `styled_quality_inputs.json` 的 SHA-256 为 `6d5a77c5369be23cec23e526cb89f102e7c2726e3d84221e48d6572c9b62576c`，只含四个合成日常原句，依次覆盖 zh_ja、ja_zh、zh_fr、fr_zh；每句原源依次请求 Natural、Formal，最多8次翻译，无重试、重启、改题或普通翻译回退。语义锚点用于人工检查否定、主体、数字、状态、时态/条件及承诺强度，不是参考译文或自动评分。
@@ -123,3 +131,29 @@ B 构建、真实 ELF/ABI 检查及 A/B 采集共用原风格槽600秒绝对截�
 ## Linux 设置与教程独立验收
 
 完整检查及 practice 部分验收分别执行 `native_e2e.py --desktop --desktop-scope setup-settings` 和 `--desktop-scope setup-tutorial`，两者都要求原真实模型安装成功，使用独立 config、输出目录及各自隔离 HOME/退出清理。设置失败不阻止教程，教程失败也不抹去设置结果；单个作用域通过不能替代另一项。设置保留360秒原预算与方向安装回归，教程使用240秒桌面预算并核验实际主 host Ready，两者合计最大600秒工作预算及各自原清理余量，不扩大单场景期限。Linux job及质量采集 admission 总预算不变；quality-only 跳过两项，不将其计作通过。
+
+### Hy ordinary 诊断对照
+
+`tests/shared/worker/ordinary_quality.py` 只供显式根因定位，默认 CI 不执行、不改变质量门。它固定复用 styled 的原始四句和 holdout 四句，同一生产 Hy greedy worker 各调用一次普通 `translate`，最多 8 次；身份核验、600 秒总限时与自有进程清理复用 styled 采集器。无重试、下载或模型替换。
+
+```sh
+python tests/shared/worker/ordinary_quality.py --validate-only --output artifacts/hy-ordinary-prepared.json
+# 实际采集需已安装的同代路径，不能以准备结果当作模型测试：
+python tests/shared/worker/ordinary_quality.py --python "$HY_PYTHON" --models "$HY_MODELS" --worker "$HY_WORKER" --output artifacts/hy-ordinary.json
+```
+
+比较前人工核对两份报告的输入 SHA、worker 源码映射、inventory SHA、模型版本与 native adapter 身份完全相同，并确认基线为 greedy 而非采样 B。身份不同则不能归因。假设为“styled 提示路径诱发原义漂移”：若 ordinary 同句仍翻转否定，则仅去掉 styled 路径不足以修复；若 ordinary 正确，只能支持继续定位提示条件，不能证明普遍改善。生产 ordinary 同时去掉风格指令和 styled 忠实度补充句，因此不是只改变 style_name 的单变量因果实验。仍按全 8 句原义、数字、主体、承诺强度审阅；原始采集保持 not-reviewed，不自动放行，不以普通翻译替代风格功能。
+
+### 显式固定模型根因诊断（40 响应）
+
+需要实际定位 Argos 原始候选与选择边界、Hy ordinary 与 styled 提示路径时，可在 `collect_translation_quality=true` 之外明确选择 `fixed_model_diagnostics=true`。它与 `hy_decode_comparison` 互斥，替换而非追加原53/69采集。无 dispatch 入口时，沿上述严格校验的 push footer，最后一个空行分隔段仅含相邻两行，依次为 `TypeLay-Quality-Capture: true` 与 `TypeLay-Fixed-Model-Diagnostics: true`。两行必须唯一、精确且顺序固定；与 comparison 共选或畸形标记不采集，完整检查保留。普通 push/default manual 行为不变。
+
+该选项只在原包生命周期的 Argos Ready/退出/同代独占锁之后执行 `alternative_quality.py --capture-decoding-boundary` 的32请求，Hy Ready/退出后执行 `ordinary_quality.py` 的8请求，合计40个诊断响应及另计2个 hello。不会执行 styled、glossary 或 B 采样；原生命周期自身的普通翻译 smoke 仍保留，另计且不是这40个诊断样本。instrumented Argos 入口必须先通过现有完整发行 worker Python 模块、requirements/catalog、模型/CPU锁及 ABI5 manifest 同源核验，原始报告明确记录插桩方法与 observer SHA；Hy 使用真实发行 worker 原 greedy。两模型各自固定输入、原始响应、库存与 worker 身份分开记录，不跨安装代或 native 版本冒称成对因果。
+
+复用同一现役安装、宿主退出与重启、精确代锁和退出确认，不增加模型所有者。诊断模式下 Hy cache preparation 使用 `--cache-only`，必须已有固定缓存完整文件，缺失、链接或哈希错误直接失败，禁止下载补齐；Argos 使用本次原有正式安装。原70分钟job、36分钟步骤、2061秒工作窗/30秒外层清理及每runner600秒/7秒清理均不增加。输出仍为 `quality-capture/alternative-quality.json`、`ordinary-quality.json` 和生命周期汇总，禁止覆盖；不新增模型或 HOME artifact。失败不重试或续跑，默认53和可选69保持原行为。此入口和无模型行为测试不是实测响应或质量放行，采集完成仍须按原义等锚点人工审阅，三项质量门保持关闭。
+
+## GTK 语言预览拒绝回归
+
+`gtk_session_reentry.py` 的只读续显负例保留真实源输入法 `Known | Detached`，焦点只能来自该语言按钮或它自己已映射的子菜单；GTK3 的独立 attached popover 不等于按钮后代焦点。正文、authority、编辑权限、外部焦点和源输入变化仍分别要求拒绝。
+
+`trigger-expired-render` 等原预览实际退休后重放最后一次有效请求的原 `expiresAtMs`，验证过期请求不能重新显示。它不证明已销毁菜单仍处于 detached 续显分支，也不禁止源框恢复真实 Clear 后的正常新预览。该场景另用显式回源、新采集及默认新期限验证只读显示合法；两条路径均不授予接受或写回资格。纯 snapshot/request 测试只验证 runner 合同，实际 GTK 桌面场景仍须单独执行。

@@ -22,6 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKER = ROOT / "src/shared/TypeLay.Worker/run_worker.py"
+BOUNDARY_WORKER = Path(__file__).with_name("alternative_boundary_worker.py")
 INPUTS = Path(__file__).with_name("alternative_quality_inputs.json")
 INPUT_SHA256 = "87452b28c414bc964afbd84542480dd46a65c0b4e15c42ad36422270413bcbe5"
 sys.path.insert(0, str(WORKER.parent))
@@ -46,6 +47,11 @@ def arguments():
     parser.add_argument("--total-timeout", type=positive_seconds, default=600)
     parser.add_argument(
         "--validate-only", action="store_true", help="no worker startup or native model imports"
+    )
+    parser.add_argument(
+        "--capture-decoding-boundary",
+        action="store_true",
+        help="observe raw CT2 candidates for the frozen synthetic fixture only",
     )
     args = parser.parse_args()
     args.output = args.output.resolve()
@@ -75,10 +81,33 @@ def prepare_report(args):
         "inputSha256": INPUT_SHA256,
         "workerSourceSha256": {
             name: hashlib.sha256((WORKER.parent / name).read_bytes()).hexdigest()
-            for name in ("run_worker.py", "typelay_worker/engine.py", "typelay_worker/inventory.py")
+            for name in (
+                (
+                    "run_worker.py",
+                    *sorted(
+                        str(path.relative_to(WORKER.parent))
+                        for path in (WORKER.parent / "typelay_worker").glob("*.py")
+                    ),
+                    "requirements.txt",
+                    "model-catalog.json",
+                    "native/hy/model.lock.json",
+                    "native/hy/cpu-runtime.lock.json",
+                )
+                if getattr(args, "capture_decoding_boundary", False)
+                else ("run_worker.py", "typelay_worker/engine.py", "typelay_worker/inventory.py")
+            )
         },
-        "method": "production-translate-then-translate-alternative",
-        "rawNBestExposed": False,
+        "method": (
+            "instrumented-production-translate-then-translate-alternative"
+            if getattr(args, "capture_decoding_boundary", False)
+            else "production-translate-then-translate-alternative"
+        ),
+        "rawNBestExposed": getattr(args, "capture_decoding_boundary", False),
+        "boundaryObserverSha256": (
+            hashlib.sha256(BOUNDARY_WORKER.read_bytes()).hexdigest()
+            if getattr(args, "capture_decoding_boundary", False)
+            else None
+        ),
         "maximumTranslationRequests": 32,
         "requestTimeoutSeconds": args.request_timeout,
         "totalTimeoutSeconds": args.total_timeout,
@@ -206,6 +235,27 @@ async def request(process, report, args, operation, case=None, previous=None):
             text=response.get("text"),
             workerElapsedMs=response["elapsedMs"],
         )
+        if getattr(args, "capture_decoding_boundary", False):
+            boundary = response.get("decodingBoundary")
+            if not isinstance(boundary, dict) or boundary.get("inputSha256") != INPUT_SHA256:
+                raise ValueError("missing-decoding-boundary")
+            record["decodingBoundary"] = boundary
+            calls = boundary.get("calls")
+            packages = boundary.get("packages")
+            if operation == "hello":
+                if calls != [] or not isinstance(packages, list) or len(packages) != 2:
+                    raise ValueError("incomplete-decoding-boundary")
+            elif (
+                not isinstance(calls, list)
+                or len(calls) != 1
+                or not isinstance(calls[0], dict)
+                or not isinstance(calls[0].get("sourcePieces"), list)
+                or len(calls[0]["sourcePieces"]) != 1
+                or not isinstance(calls[0].get("results"), list)
+                or len(calls[0]["results"]) != 1
+                or packages != []
+            ):
+                raise ValueError("incomplete-decoding-boundary")
         if operation == "hello":
             expected = report["installation"]
             if (
@@ -296,7 +346,11 @@ async def collect(args, report):
                     str(args.python),
                     "-I",
                     "-B",
-                    str(WORKER),
+                    *(
+                        [str(BOUNDARY_WORKER), "--fixed-fixture"]
+                        if getattr(args, "capture_decoding_boundary", False)
+                        else [str(WORKER)]
+                    ),
                     "--models",
                     str(args.models),
                     stdin=asyncio.subprocess.PIPE,

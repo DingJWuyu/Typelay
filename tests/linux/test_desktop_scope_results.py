@@ -33,6 +33,10 @@ class DesktopScopeResultTests(unittest.TestCase):
 
             def launch(*_args, **_kwargs):
                 pending.append(json.loads(report.read_text()))
+                configuration = (output / "niri.kdl").read_text()
+                self.assertEqual(
+                    "animations { off; }" in configuration.splitlines(), scope == "ordinary-gimp"
+                )
                 if launch_error:
                     raise OSError("synthetic private input must not enter the report")
                 # The inside success receipt is a controlled process-port reply,

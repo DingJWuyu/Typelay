@@ -95,11 +95,12 @@ def model_cache(package, cache):
     return assets, fixed, cache / "typelay/components" / HY / fixed["version"]
 
 
-def prepare_cache(package, cache):
+def prepare_cache(package, cache, *, cache_only=False):
     assets, fixed, folder = model_cache(package, cache)
     assets.verify_native()
     item = next(item for item in package_catalog(package).packages if item.id == HY)
-    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not cache_only:
+        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     assets.plain_path(folder, directory=True)
     expected = {fixed[key]["file"] for key in ("model", "model_license")}
     if {path.name for path in folder.iterdir()} - expected:
@@ -109,6 +110,8 @@ def prepare_cache(package, cache):
         target = folder / record["file"]
         if target.exists() or target.is_symlink():
             assets.verify_file(target, record)
+        elif cache_only:
+            raise FileNotFoundError("fixed diagnostics requires the verified existing Hy cache")
         else:
             url = item.url if kind == "model" else item.url.rsplit("/", 1)[0] + "/LICENSE.txt"
             with redirect_stdout(sys.stderr):
@@ -195,6 +198,7 @@ def run(arguments):
             arguments.output,
             arguments.quality_work_deadline,
             comparison=getattr(arguments, "hy_decode_comparison", False),
+            diagnostics=getattr(arguments, "fixed_model_diagnostics", False),
         )
         if quality
         else None
@@ -809,7 +813,9 @@ def run(arguments):
                 action("Hy-MT2 1.8B · 中文多语", "下载并使用…")
                 hy = ready([HY], DIRECTIONS, "install-and-use-hy")
                 if capture is not None:
-                    collect_and_restart(("styled", "glossary"), hy, log)
+                    collect_and_restart(
+                        ("ordinary",) if capture.diagnostics else ("styled", "glossary"), hy, log
+                    )
                 request = {
                     "id": 1,
                     "operation": "translateEditorSnapshot",
@@ -981,13 +987,22 @@ if __name__ == "__main__":
     parser.add_argument("--data", type=Path)
     parser.add_argument("--remaining-seconds", type=int)
     parser.add_argument("--collect-translation-quality", action="store_true")
+    parser.add_argument("--cache-only", action="store_true")
     args = parser.parse_args()
+    if args.cache_only and not args.prepare_cache:
+        parser.error("--cache-only requires --prepare-cache")
     if args.collect_translation_quality and not args.check_budget:
         parser.error("--collect-translation-quality is only valid with --check-budget")
     if args.prepare_cache:
         if args.cache is None:
             parser.error("--prepare-cache requires --cache")
-        print(json.dumps(prepare_cache(args.package.resolve(), args.cache.resolve())))
+        print(
+            json.dumps(
+                prepare_cache(
+                    args.package.resolve(), args.cache.resolve(), cache_only=args.cache_only
+                )
+            )
+        )
     else:
         if args.data is None or args.remaining_seconds is None:
             parser.error("--check-budget requires --data and --remaining-seconds")

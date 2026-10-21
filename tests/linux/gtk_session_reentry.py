@@ -78,6 +78,16 @@ def clickable_control(actual, name, after, dimensions):
     return actual
 
 
+def language_control_focused(control):
+    return bool(
+        control.get("visible")
+        and (
+            control.get("buttonFocused")
+            or (control.get("popupVisible") and control.get("popupFocused"))
+        )
+    )
+
+
 def observe_click_geometry(actual):
     # Existing fixture time is MONOTONIC; render/click deadlines use BOOTTIME.
     candidate = actual.get("candidate")
@@ -540,8 +550,9 @@ def render_preview(
     theme="system",
     editor_owns_text=None,
     language_view=None,
+    expires_at=None,
 ):
-    expires = now_ms() + 800
+    expires = now_ms() + 800 if expires_at is None else expires_at
     if evidence is not None:
         evidence.update(revision=revision, expiresAtMs=expires, renderStartedAtMs=now_ms())
     result = client.call(
@@ -678,7 +689,12 @@ def check_preview_colors(client, source, generation, state, initial):
 def check_language_retention_refusal(
     client, source, generation, state, initial, nested, dimensions, stage
 ):
-    """Exercise the real detached source and own language focus, not a fake IME."""
+    """Real detached focus refusals; expired-render replays the retired deadline.
+
+    Expiry retirement may restore source Clear. Its replay checks the original
+    request deadline, not a detached renewal after the owned UI has disappeared.
+    A separate fresh source capture must still allow a new read-only preview.
+    """
     assert client.hello["backend"] in ("gtk3", "gtk4")
     trigger, menu, control = (
         "typelay-menu-trigger",
@@ -710,10 +726,9 @@ def check_language_retention_refusal(
         actual = state()
         selected = actual.get("overlayControls", {}).get(control, {})
         return (
-            selected.get("visible")
-            and selected.get("focused")
+            language_control_focused(selected)
             and not actual["firstEntry"]["focused"]
-            and actual["firstEntry"]["ime"]["flags"] == 17  # Known | Detached, not Clear.
+            and (actual["firstEntry"].get("ime") or {}).get("flags") == 17  # Known | Detached.
             and not actual["imeClear"]
             and actual
         )
@@ -748,9 +763,16 @@ def check_language_retention_refusal(
     click(control, actual=shown)
     wait_for(detached_menu, "source did not detach under exact language control focus")
     # The old implementation fails here. This must not alter source IME authority.
-    assert render_preview(client, source, generation, 2, "fixture exit", language_view=languages)[
-        "visible"
-    ]
+    retained_render = {}
+    assert render_preview(
+        client,
+        source,
+        generation,
+        2,
+        "fixture exit",
+        language_view=languages,
+        evidence=retained_render,
+    )["visible"]
     wait_for(detached_menu, "read-only renewal changed source/menu focus")
     trigger_case = stage.startswith("language-retention-trigger-")
     if trigger_case:
@@ -767,7 +789,13 @@ def check_language_retention_refusal(
             "menu Escape did not hand focus to its trigger",
         )
         assert render_preview(
-            client, source, generation, 3, "fixture exit", language_view=languages
+            client,
+            source,
+            generation,
+            3,
+            "fixture exit",
+            language_view=languages,
+            evidence=retained_render,
         )["visible"]
         assert not state()["imeClear"], "collapsed menu fabricated source Clear"
         key("F1")  # The configured source acceptance must not be minted by menu focus.
@@ -787,8 +815,10 @@ def check_language_retention_refusal(
     elif stage == "language-retention-external-focus":
         click("secondEntry", field=True)
         wait_for(lambda: state().get("focus") == "fixture-second", "external field not focused")
-    elif stage == "language-retention-expired":
+    elif stage == "language-retention-expired-render":
         wait_for(lambda: state().get("candidate") is None, "original menu lease did not expire")
+        assert now_ms() > retained_render["expiresAtMs"], "preview retired before its expiry"
+        kwargs["expires_at"] = retained_render["expiresAtMs"]
     elif stage == "language-retention-source-input":
         click("firstEntry", field=True)
         wait_for(
@@ -827,6 +857,32 @@ def check_language_retention_refusal(
     )
     assert final["first"] == expected_first and final["second"] == initial["second"]
     assert not any(event.get("event") == "accepted" for event in client.events)
+    if stage == "language-retention-expired-render":
+        # This is a new explicit source interaction/capture, not resurrection of
+        # the expired detached menu. Preserve normal fresh read-only admission.
+        click("firstEntry", field=True)
+        wait_for(
+            lambda: state().get("focus") == "fixture-first" and state().get("imeClear"),
+            "source did not establish fresh actual IME Clear",
+        )
+        described = client.call("describe")
+        fresh = client.call(
+            "capture", {"target": described["target"], "authority": described["authority"]}
+        )
+        assert fresh and fresh["text"] == initial["first"]
+        assert render_preview(
+            client, fresh, generation, 5, "fixture exit", language_view=languages
+        ) == {
+            "visible": True,
+            "editing": False,
+        }
+        shown = wait_for(
+            lambda: (actual := state()).get("candidate") and actual, "fresh source preview missing"
+        )
+        assert not shown["candidate"].get("editablePreview", False)
+        assert shown["first"] == initial["first"] and shown["second"] == initial["second"]
+        client.call("describe")
+        assert not any(event.get("event") == "accepted" for event in client.events)
 
 
 def check_language_options(

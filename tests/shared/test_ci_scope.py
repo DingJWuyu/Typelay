@@ -17,6 +17,7 @@ FULL = {
     "practice": "false",
     "collect_quality": "false",
     "hy_decode_comparison": "false",
+    "fixed_model_diagnostics": "false",
 }
 LINUX = {**FULL, "windows": "false"}
 WINDOWS = {**FULL, "linux": "false"}
@@ -97,6 +98,7 @@ class ScopeTests(unittest.TestCase):
                 "BEFORE": before,
                 "AFTER": self.git("rev-parse", "HEAD"),
                 "HY_DECODE_COMPARISON": "false",
+                "FIXED_MODEL_DIAGNOSTICS": "false",
                 "CREATED": "false",
                 "FORCED": "false",
                 **event,
@@ -106,6 +108,71 @@ class ScopeTests(unittest.TestCase):
             timeout=20,
         )
         return dict(line.split("=", 1) for line in output.read_text().splitlines())
+
+    def test_manual_fixed_diagnostics_requires_collection_and_excludes_comparison(self):
+        self.assertEqual(
+            self.select(
+                self.base,
+                EVENT_NAME="workflow_dispatch",
+                CHECK_MODE="quality-only",
+                COLLECT_TRANSLATION_QUALITY="true",
+                FIXED_MODEL_DIAGNOSTICS="true",
+            ),
+            {**QUALITY_ONLY, "fixed_model_diagnostics": "true"},
+        )
+        for event in (
+            {"COLLECT_TRANSLATION_QUALITY": "false"},
+            {"HY_DECODE_COMPARISON": "true"},
+            {"FIXED_MODEL_DIAGNOSTICS": "TRUE"},
+            {"FIXED_MODEL_DIAGNOSTICS": "yes"},
+            {"EVENT_NAME": "push"},
+        ):
+            with self.subTest(event=event), self.assertRaises(subprocess.CalledProcessError):
+                self.select(
+                    self.base,
+                    **{
+                        "EVENT_NAME": "workflow_dispatch",
+                        "COLLECT_TRANSLATION_QUALITY": "true",
+                        "FIXED_MODEL_DIAGNOSTICS": "true",
+                        **event,
+                    },
+                )
+
+    def test_fixed_diagnostics_selects_only_explicit_authenticated_footer(self):
+        quality = "TypeLay-Quality-Capture: true"
+        diagnostic = "TypeLay-Fixed-Model-Diagnostics: true"
+        payload = self.root / "event.json"
+        for message, enabled in (
+            (f"diagnose\n\n{quality}\n{diagnostic}", True),
+            (f"diagnose\n\n{diagnostic}", False),
+            (f"diagnose\n\n{diagnostic}\n{quality}", False),
+            (f"diagnose\n\n{quality}\n{diagnostic}\n{diagnostic}", False),
+            (f"diagnose\n\n{quality}\n{diagnostic}\nTypeLay-Hy-Decode-Comparison: true", False),
+            (f"diagnose\n\n{quality}\nTypeLay-Fixed-Model-Diagnostics: false", False),
+            (f"diagnose\n\n```\n{quality}\n{diagnostic}\n```", False),
+        ):
+            with self.subTest(message=message):
+                self.reset(self.base)
+                head = self.commit({"src/shared/diagnostic.py": "test"}, message=message)
+                payload.write_text(json.dumps({"head_commit": {"id": head, "message": message}}))
+                result = self.select(self.base, GITHUB_EVENT_PATH=str(payload))
+                self.assertEqual(result["fixed_model_diagnostics"], str(enabled).lower())
+                self.assertEqual(result["collect_quality"], str(enabled).lower())
+                self.assertEqual(result["hy_decode_comparison"], "false")
+                self.assertEqual((result["windows"], result["linux"]), ("true", "true"))
+                if enabled:
+                    for event in (
+                        {"FORCED": "true"},
+                        {"AFTER": self.base},
+                        {"EVENT_NAME": "pull_request"},
+                    ):
+                        self.assertEqual(
+                            self.select(self.base, GITHUB_EVENT_PATH=str(payload), **event), FULL
+                        )
+                    payload.write_text(
+                        json.dumps({"head_commit": {"id": self.base, "message": message}})
+                    )
+                    self.assertEqual(self.select(self.base, GITHUB_EVENT_PATH=str(payload)), FULL)
 
     def test_current_platform_push_ignores_old_cross_platform_history(self):
         for platform, branch, expected in (
