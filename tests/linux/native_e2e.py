@@ -226,6 +226,7 @@ def _gtk4_source_glossary(out, environment, deadline):
     environment.pop("TYPELAY_DESKTOP", None)
     results = []
     current_case = None
+    capture_admission = None
     (out / "gtk4-glossary-result.json").unlink(missing_ok=True)
     with (
         socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server,
@@ -456,18 +457,56 @@ def _gtk4_source_glossary(out, environment, deadline):
                         "no-click-replay",
                     ):
                         current_case = {"state": view_state, "finish": finish}
+                        capture_admission = None
                         call("overlay-hide")
                         call("configure-shortcuts", configuration)
                         wait_for(lambda: state().get("firstEntry"), "GTK4 source observation")
                         point("firstEntry")
                         wait_for(lambda: state().get("imeClear"), "source real IM clear")
-                        description = call("describe")
-                        assert description["sourceGlossarySupported"] is True
-                        target = description["target"]
-                        captured = call(
-                            "capture", {"target": target, "authority": description["authority"]}
+                        initial_source = state()
+                        assert initial_source["firstEntry"]["focused"] is True
+                        expected_context = initial_source["firstEntry"]["ime"]["context"]
+                        assert type(expected_context) is int and expected_context > 0
+                        target = None
+                        capture_admission = {"rejectedCaptures": 0, "unavailableDescriptions": 0}
+
+                        def source_ready():
+                            nonlocal target
+                            attempt = {"describeStartedAtMs": now_ms()}
+                            capture_admission["lastAttempt"] = attempt
+                            description = call("describe")
+                            attempt["describeReturnedAtMs"] = now_ms()
+                            if description is None:
+                                capture_admission["unavailableDescriptions"] += 1
+                                return None
+                            assert description["sourceGlossarySupported"] is True
+                            assert description["focused"] is True
+                            if target is None:
+                                target = description["target"]
+                            assert description["target"] == target
+                            basis = description["authority"]
+                            assert basis["contextStamp"]["context"] == expected_context
+                            attempt["describedAuthority"] = basis
+                            attempt["captureStartedAtMs"] = now_ms()
+                            value = call("capture", {"target": target, "authority": basis})
+                            attempt["captureReturnedAtMs"] = now_ms()
+                            attempt["captureReturnedNull"] = value is None
+                            if value is None:
+                                capture_admission["rejectedCaptures"] += 1
+                                return None
+                            assert value["ime"] == "Clear" and value["target"] == target
+                            assert value["authority"]["contextStamp"]["context"] == expected_context
+                            assert value["text"] == initial_source["first"]
+                            capture_admission["capturedAuthority"] = value["authority"]
+                            return value
+
+                        # Fixture Clear is an independent earlier observation,
+                        # not a promise that a later native capture cannot reject.
+                        # Match the existing read-only source admission boundary:
+                        # every attempt describes afresh, before any form action.
+                        captured = wait_for(
+                            source_ready, "same source/context native capture ready"
                         )
-                        assert captured and captured["ime"] == "Clear"
                         authority = captured["authority"]
                         token = {
                             "target": {
@@ -878,7 +917,14 @@ def _gtk4_source_glossary(out, environment, deadline):
                                 )
                                 assert len(events("sessionGlossaryAdd")) == 1
                             unchanged()
-                        results.append({"state": view_state, "finish": finish, "passed": True})
+                        results.append(
+                            {
+                                "state": view_state,
+                                "finish": finish,
+                                "passed": True,
+                                "captureAdmission": capture_admission,
+                            }
+                        )
                 call("overlay-hide")
                 point("multiline")
                 wait_for(lambda: state().get("focus") == "fixture-multiline", "TextView focus")
@@ -890,6 +936,7 @@ def _gtk4_source_glossary(out, environment, deadline):
                         "passed": False,
                         "cases": results,
                         "failed_case": current_case,
+                        "captureAdmission": capture_admission,
                         "error": f"{type(error).__name__}: {error}",
                         "real_model_quality": False,
                     },

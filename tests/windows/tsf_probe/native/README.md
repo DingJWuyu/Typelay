@@ -1,14 +1,14 @@
-# 未执行的原生只读实验源码
+# 原生只读实验源码（不是产品支持）
 
-范围仅限本次独占创建的 System32 x64 经典 Notepad、唯一标准 Edit 与固定合成文件。生产 NativeInput、solution、包及现有 preflight workflow 均不引用这些文件。没有现成 Windows SDK/编译器时停止，不安装依赖。
+范围仅限本次独占创建的 System32 x64 经典 Notepad、唯一标准 Edit 与固定合成文件。生产 NativeInput、solution 及产品包不引用这些文件；独立 TSF workflow 仅按显式 Lifecycle/Read 隔离级别编译并执行所选操作，不接入产品验收路径。没有现成 Windows SDK/编译器时停止，不安装依赖。
 
-`build_native.py --output <全新目录>` 仅在已经配置好的 x64 MSVC developer 环境编译，不加载 DLL、不执行 runner。当前源码尚未取得真实 Windows 编译或执行证据。
+`build_native.py --output <全新目录>` 仅在已经配置好的 x64 MSVC developer 环境编译，不加载 DLL、不执行 runner。固定源码已在隔离 Windows 上通过 MSVC 三目标编译、纯合同测试和 no-DLL Notepad 生命周期；单次只读模块尚未加载执行。
 
 ## 执行必须另审
 
 runner 需要经 root/lead 审核的一次性 Windows VM 命令及 `TYPELAY_ISOLATED_TSF_NATIVE=1`；环境标签不是授权证明。入口有：
 
-- `--protocol-selftest`：本机 ABI/header 长度及版本拒绝、纯期限/取消/父进程存活/目标销毁判定和长度越界，只证明这些函数；目前亦未编译执行，不证明真实回调时序。
+- `--protocol-selftest`：本机 ABI/header 长度及版本拒绝、纯期限/取消/父进程存活/目标销毁判定和长度越界，只证明这些函数；已执行通过，但不证明真实回调时序。
 - `--lifecycle-only <artifact-dir> <绝对DLL路径>`：只创建合成文件及独占 Notepad，正常关闭并确认 owned job 归零，不加载 DLL。
 - `--single-read <artifact-dir> <绝对DLL路径>`：在上述独占目标加载 test-only hook，提交一次异步只读会话。不能自动挂到只读环境 preflight。
 
@@ -26,9 +26,9 @@ IPC 不携带正文，只有有界状态、长度、选区和 fingerprint。fing
 
 ## 证据边界与待验证
 
-本版本只有源码，不是支持能力。必须先分别验证启动/关闭，再执行单次异步读取。真实编译、正常退出、缺 manager/context、取消/过期、父进程退出、目标销毁与晚到回调均尚未在 Windows 上验证。缺中文 IME 环境只能建立无组合时的单次合成文档观察，不能建立中文组合/共存/连续观察或任何 Tab/写回能力。
+本版本不是支持能力。真实编译、纯合同测试和 no-DLL 正常启动/退出已在隔离 Windows 验证；缺 manager/context、取消/过期、父进程退出、目标销毁与晚到回调等只读阶段仍未在 Windows 上验证。缺中文 IME 环境只能建立无组合时的单次合成文档观察，不能建立中文组合/共存/连续观察或任何 Tab/写回能力。
 
-源代码内 guard 不是实测证据；后续具体生命周期反例的执行编排仍须在首次 Windows 编译后单独审查，不使用模拟 TSF 替代。
+源代码内 guard 不是实测证据；后续具体只读生命周期反例的执行编排仍须单独审查，不使用模拟 TSF 替代。
 
 ## 失败返回与验证边界
 
@@ -56,4 +56,4 @@ SetWindowsHookEx 使用 TID，不接受持有的线程句柄/创建时间。runn
 3. 独立审批后在新隔离 VM 设置明确开关，执行 `runner.exe --lifecycle-only <现存测试输出目录> <observer.dll绝对路径>`。不加载 observer，只验证真实 Notepad 独占启动/目标准入/正常关闭/job 归零/合成文件删除。未通过不得进下一步。
 4. 再审核该结果及环境后，才能批准同样隔离条件下的 `--single-read`，不能由 exit 0 自动授权。
 
-`test_outcome.cpp` 无 Windows 依赖，可用现成 Linux C++ 编译器在临时输出目录单独编译并运行，实际断言同一 `LifecycleObserved` 函数；这只证明报告逻辑。Windows runner/observer 仍未编译。`lifecycleValidated` 仅在输入就绪和唯一字段检查全部完成后置真，清理成功不能弥补先前失败。
+`test_outcome.cpp` 无 Windows 依赖，可用现成 Linux C++ 编译器在临时输出目录单独编译并运行，实际断言同一 `LifecycleObserved` 函数；这只证明报告逻辑。Windows runner/observer 已编译，但模块加载与 TSF 读取未执行。`lifecycleValidated` 仅在输入就绪和唯一字段检查全部完成后置真，清理成功不能弥补先前失败。

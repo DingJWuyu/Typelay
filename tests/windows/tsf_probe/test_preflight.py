@@ -84,9 +84,9 @@ class PreflightTests(unittest.TestCase):
                     event, head, message, ["tests/windows/tsf_probe/preflight.py"], True
                 )
 
-    def test_lifecycle_and_readonly_opt_in_are_separate(self):
+    def test_all_three_levels_are_exclusive_and_unknown_refused(self):
         head = "a" * 40
-        for requested in (probe.MARKER, probe.LIFECYCLE_MARKER):
+        for requested in probe.MARKERS:
             message = "test: changed diagnostic source\n\n" + requested
             event = {
                 "ref": "refs/heads/work/linux-usability",
@@ -97,20 +97,19 @@ class PreflightTests(unittest.TestCase):
             paths = [".github/workflows/tsf-preflight.yml"]
             with self.assertRaises(ValueError):
                 probe.push_eligible(event, head, message, paths, True, marker="unknown-level")
-            for level in (probe.MARKER, probe.LIFECYCLE_MARKER):
+            for level in probe.MARKERS:
                 self.assertEqual(
                     level == requested,
                     probe.push_eligible(event, head, message, paths, True, marker=level),
                 )
-            mixed = (
-                message
-                + "\n\n"
-                + (probe.LIFECYCLE_MARKER if requested == probe.MARKER else probe.MARKER)
-            )
-            event["head_commit"]["message"] = mixed
-            for level in (probe.MARKER, probe.LIFECYCLE_MARKER):
-                with self.assertRaises(ValueError):
-                    probe.push_eligible(event, head, mixed, paths, True, marker=level)
+            for other in probe.MARKERS:
+                if other == requested:
+                    continue
+                mixed = message + "\n\n" + other
+                event["head_commit"]["message"] = mixed
+                for level in (requested, other):
+                    with self.assertRaises(ValueError):
+                        probe.push_eligible(event, head, mixed, paths, True, marker=level)
 
     def test_public_push_gate_keeps_execution_levels_separate(self):
         script = Path(probe.__file__).resolve()
@@ -145,7 +144,7 @@ class PreflightTests(unittest.TestCase):
             source.parent.mkdir(parents=True)
             source.write_text("baseline", encoding="utf-8")
             before = commit("baseline")
-            for marker in (probe.MARKER, probe.LIFECYCLE_MARKER):
+            for marker in (*probe.MARKERS, "TypeLay-TSF-Unknown: true", "no opt-in"):
                 source.write_text(marker, encoding="utf-8")
                 message = "test: actual diagnostic source change\n\n" + marker
                 after = commit(message)
@@ -157,10 +156,7 @@ class PreflightTests(unittest.TestCase):
                 }
                 event_path = root / "event.json"
                 event_path.write_text(json.dumps(event), encoding="utf-8")
-                for flag, level in (
-                    ("--check-push", probe.MARKER),
-                    ("--check-lifecycle-push", probe.LIFECYCLE_MARKER),
-                ):
+                for flag in ("--check-push", "--check-native-push"):
                     output = root / "output.txt"
                     output.write_text("", encoding="utf-8")
                     result = subprocess.run(
@@ -178,10 +174,21 @@ class PreflightTests(unittest.TestCase):
                         },
                     )
                     self.assertEqual(0, result.returncode, result.stderr)
-                    self.assertEqual(
-                        f"eligible={str(level == marker).lower()}\n",
-                        output.read_text(encoding="utf-8"),
+                    native = flag == "--check-native-push"
+                    eligible = (
+                        marker in (probe.LIFECYCLE_MARKER, probe.READ_MARKER)
+                        if native
+                        else marker == probe.MARKER
                     )
+                    level = (
+                        ("read" if marker == probe.READ_MARKER else "lifecycle")
+                        if eligible
+                        else "none"
+                    )
+                    expected = f"eligible={str(eligible).lower()}\n" + (
+                        f"level={level}\n" if native else ""
+                    )
+                    self.assertEqual(expected, output.read_text(encoding="utf-8"))
                 before = after
 
     def test_admission_requires_all_labels_and_windows(self):

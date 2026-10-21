@@ -4,7 +4,7 @@
 
 ## 范围与执行前审查
 
-- 本目录测试工具不被生产 solution、App、Broker、安装包或普通 checks 消费；独立 `.github/workflows/tsf-preflight.yml` 使用下面两个互斥的显式诊断级别。
+- 本目录测试工具不被生产 solution、App、Broker、安装包或普通 checks 消费；独立 `.github/workflows/tsf-preflight.yml` 使用下面三个互斥的显式诊断级别。
 - Python 只调用系统自带 PowerShell 的固定只读查询及 Win32 元数据接口。无需构建、安装或新增依赖。
 - 只在经 root/lead 确认的一次性 GitHub-hosted Windows job 上执行。环境标签是必要条件，不是权限证明；workflow 和 runner 生命周期证据必须另外审查。不得在用户电脑或长期 self-hosted runner 上设置标签绕过门槛。
 - 当前代码不含注册阶段。注册/辅助类别激活需另审，不能因为此报告有 `present` 而执行。
@@ -37,8 +37,15 @@ python -B -m unittest discover -s tests/windows/tsf_probe -p 'test_*.py' -v
 
 本目录 preflight 验证环境前提，native 实验验证独占真实目标的不同级别，两者不互相代替、不扩生产协议、不新增运行时依赖。当前不删除既有安全测试。
 
-## 独立生命周期级别（候选，未执行）
+## 原生隔离级别（执行须独立批准）
 
-同一 workflow 新增 `lifecycle` job，仅接受唯一终段 `TypeLay-TSF-Lifecycle: true`，不接受旧 Preflight 标记；混合两个标记拒绝。共用 HEAD/祖先/真实路径核验，未复制或放宽准入门。这个级别只复用 runner 已装好的 x64 MSVC 编译测试文件、执行纯协议/结果合同，然后启动本次独占经典 Notepad 并验证正常退出；**不加载 observer DLL、不观察 TSF、不换 IME、不注册或写回**。缺现成 SDK/经典目标即失败，不下载安装或找其它应用补位。
+同一 workflow 的 `isolated-native` job 只接受唯一终段 `TypeLay-TSF-Lifecycle: true` 或 `TypeLay-TSF-Read: true`。与 Preflight 三标记严格互斥，混合、未知及无标记不产生执行准入。共用 HEAD/祖先/真实路径门后输出枚举 `level=lifecycle/read`；失败不输出可执行级别。两个末端分别硬编码命令，不由标记拼接程序参数、没有默认 read。
 
-具体源码/对象生命周期与分级命令见 [native/README.md](native/README.md)。此 job 仍需 root 对精确提交/标记的独立发布授权；单次只读 `--single-read` 不存在 workflow 入口，不能继承 lifecycle 成功。现 workflow 全部仍是实验，不是产品验收。
+每次是新的 GitHub-hosted Windows VM。native 的三个 .cpp、两个 .h 与 build_native.py 共六个编译输入的 Git blob 必须逐文件等于已验证生命周期基线 `8d5e3f922266b6f3a754dbfee967a9665106c425`，工作树也必须干净；日志列 blob 哈希。复用已装好的 MSVC 编译和纯合同测试，不下载安装或改原观察逻辑。
+
+- `lifecycle`：固定 `runner.exe --lifecycle-only <新测试目录> <observer.dll绝对路径>`。只验证独占 Notepad 启退，不加载 observer。
+- `read`：先执行只读环境采集。exit 2 只是原协议返回值，必须同时验证 `observed-prerequisites-only`、当前 SHA 与零注册/激活/输入变化/正文读取，才能继续。Notepad 尚未在场与中文 IME 未证明均保留 unknown，不改系统补条件。然后且仅一次 `runner.exe --single-read <新测试目录> <observer.dll绝对路径>`。
+
+Read 只有完整合成正文逐字符匹配、有效 UTF-16 选区范围、一次 callback、正常退出、owned job 归零、合成文件移除且无强杀，才报告单次观察完成。report validator 校验固定字段、类型、范围与不升级权限；不接受额外正文键，不打印失败 payload。任何 exit 2/未知/context 缺失/焦点身份变化/组合中/超时/清理失败均停止，保留原有界 JSON，不重试或自动改模式。数字初始零值不代表有效无组合；必须 `readSnapshotValid=true`，且即便如此 `imeVerified/writebackAllowed/liveUnloadProven` 仍为 false。
+
+该级别最多证明隔离 VM、自有合成文档的一次正文/选区观察与进程级移除。没有中文 IME 不伪装 Clear，更不证明共存、连续变化、运行中卸载或写回。TID 挂 hook 的非原子身份限制见 [native/README.md](native/README.md)，不外推用户应用生产安全。原生说明中的逐级权限规则仍有效；Read 入口存在不等于已获本次发布执行授权。远端精确提交/标记仍由 root 审核、lead 单写，不自动挂正式产品验收。

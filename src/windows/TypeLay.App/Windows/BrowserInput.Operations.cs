@@ -464,6 +464,10 @@ internal sealed partial class BrowserInput
         if (reason != OwnerReason.Ready)
         {
             RetireCommandOwner(reason);
+            // A new key can race Poll's release check. Keep this owner retired;
+            // after actual release, Poll must prepare a new owner and authority.
+            if (reason == OwnerReason.KeysHeld)
+                _ownerRefreshRequested = true;
             TraceOwner(OwnerStage.Activate, reason, owner, now, released);
             return;
         }

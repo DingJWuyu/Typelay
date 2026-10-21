@@ -235,11 +235,13 @@ def native_observation(pids):
 
 MARKER = "TypeLay-TSF-Preflight: true"
 LIFECYCLE_MARKER = "TypeLay-TSF-Lifecycle: true"
+READ_MARKER = "TypeLay-TSF-Read: true"
+MARKERS = (MARKER, LIFECYCLE_MARKER, READ_MARKER)
 
 
 def push_eligible(event, head, message, changed_paths, is_ancestor, *, marker=MARKER):
     """Admit only this push's explicit request and actual diagnostic source changes."""
-    if marker not in (MARKER, LIFECYCLE_MARKER):
+    if marker not in MARKERS:
         raise ValueError("unknown-diagnostic-level")
     if event.get("ref") != "refs/heads/work/linux-usability" or event.get("deleted"):
         return False
@@ -260,7 +262,7 @@ def push_eligible(event, head, message, changed_paths, is_ancestor, *, marker=MA
     if (
         paragraphs[-1] != marker
         or message.count(marker) != 1
-        or any(other != marker and other in message for other in (MARKER, LIFECYCLE_MARKER))
+        or any(other != marker and other in message for other in MARKERS)
         or "```" in message
         or "~~~" in message
     ):
@@ -271,7 +273,7 @@ def push_eligible(event, head, message, changed_paths, is_ancestor, *, marker=MA
     )
 
 
-def check_push(*, marker=MARKER):
+def check_push(*, marker=MARKER, native=False):
     if os.environ.get("GITHUB_EVENT_NAME") != "push":
         raise ValueError("push-required")
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
@@ -298,9 +300,19 @@ def check_push(*, marker=MARKER):
         == 0
     )
     paths = git("diff", "--name-only", "--no-renames", "-z", before, after).split("\0")
+    level = "none"
+    if native:
+        selected = [item for item in (LIFECYCLE_MARKER, READ_MARKER) if item in message]
+        if len(selected) > 1:
+            raise ValueError("mixed-native-levels")
+        marker = selected[0] if selected else LIFECYCLE_MARKER
     eligible = push_eligible(event, head, message, paths, ancestry, marker=marker)
+    if native and eligible:
+        level = "read" if marker == READ_MARKER else "lifecycle"
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
         output.write(f"eligible={str(eligible).lower()}\n")
+        if native:
+            output.write(f"level={level}\n")
     return 0
 
 
@@ -388,6 +400,6 @@ def main(argv=None):
 if __name__ == "__main__":
     if sys.argv[1:] == ["--check-push"]:
         sys.exit(check_push())
-    if sys.argv[1:] == ["--check-lifecycle-push"]:
-        sys.exit(check_push(marker=LIFECYCLE_MARKER))
+    if sys.argv[1:] == ["--check-native-push"]:
+        sys.exit(check_push(native=True))
     sys.exit(main())
