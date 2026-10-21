@@ -11,12 +11,22 @@ import math
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from desktop_session import DesktopSession, process_identity, receipts
 from main import control
 from niri import contents, request
 from registered_applications import resolve_application
+
+
+def acceptable_candidate(read_candidate, ready_to_accept, original):
+    """Observe candidate content before the final, fresh public acceptance cue."""
+    candidate = read_candidate()
+    if not candidate or candidate == original:
+        return None
+    ready = ready_to_accept()
+    return (candidate, ready) if ready else None
 
 
 def launched_application(child, executable):
@@ -563,16 +573,31 @@ def run_gimp(
         record("automatic-preview-accept")
         original = "Please send me the final version"
         type_source(original)
+        preview_deadline = time.monotonic() + 60
         wait_for(ready_to_accept, "ordinary GIMP preview not acceptable", timeout=60)
         report["connectedInput"] = status().get("input")
         subprocess.run(
             ["grim", str(arguments.output / "ordinary-gimp-preview.png")], check=True, timeout=3
         )
-        candidate_text = text(wait_for(editor, "candidate text missing"))
-        assert candidate_text and candidate_text != original
+
+        def candidate_ready():
+            def read_candidate():
+                node = editor()
+                value = text(node) if node is not None else None
+                report["lastObservedCandidate"] = value
+                return value
+
+            return acceptable_candidate(read_candidate, ready_to_accept, original)
+
         offset = trace_checkpoint()
-        # No slow source IPC between final public cue and this single key.
-        wait_for(ready_to_accept, "GIMP acceptance not refreshed")
+        # Screenshot/status collection can outlive an acceptance generation.
+        # Re-observe text and then the public cue within the original budget;
+        # no screenshot, source IPC or diagnostic write goes between cue and Tab.
+        candidate_text, _ = wait_for(
+            candidate_ready,
+            "ordinary GIMP has no current nonempty translated candidate with acceptance",
+            timeout=max(0, preview_deadline - time.monotonic()),
+        )
         send_tab()
         wait_for(lambda: verified_write(offset), "GIMP Tab not verified")
         wait_for(

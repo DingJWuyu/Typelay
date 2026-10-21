@@ -95,12 +95,21 @@ public sealed class ModelConsumerFixtureOwnerTests(ITestOutputHelper output)
             var start = new ProcessStartInfo(Path.GetFullPath(python)) { UseShellExecute = false };
             foreach (string argument in new[] { "-I", "-B", "-c", """
                 import json, os, subprocess, sys
+                child_result = None
                 if sys.argv[3] == 'True':
-                    # Real child completion, not a timing sleep or a fabricated counter.
-                    subprocess.run([sys.executable, '-I', '-B', '-c', 'raise SystemExit(0)'], check=True)
+                    # Model consumers are non-interactive. Match the production
+                    # no-window launch rather than introducing a console lifetime.
+                    with subprocess.Popen([sys.executable, '-I', '-B', '-c',
+                            'import ctypes; get_console = ctypes.windll.kernel32.GetConsoleWindow; '
+                            'get_console.restype = ctypes.c_void_p; assert not get_console()'],
+                            creationflags=subprocess.CREATE_NO_WINDOW) as child:
+                        code = child.wait()
+                        child_result = dict(pid=child.pid, exitCode=code)
+                        if code:
+                            raise subprocess.CalledProcessError(code, child.args)
                 with open(sys.argv[2], 'x', encoding='utf-8') as identity:
                     json.dump(dict(pid=os.getpid(), executable=sys.executable,
-                        base_executable=getattr(sys, '_base_executable', None)), identity)
+                        base_executable=getattr(sys, '_base_executable', None), child=child_result), identity)
                 sys.exit(int(sys.argv[1]))
                 """, code.ToString(System.Globalization.CultureInfo.InvariantCulture), identityPath, exitedChild.ToString() })
                 start.ArgumentList.Add(argument);
@@ -115,6 +124,15 @@ public sealed class ModelConsumerFixtureOwnerTests(ITestOutputHelper output)
                 selectedPython = start.FileName,
                 payload = identity.RootElement
             }));
+            var childResult = identity.RootElement.GetProperty("child");
+            if (exitedChild)
+            {
+                Assert.True(childResult.GetProperty("pid").GetInt32() > 0);
+                Assert.NotEqual(identity.RootElement.GetProperty("pid").GetInt32(), childResult.GetProperty("pid").GetInt32());
+                Assert.Equal(0, childResult.GetProperty("exitCode").GetInt32());
+            }
+            else
+                Assert.Equal(JsonValueKind.Null, childResult.ValueKind);
             Assert.True(result.NoActiveOwnedConsumers);
             Assert.Equal("natural", result.CleanupMode);
             Assert.Equal(code, result.RootExitCode);

@@ -4,6 +4,7 @@ import ctypes
 import gettext
 import hashlib
 import json
+import math
 import os
 import re
 import select
@@ -30,6 +31,20 @@ from setup import (
     runtime_copy_plan,
 )
 from wire import Decoder, encode, now_ms
+
+
+def acceptance_observation_current(data, elapsed_ms):
+    """A status response is evidence only while its original time remains."""
+    remaining = data.get("acceptanceRemainingMs")
+    return (
+        data.get("acceptanceReady") is True
+        and type(remaining) in (int, float)
+        and math.isfinite(remaining)
+        and type(elapsed_ms) in (int, float)
+        and math.isfinite(elapsed_ms)
+        and elapsed_ms >= 0
+        and remaining - elapsed_ms > 0
+    )
 
 
 def copy_setup_model_data(source_data, destination_data):
@@ -762,7 +777,11 @@ def run(arguments):
                 "acceptanceRemainingMs": data.get("acceptanceRemainingMs"),
                 "nativePublications": data.get("input", {}).get("nativePublications", []),
             }
-        return data if data and data.get("acceptanceReady") else None
+        return (
+            {**data, "statusElapsedMs": finished - started}
+            if data and acceptance_observation_current(data, finished - started)
+            else None
+        )
 
     def typed(text):
         subprocess.run(
@@ -1618,6 +1637,7 @@ def run(arguments):
                 firefox_tab = {
                     "beforeMs": now_ms(),
                     "reportedRemainingMs": ready.get("acceptanceRemainingMs"),
+                    "statusElapsedMs": ready["statusElapsedMs"],
                 }
                 send_tab()
                 firefox_tab["afterMs"] = now_ms()
@@ -1672,18 +1692,8 @@ def run(arguments):
                         ["grim", str(arguments.output / "firefox-rich.png")], check=True, timeout=3
                     )
 
-                    def rich_ready_to_accept():
-                        started = now_ms()
-                        candidate = ready_to_accept()
-                        status_elapsed_ms = now_ms() - started
-                        if not candidate:
-                            return None
-                        if candidate["acceptanceRemainingMs"] - status_elapsed_ms <= 0:
-                            return None
-                        return {**candidate, "statusElapsedMs": status_elapsed_ms}
-
                     ready = wait_for(
-                        rich_ready_to_accept, "rich editor acceptance expired while taking evidence"
+                        ready_to_accept, "rich editor acceptance expired while taking evidence"
                     )
                     rich_tab = {
                         "beforeMs": now_ms(),

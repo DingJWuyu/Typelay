@@ -562,6 +562,51 @@ internal sealed partial class KeyboardHook
             ForegroundEpoch: lease.ForegroundEpoch, CommandGeneration: lease.Token.CommandGeneration,
             Target: lease.Token.Target, SessionRevision: lease.Token.Revision));
     }
+    private int _ownedInputRejectionTraceCount;
+    private void QueueOwnedInputRejection(string stage, long now, OwnedInstalled? installed, OwnedPrefix? prefix,
+        bool repeated, bool injected, bool? exact = null, bool? fresh = null, bool? firstControl = null,
+        bool? prefixDown = null, bool? chordAction = null, bool? acceptBinding = null)
+    {
+        if (!OwnedEditorTraceEnabled || _ownedInputRejectionTraceCount >= 16)
+            return;
+        _ownedInputRejectionTraceCount++;
+        try
+        {
+            // Called only after the original rejection effects. These are the
+            // original installed snapshot and resulting prefix lifecycle, not
+            // another admission check. The existing UI drain performs all I/O.
+            QueueOwnedEditorTrace(new
+            {
+                atMs = now,
+                operation = "owned-input-rejected",
+                stage,
+                installed = installed is not null,
+                observedAtMs = installed?.Permit.ObservedAtMs,
+                expiresAtMs = installed?.Permit.ExpiresAtMs,
+                repeated,
+                injected,
+                exact,
+                fresh,
+                firstControl,
+                prefixDown,
+                chordAction,
+                acceptBinding,
+                prefixPresent = prefix is not null,
+                prefixPlanMatches = prefix is null ? (bool?)null : prefix.Plan is not null && ReferenceEquals(prefix.Plan, installed),
+                prefixTargetMatches = prefix is null || installed is null ? (bool?)null : prefix.Basis.Source.Target == installed.Lease.Source.Target,
+                prefixGenerationMatches = prefix is null || installed is null ? (bool?)null : prefix.Basis.CommandGeneration == installed.Lease.CommandGeneration,
+                prefixUserEpochMatches = prefix is null || installed is null ? (bool?)null : prefix.Basis.UserEpoch == installed.Lease.UserEpoch,
+                prefixForegroundEpochMatches = prefix is null || installed is null ? (bool?)null : prefix.Basis.ForegroundEpoch == installed.Lease.ForegroundEpoch,
+                prefixSettled = prefix is null ? (int?)null : Volatile.Read(ref prefix.Settled),
+                prefixInvalid = prefix is null ? (int?)null : Volatile.Read(ref prefix.Invalid),
+                prefixProcessed = prefix is null ? (int?)null : Volatile.Read(ref prefix.Processed),
+                controlReleased = prefix is null ? (int?)null : Volatile.Read(ref prefix.ControlReleased),
+                actionReleased = prefix is null ? (int?)null : Volatile.Read(ref prefix.ActionReleased),
+                actionPresent = prefix is null ? (bool?)null : Interlocked.Read(ref prefix.ActionSequence) != 0
+            });
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { }
+    }
     private bool ObserveOwnedKey(Native.KeyData data, bool down, bool repeated, bool injected, long now, uint acceptanceKey)
     {
         var prefix = Volatile.Read(ref _ownedPrefix);
@@ -599,6 +644,8 @@ internal sealed partial class KeyboardHook
             RevokeOwnedPrefix();
             _ownedGate.ProcessAcceptanceKey(new(data.Key, down, repeated, false),
                 new(null, false, ImeState.Unknown, Modified, injected, false, -1, -1, now, CurrentModifiers));
+            if (channel is not null && OwnedEditorTraceEnabled && down && (ControlKey(data.Key) || data.Key == acceptanceKey))
+                QueueOwnedInputRejection("foreground", now, Volatile.Read(ref _ownedInstalled), prefix, repeated, injected);
             return false;
         }
         if (!channel.Writer.TryEnter())
@@ -606,6 +653,8 @@ internal sealed partial class KeyboardHook
             RevokeOwnedPrefix();
             _ownedGate.ProcessAcceptanceKey(new(data.Key, down, repeated, false),
                 new(null, false, ImeState.Unknown, Modified, injected, false, -1, -1, now, CurrentModifiers));
+            if (OwnedEditorTraceEnabled && down && (ControlKey(data.Key) || data.Key == acceptanceKey))
+                QueueOwnedInputRejection("writer-busy", now, Volatile.Read(ref _ownedInstalled), prefix, repeated, injected);
             return true;
         }
         try
@@ -693,6 +742,11 @@ internal sealed partial class KeyboardHook
                 }
                 RevokeOwnedPlan();
             }
+            if (OwnedEditorTraceEnabled && down
+                && (ControlKey(data.Key) && !prefixDown && !samePrefixRepeat
+                    || data.Key == acceptanceKey && decision.Permit is null))
+                QueueOwnedInputRejection(ControlKey(data.Key) ? "prefix" : "acceptance", now, installed, prefix,
+                    repeated, injected, exact, fresh, firstControl, prefixDown, chordAction, acceptBinding);
             return true; // Every original MSG goes to its application unchanged.
         }
         finally { channel.Writer.Exit(); }

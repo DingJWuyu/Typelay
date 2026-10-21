@@ -57,6 +57,27 @@ def click_point(actual, point, dimensions):
     return int(x * actual["scale"]), int(y * actual["scale"])
 
 
+def clickable_control(actual, name, after, dimensions):
+    item = actual.get("overlayControls", {}).get(name, {})
+    geometry = [item.get(key) for key in ("x", "y", "width", "height")]
+    if (
+        actual.get("observedAtMs", 0) <= after
+        or not parent_geometry_ready(actual, dimensions)
+        or not item.get("visible")
+        or not all(type(value) in (int, float) and math.isfinite(value) for value in geometry)
+    ):
+        return None
+    x, y, width, height = geometry
+    if (
+        width <= 0
+        or height <= 0
+        or not 0 <= x + width / 2 < actual["width"]
+        or not 0 <= y + height / 2 < actual["height"]
+    ):
+        return None
+    return actual
+
+
 def observe_click_geometry(actual):
     # Existing fixture time is MONOTONIC; render/click deadlines use BOOTTIME.
     candidate = actual.get("candidate")
@@ -673,8 +694,8 @@ def check_language_retention_refusal(
         },
     }
 
-    def click(name, field=False):
-        actual = state()
+    def click(name, field=False, actual=None):
+        actual = state() if actual is None else actual
         item = actual[name] if field else actual["overlayControls"][name]
         assert item["width"] > 0 and item["height"] > 0
         point = click_point(
@@ -697,13 +718,34 @@ def check_language_retention_refusal(
             and actual
         )
 
-    assert render_preview(client, source, generation, 1, "fixture exit", language_view=languages)[
-        "visible"
-    ]
-    wait_for(lambda: controls().get(trigger, {}).get("visible"), "language trigger missing")
-    click(trigger)
-    wait_for(lambda: controls().get(menu, {}).get("visible"), "language menu missing")
-    click(control)
+    initial_render = {}
+    assert render_preview(
+        client,
+        source,
+        generation,
+        1,
+        "fixture exit",
+        language_view=languages,
+        evidence=initial_render,
+    )["visible"]
+    # Mapping precedes native allocation. Use the existing waits to require a
+    # fresh, in-bounds click target, then click that exact observed snapshot once.
+    rendered = initial_render["renderReturnedAtMonoMs"]
+    shown = wait_for(
+        lambda: clickable_control(state(), trigger, rendered, dimensions),
+        "language trigger geometry missing",
+    )
+    assert now_ms() <= initial_render["expiresAtMs"], "initial language lease expired before click"
+    click(trigger, actual=shown)
+    opened = time.monotonic_ns() // 1_000_000
+    shown = wait_for(
+        lambda: (value := clickable_control(state(), control, opened, dimensions))
+        and value["overlayControls"].get(menu, {}).get("visible")
+        and value,
+        "language selector geometry missing",
+    )
+    assert now_ms() <= initial_render["expiresAtMs"], "initial language lease expired before click"
+    click(control, actual=shown)
     wait_for(detached_menu, "source did not detach under exact language control focus")
     # The old implementation fails here. This must not alter source IME authority.
     assert render_preview(client, source, generation, 2, "fixture exit", language_view=languages)[

@@ -31,7 +31,7 @@ internal static partial class ContinuousTranslationCheck
         int firstCompletedReceipts = 0;
         var elapsed = Stopwatch.StartNew();
         long? firstPreviewMs = null, acceptanceReadyMs = null, acceptedMs = null;
-        long? acceptancePressStartedAtMs = null, acceptancePressCompletedAtMs = null;
+        long? acceptanceCueObservedAtMs = null, acceptancePressStartedAtMs = null, acceptancePressCompletedAtMs = null;
         ChildProcess? child = null;
         PracticeHost? host = null;
         OverlayWindow? overlay = null;
@@ -200,8 +200,11 @@ internal static partial class ContinuousTranslationCheck
                 Require(N.Focused() == (root, field), "owned-preview-focus");
                 Require(new[] { 0x76, 0x77, 0x10, 0x11, 0x12, 0x5B, 0x5C }.All(key => GetAsyncKeyState(key) >= 0),
                     "owned-key-already-down");
-                return input.LastCapture?.Snapshot is { } captured && captured.Text == original
+                bool ready = input.LastCapture?.Snapshot is { } captured && captured.Text == original
                     && captured.Selection == selection && VisibleTranslation(overlay, editor) && OwnedAcceptanceVisible(overlay);
+                if (ready)
+                    acceptanceCueObservedAtMs = WindowsInterruptClock.NowMs;
+                return ready;
             }, cancellation);
             acceptanceReadyMs = elapsed.ElapsedMilliseconds;
             string candidate = editor.Text;
@@ -332,6 +335,7 @@ internal static partial class ContinuousTranslationCheck
                 submitCounterAvailable = false,
                 firstPreviewMs,
                 acceptanceReadyMs,
+                acceptanceCueObservedAtMs,
                 acceptancePressStartedAtMs,
                 acceptancePressCompletedAtMs,
                 acceptedMs,

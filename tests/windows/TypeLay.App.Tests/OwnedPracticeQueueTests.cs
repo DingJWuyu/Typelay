@@ -667,6 +667,8 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         await using var scene = new QueueScene(interruption != "attempt");
         await scene.Start(true);
         await scene.Install();
+        long installedAtMs = WindowsInterruptClock.NowMs;
+        long? inputStartedAtMs = null, inputReturnedAtMs = null, interruptionObservedAtMs = null, focusCheckedAtMs = null;
         scene.PublishForRenewal();
         long originalContentEpoch = scene.ContentEpoch;
         Assert.True(scene.CanRenew(originalContentEpoch));
@@ -676,20 +678,43 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         {
             if (interruption == "content")
             {
+                inputStartedAtMs = WindowsInterruptClock.NowMs;
                 scene.ClickSource();
-                await scene.Wait(() => scene.ContentEpoch > originalContentEpoch);
+                inputReturnedAtMs = WindowsInterruptClock.NowMs;
+                await scene.Wait(() =>
+                {
+                    if (scene.ContentEpoch <= originalContentEpoch)
+                        return false;
+                    interruptionObservedAtMs = WindowsInterruptClock.NowMs;
+                    return true;
+                });
                 Assert.Equal((scene.Root, scene.Field), N.Focused());
+                focusCheckedAtMs = WindowsInterruptClock.NowMs;
             }
             else
             {
                 // A default-denied injected release records the old plan's
                 // attempt without a down edge changing ContentEpoch.
+                inputStartedAtMs = WindowsInterruptClock.NowMs;
                 scene.Key(9, false);
-                await scene.Wait(() => scene.PlanAttempted);
+                inputReturnedAtMs = WindowsInterruptClock.NowMs;
+                await scene.Wait(() =>
+                {
+                    if (!scene.PlanAttempted)
+                        return false;
+                    interruptionObservedAtMs = WindowsInterruptClock.NowMs;
+                    return true;
+                });
                 Assert.Equal(originalContentEpoch, scene.ContentEpoch);
             }
-            Assert.True(WindowsInterruptClock.NowMs <= scene.Plan!.Permit.ExpiresAtMs,
-                "The interruption must be observed before the original authorization expires.");
+            long checkedAtMs = WindowsInterruptClock.NowMs;
+            bool withinOriginalDeadline = checkedAtMs <= scene.Plan!.Permit.ExpiresAtMs;
+            Assert.True(withinOriginalDeadline, withinOriginalDeadline ? null :
+                "The interruption must be observed before the original authorization expires. "
+                + $"kind={interruption}; observed={scene.Plan.Permit.ObservedAtMs}; installed={installedAtMs}; "
+                + $"inputStarted={inputStartedAtMs}; inputReturned={inputReturnedAtMs}; "
+                + $"interruptionObserved={interruptionObservedAtMs}; focusChecked={focusCheckedAtMs}; "
+                + $"expires={scene.Plan.Permit.ExpiresAtMs}; checked={checkedAtMs}");
         }
         Assert.False(scene.CanRenew(originalContentEpoch));
     });

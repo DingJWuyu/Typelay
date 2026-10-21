@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import alternative_quality
+import glossary_quality
 from typelay_worker.protocol import read_frame, write_frame
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -79,6 +80,16 @@ class QualityPreparationTests(unittest.TestCase):
                 (RUNNERS / "glossary_quality_inputs.json").read_text(encoding="utf-8")
             )
             self.assertEqual(len(report["cases"]), 5)
+            protected = inputs["samples"][2]
+            self.assertEqual(protected["id"], "zh-fr-preserved-structure")
+            self.assertEqual(
+                protected["request"]["text"],
+                "项目尚未确认。\r\nhttps://example.com/project @alice #42 🙂",
+            )
+            self.assertEqual(
+                protected["protected_literals"],
+                ["\r\n", "https://example.com/project", "@alice", "#42", "🙂"],
+            )
             for case, sample in zip(report["cases"], inputs["samples"], strict=True):
                 self.assertEqual({key: case[key] for key in sample}, sample)
                 self.assertIsNone(case["response"])
@@ -163,6 +174,48 @@ class QualityPreparationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("unrecognized arguments: --include-holdout", result.stderr)
             self.assertFalse(output.exists())
+
+
+class GlossaryCollectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_real_crlf_survives_request_frame_and_collected_response(self):
+        # This controlled transport checks capture fidelity, not model translation quality.
+        report = glossary_quality.prepare_report()
+        case = report["cases"][2]
+        report["cases"] = [case]
+        response = {
+            "id": 1,
+            "status": "translated",
+            "code": "",
+            "elapsedMs": 1,
+            "text": "Le dossier reste non confirmé.\r\nhttps://example.com/project @alice #42 🙂",
+        }
+        wire = io.BytesIO()
+        write_frame(wire, response)
+        reader = asyncio.StreamReader()
+        reader.feed_data(wire.getvalue())
+        reader.feed_eof()
+
+        class Input(io.BytesIO):
+            async def drain(self):
+                pass
+
+        writer = Input()
+        await glossary_quality.collect_cases(SimpleNamespace(stdin=writer, stdout=reader), report)
+        writer.seek(0)
+        request = read_frame(writer)
+        self.assertEqual(
+            request["text"], "项目尚未确认。\r\nhttps://example.com/project @alice #42 🙂"
+        )
+        self.assertEqual(request, {"id": 1, **case["request"]})
+        self.assertEqual(report["requests"][0]["request"], request)
+        self.assertEqual(case["response"], response)
+        self.assertEqual(report["requests"][0]["response"], response)
+        self.assertEqual(
+            case["response"]["text"].split("\r\n"),
+            ["Le dossier reste non confirmé.", "https://example.com/project @alice #42 🙂"],
+        )
+        self.assertEqual(report["quality"], "not-reviewed")
+        self.assertTrue(all(value is None for value in case["manualReview"].values()))
 
 
 class AlternativeHelloTests(unittest.IsolatedAsyncioTestCase):

@@ -321,7 +321,11 @@ internal static partial class BrowserCooperationCheck
                 setup.Stage = "confirm-connect-arrange-source";
                 await Task.Run(() => ArrangeSettingsBesideSource(app.Process, connectionWindow, ct), ct).WaitAsync(ct);
                 setup.Stage = "confirm-connect-return-to-page";
-                await FocusCommandFieldAsync(cdp!, windows!, connectionWindow, ct);
+                await FocusCommandFieldAsync(cdp!, windows!, connectionWindow, ct, step =>
+                {
+                    setup.Stage = "confirm-connect-return-to-page-" + step;
+                    Record("scene-progress", setup);
+                }, app.Process.Id);
                 setup.Stage = "confirm-connect-wait-connected";
                 await WaitBrowserConnectionStatusAsync(app.Process, "已连接", ct);
             });

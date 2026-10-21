@@ -7,7 +7,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from desktop_e2e import settings_text_visible_point, settings_viewport_from_pane  # noqa: E402
-from gtk_session_reentry import click_point, parent_geometry_ready, validated_geometry  # noqa: E402
+from gtk_session_reentry import (  # noqa: E402
+    click_point,
+    clickable_control,
+    parent_geometry_ready,
+    validated_geometry,
+)
 from hy_package_e2e import package_scroll_value, rectangle_contains  # noqa: E402
 
 
@@ -87,6 +92,33 @@ class GtkReentryGeometryTests(unittest.TestCase):
         for source in ({}, {"geometry": None}):
             with self.subTest(source=source), self.assertRaises(AssertionError):
                 validated_geometry(source, "gtk4")
+
+    def test_control_readiness_requires_fresh_allocated_in_bounds_snapshot(self):
+        control = {"visible": True, "x": 740, "y": 122, "width": 97, "height": 28}
+        actual = {
+            "fullscreen": True,
+            "width": 1280,
+            "height": 800,
+            "scale": 1,
+            "observedAtMs": 101,
+            "overlayControls": {"trigger": control},
+        }
+        self.assertIs(clickable_control(actual, "trigger", 100, (1280, 800)), actual)
+        self.assertIsNone(clickable_control(actual, "trigger", 101, (1280, 800)))
+        for changed in (
+            {"x": 41, "y": 67, "width": 0, "height": 0},
+            {"x": -1, "y": -1, "width": 1, "height": 1},
+            {"visible": False},
+            {"x": float("nan")},
+            {"height": float("inf")},
+            {"width": True},
+            {"x": 1280},
+        ):
+            with self.subTest(changed=changed):
+                pending = {**actual, "overlayControls": {"trigger": {**control, **changed}}}
+                self.assertIsNone(clickable_control(pending, "trigger", 100, (1280, 800)))
+        self.assertIsNone(clickable_control(actual, "missing", 100, (1280, 800)))
+        self.assertIsNone(clickable_control(actual, "trigger", 100, (640, 400)))
 
     def test_click_maps_parent_local_point_at_native_scale(self):
         actual = {"fullscreen": True, "width": 640, "height": 400, "scale": 2}

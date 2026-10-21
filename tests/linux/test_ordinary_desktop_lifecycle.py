@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from desktop_session import process_identity
 from ordinary_gimp import (
+    acceptable_candidate,
     fullscreen_content_origin,
     launched_application,
     properties_click_point,
@@ -96,6 +97,36 @@ class OrdinaryDesktopLifecycleTests(unittest.TestCase):
             (root / ("a" * 32 + ".json")).write_text("{}")
             with self.assertRaises(OSError):
                 session_exit_confirmed(data, [])
+
+
+class OrdinaryCandidateObservationTests(unittest.TestCase):
+    def test_expired_cue_and_empty_translating_text_do_not_authorize_accept(self):
+        events = []
+
+        def ready():
+            events.append("ready")
+            return {"acceptanceReady": True}
+
+        self.assertIsNone(acceptable_candidate(lambda: "", ready, "source"))
+        self.assertIsNone(acceptable_candidate(lambda: "source", ready, "source"))
+        self.assertEqual(events, [])
+        self.assertIsNone(acceptable_candidate(lambda: "translation", lambda: None, "source"))
+
+    def test_current_candidate_is_read_before_final_acceptance_cue(self):
+        events = []
+
+        def read():
+            events.append("text")
+            return "translation"
+
+        def ready():
+            events.append("ready")
+            return {"acceptanceReady": True}
+
+        self.assertEqual(
+            acceptable_candidate(read, ready, "source"), ("translation", {"acceptanceReady": True})
+        )
+        self.assertEqual(events, ["text", "ready"])
 
 
 class OrdinaryDesktopGeometryTests(unittest.TestCase):

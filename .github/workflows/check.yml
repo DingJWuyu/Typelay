@@ -482,6 +482,7 @@ jobs:
           python tests/linux/setup_e2e.py -v
           python tests/linux/test_desktop_session.py -v
           python tests/linux/test_desktop_scope_results.py -v
+          python tests/linux/test_desktop_acceptance_observation.py -v
           python tests/linux/test_setup_scope_data.py -v
           python tests/linux/test_practice_session.py -v
           python tests/linux/test_fcitx_session_source.py -v
