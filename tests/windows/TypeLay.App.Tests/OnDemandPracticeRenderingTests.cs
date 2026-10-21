@@ -8,6 +8,7 @@ using System.Windows.Threading;
 using TypeLay.App;
 using TypeLay.Core;
 using TypeLay.Runtime;
+using TypeLay.Windows;
 using TypeLay.Windows.Contracts;
 using N = TypeLay.Platform.Windows.NativeMethods;
 using Xunit;
@@ -52,7 +53,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             Assert.True(N.SetForegroundWindow(root));
             Assert.True(N.PostMessage(root, 0x0007, 0, 0));
             await Until(() => N.Focused() == (root, GetDlgItem(root, 101)));
-            await Until(() => controller.PracticeProgress?.PreviewReady == false && broker.Waiting);
+            await Until(() => controller.PracticeProgress is { PreviewReady: false, DirectReady: false } && broker.Waiting);
             var initial = controller.PracticeProgress!;
             string ReadyNotice() => OnDemandPracticePresentation.Create(settings.Value,
                 controller.PracticeProgress! with
@@ -67,8 +68,9 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             var bound = controller.PracticeProgress!;
             Assert.Equal(initial.RunId, bound.RunId);
             Assert.True(bound.PreviewReady);
+            await Until(() => controller.PracticeProgress?.DirectReady == true);
             broker.Pause(); // No replacement read can keep an old publication alive.
-            await Until(() => broker.Waiting && controller.PracticeProgress?.PreviewReady == false
+            await Until(() => broker.Waiting && controller.PracticeProgress is { PreviewReady: false, DirectReady: false }
                 && N.ReadStaticNotice(GetDlgItem(root, 103)) == OnDemandPracticePresentation.Create(settings.Value,
                     controller.PracticeProgress).ProgressNotice);
             Assert.Equal(bound.Target, controller.PracticeProgress!.Target);
@@ -78,7 +80,8 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             Assert.Equal(OnDemandPracticePresentation.Create(settings.Value).SampleText,
                 N.ReadText(GetDlgItem(root, 101), Limits.MaxTextUnits));
             broker.Resume();
-            await Until(() => N.ReadStaticNotice(GetDlgItem(root, 103)) == ReadyNotice());
+            await Until(() => controller.PracticeProgress?.DirectReady == true
+                && N.ReadStaticNotice(GetDlgItem(root, 103)) == ReadyNotice());
             settings.Update(settings.Value with
             {
                 WakeShortcut = "Alt+F8"
@@ -99,6 +102,95 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             overlay.Close();
             if (Directory.Exists(directory))
                 Directory.Delete(directory, true);
+        }
+    });
+
+    [Fact]
+    public Task PreviewCompletedCueRendersDirectReadinessAndWithdrawalFromTheProgressPipe() => desktop.RunAsync(async () =>
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(25));
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-practice-direct-cue-" + Guid.NewGuid().ToString("N"));
+        string path = Path.Combine(directory, "settings.json");
+        ChildProcess? child = null;
+        try
+        {
+            var settings = WindowsRuntime.CreateSettings(path);
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.OnDemand,
+                DirectShortcut = "Alt+F9"
+            });
+            Guid connection = Guid.NewGuid(), run = Guid.NewGuid();
+            var start = AppPaths.Child("TypeLay.Practice");
+            start.ArgumentList.Add("--settings");
+            start.ArgumentList.Add(path);
+            start.ArgumentList.Add("--progress");
+            start.ArgumentList.Add(connection.ToString("N"));
+            child = new ChildProcess(start);
+            await PracticeProgressPipe.WriteAsync(child.Process.StandardInput.BaseStream,
+                new("begin", connection, run, 1), deadline.Token);
+            var started = await PracticeProgressPipe.ReadAsync(child.Process.StandardOutput.BaseStream, deadline.Token);
+            Assert.Equal("started", started.Kind);
+            Assert.Equal(connection, started.Connection);
+            Assert.Equal(run, started.Run);
+            Assert.Equal(1, started.Sequence);
+            nint root = 0;
+            await Until(() =>
+            {
+                child.Process.Refresh();
+                root = child.Process.MainWindowHandle;
+                return root != 0 && GetDlgItem(root, 103) != 0;
+            });
+
+            // Controlled body-free progress tests the production pipe and native renderer,
+            // not inference completion, capture authority, or permission to send input.
+            var progress = new OnDemandPracticeProgress(run, new("render-only", "field", Guid.NewGuid()),
+                Guid.NewGuid(), 1, 1, true, false);
+            (bool? Ready, string Notice)[] states =
+            [
+                (null, "已生成预览。请回到练习输入框，完成第 2 步直接替换。"),
+                (false, "已生成预览。请回到练习输入框，等待直接替换快捷键就绪。"),
+                (true, "已生成预览。直接替换快捷键已就绪，可按 Alt+F9 完成第 2 步。"),
+                (false, "已生成预览。请回到练习输入框，等待直接替换快捷键就绪。")
+            ];
+            foreach (var state in states)
+            {
+                await PracticeProgressPipe.WriteAsync(child.Process.StandardInput.BaseStream,
+                    new("progress", connection, run, 1, progress with
+                    {
+                        DirectReady = state.Ready
+                    }), deadline.Token);
+                await Until(() => N.ReadStaticNotice(GetDlgItem(root, 103)) == state.Notice);
+            }
+            Assert.Equal(OnDemandPracticePresentation.Create(settings.Value).SampleText,
+                N.ReadText(GetDlgItem(root, 101), Limits.MaxTextUnits));
+
+            async Task Until(Func<bool> condition)
+            {
+                while (!condition())
+                {
+                    Assert.False(child.Process.HasExited);
+                    await Task.Delay(15, deadline.Token);
+                }
+            }
+        }
+        finally
+        {
+            try
+            {
+                if (child is not null)
+                {
+                    using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await child.TerminateAndWaitAsync(cleanup.Token);
+                }
+            }
+            finally
+            {
+                child?.Dispose();
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, true);
+            }
         }
     });
 

@@ -64,21 +64,15 @@ class Tutorial:
         scroll.add(self.result)
         box.pack_start(scroll, True, True, 0)
         self.message = note("")
-        note("2. 在已启用 TypeLay 的真实输入框练习")
+        note("2. 连接应用并打开受管练习")
         note(
-            "请先在设置的应用支持中连接目标应用，并按页面指引完成必要授权。"
-            "本窗生成译文只检查本地模型，不代表其他应用已连接。"
-            "回到目标应用的普通文本框，再逐项检查下面的操作。"
+            "请在设置的“应用支持”中按指引完成接入，再打开受管练习。"
+            "练习窗口会按当前配置说明操作；需要切换工作模式时会先请你确认。"
         )
+        note("本窗仅检查本地模型，不代表应用已连接或练习已完成。受管练习不需要开启全局实验替换。")
         self.connection_button = Gtk.Button(label="…")
         self.connection_button.connect("clicked", lambda *_: self.open_connection())
         box.pack_start(self.connection_button, False, False, 0)
-        note(
-            "开启设置中的原生输入框替换后，仅用非敏感测试文字：\n"
-            "• 正常输入，等待胶囊展开并生成真实译文；在原框按 Tab，只替换、不发送。\n"
-            "• 点击译文并修改；第一次 Tab 回到原框，第二次 Tab 接受修改。\n"
-            "• 输入法候选未完成时，Tab 应交给输入法；未知状态不会读取或替换。"
-        )
         note(
             "本窗试译不证明跨应用、自动浮层、物理 Tab 或真实输入法已通过验收。"
             "需要设置或稍后练习时可以关闭此窗；也可明确跳过，之后从设置重新打开。"
@@ -118,9 +112,7 @@ class Tutorial:
             if revision == self.revision and self.window.get_visible():
                 self.result.get_buffer().set_text(translation)
                 self.state = "preview"
-                self.message.set_text(
-                    "本地译文已生成。请确认含义；Tab 练习请在下面说明的实际输入框完成。"
-                )
+                self.message.set_text("本地译文已生成，请确认含义。继续练习请从下方进入应用支持。")
         except (OSError, ValueError, EOFError, TimeoutError):
             if revision == self.revision:
                 self.state = "failed"

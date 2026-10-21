@@ -6576,12 +6576,19 @@ def run(arguments):
                 wait_for(
                     lambda: status().get("setup", {}).get("onboardingComplete")
                     and not status()["setup"]["tutorialVisible"],
-                    "explicit tutorial completion was not saved",
+                    "explicit tutorial prompt dismissal was not saved",
                 )
                 settings = json.loads(paths.settings.read_text())
                 assert settings["OnboardingComplete"] is True
                 stop()
+                settings["Mode"] = 1
+                settings["AcceptShortcut"] = "F6"
+                settings["ExperimentalWriteback"] = False
                 start()
+                trial_preferences = {
+                    name: settings[name]
+                    for name in ("Mode", "AcceptShortcut", "ExperimentalWriteback")
+                }
                 assert not status().get("setup", {}).get("tutorialVisible")
                 unopened_settings = named(process.pid, "TypeLay 设置")
                 assert unopened_settings is None or not unopened_settings.get_state_set().contains(
@@ -6597,6 +6604,18 @@ def run(arguments):
                     == "TypeLay 首次使用",
                     "reopened tutorial did not gain real compositor focus",
                 )
+                connection = settings_control(support["labels"]["connectApplications"])
+                assert Atspi.Component.grab_focus(connection.get_component_iface())
+                for instruction in (
+                    "2. 连接应用并打开受管练习",
+                    "本窗仅检查本地模型，不代表应用已连接或练习已完成。"
+                    "受管练习不需要开启全局实验替换。",
+                ):
+                    wait_for(
+                        lambda: (label := named(process.pid, instruction))
+                        and label.get_state_set().contains(Atspi.StateType.SHOWING),
+                        "local trial guidance was not visible: " + instruction,
+                    )
                 activate_setting(support["labels"]["connectApplications"])
                 wait_for(
                     lambda: settings_control("设置页：应用支持")
@@ -6611,6 +6630,8 @@ def run(arguments):
                 support_index, _ = settings_page_row(navigation[1], "应用支持")
                 assert Atspi.Selection.is_child_selected(navigation[0], support_index)
                 assert not status()["setup"]["tutorialVisible"]
+                persisted = json.loads(paths.settings.read_text())
+                assert all(persisted[name] == value for name, value in trial_preferences.items())
                 assert control(paths, "tutorial") is True
                 wait_for(
                     lambda: (contents(request("FocusedWindow"), "FocusedWindow") or {}).get("title")
@@ -6620,10 +6641,12 @@ def run(arguments):
                 key("alt+s")
                 wait_for(
                     lambda: not status().get("setup", {}).get("tutorialVisible"),
-                    "explicit tutorial skip did not close the practice window",
+                    "explicit tutorial skip did not close the trial window",
                 )
+                persisted = json.loads(paths.settings.read_text())
+                assert all(persisted[name] == value for name, value in trial_preferences.items())
                 evidence.append(
-                    "First-run application support stays separate from model readiness; explicit local-model trial, completion, persisted restart and optional reopening without intercepting target-app Tab"
+                    "First-run application support stays separate from model readiness; explicit local-model trial, prompt dismissal, persisted restart and reopening; visible managed-practice guidance, connection routing and skip preserve mode, custom acceptance key and writeback preference"
                 )
                 if bundled_component:
                     # Keep the earlier explicit tutorial-dismissal coverage, then
@@ -6635,6 +6658,7 @@ def run(arguments):
                     settings["OnboardingComplete"] = False
                     settings["ExperimentalWriteback"] = False
                     settings["Mode"] = 0
+                    settings["AcceptShortcut"] = "Tab"
                     start()
                     assert not status()["setup"]["onboardingComplete"]
 

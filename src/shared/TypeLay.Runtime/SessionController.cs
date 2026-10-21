@@ -120,6 +120,19 @@ public sealed partial class SessionController : IDisposable
         };
         PracticeProgressChanged?.Invoke(PracticeProgress);
     }
+    public void ObserveOnDemandDirectReadiness(Guid runId, TargetId? target, Guid commandGeneration, bool ready)
+    {
+        if (_disposed || PracticeProgress is not { } progress || progress.RunId != runId
+            || progress.Target != target || progress.CommandGeneration != commandGeneration
+            || ready && (commandGeneration != _hook.CommandGeneration || target is null)
+            || progress.DirectReady == ready)
+            return;
+        PracticeProgress = progress with
+        {
+            DirectReady = ready
+        };
+        PracticeProgressChanged?.Invoke(PracticeProgress);
+    }
     public bool EndOnDemandPractice(Guid runId)
     {
         if (PracticeProgress?.RunId != runId)
@@ -164,7 +177,8 @@ public sealed partial class SessionController : IDisposable
         {
             PreviewCompleted = true,
             DirectReplacementCompleted = direct,
-            PreviewReady = progress.PreviewReady
+            PreviewReady = progress.PreviewReady,
+            DirectReady = progress.DirectReady
         };
         PracticeProgressChanged?.Invoke(PracticeProgress);
     }

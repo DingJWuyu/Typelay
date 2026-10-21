@@ -18,7 +18,7 @@ public sealed class PracticeProgressPipeTests
     [InlineData(null)]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task OptionalPreviewReadinessRoundTripsWithoutChangingPracticeProgress(bool? ready)
+    public async Task OptionalReadinessRoundTripsWithoutChangingPracticeProgress(bool? ready)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(5));
@@ -26,13 +26,14 @@ public sealed class PracticeProgressPipeTests
         using var reader = new AnonymousPipeClientStream(PipeDirection.In, writer.ClientSafePipeHandle);
         Guid run = Guid.NewGuid();
         var progress = new OnDemandPracticeProgress(run, new("controlled", "source", Guid.NewGuid()),
-            Guid.NewGuid(), 0, 0, false, false, ready);
+            Guid.NewGuid(), 0, 0, false, false, ready, ready);
         var message = new PracticeMessage("progress", Guid.NewGuid(), run, 1, progress);
         await PracticeProgressPipe.WriteAsync(writer, message, deadline.Token);
         Assert.Equal(message, await PracticeProgressPipe.ReadAsync(reader, deadline.Token));
         // An older sender omits the optional field; absence must not mean ready.
         var legacy = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(message))!;
         legacy["Progress"]!.AsObject().Remove("PreviewReady");
+        legacy["Progress"]!.AsObject().Remove("DirectReady");
         byte[] body = JsonSerializer.SerializeToUtf8Bytes(legacy);
         byte[] prefix = new byte[4];
         BinaryPrimitives.WriteInt32LittleEndian(prefix, body.Length);
@@ -42,7 +43,8 @@ public sealed class PracticeProgressPipeTests
         var received = await PracticeProgressPipe.ReadAsync(reader, deadline.Token);
         Assert.Equal(progress with
         {
-            PreviewReady = null
+            PreviewReady = null,
+            DirectReady = null
         }, received.Progress);
         Assert.False(received.Progress!.Completed);
     }

@@ -178,7 +178,7 @@ internal static partial class BrowserCooperationCheck
     private static async Task WaitPublicCommandReadyAsync(AutomationElement settings, BrowserWindows windows, System.Windows.Rect source, CancellationToken ct)
     {
         // The existing settings page remains visible beside the source. Read its
-        // actual status text before typing/selection, never an internal ACK.
+        // actual status text after final typing/selection, never an internal ACK.
         const string ready = "浏览器快捷键已就绪。";
         try
         {

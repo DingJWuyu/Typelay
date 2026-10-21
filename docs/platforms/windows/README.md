@@ -79,18 +79,18 @@
 
 ### 当前可验证候选
 
-最近核对的验证基线为 [`4e5cbacf`](https://github.com/DingJWuyu/Typelay/actions/runs/39588747394)，该运行已结束，Windows 完整检查失败。
+最近核对的验证基线为 [`e1f55ebd`](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654)，该运行已结束，Windows 完整检查失败。
 
 - App.Tests：577/577 通过，包含 Settings 回源与两项清理检查；Runtime.Tests：1091/1091 通过。不代表完整产品验收通过。
 - 连续翻译整链通过，包含自有编辑与接受、普通字段、直接替换、按需练习、冷启动 Chrome 与新标签页；不外推物理输入法或所有应用。
-- 浏览器接入、自动预览 Tab 与按需设置通过；`direct-selection` 实际被 `PolicyAuthorityExpired` 拒绝且未写入，后续场景未运行。本轮清理通过，2727ms 内全部持有的进程句柄已进入 signaled 状态、待退出数为 0；记事本与 Hy 未运行，不沿用较早通过结果。
+- 浏览器合作七个场景及整步通过；记事本设置和只读预览观察通过，但等待公开接受提示仍因 Unknown 安全缺口超时，后续编辑/直接替换及 Hy 未运行。Windows 完整验收仍未通过。
 - 本轮未消除普通自动捕获的输入法安全缺口，Unknown 继续拒写；按需 CaptureDirect 既有 owner-thread 桥仍有同步 IMM 消息重入风险，不能据本轮连续链通过消除该限制。后继候选未经对应验证不记作修复。本轮无质量采集，5068 的 40 次诊断与 386 的 69 次响应仍是各自范围的既有证据，三项质量门继续关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
 
-当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39588747394)下载 [`typelay-windows-4e5cbacff8a13441015de3a9f3abcc1be7e4d96f`](https://github.com/DingJWuyu/Typelay/actions/runs/39588747394/artifacts/12340794924)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
+当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654)下载 [`typelay-windows-e1f55ebd4da69c3d77c4a6447eaad2a146b8bfa6`](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654/artifacts/12342794943)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
 
-- 源码提交：`4e5cbacff8a13441015de3a9f3abcc1be7e4d96f`。
-- 内层 ZIP：87,038,470 字节。
-- SHA-256：`465351344c45c809809e06c4386969e4b06f2d6df9b207d0b08fa490ba87a8b5`，已实际重算并核对包旁摘要。
+- 源码提交：`e1f55ebd4da69c3d77c4a6447eaad2a146b8bfa6`。
+- 内层 ZIP：87,038,548 字节。
+- SHA-256：`bbe411262d078a5557703a3a73569ad265e6e89533bec4601b882d69590dcb91`，已实际重算并核对包旁摘要。
 - 用 `Get-FileHash .\TypeLay-Windows-preview.zip -Algorithm SHA256` 核对；不要将内层摘要用于外层 Actions ZIP。App、Broker、Practice 与 BrowserHost 必须来自同一个完整包。
 
 正式安装器的单向中英准备、Auto 同语无输出、缺方向拒绝与保留旧方向的补装已通过真实模型 API 检查；该检查本身没有操作输入框或触发 F10。安装库存损坏时保留原数据并禁用修改，目前仍缺少用户可执行的库存恢复入口。

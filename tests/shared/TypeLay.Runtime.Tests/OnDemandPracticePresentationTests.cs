@@ -23,6 +23,28 @@ public sealed class OnDemandPracticePresentationTests
         Assert.False(view.Completed);
     }
 
+    [Theory]
+    [InlineData(null, "已生成预览。请回到练习输入框，完成第 2 步直接替换。")]
+    [InlineData(false, "已生成预览。请回到练习输入框，等待直接替换快捷键就绪。")]
+    [InlineData(true, "已生成预览。直接替换快捷键已就绪，可按 Alt+F9 完成第 2 步。")]
+    public void CompletedPreviewDoesNotImplyDirectReadinessAndKeepsLegacyPlatformsUnchanged(bool? ready, string notice)
+    {
+        var progress = new OnDemandPracticeProgress(Guid.NewGuid(), new("controlled", "source", Guid.NewGuid()),
+            Guid.NewGuid(), 1, 1, true, false, DirectReady: ready);
+        var settings = new UserSettings(Mode: WorkMode.OnDemand, DirectShortcut: "Alt+F9");
+        var view = OnDemandPracticePresentation.Create(settings, progress);
+        Assert.Equal(notice, view.ProgressNotice);
+        Assert.True(view.PreviewCompleted);
+        Assert.False(view.DirectReplacementCompleted);
+        Assert.False(view.Completed);
+        var completed = OnDemandPracticePresentation.Create(settings, progress with
+        {
+            DirectReplacementCompleted = true
+        });
+        Assert.Equal("按需练习已完成：已生成预览，并已验证直接替换。", completed.ProgressNotice);
+        Assert.True(completed.Completed);
+    }
+
     [Fact]
     public void AutomaticModeMakesTheGlobalModeChangeExplicit()
     {

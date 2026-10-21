@@ -13,6 +13,7 @@ using TypeLay.App;
 using TypeLay.Core;
 using TypeLay.Platform.Windows;
 using TypeLay.Runtime;
+using TypeLay.Windows;
 using TypeLay.Windows.Contracts;
 using N = TypeLay.Platform.Windows.NativeMethods;
 
@@ -397,6 +398,12 @@ internal static partial class ContinuousTranslationCheck
         string? feedbackCode = null;
         InputSnapshot? firstCapture = null;
         ChildProcess? native = null;
+        FixtureDescriptor? sourceDescriptor = null;
+        long? readyStartedAtMs = null, readyCompletedAtMs = null;
+        long? textStartedAtMs = null, textCompletedAtMs = null;
+        long? selectionStartedAtMs = null, selectionCompletedAtMs = null;
+        bool initializationCompleted = false;
+        object? initializationFailure = null;
         OverlayWindow? overlay = null;
         SessionController? controller = null;
         OrdinaryControlBroker? broker = null;
@@ -408,15 +415,23 @@ internal static partial class ContinuousTranslationCheck
             native = StartSource(nativeFixture);
             using var setupDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
             setupDeadline.CancelAfter(TimeSpan.FromSeconds(15));
+            readyStartedAtMs = WindowsInterruptClock.NowMs;
             var host = await ReadSourceAsync(native, setupDeadline.Token);
+            readyCompletedAtMs = WindowsInterruptClock.NowMs;
+            sourceDescriptor = host;
             nint root = (nint)host.RootHwnd;
             nint field = (nint)host.Fields.Single(item => item.Name == "a").Hwnd;
+            textStartedAtMs = WindowsInterruptClock.NowMs;
             N.SendString(field, N.WM_SETTEXT, source);
+            textCompletedAtMs = WindowsInterruptClock.NowMs;
+            selectionStartedAtMs = WindowsInterruptClock.NowMs;
             N.Send(field, N.EM_SETSEL, (nuint)source.Length, (nint)source.Length);
+            selectionCompletedAtMs = WindowsInterruptClock.NowMs;
             TextRange selection = N.ReadSelection(field);
             Require(selection == new TextRange(source.Length, source.Length), "ordinary-source-selection");
             Require(N.PostMessage(root, N.FixtureFocus, (nuint)field, 0), "ordinary-source-focus-request");
             await UntilAsync(() => N.Focused() == (root, field), setupDeadline.Token);
+            initializationCompleted = true;
             var settings = CreateSettings(Path.Combine(directory, "ordinary-controls", "settings.json"), WorkMode.OnDemand);
             settings.Update(settings.Value with
             {
@@ -571,6 +586,68 @@ internal static partial class ContinuousTranslationCheck
             if (sourceExitOutcome == "running")
                 sourceExitOutcome = "failed";
             RecordFailure(result, error);
+            if (!initializationCompleted && native is not null)
+            {
+                // Observe only after the original failure, before normal cleanup.
+                // No message, source read or focus action may be issued here.
+                try
+                {
+                    long observedAtMs = WindowsInterruptClock.NowMs;
+                    bool? processExited = native?.Process.HasExited;
+                    if (sourceDescriptor is not { } descriptor)
+                        initializationFailure = new
+                        {
+                            observedAtMs,
+                            processExited,
+                            descriptorKnown = false
+                        };
+                    else
+                    {
+                        nint root = (nint)descriptor.RootHwnd;
+                        nint field = (nint)descriptor.Fields.Single(item => item.Name == "a").Hwnd;
+                        bool rootExists = N.IsWindow(root), fieldExists = N.IsWindow(field);
+                        uint rootThread = N.GetWindowThreadProcessId(root, out uint rootProcess);
+                        int? rootLookupError = rootThread == 0 ? Marshal.GetLastPInvokeError() : null;
+                        uint fieldThread = N.GetWindowThreadProcessId(field, out uint fieldProcess);
+                        int? fieldLookupError = fieldThread == 0 ? Marshal.GetLastPInvokeError() : null;
+                        bool rootIdentityMatches = rootThread != 0 && rootProcess == descriptor.ProcessId;
+                        bool fieldIdentityMatches = fieldThread != 0 && fieldProcess == descriptor.ProcessId;
+                        bool sameThread = rootThread != 0 && rootThread == fieldThread;
+                        bool fieldRootMatches = N.GetAncestor(field, 2) == root;
+                        var gui = new N.GuiThreadInfo { Size = (uint)Marshal.SizeOf<N.GuiThreadInfo>() };
+                        bool? guiRead = rootIdentityMatches ? N.GetGUIThreadInfo(rootThread, ref gui) : null;
+                        int? guiError = guiRead == false ? Marshal.GetLastPInvokeError() : null;
+                        initializationFailure = new
+                        {
+                            observedAtMs,
+                            processExited,
+                            descriptorKnown = true,
+                            rootExists,
+                            fieldExists,
+                            rootIdentityMatches,
+                            fieldIdentityMatches,
+                            sameThread,
+                            fieldRootMatches,
+                            rootLookupError,
+                            fieldLookupError,
+                            guiRead,
+                            guiError,
+                            activeIsRoot = guiRead == true ? (bool?)(gui.Active == root) : null,
+                            focusIsField = guiRead == true ? (bool?)(gui.Focus == field) : null,
+                            menuMode = guiRead == true ? (bool?)((gui.Flags & 0x4) != 0) : null,
+                            systemMenuMode = guiRead == true ? (bool?)((gui.Flags & 0x8) != 0) : null,
+                            popupMenuMode = guiRead == true ? (bool?)((gui.Flags & 0x10) != 0) : null
+                        };
+                    }
+                }
+                catch (Exception diagnosticError) when (diagnosticError is not OutOfMemoryException)
+                {
+                    initializationFailure = new
+                    {
+                        diagnosticErrorType = diagnosticError.GetType().Name
+                    };
+                }
+            }
         }
         finally
         {
@@ -582,6 +659,17 @@ internal static partial class ContinuousTranslationCheck
             CompleteCleanup(result);
             result.Facts = new
             {
+                sourceInitialization = new
+                {
+                    readyStartedAtMs,
+                    readyCompletedAtMs,
+                    textStartedAtMs,
+                    textCompletedAtMs,
+                    selectionStartedAtMs,
+                    selectionCompletedAtMs,
+                    initializationCompleted,
+                    failureObservation = initializationFailure
+                },
                 inputKind = "software-input",
                 allowInjectedInput = true,
                 physicalIme = false,
@@ -1121,8 +1209,15 @@ internal static partial class ContinuousTranslationCheck
             Require(previewUnchanged, "practice-preview-mutated-source");
             await UntilAsync(() => controller.PracticeProgress is { PreviewCompleted: true, DirectReplacementCompleted: false }, cancellation);
             previewProgress = true;
-            await UntilAsync(() => N.ReadStaticNotice(GetDlgItem(root, 103))
-                == OnDemandPracticePresentation.Create(settings.Value, controller.PracticeProgress).ProgressNotice, cancellation);
+            result.Stage = "practice-direct-ready";
+            // Preview completion is progress, not a fresh source observation.
+            // Follow the same ready cue shown to the user, then send one chord.
+            string directReadyNotice = OnDemandPracticePresentation.Create(settings.Value,
+                controller.PracticeProgress! with
+                {
+                    DirectReady = true
+                }).ProgressNotice;
+            await UntilAsync(() => N.ReadStaticNotice(GetDlgItem(root, 103)) == directReadyNotice, cancellation);
             result.Stage = "practice-direct-shortcut";
             Require(new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C, 0x79 }.All(key => GetAsyncKeyState(key) >= 0),
                 "practice-key-already-down");
