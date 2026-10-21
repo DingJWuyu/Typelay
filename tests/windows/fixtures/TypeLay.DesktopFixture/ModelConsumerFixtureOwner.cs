@@ -277,7 +277,11 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
                 },
                 Attributes = attributes
             };
-            var created = SuspendedProcess.Create(start, ref startup, inheritHandles: true);
+            // This fixture communicates through the three pipes, not a console.
+            // CREATE_NO_WINDOW can still create a conhost with its own lifetime.
+            // Production model children retain their existing NoWindow default.
+            var created = SuspendedProcess.Create(start, ref startup, inheritHandles: true,
+                consoleMode: SuspendedProcess.ConsoleMode.Detached);
             _process = created.Process;
             _processId = created.ProcessId;
             _thread = created.Thread;

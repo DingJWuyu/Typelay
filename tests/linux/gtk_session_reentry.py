@@ -1278,27 +1278,40 @@ def check_footer(client, source, generation, runtime, state, initial):
     assert not any(event.get("event") == "accepted" for event in client.events)
 
 
+def expand_click_point(actual, evidence, dimensions, now):
+    assert now <= evidence["expiresAtMs"], "expand lease expired before click"
+    name = "fixture-expand"
+    if not clickable_control(actual, name, evidence["renderReturnedAtMonoMs"], dimensions):
+        return None
+    control = actual["overlayControls"][name]
+    if not control.get("enabled") or control.get("scale") != actual["scale"]:
+        return None
+    return click_point(
+        actual,
+        (control["x"] + control["width"] / 2, control["y"] + control["height"] / 2),
+        dimensions,
+    )
+
+
 def check_expand(client, source, generation, runtime, state, initial, nested, dimensions, evidence):
     assert render_preview(client, source, generation, 1, "fixture exit", evidence=evidence)[
         "visible"
     ]
     ready = runtime / "expand-ready"
-    actual = wait_for(
-        lambda: ready.exists()
-        and (value := state()).get("candidate")
-        and value["observedAtMs"] > evidence["renderReturnedAtMonoMs"]
-        and value,
-        "real expand button/current preview missing",
-    )
-    x, y, scale = map(float, ready.read_text().split())
-    # The existing fixture records this center only once. It belongs to revision
-    # 1 (no later render exists yet), but cannot prove the button has not moved.
+
+    def allocated_button():
+        actual = state()
+        point = expand_click_point(actual, evidence, dimensions, now_ms())
+        return (actual, point) if ready.exists() and actual.get("candidate") and point else None
+
+    actual, point = wait_for(allocated_button, "real expand button/current geometry missing")
     evidence["beforeClick"] = observe_click_geometry(actual)
-    evidence["buttonCenterAtFirstObservation"] = {"x": x, "y": y, "scale": scale}
-    evidence["buttonBoundsCurrent"] = False
-    assert scale == actual["scale"], "button and current parent scales differ"
-    point = click_point(actual, (x, y), dimensions)
+    evidence["buttonBoundsCurrent"] = {
+        key: actual["overlayControls"]["fixture-expand"][key]
+        for key in ("instance", "x", "y", "width", "height", "scale")
+    }
     evidence["pixelPoint"] = point
+    assert now_ms() <= evidence["expiresAtMs"], "expand lease expired before click"
     (runtime / "arm").touch()
     click_once(nested, point, evidence)
     try:

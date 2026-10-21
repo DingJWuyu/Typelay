@@ -475,8 +475,20 @@ def run_gimp(
         current, _, _ = wait_for(
             observed_fullscreen, "GIMP properties did not reach the observed full-output tile"
         )
-        measured = bounds(node, application["pid"], current["layout"]["window_size"])
-        remeasured = bounds(node, application["pid"], current["layout"]["window_size"])
+
+        # GimpViewableDialog derives from GtkDialog, whose ATK role is DIALOG,
+        # not FRAME. Bind both observations to this exact compositor title.
+        def properties_bounds():
+            return bounds(
+                node,
+                application["pid"],
+                current["layout"]["window_size"],
+                expected_role=Atspi.Role.DIALOG,
+                expected_name=current["title"],
+            )
+
+        measured = properties_bounds()
+        remeasured = properties_bounds()
         assert contents(request("Outputs"), "Outputs") == outputs, (
             "nested output changed before click"
         )

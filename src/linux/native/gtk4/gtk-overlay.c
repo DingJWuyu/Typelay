@@ -55,7 +55,7 @@ static struct {
     GtkWidget *style_label, *style_inherit, *style_natural, *style_formal, *alternative, *action_feedback, *glossary_action;
     GlossaryForm *glossary;
     JsonObject *glossary_draft_token;
-    gboolean pending_glossary;
+    gboolean pending_glossary, language_focus_transfer;
     LanguageMenu source_languages, target_languages;
     JsonObject *menu_token;
     char *menu_target, *menu_generation;
@@ -325,12 +325,29 @@ static gboolean language_handoff_current(JsonObject *view) {
         && tl_view_context_matches(overlay.target, view)
         && tl_metadata_matches(overlay.target, overlay.authority);
 }
+static void focus_language_trigger(JsonObject *view) {
+    if (overlay.language_focus_transfer || !language_handoff_current(view) || !language_focus_current()) return;
+    json_object_ref(view);
+    GtkWidget *trigger = g_object_ref(overlay.language);
+    /* The source's ordinary Tab must skip a preview. Only an existing internal
+     * language interaction temporarily makes this return destination focusable. */
+    overlay.language_focus_transfer = TRUE;
+    gtk_widget_set_focusable(trigger, TRUE);
+    if (overlay.language == trigger && language_handoff_current(view) && language_focus_current())
+        gtk_widget_grab_focus(trigger);
+    if (overlay.language == trigger) overlay.language_focus_transfer = FALSE;
+    if (overlay.language != trigger || !overlay.top
+        || gtk_window_get_focus(GTK_WINDOW(overlay.top)) != trigger)
+        gtk_widget_set_focusable(trigger, FALSE);
+    g_object_unref(trigger);
+    json_object_unref(view);
+}
 static void close_language_menu(JsonObject *view) {
     GtkWidget *menu = overlay.menu;
     /* Only a live internal language interaction hands focus to the trigger.
      * Outside destinations and expired views never borrow this transition. */
     if (language_handoff_current(view) && gtk_widget_get_mapped(menu) && language_focus_current())
-        gtk_widget_grab_focus(overlay.language);
+        focus_language_trigger(view);
     if (overlay.view == view && overlay.menu == menu && menu) gtk_widget_set_visible(menu, FALSE);
 }
 static gboolean language_menu_key(GtkEventControllerKey *keys, guint keyval, guint keycode,
@@ -589,7 +606,7 @@ static void close_language_popups_outside(GtkWidget *widget, gboolean trigger_cl
         if (trigger_click && widget && overlay.language && (widget == overlay.language
             || gtk_widget_is_ancestor(widget, overlay.language))
             && language_handoff_current(overlay.view) && language_focus_current())
-            gtk_widget_grab_focus(overlay.language);
+            focus_language_trigger(overlay.view);
         if (!overlay.popover || (button != overlay.source && button != overlay.destination)) break;
         gtk_menu_button_popdown(GTK_MENU_BUTTON(button));
         if (!overlay.popover) break;
@@ -1321,6 +1338,8 @@ void tl_overlay_sync(void) {
 static void focus_changed(GObject *object, GParamSpec *property, gpointer data) {
     (void)object; (void)property; (void)data;
     GtkWidget *focus = overlay.top ? gtk_window_get_focus(GTK_WINDOW(overlay.top)) : NULL;
+    if (overlay.language && !overlay.language_focus_transfer && focus != overlay.language)
+        gtk_widget_set_focusable(overlay.language, FALSE);
     /* notify may expose a transient NULL during an internal focus transfer.
      * It is not proof of an outside destination; the original safety gates
      * still revoke focus/authority without actively closing a child here. */
@@ -1358,6 +1377,7 @@ void tl_overlay_hide(void) {
     if (overlay.popover) emit_boolean("visible", FALSE);
     if (overlay.composing) emit_boolean("composition", FALSE);
     GtkWidget *popover = overlay.popover, *top = overlay.top;
+    GtkWidget *language = overlay.language ? g_object_ref(overlay.language) : NULL;
     gulong focus_handler = overlay.focus_handler, active_handler = overlay.active_handler;
     GtkCssProvider *css = overlay.css;
     GdkDisplay *display = overlay.display;
@@ -1379,6 +1399,10 @@ void tl_overlay_hide(void) {
         g_object_remove_weak_pointer(G_OBJECT(top), (gpointer *)&overlay.top);
     }
     if (language_pointer) g_object_unref(language_pointer);
+    if (language) {
+        gtk_widget_set_focusable(language, FALSE);
+        g_object_unref(language);
+    }
     if (popover) {
         gtk_popover_popdown(GTK_POPOVER(popover));
         if (gtk_widget_get_parent(popover)) gtk_widget_unparent(popover);
@@ -1637,7 +1661,7 @@ static void create(Target *target) {
     overlay.language = button(overlay.header, "", "menu");
     gtk_widget_set_name(overlay.language, "typelay-menu-trigger");
     /* First open keeps source focus; an owned close explicitly hands off here. */
-    gtk_widget_set_focusable(overlay.language, TRUE);
+    gtk_widget_set_focusable(overlay.language, FALSE);
     overlay.status = gtk_label_new("");
     gtk_label_set_wrap(GTK_LABEL(overlay.status), TRUE);
     gtk_label_set_wrap_mode(GTK_LABEL(overlay.status), PANGO_WRAP_WORD_CHAR);

@@ -11,17 +11,29 @@ namespace TypeLay.App;
 // membership is checked here, but arbitrary thread/process pairing is not.
 internal static class SuspendedProcess
 {
-    internal static ProcessInformation Create(ProcessStartInfo info, ref StartupInfoEx startup, bool inheritHandles)
+    internal enum ConsoleMode
+    {
+        NoWindow, Detached
+    }
+
+    internal static ProcessInformation Create(ProcessStartInfo info, ref StartupInfoEx startup, bool inheritHandles,
+        ConsoleMode consoleMode = ConsoleMode.NoWindow)
     {
         ArgumentNullException.ThrowIfNull(info);
         if (info.UseShellExecute || info.Arguments.Length != 0)
             throw new ArgumentException("model-process-start", nameof(info));
+        uint consoleFlag = consoleMode switch
+        {
+            ConsoleMode.NoWindow => 0x08000000,
+            ConsoleMode.Detached => 0x8,
+            _ => throw new ArgumentOutOfRangeException(nameof(consoleMode))
+        };
         nint environment = Marshal.StringToHGlobalUni(EnvironmentBlock(info));
         try
         {
             var command = new StringBuilder(string.Join(' ', new[] { info.FileName }.Concat(info.ArgumentList).Select(Quote)));
-            const uint suspendedUnicodeExtendedNoWindow = 4 | 0x400 | 0x80000 | 0x08000000;
-            if (!CreateProcessW(info.FileName, command, 0, 0, inheritHandles, suspendedUnicodeExtendedNoWindow,
+            uint creationFlags = 4 | 0x400 | 0x80000 | consoleFlag;
+            if (!CreateProcessW(info.FileName, command, 0, 0, inheritHandles, creationFlags,
                 environment, string.IsNullOrEmpty(info.WorkingDirectory) ? null : info.WorkingDirectory, ref startup, out var process))
                 throw Failure("worker-create");
             return process;

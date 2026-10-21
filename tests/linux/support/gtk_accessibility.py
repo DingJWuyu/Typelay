@@ -58,13 +58,16 @@ def focused(node):
     return node.get_state_set().contains(Atspi.StateType.FOCUSED)
 
 
-def bounds(node, pid, expected_size):
+def bounds(node, pid, expected_size, *, expected_role=None, expected_name=None):
     """Resolve an owned popup's bounds relative to its actual GTK frame.
 
     WINDOW can be relative to the popover's Gdk toplevel. Subtract the
-    enclosing FRAME in the same reported coordinate space instead; this
-    does not treat Wayland SCREEN coordinates as desktop-global positions.
+    enclosing FRAME (or explicitly named DIALOG) in the same coordinate
+    space instead; Wayland SCREEN coordinates are not desktop-global.
     """
+    if expected_role is None:
+        expected_role = Atspi.Role.FRAME
+    assert expected_role in (Atspi.Role.FRAME, Atspi.Role.DIALOG)
     node.clear_cache()
     assert node.get_process_id() == pid, "candidate belongs to another process"
     assert node.get_state_set().contains(Atspi.StateType.SHOWING)
@@ -73,7 +76,12 @@ def bounds(node, pid, expected_size):
     for _ in range(16):
         assert frame is not None and frame.get_process_id() == pid, "owned GTK frame unavailable"
         frame.clear_cache()
-        if frame.get_role() == Atspi.Role.FRAME:
+        if frame.get_role() in (Atspi.Role.FRAME, Atspi.Role.DIALOG):
+            assert frame.get_role() == expected_role, "unexpected GTK toplevel role"
+            if expected_name is not None:
+                assert frame.get_name() == expected_name, (
+                    "GTK toplevel title differs from niri window"
+                )
             break
         frame = frame.get_parent()
     else:

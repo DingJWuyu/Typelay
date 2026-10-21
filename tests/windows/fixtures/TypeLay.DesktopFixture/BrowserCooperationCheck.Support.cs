@@ -89,59 +89,34 @@ internal static partial class BrowserCooperationCheck
     }
     private static Task FocusPageAsync(Cdp cdp, BrowserWindows windows, CancellationToken ct) =>
         BringPageToForegroundAsync(cdp, windows, requireDocumentFocus: true, ct);
-    private static async Task BringPageToForegroundAsync(Cdp cdp, BrowserWindows windows, bool requireDocumentFocus,
-        CancellationToken ct, Action<string>? stage = null, int? appProcessId = null)
+    private static async Task BringPageToForegroundAsync(Cdp cdp, BrowserWindows windows, bool requireDocumentFocus, CancellationToken ct)
     {
-        stage?.Invoke("cdp-bring-to-front");
         await cdp.PageCallAsync("Page.bringToFront", new
         {
         }, ct);
-        stage?.Invoke("native-foreground");
-        string foreground = "unobserved", activation = "not-requested";
-        nint lastForeground = 0;
-        try
+        while (true)
         {
-            while (true)
+            ct.ThrowIfCancellationRequested();
+            var matches = windows.Read().Where(window => window.Page).ToArray();
+            Require(matches.Length <= 1, "owned-page-window-ambiguous");
+            if (matches.Length == 1)
             {
-                ct.ThrowIfCancellationRequested();
-                var matches = windows.Read().Where(window => window.Page).ToArray();
-                Require(matches.Length <= 1, "owned-page-window-ambiguous");
-                foreground = "owned-page-missing";
-                if (matches.Length == 1)
-                {
-                    nint window = matches[0].Handle;
-                    if (Native.GetForegroundWindow() != window)
-                        activation = Native.SetForegroundWindow(window) ? "accepted" : "rejected";
-                    nint current = Native.GetForegroundWindow();
-                    foreground = current == window ? "owned-page" : current == 0 ? "none" : "other";
-                    lastForeground = current;
-                    if (current == window
-                        && (!requireDocumentFocus || (await cdp.StateAsync("", ct)).PageFocused))
-                        return;
-                }
-                await Task.Delay(40, ct);
+                nint window = matches[0].Handle;
+                if (Native.GetForegroundWindow() != window)
+                    Native.SetForegroundWindow(window);
+                if (Native.GetForegroundWindow() == window
+                    && (!requireDocumentFocus || (await cdp.StateAsync("", ct)).PageFocused))
+                    return;
             }
-        }
-        catch (OperationCanceledException)
-        {
-            // Report only the last original observation. No new focus action,
-            // CDP request or window enumeration runs after the deadline.
-            if (stage is not null && foreground == "other")
-            {
-                Native.GetWindowThreadProcessId(lastForeground, out uint processId);
-                if (appProcessId == processId)
-                    foreground = "app";
-            }
-            stage?.Invoke("native-foreground-" + foreground + "-activation-" + activation);
-            throw;
+            await Task.Delay(40, ct);
         }
     }
     private static async Task<System.Windows.Rect> FocusCommandFieldAsync(Cdp cdp, BrowserWindows windows, AutomationElement settings, CancellationToken ct,
-        Action<string>? stage = null, int? appProcessId = null)
+        Action<string>? stage = null)
     {
-        // The one visible field click below establishes document focus after
-        // Settings. Waiting for that focus first would prevent the user action.
-        await BringPageToForegroundAsync(cdp, windows, requireDocumentFocus: false, ct, stage, appProcessId);
+        // A real user returns from Settings by clicking the exposed source.
+        // Programmatic foreground activation is not a prerequisite for that click.
+        ct.ThrowIfCancellationRequested();
         stage?.Invoke("owned-page-layout");
         var pages = windows.Read().Where(window => window.Page).ToArray();
         Require(pages.Length == 1, "owned-page-window-unavailable");
@@ -171,19 +146,13 @@ internal static partial class BrowserCooperationCheck
         // No Chrome-internal child HWND or guessed toolbar height is needed.
         stage?.Invoke("click-observer");
         await cdp.EvaluateAsync("globalThis.__cooperationPointer=null;a.addEventListener('mousedown',e=>{globalThis.__cooperationPointer={trusted:e.isTrusted,target:e.target===a,clientX:e.clientX,clientY:e.clientY,screenX:e.screenX,screenY:e.screenY};},{once:true});true", ct);
-        foreach (string type in new[] { "mousePressed", "mouseReleased" })
-        {
-            stage?.Invoke(type == "mousePressed" ? "click-press" : "click-release");
-            await cdp.PageCallAsync("Input.dispatchMouseEvent", new
-            {
-                type,
-                x,
-                y,
-                button = "left",
-                clickCount = 1
-            }, ct);
-        }
+        stage?.Invoke("source-desktop-click");
+        await windows.ClickVisibleSourceAsync(page, "A message", settingsBounds, ct);
         stage?.Invoke("click-observed");
+        // SendInput completion is insertion, not proof that Chrome processed
+        // the single click. Observe its original DOM event without reinjection.
+        while (!(await cdp.EvaluateAsync("globalThis.__cooperationPointer!==null", ct)).GetBoolean())
+            await Task.Delay(20, ct);
         var click = await cdp.EvaluateAsync("(()=>{const p=globalThis.__cooperationPointer;delete globalThis.__cooperationPointer;return p;})()", ct);
         Require(click.ValueKind == JsonValueKind.Object && click.GetProperty("trusted").GetBoolean()
             && click.GetProperty("target").GetBoolean()

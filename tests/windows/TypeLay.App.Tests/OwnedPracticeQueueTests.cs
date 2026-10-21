@@ -30,11 +30,36 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         await using var scene = new QueueScene(true);
         await scene.Start(true, bindings: control ? SessionShortcutBindings.Restore("Ctrl+F7", "Ctrl+F10") : null);
         await scene.InstallExit();
+        long installedAtMs = WindowsInterruptClock.NowMs;
         var selection = N.ReadSelection(scene.Field);
+        long? prefixReturnedAtMs = null;
         if (control)
+        {
             await scene.PressControlPrefix();
+            prefixReturnedAtMs = WindowsInterruptClock.NowMs;
+        }
+        long pressStartedAtMs = WindowsInterruptClock.NowMs;
         scene.Key(scene.ExitKey, true);
-        await scene.Wait(() => scene.Messages.Any(message => message.Kind == "exit-completed"));
+        long pressCompletedAtMs = WindowsInterruptClock.NowMs;
+        // The source sends exit-completed before this original MSG's dispatch
+        // completion. A refused terminal dispatch cannot later become accepted.
+        await scene.WaitExitInput(1);
+        long terminalObservedAtMs = WindowsInterruptClock.NowMs;
+        var completion = Assert.Single(scene.ExitInputs);
+        bool accepted = completion.Down && completion.Consumed
+            && scene.Messages.Count(message => message.Kind == "exit-completed") == 1;
+        if (!accepted)
+        {
+            var edges = scene.Audit().Where(witness => witness.VirtualKey == scene.ExitKey && witness.Down).ToArray();
+            OwnedKeyWitness? last = edges.Length == 0 ? null : edges[^1];
+            Assert.Fail($"Exit dispatch refused: control={control}; down={completion.Down}; consumed={completion.Consumed}; "
+                + $"completed={scene.Messages.Count(message => message.Kind == "exit-completed")}; "
+                + $"observed={scene.ExitLease!.ObservedAtMs}; expires={scene.ExitLease.ExpiresAtMs}; installed={installedAtMs}; "
+                + $"prefixReturned={prefixReturnedAtMs}; pressStarted={pressStartedAtMs}; pressCompleted={pressCompletedAtMs}; "
+                + $"terminalObserved={terminalObservedAtMs}; edges={edges.Length}; witnessObserved={last?.ObservedAtMs}; "
+                + $"exitMatches={last?.ExitLeaseSequence == scene.ExitLease.Sequence}; prefixPresent={last?.PrefixSequence > 0}; "
+                + $"sourceFocused={N.Focused() == (scene.Root, scene.Field)}.");
+        }
         var result = Assert.Single(scene.Messages, message => message.Kind == "exit-completed").ExitResult!;
         Assert.Equal(scene.ExitLease!.Sequence, result.LeaseSequence);
         Assert.InRange(result.AcceptedAtMs, scene.ExitLease.ObservedAtMs, scene.ExitLease.ExpiresAtMs);
@@ -55,6 +80,26 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
         Assert.Equal(selection, N.ReadSelection(scene.Field));
         Assert.Equal((scene.Root, scene.Field), N.Focused());
+    });
+
+    [Fact]
+    public Task ExpiredControlExitReportsItsUnconsumedOriginalDispatchWithoutCompleting() => desktop.RunAsync(async () =>
+    {
+        await using var scene = new QueueScene(true);
+        await scene.Start(true, bindings: SessionShortcutBindings.Restore("Ctrl+F7", "Ctrl+F10"));
+        var selection = N.ReadSelection(scene.Field);
+        await scene.InstallExit();
+        await scene.PressControlPrefix();
+        await scene.Wait(() => WindowsInterruptClock.NowMs > scene.ExitLease!.ExpiresAtMs);
+        scene.Key(scene.ExitKey, true);
+        await scene.WaitExitInput(1);
+        var completion = Assert.Single(scene.ExitInputs);
+        Assert.True(completion.Down);
+        Assert.False(completion.Consumed);
+        Assert.DoesNotContain(scene.Messages, message => message.Kind == "exit-completed");
+        Assert.Equal(0, scene.Receipts);
+        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        Assert.Equal(selection, N.ReadSelection(scene.Field));
     });
 
     [Theory]

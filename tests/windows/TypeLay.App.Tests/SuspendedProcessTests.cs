@@ -36,7 +36,18 @@ public sealed class SuspendedProcessTests
         string python = (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator)
             .Select(path => Path.Combine(path.Trim('"'), "python.exe")).First(File.Exists);
         var start = new ProcessStartInfo(Path.GetFullPath(python)) { UseShellExecute = false };
-        foreach (string argument in new[] { "-I", "-B", "-c", "import sys; sys.exit(23)" })
+        foreach (string argument in new[] { "-I", "-B", "-c", """
+            import ctypes, sys
+            from ctypes import wintypes
+            kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+            kernel.GetConsoleProcessList.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD]
+            kernel.GetConsoleProcessList.restype = wintypes.DWORD
+            members = (wintypes.DWORD * 1)()
+            # The default NoWindow launch still owns a console, unlike the
+            # explicitly detached test-fixture owner. Keep production unchanged.
+            assert kernel.GetConsoleProcessList(members, 1) > 0
+            sys.exit(23)
+            """ })
             start.ArgumentList.Add(argument);
         using var root = new Root(start);
         // Observe the real OS suspension count without executing the child.

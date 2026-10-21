@@ -467,6 +467,10 @@ def quality_exit(arguments, compositor, work_deadline, result, failure):
         process_status,
     )
 
+    expected_collections = collections(
+        getattr(arguments, "hy_decode_comparison", False),
+        getattr(arguments, "fixed_model_diagnostics", False),
+    )
     cancelled = False
     signalled = False
     owner = None
@@ -520,9 +524,7 @@ def quality_exit(arguments, compositor, work_deadline, result, failure):
                     assert original["workerExitConfirmed"] is True, (
                         "runner exit unconfirmed; preserve data"
                     )
-                    expected_count = collections(getattr(arguments, "hy_decode_comparison", False))[
-                        item["runner"]
-                    ]
+                    expected_count = expected_collections[item["runner"]]
                     assert (
                         original["status"] == "completed"
                         and original["workerStarts"] == 1
@@ -534,11 +536,10 @@ def quality_exit(arguments, compositor, work_deadline, result, failure):
                     "quality lifecycle failed; preserve its reports and isolated data"
                 )
                 assert [item["runner"] for item in quality["collections"]] == list(
-                    collections(getattr(arguments, "hy_decode_comparison", False))
+                    expected_collections
                 )
                 assert (
-                    quality["actualTranslationRequests"]
-                    == sum(collections(getattr(arguments, "hy_decode_comparison", False)).values())
+                    quality["actualTranslationRequests"] == sum(expected_collections.values())
                     and quality["requestCountComplete"]
                 )
                 return

@@ -27,6 +27,102 @@ from support.translation_quality_capture import (  # noqa: E402
 )
 
 
+class QualityExitSummaryTests(unittest.TestCase):
+    def test_completed_fixed_diagnostics_reconciles_40_responses_after_actual_inside_exit(self):
+        self.check_exit({"alternative": 32, "ordinary": 8}, diagnostics=True)
+
+    def test_completed_default_and_comparison_counts_remain_53_and_69(self):
+        self.check_exit({"alternative": 32, "styled": 16, "glossary": 5})
+        self.check_exit(
+            {"alternative": 32, "styled": 16, "styled-b": 16, "glossary": 5}, comparison=True
+        )
+
+    def test_fixed_diagnostics_rejects_missing_runner_wrong_count_and_unknown_exit(self):
+        for defect in ("missing-ordinary", "short-ordinary", "wrong-total", "unknown-exit"):
+            with self.subTest(defect=defect):
+                self.check_exit({"alternative": 32, "ordinary": 8}, diagnostics=True, defect=defect)
+
+    def check_exit(self, selected, *, diagnostics=False, comparison=False, defect=None):
+        # Real owned processes and persisted reports exercise the outer completion
+        # boundary. Synthetic responses are not model-inference evidence.
+        (ROOT / "artifacts").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as directory:
+            output = Path(directory)
+            inside = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "import json,os,pathlib,sys; "
+                    "identity=pathlib.Path(f'/proc/{os.getpid()}/stat').read_text().rsplit(')',1)[1].split()[19]; "
+                    "pathlib.Path(sys.argv[1]).write_text(json.dumps({'pid':os.getpid(),'startTime':identity}))",
+                    str(output / "quality-inside-owner.json"),
+                ]
+            )
+            self.assertEqual(inside.wait(timeout=3), 0)
+            compositor = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+            try:
+                items = []
+                for name, count in selected.items():
+                    if name == "ordinary" and defect == "missing-ordinary":
+                        continue
+                    items.append({"runner": name})
+                    actual_count = count - (name == "ordinary" and defect == "short-ordinary")
+                    operations = {
+                        "alternative": ["translate", "translate-alternative"] * 16,
+                        "ordinary": ["translate"] * 8,
+                        "styled": ["translate-styled-v1"] * 16,
+                        "styled-b": ["translate-styled-v1"] * 16,
+                        "glossary": ["translate-glossary-v1"] * 5,
+                    }[name][:actual_count]
+                    (output / f"{name}-quality.json").write_text(
+                        json.dumps(
+                            {
+                                "status": "completed",
+                                "quality": "not-reviewed",
+                                "workerStarts": 1,
+                                "workerExitCode": 0,
+                                "workerExitConfirmed": not (
+                                    name == "ordinary" and defect == "unknown-exit"
+                                ),
+                                "requests": [{"op": op} for op in ["hello", *operations]],
+                            }
+                        )
+                    )
+                report = {
+                    "status": "passed",
+                    "hostExitConfirmed": True,
+                    "workerExitConfirmed": True,
+                    "translationQuality": {
+                        "workerExitConfirmed": True,
+                        "collections": items,
+                        "actualTranslationRequests": sum(selected.values())
+                        - (defect == "wrong-total"),
+                        "requestCountComplete": True,
+                    },
+                }
+                (output / "hy-package-result.json").write_text(json.dumps(report))
+                result, failure = output / "desktop-result.json", output / "inside.failed"
+                result.write_text("{}")
+                before = {path.name: path.read_bytes() for path in output.iterdir()}
+                arguments = types.SimpleNamespace(
+                    output=output,
+                    fixed_model_diagnostics=diagnostics,
+                    hy_decode_comparison=comparison,
+                )
+                if defect:
+                    with self.assertRaises(AssertionError):
+                        quality_exit(arguments, compositor, time.monotonic() + 3, result, failure)
+                else:
+                    quality_exit(arguments, compositor, time.monotonic() + 3, result, failure)
+                self.assertEqual(
+                    {path.name: path.read_bytes() for path in output.iterdir()}, before
+                )
+                self.assertIsNone(compositor.poll())
+            finally:
+                compositor.terminate()
+                compositor.wait(timeout=3)
+
+
 class CaptureModeTests(unittest.TestCase):
     def test_quality_flag_rejects_unrelated_desktop_scope_before_startup(self):
         result = subprocess.run(

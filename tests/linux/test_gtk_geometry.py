@@ -10,6 +10,7 @@ from desktop_e2e import settings_text_visible_point, settings_viewport_from_pane
 from gtk_session_reentry import (  # noqa: E402
     click_point,
     clickable_control,
+    expand_click_point,
     parent_geometry_ready,
     validated_geometry,
 )
@@ -119,6 +120,54 @@ class GtkReentryGeometryTests(unittest.TestCase):
                 self.assertIsNone(clickable_control(pending, "trigger", 100, (1280, 800)))
         self.assertIsNone(clickable_control(actual, "missing", 100, (1280, 800)))
         self.assertIsNone(clickable_control(actual, "trigger", 100, (640, 400)))
+
+    def test_expand_uses_current_allocation_and_never_an_expired_or_foreign_parent(self):
+        evidence = {"renderReturnedAtMonoMs": 100, "expiresAtMs": 800}
+        button = {
+            "visible": True,
+            "enabled": True,
+            "instance": 7,
+            "scale": 1,
+            "x": -1,
+            "y": -1,
+            "width": 1,
+            "height": 1,
+        }
+        actual = {
+            "fullscreen": True,
+            "width": 1280,
+            "height": 800,
+            "scale": 1,
+            "observedAtMs": 101,
+            "overlayControls": {"fixture-expand": button},
+        }
+        self.assertIsNone(expand_click_point(actual, evidence, (1280, 800), 200))
+        allocated = {
+            **actual,
+            "observedAtMs": 102,
+            "overlayControls": {
+                "fixture-expand": {**button, "x": 1100, "y": 120, "width": 80, "height": 28}
+            },
+        }
+        self.assertEqual(expand_click_point(allocated, evidence, (1280, 800), 201), (1140, 134))
+        for changed in ({"fullscreen": False}, {"width": 640}, {"scale": 2}, {"observedAtMs": 100}):
+            with self.subTest(changed=changed):
+                self.assertIsNone(
+                    expand_click_point({**allocated, **changed}, evidence, (1280, 800), 202)
+                )
+        wrong_scale = {
+            **allocated,
+            "overlayControls": {
+                "fixture-expand": {**allocated["overlayControls"]["fixture-expand"], "scale": 2}
+            },
+        }
+        self.assertIsNone(expand_click_point(wrong_scale, evidence, (1280, 800), 202))
+        for snapshot in (actual, allocated):
+            with (
+                self.subTest(snapshot=snapshot),
+                self.assertRaisesRegex(AssertionError, "lease expired"),
+            ):
+                expand_click_point(snapshot, evidence, (1280, 800), 801)
 
     def test_click_maps_parent_local_point_at_native_scale(self):
         actual = {"fullscreen": True, "width": 640, "height": 400, "scale": 2}

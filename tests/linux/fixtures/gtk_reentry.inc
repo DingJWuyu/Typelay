@@ -86,24 +86,11 @@ static void watch_session_button(GtkWidget *widget) {
         || !GTK_IS_BUTTON(widget) || !gtk_widget_get_mapped(widget)
         || g_strcmp0(gtk_button_get_label(GTK_BUTTON(widget)), expand ? "展开" : "fixture-initial-exit") != 0
         || g_object_get_data(G_OBJECT(widget), "fixture-button-watched")) return;
-    double x, y;
-#if GTK_MAJOR_VERSION == 3
-    gint translated_x, translated_y;
-    if (!gtk_widget_translate_coordinates(widget, report_window, 0, 0, &translated_x, &translated_y)) return;
-    x = translated_x + gtk_widget_get_allocated_width(widget) / 2.0;
-    y = translated_y + gtk_widget_get_allocated_height(widget) / 2.0;
-#else
-    graphene_point_t zero = GRAPHENE_POINT_INIT(0, 0), origin;
-    if (!gtk_widget_compute_point(widget, report_window, &zero, &origin)) return;
-    x = origin.x + gtk_widget_get_width(widget) / 2.0;
-    y = origin.y + gtk_widget_get_height(widget) / 2.0;
-#endif
     g_object_set_data(G_OBJECT(widget), "fixture-button-watched", GINT_TO_POINTER(1));
     g_signal_connect(widget, "notify::label", expand ? G_CALLBACK(expand_changed) : G_CALLBACK(footer_changed), NULL);
     char *ready = g_build_filename(directory, expand ? "expand-ready" : "footer-ready", NULL);
-    char *position = g_strdup_printf("%f %f %d", x, y, gtk_widget_get_scale_factor(widget));
-    g_file_set_contents(ready, position, -1, NULL);
-    g_free(position); g_free(ready);
+    g_file_set_contents(ready, "watching-label", -1, NULL);
+    g_free(ready);
 }
 #if GTK_MAJOR_VERSION == 4
 static void remove_session_controller(GtkWidget *widget, gboolean editor) {

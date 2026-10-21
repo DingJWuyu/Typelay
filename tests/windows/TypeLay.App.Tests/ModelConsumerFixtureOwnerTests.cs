@@ -94,22 +94,45 @@ public sealed class ModelConsumerFixtureOwnerTests(ITestOutputHelper output)
             using var owner = new ModelConsumerFixtureOwner();
             var start = new ProcessStartInfo(Path.GetFullPath(python)) { UseShellExecute = false };
             foreach (string argument in new[] { "-I", "-B", "-c", """
-                import json, os, subprocess, sys
+                import ctypes, json, os, subprocess, sys
+                from ctypes import wintypes
+                kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+                kernel.GetConsoleProcessList.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD]
+                kernel.GetConsoleProcessList.restype = wintypes.DWORD
+                members = (wintypes.DWORD * 1)()
+                console_count = kernel.GetConsoleProcessList(members, 1)
+                console_error = ctypes.get_last_error()
+                assert console_count == 0 and console_error == 6, (console_count, console_error)
+                kernel.GetStdHandle.argtypes = [wintypes.DWORD]
+                kernel.GetStdHandle.restype = wintypes.HANDLE
+                kernel.GetFileType.argtypes = [wintypes.HANDLE]
+                kernel.GetFileType.restype = wintypes.DWORD
+                pipe_types = [kernel.GetFileType(kernel.GetStdHandle(n)) for n in (-10, -11, -12)]
+                assert pipe_types == [3, 3, 3], pipe_types
+                assert os.read(0, 1) == b''
+                assert os.write(1, b'owner-stdout-probe\n') == 19
+                assert os.write(2, b'owner-stderr-probe\n') == 19
                 child_result = None
                 if sys.argv[3] == 'True':
-                    # Model consumers are non-interactive. Match the production
-                    # no-window launch rather than introducing a console lifetime.
+                    # This owned test child has no console either. Production
+                    # model consumers retain their separate NoWindow contract.
                     with subprocess.Popen([sys.executable, '-I', '-B', '-c',
-                            'import ctypes; get_console = ctypes.windll.kernel32.GetConsoleWindow; '
-                            'get_console.restype = ctypes.c_void_p; assert not get_console()'],
-                            creationflags=subprocess.CREATE_NO_WINDOW) as child:
+                            'import ctypes; from ctypes import wintypes; '
+                            'kernel = ctypes.WinDLL("kernel32", use_last_error=True); '
+                            'kernel.GetConsoleProcessList.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD]; '
+                            'kernel.GetConsoleProcessList.restype = wintypes.DWORD; '
+                            'members = (wintypes.DWORD * 1)(); '
+                            'count = kernel.GetConsoleProcessList(members, 1); '
+                            'assert count == 0 and ctypes.get_last_error() == 6'],
+                            creationflags=subprocess.DETACHED_PROCESS) as child:
                         code = child.wait()
                         child_result = dict(pid=child.pid, exitCode=code)
                         if code:
                             raise subprocess.CalledProcessError(code, child.args)
                 with open(sys.argv[2], 'x', encoding='utf-8') as identity:
                     json.dump(dict(pid=os.getpid(), executable=sys.executable,
-                        base_executable=getattr(sys, '_base_executable', None), child=child_result), identity)
+                        base_executable=getattr(sys, '_base_executable', None), child=child_result,
+                        consoleCount=console_count, consoleError=console_error, pipeTypes=pipe_types), identity)
                 sys.exit(int(sys.argv[1]))
                 """, code.ToString(System.Globalization.CultureInfo.InvariantCulture), identityPath, exitedChild.ToString() })
                 start.ArgumentList.Add(argument);
@@ -124,6 +147,10 @@ public sealed class ModelConsumerFixtureOwnerTests(ITestOutputHelper output)
                 selectedPython = start.FileName,
                 payload = identity.RootElement
             }));
+            Assert.Equal(0, identity.RootElement.GetProperty("consoleCount").GetInt32());
+            Assert.Equal(6, identity.RootElement.GetProperty("consoleError").GetInt32());
+            Assert.Equal(new[] { 3, 3, 3 }, identity.RootElement.GetProperty("pipeTypes")
+                .EnumerateArray().Select(value => value.GetInt32()));
             var childResult = identity.RootElement.GetProperty("child");
             if (exitedChild)
             {

@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import alternative_quality
 import glossary_quality
@@ -55,9 +56,18 @@ class QualityPreparationTests(unittest.TestCase):
             self.assertEqual(report["maximumTranslationRequests"], 8)
             expected = []
             for name in ("styled_quality_inputs.json", "styled_quality_holdout_inputs.json"):
-                expected.extend(json.loads((RUNNERS / name).read_text())["samples"])
+                expected.extend(json.loads((RUNNERS / name).read_text(encoding="utf-8"))["samples"])
             self.assertEqual([c["text"] for c in report["cases"]], [c["text"] for c in expected])
             self.assertTrue(all(c["ordinary"] is None for c in report["cases"]))
+
+    def test_ordinary_preparation_comparison_is_independent_of_windows_default_encoding(self):
+        original = Path.read_text
+
+        def windows_default(path, encoding=None, errors=None):
+            return original(path, encoding=encoding or "cp1252", errors=errors)
+
+        with patch.object(Path, "read_text", windows_default):
+            self.test_ordinary_diagnostic_validate_only_never_loads_assets()
 
     def test_glossary_preparation_keeps_full_inputs_and_review_unset_without_assets(self):
         (ROOT / "artifacts").mkdir(exist_ok=True)

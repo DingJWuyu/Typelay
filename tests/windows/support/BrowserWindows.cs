@@ -14,7 +14,7 @@ namespace TypeLay.Windows.Testing;
 
 // Tracks only the process family launched for this test. MainWindowHandle is
 // not a browser identity: a launcher or another member may own the page window.
-internal sealed class BrowserWindows
+internal sealed partial class BrowserWindows : IDisposable
 {
     private readonly Dictionary<int, Process> _processes = new();
     private readonly DateTime _startedAt;
@@ -609,11 +609,16 @@ internal sealed class BrowserWindows
         }
         finally
         {
-            foreach (var process in _processes.Values)
-                process.Dispose();
-            _processes.Clear();
+            Dispose();
             owner.Dispose();
         }
+    }
+
+    public void Dispose()
+    {
+        foreach (var process in _processes.Values)
+            process.Dispose();
+        _processes.Clear();
     }
 
     public static void Keys(ushort key) => Send([

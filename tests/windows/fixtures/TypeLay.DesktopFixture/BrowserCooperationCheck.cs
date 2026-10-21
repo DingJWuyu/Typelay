@@ -325,7 +325,7 @@ internal static partial class BrowserCooperationCheck
                 {
                     setup.Stage = "confirm-connect-return-to-page-" + step;
                     Record("scene-progress", setup);
-                }, app.Process.Id);
+                });
                 setup.Stage = "confirm-connect-wait-connected";
                 await WaitBrowserConnectionStatusAsync(app.Process, "已连接", ct);
             });
@@ -451,7 +451,7 @@ internal static partial class BrowserCooperationCheck
         catch (Exception error) when (error is not OutOfMemoryException)
         {
             active.Outcome = "failed";
-            active.Failure = error is Failure failure ? failure.Code : error is HostedBrowserContainerRejected rejected ? rejected.Code : error is OperationCanceledException ? active.Stage + "-deadline" : "unexpected-error";
+            active.Failure = error is Failure failure ? failure.Code : error is BrowserWindows.Failure browserFailure ? browserFailure.Code : error is HostedBrowserContainerRejected rejected ? rejected.Code : error is OperationCanceledException ? active.Stage + "-deadline" : "unexpected-error";
             active.ErrorType = error.GetType().Name;
             if (ReferenceEquals(active, setup))
             {

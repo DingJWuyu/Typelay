@@ -216,9 +216,19 @@ static gboolean language_control(const char *name) {
 static void report_language_control(GtkWidget *widget, gpointer data) {
     JsonBuilder *builder = data;
     const char *name = gtk_widget_get_name(widget);
-    if (language_control(name)) {
+    /* Public label discovery matches the existing reentry watcher. Report its
+     * current allocation on every frame, never freeze a pre-layout center. */
+    gboolean expand = GTK_IS_BUTTON(widget)
+        && g_strcmp0(g_getenv("TYPELAY_FIXTURE_REENTRY_STAGE"), "expand") == 0
+        && g_strcmp0(gtk_button_get_label(GTK_BUTTON(widget)), "展开") == 0;
+    if (expand) name = "fixture-expand";
+    if (expand || language_control(name)) {
         json_builder_set_member_name(builder, name);
         json_builder_begin_object(builder);
+        if (expand) {
+            json_builder_set_member_name(builder, "scale");
+            json_builder_add_int_value(builder, gtk_widget_get_scale_factor(widget));
+        }
         json_builder_set_member_name(builder, "instance");
         json_builder_add_int_value(builder, language_instance(G_OBJECT(widget)));
         json_builder_set_member_name(builder, "visible");
