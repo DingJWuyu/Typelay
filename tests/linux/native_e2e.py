@@ -1940,7 +1940,11 @@ if __name__ == "__main__":
     parser.add_argument("--collect-translation-quality", action="store_true")
     parser.add_argument("--hy-decode-comparison", action="store_true")
     parser.add_argument("--fixed-model-diagnostics", action="store_true")
-    parser.add_argument("--combination-only", action="store_true")
+    parser.add_argument(
+        "--combination-only",
+        action="store_true",
+        help="Only eight paired quality requests within the cached install/select/remove lifecycle",
+    )
     parser.add_argument("--quality-work-deadline", type=float, help=argparse.SUPPRESS)
     parser.add_argument(
         "--desktop-scope",

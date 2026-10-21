@@ -325,8 +325,24 @@ internal static partial class HyPackageCheck
             await report.Phase("remove-hy", async scene =>
             {
                 Require(cacheFiles.All(File.Exists), "installed-hy-cache-missing-before-remove");
-                await PackageActionAsync(app!.Process, settings!, HyId, ModelPackageOperation.Remove, scene, ct);
-                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, argos, lastWorker, generations, scene, ct);
+                var removalPaths = new ModelInstallationStore(data, worker).InitialPaths();
+                workers!.BeginInactiveHyRemoval(lastWorker, removalPaths.Python);
+                try
+                {
+                    await PackageActionAsync(app!.Process, settings!, HyId, ModelPackageOperation.Remove, scene, ct);
+                    lastWorker = await ObserveActiveAsync(app.Process, settings!, workers, data, worker, argos, lastWorker, generations, scene, ct);
+                    var published = new ModelInstallationStore(data, worker);
+                    workers.CompleteInactiveHyRemoval(published.ReadInstallationState().Generation!, published.InitialPaths().Python);
+                }
+                catch
+                {
+                    scene.Facts = new
+                    {
+                        gate = "inactive-hy-removal",
+                        processObservation = workers.LastConflict
+                    };
+                    throw;
+                }
                 await WaitAsync(() =>
                 {
                     workers!.Check();

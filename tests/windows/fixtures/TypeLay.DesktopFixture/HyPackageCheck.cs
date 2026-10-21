@@ -17,10 +17,6 @@ internal static partial class HyPackageCheck
     private const string HyVersion = "a0c709d9fac510f2c807aa3af52872340dc37a4a";
     private static readonly string[] HyDirections = ["zh_ja", "ja_zh", "zh_ko", "ko_zh", "zh_fr", "fr_zh", "zh_es", "es_zh", "zh_de", "de_zh", "zh_pt", "pt_zh"];
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
-    private sealed class Failure(string code) : Exception(code)
-    {
-        public string Code { get; } = code;
-    }
     private sealed class Scene(string name)
     {
         public string Name { get; } = name;
@@ -115,11 +111,7 @@ internal static partial class HyPackageCheck
             return Outcome == "passed" ? 0 : 1;
         }
     }
-    private static void Require(bool condition, string code)
-    {
-        if (!condition)
-            throw new Failure(code);
-    }
+
     public static int Run(string directory, string distribution, string cache, string? nativeFixture = null)
     {
         directory = Path.GetFullPath(directory);

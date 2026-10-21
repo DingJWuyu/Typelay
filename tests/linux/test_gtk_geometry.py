@@ -369,10 +369,46 @@ class GtkReentryGeometryTests(unittest.TestCase):
             with self.subTest(backend=backend):
                 self.assertTrue(current(actual))
                 self.assertFalse(current({**actual, "observedAtMs": 199}))
+                for scale in (1, 2):
+                    moved = {
+                        **button,
+                        "scale": scale,
+                        "x": 744,
+                        "y": 130,
+                        "width": 104,
+                        "surfaceGeometry": {
+                            **button["surfaceGeometry"],
+                            "x": 724,
+                            "y": 120,
+                            "scale": scale,
+                        },
+                    }
+                    snapshot = {
+                        **actual,
+                        "scale": scale,
+                        "overlayControls": {"typelay-menu-trigger": moved},
+                    }
+                    self.assertTrue(
+                        language_trigger_hover_current(
+                            snapshot,
+                            phase,
+                            (1280 * scale, 800 * scale),
+                            220,
+                            backend,
+                            7,
+                            8,
+                            tuple(value * scale for value in point),
+                            200,
+                            layout=False,
+                        )
+                    )
                 for change in (
                     {"instance": 9},
                     {"pointerInside": False},
-                    {"width": 104},
+                    {"width": 50},
+                    {"width": 49},
+                    {"height": 14},
+                    {"height": 13},
                     {"visible": False},
                     {"enabled": False},
                     {"pointerEnteredAtMs": 0, "pointerEnteredAtMonoMs": 0},

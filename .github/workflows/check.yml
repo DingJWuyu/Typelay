@@ -15,7 +15,7 @@ on:
           - full
           - quality-only
       collect_translation_quality:
-        description: Collect the fixed Linux translation responses once for manual review
+        description: Collect eight paired Linux responses once (diagnostic flags select their fixed sets)
         type: boolean
         required: false
         default: false
@@ -369,6 +369,8 @@ jobs:
     timeout-minutes: ${{ needs.scope.outputs.collect_quality == 'true' && 70 || 45 }}
     env:
       FIXED_MODEL_DIAGNOSTICS: ${{ needs.scope.outputs.fixed_model_diagnostics }}
+      # Explicit ordinary quality capture now means the fixed eight-request paired set.
+      TYPELAY_COMBINATION_ONLY: ${{ needs.scope.outputs.collect_quality == 'true' && needs.scope.outputs.fixed_model_diagnostics != 'true' && needs.scope.outputs.hy_decode_comparison != 'true' }}
       TYPELAY_COLLECT_TRANSLATION_QUALITY: ${{ needs.scope.outputs.collect_quality == 'true' }}
       TYPELAY_LINUX_CHECK_SECONDS: ${{ needs.scope.outputs.collect_quality == 'true' && 4200 || 2700 }}
       TYPELAY_EXPECT_QT_VERSION: 6.11.2
@@ -853,6 +855,9 @@ jobs:
           set --
           if [ "$TYPELAY_COLLECT_TRANSLATION_QUALITY" = true ]; then
             set -- --collect-translation-quality
+            if [ "$TYPELAY_COMBINATION_ONLY" = true ]; then
+              set -- "$@" --combination-only
+            fi
           fi
           remaining=$((TYPELAY_LINUX_CHECK_SECONDS - $(date +%s) + TYPELAY_LINUX_CHECK_START))
           python tests/linux/hy_package_e2e.py --check-budget --package artifacts/linux/package --data artifacts/linux/desktop-data --remaining-seconds "$remaining" "$@" > artifacts/linux/hy-package/admission.json
@@ -872,7 +877,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE: ${{ needs.scope.outputs.collect_quality == 'true' && '1' || '' }}
         run: |
           set --
-          if [ "$FIXED_MODEL_DIAGNOSTICS" = true ]; then
+          if [ "$FIXED_MODEL_DIAGNOSTICS" = true ] || [ "$TYPELAY_COMBINATION_ONLY" = true ]; then
             set -- --cache-only
           fi
           python tests/linux/hy_package_e2e.py --prepare-cache --package artifacts/linux/package --cache artifacts/linux/hy-model-cache "$@" > artifacts/linux/hy-package/cache-verification.json
@@ -896,6 +901,9 @@ jobs:
           output=artifacts/linux/hy-package
           if [ "$TYPELAY_COLLECT_TRANSLATION_QUALITY" = true ]; then
             set -- --collect-translation-quality
+            if [ "$TYPELAY_COMBINATION_ONLY" = true ]; then
+              set -- "$@" --combination-only
+            fi
             output=artifacts/linux/quality-capture
           fi
           if [ "$FIXED_MODEL_DIAGNOSTICS" = true ]; then

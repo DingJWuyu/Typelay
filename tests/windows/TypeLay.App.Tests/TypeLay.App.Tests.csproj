@@ -26,6 +26,7 @@
     <Compile Include="../support/ProcessImage.cs" Link="ProcessImage.cs" />
     <Compile Include="../support/OverlayPreviewObservation.cs" Link="OverlayPreviewObservation.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/ModelConsumerFixtureOwner.cs" Link="ModelConsumerFixtureOwner.cs" />
+    <Compile Include="../fixtures/TypeLay.DesktopFixture/HyPackageCheck.Processes.cs" Link="HyPackageCheck.Processes.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/HyPackageCheck.Mouse.cs" Link="HyPackageCheck.Mouse.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/HyPackageCheck.WritebackClick.cs" Link="HyPackageCheck.WritebackClick.cs" />
   </ItemGroup>

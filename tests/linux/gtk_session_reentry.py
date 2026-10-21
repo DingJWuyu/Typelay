@@ -965,9 +965,18 @@ def language_trigger_hover_current(
     actual, phase, dimensions, now, backend, instance, surface, point, moved_at, *, layout=True
 ):
     current_point = language_trigger_point(actual, phase, dimensions, now, backend, layout=layout)
-    if current_point != point or actual.get("observedAtMs", 0) < moved_at:
+    if current_point is None or actual.get("observedAtMs", 0) < moved_at:
         return False
     control = actual["overlayControls"]["typelay-menu-trigger"]
+    bounds = control["surfaceGeometry"] if backend == "gtk4" else control
+    # Keep the original physical pointer fixed. A layout change may move the
+    # center without moving that pointer outside this same control/surface.
+    x, y = (coordinate / actual["scale"] for coordinate in point)
+    if not (
+        bounds["x"] < x < bounds["x"] + control["width"]
+        and bounds["y"] < y < bounds["y"] + control["height"]
+    ):
+        return False
     entered = control.get("pointerEnteredAtMonoMs" if backend == "gtk4" else "pointerEnteredAtMs")
     return (
         control.get("instance") == instance

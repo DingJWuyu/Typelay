@@ -26,7 +26,7 @@ IPC 不携带正文，只有有界状态、长度、选区和 fingerprint。fing
 
 ## 证据边界与待验证
 
-本版本不是支持能力。当前 v3 元数据候选未完成 Windows 编译或执行；诊断协议 v2 的真实编译、纯合同测试和 no-DLL 正常启动/退出已在隔离 Windows 验证；该结果不证明目标侧 hook、策略查询或读取会话成功；缺 manager/context、取消/过期、父进程退出、目标销毁与晚到回调等只读阶段仍未在 Windows 上验证。缺中文 IME 环境只能建立无组合时的单次合成文档观察，不能建立中文组合/共存/连续观察或任何 Tab/写回能力。
+本版本不是支持能力。当前 v3 已在隔离 Windows 完成真实编译、纯合同测试和 no-DLL 正常启动/退出；目标侧 v3 模块加载与栈元数据采集尚未执行；该结果不证明目标侧 hook、策略查询或读取会话成功；缺 manager/context、取消/过期、父进程退出、目标销毁与晚到回调等只读阶段仍未在 Windows 上验证。缺中文 IME 环境只能建立无组合时的单次合成文档观察，不能建立中文组合/共存/连续观察或任何 Tab/写回能力。
 
 源代码内 guard 不是实测证据；后续具体只读生命周期反例的执行编排仍须单独审查，不使用模拟 TSF 替代。
 
@@ -56,7 +56,7 @@ SetWindowsHookEx 使用 TID，不接受持有的线程句柄/创建时间。runn
 3. 独立审批后在新隔离 VM 设置明确开关，执行 `runner.exe --lifecycle-only <现存测试输出目录> <observer.dll绝对路径>`。不加载 observer，只验证真实 Notepad 独占启动/目标准入/正常关闭/job 归零/合成文件删除。未通过不得进下一步。
 4. 再审核该结果及环境后，才能批准同样隔离条件下的 `--single-read`，不能由 exit 0 自动授权。
 
-`test_outcome.cpp` 无 Windows 依赖，可用现成 Linux C++ 编译器在临时输出目录单独编译并运行，实际断言同一 `LifecycleObserved` 函数；这只证明报告逻辑。Windows runner/observer 已编译，但模块加载与 TSF 读取未执行。`lifecycleValidated` 仅在输入就绪和唯一字段检查全部完成后置真，清理成功不能弥补先前失败。
+`test_outcome.cpp` 无 Windows 依赖，可用现成 Linux C++ 编译器在临时输出目录单独编译并运行，实际断言同一 `LifecycleObserved` 函数；这只证明报告逻辑。当前 v3 Windows runner/observer 已编译，但 v3 模块加载与 TSF 栈元数据采集未执行。`lifecycleValidated` 仅在输入就绪和唯一字段检查全部完成后置真，清理成功不能弥补先前失败。
 
 ## 发送与入口诊断
 
@@ -66,11 +66,11 @@ SetWindowsHookEx 使用 TID，不接受持有的线程句柄/创建时间。runn
 
 在 hook 前，使用 held 自有目标进程句柄只读查询签名与动态代码 policy，记录 query/known、数值错误及已定义标志位。任何查询失败停止；MicrosoftSignedOnly/StoreSignedOnly/MitigationOptIn 不兼容本次未签名实验 DLL 时停止。动态代码禁止位只约束动态生成/修改可执行代码，不等于普通 DLL 加载被禁止，也不是加载安全证明；不调用策略修改/放宽接口，不提权或绕过。[查询合同](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessmitigationpolicy)、[签名策略](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-process_mitigation_binary_signature_policy)、[动态代码策略](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-process_mitigation_dynamic_code_policy)
 
-所有新增字段都是固定有界元数据，无正文/地址/句柄。报告消费者严格校验版本、阶段、类型与范围；Lifecycle 要求全部发送/阶段为未开始且原清理成立，不能将全零诊断当读取成功。新候选先经独立 Lifecycle 编译、selftests、no-DLL 验证并保留六个源码 blob；Read 固定经审的 v2 生命周期基线 `889a06469e47632d55f2107174f7c3cd7c4a16ff`；未来源码变更仍须重新验证、审定固定基线并另批单次 Read。没有自动重试或写锁升级。
+所有新增字段都是固定有界元数据，无正文/地址/句柄。报告消费者严格校验版本、阶段、类型与范围；Lifecycle 要求全部发送/阶段为未开始且原清理成立，不能将全零诊断当读取成功。新候选先经独立 Lifecycle 编译、selftests、no-DLL 验证并保留六个源码 blob；Read 固定经审的 v3 生命周期基线 `d83f04a2fead9c3dd2978e6d3ce7f949f2c6329e`；未来源码变更仍须重新验证、审定固定基线并另批单次 Read。没有自动重试或写锁升级。
 
-## 单次 Transitory 栈元数据（v3 SOURCE）
+## 单次 Transitory 栈元数据（v3）
 
-仅在原 top 会话已通过目标 guard、GetStatus 返回 Transitory 时，拒绝前做一次有界元数据采集，仍以 Unsupported/Transitory 结束，readSnapshotValid 始终为 false。协议/消息名升 v3，不把既有 v2 Lifecycle 或 Read 报告当作 v3 证据。现 workflow 的 Read 仍锁 v2 已验基线，新候选不能直接加载，须先另审 Lifecycle。
+仅在原 top 会话已通过目标 guard、GetStatus 返回 Transitory 时，拒绝前做一次有界元数据采集，仍以 Unsupported/Transitory 结束，readSnapshotValid 始终为 false。协议/消息名升 v3，不把既有 v2 Lifecycle 或 Read 报告当作 v3 证据。现 workflow 的 Read 锁定经审的 v3 no-DLL Lifecycle 基线；一次目标侧观察仍须另批精确 manifest 与 Read 标记，不因基线更新自动执行。
 
 仅查询当前 focused document 的 GetTop/GetBase/EnumContexts，一次 Next(3) 只保留最多两项，第三项立即 release 并判 overflow。逐项仅做规范 IUnknown 身份比较、GetDocumentMgr 归属、GetStatus、GetActiveView/GetWnd；不读任何项正文、不申请 base 会话、不跨 document 搜索或访问 parent compartment、不 Push/Pop/Create/Activate，不等待/重试到期望栈顶。每个阶段检查原目标与期限，前后比较 focused document/top/base；释放全部元数据 COM 引用后再做 Guard，并以无 COM 调用的 BasicGuard 封口；失败整块清空为 attempted + MetadataGuard/E_ABORT。stable 只表示前后采样一致，不是栈不会发生 ABA 变化的原子性证明。
 

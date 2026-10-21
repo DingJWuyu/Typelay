@@ -917,7 +917,7 @@ class CombinationOnlyTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("requires", result.stderr)
 
-    def test_preinstalled_inventory_is_required_and_never_fabricated(self):
+    def test_mid_lifecycle_inventory_is_required_and_never_fabricated(self):
         from hy_package_e2e import ARGOS, DIRECTIONS, HY, require_combination_inventory
 
         value = {
@@ -981,80 +981,137 @@ class CombinationOnlyTests(unittest.TestCase):
                     require_combination_inventory(restored, "fixed", original=original)
             self.assertEqual((marker.read_bytes(), settings.read_bytes()), before)
 
-    def test_combination_disk_budget_counts_two_copy_plans_one_app_and_no_new_cache(self):
-        import shutil
+    def test_combination_lifecycle_uses_existing_transactions_and_only_eight_requests(self):
+        import copy
 
         import hy_package_e2e as lifecycle
 
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            package, data, cache = root / "package", root / "data", root / "cache"
-            cache.mkdir()
-            generation = data / "typelay/components" / ("a" * 32)
-            (generation / "runtime").mkdir(parents=True)
-            (generation / "runtime/actual").write_bytes(b"abc")
-            (generation / "runtime/alias").symlink_to("actual")
-            (generation.parent / "current").symlink_to(generation.name)
-            packages = []
-            for name, size in zip([*lifecycle.ARGOS, lifecycle.HY], (2, 3, 7), strict=True):
-                folder = generation / "models/packages" / name / "fixed"
-                folder.mkdir(parents=True)
-                (folder / "asset").write_bytes(b"x" * size)
-                packages.append(dict(id=name, version="fixed", directions=lifecycle.DIRECTIONS))
-            (generation / "models/installed.json").write_text(
-                json.dumps(dict(schema=3, activePackages=lifecycle.ARGOS, packages=packages))
-            )
-            lock = package / "worker/native/hy/model.lock.json"
-            lock.parent.mkdir(parents=True)
-            lock.write_text(
-                json.dumps(dict(version="fixed", model={"bytes": 7}, model_license={"bytes": 2}))
-            )
-            (package / "actual").write_bytes(b"hello")
-            (package / "alias").symlink_to("actual")
-            copied = root / "copied-app"
-            shutil.copytree(package, copied)
-            app_bytes = sum(path.stat().st_size for path in copied.rglob("*") if path.is_file())
-            assets = types.SimpleNamespace(read_json=lambda path: json.loads(path.read_bytes()))
-            with patch.object(lifecycle, "hy_assets", return_value=assets):
-                budget = lifecycle.disk_budget(package, data, combination=True)
-                self.assertEqual(budget["runtimeCopyBytes"], 6)
-                self.assertEqual(budget["installedPackageCopyBytes"], 12)
-                self.assertEqual(budget["applicationCopyBytes"], app_bytes)
-                expected = 2 * (6 + 12) + app_bytes + 2 * 64 * 1024**2
-                self.assertEqual(budget["requiredDesktopFreeBytes"], expected)
-                self.assertEqual(budget["requiredCacheAndDesktopFreeBytes"], expected)
-                self.assertEqual(budget["additionalCacheBytes"], 0)
-                (cache / "already-cached-model").write_bytes(b"c" * 100)
-                self.assertEqual(lifecycle.disk_budget(package, data, combination=True), budget)
-                original = sum(
-                    path.stat().st_size for path in generation.rglob("*") if path.is_file()
-                )
-                normal = lifecycle.disk_budget(package, data)
-                self.assertEqual(
-                    normal["requiredDesktopFreeBytes"], 5 * original + 4 * 9 + 2 * 1024**3
+        original = dict(
+            schema=3,
+            activePackages=lifecycle.ARGOS,
+            packages=[
+                dict(id=name, version="fixed", directions=lifecycle.DIRECTIONS)
+                for name in [*lifecycle.ARGOS, lifecycle.HY]
+            ],
+        )
+        for combination, capture, expected in (
+            (True, types.SimpleNamespace(diagnostics=False), [("styled_glossary",)]),
+            (
+                False,
+                types.SimpleNamespace(diagnostics=False),
+                [("alternative",), ("styled", "glossary")],
+            ),
+            (False, types.SimpleNamespace(diagnostics=True), [("alternative",), ("ordinary",)]),
+            (False, None, []),
+        ):
+            with self.subTest(combination=combination, expected=expected):
+                events, requests = [], []
+
+                def ready(packages, directions, stage):
+                    events.append(stage)
+                    return stage
+
+                def collect(names, generation):
+                    events.append((names, generation))
+                    requests.extend(names)
+
+                lifecycle.exercise_model_lifecycle(
+                    lambda title, label: events.append(label),
+                    ready,
+                    lambda: events.append("prepare"),
+                    collect,
+                    lambda: events.append("preview"),
+                    lambda: events.append("screenshot"),
+                    lambda: copy.deepcopy(original),
+                    "fixed",
+                    capture=capture,
+                    combination=combination,
                 )
                 self.assertEqual(
-                    normal["requiredCacheAndDesktopFreeBytes"],
-                    normal["requiredDesktopFreeBytes"] + 9,
+                    [event[0] for event in events if isinstance(event, tuple)], expected
                 )
-            with patch.object(
-                lifecycle.shutil, "disk_usage", return_value=types.SimpleNamespace(free=expected)
-            ):
-                lifecycle.require_combination_space(data, cache, root, budget)
-            with patch.object(
-                lifecycle.shutil,
-                "disk_usage",
-                return_value=types.SimpleNamespace(free=expected - 1),
-            ):
-                with self.assertRaisesRegex(RuntimeError, "Insufficient disk"):
-                    lifecycle.require_combination_space(data, cache, root, budget)
-            with patch.object(
-                lifecycle.os,
-                "stat",
-                side_effect=[types.SimpleNamespace(st_dev=n) for n in (1, 1, 2)],
-            ):
-                with self.assertRaisesRegex(ValueError, "same-filesystem"):
-                    lifecycle.require_combination_space(data, cache, root, budget)
+                self.assertEqual(events.count("下载并使用…"), 1)
+                self.assertEqual(events.count("使用此模型"), 3)
+                self.assertEqual(events.count("移除…"), 1)
+                self.assertEqual(events.count("preview"), 0 if combination else 1)
+                if combination:
+                    self.assertEqual(requests, ["styled_glossary"])
+                    self.assertEqual(collections(combination=True), {"styled_glossary": 8})
+                    self.assertLess(
+                        events.index("switch-back-to-argos"), events.index("select-installed-hy")
+                    )
+                    self.assertLess(
+                        events.index((("styled_glossary",), "select-installed-hy")),
+                        events.index("return-to-argos-before-remove"),
+                    )
+
+    def test_combination_lifecycle_invalid_or_failed_restore_never_removes_or_succeeds(self):
+        import copy
+
+        import hy_package_e2e as lifecycle
+
+        original = dict(
+            schema=3,
+            activePackages=lifecycle.ARGOS,
+            packages=[
+                dict(id=name, version="fixed", directions=lifecycle.DIRECTIONS)
+                for name in [*lifecycle.ARGOS, lifecycle.HY]
+            ],
+        )
+        for corrupt_start in (True, False):
+            events = []
+            bad = copy.deepcopy(original)
+            bad["activePackages"] = [lifecycle.HY]
+            inventories = iter([bad] if corrupt_start else [original, bad])
+            with self.assertRaisesRegex(ValueError, "combination-only"):
+                lifecycle.exercise_model_lifecycle(
+                    lambda title, label: events.append(label),
+                    lambda *args: args[-1],
+                    lambda: None,
+                    lambda *args: events.append("collect"),
+                    lambda: self.fail("ninth inference"),
+                    lambda: None,
+                    lambda: next(inventories),
+                    "fixed",
+                    capture=types.SimpleNamespace(diagnostics=False),
+                    combination=True,
+                )
+            self.assertNotIn("移除…", events)
+            self.assertEqual(events.count("collect"), 0 if corrupt_start else 1)
+
+    def test_combination_collection_failure_is_not_retried_or_reported_restored(self):
+        import hy_package_e2e as lifecycle
+
+        events = []
+        original = dict(
+            schema=3,
+            activePackages=lifecycle.ARGOS,
+            packages=[
+                dict(id=name, version="fixed", directions=lifecycle.DIRECTIONS)
+                for name in [*lifecycle.ARGOS, lifecycle.HY]
+            ],
+        )
+
+        def collect(*args):
+            events.append("collect")
+            raise RuntimeError("owned capture failed")
+
+        with self.assertRaisesRegex(RuntimeError, "owned capture failed"):
+            lifecycle.exercise_model_lifecycle(
+                lambda title, label: events.append(label),
+                lambda *args: events.append(args[-1]),
+                lambda: None,
+                collect,
+                lambda: self.fail("ninth inference"),
+                lambda: None,
+                lambda: original,
+                "fixed",
+                capture=types.SimpleNamespace(diagnostics=False),
+                combination=True,
+            )
+        self.assertEqual(events.count("collect"), 1)
+        self.assertNotIn("return-to-argos-before-remove", events)
+        self.assertNotIn("移除…", events)
 
     def test_missing_existing_cache_cannot_fall_back_to_download(self):
         import hy_package_e2e

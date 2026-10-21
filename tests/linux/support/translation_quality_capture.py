@@ -27,7 +27,9 @@ def work_seconds(combination=False):
 
 def collections(comparison=False, diagnostics=False, combination=False):
     if sum((comparison, diagnostics, combination)) > 1:
-        raise ValueError("comparison and fixed diagnostics are mutually exclusive")
+        raise ValueError(
+            "comparison, fixed diagnostics and combination capture are mutually exclusive"
+        )
     if combination:
         return {"styled_glossary": 8}
     if diagnostics:
