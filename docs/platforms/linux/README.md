@@ -6,12 +6,12 @@
 
 这是正在完成桌面验证的预览客户端，不是已通过完整产品验收的 Linux 正式版。[产品验收入口](https://github.com/DingJWuyu/Typelay/blob/trunk/README.md#产品验收入口)统一规定冻结基线与已接受增量；本页能力表描述实现和证据，不降低产品要求，也不构成永久应用支持名单。
 
-最近核对的验证基线为 [`1a1a8f75`](https://github.com/DingJWuyu/Typelay/actions/runs/39581196739)，该运行已结束，Linux 完整检查失败：
+最近核对的验证基线为 [`61ecad22`](https://github.com/DingJWuyu/Typelay/actions/runs/39585620623)，该运行已结束，Linux 完整检查失败：
 
 | 状态 | 本提交实际结果 |
 | --- | --- |
 | 通过 | 共享检查、完整合作组件封装、设置、完整独立教程、GTK3 完整桌面 scope、默认回执结构兼容性回归检查、Firefox 浏览器链、GTK4 完整桌面 scope、Qt 合作探针与真实模型链、已安装 VS Code 手动模型命令、正式 Hy 生命周期 |
-| 失败 | GIMP 单次 F10 实际回执为 `RejectedBeforeMutation / EpochChanged`；authority 阶段诊断仅 `basisEpoch=false`，其余检查为 true。尚不能将诊断字段当作完整根因或记为后继修复已通过 |
+| 失败 | GIMP 真实直接替换回执已为 `Verified`，19 项受控检查通过；随后 `native-paste-undo-baseline` 阶段缺少候选语言菜单。TypeLay 写入后两次 Ctrl+Z 仍保留译文，原生粘贴撤销基线未完成，不能宣称 Undo 安全或确定根因 |
 | 未采集质量 | 本轮没有新质量响应；5068 的 40 次诊断与 386 的 69 次响应须分别解读，不构成本轮质量通过 |
 
 通过项不代表物理键盘、用户输入法或所有普通桌面应用已通过。5068 的 Argos 少于20分钟仍误译为保持20分钟，电话问题该次未复现但未证明修复；术语结构小样本保留了真实 CRLF，但不足以证明普遍结构安全或开放质量门。实际质量范围见[共同产品缺口](../../product/README.md#当前共同开发缺口)，后继修正不得提前算作 GUI 或质量通过。
@@ -51,7 +51,7 @@ GTK3/GTK4 默认与配置按键、编辑回源、暂停恢复及后台原字段�
 | 编辑/接受 | 共用人工草稿、第一 Tab 回源、重新核验后第二 Tab 接受；写回默认需显式开启 | 物理键盘、真实应用快速切焦点与各控件原生撤销仍须逐路径验证 |
 | 直接替换 | 绑定原目标生命周期，在源事件线程写入；实际类型恰为标准 GTK3/GTK4 Entry、Qt QLineEdit 的字段已验证同窗后台写原字段、保持另一字段焦点/正文及原文冲突拒绝 | TextView/QPlainTextEdit 后台与跨窗口/应用后台未覆盖；不能把前台多行通过外推为后台能力，也不能转写新焦点 |
 | IME/焦点 | 未知状态不授予编辑/接受资格，源框与浮层属于同一会话 | Linux 合作 Fcitx 需用户手动切换私有会话，仍未达到无需输入法协作的通用体验 |
-| 语言与模型 | 默认 Argos 中英；可选 Hy 十二方向预览，实际可用语言动态映射与设置语言搜索已有代码 | 1a1a8f7 的 Qt 合作探针与真实模型链、设置、教程及 Hy 生命周期通过；GTK3/GTK4 完整 scope 通过，GIMP 失败边界见本页开头；真实安装/切换的范围见下方[可选模型](#可选多语言预览模型)，握手方向不等于质量通过 |
+| 语言与模型 | 默认 Argos 中英；可选 Hy 十二方向预览，实际可用语言动态映射与设置语言搜索已有代码 | 61ecad2 的 Qt 合作探针与真实模型链、设置、教程及 Hy 生命周期通过；GTK3/GTK4 完整 scope 通过，GIMP 失败边界见本页开头；真实安装/切换的范围见下方[可选模型](#可选多语言预览模型)，握手方向不等于质量通过 |
 | 风格/换种说法/术语 | 已发布源码已接真实后端、双端设置和浮层操作 | 三项质量发布门全部关闭；主动加词的状态缺口与质量要求见[产品开发缺口](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/product/README.md#当前共同开发缺口) |
 | 设置/托盘与暂停 | 启停、模式、方向、交换、排除、主题、启动项、模型状态和退出已实现，托盘保留恢复入口 | 设置已按常规、语言、快捷键、应用支持分组，790×560 首屏、原生侧栏键盘导航与跨页保存已通过隔离桌面验证；实机缩放和平台托盘仍须分别验收 |
 | 安装/首次使用 | 显式模型安装、校验后启用、设置持久化、单会话与退出清理已有实现 | Linux 已实现下载暂停/验证后续传与显式本地试译引导；独立 GTK 实操窗口复用生产自动胶囊/两阶段 Tab，需已启用合作组件；普通未合作环境仅提供接入指引，真实实操结果以对应提交 CI 为准 |
@@ -66,11 +66,11 @@ GTK3/GTK4 默认与配置按键、编辑回源、暂停恢复及后台原字段�
 
 ### 当前可验证候选
 
-在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39581196739)下载 [`typelay-linux-1a1a8f75e574e2647c368cf92ee37699fd623016`](https://github.com/DingJWuyu/Typelay/actions/runs/39581196739/artifacts/12339190576)。这是附带匹配桌面合作组件的预览开发包，GIMP 红项尚未关闭，不能作为日常稳定版推荐；[Windows 同版结果](../windows/README.md#当前可验证候选)独立记录。
+在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39585620623)下载 [`typelay-linux-61ecad2243f7184a70743e56b44a63cc06e68d23`](https://github.com/DingJWuyu/Typelay/actions/runs/39585620623/artifacts/12339597433)。这是附带匹配桌面合作组件的预览开发包，GIMP 红项尚未关闭，不能作为日常稳定版推荐；[Windows 同版结果](../windows/README.md#当前可验证候选)独立记录。
 
-- 源码：`1a1a8f75e574e2647c368cf92ee37699fd623016`；包内 `build-info.json` 记录同一提交且 `sourceDirty=false`。
-- 内层 `TypeLay-Linux-preview-x86_64.tar.gz`：280,924,331 字节。
-- SHA-256：`25b7629ee083ec0b7103699224da7a81d5c773982ec38aa88f784641e1e698e6`，已重新计算并与包旁 `.sha256` 相符。不要将内层摘要用于外层 Actions ZIP。
+- 源码：`61ecad2243f7184a70743e56b44a63cc06e68d23`；包内 `build-info.json` 记录同一提交且 `sourceDirty=false`。
+- 内层 `TypeLay-Linux-preview-x86_64.tar.gz`：280,924,071 字节。
+- SHA-256：`225d5f6bf5e6d0bc2ee06a47c4d11725f426d892e4874485884e6d627efeab4c`，已重新计算并与包旁 `.sha256` 相符。不要将内层摘要用于外层 Actions ZIP。
 - artifact 过期或换用后续提交时，重新核对其包摘要与独立检查结果。
 
 ## 安装、启动与首次配置
@@ -115,7 +115,7 @@ python install.py install
 - 当前模型与实际就绪方向分别显示。只安装但未通过 worker hello 的包不会标为就绪；当前模型不含已选语言方向时会提示
 - 新增语言选项只随实际安装且平台可用的 Hy 包开放；离线或切包后保留已保存值，未安装包不会仅凭目录被视为能力
 
-模型许可与预览风险位于行内详情。预览译文可能漏译或表达不准确，应核对后再接受。1a1a8f7 的[正式发行链检查](https://github.com/DingJWuyu/Typelay/actions/runs/39581196739)使用私有 Python 3.13.16，完成原 Argos 就绪、安装并使用 Hy、切回 Argos、再选已安装 Hy、返回 Argos 和移除非当前 Hy。原 Argos 库存与语言设置保留，worker 与宿主退出已确认，无强制清理。中译法单句返回非空且不同于原文的译文，hello 确认十二方向；这不是十二方向质量或实机验收。
+模型许可与预览风险位于行内详情。预览译文可能漏译或表达不准确，应核对后再接受。61ecad2 的[正式发行链检查](https://github.com/DingJWuyu/Typelay/actions/runs/39585620623)使用私有 Python 3.13.16，完成原 Argos 就绪、安装并使用 Hy、切回 Argos、再选已安装 Hy、返回 Argos 和移除非当前 Hy。原 Argos 库存与语言设置保留，worker 与宿主退出已确认，无强制清理。中译法单句返回非空且不同于原文的译文，hello 确认十二方向；这不是十二方向质量或实机验收。
 
 生命周期通过不代表模型质量通过；本轮未采集质量，5068 的 40 次诊断请求与 386f20 的 69 次响应结论见[共同产品缺口](../../product/README.md#当前共同开发缺口)。下载量不能当作安装所需空间，单次运行的资源峰值也不是所有设备的保证。
 

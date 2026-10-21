@@ -79,10 +79,26 @@ public sealed class ShortcutFeedbackTests(WpfDesktopFixture desktop)
             {
                 ShortcutStatus = () => hook.ShortcutStatus
             };
+            async Task ReturnToFixture(string stage)
+            {
+                // The settings window is the foreground owner. Give only this
+                // test's live child permission to perform the requested handoff.
+                Assert.False(fixture.HasExited, $"{stage}: source fixture exited before focus handoff.");
+                Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+                Assert.True(Native.AllowSetForegroundWindow(checked((uint)fixture.Id)),
+                    $"{stage}: could not authorize the source fixture's foreground handoff.");
+                Assert.True(N.PostMessage((nint)host.RootHwnd, N.FixtureFocus, (nuint)field, 0));
+                await Until(() => N.Focused() == ((nint)host.RootHwnd, field), deadline.Token, () =>
+                {
+                    var actual = N.Focused();
+                    return $"{stage}: expected root={host.RootHwnd}, field={(long)field}; "
+                        + $"observed root={(long)actual.Item1}, field={(long)actual.Item2}, "
+                        + $"foreground={(long)Native.GetForegroundWindow()}.";
+                });
+            }
             window.ShowPage("shortcuts");
             window.UpdateLayout();
-            Assert.True(N.PostMessage((nint)host.RootHwnd, N.FixtureFocus, (nuint)field, 0));
-            await Until(() => N.Focused() == ((nint)host.RootHwnd, field), deadline.Token);
+            await ReturnToFixture("settings-initial-return");
             void ExpectReady(bool expected)
             {
                 string status = hook.ShortcutStatus;
@@ -143,8 +159,7 @@ public sealed class ShortcutFeedbackTests(WpfDesktopFixture desktop)
             await Until(() => Native.GetForegroundWindow() == new WindowInteropHelper(window).Handle, deadline.Token);
             PublishStatus(FreshStatus());
             ExpectReady(false);
-            Assert.True(N.PostMessage((nint)host.RootHwnd, N.FixtureFocus, (nuint)field, 0));
-            await Until(() => N.Focused() == ((nint)host.RootHwnd, field), deadline.Token);
+            await ReturnToFixture("settings-focus-loss-return");
             PublishStatus(FreshStatus());
             ExpectReady(true);
             hook.ConfigureShortcuts(true, "Ctrl+Shift+F22", "Ctrl+Shift+F24",
@@ -338,12 +353,14 @@ public sealed class ShortcutFeedbackTests(WpfDesktopFixture desktop)
         }
     }
 
-    private static async Task Until(Func<bool> ready, CancellationToken cancellation)
+    private static async Task Until(Func<bool> ready, CancellationToken cancellation, Func<string>? failure = null)
     {
         var elapsed = Stopwatch.StartNew();
         while (!ready() && elapsed.Elapsed < TimeSpan.FromSeconds(3))
             await Task.Delay(10, cancellation);
-        Assert.True(ready(), "The configured shortcut must produce an explicit refusal instead of disappearing.");
+        bool completed = ready();
+        Assert.True(completed, completed ? null
+            : failure?.Invoke() ?? "The configured shortcut must produce an explicit refusal instead of disappearing.");
     }
 
     private static void Keys(params ushort[] keys)

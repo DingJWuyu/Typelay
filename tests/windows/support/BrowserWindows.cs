@@ -580,32 +580,62 @@ internal sealed partial class BrowserWindows : IDisposable
     public async Task StopAsync(ChildProcess owner, Action<string> log)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        var elapsed = Stopwatch.StartNew();
+        string stage = "discover";
+        int? pending = null;
+        void Record(string outcome, int? finalPending = null)
+        {
+            try
+            {
+                log($"Owned browser cleanup: stage={stage}; outcome={outcome}; elapsedMs={elapsed.ElapsedMilliseconds}; retainedProcesses={_processes.Count}; pendingKernelSignals={pending?.ToString() ?? "unobserved"}; finalPendingKernelSignals={finalPending?.ToString() ?? "unobserved"}");
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+        }
         try
         {
             // Retain exact process identities before terminating the owned job.
             // Also await held identities outside that job, without killing them.
             // A discovery failure must still terminate and close the owned job.
+            Record("started");
             try
             {
                 Discover();
             }
             finally
             {
+                stage = "terminate-owned-job";
+                Record("started");
                 await owner.TerminateAndWaitAsync(deadline.Token);
             }
+            stage = "wait-managed-exit";
+            Record("started");
             await Task.WhenAll(_processes.Values.Select(process => process.WaitForExitAsync(deadline.Token)));
             // WaitForExitAsync may return on HasExited's early exit-code check.
             // WaitForExit(0) instead tests the kernel signal on our retained
             // handle, without reopening a PID or waiting for redirected output.
             // https://github.com/dotnet/runtime/blob/v10.0.12/src/libraries/System.Diagnostics.Process/src/System/Diagnostics/ProcessManager.Windows.cs#L259-L291
-            int pending = _processes.Values.Count(process => !process.WaitForExit(0));
-            log($"Owned browser exit proof: retainedProcesses={_processes.Count}; pendingKernelSignals={pending}");
+            stage = "wait-kernel-signals";
+            pending = _processes.Values.Count(process => !process.WaitForExit(0));
+            Record("started");
             while (pending != 0)
             {
                 await Task.Delay(10, deadline.Token);
                 pending = _processes.Values.Count(process => !process.WaitForExit(0));
             }
-            log($"Owned browser exit proof: kernelSignaledProcesses={_processes.Count}");
+            Record("completed");
+        }
+        catch (OperationCanceledException)
+        {
+            // One bounded read of already-held identities, after cancellation.
+            // Even a zero result here cannot prove exit before the original limit.
+            int? finalPending = null;
+            try
+            {
+                finalPending = _processes.Values.Count(process => !process.WaitForExit(0));
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+            Record("cancelled", finalPending);
+            throw;
         }
         finally
         {

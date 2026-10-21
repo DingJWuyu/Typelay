@@ -79,18 +79,18 @@
 
 ### 当前可验证候选
 
-最近核对的验证基线为 [`1a1a8f75`](https://github.com/DingJWuyu/Typelay/actions/runs/39581196739)，该运行已结束，Windows 完整检查失败。
+最近核对的验证基线为 [`61ecad22`](https://github.com/DingJWuyu/Typelay/actions/runs/39585620623)，该运行已结束，Windows 完整检查失败。
 
-- App.Tests：567/567 通过，Runtime.Tests：1091/1091 通过；不代表桌面整链验收完成。
-- 连续翻译在 `owned-editor-single-click` 等待交接超时，后续自有回源/接受/完成未运行；普通直接替换报 `shortcut-staleobservation`。普通字段快捷键、持续预览、按需练习、冷启动 Chrome 与新标签页通过，整链仍失败，不沿用上一轮全部 13 段通过结果。
-- 浏览器合作整链通过；记事本设置与只读预览观察通过，但等待公开接受提示因 Unknown 安全缺口超时，后续编辑/直接替换及 Hy 未运行，不沿用较早结果。
-- 本轮未消除普通自动捕获的输入法安全缺口，Unknown 继续拒写；后继候选未经对应验证不记作修复。本轮无质量采集，5068 的 40 次诊断与 386 的 69 次响应仍是各自范围的既有证据，三项质量门继续关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
+- App.Tests：575 项中 574 项通过；唯一失败是新增快捷键就绪测试的 Settings 回源前置检查，不代表已到达后续就绪断言。
+- 连续翻译整链通过，包含自有编辑与接受、普通字段、直接替换、按需练习、冷启动 Chrome 与新标签页；不外推物理输入法或所有应用。
+- 浏览器 7 个场景通过，但清理阶段 `cleanup-failed / TaskCanceledException`，整步失败；记事本与 Hy 本轮未运行，不能沿用此前只读预览通过结果。
+- 本轮未消除普通自动捕获的输入法安全缺口，Unknown 继续拒写；按需 CaptureDirect 既有 owner-thread 桥仍有同步 IMM 消息重入风险，不能据本轮连续链通过消除该限制。后继候选未经对应验证不记作修复。本轮无质量采集，5068 的 40 次诊断与 386 的 69 次响应仍是各自范围的既有证据，三项质量门继续关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
 
-当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39581196739)下载 [`typelay-windows-1a1a8f75e574e2647c368cf92ee37699fd623016`](https://github.com/DingJWuyu/Typelay/actions/runs/39581196739/artifacts/12336323512)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
+当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39585620623)下载 [`typelay-windows-61ecad2243f7184a70743e56b44a63cc06e68d23`](https://github.com/DingJWuyu/Typelay/actions/runs/39585620623/artifacts/12341085387)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
 
-- 源码提交：`1a1a8f75e574e2647c368cf92ee37699fd623016`。
-- 内层 ZIP：87,032,630 字节。
-- SHA-256：`641f0ef9ae8319a43ea6373c7802ca2716efb6e4d05722e815dec5fd7ea3382a`，已实际重算并核对包旁摘要。
+- 源码提交：`61ecad2243f7184a70743e56b44a63cc06e68d23`。
+- 内层 ZIP：87,038,495 字节。
+- SHA-256：`e36d4bf650beeb43ac5250ff4a43c78f411d9b84f92a18dfeefd487c7c4afa17`，已实际重算并核对包旁摘要。
 - 用 `Get-FileHash .\TypeLay-Windows-preview.zip -Algorithm SHA256` 核对；不要将内层摘要用于外层 Actions ZIP。App、Broker、Practice 与 BrowserHost 必须来自同一个完整包。
 
 正式安装器的单向中英准备、Auto 同语无输出、缺方向拒绝与保留旧方向的补装已通过真实模型 API 检查；该检查本身没有操作输入框或触发 F10。安装库存损坏时保留原数据并禁用修改，目前仍缺少用户可执行的库存恢复入口。
