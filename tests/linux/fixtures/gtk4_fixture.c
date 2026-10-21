@@ -303,6 +303,8 @@ static void report_control_surface(JsonBuilder *builder, GtkWidget *widget) {
     json_builder_begin_object(builder);
     json_builder_set_member_name(builder, "x"); json_builder_add_double_value(builder, x);
     json_builder_set_member_name(builder, "y"); json_builder_add_double_value(builder, y);
+    json_builder_set_member_name(builder, "surfaceInstance");
+    json_builder_add_int_value(builder, language_instance(G_OBJECT(surface)));
     json_builder_set_member_name(builder, "scale");
     json_builder_add_int_value(builder, gdk_surface_get_scale_factor(surface));
     json_builder_set_member_name(builder, "nativeX"); json_builder_add_double_value(builder, point.x);
@@ -334,7 +336,10 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
     if (expand || language_control(name) || g_str_equal(name, "fixture-glossary-feedback")) {
         json_builder_set_member_name(builder, name);
         json_builder_begin_object(builder);
-        if (g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND") && language_control(name))
+        const char *stage = g_getenv("TYPELAY_FIXTURE_REENTRY_STAGE");
+        gboolean language_trigger = g_str_equal(name, "typelay-menu-trigger")
+            && stage && (g_str_equal(stage, "language-options") || g_str_has_prefix(stage, "language-retention-"));
+        if ((g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND") && language_control(name)) || language_trigger)
             report_control_surface(builder, widget);
         if (expand) {
             GtkEventControllerMotion *motion = g_object_get_data(G_OBJECT(widget), "fixture-expand-motion");

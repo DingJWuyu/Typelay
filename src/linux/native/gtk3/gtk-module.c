@@ -343,6 +343,14 @@ gboolean tl_glossary_transfer_end(gboolean valid) {
     return valid;
 }
 void tl_send_event(const char *event, JsonObject *data) {
+    /* Diagnostics must not disturb the real focus-transfer collector, even
+     * after it has failed but before transfer_end releases it. Ownership is
+     * consumed here just as by the ordinary frame below. */
+    if (glossary_events && strcmp(event, "ui") == 0
+        && g_strcmp0(tl_string(data, "operation"), "editClickDiagnostic") == 0) {
+        json_object_unref(data);
+        return;
+    }
     JsonObject *frame = json_object_new();
     json_object_set_string_member(frame, "event", event);
     json_object_set_object_member(frame, "data", data);

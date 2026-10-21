@@ -13,6 +13,7 @@ from gtk_session_reentry import (  # noqa: E402
     clickable_control,
     expand_click_point,
     expand_hover_current,
+    language_trigger_hover_current,
     language_trigger_point,
     parent_geometry_ready,
     validated_geometry,
@@ -295,6 +296,7 @@ class GtkReentryGeometryTests(unittest.TestCase):
             "visible": True,
             "enabled": True,
             "instance": 1,
+            "scale": 1,
             "x": 740,
             "y": 122,
             "width": 97,
@@ -332,6 +334,71 @@ class GtkReentryGeometryTests(unittest.TestCase):
             self.assertIsNone(language_trigger_point({**actual, **change}, phase, (1280, 800), 120))
         with self.assertRaisesRegex(AssertionError, "lease expired"):
             language_trigger_point(actual, phase, (1280, 800), 801)
+
+    def test_language_trigger_hover_binds_fresh_instance_point_and_surface(self):
+        phase = {"renderReturnedAtMonoMs": 100, "expiresAtMs": 800}
+        button = {
+            "visible": True,
+            "enabled": True,
+            "instance": 7,
+            "scale": 1,
+            "x": 740,
+            "y": 122,
+            "width": 100,
+            "height": 28,
+            "pointerInside": True,
+            "pointerEnteredAtMs": 190,
+            "pointerEnteredAtMonoMs": 190,
+            "surfaceGeometry": {"x": 720, "y": 112, "scale": 1, "surfaceInstance": 8},
+        }
+        actual = {
+            "fullscreen": True,
+            "width": 1280,
+            "height": 800,
+            "scale": 1,
+            "observedAtMs": 210,
+            "overlayControls": {"typelay-menu-trigger": button},
+        }
+        for backend, point in (("gtk3", (790, 136)), ("gtk4", (770, 126))):
+
+            def current(snapshot, now=220):
+                return language_trigger_hover_current(
+                    snapshot, phase, (1280, 800), now, backend, 7, 8, point, 200, layout=False
+                )
+
+            with self.subTest(backend=backend):
+                self.assertTrue(current(actual))
+                self.assertFalse(current({**actual, "observedAtMs": 199}))
+                for change in (
+                    {"instance": 9},
+                    {"pointerInside": False},
+                    {"width": 104},
+                    {"visible": False},
+                    {"enabled": False},
+                    {"pointerEnteredAtMs": 0, "pointerEnteredAtMonoMs": 0},
+                ):
+                    changed = {
+                        **actual,
+                        "overlayControls": {"typelay-menu-trigger": {**button, **change}},
+                    }
+                    self.assertFalse(current(changed))
+                with self.assertRaisesRegex(AssertionError, "lease expired"):
+                    current(actual, 801)
+        for surface in (
+            None,
+            {"x": 720, "y": 112, "scale": 2, "surfaceInstance": 8},
+            {"x": float("nan"), "y": 112, "scale": 1, "surfaceInstance": 8},
+            {"x": 720, "y": 112, "scale": 1, "surfaceInstance": 9},
+        ):
+            changed = {
+                **actual,
+                "overlayControls": {"typelay-menu-trigger": {**button, "surfaceGeometry": surface}},
+            }
+            self.assertFalse(
+                language_trigger_hover_current(
+                    changed, phase, (1280, 800), 220, "gtk4", 7, 8, (770, 126), 200, layout=False
+                )
+            )
 
     def test_click_maps_parent_local_point_at_native_scale(self):
         actual = {"fullscreen": True, "width": 640, "height": 400, "scale": 2}

@@ -21,6 +21,7 @@ class Overlay:
         self.revision = 0
         self.visual_expansion = None
         self.edit_trace_count = 0
+        self.edit_click_trace_count = 0
         self.pending = False
         self.glossary = None
         self.glossary_begin_pending = None
@@ -339,7 +340,54 @@ class Overlay:
             self.resume_trace_count = getattr(self, "resume_trace_count", 0) + 1
             self.trace_edit(stage, **fields)
 
+    def trace_edit_click(self, peer, event):
+        if not os.environ.get("TYPELAY_TRACE") or self.edit_click_trace_count >= 16:
+            return
+        detail = event.get("value")
+        reasons = {
+            "pointer": {"received"},
+            "begin-edit": {
+                "wrong-widget",
+                "non-primary",
+                "already-editing",
+                "paused",
+                "not-editable",
+                "pending",
+                "configuration-changed",
+                "context-changed",
+                "cannot-edit",
+                "emitted",
+            },
+        }
+        if (
+            not isinstance(detail, dict)
+            or set(detail) != {"phase", "reason", "elapsedMs", "candidateHit"}
+            or type(detail["phase"]) is not str
+            or type(detail["reason"]) is not str
+            or detail["reason"] not in reasons.get(detail["phase"], set())
+            or type(detail["elapsedMs"]) is not int
+            or not 0 <= detail["elapsedMs"] <= 9223372036854775807
+            or type(detail["candidateHit"]) is not bool
+        ):
+            return
+        peer_matches = peer is self.peer
+        target_matches = bool(
+            self.value and event.get("target") == self.value["source"]["target"]["value"]
+        )
+        revision_matches = type(event.get("revision")) is int and event["revision"] == self.revision
+        self.edit_click_trace_count += 1
+        self.trace_edit(
+            "native-click",
+            **detail,
+            peerMatches=peer_matches,
+            targetMatches=target_matches,
+            revisionMatches=revision_matches,
+        )
+
     def event(self, peer, event):
+        if isinstance(event, dict) and event.get("operation") == "editClickDiagnostic":
+            self.trace_edit_click(peer, event)
+            return  # Even malformed diagnostics can never become an edit action.
         if isinstance(event, dict) and event.get("operation") == "beginEdit":
             self.trace_edit(
                 "event",

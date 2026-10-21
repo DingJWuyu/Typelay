@@ -3833,6 +3833,92 @@ class InputFeedbackTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_native_click_diagnostics_are_bounded_observations_not_edit_actions(self):
+        async def exercise():
+            overlay, jobs, _token, _view = await self.overlay_scenario()
+            await self.settle_overlay(jobs)
+            before = (list(self.host.events), list(self.host.requests), overlay.value)
+            before_jobs = list(jobs)
+            event = {
+                "operation": "editClickDiagnostic",
+                "target": "ordinary-field",
+                "revision": overlay.revision,
+                "generation": self.generation,
+                "value": {
+                    "phase": "pointer",
+                    "reason": "received",
+                    "elapsedMs": 0,
+                    "candidateHit": True,
+                },
+            }
+            output = io.StringIO()
+            with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}), contextlib.redirect_stderr(output):
+                for index in range(20):
+                    current = copy.deepcopy(event)
+                    current["revision"] += index % 2
+                    self.peer.event("ui", current)
+            rows = [
+                json.loads(line.removeprefix("typelay-edit "))
+                for line in output.getvalue().splitlines()
+            ]
+            self.assertEqual(len(rows), 16)
+            self.assertTrue(all(row["stage"] == "native-click" for row in rows))
+            self.assertTrue(all(row["peerMatches"] and row["targetMatches"] for row in rows))
+            self.assertEqual([row["revisionMatches"] for row in rows], [True, False] * 8)
+            self.assertNotIn("ordinary-field", output.getvalue())
+            self.assertEqual((self.host.events, self.host.requests, overlay.value), before)
+            self.assertEqual(jobs, before_jobs)
+
+        asyncio.run(exercise())
+
+    def test_native_click_diagnostic_invalid_payload_and_trace_off_never_dispatch(self):
+        async def exercise():
+            overlay, jobs, _token, _view = await self.overlay_scenario()
+            await self.settle_overlay(jobs)
+            before = (list(self.host.events), list(self.host.requests), overlay.value)
+            before_jobs = list(jobs)
+            event = {
+                "operation": "editClickDiagnostic",
+                "target": "ordinary-field",
+                "revision": overlay.revision,
+                "value": {
+                    "phase": "begin-edit",
+                    "reason": "emitted",
+                    "elapsedMs": 1,
+                    "candidateHit": True,
+                },
+            }
+            invalid = [
+                None,
+                {},
+                {**event["value"], "text": "private"},
+                {**event["value"], "candidateHit": 1},
+                {**event["value"], "elapsedMs": True},
+                {**event["value"], "elapsedMs": -1},
+                {**event["value"], "elapsedMs": 2**63},
+                {**event["value"], "phase": []},
+                {**event["value"], "reason": "beginEdit"},
+                {**event["value"], "phase": "pointer"},
+            ]
+            output = io.StringIO()
+            with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}), contextlib.redirect_stderr(output):
+                for value in invalid:
+                    self.peer.event("ui", {**event, "value": value})
+            with patch.dict(os.environ, {"TYPELAY_TRACE": ""}), contextlib.redirect_stderr(output):
+                self.peer.event("ui", event)
+            self.assertEqual(output.getvalue(), "")
+            self.assertEqual(overlay.edit_click_trace_count, 0)
+            with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}), contextlib.redirect_stderr(output):
+                overlay.event(object(), {**event, "target": "unrelated-private-target"})
+            row = json.loads(output.getvalue().removeprefix("typelay-edit "))
+            self.assertFalse(row["peerMatches"])
+            self.assertFalse(row["targetMatches"])
+            self.assertNotIn("unrelated-private-target", output.getvalue())
+            self.assertEqual((self.host.events, self.host.requests, overlay.value), before)
+            self.assertEqual(jobs, before_jobs)
+
+        asyncio.run(exercise())
+
     def test_begin_edit_uses_the_token_returned_after_the_shared_transition(self):
         async def exercise():
             overlay, jobs, token, view = await self.overlay_scenario()

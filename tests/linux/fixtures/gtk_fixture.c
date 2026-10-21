@@ -314,6 +314,16 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         && g_strcmp0(g_getenv("TYPELAY_FIXTURE_REENTRY_STAGE"), "expand") == 0
         && g_strcmp0(gtk_button_get_label(GTK_BUTTON(widget)), "展开") == 0;
     if (expand) name = "fixture-expand";
+    const char *stage = g_getenv("TYPELAY_FIXTURE_REENTRY_STAGE");
+    gboolean language_trigger = GTK_IS_BUTTON(widget) && g_strcmp0(name, "typelay-menu-trigger") == 0
+        && stage && (g_str_equal(stage, "language-options") || g_str_has_prefix(stage, "language-retention-"));
+    if (language_trigger && !g_object_get_data(G_OBJECT(widget), "fixture-trigger-pointer-watched")) {
+        g_object_set_data(G_OBJECT(widget), "fixture-trigger-pointer-watched", GINT_TO_POINTER(1));
+        /* Reuse the exact real GtkButton event-window crossing observer. */
+        g_signal_connect(widget, "enter", G_CALLBACK(observe_expand_crossing), GINT_TO_POINTER(TRUE));
+        g_signal_connect(widget, "leave", G_CALLBACK(observe_expand_crossing), GINT_TO_POINTER(FALSE));
+        g_signal_connect(widget, "unmap", G_CALLBACK(observe_expand_unmapped), NULL);
+    }
     if (expand || language_control(name)) {
         json_builder_set_member_name(builder, name);
         json_builder_begin_object(builder);
@@ -331,7 +341,7 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
                 && layout->width == gtk_widget_get_allocated_width(widget)
                 && layout->height == gtk_widget_get_allocated_height(widget));
         }
-        if (expand) {
+        if (expand || language_trigger) {
             json_builder_set_member_name(builder, "scale");
             json_builder_add_int_value(builder, gtk_widget_get_scale_factor(widget));
             json_builder_set_member_name(builder, "pointerInside");

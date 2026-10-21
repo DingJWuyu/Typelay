@@ -581,7 +581,13 @@ static void close_language_popups_outside(GtkWidget *widget, gboolean trigger_cl
         if (!overlay.popover) return;
     }
 }
+static void trace_edit_click(const char *phase, const char *reason, gboolean candidate_hit);
 void tl_overlay_pointer(GdkEvent *event) {
+    if (event->type == GDK_BUTTON_PRESS && event->button.button == 1 && overlay.target) {
+        GtkWidget *widget = gtk_get_event_widget(event);
+        trace_edit_click("pointer", "received", widget && overlay.text
+            && (widget == overlay.text || gtk_widget_is_ancestor(widget, overlay.text)));
+    }
     if (event->type == GDK_BUTTON_PRESS) close_language_popups_outside(gtk_get_event_widget(event), TRUE);
 }
 static gboolean paused(void) {
@@ -643,6 +649,25 @@ static void emit(const char *operation, JsonNode *value) {
     if (value) json_object_set_member(event, "value", value);
     else json_object_set_null_member(event, "value");
     tl_send_event("ui", event);
+}
+/* Payload-only diagnostics use the existing owned UI route, never app stderr.
+ * No provider reads, authorization, text or native identifiers are added. */
+static void trace_edit_click(const char *phase, const char *reason, gboolean candidate_hit) {
+    static guint count;
+    static gint64 started;
+    const char *trace = g_getenv("TYPELAY_TRACE");
+    if (!trace || !*trace || !overlay.target || count >= 16) return;
+    gint64 now = tl_now();
+    if (!count) started = now;
+    count++;
+    JsonObject *detail = json_object_new();
+    json_object_set_string_member(detail, "phase", phase);
+    json_object_set_string_member(detail, "reason", reason);
+    json_object_set_int_member(detail, "elapsedMs", MAX((gint64)0, now - started));
+    json_object_set_boolean_member(detail, "candidateHit", candidate_hit);
+    JsonNode *node = json_node_new(JSON_NODE_OBJECT);
+    json_node_take_object(node, detail);
+    emit("editClickDiagnostic", node);
 }
 static void emit_boolean(const char *operation, gboolean value) {
     JsonNode *node = json_node_new(JSON_NODE_VALUE);
@@ -1640,21 +1665,34 @@ static void preedit(GtkWidget *widget, const gchar *text, gpointer data) {
 }
 static gboolean begin_edit(GtkWidget *widget, GdkEventButton *event, gpointer data) {
     (void)data;
-    static guint trace_count;
-    if (g_getenv("TYPELAY_TRACE") && trace_count < 96) {
-        trace_count++;
-        g_printerr("TypeLay GTK beginEdit revision=%" G_GINT64_FORMAT
-            " left=%d editor=%d editable=%d pending=%d remainingMs=%" G_GINT64_FORMAT "\n",
-            overlay.revision, event->button == 1,
-            gtk_text_view_get_editable(GTK_TEXT_VIEW(widget)),
-            boolean(overlay.view, "editable"), overlay.pending_edit, overlay.expires - tl_now());
+    /* Preserve the original short-circuit order and each return value. */
+    if (widget != overlay.text) {
+        trace_edit_click("begin-edit", "wrong-widget", FALSE); return FALSE;
     }
-    if (widget != overlay.text || event->button != 1
-        || gtk_text_view_get_editable(GTK_TEXT_VIEW(widget))) return FALSE;
-    if (paused() || !boolean(overlay.view, "editable") || overlay.pending_edit
-        || !tl_configuration_current(overlay.generation)
-        || !tl_view_context_matches(overlay.target, overlay.view)
-        || !boolean(tl_object(overlay.view, "viewContext"), "canEdit")) return TRUE;
+    if (event->button != 1) {
+        trace_edit_click("begin-edit", "non-primary", TRUE); return FALSE;
+    }
+    if (gtk_text_view_get_editable(GTK_TEXT_VIEW(widget))) {
+        trace_edit_click("begin-edit", "already-editing", TRUE); return FALSE;
+    }
+    if (paused()) {
+        trace_edit_click("begin-edit", "paused", TRUE); return TRUE;
+    }
+    if (!boolean(overlay.view, "editable")) {
+        trace_edit_click("begin-edit", "not-editable", TRUE); return TRUE;
+    }
+    if (overlay.pending_edit) {
+        trace_edit_click("begin-edit", "pending", TRUE); return TRUE;
+    }
+    if (!tl_configuration_current(overlay.generation)) {
+        trace_edit_click("begin-edit", "configuration-changed", TRUE); return TRUE;
+    }
+    if (!tl_view_context_matches(overlay.target, overlay.view)) {
+        trace_edit_click("begin-edit", "context-changed", TRUE); return TRUE;
+    }
+    if (!boolean(tl_object(overlay.view, "viewContext"), "canEdit")) {
+        trace_edit_click("begin-edit", "cannot-edit", TRUE); return TRUE;
+    }
     gint x, y;
     GtkTextIter position;
     gtk_text_view_window_to_buffer_coords(GTK_TEXT_VIEW(widget), GTK_TEXT_WINDOW_WIDGET,
@@ -1663,6 +1701,7 @@ static gboolean begin_edit(GtkWidget *widget, GdkEventButton *event, gpointer da
     overlay.edit_offset = gtk_text_iter_get_offset(&position);
     overlay.pending_edit = TRUE;
     emit("beginEdit", NULL);
+    trace_edit_click("begin-edit", "emitted", TRUE);
     return TRUE;
 }
 static void translation_action_clicked(const char *operation, JsonObject *view) {

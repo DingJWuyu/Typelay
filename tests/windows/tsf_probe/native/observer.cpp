@@ -49,11 +49,11 @@ bool SameObject(IUnknown* a, IUnknown* b) noexcept {
     return same;
 }
 Tri MetadataIdentity(IUnknown* a, IUnknown* b) noexcept {
-    if (!a || !b) return Unknown;
+    if (!a || !b) return probe::Unknown;
     IUnknown *left = nullptr, *right = nullptr;
     HRESULT ha = a->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&left));
     HRESULT hb = b->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&right));
-    const Tri value = SUCCEEDED(ha) && SUCCEEDED(hb) && left && right ? (left == right ? Yes : No) : Unknown;
+    const Tri value = SUCCEEDED(ha) && SUCCEEDED(hb) && left && right ? (left == right ? Yes : No) : probe::Unknown;
     if (left) left->Release();
     if (right) right->Release();
     return value;
@@ -110,7 +110,7 @@ class Session final : public ITfEditSession {
             hr = document->GetBase(&base);
             if (FAILED(hr)) return hr;
             m.topEqualsBase = MetadataIdentity(top, base);
-            if (m.topEqualsBase == Unknown) return E_FAIL;
+            if (m.topEqualsBase == probe::Unknown) return E_FAIL;
             if (!Ready(MetadataEnumeration)) return E_ABORT;
             hr = document->EnumContexts(&enumerator);
             if (FAILED(hr)) return hr;
@@ -130,7 +130,7 @@ class Session final : public ITfEditSession {
                 if (!Ready(MetadataMembership)) return E_ABORT;
                 row.equalsTop = MetadataIdentity(items[i], top);
                 row.equalsBase = MetadataIdentity(items[i], base);
-                if (row.equalsTop == Unknown || row.equalsBase == Unknown) return E_FAIL;
+                if (row.equalsTop == probe::Unknown || row.equalsBase == probe::Unknown) return E_FAIL;
                 topCount += row.equalsTop == Yes; baseCount += row.equalsBase == Yes;
                 hr = items[i]->GetDocumentMgr(&owner);
                 if (FAILED(hr)) return hr;
@@ -152,7 +152,7 @@ class Session final : public ITfEditSession {
                 hr = view->GetWnd(&window);
                 view->Release(); view = nullptr;
                 if (FAILED(hr)) return hr;
-                row.windowMatchesOwnedEdit = !window ? Unknown : (window == state_->field ? Yes : No);
+                row.windowMatchesOwnedEdit = !window ? probe::Unknown : (window == state_->field ? Yes : No);
             }
             m.failureStage = MetadataEnumeration;
             if (topCount != 1 || baseCount != 1 || (m.count == 1) != (m.topEqualsBase == Yes)) return E_FAIL;

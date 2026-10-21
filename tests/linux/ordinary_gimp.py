@@ -592,28 +592,82 @@ def run_gimp(
             current, observed[0], measured, remeasured, expected, full_output_proven=observed[2]
         )
         assert process_identity(application["pid"]) == application
+        clicks = report.setdefault("clickObservations", [])
+        assert len(clicks) < 16, "ordinary click evidence limit exceeded"
+        observation = {
+            "sequence": len(clicks) + 1,
+            "stage": report["stage"],
+            "windowId": current["id"],
+            "measured": measured,
+            "remeasured": remeasured,
+            "point": point,
+        }
+        clicks.append(observation)
+        diagnostic_record()
+        # The original single move and click, with observation in between.
+        # All X commands share the original three-second action budget.
+        deadline = time.monotonic() + 3
         subprocess.run(
-            [
-                "xdotool",
-                "mousemove",
-                "--window",
-                nested_window,
-                str(point[0]),
-                str(point[1]),
-                "click",
-                "1",
-            ],
+            ["xdotool", "mousemove", "--window", nested_window, str(point[0]), str(point[1])],
             check=True,
-            timeout=3,
+            timeout=max(0.001, deadline - time.monotonic()),
         )
+        try:
+            location = dict(
+                line.split("=", 1)
+                for line in subprocess.check_output(
+                    ["xdotool", "getmouselocation", "--shell"],
+                    text=True,
+                    timeout=max(0.001, deadline - time.monotonic()),
+                ).splitlines()
+            )
+            # WINDOW is evidence only in this owned nested X session, not a
+            # native identity or permission to edit the source application.
+            observation["xPointer"] = {key: int(location[key]) for key in ("X", "Y", "WINDOW")}
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            observation["xPointerUnavailable"] = type(error).__name__
+        assert time.monotonic() < deadline, "single click action budget expired"
+        subprocess.run(
+            ["xdotool", "click", "1"],
+            check=True,
+            timeout=max(0.001, deadline - time.monotonic()),
+        )
+        observation["clickDispatched"] = True
+        diagnostic_record()
+        return observation
 
     def edit_candidate():
         candidate = wait_for(editor, "GIMP candidate missing")
-        click_in_properties(candidate)
-        wait_for(
-            lambda: focused(candidate) and status().get("viewState") == "EditingTranslation",
-            "real candidate click did not enter editing",
-        )
+        observation = click_in_properties(candidate)
+
+        def editing():
+            candidate_focused = focused(candidate)
+            state = status().get("viewState")
+            observation["editObservation"] = {
+                "candidateFocused": candidate_focused,
+                "sourceFocused": focused(source),
+                "viewState": state,
+            }
+            return candidate_focused and state == "EditingTranslation"
+
+        try:
+            wait_for(editing, "real candidate click did not enter editing")
+        except Exception:
+            # Before cleanup alters focus, record the same node's present
+            # geometry. A moved rectangle is evidence, never a second click.
+            try:
+                observation["failureBounds"] = bounds(
+                    candidate,
+                    application["pid"],
+                    report["clickWindow"]["layout"]["window_size"],
+                    expected_role=Atspi.Role.DIALOG,
+                    expected_name=report["clickWindow"]["title"],
+                )
+            except Exception as error:
+                observation["failureBoundsUnavailable"] = type(error).__name__
+            raise
+        finally:
+            diagnostic_record()
         return candidate
 
     def quit_gimp():

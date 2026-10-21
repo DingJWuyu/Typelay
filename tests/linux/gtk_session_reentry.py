@@ -274,7 +274,15 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                 assert source["authority"]["sessionBindings"] == source["sessionBindings"]
                 if stage.startswith("language-retention-"):
                     check_language_retention_refusal(
-                        client, source, generation, state, initial, nested, dimensions, stage
+                        client,
+                        source,
+                        generation,
+                        state,
+                        initial,
+                        nested,
+                        dimensions,
+                        stage,
+                        click_evidence,
                     )
                     print(f"GTK read-only language preview: {stage} refused", flush=True)
                     return
@@ -707,7 +715,7 @@ def check_preview_colors(client, source, generation, state, initial, evidence):
 
 
 def check_language_retention_refusal(
-    client, source, generation, state, initial, nested, dimensions, stage
+    client, source, generation, state, initial, nested, dimensions, stage, evidence
 ):
     """Real detached focus refusals; expired-render replays the retired deadline.
 
@@ -731,6 +739,12 @@ def check_language_retention_refusal(
     }
 
     def click(name, field=False, actual=None):
+        if name == trigger and not field:
+            phase = evidence["languageTrigger"] = dict(initial_render)
+            click_language_trigger(
+                state, nested, dimensions, phase, client.hello["backend"], layout=False
+            )
+            return
         actual = state() if actual is None else actual
         item = actual[name] if field else actual["overlayControls"][name]
         assert item["width"] > 0 and item["height"] > 0
@@ -905,24 +919,156 @@ def check_language_retention_refusal(
         assert not any(event.get("event") == "accepted" for event in client.events)
 
 
-def language_trigger_point(actual, phase, dimensions, now):
+def language_trigger_point(actual, phase, dimensions, now, backend="gtk3", *, layout=True):
     assert now <= phase["expiresAtMs"], "language trigger lease expired before click"
     name = "typelay-menu-trigger"
     if not clickable_control(actual, name, phase["renderReturnedAtMonoMs"], dimensions):
         return None
     control = actual["overlayControls"][name]
-    if (
-        not control.get("enabled")
-        or control.get("labelLayoutCurrent") is not True
-        or not control.get("labelRevision")
-        or control.get("paintedLabelRevision") != control["labelRevision"]
-    ):
+    if not control.get("enabled"):
         return None
+    if backend == "gtk3":
+        if control.get("scale") != actual["scale"]:
+            return None
+        if layout and (
+            control.get("labelLayoutCurrent") is not True
+            or not control.get("labelRevision")
+            or control.get("paintedLabelRevision") != control["labelRevision"]
+        ):
+            return None
+        bounds = control
+    elif backend == "gtk4":
+        bounds = control.get("surfaceGeometry")
+        if (
+            not isinstance(bounds, dict)
+            or type(bounds.get("scale")) is not int
+            or bounds["scale"] != actual["scale"]
+        ):
+            return None
+        if type(bounds.get("surfaceInstance")) is not int or bounds["surfaceInstance"] <= 0:
+            return None
+        if not all(
+            type(bounds.get(key)) in (int, float) and math.isfinite(bounds[key])
+            for key in ("x", "y")
+        ):
+            return None
+    else:
+        raise AssertionError("unknown GTK language trigger backend")
     return click_point(
         actual,
-        (control["x"] + control["width"] / 2, control["y"] + control["height"] / 2),
+        (bounds["x"] + control["width"] / 2, bounds["y"] + control["height"] / 2),
         dimensions,
     )
+
+
+def language_trigger_hover_current(
+    actual, phase, dimensions, now, backend, instance, surface, point, moved_at, *, layout=True
+):
+    current_point = language_trigger_point(actual, phase, dimensions, now, backend, layout=layout)
+    if current_point != point or actual.get("observedAtMs", 0) < moved_at:
+        return False
+    control = actual["overlayControls"]["typelay-menu-trigger"]
+    entered = control.get("pointerEnteredAtMonoMs" if backend == "gtk4" else "pointerEnteredAtMs")
+    return (
+        control.get("instance") == instance
+        and (backend != "gtk4" or control["surfaceGeometry"]["surfaceInstance"] == surface)
+        and control.get("pointerInside") is True
+        and type(entered) is int
+        and entered > 0
+    )
+
+
+def click_language_trigger(state, nested, dimensions, phase, backend, *, layout=True):
+    # No renewal: these language tests deliberately bind some actions to an
+    # original expiry. Hover consumes that same budget and never retries input.
+    def observation(actual):
+        control = actual.get("overlayControls", {}).get("typelay-menu-trigger", {})
+        return {
+            "observedAtMonoMs": actual.get("observedAtMs"),
+            "parent": {key: actual.get(key) for key in ("fullscreen", "width", "height", "scale")},
+            "control": {
+                key: control.get(key)
+                for key in (
+                    "instance",
+                    "visible",
+                    "enabled",
+                    "x",
+                    "y",
+                    "width",
+                    "height",
+                    "surfaceGeometry",
+                    "pointerInside",
+                    "pointerEnteredAtMs",
+                    "pointerEnteredAtMonoMs",
+                    "pointerObservation",
+                    "eventWindow",
+                )
+            },
+        }
+
+    def ready():
+        actual = state()
+        phase["triggerGeometry"] = observation(actual)
+        point = language_trigger_point(actual, phase, dimensions, now_ms(), backend, layout=layout)
+        return (actual, point) if point else None
+
+    actual, point = wait_for(ready, "language trigger geometry unavailable before single move")
+    control = actual["overlayControls"]["typelay-menu-trigger"]
+    instance = control["instance"]
+    surface = control.get("surfaceGeometry", {}).get("surfaceInstance")
+    phase.update(control="typelay-menu-trigger", point=point)
+    subprocess.run(
+        ["xdotool", "mousemove", "--window", nested, *map(str, point)], check=True, timeout=3
+    )
+    moved_at = time.monotonic_ns() // 1_000_000
+    phase["moveFinishedAtMonoMs"] = moved_at
+    try:
+        location = dict(
+            line.split("=", 1)
+            for line in subprocess.check_output(
+                ["xdotool", "getmouselocation", "--shell"], text=True, timeout=3
+            ).splitlines()
+        )
+        phase["xPointer"] = {
+            "ownedNiri": int(nested),
+            **{key: int(location[key]) for key in ("X", "Y", "WINDOW")},
+        }
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        phase["xPointer"] = {"unavailable": type(error).__name__}
+
+    def hovered():
+        actual = state()
+        value = observation(actual)
+        phase.setdefault("firstHoverObservation", value)
+        phase["lastHoverObservation"] = value
+        return (
+            actual
+            if language_trigger_hover_current(
+                actual,
+                phase,
+                dimensions,
+                now_ms(),
+                backend,
+                instance,
+                surface,
+                point,
+                moved_at,
+                layout=layout,
+            )
+            else None
+        )
+
+    actual = wait_for(hovered, "language trigger did not receive real same-point hover")
+    phase["beforeClick"] = observation(actual)
+    assert now_ms() <= phase["expiresAtMs"], "language trigger lease expired before click"
+    phase["clickStartedAtMonoMs"] = time.monotonic_ns() // 1_000_000
+    phase["clickStartedAtMs"] = now_ms()
+    try:
+        subprocess.run(["xdotool", "click", "1"], check=True, timeout=3)
+        phase["clickCommandSucceeded"] = True
+    finally:
+        phase["clickFinishedAtMs"] = now_ms()
+        phase["clickFinishedAtMonoMs"] = time.monotonic_ns() // 1_000_000
 
 
 def check_language_options(
@@ -1044,34 +1190,22 @@ def check_language_options(
         return actual.get("overlayControls", {})
 
     def click(name):
-        if name == trigger and client.hello["backend"] == "gtk3":
-
-            def laid_out():
-                actual = state()
-                phases[-1]["lastObservation"] = observe(actual)
-                point = language_trigger_point(actual, phases[-1], dimensions, now_ms())
-                return (actual, point) if point else None
-
-            actual, point = wait_for(laid_out, "language trigger label layout did not finish")
-        else:
-            actual = state()
-            control = actual["overlayControls"][name]
-            assert control["visible"] and control["width"] > 0 and control["height"] > 0
-            point = click_point(
-                actual,
-                (control["x"] + control["width"] / 2, control["y"] + control["height"] / 2),
-                dimensions,
-            )
+        if name == trigger:
+            click_language_trigger(state, nested, dimensions, phases[-1], client.hello["backend"])
+            return
+        actual = state()
+        control = actual["overlayControls"][name]
+        assert control["visible"] and control["width"] > 0 and control["height"] > 0
+        point = click_point(
+            actual,
+            (control["x"] + control["width"] / 2, control["y"] + control["height"] / 2),
+            dimensions,
+        )
         phase = phases[-1]
-        if phase:
-            phase.update(control=name, point=point, beforeClick=observe(actual))
-        if phase:
-            phase["clickStartedAtMonoMs"] = time.monotonic_ns() // 1_000_000
-        if name == trigger and client.hello["backend"] == "gtk3":
-            assert now_ms() <= phase["expiresAtMs"], "language trigger lease expired before click"
+        phase.update(control=name, point=point, beforeClick=observe(actual))
+        phase["clickStartedAtMonoMs"] = time.monotonic_ns() // 1_000_000
         click_once(nested, point, phase)
-        if phase:
-            phase["clickFinishedAtMonoMs"] = time.monotonic_ns() // 1_000_000
+        phase["clickFinishedAtMonoMs"] = time.monotonic_ns() // 1_000_000
 
     def toggle(opened, renew=True):
         if renew:
