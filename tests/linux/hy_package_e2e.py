@@ -25,14 +25,20 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from main import control  # noqa: E402
 from paths import Paths  # noqa: E402
-from setup import download_resource, hy_assets, package_catalog  # noqa: E402
+from setup import (  # noqa: E402
+    download_resource,
+    hy_assets,
+    package_catalog,
+    plain_files,
+    runtime_copy_plan,
+)
 from support.translation_quality_capture import (  # noqa: E402
     CLEANUP_SECONDS,
-    WORK_SECONDS,
     Capture,
     exclusive_inventory,
     fixture_home,
     process_identity,
+    work_seconds,
 )
 
 HY = "hy-mt2-1-8b-q4-k-m"
@@ -141,11 +147,38 @@ def prepare_cache(package, cache, *, cache_only=False):
     }
 
 
-def disk_budget(package, data):
-    """Reserve all five transaction generations until Remove retires history."""
+def disk_budget(package, data, *, combination=False):
+    """Reserve actual two-Select copies, or the unchanged five-transaction lifecycle."""
     assets = hy_assets(package)
     fixed = assets.read_json(package / "worker/native/hy/model.lock.json")
     generation = (data / "typelay/components/current").resolve(strict=True)
+    if combination:
+        inventory = json.loads((generation / "models/installed.json").read_bytes())
+        require_combination_inventory(inventory, fixed["version"])
+        runtime_bytes = sum(
+            path.stat().st_size for path, _, _ in runtime_copy_plan(generation / "runtime")
+        )
+        package_bytes = sum(
+            path.stat().st_size
+            for item in inventory["packages"]
+            for path in plain_files(generation / "models/packages" / item["id"] / item["version"])
+        )
+        # copytree follows internal links too; use the same bounded expansion plan.
+        app_bytes = sum(path.stat().st_size for path, _, _ in runtime_copy_plan(package))
+        # Keep both generations even if normal retention releases one sooner.
+        # Two production-sized margins cover metadata, path rewrites and allocation.
+        margin = 2 * 64 * 1024**2
+        required = 2 * (runtime_bytes + package_bytes) + app_bytes + margin
+        return dict(
+            selectTransactions=2,
+            runtimeCopyBytes=runtime_bytes,
+            installedPackageCopyBytes=package_bytes,
+            applicationCopyBytes=app_bytes,
+            safetyMarginBytes=margin,
+            additionalCacheBytes=0,
+            requiredDesktopFreeBytes=required,
+            requiredCacheAndDesktopFreeBytes=required,
+        )
     original = sum(path.stat().st_size for path in generation.rglob("*") if path.is_file())
     model = sum(fixed[key]["bytes"] for key in ("model", "model_license"))
     # Install, return, select, return retain four GGUF copies. Remove adds a
@@ -158,6 +191,14 @@ def disk_budget(package, data):
         "requiredDesktopFreeBytes": desktop,
         "requiredCacheAndDesktopFreeBytes": desktop + model,
     }
+
+
+def require_combination_space(data, cache, fixture_parent, budget):
+    """This bounded fixture uses one filesystem; reject cross-device assumptions."""
+    if len({os.stat(path).st_dev for path in (data, cache, fixture_parent)}) != 1:
+        raise ValueError("combination-only-requires-same-filesystem")
+    if shutil.disk_usage(data).free < budget["requiredDesktopFreeBytes"]:
+        raise RuntimeError("Insufficient disk for the two-Select combination capture")
 
 
 def worker_generation(pid, package, components):
@@ -186,6 +227,23 @@ def worker_generation(pid, package, components):
     return None
 
 
+def require_combination_inventory(inventory, version, *, original=None):
+    """Only a preinstalled isolated inventory can enter the no-install capture."""
+    if (
+        type(inventory.get("schema")) is not int
+        or inventory["schema"] != 3
+        or inventory.get("activePackages") != ARGOS
+        or len(inventory.get("packages", [])) != len(ARGOS) + 1
+        or {item.get("id") for item in inventory.get("packages", [])} != {*ARGOS, HY}
+    ):
+        raise ValueError("combination-only-requires-preinstalled-hy-and-active-argos")
+    hy = next(item for item in inventory["packages"] if item["id"] == HY)
+    if hy.get("version") != version or hy.get("directions") != DIRECTIONS:
+        raise ValueError("combination-only-preinstalled-hy-identity")
+    if original is not None and inventory != original:
+        raise ValueError("combination-only-restored-inventory-changed")
+
+
 def run(arguments):
     from support.gtk_accessibility import Atspi, named, select_settings_page
 
@@ -193,19 +251,21 @@ def run(arguments):
     started, process = time.monotonic(), None
     deadline = started + 240
     quality = getattr(arguments, "collect_translation_quality", False)
+    combination = getattr(arguments, "combination_only", False)
     capture = (
         Capture(
             arguments.output,
             arguments.quality_work_deadline,
             comparison=getattr(arguments, "hy_decode_comparison", False),
             diagnostics=getattr(arguments, "fixed_model_diagnostics", False),
+            combination=combination,
         )
         if quality
         else None
     )
     if quality:
         assert arguments.quality_work_deadline is not None
-        assert 0 < arguments.quality_work_deadline - started <= WORK_SECONDS
+        assert 0 < arguments.quality_work_deadline - started <= work_seconds(combination)
         (arguments.output / "quality-inside-owner.json").write_text(
             json.dumps(
                 {
@@ -239,9 +299,16 @@ def run(arguments):
     cache_identity = {
         path.name: (path.stat().st_size, path.stat().st_mtime_ns) for path in cache.iterdir()
     }
-    budget = disk_budget(package, Path(environment["XDG_DATA_HOME"]))
+    budget = disk_budget(package, Path(environment["XDG_DATA_HOME"]), combination=combination)
     report["diskBudget"] = budget
-    if (
+    if combination:
+        require_combination_space(
+            Path(environment["XDG_DATA_HOME"]),
+            Path(environment["XDG_CACHE_HOME"]),
+            arguments.output,
+            budget,
+        )
+    elif (
         shutil.disk_usage(Path(environment["XDG_DATA_HOME"])).free
         < budget["requiredDesktopFreeBytes"]
     ):
@@ -278,6 +345,8 @@ def run(arguments):
             paths = Paths(package)
         initial = json.loads((paths.models / "installed.json").read_text())
         assert initial["schema"] in (1, 2, 3)
+        if combination:
+            require_combination_inventory(initial, fixed["version"])
         assert (
             subprocess.check_output(
                 [
@@ -799,48 +868,59 @@ def run(arguments):
                     [str(paths.launcher), "--background"], env=environment, stdout=log, stderr=log
                 )
                 argos = ready(ARGOS, ["zh_en", "en_zh"], "original-argos")
-                if capture is not None:
+                if capture is not None and not combination:
                     collect_and_restart(("alternative",), argos, log)
                 assert control(paths, "settings") is True
-                wait(
-                    lambda: row()
-                    and any(
-                        a["request"]["operation"] == "Install" and a["enabled"]
-                        for a in row()["actions"]
-                    ),
-                    "shipped Hy runtime unavailable",
-                )
-                action("Hy-MT2 1.8B · 中文多语", "下载并使用…")
-                hy = ready([HY], DIRECTIONS, "install-and-use-hy")
+                if combination:
+                    action("Hy-MT2 1.8B · 中文多语", "使用此模型")
+                    hy = ready([HY], DIRECTIONS, "select-preinstalled-hy")
+                else:
+                    wait(
+                        lambda: row()
+                        and any(
+                            a["request"]["operation"] == "Install" and a["enabled"]
+                            for a in row()["actions"]
+                        ),
+                        "shipped Hy runtime unavailable",
+                    )
+                    action("Hy-MT2 1.8B · 中文多语", "下载并使用…")
+                    hy = ready([HY], DIRECTIONS, "install-and-use-hy")
                 if capture is not None:
                     collect_and_restart(
-                        ("ordinary",) if capture.diagnostics else ("styled", "glossary"), hy, log
+                        ("styled_glossary",)
+                        if combination
+                        else (("ordinary",) if capture.diagnostics else ("styled", "glossary")),
+                        hy,
+                        log,
                     )
-                request = {
-                    "id": 1,
-                    "operation": "translateEditorSnapshot",
-                    "data": {
-                        "documentId": str(uuid.uuid4()),
-                        "version": 1,
-                        "selection": {"start": 0, "length": 11},
-                        "text": "我没有同意删除备份。",
-                        "languageId": "plaintext",
-                    },
-                }
-                request["data"]["selection"]["length"] = (
-                    len(request["data"]["text"].encode("utf-16-le")) // 2
-                )
-                response = control(
-                    paths, "translateEditorSnapshot", request, timeout=min(70, remaining())
-                )
-                assert (
-                    response["id"] == 1
-                    and response["data"]["documentId"] == request["data"]["documentId"]
-                )
-                translated = response["data"]["translation"]
-                assert translated.strip() and translated != request["data"]["text"]
-                assert workers() == [previous_worker], "explicit preview spawned another worker"
-                report["singleZhFrInference"] = "translated-nonempty-different"
+                if combination:
+                    report["singleZhFrInference"] = "not-run-combination-only-eight-request-budget"
+                else:
+                    request = {
+                        "id": 1,
+                        "operation": "translateEditorSnapshot",
+                        "data": {
+                            "documentId": str(uuid.uuid4()),
+                            "version": 1,
+                            "selection": {"start": 0, "length": 11},
+                            "text": "我没有同意删除备份。",
+                            "languageId": "plaintext",
+                        },
+                    }
+                    request["data"]["selection"]["length"] = (
+                        len(request["data"]["text"].encode("utf-16-le")) // 2
+                    )
+                    response = control(
+                        paths, "translateEditorSnapshot", request, timeout=min(70, remaining())
+                    )
+                    assert (
+                        response["id"] == 1
+                        and response["data"]["documentId"] == request["data"]["documentId"]
+                    )
+                    translated = response["data"]["translation"]
+                    assert translated.strip() and translated != request["data"]["text"]
+                    assert workers() == [previous_worker], "explicit preview spawned another worker"
+                    report["singleZhFrInference"] = "translated-nonempty-different"
                 subprocess.run(
                     ["grim", str(arguments.output / "hy-installed.png")],
                     check=True,
@@ -848,22 +928,26 @@ def run(arguments):
                 )
                 action("Argos · 中文 → English", "使用此模型")
                 ready(ARGOS, ["zh_en", "en_zh"], "switch-back-to-argos")
-                action("Hy-MT2 1.8B · 中文多语", "使用此模型")
-                ready([HY], DIRECTIONS, "select-installed-hy")
-                action("Argos · 中文 → English", "使用此模型")
-                ready(ARGOS, ["zh_en", "en_zh"], "return-to-argos-before-remove")
-                action("Hy-MT2 1.8B · 中文多语", "移除…")
-                ready(ARGOS, ["zh_en", "en_zh"], "remove-inactive-hy")
-                marker = json.loads((paths.models / "installed.json").read_text())
-                assert marker["schema"] == 3 and marker["activePackages"] == ARGOS
-                assert [item["id"] for item in marker["packages"]] == ARGOS
-                # Real cleanup must release model copies, including recovery generations.
-                wait(
-                    lambda: not list((paths.data / "components").rglob("*.gguf")),
-                    "removed Hy model copies were retained without release",
-                    remaining(),
-                )
-                wait(lambda: not cache.exists(), "removed Hy download cache was not cleaned")
+                if combination:
+                    restored = json.loads((paths.models / "installed.json").read_text())
+                    require_combination_inventory(restored, fixed["version"], original=initial)
+                else:
+                    action("Hy-MT2 1.8B · 中文多语", "使用此模型")
+                    ready([HY], DIRECTIONS, "select-installed-hy")
+                    action("Argos · 中文 → English", "使用此模型")
+                    ready(ARGOS, ["zh_en", "en_zh"], "return-to-argos-before-remove")
+                    action("Hy-MT2 1.8B · 中文多语", "移除…")
+                    ready(ARGOS, ["zh_en", "en_zh"], "remove-inactive-hy")
+                    marker = json.loads((paths.models / "installed.json").read_text())
+                    assert marker["schema"] == 3 and marker["activePackages"] == ARGOS
+                    assert [item["id"] for item in marker["packages"]] == ARGOS
+                    # Real cleanup must release model copies, including recovery generations.
+                    wait(
+                        lambda: not list((paths.data / "components").rglob("*.gguf")),
+                        "removed Hy model copies were retained without release",
+                        remaining(),
+                    )
+                    wait(lambda: not cache.exists(), "removed Hy download cache was not cleaned")
                 assert control(paths, "quit") is True
                 assert process.wait(timeout=7) == 0
                 assert not (Path("/proc") / str(previous_worker)).exists()
@@ -965,7 +1049,7 @@ def run(arguments):
                 report["nonCollectionSeconds"] = round(
                     time.monotonic() - started - capture.elapsed, 3
                 )
-                report["wallBudgetSeconds"] = WORK_SECONDS + 30
+                report["wallBudgetSeconds"] = work_seconds(combination) + 30
             report["peakAdditionalDiskBytes"] = initial_free - report["minimumDataFreeBytes"]
             report["elapsedSeconds"] = round(time.monotonic() - started, 3)
             (arguments.output / "hy-package-result.json").write_text(json.dumps(report, indent=2))
@@ -988,7 +1072,10 @@ if __name__ == "__main__":
     parser.add_argument("--remaining-seconds", type=int)
     parser.add_argument("--collect-translation-quality", action="store_true")
     parser.add_argument("--cache-only", action="store_true")
+    parser.add_argument("--combination-only", action="store_true")
     args = parser.parse_args()
+    if args.combination_only and not (args.check_budget and args.collect_translation_quality):
+        parser.error("--combination-only requires --check-budget --collect-translation-quality")
     if args.cache_only and not args.prepare_cache:
         parser.error("--cache-only requires --prepare-cache")
     if args.collect_translation_quality and not args.check_budget:
@@ -1007,7 +1094,9 @@ if __name__ == "__main__":
         if args.data is None or args.remaining_seconds is None:
             parser.error("--check-budget requires --data and --remaining-seconds")
         report = {
-            **disk_budget(args.package.resolve(), args.data.resolve()),
+            **disk_budget(
+                args.package.resolve(), args.data.resolve(), combination=args.combination_only
+            ),
             "remainingSeconds": args.remaining_seconds,
             "requiredSeconds": 12 * 60,
             "freeBytes": shutil.disk_usage(args.data).free,
@@ -1015,13 +1104,16 @@ if __name__ == "__main__":
         if args.collect_translation_quality:
             # Replace the ordinary five-minute lifecycle allowance, not append it.
             # Cache restore, preparation and cache save keep their original bounds.
-            capture = WORK_SECONDS + CLEANUP_SECONDS
+            capture = work_seconds(args.combination_only) + CLEANUP_SECONDS
             report.update(
                 preparationSeconds=7 * 60,
                 captureSeconds=capture,
-                captureStepOverheadSeconds=36 * 60 - capture,
+                captureStepOverheadSeconds=0 if args.combination_only else 36 * 60 - capture,
                 artifactSeconds=3 * 60,
-                requiredSeconds=7 * 60 + capture + (36 * 60 - capture) + 3 * 60,
+                requiredSeconds=7 * 60
+                + capture
+                + (0 if args.combination_only else 36 * 60 - capture)
+                + 3 * 60,
             )
         report["admitted"] = (
             report["remainingSeconds"] >= report["requiredSeconds"]

@@ -26,7 +26,7 @@ IPC 不携带正文，只有有界状态、长度、选区和 fingerprint。fing
 
 ## 证据边界与待验证
 
-本版本不是支持能力。旧基线的真实编译、纯合同测试和 no-DLL 正常启动/退出已在隔离 Windows 验证；当前诊断协议 v2 候选尚未完成 Windows 编译与生命周期验证，不能继承旧基线证据；缺 manager/context、取消/过期、父进程退出、目标销毁与晚到回调等只读阶段仍未在 Windows 上验证。缺中文 IME 环境只能建立无组合时的单次合成文档观察，不能建立中文组合/共存/连续观察或任何 Tab/写回能力。
+本版本不是支持能力。诊断协议 v2 的真实编译、纯合同测试和 no-DLL 正常启动/退出已在隔离 Windows 验证；该结果不证明目标侧 hook、策略查询或读取会话成功；缺 manager/context、取消/过期、父进程退出、目标销毁与晚到回调等只读阶段仍未在 Windows 上验证。缺中文 IME 环境只能建立无组合时的单次合成文档观察，不能建立中文组合/共存/连续观察或任何 Tab/写回能力。
 
 源代码内 guard 不是实测证据；后续具体只读生命周期反例的执行编排仍须单独审查，不使用模拟 TSF 替代。
 
@@ -66,4 +66,4 @@ SetWindowsHookEx 使用 TID，不接受持有的线程句柄/创建时间。runn
 
 在 hook 前，使用 held 自有目标进程句柄只读查询签名与动态代码 policy，记录 query/known、数值错误及已定义标志位。任何查询失败停止；MicrosoftSignedOnly/StoreSignedOnly/MitigationOptIn 不兼容本次未签名实验 DLL 时停止。动态代码禁止位只约束动态生成/修改可执行代码，不等于普通 DLL 加载被禁止，也不是加载安全证明；不调用策略修改/放宽接口，不提权或绕过。[查询合同](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessmitigationpolicy)、[签名策略](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-process_mitigation_binary_signature_policy)、[动态代码策略](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-process_mitigation_dynamic_code_policy)
 
-所有新增字段都是固定有界元数据，无正文/地址/句柄。报告消费者严格校验版本、阶段、类型与范围；Lifecycle 要求全部发送/阶段为未开始且原清理成立，不能将全零诊断当读取成功。新候选先经独立 Lifecycle 编译、selftests、no-DLL 验证并保留六个源码 blob；Read 继续固定旧基线，只有原报告经审后才可另批固定新基线与单次 Read。没有自动重试或写锁升级。
+所有新增字段都是固定有界元数据，无正文/地址/句柄。报告消费者严格校验版本、阶段、类型与范围；Lifecycle 要求全部发送/阶段为未开始且原清理成立，不能将全零诊断当读取成功。新候选先经独立 Lifecycle 编译、selftests、no-DLL 验证并保留六个源码 blob；Read 固定经审的 v2 生命周期基线 `889a06469e47632d55f2107174f7c3cd7c4a16ff`；未来源码变更仍须重新验证、审定固定基线并另批单次 Read。没有自动重试或写锁升级。

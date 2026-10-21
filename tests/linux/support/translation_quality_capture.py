@@ -21,9 +21,15 @@ CLEANUP_SECONDS = 30
 COLLECTIONS = {"alternative": 32, "styled": 16, "glossary": 5}
 
 
-def collections(comparison=False, diagnostics=False):
-    if comparison and diagnostics:
+def work_seconds(combination=False):
+    return 240 + RUNNER_SECONDS if combination else WORK_SECONDS
+
+
+def collections(comparison=False, diagnostics=False, combination=False):
+    if sum((comparison, diagnostics, combination)) > 1:
         raise ValueError("comparison and fixed diagnostics are mutually exclusive")
+    if combination:
+        return {"styled_glossary": 8}
     if diagnostics:
         return {"alternative": 32, "ordinary": 8}
     return (
@@ -84,6 +90,7 @@ def invoke_runner(name, arguments, *, comparison=None, shipped_worker=None):
                 "styled_quality",
                 "glossary_quality",
                 "ordinary_quality",
+                "styled_glossary_quality",
                 "hy_decode_comparison",
             }
         )
@@ -142,6 +149,7 @@ def inspect_report(name, output):
             "translate-alternative",
             "translate-styled-v1",
             "translate-glossary-v1",
+            "translate-styled-glossary-v1",
         }:
             raise ValueError("quality request operation invalid")
         operations.append(operation)
@@ -151,7 +159,9 @@ def inspect_report(name, output):
         "output": str(output),
         "status": report.get("status"),
         "quality": report.get("quality", "not-run"),
-        "maximumTranslationRequests": collections(name == "styled-b", name == "ordinary")[name],
+        "maximumTranslationRequests": collections(
+            name == "styled-b", name == "ordinary", name == "styled_glossary"
+        )[name],
         "actualTranslationRequests": count,
         "actualHelloRequests": operations.count("hello"),
         "method": report.get("method"),
@@ -164,10 +174,13 @@ def inspect_report(name, output):
 
 
 class Capture:
-    def __init__(self, output, work_deadline, *, comparison=False, diagnostics=False):
+    def __init__(
+        self, output, work_deadline, *, comparison=False, diagnostics=False, combination=False
+    ):
+        self.combination = combination
         self.comparison = comparison
         self.diagnostics = diagnostics
-        self.collections = collections(comparison, diagnostics)
+        self.collections = collections(comparison, diagnostics, combination)
         self.output = output
         self.work_deadline = work_deadline
         self.elapsed = 0.0
@@ -292,6 +305,31 @@ class Capture:
         source_name = "styled" if name in ("styled-b", "ordinary") else name
         inputs = (RUNNERS / f"{source_name}_quality_inputs.json").read_bytes()
         expected = json.loads(inputs)["samples"]
+        if name == "styled_glossary":
+            paired = []
+            for sample in expected:
+                source, target = sample["direction"].split("_")
+                for variant, operation in (
+                    ("ordinary", "translate"),
+                    ("style", "translate-styled-v1"),
+                    ("glossary", "translate-glossary-v1"),
+                    ("combined", "translate-styled-glossary-v1"),
+                ):
+                    payload = dict(op=operation, text=sample["text"], source=source, target=target)
+                    if variant in ("style", "combined"):
+                        payload["style"] = sample["style"]
+                    if variant in ("glossary", "combined"):
+                        payload["glossary"] = sample["glossary"]
+                    paired.append(
+                        dict(
+                            id=sample["id"] + ":" + variant,
+                            sourceCaseId=sample["id"],
+                            variant=variant,
+                            request=payload,
+                            semantic_anchors=sample["semantic_anchors"],
+                        )
+                    )
+            expected = paired
         holdout_matches = True
         if name in ("styled", "styled-b", "ordinary"):
             holdout = (RUNNERS / "styled_quality_holdout_inputs.json").read_bytes()

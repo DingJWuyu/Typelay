@@ -318,9 +318,38 @@ def _gtk4_source_glossary(out, environment, deadline):
                     )
                     assert len(display) == 2 and all(value > 0 for value in display), display
 
+                    observations = {}
+
                     def ready():
+                        if overlay_control:
+                            renew()
                         actual = state()
                         parent = [actual.get(key) for key in ("width", "height", "scale")]
+                        control = (
+                            actual.get("overlayControls", {}).get(name)
+                            if overlay_control
+                            else actual.get(name)
+                        )
+                        metadata = {
+                            "observedAtMs": actual.get("observedAtMs"),
+                            "fullscreen": actual.get("fullscreen"),
+                            "parent": parent,
+                            "control": {
+                                key: control.get(key)
+                                for key in (
+                                    "visible",
+                                    "x",
+                                    "y",
+                                    "width",
+                                    "height",
+                                    "surfaceGeometry",
+                                )
+                            }
+                            if control
+                            else None,
+                        }
+                        observations.setdefault("first", metadata)
+                        observations["last"] = metadata
                         if (
                             actual.get("observedAtMs", 0) <= started
                             or actual.get("fullscreen") is not True
@@ -332,11 +361,6 @@ def _gtk4_source_glossary(out, environment, deadline):
                             or parent[1] * parent[2] != dimensions[1]
                         ):
                             return None
-                        control = (
-                            actual.get("overlayControls", {}).get(name)
-                            if overlay_control
-                            else actual.get(name)
-                        )
                         if not control or overlay_control and not control.get("visible"):
                             return None
                         surface = control.get("surfaceGeometry") if overlay_control else control
@@ -363,7 +387,15 @@ def _gtk4_source_glossary(out, environment, deadline):
                             assert control["enabled"], name
                         return actual, control, (int(x * parent[2]), int(y * parent[2]))
 
-                    actual, control, pixel = wait_for(ready, f"{name}: matching parent geometry")
+                    try:
+                        actual, control, pixel = wait_for(
+                            ready, f"{name}: matching parent geometry"
+                        )
+                    except AssertionError as error:
+                        raise AssertionError(
+                            f"{error}; started={started}; nested={dimensions}; "
+                            f"display={display}; readiness={observations}"
+                        ) from error
                     evidence = {
                         "case": current_case,
                         "control": name,
@@ -425,7 +457,6 @@ def _gtk4_source_glossary(out, environment, deadline):
                         instance = control["instance"]
 
                         def hovered():
-                            renew()
                             current = ready()
                             if current is None:
                                 return None
@@ -1621,6 +1652,7 @@ def quality_exit(arguments, compositor, work_deadline, result, failure):
     expected_collections = collections(
         getattr(arguments, "hy_decode_comparison", False),
         getattr(arguments, "fixed_model_diagnostics", False),
+        getattr(arguments, "combination_only", False),
     )
     cancelled = False
     signalled = False
@@ -1783,12 +1815,16 @@ def run_outer(arguments, script=None):
     ]
     quality_deadline = None
     if quality:
-        from support.translation_quality_capture import WORK_SECONDS
+        from support.translation_quality_capture import work_seconds
 
-        quality_deadline = time.monotonic() + WORK_SECONDS
+        quality_deadline = time.monotonic() + work_seconds(
+            getattr(arguments, "combination_only", False)
+        )
         command.extend(
             ["--collect-translation-quality", "--quality-work-deadline", str(quality_deadline)]
         )
+    if getattr(arguments, "combination_only", False):
+        command.append("--combination-only")
     if getattr(arguments, "fixed_model_diagnostics", False):
         command.append("--fixed-model-diagnostics")
     if getattr(arguments, "hy_decode_comparison", False):
@@ -1904,6 +1940,7 @@ if __name__ == "__main__":
     parser.add_argument("--collect-translation-quality", action="store_true")
     parser.add_argument("--hy-decode-comparison", action="store_true")
     parser.add_argument("--fixed-model-diagnostics", action="store_true")
+    parser.add_argument("--combination-only", action="store_true")
     parser.add_argument("--quality-work-deadline", type=float, help=argparse.SUPPRESS)
     parser.add_argument(
         "--desktop-scope",
@@ -1939,6 +1976,12 @@ if __name__ == "__main__":
     parser.add_argument("--native", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.combination_only and (
+        not args.collect_translation_quality
+        or args.fixed_model_diagnostics
+        or args.hy_decode_comparison
+    ):
+        parser.error("--combination-only requires collection and excludes other capture modes")
     if args.fixed_model_diagnostics and (
         not args.collect_translation_quality or args.hy_decode_comparison
     ):

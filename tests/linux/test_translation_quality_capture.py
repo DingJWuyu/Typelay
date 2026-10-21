@@ -20,14 +20,19 @@ from alternative_quality import collect, prepare_report  # noqa: E402
 from native_e2e import outer, quality_exit  # noqa: E402
 from support.translation_quality_capture import (  # noqa: E402
     Capture,
+    collections,
     exclusive_inventory,
     fixture_home,
     invoke_runner,
     process_identity,
+    work_seconds,
 )
 
 
 class QualityExitSummaryTests(unittest.TestCase):
+    def test_completed_combination_only_reconciles_eight_responses(self):
+        self.check_exit({"styled_glossary": 8}, combination=True)
+
     def test_completed_fixed_diagnostics_reconciles_40_responses_after_actual_inside_exit(self):
         self.check_exit({"alternative": 32, "ordinary": 8}, diagnostics=True)
 
@@ -42,7 +47,9 @@ class QualityExitSummaryTests(unittest.TestCase):
             with self.subTest(defect=defect):
                 self.check_exit({"alternative": 32, "ordinary": 8}, diagnostics=True, defect=defect)
 
-    def check_exit(self, selected, *, diagnostics=False, comparison=False, defect=None):
+    def check_exit(
+        self, selected, *, diagnostics=False, comparison=False, combination=False, defect=None
+    ):
         # Real owned processes and persisted reports exercise the outer completion
         # boundary. Synthetic responses are not model-inference evidence.
         (ROOT / "artifacts").mkdir(exist_ok=True)
@@ -73,6 +80,13 @@ class QualityExitSummaryTests(unittest.TestCase):
                         "styled": ["translate-styled-v1"] * 16,
                         "styled-b": ["translate-styled-v1"] * 16,
                         "glossary": ["translate-glossary-v1"] * 5,
+                        "styled_glossary": [
+                            "translate",
+                            "translate-styled-v1",
+                            "translate-glossary-v1",
+                            "translate-styled-glossary-v1",
+                        ]
+                        * 2,
                     }[name][:actual_count]
                     (output / f"{name}-quality.json").write_text(
                         json.dumps(
@@ -108,6 +122,7 @@ class QualityExitSummaryTests(unittest.TestCase):
                     output=output,
                     fixed_model_diagnostics=diagnostics,
                     hy_decode_comparison=comparison,
+                    combination_only=combination,
                 )
                 if defect:
                     with self.assertRaises(AssertionError):
@@ -866,6 +881,259 @@ class DecodeComparisonProcessTests(unittest.TestCase):
                 self.assertEqual(
                     (output / "styled-b-quality.json").exists(), not (unknown_a or exhaust_a)
                 )
+
+
+class CombinationOnlyTests(unittest.TestCase):
+    def test_mode_is_exclusive_and_budget_replaces_three_collectors(self):
+        self.assertEqual(collections(combination=True), {"styled_glossary": 8})
+        self.assertEqual(work_seconds(True), 240 + 600 + 7)
+        for comparison, diagnostics in ((True, False), (False, True), (True, True)):
+            with self.assertRaises(ValueError):
+                collections(comparison, diagnostics, True)
+        self.assertEqual(collections(), {"alternative": 32, "styled": 16, "glossary": 5})
+
+    def test_cli_rejects_unscoped_or_mixed_capture_before_assets(self):
+        for options in (
+            [],
+            ["--collect-translation-quality", "--fixed-model-diagnostics"],
+            ["--collect-translation-quality", "--hy-decode-comparison"],
+            ["--collect-translation-quality", "--desktop", "--desktop-scope", "gtk"],
+        ):
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tests/linux/native_e2e.py"),
+                    "--combination-only",
+                    "--native",
+                    "/absent",
+                    "--output",
+                    "/absent",
+                    *options,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("requires", result.stderr)
+
+    def test_preinstalled_inventory_is_required_and_never_fabricated(self):
+        from hy_package_e2e import ARGOS, DIRECTIONS, HY, require_combination_inventory
+
+        value = {
+            "schema": 3,
+            "activePackages": ARGOS,
+            "packages": [{"id": name} for name in ARGOS]
+            + [{"id": HY, "version": "fixed", "directions": DIRECTIONS}],
+        }
+        original = json.dumps(value)
+        require_combination_inventory(value, "fixed")
+        self.assertEqual(json.dumps(value), original)
+        for defect in ("missing", "version", "directions", "active"):
+            bad = json.loads(original)
+            if defect == "missing":
+                bad["packages"].pop()
+            elif defect == "version":
+                bad["packages"][-1]["version"] = "other"
+            elif defect == "directions":
+                bad["packages"][-1]["directions"] = ["zh_fr"]
+            else:
+                bad["activePackages"] = [HY]
+            with self.assertRaisesRegex(ValueError, "combination-only"):
+                require_combination_inventory(bad, "fixed")
+
+    def test_restored_inventory_must_preserve_original_selection_and_all_records(self):
+        from hy_package_e2e import ARGOS, DIRECTIONS, HY, require_combination_inventory
+
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "installed.json"
+            settings = Path(temporary) / "settings.json"
+            value = {
+                "schema": 3,
+                "activePackages": ARGOS,
+                "pythonVersion": "fixed",
+                "packages": [{"id": name} for name in ARGOS]
+                + [
+                    {
+                        "id": HY,
+                        "version": "fixed",
+                        "directions": DIRECTIONS,
+                        "files": [{"path": "fixed.gguf", "sha256": "a" * 64}],
+                    }
+                ],
+            }
+            marker.write_text(json.dumps(value))
+            settings.write_bytes(b'{"Source":"zh","Target":"fr"}')
+            before = (marker.read_bytes(), settings.read_bytes())
+            original = json.loads(marker.read_bytes())
+            require_combination_inventory(
+                json.loads(marker.read_bytes()), "fixed", original=original
+            )
+            for defect in ("selection", "file", "runtime"):
+                restored = json.loads(marker.read_bytes())
+                if defect == "selection":
+                    restored["activePackages"] = [HY]
+                elif defect == "file":
+                    restored["packages"][-1]["files"][0]["sha256"] = "b" * 64
+                else:
+                    restored["pythonVersion"] = "different"
+                with self.assertRaisesRegex(ValueError, "combination-only"):
+                    require_combination_inventory(restored, "fixed", original=original)
+            self.assertEqual((marker.read_bytes(), settings.read_bytes()), before)
+
+    def test_combination_disk_budget_counts_two_copy_plans_one_app_and_no_new_cache(self):
+        import shutil
+
+        import hy_package_e2e as lifecycle
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package, data, cache = root / "package", root / "data", root / "cache"
+            cache.mkdir()
+            generation = data / "typelay/components" / ("a" * 32)
+            (generation / "runtime").mkdir(parents=True)
+            (generation / "runtime/actual").write_bytes(b"abc")
+            (generation / "runtime/alias").symlink_to("actual")
+            (generation.parent / "current").symlink_to(generation.name)
+            packages = []
+            for name, size in zip([*lifecycle.ARGOS, lifecycle.HY], (2, 3, 7), strict=True):
+                folder = generation / "models/packages" / name / "fixed"
+                folder.mkdir(parents=True)
+                (folder / "asset").write_bytes(b"x" * size)
+                packages.append(dict(id=name, version="fixed", directions=lifecycle.DIRECTIONS))
+            (generation / "models/installed.json").write_text(
+                json.dumps(dict(schema=3, activePackages=lifecycle.ARGOS, packages=packages))
+            )
+            lock = package / "worker/native/hy/model.lock.json"
+            lock.parent.mkdir(parents=True)
+            lock.write_text(
+                json.dumps(dict(version="fixed", model={"bytes": 7}, model_license={"bytes": 2}))
+            )
+            (package / "actual").write_bytes(b"hello")
+            (package / "alias").symlink_to("actual")
+            copied = root / "copied-app"
+            shutil.copytree(package, copied)
+            app_bytes = sum(path.stat().st_size for path in copied.rglob("*") if path.is_file())
+            assets = types.SimpleNamespace(read_json=lambda path: json.loads(path.read_bytes()))
+            with patch.object(lifecycle, "hy_assets", return_value=assets):
+                budget = lifecycle.disk_budget(package, data, combination=True)
+                self.assertEqual(budget["runtimeCopyBytes"], 6)
+                self.assertEqual(budget["installedPackageCopyBytes"], 12)
+                self.assertEqual(budget["applicationCopyBytes"], app_bytes)
+                expected = 2 * (6 + 12) + app_bytes + 2 * 64 * 1024**2
+                self.assertEqual(budget["requiredDesktopFreeBytes"], expected)
+                self.assertEqual(budget["requiredCacheAndDesktopFreeBytes"], expected)
+                self.assertEqual(budget["additionalCacheBytes"], 0)
+                (cache / "already-cached-model").write_bytes(b"c" * 100)
+                self.assertEqual(lifecycle.disk_budget(package, data, combination=True), budget)
+                original = sum(
+                    path.stat().st_size for path in generation.rglob("*") if path.is_file()
+                )
+                normal = lifecycle.disk_budget(package, data)
+                self.assertEqual(
+                    normal["requiredDesktopFreeBytes"], 5 * original + 4 * 9 + 2 * 1024**3
+                )
+                self.assertEqual(
+                    normal["requiredCacheAndDesktopFreeBytes"],
+                    normal["requiredDesktopFreeBytes"] + 9,
+                )
+            with patch.object(
+                lifecycle.shutil, "disk_usage", return_value=types.SimpleNamespace(free=expected)
+            ):
+                lifecycle.require_combination_space(data, cache, root, budget)
+            with patch.object(
+                lifecycle.shutil,
+                "disk_usage",
+                return_value=types.SimpleNamespace(free=expected - 1),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Insufficient disk"):
+                    lifecycle.require_combination_space(data, cache, root, budget)
+            with patch.object(
+                lifecycle.os,
+                "stat",
+                side_effect=[types.SimpleNamespace(st_dev=n) for n in (1, 1, 2)],
+            ):
+                with self.assertRaisesRegex(ValueError, "same-filesystem"):
+                    lifecycle.require_combination_space(data, cache, root, budget)
+
+    def test_missing_existing_cache_cannot_fall_back_to_download(self):
+        import hy_package_e2e
+
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary)
+            assets = types.SimpleNamespace(
+                verify_native=lambda: None, plain_path=lambda path, **kwargs: path
+            )
+            fixed = {
+                "model": {"file": "missing.gguf"},
+                "model_license": {"file": "missing-license"},
+            }
+            package = types.SimpleNamespace(id=hy_package_e2e.HY)
+            with (
+                patch.object(hy_package_e2e, "model_cache", return_value=(assets, fixed, cache)),
+                patch.object(
+                    hy_package_e2e,
+                    "package_catalog",
+                    return_value=types.SimpleNamespace(packages=[package]),
+                ),
+                patch.object(hy_package_e2e, "download_resource") as download,
+            ):
+                with self.assertRaisesRegex(FileNotFoundError, "existing Hy cache"):
+                    hy_package_e2e.prepare_cache(cache, cache, cache_only=True)
+                download.assert_not_called()
+
+    def test_combination_capture_keeps_eight_only_and_rejects_retries_or_ninth_request(self):
+        import styled_glossary_quality
+
+        (ROOT / "artifacts").mkdir(exist_ok=True)
+        for extra_request in (False, True):
+            with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as temporary:
+                output = Path(temporary)
+                generation = output / "generation"
+                (generation / "models").mkdir(parents=True)
+                marker = generation / "models/installed.json"
+                marker.write_text('{"schema":3}')
+                seen = []
+
+                def runner(name, arguments):
+                    seen.append(name)
+                    report = styled_glossary_quality.prepare_report()
+                    report.update(
+                        status="completed",
+                        quality="not-reviewed",
+                        workerStarts=1,
+                        workerExitCode=0,
+                        workerExitConfirmed=True,
+                    )
+                    report["requests"] = [{"op": "hello"}] + [
+                        {"request": {"id": index + 2, **case["request"]}}
+                        for index, case in enumerate(report["cases"])
+                    ]
+                    if extra_request:
+                        report["requests"].append({"op": "translate"})
+                    report["installation"] = dict(
+                        models=str(generation / "models"),
+                        python=str(generation / "runtime/venv/bin/python"),
+                        inventorySha256=hashlib.sha256(marker.read_bytes()).hexdigest(),
+                    )
+                    (output / "styled_glossary-quality.json").write_text(json.dumps(report))
+                    return 0
+
+                capture = Capture(output, time.monotonic() + 1000, combination=True)
+                with patch("support.translation_quality_capture.invoke_runner", side_effect=runner):
+                    for name in ("alternative", "styled", "glossary", "ordinary"):
+                        with self.assertRaises(ValueError):
+                            capture.run(name, generation, output / "worker")
+                    if extra_request:
+                        with self.assertRaisesRegex(RuntimeError, "incomplete"):
+                            capture.run("styled_glossary", generation, output / "worker")
+                    else:
+                        capture.run("styled_glossary", generation, output / "worker")
+                        self.assertEqual(capture.report["actualTranslationRequests"], 8)
+                        self.assertEqual(capture.report["actualHelloRequests"], 1)
+                    with self.assertRaises(RuntimeError):
+                        capture.run("styled_glossary", generation, output / "worker")
+                    self.assertEqual(seen, ["styled_glossary"])
 
 
 if __name__ == "__main__":

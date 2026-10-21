@@ -43,7 +43,7 @@ python -B -m unittest discover -s tests/windows/tsf_probe -p 'test_*.py' -v
 
 workflow 监听授权分支的 push，但无标记时两个 job 都跳过、不分配 Windows runner。Preflight/Lifecycle 仍要求本目录或该 workflow 的真实变更；Read 可以随任何真实非空 tracked diff 的正常能力批执行，且 before 与 after 必须不同。每批都须明确唯一 Read 末段标记与 root 精确授权，不是自动后台读取；不为触发造探针 touch、空提交或复跑旧代码。
 
-每次是新的 GitHub-hosted Windows VM。Read 的三个 .cpp、两个 .h 与 build_native.py 共六个编译输入的 Git blob 必须逐文件等于已验证生命周期基线 `8d5e3f922266b6f3a754dbfee967a9665106c425`，工作树也必须干净；日志列 blob 哈希。复用已装好的 MSVC 编译和纯合同测试，不下载安装或改原观察逻辑。Lifecycle 可编译本批明确审过的新候选，但只能执行纯合同与 no-DLL 启退；两级均保留 source-baseline.json 的当前提交与六个 blob 清单。新 Lifecycle 通过及清单不自动升级 Read 基线；须 root 核验原报告后另审固定基线提交及一次 Read，不能把锁改成 HEAD。
+每次是新的 GitHub-hosted Windows VM。Read 的三个 .cpp、两个 .h 与 build_native.py 共六个编译输入的 Git blob 必须逐文件等于已验证生命周期基线 `889a06469e47632d55f2107174f7c3cd7c4a16ff`，工作树也必须干净；日志列 blob 哈希。复用已装好的 MSVC 编译和纯合同测试，不下载安装或改原观察逻辑。Lifecycle 可编译本批明确审过的新候选，但只能执行纯合同与 no-DLL 启退；两级均保留 source-baseline.json 的当前提交与六个 blob 清单。新 Lifecycle 通过及清单不自动升级 Read 基线；须 root 核验原报告后另审固定基线提交及一次 Read，不能把锁改成 HEAD。
 
 - `lifecycle`：固定 `runner.exe --lifecycle-only <新测试目录> <observer.dll绝对路径>`。只验证独占 Notepad 启退，不加载 observer。
 - `read`：先执行只读环境采集。exit 2 只是原协议返回值，必须同时验证 `observed-prerequisites-only`、当前 SHA 与零注册/激活/输入变化/正文读取，才能继续。Notepad 尚未在场与中文 IME 未证明均保留 unknown，不改系统补条件。然后且仅一次 `runner.exe --single-read <新测试目录> <observer.dll绝对路径>`。
@@ -52,4 +52,4 @@ Read 只有完整合成正文逐字符匹配、有效 UTF-16 选区范围、一�
 
 该级别最多证明隔离 VM、自有合成文档的一次正文/选区观察与进程级移除。没有中文 IME 不伪装 Clear，更不证明共存、连续变化、运行中卸载或写回。TID 挂 hook 的非原子身份限制见 [native/README.md](native/README.md)，不外推用户应用生产安全。原生说明中的逐级权限规则仍有效；Read 入口存在不等于已获本次发布执行授权。远端精确提交/标记仍由 root 审核、lead 单写，不自动挂正式产品验收。
 
-诊断协议 v2 只增加发送 API 事实、经验证的目标阶段位与只读 mitigation 摘要，见 [native/README.md](native/README.md#发送与入口诊断)。修改后的 native 尚须重新完成真实 Lifecycle 验证；现有 Read 锁仍保持旧已验提交，因此拒绝直接加载新候选。查询策略不可信或签名策略不兼容时在 hook 前停止，不修改系统策略。
+诊断协议 v2 只增加发送 API 事实、经验证的目标阶段位与只读 mitigation 摘要，见 [native/README.md](native/README.md#发送与入口诊断)。诊断 v2 已完成真实编译、纯合同及 no-DLL Lifecycle 验证；Read 现锁定该已验提交，但一次实际 Read 仍须本批精确审批，不因基线更新自动执行。查询策略不可信或签名策略不兼容时在 hook 前停止，不修改系统策略。
