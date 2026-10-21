@@ -201,6 +201,7 @@ public sealed class InlineGlossaryTests
     [InlineData("ime")]
     [InlineData("composing")]
     [InlineData("model")]
+    [InlineData("combined-capability")]
     [InlineData("settings")]
     [InlineData("close")]
     public async Task SourceReturnRechecksOriginalBasisBeforeAnyPersistence(string change)
@@ -250,6 +251,9 @@ public sealed class InlineGlossaryTests
                     {
                         Ime = change == "composing" ? ImeState.Composing : ImeState.Unknown
                     };
+                    break;
+                case "combined-capability":
+                    s.Model.StyledGlossaryTranslationCapability = new(2);
                     break;
                 case "model":
                     s.Model.VerifiedIdentity = SessionScenario.ArgosIdentity;

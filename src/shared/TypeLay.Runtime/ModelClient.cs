@@ -19,6 +19,10 @@ public sealed class ModelClient : ITranslationService, IDisposable
         {
             get; set;
         }
+        public StyledGlossaryTranslationCapability? StyledGlossaryTranslationCapability
+        {
+            get; set;
+        }
         public VerifiedModelIdentity? VerifiedIdentity
         {
             get; set;
@@ -132,6 +136,26 @@ public sealed class ModelClient : ITranslationService, IDisposable
                 try
                 {
                     return active.Child.Process.HasExited ? null : active.GlossaryTranslationCapability;
+                }
+                catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+                {
+                    return null;
+                }
+            }
+        }
+    }
+    public StyledGlossaryTranslationCapability? StyledGlossaryTranslationCapability
+    {
+        get
+        {
+            lock (_owner)
+            {
+                if (_disposed || _switching || _operation is not null || _active is not { } active
+                    || active.ExchangeCancellation.IsCancellationRequested || active.StyledGlossaryTranslationCapability is null)
+                    return null;
+                try
+                {
+                    return active.Child.Process.HasExited ? null : active.StyledGlossaryTranslationCapability;
                 }
                 catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
                 {
@@ -539,6 +563,8 @@ public sealed class ModelClient : ITranslationService, IDisposable
             connection.StyledTranslationCapability = new(connection.Admission);
         if (hello.GlossaryTranslationVersion == 1)
             connection.GlossaryTranslationCapability = new(connection.Admission);
+        if (hello.StyledGlossaryTranslationVersion == 1)
+            connection.StyledGlossaryTranslationCapability = new(connection.Admission);
         return connection;
     }
     private static void ValidateHello(ModelLoadPlan plan, ModelResponse hello)
@@ -548,6 +574,9 @@ public sealed class ModelClient : ITranslationService, IDisposable
         if (hello.StyledTranslationVersion is { } styledVersion && (styledVersion != 1 || !plan.UsesHy))
             throw new IOException("model-hello-capabilities");
         if (hello.GlossaryTranslationVersion is { } glossaryVersion && (glossaryVersion != 1 || !plan.UsesHy))
+            throw new IOException("model-hello-capabilities");
+        if (hello.StyledGlossaryTranslationVersion is { } combinedVersion
+            && (combinedVersion != 1 || !plan.UsesHy || hello.StyledTranslationVersion != 1 || hello.GlossaryTranslationVersion != 1))
             throw new IOException("model-hello-capabilities");
         if (hello.Directions is not { Length: > 0 } directions || directions.Any(string.IsNullOrEmpty)
             || directions.Distinct(StringComparer.Ordinal).Count() != directions.Length
@@ -628,7 +657,7 @@ public sealed class ModelClient : ITranslationService, IDisposable
         ModelGlossary? glossary = job.Glossary?.CouldApply(job.Direction) == true
             ? new(job.Glossary.Version, job.Glossary.Rules.Select(rule => new ModelGlossaryRule(
                 rule.SourceTerm, rule.TargetTerm, rule.SourceLanguage, rule.TargetLanguage)).ToArray()) : null;
-        if (glossary is not null && (job.Style is not null || job.Kind == TranslationKind.Alternative || job.PreviousCandidate is not null))
+        if (glossary is not null && (job.Kind == TranslationKind.Alternative || job.PreviousCandidate is not null))
             return Task.FromResult(new ModelResponse(0, "error", Code: "glossary-combination-unavailable"));
         string? wireStyle = job.Style switch
         {
@@ -636,7 +665,8 @@ public sealed class ModelClient : ITranslationService, IDisposable
             TranslationStyle.Formal => "formal",
             _ => null
         };
-        return TranslateRequestAsync(new(0, glossary is not null ? "translate-glossary-v1" : wireStyle is not null ? "translate-styled-v1"
+        return TranslateRequestAsync(new(0, glossary is not null && wireStyle is not null ? "translate-styled-glossary-v1"
+            : glossary is not null ? "translate-glossary-v1" : wireStyle is not null ? "translate-styled-v1"
             : job.Kind == TranslationKind.Alternative ? "translate-alternative" : "translate",
             job.SourceText, job.Direction.Source, job.Direction.Target, job.PreservedManualText,
             job.PreviousCandidate, wireStyle, glossary), expectedIdentity);
@@ -652,6 +682,8 @@ public sealed class ModelClient : ITranslationService, IDisposable
             if (_disposed || _active is null || _operation is not null
                 || expectedIdentity is not null && !ReferenceEquals(expectedIdentity, _active.VerifiedIdentity))
                 return new(0, "error", Code: "not-ready");
+            if (request.Op == "translate-styled-glossary-v1" && (!_active.Plan.UsesHy || _active.StyledGlossaryTranslationCapability is null))
+                return new(0, "error", Code: "glossary-combination-unavailable");
             if (request.Op == "translate-glossary-v1" && (!_active.Plan.UsesHy || _active.GlossaryTranslationCapability is null))
                 return new(0, "error", Code: "glossary-unavailable");
             if (request.Op == "translate-styled-v1" && !_active.Plan.UsesHy)
@@ -679,18 +711,18 @@ public sealed class ModelClient : ITranslationService, IDisposable
             try
             {
                 var response = await ExchangeAsync(connection, request, TimeSpan.FromSeconds(90), CancellationToken.None);
-                if (request.Op is "translate-alternative" or "translate-styled-v1" or "translate-glossary-v1")
+                if (request.Op is "translate-alternative" or "translate-styled-v1" or "translate-glossary-v1" or "translate-styled-glossary-v1")
                 {
                     lock (_owner)
                         if (!ReferenceEquals(_active, connection) || admission != _admission || _operation is not null)
                             return new(0, "error", Code: "not-ready");
-                    bool valid = response.Directions is null && response.Packages is null && response.StyledTranslationVersion is null && response.GlossaryTranslationVersion is null
+                    bool valid = response.Directions is null && response.Packages is null && response.StyledTranslationVersion is null && response.GlossaryTranslationVersion is null && response.StyledGlossaryTranslationVersion is null
                         && double.IsFinite(response.ElapsedMs) && response.ElapsedMs >= 0
                         && (response.Status switch
                         {
                             "translated" => WriteSafety.ValidReplacement(response.Text) && response.Code == "",
                             "no-alternative" => request.Op == "translate-alternative" && response.Text == "" && response.Code == "",
-                            "no-translation" => request.Op is ("translate-styled-v1" or "translate-glossary-v1") && response.Text == "" && response.Code == "",
+                            "no-translation" => request.Op is ("translate-styled-v1" or "translate-glossary-v1" or "translate-styled-glossary-v1") && response.Text == "" && response.Code == "",
                             "error" => response.Text == "" && !string.IsNullOrWhiteSpace(response.Code),
                             _ => false
                         });

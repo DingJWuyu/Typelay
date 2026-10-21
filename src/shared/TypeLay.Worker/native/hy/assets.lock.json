@@ -30,13 +30,13 @@
     },
     {
       "file": "hy_adapter.cpp",
-      "bytes": 16894,
-      "sha256": "3a102d3d95043f74d4767cdee1b7113bbaac1826718b35b17aa67c25827c2e40"
+      "bytes": 17283,
+      "sha256": "e5384a366ad7924c6ca1423ccfc86f1de88cc9049db036701a1cffdd2c5797cc"
     },
     {
       "file": "hy_adapter.h",
-      "bytes": 4332,
-      "sha256": "0f71c04b95334244c2dd72782a7ee0f6d4c8f78dd05a9b1df999fce61b4bcdf8"
+      "bytes": 4871,
+      "sha256": "2c1fc86db93a45a8831a045c44948294feb75b560f74c6f5fd12e9a9df8e2153"
     },
     {
       "file": "include/LICENSE.llama.cpp",

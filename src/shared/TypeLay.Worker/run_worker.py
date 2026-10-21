@@ -76,13 +76,39 @@ def serve(engine, self_check):
                     response["styledTranslationVersion"] = engine.styled_translation_version
                 if engine.glossary_translation_version is not None:
                     response["glossaryTranslationVersion"] = engine.glossary_translation_version
+                if engine.styled_glossary_translation_version is not None:
+                    response["styledGlossaryTranslationVersion"] = (
+                        engine.styled_glossary_translation_version
+                    )
             elif operation in (
                 "translate",
                 "translate-alternative",
                 "translate-styled-v1",
                 "translate-glossary-v1",
+                "translate-styled-glossary-v1",
             ):
-                if operation == "translate-glossary-v1":
+                if operation == "translate-styled-glossary-v1":
+                    if set(request) - {
+                        "id",
+                        "op",
+                        "text",
+                        "source",
+                        "target",
+                        "preserved",
+                        "style",
+                        "glossary",
+                    }:
+                        result = Result("error", code="invalid-request")
+                    else:
+                        result = engine.translate_styled_glossary(
+                            request.get("text"),
+                            request.get("source"),
+                            request.get("target"),
+                            request.get("style"),
+                            request.get("glossary"),
+                            request.get("preserved"),
+                        )
+                elif operation == "translate-glossary-v1":
                     if set(request) - {
                         "id",
                         "op",
@@ -157,6 +183,7 @@ def serve(engine, self_check):
                 "translate-alternative",
                 "translate-styled-v1",
                 "translate-glossary-v1",
+                "translate-styled-glossary-v1",
             ):
                 del result
         except EOFError:

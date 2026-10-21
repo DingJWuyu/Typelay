@@ -20,6 +20,7 @@ internal static class TranslationMenuPresentation
         "style-save-failed" => "未能保存，请重试",
         "style-canceled" => "操作已取消",
         "glossary-combination-unavailable" => "暂不支持同时应用风格与术语表",
+        "glossary-combination-not-released" => "当前模型方向尚未开放风格与术语同时应用",
         "style-not-released" => "当前模型方向尚未开放翻译风格",
         "alternative-not-released" => "当前模型方向尚未开放换种说法",
         "style-settings-full" => "应用风格数量已达上限",

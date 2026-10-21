@@ -1,4 +1,5 @@
 #include <gtk/gtk.h>
+#include <stdio.h>
 #include <json-glib/json-glib.h>
 #include "../../../src/linux/native/fcitx5/typelay-fcitx-v1.h"
 
@@ -8,6 +9,7 @@ static GtkWidget *report_window, *report_first, *report_second, *other_window, *
 static GtkWidget *protected_fields[2], *report_multiline, *excluded_views[3];
 static const char *report_path;
 static char *last_report;
+static guint glossary_command;
 typedef struct {
     guint insertions, deletions, focus_in, focus_out;
 } EntryEvidence;
@@ -219,7 +221,8 @@ static gboolean language_control(const char *name) {
         || g_strcmp0(name, "typelay-source-language") == 0
         || g_strcmp0(name, "typelay-target-language") == 0
         || g_strcmp0(name, "typelay-apply-languages") == 0
-        || g_strcmp0(name, "typelay-language-menu") == 0;
+        || g_strcmp0(name, "typelay-language-menu") == 0
+        || g_str_has_prefix(name, "typelay-glossary-");
 }
 static void report_language_control(GtkWidget *widget, gpointer data) {
     JsonBuilder *builder = data;
@@ -230,7 +233,11 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         && g_strcmp0(g_getenv("TYPELAY_FIXTURE_REENTRY_STAGE"), "expand") == 0
         && g_strcmp0(gtk_button_get_label(GTK_BUTTON(widget)), "展开") == 0;
     if (expand) name = "fixture-expand";
-    if (expand || language_control(name)) {
+    GtkWidget *parent = gtk_widget_get_parent(widget);
+    if (GTK_IS_LABEL(widget) && gtk_label_get_wrap(GTK_LABEL(widget)) && parent
+        && g_strcmp0(gtk_widget_get_name(parent), "typelay-glossary-form") == 0)
+        name = "fixture-glossary-feedback";
+    if (expand || language_control(name) || g_str_equal(name, "fixture-glossary-feedback")) {
         json_builder_set_member_name(builder, name);
         json_builder_begin_object(builder);
         if (expand) {
@@ -253,6 +260,14 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(report_window));
         json_builder_set_member_name(builder, "focused");
         json_builder_add_boolean_value(builder, focus && (focus == widget || gtk_widget_is_ancestor(focus, widget)));
+        if (GTK_IS_LABEL(widget)) {
+            json_builder_set_member_name(builder, "text");
+            json_builder_add_string_value(builder, gtk_label_get_text(GTK_LABEL(widget)));
+        }
+        if (GTK_IS_EDITABLE(widget)) {
+            json_builder_set_member_name(builder, "text");
+            json_builder_add_string_value(builder, gtk_editable_get_text(GTK_EDITABLE(widget)));
+        }
         if (GTK_IS_BUTTON(widget)) {
             const char *label = gtk_button_get_label(GTK_BUTTON(widget));
             json_builder_set_member_name(builder, "text");
@@ -309,8 +324,48 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
 
 #include "gtk_motion.inc"
 
+/* Public widget discovery, also used by the ordinary UI observations above. */
+static GtkWidget *find_named_widget(GtkWidget *widget, const char *name) {
+    if (g_strcmp0(gtk_widget_get_name(widget), name) == 0) return widget;
+    for (GtkWidget *child = gtk_widget_get_first_child(widget); child; child = gtk_widget_get_next_sibling(child)) {
+        GtkWidget *found = find_named_widget(child, name);
+        if (found) return found;
+    }
+    return NULL;
+}
+/* Host-app operations on real GTK objects; no TypeLay/provider state injection. */
+static void glossary_host_command(void) {
+    const char *path = g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND");
+    char *body = NULL;
+    if (!path || !g_file_get_contents(path, &body, NULL, NULL)) return;
+    guint serial = 0;
+    char action[32] = {0};
+    if (sscanf(body, "%u %31s", &serial, action) == 2 && serial > glossary_command) {
+        if (g_str_equal(action, "reset-inactive-term")) {
+            GtkWidget *term = find_named_widget(report_window, "typelay-glossary-source");
+            GtkWidget *client = term && GTK_IS_ENTRY(term) ? entry_client(term) : NULL;
+            if (!client || gtk_widget_has_focus(client)) g_error("Expected the inactive first glossary term");
+            GtkIMContext *context = g_object_get_data(G_OBJECT(client), TL_FCITX_CONTEXT_V1);
+            if (context && GTK_IS_IM_CONTEXT(context)) gtk_im_context_reset(context);
+            else g_error("No real inactive term GTK IM context to reset");
+        } else if (g_str_equal(action, "change-source")) {
+            char *changed = g_strconcat(gtk_editable_get_text(GTK_EDITABLE(report_first)), " changed", NULL);
+            gtk_editable_set_text(GTK_EDITABLE(report_first), changed);
+            g_free(changed);
+        } else if (g_str_equal(action, "replace-buffer")) {
+            GtkEntryBuffer *buffer = gtk_entry_buffer_new(gtk_editable_get_text(GTK_EDITABLE(report_first)), -1);
+            gtk_entry_set_buffer(GTK_ENTRY(report_first), buffer);
+            g_signal_connect_after(buffer, "inserted-text", G_CALLBACK(entry_inserted), &first_evidence);
+            g_signal_connect_after(buffer, "deleted-text", G_CALLBACK(entry_deleted), &first_evidence);
+            g_object_unref(buffer);
+        } else g_error("Unknown glossary fixture command");
+        glossary_command = serial;
+    }
+    g_free(body);
+}
 static gboolean report_state(gpointer unused) {
     (void)unused;
+    glossary_host_command();
     remove_session_controller(report_window, FALSE);
     GtkWidget *active = other_window && gtk_window_is_active(GTK_WINDOW(other_window)) ? other_window : report_window;
     GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(active));
@@ -320,6 +375,8 @@ static gboolean report_state(gpointer unused) {
     JsonBuilder *builder = json_builder_new();
     json_builder_begin_object(builder);
     motion_report(builder);
+    json_builder_set_member_name(builder, "glossaryCommand");
+    json_builder_add_int_value(builder, glossary_command);
     json_builder_set_member_name(builder, "observedAtMs");
     json_builder_add_int_value(builder, g_get_monotonic_time() / 1000);
     json_builder_set_member_name(builder, "first");
@@ -387,6 +444,10 @@ static gboolean report_state(gpointer unused) {
             json_builder_add_int_value(builder, gtk_widget_get_width(candidate));
             json_builder_set_member_name(builder, "height");
             json_builder_add_int_value(builder, gtk_widget_get_height(candidate));
+            json_builder_set_member_name(builder, "editable");
+            json_builder_add_boolean_value(builder, gtk_text_view_get_editable(GTK_TEXT_VIEW(candidate)));
+            json_builder_set_member_name(builder, "focused");
+            json_builder_add_boolean_value(builder, gtk_widget_has_focus(candidate));
             json_builder_set_member_name(builder, "editablePreview");
             json_builder_add_boolean_value(builder, gtk_widget_has_css_class(candidate, "editable-preview"));
             GdkRGBA foreground;

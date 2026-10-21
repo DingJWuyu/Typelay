@@ -40,9 +40,14 @@ typedef struct {
     TlGtk4GlossaryBuffer *buffers[2]; /* owned by the corresponding entry */
     GtkIMContext *contexts[2]; /* weak provider-owned bindings */
     gulong handlers[2];
-    JsonObject *token;
+    JsonObject *token, *source_authority, *source_view;
     JsonArray *directions;
-    char *id, *target, *generation;
+    char *id, *target, *generation, *origin_state;
+    Target *origin;
+    GtkWidget *origin_top, *origin_client;
+    gpointer origin_buffer;
+    gboolean source_origin, return_started, returned;
+    guint64 returned_focus;
     gint64 revision, settings_revision;
     gboolean clear[2], composing[2], probing, pending, finished, closing;
     gint reported_ime;
@@ -55,6 +60,7 @@ static struct {
     GtkWidget *style_label, *style_inherit, *style_natural, *style_formal, *alternative, *action_feedback, *glossary_action;
     GlossaryForm *glossary;
     JsonObject *glossary_draft_token;
+    GtkTextBuffer *glossary_draft_buffer;
     gboolean pending_glossary, language_focus_transfer;
     LanguageMenu source_languages, target_languages;
     JsonObject *menu_token;
@@ -72,6 +78,15 @@ static struct {
     gint64 revision, expires;
     guint expiry_timer;
 } overlay;
+
+/* Lives outside overlay: synchronous destruction must not erase failure. */
+typedef struct {
+    GtkWidget *top, *destination;
+    guint emissions;
+    gboolean failed, destination_seen;
+} GlossaryHandoff;
+static GlossaryHandoff *glossary_handoff;
+static gboolean glossary_can_return(Target *target);
 
 /* Only a local editor command, never a source write permit. Borrowed identities
  * are compared while the current overlay owns them, never dereferenced later. */
@@ -200,8 +215,7 @@ static gboolean render_translation_actions(JsonObject *view) {
         g_strcmp0(style, "Formal") == 0 ? "✓ 正式" : "正式", "换种说法", "加入术语表", feedback};
     gboolean visible[] = {released, released, released, released, boolean(state, "alternativeReleased"), boolean(state, "glossaryReleased"), *feedback != '\0'};
     gboolean enabled[] = {TRUE, current && boolean(state, "canInheritStyle"), change, change,
-        current && boolean(state, "canRequestAlternative"), current && boolean(state, "canOpenGlossary")
-            && g_strcmp0(tl_string(view, "state"), "EditingTranslation") == 0, TRUE};
+        current && boolean(state, "canRequestAlternative"), current && boolean(state, "canOpenGlossary"), TRUE};
     const char *reasons[] = {NULL, tl_string(state, "inheritUnavailableReason"),
         tl_string(state, "styleUnavailableReason"), tl_string(state, "styleUnavailableReason"),
         tl_string(state, "alternativeUnavailableReason"), tl_string(state, "glossaryUnavailableReason"), NULL};
@@ -630,6 +644,7 @@ static gboolean language_pointer_event(GtkEventControllerLegacy *controller, Gdk
 }
 
 gboolean tl_overlay_can_return(Target *target) {
+    if (glossary_can_return(target)) return TRUE;
     const char *state = tl_string(overlay.view, "state");
     gboolean editor_owner = boolean(tl_object(overlay.view, "presentation"), "editorOwnsText")
         && (g_strcmp0(state, "EditingTranslation") == 0 || g_strcmp0(state, "ReturningToSource") == 0);
@@ -725,7 +740,9 @@ static void glossary_unref(GlossaryForm *form) {
     if (form->scope_options) g_ptr_array_unref(form->scope_options);
     g_object_unref(form->box);
     json_object_unref(form->token); json_array_unref(form->directions);
-    g_free(form->id); g_free(form->target); g_free(form->generation); g_free(form);
+    if (form->source_authority) json_object_unref(form->source_authority);
+    if (form->source_view) json_object_unref(form->source_view);
+    g_free(form->id); g_free(form->target); g_free(form->generation); g_free(form->origin_state); g_free(form);
 }
 static gboolean glossary_scope_option(GlossaryForm *form, GtkWidget *widget, guint *selected) {
     if (!form || !widget || !form->scope_options || !form->scope_popup
@@ -745,6 +762,71 @@ static gboolean glossary_contains(GlossaryForm *form, GtkWidget *widget) {
         || widget == form->scope || widget == form->save || widget == form->cancel
         || glossary_scope_option(form, widget, NULL));
 }
+static gboolean glossary_source_basis(GlossaryForm *form) {
+    Target *target = overlay.target;
+    JsonObject *basis = form ? form->source_authority : NULL;
+    return form && form->source_origin && target && target == form->origin && !target->dead
+        && overlay.top == form->origin_top && target->widget && target->buffer
+        && target->buffer == form->origin_buffer && overlay.text && overlay.glossary_draft_buffer
+        && gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text)) == overlay.glossary_draft_buffer
+        && G_OBJECT_TYPE(target->widget) == GTK_TYPE_ENTRY && G_OBJECT_TYPE(target->buffer) == GTK_TYPE_ENTRY_BUFFER
+        && target->client && target->client == form->origin_client && G_OBJECT_TYPE(target->client) == GTK_TYPE_TEXT
+        && gtk_widget_get_parent(target->client) == target->widget
+        && gtk_editable_get_delegate(GTK_EDITABLE(target->widget)) == GTK_EDITABLE(target->client)
+        && !target->mutating && !target->quarantined && target->im_context && target->im_observed
+        && g_object_get_data(G_OBJECT(target->client), TL_FCITX_CONTEXT_V1) == target->im_context
+        && (gint64)target->im_state.context_generation == tl_integer(tl_object(basis, "contextStamp"), "context", -1)
+        && (gint64)target->content_revision == tl_integer(basis, "contentRevision", -1)
+        && (gint64)target->input_revision == tl_integer(basis, "inputRevision", -1);
+}
+static gboolean glossary_source_view_matches(JsonObject *original, JsonObject *view) {
+    JsonObject *old_context = tl_object(original, "viewContext"), *next_context = tl_object(view, "viewContext");
+    if (!original || !view || !old_context || !next_context) return FALSE;
+    JsonObject *copy = tl_copy(view), *context = tl_copy(next_context);
+    json_object_set_object_member(copy, "viewContext", context);
+    /* The actual auxiliary ACK withdraws these two booleans. Never discard a
+     * whole projection: settings, model actions and unknown fields stay exact. */
+    JsonObject *before[] = {original, old_context}, *after[] = {copy, context};
+    JsonObject *current[] = {overlay.view, tl_object(overlay.view, "viewContext")};
+    const char *keys[] = {"editable", "canEdit"};
+    for (guint index = 0; index < G_N_ELEMENTS(keys); index++) {
+        JsonNode *node = json_object_get_member(after[index], keys[index]);
+        if (!boolean(current[index], keys[index]) && boolean(after[index], keys[index])) {
+            json_object_unref(copy); return FALSE;
+        }
+        if (boolean(before[index], keys[index]) && node && JSON_NODE_HOLDS_VALUE(node)
+            && json_node_get_value_type(node) == G_TYPE_BOOLEAN && !json_node_get_boolean(node))
+            json_object_set_boolean_member(after[index], keys[index], TRUE);
+    }
+    JsonObject *old_actions = tl_object(old_context, "translationActions");
+    JsonObject *actions = tl_object(context, "translationActions");
+    if (g_strcmp0(tl_string(translation_actions(overlay.view), "glossaryUnavailableReason"), "内容或设置已变化，请重新打开表单") == 0
+        && g_strcmp0(tl_string(actions, "glossaryUnavailableReason"), "请先完成当前术语表单") == 0) {
+        json_object_unref(copy); return FALSE;
+    }
+    if (g_strcmp0(tl_string(old_actions, "glossaryUnavailableReason"), "请先完成当前术语表单") == 0
+        && g_strcmp0(tl_string(actions, "glossaryUnavailableReason"), "内容或设置已变化，请重新打开表单") == 0) {
+        /* QualifyGlossaryEntry checks the withdrawn ViewCommand ACK first. */
+        actions = tl_copy(actions);
+        json_object_set_string_member(actions, "glossaryUnavailableReason", "请先完成当前术语表单");
+        json_object_set_object_member(context, "translationActions", actions);
+    }
+    gboolean same = json_object_equal(original, copy);
+    json_object_unref(copy);
+    return same;
+}
+static gboolean glossary_source_render(GlossaryForm *form, Target *target, JsonObject *data) {
+    if (!form || !form->source_origin || overlay.target != target || !glossary_source_basis(form)
+        || form->revision != tl_integer(data, "revision", -1)) return FALSE;
+    JsonObject *value = tl_object(data, "view"), *basis = tl_object(data, "authority");
+    if (!value || !basis
+        || g_strcmp0(tl_string(basis, "metadataKey"), tl_string(form->source_authority, "metadataKey")) != 0
+        || tl_integer(basis, "inputRevision", -1) != tl_integer(form->source_authority, "inputRevision", -2)
+        || tl_integer(basis, "contentRevision", -1) != tl_integer(form->source_authority, "contentRevision", -2)
+        || tl_integer(tl_object(basis, "contextStamp"), "context", -1)
+            != tl_integer(tl_object(form->source_authority, "contextStamp"), "context", -2)) return FALSE;
+    return glossary_source_view_matches(form->source_view, value);
+}
 static gboolean glossary_identity_current(GlossaryForm *form) {
     JsonObject *token = tl_object(tl_object(overlay.view, "viewContext"), "token");
     return form && overlay.target && !overlay.target->dead
@@ -753,13 +835,15 @@ static gboolean glossary_identity_current(GlossaryForm *form) {
         && token && json_object_equal(form->token, token)
         && (gint64)overlay.target->content_revision == tl_integer(overlay.authority, "contentRevision", -1)
         && (gint64)overlay.target->input_revision == tl_integer(overlay.authority, "inputRevision", -1)
-        && g_strcmp0(tl_string(overlay.view, "state"), "EditingTranslation") == 0
+        && g_strcmp0(tl_string(overlay.view, "state"), form->origin_state) == 0
+        && (!form->source_origin || glossary_source_basis(form))
         && tl_configuration_current(form->generation) && tl_view_context_matches(overlay.target, overlay.view)
         && active() && tl_now() <= overlay.expires;
 }
 static gboolean glossary_current(GlossaryForm *form) {
     return overlay.glossary == form && form && !form->closing && glossary_identity_current(form);
 }
+static void glossary_close(gboolean restore, gboolean notify);
 gboolean tl_overlay_auxiliary_active(Target *target) {
     return overlay.target == target && glossary_current(overlay.glossary);
 }
@@ -821,6 +905,7 @@ static gboolean glossary_terms_clear(GlossaryForm *form) {
         && g_object_get_data(G_OBJECT(form->clients[1]), TL_FCITX_CONTEXT_V1) == form->contexts[1];
 }
 static void glossary_sync(void) {
+    if (glossary_handoff) return;
     GlossaryForm *form = glossary_ref(overlay.glossary);
     if (!form || form->probing || form->closing) { glossary_unref(form); return; }
     form->probing = TRUE;
@@ -869,18 +954,109 @@ static void glossary_sync(void) {
     form->probing = FALSE;
     glossary_unref(form);
 }
+static void glossary_focus_observed(GObject *object, GParamSpec *property, gpointer data) {
+    (void)property;
+    GlossaryHandoff *guard = data;
+    GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(object));
+    /* GTK4 may expose the old focus being cleared before its destination.
+     * Only that one NULL followed by the exact destination is permitted. */
+    if (GTK_WIDGET(object) != guard->top || guard->destination_seen || guard->emissions >= 2
+        || (focus && focus != guard->destination)
+        || (!focus && guard->emissions != 0)) guard->failed = TRUE;
+    if (focus == guard->destination) guard->destination_seen = TRUE;
+    guard->emissions++;
+}
+static JsonObject *glossary_receipt(GlossaryForm *form) {
+    JsonObject *value = json_object_new();
+    json_object_set_string_member(value, "formId", form->id);
+    json_object_set_object_member(value, "token", tl_copy(form->token));
+    return value;
+}
+static gboolean glossary_transfer(GlossaryForm *form, gboolean returning) {
+    if (glossary_handoff || !glossary_current(form) || !glossary_source_basis(form)) return FALSE;
+    GtkWidget *from = gtk_window_get_focus(GTK_WINDOW(overlay.top));
+    if (returning ? !glossary_contains(form, from) : from != form->origin->client) return FALSE;
+    GtkWidget *to = returning ? form->origin->client : form->clients[0];
+    GlossaryHandoff guard = {.top = overlay.top, .destination = to};
+    g_object_ref(guard.top);
+    gulong hook = g_signal_connect(guard.top, "notify::focus-widget", G_CALLBACK(glossary_focus_observed), &guard);
+    JsonObject *identity = glossary_receipt(form);
+    gboolean begun = tl_glossary_transfer_begin(form->origin, identity, returning ? "Returning" : "Opening");
+    json_object_unref(identity);
+    if (!begun) { g_signal_handler_disconnect(guard.top, hook); g_object_unref(guard.top); return FALSE; }
+    glossary_handoff = &guard;
+    gboolean moved = TRUE;
+    if (returning) moved = tl_return(form->origin, form->source_authority);
+    else gtk_widget_grab_focus(to);
+    glossary_handoff = NULL;
+    g_signal_handler_disconnect(guard.top, hook);
+    gboolean current = moved && !guard.failed && guard.destination_seen && guard.emissions > 0 && guard.emissions <= 2 && glossary_current(form)
+        && glossary_source_basis(form) && overlay.top == guard.top && active()
+        && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == to;
+    g_object_unref(guard.top);
+    return tl_glossary_transfer_end(current);
+}
+
+static gboolean glossary_return_request(GlossaryForm *form, Target *target, JsonObject *request) {
+    JsonObject *token = tl_object(request, "token");
+    return glossary_current(form) && form->source_origin && overlay.target == target && form->pending
+        && g_strcmp0(form->id, tl_string(request, "formId")) == 0
+        && g_strcmp0(form->generation, tl_string(request, "generation")) == 0
+        && form->revision == tl_integer(request, "revision", -1)
+        && token && json_object_equal(form->token, token);
+}
+JsonObject *tl_overlay_glossary_return_basis(Target *target, JsonObject *request) {
+    GlossaryForm *form = overlay.glossary;
+    return glossary_return_request(form, target, request) && !form->return_started
+        ? tl_copy(form->source_authority) : NULL;
+}
+gboolean tl_overlay_glossary_return(Target *target, JsonObject *request, gboolean starting, gboolean ready) {
+    GlossaryForm *form = glossary_ref(overlay.glossary);
+    gboolean valid = glossary_return_request(form, target, request) && glossary_source_basis(form);
+    if (valid && starting) {
+        valid = !form->return_started && glossary_contains(form, gtk_window_get_focus(GTK_WINDOW(overlay.top)));
+        if (valid) glossary_sync();
+        valid = valid && glossary_return_request(form, target, request) && glossary_terms_clear(form)
+            && form->reported_ime == 1;
+        if (valid) {
+            form->return_started = TRUE;
+            valid = glossary_transfer(form, TRUE);
+            if (!valid && overlay.glossary == form) glossary_close(FALSE, TRUE);
+        }
+    }
+    valid = valid && glossary_return_request(form, target, request) && form->return_started
+        && glossary_source_basis(form) && tl_focused() == target
+        && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == target->client;
+    if (valid && ready) { form->returned = TRUE; form->returned_focus = target->focus_revision; }
+    if (starting) tl_overlay_sync();
+    glossary_unref(form);
+    return valid;
+}
+JsonObject *tl_overlay_glossary_source(Target *target) {
+    GlossaryForm *form = overlay.glossary;
+    return glossary_current(form) && form->source_origin && form->returned && overlay.target == target
+        && glossary_source_basis(form) && tl_focused() == target && target->ime_known && !target->composing
+        && form->returned_focus == target->focus_revision ? glossary_receipt(form) : NULL;
+}
+static gboolean glossary_can_return(Target *target) {
+    GlossaryForm *form = overlay.glossary;
+    return glossary_current(form) && form->source_origin && form->return_started
+        && target == form->origin && glossary_source_basis(form)
+        && glossary_contains(form, gtk_window_get_focus(GTK_WINDOW(overlay.top)));
+}
 static void glossary_close(gboolean restore, gboolean notify) {
     GlossaryForm *form = glossary_ref(overlay.glossary);
     if (!form || form->closing) { glossary_unref(form); return; }
     gboolean return_editor = restore && glossary_current(form) && overlay.text
         && glossary_contains(form, gtk_window_get_focus(GTK_WINDOW(overlay.top)));
-    GtkWidget *editor = return_editor ? g_object_ref(overlay.text) : NULL;
+    GtkWidget *editor = return_editor ? g_object_ref(form->source_origin ? form->origin->widget : overlay.text) : NULL;
     if (notify) {
         JsonNode *node = json_node_new(JSON_NODE_VALUE); json_node_set_string(node, form->id);
         glossary_emit(form, "sessionGlossaryClose", node);
     }
     if (form->reported_ime >= 0) glossary_emit(form, "sessionGlossaryFocus", NULL);
-    return_editor = return_editor && glossary_current(form) && overlay.text == editor
+    return_editor = return_editor && glossary_current(form)
+        && (form->source_origin ? form->origin->widget == editor : overlay.text == editor)
         && glossary_contains(form, gtk_window_get_focus(GTK_WINDOW(overlay.top)));
     /* Transfer the overlay owner before grab_focus: a synchronous focus callback
      * can hide/memset overlay. This stack must still release that owner once. */
@@ -890,9 +1066,15 @@ static void glossary_close(gboolean restore, gboolean notify) {
     if (return_editor) {
         /* The host can retire editor readiness while aux owns focus. Return to
          * its original read-only widget; fresh binding/IME ACK enables editing. */
-        gtk_widget_set_focusable(editor, TRUE);
-        if (glossary_identity_current(form) && overlay.text == editor
-            && glossary_contains(form, gtk_window_get_focus(GTK_WINDOW(overlay.top)))) gtk_widget_grab_focus(editor);
+        if (form->source_origin) {
+            if (glossary_identity_current(form) && glossary_source_basis(form)
+                && glossary_contains(form, gtk_window_get_focus(GTK_WINDOW(overlay.top))))
+                gtk_entry_grab_focus_without_selecting(GTK_ENTRY(editor));
+        } else {
+            gtk_widget_set_focusable(editor, TRUE);
+            if (glossary_identity_current(form) && overlay.text == editor
+                && glossary_contains(form, gtk_window_get_focus(GTK_WINDOW(overlay.top)))) gtk_widget_grab_focus(editor);
+        }
     }
     if (owned) {
         if (gtk_widget_get_parent(form->box)) gtk_box_remove(GTK_BOX(gtk_widget_get_parent(form->box)), form->box);
@@ -1162,6 +1344,35 @@ static gboolean glossary_editor_ready(void) {
     json_object_unref(view); g_object_unref(editor);
     return current;
 }
+static gboolean glossary_source_ready(void) {
+    Target *target = overlay.target;
+    const char *state = tl_string(overlay.view, "state");
+    if (!target || target->dead || !target->widget || !target->buffer || !active()
+        || (g_strcmp0(state, "ValidTranslation") != 0 && g_strcmp0(state, "EditedTranslationPending") != 0)
+        || G_OBJECT_TYPE(target->widget) != GTK_TYPE_ENTRY || G_OBJECT_TYPE(target->buffer) != GTK_TYPE_ENTRY_BUFFER
+        || !target->client || G_OBJECT_TYPE(target->client) != GTK_TYPE_TEXT
+        || gtk_widget_get_parent(target->client) != target->widget
+        || gtk_editable_get_delegate(GTK_EDITABLE(target->widget)) != GTK_EDITABLE(target->client)
+        || gtk_window_get_focus(GTK_WINDOW(overlay.top)) != target->client || tl_focused() != target
+        || !translation_menu_current()
+        || (overlay.pending_glossary && (!overlay.text || !overlay.glossary_draft_buffer
+            || gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text)) != overlay.glossary_draft_buffer))) return FALSE;
+    JsonObject *view = json_object_ref(overlay.view), *basis = tl_copy(overlay.authority);
+    gboolean current = tl_ime_clear(target) && overlay.target == target && overlay.view == view && active()
+        && tl_focused() == target && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == target->client
+        && tl_metadata_matches(target, basis)
+        && (gint64)target->im_state.context_generation == tl_integer(tl_object(basis, "contextStamp"), "context", -1)
+        && (gint64)target->input_revision == tl_integer(basis, "inputRevision", -1)
+        && (gint64)target->content_revision == tl_integer(basis, "contentRevision", -1)
+        && overlay.view == view && translation_menu_current() && active() && tl_focused() == target
+        && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == target->client;
+    json_object_unref(view); json_object_unref(basis);
+    return current;
+}
+static gboolean glossary_origin_ready(void) {
+    return g_strcmp0(tl_string(overlay.view, "state"), "EditingTranslation") == 0
+        ? glossary_editor_ready() : glossary_source_ready();
+}
 static void glossary_reject_open(Target *target, JsonObject *data, const char *id) {
     if (!target || !id || !*id || !tl_string(data, "generation")) return;
     JsonObject *event = json_object_new();
@@ -1178,15 +1389,16 @@ static void glossary_open(Target *target, JsonObject *data) {
     JsonArray *directions = directions_node && JSON_NODE_HOLDS_ARRAY(directions_node) ? json_node_get_array(directions_node) : NULL;
     const char *id = tl_string(entry, "formId");
     if (overlay.glossary && g_strcmp0(overlay.glossary->id, id) == 0) return;
-    gboolean editor_ready = overlay.pending_glossary && glossary_editor_ready();
+    gboolean source_origin = boolean(entry, "sourceOrigin");
+    gboolean editor_ready = overlay.pending_glossary && glossary_origin_ready();
     if (!editor_ready || !overlay.pending_glossary || overlay.glossary || !target || overlay.target != target
-        || !translation_menu_current() || !active() || gtk_window_get_focus(GTK_WINDOW(overlay.top)) != overlay.text
+        || !translation_menu_current() || !active()
         || overlay.revision != tl_integer(data, "revision", -1)
         || g_strcmp0(overlay.generation, tl_string(data, "generation")) != 0
         || !id || !*id || !token || !json_object_equal(token, overlay.menu_token)
         || tl_integer(entry, "settingsRevision", -1) != overlay.menu_settings_revision
         || !glossary_directions_valid(directions)
-        || g_strcmp0(tl_string(overlay.view, "state"), "EditingTranslation") != 0
+        || source_origin != (g_strcmp0(tl_string(overlay.view, "state"), "EditingTranslation") != 0)
         || !boolean(translation_actions(overlay.view), "glossaryReleased")) {
         if (overlay.target == target && overlay.revision == tl_integer(data, "revision", -1)
             && g_strcmp0(overlay.generation, tl_string(data, "generation")) == 0)
@@ -1201,6 +1413,14 @@ static void glossary_open(Target *target, JsonObject *data) {
     form->id = g_strdup(id); form->target = g_strdup(target->id); form->generation = g_strdup(overlay.generation);
     form->revision = overlay.revision; form->settings_revision = tl_integer(entry, "settingsRevision", -1);
     form->token = tl_copy(token); form->directions = json_array_ref(directions);
+    form->source_origin = source_origin;
+    form->origin_state = g_strdup(tl_string(overlay.view, "state"));
+    form->origin = target; form->origin_top = overlay.top; form->origin_buffer = target->buffer;
+    form->origin_client = target->client;
+    if (source_origin) {
+        form->source_authority = tl_copy(overlay.authority);
+        form->source_view = tl_copy(overlay.view);
+    }
     form->box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6); g_object_ref_sink(form->box);
     /* Mark before creating/parenting editable children: discovery never sees
      * these controls as external source fields. */
@@ -1278,7 +1498,8 @@ static void glossary_open(Target *target, JsonObject *data) {
     if (overlay.glossary || !overlay.top || !translation_menu_current() || !active()
         || overlay.target != target || overlay.revision != form->revision
         || g_strcmp0(overlay.generation, form->generation) != 0
-        || gtk_window_get_focus(GTK_WINDOW(overlay.top)) != overlay.text) {
+        || gtk_window_get_focus(GTK_WINDOW(overlay.top)) != (source_origin ? target->client : overlay.text)
+        || (source_origin && !glossary_source_ready())) {
         glossary_reject_open(target, data, id);
         glossary_unref(form);
         return;
@@ -1289,7 +1510,11 @@ static void glossary_open(Target *target, JsonObject *data) {
     glossary_ref(form);
     gtk_box_append(GTK_BOX(overlay.card), form->box);
     if (glossary_current(form)) gtk_widget_set_visible(overlay.menu, FALSE);
-    if (glossary_current(form)) gtk_widget_grab_focus(form->terms[0]);
+    if (glossary_current(form)) {
+        if (source_origin) {
+            if (!glossary_transfer(form, FALSE)) glossary_close(FALSE, TRUE);
+        } else gtk_widget_grab_focus(form->terms[0]);
+    }
     if (glossary_current(form)) glossary_sync();
     glossary_unref(form);
 }
@@ -1324,6 +1549,7 @@ done:
 }
 
 void tl_overlay_sync(void) {
+    if (glossary_handoff) return;
     glossary_sync();
     GtkWidget *focus = overlay.top ? gtk_window_get_focus(GTK_WINDOW(overlay.top)) : NULL;
     gboolean focused = active() && overlay.popover && gtk_widget_get_visible(overlay.popover)
@@ -1336,6 +1562,7 @@ void tl_overlay_sync(void) {
     }
 }
 static void focus_changed(GObject *object, GParamSpec *property, gpointer data) {
+    if (glossary_handoff) return;
     (void)object; (void)property; (void)data;
     GtkWidget *focus = overlay.top ? gtk_window_get_focus(GTK_WINDOW(overlay.top)) : NULL;
     if (overlay.language && !overlay.language_focus_transfer && focus != overlay.language)
@@ -1347,6 +1574,11 @@ static void focus_changed(GObject *object, GParamSpec *property, gpointer data) 
     tl_overlay_control_cancel();
     if (overlay.top && gtk_window_get_focus(GTK_WINDOW(overlay.top)) != overlay.text) overlay.pending_glossary = FALSE;
     tl_overlay_sync();
+    if (overlay.glossary && overlay.glossary->source_origin
+        && (overlay.glossary->return_started || (focus && !glossary_contains(overlay.glossary, focus)))) {
+        tl_overlay_hide();
+        return;
+    }
     if (active() && tl_focused() != overlay.target && (paused() || tl_focused())) {
         tl_overlay_hide();
     }
@@ -1389,6 +1621,7 @@ void tl_overlay_hide(void) {
     clear_language_menu(&overlay.target_languages);
     clear_translation_menu();
     if (overlay.glossary_draft_token) json_object_unref(overlay.glossary_draft_token);
+    if (overlay.glossary_draft_buffer) g_object_unref(overlay.glossary_draft_buffer);
     if (overlay.layout_handler) g_signal_handler_disconnect(overlay.layout_clock, overlay.layout_handler);
     g_clear_object(&overlay.layout_clock);
     memset(&overlay, 0, sizeof overlay);
@@ -1482,14 +1715,12 @@ static gboolean key_event(GtkEventControllerLegacy *controller, GdkEvent *event,
 static void translation_action_clicked(const char *operation, JsonObject *view) {
     if (!active() || !gtk_widget_get_visible(overlay.menu) || !translation_menu_current()) return;
     gboolean glossary = strcmp(operation, "glossary") == 0;
-    if (glossary && (!glossary_editor_ready() || overlay.view != view)) return;
+    if (glossary && (!glossary_origin_ready() || overlay.view != view)) return;
     JsonObject *state = translation_actions(view);
     gboolean alternative = strcmp(operation, "alternative") == 0;
     gboolean inherit = strcmp(operation, "style-inherit") == 0;
     if (glossary ? !boolean(state, "glossaryReleased") || !boolean(state, "canOpenGlossary")
         || overlay.pending_glossary || overlay.glossary
-        || g_strcmp0(tl_string(view, "state"), "EditingTranslation") != 0
-        || gtk_window_get_focus(GTK_WINDOW(overlay.top)) != overlay.text
         : alternative ? !boolean(state, "alternativeReleased") || !boolean(state, "canRequestAlternative")
         : !boolean(state, "styleReleased") || !boolean(state, inherit ? "canInheritStyle" : "canChangeStyle")) return;
     /* The bridge resolves this exact transport record to its original complete
@@ -1508,7 +1739,18 @@ static void translation_action_clicked(const char *operation, JsonObject *view) 
         else json_object_set_string_member(value, "style", strcmp(operation, "style-natural") == 0 ? "Natural" : "Formal");
         json_object_set_object_member(event, "value", value);
     }
-    if (glossary) overlay.pending_glossary = TRUE;
+    if (glossary) {
+        overlay.pending_glossary = TRUE;
+        /* The host withdraws acceptance and renders before replying with the
+         * form. Preserve this original buffer even during that first repaint. */
+        if (g_strcmp0(tl_string(view, "state"), "EditingTranslation") != 0) {
+            if (overlay.glossary_draft_token) json_object_unref(overlay.glossary_draft_token);
+            overlay.glossary_draft_token = tl_copy(token);
+            if (overlay.glossary_draft_buffer) g_object_unref(overlay.glossary_draft_buffer);
+            overlay.glossary_draft_buffer = g_object_ref(gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text)));
+        }
+    }
+
     gtk_widget_set_visible(overlay.menu, FALSE);
     if (translation_render_current(view, context) && overlay.menu_token == token && active() && translation_menu_current())
         tl_send_event("ui", event);
@@ -1929,6 +2171,8 @@ static gboolean render(Target *target, JsonObject *data) {
         && target && !target->dead
         && (gint64)target->content_revision == tl_integer(authority, "contentRevision", -1)
         && (gint64)target->input_revision == tl_integer(authority, "inputRevision", -1);
+    gboolean retained_source_form = glossary_current(overlay.glossary)
+        && glossary_source_render(overlay.glossary, target, data);
     gint64 request_revision = tl_integer(data, "revision", 0);
     if (!target || !boolean(presentation, "visible"))
         return pause_render_result(is_paused, "target-or-view", request_revision, FALSE);
@@ -1937,7 +2181,7 @@ static gboolean render(Target *target, JsonObject *data) {
     if (until < now || until - now > 1000)
         return pause_render_result(is_paused, "expiry", request_revision, FALSE);
     if (is_paused ? !pause_current(target, authority)
-        : !retained_editor && !tl_ime_clear(target) && !retained_language_preview(target, data))
+        : !retained_source_form && !retained_editor && !tl_ime_clear(target) && !retained_language_preview(target, data))
         return pause_render_result(is_paused, "source-observation", request_revision, FALSE);
     GtkWidget *top = GTK_WIDGET(gtk_widget_get_root(target->widget));
     if (!GTK_IS_WINDOW(top) || !gtk_window_is_active(GTK_WINDOW(top)))
@@ -1950,6 +2194,7 @@ static gboolean render(Target *target, JsonObject *data) {
     if (overlay.target == target && overlay.top == top && overlay.popover && overlay.text && overlay.status
         && g_strcmp0(overlay.generation, generation) == 0
         && overlay.revision == tl_integer(data, "revision", -1)
+        && (!overlay.glossary || !overlay.glossary->source_origin || retained_source_form)
         && translation_actions_only(overlay.view, value)) {
         gboolean refreshed = refresh_translation_actions(value, authority, until);
         json_object_unref(geometry);
@@ -1960,7 +2205,8 @@ static gboolean render(Target *target, JsonObject *data) {
     if (overlay.glossary && (overlay.target != target || overlay.top != top
         || g_strcmp0(overlay.generation, generation) != 0
         || overlay.revision != tl_integer(data, "revision", -1)
-        || g_strcmp0(tl_string(value, "state"), "EditingTranslation") != 0
+        || g_strcmp0(tl_string(value, "state"), overlay.glossary->origin_state) != 0
+        || (overlay.glossary->source_origin && !retained_source_form)
         || !tl_object(tl_object(value, "viewContext"), "token")
         || !json_object_equal(overlay.glossary->token, tl_object(tl_object(value, "viewContext"), "token"))))
         glossary_close(FALSE, TRUE);
@@ -1979,12 +2225,22 @@ static gboolean render(Target *target, JsonObject *data) {
         && boolean(tl_object(value, "viewContext"), "canEdit")
         && g_strcmp0(tl_string(value, "state"), "EditingTranslation") == 0;
     JsonObject *draft_token = tl_object(tl_object(value, "viewContext"), "token");
+    gboolean source_draft = overlay.glossary_draft_buffer
+        && gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text)) == overlay.glossary_draft_buffer
+        && (g_strcmp0(tl_string(value, "state"), "ValidTranslation") == 0
+            || g_strcmp0(tl_string(value, "state"), "EditedTranslationPending") == 0);
+    char *draft_text = source_draft ? candidate() : NULL;
+    source_draft = source_draft && g_strcmp0(draft_text, text_or_empty(value, "text")) == 0;
+    g_free(draft_text);
     gboolean glossary_draft = overlay.glossary_draft_token && draft_token
         && json_object_equal(overlay.glossary_draft_token, draft_token)
-        && g_strcmp0(tl_string(value, "state"), "EditingTranslation") == 0
-        && boolean(presentation, "editorOwnsText");
+        && ((g_strcmp0(tl_string(value, "state"), "EditingTranslation") == 0
+                && boolean(presentation, "editorOwnsText"))
+            || source_draft);
     if (overlay.glossary_draft_token && !glossary_draft) {
         json_object_unref(overlay.glossary_draft_token); overlay.glossary_draft_token = NULL;
+        if (overlay.glossary_draft_buffer) g_object_unref(overlay.glossary_draft_buffer);
+        overlay.glossary_draft_buffer = NULL;
     }
     if (!glossary_draft && (is_paused
         || !(boolean(presentation, "editorOwnsText") && gtk_text_view_get_editable(GTK_TEXT_VIEW(overlay.text))))) {

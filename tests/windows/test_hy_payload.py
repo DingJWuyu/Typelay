@@ -74,6 +74,17 @@ class WindowsPayloadTests(unittest.TestCase):
     def write_manifest(self):
         (self.root / "production-adapter.json").write_text(json.dumps(self.manifest))
 
+    def test_only_exact_legacy_or_extended_closure_is_admitted(self):
+        for exports, available in ((hy_assets.EXPORTS, False), (hy_assets.EXTENDED_EXPORTS, True)):
+            self.manifest["exports"] = exports
+            self.write_manifest()
+            self.assertEqual(hy_assets.verify_native()["styled_glossary"], available)
+        for exports in (hy_assets.EXTENDED_EXPORTS[:-1], [*hy_assets.EXTENDED_EXPORTS, "unknown"]):
+            self.manifest["exports"] = exports
+            self.write_manifest()
+            with self.assertRaises(ValueError):
+                hy_assets.verify_native()
+
     def test_relocated_manifest_and_cpu_lock_are_sufficient_without_source_or_model(self):
         result = hy_assets.verify_native()
         self.assertEqual(result["adapter_path"], str(self.root / "typelay_hy.dll"))

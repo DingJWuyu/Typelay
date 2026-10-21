@@ -1134,6 +1134,7 @@ class TranslationSettings:
             "glossary-unavailable": "当前模型暂不支持术语应用。",
             "glossary-not-released": "新增术语尚未开放。",
             "glossary-combination-unavailable": "当前不支持同时应用风格和术语。",
+            "glossary-combination-not-released": "当前模型方向尚未开放风格与术语同时应用。",
             "invalid-glossary": "请检查源词、指定译法和语言方向。",
             "style-save-failed": "风格未保存，请检查权限或磁盘空间。",
             "glossary-save-failed": "术语未保存，请检查权限或磁盘空间。",

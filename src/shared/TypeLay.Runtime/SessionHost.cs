@@ -103,12 +103,14 @@ public interface ISessionView
 // A negotiated protocol feature for one worker connection, not a quality claim.
 public sealed record StyledTranslationCapability(long Revision);
 public sealed record GlossaryTranslationCapability(long Revision);
+public sealed record StyledGlossaryTranslationCapability(long Revision);
 
 public interface ITranslationService
 {
     VerifiedModelIdentity? VerifiedIdentity => null;
     StyledTranslationCapability? StyledTranslationCapability => null;
     GlossaryTranslationCapability? GlossaryTranslationCapability => null;
+    StyledGlossaryTranslationCapability? StyledGlossaryTranslationCapability => null;
     bool Ready
     {
         get;
@@ -170,7 +172,7 @@ public sealed class VerifiedModelPackage
 }
 public enum TranslationOperation
 {
-    Style, Glossary, Alternative
+    Style, Glossary, Alternative, StyledGlossary
 }
 public sealed record TranslationRelease(TranslationOperation Operation, string PackageId, string Version, string Direction);
 

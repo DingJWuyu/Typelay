@@ -77,7 +77,7 @@ class HyRuntimeBundleTests(unittest.TestCase):
         result = self.run_worker(
             "import ctypes,json; loader=LinuxRuntime(verify_native()); "
             "selected=loader.select_cpu_backend(); adapter=loader.load_adapter(); "
-            "assert hasattr(adapter,'hy_open_v5') and hasattr(adapter,'hy_translate_glossary_v5'); "
+            "assert hasattr(adapter,'hy_open_v5') and hasattr(adapter,'hy_translate_glossary_v5') and hasattr(adapter,'hy_translate_styled_glossary_v5'); "
             "assert not any(hasattr(adapter,name) for name in ('hy_open_v2','hy_open_v3','hy_open_v4','hy_translate_styled_v4','hy_audit')); "
             "cpu=ctypes.CDLL(str(selected)); "
             "print(json.dumps(loader.verify_loaded(selected))); loader.close()"
@@ -95,6 +95,7 @@ class HyRuntimeBundleTests(unittest.TestCase):
                 "hy_open_v5",
                 "hy_translate",
                 "hy_translate_glossary_v5",
+                "hy_translate_styled_glossary_v5",
                 "hy_translate_styled_v5",
             ],
         )
@@ -153,6 +154,58 @@ class HyRuntimeBundleTests(unittest.TestCase):
             adapter.write_bytes(original_adapter)
             manifest.write_bytes(original_manifest)
 
+    def test_claimed_extension_missing_actual_symbol_rejects_before_open(self):
+        adapter = self.native / "libtypelay_hy.so"
+        manifest = self.native / "production-adapter.json"
+        original_adapter, original_manifest = adapter.read_bytes(), manifest.read_bytes()
+        marker = self.directory / "missing-combination-open-was-called"
+        source = self.directory / "legacy-five-exports.c"
+        source.write_text(
+            "#include <stdio.h>\n#include <stdlib.h>\n"
+            "int hy_open_v5(void *a,void *b,void *c,void *d,unsigned e) {"
+            "(void)a;(void)b;(void)c;(void)d;(void)e;"
+            'FILE *f=fopen(getenv("TYPELAY_TEST_OLD_OPEN"),"w"); if(f)fclose(f);return 8;}\n'
+            "void hy_close(void *p){(void)p;}\n"
+            "int hy_translate(void){return 1;}\n"
+            "int hy_translate_styled_v5(void){return 1;}\n"
+            "int hy_translate_glossary_v5(void){return 1;}\n"
+        )
+        try:
+            subprocess.run(
+                [
+                    "cc",
+                    "-shared",
+                    "-fPIC",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    str(source),
+                    "-o",
+                    str(adapter),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
+            claimed = json.loads(original_manifest)
+            self.assertIn("hy_translate_styled_glossary_v5", claimed["exports"])
+            claimed["adapter"].update(
+                bytes=adapter.stat().st_size,
+                sha256=hashlib.sha256(adapter.read_bytes()).hexdigest(),
+            )
+            manifest.write_text(json.dumps(claimed))
+            result = self.run_worker(
+                "from typelay_worker.hy import HyModel; "
+                "HyModel({**verify_native(),'model_path':'must-not-open-a-model'})",
+                env={**os.environ, "TYPELAY_TEST_OLD_OPEN": str(marker)},
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("hy_translate_styled_glossary_v5", result.stderr)
+            self.assertFalse(marker.exists())
+        finally:
+            adapter.write_bytes(original_adapter)
+            manifest.write_bytes(original_manifest)
+
     def test_unknown_styles_fail_before_touching_a_model_handle(self):
         result = self.run_worker(
             "import ctypes; from typelay_worker.hy import Metrics,CANCEL; "
@@ -169,6 +222,37 @@ class HyRuntimeBundleTests(unittest.TestCase):
             "ctypes.byref(metrics),CANCEL(),None,error,len(error)); "
             "assert (code,length.value,metrics.decode_calls)==(1,0,0); "
             "assert error.value==b'unknown translation style'; loader.close()"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_combined_export_validates_both_constraints_without_opening_a_model(self):
+        result = self.run_worker(
+            textwrap.dedent(r"""
+            import ctypes
+            from typelay_worker.hy import Metrics, CANCEL, Term
+            verified = verify_native()
+            assert verified['styled_glossary'] is True
+            loader = LinuxRuntime(verified)
+            loader.select_cpu_backend()
+            adapter = loader.load_adapter()
+            call = adapter.hy_translate_styled_glossary_v5
+            call.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+                             ctypes.POINTER(Term), ctypes.c_uint32,
+                             ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32,
+                             ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(Metrics), CANCEL,
+                             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32]
+            call.restype = ctypes.c_int32
+            terms = (Term * 1)(Term(b'a', 1, b'b', 1))
+            for style, count, expected in ((0, 1, b'unknown translation style'),
+                                           (2, 0, b'glossary must contain 1..64 term pairs'),
+                                           (2, 1, b'translate argument mismatch')):
+                output, error = ctypes.create_string_buffer(8192), ctypes.create_string_buffer(512)
+                length, metrics = ctypes.c_uint32(99), Metrics()
+                code = call(None, 1, style, terms, count, b'a', 1, output, len(output),
+                            ctypes.byref(length), ctypes.byref(metrics), CANCEL(), None, error, len(error))
+                assert (code, length.value, metrics.decode_calls, error.value) == (1, 0, 0, expected)
+            loader.close()
+            """)
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 

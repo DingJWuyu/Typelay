@@ -2398,7 +2398,9 @@ class InputFeedbackTests(unittest.TestCase):
         asyncio.run(exercise())
 
     def test_source_glossary_native_capability_requires_backend_specific_identity(self):
-        async def exercise(backend, aria, capable, multiline=False, document=0):
+        async def exercise(
+            backend, aria, capable, multiline=False, document=0, context=7, metadata=None
+        ):
             self.peer = self.connect_peer(backend)
             original = self.description
 
@@ -2408,10 +2410,13 @@ class InputFeedbackTests(unittest.TestCase):
                 value["geometry"]["space"] = self.peer.anchor_space
                 value["sourceGlossarySupported"] = capable
                 value["authority"]["contextStamp"] = (
-                    {"context": 7, "field": 3, "input": 2} if backend == "qt6" else {"context": 7}
+                    {"context": 7, "field": 3, "input": 2}
+                    if backend == "qt6"
+                    else {"context": context}
                 )
                 value["metadata"]["documentGeneration"] = document
                 value["metadata"]["multiline"] = multiline
+                value["metadata"].update(metadata or {})
                 return value
 
             self.description = description
@@ -2425,7 +2430,9 @@ class InputFeedbackTests(unittest.TestCase):
             ("gtk3", "GtkEntry", True, False, 0, True),
             ("gtk3", "GtkTextView", True, True, 1, False),
             ("gtk3", "GtkEntry", False, False, 0, False),
-            ("gtk4", "GtkEntry", True, False, 0, False),
+            ("gtk4", "GtkEntry", True, False, 0, True),
+            ("gtk4", "GtkEntry", False, False, 0, False),
+            ("gtk4", "GtkTextView", True, True, 1, False),
             ("qt6", "GtkEntry", True, False, 0, False),
             ("qt6", "QLineEdit", True, False, 0, True),
             ("qt6", "QLineEdit", False, False, 0, False),
@@ -2440,6 +2447,18 @@ class InputFeedbackTests(unittest.TestCase):
             with self.subTest(backend=backend, aria=aria, capable=capable, document=document):
                 target = asyncio.run(exercise(backend, aria, capable, multiline, document))
                 self.assertEqual(target is not None, expected)
+
+        for backend in ("gtk3", "gtk4"):
+            for context in (None, False, True, 0, -1):
+                with self.subTest(backend=backend, context=context):
+                    self.assertIsNone(
+                        asyncio.run(exercise(backend, "GtkEntry", True, context=context))
+                    )
+            for metadata in ({"password": True}, {"readOnly": True}, {"enabled": False}):
+                with self.subTest(backend=backend, metadata=metadata):
+                    self.assertIsNone(
+                        asyncio.run(exercise(backend, "GtkEntry", True, metadata=metadata))
+                    )
 
     async def native_glossary_scenario(
         self,
@@ -2568,10 +2587,10 @@ class InputFeedbackTests(unittest.TestCase):
             },
         )
 
-    def test_qt6_source_glossary_opens_without_fabricating_editor_ownership(self):
-        async def exercise(state, multiline):
+    def test_native_source_glossary_opens_without_fabricating_editor_ownership(self):
+        async def exercise(state, backend, multiline):
             overlay, jobs, entry, request, emit = await self.native_glossary_scenario(
-                backend="qt6", state=state, revoke=True, multiline=multiline
+                backend=backend, state=state, revoke=True, multiline=multiline
             )
             self.assertIsNotNone(request)
             window = self.input.window_epoch
@@ -2590,9 +2609,14 @@ class InputFeedbackTests(unittest.TestCase):
             self.assertNotIn("beginEdit", [operation for operation, _ in self.host.requests])
 
         for state in ("ValidTranslation", "EditedTranslationPending"):
-            for multiline in (False, True):
-                with self.subTest(state=state, multiline=multiline):
-                    asyncio.run(exercise(state, multiline))
+            for backend, multiline in (
+                ("gtk3", False),
+                ("gtk4", False),
+                ("qt6", False),
+                ("qt6", True),
+            ):
+                with self.subTest(state=state, backend=backend, multiline=multiline):
+                    asyncio.run(exercise(state, backend, multiline))
 
     def test_qt6_auxiliary_term_focus_stream_preserves_original_window_identity(self):
         async def exercise():
@@ -2631,9 +2655,11 @@ class InputFeedbackTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-    def test_gtk3_source_glossary_opens_without_entering_translation_editor(self):
-        async def exercise():
-            overlay, jobs, entry, request, emit = await self.native_glossary_scenario()
+    def test_gtk_source_glossary_opens_without_entering_translation_editor(self):
+        async def exercise(backend):
+            overlay, jobs, entry, request, emit = await self.native_glossary_scenario(
+                backend=backend
+            )
             window = self.input.window_epoch
             self.native_glossary_transfer(entry, "Opening", 1, 2)
             self.native_glossary_transfer(entry, "Opening", 2, 2)
@@ -2648,11 +2674,15 @@ class InputFeedbackTests(unittest.TestCase):
             self.assertEqual(overlay.value["state"], "ValidTranslation")
             self.assertNotIn("beginEdit", [operation for operation, _ in self.host.requests])
 
-        asyncio.run(exercise())
+        for backend in ("gtk3", "gtk4"):
+            with self.subTest(backend=backend):
+                asyncio.run(exercise(backend))
 
-    def test_gtk3_glossary_begin_survives_its_own_acceptance_revocation_render(self):
-        async def exercise():
-            overlay, jobs, entry, request, emit = await self.native_glossary_scenario(revoke=True)
+    def test_gtk_glossary_begin_survives_its_own_acceptance_revocation_render(self):
+        async def exercise(backend):
+            overlay, jobs, entry, request, emit = await self.native_glossary_scenario(
+                revoke=True, backend=backend
+            )
             self.assertIsNotNone(request)
             self.native_glossary_transfer(entry, "Opening")
             emit(
@@ -2665,7 +2695,9 @@ class InputFeedbackTests(unittest.TestCase):
             self.assertFalse(overlay.value["canAccept"])
             self.assertEqual(overlay.value["viewContext"]["token"], entry["token"])
 
-        asyncio.run(exercise())
+        for backend in ("gtk3", "gtk4"):
+            with self.subTest(backend=backend):
+                asyncio.run(exercise(backend))
 
     def test_native_glossary_pending_begin_rejects_other_changes_and_closed_attempt(self):
         async def exercise(case, backend):
@@ -2688,13 +2720,15 @@ class InputFeedbackTests(unittest.TestCase):
             "repeat",
             "close",
         ):
-            for backend in ("gtk3", "qt6"):
+            for backend in ("gtk3", "gtk4", "qt6"):
                 with self.subTest(case=case, backend=backend):
                     asyncio.run(exercise(case, backend))
 
-    def test_gtk3_glossary_auxiliary_render_allows_only_exact_ack_withdrawal(self):
-        async def exercise(case):
-            overlay, jobs, entry, request, emit = await self.native_glossary_scenario(revoke=True)
+    def test_gtk_glossary_auxiliary_render_allows_only_exact_ack_withdrawal(self):
+        async def exercise(case, backend):
+            overlay, jobs, entry, request, emit = await self.native_glossary_scenario(
+                revoke=True, backend=backend
+            )
             self.native_glossary_transfer(entry, "Opening")
             emit(
                 "sessionGlossaryFocus",
@@ -2748,8 +2782,9 @@ class InputFeedbackTests(unittest.TestCase):
             "missing",
             "null",
         ):
-            with self.subTest(case=case):
-                asyncio.run(exercise(case))
+            for backend in ("gtk3", "gtk4"):
+                with self.subTest(case=case, backend=backend):
+                    asyncio.run(exercise(case, backend))
 
     def test_native_glossary_transfer_rejects_incomplete_replayed_and_external_sequences(self):
         async def exercise(case, backend):
@@ -2810,13 +2845,15 @@ class InputFeedbackTests(unittest.TestCase):
             "old-token",
             "no-witness",
         ):
-            for backend in ("gtk3", "qt6"):
+            for backend in ("gtk3", "gtk4", "qt6"):
                 with self.subTest(case=case, backend=backend):
                     asyncio.run(exercise(case, backend))
 
-    def test_gtk3_auxiliary_external_focus_retires_form_without_another_source_event(self):
-        async def exercise():
-            overlay, jobs, entry, request, emit = await self.native_glossary_scenario()
+    def test_gtk_auxiliary_external_focus_retires_form_without_another_source_event(self):
+        async def exercise(backend):
+            overlay, jobs, entry, request, emit = await self.native_glossary_scenario(
+                backend=backend
+            )
             receipt = {key: entry[key] for key in ("formId", "token")}
             self.native_glossary_transfer(entry, "Opening")
             emit("sessionGlossaryFocus", {**receipt, "ime": "Clear"})
@@ -2845,7 +2882,9 @@ class InputFeedbackTests(unittest.TestCase):
                 "sessionGlossaryAdd", [operation for operation, _ in self.host.requests]
             )
 
-        asyncio.run(exercise())
+        for backend in ("gtk3", "gtk4"):
+            with self.subTest(backend=backend):
+                asyncio.run(exercise(backend))
 
     def native_glossary_return_capture(self, backend, multiline=False):
         async def exercise():
@@ -3001,6 +3040,9 @@ class InputFeedbackTests(unittest.TestCase):
 
     def test_gtk3_glossary_return_needs_fresh_original_source_clear_read_only_capture(self):
         self.native_glossary_return_capture("gtk3")
+
+    def test_gtk4_glossary_return_needs_fresh_original_source_clear_read_only_capture(self):
+        self.native_glossary_return_capture("gtk4")
 
     def test_qt6_glossary_return_needs_fresh_original_source_clear_read_only_capture(self):
         self.native_glossary_return_capture("qt6")

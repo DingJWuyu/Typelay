@@ -447,6 +447,10 @@ internal sealed class SessionScenario : IDisposable
         {
             get; set;
         }
+        public StyledGlossaryTranslationCapability? StyledGlossaryTranslationCapability
+        {
+            get; set;
+        }
         public GlossaryTranslationCapability? GlossaryTranslationCapability
         {
             get; set;

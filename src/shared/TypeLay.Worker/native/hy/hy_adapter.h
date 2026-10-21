@@ -74,6 +74,14 @@ HY_API int32_t hy_translate_glossary_v5(hy_handle *handle, uint32_t direction,
     uint8_t *output, uint32_t output_capacity, uint32_t *output_length,
     hy_metrics *metrics, hy_cancel_fn cancel, void *cancel_data,
     char *error, uint32_t error_capacity);
+/* Optional ABI5 extension. Requires explicit combined capability; unchanged layout
+   and budgets. Terms and style apply to the same source in one decode. */
+HY_API int32_t hy_translate_styled_glossary_v5(hy_handle *handle, uint32_t direction, uint32_t style,
+    const hy_term *terms, uint32_t term_count,
+    const uint8_t *source, uint32_t source_length,
+    uint8_t *output, uint32_t output_capacity, uint32_t *output_length,
+    hy_metrics *metrics, hy_cancel_fn cancel, void *cancel_data,
+    char *error, uint32_t error_capacity);
 HY_API void hy_close(hy_handle *handle);
 #ifdef HY_ENABLE_AUDIT
 /* Isolated fixture-only export; shared source encoder, never performs decode. */

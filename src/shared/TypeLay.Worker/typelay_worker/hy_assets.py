@@ -23,6 +23,8 @@ EXPORTS = [
     "hy_translate_glossary_v5",
     "hy_translate_styled_v5",
 ]
+STYLED_GLOSSARY_EXPORT = "hy_translate_styled_glossary_v5"
+EXTENDED_EXPORTS = sorted([*EXPORTS, STYLED_GLOSSARY_EXPORT])
 DIRECTIONS = (
     "zh_ja",
     "ja_zh",
@@ -205,7 +207,7 @@ def verify_native():
         manifest["schema"] != 1
         or manifest["abi"] != ABI
         or manifest["platform"] != ("win-x64" if windows else "linux-x86_64")
-        or manifest["exports"] != EXPORTS
+        or manifest["exports"] not in (EXPORTS, EXTENDED_EXPORTS)
         or manifest["upstream_revision"] != UPSTREAM
         or manifest["model_lock_sha256"] != digest(root / "model.lock.json")
         or manifest["cpu_runtime_lock_sha256"] != digest(root / cpu_lock)
@@ -232,6 +234,7 @@ def verify_native():
     adapter = verify_file(root / manifest["adapter"]["file"], manifest["adapter"])
     verify_file(root / manifest["license"]["file"], manifest["license"])
     return {
+        "styled_glossary": manifest["exports"] == EXTENDED_EXPORTS,
         "adapter_path": str(adapter),
         "adapter_sha256": manifest["adapter"]["sha256"],
         "adapter_record": manifest["adapter"],

@@ -272,6 +272,15 @@ class LocalEngine:
         return self.styled_translation_version
 
     @property
+    def styled_glossary_translation_version(self):
+        return (
+            1
+            if self.styled_translation_version is not None
+            and self._owned[0].styled_glossary_available
+            else None
+        )
+
+    @property
     def self_check_directions(self):
         directions = tuple(direction for item in self._selection for direction in item.directions)
         return (
@@ -337,7 +346,17 @@ class LocalEngine:
             return Result("error", code="style-unavailable")
         return self._translate(text, source, target, preserved, style)
 
+    def translate_styled_glossary(self, text, source, target, style, glossary, preserved=None):
+        if type(style) is not str or style not in ("natural", "formal"):
+            return Result("error", code="invalid-request")
+        if self.styled_glossary_translation_version is None:
+            return Result("error", code="glossary-combination-unavailable")
+        return self._translate_glossary(text, source, target, glossary, preserved, style)
+
     def translate_glossary(self, text, source, target, glossary, preserved=None):
+        return self._translate_glossary(text, source, target, glossary, preserved, None)
+
+    def _translate_glossary(self, text, source, target, glossary, preserved, style):
         try:
             rules = parse_glossary(glossary, {(d.source, d.target) for d in self.catalog})
         except ValueError as error:
@@ -346,7 +365,7 @@ class LocalEngine:
             return Result("error", code="invalid-request")
         if self._selection[0].package.backend != "hy-mt-llama-cpu":
             return Result("error", code="glossary-unavailable")
-        return self._translate(text, source, target, preserved, None, rules)
+        return self._translate(text, source, target, preserved, style, rules)
 
     def translate(
         self, text: str, source: str, target: str, preserved: str | None = None

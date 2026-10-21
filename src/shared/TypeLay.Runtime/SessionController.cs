@@ -1309,7 +1309,8 @@ public sealed partial class SessionController : IDisposable
 
     private string? StyleApplicationProblem() =>
         QualifyTranslationOperation(TranslationOperation.Style, _settings.Value.Direction)
-            ?? (_settings.Value.Glossary?.CouldApply(_settings.Value.Direction) == true ? "glossary-combination-unavailable" : null);
+            ?? (_settings.Value.Glossary?.CouldApply(_settings.Value.Direction) == true
+                ? QualifyTranslationOperation(TranslationOperation.StyledGlossary, _settings.Value.Direction) : null);
 
     private bool TranslationSettingsBusy() => AutomaticPracticeProgress is not null || PracticeProgress is not null
         || _pendingPracticeCompletion is not null || _ownedPractice is not null || _awaitingPractice is not null
@@ -1346,6 +1347,7 @@ public sealed partial class SessionController : IDisposable
         string? savedApplication = null)
     {
         var capability = _model.StyledTranslationCapability;
+        var combinedCapability = _model.StyledGlossaryTranslationCapability;
         var identity = _model.VerifiedIdentity;
         var observation = _styleObservation;
         long generation = _generation, configuration = _configurationRevision;
@@ -1357,6 +1359,7 @@ public sealed partial class SessionController : IDisposable
             if (generation != _generation || configuration != _configurationRevision || observation != _styleObservation)
                 return "style-stale";
             if (!removal && (!ReferenceEquals(capability, _model.StyledTranslationCapability)
+                || !ReferenceEquals(combinedCapability, _model.StyledGlossaryTranslationCapability)
                 || !ReferenceEquals(identity, _model.VerifiedIdentity)))
                 return "style-unavailable";
             return null;
@@ -1417,6 +1420,7 @@ public sealed partial class SessionController : IDisposable
         {
             TranslationOperation.Style => _model.StyledTranslationCapability is not null,
             TranslationOperation.Glossary => _model.GlossaryTranslationCapability is not null,
+            TranslationOperation.StyledGlossary => _model.StyledGlossaryTranslationCapability is not null,
             TranslationOperation.Alternative => identity.AlternativeTranslationAvailable,
             _ => false
         };
@@ -1427,7 +1431,7 @@ public sealed partial class SessionController : IDisposable
     private string? QualifyTranslationOperation(TranslationOperation operation, LanguageDirection direction, out VerifiedModelIdentity? identity)
     {
         identity = _model.VerifiedIdentity;
-        string name = operation.ToString().ToLowerInvariant();
+        string name = operation == TranslationOperation.StyledGlossary ? "glossary-combination" : operation.ToString().ToLowerInvariant();
         if (!TechnicalTranslationAvailable(operation, identity) || !ReferenceEquals(identity, _model.VerifiedIdentity))
             return name + "-unavailable";
         return _translationRelease.IsReleased(operation)
@@ -1438,10 +1442,12 @@ public sealed partial class SessionController : IDisposable
     {
         identity = null;
         bool glossary = job.Glossary?.CouldApply(job.Direction) == true;
-        if (glossary && (job.Style is not null || job.Kind == TranslationKind.Alternative))
+        if (glossary && job.Kind == TranslationKind.Alternative)
             return "glossary-combination-unavailable";
         if (job.Kind == TranslationKind.Alternative)
             return job.Style is not null ? "alternative-unavailable" : QualifyTranslationOperation(TranslationOperation.Alternative, job.Direction, out identity);
+        if (glossary && job.Style is not null)
+            return QualifyTranslationOperation(TranslationOperation.StyledGlossary, job.Direction, out identity);
         return glossary ? QualifyTranslationOperation(TranslationOperation.Glossary, job.Direction, out identity)
             : job.Style is not null ? QualifyTranslationOperation(TranslationOperation.Style, job.Direction, out identity) : null;
     }
@@ -1606,6 +1612,7 @@ public sealed partial class SessionController : IDisposable
                     "style-unavailable" => "当前模型不支持翻译风格",
                     "glossary-unavailable" => "当前模型不支持应用术语表",
                     "glossary-combination-unavailable" => "暂不支持同时应用风格与术语表",
+                    "glossary-combination-not-released" => "当前模型方向尚未开放风格与术语同时应用",
                     "glossary-protected-conflict" => "术语命中受保护内容或跨越分段，无法应用",
                     "glossary-output-missing" => "译文未包含指定译法，未提供可接受候选",
                     _ => "暂时无法翻译"

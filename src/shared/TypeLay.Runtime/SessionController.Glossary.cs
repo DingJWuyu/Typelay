@@ -35,7 +35,7 @@ public sealed partial class SessionController
 
     private string? GlossaryApplicationProblem(GlossarySnapshot next) =>
         next.CouldApply(_settings.Value.Direction) && _settings.Value.Styles is not null
-            ? "glossary-combination-unavailable"
+            ? QualifyTranslationOperation(TranslationOperation.StyledGlossary, _settings.Value.Direction)
             : QualifyTranslationOperation(TranslationOperation.Glossary, _settings.Value.Direction);
 
     private bool IsGlossaryDeletion(GlossarySnapshot next) => _settings.Value.Glossary is { } saved
@@ -89,6 +89,7 @@ public sealed partial class SessionController
         var sourceBasis = _session.Current;
         var identity = _model.VerifiedIdentity;
         var capability = _model.GlossaryTranslationCapability;
+        var combinedCapability = _model.StyledGlossaryTranslationCapability;
         long contentEpoch = _hook.ContentEpoch, foregroundEpoch = _hook.ForegroundEpoch, windowEpoch = _hook.WindowEpoch;
         bool deletion = IsGlossaryDeletion(next!);
         bool appliesNow = !deletion && sourceBasis is not null && !_session.ManualStyleLocked
@@ -106,7 +107,8 @@ public sealed partial class SessionController
                 || sourceBasis?.InputEpoch != _session.Current?.InputEpoch)
                 return "glossary-stale";
             if (appliesNow && (!ReferenceEquals(identity, _model.VerifiedIdentity)
-                || !ReferenceEquals(capability, _model.GlossaryTranslationCapability)))
+                || !ReferenceEquals(capability, _model.GlossaryTranslationCapability)
+                || !ReferenceEquals(combinedCapability, _model.StyledGlossaryTranslationCapability)))
                 return "glossary-unavailable";
             return null;
         }

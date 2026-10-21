@@ -40,6 +40,42 @@ public sealed class GlossarySettingsTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CombinedCapabilityNeedsItsOwnReleaseAndPreservesBothChoices(bool released)
+    {
+        var releases = new List<TranslationRelease>
+        {
+            new(TranslationOperation.Style, "hy-mt2-1-8b-q4-k-m", "a0c709d9fac510f2c807aa3af52872340dc37a4a", "zh_ja"),
+            new(TranslationOperation.Glossary, "hy-mt2-1-8b-q4-k-m", "a0c709d9fac510f2c807aa3af52872340dc37a4a", "zh_ja")
+        };
+        if (released)
+            releases.Add(new(TranslationOperation.StyledGlossary, "hy-mt2-1-8b-q4-k-m", "a0c709d9fac510f2c807aa3af52872340dc37a4a", "zh_ja"));
+        using var s = new SessionScenario(translationRelease: new(releases), modelIdentity: SessionScenario.HyIdentity,
+            direction: new("zh", "ja"), glossaryAvailable: true, initialStyles: new(TranslationStyle.Formal));
+        s.Model.StyledTranslationCapability = new(1);
+        s.Model.StyledGlossaryTranslationCapability = new(1);
+        s.ReadyCandidate();
+        var rules = new[] { new GlossaryRule("hello", "fixed") };
+        var result = await s.Controller.ChangeGlossaryAsync(rules, s.Settings.Revision, s.View.Token,
+            TestContext.Current.CancellationToken);
+        Assert.Equal(released, result.Saved);
+        if (!released)
+        {
+            Assert.Equal("glossary-combination-not-released", result.Code);
+            Assert.Null(s.ReloadSettings().Glossary);
+        }
+        else
+        {
+            Assert.Equal(TranslationStyle.Formal, s.ReloadSettings().Styles!.Default);
+            Assert.Equal(rules, s.ReloadSettings().Glossary!.Rules);
+            s.Tick();
+            s.Tick(Limits.DebounceMs);
+            Assert.Contains(s.Model.Jobs, job => job.Style == TranslationStyle.Formal && job.Glossary is not null);
+        }
+    }
+
+    [Theory]
     [InlineData("subset", true)]
     [InlineData("clear", true)]
     [InlineData("changed-target", false)]

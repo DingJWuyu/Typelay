@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src/shared/TypeLay.Worker"))
 from typelay_worker.hy_assets import (  # noqa: E402
     ABI,
-    EXPORTS,
+    EXTENDED_EXPORTS,
     NATIVE_ROOT,
     TEMPLATE_SHA256,
     UPSTREAM,
@@ -53,8 +53,8 @@ def production_exports(raw):
             raise ValueError("malformed adapter export listing")
         exports.append(fields[index].decode("ascii", "strict"))
     exports.sort()
-    if exports != EXPORTS:
-        raise ValueError("production adapter must expose exactly five ABI5 exports")
+    if exports != EXTENDED_EXPORTS:
+        raise ValueError("production adapter must expose exactly six extended ABI5 exports")
     return exports
 
 

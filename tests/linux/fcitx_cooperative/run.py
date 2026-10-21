@@ -5,8 +5,8 @@ Or: python tests/linux/fcitx_cooperative/run.py --core-version 5.1.22
 Builds all official core frontends and private Core/Config/Utils,
 requires CMake/Ninja/ECM/gettext and official Wayland/Plasma protocols, and writes
 a separate fcitx-cooperative-5.1.22 output directory. It is not an installation.
-Requires GTK3 development files, boost, zstd, GCC, pkgconf, patch,
-glib-genmarshal, dbus-run-session, Xvfb and xdotool. LibIME and its data
+Requires GTK3/GTK4 development files, json-glib, boost, zstd, GCC, pkgconf, patch,
+glib-genmarshal, dbus-run-session, Xvfb, niri and xdotool. LibIME and its data
 are built from fixed official sources; system LibIME is not used.
 The separately packaged opt-in components do not change a user installation.
 Downloaded sources, their licenses, modifications and binaries remain together
@@ -39,7 +39,14 @@ from eng.linux.cooperative.inputs import (  # noqa: E402
 )
 
 ABI = ROOT / "src/linux/native/fcitx5/typelay-fcitx-v1.h"
-TEST_INPUTS = ("tests/linux/fcitx_cooperative/run.py", "tests/linux/fcitx_cooperative/fixture.c")
+TEST_INPUTS = (
+    "tests/linux/fcitx_cooperative/run.py",
+    "tests/linux/fcitx_cooperative/fixture.c",
+    "tests/linux/native_e2e.py",
+    "tests/linux/fixtures/gtk4_fixture.c",
+    "tests/linux/fixtures/gtk_reentry.inc",
+    "tests/linux/fixtures/gtk_motion.inc",
+)
 
 
 def run(args, **kwargs):
@@ -75,6 +82,19 @@ def build(out: Path, core_version: str):
             *flags("gtk+-3.0", "gmodule-2.0"),
         ]
     )
+    run(
+        [
+            "cc",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-g",
+            ROOT / "tests/linux/fixtures/gtk4_fixture.c",
+            "-o",
+            out / "gtk4-fixture",
+            *flags("gtk4", "json-glib-1.0"),
+        ]
+    )
     if hashes(TEST_INPUTS) != inputs:
         raise RuntimeError("Test inputs changed during fixture compilation")
     (out / "test-inputs.json").write_text(
@@ -82,6 +102,7 @@ def build(out: Path, core_version: str):
             {
                 "files": inputs,
                 "fixture_sha256": sha256(out / "fixture"),
+                "gtk4_fixture_sha256": sha256(out / "gtk4-fixture"),
                 "build_inputs_sha256": sha256(out / "build-inputs.json"),
                 "build_metadata_sha256": sha256(out / "versions.json"),
             },
@@ -188,7 +209,7 @@ def fixed_compose_mapping(out: Path):
         raise
 
 
-def session(out: Path, core_version: str):
+def session(out: Path, core_version: str, deadline: float):
     prefix = out / "core-prefix"
     for name in ("command", "command.tmp", "state.json", "result.json"):
         (out / name).unlink(missing_ok=True)
@@ -469,6 +490,15 @@ def session(out: Path, core_version: str):
                     wait(lambda: state().get("settled"), f"{mode} mode cancelled")
                     assert command("capture")["result"] == "captured"
 
+                # Reuse this actual daemon and private desktop before the deliberate
+                # unknown-origin restarts. No new daemon or per-case time allowance.
+                sys.path.insert(0, str(ROOT / "tests/linux"))
+                from native_e2e import gtk4_source_glossary
+
+                gtk4_source_glossary(out, env, deadline)
+                run(["xdotool", "windowfocus", "--sync", window], env=env)
+                wait(lambda: state().get("settled"), "original GTK3 client refocused")
+
                 # Both unknown origins and unknown addon implementations keep
                 # ordinary input working while removing TypeLay authority.
                 daemon = children[0]
@@ -571,13 +601,16 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--core-version", choices=(CORE_VERSION,), default=CORE_VERSION)
     parser.add_argument("--session", action="store_true")
+    parser.add_argument("--session-deadline", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--build-only", action="store_true")
     args = parser.parse_args()
     default_name = f"fcitx-cooperative-{CORE_VERSION}"
     out = (args.output or ROOT / "artifacts/linux" / default_name).resolve()
     out.mkdir(parents=True, exist_ok=True)
     if args.session:
-        session(out, args.core_version)
+        if args.session_deadline is None:
+            parser.error("--session requires the outer absolute deadline")
+        session(out, args.core_version, args.session_deadline)
     else:
         build(out, args.core_version)
         if not args.build_only:
@@ -590,6 +623,8 @@ def main():
                     sys.executable,
                     str(Path(__file__).resolve()),
                     "--session",
+                    "--session-deadline",
+                    str(time.monotonic() + 115),
                     "--core-version",
                     args.core_version,
                     "--output",

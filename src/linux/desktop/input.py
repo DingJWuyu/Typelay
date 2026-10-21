@@ -1285,9 +1285,11 @@ class Input:
         if not current:
             return False
         peer = record["peer"]
-        if peer.backend in ("gtk3", "qt6"):
+        if peer.backend in ("gtk3", "gtk4", "qt6"):
             return bool(
-                record.get("gtk3SourceGlossary" if peer.backend == "gtk3" else "qt6SourceGlossary")
+                record.get(
+                    "gtkSourceGlossary" if peer.backend in ("gtk3", "gtk4") else "qt6SourceGlossary"
+                )
                 is True
                 and record.get("route") is None
                 and record["target"]["lifetime"] == peer.lifetime
@@ -1302,11 +1304,11 @@ class Input:
         )
 
     @staticmethod
-    def gtk3_source_glossary(peer, native):
+    def gtk_source_glossary(peer, native):
         metadata, authority = native.get("metadata", {}), native.get("authority", {})
         context = authority.get("contextStamp", {}).get("context")
         return bool(
-            peer.backend == "gtk3"
+            peer.backend in ("gtk3", "gtk4")
             and getattr(native, "route", None) is None
             and native.get("sourceGlossarySupported") is True
             and metadata.get("aria") == "GtkEntry"
@@ -1377,10 +1379,10 @@ class Input:
         )
         if not current:
             return False
-        if peer.backend == "gtk3":
+        if peer.backend in ("gtk3", "gtk4"):
             basis, authority = receipt.get("sourceAuthority", {}), native.get("authority", {})
             return bool(
-                self.gtk3_source_glossary(peer, native)
+                self.gtk_source_glossary(peer, native)
                 and receipt["token"]["target"]["lifetime"] == peer.lifetime
                 and all(
                     authority.get(key) == basis.get(key)
@@ -2153,14 +2155,14 @@ class Input:
             )
         ):
             acknowledgement = None
-        record["gtk3SourceGlossary"] = self.gtk3_source_glossary(
+        record["gtkSourceGlossary"] = self.gtk_source_glossary(
             peer, description
-        ) and self.gtk3_source_glossary(peer, native)
+        ) and self.gtk_source_glossary(peer, native)
         record["qt6SourceGlossary"] = self.qt6_source_glossary(
             peer, description
         ) and self.qt6_source_glossary(peer, native)
         record["sourceGlossarySupported"] = (
-            record["gtk3SourceGlossary"]
+            record["gtkSourceGlossary"]
             or record["qt6SourceGlossary"]
             or (
                 peer.backend == "browser"

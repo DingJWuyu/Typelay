@@ -16,6 +16,8 @@ public static class GlossaryEntryPresentation
         "glossary-saved" or "glossary-saved-notification-failed" => "已加入术语表，下次翻译生效",
         "glossary-unchanged" => "术语表中已有相同规则",
         "glossary-not-released" => "术语功能尚未开放",
+        "glossary-combination-unavailable" => "当前模型不支持同时应用风格与术语表",
+        "glossary-combination-not-released" => "当前模型方向尚未开放风格与术语同时应用",
         "glossary-entry-editing-required" => "当前译文无法加入术语表",
         "glossary-entry-return-failed" => "未能返回原输入框，术语尚未保存",
         "glossary-entry-ime" => "请先完成或取消当前输入",
@@ -62,6 +64,10 @@ public sealed partial class SessionController
             get; init;
         }
         public GlossaryTranslationCapability? ModelCapability
+        {
+            get; init;
+        }
+        public StyledGlossaryTranslationCapability? CombinedModelCapability
         {
             get; init;
         }
@@ -139,7 +145,8 @@ public sealed partial class SessionController
         && current.Multiline == basis.Multiline && _session.Style == form.Style
         && ReferenceEquals(_session.AppliedGlossary, form.AppliedGlossary)
         && ReferenceEquals(_model.VerifiedIdentity, form.ModelIdentity)
-        && ReferenceEquals(_model.GlossaryTranslationCapability, form.ModelCapability);
+        && ReferenceEquals(_model.GlossaryTranslationCapability, form.ModelCapability)
+        && ReferenceEquals(_model.StyledGlossaryTranslationCapability, form.CombinedModelCapability);
 
     private bool GlossaryAuxiliaryCurrent(GlossaryEntrySession form) =>
         _overlay.GlossaryEntryFocus is { } focus && focus.FormId == form.Entry.FormId
@@ -171,6 +178,7 @@ public sealed partial class SessionController
             WindowEpoch = _hook.WindowEpoch,
             ModelIdentity = _model.VerifiedIdentity,
             ModelCapability = _model.GlossaryTranslationCapability,
+            CombinedModelCapability = _model.StyledGlossaryTranslationCapability,
             Style = _session.Style,
             AppliedGlossary = _session.AppliedGlossary,
             Application = _styleObservation?.Application

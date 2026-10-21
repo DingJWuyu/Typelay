@@ -224,6 +224,9 @@ extern "C" HY_API int32_t hy_translate_styled_v5(hy_handle *h,uint32_t dir,uint3
 extern "C" HY_API int32_t hy_translate_glossary_v5(hy_handle *h,uint32_t dir,const hy_term *terms,uint32_t term_count,const uint8_t *p,uint32_t len,uint8_t *out,uint32_t outcap,uint32_t *outlen,hy_metrics *m,hy_cancel_fn cancel,void *data,char *e,uint32_t cap){
  return translate(h,dir,p,len,out,outcap,outlen,m,cancel,data,e,cap,false,0,true,terms,term_count);
 }
+extern "C" HY_API int32_t hy_translate_styled_glossary_v5(hy_handle *h,uint32_t dir,uint32_t style,const hy_term *terms,uint32_t term_count,const uint8_t *p,uint32_t len,uint8_t *out,uint32_t outcap,uint32_t *outlen,hy_metrics *m,hy_cancel_fn cancel,void *data,char *e,uint32_t cap){
+ return translate(h,dir,p,len,out,outcap,outlen,m,cancel,data,e,cap,true,style,true,terms,term_count);
+}
 extern "C" HY_API void hy_close(hy_handle *h){if(h){try{delete h;llama_backend_free();}catch(...){}live=false;}}
 #ifdef HY_ENABLE_AUDIT
 extern "C" HY_API int32_t hy_audit(hy_handle *h,const uint8_t *p,uint32_t len,hy_metrics *m,char *e,uint32_t cap){error_text(e,cap,"");try{init_metrics(m);source_tokens(h,p,len,m);return HY_OK;}catch(...){return caught(e,cap);}}

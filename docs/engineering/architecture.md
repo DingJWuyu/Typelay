@@ -178,7 +178,9 @@ Qt 源侧入口仅限标准 `QLineEdit`/`QPlainTextEdit`，绑定 provider/conte
 
 ModelClient只筛明显无关方向：显式方向无global及该精确方向规则、或Auto无global及该target规则时保持普通原帧；其余使用独立`translate-glossary-v1`，要求当前Hy活连接的精确数值`glossaryTranslationVersion=1`，旧worker及非Hy明确拒绝，不回退。宿主不检测语言或匹配词。worker沿原检测顺序得到actual后，方向专属规则覆盖同source全局规则。所有匹配大小写精确、不规范化Unicode；包含Han/Kana/Hangul的源词（包括混合词）按子串，其余词的两侧不得紧邻Unicode字母、数字、组合附加符或下划线。重叠按Unicode scalar长度降序、起点升序、源词/译词scalar ordinal确定排序选互不重叠命中。只把完整落入本次实际可翻译segment的命中交给后端，跨保护边界或要求修改protected内容明确拒绝；protected中的恒等规则不需模型应用。各段真实输出须先包含本段指定译法（同边界规则），再拼回结构、合并人工prefix；不硬替换输出，不承诺命中次数，此检查仅为必要条件，不是质量通过。
 
-新op严格白名单字段；旧translate、styled、alternative显式拒绝glossary/terms字段，包括null。Style与潜在适用glossary组合明确拒绝。ABI5的`hy_translate_glossary_v5`接收有界结构化词对；可信固定模板取[官方Hy-MT2术语示例](https://huggingface.co/tencent/Hy-MT2-1.8B)，源词、译词与原文分别沿同一literal编码，不进入可信指令，所有片段literal审计累计。完整prompt仍须满足context1024及192输出token预留，各段共用原60秒deadline，超限拒绝且不发布部分结果。无词命中的段保持原普通prompt字节。ABI5的软件合同、真实CPU ELF加载与无模型参数验证均不能作为GGUF推理、术语语言质量或UI开放证据。
+新op严格白名单字段；旧translate、styled、alternative显式拒绝glossary/terms字段，包括null。Style与潜在适用glossary仅在独立组合技术能力及精确包/版本/方向的组合质量门均通过时采用；组合质量门当前仍关闭。ABI5的`hy_translate_glossary_v5`接收有界结构化词对；可信固定模板取[官方Hy-MT2术语示例](https://huggingface.co/tencent/Hy-MT2-1.8B)，源词、译词与原文分别沿同一literal编码，不进入可信指令，所有片段literal审计累计。完整prompt仍须满足context1024及192输出token预留，各段共用原60秒deadline，超限拒绝且不发布部分结果。无词命中的段保持原普通prompt字节。ABI5的软件合同、真实CPU ELF加载与无模型参数验证均不能作为GGUF推理、术语语言质量或UI开放证据。
+
+风格与术语组合复用同一 `ModelRequest.Style/Glossary`，使用独立 `translate-styled-glossary-v1`；hello 的可空严格整数 `styledGlossaryTranslationVersion=1` 只在验证并实际绑定可选 `hy_translate_styled_glossary_v5` 后发布。既有 ABI5 布局、单项签名和五导出闭包不变；新 native 闭包仅多此导出，两种闭包均要求精确 manifest、完整文件哈希、固定 ABI 与真实加载路径。旧闭包可继续普通及单项翻译，但拒绝组合；未知或缺失闭包、哈希/ABI错误、声明扩展但实际符号缺失都拒绝 native 身份，不降级猜测。用户安装模型目录仍只有原 GGUF 和许可证，native 随发行 worker 分发，不改库存或重下模型。app/worker 按同一发行包配套，旧客户端的严格响应 schema 会拒绝带新能力字段的 hello，不承诺跨发行版本混用。组合将风格、每段命中术语和同一原文交给同一 native decode，沿原结构保护、共享截止时间和原资源上限，不串行改写或替换模型输出；另述组合仍拒绝。组合能力与模型连接身份在设置保存及源侧加词回源时重新核验。
 
 Hy 的 ABI5 实际模型、安装生命周期与固定质量采集结果分别见 [Windows 当前候选](../platforms/windows/README.md#当前可验证候选)、[Linux 模型验证边界](../platforms/linux/README.md#可选多语言预览模型)及[共同产品缺口](../product/README.md#当前共同开发缺口)。握手、单句推理、采集完成与完整产品质量验收是不同证据，不能互相替代。
 

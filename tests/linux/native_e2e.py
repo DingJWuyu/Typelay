@@ -1,4 +1,4 @@
-"""Real GTK Unknown-IME refusal in niri; GTK translation remains unsupported."""
+"""Real GTK native boundaries; controlled views do not establish model quality."""
 
 import argparse
 import faulthandler
@@ -21,20 +21,29 @@ from wire import encode, now_ms, receive_sync  # noqa: E402
 
 
 class Native:
-    def __init__(self, connection):
+    def __init__(self, connection, *, deadline=None):
         self.connection = connection
+        self.deadline = deadline
         self.connection.settimeout(2)
         self.id = 0
         self.events = []
-        first = receive_sync(connection)
+        first = self.receive()
         assert first["event"] == "hello" and first["data"]["protocol"] == 2
         self.hello = first["data"]
+
+    def receive(self):
+        if self.deadline is not None:
+            remaining = self.deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("native protocol exceeded the original session deadline")
+            self.connection.settimeout(min(2, remaining))
+        return receive_sync(self.connection)
 
     def call(self, operation, data=None):
         self.id += 1
         self.connection.sendall(encode({"id": self.id, "op": operation, "data": data or {}}))
         while True:
-            frame = receive_sync(self.connection)
+            frame = self.receive()
             if frame.get("id") == self.id:
                 self.capture_trace = frame.get("captureTrace")
                 self.capture_continuity = frame.get("captureContinuity")
@@ -97,6 +106,676 @@ def plan(source, replacement, scope=None):
         "resultText": result,
         "caret": first + len(replacement.encode("utf-16-le")) // 2,
     }
+
+
+def gtk4_source_glossary(out, environment, deadline):
+    """Use Wayland production admission inside the caller's owned Xvfb/session."""
+    config = out / "gtk4-glossary-niri.kdl"
+    ready = out / "gtk4-glossary-environment.json"
+    ready.unlink(missing_ok=True)
+    command = [
+        sys.executable,
+        "-c",
+        "import json,os,pathlib; pathlib.Path("
+        + repr(str(ready))
+        + ").write_text(json.dumps({k:os.environ[k] for k in ('NIRI_SOCKET','WAYLAND_DISPLAY')}))",
+    ]
+    config.write_text(
+        "hotkey-overlay { skip-at-startup; }\nspawn-at-startup "
+        + " ".join(json.dumps(item) for item in command)
+        + "\n"
+    )
+    nested_env = environment | {"GDK_BACKEND": "wayland", "LIBGL_ALWAYS_SOFTWARE": "1"}
+    nested_env.pop("WAYLAND_DISPLAY", None)
+    nested_env.pop("NIRI_SOCKET", None)
+    report = out / "gtk4-glossary-startup.json"
+    evidence = {"status": "not-run", "cleanup": False, "real_model_quality": False}
+    report.write_text(json.dumps(evidence, indent=2) + "\n")
+    with (out / "gtk4-glossary-niri.log").open("w") as log:
+        compositor = subprocess.Popen(
+            ["niri", "--config", str(config)], env=nested_env, stdout=log, stderr=subprocess.STDOUT
+        )
+        evidence["pid"] = compositor.pid
+        try:
+            while time.monotonic() < deadline:
+                assert compositor.poll() is None, "nested niri exited before GTK4 glossary"
+                try:
+                    connected = nested_env | json.loads(ready.read_text())
+                except (FileNotFoundError, json.JSONDecodeError):
+                    time.sleep(0.025)
+                    continue
+                assert connected.get("NIRI_SOCKET") and connected.get("WAYLAND_DISPLAY")
+                # XTest targets the outer owned Xvfb, not any Xwayland DISPLAY
+                # the nested compositor publishes to its applications.
+                connected["DISPLAY"] = environment["DISPLAY"]
+                evidence.update(
+                    status="started",
+                    wayland=connected["WAYLAND_DISPLAY"],
+                    ipc=connected["NIRI_SOCKET"],
+                )
+                report.write_text(json.dumps(evidence, indent=2) + "\n")
+                result = _gtk4_source_glossary(out, connected, deadline)
+                evidence["status"] = "passed"
+                return result
+            raise AssertionError("GTK4 glossary: original session deadline during niri startup")
+        except BaseException as error:
+            evidence.update(status="failed", error=f"{type(error).__name__}: {error}")
+            raise
+        finally:
+            compositor.terminate()
+            try:
+                compositor.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                compositor.kill()
+                compositor.wait(timeout=2)
+                evidence["forced_cleanup"] = True
+            evidence.update(cleanup=compositor.poll() is not None, returncode=compositor.returncode)
+            report.write_text(json.dumps(evidence, indent=2) + "\n")
+
+
+def _gtk4_source_glossary(out, environment, deadline):
+    """Real GTK4/Fcitx consumer, controlled public views, never model-quality evidence.
+
+    The caller owns the daemon, HOME and Xvfb and supplies its original absolute
+    session deadline. All cases share this budget, including socket I/O.
+    """
+    import hashlib
+
+    def remaining():
+        value = deadline - time.monotonic()
+        assert value > 0, "GTK4 source glossary exhausted the existing session budget"
+        return value
+
+    def execute(*args):
+        return subprocess.check_output(
+            [str(arg) for arg in args],
+            env=environment,
+            text=True,
+            timeout=min(2, remaining()),
+        ).strip()
+
+    def wait_for(predicate, label):
+        while time.monotonic() < deadline:
+            value = predicate()
+            if value:
+                return value
+            time.sleep(min(0.025, remaining()))
+        raise AssertionError(f"GTK4 source glossary session deadline: {label}")
+
+    identity = environment.get("WAYLAND_DISPLAY", "") + "\n" + environment.get("NIRI_SOCKET", "")
+    directory = (
+        Path(environment["XDG_RUNTIME_DIR"])
+        / "typelay"
+        / hashlib.sha256(identity.encode()).hexdigest()[:16]
+    )
+    directory.mkdir(parents=True, mode=0o700)
+    path = directory / "native.sock"
+    state_path = out / "gtk4-glossary-state.json"
+    command_path = out / "gtk4-glossary-command"
+    for owned in (path, state_path, command_path):
+        owned.unlink(missing_ok=True)
+    environment = environment | {
+        "GTK_PATH": str(out / "lib/gtk-4.0"),
+        "TYPELAY_FIXTURE_STATE": str(state_path),
+        "TYPELAY_FIXTURE_GLOSSARY_COMMAND": str(command_path),
+        "TYPELAY_FIXTURE_COOPERATIVE": "1",
+        "TYPELAY_FIXTURE_FULLSCREEN": "1",
+    }
+    environment.pop("TYPELAY_DESKTOP", None)
+    results = []
+    current_case = None
+    (out / "gtk4-glossary-result.json").unlink(missing_ok=True)
+    with (
+        socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server,
+        (out / "gtk4-glossary.log").open("w") as log,
+    ):
+        server.bind(str(path))
+        path.chmod(0o600)
+        server.listen(1)
+        server.settimeout(min(5, remaining()))
+        process = subprocess.Popen(
+            [str(out / "gtk4-fixture")], env=environment, stdout=log, stderr=subprocess.STDOUT
+        )
+        try:
+            connection, _ = server.accept()
+            with connection:
+                assert peer_credentials(connection)[0] == process.pid
+                native = Native(connection, deadline=deadline)
+                mappings = Path(f"/proc/{process.pid}/maps").read_text()
+                for library in (
+                    out / "lib/libtypelay-gtk4.so",
+                    out / "lib/gtk-4.0/4.0.0/immodules/libim-fcitx5.so",
+                ):
+                    assert str(library.resolve()) in mappings, f"actual GTK4 must load {library}"
+
+                def call(operation, data=None):
+                    connection.settimeout(min(2, remaining()))
+                    return native.call(operation, data)
+
+                def state():
+                    try:
+                        return json.loads(state_path.read_text())
+                    except (FileNotFoundError, json.JSONDecodeError):
+                        return {}
+
+                def visible_windows():
+                    found = subprocess.run(
+                        ["xdotool", "search", "--onlyvisible", "--name", "^niri$"],
+                        env=environment,
+                        text=True,
+                        capture_output=True,
+                        timeout=min(2, remaining()),
+                    )
+                    assert found.returncode in (0, 1), found.stderr
+                    return found.stdout.split()
+
+                windows = wait_for(visible_windows, "owned nested niri window")
+                assert len(windows) == 1, "owned Xvfb must contain exactly one nested niri"
+                window = windows[0]
+                execute("xdotool", "windowfocus", "--sync", window)
+                wait_for(
+                    lambda: state().get("fullscreen"), "fullscreen Wayland fixture coordinates"
+                )
+                execute("fcitx5-remote", "-s", "keyboard-us")
+                generation = str(uuid.uuid4())
+                configuration = {
+                    "enabled": True,
+                    "sessionEnabled": True,
+                    "generation": generation,
+                    "accept": "Tab",
+                    "exit": "Esc",
+                    "wake": {},
+                    "direct": {},
+                }
+                call("configure-shortcuts", configuration)
+                serial = 0
+
+                def host(action):
+                    nonlocal serial
+                    serial += 1
+                    temporary = command_path.with_suffix(".tmp")
+                    temporary.write_text(f"{serial} {action}\n")
+                    temporary.replace(command_path)
+                    wait_for(lambda: state().get("glossaryCommand") == serial, action)
+
+                def point(control):
+                    scale = state()["scale"]
+                    execute(
+                        "xdotool",
+                        "mousemove",
+                        "--window",
+                        window,
+                        int((control["x"] + control.get("width", 4) / 2) * scale),
+                        int((control["y"] + control.get("height", 4) / 2) * scale),
+                        "click",
+                        "1",
+                    )
+
+                for view_state in ("ValidTranslation", "EditedTranslationPending"):
+                    for finish in (
+                        "save",
+                        "cancel",
+                        "changed-source",
+                        "replaced-buffer",
+                        "reset",
+                        "external-focus",
+                        "no-click-replay",
+                    ):
+                        current_case = {"state": view_state, "finish": finish}
+                        call("overlay-hide")
+                        call("configure-shortcuts", configuration)
+                        wait_for(lambda: state().get("firstEntry"), "GTK4 source observation")
+                        point(state()["firstEntry"])
+                        wait_for(lambda: state().get("imeClear"), "source real IM clear")
+                        description = call("describe")
+                        assert description["sourceGlossarySupported"] is True
+                        target = description["target"]
+                        captured = call(
+                            "capture", {"target": target, "authority": description["authority"]}
+                        )
+                        assert captured and captured["ime"] == "Clear"
+                        authority = captured["authority"]
+                        token = {
+                            "target": {
+                                "backend": "linux-gtk4",
+                                "value": target,
+                                "lifetime": native.hello["lifetime"],
+                            },
+                            "commandGeneration": generation,
+                            "revision": 1,
+                        }
+                        actions = {
+                            "settingsRevision": 12,
+                            "styleReleased": False,
+                            "alternativeReleased": False,
+                            "glossaryReleased": True,
+                            "canOpenGlossary": True,
+                            "canChangeStyle": False,
+                            "canInheritStyle": False,
+                            "canRequestAlternative": False,
+                            "applicationStyle": None,
+                            "styleUnavailableReason": None,
+                            "inheritUnavailableReason": None,
+                            "alternativeUnavailableReason": None,
+                            "feedback": None,
+                            "glossaryUnavailableReason": None,
+                        }
+                        view = {
+                            "state": view_state,
+                            "text": "Kept candidate",
+                            "editable": True,
+                            "viewContext": {
+                                "token": token,
+                                "bindings": {"accept": "Tab", "exit": "Esc"},
+                                "canEdit": True,
+                                "translationActions": actions,
+                            },
+                            "presentation": {"visible": True, "editorOwnsText": False},
+                        }
+                        if finish in ("save", "cancel"):
+                            view["canAccept"] = True
+                            view["presentation"]["tabHint"] = "Tab 接受译文"
+                        base = {
+                            "target": target,
+                            "authority": authority,
+                            "generation": generation,
+                            "revision": 1,
+                        }
+                        assert call(
+                            "overlay-render", {**base, "expiresAtMs": now_ms() + 800, "view": view}
+                        )["visible"]
+                        wait_for(
+                            lambda: (state().get("candidate") or {}).get("text")
+                            == "Kept candidate",
+                            "rendered candidate",
+                        )
+                        original = state()
+                        before = len(native.events)
+
+                        def renew():
+                            call("overlay-renew", {**base, "expiresAtMs": now_ms() + 800})
+
+                        def observe(predicate, label):
+                            def check():
+                                renew()
+                                return predicate(state())
+
+                            return wait_for(check, f"{view_state}/{finish}: {label}")
+
+                        def click(name):
+                            control = observe(
+                                lambda value: value.get("overlayControls", {}).get(name)
+                                if value.get("overlayControls", {}).get(name, {}).get("visible")
+                                else None,
+                                name,
+                            )
+                            assert control["enabled"]
+                            point(control)
+
+                        def events(operation):
+                            renew()
+                            return [
+                                item["data"]
+                                for item in native.events[before:]
+                                if item.get("event") == "ui"
+                                and item["data"].get("operation") == operation
+                            ]
+
+                        def unchanged():
+                            actual = state()
+                            assert actual["first"] == original["first"]
+                            for name in ("start", "end", "insertions", "deletions"):
+                                assert actual["firstEntry"][name] == original["firstEntry"][name], (
+                                    view_state,
+                                    finish,
+                                    name,
+                                )
+                            candidate = actual["candidate"]
+                            assert (
+                                candidate["text"] == "Kept candidate"
+                                and not candidate["editable"]
+                                and not candidate["focused"]
+                            )
+                            assert not events("beginEdit")
+                            assert not any(
+                                item.get("event") == "accepted" for item in native.events[before:]
+                            )
+
+                        entry = {
+                            "formId": str(uuid.uuid4()),
+                            "token": token,
+                            "settingsRevision": 12,
+                            "directions": [],
+                            "sourceOrigin": True,
+                        }
+                        request_data = {**base, "entry": entry}
+                        if finish == "no-click-replay":
+                            assert not call("overlay-glossary-open", request_data)["opened"]
+                            closed_view = {
+                                **view,
+                                "viewContext": {
+                                    **view["viewContext"],
+                                    "translationActions": {
+                                        **actions,
+                                        "glossaryReleased": False,
+                                        "canOpenGlossary": False,
+                                    },
+                                },
+                            }
+                            assert call(
+                                "overlay-render",
+                                {**base, "expiresAtMs": now_ms() + 800, "view": closed_view},
+                            )["visible"]
+                            assert not call("overlay-glossary-open", request_data)["opened"]
+                            assert call(
+                                "overlay-render",
+                                {**base, "expiresAtMs": now_ms() + 800, "view": view},
+                            )["visible"]
+                        click("typelay-menu-trigger")
+                        click("typelay-glossary-add")
+                        observe(lambda _: events("sessionGlossaryBegin"), "explicit glossary click")
+                        if finish in ("save", "cancel"):
+                            # Runtime Begin revokes acceptance and renders before
+                            # it returns the entry. This pending view is the
+                            # native form's sourceView, not the initial preview.
+                            view = {
+                                **view,
+                                "canAccept": False,
+                                "presentation": {**view["presentation"], "tabHint": "Tab 交还应用"},
+                                "viewContext": {
+                                    **view["viewContext"],
+                                    "translationActions": {
+                                        **actions,
+                                        "canOpenGlossary": False,
+                                        "glossaryUnavailableReason": "请先完成当前术语表单",
+                                    },
+                                },
+                            }
+                            assert call(
+                                "overlay-render",
+                                {
+                                    **base,
+                                    "expiresAtMs": now_ms() + 800,
+                                    "view": view,
+                                },
+                            )["visible"]
+                        assert call("overlay-glossary-open", request_data)["opened"]
+                        observe(
+                            lambda value: value["overlayControls"]
+                            .get("typelay-glossary-source", {})
+                            .get("focused"),
+                            "source term focused",
+                        )
+                        unchanged()
+                        if finish in ("save", "cancel"):
+                            form_instance = state()["overlayControls"]["typelay-glossary-form"][
+                                "instance"
+                            ]
+                            # The auxiliary ACK only withdraws edit affordances;
+                            # it must retain this exact form and pending source.
+                            auxiliary_view = {
+                                **view,
+                                "editable": False,
+                                "viewContext": {
+                                    **view["viewContext"],
+                                    "canEdit": False,
+                                    "translationActions": {
+                                        **view["viewContext"]["translationActions"],
+                                        "glossaryUnavailableReason": "内容或设置已变化，请重新打开表单",
+                                    },
+                                },
+                            }
+                            assert call(
+                                "overlay-render",
+                                {
+                                    **base,
+                                    "expiresAtMs": now_ms() + 800,
+                                    "view": auxiliary_view,
+                                },
+                            )["visible"]
+                            observe(
+                                lambda value: value["overlayControls"]
+                                .get("typelay-glossary-form", {})
+                                .get("instance")
+                                == form_instance
+                                and value["overlayControls"]["typelay-glossary-form"]["visible"]
+                                and value["overlayControls"]["typelay-glossary-source"]["focused"],
+                                "auxiliary ACK retains the same focused form",
+                            )
+                            unchanged()
+                        if finish in ("cancel", "no-click-replay"):
+                            click("typelay-glossary-cancel")
+                            observe(
+                                lambda value: value["firstEntry"]["focused"],
+                                "cancel returned source",
+                            )
+                            assert not events("sessionGlossaryAdd")
+                            unchanged()
+                            if finish == "no-click-replay":
+                                assert not call("overlay-glossary-open", request_data)["opened"]
+                                # A new physical opt-in opens a new form. Revoking
+                                # settings/model projection after opening must not
+                                # be mistaken for the host's benign ACK render.
+                                previous_begins = len(events("sessionGlossaryBegin"))
+                                click("typelay-menu-trigger")
+                                click("typelay-glossary-add")
+                                observe(
+                                    lambda _: len(events("sessionGlossaryBegin")) > previous_begins,
+                                    "new explicit glossary activation",
+                                )
+                                entry = {**entry, "formId": str(uuid.uuid4())}
+                                request_data = {**base, "entry": entry}
+                                assert call("overlay-glossary-open", request_data)["opened"]
+                                observe(
+                                    lambda value: value["overlayControls"]
+                                    .get("typelay-glossary-source", {})
+                                    .get("focused"),
+                                    "replacement form focused",
+                                )
+                                changed_actions = {
+                                    **actions,
+                                    **(
+                                        {"settingsRevision": 13}
+                                        if view_state == "ValidTranslation"
+                                        else {"glossaryReleased": False, "canOpenGlossary": False}
+                                    ),
+                                }
+                                changed_view = {
+                                    **view,
+                                    "viewContext": {
+                                        **view["viewContext"],
+                                        "translationActions": changed_actions,
+                                    },
+                                }
+                                call(
+                                    "overlay-render",
+                                    {**base, "expiresAtMs": now_ms() + 800, "view": changed_view},
+                                )
+                                wait_for(
+                                    lambda: not state()
+                                    .get("overlayControls", {})
+                                    .get("typelay-glossary-form", {})
+                                    .get("visible"),
+                                    "post-open settings/model change closes old form",
+                                )
+                                assert (
+                                    call(
+                                        "overlay-glossary-return",
+                                        {**base, "formId": entry["formId"], "token": token},
+                                    )
+                                    is None
+                                )
+                                assert not call("overlay-glossary-open", request_data)["opened"]
+                                assert not events("sessionGlossaryAdd") and not events("beginEdit")
+                                actual = state()
+                                assert actual["first"] == original["first"]
+                                for name in ("start", "end", "insertions", "deletions"):
+                                    assert (
+                                        actual["firstEntry"][name] == original["firstEntry"][name]
+                                    )
+                                assert not any(
+                                    item.get("event") == "accepted"
+                                    for item in native.events[before:]
+                                )
+                        elif finish in ("changed-source", "replaced-buffer", "external-focus"):
+                            invalidation_start = len(native.events)
+                            if finish in ("changed-source", "replaced-buffer"):
+                                host(
+                                    "change-source"
+                                    if finish == "changed-source"
+                                    else "replace-buffer"
+                                )
+                            else:
+                                point(state()["secondEntry"])
+
+                            def invalidated_source():
+                                call("describe", {"target": target})
+                                return any(
+                                    item.get("event") == "input"
+                                    and item.get("data", {}).get("target") == target
+                                    for item in native.events[invalidation_start:]
+                                )
+
+                            wait_for(invalidated_source, "real source/provider invalidation")
+                            # The production host closes its view after this input
+                            # event. Here the native contract must independently
+                            # refuse the old form before any controlled-host hide.
+                            assert not call("overlay-glossary-open", request_data)["opened"]
+                            invalidated = state()
+                            assert not events("sessionGlossaryAdd")
+                            assert (
+                                call(
+                                    "overlay-glossary-return",
+                                    {**base, "formId": entry["formId"], "token": token},
+                                )
+                                is None
+                            )
+                            after_refusal = state()
+                            assert after_refusal["first"] == invalidated["first"]
+                            for name in ("start", "end", "insertions", "deletions"):
+                                assert (
+                                    after_refusal["firstEntry"][name]
+                                    == invalidated["firstEntry"][name]
+                                )
+                            assert not events("beginEdit")
+                            assert not any(
+                                item.get("event") == "accepted" for item in native.events[before:]
+                            )
+                        else:
+                            execute("xdotool", "type", "--delay", "0", "PR")
+                            observe(
+                                lambda value: value["overlayControls"][
+                                    "typelay-glossary-source"
+                                ].get("text")
+                                == "PR"
+                                and value.get("focusedImeClear"),
+                                "first term clear",
+                            )
+                            execute("xdotool", "key", "Tab")
+                            observe(
+                                lambda value: value["overlayControls"]["typelay-glossary-target"][
+                                    "focused"
+                                ],
+                                "target term focus",
+                            )
+                            execute("xdotool", "type", "--delay", "0", "pull request")
+                            observe(
+                                lambda value: value["overlayControls"][
+                                    "typelay-glossary-target"
+                                ].get("text")
+                                == "pull request"
+                                and value.get("focusedImeClear"),
+                                "target term clear",
+                            )
+                            if finish == "reset":
+                                host("reset-inactive-term")
+                            click("typelay-glossary-save")
+                            if finish == "reset":
+                                observe(
+                                    lambda value: value["overlayControls"][
+                                        "fixture-glossary-feedback"
+                                    ]["text"]
+                                    == "请先完成两个词条的输入法组合，再保存",
+                                    "real reset refuses explicit Save",
+                                )
+                                assert not events("sessionGlossaryAdd")
+                            else:
+                                saved = observe(
+                                    lambda _: events("sessionGlossaryAdd"), "explicit save"
+                                )[-1]["value"]
+                                assert (
+                                    saved["formId"] == entry["formId"] and saved["token"] == token
+                                )
+                                assert saved["rule"] == {
+                                    "sourceTerm": "PR",
+                                    "targetTerm": "pull request",
+                                    "sourceLanguage": None,
+                                    "targetLanguage": None,
+                                }
+                                receipt = {"formId": entry["formId"], "token": token}
+                                assert call("overlay-glossary-return", {**base, **receipt}) == {
+                                    **receipt,
+                                    "returned": True,
+                                }
+                                observe(
+                                    lambda value: value["firstEntry"]["focused"]
+                                    and value.get("imeClear"),
+                                    "exact source return",
+                                )
+                                description = call("describe", {"target": target})
+                                assert description["glossarySource"] == receipt
+                                assert (
+                                    not description["sessionBindings"]["sourceReady"]
+                                    and not description["sessionBindings"]["editorReady"]
+                                )
+                                again = call(
+                                    "capture",
+                                    {"target": target, "authority": description["authority"]},
+                                )
+                                assert (
+                                    again
+                                    and again["glossarySource"] == receipt
+                                    and again["ime"] == "Clear"
+                                )
+                                assert (
+                                    not again["writeSupported"]
+                                    and again["text"] == captured["text"]
+                                    and again["selection"] == captured["selection"]
+                                )
+                                assert len(events("sessionGlossaryAdd")) == 1
+                            unchanged()
+                        results.append({"state": view_state, "finish": finish, "passed": True})
+                call("overlay-hide")
+                point(state()["multiline"])
+                wait_for(lambda: state().get("focus") == "fixture-multiline", "TextView focus")
+                assert call("describe")["sourceGlossarySupported"] is False
+        except BaseException as error:
+            (out / "gtk4-glossary-result.json").write_text(
+                json.dumps(
+                    {
+                        "passed": False,
+                        "cases": results,
+                        "failed_case": current_case,
+                        "error": f"{type(error).__name__}: {error}",
+                        "real_model_quality": False,
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+            raise
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+            path.unlink(missing_ok=True)
+    (out / "gtk4-glossary-result.json").write_text(
+        json.dumps({"passed": True, "cases": results, "real_model_quality": False}, indent=2) + "\n"
+    )
+    return results
 
 
 def inside(arguments, notifications=None):

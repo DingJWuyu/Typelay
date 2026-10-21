@@ -8,7 +8,7 @@ import sys
 import time
 
 from .engine import EngineError
-from .hy_assets import ABI
+from .hy_assets import ABI, STYLED_GLOSSARY_EXPORT
 from .hy_assets import DIRECTIONS as DIRECTION_IDS
 from .hy_cpu import LinuxRuntime
 from .protocol import valid_text
@@ -58,6 +58,7 @@ class HyModel:
     def __init__(self, verified: dict):
         self._loader = None
         self._lib = None
+        self.styled_glossary_available = False
         self._handle = ctypes.c_void_p()
         try:
             if sys.platform == "win32":
@@ -106,6 +107,18 @@ class HyModel:
                 *self._lib.hy_translate.argtypes[2:],
             ]
             self._lib.hy_translate_glossary_v5.restype = ctypes.c_int32
+            if verified.get("styled_glossary") is True:
+                # The verified manifest is not proof that the actual symbol exists.
+                combined = getattr(self._lib, STYLED_GLOSSARY_EXPORT)
+                combined.argtypes = [
+                    *self._lib.hy_translate.argtypes[:2],
+                    ctypes.c_uint32,
+                    ctypes.POINTER(Term),
+                    ctypes.c_uint32,
+                    *self._lib.hy_translate.argtypes[2:],
+                ]
+                combined.restype = ctypes.c_int32
+                self.styled_glossary_available = True
             error = ctypes.create_string_buffer(512)
             code = self._lib.hy_open_v5(
                 os.fsencode(selected),
@@ -158,12 +171,15 @@ class HyModel:
         translate = self._lib.hy_translate if style is None else self._lib.hy_translate_styled_v5
         prefix = (self._handle, direction) if style is None else (self._handle, direction, style)
         if terms:
-            if style is not None:
+            if style is not None and not self.styled_glossary_available:
                 raise EngineError("glossary-combination-unavailable")
             encoded = [(a.encode("utf-8", "strict"), b.encode("utf-8", "strict")) for a, b in terms]
             pairs = (Term * len(encoded))(*(Term(a, len(a), b, len(b)) for a, b in encoded))
             translate = self._lib.hy_translate_glossary_v5
             prefix = (self._handle, direction, pairs, len(pairs))
+            if style is not None:
+                translate = getattr(self._lib, STYLED_GLOSSARY_EXPORT)
+                prefix = (self._handle, direction, style, pairs, len(pairs))
         code = translate(
             *prefix,
             source,

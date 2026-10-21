@@ -175,7 +175,7 @@ class Overlay:
                 self.glossary_begin_pending = None
         native_form = (
             self.glossary
-            and self.glossary["peer"].backend in ("gtk3", "qt6")
+            and self.glossary["peer"].backend in ("gtk3", "gtk4", "qt6")
             and self.glossary["entry"].get("sourceOrigin") is True
         )
         if native_form:
@@ -410,7 +410,7 @@ class Overlay:
                     self.glossary
                     and self.glossary["entry"].get("sourceOrigin") is True
                     and (
-                        peer.backend not in ("gtk3", "qt6")
+                        peer.backend not in ("gtk3", "gtk4", "qt6")
                         or (self.glossary.get("transfer") or {}).get("phase") == "Returning"
                     )
                 ):
@@ -609,7 +609,7 @@ class Overlay:
                 and self.current_record().get("route") == form["route"]
             )
             and (
-                form["peer"].backend not in ("gtk3", "qt6")
+                form["peer"].backend not in ("gtk3", "gtk4", "qt6")
                 or form["entry"].get("sourceOrigin") is not True
                 or (form["window"], form["foreground"])
                 == (self.input.window_epoch, self.input.foreground_epoch)
@@ -640,7 +640,7 @@ class Overlay:
             "token": form["entry"]["token"],
             "phase": transfer["phase"],
         }
-        if peer.backend in ("gtk3", "qt6"):
+        if peer.backend in ("gtk3", "gtk4", "qt6"):
             if not isinstance(marker, dict) or set(marker) != {*expected, "ordinal", "count"}:
                 return False
             ordinal, count = marker["ordinal"], marker["count"]
@@ -723,7 +723,7 @@ class Overlay:
         ):
             return
         attempt = self.glossary_begin_pending = {
-            "nativeSource": peer.backend in ("gtk3", "qt6")
+            "nativeSource": peer.backend in ("gtk3", "gtk4", "qt6")
             and self.value.get("state") in ("ValidTranslation", "EditedTranslationPending"),
             "peer": peer,
             "revision": revision,

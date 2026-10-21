@@ -77,6 +77,18 @@ public sealed class ProtocolContractTests
         Assert.False(old.RootElement.TryGetProperty("glossaryTranslationVersion", out _));
     }
 
+    [Fact]
+    public async Task CombinedCapabilityIsExplicitNumericAndAbsentForLegacyHello()
+    {
+        using var stream = new MemoryStream();
+        await Wire.WriteAsync(stream, new ModelResponse(1, "ready", StyledGlossaryTranslationVersion: 1), TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        Assert.Equal(1, (await Wire.ReadAsync<ModelResponse>(stream, TestContext.Current.CancellationToken)).StyledGlossaryTranslationVersion);
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<ModelResponse>("""{"id":1,"status":"ready","styledGlossaryTranslationVersion":"1"}""", Wire.Json));
+        using var legacy = JsonDocument.Parse(JsonSerializer.Serialize(new ModelResponse(2, "ready"), Wire.Json));
+        Assert.False(legacy.RootElement.TryGetProperty("styledGlossaryTranslationVersion", out _));
+    }
+
     [Fact(DisplayName = "wire-web-case-contract")]
     public void WireWebCaseContract()
     {

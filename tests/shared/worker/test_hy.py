@@ -130,12 +130,17 @@ class HyContractTests(unittest.TestCase):
             )
             return translated(handle, direction, *arguments)
 
+        def combined(handle, direction, style, terms, count, *arguments):
+            self.styles.append(style)
+            return glossary(handle, direction, terms, count, *arguments)
+
         self.library = SimpleNamespace(
             hy_open_v5=NativeFunction(opened),
             hy_close=NativeFunction(closed),
             hy_translate=NativeFunction(translated),
             hy_translate_styled_v5=NativeFunction(styled),
             hy_translate_glossary_v5=NativeFunction(glossary),
+            hy_translate_styled_glossary_v5=NativeFunction(combined),
         )
         owner = self
 
@@ -198,6 +203,107 @@ class HyContractTests(unittest.TestCase):
         while outgoing.tell() < len(outgoing.getvalue()):
             responses.append(read_frame(outgoing))
         return status, responses
+
+    def combined_request(self, **changes):
+        return {
+            "op": "translate-styled-glossary-v1",
+            "text": "原文",
+            "source": "zh",
+            "target": "ja",
+            "style": "formal",
+            "glossary": {"version": 1, "rules": [{"sourceTerm": "原文", "targetTerm": "固定"}]},
+            **changes,
+        }
+
+    def test_old_native_keeps_single_operations_and_rejects_combination(self):
+        del self.library.hy_translate_styled_glossary_v5
+        self.output_text = "固定"
+        status, replies = self.run_worker(
+            [
+                self.combined_request(),
+                {
+                    "op": "translate-styled-v1",
+                    "text": "原文",
+                    "source": "zh",
+                    "target": "ja",
+                    "style": "formal",
+                },
+                {
+                    k: v
+                    for k, v in self.combined_request(op="translate-glossary-v1").items()
+                    if k != "style"
+                },
+            ]
+        )
+        self.assertEqual(status, 0)
+        self.assertNotIn("styledGlossaryTranslationVersion", replies[0])
+        self.assertEqual(replies[1]["code"], "glossary-combination-unavailable")
+        self.assertEqual([r["status"] for r in replies[2:]], ["translated", "translated"])
+        self.assertEqual(len(self.calls), 2)
+
+    def test_combined_frame_passes_style_terms_and_original_in_one_native_call(self):
+        self.verified["styled_glossary"] = True
+        self.output_text = "固定"
+        status, replies = self.run_worker([self.combined_request()])
+        self.assertEqual(status, 0)
+        self.assertEqual(replies[0]["styledGlossaryTranslationVersion"], 1)
+        self.assertEqual(replies[1]["text"], "固定")
+        self.assertEqual(
+            (self.calls, self.styles, self.terms), ([(1, "原文")], [2], [[("原文", "固定")]])
+        )
+
+    def test_combined_no_term_match_still_applies_style_and_protected_conflicts_refuse(self):
+        self.verified["styled_glossary"] = True
+        self.output_text = "译文"
+        conflict = {
+            "version": 1,
+            "rules": [{"sourceTerm": "https://example.com", "targetTerm": "replacement"}],
+        }
+        status, replies = self.run_worker(
+            [
+                self.combined_request(text="另一句"),
+                self.combined_request(text="原文 https://example.com", glossary=conflict),
+            ]
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(replies[1]["text"], "译文")
+        self.assertEqual(replies[2]["code"], "glossary-protected-conflict")
+        self.assertEqual((self.calls, self.styles, self.terms), ([(1, "另一句")], [2], []))
+
+    def test_claimed_extension_without_actual_symbol_fails_before_model_open(self):
+        self.verified["styled_glossary"] = True
+        del self.library.hy_translate_styled_glossary_v5
+        self.assertEqual(self.run_worker(), (2, []))
+        self.assertEqual((self.opened, self.calls), (0, []))
+
+    def test_combined_request_rejects_unknown_fields_and_missing_constraints(self):
+        self.verified["styled_glossary"] = True
+        requests = [
+            self.combined_request(**change)
+            for change in (
+                {"style": None},
+                {"style": "invented"},
+                {"glossary": None},
+                {"previousCandidate": "old"},
+                {"terms": []},
+            )
+        ]
+        status, replies = self.run_worker(requests)
+        self.assertEqual(status, 0)
+        self.assertTrue(all(r["status"] == "error" for r in replies[1:]))
+        self.assertEqual(self.calls, [])
+
+    def test_combined_translation_keeps_structure_and_rejects_missing_target(self):
+        self.verified["styled_glossary"] = True
+        self.output_text = "固定"
+        status, replies = self.run_worker(
+            [self.combined_request(text="原文\r\nhttps://example.com")]
+        )
+        self.assertEqual((status, replies[1]["text"]), (0, "固定\r\nhttps://example.com"))
+        self.output_text = "不含指定译法"
+        _, replies = self.run_worker([self.combined_request()])
+        self.assertEqual(replies[1]["status"], "error")
+        self.assertEqual(replies[1]["text"], "")
 
     def test_production_catalog_lock_and_binding_agree_on_twelve_fixed_directions(self):
         self.assertEqual([item.id for item in self.package.directions], EXPECTED_DIRECTIONS)
@@ -568,6 +674,14 @@ class HyContractTests(unittest.TestCase):
                 self.assertEqual(
                     [(reply["code"], reply["text"]) for reply in replies[1:]], [(code, "")] * 2
                 )
+
+    def test_combined_segments_share_deadline_and_never_return_partial_output(self):
+        self.verified["styled_glossary"] = True
+        self.output_text = "固定"
+        self.after_decode = lambda: setattr(self, "clock", self.clock + 31)
+        _, replies = self.run_worker([self.combined_request(text="原文\n原文")])
+        self.assertEqual((replies[1]["code"], replies[1]["text"]), ("request-timeout", ""))
+        self.assertEqual((len(self.calls), self.styles, len(self.terms)), (2, [2, 2], 2))
 
     def test_all_segments_share_one_deadline_and_discard_earlier_segment_output(self):
         self.after_decode = lambda: setattr(self, "clock", self.clock + 31)

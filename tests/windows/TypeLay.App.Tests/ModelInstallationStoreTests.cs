@@ -264,11 +264,20 @@ public sealed class ModelInstallationStoreTests
             lease.PreparePackages(new(1, ModelPackageOperation.Install, [hy], [hy], null))).Message);
     }
 
-    [Fact]
-    public async Task CompleteHyComponentsPermitPreparationWithoutClaimingLoadedPackages()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CompleteHyComponentsPermitPreparationWithoutClaimingLoadedPackages(bool combined)
     {
         using var files = new StoreFiles();
         files.WriteHyComponents();
+        if (combined)
+        {
+            string path = Path.Combine(files.Root, "native", "hy", "production-adapter.json");
+            var manifest = JsonNode.Parse(File.ReadAllText(path))!;
+            manifest["exports"]!.AsArray().Insert(4, JsonValue.Create("hy_translate_styled_glossary_v5"));
+            File.WriteAllText(path, manifest.ToJsonString());
+        }
         Assert.True(files.Store.CanPrepareWindowsHy);
         var row = HyPreparationRow(files.Store);
         Assert.False(row.Ready);

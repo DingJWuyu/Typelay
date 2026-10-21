@@ -10,6 +10,8 @@ internal static class WindowsHyPayload
     private const string Template = "b7491ec0e9c869dfce20f2176758099bf248d979dd05530ede99deb21698acee";
     private static readonly string[] Exports =
         ["hy_close", "hy_open_v5", "hy_translate", "hy_translate_glossary_v5", "hy_translate_styled_v5"];
+    private static readonly string[] ExtendedExports =
+        ["hy_close", "hy_open_v5", "hy_translate", "hy_translate_glossary_v5", "hy_translate_styled_glossary_v5", "hy_translate_styled_v5"];
     private static readonly string[] CpuFiles =
         ["libomp.dll", "ggml-base.dll", "ggml.dll", "llama.dll", "LICENSE-LLVM-OpenMP",
         "ggml-cpu-alderlake.dll", "ggml-cpu-cannonlake.dll", "ggml-cpu-cascadelake.dll", "ggml-cpu-cooperlake.dll",
@@ -27,10 +29,11 @@ internal static class WindowsHyPayload
             RequireNames(root, ["production-adapter.json", "typelay_hy.dll", "LICENSE.llama.cpp",
                 "model.lock.json", "cpu-runtime.win-x64.lock.json", "cpu-runtime"]);
             var manifest = ReadObject(Path.Combine(root, "production-adapter.json"));
+            var exports = manifest.GetProperty("exports").EnumerateArray().Select(item => item.GetString()).ToArray();
             if (manifest.GetProperty("schema").GetInt32() != 1 || manifest.GetProperty("abi").GetInt32() != 5
                 || manifest.GetProperty("platform").GetString() != "win-x64"
                 || manifest.GetProperty("template_sha256").GetString() != Template
-                || !manifest.GetProperty("exports").EnumerateArray().Select(item => item.GetString()).SequenceEqual(Exports))
+                || !(exports.SequenceEqual(Exports) || exports.SequenceEqual(ExtendedExports)))
                 return false;
             RequireFile(root, "typelay_hy.dll", manifest.GetProperty("adapter"));
             RequireFile(root, "LICENSE.llama.cpp", manifest.GetProperty("license"));

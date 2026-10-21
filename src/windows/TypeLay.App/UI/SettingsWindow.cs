@@ -1974,7 +1974,7 @@ internal sealed class SettingsWindow : Window
         "glossary-save-failed" or "style-save-failed" => "请检查当前用户目录与组织策略。",
         "glossary-canceled" or "style-canceled" => "保存已取消，修改尚未保存。",
         "style-not-released" or "style-unavailable" or "style-busy" or "glossary-busy" or "glossary-not-released"
-            or "glossary-unavailable" or "manual-style-locked" or "glossary-combination-unavailable"
+            or "glossary-unavailable" or "manual-style-locked" or "glossary-combination-unavailable" or "glossary-combination-not-released"
             or "style-application-unavailable" or "practice-retirement-unconfirmed" => "当前无法保存，请检查翻译设置后重试。",
         _ => "保存结果未确认，请检查当前值后重试。"
     };

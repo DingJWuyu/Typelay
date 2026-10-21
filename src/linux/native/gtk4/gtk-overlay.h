@@ -20,3 +20,9 @@ void tl_overlay_control_cancel(void);
 /* The module owns physical presses; claim before a return/exit can move focus. */
 gboolean tl_overlay_key_claim(guint keycode, guint64 sequence, guint control_keycode, guint64 control_sequence);
 JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject *data);
+
+gboolean tl_glossary_transfer_begin(Target *target, JsonObject *identity, const char *phase);
+gboolean tl_glossary_transfer_end(gboolean valid);
+JsonObject *tl_overlay_glossary_return_basis(Target *target, JsonObject *request);
+gboolean tl_overlay_glossary_return(Target *target, JsonObject *request, gboolean starting, gboolean ready);
+JsonObject *tl_overlay_glossary_source(Target *target);

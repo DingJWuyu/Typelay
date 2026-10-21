@@ -593,6 +593,9 @@ JsonObject *tl_describe(Target *target) {
     if (bounds) json_object_set_object_member(value, "geometry", bounds);
     else json_object_set_null_member(value, "geometry");
     json_object_set_boolean_member(value, "focused", tl_focused() == target);
+    json_object_set_boolean_member(value, "sourceGlossarySupported", standard_entry(target));
+    JsonObject *glossary = tl_overlay_glossary_source(target);
+    if (glossary) json_object_set_object_member(value, "glossarySource", glossary);
     g_free(key);
     return value;
 }
@@ -681,7 +684,8 @@ JsonObject *tl_capture(Target *target, JsonObject *approved) {
     json_object_set_int_member(selection, "start", start); json_object_set_int_member(selection, "end", end);
     json_object_set_object_member(description, "selection", selection);
     json_object_set_string_member(description, "ime", "Clear");
-    json_object_set_boolean_member(description, "writeSupported", !target->quarantined);
+    json_object_set_boolean_member(description, "writeSupported", !target->quarantined
+        && !tl_object(description, "glossarySource"));
     json_object_set_int_member(description, "observedAtMs", tl_now());
     g_free(text);
     return description;

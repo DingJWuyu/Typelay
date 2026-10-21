@@ -1,0 +1,66 @@
+name: TSF read-only prerequisites (not acceptance)
+on:
+  push:
+    branches: [work/linux-usability]
+    paths:
+      - 'tests/windows/tsf_probe/**'
+      - '.github/workflows/tsf-preflight.yml'
+permissions:
+  contents: read
+concurrency:
+  group: typelay-tsf-readonly-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  observe:
+    if: ${{ !github.event.deleted && contains(github.event.head_commit.message, 'TypeLay-TSF-Preflight: true') }}
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - name: Verify this push explicitly requests the changed read-only probe
+        id: gate
+        shell: pwsh
+        run: |
+          python -B tests/windows/tsf_probe/preflight.py --check-push
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify report boundaries (not Windows or IME acceptance)
+        if: steps.gate.outputs.eligible == 'true'
+        shell: pwsh
+        run: |
+          python -B -m unittest discover -s tests/windows/tsf_probe -p 'test_*.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Observe existing prerequisites without registration or input changes
+        if: steps.gate.outputs.eligible == 'true'
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          New-Item -ItemType Directory -Path artifacts/tsf-preflight -ErrorAction Stop | Out-Null
+          python -B tests/windows/tsf_probe/preflight.py --output artifacts/tsf-preflight/result.json
+          $code = $LASTEXITCODE
+          if ($code -ne 2) { throw "Unexpected probe exit code: $code" }
+          $report = Get-Content -LiteralPath artifacts/tsf-preflight/result.json -Raw | ConvertFrom-Json
+          if ($report.schemaVersion -ne 1 -or $report.kind -ne 'tsf-readonly-prerequisites' -or
+              $report.status -ne 'observed-prerequisites-only' -or $report.runner.GITHUB_SHA -ne $env:GITHUB_SHA -or
+              $report.productAcceptance -ne $false -or $report.registrationAttempts -ne 0 -or
+              $report.activationAttempts -ne 0 -or $report.inputChanges -ne 0 -or
+              $report.targetApplicationStarts -ne 0 -or $report.sourceTextReads -ne 0 -or
+              $report.capabilities.registrationAllowed -ne $false -or $report.capabilities.writebackAllowed -ne $false) {
+            throw 'Probe failed or report did not preserve the read-only boundary'
+          }
+          'Read-only prerequisite metadata collected. Not product acceptance; no registration or writeback authorized.' >> $env:GITHUB_STEP_SUMMARY
+          exit 0
+      - name: Preserve only this diagnostic report
+        if: ${{ always() && steps.gate.outputs.eligible == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: typelay-tsf-readonly-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/tsf-preflight/result.json
+          if-no-files-found: error
+          retention-days: 7

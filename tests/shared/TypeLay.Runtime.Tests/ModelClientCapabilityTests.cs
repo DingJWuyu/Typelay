@@ -658,6 +658,49 @@ public sealed class ModelClientCapabilityTests
     }
 
 
+    private static string CombinedHello(string version = "1") => GlossaryHello().Replace("\"status\":\"ready\"",
+        "\"status\":\"ready\",\"styledTranslationVersion\":1,\"styledGlossaryTranslationVersion\":" + version);
+
+    [Fact]
+    public async Task ExplicitCombinedCapabilitySendsBothChoicesInOneRequest()
+    {
+        string expected = JsonSerializer.Serialize(new
+        {
+            op = "translate-styled-glossary-v1",
+            text = "你好",
+            source = "zh",
+            target = "ja",
+            preserved = (string?)null,
+            style = "formal",
+            glossary = new
+            {
+                version = 7,
+                rules = new[] { new { sourceTerm = "你好", targetTerm = "固定", sourceLanguage = "zh", targetLanguage = "ja" } }
+            }
+        });
+        using var peer = new ProtocolPeer(CombinedHello(), """{"status":"translated","text":"固定"}""", HyInventory, expected);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        Assert.NotNull(peer.Client.StyledGlossaryTranslationCapability);
+        var response = await peer.Client.TranslateAsync(GlossaryJob() with
+        {
+            Style = TranslationStyle.Formal
+        });
+        Assert.Equal((2, "translated", "固定"), (response.Id, response.Status, response.Text));
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("2")]
+    [InlineData("\"1\"")]
+    public async Task CombinedHelloRejectsUnsupportedOrNonNumericVersions(string version)
+    {
+        using var peer = new ProtocolPeer(CombinedHello(version), inventory: HyInventory);
+        Assert.Equal(ModelPublicationOutcome.Unchanged, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        Assert.Null(peer.Client.StyledGlossaryTranslationCapability);
+    }
+
     private static string GlossaryHello(string version = "1") => HyHello.Replace("\"status\":\"ready\"",
         "\"status\":\"ready\",\"glossaryTranslationVersion\":" + version);
     private static TranslationJob GlossaryJob(string source = "zh", string target = "ja", GlossarySnapshot? glossary = null) => AlternativeJob() with
@@ -820,7 +863,7 @@ public sealed class ModelClientCapabilityTests
                 exit_after_hello = sys.argv[5] == "true"
                 while header := sys.stdin.buffer.read(4):
                     request = json.loads(sys.stdin.buffer.read(struct.unpack("<I", header)[0]))
-                    if request["op"] in ("translate-alternative", "translate-styled-v1", "translate-glossary-v1"):
+                    if request["op"] in ("translate-alternative", "translate-styled-v1", "translate-glossary-v1", "translate-styled-glossary-v1"):
                         if expected is not None:
                             assert {k: v for k, v in request.items() if k != "id"} == expected
                         if hold:
