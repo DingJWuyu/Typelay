@@ -1121,6 +1121,8 @@ def check_language_options(
                 control.get("popupVisible") is not False or control.get("buttonFocused") is not True
             ):
                 return None
+            if client.hello["backend"] == "gtk3" and control.get("popupShown") is not False:
+                return None
             return value
 
         return wait_for(

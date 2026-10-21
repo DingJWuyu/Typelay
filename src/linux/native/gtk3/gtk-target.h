@@ -2,6 +2,7 @@
 #include <gtk/gtk.h>
 #include <json-glib/json-glib.h>
 #include "../fcitx5/typelay-fcitx-v1.h"
+#include "input-notifications.h"
 
 #define TL_MAX_FRAME (256 * 1024)
 #define TL_MAX_TEXT 8192
@@ -25,6 +26,7 @@ struct Target {
     GThread *thread;
     gulong im_handler;
     TlFcitxStateV1 im_state;
+    InputNotifications input_notifications;
     char *id;
     guint64 storage_revision;
     guint64 content_revision;

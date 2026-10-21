@@ -59,17 +59,17 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
                 {
                     PreviewReady = true
                 }).ProgressNotice;
-            Assert.DoesNotContain("已就绪", N.ReadText(GetDlgItem(root, 103), 4096));
+            Assert.DoesNotContain("已就绪", N.ReadStaticNotice(GetDlgItem(root, 103)));
             Assert.Null(initial.Target); // A held real capture cannot bind or announce readiness.
             broker.Resume();
             await Until(() => controller.PracticeProgress?.Target is not null
-                && N.ReadText(GetDlgItem(root, 103), 4096) == ReadyNotice());
+                && N.ReadStaticNotice(GetDlgItem(root, 103)) == ReadyNotice());
             var bound = controller.PracticeProgress!;
             Assert.Equal(initial.RunId, bound.RunId);
             Assert.True(bound.PreviewReady);
             broker.Pause(); // No replacement read can keep an old publication alive.
             await Until(() => broker.Waiting && controller.PracticeProgress?.PreviewReady == false
-                && N.ReadText(GetDlgItem(root, 103), 4096) == OnDemandPracticePresentation.Create(settings.Value,
+                && N.ReadStaticNotice(GetDlgItem(root, 103)) == OnDemandPracticePresentation.Create(settings.Value,
                     controller.PracticeProgress).ProgressNotice);
             Assert.Equal(bound.Target, controller.PracticeProgress!.Target);
             Assert.False(controller.PracticeProgress.PreviewCompleted);
@@ -78,13 +78,13 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             Assert.Equal(OnDemandPracticePresentation.Create(settings.Value).SampleText,
                 N.ReadText(GetDlgItem(root, 101), Limits.MaxTextUnits));
             broker.Resume();
-            await Until(() => N.ReadText(GetDlgItem(root, 103), 4096) == ReadyNotice());
+            await Until(() => N.ReadStaticNotice(GetDlgItem(root, 103)) == ReadyNotice());
             settings.Update(settings.Value with
             {
                 WakeShortcut = "Alt+F8"
             });
             await Until(() => controller.PracticeProgress is null
-                && !N.ReadText(GetDlgItem(root, 103), 4096).Contains("已就绪", StringComparison.Ordinal));
+                && !N.ReadStaticNotice(GetDlgItem(root, 103)).Contains("已就绪", StringComparison.Ordinal));
             Assert.Equal(0, broker.Writes);
 
             async Task Until(Func<bool> condition)
@@ -460,7 +460,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             await Focus(root);
             await Until(() => controller.PracticeProgress?.Target is not null);
             await Until(() => controller.PracticeProgress?.PreviewReady == true
-                && N.ReadText(GetDlgItem(root, 103), 4096) == OnDemandPracticePresentation.Create(settings.Value,
+                && N.ReadStaticNotice(GetDlgItem(root, 103)) == OnDemandPracticePresentation.Create(settings.Value,
                     controller.PracticeProgress).ProgressNotice);
             var first = controller.PracticeProgress!;
             Assert.False(first.Completed); // Historical onboarding preference is never evidence.
@@ -478,7 +478,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
 
             await Focus(otherRoot);
             await Until(() => controller.PracticeProgress?.PreviewReady == false
-                && N.ReadText(GetDlgItem(root, 103), 4096) == OnDemandPracticePresentation.Create(settings.Value,
+                && N.ReadStaticNotice(GetDlgItem(root, 103)) == OnDemandPracticePresentation.Create(settings.Value,
                     controller.PracticeProgress).ProgressNotice);
             settings.Update(settings.Value with
             {

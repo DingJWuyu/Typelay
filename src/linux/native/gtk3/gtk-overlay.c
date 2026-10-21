@@ -380,16 +380,37 @@ static void language_popup_toggled(GtkToggleButton *button, gpointer data) {
 static void language_row_activated(GtkTreeView *list, GtkTreePath *path, GtkTreeViewColumn *column, gpointer data) {
     (void)list; (void)path; (void)column;
     GtkWidget *button = g_object_ref(data);
-    if ((button != overlay.source && button != overlay.destination) || !active()
+    if ((button != overlay.source && button != overlay.destination) || !active() || !overlay.view
         || !gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(button))) {
         g_object_unref(button);
         return;
     }
+    JsonObject *view = json_object_ref(overlay.view);
+    GtkWidget *popup = GTK_WIDGET(gtk_menu_button_get_popover(GTK_MENU_BUTTON(button)));
+    if (!popup || !language_handoff_current(view)) {
+        json_object_unref(view);
+        g_object_unref(button);
+        return;
+    }
+    g_object_ref(popup);
     /* Return focus before closing the child surface. Both are in the same
      * source-bound overlay family, with no native keyboard grab. */
     gtk_widget_grab_focus(button);
-    if (button == overlay.source || button == overlay.destination)
+    if ((button == overlay.source || button == overlay.destination)
+        && language_handoff_current(view)
+        && GTK_WIDGET(gtk_menu_button_get_popover(GTK_MENU_BUTTON(button))) == popup)
         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(button), FALSE);
+    /* MenuButton's inactive transition only starts an animated popdown. An
+     * explicit choice/Escape completes this child surface now, without leaving
+     * its fading allocation visible until the source-bound lease expires. */
+    if ((button == overlay.source || button == overlay.destination)
+        && language_handoff_current(view)
+        && GTK_WIDGET(gtk_menu_button_get_popover(GTK_MENU_BUTTON(button))) == popup
+        && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == button
+        && !gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(button)))
+        gtk_widget_hide(popup);
+    g_object_unref(popup);
+    json_object_unref(view);
     g_object_unref(button);
 }
 static gboolean language_popup_key(GtkWidget *popup, GdkEventKey *event, gpointer data) {

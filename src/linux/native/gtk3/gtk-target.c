@@ -63,14 +63,21 @@ static void im_invalidated(Target *target, guint causes) {
 static void im_changed(GtkIMContext *context, guint causes, gpointer data) {
     Target *target = data;
     if (context != target->im_context) return;
-    if (tl_ordered_transition(target)) {
+    input_notifications_begin(&target->input_notifications,
+        !(causes & (guint)~(TL_FCITX_CHANGE_INPUT | TL_FCITX_CHANGE_FOCUS | TL_FCITX_CHANGE_BINDING)),
+        (causes & TL_FCITX_CHANGE_BINDING) != 0);
+    gboolean ordered = tl_ordered_transition(target);
+    gboolean applied = !ordered && !target->dead && (causes & TL_FCITX_CHANGE_INPUT);
+    if (ordered) {
         target->ime_known = FALSE;
         tl_drop_publication();
     } else im_invalidated(target, causes);
+    input_notifications_end(&target->input_notifications, applied);
 }
 static gboolean bind_context(Target *target) {
     GtkIMContext *context = published_context(target);
     if (target->im_context != context) {
+        input_notifications_reset(&target->input_notifications);
         if (target->im_context && target->im_handler)
             g_signal_handler_disconnect(target->im_context, target->im_handler);
         target->im_handler = 0;
@@ -216,7 +223,12 @@ gboolean tl_widget_ime_clear(GtkWidget *widget) {
 }
 static gboolean inspect_ime(Target *target) {
     if (!target || target->dead || target->thread != g_thread_self() || target->im_probing
-        || g_main_depth() != 1 || !bind_context(target)) return FALSE;
+        || g_main_depth() != 1 || !bind_context(target)) {
+        if (target && target->thread == g_thread_self())
+            input_notifications_reset(&target->input_notifications);
+        return FALSE;
+    }
+    guint64 notification_probe = input_notifications_probe(&target->input_notifications);
     TlFcitxStateV1 state = {.size = sizeof state, .version = TL_FCITX_ABI_V1};
     GtkIMContext *context = g_object_ref(target->im_context);
     target->im_probing = TRUE;
@@ -228,6 +240,8 @@ static gboolean inspect_ime(Target *target) {
     valid = valid && !target->dead && target->im_context == context;
     g_object_unref(widget);
     if (!valid) {
+        input_notifications_observed(&target->input_notifications, notification_probe, 0, 0, FALSE);
+        input_notifications_reset(&target->input_notifications);
         im_invalidated(target, 0);
         return FALSE;
     }
@@ -235,13 +249,19 @@ static gboolean inspect_ime(Target *target) {
         guint causes = 0;
         if (target->im_state.context_generation != state.context_generation)
             causes |= TL_FCITX_CHANGE_BINDING;
-        if (target->im_state.input_epoch != state.input_epoch) causes |= TL_FCITX_CHANGE_INPUT;
+        if (target->im_state.input_epoch != state.input_epoch
+            && !(target->im_state.context_generation == state.context_generation
+                && input_notifications_accounted(&target->input_notifications,
+                    state.context_generation, target->im_state.input_epoch, state.input_epoch)))
+            causes |= TL_FCITX_CHANGE_INPUT;
         if ((target->im_state.flags ^ state.flags) & TL_FCITX_FOCUSED) causes |= TL_FCITX_CHANGE_FOCUS;
         if (tl_ordered_observation(target, &state)) {
             target->ime_known = FALSE;
             tl_drop_publication();
         } else im_invalidated(target, causes);
     }
+    input_notifications_observed(&target->input_notifications, notification_probe,
+        state.context_generation, state.input_epoch, TRUE);
     target->im_state = state;
     target->im_observed = TRUE;
     target->ime_known = (state.flags & (TL_FCITX_KNOWN | TL_FCITX_FOCUSED | TL_FCITX_PENDING))
@@ -343,6 +363,7 @@ static void destroyed(GtkWidget *widget, gpointer data) {
     (void)widget;
     Target *target = data;
     target->dead = TRUE;
+    input_notifications_reset(&target->input_notifications);
     target->widget = NULL;
     if (target->im_context && target->im_handler)
         g_signal_handler_disconnect(target->im_context, target->im_handler);

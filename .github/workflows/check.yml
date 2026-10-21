@@ -494,6 +494,7 @@ jobs:
           python tests/linux/test_setup_scope_data.py -v
           python tests/linux/test_practice_session.py -v
           python tests/linux/test_fcitx_session_source.py -v
+          python tests/linux/test_input_notifications.py -v
           python tests/linux/test_gtk_geometry.py -v
           python tests/linux/test_gtk_accessibility_bounds.py -v
           python tests/linux/test_ordinary_desktop_lifecycle.py -v

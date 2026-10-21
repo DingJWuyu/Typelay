@@ -157,3 +157,9 @@ python tests/shared/worker/ordinary_quality.py --python "$HY_PYTHON" --models "$
 `gtk_session_reentry.py` 的只读续显负例保留真实源输入法 `Known | Detached`，焦点只能来自该语言按钮或它自己已映射的子菜单；GTK3 的独立 attached popover 不等于按钮后代焦点。正文、authority、编辑权限、外部焦点和源输入变化仍分别要求拒绝。
 
 `trigger-expired-render` 等原预览实际退休后重放最后一次有效请求的原 `expiresAtMs`，验证过期请求不能重新显示。它不证明已销毁菜单仍处于 detached 续显分支，也不禁止源框恢复真实 Clear 后的正常新预览。该场景另用显式回源、新采集及默认新期限验证只读显示合法；两条路径均不授予接受或写回资格。纯 snapshot/request 测试只验证 runner 合同，实际 GTK 桌面场景仍须单独执行。
+
+## GTK3 输入通知去重合同
+
+`python tests/linux/test_input_notifications.py -v` 编译并运行生产私有通知账本，覆盖完整通知、缺额/多额、换代、回退、溢出、消费者重入及 probe 中通知；它不证明真实 GTK 或输入法可用。原 `native_e2e.py` Unknown-IME 拒绝场景保持不变，随后单独启动受控 IM context fixture，加载生产 GTK3 module，先保留旧 probe 缓存，再送入已完成通知及一次真实 F9。该对照包含完整15次通知、已结束的 producer 嵌套两通知，以及 probe 中输入/零cause、漏通知、context 换代、epoch 回退和未知cause的拒绝；不运行模型，不提供写回许可，不冒充真实 Fcitx Clear。
+
+去重依据锁定 provider 的唯一 `input_epoch++` 与同次同步 INPUT signal 对应关系，只处理已执行原 invalidation 的通知；原 revision 和许可撤销不恢复。消费者自身回调重入、probe 期间通知及不完整证据不允许去重。V1 不暴露其它监听者已结束的 producer 嵌套深度：若两次通知均完整处理、原 emit 栈已返回，且后续完整 inspect 的同 context 版本差额精确吻合，则两次均视为已处理输入。此逻辑不建立 Clear，仍须实际 provider inspect 成功；GIMP 真实应用和真实输入法验收另行执行。

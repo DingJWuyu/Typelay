@@ -99,9 +99,10 @@ def plan(source, replacement, scope=None):
     }
 
 
-def inside(arguments):
+def inside(arguments, notifications=None):
     # niri may detach spawned programs from its own diagnostic stream.
-    sys.stdout = sys.stderr = (arguments.output / "inside.log").open("w", buffering=1)
+    log = "inside.log" if notifications is None else f"inside-notifications-{notifications}.log"
+    sys.stdout = sys.stderr = (arguments.output / log).open("w", buffering=1)
     faulthandler.dump_traceback_later(15, file=sys.stderr, repeat=False)
     paths = Paths(ROOT)
     paths.native.unlink(missing_ok=True)
@@ -117,6 +118,8 @@ def inside(arguments):
         "TYPELAY_TRACE": "1",
     }
     environment.pop("TYPELAY_DESKTOP", None)
+    if notifications is not None:
+        environment["TYPELAY_FIXTURE_INPUT_NOTIFICATIONS"] = notifications
     state_path = arguments.output / "fixture.json"
     state_path.unlink(missing_ok=True)
     environment["TYPELAY_FIXTURE_STATE"] = str(state_path)
@@ -165,10 +168,23 @@ def inside(arguments):
                 time.sleep(0.025)
             raise AssertionError("fixture state did not reach the expected input/focus")
 
-        initial = wait_state(lambda value: value.get("focus") == "fixture-first")
-        original = initial["first"]
+        field = "fixture-first" if notifications is None else "fixture-multiline"
+        initial = wait_state(lambda value: value.get("focus") == field)
+        original = initial["first"] if notifications is None else initial["multiline"]["text"]
         description = client.describe()
-        assert description["metadata"]["automationId"] == "fixture-first"
+        assert description["metadata"]["automationId"] == field
+        if notifications is not None:
+            notification_contract(client, description, notifications, original, state)
+            (arguments.output / f"notification-{notifications}-result.json").write_text(
+                json.dumps(
+                    {
+                        "scope": "controlled-notification-contract",
+                        "mode": notifications,
+                        "passed": True,
+                    }
+                )
+            )
+            return
         assert description["metadata"]["hasTextEdit"] is False
         assert "text" not in description and "selection" not in description
         assert original not in json.dumps(description, ensure_ascii=False)
@@ -450,7 +466,7 @@ def inside(arguments):
             "target-specific canonical ACK, automatic-mode session bindings, stale generation refusal and invalid-pair refusal"
         )
 
-        (arguments.output / "native-result.json").write_text(
+        (arguments.output / "native-unknown-result.json").write_text(
             json.dumps(
                 {
                     "scope": "gtk-unknown-ime-refusal-only",
@@ -474,6 +490,47 @@ def inside(arguments):
         faulthandler.cancel_dump_traceback_later()
         server.close()
         paths.native.unlink(missing_ok=True)
+
+
+def notification_contract(client, description, mode, original, state):
+    generation = str(uuid.uuid4())
+    client.call(
+        "configure-shortcuts",
+        {
+            "enabled": True,
+            "generation": generation,
+            "sessionEnabled": False,
+            "wake": {"keyval": 0xFFC6, "modifiers": 0},
+            "direct": {},
+        },
+    )
+    current = client.describe(description["target"])
+    assert current["authority"]["contextStamp"]["flags"] == 3  # Controlled Known|Focused.
+    client.call(
+        "publish-shortcut",
+        {
+            "target": current["target"],
+            "authority": current["authority"],
+            "generation": generation,
+        },
+    )
+    # One ordered key sequence, no intervening host probe to refresh the cache.
+    subprocess.run(
+        ["xdotool", "key", "--clearmodifiers", "--delay", "0", "F6", "F9"], check=True, timeout=2
+    )
+    while True:
+        frame = receive_sync(client.connection)
+        if frame.get("event") in ("shortcut", "shortcut-rejected"):
+            break
+    expected = "shortcut" if mode in ("notified", "nested-complete") else "shortcut-rejected"
+    assert frame["event"] == expected, (mode, frame)
+    if expected == "shortcut":
+        assert frame["data"]["native"]["text"] == original
+    else:
+        assert frame["data"]["reason"] == "EpochChanged", frame
+        assert frame["data"]["diagnostic"]["phase"] == "ime", frame
+        assert frame["data"]["diagnostic"]["gate"] == "input-revision", frame
+    assert state()["multiline"]["text"] == original, "controlled notification mutated source"
 
 
 def quality_exit(arguments, compositor, work_deadline, result, failure):
@@ -735,8 +792,7 @@ def run_outer(arguments, script=None):
             ):
                 time.sleep(0.1)
             if not result.exists():
-                inside_log = arguments.output / "inside.log"
-                if inside_log.exists():
+                for inside_log in sorted(arguments.output.glob("inside*.log")):
                     print(inside_log.read_text(), file=sys.stderr)
                 raise RuntimeError("nested niri/GTK contract failed; inspect nested-niri.log")
             print(result.read_text())
@@ -863,6 +919,24 @@ if __name__ == "__main__":
                 run(args)
             else:
                 inside(args)
+                for mode in (
+                    "notified",
+                    "nested-complete",
+                    "during",
+                    "during-zero",
+                    "missing",
+                    "context",
+                    "rollback",
+                    "unknown",
+                ):
+                    inside(args, notifications=mode)
+                result = json.loads((args.output / "native-unknown-result.json").read_text())
+                result["controlledNotifications"] = [
+                    json.loads(path.read_text())
+                    for path in sorted(args.output.glob("notification-*-result.json"))
+                ]
+                assert len(result["controlledNotifications"]) == 8
+                (args.output / "native-result.json").write_text(json.dumps(result, indent=2))
         except BaseException:
             import traceback
 

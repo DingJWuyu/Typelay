@@ -1063,6 +1063,8 @@ class InputFeedbackTests(unittest.TestCase):
         foreground_gap=False,
         late_continuity=False,
         proof_fault=None,
+        awaiting_refusal_gap=False,
+        awaiting_fault=None,
     ):
         self.clock.return_value = 1000
         self.peer = self.connect_peer("gtk3")
@@ -1267,20 +1269,59 @@ class InputFeedbackTests(unittest.TestCase):
             self.peer.link.receive({"id": describe["id"], "data": description()})
             capture = await asyncio.wait_for(request("capture"), 1)
             self.assertTrue(capture["data"]["ownedSource"])
-            self.peer.link.receive(
-                {
-                    "id": capture["id"],
-                    "data": None,
-                    "captureContinuity": {
-                        "target": binding["target"]["value"],
-                        "nativeFocusRevision": 1,
-                        "contextGeneration": 7,
-                        "observedAtMs": self.clock.return_value,
-                    },
+            refused_at = self.clock.return_value
+            if awaiting_refusal_gap:
+                self.clock.return_value += 151
+                self.input.state()
+                self.input.niri.observed_at = self.clock.return_value
+                self.input.state()
+            late = {
+                "id": capture["id"],
+                "data": None,
+                "captureContinuity": {
+                    "target": binding["target"]["value"],
+                    "nativeFocusRevision": 1,
+                    "contextGeneration": 7,
+                    "observedAtMs": refused_at,
+                },
+            }
+            if awaiting_fault == "native-null":
+                late.pop("captureContinuity")
+            elif awaiting_fault in ("nativeFocusRevision", "contextGeneration"):
+                late["captureContinuity"][awaiting_fault] = 9
+            elif awaiting_fault == "window":
+                self.input.window_epoch += 1
+            elif awaiting_fault == "close":
+                self.input.retire_practice(binding["runId"])
+            elif awaiting_fault == "unacknowledged":
+                # Exercise the retained-intent boundary with its executor ACK
+                # absent; a matching run alone must not classify an old reply.
+                self.input.practice_retirement_ack = None
+            elif awaiting_fault and awaiting_fault.startswith("waiting-"):
+                field = awaiting_fault.removeprefix("waiting-")
+                self.input.practice_continuity = {
+                    **self.input.practice_continuity,
+                    field: {**binding["target"], "value": str(uuid.uuid4())}
+                    if field == "target"
+                    else str(uuid.uuid4())
+                    if field == "connectionId"
+                    else 9,
                 }
-            )
+            successor = self.input.practice_continuity
+            self.peer.link.receive(late)
             repeated = await asyncio.wait_for(operation, 1)
-            self.assertEqual(repeated["ownedSource"]["binding"], second)
+            if awaiting_fault:
+                self.assertIsNone(repeated)
+                self.assertIsNone(self.input.practice_authorization)
+                return
+            if awaiting_refusal_gap:
+                self.assertEqual(repeated, {"snapshot": None, "foregroundExpired": True})
+                self.assertTrue(self.input.practice_waiting(binding["runId"]))
+                self.assertIs(self.input.practice_continuity, successor)
+                self.assertIsNone(self.input.bound_observation)
+                self.assertIsNone(self.input.practice_pending)
+            else:
+                self.assertEqual(repeated["ownedSource"]["binding"], second)
             self.assertEqual(
                 self.native_frames(self.peer), [], "a repeated witness issued another revoke"
             )
@@ -1403,6 +1444,38 @@ class InputFeedbackTests(unittest.TestCase):
             )
 
         asyncio.run(exercise())
+
+    def test_awaiting_age_fence_discards_late_refusal_without_retiring_successor(self):
+        self.owned_context_advance(awaiting_refusal_gap=True, resume=True)
+
+    def test_awaiting_age_fence_rejects_unknown_late_refusal(self):
+        self.owned_context_advance(awaiting_refusal_gap=True, awaiting_fault="native-null")
+
+    def test_awaiting_age_fence_rejects_focus_late_refusal(self):
+        self.owned_context_advance(awaiting_refusal_gap=True, awaiting_fault="nativeFocusRevision")
+
+    def test_awaiting_age_fence_rejects_context_late_refusal(self):
+        self.owned_context_advance(awaiting_refusal_gap=True, awaiting_fault="contextGeneration")
+
+    def test_awaiting_age_fence_rejects_window_late_refusal(self):
+        self.owned_context_advance(awaiting_refusal_gap=True, awaiting_fault="window")
+
+    def test_awaiting_age_fence_rejects_closed_late_refusal(self):
+        self.owned_context_advance(awaiting_refusal_gap=True, awaiting_fault="close")
+
+    def test_awaiting_age_fence_rejects_unacknowledged_successor(self):
+        self.owned_context_advance(awaiting_refusal_gap=True, awaiting_fault="unacknowledged")
+
+    def test_awaiting_age_fence_rejects_new_target_successor(self):
+        self.owned_context_advance(awaiting_refusal_gap=True, awaiting_fault="waiting-target")
+
+    def test_awaiting_age_fence_rejects_new_connection_successor(self):
+        self.owned_context_advance(awaiting_refusal_gap=True, awaiting_fault="waiting-connectionId")
+
+    def test_awaiting_age_fence_rejects_new_context_successor(self):
+        self.owned_context_advance(
+            awaiting_refusal_gap=True, awaiting_fault="waiting-contextGeneration"
+        )
 
     def test_context_continuity_diagnoses_changed_native_focus(self):
         self.owned_context_advance(proof_fault=("nativeFocusRevision", "native-focus-changed"))

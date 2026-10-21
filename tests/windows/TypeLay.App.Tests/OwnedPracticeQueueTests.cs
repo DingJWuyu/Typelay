@@ -140,7 +140,39 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             Assert.Equal(new PracticeInputCompletion(1, true, accepted), Assert.Single(scene.ExitInputs));
             phase = "exit-up-dispatch";
             scene.Key(scene.ExitKey, false);
+            if (!accepted)
+            {
+                Assert.DoesNotContain(scene.Messages, reply => reply.Kind == "exit-completed");
+                Assert.Equal(0, scene.Receipts);
+                await scene.Wait(() =>
+                {
+                    if (scene.ExitInputs.Length >= 2)
+                        return true;
+                    uint thread = N.GetWindowThreadProcessId(scene.Root, out uint process);
+                    Assert.Equal(scene.Descriptor.ThreadId, thread);
+                    Assert.Equal((uint)scene.Descriptor.ProcessId, process);
+                    Assert.Equal(scene.Descriptor.RootHwnd, (long)scene.Root);
+                    var gui = new N.GuiThreadInfo { Size = (uint)Marshal.SizeOf<N.GuiThreadInfo>() };
+                    Assert.True(N.GetGUIThreadInfo(thread, ref gui));
+                    if ((gui.Flags & 0x0004) == 0) // GUI_INMENUMODE.
+                        return false;
+                    Assert.NotEqual(0u, gui.Flags & 0x0008); // GUI_SYSTEMMENUMODE.
+                    Assert.Equal(0u, gui.Flags & 0x0010); // Not GUI_POPUPMENUMODE.
+                    Assert.Equal(scene.Root, gui.MenuOwner);
+                    phase = "cancel-observed-system-menu";
+                    // The original F10 down was already rejected above. Its
+                    // ordinary up dispatch can enter DefWindowProc's modal menu.
+                    // Cancel only that observed owned OS mode once, so the same
+                    // dispatch returns. This is fixture cleanup, not user input
+                    // or a product shortcut fix; no extra key or ACK is created.
+                    N.Send(scene.Root, 0x001f); // WM_CANCELMODE, original bounded native send.
+                    return true;
+                });
+            }
+            phase = "exit-up-dispatch";
             await scene.WaitExitInput(2);
+            Assert.Equal(new[] { new PracticeInputCompletion(1, true, accepted),
+                new PracticeInputCompletion(2, false, accepted) }, scene.ExitInputs);
             phase = "control-release-and-postconditions";
             scene.Key(0x11, false);
             var exits = scene.Messages.Where(reply => reply.Kind == "exit-completed").ToArray();

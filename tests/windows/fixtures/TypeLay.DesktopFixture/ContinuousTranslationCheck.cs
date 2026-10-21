@@ -1093,7 +1093,7 @@ internal static partial class ContinuousTranslationCheck
                 {
                     PreviewReady = true
                 }).ProgressNotice;
-            await UntilAsync(() => N.ReadText(GetDlgItem(root, 103), 4096) == readyNotice, cancellation);
+            await UntilAsync(() => N.ReadStaticNotice(GetDlgItem(root, 103)) == readyNotice, cancellation);
             result.Stage = "practice-preview-shortcut";
             Require(new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C, 0x78 }.All(key => GetAsyncKeyState(key) >= 0),
                 "practice-key-already-down");
@@ -1108,7 +1108,7 @@ internal static partial class ContinuousTranslationCheck
             Require(previewUnchanged, "practice-preview-mutated-source");
             await UntilAsync(() => controller.PracticeProgress is { PreviewCompleted: true, DirectReplacementCompleted: false }, cancellation);
             previewProgress = true;
-            await UntilAsync(() => N.ReadText(GetDlgItem(root, 103), 4096)
+            await UntilAsync(() => N.ReadStaticNotice(GetDlgItem(root, 103))
                 == OnDemandPracticePresentation.Create(settings.Value, controller.PracticeProgress).ProgressNotice, cancellation);
             result.Stage = "practice-direct-shortcut";
             Require(new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C, 0x79 }.All(key => GetAsyncKeyState(key) >= 0),
@@ -1124,7 +1124,7 @@ internal static partial class ContinuousTranslationCheck
             Require(replaced, "practice-direct-result");
             await UntilAsync(() => controller.PracticeProgress?.Completed == true, cancellation);
             completedProgress = true;
-            await UntilAsync(() => N.ReadText(GetDlgItem(root, 103), 4096)
+            await UntilAsync(() => N.ReadStaticNotice(GetDlgItem(root, 103))
                 == OnDemandPracticePresentation.Create(settings.Value, controller.PracticeProgress).ProgressNotice, cancellation);
             Require(!settings.Value.OnboardingComplete, "practice-marked-tutorial-complete");
             result.Stage = "practice-close-keeps-current-settings";
@@ -1134,7 +1134,7 @@ internal static partial class ContinuousTranslationCheck
             });
             Require(controller.PracticeProgress is null, "practice-settings-reused-completion");
             resetProgress = true;
-            await UntilAsync(() => N.ReadText(GetDlgItem(root, 103), 4096)
+            await UntilAsync(() => N.ReadStaticNotice(GetDlgItem(root, 103))
                 == OnDemandPracticePresentation.Create(settings.Value).ProgressNotice, cancellation);
             Require(N.PostMessage(root, 0x0010, 0, 0), "practice-close-request");
             await child.Process.WaitForExitAsync().WaitAsync(cancellation);

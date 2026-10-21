@@ -150,6 +150,30 @@ public static class NativeMethods
             throw new InvalidOperationException("Text changed during read.");
         return result;
     }
+    // Public fixture labels change independently of observation. Read one bounded
+    // WM_GETTEXT snapshot; never use this helper for source text or acceptance authority.
+    public static string ReadStaticNotice(nint hwnd)
+    {
+        uint thread = GetWindowThreadProcessId(hwnd, out uint process);
+        nint root = GetAncestor(hwnd, 2);
+        bool StaticClass()
+        {
+            var name = new StringBuilder(32);
+            return GetClassName(hwnd, name, name.Capacity) > 0 && name.ToString() == "Static";
+        }
+        if (thread == 0 || process == 0 || root == 0 || !StaticClass())
+            throw new InvalidOperationException("Public notice identity.");
+        var buffer = new StringBuilder(4096);
+        if (SendRead(hwnd, WM_GETTEXT, (nuint)buffer.Capacity, buffer, 0x22, 100, out nuint count) == 0)
+            throw new NativeMessageException(nameof(ReadStaticNotice), WM_GETTEXT, Marshal.GetLastPInvokeError());
+        string result = buffer.ToString();
+        if (count >= (nuint)(buffer.Capacity - 1) || count != (nuint)result.Length)
+            throw new InvalidOperationException("Public notice truncated or invalid.");
+        if (GetWindowThreadProcessId(hwnd, out uint currentProcess) != thread || currentProcess != process
+            || GetAncestor(hwnd, 2) != root || !StaticClass())
+            throw new InvalidOperationException("Public notice identity changed.");
+        return result;
+    }
     public static TypeLay.Core.TextRange ReadSelection(nint hwnd)
     {
         // The adapter is capped at 8192 UTF-16 units. Thus packed 16-bit offsets are sufficient.

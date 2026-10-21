@@ -26,6 +26,7 @@ typedef struct {
 static EntryEvidence first_evidence, second_evidence;
 static JsonObject *first_insert_context, *first_delete_context;
 #include "gtk_reentry.inc"
+#include "gtk_input_notifications.inc"
 
 static guint function_down[24], function_up[24];
 static gboolean observe_key(GtkWidget *widget, GdkEventKey *event, gpointer data) {
@@ -660,6 +661,7 @@ int main(int argc, char **argv) {
         g_signal_connect(other_window, "destroy", G_CALLBACK(fixture_destroyed), NULL);
         gtk_widget_show_all(other_window);
     }
+    notification_fixture_init(view);
     report_path = g_getenv("TYPELAY_FIXTURE_STATE");
     if (report_path && g_path_is_absolute(report_path)) {
         report_window = window;

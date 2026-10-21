@@ -826,6 +826,30 @@ class Input:
                     )
                 },
             }
+        # An already-ACKed waiting token can be replaced solely to fence an
+        # in-flight read at a foreground age gap. Discard that exact old read,
+        # never turn its continuity proof into a fresh observation or authority.
+        if (
+            waiting is not None
+            and waiting is not authorization
+            and authorization.get("foregroundExpired") is True
+            and waiting["peer"] is authorization["peer"]
+            and all(
+                waiting.get(key) == authorization.get(key)
+                for key in (
+                    "runId",
+                    "target",
+                    "connectionId",
+                    "commandGeneration",
+                    "nativeFocusRevision",
+                    "contextGeneration",
+                )
+            )
+            and self.practice_waiting(authorization["runId"], require_fresh=False)
+        ):
+            expired = self.expired_practice_capture(authorization)
+            if expired is not None:
+                return expired
         active = authorization is self.practice_authorization
         if not active and authorization is not self.practice_continuity:
             return declined("owner-replaced")
