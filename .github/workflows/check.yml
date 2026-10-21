@@ -498,6 +498,7 @@ jobs:
           python tests/linux/test_gtk_accessibility_bounds.py -v
           python tests/linux/test_ordinary_desktop_lifecycle.py -v
           python tests/linux/test_gtk_preview_contract.py -v
+          python tests/linux/test_qt_candidate_observation.py -v
           python eng/linux/build.py --with-test-fixture --hy-runtime artifacts/linux/hy-cpu-runtime
       - name: Verify resumable model downloads over isolated HTTP
         if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}

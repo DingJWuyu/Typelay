@@ -3503,14 +3503,44 @@ def run(arguments):
                             "actual GTK resume button disappeared before activation",
                         )
                         action = resume.get_action_iface()
-                        assert action and Atspi.Action.do_action(action, 0)
-                        wait_for(
-                            lambda: json.loads(paths.settings.read_text())["Enabled"]
-                            and not status().get("overlayVisible")
-                            and status()["input"]["captureCounts"].get("supported", 0)
-                            > paused_captures.get("supported", 0),
-                            "GTK resume did not leave OnDemand dormant with a fresh observation",
-                        )
+                        assert action
+                        resume_attempt = {
+                            "startedAtMs": now_ms(),
+                            "action": action.get_action_name(0),
+                        }
+                        assert Atspi.Action.do_action(action, 0)
+                        resume_attempt["returnedAtMs"] = now_ms()
+                        try:
+                            wait_for(
+                                lambda: json.loads(paths.settings.read_text())["Enabled"]
+                                and not status().get("overlayVisible")
+                                and status()["input"]["captureCounts"].get("supported", 0)
+                                > paused_captures.get("supported", 0),
+                                "GTK resume did not leave OnDemand dormant with a fresh observation",
+                            )
+                        except BaseException:
+                            try:
+                                current = status()
+                                resume_attempt.update(
+                                    failedAtMs=now_ms(),
+                                    enabled=json.loads(paths.settings.read_text())["Enabled"],
+                                    overlayVisible=current.get("overlayVisible"),
+                                    viewState=current.get("viewState"),
+                                    supportedCaptures=current["input"]["captureCounts"].get(
+                                        "supported", 0
+                                    ),
+                                )
+                            except (OSError, ValueError, RuntimeError):
+                                pass
+                            raise
+                        finally:
+                            try:
+                                (arguments.output / "resume-attempt.json").write_text(
+                                    json.dumps(resume_attempt, indent=2)
+                                )
+                            except OSError:
+                                pass  # Do not replace the original desktop failure.
+
                         assert json.loads(paths.settings.read_text()) == {
                             **paused_settings,
                             "Enabled": True,

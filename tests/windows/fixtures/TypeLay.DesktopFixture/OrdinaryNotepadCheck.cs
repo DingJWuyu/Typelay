@@ -293,16 +293,23 @@ internal static partial class HyPackageCheck
             });
             await report.Phase("automatic-preview-and-accept", async scene =>
             {
+                scene.Stage = "focus-original-source";
                 await FocusSource();
                 SourceUnchanged(original);
+                scene.Stage = "await-readonly-preview";
                 var editor = await OverlayEditor(false);
+                scene.Stage = "read-preview-target-language";
                 translation = await UiAsync(() => ((ValuePattern)editor.GetCurrentPattern(ValuePattern.Pattern)).Current.Value, ct);
                 Require(translation.Any(character => character is >= '\u3400' and <= '\u9fff'), "ordinary-preview-not-target-language");
                 SourceUnchanged(original);
+                scene.Stage = "await-public-acceptance-cue";
                 await OverlayEditor(true);
+                scene.Stage = "press-single-acceptance-tab";
                 NotepadChord([0x09]);
+                scene.Stage = "await-exact-source-translation";
                 await WaitAsync(() => Task.FromResult(N.ReadText(field, Limits.MaxTextUnits) == translation), ct);
                 Require(N.Focused() == (root, field), "ordinary-accept-stole-focus");
+                scene.Stage = "native-undo-original-source";
                 await Undo(original);
                 scene.Facts = new
                 {

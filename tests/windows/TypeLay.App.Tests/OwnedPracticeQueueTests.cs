@@ -27,7 +27,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
     [InlineData(true)]
     public Task ExitWithoutAWritePlanPreservesSourceAndPairsItsPressAcrossRetirement(bool control) => desktop.RunAsync(async () =>
     {
-        await using var scene = new QueueScene(true);
+        await using var scene = new QueueScene(true, traceExitRejections: true);
         await scene.Start(true, bindings: control ? SessionShortcutBindings.Restore("Ctrl+F7", "Ctrl+F10") : null);
         await scene.InstallExit();
         long installedAtMs = WindowsInterruptClock.NowMs;
@@ -58,7 +58,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 + $"prefixReturned={prefixReturnedAtMs}; pressStarted={pressStartedAtMs}; pressCompleted={pressCompletedAtMs}; "
                 + $"terminalObserved={terminalObservedAtMs}; edges={edges.Length}; witnessObserved={last?.ObservedAtMs}; "
                 + $"exitMatches={last?.ExitLeaseSequence == scene.ExitLease.Sequence}; prefixPresent={last?.PrefixSequence > 0}; "
-                + $"sourceFocused={N.Focused() == (scene.Root, scene.Field)}.");
+                + $"sourceFocused={N.Focused() == (scene.Root, scene.Field)}; rejectionTrace={scene.ReadExitRejectionTrace()}.");
         }
         var result = Assert.Single(scene.Messages, message => message.Kind == "exit-completed").ExitResult!;
         Assert.Equal(scene.ExitLease!.Sequence, result.LeaseSequence);
@@ -1306,6 +1306,24 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         private readonly string _directory = Path.Combine(Path.GetTempPath(), "typelay-owned-queue-" + Guid.NewGuid().ToString("N"));
         private readonly CancellationTokenSource _deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         private readonly KeyboardHook _hook;
+        private readonly bool _traceExitRejections;
+        private string ExitTracePath => Path.Combine(_directory, "exit-trace");
+        public string ReadExitRejectionTrace()
+        {
+            if (!_traceExitRejections)
+                return "disabled";
+            try
+            {
+                string path = ExitTracePath + ".practice.jsonl";
+                if (!File.Exists(path))
+                    return "not-flushed";
+                return new FileInfo(path).Length <= 65536 ? File.ReadAllText(path) : "size-limit";
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                return "unavailable";
+            }
+        }
         private readonly Guid _connection = Guid.NewGuid();
         private Guid _run;
         private long _sequence, _planSequence, _consumed, _exitSequence;
@@ -1384,8 +1402,9 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         public bool PlanAttempted => _hook.OwnedPlanAttempted(Plan!.PlanSequence);
         public void PublishForRenewal() => _hook.Publish(_planLease!, Plan!.Permit);
         public bool CanRenew(long contentEpoch) => _hook.CanRenewOwnedPlan(_planLease!, Plan!.Permit, Plan.PlanSequence, contentEpoch);
-        public QueueScene(bool automation)
+        public QueueScene(bool automation, bool traceExitRejections = false)
         {
+            _traceExitRejections = traceExitRejections;
             _hook = new(allowInjectedInput: automation);
             _deadline.CancelAfter(TimeSpan.FromSeconds(25));
         }
@@ -1402,6 +1421,8 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 ExitShortcut = _bindings.Exit
             });
             var start = AppPaths.Child("TypeLay.Practice");
+            if (_traceExitRejections)
+                start.Environment["TYPELAY_TRACE"] = ExitTracePath;
             foreach (string argument in new[] { "--settings", Path.Combine(_directory, "settings.json"), "--progress", _connection.ToString("N") })
                 start.ArgumentList.Add(argument);
             _child = new(start);

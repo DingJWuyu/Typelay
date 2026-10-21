@@ -228,6 +228,10 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         if (expand) {
             json_builder_set_member_name(builder, "scale");
             json_builder_add_int_value(builder, gtk_widget_get_scale_factor(widget));
+            json_builder_set_member_name(builder, "eventWindow");
+            JsonNode *event_window = json_node_new(JSON_NODE_OBJECT);
+            json_node_take_object(event_window, expand_event_window(widget));
+            json_builder_add_value(builder, event_window);
         }
         json_builder_set_member_name(builder, "instance");
         json_builder_add_int_value(builder, language_instance(G_OBJECT(widget)));

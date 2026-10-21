@@ -937,6 +937,7 @@ class InputFeedbackTests(unittest.TestCase):
         age_gap=False,
         foreground_gap=False,
         late_continuity=False,
+        proof_fault=None,
     ):
         self.clock.return_value = 1000
         self.peer = self.connect_peer("gtk3")
@@ -1027,6 +1028,24 @@ class InputFeedbackTests(unittest.TestCase):
                     )
                     late_reply = reply
                 else:
+                    if proof_fault is not None:
+                        field, expected = proof_fault
+                        if field == "age":
+                            self.clock.return_value += 151
+                            self.input.niri.observed_at = self.clock.return_value
+                        elif field == "window":
+                            self.input.window_epoch += 1
+                        else:
+                            reply["captureContinuity"][field] = 9
+                        self.peer.link.receive(reply)
+                        self.assertIsNone(await asyncio.wait_for(operation, 1))
+                        failure = self.input.diagnostics()["practiceFailures"][-1]
+                        self.assertEqual(failure["stage"], "context-continuity")
+                        self.assertEqual(failure["reason"], expected)
+                        self.assertNotIn(binding["target"]["value"], str(failure))
+                        self.assertIsNone(self.input.practice_continuity)
+                        self.assertEqual(self.native_frames(self.peer), [])
+                        return
                     self.peer.link.receive(reply)
             revoke = await asyncio.wait_for(request("revoke"), 1)
             self.assertFalse(operation.done())
@@ -1259,6 +1278,18 @@ class InputFeedbackTests(unittest.TestCase):
             )
 
         asyncio.run(exercise())
+
+    def test_context_continuity_diagnoses_changed_native_focus(self):
+        self.owned_context_advance(proof_fault=("nativeFocusRevision", "native-focus-changed"))
+
+    def test_context_continuity_diagnoses_changed_context(self):
+        self.owned_context_advance(proof_fault=("contextGeneration", "context-changed"))
+
+    def test_context_continuity_diagnoses_expired_proof(self):
+        self.owned_context_advance(proof_fault=("age", "observation-expired"))
+
+    def test_context_continuity_diagnoses_changed_window(self):
+        self.owned_context_advance(proof_fault=("window", "window-changed"))
 
     def test_age_fence_keeps_late_refusal_separate_from_fresh_evidence(self):
         self.owned_context_advance(foreground_gap=True, late_continuity="pending", resume=True)
@@ -1979,6 +2010,28 @@ class InputFeedbackTests(unittest.TestCase):
             )
 
         asyncio.run(returning())
+
+    def test_overlay_unowned_malformed_events_remain_inert_with_resume_trace(self):
+        async def scenario():
+            with (
+                patch.dict(os.environ, {"TYPELAY_TRACE": "1"}),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                overlay = Overlay(self.host, self.input, lambda _: None, lambda: None)
+                self.native_frames(self.peer)  # Consume initial peer configuration.
+                for event in (None, [], "resume"):
+                    overlay.event(self.peer, event)
+                self.assertEqual(self.native_frames(self.peer), [])
+                overlay, jobs, _, _ = await self.overlay_scenario()
+                notices = list(self.host.notices)
+                for event in (None, [], "resume"):
+                    overlay.event(object(), event)
+                self.assertEqual(self.host.notices, notices)
+                self.assertEqual(self.native_frames(self.peer), [])
+                self.assertTrue(overlay.visible)
+                await self.settle_overlay(jobs)
+
+        asyncio.run(scenario())
 
     async def overlay_scenario(self):
         publication = (await self.publish_acceptance(pause=False))[0]["data"]

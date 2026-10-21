@@ -18,6 +18,28 @@ from paths import Paths, connect_private, peer_credentials
 from wire import now_ms
 
 
+def displayed_wake_candidate(value, source, ready):
+    """Observe a rendered source candidate; host readiness alone is not a frame."""
+    field = value.get("first", {})
+    if not (
+        field.get("text") == source
+        and field.get("focused")
+        and field.get("selectionStart") == -1
+        and field.get("selectionLength") == 0
+        and field.get("cursor") == len(source.encode("utf-16-le")) // 2
+        and value.get("overlayVisible")
+        and value.get("editorVisible")
+        and value.get("editorReadOnly")
+        and value.get("editorText")
+        and all(
+            value.get(name) == 0
+            for name in ("tlqtPendingDbus", "tlqtPendingForward", "tlqtOutputDepth")
+        )
+    ):
+        return None
+    return value if ready() else None
+
+
 def run_qt(
     arguments,
     environment,
@@ -1692,10 +1714,11 @@ def run_qt(
                 )
                 dormant_source(wake_source)
                 key("ctrl+shift+F9")
-                wait_for(
-                    ready_to_accept, "real Qt wake shortcut did not request a CPU model candidate"
+                wake_frame = wait_for(
+                    lambda: displayed_wake_candidate(state(), wake_source, ready_to_accept),
+                    "real Qt wake shortcut did not display its ready CPU model candidate",
                 )
-                wake_candidate = state()["editorText"]
+                wake_candidate = wake_frame["editorText"]
                 assert re.search(r"[\u3400-\u9fff]", wake_candidate)
                 assert state()["first"]["text"] == wake_source
                 before_write = trace_checkpoint()

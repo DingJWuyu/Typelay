@@ -18,14 +18,41 @@ sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from desktop_session import process_identity  # noqa: E402
 from ordinary_gimp import (  # noqa: E402
     acceptable_candidate,
+    completed_new_image,
     full_output_origin_proven,
     fullscreen_content_origin,
     launched_application,
     properties_click_point,
     returned_draft_ready,
     session_exit_confirmed,
+    unique_owned_window,
     validate_nested_output,
 )
+
+
+class OrdinaryFirstRunTests(unittest.TestCase):
+    def test_welcome_requires_unique_same_process_exact_title(self):
+        welcome = {"id": 2, "pid": 10, "title": "Welcome to GIMP 3.2.6"}
+        self.assertEqual(unique_owned_window([welcome], 10, welcome["title"]), welcome)
+        self.assertIsNone(unique_owned_window([welcome], 11, welcome["title"]))
+        self.assertIsNone(unique_owned_window([welcome], 10, "Welcome to GIMP 3.2.7"))
+        with self.assertRaises(AssertionError):
+            unique_owned_window([welcome, {**welcome, "id": 3}], 10, welcome["title"])
+
+    def test_new_image_requires_old_dialog_gone_and_same_focused_main_with_new_title(self):
+        previous = {"id": 1, "pid": 10, "title": "[Untitled]-1.0", "is_focused": True}
+        current = {**previous, "title": "[Untitled]-2.0"}
+        self.assertEqual(completed_new_image([current], previous, 2), current)
+        self.assertIsNone(completed_new_image([current, {"id": 2}], previous, 2))
+        for change in (
+            {"title": previous["title"]},
+            {"pid": 11},
+            {"id": 3},
+            {"is_focused": False},
+            {"title": "Welcome to GIMP 3.2.6"},
+        ):
+            with self.subTest(change=change):
+                self.assertIsNone(completed_new_image([{**current, **change}], previous, 2))
 
 
 class ReturnedDraftReadinessTests(unittest.TestCase):

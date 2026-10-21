@@ -334,6 +334,11 @@ class Overlay:
             except OSError:
                 pass
 
+    def trace_resume(self, stage, **fields):
+        if os.environ.get("TYPELAY_TRACE") and getattr(self, "resume_trace_count", 0) < 8:
+            self.resume_trace_count = getattr(self, "resume_trace_count", 0) + 1
+            self.trace_edit(stage, **fields)
+
     def event(self, peer, event):
         if isinstance(event, dict) and event.get("operation") == "beginEdit":
             self.trace_edit(
@@ -350,16 +355,30 @@ class Overlay:
             or peer is not self.peer
             or event["target"] != self.value["source"]["target"]["value"]
         ):
+            if isinstance(event, dict) and event.get("operation") == "resume":
+                self.trace_resume(
+                    "resume-reject-owner",
+                    hasView=self.value is not None,
+                    peerMatches=peer is self.peer,
+                )
             return
         operation, value = event["operation"], event.get("value")
         if self.value.get("state") == "Paused":
             if operation == "resume":
-                if (
-                    type(event.get("revision")) is int
-                    and event["revision"] == self.revision
-                    and self.visible
-                    and self.current_record() is not None
-                ):
+                revision_matches = (
+                    type(event.get("revision")) is int and event["revision"] == self.revision
+                )
+                visible = self.visible if revision_matches else None
+                record_current = (
+                    self.current_record() is not None if revision_matches and visible else None
+                )
+                self.trace_resume(
+                    "resume-event",
+                    revisionMatches=revision_matches,
+                    visible=visible,
+                    recordCurrent=record_current,
+                )
+                if revision_matches and visible and record_current:
                     revision = self.value["pauseRevision"]
                     # Consume the displayed action before dispatching it. The
                     # controller reobserves metadata and owns the settings write.

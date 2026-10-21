@@ -29,6 +29,27 @@ def acceptable_candidate(read_candidate, ready_to_accept, original):
     return (candidate, ready) if ready else None
 
 
+def unique_owned_window(observed, pid, title):
+    matches = [w for w in observed if w.get("pid") == pid and w.get("title") == title]
+    assert len(matches) <= 1, "ambiguous ordinary application window"
+    return matches[0] if matches else None
+
+
+def completed_new_image(observed, previous, dialog_id):
+    if any(w["id"] == dialog_id for w in observed):
+        return None
+    current = next((w for w in observed if w["id"] == previous["id"]), None)
+    if (
+        current is None
+        or current.get("pid") != previous["pid"]
+        or not current.get("is_focused")
+        or current.get("title") == previous.get("title")
+        or not current.get("title", "").startswith("[Untitled]-")
+    ):
+        return None
+    return current
+
+
 def returned_draft_ready(source_focused, ready_to_accept, observation=None):
     """A returned manual draft is not a fresh machine translation."""
     focused = source_focused()
@@ -265,13 +286,25 @@ def run_gimp(
         node = named(pid, name)
         return node if showing(node) else None
 
-    def action(pid, name):
+    def action(pid, name, *, dialog_title=None):
         node = wait_for(lambda: named(pid, name), "public control missing: " + name)
         if not showing(node):
             assert Atspi.Component.scroll_to(
                 node.get_component_iface(), Atspi.ScrollType.ANYWHERE
             ), name
         wait_for(lambda: showing(node), "public control did not scroll into view: " + name)
+        if dialog_title is not None:
+            ancestor = node
+            for _ in range(16):
+                assert ancestor is not None and ancestor.get_process_id() == pid
+                ancestor.clear_cache()
+                if ancestor.get_role() in (Atspi.Role.FRAME, Atspi.Role.DIALOG):
+                    assert ancestor.get_role() == Atspi.Role.DIALOG
+                    assert ancestor.get_name() == dialog_title
+                    break
+                ancestor = ancestor.get_parent()
+            else:
+                raise AssertionError("new-image button has no owned dialog")
         interface = node.get_action_iface()
         assert interface and Atspi.Action.do_action(interface, 0), name
         return node
@@ -383,9 +416,26 @@ def run_gimp(
 
     def new_image_comment():
         close_comment()
-        focus_window(wait_for(main_window, "GIMP image window missing before new image"))
+        before = wait_for(main_window, "GIMP image window missing before new image")
+        focus_window(before)
         key("ctrl+n")
-        action(application["pid"], "OK")
+        dialog = wait_for(
+            lambda: unique_owned_window(
+                windows(application["pid"]), application["pid"], "Create a New Image"
+            ),
+            "unique GIMP new-image dialog missing",
+        )
+        focus_window(dialog)
+        action(application["pid"], "OK", dialog_title=dialog["title"])
+        current = wait_for(
+            lambda: completed_new_image(windows(application["pid"]), before, dialog["id"]),
+            "GIMP new-image dialog did not finish with a focused new image",
+        )
+        report["newImage"] = {
+            "dialogId": dialog["id"],
+            "previousTitle": before["title"],
+            "mainWindow": current,
+        }
         return open_comment()
 
     def native_undo_trace():
@@ -640,28 +690,29 @@ def run_gimp(
         )
         report["process"] = application
         record("ordinary-comment-field")
+        startup_deadline = time.monotonic() + 60
         main = wait_for(main_window, "ordinary GIMP window missing", timeout=60)
         gimp_main_id = main["id"]
-        welcome = next(
-            (
-                w
-                for w in windows(application["pid"])
-                if w.get("title", "").startswith("Welcome to GIMP ")
-            ),
-            None,
+        # Fresh isolated HOME: GIMP 3.2.6 shows its first-run welcome after
+        # creating the main window (gimp-update.c). Never race one optional peek.
+        assert report["application"]["packageVersion"] == "gimp 3.2.6-2", (
+            "unverified GIMP first-run version"
         )
-        if welcome is not None:
-            # Ordinary first-run GIMP welcome, not a test-only startup switch.
-            focus_window(welcome)
-            action(application["pid"], "Close")
-            wait_for(
-                lambda: not any(w["id"] == welcome["id"] for w in windows(application["pid"])),
-                "GIMP welcome did not close",
-            )
-        focus_window(main)
-        key("ctrl+n")
-        action(application["pid"], "OK")
-        open_comment()
+        welcome = wait_for(
+            lambda: unique_owned_window(
+                windows(application["pid"]), application["pid"], "Welcome to GIMP 3.2.6"
+            ),
+            "fresh-profile GIMP welcome missing",
+            timeout=max(0, startup_deadline - time.monotonic()),
+        )
+        report["firstRunWelcome"] = welcome
+        request({"Action": {"CloseWindow": {"id": welcome["id"]}}})
+        wait_for(
+            lambda: not any(w["id"] == welcome["id"] for w in windows(application["pid"])),
+            "GIMP welcome did not close",
+            timeout=max(0, startup_deadline - time.monotonic()),
+        )
+        new_image_comment()
         wait_for(
             lambda: desktop_row()["state"] == "Connected" and installed_view()["result"] == "",
             "real GIMP connection not shown",

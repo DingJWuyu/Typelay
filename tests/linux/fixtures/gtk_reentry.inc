@@ -6,6 +6,27 @@ static gboolean reentry_fired;
  * focus, configuration, or signal propagation is changed by these callbacks. */
 static JsonObject *expand_transitions[16];
 static guint expand_transition_count;
+/* GdkWindow positions are relative to their GdkWindow parent, NOT the
+ * toplevel widget or nested compositor. Evidence only, never a click point. */
+static JsonObject *expand_event_window(GtkWidget *widget) {
+    JsonObject *value = json_object_new();
+    GdkWindow *window = gtk_button_get_event_window(GTK_BUTTON(widget));
+    json_object_set_boolean_member(value, "exists", window != NULL);
+    json_object_set_string_member(value, "coordinateSpace", "gdk-window-parent");
+    if (window) {
+        gint x, y;
+        gdk_window_get_position(window, &x, &y);
+        json_object_set_int_member(value, "x", x);
+        json_object_set_int_member(value, "y", y);
+        json_object_set_int_member(value, "width", gdk_window_get_width(window));
+        json_object_set_int_member(value, "height", gdk_window_get_height(window));
+        json_object_set_boolean_member(value, "visible", gdk_window_is_visible(window));
+        json_object_set_boolean_member(value, "viewable", gdk_window_is_viewable(window));
+        json_object_set_boolean_member(value, "parentIsWidgetWindow",
+            gdk_window_get_parent(window) == gtk_widget_get_window(widget));
+    }
+    return value;
+}
 static void observe_expand(GtkWidget *widget, const char *phase, GdkEventButton *event) {
     if (g_strcmp0(g_getenv("TYPELAY_FIXTURE_REENTRY_STAGE"), "expand") != 0
         || expand_transition_count >= G_N_ELEMENTS(expand_transitions)) return;
@@ -30,15 +51,15 @@ static void observe_expand(GtkWidget *widget, const char *phase, GdkEventButton 
         json_object_set_double_member(value, "eventX", event->x);
         json_object_set_double_member(value, "eventY", event->y);
     }
+    json_object_set_object_member(value, "eventWindow", expand_event_window(widget));
     expand_transitions[expand_transition_count++] = value;
 }
-static gboolean observe_expand_pointer(GtkWidget *widget, GdkEventButton *event, gpointer data) {
-    observe_expand(widget, data, event);
-    return FALSE;
-}
-static void observe_expand_clicked(GtkButton *widget, gpointer data) {
-    (void)data;
-    observe_expand(GTK_WIDGET(widget), "clicked", NULL);
+static void observe_expand_button(GtkButton *widget, gpointer data) {
+    GdkEvent *event = gtk_get_current_event();
+    GdkEventButton *pointer = event && (event->type == GDK_BUTTON_PRESS
+        || event->type == GDK_BUTTON_RELEASE) ? &event->button : NULL;
+    observe_expand(GTK_WIDGET(widget), data, pointer);
+    if (event) gdk_event_free(event);
 }
 #endif
 static void mutation_barrier(const char *stage) {
@@ -133,9 +154,9 @@ static void watch_session_button(GtkWidget *widget) {
 #if GTK_MAJOR_VERSION == 3
     if (expand) {
         observe_expand(widget, "watching", NULL);
-        g_signal_connect(widget, "button-press-event", G_CALLBACK(observe_expand_pointer), "press");
-        g_signal_connect(widget, "button-release-event", G_CALLBACK(observe_expand_pointer), "release");
-        g_signal_connect(widget, "clicked", G_CALLBACK(observe_expand_clicked), NULL);
+        g_signal_connect(widget, "pressed", G_CALLBACK(observe_expand_button), "pressed");
+        g_signal_connect(widget, "released", G_CALLBACK(observe_expand_button), "released");
+        g_signal_connect(widget, "clicked", G_CALLBACK(observe_expand_button), "clicked");
     }
 #endif
     g_signal_connect(widget, "notify::label", expand ? G_CALLBACK(expand_changed) : G_CALLBACK(footer_changed), NULL);

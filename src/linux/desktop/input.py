@@ -754,73 +754,92 @@ class Input:
         settings_generation,
         command_generation,
     ):
-        if (
-            authorization is None
-            or not proof
-            or command_generation != self.shortcut_config.get("generation")
-            or proof.get("target") != authorization["target"]["value"]
-            or any(
+        def declined(reason):
+            self.record_practice_failure("context-continuity", reason)
+            return None
+
+        if authorization is None:
+            return declined("owner-missing")
+        if not proof:
+            return declined("proof-missing")
+        if command_generation != self.shortcut_config.get("generation"):
+            return declined("command-changed")
+        if proof.get("target") != authorization["target"]["value"]:
+            return declined("target-changed")
+        for key, reason in (
+            ("nativeFocusRevision", "native-focus-changed"),
+            ("contextGeneration", "context-changed"),
+        ):
+            if (
                 proof.get(key) != authorization.get(key)
                 or type(proof.get(key)) is not int
                 or proof[key] <= 0
-                for key in ("nativeFocusRevision", "contextGeneration")
-            )
-            or type(proof.get("observedAtMs")) is not int
-            or not 0 < proof["observedAtMs"] <= now_ms()
-            or window_epoch != self.window_epoch
-            or foreground_epoch != self.foreground_epoch
-            or settings_generation != self.settings_generation
-        ):
-            return None
+            ):
+                return declined(reason)
+        if type(proof.get("observedAtMs")) is not int:
+            return declined("observation-invalid")
+        if not 0 < proof["observedAtMs"] <= now_ms():
+            return declined("observation-time-invalid")
+        if window_epoch != self.window_epoch:
+            return declined("window-changed")
+        if foreground_epoch != self.foreground_epoch:
+            return declined("foreground-changed")
+        if settings_generation != self.settings_generation:
+            return declined("settings-changed")
         waiting = self.practice_continuity
         if waiting is not None and waiting.get("foregroundSuspension") is authorization:
             peer = authorization["peer"]
-            if (
-                (
-                    self.practice_retirement is authorization
-                    or (
-                        self.practice_retirement is None
-                        and self.practice_retirement_binding is authorization
-                        and self.practice_retirement_ack == authorization["runId"]
-                    )
-                )
-                and peer.connection_id == authorization["connectionId"]
-                and command_generation == authorization["commandGeneration"]
-                and self.practice_editor is None
-                and self.practice_return is None
-                and self.practice_waiting(
-                    authorization["runId"], acknowledged=False, require_fresh=False
+            if not (
+                self.practice_retirement is authorization
+                or (
+                    self.practice_retirement is None
+                    and self.practice_retirement_binding is authorization
+                    and self.practice_retirement_ack == authorization["runId"]
                 )
             ):
-                # This exact old request lost to its age fence. Its native proof
-                # may have aged in transit; it supplies no new observation or ACK.
-                return {
-                    "snapshot": None,
-                    "fencedPracticeRead": {
-                        key: authorization[key]
-                        for key in (
-                            "runId",
-                            "target",
-                            "connectionId",
-                            "commandGeneration",
-                            "nativeFocusRevision",
-                            "contextGeneration",
-                        )
-                    },
-                }
-            return None
+                return declined("fenced-retirement-changed")
+            if peer.connection_id != authorization["connectionId"]:
+                return declined("fenced-connection-changed")
+            if command_generation != authorization["commandGeneration"]:
+                return declined("fenced-command-changed")
+            if self.practice_editor is not None:
+                return declined("fenced-editor-active")
+            if self.practice_return is not None:
+                return declined("fenced-return-active")
+            if not self.practice_waiting(
+                authorization["runId"], acknowledged=False, require_fresh=False
+            ):
+                return declined("fenced-waiting-invalid")
+            # This exact old request lost to its age fence. Its native proof
+            # may have aged in transit; it supplies no new observation or ACK.
+            return {
+                "snapshot": None,
+                "fencedPracticeRead": {
+                    key: authorization[key]
+                    for key in (
+                        "runId",
+                        "target",
+                        "connectionId",
+                        "commandGeneration",
+                        "nativeFocusRevision",
+                        "contextGeneration",
+                    )
+                },
+            }
         active = authorization is self.practice_authorization
-        if (
-            (not active and authorization is not self.practice_continuity)
-            or not 0 <= now_ms() - proof["observedAtMs"] <= 150
-            or self.focused_peer() is not authorization["peer"]
-            or self.overlay_focused
-            or not self.fresh()
-        ):
-            return None
+        if not active and authorization is not self.practice_continuity:
+            return declined("owner-replaced")
+        if not 0 <= now_ms() - proof["observedAtMs"] <= 150:
+            return declined("observation-expired")
+        if self.focused_peer() is not authorization["peer"]:
+            return declined("focused-peer-unavailable")
+        if self.overlay_focused:
+            return declined("overlay-focused")
+        if not self.fresh():
+            return declined("foreground-expired")
         if not active:
             if not self.practice_waiting(authorization["runId"]):
-                return None
+                return declined("waiting-invalid")
             binding = {
                 key: authorization[key]
                 for key in (
@@ -842,15 +861,20 @@ class Input:
                 },
             }
         waiting = self.suspend_practice_source(authorization)
-        if (
-            not await self.confirm_practice_retirement(authorization["runId"])
-            or self.practice_continuity is not waiting
-            or not self.practice_waiting(authorization["runId"])
-            or self.shortcut_config.get("generation") != authorization["commandGeneration"]
-            or not 0 <= now_ms() - proof["observedAtMs"] <= 150
-        ):
+        reason = None
+        if not await self.confirm_practice_retirement(authorization["runId"]):
+            reason = "retirement-unconfirmed"
+        elif self.practice_continuity is not waiting:
+            reason = "waiting-replaced"
+        elif not self.practice_waiting(authorization["runId"]):
+            reason = "retired-waiting-invalid"
+        elif self.shortcut_config.get("generation") != authorization["commandGeneration"]:
+            reason = "retired-command-changed"
+        elif not 0 <= now_ms() - proof["observedAtMs"] <= 150:
+            reason = "retired-observation-expired"
+        if reason is not None:
             self.retire_practice(authorization["runId"])
-            return None
+            return declined(reason)
         return {
             "snapshot": None,
             "focus": "Source",

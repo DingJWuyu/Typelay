@@ -1026,6 +1026,20 @@ internal static partial class Program
             _editorHandoff, kind, reason, peer, active, readCompletedAtMs, guiDequeuedAtMs));
     }
 
+    private static bool InputRejectionTraceEnabled => !string.IsNullOrWhiteSpace(EditorTracePath)
+        && _acceptanceRejectionTraceCount < 16;
+    private static void QueueInputRejection(object record)
+    {
+        try
+        {
+            if (!InputRejectionTraceEnabled)
+                return;
+            _acceptanceRejectionTraceCount++;
+            AcceptanceRejectionTraces.Add(record);
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { }
+    }
+
     private static void FlushEditorTrace()
     {
         if (EditorTraces.Count == 0 && AcceptanceRejectionTraces.Count == 0)
@@ -1253,7 +1267,17 @@ internal static partial class Program
         // observation. It still invalidates a live proof. Non-client wParam is
         // a hit-test value, not button flags; actual drags retain the LL gate.
         bool hover = id == 0x00a0 || id == 0x0200 && (wParam & 0x0073) == 0;
+        bool discardedProof = _prefixProof is not null;
         InvalidateGuiInput(!hover || _prefixDispatch is not null || _prefixProof is not null);
+        if (discardedProof && InputRejectionTraceEnabled)
+            QueueInputRejection(new
+            {
+                operation = "owned-prefix-invalidated",
+                reason = hover ? "hover" : imeOrLanguage ? "ime-language" : sourceMutation || changed ? "source-mutation" : "input",
+                sent,
+                source,
+                root
+            });
     }
 
     private static void BeginPrefixDispatch(ref Native.Message message, OwnedKeyWitness witness, ulong bits)
@@ -1334,16 +1358,38 @@ internal static partial class Program
     {
         context = null;
         var prefix = _prefixProof;
-        if (prefix is null || witness.PrefixSequence != prefix.Witness.Sequence
-            || witness.Modifiers != ShortcutModifiers.Control
-            || planSequence > 0 && prefix.Witness.PlanSequence != planSequence
-            || exitSequence > 0 && prefix.Witness.ExitLeaseSequence != exitSequence
-            || planSequence > 0 && !PrefixPlanCurrent(prefix.Witness, prefix.Plan)
-            || exitSequence > 0 && !PrefixExitCurrent(prefix.Witness, prefix.ExitLease)
-            || !PrefixCurrent(prefix, checked(prefix.InputRevision + 1))
-            || !_owned!.TryProbeInputContext(prefix.Descriptor!, prefix.ExpiresAtMs, out var current)
-            || current != prefix.Context || !PrefixCurrent(prefix, checked(prefix.InputRevision + 1)))
+        bool? sequenceMatches = null, modifiersMatch = null, planMatches = null, exitMatches = null,
+            planCurrent = null, exitCurrent = null, prefixCurrent = null, inputProbed = null,
+            contextMatches = null, prefixStillCurrent = null;
+        if (prefix is null || (sequenceMatches = witness.PrefixSequence == prefix.Witness.Sequence) == false
+            || (modifiersMatch = witness.Modifiers == ShortcutModifiers.Control) == false
+            || planSequence > 0 && (planMatches = prefix.Witness.PlanSequence == planSequence) == false
+            || exitSequence > 0 && (exitMatches = prefix.Witness.ExitLeaseSequence == exitSequence) == false
+            || planSequence > 0 && (planCurrent = PrefixPlanCurrent(prefix.Witness, prefix.Plan)) == false
+            || exitSequence > 0 && (exitCurrent = PrefixExitCurrent(prefix.Witness, prefix.ExitLease)) == false
+            || (prefixCurrent = PrefixCurrent(prefix, checked(prefix.InputRevision + 1))) == false
+            || (inputProbed = _owned!.TryProbeInputContext(prefix.Descriptor!, prefix.ExpiresAtMs, out var current)) == false
+            || (contextMatches = current == prefix.Context) == false
+            || (prefixStillCurrent = PrefixCurrent(prefix, checked(prefix.InputRevision + 1))) == false)
+        {
+            if (InputRejectionTraceEnabled)
+                QueueInputRejection(new
+                {
+                    operation = "owned-prefix-use-rejected",
+                    prefixPresent = prefix is not null,
+                    sequenceMatches,
+                    modifiersMatch,
+                    planMatches,
+                    exitMatches,
+                    planCurrent,
+                    exitCurrent,
+                    prefixCurrent,
+                    inputProbed,
+                    contextMatches,
+                    prefixStillCurrent
+                });
             return false;
+        }
         context = current;
         return true;
     }
@@ -1400,17 +1446,39 @@ internal static partial class Program
                 0xa4 or 0xa5 => 0x12,
                 _ => witness.VirtualKey
             };
-            bool tupleMatches = messageKey == (uint)message.WParam
-                && witness.MessageTime == message.Time && witness.ScanCode == ((bits >> 16) & 0xff)
-                && ((witness.NativeFlags & 1) != 0) == extended
-                && ((witness.NativeFlags & 0x80) == 0) == down && witness.Down == down
-                && (!down || witness.Repeated == repeated) && (bits & 0xffff) == 1
-                && witness.Injected == ((witness.NativeFlags & 0x12) != 0);
+            bool? keyMatches = null, timeMatches = null, scanMatches = null, extendedMatches = null,
+                nativeDownMatches = null, downMatches = null, repeatMatches = null, countMatches = null,
+                injectionMatches = null;
+            bool tupleMatches = (keyMatches = messageKey == (uint)message.WParam) == true
+                && (timeMatches = witness.MessageTime == message.Time) == true
+                && (scanMatches = witness.ScanCode == ((bits >> 16) & 0xff)) == true
+                && (extendedMatches = ((witness.NativeFlags & 1) != 0) == extended) == true
+                && (nativeDownMatches = ((witness.NativeFlags & 0x80) == 0) == down) == true
+                && (downMatches = witness.Down == down) == true
+                && (!down || (repeatMatches = witness.Repeated == repeated) == true)
+                && (countMatches = (bits & 0xffff) == 1) == true
+                && (injectionMatches = witness.Injected == ((witness.NativeFlags & 0x12) != 0)) == true;
             if (!tupleMatches)
             {
                 ReportRejectedEligible(witness);
                 ReportRejectedExit(witness);
                 FailWitness();
+                if (InputRejectionTraceEnabled)
+                    QueueInputRejection(new
+                    {
+                        operation = "owned-input-tuple-rejected",
+                        keyMatches,
+                        timeMatches,
+                        scanMatches,
+                        extendedMatches,
+                        nativeDownMatches,
+                        downMatches,
+                        repeatMatches,
+                        countMatches,
+                        injectionMatches,
+                        witnessRepeated = witness.Repeated,
+                        messageRepeated = repeated
+                    });
                 return false;
             }
             if (_escapeHeld && message.WParam == _escapeVirtualKey && (!down || repeated))
@@ -1624,28 +1692,63 @@ internal static partial class Program
         var lease = _exitLease;
         OwnedInputContext? expectedInput = null;
         long now = WindowsInterruptClock.NowMs;
-        bool qualified = lease is not null && !_retired && !repeated
-            && witness.VirtualKey == lease.VirtualKey && witness.Modifiers == lease.Modifiers
-            && witness.Modified == (lease.Modifiers != ShortcutModifiers.None)
-            && (!witness.Injected || _allowInjectedInput)
-            && message.Id is 0x0100 or 0x0104 && message.Window == _edit!.Handle && (bits & (1UL << 29)) == 0 && ExactModifiers(lease.Modifiers)
-            && witness.ExitLeaseSequence == lease.Sequence
-            && witness.Sequence > _exitWitnessFloor && witness.Sequence > lease.InstallWitnessSequence
-            && witness.NativeFocusRevision == lease.Descriptor.NativeFocusRevision
-            && witness.UserEpoch == lease.UserEpoch && witness.ForegroundEpoch == lease.ForegroundEpoch
-            && witness.ObservedAtMs >= lease.ObservedAtMs && witness.ObservedAtMs <= lease.ExpiresAtMs
-            && now >= witness.ObservedAtMs && now <= lease.ExpiresAtMs
-            && ExitContextCurrent(lease)
-            && (lease.Modifiers == ShortcutModifiers.None && witness.PrefixSequence == 0
-                || lease.Modifiers == ShortcutModifiers.Control && TryUsePrefix(witness, 0, lease.Sequence, out expectedInput))
-            && _owned!.CanExit(lease.Descriptor, lease.ExpiresAtMs, expectedInput)
-            && ExitContextCurrent(lease) && ExactModifiers(lease.Modifiers);
+        bool? live = null, keyPolicy = null, messageMatches = null, modifiersMatch = null,
+            leaseMatches = null, sequenceFresh = null, focusRevisionMatches = null, epochsMatch = null,
+            witnessInLease = null, dispatchInLease = null, contextCurrent = null, prefixMatches = null,
+            nativeExit = null, contextStillCurrent = null, modifiersStillMatch = null;
+        bool qualified = lease is not null && (live = !_retired && !repeated) == true
+            && (keyPolicy = witness.VirtualKey == lease.VirtualKey && witness.Modifiers == lease.Modifiers
+                && witness.Modified == (lease.Modifiers != ShortcutModifiers.None)
+                && (!witness.Injected || _allowInjectedInput)) == true
+            && (messageMatches = message.Id is 0x0100 or 0x0104 && message.Window == _edit!.Handle
+                && (bits & (1UL << 29)) == 0) == true
+            && (modifiersMatch = ExactModifiers(lease.Modifiers)) == true
+            && (leaseMatches = witness.ExitLeaseSequence == lease.Sequence) == true
+            && (sequenceFresh = witness.Sequence > _exitWitnessFloor && witness.Sequence > lease.InstallWitnessSequence) == true
+            && (focusRevisionMatches = witness.NativeFocusRevision == lease.Descriptor.NativeFocusRevision) == true
+            && (epochsMatch = witness.UserEpoch == lease.UserEpoch && witness.ForegroundEpoch == lease.ForegroundEpoch) == true
+            && (witnessInLease = witness.ObservedAtMs >= lease.ObservedAtMs && witness.ObservedAtMs <= lease.ExpiresAtMs) == true
+            && (dispatchInLease = now >= witness.ObservedAtMs && now <= lease.ExpiresAtMs) == true
+            && (contextCurrent = ExitContextCurrent(lease)) == true
+            && (prefixMatches = lease.Modifiers == ShortcutModifiers.None && witness.PrefixSequence == 0
+                || lease.Modifiers == ShortcutModifiers.Control && TryUsePrefix(witness, 0, lease.Sequence, out expectedInput)) == true
+            && (nativeExit = _owned!.CanExit(lease.Descriptor, lease.ExpiresAtMs, expectedInput)) == true
+            && (contextStillCurrent = ExitContextCurrent(lease)) == true
+            && (modifiersStillMatch = ExactModifiers(lease.Modifiers)) == true;
+        long qualificationAtMs = now;
         _exitLease = null; // One press, even when refused. Repeats never retry.
         _planActive = false;
         ClearPrefixProof();
         now = WindowsInterruptClock.NowMs;
         if (!qualified || lease is null || now < witness.ObservedAtMs || now > lease.ExpiresAtMs)
         {
+            if (InputRejectionTraceEnabled)
+                QueueInputRejection(new
+                {
+                    operation = "owned-exit-qualification-rejected",
+                    atMs = now,
+                    qualificationAtMs,
+                    witnessObservedAtMs = witness.ObservedAtMs,
+                    leaseObservedAtMs = lease?.ObservedAtMs,
+                    leaseExpiresAtMs = lease?.ExpiresAtMs,
+                    leasePresent = lease is not null,
+                    live,
+                    keyPolicy,
+                    messageMatches,
+                    modifiersMatch,
+                    leaseMatches,
+                    sequenceFresh,
+                    focusRevisionMatches,
+                    epochsMatch,
+                    witnessInLease,
+                    dispatchInLease,
+                    contextCurrent,
+                    prefixMatches,
+                    nativeExit,
+                    contextStillCurrent,
+                    modifiersStillMatch,
+                    qualified
+                });
             if (_prefixTicket is { } ticket && witness.PrefixSequence == ticket.PrefixSequence)
                 WriteReply(new("prefix-processed", _connection, _run, _sequence, PrefixResult: ticket with
                 {

@@ -1310,6 +1310,10 @@ def check_expand(client, source, generation, runtime, state, initial, nested, di
         key: actual["overlayControls"]["fixture-expand"][key]
         for key in ("instance", "x", "y", "width", "height", "scale")
     }
+    if "eventWindow" in actual["overlayControls"]["fixture-expand"]:
+        evidence["buttonBoundsCurrent"]["eventWindow"] = actual["overlayControls"][
+            "fixture-expand"
+        ]["eventWindow"]
     evidence["pixelPoint"] = point
     assert now_ms() <= evidence["expiresAtMs"], "expand lease expired before click"
     (runtime / "arm").touch()

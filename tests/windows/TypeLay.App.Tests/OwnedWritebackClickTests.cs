@@ -71,7 +71,13 @@ public sealed class OwnedWritebackClickTests(WpfDesktopFixture desktop)
                     action.Cancel();
                 if (cancelled)
                     await Assert.ThrowsAnyAsync<OperationCanceledException>(() => HyPackageCheck.ClickOwnedWritebackCheckboxAsync(root, Environment.ProcessId, action.Token));
-                else if (covered || alreadyOn)
+                else if (covered)
+                {
+                    var rejected = await Record.ExceptionAsync(() => HyPackageCheck.ClickOwnedWritebackCheckboxAsync(root, Environment.ProcessId, action.Token));
+                    Assert.True(rejected is NoClickablePointException or InvalidOperationException,
+                        $"Unexpected covered-checkbox result: {rejected?.GetType().Name ?? "no rejection"}");
+                }
+                else if (alreadyOn)
                     await Assert.ThrowsAsync<InvalidOperationException>(() => HyPackageCheck.ClickOwnedWritebackCheckboxAsync(root, Environment.ProcessId, action.Token));
                 else
                 {

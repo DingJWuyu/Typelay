@@ -1515,17 +1515,44 @@ static void translation_action_clicked(const char *operation, JsonObject *view) 
     else json_object_unref(event);
     json_object_unref(context); json_object_unref(token);
 }
+/* Observe only an attempted resume, not every paused-view renewal. */
+static void trace_resume(GtkWidget *widget, gpointer data) {
+    static unsigned count;
+    const char *stage = data;
+    if (!g_getenv("TYPELAY_TRACE") || count >= 8) return;
+    if (strcmp(stage, "activate") == 0)
+        g_object_set_data(G_OBJECT(widget), "typelay-resume-activated", GINT_TO_POINTER(1));
+    if (strcmp(stage, "unmap") == 0
+        && !g_object_get_data(G_OBJECT(widget), "typelay-resume-activated")) return;
+    count++;
+    g_printerr("TypeLay GTK4 resume stage=%s atMs=%" G_GINT64_FORMAT
+        " current=%d mapped=%d revision=%" G_GINT64_FORMAT "\n",
+        stage, tl_now(), widget == overlay.resume, gtk_widget_get_mapped(widget), overlay.revision);
+}
 static void button_clicked(GtkButton *button, gpointer data) {
-    if (!overlay.popover || !gtk_widget_is_ancestor(GTK_WIDGET(button), overlay.popover)) return;
     const char *operation = data;
+    if (strcmp(operation, "resume") == 0) trace_resume(GTK_WIDGET(button), "clicked");
+    if (!overlay.popover || !gtk_widget_is_ancestor(GTK_WIDGET(button), overlay.popover)) {
+        if (strcmp(operation, "resume") == 0) trace_resume(GTK_WIDGET(button), "reject-owner");
+        return;
+    }
     if (strcmp(operation, "resume") == 0) {
         Target *target = overlay.target;
         gint64 revision = overlay.revision;
-        if (GTK_WIDGET(button) != overlay.resume || !paused() || overlay.pending_resume) return;
-        if (!active() || tl_now() > overlay.expires || !pause_current(target, overlay.authority)) {
+        if (GTK_WIDGET(button) != overlay.resume || !paused() || overlay.pending_resume) {
+            trace_resume(GTK_WIDGET(button), "reject-state"); return;
+        }
+        const char *rejected = !active() ? "reject-active"
+            : tl_now() > overlay.expires ? "reject-expired"
+            : !pause_current(target, overlay.authority) ? "reject-authority" : NULL;
+        if (rejected) {
+            trace_resume(GTK_WIDGET(button), (gpointer)rejected);
             tl_overlay_hide(); return;
         }
-        if (overlay.target != target || overlay.revision != revision || !paused() || tl_now() > overlay.expires) return;
+        if (overlay.target != target || overlay.revision != revision || !paused() || tl_now() > overlay.expires) {
+            trace_resume(GTK_WIDGET(button), "reject-reentry"); return;
+        }
+        trace_resume(GTK_WIDGET(button), "emit");
         overlay.pending_resume = TRUE;
         gtk_widget_set_sensitive(overlay.resume, FALSE);
         emit("resume", NULL);
@@ -1676,6 +1703,10 @@ static void create(Target *target) {
     overlay.expand = button(overlay.actions, "展开", "expand");
     overlay.resume = button(overlay.header, "恢复", "resume");
     gtk_widget_set_name(overlay.resume, "typelay-resume");
+    if (g_getenv("TYPELAY_TRACE")) {
+        g_signal_connect(overlay.resume, "activate", G_CALLBACK(trace_resume), "activate");
+        g_signal_connect(overlay.resume, "unmap", G_CALLBACK(trace_resume), "unmap");
+    }
     overlay.scroll = gtk_scrolled_window_new();
     gtk_widget_set_name(overlay.scroll, "typelay-body");
     gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(overlay.scroll), FALSE);
