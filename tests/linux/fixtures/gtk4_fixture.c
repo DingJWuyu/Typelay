@@ -224,6 +224,74 @@ static gboolean language_control(const char *name) {
         || g_strcmp0(name, "typelay-language-menu") == 0
         || g_str_has_prefix(name, "typelay-glossary-");
 }
+static void control_pointer_enter(GtkEventControllerMotion *motion, double x, double y, gpointer data) {
+    (void)x; (void)y; (void)data;
+    GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(motion));
+    g_object_set_data(G_OBJECT(widget), "fixture-control-enter-at",
+        (gpointer)(gintptr)(g_get_monotonic_time() / 1000));
+}
+static void control_pointer_leave(GtkEventControllerMotion *motion, gpointer data) {
+    (void)data;
+    GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(motion));
+    g_object_set_data(G_OBJECT(widget), "fixture-control-enter-at", NULL);
+}
+static void control_pointer_unmap(GtkWidget *widget, gpointer data) {
+    (void)data;
+    g_object_set_data(G_OBJECT(widget), "fixture-control-enter-at", NULL);
+}
+static void report_control_surface(JsonBuilder *builder, GtkWidget *widget) {
+    GtkEventControllerMotion *motion = g_object_get_data(G_OBJECT(widget), "fixture-control-motion");
+    if (!motion) {
+        GtkEventController *observer = gtk_event_controller_motion_new();
+        motion = GTK_EVENT_CONTROLLER_MOTION(observer);
+        g_signal_connect(observer, "enter", G_CALLBACK(control_pointer_enter), NULL);
+        g_signal_connect(observer, "leave", G_CALLBACK(control_pointer_leave), NULL);
+        g_signal_connect(widget, "unmap", G_CALLBACK(control_pointer_unmap), NULL);
+        g_object_set_data(G_OBJECT(widget), "fixture-control-motion", observer);
+        gtk_widget_add_controller(widget, observer);
+    }
+    json_builder_set_member_name(builder, "pointerInside");
+    json_builder_add_boolean_value(builder, gtk_widget_get_mapped(widget)
+        && gtk_event_controller_motion_contains_pointer(motion));
+    json_builder_set_member_name(builder, "pointerEnteredAtMonoMs");
+    json_builder_add_int_value(builder,
+        (gintptr)g_object_get_data(G_OBJECT(widget), "fixture-control-enter-at"));
+    GtkNative *native = gtk_widget_get_native(widget);
+    GdkSurface *surface = native ? gtk_native_get_surface(native) : NULL;
+    GdkSurface *parent = gtk_native_get_surface(GTK_NATIVE(report_window));
+    graphene_point_t origin = GRAPHENE_POINT_INIT(0, 0), point;
+    double tx = 0, ty = 0;
+    json_builder_set_member_name(builder, "surfaceGeometry");
+    if (!surface || !parent || !gdk_surface_get_mapped(surface) || !gdk_surface_get_mapped(parent)
+        || !gtk_widget_compute_point(widget, GTK_WIDGET(native), &origin, &point)) {
+        json_builder_add_null_value(builder); return;
+    }
+    /* GtkNative's transform is surface -> widget; invert before translating
+     * the real popup surface to its parent. Widget-tree offsets are not a
+     * substitute for the compositor-configured popup position. */
+    gtk_native_get_surface_transform(native, &tx, &ty);
+    double x = (double)point.x - tx, y = (double)point.y - ty;
+    if (!gdk_surface_translate_coordinates(surface, parent, &x, &y)) {
+        json_builder_add_null_value(builder); return;
+    }
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "x"); json_builder_add_double_value(builder, x);
+    json_builder_set_member_name(builder, "y"); json_builder_add_double_value(builder, y);
+    json_builder_set_member_name(builder, "scale");
+    json_builder_add_int_value(builder, gdk_surface_get_scale_factor(surface));
+    json_builder_set_member_name(builder, "nativeX"); json_builder_add_double_value(builder, point.x);
+    json_builder_set_member_name(builder, "nativeY"); json_builder_add_double_value(builder, point.y);
+    json_builder_set_member_name(builder, "transformX"); json_builder_add_double_value(builder, tx);
+    json_builder_set_member_name(builder, "transformY"); json_builder_add_double_value(builder, ty);
+    json_builder_set_member_name(builder, "popup"); json_builder_add_boolean_value(builder, GDK_IS_POPUP(surface));
+    if (GDK_IS_POPUP(surface)) {
+        json_builder_set_member_name(builder, "popupX");
+        json_builder_add_int_value(builder, gdk_popup_get_position_x(GDK_POPUP(surface)));
+        json_builder_set_member_name(builder, "popupY");
+        json_builder_add_int_value(builder, gdk_popup_get_position_y(GDK_POPUP(surface)));
+    }
+    json_builder_end_object(builder);
+}
 static void report_language_control(GtkWidget *widget, gpointer data) {
     JsonBuilder *builder = data;
     const char *name = gtk_widget_get_name(widget);
@@ -240,6 +308,8 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
     if (expand || language_control(name) || g_str_equal(name, "fixture-glossary-feedback")) {
         json_builder_set_member_name(builder, name);
         json_builder_begin_object(builder);
+        if (g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND") && language_control(name))
+            report_control_surface(builder, widget);
         if (expand) {
             GtkEventControllerMotion *motion = g_object_get_data(G_OBJECT(widget), "fixture-expand-motion");
             json_builder_set_member_name(builder, "pointerInside");

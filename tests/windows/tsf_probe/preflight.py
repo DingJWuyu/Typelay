@@ -234,15 +234,18 @@ def native_observation(pids):
 
 
 MARKER = "TypeLay-TSF-Preflight: true"
+LIFECYCLE_MARKER = "TypeLay-TSF-Lifecycle: true"
 
 
-def push_eligible(event, head, message, changed_paths, is_ancestor):
+def push_eligible(event, head, message, changed_paths, is_ancestor, *, marker=MARKER):
     """Admit only this push's explicit request and actual diagnostic source changes."""
+    if marker not in (MARKER, LIFECYCLE_MARKER):
+        raise ValueError("unknown-diagnostic-level")
     if event.get("ref") != "refs/heads/work/linux-usability" or event.get("deleted"):
         return False
     head_commit = event.get("head_commit") or {}
     event_message = head_commit.get("message", "")
-    if MARKER not in event_message:
+    if marker not in event_message:
         return False
     before, after = event.get("before", ""), event.get("after", "")
     if not all(re.fullmatch(r"[0-9a-f]{40}", value) for value in (before, after)):
@@ -255,8 +258,9 @@ def push_eligible(event, head, message, changed_paths, is_ancestor):
         raise ValueError("unverified-commit-message")
     paragraphs = message.strip("\n").split("\n\n")
     if (
-        paragraphs[-1] != MARKER
-        or message.count(MARKER) != 1
+        paragraphs[-1] != marker
+        or message.count(marker) != 1
+        or any(other != marker and other in message for other in (MARKER, LIFECYCLE_MARKER))
         or "```" in message
         or "~~~" in message
     ):
@@ -267,7 +271,7 @@ def push_eligible(event, head, message, changed_paths, is_ancestor):
     )
 
 
-def check_push():
+def check_push(*, marker=MARKER):
     if os.environ.get("GITHUB_EVENT_NAME") != "push":
         raise ValueError("push-required")
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
@@ -294,7 +298,7 @@ def check_push():
         == 0
     )
     paths = git("diff", "--name-only", "--no-renames", "-z", before, after).split("\0")
-    eligible = push_eligible(event, head, message, paths, ancestry)
+    eligible = push_eligible(event, head, message, paths, ancestry, marker=marker)
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
         output.write(f"eligible={str(eligible).lower()}\n")
     return 0
@@ -382,4 +386,8 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(check_push() if sys.argv[1:] == ["--check-push"] else main())
+    if sys.argv[1:] == ["--check-push"]:
+        sys.exit(check_push())
+    if sys.argv[1:] == ["--check-lifecycle-push"]:
+        sys.exit(check_push(marker=LIFECYCLE_MARKER))
+    sys.exit(main())

@@ -127,9 +127,9 @@ class BrowserContract(unittest.TestCase):
               Object.defineProperty(performance, 'now', {value: () => bucket});
               Date.now = () => wallOrigin + bucket;
             })();"""
-        if (
-            self._testMethodName
-            == "test_accept_hint_hands_off_before_permission_and_recovers_on_new_publication"
+        if self._testMethodName in (
+            "test_accept_hint_hands_off_before_permission_and_recovers_on_new_publication",
+            "test_hint_preserves_unchanged_text_and_updates_on_revocation",
         ):
             # Controlled scheduling, with a fine monotonic sampling step for the
             # adapter's timer-resolution guard. Not Firefox latency evidence.
@@ -2868,7 +2868,6 @@ class BrowserContract(unittest.TestCase):
                 const command = {id: 965, op: 'publish', data: {
                   target: snapshot.target, authority: snapshot.authority, permit: {plan}}};
                 const result = fixtureCommand(command);
-                window.fixtureHintDeadline = command.data.permit.expiresAtMs - 1000000;
                 return result.published;
               };
               const result = {published: fixturePublishHint(), hint: fixtureReadHint()};
@@ -2880,10 +2879,23 @@ class BrowserContract(unittest.TestCase):
         self.assertTrue(initial["published"], initial)
         self.assertEqual(initial["hint"], {"text": "Tab 接受译文", "changes": 1})
         self.assertEqual(initial["unchanged"], {"text": "Tab 接受译文", "changes": 0})
-        self.page.wait_for_function("performance.now() > fixtureHintDeadline + 2", timeout=1000)
+        # The host fixture issues 90ms, but the existing 4ms conservative clock
+        # bound makes the local deadline 86ms and presentation handoff 61ms.
+        self.page.evaluate("fixtureAdvanceHintClock(60)")
+        self.assertEqual(
+            self.page.evaluate("fixtureReadHint()"), {"text": "Tab 接受译文", "changes": 0}
+        )
+        self.page.evaluate("fixtureAdvanceHintClock(1)")
+        self.assertEqual(self.page.evaluate("fixtureReadHint()"), {"text": "", "changes": 1})
+        self.assertTrue(self.command("describe")["publication"]["ready"])
+        self.page.evaluate("fixtureAdvanceHintClock(24)")
+        self.assertTrue(self.command("describe")["publication"]["ready"])
+        self.assertEqual(self.page.evaluate("fixtureReadHint()"), {"text": "", "changes": 0})
+        self.page.evaluate("fixtureAdvanceHintClock(1)")
         self.assertEqual(
             self.page.evaluate("fixtureReadHint()"), {"text": "Tab 交还应用", "changes": 1}
         )
+        self.assertFalse(self.command("describe")["publication"]["ready"])
         for action in ("revoke", "focus"):
             with self.subTest(action=action):
                 result = self.page.evaluate(
@@ -3216,20 +3228,26 @@ class BrowserContract(unittest.TestCase):
         self.assertNotIn("Tab 接受译文", names())
         publish_current()
         self.assertIn("Tab 接受译文", names())
-        self.page.evaluate("fixtureAdvanceHintClock(64)")
+        # 90ms host permit minus its existing 4ms clock margin: local expiry
+        # is 86ms, not 90ms. The cue hands off 25ms before that local expiry.
+        self.page.evaluate("fixtureAdvanceHintClock(60)")
         self.assertIn("Tab 接受译文", names())
         self.page.evaluate("fixtureAdvanceHintClock(1)")
         self.assertNotIn("Tab 交还应用", names())
         self.assertNotIn("Tab 接受译文", names())
         # Presentation withdrawal does not revoke the original permission.
         self.assertTrue(self.command("describe")["publication"]["ready"])
-        self.page.evaluate("fixtureAdvanceHintClock(25)")
+        self.page.evaluate("fixtureAdvanceHintClock(24)")
+        self.assertTrue(self.command("describe")["publication"]["ready"])
+        self.assertNotIn("Tab 交还应用", names())
+        self.assertNotIn("Tab 接受译文", names())
+        self.page.evaluate("fixtureAdvanceHintClock(1)")
         self.assertIn("Tab 交还应用", names())
         self.assertNotIn("Tab 接受译文", names())
         self.assertFalse(self.command("describe")["publication"]["ready"])
         publish_current()
         self.assertIn("Tab 接受译文", names())
-        self.page.evaluate("fixtureAdvanceHintClock(65)")
+        self.page.evaluate("fixtureAdvanceHintClock(61)")
         self.assertNotIn("Tab 接受译文", names())
         self.assertNotIn("Tab 交还应用", names())
         publish_current()

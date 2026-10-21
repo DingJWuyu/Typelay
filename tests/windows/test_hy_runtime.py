@@ -89,12 +89,18 @@ class WindowsNativeRuntimeTests(unittest.TestCase):
         foreign = self.root / "foreign"
         foreign.mkdir(exist_ok=True)
         target = foreign / "ggml-base.dll"
-        shutil.copyfile(self.native / "cpu-runtime/ggml-base.dll", target)
+        dependency = foreign / "libomp.dll"
+        for path in (dependency, target):
+            shutil.copyfile(self.native / "cpu-runtime" / path.name, path)
         result = self.run_native(
-            f"import ctypes; foreign=ctypes.CDLL({str(target)!r},winmode=0x800); "
+            "import ctypes; "
+            f"dependency=ctypes.CDLL({str(dependency)!r},winmode=0x800); "
+            f"foreign=ctypes.CDLL({str(target)!r},winmode=0x800); "
+            "print('foreign-runtime-ready',flush=True); "
             "WindowsRuntime(verify_native())"
         )
         self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.splitlines(), ["foreign-runtime-ready"])
         self.assertIn("loaded before", result.stderr)
 
     def test_changed_cpu_file_is_rejected_without_loading(self):

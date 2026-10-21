@@ -334,7 +334,14 @@ def _gtk4_source_glossary(out, environment, deadline):
                         )
                         if not control or overlay_control and not control.get("visible"):
                             return None
-                        rectangle = [control.get(key) for key in ("x", "y")]
+                        surface = control.get("surfaceGeometry") if overlay_control else control
+                        if not isinstance(surface, dict):
+                            return None
+                        if overlay_control and (
+                            type(surface.get("scale")) is not int or surface["scale"] != parent[2]
+                        ):
+                            return None
+                        rectangle = [surface.get(key) for key in ("x", "y")]
                         rectangle += [control.get(key, 4) for key in ("width", "height")]
                         if not all(
                             type(value) in (int, float) and math.isfinite(value)
@@ -362,15 +369,48 @@ def _gtk4_source_glossary(out, environment, deadline):
                             for key in ("fullscreen", "width", "height", "scale")
                         },
                         "bounds": {key: control.get(key) for key in ("x", "y", "width", "height")},
+                        "surfaceGeometry": control.get("surfaceGeometry"),
                         "beforeFocus": actual.get("focus"),
                         "pixelPoint": pixel,
-                        "clickStartedAtMonoMs": time.monotonic_ns() // 1000000,
+                        "moveStartedAtMonoMs": time.monotonic_ns() // 1000000,
                     }
                     clicks.append(evidence)
                     click_path.write_text(json.dumps(clicks, indent=2) + "\n")
-                    # Exactly one click, from one observation. A different focus
-                    # may still be an asynchronous transition, not a retry signal.
-                    execute("xdotool", "mousemove", "--window", window, *pixel, "click", "1")
+                    # One move, then only a real crossing of this same control
+                    # authorizes the one click. Never search offsets or move again.
+                    execute("xdotool", "mousemove", "--window", window, *pixel)
+                    moved_at = time.monotonic_ns() // 1000000
+                    evidence["moveFinishedAtMonoMs"] = moved_at
+                    if overlay_control:
+                        instance = control["instance"]
+
+                        def hovered():
+                            renew()
+                            current = ready()
+                            if current is None:
+                                return None
+                            observed, item, current_pixel = current
+                            evidence["hoverObservation"] = {
+                                "observedAtMonoMs": observed.get("observedAtMs"),
+                                "control": item,
+                                "pixelPoint": current_pixel,
+                            }
+                            click_path.write_text(json.dumps(clicks, indent=2) + "\n")
+                            return (
+                                observed
+                                if current_pixel == pixel
+                                and observed.get("observedAtMs", 0) >= moved_at
+                                and item.get("instance") == instance
+                                and item.get("pointerInside") is True
+                                and type(item.get("pointerEnteredAtMonoMs")) is int
+                                and item["pointerEnteredAtMonoMs"] > 0
+                                else None
+                            )
+
+                        wait_for(hovered, f"{name}: real pointer hover on same surface point")
+                    evidence["clickStartedAtMonoMs"] = time.monotonic_ns() // 1000000
+                    click_path.write_text(json.dumps(clicks, indent=2) + "\n")
+                    execute("xdotool", "click", "1")
                     following = state()
                     evidence.update(
                         clickReturnedAtMonoMs=time.monotonic_ns() // 1000000,

@@ -1,4 +1,4 @@
-name: TSF read-only prerequisites (not acceptance)
+name: TSF isolated diagnostics (not acceptance)
 on:
   push:
     branches: [work/linux-usability]
@@ -63,5 +63,88 @@ jobs:
         with:
           name: typelay-tsf-readonly-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/tsf-preflight/result.json
+          if-no-files-found: error
+          retention-days: 7
+
+  lifecycle:
+    if: >-
+      ${{ !github.event.deleted && contains(github.event.head_commit.message, 'TypeLay-TSF-Lifecycle: true') }}
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - name: Verify this push explicitly requests only the no-DLL lifecycle level
+        id: gate
+        shell: pwsh
+        run: |
+          python -B tests/windows/tsf_probe/preflight.py --check-lifecycle-push
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify diagnostic admission and build-entry contracts
+        if: steps.gate.outputs.eligible == 'true'
+        shell: pwsh
+        run: |
+          python -B -m unittest discover -s tests/windows/tsf_probe -p 'test_*.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compile test sources with an already installed x64 MSVC toolchain
+        if: steps.gate.outputs.eligible == 'true'
+        timeout-minutes: 3
+        shell: cmd
+        run: |
+          @echo off
+          set "VSROOT="
+          if not exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" exit /b 1
+          for /f "usebackq delims=" %%V in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%V"
+          if not defined VSROOT exit /b 1
+          if not exist "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" exit /b 1
+          call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat"
+          if errorlevel 1 exit /b 1
+          python -B tests/windows/tsf_probe/build_native.py --output artifacts/tsf-lifecycle/bin
+          if errorlevel 1 exit /b 1
+      - name: Verify native protocol and pure outcome contracts without loading observer
+        if: steps.gate.outputs.eligible == 'true'
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          New-Item -ItemType Directory -Path artifacts/tsf-lifecycle/reports -ErrorAction Stop | Out-Null
+          & artifacts/tsf-lifecycle/bin/runner.exe --protocol-selftest | Set-Content -Encoding utf8 artifacts/tsf-lifecycle/reports/protocol.json
+          if ($LASTEXITCODE -ne 0) { throw 'Native protocol selftest failed' }
+          & artifacts/tsf-lifecycle/bin/test_outcome.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Lifecycle outcome contract failed' }
+      - name: Observe only owned Notepad startup and normal exit (no observer DLL)
+        if: steps.gate.outputs.eligible == 'true'
+        timeout-minutes: 2
+        env:
+          TYPELAY_ISOLATED_TSF_NATIVE: '1'
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $directory = (Resolve-Path artifacts/tsf-lifecycle/reports).Path
+          $dll = (Resolve-Path artifacts/tsf-lifecycle/bin/observer.dll).Path
+          & artifacts/tsf-lifecycle/bin/runner.exe --lifecycle-only $directory $dll | Set-Content -Encoding utf8 artifacts/tsf-lifecycle/reports/lifecycle.json
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { throw "Notepad lifecycle incomplete: exit $code" }
+          $report = Get-Content -LiteralPath artifacts/tsf-lifecycle/reports/lifecycle.json -Raw | ConvertFrom-Json
+          if ($report.kind -ne 'isolated-tsf-native' -or $report.status -ne 'observed-not-acceptance' -or
+              $report.reason -ne 'lifecycle-observed' -or $report.targetStarted -ne $true -or
+              $report.requestDispatched -ne $false -or $report.normalExit -ne $true -or
+              $report.forcedCleanup -ne $false -or $report.ownedJobEmpty -ne $true -or
+              $report.syntheticFileRemoved -ne $true -or $report.removalProvenByProcessExit -ne $true -or
+              $report.readSnapshotValid -ne $false -or $report.callbackCount -ne 0 -or
+              $report.imeVerified -ne $false -or $report.writebackAllowed -ne $false) {
+            throw 'No-DLL lifecycle contract not demonstrated'
+          }
+          'Owned Notepad lifecycle only. No observer loaded; no TSF/IME/read/write acceptance.' >> $env:GITHUB_STEP_SUMMARY
+      - name: Preserve only lifecycle-level reports
+        if: ${{ always() && steps.gate.outputs.eligible == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: typelay-tsf-lifecycle-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/tsf-lifecycle/reports/*.json
           if-no-files-found: error
           retention-days: 7

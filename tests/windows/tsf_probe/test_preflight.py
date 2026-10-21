@@ -3,10 +3,13 @@
 import importlib.util
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 SPEC = importlib.util.spec_from_file_location(
     "tsf_preflight", Path(__file__).with_name("preflight.py")
@@ -16,6 +19,14 @@ SPEC.loader.exec_module(probe)
 
 
 class PreflightTests(unittest.TestCase):
+    def assert_stdlib_process_unaffected(self):
+        # A real unrelated stdlib child must remain usable while only the
+        # probe query is doubled. platform.system itself remains unpatched.
+        value = subprocess.check_output(
+            [sys.executable, "-c", "print('stdlib-unaffected')"], text=True, timeout=10
+        )
+        self.assertEqual("stdlib-unaffected", value.strip())
+
     def test_push_gate_requires_this_commit_and_actual_probe_or_workflow_change(self):
         head = "a" * 40
         message = "test: actual capability batch\n\n" + probe.MARKER
@@ -73,6 +84,106 @@ class PreflightTests(unittest.TestCase):
                     event, head, message, ["tests/windows/tsf_probe/preflight.py"], True
                 )
 
+    def test_lifecycle_and_readonly_opt_in_are_separate(self):
+        head = "a" * 40
+        for requested in (probe.MARKER, probe.LIFECYCLE_MARKER):
+            message = "test: changed diagnostic source\n\n" + requested
+            event = {
+                "ref": "refs/heads/work/linux-usability",
+                "before": "b" * 40,
+                "after": head,
+                "head_commit": {"id": head, "message": message},
+            }
+            paths = [".github/workflows/tsf-preflight.yml"]
+            with self.assertRaises(ValueError):
+                probe.push_eligible(event, head, message, paths, True, marker="unknown-level")
+            for level in (probe.MARKER, probe.LIFECYCLE_MARKER):
+                self.assertEqual(
+                    level == requested,
+                    probe.push_eligible(event, head, message, paths, True, marker=level),
+                )
+            mixed = (
+                message
+                + "\n\n"
+                + (probe.LIFECYCLE_MARKER if requested == probe.MARKER else probe.MARKER)
+            )
+            event["head_commit"]["message"] = mixed
+            for level in (probe.MARKER, probe.LIFECYCLE_MARKER):
+                with self.assertRaises(ValueError):
+                    probe.push_eligible(event, head, mixed, paths, True, marker=level)
+
+    def test_public_push_gate_keeps_execution_levels_separate(self):
+        script = Path(probe.__file__).resolve()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def git(*args):
+                return subprocess.run(
+                    ["git", *args],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=10,
+                ).stdout.strip()
+
+            def commit(message):
+                git("add", ".")
+                git(
+                    "-c",
+                    "user.name=Probe Test",
+                    "-c",
+                    "user.email=probe@example.invalid",
+                    "commit",
+                    "-qm",
+                    message,
+                )
+                return git("rev-parse", "HEAD")
+
+            git("init", "-q")
+            source = root / "tests/windows/tsf_probe/input.txt"
+            source.parent.mkdir(parents=True)
+            source.write_text("baseline", encoding="utf-8")
+            before = commit("baseline")
+            for marker in (probe.MARKER, probe.LIFECYCLE_MARKER):
+                source.write_text(marker, encoding="utf-8")
+                message = "test: actual diagnostic source change\n\n" + marker
+                after = commit(message)
+                event = {
+                    "ref": "refs/heads/work/linux-usability",
+                    "before": before,
+                    "after": after,
+                    "head_commit": {"id": after, "message": message},
+                }
+                event_path = root / "event.json"
+                event_path.write_text(json.dumps(event), encoding="utf-8")
+                for flag, level in (
+                    ("--check-push", probe.MARKER),
+                    ("--check-lifecycle-push", probe.LIFECYCLE_MARKER),
+                ):
+                    output = root / "output.txt"
+                    output.write_text("", encoding="utf-8")
+                    result = subprocess.run(
+                        [sys.executable, str(script), flag],
+                        cwd=root,
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                        check=False,
+                        env=os.environ
+                        | {
+                            "GITHUB_EVENT_NAME": "push",
+                            "GITHUB_EVENT_PATH": str(event_path),
+                            "GITHUB_OUTPUT": str(output),
+                        },
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(
+                        f"eligible={str(level == marker).lower()}\n",
+                        output.read_text(encoding="utf-8"),
+                    )
+                before = after
+
     def test_admission_requires_all_labels_and_windows(self):
         environment = {
             "GITHUB_ACTIONS": "true",
@@ -122,13 +233,19 @@ class PreflightTests(unittest.TestCase):
             with (
                 patch.object(probe, "admission", return_value=[]),
                 patch.dict(os.environ, {"WINDIR": "C:/Windows"}),
+                # Replace only the probe's dependency, not the shared stdlib
+                # module used internally by Windows platform initialization.
                 patch.object(
-                    probe.subprocess,
-                    "run",
-                    side_effect=probe.subprocess.TimeoutExpired("fixed-query", 40),
+                    probe,
+                    "subprocess",
+                    SimpleNamespace(
+                        run=Mock(side_effect=subprocess.TimeoutExpired("fixed-query", 40)),
+                        SubprocessError=subprocess.SubprocessError,
+                    ),
                 ),
                 patch.object(probe, "native_observation") as native,
             ):
+                self.assert_stdlib_process_unaffected()
                 self.assertEqual(2, probe.main(["--output", str(path)]))
                 native.assert_not_called()
             result = json.loads(path.read_text(encoding="utf-8"))
@@ -142,11 +259,16 @@ class PreflightTests(unittest.TestCase):
             with (
                 patch.dict(os.environ, {}, clear=True),
                 patch.object(probe, "native_observation") as native,
-                patch.object(probe.subprocess, "run") as shell,
+                patch.object(
+                    probe,
+                    "subprocess",
+                    SimpleNamespace(run=Mock(), SubprocessError=subprocess.SubprocessError),
+                ) as query,
             ):
+                self.assert_stdlib_process_unaffected()
                 self.assertEqual(2, probe.main(["--output", str(path)]))
                 native.assert_not_called()
-                shell.assert_not_called()
+                query.run.assert_not_called()
             result = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual("blocked", result["status"])
             self.assertFalse(result["productAcceptance"])
