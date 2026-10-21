@@ -145,18 +145,21 @@ class Channel:
             self.close()
             return False
         try:
-            while self.alive:
-                try:
-                    data = os.read(self.read_fd, 8192)
-                except BlockingIOError:
-                    break
-                if not data:
-                    self.input_watch = 0
-                    self.close()
-                    return False
-                for value in self.decoder.feed(data):
-                    stamp_capture_reply(value, "desktopReplyDispatchedMs")
-                    self.received(value)
+            # Yield between bounded reads so sustained native input cannot
+            # starve completed foreground observations or host replies. The
+            # level-triggered watch keeps unread bytes ready for the next turn;
+            # Decoder retains partial frames, including across HUP before EOF.
+            try:
+                data = os.read(self.read_fd, 8192)
+            except BlockingIOError:
+                return self.alive
+            if not data:
+                self.input_watch = 0
+                self.close()
+                return False
+            for value in self.decoder.feed(data):
+                stamp_capture_reply(value, "desktopReplyDispatchedMs")
+                self.received(value)
         except (OSError, ValueError, KeyError, TypeError, UnicodeError):
             self.input_watch = 0
             self.close()

@@ -499,26 +499,14 @@ internal static partial class HyPackageCheck
         nint settingsWindow = await UiAsync(() => (nint)settings.Current.NativeWindowHandle, ct);
         Require(settingsWindow != 0 && N.GetWindowThreadProcessId(settingsWindow, out uint ownerPid) != 0
             && ownerPid == app, "ordinary-settings-owner-unavailable");
-        stage("start-public-writeback-toggle");
-        Task toggle = Task.Run(() =>
-        {
-            var checkbox = Find(settings, AutomationElement.NameProperty, "开发版实验：允许 Tab 写回", ControlType.CheckBox);
-            Require(checkbox is not null, "ordinary-writeback-toggle-missing");
-            ((TogglePattern)checkbox!.GetCurrentPattern(TogglePattern.Pattern)).Toggle();
-        }, ct);
+        stage("click-public-writeback-checkbox");
+        await ClickOwnedWritebackCheckboxAsync(settings, app, ct);
         nint confirmationWindow = 0;
         stage("await-public-writeback-confirmation");
-        await WaitAsync(async () =>
+        await WaitAsync(() =>
         {
-            // A failed TogglePattern call is a real failure, not a missing dialog
-            // to poll until the whole operation deadline. Preserve its exception.
-            if (toggle.IsFaulted || toggle.IsCanceled)
-            {
-                stage("public-writeback-toggle-failed");
-                await toggle;
-            }
             confirmationWindow = OwnedConfirmationDialog.Find((uint)app, settingsWindow, title);
-            return confirmationWindow != 0;
+            return Task.FromResult(confirmationWindow != 0);
         }, ct);
         stage("invoke-public-writeback-confirmation");
         await UiAsync(() =>
@@ -533,8 +521,6 @@ internal static partial class HyPackageCheck
                 "ordinary-writeback-confirmation-identity-changed");
             ((InvokePattern)yes!.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
         }, ct);
-        stage("await-public-writeback-toggle-return");
-        await toggle.WaitAsync(ct);
     }
     private static Task ClickNotepadEditor(AutomationElement editor, int app, CancellationToken ct) => UiAsync(() =>
     {

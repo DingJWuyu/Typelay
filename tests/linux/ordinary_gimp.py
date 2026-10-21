@@ -29,6 +29,19 @@ def acceptable_candidate(read_candidate, ready_to_accept, original):
     return (candidate, ready) if ready else None
 
 
+def returned_draft_ready(source_focused, ready_to_accept, observation=None):
+    """A returned manual draft is not a fresh machine translation."""
+    focused = source_focused()
+    ready = ready_to_accept("EditedTranslationPending") if focused else None
+    if observation is not None:
+        observation.update(
+            sourceFocused=focused,
+            expectedState="EditedTranslationPending",
+            manualAcceptanceReady=bool(ready),
+        )
+    return ready
+
+
 def launched_application(child, executable):
     """A running guardian receipt precedes the launcher's final exec."""
     assert process_identity(child["pid"]) == child, "application identity changed during launch"
@@ -718,11 +731,18 @@ def run_gimp(
         offset = trace_checkpoint()
         send_tab()
         wait_for(
-            lambda: focused(source) and ready_to_accept(),
-            "first Tab did not return to the original GIMP field",
+            lambda: returned_draft_ready(
+                lambda: focused(source), ready_to_accept, report.setdefault("manualReturn", {})
+            ),
+            "first Tab did not return with an acceptable manual draft",
         )
         assert text(source) == unchanged and not new_write_outcomes(offset)
-        wait_for(ready_to_accept, "returned candidate not ready")
+        wait_for(
+            lambda: returned_draft_ready(
+                lambda: focused(source), ready_to_accept, report.setdefault("manualReturn", {})
+            ),
+            "returned manual draft not ready",
+        )
         send_tab()
         wait_for(lambda: verified_write(offset), "second Tab did not verify draft")
         wait_for(

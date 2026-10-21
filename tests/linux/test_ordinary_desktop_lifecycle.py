@@ -22,9 +22,46 @@ from ordinary_gimp import (  # noqa: E402
     fullscreen_content_origin,
     launched_application,
     properties_click_point,
+    returned_draft_ready,
     session_exit_confirmed,
     validate_nested_output,
 )
+
+
+class ReturnedDraftReadinessTests(unittest.TestCase):
+    def test_returned_draft_requests_manual_not_machine_translation_authority(self):
+        calls = []
+        permit = {"viewState": "EditedTranslationPending", "acceptanceReady": True}
+
+        def ready(state="ValidTranslation"):
+            calls.append(state)
+            return permit if state == permit["viewState"] else None
+
+        self.assertIs(returned_draft_ready(lambda: True, ready), permit)
+        self.assertEqual(calls, ["EditedTranslationPending"])
+
+    def test_machine_candidate_cannot_satisfy_manual_wait(self):
+        machine = {"viewState": "ValidTranslation", "acceptanceReady": True}
+        self.assertIsNone(
+            returned_draft_ready(
+                lambda: True, lambda state: machine if state == machine["viewState"] else None
+            )
+        )
+
+    def test_diagnostics_distinguish_focus_from_manual_authority(self):
+        observation = {}
+        returned_draft_ready(lambda: False, lambda state: None, observation)
+        self.assertFalse(observation["sourceFocused"])
+        self.assertFalse(observation["manualAcceptanceReady"])
+        returned_draft_ready(lambda: True, lambda state: None, observation)
+        self.assertTrue(observation["sourceFocused"])
+        self.assertFalse(observation["manualAcceptanceReady"])
+
+    def test_lost_source_focus_or_missing_manual_authority_does_not_accept(self):
+        calls = []
+        self.assertIsNone(returned_draft_ready(lambda: False, lambda state: calls.append(state)))
+        self.assertEqual(calls, [])
+        self.assertIsNone(returned_draft_ready(lambda: True, lambda state: None))
 
 
 class OrdinaryDesktopLifecycleTests(unittest.TestCase):

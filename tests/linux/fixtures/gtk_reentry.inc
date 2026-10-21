@@ -1,6 +1,46 @@
 /* Test-host callbacks only. A bounded nested dispatch lets the public native
  * socket apply configuration while a real GtkEntry mutation callback is active. */
 static gboolean reentry_fired;
+#if GTK_MAJOR_VERSION == 3
+/* Bounded public signal observations for the real expand click. No input,
+ * focus, configuration, or signal propagation is changed by these callbacks. */
+static JsonObject *expand_transitions[16];
+static guint expand_transition_count;
+static void observe_expand(GtkWidget *widget, const char *phase, GdkEventButton *event) {
+    if (g_strcmp0(g_getenv("TYPELAY_FIXTURE_REENTRY_STAGE"), "expand") != 0
+        || expand_transition_count >= G_N_ELEMENTS(expand_transitions)) return;
+    JsonObject *value = json_object_new();
+    json_object_set_string_member(value, "phase", phase);
+    json_object_set_int_member(value, "atMs", g_get_monotonic_time() / 1000);
+    json_object_set_boolean_member(value, "mapped", gtk_widget_get_mapped(widget));
+    json_object_set_boolean_member(value, "sensitive", gtk_widget_is_sensitive(widget));
+    json_object_set_boolean_member(value, "parentActive", gtk_window_is_active(GTK_WINDOW(report_window)));
+    json_object_set_int_member(value, "parentWidth", gtk_widget_get_allocated_width(report_window));
+    json_object_set_int_member(value, "parentHeight", gtk_widget_get_allocated_height(report_window));
+    json_object_set_int_member(value, "scale", gtk_widget_get_scale_factor(widget));
+    gint x, y;
+    if (gtk_widget_translate_coordinates(widget, report_window, 0, 0, &x, &y)) {
+        json_object_set_int_member(value, "x", x);
+        json_object_set_int_member(value, "y", y);
+    }
+    json_object_set_int_member(value, "width", gtk_widget_get_allocated_width(widget));
+    json_object_set_int_member(value, "height", gtk_widget_get_allocated_height(widget));
+    if (event) {
+        json_object_set_int_member(value, "button", event->button);
+        json_object_set_double_member(value, "eventX", event->x);
+        json_object_set_double_member(value, "eventY", event->y);
+    }
+    expand_transitions[expand_transition_count++] = value;
+}
+static gboolean observe_expand_pointer(GtkWidget *widget, GdkEventButton *event, gpointer data) {
+    observe_expand(widget, data, event);
+    return FALSE;
+}
+static void observe_expand_clicked(GtkButton *widget, gpointer data) {
+    (void)data;
+    observe_expand(GTK_WIDGET(widget), "clicked", NULL);
+}
+#endif
 static void mutation_barrier(const char *stage) {
     const char *directory = g_getenv("TYPELAY_FIXTURE_REENTRY");
     if (reentry_fired || !directory || !g_path_is_absolute(directory)
@@ -70,6 +110,9 @@ static void footer_changed(GObject *object, GParamSpec *spec, gpointer data) {
 }
 static void expand_changed(GObject *object, GParamSpec *spec, gpointer data) {
     (void)object; (void)spec; (void)data;
+#if GTK_MAJOR_VERSION == 3
+    observe_expand(GTK_WIDGET(object), "notify-label", NULL);
+#endif
     mutation_barrier("expand");
     const char *directory = g_getenv("TYPELAY_FIXTURE_REENTRY");
     if (directory && reentry_fired) {
@@ -87,6 +130,14 @@ static void watch_session_button(GtkWidget *widget) {
         || g_strcmp0(gtk_button_get_label(GTK_BUTTON(widget)), expand ? "展开" : "fixture-initial-exit") != 0
         || g_object_get_data(G_OBJECT(widget), "fixture-button-watched")) return;
     g_object_set_data(G_OBJECT(widget), "fixture-button-watched", GINT_TO_POINTER(1));
+#if GTK_MAJOR_VERSION == 3
+    if (expand) {
+        observe_expand(widget, "watching", NULL);
+        g_signal_connect(widget, "button-press-event", G_CALLBACK(observe_expand_pointer), "press");
+        g_signal_connect(widget, "button-release-event", G_CALLBACK(observe_expand_pointer), "release");
+        g_signal_connect(widget, "clicked", G_CALLBACK(observe_expand_clicked), NULL);
+    }
+#endif
     g_signal_connect(widget, "notify::label", expand ? G_CALLBACK(expand_changed) : G_CALLBACK(footer_changed), NULL);
     char *ready = g_build_filename(directory, expand ? "expand-ready" : "footer-ready", NULL);
     g_file_set_contents(ready, "watching-label", -1, NULL);

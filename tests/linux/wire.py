@@ -132,6 +132,96 @@ class PipeTransportTests(unittest.TestCase):
         # failure is detected synchronously inside send().
         self.channel.close()
 
+    def test_sustained_input_yields_to_completed_foreground_delivery(self):
+        received, deliveries = [], []
+        count = 256
+        context = GLib.MainContext.default()
+
+        def receive(value):
+            received.append(value["sequence"])
+            if len(received) == 1:
+                GLib.idle_add(
+                    lambda: (deliveries.append(len(received)), False)[1],
+                    priority=GLib.PRIORITY_DEFAULT,
+                )
+            if len(received) < count:
+                os.write(self.input_write, encode({"sequence": len(received)}))
+
+        self.channel.received = receive
+        os.write(self.input_write, encode({"sequence": 0}))
+        deadline = time.monotonic() + 2
+        while (len(received) < count or not deliveries) and time.monotonic() < deadline:
+            context.iteration(False)
+        self.assertEqual(received, list(range(count)))
+        self.assertTrue(deliveries, "completed foreground delivery never ran")
+        self.assertLess(deliveries[0], count, "native input drained before foreground could run")
+        self.assertTrue(self.channel.alive)
+
+    def test_fragmented_input_preserves_coalesced_frames_before_eof(self):
+        expected = [{"payload": "x" * 9000}, {"sequence": 2}, {"sequence": 3}]
+        received = []
+        self.channel.received = received.append
+        context = GLib.MainContext.default()
+        payload = b"".join(encode(value) for value in expected)
+        # Split a length prefix and a body across real pipe readiness turns.
+        for chunk in (payload[:2], payload[2:4096], payload[4096:8192], payload[8192:]):
+            os.write(self.input_write, chunk)
+            context.iteration(False)
+        os.close(self.input_write)
+        self.descriptors.remove(self.input_write)
+        deadline = time.monotonic() + 2
+        while self.channel.alive and time.monotonic() < deadline:
+            context.iteration(False)
+        self.assertEqual(received, expected)
+        self.assertFalse(self.channel.alive)
+        self.assertEqual(self.closed, 1)
+
+    def test_queued_input_larger_than_one_read_drains_before_hup_close(self):
+        expected = [{"sequence": index, "payload": "x" * 500} for index in range(64)]
+        received = []
+        self.channel.received = received.append
+        remaining = memoryview(b"".join(encode(value) for value in expected))
+        os.set_blocking(self.input_write, False)
+        context = GLib.MainContext.default()
+        deadline = time.monotonic() + 2
+        while remaining and time.monotonic() < deadline:
+            try:
+                remaining = remaining[os.write(self.input_write, remaining) :]
+            except BlockingIOError:
+                context.iteration(False)
+        self.assertEqual(len(remaining), 0)
+        # EOF accompanies buffered frames, not an already drained stream.
+        self.assertLess(len(received), len(expected))
+        os.close(self.input_write)
+        self.descriptors.remove(self.input_write)
+        while self.channel.alive and time.monotonic() < deadline:
+            context.iteration(False)
+        self.assertEqual(received, expected)
+        self.assertFalse(self.channel.alive)
+        self.assertEqual(self.closed, 1)
+
+    def test_invalid_frame_closes_once_without_dispatching_payload(self):
+        received = []
+        self.channel.received = received.append
+        os.write(self.input_write, b"\x00\x00\x00\x00")
+        context = GLib.MainContext.default()
+        deadline = time.monotonic() + 2
+        while self.channel.alive and time.monotonic() < deadline:
+            context.iteration(False)
+        self.assertEqual(received, [])
+        self.assertFalse(self.channel.alive)
+        self.assertEqual(self.closed, 1)
+
+    def test_cancelled_channel_does_not_dispatch_pending_pipe_data(self):
+        received = []
+        self.channel.received = received.append
+        os.write(self.input_write, encode({"sequence": 1}))
+        self.channel.close()
+        context = GLib.MainContext.default()
+        context.iteration(False)
+        self.assertEqual(received, [])
+        self.assertEqual(self.closed, 1)
+
     def test_activation_timeout_and_cancellation_forward_only_their_own_identity(self):
         self.channel.close()
         host = Link(GLib, self.input_read, self.output_write, lambda *_: None, None, lambda: None)

@@ -79,17 +79,17 @@
 
 ### 当前可验证候选
 
-最近核对的验证基线为 [`5068f9d6`](https://github.com/DingJWuyu/Typelay/actions/runs/39544105642)，该运行已结束，Windows 完整检查失败。
+最近核对的验证基线为 [`90c2d617`](https://github.com/DingJWuyu/Typelay/actions/runs/39547465069)，该运行已结束，Windows 完整检查失败。
 
-- App.Tests：530 项中 527 项通过、3 项失败，涉及两项自然退出所有权与一项 Ctrl 退出按键配对。UTF-8 测试另报告 cp1252；后继修正不能追认本轮通过。
-- 连续翻译全链、打包与分发 smoke 通过；真实浏览器链在原生前台请求被拒后失败，记事本与 Hy 后续阶段均未运行。
-- 后继候选尚未取得对应完整运行结果。本轮质量诊断的内层响应与外层汇总结果须分开看，三项质量门仍关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
+- App.Tests：534 项全部通过；连续翻译全链、真实浏览器接入、打包与分发 smoke 本轮通过，不代表所有应用或长期稳定性已验收。
+- 真实记事本在 `invoke-public-writeback-confirmation` 阶段失败，`AutomationElement.FromHandle` 报 COM `0x80131505`；后置两个 Hy scope 均跳过，不能记为通过。
+- 后继记事本候选尚未取得对应验证结果。本轮无质量采集，5068 的 40 次诊断与 386 的 69 次响应仍是各自范围的既有证据，三项质量门继续关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
 
-当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39544105642)下载 [`typelay-windows-5068f9d6cce0cb362bedc55992c0563ea8a0a2e4`](https://github.com/DingJWuyu/Typelay/actions/runs/39544105642/artifacts/12321142822)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
+当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39547465069)下载 [`typelay-windows-90c2d617f7359054e8ce6c3f34e938ad2bfd853d`](https://github.com/DingJWuyu/Typelay/actions/runs/39547465069/artifacts/12322087268)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
 
-- 源码提交：`5068f9d6cce0cb362bedc55992c0563ea8a0a2e4`。
-- 内层 ZIP：87,021,361 字节。
-- SHA-256：`ed66fa30aa0e824b1ea33e279deb25cfd3d763319cb8242f84b6299d8c38948a`，已实际重算并核对包旁摘要。
+- 源码提交：`90c2d617f7359054e8ce6c3f34e938ad2bfd853d`。
+- 内层 ZIP：87,021,424 字节。
+- SHA-256：`6d5d6398148af9b5533579b9c383944d15bfcee15bb1dcb783d4dcb65c119fc3`，已实际重算并核对包旁摘要。
 - 用 `Get-FileHash .\TypeLay-Windows-preview.zip -Algorithm SHA256` 核对；不要将内层摘要用于外层 Actions ZIP。App、Broker、Practice 与 BrowserHost 必须来自同一个完整包。
 
 正式安装器的单向中英准备、Auto 同语无输出、缺方向拒绝与保留旧方向的补装已通过真实模型 API 检查；该检查本身没有操作输入框或触发 F10。安装库存损坏时保留原数据并禁用修改，目前仍缺少用户可执行的库存恢复入口。

@@ -316,6 +316,14 @@ static gboolean report_state(gpointer unused) {
         json_builder_set_member_name(builder, "other");
         json_builder_add_string_value(builder, gtk_entry_get_text(GTK_ENTRY(other_entry)));
     }
+    json_builder_set_member_name(builder, "expandTransitions");
+    json_builder_begin_array(builder);
+    for (guint index = 0; index < expand_transition_count; index++) {
+        JsonNode *transition = json_node_new(JSON_NODE_OBJECT);
+        json_node_set_object(transition, expand_transitions[index]);
+        json_builder_add_value(builder, transition);
+    }
+    json_builder_end_array(builder);
     json_builder_set_member_name(builder, "languageTransitions");
     json_builder_begin_array(builder);
     for (guint index = 0; index < language_transition_count; index++) {
