@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from desktop_session import process_identity  # noqa: E402
 from ordinary_gimp import (  # noqa: E402
     acceptable_candidate,
+    comment_undo_evidence,
     completed_new_image,
     direct_write_receipt,
     full_output_origin_proven,
@@ -29,6 +30,47 @@ from ordinary_gimp import (  # noqa: E402
     unique_owned_window,
     validate_nested_output,
 )
+
+
+class CommentUndoEvidenceTests(unittest.TestCase):
+    def test_audited_nonundoable_comment_is_not_reported_as_undo_success(self):
+        result = comment_undo_evidence(
+            "gimp 3.2.6-2", "source", "translation", ["translation"] * 2, ["translation"] * 2
+        )
+        self.assertEqual(
+            result,
+            {
+                "nativeUndoSupported": False,
+                "undoRestoration": "not-supported",
+                "compatibilityTrajectoryMatches": True,
+            },
+        )
+
+    def test_real_restoring_baseline_is_preserved_including_future_host(self):
+        for native in (["source", "earlier"], ["translation", "source"]):
+            result = comment_undo_evidence("gimp future", "source", "translation", native, native)
+            self.assertTrue(result["nativeUndoSupported"])
+            self.assertEqual(result["undoRestoration"], "observed")
+
+    def test_missing_host_history_never_excuses_a_different_typelay_trajectory(self):
+        with self.assertRaises(AssertionError):
+            comment_undo_evidence(
+                "gimp 3.2.6-2", "source", "translation", ["changed", "changed"], ["translation"] * 2
+            )
+        with self.assertRaises(AssertionError):
+            comment_undo_evidence(
+                "gimp future", "source", "translation", ["translation"] * 2, ["source", "earlier"]
+            )
+
+    def test_unknown_nonrestoring_behavior_and_wrong_action_counts_fail(self):
+        for version, direct, native in (
+            ("gimp future", ["translation"] * 2, ["translation"] * 2),
+            ("gimp 3.2.6-2", ["other"] * 2, ["other"] * 2),
+            ("gimp 3.2.6-2", [], []),
+            ("gimp 3.2.6-2", ["source"] * 3, ["source"] * 3),
+        ):
+            with self.subTest(version=version, native=native), self.assertRaises(AssertionError):
+                comment_undo_evidence(version, "source", "translation", direct, native)
 
 
 class DirectReceiptTests(unittest.TestCase):

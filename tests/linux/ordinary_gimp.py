@@ -29,6 +29,26 @@ def acceptable_candidate(read_candidate, ready_to_accept, original):
     return (candidate, ready) if ready else None
 
 
+def comment_undo_evidence(package_version, original, replacement, direct, native_paste):
+    """Classify the observed Comment baseline, never manufacture host history."""
+    assert original != replacement and original and replacement
+    assert len(direct) == len(native_paste) == 2, (
+        "both native undo traces require exactly two actions"
+    )
+    assert direct == native_paste, "TypeLay undo trajectory differs from GIMP's own selection paste"
+    supported = original in native_paste
+    if not supported:
+        # Exact audited host/field only. Unknown behavior is not an unsupported
+        # capability receipt; a future restoring baseline takes the branch above.
+        assert package_version == "gimp 3.2.6-2", "unknown Comment undo capability"
+        assert native_paste == [replacement, replacement], "unexpected non-restoring native history"
+    return {
+        "nativeUndoSupported": supported,
+        "undoRestoration": "observed" if supported else "not-supported",
+        "compatibilityTrajectoryMatches": True,
+    }
+
+
 def direct_write_receipt(rows):
     starts = [r for r in rows if r.get("operation") == "direct-write-start"]
     results = [r for r in rows if r.get("operation") == "direct-write-result"]
@@ -914,14 +934,17 @@ def run_gimp(
             nativePaste=paste_undo, nativeFirstUndoRestoresOriginal=paste_undo[0] == original
         )
         record("compare-native-undo-history")
-        assert original in paste_undo, (
-            "original native undo history not established in fixed two actions"
-        )
-        assert direct_undo == paste_undo, (
-            "TypeLay undo trajectory differs from GIMP's own selection paste"
+        report["undo"].update(
+            comment_undo_evidence(
+                report["application"]["packageVersion"],
+                original,
+                replacement,
+                direct_undo,
+                paste_undo,
+            )
         )
         passed(
-            "Fixed two-action GIMP undo trajectory matches its own ordinary selection/paste baseline and contains the original comment; actual first-action result recorded separately"
+            "GIMP Comment replacement compatibility matches the fixed two-action native paste trajectory; native undo capability reported separately"
         )
 
         record("normal-exit-and-disconnect")

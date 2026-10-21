@@ -375,9 +375,13 @@ internal static partial class BrowserCooperationCheck
             await Phase(direct, "wait-public-command-ready", 30, async ct =>
             {
                 var sourceBounds = await FocusCommandFieldAsync(cdp!, windows!, commandSettings!, ct);
+                direct.Stage = "prepare-final-selection";
+                await PrepareInputAsync(cdp!, windows!, "Keep [", "] unchanged", selectSource: true, ct);
+                // Read the same public current-field readiness after typing and
+                // selection, not before preparation can outlive its observation.
+                direct.Stage = "wait-public-command-ready";
                 await WaitPublicCommandReadyAsync(commandSettings!, windows!, sourceBounds, ct);
                 direct.Stage = "single-f10-selection";
-                await PrepareInputAsync(cdp!, windows!, "Keep [", "] unchanged", selectSource: true, ct);
                 SendChord([0x11, 0x10, 0x79], cleanupErrors);
                 direct.ShortcutPresses = 1;
                 direct.Stage = "wait-direct-replacement";
@@ -389,9 +393,11 @@ internal static partial class BrowserCooperationCheck
             await Phase(background, "wait-public-command-ready", 30, async ct =>
             {
                 var sourceBounds = await FocusCommandFieldAsync(cdp!, windows!, commandSettings!, ct);
+                background.Stage = "prepare-final-text";
+                await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
+                background.Stage = "wait-public-command-ready";
                 await WaitPublicCommandReadyAsync(commandSettings!, windows!, sourceBounds, ct);
                 background.Stage = "single-f10-full-text";
-                await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
                 long offset = TraceLength(trace);
                 SendChord([0x11, 0x10, 0x79], cleanupErrors);
                 background.ShortcutPresses = 1;

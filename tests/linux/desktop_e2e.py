@@ -33,6 +33,39 @@ from setup import (
 from wire import Decoder, encode, now_ms
 
 
+def background_direct_rejection_current(report, rows, previous_feedback):
+    """Match the new single direct plan's refusal, not a prior status string."""
+    direct = [
+        row for row in rows if row.get("operation") in ("direct-write-start", "direct-write-result")
+    ]
+    if len(direct) != 2:
+        return False
+    start, result = direct
+    if (
+        start.get("operation") != "direct-write-start"
+        or result.get("operation") != "direct-write-result"
+        or not start.get("planId")
+        or start["planId"] != result.get("planId")
+    ):
+        return False
+    detail = result.get("detail") or {}
+    if detail.get("status") != "RejectedBeforeMutation":
+        return False
+    reason = detail.get("reason")
+    if reason == "ImeUnclear":
+        terminal = "输入法状态尚未确认，TypeLay 未替换文字。请完成或取消当前输入后再操作。"
+    elif reason in ("SourceChanged", "SelectionChanged", "TargetChanged", "EpochChanged"):
+        terminal = "输入内容、选区或字段已变化，TypeLay 未替换文字。请确认目标输入框后再操作。"
+    else:
+        return False
+    feedback = report.get("operationFeedback", {})
+    return (
+        report.get("serviceStatus") == terminal
+        and feedback.get("code") == "write-rejected"
+        and feedback.get("revision", 0) > previous_feedback
+    )
+
+
 def acceptance_observation_current(data, elapsed_ms):
     """A status response is evidence only while its original time remains."""
     remaining = data.get("acceptanceRemainingMs")
@@ -3771,18 +3804,35 @@ def run(arguments):
                                 if changes_source
                                 else "已直接替换原输入框文字。"
                             )
-                            wait_for(
-                                lambda: (report := status()).get("serviceStatus") == terminal
-                                and (
-                                    not changes_source
-                                    or (
-                                        (feedback := report.get("operationFeedback", {})).get(
-                                            "code"
-                                        )
-                                        == "write-rejected"
-                                        and feedback.get("revision", 0) > before_feedback
+
+                            def direct_terminal():
+                                report = status()
+                                if not changes_source:
+                                    return report.get("serviceStatus") == terminal
+                                with trace_path.open("rb") as trace:
+                                    trace.seek(before_write)
+                                    data = trace.read()
+                                rows = [
+                                    json.loads(line)
+                                    for line in data[: data.rfind(b"\n") + 1].splitlines()
+                                ]
+                                # Native IME inspection precedes content validation.
+                                # Real typing/focus transitions can safely refuse at
+                                # either gate, but only this new plan's exact receipt
+                                # and its corresponding public feedback are accepted.
+                                complete = background_direct_rejection_current(
+                                    report, rows, before_feedback
+                                )
+                                if complete:
+                                    record["directOutcome"] = next(
+                                        row
+                                        for row in rows
+                                        if row.get("operation") == "direct-write-result"
                                     )
-                                ),
+                                return complete
+
+                            wait_for(
+                                direct_terminal,
                                 "background GTK direct translation did not reach its real terminal outcome",
                             )
                             terminal_at = now_ms()

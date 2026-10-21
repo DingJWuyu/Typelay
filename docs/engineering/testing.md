@@ -169,3 +169,9 @@ python tests/shared/worker/ordinary_quality.py --python "$HY_PYTHON" --models "$
 `native_e2e.py` 在原 Unknown-IME 和8组通知合同之后，单独启动 `direct` 受控 IM context fixture。控制文件只由隔离 fixture 的 GLib 主循环消费固定动作和严格递增序号，不进入生产进程；未知动作与重复序号拒绝。通过生产公开 capture 冻结原文和 authority，然后发送一次 cause=0 的 provider 版本变化，读取真实 fresh describe，再调用公开 direct。正例必须验证实际正文、选区、Verified snapshot 和原 `begin-user-action` / `end-user-action` 各一次。输入、context、serial、组成、焦点、正文、选区、epoch 回退、prepare 中输入以及缺失/不匹配/过期批准分别保持拒绝且不得改写当前正文和选区。
 
 续接只用于 GTK3 标准 TextView：旧 basis 除单调 transport epoch 外全部字段和三种 revision 精确保留，当前 focused Clear 与 fresh approved 完整 stamp 仍须成立，沿用150ms批准和原事务全部后验门。它不借用 Entry 的 Detached 路径，不改变 provider ABI。受控端口验证写入分组协议，不证明真实输入法、原子性或 GTK3 原生 Undo。真实 GIMP 的普通应用写回与原生 Undo 轨迹对照仍独立执行；本地对象编译不能替代这两层嵌套桌面执行。
+
+## GIMP Comment 的宿主撤销边界
+
+`ordinary-gimp` 保留两张独立临时图像、同原文与实际译文、一次 TypeLay direct 和一次真实用户粘贴，各执行固定两次 Ctrl+Z。比较的是这两个实际轨迹，不循环重试到原文出现，也不向 GIMP 注入历史。GIMP `3.2.6-2` 的 Image Properties → Comment 本身不为评论修改建立 Undo：官方 [GIMP_3_2_6 comment editor](https://github.com/GNOME/gimp/blob/GIMP_3_2_6/app/widgets/gimpimagecommenteditor.c#L214-L218) 只设 `GIMP_PARASITE_PERSISTENT`；[image attach/detach](https://github.com/GNOME/gimp/blob/GIMP_3_2_6/app/core/gimpimage.c#L4499-L4502) 仅在 `UNDOABLE` 时推入历史，二者是[不同 flags](https://github.com/GNOME/gimp/blob/GIMP_3_2_6/libgimpbase/gimpparasite.h#L59-L75)。
+
+仅该已核版本/字段且原生粘贴两次均保持译文、TypeLay 完整轨迹相同时，报告 `nativeUndoSupported=false`、`undoRestoration=not-supported`，兼容性轨迹匹配单独记录，不宣称 Undo 功能通过或不存在的历史得到恢复。未来原生基线若实际恢复原文，则要求 TypeLay 同样完整轨迹；未知版本的不恢复行为、任意轨迹差异或动作数变化均失败。此项遵守规格 §17.2 的文本归属和 ADR-0002 请求保留宿主撤销语义，不改变冻结规格，不证明其它字段或已有图像编辑历史的完整性。普通应用退出、取消断开、恢复配置和 guardian 退出证明仍须继续完成，局部替换通过不等于整条验收通过。
