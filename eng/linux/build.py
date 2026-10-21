@@ -364,7 +364,7 @@ def cooperation_metadata(archive):
         raise ValueError("Cooperation build inputs differ from the current checkout")
     test_inputs = metadata.get("testInputs")
     if test_inputs is not None:
-        if test_inputs.get("files") != cooperation.hashes(recipe.TEST_INPUTS):
+        if test_inputs.get("files") != cooperation.hashes(cooperation.FCITX_TEST_INPUTS):
             raise ValueError("Cooperation test inputs differ from the current checkout")
         expected.update(test_inputs["files"])
     qt = metadata.get("qt6")

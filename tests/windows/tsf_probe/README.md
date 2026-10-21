@@ -9,7 +9,7 @@
 - 只在经 root/lead 确认的一次性 GitHub-hosted Windows job 上执行。环境标签是必要条件，不是权限证明；workflow 和 runner 生命周期证据必须另外审查。不得在用户电脑或长期 self-hosted runner 上设置标签绕过门槛。
 - 当前代码不含注册阶段。注册/辅助类别激活需另审，不能因为此报告有 `present` 而执行。
 
-独立 workflow 候选只监听既有授权分支 `work/linux-usability` 上本目录或该 workflow 的实际变更，且提交末段必须唯一为 `TypeLay-TSF-Preflight: true`。执行前核对事件与 Git HEAD、完整提交正文、非强推有效祖先以及真实 probe 文件差异；仅 workflow 变化不采集。此入口不修改主 checks；与下一正常能力批同发，不为诊断造空提交。独立并发组不取消正式检查。远端发布及精确 opt-in 仍须 root 审核，由 lead 单写；未来注册不能继承此授权。
+独立 workflow 候选只监听既有授权分支 `work/linux-usability` 上本目录或该 workflow 的实际变更，且提交末段必须唯一为 `TypeLay-TSF-Preflight: true`。执行前核对事件与 Git HEAD、完整提交正文、非强推有效祖先以及真实 probe 文件或这一个独立 workflow 的差异；独立 workflow 的真实修复只有同次显式标记才可重新采集，无标记或仅其它文件变化均不采集。此入口不修改主 checks；与下一正常能力批同发，不为诊断造空提交。独立并发组不取消正式检查。远端发布及精确 opt-in 仍须 root 审核，由 lead 单写；未来注册不能继承此授权。
 
 诊断命令：
 

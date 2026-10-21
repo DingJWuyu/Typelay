@@ -3,6 +3,7 @@
 import argparse
 import faulthandler
 import json
+import math
 import os
 import signal
 import socket
@@ -113,6 +114,7 @@ def gtk4_source_glossary(out, environment, deadline):
     config = out / "gtk4-glossary-niri.kdl"
     ready = out / "gtk4-glossary-environment.json"
     ready.unlink(missing_ok=True)
+    (out / "gtk4-glossary-clicks.json").unlink(missing_ok=True)
     command = [
         sys.executable,
         "-c",
@@ -298,18 +300,84 @@ def _gtk4_source_glossary(out, environment, deadline):
                     temporary.replace(command_path)
                     wait_for(lambda: state().get("glossaryCommand") == serial, action)
 
-                def point(control):
-                    scale = state()["scale"]
-                    execute(
-                        "xdotool",
-                        "mousemove",
-                        "--window",
-                        window,
-                        int((control["x"] + control.get("width", 4) / 2) * scale),
-                        int((control["y"] + control.get("height", 4) / 2) * scale),
-                        "click",
-                        "1",
+                clicks = []
+                click_path = out / "gtk4-glossary-clicks.json"
+
+                def point(name, *, overlay_control=False):
+                    started = time.monotonic_ns() // 1000000
+                    geometry = dict(
+                        line.split("=", 1)
+                        for line in execute(
+                            "xdotool", "getwindowgeometry", "--shell", window
+                        ).splitlines()
                     )
+                    dimensions = int(geometry["WIDTH"]), int(geometry["HEIGHT"])
+
+                    def ready():
+                        actual = state()
+                        parent = [actual.get(key) for key in ("width", "height", "scale")]
+                        if (
+                            actual.get("observedAtMs", 0) <= started
+                            or actual.get("fullscreen") is not True
+                            or not all(
+                                type(value) in (int, float) and math.isfinite(value) and value > 0
+                                for value in parent
+                            )
+                            or parent[0] * parent[2] != dimensions[0]
+                            or parent[1] * parent[2] != dimensions[1]
+                        ):
+                            return None
+                        control = (
+                            actual.get("overlayControls", {}).get(name)
+                            if overlay_control
+                            else actual.get(name)
+                        )
+                        if not control or overlay_control and not control.get("visible"):
+                            return None
+                        rectangle = [control.get(key) for key in ("x", "y")]
+                        rectangle += [control.get(key, 4) for key in ("width", "height")]
+                        if not all(
+                            type(value) in (int, float) and math.isfinite(value)
+                            for value in rectangle
+                        ):
+                            return None
+                        x, y, width, height = rectangle
+                        if width <= 0 or height <= 0:
+                            return None
+                        x, y = x + width / 2, y + height / 2
+                        if not (0 <= x < parent[0] and 0 <= y < parent[1]):
+                            return None
+                        if overlay_control:
+                            assert control["enabled"], name
+                        return actual, control, (int(x * parent[2]), int(y * parent[2]))
+
+                    actual, control, pixel = wait_for(ready, f"{name}: matching parent geometry")
+                    evidence = {
+                        "case": current_case,
+                        "control": name,
+                        "nestedSize": dimensions,
+                        "beforeObservedAtMonoMs": actual.get("observedAtMs"),
+                        "parent": {
+                            key: actual.get(key)
+                            for key in ("fullscreen", "width", "height", "scale")
+                        },
+                        "bounds": {key: control.get(key) for key in ("x", "y", "width", "height")},
+                        "beforeFocus": actual.get("focus"),
+                        "pixelPoint": pixel,
+                        "clickStartedAtMonoMs": time.monotonic_ns() // 1000000,
+                    }
+                    clicks.append(evidence)
+                    click_path.write_text(json.dumps(clicks, indent=2) + "\n")
+                    # Exactly one click, from one observation. A different focus
+                    # may still be an asynchronous transition, not a retry signal.
+                    execute("xdotool", "mousemove", "--window", window, *pixel, "click", "1")
+                    following = state()
+                    evidence.update(
+                        clickReturnedAtMonoMs=time.monotonic_ns() // 1000000,
+                        afterObservedAtMonoMs=following.get("observedAtMs"),
+                        afterFocus=following.get("focus"),
+                    )
+                    click_path.write_text(json.dumps(clicks, indent=2) + "\n")
 
                 for view_state in ("ValidTranslation", "EditedTranslationPending"):
                     for finish in (
@@ -325,7 +393,7 @@ def _gtk4_source_glossary(out, environment, deadline):
                         call("overlay-hide")
                         call("configure-shortcuts", configuration)
                         wait_for(lambda: state().get("firstEntry"), "GTK4 source observation")
-                        point(state()["firstEntry"])
+                        point("firstEntry")
                         wait_for(lambda: state().get("imeClear"), "source real IM clear")
                         description = call("describe")
                         assert description["sourceGlossarySupported"] is True
@@ -410,7 +478,7 @@ def _gtk4_source_glossary(out, environment, deadline):
                                 name,
                             )
                             assert control["enabled"]
-                            point(control)
+                            point(name, overlay_control=True)
 
                         def events(operation):
                             renew()
@@ -626,7 +694,7 @@ def _gtk4_source_glossary(out, environment, deadline):
                                     else "replace-buffer"
                                 )
                             else:
-                                point(state()["secondEntry"])
+                                point("secondEntry")
 
                             def invalidated_source():
                                 call("describe", {"target": target})
@@ -746,7 +814,7 @@ def _gtk4_source_glossary(out, environment, deadline):
                             unchanged()
                         results.append({"state": view_state, "finish": finish, "passed": True})
                 call("overlay-hide")
-                point(state()["multiline"])
+                point("multiline")
                 wait_for(lambda: state().get("focus") == "fixture-multiline", "TextView focus")
                 assert call("describe")["sourceGlossarySupported"] is False
         except BaseException as error:

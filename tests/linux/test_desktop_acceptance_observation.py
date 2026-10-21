@@ -13,36 +13,87 @@ from desktop_e2e import (  # noqa: E402
 
 
 class AcceptanceObservationTests(unittest.TestCase):
-    def test_only_positive_original_remaining_time_is_current(self):
-        data = {"acceptanceReady": True, "acceptanceRemainingMs": 2}
+    def test_only_positive_public_hint_time_is_current(self):
+        data = {
+            "acceptanceReady": True,
+            "acceptanceRemainingMs": 27,
+            "acceptanceHintRemainingMs": 2,
+        }
         self.assertTrue(acceptance_observation_current(data, 1))
         self.assertFalse(acceptance_observation_current(data, 2))
         self.assertFalse(acceptance_observation_current(data, 3))
-        self.assertEqual(data["acceptanceRemainingMs"], 2)
+        self.assertEqual(data["acceptanceRemainingMs"], 27)
+        self.assertEqual(data["acceptanceHintRemainingMs"], 2)
+
+    def test_original_permission_alone_cannot_stand_in_for_a_public_hint(self):
+        self.assertFalse(
+            acceptance_observation_current(
+                {"acceptanceReady": True, "acceptanceRemainingMs": 100}, 0
+            )
+        )
+        self.assertFalse(
+            acceptance_observation_current(
+                {
+                    "acceptanceReady": True,
+                    "acceptanceRemainingMs": 25,
+                    "acceptanceHintRemainingMs": 0,
+                },
+                0,
+            )
+        )
 
     def test_unknown_and_invalid_time_never_grant_readiness(self):
         for remaining in (None, True, "2", float("nan"), float("inf"), -1, 0):
             with self.subTest(remaining=remaining):
                 self.assertFalse(
                     acceptance_observation_current(
-                        {"acceptanceReady": True, "acceptanceRemainingMs": remaining}, 0
+                        {
+                            "acceptanceReady": True,
+                            "acceptanceRemainingMs": 100,
+                            "acceptanceHintRemainingMs": remaining,
+                        },
+                        0,
                     )
                 )
         for elapsed in (None, True, "1", float("nan"), float("inf"), -1):
             with self.subTest(elapsed=elapsed):
                 self.assertFalse(
                     acceptance_observation_current(
-                        {"acceptanceReady": True, "acceptanceRemainingMs": 2}, elapsed
+                        {
+                            "acceptanceReady": True,
+                            "acceptanceRemainingMs": 27,
+                            "acceptanceHintRemainingMs": 2,
+                        },
+                        elapsed,
                     )
                 )
         self.assertFalse(acceptance_observation_current({}, 0))
+
+    def test_hint_cannot_outlive_unknown_or_shorter_original_permission(self):
+        for permission in (None, True, "100", float("nan"), float("inf"), -1, 0, 1):
+            with self.subTest(permission=permission):
+                self.assertFalse(
+                    acceptance_observation_current(
+                        {
+                            "acceptanceReady": True,
+                            "acceptanceRemainingMs": permission,
+                            "acceptanceHintRemainingMs": 2,
+                        },
+                        0,
+                    )
+                )
 
     def test_false_or_non_boolean_ready_is_not_a_cue(self):
         for ready in (False, None, 1, "true"):
             with self.subTest(ready=ready):
                 self.assertFalse(
                     acceptance_observation_current(
-                        {"acceptanceReady": ready, "acceptanceRemainingMs": 100}, 0
+                        {
+                            "acceptanceReady": ready,
+                            "acceptanceRemainingMs": 100,
+                            "acceptanceHintRemainingMs": 75,
+                        },
+                        0,
                     )
                 )
 

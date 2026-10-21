@@ -262,6 +262,7 @@ jobs:
         shell: pwsh
         env:
           TYPELAY_BROWSER_REGISTRATION_E2E: "1"
+          TYPELAY_HY_WINDOWS_CPU_RUNTIME: artifacts/hy-runtime
         run: ./dev.ps1 pack -HyRuntime artifacts/hy-runtime
       - name: Verify cooperative browser input with the shipped app and real model
         id: windows-browser

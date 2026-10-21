@@ -237,7 +237,7 @@ MARKER = "TypeLay-TSF-Preflight: true"
 
 
 def push_eligible(event, head, message, changed_paths, is_ancestor):
-    """Admit only this push's explicit request and actual probe source changes."""
+    """Admit only this push's explicit request and actual diagnostic source changes."""
     if event.get("ref") != "refs/heads/work/linux-usability" or event.get("deleted"):
         return False
     head_commit = event.get("head_commit") or {}
@@ -261,7 +261,10 @@ def push_eligible(event, head, message, changed_paths, is_ancestor):
         or "~~~" in message
     ):
         raise ValueError("invalid-opt-in-marker")
-    return any(path.startswith("tests/windows/tsf_probe/") for path in changed_paths)
+    return any(
+        path.startswith("tests/windows/tsf_probe/") or path == ".github/workflows/tsf-preflight.yml"
+        for path in changed_paths
+    )
 
 
 def check_push():

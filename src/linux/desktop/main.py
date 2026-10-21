@@ -825,7 +825,7 @@ async def desktop(paths, background, lock, tutorial=False):
                 GLib.timeout_add(50, lambda: (stopping.set(), False)[1])
                 return True
             if operation == "status":
-                remaining = components["input"].acceptance_remaining_ms()
+                remaining, hint_remaining = components["input"].acceptance_timing()
                 return {
                     **status,
                     "trayAvailable": components["tray"].indicator is not None,
@@ -833,8 +833,10 @@ async def desktop(paths, background, lock, tutorial=False):
                     "nativePeers": sum(bool(peer.lifetime) for peer in components["input"].peers),
                     "overlayVisible": components["overlay"].visible,
                     "editing": components["overlay"].editing,
-                    "acceptanceReady": components["overlay"].acceptance_ready and remaining > 0,
+                    "acceptanceReady": components["overlay"].acceptance_ready
+                    and hint_remaining > 0,
                     "acceptanceRemainingMs": remaining,
+                    "acceptanceHintRemainingMs": hint_remaining,
                     "viewState": (components["overlay"].value or {}).get("state"),
                     "sourceSupported": components["input"].focused_peer() is not None,
                     "input": components["input"].diagnostics(),

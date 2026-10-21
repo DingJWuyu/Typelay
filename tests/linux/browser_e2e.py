@@ -127,6 +127,31 @@ class BrowserContract(unittest.TestCase):
               Object.defineProperty(performance, 'now', {value: () => bucket});
               Date.now = () => wallOrigin + bucket;
             })();"""
+        if (
+            self._testMethodName
+            == "test_accept_hint_hands_off_before_permission_and_recovers_on_new_publication"
+        ):
+            # Controlled scheduling, with a fine monotonic sampling step for the
+            # adapter's timer-resolution guard. Not Firefox latency evidence.
+            clock_setup = """(() => {
+              const wall = Date.now(), timers = new Map();
+              let elapsed = 0, tick = 0, identity = 0;
+              Object.defineProperty(performance, 'now', {value: () => elapsed + ++tick / 10000});
+              Date.now = () => wall + elapsed;
+              window.setTimeout = (callback, delay = 0, ...args) => {
+                const id = ++identity;
+                timers.set(id, {at: elapsed + Math.max(1, delay), callback, args});
+                return id;
+              };
+              window.clearTimeout = id => timers.delete(id);
+              window.fixtureAdvanceHintClock = milliseconds => {
+                elapsed += milliseconds;
+                for (const [id, timer] of [...timers]) if (timer.at <= elapsed) {
+                  timers.delete(id);
+                  timer.callback(...timer.args);
+                }
+              };
+            })();"""
         bridge = (
             BRIDGE.read_text()
             if self._testMethodName
@@ -3172,6 +3197,55 @@ class BrowserContract(unittest.TestCase):
                       message.event === 'ui' && ['return', 'escape'].includes(message.data.operation))""")
                 )
                 self.assertEqual(self.page.evaluate("editorKeys"), ["keydown", "keyup"])
+
+    def test_accept_hint_hands_off_before_permission_and_recovers_on_new_publication(self):
+        self.motion_view()
+
+        def names():
+            return [
+                node.get("name", {}).get("value")
+                for node in self.cdp.send("Accessibility.getFullAXTree")["nodes"]
+            ]
+
+        def publish_current():
+            snapshot = self.capture()
+            self.assertIsNotNone(snapshot, self.capture_diagnostics)
+            self.publish(snapshot, self.plan(snapshot))
+
+        self.assertIn("Tab 交还应用", names())
+        self.assertNotIn("Tab 接受译文", names())
+        publish_current()
+        self.assertIn("Tab 接受译文", names())
+        self.page.evaluate("fixtureAdvanceHintClock(64)")
+        self.assertIn("Tab 接受译文", names())
+        self.page.evaluate("fixtureAdvanceHintClock(1)")
+        self.assertNotIn("Tab 交还应用", names())
+        self.assertNotIn("Tab 接受译文", names())
+        # Presentation withdrawal does not revoke the original permission.
+        self.assertTrue(self.command("describe")["publication"]["ready"])
+        self.page.evaluate("fixtureAdvanceHintClock(25)")
+        self.assertIn("Tab 交还应用", names())
+        self.assertNotIn("Tab 接受译文", names())
+        self.assertFalse(self.command("describe")["publication"]["ready"])
+        publish_current()
+        self.assertIn("Tab 接受译文", names())
+        self.page.evaluate("fixtureAdvanceHintClock(65)")
+        self.assertNotIn("Tab 接受译文", names())
+        self.assertNotIn("Tab 交还应用", names())
+        publish_current()
+        self.assertIn("Tab 接受译文", names())
+        # Cross the previous publication's deadline: its timer cannot remove
+        # a successor's valid cue or resurrect the old pass-through hint.
+        self.page.evaluate("fixtureAdvanceHintClock(25)")
+        self.assertIn("Tab 接受译文", names())
+        self.assertNotIn("Tab 交还应用", names())
+        self.page.locator("#other").focus()
+        self.page.locator("#source").focus()
+        self.assertNotIn("Tab 接受译文", names())
+        self.page.evaluate("fixtureAdvanceHintClock(100)")
+        self.assertNotIn("Tab 接受译文", names())
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
 
     def test_untrusted_tab_and_password_are_not_adapted(self):
         snapshot = self.type_source()

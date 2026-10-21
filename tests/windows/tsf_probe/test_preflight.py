@@ -16,7 +16,7 @@ SPEC.loader.exec_module(probe)
 
 
 class PreflightTests(unittest.TestCase):
-    def test_push_gate_requires_this_commit_and_actual_probe_change(self):
+    def test_push_gate_requires_this_commit_and_actual_probe_or_workflow_change(self):
         head = "a" * 40
         message = "test: actual capability batch\n\n" + probe.MARKER
         event = {
@@ -27,8 +27,17 @@ class PreflightTests(unittest.TestCase):
         }
         paths = ["tests/windows/tsf_probe/preflight.py"]
         self.assertTrue(probe.push_eligible(event, head, message, paths, True))
-        self.assertFalse(
+        self.assertTrue(
             probe.push_eligible(event, head, message, [".github/workflows/tsf-preflight.yml"], True)
+        )
+        for unrelated in (".github/workflows/check.yml", "README.md", "src/windows/example.cs"):
+            self.assertFalse(probe.push_eligible(event, head, message, [unrelated], True))
+        no_opt_in = "fix: repair diagnostic configuration"
+        unmarked = event | {"head_commit": {"id": head, "message": no_opt_in}}
+        self.assertFalse(
+            probe.push_eligible(
+                unmarked, head, no_opt_in, [".github/workflows/tsf-preflight.yml"], True
+            )
         )
         self.assertFalse(
             probe.push_eligible(event | {"ref": "refs/heads/trunk"}, head, message, paths, True)

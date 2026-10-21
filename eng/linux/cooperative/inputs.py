@@ -104,6 +104,16 @@ QT_BUILD_INPUTS = (
 )
 
 
+FCITX_TEST_INPUTS = (
+    "tests/linux/fcitx_cooperative/run.py",
+    "tests/linux/fcitx_cooperative/fixture.c",
+    "tests/linux/native_e2e.py",
+    "tests/linux/fixtures/gtk4_fixture.c",
+    "tests/linux/fixtures/gtk_reentry.inc",
+    "tests/linux/fixtures/gtk_motion.inc",
+)
+
+
 def sha256(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()

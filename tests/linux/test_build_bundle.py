@@ -1,6 +1,7 @@
 """Exercise main-package finalization with real files and cooperation archives."""
 
 import hashlib
+import importlib.util
 import io
 import json
 import shutil
@@ -28,6 +29,62 @@ from eng.linux.cooperative import inputs  # noqa: E402
 
 def digest(content):
     return hashlib.sha256(content).hexdigest()
+
+
+class FcitxTestManifestTests(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "typelay_pack_manifest_test", ROOT / "packaging/linux/fcitx-cooperative/pack.py"
+        )
+        self.recipe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.recipe)
+        temporary = tempfile.TemporaryDirectory(prefix="typelay-fcitx-manifest-")
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.paths = {
+            "fixture_sha256": "fixture",
+            "gtk4_fixture_sha256": "gtk4-fixture",
+            "build_inputs_sha256": "build-inputs.json",
+            "build_metadata_sha256": "versions.json",
+        }
+        for relative in self.paths.values():
+            (self.directory / relative).write_bytes(b"real inert fixture bytes\n")
+        self.expected = inputs.FCITX_TEST_INPUTS
+        self.record = {
+            "files": inputs.hashes(self.expected),
+            **{key: inputs.sha256(self.directory / path) for key, path in self.paths.items()},
+        }
+
+    def write_record(self):
+        (self.directory / "test-inputs.json").write_text(json.dumps(self.record))
+
+    def test_current_regression_manifest_is_accepted(self):
+        self.write_record()
+        self.assertEqual(self.recipe.verify_tests(self.directory), self.record)
+
+    def test_old_partial_and_changed_regression_inputs_are_rejected(self):
+        original = dict(self.record["files"])
+        for files in (
+            {key: original[key] for key in self.expected[:2]},
+            {key: value for key, value in original.items() if key != self.expected[-1]},
+            {**original, self.expected[2]: "0" * 64},
+        ):
+            with self.subTest(files=files):
+                self.record["files"] = files
+                self.write_record()
+                with self.assertRaisesRegex(ValueError, "fixture inputs differ"):
+                    self.recipe.verify_tests(self.directory)
+
+    def test_each_compiled_fixture_and_build_record_remains_bound(self):
+        self.write_record()
+        for relative in self.paths.values():
+            with self.subTest(relative=relative):
+                path = self.directory / relative
+                original = path.read_bytes()
+                path.write_bytes(original + b"changed")
+                with self.assertRaisesRegex(ValueError, "changed after fixture compilation"):
+                    self.recipe.verify_tests(self.directory)
+                path.write_bytes(original)
 
 
 class WorkerBundleTests(unittest.TestCase):
@@ -128,6 +185,7 @@ class MainBundleTests(unittest.TestCase):
         self.repository.mkdir()
         for relative in (
             *inputs.FCITX_BUILD_INPUTS,
+            *inputs.FCITX_TEST_INPUTS,
             *inputs.QT_BUILD_INPUTS,
             *QT_TEST_INPUTS,
             "eng/linux/build.py",
@@ -238,6 +296,7 @@ class MainBundleTests(unittest.TestCase):
             self.files[name] = b"inert packaged fixture\n"
         for relative in (
             *inputs.FCITX_BUILD_INPUTS,
+            *inputs.FCITX_TEST_INPUTS,
             "packaging/linux/fcitx-cooperative/pack.py",
             "packaging/linux/fcitx-cooperative/fcitx-cooperative.py",
             "docs/platforms/linux/fcitx.md",
@@ -315,6 +374,23 @@ class MainBundleTests(unittest.TestCase):
             capture_output=True,
             timeout=30,
         )
+
+    def test_current_regression_inputs_survive_finalization(self):
+        self.metadata["testInputs"] = {"files": inputs.hashes(inputs.FCITX_TEST_INPUTS)}
+        self.write_archive()
+        result = self.finalize()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_partial_regression_inputs_are_rejected_by_finalizer(self):
+        self.metadata["testInputs"] = {"files": inputs.hashes(inputs.FCITX_TEST_INPUTS[:2])}
+        self.write_archive()
+        self.assert_rejected("Cooperation test inputs differ")
+
+    def test_changed_regression_source_is_rejected_by_finalizer(self):
+        self.metadata["testInputs"] = {"files": inputs.hashes(inputs.FCITX_TEST_INPUTS)}
+        self.files["source/tests/linux/fixtures/gtk4_fixture.c"] += b"\n/* drift */\n"
+        self.write_archive()
+        self.assert_rejected("Packaged cooperation source differs")
 
     def test_matching_payload_is_bound_to_main_manifest_without_rebuilding(self):
         self.write_archive()

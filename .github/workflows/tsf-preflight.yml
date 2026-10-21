@@ -12,7 +12,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   observe:
-    if: ${{ !github.event.deleted && contains(github.event.head_commit.message, 'TypeLay-TSF-Preflight: true') }}
+    if: >-
+      ${{ !github.event.deleted && contains(github.event.head_commit.message, 'TypeLay-TSF-Preflight: true') }}
     runs-on: windows-latest
     timeout-minutes: 5
     steps:

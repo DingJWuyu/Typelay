@@ -34,19 +34,12 @@ sys.path.insert(0, str(ROOT))
 from eng.linux.cooperative import fcitx  # noqa: E402
 from eng.linux.cooperative.inputs import (  # noqa: E402
     CORE_VERSION,
+    FCITX_TEST_INPUTS,
     hashes,
     sha256,
 )
 
 ABI = ROOT / "src/linux/native/fcitx5/typelay-fcitx-v1.h"
-TEST_INPUTS = (
-    "tests/linux/fcitx_cooperative/run.py",
-    "tests/linux/fcitx_cooperative/fixture.c",
-    "tests/linux/native_e2e.py",
-    "tests/linux/fixtures/gtk4_fixture.c",
-    "tests/linux/fixtures/gtk_reentry.inc",
-    "tests/linux/fixtures/gtk_motion.inc",
-)
 
 
 def run(args, **kwargs):
@@ -65,7 +58,7 @@ def flags(*packages):
 
 
 def build(out: Path, core_version: str):
-    inputs = hashes(TEST_INPUTS)
+    inputs = hashes(FCITX_TEST_INPUTS)
     (out / "result.json").unlink(missing_ok=True)
     fcitx.build(out, core_version)
     run(
@@ -95,7 +88,7 @@ def build(out: Path, core_version: str):
             *flags("gtk4", "json-glib-1.0"),
         ]
     )
-    if hashes(TEST_INPUTS) != inputs:
+    if hashes(FCITX_TEST_INPUTS) != inputs:
         raise RuntimeError("Test inputs changed during fixture compilation")
     (out / "test-inputs.json").write_text(
         json.dumps(

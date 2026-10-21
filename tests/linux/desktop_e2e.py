@@ -67,12 +67,16 @@ def background_direct_rejection_current(report, rows, previous_feedback):
 
 
 def acceptance_observation_current(data, elapsed_ms):
-    """A status response is evidence only while its original time remains."""
-    remaining = data.get("acceptanceRemainingMs")
+    """Age the public cue itself, never substitute the longer permission TTL."""
+    remaining = data.get("acceptanceHintRemainingMs")
+    permission_remaining = data.get("acceptanceRemainingMs")
     return (
         data.get("acceptanceReady") is True
         and type(remaining) in (int, float)
         and math.isfinite(remaining)
+        and type(permission_remaining) in (int, float)
+        and math.isfinite(permission_remaining)
+        and remaining <= permission_remaining
         and type(elapsed_ms) in (int, float)
         and math.isfinite(elapsed_ms)
         and elapsed_ms >= 0
@@ -808,6 +812,7 @@ def run(arguments):
                 "statusStartedAtMs": started,
                 "statusReceivedAtMs": finished,
                 "acceptanceRemainingMs": data.get("acceptanceRemainingMs"),
+                "acceptanceHintRemainingMs": data.get("acceptanceHintRemainingMs"),
                 "nativePublications": data.get("input", {}).get("nativePublications", []),
             }
         return (
@@ -1670,6 +1675,7 @@ def run(arguments):
                 firefox_tab = {
                     "beforeMs": now_ms(),
                     "reportedRemainingMs": ready.get("acceptanceRemainingMs"),
+                    "reportedHintRemainingMs": ready.get("acceptanceHintRemainingMs"),
                     "statusElapsedMs": ready["statusElapsedMs"],
                 }
                 send_tab()
@@ -1731,6 +1737,7 @@ def run(arguments):
                     rich_tab = {
                         "beforeMs": now_ms(),
                         "reportedRemainingMs": ready.get("acceptanceRemainingMs"),
+                        "reportedHintRemainingMs": ready.get("acceptanceHintRemainingMs"),
                         "statusElapsedMs": ready["statusElapsedMs"],
                     }
                     send_tab()

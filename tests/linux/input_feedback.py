@@ -256,7 +256,7 @@ class InputFeedbackTests(unittest.TestCase):
             "text": "Original source",
             "selection": {"start": 0, "end": 0},
             "ime": "Clear",
-            "observedAtMs": 1000,
+            "observedAtMs": self.clock.return_value,
             "writeSupported": glossary_source is None,
             "glossarySource": glossary_source
             if captured_glossary_source is None
@@ -307,7 +307,7 @@ class InputFeedbackTests(unittest.TestCase):
                         "expected": capture["snapshot"],
                         "replacement": "Translation",
                     },
-                    "expiresAtMs": 1100,
+                    "expiresAtMs": capture["snapshot"]["observedAtMs"] + 100,
                 },
             },
         )
@@ -2098,6 +2098,56 @@ class InputFeedbackTests(unittest.TestCase):
         self.input.notification("settings", {"enabled": False})
         self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["revoke"])
         return plan_id
+
+    def test_native_acceptance_presentation_keeps_original_timing(self):
+        frames = asyncio.run(self.publish_acceptance(pause=False))
+        notice = {
+            "target": "ordinary-field",
+            "planId": frames[0]["data"]["permit"]["plan"]["id"],
+            "ready": True,
+            "readyUntilHostMs": 1100,
+        }
+        self.peer.event("publication", notice)
+        for backend in ("gtk3", "gtk4", "qt6"):
+            self.peer.backend = backend
+            for now, remaining in ((1000, 100), (1075, 25), (1099, 1), (1100, 0)):
+                with self.subTest(backend=backend, now=now):
+                    self.clock.return_value = now
+                    self.assertEqual(self.input.acceptance_timing(), (remaining, remaining))
+
+    def test_browser_acceptance_hint_hands_off_and_only_current_publication_restores_it(self):
+        self.connect_registered_browser()
+        identity = self.publish_browser(asyncio.run(self.capture_browser()))
+        notice = {
+            "target": self.browser_native["target"],
+            "planId": identity,
+            "ready": True,
+            "readyUntilHostMs": 1100,
+        }
+
+        def acknowledge():
+            self.peer.link.receive({"event": "publication", "data": notice, "route": self.route})
+
+        acknowledge()
+        for now, expected in (
+            (1000, (100, 75)),
+            (1074, (26, 1)),
+            (1075, (25, 0)),
+            (1099, (1, 0)),
+            (1100, (0, 0)),
+        ):
+            with self.subTest(now=now):
+                self.clock.return_value = now
+                self.assertEqual(self.input.acceptance_timing(), expected)
+        # A genuinely new capture/publication, not a refreshed old timestamp.
+        identity = self.publish_browser(asyncio.run(self.capture_browser()))
+        notice.update(planId=identity, readyUntilHostMs=1200)
+        acknowledge()
+        self.assertEqual(self.input.acceptance_timing(), (100, 75))
+        self.input.notification("revoke", None)
+        self.assertEqual(self.input.acceptance_timing(), (0, 0))
+        acknowledge()
+        self.assertEqual(self.input.acceptance_timing(), (0, 0))
 
     def test_peer_without_binding_acknowledgement_cannot_receive_acceptance_permit(self):
         frames = asyncio.run(self.publish_acceptance(acknowledgement=False))

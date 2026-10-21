@@ -19,6 +19,10 @@ from niri import Niri
 from paths import peer_credentials, process_identity, process_lineage
 from wire import now_ms
 
+# Same presentation handoff as the browser hint and Windows owned precedent.
+# This is not an input-latency guarantee and never alters a permit's deadline.
+BROWSER_ACCEPTANCE_PRESENTATION_HANDOFF_MS = 25
+
 
 def target_id(peer, value):
     return {"backend": f"linux-{peer.backend}", "value": value, "lifetime": peer.lifetime}
@@ -1635,10 +1639,11 @@ class Input:
             "userEpoch": self.user_epoch,
         }
 
-    def acceptance_remaining_ms(self):
+    def acceptance_timing(self):
+        """Original permission and public hint time remaining, from one observation."""
         peer = self.focused_peer()
         if not peer:
-            return 0
+            return 0, 0
         value = self.native_publication
         if (
             not value
@@ -1648,8 +1653,14 @@ class Input:
             or value["userEpoch"] != self.user_epoch
             or value["planId"] not in self.issued
         ):
-            return 0
-        return max(0, int(value["until"] - now_ms()))
+            return 0, 0
+        remaining = max(0, int(value["until"] - now_ms()))
+        hint_remaining = (
+            max(0, remaining - BROWSER_ACCEPTANCE_PRESENTATION_HANDOFF_MS)
+            if peer.backend == "browser"
+            else remaining
+        )
+        return remaining, hint_remaining
 
     def diagnostics(self):
         acknowledgement = (

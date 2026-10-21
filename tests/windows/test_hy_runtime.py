@@ -57,7 +57,7 @@ class WindowsNativeRuntimeTests(unittest.TestCase):
             timeout=60,
         )
 
-    def test_relocated_dll_closure_loads_with_five_production_exports_and_no_model(self):
+    def test_relocated_dll_closure_loads_with_six_production_exports_and_no_model(self):
         result = self.run_native(
             "import ctypes,json,_ctypes; loader=WindowsRuntime(verify_native()); "
             "selected=loader.select_cpu_backend(); adapter=loader.load_adapter(); "

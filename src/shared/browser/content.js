@@ -15,6 +15,9 @@
   const consumed = new Map();
   const held = new Map();
   const MAX_TEXT = 8192;
+  // Reuse the Windows owned presentation handoff, not its authority or a
+  // guaranteed input latency. The original publication/write deadlines stand.
+  const ACCEPTANCE_PRESENTATION_HANDOFF_MS = 25;
   let commandOwner = null, preparedCommandOwner = null, commandPolicy = null, commandOwnerTimer = null;
   let nextSourceCommandId = 0;
   let ownerDiagnostic = null, lastOwnerDiagnostic = null;
@@ -814,15 +817,19 @@
     // capture result has passed its final IME/source guard.
     const state = publicationState(current.field, null, true);
     if (overlay !== current) return;
+    const remaining = state.ready && publication
+      ? Math.min(publication.expiresAtPerformanceMs - monoNow(), publication.expiresAtWallMs - Date.now()) : 0;
+    const hintRemaining = remaining - ACCEPTANCE_PRESENTATION_HANDOFF_MS;
     const shortcuts = current.shortcuts;
     const accepts = shortcuts && [shortcuts.acceptHint, shortcuts.passThroughHint].includes(current.tabHint);
     const text = current.editing ? shortcuts?.returnHint || ""
-      : accepts ? (state.ready ? shortcuts.acceptHint : shortcuts.passThroughHint) : current.tabHint || "";
+      : accepts ? (hintRemaining > 0 ? shortcuts.acceptHint : remaining > 0 ? "" : shortcuts.passThroughHint)
+      : current.tabHint || "";
     if (current.hint.textContent !== text) current.hint.textContent = text;
-    if (state.ready && publication) {
-      const remaining = Math.min(publication.expiresAtPerformanceMs - monoNow(), publication.expiresAtWallMs - Date.now());
-      hintTimer = setTimeout(refreshHint, Math.max(1, Math.ceil(remaining)));
-    }
+    // A still-live permit may accept the key during handoff. Do not promise
+    // pass-through until its original deadline; a real renewal replaces this timer.
+    if (remaining > 0)
+      hintTimer = setTimeout(refreshHint, Math.max(1, Math.ceil(hintRemaining > 0 ? hintRemaining : remaining)));
   }
   function position(previous = null) {
     refreshHint();

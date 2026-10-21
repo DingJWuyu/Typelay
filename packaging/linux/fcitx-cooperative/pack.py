@@ -24,6 +24,7 @@ from eng.linux.cooperative.inputs import (  # noqa: E402
     DATA_ARCHIVES,
     FCITX_BUILD_INPUTS,
     FCITX_PINS,
+    FCITX_TEST_INPUTS,
     PATCH_PROJECTS,
     PATCHES,
     PRIVATE_VERSIONS,
@@ -52,7 +53,6 @@ CHINESE_ADDONS = (
 )
 TABLE_DATA = ("db", "erbi", "qxm", "wanfeng", "wbpy", "wbx", "zrm", "cj")
 RUNTIME_DIRS = {"bin", "lib", "libexec", "share", "etc"}
-TEST_INPUTS = ("tests/linux/fcitx_cooperative/run.py", "tests/linux/fcitx_cooperative/fixture.c")
 QT_TEST_INPUTS = (
     "tests/linux/qt_cooperative/run.py",
     "tests/linux/qt_cooperative/fixture.cpp",
@@ -290,7 +290,7 @@ def copy_sources(build, bundle, pins, inputs, test_inputs):
         copy_tree(upstream, source / "upstream" / project)
     files = [
         *FCITX_BUILD_INPUTS,
-        *TEST_INPUTS,
+        *FCITX_TEST_INPUTS,
         "packaging/linux/fcitx-cooperative/pack.py",
         "packaging/linux/fcitx-cooperative/fcitx-cooperative.py",
         "docs/platforms/linux/fcitx.md",
@@ -398,10 +398,11 @@ def verify_tests(build):
     if not (build / "test-inputs.json").exists():
         return None
     record = read_object(build / "test-inputs.json")
-    if record.get("files") != hashes(TEST_INPUTS):
+    if record.get("files") != hashes(FCITX_TEST_INPUTS):
         raise ValueError("Fcitx regression fixture inputs differ from this checkout")
     for key, relative in (
         ("fixture_sha256", "fixture"),
+        ("gtk4_fixture_sha256", "gtk4-fixture"),
         ("build_inputs_sha256", "build-inputs.json"),
         ("build_metadata_sha256", "versions.json"),
     ):
