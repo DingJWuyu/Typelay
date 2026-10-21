@@ -23,8 +23,9 @@ def main():
     source = Path(__file__).resolve().parent / "native"
     common = [compiler, "/nologo", "/std:c++17", "/EHsc", "/W4", "/MT", "/DUNICODE", "/D_UNICODE"]
     # A separate empty output directory owns every compiler-generated file.
+    # TF_GetThreadMgr has no import library; observer obtains it dynamically.
     for name, extra, libraries in (
-        ("observer", ["/LD"], ["user32.lib", "ole32.lib", "uuid.lib", "msctf.lib"]),
+        ("observer", ["/LD"], ["user32.lib", "ole32.lib", "uuid.lib"]),
         ("runner", [], ["user32.lib", "ole32.lib", "uuid.lib"]),
         ("test_outcome", [], []),
     ):

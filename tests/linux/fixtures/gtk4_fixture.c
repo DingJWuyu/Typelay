@@ -259,6 +259,32 @@ static void report_control_surface(JsonBuilder *builder, GtkWidget *widget) {
     GtkNative *native = gtk_widget_get_native(widget);
     GdkSurface *surface = native ? gtk_native_get_surface(native) : NULL;
     GdkSurface *parent = gtk_native_get_surface(GTK_NATIVE(report_window));
+    GdkSeat *seat = gdk_display_get_default_seat(gtk_widget_get_display(report_window));
+    GdkDevice *pointer = seat ? gdk_seat_get_pointer(seat) : NULL;
+    double px = 0, py = 0;
+    GdkSurface *pointer_surface = pointer ? gdk_device_get_surface_at_position(pointer, &px, &py) : NULL;
+    json_builder_set_member_name(builder, "pointerObservation");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "status");
+    json_builder_add_string_value(builder, pointer_surface ? "captured" : "unavailable");
+    if (pointer_surface) {
+        json_builder_set_member_name(builder, "surface");
+        json_builder_add_string_value(builder, pointer_surface == surface ? "control-native"
+            : pointer_surface == parent ? "fixture-window" : "other");
+        json_builder_set_member_name(builder, "x"); json_builder_add_double_value(builder, px);
+        json_builder_set_member_name(builder, "y"); json_builder_add_double_value(builder, py);
+        GtkNative *pointer_native = gtk_native_get_for_surface(pointer_surface);
+        /* Report a pick only inside this owned fixture, never other app names. */
+        if (pointer_native && gtk_widget_get_root(GTK_WIDGET(pointer_native)) == GTK_ROOT(report_window)) {
+            double ox, oy;
+            gtk_native_get_surface_transform(pointer_native, &ox, &oy);
+            GtkWidget *picked = gtk_widget_pick(GTK_WIDGET(pointer_native), px + ox, py + oy, GTK_PICK_DEFAULT);
+            json_builder_set_member_name(builder, "pick");
+            if (picked) json_builder_add_string_value(builder, gtk_widget_get_name(picked));
+            else json_builder_add_null_value(builder);
+        }
+    }
+    json_builder_end_object(builder);
     graphene_point_t origin = GRAPHENE_POINT_INIT(0, 0), point;
     double tx = 0, ty = 0;
     json_builder_set_member_name(builder, "surfaceGeometry");

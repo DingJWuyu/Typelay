@@ -363,6 +363,7 @@ def _gtk4_source_glossary(out, environment, deadline):
                         "case": current_case,
                         "control": name,
                         "nestedSize": dimensions,
+                        "nestedOrigin": [int(geometry[key]) for key in ("X", "Y")],
                         "beforeObservedAtMonoMs": actual.get("observedAtMs"),
                         "parent": {
                             key: actual.get(key)
@@ -381,6 +382,31 @@ def _gtk4_source_glossary(out, environment, deadline):
                     execute("xdotool", "mousemove", "--window", window, *pixel)
                     moved_at = time.monotonic_ns() // 1000000
                     evidence["moveFinishedAtMonoMs"] = moved_at
+                    try:
+                        location = dict(
+                            line.split("=", 1)
+                            for line in execute(
+                                "xdotool", "getmouselocation", "--shell"
+                            ).splitlines()
+                        )
+                        evidence["xPointer"] = {
+                            "status": "captured",
+                            "ownedNiri": int(window),
+                            "observedAtMonoMs": time.monotonic_ns() // 1000000,
+                            **{key: int(location[key]) for key in ("X", "Y", "WINDOW")},
+                        }
+                    except (
+                        OSError,
+                        ValueError,
+                        KeyError,
+                        subprocess.SubprocessError,
+                        AssertionError,
+                    ) as error:
+                        evidence["xPointer"] = {
+                            "status": "unavailable",
+                            "error": type(error).__name__,
+                        }
+                    click_path.write_text(json.dumps(clicks, indent=2) + "\n")
                     if overlay_control:
                         instance = control["instance"]
 
