@@ -911,8 +911,8 @@ def check_language_options(
     phases = evidence["languagePhases"] = []
 
     def observe(value):
-        # Only the first six existing render/input boundaries. Do not retain
-        # source/candidate text, labels, or add observation requests or sleeps.
+        # Retain bounded existing render/input observations, never source or
+        # candidate text, labels, extra observation requests, or sleeps.
         return {
             "observedAtMonoMs": value.get("observedAtMs"),
             "focus": value.get("focus"),
@@ -943,13 +943,13 @@ def check_language_options(
             },
         }
 
-    def render():
+    def render(stage=None):
         nonlocal revision
         revision += 1
-        phase = None
-        if revision <= 6:
-            phase = {
-                "stage": (
+        phase = {
+            "stage": stage
+            or (
+                (
                     "initial",
                     "menu-renew",
                     "choice-renew",
@@ -957,8 +957,15 @@ def check_language_options(
                     "saved-update",
                     "second-choice",
                 )[revision - 1]
-            }
-            phases.append(phase)
+                if revision <= 6
+                else "language-renew"
+            )
+        }
+        phases.append(phase)
+        # Keep initial allocation evidence plus the six most recent phases.
+        # Later failures must not lose their actual render/click boundary.
+        if len(phases) > 8:
+            del phases[2]
         result = render_preview(
             client,
             source,
@@ -975,6 +982,7 @@ def check_language_options(
 
         def shown():
             value = state()
+            phase["lastObservation"] = observe(value)
             fresh = value.get("observedAtMs", 0) > rendered
             if fresh and phase is not None and "firstFreshObservation" not in phase:
                 phase["firstFreshObservation"] = observe(value)
@@ -987,7 +995,10 @@ def check_language_options(
         return wait_for(shown, "language controls did not render")
 
     def controls():
-        return state().get("overlayControls", {})
+        actual = state()
+        if phases:
+            phases[-1]["lastObservation"] = observe(actual)
+        return actual.get("overlayControls", {})
 
     def click(name):
         actual = state()
@@ -998,7 +1009,7 @@ def check_language_options(
             (control["x"] + control["width"] / 2, control["y"] + control["height"] / 2),
             dimensions,
         )
-        phase = phases[-1] if revision <= 6 else {}
+        phase = phases[-1]
         if phase:
             phase.update(control=name, point=point, beforeClick=observe(actual))
         if phase:
@@ -1010,6 +1021,7 @@ def check_language_options(
     def toggle(opened, renew=True):
         if renew:
             render()
+        phases[-1]["requestedMenuVisible"] = opened
         click(trigger)
         wait_for(
             lambda: controls().get(menu, {}).get("visible") is opened,
@@ -1036,13 +1048,13 @@ def check_language_options(
         for _ in range(index):
             key("Down")
         key("Return")
-        if revision in (3, 6):
-            phases[-1]["keysReturnedAtMs"] = now_ms()
+        phases[-1]["keysReturnedAtMs"] = now_ms()
 
         def selected():
             actual = state()
+            phases[-1]["lastObservation"] = observe(actual)
             value = actual.get("overlayControls", {})
-            if revision in (3, 6) and "afterKeys" not in phases[-1]:
+            if "afterKeys" not in phases[-1]:
                 phases[-1]["afterKeys"] = observe(actual)
             control = value.get(name, {})
             if control.get("selected") != index:
@@ -1225,7 +1237,7 @@ def check_language_options(
         # before renewing; an open-menu trigger is not a retained focus proof.
         toggle(False, renew=False)
         view["languageChoices"] = choices
-        render()
+        render("restore-valid-choices")
         toggle(True, renew=False)
         click(source_control)
         wait_for(

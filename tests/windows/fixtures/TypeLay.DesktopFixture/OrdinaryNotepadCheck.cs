@@ -135,23 +135,14 @@ internal static partial class HyPackageCheck
             {
                 Require(!app!.Process.HasExited, "ordinary-app-exited");
                 workers!.Check();
-                var overlay = AutomationElement.RootElement.FindFirst(TreeScope.Children, new AndCondition(
+                var overlays = AutomationElement.RootElement.FindAll(TreeScope.Children, new AndCondition(
                     new PropertyCondition(AutomationElement.ProcessIdProperty, app.Process.Id),
                     new PropertyCondition(AutomationElement.NameProperty, "TypeLay · 自动化测试"),
                     new PropertyCondition(AutomationElement.IsOffscreenProperty, false)));
-                if (overlay is null)
+                if (overlays.Count != 1)
                     return false;
-                editor = Find(overlay, AutomationElement.NameProperty, "编辑译文", ControlType.Edit);
-                if (editor is null || editor.Current.IsOffscreen || !editor.TryGetCurrentPattern(ValuePattern.Pattern, out var value))
-                    return false;
-                string candidate = ((ValuePattern)value).Current.Value;
-                if (string.IsNullOrWhiteSpace(candidate) || candidate == original)
-                    return false;
-                if (!ready)
-                    return true;
-                // The visible footer is the user's acceptance cue. No slow source
-                // roundtrip is inserted after this observation before the one key.
-                return Find(overlay, AutomationElement.NameProperty, "接受译文", ControlType.Text) is not null;
+                editor = OverlayPreviewObservation.Find(overlays[0], app.Process.Id, original, ready);
+                return editor is not null;
             }, request.Token), request.Token);
             return editor!;
         }

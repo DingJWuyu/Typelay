@@ -21,6 +21,95 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
 {
+    [Fact]
+    public Task OrdinaryObserverRejectsMultipleDisplayedCandidateValues() => desktop.RunAsync(async () =>
+    {
+        var panel = new StackPanel();
+        foreach (string name in new[] { "译文预览", "编辑译文" })
+        {
+            var text = new TextBox { Text = "Controlled displayed value", IsReadOnly = true };
+            System.Windows.Automation.AutomationProperties.SetName(text, name);
+            panel.Children.Add(text);
+        }
+        var window = new Window { Content = panel, Width = 400, Height = 200 };
+        try
+        {
+            window.Show();
+            window.UpdateLayout();
+            nint handle = new WindowInteropHelper(window).Handle;
+            await Task.Run(() =>
+            {
+                var root = System.Windows.Automation.AutomationElement.FromHandle(handle);
+                Assert.Equal(2, root.FindAll(System.Windows.Automation.TreeScope.Descendants,
+                    new System.Windows.Automation.AndCondition(
+                        new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.ControlTypeProperty, System.Windows.Automation.ControlType.Edit),
+                        new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.IsOffscreenProperty, false))).Count);
+                Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, "original", false));
+                Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, "original", true));
+            }, TestContext.Current.CancellationToken);
+        }
+        finally { window.Close(); }
+    });
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public Task OrdinaryObserverReadsActualPreviewWithoutPromotingUnknownToReady(bool editable, bool permit) =>
+        desktop.RunAsync(async () =>
+        {
+            var (window, input, source) = OpenSource();
+            var overlay = new OverlayWindow(clientAreaAnimation: () => false);
+            try
+            {
+                Session session;
+                if (editable)
+                    session = Ready(source, "真实译文预览");
+                else
+                {
+                    session = new Session(new("auto", "en"));
+                    session.Observe(source with
+                    {
+                        Text = "",
+                        Selection = new(0, 0),
+                        Ime = ImeState.Unknown,
+                        PreviewText = source.Text,
+                        WriteSupported = false
+                    }, FocusMember.Source, 1000);
+                    var job = session.TakeTranslationJob(1300);
+                    Assert.NotNull(job);
+                    Assert.False(session.Complete(job, "真实译文预览"));
+                    Assert.Equal("真实译文预览", session.Preview);
+                    Assert.Empty(session.Candidate);
+                    Assert.Equal(SessionState.Invalid, session.State);
+                    Assert.False(session.CanBeginEdit);
+                }
+                overlay.Render(session, new UserSettings(), permit,
+                    context: EditableView(source) with
+                    {
+                        CanEdit = editable
+                    });
+                overlay.UpdateLayout();
+                nint handle = overlay.Handle;
+                await Task.Run(() =>
+                {
+                    var root = System.Windows.Automation.AutomationElement.FromHandle(handle);
+                    var preview = TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, source.Text, false);
+                    Assert.NotNull(preview);
+                    var value = (System.Windows.Automation.ValuePattern)preview.GetCurrentPattern(System.Windows.Automation.ValuePattern.Pattern);
+                    Assert.Equal("真实译文预览", value.Current.Value);
+                    Assert.True(value.Current.IsReadOnly);
+                    Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, value.Current.Value, false));
+                    Assert.Equal(editable ? "编辑译文" : "译文预览", preview.Current.Name);
+                    Assert.Equal(editable && permit,
+                        TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, source.Text, true) is not null);
+                    Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, -1, source.Text, false));
+                }, TestContext.Current.CancellationToken);
+                Assert.Equal(source.Text, input.Text);
+            }
+            finally { overlay.Close(); window.Close(); }
+        });
+
     [Theory]
     [InlineData("ja", "日本語")]
     [InlineData("ko", "한국어")]

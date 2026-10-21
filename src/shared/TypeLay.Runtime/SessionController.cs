@@ -1163,9 +1163,15 @@ public sealed partial class SessionController : IDisposable
             }
             // Never route detached work through foreground-only write/return operations.
             _directWriteSubmitted = true;
+            Trace("direct-write-start", plan.Id, inspectFocus: false);
             var result = await _broker.WriteDirectAsync(plan, _settings.Value.Excluded);
             if (_disposed)
                 return;
+            Trace("direct-write-result", plan.Id, new
+            {
+                status = result.Status.ToString(),
+                reason = result.Reason.ToString()
+            }, inspectFocus: false);
             // Only an explicit pre-mutation rejection proves that TypeLay did not
             // replace text. Reasons, including Unsupported, cannot override an
             // unknown status. Future or malformed status values stay conservative.

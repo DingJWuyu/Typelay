@@ -19,6 +19,7 @@ from desktop_session import process_identity  # noqa: E402
 from ordinary_gimp import (  # noqa: E402
     acceptable_candidate,
     completed_new_image,
+    direct_write_receipt,
     full_output_origin_proven,
     fullscreen_content_origin,
     launched_application,
@@ -28,6 +29,32 @@ from ordinary_gimp import (  # noqa: E402
     unique_owned_window,
     validate_nested_output,
 )
+
+
+class DirectReceiptTests(unittest.TestCase):
+    def test_only_the_actual_submitted_direct_plan_receipt_can_finish(self):
+        start = {"operation": "direct-write-start", "planId": "owned-plan"}
+        result = {
+            "operation": "direct-write-result",
+            "planId": "owned-plan",
+            "detail": {"status": "Verified", "reason": "None"},
+        }
+        self.assertIsNone(direct_write_receipt([{"operation": "write-Verified-None"}]))
+        self.assertIsNone(direct_write_receipt([start]))
+        self.assertEqual(direct_write_receipt([start, result]), result)
+        rejected = {
+            **result,
+            "detail": {"status": "RejectedBeforeMutation", "reason": "EpochChanged"},
+        }
+        self.assertEqual(direct_write_receipt([start, rejected]), rejected)
+        for rows in (
+            [result],
+            [start, {**result, "planId": "other"}],
+            [start, start, result],
+            [start, result, result],
+        ):
+            with self.subTest(rows=rows), self.assertRaises(AssertionError):
+                direct_write_receipt(rows)
 
 
 class OrdinaryFirstRunTests(unittest.TestCase):

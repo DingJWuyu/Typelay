@@ -215,7 +215,21 @@ internal sealed class SessionScenario : IDisposable
         public bool ShortcutsReady { get; set; } = true;
         public bool CanInterceptAcceptance { get; set; } = true;
         public string ShortcutStatus => "controlled";
-        public long UserEpoch { get; set; } = 1;
+        private long _userEpoch = 1;
+        public int DisposedEpochReads
+        {
+            get; private set;
+        }
+        public long UserEpoch
+        {
+            get
+            {
+                if (Disposed)
+                    DisposedEpochReads++;
+                return _userEpoch;
+            }
+            set => _userEpoch = value;
+        }
         public long SourceUserEpoch { get; set; } = 1;
         public long ForegroundEpoch { get; set; } = 1;
         public long WindowEpoch { get; set; } = 1;

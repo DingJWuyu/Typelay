@@ -79,17 +79,17 @@
 
 ### 当前可验证候选
 
-最近核对的验证基线为 [`e5a40de8`](https://github.com/DingJWuyu/Typelay/actions/runs/39552282346)，该运行已结束，Windows 完整检查失败。
+最近核对的验证基线为 [`e3f0ad75`](https://github.com/DingJWuyu/Typelay/actions/runs/39555404569)，该运行已结束，Windows 完整检查失败。
 
-- App.Tests：538 项中 536 项通过、2 项失败，分别为 Ctrl 退出按键配对与被覆盖复选框的点击检查；连续翻译全链、真实浏览器接入、打包与分发 smoke 本轮通过，不代表所有应用或长期稳定性已验收。
-- 真实记事本的设置确认与模型准备已通过（6580ms），自动预览/接受随后超时：已生成 9 字译文，但 `IMEUnknown` 下没有写入资格。后续记事本场景与 Hy 均未运行；Unknown 继续拒写，不以已有译文推断可安全接受。
+- App.Tests：538 项中 537 项通过、1 项失败，位于退休测试的 initial Focus 后验等待，尚未执行退休；原 Ctrl 退出与被覆盖复选框检查本轮通过；连续翻译全链、真实浏览器接入、打包与分发 smoke 本轮通过，不代表所有应用或长期稳定性已验收。
+- 真实记事本设置确认与模型准备通过（9780ms），随后 `await-readonly-preview` 超时。测试只查“编辑译文”，只读控件实际命名为“译文预览”，因此不能据此断言 UI 没有预览；trace 已有 9 字译文，但 `IMEUnknown` 下没有写入资格。后继观察修正仍待验证，记事本后续场景与 Hy 未运行；Unknown 继续拒写。
 - 本次 Notepad 自动捕获路径未启用既有 owner-thread 桥（目前仅按需 `CaptureDirect` 路由使用）。现桥在 `SendMessageTimeout` 内调用 IMM 存在已知重入风险，因此新增自动调用暂停；这不是本轮 `IMEUnknown` 已发生运行崩溃的证据，也不能写成已修复。本轮无质量采集，5068 的 40 次诊断与 386 的 69 次响应仍是各自范围的既有证据，三项质量门继续关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
 
-当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39552282346)下载 [`typelay-windows-e5a40de8983286286cafbc75edab6f696340d44f`](https://github.com/DingJWuyu/Typelay/actions/runs/39552282346/artifacts/12324223228)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
+当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39555404569)下载 [`typelay-windows-e3f0ad752ebe0cfc22a8fa959285651f32a7c486`](https://github.com/DingJWuyu/Typelay/actions/runs/39555404569/artifacts/12326231053)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
 
-- 源码提交：`e5a40de8983286286cafbc75edab6f696340d44f`。
-- 内层 ZIP：87,021,373 字节。
-- SHA-256：`6b19c7f6f917d32b594bb32a75fdc17af58c8d0c7ce23f34cd0e276f16f0e0e1`，已实际重算并核对包旁摘要。
+- 源码提交：`e3f0ad752ebe0cfc22a8fa959285651f32a7c486`。
+- 内层 ZIP：87,027,270 字节。
+- SHA-256：`be8971b30063d56b7772a5fb6c2f413ba7179b5f21ee70668d70257f0b8afb82`，已实际重算并核对包旁摘要。
 - 用 `Get-FileHash .\TypeLay-Windows-preview.zip -Algorithm SHA256` 核对；不要将内层摘要用于外层 Actions ZIP。App、Broker、Practice 与 BrowserHost 必须来自同一个完整包。
 
 正式安装器的单向中英准备、Auto 同语无输出、缺方向拒绝与保留旧方向的补装已通过真实模型 API 检查；该检查本身没有操作输入框或触发 F10。安装库存损坏时保留原数据并禁用修改，目前仍缺少用户可执行的库存恢复入口。

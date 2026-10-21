@@ -183,7 +183,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             nint otherRoot = await Window(ordinary!);
             host.Open(path);
             nint ownedRoot = await Window(owned!);
-            await Focus(ownedRoot);
+            await Focus(ownedRoot, "owned-initial");
             await Until(() => controller.AutomaticPracticeProgress?.Target is not null);
 
             var next = settings.Value with
@@ -209,7 +209,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             settings.Update(next);
             Assert.Equal(!disconnect, host.IsAutomatic); // A normal ACK retains identity for restart.
 
-            await Focus(otherRoot);
+            await Focus(otherRoot, "unrelated-after-retirement");
             InputSnapshot? captured = null;
             while (captured is null)
             {
@@ -234,7 +234,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
 
             if (!disconnect)
             {
-                await Focus(ownedRoot);
+                await Focus(ownedRoot, "owned-after-retirement");
                 Assert.Null((await input.CaptureAsync(context)).Snapshot); // Old owned root stays reserved until exit.
             }
             Assert.Null(controller.AutomaticPracticeProgress);
@@ -251,11 +251,36 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
                 });
                 return root;
             }
-            async Task Focus(nint root)
+            async Task Focus(nint root, string phase)
             {
                 Assert.True(N.SetForegroundWindow(root));
                 Assert.True(N.PostMessage(root, 0x0007, 0, 0));
-                await Until(() => N.Focused() == (root, GetDlgItem(root, 101)));
+                N.FocusObservation last = default;
+                nint field = 0;
+                try
+                {
+                    await Until(() =>
+                    {
+                        // Focused() uses this same single native observation.
+                        last = N.ReadFocus();
+                        field = GetDlgItem(root, 101);
+                        return (last.Root, last.Control) == (root, field);
+                    });
+                }
+                catch (OperationCanceledException) when (deadline.IsCancellationRequested
+                    && !TestContext.Current.CancellationToken.IsCancellationRequested)
+                {
+                    string foreground = last.Root == 0 ? "none" : last.Root == ownedRoot ? "owned-root"
+                        : last.Root == otherRoot ? "unrelated-root" : last.ProcessId == Environment.ProcessId ? "test-process"
+                        : last.ProcessId == owned!.Process.Id ? "owned-process-other-window"
+                        : last.ProcessId == ordinary!.Process.Id ? "unrelated-process-other-window"
+                        : last.ProcessId == 0 ? "unknown" : "other-process";
+                    Assert.Fail($"Practice focus deadline: phase={phase}; rootMatched={last.Root == root}; "
+                        + $"controlMatched={last.Control == field}; fieldPresent={field != 0}; foreground={foreground}; "
+                        + $"guiSucceeded={last.GuiThreadInfoSucceeded}; guiError={last.GuiThreadInfoError}; threadError={last.ThreadLookupError}; "
+                        + $"rootAlive={N.IsWindow(root)}; rootVisible={N.IsWindowVisible(root)}; rootEnabled={N.IsWindowEnabled(root)}; "
+                        + $"fieldAlive={N.IsWindow(field)}; fieldVisible={N.IsWindowVisible(field)}; fieldEnabled={N.IsWindowEnabled(field)}.");
+                }
             }
             async Task Until(Func<bool> condition)
             {

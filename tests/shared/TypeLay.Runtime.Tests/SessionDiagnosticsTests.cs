@@ -12,6 +12,59 @@ public sealed class SessionDiagnosticsCollection;
 public sealed class SessionDiagnosticsTests
 {
     [Fact]
+    public void DisposedControllerDoesNotInspectTheHookOrTraceALateDirectReceipt()
+    {
+        WithTrace(path =>
+        {
+            using var s = new SessionScenario(WorkMode.OnDemand);
+            s.Service.PendingDirectWrite = new();
+            s.Command("direct");
+            s.Tick();
+            s.CompleteTranslation("translated");
+            Assert.Single(s.Service.DirectWrites);
+            s.Controller.Dispose();
+            Assert.True(s.Input.Disposed);
+            int focusChecks = s.Input.FocusChecks;
+            s.Service.PendingDirectWrite.SetResult(new(WriteStatus.Verified, Denial.None));
+            s.Tick();
+            Assert.Equal(0, s.Input.DisposedEpochReads);
+            Assert.Equal(focusChecks, s.Input.FocusChecks);
+            Assert.DoesNotContain("direct-write-result", File.ReadAllText(path));
+            Assert.Single(s.Service.DirectWrites);
+        });
+    }
+
+    [Theory]
+    [InlineData(WriteStatus.Verified, Denial.None)]
+    [InlineData(WriteStatus.RejectedBeforeMutation, Denial.EpochChanged)]
+    public void DirectReceiptTraceBelongsToTheSubmittedPlanAndActualResult(WriteStatus status, Denial reason)
+    {
+        WithTrace(path =>
+        {
+            using var s = new SessionScenario(WorkMode.OnDemand);
+            s.Service.PendingDirectWrite = new();
+            s.Command("direct");
+            s.Tick();
+            s.CompleteTranslation("private-direct-result");
+            var plan = Assert.Single(s.Service.DirectWrites);
+            string pending = File.ReadAllText(path);
+            Assert.DoesNotContain("direct-write-result", pending);
+            using var start = ReadOperation(pending, "direct-write-start");
+            Assert.Equal(plan.Id, start.RootElement.GetProperty("planId").GetGuid());
+            s.Service.PendingDirectWrite.SetResult(new(status, reason));
+            s.Tick();
+            string trace = File.ReadAllText(path);
+            Assert.DoesNotContain("private-direct-result", trace);
+            Assert.DoesNotContain(plan.Expected.Text, trace);
+            using var result = ReadOperation(trace, "direct-write-result");
+            Assert.Equal(plan.Id, result.RootElement.GetProperty("planId").GetGuid());
+            Assert.Equal(status.ToString(), result.RootElement.GetProperty("detail").GetProperty("status").GetString());
+            Assert.Equal(reason.ToString(), result.RootElement.GetProperty("detail").GetProperty("reason").GetString());
+            Assert.Single(s.Service.DirectWrites);
+        });
+    }
+
+    [Fact]
     public void RejectedWakeTraceCorrelatesTheCommandWithoutLeakingItsSource()
     {
         WithTrace(path =>

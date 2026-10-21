@@ -860,6 +860,7 @@ jobs:
             artifacts/linux/setup-settings/
             artifacts/linux/setup-tutorial/
             artifacts/linux/ordinary-gimp/*.json
+            artifacts/linux/ordinary-gimp/controller.jsonl
             artifacts/linux/ordinary-gimp/*.png
             artifacts/linux/ordinary-gimp/*.log
             artifacts/linux/firefox-native/

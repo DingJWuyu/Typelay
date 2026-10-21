@@ -29,6 +29,17 @@ def acceptable_candidate(read_candidate, ready_to_accept, original):
     return (candidate, ready) if ready else None
 
 
+def direct_write_receipt(rows):
+    starts = [r for r in rows if r.get("operation") == "direct-write-start"]
+    results = [r for r in rows if r.get("operation") == "direct-write-result"]
+    assert len(starts) <= 1 and len(results) <= 1, "multiple direct operations after single input"
+    if not results:
+        return None
+    assert len(starts) == 1 and starts[0].get("planId"), "direct result has no submitted plan"
+    assert results[0].get("planId") == starts[0]["planId"], "direct result belongs to another plan"
+    return results[0]
+
+
 def unique_owned_window(observed, pid, title):
     matches = [w for w in observed if w.get("pid") == pid and w.get("title") == title]
     assert len(matches) <= 1, "ambiguous ordinary application window"
@@ -829,9 +840,25 @@ def run_gimp(
         key("Escape")
         offset = trace_checkpoint()
         key("ctrl+shift+F10")
-        wait_for(
-            lambda: verified_write(offset), "single direct replacement not verified", timeout=60
-        )
+
+        def direct_result():
+            with (arguments.output / "controller.jsonl").open("rb") as trace:
+                trace.seek(offset)
+                data = trace.read()
+            rows = [json.loads(line) for line in data[: data.rfind(b"\n") + 1].splitlines()]
+            receipt = direct_write_receipt(rows)
+            if receipt is None:
+                return None
+            report["directReceipt"] = receipt
+            detail = receipt["detail"]
+            if detail["status"] == "RejectedBeforeMutation":
+                assert text(source) == original, "rejected direct request changed original text"
+            assert detail == {"status": "Verified", "reason": "None"}, (
+                f"single direct replacement failed: {detail}"
+            )
+            return receipt
+
+        wait_for(direct_result, "single direct replacement receipt missing", timeout=60)
         replacement = text(source)
         assert replacement != original
         passed(
