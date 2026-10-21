@@ -337,6 +337,82 @@ if ($errors.Count -ne 0) { exit 1 }
             self.assertFalse(report["capabilities"]["registrationAllowed"])
             self.assertFalse(report["capabilities"]["writebackAllowed"])
 
+    def test_file_metadata_failure_is_unknown_not_target_permission(self):
+        detail = {"category": "notepad-file-query-failed", "hresult": -2146233087}
+        cases = (
+            (detail, None, False, True),
+            (detail, None, True, False),
+            (detail | {"message": "private-sentinel"}, None, False, False),
+            (detail | {"category": "private-sentinel"}, None, False, False),
+            (detail | {"hresult": True}, None, False, False),
+            (detail | {"hresult": 2**31}, None, False, False),
+            ("private-sentinel", None, False, False),
+            (detail, {"path": "private-sentinel"}, False, False),
+        )
+        for error, file, native_fails, collected in cases:
+            with (
+                self.subTest(error=error, native_fails=native_fails),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                path = Path(directory) / "report.json"
+                metadata = {
+                    "notepadProcesses": [],
+                    "notepadFile": file,
+                    "notepadFileError": error,
+                    "notepadPackages": [],
+                }
+                with (
+                    patch.object(probe, "admission", return_value=[]),
+                    patch.dict(os.environ, {"WINDIR": "C:/Windows"}),
+                    patch.object(
+                        probe,
+                        "subprocess",
+                        SimpleNamespace(
+                            run=Mock(
+                                return_value=subprocess.CompletedProcess(
+                                    "fixed-query", 0, json.dumps(metadata)
+                                )
+                            ),
+                            CalledProcessError=subprocess.CalledProcessError,
+                            SubprocessError=subprocess.SubprocessError,
+                        ),
+                    ),
+                    patch.object(
+                        probe,
+                        "native_observation",
+                        return_value={},
+                        side_effect=OSError("private-sentinel") if native_fails else None,
+                    ),
+                ):
+                    self.assertEqual(2, probe.main(["--output", str(path)]))
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn("private-sentinel", text)
+                report = json.loads(text)
+                if collected:
+                    self.assertEqual("observed-prerequisites-only", report["status"])
+                    self.assertEqual(detail, report["metadata"]["notepadFileError"])
+                    capabilities = report["capabilities"]  # Real assess called by public main.
+                    for key in (
+                        "notepadFileMetadata",
+                        "notepadInstallation",
+                        "notepadWindow",
+                        "activeChineseImeInTarget",
+                        "completeCommittedTextAndSelection",
+                    ):
+                        self.assertEqual("unknown", capabilities[key])
+                    for key in (
+                        "targetIdentityVerified",
+                        "registrationAllowed",
+                        "writebackAllowed",
+                    ):
+                        self.assertIs(False, capabilities[key])
+                else:
+                    self.assertEqual("blocked", report["status"])
+                    self.assertNotIn("metadata", report)
+                    self.assertEqual(
+                        "native" if native_fails else "decode", report["failure"]["stage"]
+                    )
+
     def test_query_timeout_preserves_blocked_report(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "report.json"

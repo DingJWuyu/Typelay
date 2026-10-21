@@ -24,6 +24,7 @@ $result = [ordered]@{
     languages = @()
     languageError = $null
     notepadFile = $null
+    notepadFileError = $null
     notepadPackages = @()
     packageError = $null
     notepadProcesses = @()
@@ -35,11 +36,19 @@ try {
     })
 } catch { $result.languageError = $_.Exception.GetType().FullName }
 $stage = 'notepad-file'
+# Reference metadata only; the native runner independently verifies its owned target.
+try {
 if (Test-Path -LiteralPath $notepad -PathType Leaf) {
     $file = Get-Item -LiteralPath $notepad
     $result.notepadFile = [ordered]@{
         path = $file.FullName; version = $file.VersionInfo.FileVersion
         sha256 = (Get-FileHash -LiteralPath $notepad -Algorithm SHA256).Hash
+    }
+}
+} catch {
+    $result.notepadFile = $null
+    $result.notepadFileError = [ordered]@{
+        category = 'notepad-file-query-failed'; hresult = [int]$_.Exception.HResult
     }
 }
 $stage = 'packages'
@@ -127,6 +136,7 @@ def assess(metadata, native):
     languages = metadata.get("languages", [])
     chinese = [row for row in languages if row.get("languageTag", "").lower().startswith("zh-")]
     return {
+        "notepadFileMetadata": "present" if metadata.get("notepadFile") else "unknown",
         "notepadInstallation": "present"
         if metadata.get("notepadFile") or metadata.get("notepadPackages")
         else "unknown",
@@ -415,6 +425,18 @@ def main(argv=None):
                 )
                 failure_stage = "decode"
                 metadata = json.loads(completed.stdout.lstrip("\ufeff"))
+                # A local file-query failure is reference metadata, not permission.
+                # Reject unexpected diagnostic payloads before storing metadata.
+                file_error = metadata.get("notepadFileError")
+                if file_error is not None and (
+                    type(file_error) is not dict
+                    or set(file_error) != {"category", "hresult"}
+                    or file_error["category"] != "notepad-file-query-failed"
+                    or type(file_error["hresult"]) is not int
+                    or not -(2**31) <= file_error["hresult"] < 2**31
+                    or metadata.get("notepadFile") is not None
+                ):
+                    raise ValueError("invalid-file-diagnostic")
                 failure_stage = "native"
                 native = native_observation(
                     {

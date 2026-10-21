@@ -1515,7 +1515,12 @@ static void glossary_open(Target *target, JsonObject *data) {
             if (!glossary_transfer(form, FALSE)) glossary_close(FALSE, TRUE);
         } else gtk_widget_grab_focus(form->terms[0]);
     }
-    if (glossary_current(form)) glossary_sync();
+    if (glossary_current(form) && overlay.target == target) {
+        /* The guarded source handoff suppresses focus notifications. Publish
+         * the actual auxiliary focus before a following renew reads its cache. */
+        if (source_origin) tl_overlay_sync();
+        else glossary_sync();
+    }
     glossary_unref(form);
 }
 static void glossary_result(Target *target, JsonObject *data) {

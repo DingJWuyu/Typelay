@@ -124,9 +124,17 @@ internal static partial class BrowserCooperationCheck
                 if (File.Exists(portFile))
                 {
                     setStage("read-cft-cdp-port");
-                    lines = await File.ReadAllLinesAsync(portFile, ct);
-                    if (lines.Length == 2 && int.TryParse(lines[0], out _))
-                        break;
+                    try
+                    {
+                        lines = await File.ReadAllLinesAsync(portFile, ct);
+                        if (lines.Length == 2 && int.TryParse(lines[0], out _))
+                            break;
+                    }
+                    catch (IOException error) when (error.HResult == unchecked((int)0x80070020))
+                    {
+                        // An existing endpoint file can still be locked while being published.
+                        // Keep observing under the original setup deadline.
+                    }
                 }
                 setStage("wait-cft-cdp-port");
                 await Task.Delay(40, ct);

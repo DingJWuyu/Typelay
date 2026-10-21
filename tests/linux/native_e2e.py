@@ -579,11 +579,13 @@ def _gtk4_source_glossary(out, environment, deadline):
                         before = len(native.events)
 
                         def renew():
-                            call("overlay-renew", {**base, "expiresAtMs": now_ms() + 800})
+                            return call("overlay-renew", {**base, "expiresAtMs": now_ms() + 800})
 
-                        def observe(predicate, label):
+                        def observe(predicate, label, *, require_visible=False):
                             def check():
-                                renew()
+                                renewed = renew()
+                                if require_visible:
+                                    assert renewed["visible"], "opened source form lost on renewal"
                                 return predicate(state())
 
                             return wait_for(check, f"{view_state}/{finish}: {label}")
@@ -691,6 +693,7 @@ def _gtk4_source_glossary(out, environment, deadline):
                             .get("typelay-glossary-source", {})
                             .get("focused"),
                             "source term focused",
+                            require_visible=True,
                         )
                         unchanged()
                         if finish in ("save", "cancel"):

@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Threading;
 using TypeLay.App;
 using TypeLay.Core;
 using TypeLay.Runtime;
@@ -1164,7 +1165,12 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                             hook = hook.AcceptanceDiagnostics(plan.Lease, plan.Permit)
                         }));
                     Assert.False(child!.Process.HasExited);
-                    await Task.Delay(1, deadline.Token);
+                    deadline.Token.ThrowIfCancellationRequested();
+                    // A 1 ms timer delay can span a Windows clock tick. Yield this
+                    // short original-deadline observation to the dispatcher instead,
+                    // so its ACK and input work can run before our next probe.
+                    await Dispatcher.Yield(DispatcherPriority.Background);
+                    deadline.Token.ThrowIfCancellationRequested();
                 }
             }
             async Task Until(Func<bool> condition)
