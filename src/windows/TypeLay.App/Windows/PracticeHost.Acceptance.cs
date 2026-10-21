@@ -486,7 +486,7 @@ internal sealed partial class PracticeHost
                 _nextAcceptance = null;
             else
             {
-                if (current.State is "install" or "installed" && current.Plan.Permit.ExpiresAtMs - now <= 25)
+                if (current.State is "install" or "installed" && current.Plan.Permit.ExpiresAtMs - now <= KeyboardHook.OwnedAcceptanceHandoffMs)
                     RevokeCurrentAcceptance();
                 return;
             }

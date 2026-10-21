@@ -847,6 +847,43 @@ static gboolean textview_ticket_claim(gpointer ticket, Target *target) {
 }
 #include "../common/gtk-textbuffer-write.inc"
 
+/* Failure-only diagnostics compare already-held scalar state. No provider,
+   focus, text, or configuration query is performed on this path. */
+static JsonObject *epoch_rejected(Target *target, JsonObject *basis, JsonObject *approved,
+                                  gboolean direct, const char *phase) {
+    static guint emitted;
+    if (direct && g_getenv("TYPELAY_TRACE") && emitted < 16) {
+        emitted++;
+        JsonObject *old = tl_object(basis, "contextStamp"), *fresh = tl_object(approved, "contextStamp");
+        const TlFcitxStateV1 *state = &target->im_state;
+        g_printerr("TypeLay GTK3 direct epoch phase=%s observed=%d "
+            "basisContext=%d basisEpoch=%d basisInput=%d basisServer=%d basisApplied=%d basisFlags=%d "
+            "approvedContext=%d approvedEpoch=%d approvedInput=%d approvedServer=%d approvedApplied=%d approvedFlags=%d "
+            "basisInputRevision=%d basisContentRevision=%d basisFocusRevision=%d "
+            "approvedInputRevision=%d approvedContentRevision=%d approvedFocusRevision=%d atMs=%" G_GINT64_FORMAT "\n",
+            phase, target->im_observed,
+            (gint64)state->context_generation == tl_integer(old, "context", -1),
+            (gint64)state->epoch == tl_integer(old, "epoch", -1),
+            (gint64)state->input_epoch == tl_integer(old, "input", -1),
+            (gint64)state->server_serial == tl_integer(old, "server", -1),
+            (gint64)state->applied_serial == tl_integer(old, "applied", -1),
+            (gint64)state->flags == tl_integer(old, "flags", -1),
+            (gint64)state->context_generation == tl_integer(fresh, "context", -1),
+            (gint64)state->epoch == tl_integer(fresh, "epoch", -1),
+            (gint64)state->input_epoch == tl_integer(fresh, "input", -1),
+            (gint64)state->server_serial == tl_integer(fresh, "server", -1),
+            (gint64)state->applied_serial == tl_integer(fresh, "applied", -1),
+            (gint64)state->flags == tl_integer(fresh, "flags", -1),
+            (gint64)target->input_revision == tl_integer(basis, "inputRevision", -1),
+            (gint64)target->content_revision == tl_integer(basis, "contentRevision", -1),
+            (gint64)target->focus_revision == tl_integer(basis, "focusRevision", -1),
+            (gint64)target->input_revision == tl_integer(approved, "inputRevision", -1),
+            (gint64)target->content_revision == tl_integer(approved, "contentRevision", -1),
+            (gint64)target->focus_revision == tl_integer(approved, "focusRevision", -1), tl_now());
+    }
+    return receipt("RejectedBeforeMutation", "EpochChanged");
+}
+
 static JsonObject *write_source(Target *target, JsonObject *request, gboolean direct, OrderedTicket *ticket) {
     JsonObject *plan = tl_object(request, "plan"), *basis = tl_object(request, "authority");
     JsonObject *approved = direct ? tl_object(request, "approved") : basis;
@@ -856,14 +893,14 @@ static JsonObject *write_source(Target *target, JsonObject *request, gboolean di
     const char *generation = tl_string(request, "generation");
     if (!tl_configuration_current(generation)
         || (!direct && !tl_session_matches(tl_object(basis, "sessionBindings"))))
-        return receipt("RejectedBeforeMutation", "EpochChanged");
+        return epoch_rejected(target, basis, approved, direct, "generation-before-ime");
     gboolean direct_entry = direct && standard_entry(target);
     if (target->mutating || target->quarantined || !inspect_ime(target)
         || !write_ime_clear(target, direct_entry))
         return receipt("RejectedBeforeMutation", "ImeUnclear");
     if (!tl_configuration_current(generation)
         || (!direct && !tl_session_matches(tl_object(basis, "sessionBindings"))))
-        return receipt("RejectedBeforeMutation", "EpochChanged");
+        return epoch_rejected(target, basis, approved, direct, "generation-after-ime");
     gint64 now = tl_now(), until = tl_integer(request, "expiresAtMs", 0);
     if (until < now || until - now > (direct ? 250 : 100))
         return receipt("RejectedBeforeMutation", "StaleObservation");
@@ -871,17 +908,17 @@ static JsonObject *write_source(Target *target, JsonObject *request, gboolean di
         return receipt("RejectedBeforeMutation", "Sensitive");
     if (ticket ? !tl_ordered_check(ticket, target, TRUE, TRUE)
         : direct_entry ? !direct_authority_matches(target, basis, approved) : !stamp_matches(target, basis))
-        return receipt("RejectedBeforeMutation", "EpochChanged");
+        return epoch_rejected(target, basis, approved, direct, "authority");
     if ((gint64)target->content_revision != tl_integer(basis, "contentRevision", -1))
         return receipt("RejectedBeforeMutation", "SourceChanged");
     if ((gint64)target->input_revision != tl_integer(basis, "inputRevision", -1)
         || (!direct_entry && (tl_focused() != target
             || (gint64)target->focus_revision != tl_integer(basis, "focusRevision", -1))))
-        return receipt("RejectedBeforeMutation", "EpochChanged");
+        return epoch_rejected(target, basis, approved, direct, "input-or-focus");
     g_auto(EntryFocusGuard) focus_guard = {0};
     if (standard_entry(target) && !entry_focus_init(target,
         target->im_state.flags == (TL_FCITX_KNOWN | TL_FCITX_DETACHED), &focus_guard))
-        return receipt("RejectedBeforeMutation", "EpochChanged");
+        return epoch_rejected(target, basis, approved, direct, "entry-focus");
     gint start, end;
     char *text = read_text(target, &start, &end);
     const char *original = tl_string(expected, "text"), *replacement = tl_string(plan, "replacement");

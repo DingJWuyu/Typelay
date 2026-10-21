@@ -11,6 +11,7 @@ from gtk_session_reentry import (  # noqa: E402
     click_point,
     clickable_control,
     expand_click_point,
+    expand_hover_current,
     parent_geometry_ready,
     validated_geometry,
 )
@@ -168,6 +169,55 @@ class GtkReentryGeometryTests(unittest.TestCase):
                 self.assertRaisesRegex(AssertionError, "lease expired"),
             ):
                 expand_click_point(snapshot, evidence, (1280, 800), 801)
+
+    def test_expand_hover_requires_same_live_button_and_original_point_before_deadline(self):
+        evidence = {"renderReturnedAtMonoMs": 100, "expiresAtMs": 800}
+        button = {
+            "visible": True,
+            "enabled": True,
+            "instance": 7,
+            "scale": 1,
+            "x": 1100,
+            "y": 120,
+            "width": 80,
+            "height": 28,
+            "pointerInside": True,
+            "pointerEnteredAtMs": 150,
+        }
+        actual = {
+            "fullscreen": True,
+            "width": 1280,
+            "height": 800,
+            "scale": 1,
+            "observedAtMs": 210,
+            "overlayControls": {"fixture-expand": button},
+        }
+
+        def current(snapshot, now=220):
+            return expand_hover_current(snapshot, evidence, (1280, 800), now, 7, (1140, 134), 200)
+
+        # A real prior enter is still current after the one move, until leave/unmap.
+        self.assertTrue(current(actual))
+        for changed in (
+            {"pointerInside": False},
+            {"pointerEnteredAtMs": 0},
+            {"instance": 8},
+            {"visible": False},
+            {"enabled": False},
+            {"x": 1110},
+            {"scale": 2},
+        ):
+            with self.subTest(changed=changed):
+                self.assertFalse(
+                    current(
+                        {**actual, "overlayControls": {"fixture-expand": {**button, **changed}}}
+                    )
+                )
+        for changed in ({"observedAtMs": 199}, {"width": 640}, {"scale": 2}, {"fullscreen": False}):
+            with self.subTest(changed=changed):
+                self.assertFalse(current({**actual, **changed}))
+        with self.assertRaisesRegex(AssertionError, "lease expired"):
+            current(actual, 801)
 
     def test_click_maps_parent_local_point_at_native_scale(self):
         actual = {"fullscreen": True, "width": 640, "height": 400, "scale": 2}

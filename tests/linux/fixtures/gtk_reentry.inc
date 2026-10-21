@@ -54,6 +54,28 @@ static void observe_expand(GtkWidget *widget, const char *phase, GdkEventButton 
     json_object_set_object_member(value, "eventWindow", expand_event_window(widget));
     expand_transitions[expand_transition_count++] = value;
 }
+static void observe_expand_crossing(GtkButton *button, gpointer data) {
+    GtkWidget *widget = GTK_WIDGET(button);
+    gboolean entering = GPOINTER_TO_INT(data);
+    GdkEvent *event = gtk_get_current_event();
+    if (event && event->type == (entering ? GDK_ENTER_NOTIFY : GDK_LEAVE_NOTIFY)
+        && !event->crossing.send_event
+        && event->crossing.window == gtk_button_get_event_window(button)) {
+        g_object_set_data(G_OBJECT(widget), "fixture-expand-pointer-inside", GINT_TO_POINTER(entering));
+        if (entering) {
+            g_object_set_data_full(G_OBJECT(widget), "fixture-expand-enter-window",
+                g_object_ref(event->crossing.window), g_object_unref);
+            g_object_set_data(G_OBJECT(widget), "fixture-expand-enter-at",
+                (gpointer)(gintptr)(g_get_monotonic_time() / 1000));
+        }
+        observe_expand(widget, entering ? "entered" : "left", NULL);
+    }
+    if (event) gdk_event_free(event);
+}
+static void observe_expand_unmapped(GtkWidget *widget, gpointer data) {
+    (void)data;
+    g_object_set_data(G_OBJECT(widget), "fixture-expand-pointer-inside", NULL);
+}
 static void observe_expand_button(GtkButton *widget, gpointer data) {
     GdkEvent *event = gtk_get_current_event();
     GdkEventButton *pointer = event && (event->type == GDK_BUTTON_PRESS
@@ -154,6 +176,11 @@ static void watch_session_button(GtkWidget *widget) {
 #if GTK_MAJOR_VERSION == 3
     if (expand) {
         observe_expand(widget, "watching", NULL);
+        /* GtkButton already selects crossing events. Connecting these public
+         * signals does not add event masks/controllers or consume input. */
+        g_signal_connect(widget, "enter", G_CALLBACK(observe_expand_crossing), GINT_TO_POINTER(TRUE));
+        g_signal_connect(widget, "leave", G_CALLBACK(observe_expand_crossing), GINT_TO_POINTER(FALSE));
+        g_signal_connect(widget, "unmap", G_CALLBACK(observe_expand_unmapped), NULL);
         g_signal_connect(widget, "pressed", G_CALLBACK(observe_expand_button), "pressed");
         g_signal_connect(widget, "released", G_CALLBACK(observe_expand_button), "released");
         g_signal_connect(widget, "clicked", G_CALLBACK(observe_expand_button), "clicked");

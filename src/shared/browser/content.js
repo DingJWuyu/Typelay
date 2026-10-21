@@ -177,13 +177,18 @@
   function now(upper = false) {
     return clockValid() ? (upper ? clock.upper + monoNow() : Math.floor(clock.lower + monoNow())) : NaN;
   }
-  function issued(field, basis, diagnostic = null) {
+  function issued(field, basis, diagnostic = null, triggerMono = NaN) {
     const record = field?.authorities?.get(basis?.token);
     if (!record) return clockReject("authorityMissing");
     if (record.key !== JSON.stringify(basis)) return clockReject("authorityChanged");
     const elapsed = monoNow() - record.mono;
     // Project this exact proof sample; diagnostics must not sample the clock again.
-    if (diagnostic) diagnostic.policyAuthorityAgeMs = boundedMetric(elapsed);
+    if (diagnostic) {
+      diagnostic.policyAuthorityAgeMs = boundedMetric(elapsed);
+      // The original event timestamp and this authority's performance.now()
+      // share this document's time origin. Record only after exact basis proof.
+      diagnostic.policyAuthorityAgeAtTriggerMs = boundedMetric(triggerMono - record.mono);
+    }
     if (elapsed < 0 || elapsed + CLOCK_MARGIN > 150) return clockReject("authorityExpired");
     if (Math.abs(Date.now() - record.wall - elapsed) > 20) return clockReject("authorityClock");
     return record;
@@ -265,17 +270,17 @@
     const remaining = Math.min(current.expiresAtPerformanceMs - monoNow(), current.expiresAtWallMs - Date.now());
     commandOwnerTimer = setTimeout(() => { if (commandOwner === current) retireCommandOwner(); }, Math.max(0, Math.ceil(remaining)));
   }
-  function commandPolicyProof(field, basis, diagnostic = null, phase = null) {
+  function commandPolicyProof(field, basis, diagnostic = null, phase = null, triggerMono = NaN) {
     if (diagnostic) {
       diagnostic.policyCheckPhase = phase;
-      diagnostic.policyAuthorityAgeMs = null;
+      diagnostic.policyAuthorityAgeMs = diagnostic.policyAuthorityAgeAtTriggerMs = null;
     }
     drainMutations();
     // Project only the first original short-circuit failure into the existing
     // per-key diagnostic; no state is reread and the owner proof is unchanged.
     const check = (value, reason) => commandCheck(ownerCheck(value, reason), diagnostic, reason.startsWith("Policy") ? reason : "Policy" + reason);
     const checkIssued = () => {
-      const value = !!issued(field, basis, diagnostic);
+      const value = !!issued(field, basis, diagnostic, triggerMono);
       const reason = {authorityMissing: "PolicyAuthorityMissing", authorityChanged: "PolicyAuthorityChanged",
         authorityExpired: "PolicyAuthorityExpired", authorityClock: "PolicyAuthorityClock"}[lastClockReason]
         || "PolicyAuthorityMissing";
@@ -302,7 +307,7 @@
     if (!kind) return null;
     commandDiagnosticCount++;
     return {kind, firstReason: "NotDispatched", commandSent: false, hasNative: false,
-      policyAuthorityAgeMs: null, policyCheckPhase: null};
+      policyAuthorityAgeMs: null, policyAuthorityAgeAtTriggerMs: null, policyCheckPhase: null};
   }
   function commandCheck(value, diagnostic, reason) {
     if (!value && diagnostic?.firstReason === "NotDispatched") diagnostic.firstReason = reason;
@@ -348,14 +353,14 @@
     if (field.ime !== "Clear") return reject("ImeUnclear");
     if (!commandCheck(!!policy, diagnostic, "PolicyMissing")
       || !commandCheck(policy.field === field, diagnostic, "PolicyFieldMismatch")
-      || !commandPolicyProof(field, policy.authority, diagnostic, "before-capture")) return reject("PolicyUnavailable");
+      || !commandPolicyProof(field, policy.authority, diagnostic, "before-capture", triggerMono)) return reject("PolicyUnavailable");
     const snapshot = capture(field, policy.authority, true);
     const captureMono = monoNow(), captureUpperMs = Math.ceil(frozenClock.upper + captureMono);
     if (!commandCheck(!!snapshot, diagnostic, "CaptureUnavailable")
       || !commandCheck(commandPolicy === policy, diagnostic, "PolicyChanged")
       || !commandCheck(commandOwner === current, diagnostic, "OwnerChanged")
       || !commandCheck(commandOwnerCurrent(), diagnostic, "OwnerUnavailable")
-      || !commandCheck(commandPolicyProof(field, policy.authority, diagnostic, "after-capture"), diagnostic, "PolicyUnavailable")
+      || !commandCheck(commandPolicyProof(field, policy.authority, diagnostic, "after-capture", triggerMono), diagnostic, "PolicyUnavailable")
       || !commandCheck(!(triggerMono > captureMono), diagnostic, "CaptureBeforeTrigger")
       || !commandCheck(Number.isSafeInteger(captureUpperMs), diagnostic, "CaptureTimeInvalid")
       || !commandCheck(captureUpperMs <= current.expiresAtMs, diagnostic, "OwnerExpiredAtCapture")

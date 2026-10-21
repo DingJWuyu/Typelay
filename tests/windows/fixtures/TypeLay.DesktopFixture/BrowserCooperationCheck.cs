@@ -77,7 +77,8 @@ internal static partial class BrowserCooperationCheck
     }
     private sealed record CommandPathEntry(long AtMs, string Stage, string Reason, string Kind,
         bool? CommandSent, bool? HasNative, long? AgeMs, double? PolicyAuthorityAgeMs,
-        string? PolicyCheckPhase, string? PolicyRenewalPhase);
+        string? PolicyCheckPhase, string? PolicyRenewalPhase, long? PolicyRenewalCycleAgeMs,
+        long? PolicyRenewalCycleSequence, long? ReadyPolicyRemainingMs, long? PendingPolicyRemainingMs, double? PolicyAuthorityAgeAtTriggerMs);
     private static bool ObserveDom(PageState state, Scene scene, string expected)
     {
         // The wait already read this state. Preserve those observations even if
@@ -111,17 +112,25 @@ internal static partial class BrowserCooperationCheck
                 string? kind = detail.GetProperty("kind").GetString();
                 static bool? Flag(JsonElement item, string key) => item.TryGetProperty(key, out var field)
                     && field.ValueKind is JsonValueKind.True or JsonValueKind.False ? field.GetBoolean() : null;
+                static long? BoundedLong(JsonElement item, string key, long lower = -10000, long upper = 10000) =>
+                    item.TryGetProperty(key, out var field) && field.ValueKind == JsonValueKind.Number && field.TryGetInt64(out long value)
+                        ? Math.Clamp(value, lower, upper) : null;
                 long? age = detail.TryGetProperty("ageMs", out var metric) && metric.ValueKind == JsonValueKind.Number && metric.TryGetInt64(out long number)
                     ? Math.Clamp(number, -10000, 10000) : null;
                 double? policyAge = detail.TryGetProperty("policyAuthorityAgeMs", out var policyMetric)
                     && policyMetric.ValueKind == JsonValueKind.Number && policyMetric.TryGetDouble(out double policyNumber)
                     && double.IsFinite(policyNumber) ? Math.Round(Math.Clamp(policyNumber, -10000, 10000), 1) : null;
+                double? triggerPolicyAge = detail.TryGetProperty("policyAuthorityAgeAtTriggerMs", out var triggerMetric)
+                    && triggerMetric.ValueKind == JsonValueKind.Number && triggerMetric.TryGetDouble(out double triggerNumber)
+                    && double.IsFinite(triggerNumber) ? Math.Round(Math.Clamp(triggerNumber, -10000, 10000), 1) : null;
                 string? policyPhase = BrowserInput.String(detail, "policyCheckPhase");
                 string? renewalPhase = BrowserInput.String(detail, "policyRenewalPhase");
                 records.Add(new(value.GetProperty("atMs").GetInt64(), stage!, reason!,
                     kind is "wake" or "direct" ? kind : "unknown", Flag(detail, "commandSent"), Flag(detail, "hasNative"), age,
                     policyAge, policyPhase is "before-capture" or "after-capture" ? policyPhase : null,
-                    renewalPhase is "idle" or "describe" or "approve" ? renewalPhase : null));
+                    renewalPhase is "idle" or "describe" or "approve" ? renewalPhase : null,
+                    BoundedLong(detail, "policyRenewalCycleAgeMs"), BoundedLong(detail, "policyRenewalCycleSequence", 0, 1000000),
+                    BoundedLong(detail, "readyPolicyRemainingMs"), BoundedLong(detail, "pendingPolicyRemainingMs"), triggerPolicyAge));
                 if (records.Count == 32)
                     break;
             }

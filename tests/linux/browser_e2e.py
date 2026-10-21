@@ -527,7 +527,11 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(len(diagnostics), 1)
         diagnostic = diagnostics[0]
         self.assertEqual(
-            {key: value for key, value in diagnostic.items() if key != "policyAuthorityAgeMs"},
+            {
+                key: value
+                for key, value in diagnostic.items()
+                if key not in ("policyAuthorityAgeMs", "policyAuthorityAgeAtTriggerMs")
+            },
             {
                 "kind": "direct",
                 "firstReason": "Sent",
@@ -535,6 +539,10 @@ class BrowserContract(unittest.TestCase):
                 "hasNative": True,
                 "policyCheckPhase": "after-capture",
             },
+        )
+        self.assertGreaterEqual(diagnostic["policyAuthorityAgeAtTriggerMs"], 0)
+        self.assertLessEqual(
+            diagnostic["policyAuthorityAgeAtTriggerMs"], diagnostic["policyAuthorityAgeMs"]
         )
         self.assertGreaterEqual(diagnostic["policyAuthorityAgeMs"], 0)
         self.assertLessEqual(diagnostic["policyAuthorityAgeMs"], 146)
@@ -587,6 +595,7 @@ class BrowserContract(unittest.TestCase):
                     "commandSent": False,
                     "hasNative": False,
                     "policyAuthorityAgeMs": None,
+                    "policyAuthorityAgeAtTriggerMs": None,
                     "policyCheckPhase": None,
                 }
             ],
@@ -609,7 +618,11 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(len(diagnostics), 1)
         diagnostic = diagnostics[0]
         self.assertEqual(
-            {key: value for key, value in diagnostic.items() if key != "policyAuthorityAgeMs"},
+            {
+                key: value
+                for key, value in diagnostic.items()
+                if key not in ("policyAuthorityAgeMs", "policyAuthorityAgeAtTriggerMs")
+            },
             {
                 "kind": "direct",
                 "firstReason": "PolicyAuthorityExpired",
@@ -617,6 +630,10 @@ class BrowserContract(unittest.TestCase):
                 "hasNative": False,
                 "policyCheckPhase": "before-capture",
             },
+        )
+        self.assertGreater(diagnostic["policyAuthorityAgeAtTriggerMs"], 146)
+        self.assertLessEqual(
+            diagnostic["policyAuthorityAgeAtTriggerMs"], diagnostic["policyAuthorityAgeMs"]
         )
         self.assertGreater(diagnostic["policyAuthorityAgeMs"], 146)
         self.assertLessEqual(diagnostic["policyAuthorityAgeMs"], 10000)

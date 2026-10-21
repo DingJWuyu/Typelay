@@ -392,6 +392,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
     [InlineData("password")]
     [InlineData("hidden")]
     [InlineData("parent-disabled")]
+    [InlineData("disabled")]
     public Task ProductionOwnedCaptureRechecksLiveFieldMetadata(string change) => desktop.RunAsync(async () =>
     {
         await using var scene = new QueueScene(true);
@@ -433,6 +434,9 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 case "parent-disabled":
                     EnableWindow(scene.Root, false);
                     break;
+                case "disabled":
+                    EnableWindow(scene.Field, false);
+                    break;
             }
             var refused = await broker.CallAsync(request);
             Assert.Null(refused.Snapshot);
@@ -451,7 +455,66 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             // Restore only the fixture-owned root so its normal close path remains available.
             if (change == "parent-disabled")
                 EnableWindow(scene.Root, true);
+            if (change == "disabled")
+                EnableWindow(scene.Field, true);
         }
+    });
+
+    [Fact]
+    public Task RepeatedOwnedCaptureReadsNewBodySelectionAndSafeLabel() => desktop.RunAsync(async () =>
+    {
+        await using var scene = new QueueScene(true);
+        await scene.Start(true);
+        using var broker = new BrokerClient();
+        await broker.StartAsync();
+        var request = new BrokerRequest(BrokerProtocol.Version, 0, "capture-owned", "", OwnedCapture: scene.Descriptor);
+        var first = Assert.IsType<InputSnapshot>((await broker.CallAsync(request)).Snapshot);
+        const string changed = "A fresh controlled source";
+        N.SendString(scene.Field, N.WM_SETTEXT, changed);
+        N.Send(scene.Field, N.EM_SETSEL, 2, 7);
+        nint label = GetWindow(scene.Field, 3);
+        N.SendString(label, N.WM_SETTEXT, "Updated practice input");
+        var next = Assert.IsType<InputSnapshot>((await broker.CallAsync(request)).Snapshot);
+        Assert.Equal(first.Target, next.Target);
+        Assert.Equal(changed, next.Text);
+        Assert.Equal(new TextRange(2, 7), next.Selection);
+        Assert.True(next.InputEpoch > first.InputEpoch);
+        Assert.True(next.ObservedAtMs >= first.ObservedAtMs);
+        Assert.Equal(ImeState.Clear, next.Ime);
+        Assert.True(next.WriteSupported);
+        Assert.False(next.DirectWriteSupported);
+        Assert.Equal(changed, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        Assert.Equal(new TextRange(2, 7), N.ReadSelection(scene.Field));
+    });
+
+    [Fact]
+    public Task DestroyedOwnedWindowCannotSupplyMetadataForANewPractice() => desktop.RunAsync(async () =>
+    {
+        using var broker = new BrokerClient();
+        await broker.StartAsync();
+        BrokerRequest oldRequest;
+        TargetId oldTarget;
+        await using (var previous = new QueueScene(true))
+        {
+            await previous.Start(true);
+            oldRequest = new(BrokerProtocol.Version, 0, "capture-owned", "", OwnedCapture: previous.Descriptor);
+            oldTarget = Assert.IsType<InputSnapshot>((await broker.CallAsync(oldRequest)).Snapshot).Target;
+            Assert.NotNull((await broker.CallAsync(oldRequest)).Snapshot);
+        } // The exact child has exited before the replacement is launched.
+        await using var current = new QueueScene(true);
+        await current.Start(true);
+        var refused = await broker.CallAsync(oldRequest);
+        Assert.Null(refused.Snapshot);
+        Assert.Equal(FocusMember.Other, refused.Focus);
+        var request = oldRequest with
+        {
+            OwnedCapture = current.Descriptor
+        };
+        var fresh = Assert.IsType<InputSnapshot>((await broker.CallAsync(request)).Snapshot);
+        Assert.NotEqual(oldTarget, fresh.Target);
+        Assert.Equal(current.Original, fresh.Text);
+        Assert.Equal(N.ReadSelection(current.Field), fresh.Selection);
+        Assert.Equal(fresh.Target, Assert.IsType<InputSnapshot>((await broker.CallAsync(request)).Snapshot).Target);
     });
 
     [Fact]
@@ -804,6 +867,28 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             var first = await CapturePlan();
             hook.Publish(first.Lease, first.Permit);
             await UntilReady(first, WindowsInterruptClock.NowMs);
+            var firstToken = new SessionViewToken(first.Lease.Source.Target, first.Lease.CommandGeneration, first.Lease.SessionRevision);
+            long handoffAt = first.Permit.ExpiresAtMs - KeyboardHook.OwnedAcceptanceHandoffMs;
+            Assert.True(hook.AcceptanceReady(firstToken, first.Permit, handoffAt - 1));
+            Assert.False(hook.AcceptanceReady(firstToken, first.Permit, handoffAt));
+            Assert.False(hook.AcceptanceReady(firstToken, first.Permit, first.Permit.ExpiresAtMs));
+            // A newer proposal for the same operation is not an installed
+            // successor. It must not restore the old ticket's public cue.
+            var proposed = first.Permit with
+            {
+                Plan = first.Permit.Plan with
+                {
+                    Id = Guid.NewGuid(),
+                    Expected = first.Permit.Plan.Expected with
+                    {
+                        ObservedAtMs = first.Permit.ObservedAtMs + 1
+                    }
+                },
+                ObservedAtMs = first.Permit.ObservedAtMs + 1,
+                ExpiresAtMs = first.Permit.ExpiresAtMs + 1
+            };
+            Assert.False(hook.AcceptanceReady(firstToken, proposed, handoffAt));
+            Assert.Equal(first.Lease.Source.ObservedAtMs + Limits.PermitMaxAgeMs, first.Permit.ExpiresAtMs);
             string original = N.ReadText(field, Limits.MaxTextUnits);
             Assert.True(host.EditorReady(first.Lease.Source.Target));
             if (!allowInjectedInput)

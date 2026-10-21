@@ -30,11 +30,22 @@ internal sealed class BrowserPolicyRefresh
     {
         get; private set;
     }
+    public long? DiagnosticCycleStartedAt
+    {
+        get; private set;
+    }
+    public long DiagnosticCycleSequence
+    {
+        get; private set;
+    }
     private static TaskCompletionSource<BrowserReply?> Completion() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     public Task Poll(long now, Func<Task<BrowserReply?>> describe, Func<BrowserReply, Task> approve)
     {
         if (_cycle is { Completion.IsCompleted: false } || now < _nextStart)
             return _cycle?.Completion ?? Task.CompletedTask;
+        DiagnosticCycleStartedAt = now;
+        if (DiagnosticCycleSequence < long.MaxValue)
+            DiagnosticCycleSequence++;
         _nextStart = now + 35; // Same minimum interval as ordinary Runtime observation.
         var cycle = new Cycle(_capture ?? Completion(), _capture is not null);
         _capture = null;
@@ -730,6 +741,10 @@ internal sealed partial class BrowserInput
             item.Peer == peer && item.Route == route && item.Id == String(data, "ownerId"));
         var renewalPhase = owner?.PolicyRefresh.DiagnosticPhase;
         long commandId = Number(data, "commandId"), t0 = Number(data, "triggeredAtMs"), now = WindowsInterruptClock.NowMs;
+        long? renewalAge = owner?.PolicyRefresh.DiagnosticCycleStartedAt is { } started ? now - started : null;
+        long? renewalSequence = renewalAge is not null ? owner!.PolicyRefresh.DiagnosticCycleSequence : null;
+        long? readyRemaining = owner?.ReadyPolicy is { } ready ? ready.ExpiresAt - now : null;
+        long? pendingRemaining = owner?.PendingPolicy is { } pending ? pending.ExpiresAt - now : null;
         string? kind = String(data, "kind");
         long ownerExpiry = 0;
         var reason = owner is null ? CommandPathReason.OwnerMissing
@@ -746,14 +761,16 @@ internal sealed partial class BrowserInput
         if (reason != CommandPathReason.Queued)
         {
             TraceCommandPath(CommandPathStage.Ingress, reason, kind, ageMs: t0 >= 0 ? now - t0 : null,
-                policyRenewalPhase: renewalPhase);
+                policyRenewalPhase: renewalPhase, policyRenewalCycleAgeMs: renewalAge,
+                policyRenewalCycleSequence: renewalSequence, readyPolicyRemainingMs: readyRemaining, pendingPolicyRemainingMs: pendingRemaining);
             return;
         }
         owner!.LastCommandId = commandId;
         if (_notices.Count >= 16)
         {
             TraceCommandPath(CommandPathStage.Ingress, CommandPathReason.NoticeCapacity, kind, ageMs: now - t0,
-                policyRenewalPhase: renewalPhase);
+                policyRenewalPhase: renewalPhase, policyRenewalCycleAgeMs: renewalAge,
+                policyRenewalCycleSequence: renewalSequence, readyPolicyRemainingMs: readyRemaining, pendingPolicyRemainingMs: pendingRemaining);
             return;
         }
         long sequence = _hook.NextCommandSequence();
@@ -761,7 +778,8 @@ internal sealed partial class BrowserInput
         {
             _notices.Enqueue((new(kind!, AcceptedAtMs: t0,
                 CommandGeneration: owner.Generation, Rejection: denial, CommandSequence: sequence), t0 + Limits.ObservationMaxAgeMs));
-            TraceCommandPath(CommandPathStage.Ingress, rejected, kind, ageMs: now - t0, policyRenewalPhase: renewalPhase);
+            TraceCommandPath(CommandPathStage.Ingress, rejected, kind, ageMs: now - t0, policyRenewalPhase: renewalPhase, policyRenewalCycleAgeMs: renewalAge,
+                policyRenewalCycleSequence: renewalSequence, readyPolicyRemainingMs: readyRemaining, pendingPolicyRemainingMs: pendingRemaining);
         }
         if (!data.TryGetProperty("native", out var native))
         {
@@ -818,7 +836,8 @@ internal sealed partial class BrowserInput
             Source: source, CommandGeneration: owner.Generation, CommandSequence: sequence, CommandCapture: evidence, Application: "chrome"),
             t0 + Limits.ObservationMaxAgeMs));
         TraceCommandPath(CommandPathStage.Ingress, CommandPathReason.Queued, kind, hasNative: true, ageMs: now - t0,
-            policyRenewalPhase: renewalPhase);
+            policyRenewalPhase: renewalPhase, policyRenewalCycleAgeMs: renewalAge,
+                policyRenewalCycleSequence: renewalSequence, readyPolicyRemainingMs: readyRemaining, pendingPolicyRemainingMs: pendingRemaining);
     }
     public async Task<WriteReceipt> WriteDirectAsync(WritePlan plan, string[] excluded)
     {

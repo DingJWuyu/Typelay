@@ -228,6 +228,14 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         if (expand) {
             json_builder_set_member_name(builder, "scale");
             json_builder_add_int_value(builder, gtk_widget_get_scale_factor(widget));
+            json_builder_set_member_name(builder, "pointerInside");
+            json_builder_add_boolean_value(builder, gtk_widget_get_mapped(widget)
+                && g_object_get_data(G_OBJECT(widget), "fixture-expand-pointer-inside")
+                && g_object_get_data(G_OBJECT(widget), "fixture-expand-enter-window")
+                    == gtk_button_get_event_window(GTK_BUTTON(widget)));
+            json_builder_set_member_name(builder, "pointerEnteredAtMs");
+            json_builder_add_int_value(builder,
+                (gintptr)g_object_get_data(G_OBJECT(widget), "fixture-expand-enter-at"));
             json_builder_set_member_name(builder, "eventWindow");
             JsonNode *event_window = json_node_new(JSON_NODE_OBJECT);
             json_node_take_object(event_window, expand_event_window(widget));

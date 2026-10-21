@@ -79,17 +79,18 @@
 
 ### 当前可验证候选
 
-最近核对的验证基线为 [`e3f0ad75`](https://github.com/DingJWuyu/Typelay/actions/runs/39555404569)，该运行已结束，Windows 完整检查失败。
+最近核对的验证基线为 [`64d2cc59`](https://github.com/DingJWuyu/Typelay/actions/runs/39559834209)，该运行已结束，Windows 完整检查失败。
 
-- App.Tests：538 项中 537 项通过、1 项失败，位于退休测试的 initial Focus 后验等待，尚未执行退休；原 Ctrl 退出与被覆盖复选框检查本轮通过；连续翻译全链、真实浏览器接入、打包与分发 smoke 本轮通过，不代表所有应用或长期稳定性已验收。
-- 真实记事本设置确认与模型准备通过（9780ms），随后 `await-readonly-preview` 超时。测试只查“编辑译文”，只读控件实际命名为“译文预览”，因此不能据此断言 UI 没有预览；trace 已有 9 字译文，但 `IMEUnknown` 下没有写入资格。后继观察修正仍待验证，记事本后续场景与 Hy 未运行；Unknown 继续拒写。
-- 本次 Notepad 自动捕获路径未启用既有 owner-thread 桥（目前仅按需 `CaptureDirect` 路由使用）。现桥在 `SendMessageTimeout` 内调用 IMM 存在已知重入风险，因此新增自动调用暂停；这不是本轮 `IMEUnknown` 已发生运行崩溃的证据，也不能写成已修复。本轮无质量采集，5068 的 40 次诊断与 386 的 69 次响应仍是各自范围的既有证据，三项质量门继续关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
+- App.Tests 542/542、Runtime 1087/1087 通过，打包与分发 smoke 通过；局部检查通过不代表完整桌面验收通过。
+- 连续翻译的自有首次接受报告 `EpochChanged`：低层按键在原截止内到达，GUI 消费时已超期 2ms；普通字段、编辑回源与直接替换等其它场景通过，整链仍失败。
+- 真实浏览器设置接入与自动 Tab 接受通过，直接替换报告 `PolicyAuthorityExpired`，未通过整链。记事本与 Hy 因前置失败未运行，不能沿用较早结果。
+- 本轮未消除普通自动捕获的输入法安全缺口，Unknown 继续拒写；后继候选未经对应验证不记作修复。本轮无质量采集，5068 的 40 次诊断与 386 的 69 次响应仍是各自范围的既有证据，三项质量门继续关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
 
-当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39555404569)下载 [`typelay-windows-e3f0ad752ebe0cfc22a8fa959285651f32a7c486`](https://github.com/DingJWuyu/Typelay/actions/runs/39555404569/artifacts/12326231053)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
+当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39559834209)下载 [`typelay-windows-64d2cc590056c0d94eecf618c398f2946f32f541`](https://github.com/DingJWuyu/Typelay/actions/runs/39559834209/artifacts/12328025459)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
 
-- 源码提交：`e3f0ad752ebe0cfc22a8fa959285651f32a7c486`。
-- 内层 ZIP：87,027,270 字节。
-- SHA-256：`be8971b30063d56b7772a5fb6c2f413ba7179b5f21ee70668d70257f0b8afb82`，已实际重算并核对包旁摘要。
+- 源码提交：`64d2cc590056c0d94eecf618c398f2946f32f541`。
+- 内层 ZIP：87,027,697 字节。
+- SHA-256：`f96378e4057af270a681b0b719990f3754e4303e52a3a16d469c86aa72503850`，已实际重算并核对包旁摘要。
 - 用 `Get-FileHash .\TypeLay-Windows-preview.zip -Algorithm SHA256` 核对；不要将内层摘要用于外层 Actions ZIP。App、Broker、Practice 与 BrowserHost 必须来自同一个完整包。
 
 正式安装器的单向中英准备、Auto 同语无输出、缺方向拒绝与保留旧方向的补装已通过真实模型 API 检查；该检查本身没有操作输入框或触发 F10。安装库存损坏时保留原数据并禁用修改，目前仍缺少用户可执行的库存恢复入口。

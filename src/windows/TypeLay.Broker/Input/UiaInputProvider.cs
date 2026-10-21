@@ -127,12 +127,33 @@ internal sealed class UiaInputProvider : IDisposable
             || owned.RootHwnd == request.OverlayHwnd || !NativeEditTransactions.IsCurrentOwned(owned))
             return Reject("owned-identity-changed");
 
-        // The trusted descriptor selects one exact stock Edit. Reacquire its
-        // metadata on every capture; no cached UIA object proves native focus.
+        // Reuse only the reference for this exact native lifetime. Every field
+        // policy value is refreshed; neither the old cache nor the UIA object
+        // proves native focus. A changed descriptor starts a new lookup.
         trace?.Stage("owned-field-metadata");
+        bool refresh = _ownedCapture == owned && _element is not null;
+        WindowsTarget bound = default;
+        if (refresh && (_previous is null || !WindowsTarget.TryDecode(_previous.Target, out bound)
+            || bound.ProcessId != owned.ProcessId || bound.ProcessStartUtcTicks != owned.ProcessStartUtcTicks
+            || bound.RootHwnd != owned.RootHwnd || bound.ControlHwnd != owned.ControlHwnd
+            || bound.Provider != NativeEditTransactions.Provider))
+            return Reject("owned-bound-identity-changed");
         AutomationElement element;
-        using (_metadataCache.Activate())
-            element = AutomationElement.FromHandle((nint)owned.ControlHwnd);
+        if (refresh)
+        {
+            try
+            {
+                element = _element!.GetUpdatedCache(_metadataCache);
+            }
+            catch (Exception error) when (error is ElementNotAvailableException or InvalidOperationException
+                or COMException or ArgumentException)
+            {
+                return Reject("owned-metadata-refresh-failed"); // No rediscovery fallback.
+            }
+        }
+        else
+            using (_metadataCache.Activate())
+                element = AutomationElement.FromHandle((nint)owned.ControlHwnd);
         var info = element.Cached;
         if (info.ProcessId != owned.ProcessId || info.NativeWindowHandle != owned.ControlHwnd
             || (info.ControlType != ControlType.Edit && info.ControlType != ControlType.Document)
@@ -150,6 +171,8 @@ internal sealed class UiaInputProvider : IDisposable
             return Reject("owned-process-changed");
         string app = process.ProcessName.ToLowerInvariant();
         string token = string.Join('.', element.GetRuntimeId());
+        if (refresh && token != bound.ElementToken)
+            return Reject("owned-provider-identity-changed");
         if (_quarantine.Contains((owned.ProcessId, start, token)))
             return Reject("quarantined-target");
 
@@ -175,6 +198,8 @@ internal sealed class UiaInputProvider : IDisposable
         var idBytes = SHA256.HashData(Encoding.UTF8.GetBytes($"{owned.ProcessId}/{start}/{owned.RootHwnd}/{token}"));
         var id = new WindowsTarget(owned.ProcessId, start, owned.RootHwnd, owned.ControlHwnd,
             NativeEditTransactions.Provider, token, new Guid(idBytes.AsSpan(0, 16)));
+        if (refresh && id.Id != _previous!.Target)
+            return Reject("owned-bound-identity-changed");
         trace?.Stage("native-capture");
         // Only native op6 reads the body/selection and establishes IME Clear.
         // Failure cannot fall through to the ordinary UIA capture/write route.

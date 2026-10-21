@@ -16,6 +16,9 @@ internal enum OwnedEditorAdmissionReason
 
 internal sealed partial class KeyboardHook
 {
+    // Presentation hands off before the original authorization expires. This
+    // never extends, replaces or revokes the LL/source GUI transaction deadline.
+    internal const int OwnedAcceptanceHandoffMs = 25;
     private readonly AcceptanceGate _ownedGate;
     private Func<TargetId, bool>? _ownedPracticeTarget;
     private Action<InputLease, AcceptancePermit?>? _publishOwned;
@@ -492,7 +495,8 @@ internal sealed partial class KeyboardHook
             || installed.Lease.SessionRevision != token.Revision || installed.Lease.PracticeConnectionId != channel.Connection
             || installed.Lease.CommandGeneration != CommandGeneration || installed.Lease.UserEpoch != UserEpoch
             || installed.Lease.ForegroundEpoch != ForegroundEpoch || !OwnedFocus(installed.Descriptor)
-            || nowMs < installed.Permit.ObservedAtMs || nowMs > installed.Permit.ExpiresAtMs)
+            || nowMs < installed.Permit.ObservedAtMs
+            || nowMs >= installed.Permit.ExpiresAtMs - OwnedAcceptanceHandoffMs)
             return false;
         var active = installed.Permit.Plan;
         var proposed = issued.Plan;

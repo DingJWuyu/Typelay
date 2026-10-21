@@ -599,6 +599,8 @@ public sealed class BrowserContractTests
         // proofs. The production coordinator must never await the body barrier.
         var refresh = new BrowserPolicyRefresh();
         Assert.Equal(BrowserPolicyRenewalPhase.Idle, refresh.DiagnosticPhase);
+        Assert.Null(refresh.DiagnosticCycleStartedAt);
+        Assert.Equal(0, refresh.DiagnosticCycleSequence);
         var description = new TaskCompletionSource<BrowserReply?>();
         var acknowledgement = new TaskCompletionSource();
         var body = new TaskCompletionSource();
@@ -618,6 +620,8 @@ public sealed class BrowserContractTests
         }
         var round = refresh.Poll(100, Describe, Approve);
         Assert.Equal(BrowserPolicyRenewalPhase.Describe, refresh.DiagnosticPhase);
+        Assert.Equal(100, refresh.DiagnosticCycleStartedAt);
+        Assert.Equal(1, refresh.DiagnosticCycleSequence);
         var capturedDescription = refresh.CaptureAsync();
         description.SetResult(first);
         Assert.Same(first, await capturedDescription);
@@ -630,6 +634,8 @@ public sealed class BrowserContractTests
         var reading = ReadBody();
         Assert.False(reading.IsCompleted);
         Assert.Same(round, refresh.Poll(300, Describe, Approve));
+        Assert.Equal(100, refresh.DiagnosticCycleStartedAt);
+        Assert.Equal(1, refresh.DiagnosticCycleSequence);
         Assert.Equal(1, descriptions); // An ACK timeout has not been reported yet.
         Assert.Equal(1, approvals);
         Assert.Same(first, firstApproval);
@@ -649,6 +655,8 @@ public sealed class BrowserContractTests
             approvals++;
             return nextAck.Task;
         });
+        Assert.Equal(300, refresh.DiagnosticCycleStartedAt);
+        Assert.Equal(2, refresh.DiagnosticCycleSequence);
         nextDescription.SetResult(next);
         Assert.Same(next, await refresh.CaptureAsync());
         Assert.Equal(BrowserPolicyRenewalPhase.Approve, refresh.DiagnosticPhase);

@@ -50,7 +50,9 @@ internal sealed partial class BrowserInput
     private bool CommandTraceEnabled => !string.IsNullOrWhiteSpace(_tracePath) && TraceBudget.CommandsAvailable;
     private void TraceCommandPath(CommandPathStage stage, CommandPathReason reason, string? kind,
         bool? commandSent = null, bool? hasNative = null, long? ageMs = null,
-        double? policyAuthorityAgeMs = null, string? policyCheckPhase = null, BrowserPolicyRenewalPhase? policyRenewalPhase = null)
+        double? policyAuthorityAgeMs = null, string? policyCheckPhase = null, BrowserPolicyRenewalPhase? policyRenewalPhase = null,
+        long? policyRenewalCycleAgeMs = null, long? policyRenewalCycleSequence = null,
+        long? readyPolicyRemainingMs = null, long? pendingPolicyRemainingMs = null, double? policyAuthorityAgeAtTriggerMs = null)
     {
         if (!CommandTraceEnabled)
             return;
@@ -65,6 +67,11 @@ internal sealed partial class BrowserInput
                 hasNative,
                 ageMs = ageMs is { } age ? Math.Clamp(age, -10000, 10000) : (long?)null,
                 policyAuthorityAgeMs,
+                policyAuthorityAgeAtTriggerMs,
+                policyRenewalCycleAgeMs = policyRenewalCycleAgeMs is { } cycleAge ? Math.Clamp(cycleAge, -10000, 10000) : (long?)null,
+                policyRenewalCycleSequence = policyRenewalCycleSequence is { } cycleSequence ? Math.Clamp(cycleSequence, 0, 1000000) : (long?)null,
+                readyPolicyRemainingMs = readyPolicyRemainingMs is { } readyRemaining ? Math.Clamp(readyRemaining, -10000, 10000) : (long?)null,
+                pendingPolicyRemainingMs = pendingPolicyRemainingMs is { } pendingRemaining ? Math.Clamp(pendingRemaining, -10000, 10000) : (long?)null,
                 policyCheckPhase = policyCheckPhase is "before-capture" or "after-capture" ? policyCheckPhase : null,
                 policyRenewalPhase = policyRenewalPhase switch
                 {
@@ -97,6 +104,7 @@ internal sealed partial class BrowserInput
             TraceCommandPath(CommandPathStage.Page, reason, String(data, "kind"),
                 Boolean(data, "commandSent"), Boolean(data, "hasNative"),
                 policyAuthorityAgeMs: DiagnosticMetric(data, "policyAuthorityAgeMs"),
+                policyAuthorityAgeAtTriggerMs: DiagnosticMetric(data, "policyAuthorityAgeAtTriggerMs"),
                 policyCheckPhase: String(data, "policyCheckPhase"));
         }
         catch (Exception error) when (error is not OutOfMemoryException) { }

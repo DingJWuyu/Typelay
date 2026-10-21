@@ -1305,6 +1305,18 @@ def expand_click_point(actual, evidence, dimensions, now):
     )
 
 
+def expand_hover_current(actual, evidence, dimensions, now, instance, point, moved_at):
+    current_point = expand_click_point(actual, evidence, dimensions, now)
+    if current_point != point or actual.get("observedAtMs", 0) < moved_at:
+        return False
+    control = actual["overlayControls"]["fixture-expand"]
+    return (
+        control.get("instance") == instance
+        and control.get("pointerInside") is True
+        and control.get("pointerEnteredAtMs", 0) > 0
+    )
+
+
 def check_expand(client, source, generation, runtime, state, initial, nested, dimensions, evidence):
     assert render_preview(client, source, generation, 1, "fixture exit", evidence=evidence)[
         "visible"
@@ -1328,8 +1340,43 @@ def check_expand(client, source, generation, runtime, state, initial, nested, di
         ]["eventWindow"]
     evidence["pixelPoint"] = point
     assert now_ms() <= evidence["expiresAtMs"], "expand lease expired before click"
-    (runtime / "arm").touch()
-    click_once(nested, point, evidence)
+    if client.hello["backend"] == "gtk3":
+        instance = actual["overlayControls"]["fixture-expand"]["instance"]
+        moved_at = time.monotonic_ns() // 1_000_000
+        evidence["moveStartedAtMonoMs"] = moved_at
+        subprocess.run(
+            ["xdotool", "mousemove", "--window", nested, str(point[0]), str(point[1])],
+            check=True,
+            timeout=3,
+        )
+
+        moved_at = time.monotonic_ns() // 1_000_000
+        evidence["moveFinishedAtMonoMs"] = moved_at
+
+        def hovered_button():
+            current = state()
+            evidence["hoverObservation"] = current.get("overlayControls", {}).get("fixture-expand")
+            return (
+                current
+                if expand_hover_current(
+                    current, evidence, dimensions, now_ms(), instance, point, moved_at
+                )
+                else None
+            )
+
+        actual = wait_for(hovered_button, "real expand button did not receive pointer hover")
+        evidence["beforeClick"] = observe_click_geometry(actual)
+        assert now_ms() <= evidence["expiresAtMs"], "expand lease expired before click"
+        (runtime / "arm").touch()
+        evidence["clickStartedAtMs"] = now_ms()
+        try:
+            subprocess.run(["xdotool", "click", "1"], check=True, timeout=3)
+            evidence["clickCommandSucceeded"] = True
+        finally:
+            evidence["clickFinishedAtMs"] = now_ms()
+    else:
+        (runtime / "arm").touch()
+        click_once(nested, point, evidence)
     try:
         evidence["afterClick"] = observe_click_geometry(state())
     except (OSError, AssertionError, KeyError, TypeError, ValueError):
