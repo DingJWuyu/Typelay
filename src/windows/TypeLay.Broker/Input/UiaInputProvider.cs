@@ -198,14 +198,17 @@ internal sealed class UiaInputProvider : IDisposable
         var idBytes = SHA256.HashData(Encoding.UTF8.GetBytes($"{owned.ProcessId}/{start}/{owned.RootHwnd}/{token}"));
         var id = new WindowsTarget(owned.ProcessId, start, owned.RootHwnd, owned.ControlHwnd,
             NativeEditTransactions.Provider, token, new Guid(idBytes.AsSpan(0, 16)));
-        if (refresh && id.Id != _previous!.Target)
-            return Reject("owned-bound-identity-changed");
         trace?.Stage("native-capture");
         // Only native op6 reads the body/selection and establishes IME Clear.
         // Failure cannot fall through to the ordinary UIA capture/write route.
         if (!NativeEditTransactions.IsCurrentOwned(owned)
             || _edits.CaptureOwned(id, owned, bounds, _inputEpoch) is not { } captured)
             return Reject("owned-native-unavailable");
+        // Discovery identity and issued native binding have distinct lifetimes.
+        // The fresh metadata matched the original identity fields above; only
+        // the native read can confirm the same issued binding, including lifetime.
+        if (refresh && captured.Target != _previous!.Target)
+            return Reject("owned-bound-identity-changed");
         if (!NativeEditTransactions.IsCurrentOwned(owned))
             return Reject("owned-focus-changed");
         if (_previous?.Target != captured.Target || _previous.Text != captured.Text

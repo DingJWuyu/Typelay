@@ -213,6 +213,83 @@ static gboolean language_control(const char *name) {
         || g_strcmp0(name, "typelay-apply-languages") == 0
         || g_strcmp0(name, "typelay-language-menu") == 0;
 }
+/* Observe natural GTK frame completion for a changing trigger label. No frame
+ * is requested here, and the frame callbacks never retain the button. */
+typedef struct {
+    guint revision, frame_revision, painted_revision;
+    gint64 frame_counter;
+    gint width, height;
+    GdkFrameClock *clock;
+} TriggerLayout;
+static void free_trigger_layout(gpointer data) {
+    TriggerLayout *layout = data;
+    g_clear_object(&layout->clock);
+    g_free(layout);
+}
+static void trigger_label_changed(GObject *button, GParamSpec *property, gpointer data) {
+    (void)property; (void)data;
+    TriggerLayout *layout = g_object_get_data(button, "fixture-trigger-layout");
+    if (layout->revision) layout->revision = layout->revision == G_MAXUINT ? 0 : layout->revision + 1;
+}
+static void trigger_frame_started(GdkFrameClock *clock, GtkWidget *button) {
+    TriggerLayout *layout = g_object_get_data(G_OBJECT(button), "fixture-trigger-layout");
+    gint64 frame = gdk_frame_clock_get_frame_counter(clock);
+    if (layout->clock == clock && layout->frame_counter != frame) {
+        layout->frame_counter = frame;
+        layout->frame_revision = layout->revision;
+    }
+}
+static void trigger_frame_finished(GdkFrameClock *clock, GtkWidget *button) {
+    TriggerLayout *layout = g_object_get_data(G_OBJECT(button), "fixture-trigger-layout");
+    if (layout->clock != clock || gtk_widget_get_frame_clock(button) != clock
+        || layout->frame_counter != gdk_frame_clock_get_frame_counter(clock)
+        || !gtk_widget_get_mapped(button) || !layout->revision
+        || layout->frame_revision != layout->revision) return;
+    layout->painted_revision = layout->revision;
+    layout->width = gtk_widget_get_allocated_width(button);
+    layout->height = gtk_widget_get_allocated_height(button);
+}
+static void trigger_unmapped(GtkWidget *button, gpointer data) {
+    (void)data;
+    TriggerLayout *layout = g_object_get_data(G_OBJECT(button), "fixture-trigger-layout");
+    layout->frame_revision = layout->painted_revision = 0;
+}
+static TriggerLayout *watch_trigger_layout(GtkWidget *button) {
+    TriggerLayout *layout = g_object_get_data(G_OBJECT(button), "fixture-trigger-layout");
+    if (!layout) {
+        layout = g_new0(TriggerLayout, 1);
+        layout->revision = 1;
+        layout->frame_counter = -1;
+        g_object_set_data_full(G_OBJECT(button), "fixture-trigger-layout", layout, free_trigger_layout);
+        g_signal_connect(button, "notify::label", G_CALLBACK(trigger_label_changed), NULL);
+        g_signal_connect(button, "unmap", G_CALLBACK(trigger_unmapped), NULL);
+    }
+    GdkFrameClock *clock = gtk_widget_get_frame_clock(button);
+    if (clock && layout->clock != clock) {
+        if (layout->clock) g_signal_handlers_disconnect_by_data(layout->clock, button);
+        g_set_object(&layout->clock, clock);
+        layout->frame_counter = -1;
+        layout->frame_revision = layout->painted_revision = 0;
+        g_signal_connect_object(clock, "before-paint", G_CALLBACK(trigger_frame_started), button, 0);
+        g_signal_connect_object(clock, "after-paint", G_CALLBACK(trigger_frame_finished), button, 0);
+    }
+    return layout;
+}
+/* The parent natural frame discovers the new button before layout, rather
+ * than depending on the 25 ms state reporter beating the first paint. */
+static void prepare_trigger_frame(GtkWidget *widget, gpointer data) {
+    GdkFrameClock *clock = data;
+    if (GTK_IS_BUTTON(widget)
+        && g_strcmp0(gtk_widget_get_name(widget), "typelay-menu-trigger") == 0) {
+        watch_trigger_layout(widget);
+        trigger_frame_started(clock, widget);
+    }
+    if (GTK_IS_CONTAINER(widget))
+        gtk_container_forall(GTK_CONTAINER(widget), prepare_trigger_frame, clock);
+}
+static void prepare_language_frame(GdkFrameClock *clock, GtkWidget *window) {
+    prepare_trigger_frame(window, clock);
+}
 static void report_language_control(GtkWidget *widget, gpointer data) {
     JsonBuilder *builder = data;
     const char *name = gtk_widget_get_name(widget);
@@ -225,6 +302,20 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
     if (expand || language_control(name)) {
         json_builder_set_member_name(builder, name);
         json_builder_begin_object(builder);
+        if (g_strcmp0(name, "typelay-menu-trigger") == 0
+            && g_strcmp0(g_getenv("TYPELAY_FIXTURE_REENTRY_STAGE"), "language-options") == 0) {
+            TriggerLayout *layout = watch_trigger_layout(widget);
+            json_builder_set_member_name(builder, "labelRevision");
+            json_builder_add_int_value(builder, layout->revision);
+            json_builder_set_member_name(builder, "paintedLabelRevision");
+            json_builder_add_int_value(builder, layout->painted_revision);
+            json_builder_set_member_name(builder, "labelLayoutCurrent");
+            json_builder_add_boolean_value(builder, layout->revision
+                && layout->painted_revision == layout->revision
+                && layout->clock == gtk_widget_get_frame_clock(widget)
+                && layout->width == gtk_widget_get_allocated_width(widget)
+                && layout->height == gtk_widget_get_allocated_height(widget));
+        }
         if (expand) {
             json_builder_set_member_name(builder, "scale");
             json_builder_add_int_value(builder, gtk_widget_get_scale_factor(widget));
@@ -557,6 +648,11 @@ int main(int argc, char **argv) {
         watch_entry(first, &first_evidence);
         watch_entry(second, &second_evidence);
         motion_init();
+        if (g_strcmp0(g_getenv("TYPELAY_FIXTURE_REENTRY_STAGE"), "language-options") == 0) {
+            GdkFrameClock *clock = gtk_widget_get_frame_clock(window);
+            if (clock) g_signal_connect_object(clock, "before-paint",
+                G_CALLBACK(prepare_language_frame), window, 0);
+        }
         g_timeout_add(25, report_state, NULL);
     }
     gtk_main();

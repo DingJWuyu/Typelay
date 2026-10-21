@@ -4118,6 +4118,71 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertNotIn("diagnostic", self.host.notices[0])
         self.assertNotIn("application", self.host.notices[0])
 
+    def test_refusal_probe_reports_only_bounded_existing_revision_counters(self):
+        before = {
+            "inputRevision": 10,
+            "contentRevision": 7,
+            "focusRevision": 3,
+            "context": 2,
+            "inputEpoch": 20,
+            "epoch": 30,
+        }
+        probe = {
+            "before": before,
+            "after": {**before, "inputRevision": 11, "inputEpoch": 21, "epoch": 31},
+        }
+        output = io.StringIO()
+        with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}), contextlib.redirect_stderr(output):
+            self.peer.event(
+                "shortcut-rejected",
+                {
+                    **self.command(),
+                    "reason": "EpochChanged",
+                    "diagnostic": {"phase": "ime", "gate": "input-revision", "probe": probe},
+                },
+            )
+        record = json.loads(output.getvalue().split(" ", 1)[1])
+        self.assertEqual(record["probe"], probe)
+        self.assertEqual(self.host.notices[0]["rejection"], "EpochChanged")
+        self.assertNotIn("diagnostic", self.host.notices[0])
+        self.assertNotIn("probe", self.host.notices[0])
+
+    def test_refusal_probe_never_logs_arbitrary_or_unbounded_fields(self):
+        sample = {
+            "inputRevision": 10,
+            "contentRevision": 7,
+            "focusRevision": 3,
+            "context": 2,
+            "inputEpoch": 20,
+            "epoch": 30,
+        }
+        for index, invalid in enumerate(
+            (
+                "PRIVATE",
+                {**sample, "inputEpoch": True},
+                {**sample, "inputEpoch": 2**53},
+                {**sample, "body": "PRIVATE"},
+            ),
+            1,
+        ):
+            output = io.StringIO()
+            with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}), contextlib.redirect_stderr(output):
+                self.peer.event(
+                    "shortcut-rejected",
+                    {
+                        **self.command(command_id=index),
+                        "reason": "EpochChanged",
+                        "diagnostic": {
+                            "phase": "ime",
+                            "gate": "input-revision",
+                            "probe": {"before": sample, "after": invalid},
+                        },
+                    },
+                )
+            self.assertEqual(output.getvalue(), "")
+        self.assertEqual(len(self.host.notices), 4)
+        self.assertTrue(all(n["rejection"] == "EpochChanged" for n in self.host.notices))
+
     def test_invalid_or_missing_refusal_diagnostic_cannot_change_rejection_or_log_text(self):
         output = io.StringIO()
         invalid = [

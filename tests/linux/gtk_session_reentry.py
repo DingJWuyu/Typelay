@@ -885,6 +885,26 @@ def check_language_retention_refusal(
         assert not any(event.get("event") == "accepted" for event in client.events)
 
 
+def language_trigger_point(actual, phase, dimensions, now):
+    assert now <= phase["expiresAtMs"], "language trigger lease expired before click"
+    name = "typelay-menu-trigger"
+    if not clickable_control(actual, name, phase["renderReturnedAtMonoMs"], dimensions):
+        return None
+    control = actual["overlayControls"][name]
+    if (
+        not control.get("enabled")
+        or control.get("labelLayoutCurrent") is not True
+        or not control.get("labelRevision")
+        or control.get("paintedLabelRevision") != control["labelRevision"]
+    ):
+        return None
+    return click_point(
+        actual,
+        (control["x"] + control["width"] / 2, control["y"] + control["height"] / 2),
+        dimensions,
+    )
+
+
 def check_language_options(
     client, source, generation, state, initial, nested, dimensions, evidence
 ):
@@ -926,6 +946,9 @@ def check_language_options(
                         "enabled",
                         "focused",
                         "buttonFocused",
+                        "labelRevision",
+                        "paintedLabelRevision",
+                        "labelLayoutCurrent",
                         "selected",
                         "popupVisible",
                         "popupActive",
@@ -1001,19 +1024,31 @@ def check_language_options(
         return actual.get("overlayControls", {})
 
     def click(name):
-        actual = state()
-        control = actual["overlayControls"][name]
-        assert control["visible"] and control["width"] > 0 and control["height"] > 0
-        point = click_point(
-            actual,
-            (control["x"] + control["width"] / 2, control["y"] + control["height"] / 2),
-            dimensions,
-        )
+        if name == trigger and client.hello["backend"] == "gtk3":
+
+            def laid_out():
+                actual = state()
+                phases[-1]["lastObservation"] = observe(actual)
+                point = language_trigger_point(actual, phases[-1], dimensions, now_ms())
+                return (actual, point) if point else None
+
+            actual, point = wait_for(laid_out, "language trigger label layout did not finish")
+        else:
+            actual = state()
+            control = actual["overlayControls"][name]
+            assert control["visible"] and control["width"] > 0 and control["height"] > 0
+            point = click_point(
+                actual,
+                (control["x"] + control["width"] / 2, control["y"] + control["height"] / 2),
+                dimensions,
+            )
         phase = phases[-1]
         if phase:
             phase.update(control=name, point=point, beforeClick=observe(actual))
         if phase:
             phase["clickStartedAtMonoMs"] = time.monotonic_ns() // 1_000_000
+        if name == trigger and client.hello["backend"] == "gtk3":
+            assert now_ms() <= phase["expiresAtMs"], "language trigger lease expired before click"
         click_once(nested, point, phase)
         if phase:
             phase["clickFinishedAtMonoMs"] = time.monotonic_ns() // 1_000_000
@@ -1340,7 +1375,7 @@ def check_expand(client, source, generation, runtime, state, initial, nested, di
         ]["eventWindow"]
     evidence["pixelPoint"] = point
     assert now_ms() <= evidence["expiresAtMs"], "expand lease expired before click"
-    if client.hello["backend"] == "gtk3":
+    if client.hello["backend"] in ("gtk3", "gtk4"):
         instance = actual["overlayControls"]["fixture-expand"]["instance"]
         moved_at = time.monotonic_ns() // 1_000_000
         evidence["moveStartedAtMonoMs"] = moved_at

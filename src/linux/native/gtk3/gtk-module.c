@@ -1094,6 +1094,7 @@ typedef struct {
     guint64 id, connection, content, input, focus;
     gint64 triggered_at;
     gboolean require_revisions;
+    TlFcitxStateV1 im_state;
 } ShortcutCommand;
 static gboolean shortcut_current(const ShortcutCommand *attempt) {
     return connection >= 0 && connection_generation == attempt->connection
@@ -1156,6 +1157,17 @@ static void trace_shortcut(const ShortcutCommand *attempt, const char *phase, co
         " atMs=%" G_GINT64_FORMAT " authorityAgeMs=%" G_GINT64_FORMAT " elapsedMs=%" G_GINT64_FORMAT "\n",
         phase, gate, reason, attempt->id, now, observed >= 0 ? now - observed : -1, now - attempt->triggered_at);
 }
+static JsonObject *shortcut_probe_snapshot(guint64 input, guint64 content, guint64 focus,
+                                            const TlFcitxStateV1 *state) {
+    const char *keys[] = {"inputRevision", "contentRevision", "focusRevision", "context", "inputEpoch", "epoch"};
+    guint64 values[] = {input, content, focus, state->context_generation, state->input_epoch, state->epoch};
+    for (guint i = 0; i < G_N_ELEMENTS(values); i++)
+        if (values[i] > G_GUINT64_CONSTANT(9007199254740991)) return NULL;
+    JsonObject *snapshot = json_object_new();
+    for (guint i = 0; i < G_N_ELEMENTS(values); i++)
+        json_object_set_int_member(snapshot, keys[i], (gint64)values[i]);
+    return snapshot;
+}
 static JsonObject *shortcut_message(const ShortcutCommand *attempt) {
     JsonObject *message = json_object_new();
     json_object_set_string_member(message, "kind", attempt->kind);
@@ -1175,6 +1187,7 @@ static gboolean trigger_shortcut(const char *kind, Target *target, JsonObject *a
         .id = ++shortcut_sequence, .connection = connection_generation, .triggered_at = triggered_at,
         .content = target ? target->content_revision : 0, .input = target ? target->input_revision : 0,
         .focus = target ? target->focus_revision : 0, .require_revisions = require_revisions};
+    if (target) attempt.im_state = target->im_state;
     if (!approved && !require_revisions) approved = tl_object(attempt.authority, "authority");
     attempt.approved = approved ? json_object_ref(approved) : NULL;
     shortcut_started_at = triggered_at;
@@ -1228,6 +1241,21 @@ rejected:
             JsonObject *diagnostic = json_object_new();
             json_object_set_string_member(diagnostic, "phase", phase);
             json_object_set_string_member(diagnostic, "gate", failure);
+            if (target) {
+                /* Only copied scalar state: no provider call or source read. */
+                JsonObject *before = shortcut_probe_snapshot(attempt.input, attempt.content, attempt.focus, &attempt.im_state);
+                JsonObject *after = shortcut_probe_snapshot(target->input_revision, target->content_revision,
+                    target->focus_revision, &target->im_state);
+                if (before && after) {
+                    JsonObject *probe = json_object_new();
+                    json_object_set_object_member(probe, "before", before);
+                    json_object_set_object_member(probe, "after", after);
+                    json_object_set_object_member(diagnostic, "probe", probe);
+                } else {
+                    if (before) json_object_unref(before);
+                    if (after) json_object_unref(after);
+                }
+            }
             json_object_set_object_member(message, "diagnostic", diagnostic);
         }
         tl_send_event("shortcut-rejected", message);

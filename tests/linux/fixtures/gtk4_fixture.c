@@ -234,6 +234,13 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         json_builder_set_member_name(builder, name);
         json_builder_begin_object(builder);
         if (expand) {
+            GtkEventControllerMotion *motion = g_object_get_data(G_OBJECT(widget), "fixture-expand-motion");
+            json_builder_set_member_name(builder, "pointerInside");
+            json_builder_add_boolean_value(builder, gtk_widget_get_mapped(widget) && motion
+                && gtk_event_controller_motion_contains_pointer(motion));
+            json_builder_set_member_name(builder, "pointerEnteredAtMs");
+            json_builder_add_int_value(builder,
+                (gintptr)g_object_get_data(G_OBJECT(widget), "fixture-expand-enter-at"));
             json_builder_set_member_name(builder, "scale");
             json_builder_add_int_value(builder, gtk_widget_get_scale_factor(widget));
         }

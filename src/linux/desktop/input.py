@@ -2381,7 +2381,10 @@ class Input:
         self.host.send("notice", notice)
         if rejected and os.environ.get("TYPELAY_TRACE"):
             diagnostic = value.get("diagnostic")
-            if not isinstance(diagnostic, dict) or set(diagnostic) != {"phase", "gate"}:
+            if not isinstance(diagnostic, dict) or set(diagnostic) not in (
+                {"phase", "gate"},
+                {"phase", "gate", "probe"},
+            ):
                 return
             phase, gate = diagnostic["phase"], diagnostic["gate"]
             phases = {"authority", "ime", "describe", "capture"}
@@ -2413,6 +2416,30 @@ class Input:
                 or self.shortcut_diagnostic_count >= 96
             ):
                 return
+            probe = diagnostic.get("probe")
+            if "probe" in diagnostic:
+                fields = {
+                    "inputRevision",
+                    "contentRevision",
+                    "focusRevision",
+                    "context",
+                    "inputEpoch",
+                    "epoch",
+                }
+                if (
+                    not isinstance(probe, dict)
+                    or set(probe) != {"before", "after"}
+                    or any(
+                        not isinstance(value, dict)
+                        or set(value) != fields
+                        or any(
+                            type(count) is not int or not 0 <= count < 2**53
+                            for count in value.values()
+                        )
+                        for value in probe.values()
+                    )
+                ):
+                    return
             self.shortcut_diagnostic_count += 1
             try:
                 print(
@@ -2424,6 +2451,7 @@ class Input:
                             "phase": phase,
                             "gate": gate,
                             "reason": notice["rejection"],
+                            **({"probe": probe} if probe is not None else {}),
                         },
                         separators=(",", ":"),
                     ),

@@ -12,6 +12,7 @@ from gtk_session_reentry import (  # noqa: E402
     clickable_control,
     expand_click_point,
     expand_hover_current,
+    language_trigger_point,
     parent_geometry_ready,
     validated_geometry,
 )
@@ -218,6 +219,50 @@ class GtkReentryGeometryTests(unittest.TestCase):
                 self.assertFalse(current({**actual, **changed}))
         with self.assertRaisesRegex(AssertionError, "lease expired"):
             current(actual, 801)
+
+    def test_language_trigger_requires_current_label_completed_frame_without_extending_lease(self):
+        phase = {"renderReturnedAtMonoMs": 100, "expiresAtMs": 800}
+        button = {
+            "visible": True,
+            "enabled": True,
+            "instance": 1,
+            "x": 740,
+            "y": 122,
+            "width": 97,
+            "height": 28,
+            "labelRevision": 3,
+            "paintedLabelRevision": 3,
+            "labelLayoutCurrent": True,
+        }
+        actual = {
+            "fullscreen": True,
+            "width": 1280,
+            "height": 800,
+            "scale": 1,
+            "observedAtMs": 110,
+            "overlayControls": {"typelay-menu-trigger": button},
+        }
+        self.assertEqual(language_trigger_point(actual, phase, (1280, 800), 120), (788, 136))
+        # Mid-frame label change, clock invalidation, unmap, and absent receipt
+        # must not promote a merely mapped/text-updated button to clickable.
+        for change in (
+            {"labelRevision": 4},
+            {"paintedLabelRevision": 0, "labelLayoutCurrent": False},
+            {"visible": False},
+            {"labelRevision": 0},
+            {"labelLayoutCurrent": False},
+            {"enabled": False},
+        ):
+            with self.subTest(change=change):
+                changed = {
+                    **actual,
+                    "overlayControls": {"typelay-menu-trigger": {**button, **change}},
+                }
+                self.assertIsNone(language_trigger_point(changed, phase, (1280, 800), 120))
+        for change in ({"width": 640}, {"scale": 2}, {"observedAtMs": 100}):
+            self.assertIsNone(language_trigger_point({**actual, **change}, phase, (1280, 800), 120))
+        with self.assertRaisesRegex(AssertionError, "lease expired"):
+            language_trigger_point(actual, phase, (1280, 800), 801)
 
     def test_click_maps_parent_local_point_at_native_scale(self):
         actual = {"fullscreen": True, "width": 640, "height": 400, "scale": 2}

@@ -83,6 +83,24 @@ static void observe_expand_button(GtkButton *widget, gpointer data) {
     observe_expand(GTK_WIDGET(widget), data, pointer);
     if (event) gdk_event_free(event);
 }
+#else
+static void observe_expand_enter(GtkEventControllerMotion *motion, double x, double y, gpointer data) {
+    (void)x; (void)y; (void)data;
+    GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(motion));
+    if (!widget || !gtk_widget_get_mapped(widget)
+        || !gtk_event_controller_motion_contains_pointer(motion)) return;
+    g_object_set_data(G_OBJECT(widget), "fixture-expand-enter-at",
+        (gpointer)(gintptr)(g_get_monotonic_time() / 1000));
+}
+static void observe_expand_leave(GtkEventControllerMotion *motion, gpointer data) {
+    (void)data;
+    GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(motion));
+    if (widget) g_object_set_data(G_OBJECT(widget), "fixture-expand-enter-at", NULL);
+}
+static void observe_expand_unmapped(GtkWidget *widget, gpointer data) {
+    (void)data;
+    g_object_set_data(G_OBJECT(widget), "fixture-expand-enter-at", NULL);
+}
 #endif
 static void mutation_barrier(const char *stage) {
     const char *directory = g_getenv("TYPELAY_FIXTURE_REENTRY");
@@ -184,6 +202,17 @@ static void watch_session_button(GtkWidget *widget) {
         g_signal_connect(widget, "pressed", G_CALLBACK(observe_expand_button), "pressed");
         g_signal_connect(widget, "released", G_CALLBACK(observe_expand_button), "released");
         g_signal_connect(widget, "clicked", G_CALLBACK(observe_expand_button), "clicked");
+    }
+#else
+    if (expand) {
+        /* Motion only observes public crossing state. No gesture, event return,
+         * focus change, or target override participates in the real click. */
+        GtkEventController *motion = gtk_event_controller_motion_new();
+        g_signal_connect(motion, "enter", G_CALLBACK(observe_expand_enter), NULL);
+        g_signal_connect(motion, "leave", G_CALLBACK(observe_expand_leave), NULL);
+        g_signal_connect(widget, "unmap", G_CALLBACK(observe_expand_unmapped), NULL);
+        g_object_set_data(G_OBJECT(widget), "fixture-expand-motion", motion);
+        gtk_widget_add_controller(widget, motion);
     }
 #endif
     g_signal_connect(widget, "notify::label", expand ? G_CALLBACK(expand_changed) : G_CALLBACK(footer_changed), NULL);

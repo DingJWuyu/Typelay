@@ -483,10 +483,10 @@ internal sealed partial class KeyboardHook
         };
     }
 
-    public bool AcceptanceReady(SessionViewToken token, AcceptancePermit issued, long nowMs)
+    // Observation of the actual installed ticket, not permission to write.
+    // LL input and the source GUI independently enforce their original gates.
+    internal AcceptancePermit? CurrentOwnedAcceptance(SessionViewToken token, long nowMs)
     {
-        if (_ownedPracticeTarget?.Invoke(token.Target) != true)
-            return true;
         var installed = Volatile.Read(ref _ownedInstalled);
         var channel = Volatile.Read(ref _ownedChannel);
         if (!_sessionEnabled || installed is null || channel is null || channel.Writer.Poisoned
@@ -496,9 +496,19 @@ internal sealed partial class KeyboardHook
             || installed.Lease.CommandGeneration != CommandGeneration || installed.Lease.UserEpoch != UserEpoch
             || installed.Lease.ForegroundEpoch != ForegroundEpoch || !OwnedFocus(installed.Descriptor)
             || nowMs < installed.Permit.ObservedAtMs
-            || nowMs >= installed.Permit.ExpiresAtMs - OwnedAcceptanceHandoffMs)
+            || nowMs > installed.Permit.ExpiresAtMs)
+            return null;
+        return installed.Permit;
+    }
+
+    public bool AcceptanceReady(SessionViewToken token, AcceptancePermit issued, long nowMs)
+    {
+        if (_ownedPracticeTarget?.Invoke(token.Target) != true)
+            return true;
+        var installed = CurrentOwnedAcceptance(token, nowMs);
+        if (installed is null || nowMs >= installed.ExpiresAtMs - OwnedAcceptanceHandoffMs)
             return false;
-        var active = installed.Permit.Plan;
+        var active = installed.Plan;
         var proposed = issued.Plan;
         // Repeated fresh captures may propose a new ID for the exact same
         // operation. Only the already-installed plan's original TTL is used.

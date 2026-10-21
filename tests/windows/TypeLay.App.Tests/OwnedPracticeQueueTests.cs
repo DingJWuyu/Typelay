@@ -499,7 +499,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             await previous.Start(true);
             oldRequest = new(BrokerProtocol.Version, 0, "capture-owned", "", OwnedCapture: previous.Descriptor);
             oldTarget = Assert.IsType<InputSnapshot>((await broker.CallAsync(oldRequest)).Snapshot).Target;
-            Assert.NotNull((await broker.CallAsync(oldRequest)).Snapshot);
+            Assert.Equal(oldTarget, Assert.IsType<InputSnapshot>((await broker.CallAsync(oldRequest)).Snapshot).Target);
         } // The exact child has exited before the replacement is launched.
         await using var current = new QueueScene(true);
         await current.Start(true);
@@ -865,13 +865,15 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             Assert.False(Native.GetAsyncKeyState(1) < 0);
             Assert.False(Native.GetAsyncKeyState(9) < 0);
             var first = await CapturePlan();
+            Assert.False(Installed(first)); // A proposal is not an installed ACK.
             hook.Publish(first.Lease, first.Permit);
-            await UntilReady(first, WindowsInterruptClock.NowMs);
+            await UntilInstalled(first, WindowsInterruptClock.NowMs);
             var firstToken = new SessionViewToken(first.Lease.Source.Target, first.Lease.CommandGeneration, first.Lease.SessionRevision);
             long handoffAt = first.Permit.ExpiresAtMs - KeyboardHook.OwnedAcceptanceHandoffMs;
             Assert.True(hook.AcceptanceReady(firstToken, first.Permit, handoffAt - 1));
             Assert.False(hook.AcceptanceReady(firstToken, first.Permit, handoffAt));
             Assert.False(hook.AcceptanceReady(firstToken, first.Permit, first.Permit.ExpiresAtMs));
+            Assert.Null(hook.CurrentOwnedAcceptance(firstToken, first.Permit.ExpiresAtMs + 1));
             // A newer proposal for the same operation is not an installed
             // successor. It must not restore the old ticket's public cue.
             var proposed = first.Permit with
@@ -888,6 +890,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 ExpiresAtMs = first.Permit.ExpiresAtMs + 1
             };
             Assert.False(hook.AcceptanceReady(firstToken, proposed, handoffAt));
+            Assert.False(Installed((first.Lease, proposed, first.CapturedAtMs)));
             Assert.Equal(first.Lease.Source.ObservedAtMs + Limits.PermitMaxAgeMs, first.Permit.ExpiresAtMs);
             string original = N.ReadText(field, Limits.MaxTextUnits);
             Assert.True(host.EditorReady(first.Lease.Source.Target));
@@ -914,12 +917,14 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             await Until(() => WindowsInterruptClock.NowMs > first.Permit.ExpiresAtMs);
             host.PollAcceptance();
             hook.Publish(first.Lease, first.Permit);
-            Assert.False(Ready(first));
+            Assert.False(Installed(first));
+            Assert.False(hook.AcceptanceReady(firstToken, first.Permit, WindowsInterruptClock.NowMs));
             Assert.Equal(original, N.ReadText(field, Limits.MaxTextUnits));
 
             var current = await CapturePlan();
+            Assert.False(Installed(current)); // The expired first ACK cannot install this new plan.
             hook.Publish(current.Lease, current.Permit);
-            await UntilReady(current, WindowsInterruptClock.NowMs);
+            await UntilInstalled(current, WindowsInterruptClock.NowMs);
             long contentEpoch = hook.ContentEpoch;
             // A real unmatched mouse release changes the LL content watermark,
             // without changing this field's text, selection or focus. It denies
@@ -931,7 +936,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             Assert.Equal((root, field), N.Focused());
             hook.Publish(current.Lease, current.Permit);
             host.PollAcceptance();
-            Assert.True(Ready(current), "Dropping a renewal candidate must not revoke the original live plan.");
+            Assert.True(Installed(current), "Dropping a renewal candidate must not revoke the original live plan.");
 
             Assert.Equal(1u, SendInput(1, [new KeyInput { Type = 1, Key = 9 }], Marshal.SizeOf<KeyInput>()));
             tabDown = true;
@@ -959,9 +964,12 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             Assert.True(N.PostMessage(root, 0x0010, 0, 0));
             await child!.Process.WaitForExitAsync(deadline.Token);
 
-            bool Ready((InputLease Lease, AcceptancePermit Permit, long CapturedAtMs) plan) => hook.AcceptanceReady(
+            // This capability test observes the exact real ACK at the real clock,
+            // not presentation readiness. ContinuousTranslationCheck separately
+            // requires the visible public cue before its single user acceptance.
+            bool Installed((InputLease Lease, AcceptancePermit Permit, long CapturedAtMs) plan) => hook.CurrentOwnedAcceptance(
                 new(plan.Lease.Source.Target, plan.Lease.CommandGeneration, plan.Lease.SessionRevision),
-                plan.Permit, WindowsInterruptClock.NowMs);
+                WindowsInterruptClock.NowMs)?.Plan.Id == plan.Permit.Plan.Id;
             async Task<(InputLease Lease, AcceptancePermit Permit, long CapturedAtMs)> CapturePlan()
             {
                 var captured = await input.CaptureAsync(new(hook.UserEpoch, hook.ForegroundEpoch, hook.SourceUserEpoch,
@@ -978,7 +986,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                     hook.CommandGeneration, 1, binding.RunId, binding.ConnectionId),
                     new(plan, source.InputEpoch, source.FocusEpoch, source.ObservedAtMs, source.ObservedAtMs + Limits.PermitMaxAgeMs), capturedAtMs);
             }
-            async Task UntilReady((InputLease Lease, AcceptancePermit Permit, long CapturedAtMs) plan, long publishedAtMs)
+            async Task UntilInstalled((InputLease Lease, AcceptancePermit Permit, long CapturedAtMs) plan, long publishedAtMs)
             {
                 // These are probe/dispatcher boundaries, not pipe arrival times.
                 long lastProbeStartedAtMs = publishedAtMs, lastProbeCompletedAtMs = publishedAtMs, maxProbeGapMs = 0;
@@ -986,7 +994,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 {
                     long started = WindowsInterruptClock.NowMs;
                     maxProbeGapMs = Math.Max(maxProbeGapMs, started - lastProbeCompletedAtMs);
-                    bool ready = Ready(plan);
+                    bool ready = Installed(plan);
                     lastProbeStartedAtMs = started;
                     lastProbeCompletedAtMs = WindowsInterruptClock.NowMs;
                     return ready;
@@ -998,7 +1006,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                     long now = WindowsInterruptClock.NowMs;
                     if (now > plan.Permit.ExpiresAtMs)
                         Assert.Fail(
-                        $"Original acceptance expired before Ready; injected={allowInjectedInput}; "
+                        $"Original acceptance expired before its exact installation was observed; injected={allowInjectedInput}; "
                         + $"observed={plan.Permit.ObservedAtMs}; captured={plan.CapturedAtMs}; "
                         + $"published={publishedAtMs}; expires={plan.Permit.ExpiresAtMs}; now={now}; "
                         + $"probeStarted={lastProbeStartedAtMs}; probeCompleted={lastProbeCompletedAtMs}; maxProbeGap={maxProbeGapMs}; "

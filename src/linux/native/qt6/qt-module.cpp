@@ -1483,13 +1483,22 @@ private:
         auto *source = focused();
         if (card_ && source != overlayTarget_ && (paused() || source)) hideOverlay();
     }
-    void stopOverlayMotion() {
+    void traceOverlayMotion(const char *phase, qint64 incomingRevision = -1, qint64 expansionFrom = -1, int continuation = -1) {
+        if (motionTraceRemaining_ <= 0) return;
+        --motionTraceRemaining_;
+        std::fprintf(stderr, "tlqt-motion phase=%s time=%d running=%d revision=%lld incoming=%lld from=%lld continuation=%d\n",
+            phase, overlayMotion_.currentTime(), overlayMotion_.state() == QAbstractAnimation::Running,
+            static_cast<long long>(overlayRevision_), static_cast<long long>(incomingRevision),
+            static_cast<long long>(expansionFrom), continuation);
+    }
+    void stopOverlayMotion(const char *reason = "layout-stop") {
+        if (overlayMotion_.state() == QAbstractAnimation::Running) traceOverlayMotion(reason);
         overlayMotion_.stop();
         disconnect(&overlayMotion_, nullptr, this, nullptr);
     }
     void hideOverlay() {
         revokeEditorOrdered();
-        stopOverlayMotion();
+        stopOverlayMotion("hide-stop");
         if (!card_) return;
         glossaryOpening_.reset();
         glossaryOpeningSource_.reset();
@@ -1598,18 +1607,23 @@ private:
         card_->move(x, qBound(0, y, qMax(0, top->height() - card_->height())));
     }
     void resizeOverlay() {
-        if (!card_ || !editor_ || !overlayActive()) { arrangeOverlay(); return; }
+        // This opt-in attempt owns its bounded budget; unrelated renders cannot
+        // exhaust it before the actual expansion. No source/widget text is read.
+        motionTraceRemaining_ = qEnvironmentVariableIsSet("TYPELAY_QT_PROBE") ? 16 : 0;
+        traceOverlayMotion("attempt");
+        if (!card_ || !editor_ || !overlayActive()) { traceOverlayMotion("inactive-skip"); arrangeOverlay(); return; }
         const int startHeight = editor_->height();
         const QRect start = card_->geometry();
         arrangeOverlay();
-        if (!card_) return;
+        if (!card_) { traceOverlayMotion("retired-skip"); return; }
         const QRect end = card_->geometry();
         const int endHeight = editor_->height();
         // The current Qt style is the public platform/application preference.
         // A zero duration disables motion; it is not a universal OS preference API.
         if (startHeight == endHeight || start.width() != end.width()
-            || card_->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, card_) <= 0)
-            return;
+            || card_->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, card_) <= 0) {
+            traceOverlayMotion("size-or-style-skip"); return;
+        }
         const auto bounds = geometry(overlayTarget_);
         const auto fieldBounds = bounds.value("bounds").toObject();
         const int sourceY = int(integer(fieldBounds, "y"));
@@ -1617,7 +1631,9 @@ private:
         // Keep the same upper bottom-edge or lower top-edge anchor throughout.
         // Near a parent edge a side change or clamp lands directly instead.
         if (above != (end.bottom() < sourceY)
-            || (above ? start.bottom() != end.bottom() : start.top() != end.top())) return;
+            || (above ? start.bottom() != end.bottom() : start.top() != end.top())) {
+            traceOverlayMotion("anchor-skip"); return;
+        }
         const QPointer<QWidget> parent = card_->parentWidget();
         const QRect parentBounds = parent->geometry();
         motionRevision_ = overlayRevision_;
@@ -1640,7 +1656,7 @@ private:
         overlayMotion_.setEndValue(endHeight);
         connect(&overlayMotion_, &QVariantAnimation::valueChanged, this,
             [this, parent, parentBounds, bounds, generation](const QVariant &value) {
-                if (!overlayActive()) { hideOverlay(); return; }
+                if (!overlayActive()) { traceOverlayMotion("inactive-frame"); hideOverlay(); return; }
                 if (!parent || card_->parentWidget() != parent || parent->geometry() != parentBounds
                     || overlayRevision_ != motionRevision_ || overlayGeneration_ != generation
                     || editor_ != motionEditor_ || overlayTarget_->field != motionSource_
@@ -1648,13 +1664,14 @@ private:
                     || editor_->isReadOnly() != motionReadOnly_ || editor_->focusPolicy() != motionFocusPolicy_
                     || geometry(overlayTarget_) != bounds
                     || card_->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, card_) <= 0) {
-                    arrangeOverlay(); return;
+                    traceOverlayMotion("frame-guard-stop"); arrangeOverlay(); return;
                 }
                 arrangeOverlay(value.toInt());
             });
         // No completion callback: the final value only lays out the current
         // widgets. Nothing can show, restore text, focus or renew a hidden view.
         overlayMotion_.start();
+        traceOverlayMotion("started");
     }
     static QJsonArray languageChoices(const QJsonObject &view, const char *side) {
         const auto value = view.value("languageChoices").toObject().value(QLatin1String(side));
@@ -2666,6 +2683,8 @@ private:
                     && motionParent_->geometry() == motionParentBounds_ && target->field->window() == motionParent_
                     && geometry(target) == motionGeometry_ && data.value("generation") == overlayGeneration_
                     && view == overlayView_ && data.value("theme").toString(QStringLiteral("system")) == overlayTheme_;
+                if (overlayMotion_.state() == QAbstractAnimation::Running)
+                    traceOverlayMotion("render", integer(data, "revision", -1), integer(data, "visualExpansionFrom", -1), continueMotion);
                 if (!card_ || overlayTarget_ != target) { hideOverlay(); createOverlay(target); }
                 const auto nextToken = view.value("viewContext").toObject().value("token").toObject();
                 if (glossary_ && (glossary_->context.token != nextToken
@@ -3150,6 +3169,7 @@ private:
     QString lifetime_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
     QTimer reconnect_, expiry_;
     QVariantAnimation overlayMotion_;
+    int motionTraceRemaining_ = 0;
     QPointer<QWidget> motionSource_, motionParent_;
     QPointer<QPlainTextEdit> motionEditor_;
     QPointer<QTextDocument> motionDocument_;
