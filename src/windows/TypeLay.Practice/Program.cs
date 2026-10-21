@@ -98,6 +98,8 @@ internal static partial class Program
     private static PrefixAttempt? _prefixDispatch, _prefixProof;
     private static OwnedPrefixResult? _prefixTicket;
     private static bool _prefixControlObserved;
+    private static uint _prefixMessageCompletions;
+    private static readonly bool ObservePrefixMessages = Environment.GetEnvironmentVariable("TYPELAY_TEST_PREFIX_MESSAGES") == "1";
     private sealed record PrefixAttempt(OwnedKeyWitness Witness, OwnedAcceptancePlan? Plan, OwnedExitLease? ExitLease,
         OwnedCaptureDescriptor? Descriptor, long ExpiresAtMs, long InputRevision, OwnedInputContext Context, bool Qualified);
     private static readonly long ProcessStartUtcTicks = Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks;
@@ -260,6 +262,8 @@ internal static partial class Program
                     _inputCompletions.Enqueue(new(completionKind, _connection, _run, _sequence,
                         InputCompletion: new(checked(++_inputCompletionSequence), message.Id is 0x0100 or 0x0104, consumed)));
                 }
+                if (processed && _observeInputCompletion && ObservePrefixMessages)
+                    ObservePrefixMessageCompletion(message);
                 if (consumed)
                     continue;
                 ApplyControls();
@@ -1263,10 +1267,16 @@ internal static partial class Program
             _prefixControlObserved = true;
             return;
         }
-        // Plain hover did not revoke the default LL plan before prefix
-        // observation. It still invalidates a live proof. Non-client wParam is
-        // a hit-test value, not button flags; actual drags retain the LL gate.
+        // Non-client wParam is a hit-test value, not button flags. A queued
+        // root-only hover does not change an already completed Ctrl proof;
+        // the message still dispatches normally and all subsequent native
+        // context, mutation, focus and LL input checks remain authoritative.
         bool hover = id == 0x00a0 || id == 0x0200 && (wParam & 0x0073) == 0;
+        if (!sent && root && !source && hover && _prefixProof is not null && _prefixDispatch is null
+            && (id != 0x00a0 || (Native.GetKeyState(1) & 0x8000) == 0
+                && (Native.GetKeyState(2) & 0x8000) == 0 && (Native.GetKeyState(4) & 0x8000) == 0
+                && (Native.GetKeyState(5) & 0x8000) == 0 && (Native.GetKeyState(6) & 0x8000) == 0))
+            return;
         bool discardedProof = _prefixProof is not null;
         InvalidateGuiInput(!hover || _prefixDispatch is not null || _prefixProof is not null);
         if (discardedProof && InputRejectionTraceEnabled)
@@ -1280,11 +1290,48 @@ internal static partial class Program
             });
     }
 
+    // Existing queue-fixture opt-in only. Observe real normal dispatch, never
+    // supply positive prefix evidence or change the keyboard completion sequence.
+    private static void ObservePrefixMessageCompletion(Native.Message message)
+    {
+        if (!_observeInputCompletion || !ObservePrefixMessages || _prefixTicket is null)
+            return;
+        bool root = message.Window == _window, source = message.Window == _edit?.Handle;
+        int kind = (root, source, message.Id) switch
+        {
+            (true, false, 0x0200) => (message.WParam & 0x0073) == 0 ? 1 : 2,
+            (true, false, 0x00a0) => 3,
+            (true, false, 0x0201) => 4,
+            (false, true, 0x0200) => 5,
+            (false, true, 0x00b1) => 6,
+            (true, false, 0x0051) => 7,
+            _ => 0
+        };
+        uint bit = 1u << kind;
+        if (kind == 0 || (_prefixMessageCompletions & bit) != 0)
+            return;
+        _prefixMessageCompletions |= bit; // At most seven fixed receipts per prefix.
+        if (_inputCompletions!.Count >= 8)
+            throw new InvalidDataException("practice-input-completion-limit");
+        string name = kind switch
+        {
+            1 => "root-hover",
+            2 => "root-drag",
+            3 => "root-nonclient-hover",
+            4 => "root-button",
+            5 => "source-hover",
+            6 => "source-selection",
+            _ => "ime-language"
+        };
+        _inputCompletions.Enqueue(new("test-prefix-" + name + "-dispatched", _connection, _run, _sequence));
+    }
+
     private static void BeginPrefixDispatch(ref Native.Message message, OwnedKeyWitness witness, ulong bits)
     {
         ClearPrefixProof();
         _prefixTicket = new(witness.PrefixSequence, witness.PlanSequence, witness.ExitLeaseSequence, false);
         _prefixControlObserved = false;
+        _prefixMessageCompletions = 0;
         var plan = witness.PlanSequence > 0 && _plan is { } installed && installed.PlanSequence == witness.PlanSequence
             && !_planReported ? installed : null;
         var exit = witness.ExitLeaseSequence > 0 && _exitLease is { } lease && lease.Sequence == witness.ExitLeaseSequence ? lease : null;

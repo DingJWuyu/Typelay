@@ -851,37 +851,54 @@ static gboolean textview_ticket_claim(gpointer ticket, Target *target) {
    focus, text, or configuration query is performed on this path. */
 static JsonObject *epoch_rejected(Target *target, JsonObject *basis, JsonObject *approved,
                                   gboolean direct, const char *phase) {
+    JsonObject *reply = receipt("RejectedBeforeMutation", "EpochChanged");
     static guint emitted;
     if (direct && g_getenv("TYPELAY_TRACE") && emitted < 16) {
         emitted++;
         JsonObject *old = tl_object(basis, "contextStamp"), *fresh = tl_object(approved, "contextStamp");
         const TlFcitxStateV1 *state = &target->im_state;
-        g_printerr("TypeLay GTK3 direct epoch phase=%s observed=%d "
-            "basisContext=%d basisEpoch=%d basisInput=%d basisServer=%d basisApplied=%d basisFlags=%d "
-            "approvedContext=%d approvedEpoch=%d approvedInput=%d approvedServer=%d approvedApplied=%d approvedFlags=%d "
-            "basisInputRevision=%d basisContentRevision=%d basisFocusRevision=%d "
-            "approvedInputRevision=%d approvedContentRevision=%d approvedFocusRevision=%d atMs=%" G_GINT64_FORMAT "\n",
-            phase, target->im_observed,
-            (gint64)state->context_generation == tl_integer(old, "context", -1),
-            (gint64)state->epoch == tl_integer(old, "epoch", -1),
-            (gint64)state->input_epoch == tl_integer(old, "input", -1),
-            (gint64)state->server_serial == tl_integer(old, "server", -1),
-            (gint64)state->applied_serial == tl_integer(old, "applied", -1),
-            (gint64)state->flags == tl_integer(old, "flags", -1),
-            (gint64)state->context_generation == tl_integer(fresh, "context", -1),
-            (gint64)state->epoch == tl_integer(fresh, "epoch", -1),
-            (gint64)state->input_epoch == tl_integer(fresh, "input", -1),
-            (gint64)state->server_serial == tl_integer(fresh, "server", -1),
-            (gint64)state->applied_serial == tl_integer(fresh, "applied", -1),
-            (gint64)state->flags == tl_integer(fresh, "flags", -1),
-            (gint64)target->input_revision == tl_integer(basis, "inputRevision", -1),
-            (gint64)target->content_revision == tl_integer(basis, "contentRevision", -1),
-            (gint64)target->focus_revision == tl_integer(basis, "focusRevision", -1),
-            (gint64)target->input_revision == tl_integer(approved, "inputRevision", -1),
-            (gint64)target->content_revision == tl_integer(approved, "contentRevision", -1),
-            (gint64)target->focus_revision == tl_integer(approved, "focusRevision", -1), tl_now());
+        JsonObject *diagnostic = json_object_new();
+        json_object_set_string_member(diagnostic, "phase", phase);
+        json_object_set_boolean_member(diagnostic, "observed", target->im_observed);
+        json_object_set_boolean_member(diagnostic, "basisContext",
+            (gint64)state->context_generation == tl_integer(old, "context", -1));
+        json_object_set_boolean_member(diagnostic, "basisEpoch",
+            (gint64)state->epoch == tl_integer(old, "epoch", -1));
+        json_object_set_boolean_member(diagnostic, "basisInput",
+            (gint64)state->input_epoch == tl_integer(old, "input", -1));
+        json_object_set_boolean_member(diagnostic, "basisServer",
+            (gint64)state->server_serial == tl_integer(old, "server", -1));
+        json_object_set_boolean_member(diagnostic, "basisApplied",
+            (gint64)state->applied_serial == tl_integer(old, "applied", -1));
+        json_object_set_boolean_member(diagnostic, "basisFlags",
+            (gint64)state->flags == tl_integer(old, "flags", -1));
+        json_object_set_boolean_member(diagnostic, "basisInputRevision",
+            (gint64)target->input_revision == tl_integer(basis, "inputRevision", -1));
+        json_object_set_boolean_member(diagnostic, "basisContentRevision",
+            (gint64)target->content_revision == tl_integer(basis, "contentRevision", -1));
+        json_object_set_boolean_member(diagnostic, "basisFocusRevision",
+            (gint64)target->focus_revision == tl_integer(basis, "focusRevision", -1));
+        json_object_set_boolean_member(diagnostic, "approvedContext",
+            (gint64)state->context_generation == tl_integer(fresh, "context", -1));
+        json_object_set_boolean_member(diagnostic, "approvedEpoch",
+            (gint64)state->epoch == tl_integer(fresh, "epoch", -1));
+        json_object_set_boolean_member(diagnostic, "approvedInput",
+            (gint64)state->input_epoch == tl_integer(fresh, "input", -1));
+        json_object_set_boolean_member(diagnostic, "approvedServer",
+            (gint64)state->server_serial == tl_integer(fresh, "server", -1));
+        json_object_set_boolean_member(diagnostic, "approvedApplied",
+            (gint64)state->applied_serial == tl_integer(fresh, "applied", -1));
+        json_object_set_boolean_member(diagnostic, "approvedFlags",
+            (gint64)state->flags == tl_integer(fresh, "flags", -1));
+        json_object_set_boolean_member(diagnostic, "approvedInputRevision",
+            (gint64)target->input_revision == tl_integer(approved, "inputRevision", -1));
+        json_object_set_boolean_member(diagnostic, "approvedContentRevision",
+            (gint64)target->content_revision == tl_integer(approved, "contentRevision", -1));
+        json_object_set_boolean_member(diagnostic, "approvedFocusRevision",
+            (gint64)target->focus_revision == tl_integer(approved, "focusRevision", -1));
+        json_object_set_object_member(reply, "diagnostic", diagnostic);
     }
-    return receipt("RejectedBeforeMutation", "EpochChanged");
+    return reply;
 }
 
 static JsonObject *write_source(Target *target, JsonObject *request, gboolean direct, OrderedTicket *ticket) {

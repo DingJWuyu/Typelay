@@ -109,8 +109,15 @@ internal sealed partial class PracticeHost
             return Rejected(OwnedEditorAdmissionReason.HostDisposed);
         if (_editorSealed)
             return Rejected(OwnedEditorAdmissionReason.HostSealed);
-        if (!EditorReady(displayed.Target))
-            return Rejected(OwnedEditorAdmissionReason.HostNotReady);
+        var readiness = _editorOverlay is null ? OwnedSourceReadiness.OverlayMissing : SourceReadiness(displayed.Target);
+        if (readiness != OwnedSourceReadiness.Ready)
+        {
+            TraceOwnedEditorAdmission(OwnedEditorAdmissionReason.HostNotReady, new
+            {
+                gate = readiness.ToString()
+            });
+            return null;
+        }
         if (_pending is not null)
             return Rejected(OwnedEditorAdmissionReason.HostPending);
         if (_child is not { } child)

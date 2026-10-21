@@ -82,6 +82,69 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         Assert.Equal((scene.Root, scene.Field), N.Focused());
     });
 
+
+    [Theory]
+    [InlineData("root-hover", true)]
+    [InlineData("root-nonclient-hover", true)]
+    [InlineData("root-drag", false)]
+    [InlineData("root-button", false)]
+    [InlineData("source-hover", false)]
+    [InlineData("source-selection", false)]
+    [InlineData("ime-language", false)]
+    [InlineData("sent-root-hover", false)]
+    public Task AProcessedControlPrefixDistinguishesRootHoverFromInterveningInput(string change, bool accepted)
+        => desktop.RunAsync(async () =>
+    {
+        await using var scene = new QueueScene(true, observePrefixMessages: true);
+        await scene.Start(true, bindings: SessionShortcutBindings.Restore("Ctrl+F7", "Ctrl+F10"));
+        var selection = N.ReadSelection(scene.Field);
+        await scene.InstallExit();
+        await scene.PressControlPrefix(); // Real LL Ctrl and its ordinary source GUI dispatch.
+        nint target = change.StartsWith("source-", StringComparison.Ordinal) ? scene.Field : scene.Root;
+        (uint message, nuint word, nint data) = change switch
+        {
+            "root-nonclient-hover" => (0x00a0u, 2u, 0), // HTCAPTION, not button flags.
+            "root-drag" => (0x0200u, 9u, 0), // MK_CONTROL | MK_LBUTTON.
+            "root-button" => (0x0201u, 9u, 0),
+            "source-selection" => (N.EM_SETSEL, 1u, 2),
+            "ime-language" => (0x0051u, 0u, 0),
+            _ => (0x0200u, 8u, 0) // MK_CONTROL with no mouse button.
+        };
+        if (change == "sent-root-hover")
+            N.Send(target, message, word, data);
+        else
+        {
+            // Software GUI-message replay, not physical mouse/IME evidence.
+            // The receiver ACK is emitted only after this class of queued
+            // message has returned through its normal dispatch path.
+            Assert.True(N.PostMessage(target, message, word, data));
+            await scene.Wait(() => scene.Messages.Any(reply => reply.Kind == "test-prefix-" + change + "-dispatched"));
+        }
+        if (change == "source-selection")
+            selection = new(1, 2); // The requested mutation, never an acceptance write.
+        long pressedAt = WindowsInterruptClock.NowMs;
+        Assert.InRange(pressedAt, scene.ExitLease!.ObservedAtMs, scene.ExitLease.ExpiresAtMs);
+        scene.Key(scene.ExitKey, true);
+        await scene.WaitExitInput(1);
+        Assert.Equal(new PracticeInputCompletion(1, true, accepted), Assert.Single(scene.ExitInputs));
+        scene.Key(scene.ExitKey, false);
+        await scene.WaitExitInput(2);
+        scene.Key(0x11, false);
+        var exits = scene.Messages.Where(reply => reply.Kind == "exit-completed").ToArray();
+        if (accepted)
+        {
+            var result = Assert.Single(exits).ExitResult!;
+            Assert.Equal(scene.ExitLease.Sequence, result.LeaseSequence);
+            Assert.InRange(result.AcceptedAtMs, scene.ExitLease.ObservedAtMs, scene.ExitLease.ExpiresAtMs);
+        }
+        else
+            Assert.Empty(exits);
+        Assert.Equal(0, scene.Receipts);
+        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        Assert.Equal(selection, N.ReadSelection(scene.Field));
+        Assert.Equal((scene.Root, scene.Field), N.Focused());
+    });
+
     [Fact]
     public Task ExpiredControlExitReportsItsUnconsumedOriginalDispatchWithoutCompleting() => desktop.RunAsync(async () =>
     {
@@ -1495,9 +1558,11 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         public bool PlanAttempted => _hook.OwnedPlanAttempted(Plan!.PlanSequence);
         public void PublishForRenewal() => _hook.Publish(_planLease!, Plan!.Permit);
         public bool CanRenew(long contentEpoch) => _hook.CanRenewOwnedPlan(_planLease!, Plan!.Permit, Plan.PlanSequence, contentEpoch);
-        public QueueScene(bool automation, bool traceExitRejections = false)
+        private readonly bool _observePrefixMessages;
+        public QueueScene(bool automation, bool traceExitRejections = false, bool observePrefixMessages = false)
         {
             _traceExitRejections = traceExitRejections;
+            _observePrefixMessages = observePrefixMessages;
             _hook = new(allowInjectedInput: automation);
             _deadline.CancelAfter(TimeSpan.FromSeconds(25));
         }
@@ -1516,6 +1581,8 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             var start = AppPaths.Child("TypeLay.Practice");
             if (_traceExitRejections)
                 start.Environment["TYPELAY_TRACE"] = ExitTracePath;
+            if (_observePrefixMessages)
+                start.Environment["TYPELAY_TEST_PREFIX_MESSAGES"] = "1";
             foreach (string argument in new[] { "--settings", Path.Combine(_directory, "settings.json"), "--progress", _connection.ToString("N") })
                 start.ArgumentList.Add(argument);
             _child = new(start);

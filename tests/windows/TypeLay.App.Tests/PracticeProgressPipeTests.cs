@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.IO;
+using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
 using TypeLay.Core;
@@ -13,6 +14,42 @@ namespace TypeLay.App.Tests;
 // The production inherited-stdio codec, independent of Win32 focus or inference.
 public sealed class PracticeProgressPipeTests
 {
+    [Theory]
+    [InlineData("root-hover")]
+    [InlineData("root-drag")]
+    [InlineData("root-nonclient-hover")]
+    [InlineData("root-button")]
+    [InlineData("source-hover")]
+    [InlineData("source-selection")]
+    [InlineData("ime-language")]
+    public async Task PrefixDispatchReceiptsRoundTripThroughARealPipeWithoutAuthority(string kind)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
+        using var writer = new AnonymousPipeServerStream(PipeDirection.Out);
+        using var reader = new AnonymousPipeClientStream(PipeDirection.In, writer.ClientSafePipeHandle);
+        var message = new PracticeMessage("test-prefix-" + kind + "-dispatched", Guid.NewGuid(), Guid.NewGuid(), 1);
+        await PracticeProgressPipe.WriteAsync(writer, message, deadline.Token);
+        Assert.Equal(message, await PracticeProgressPipe.ReadAsync(reader, deadline.Token));
+        // Bypass the writer's validation to exercise an actual peer's bad frame.
+        var invalid = message with
+        {
+            Acceptance = new()
+        };
+        byte[] body = JsonSerializer.SerializeToUtf8Bytes(invalid);
+        byte[] prefix = new byte[4];
+        BinaryPrimitives.WriteInt32LittleEndian(prefix, body.Length);
+        await writer.WriteAsync(prefix, deadline.Token);
+        await writer.WriteAsync(body, deadline.Token);
+        await writer.FlushAsync(deadline.Token);
+        await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.ReadAsync(reader, deadline.Token));
+        await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(writer,
+            message with
+            {
+                Sequence = 0
+            }, deadline.Token));
+    }
+
     [Theory]
     [InlineData(27u, ShortcutModifiers.None)]
     [InlineData(119u, ShortcutModifiers.Control)]

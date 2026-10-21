@@ -108,8 +108,35 @@ internal sealed partial class PracticeHost
     }
     internal OwnedCaptureDescriptor? CaptureDescriptor => !_editorSealed && IsAutomatic && _nativeActive && _pending is null
         && _descriptor is { } descriptor && DescriptorCurrent(descriptor) ? descriptor : null;
-    internal bool SourceReady(TargetId target) => !_editorSealed && IsAutomatic && OwnedSessionKeysSupported && _target == target && _descriptor is { } descriptor
-        && DescriptorCurrent(descriptor) && KeyboardHook.OwnedFocus(descriptor) && _witnessWriter is { Poisoned: false };
+    private enum OwnedSourceReadiness
+    {
+        Ready, OverlayMissing, EditorSealed, NotAutomatic, SessionKeys, Target, DescriptorMissing,
+        ChildMissing, DescriptorInvalid, BeginSequence, ProcessExited, ProcessIdentity, ProcessStart,
+        RootThread, RootProcess, FieldThread, FieldProcess, FieldRoot, FieldControl, NativeCookie,
+        FocusRevision, DescriptorUnavailable, SourceFocus, WitnessUnavailable
+    }
+    internal bool SourceReady(TargetId target) => SourceReadiness(target) == OwnedSourceReadiness.Ready;
+    private OwnedSourceReadiness SourceReadiness(TargetId target)
+    {
+        // Preserve the readiness predicate's original short-circuit order. Only
+        // the first failed gate is observed; no later native check is sampled.
+        if (_editorSealed)
+            return OwnedSourceReadiness.EditorSealed;
+        if (!IsAutomatic)
+            return OwnedSourceReadiness.NotAutomatic;
+        if (!OwnedSessionKeysSupported)
+            return OwnedSourceReadiness.SessionKeys;
+        if (_target != target)
+            return OwnedSourceReadiness.Target;
+        if (_descriptor is not { } descriptor)
+            return OwnedSourceReadiness.DescriptorMissing;
+        var identity = DescriptorReadiness(descriptor);
+        if (identity != OwnedSourceReadiness.Ready)
+            return identity;
+        if (!KeyboardHook.OwnedFocus(descriptor))
+            return OwnedSourceReadiness.SourceFocus;
+        return _witnessWriter is { Poisoned: false } ? OwnedSourceReadiness.Ready : OwnedSourceReadiness.WitnessUnavailable;
+    }
     private bool OwnedSessionKeysSupported => _settings is not null && _monitor?.CanInterceptOwnedSessionKeys == true
         && OwnedPracticeAcceptanceProtocol.TryParseKey(_settings.Value.AcceptShortcut, out _, out var acceptModifiers)
         && OwnedPracticeAcceptanceProtocol.TryParseKey(_settings.Value.ExitShortcut, out _, out var exitModifiers)
@@ -117,25 +144,47 @@ internal sealed partial class PracticeHost
     private bool CurrentExitBinding(OwnedExitLease lease) => _settings is not null
         && OwnedPracticeAcceptanceProtocol.TryParseKey(_settings.Value.ExitShortcut, out uint key, out var modifiers)
         && lease.VirtualKey == key && lease.Modifiers == modifiers;
-    private bool DescriptorCurrent(OwnedCaptureDescriptor descriptor, bool checkFocusRevision = true)
+    private bool DescriptorCurrent(OwnedCaptureDescriptor descriptor, bool checkFocusRevision = true) =>
+        DescriptorReadiness(descriptor, checkFocusRevision) == OwnedSourceReadiness.Ready;
+    private OwnedSourceReadiness DescriptorReadiness(OwnedCaptureDescriptor descriptor, bool checkFocusRevision = true)
     {
-        if (_child is null || !descriptor.IsValid || descriptor.BeginSequence > _sequence)
-            return false;
+        if (_child is null)
+            return OwnedSourceReadiness.ChildMissing;
+        if (!descriptor.IsValid)
+            return OwnedSourceReadiness.DescriptorInvalid;
+        if (descriptor.BeginSequence > _sequence)
+            return OwnedSourceReadiness.BeginSequence;
         try
         {
             var process = _child.Process;
             nint root = (nint)descriptor.RootHwnd, field = (nint)descriptor.ControlHwnd;
-            return !process.HasExited && process.Id == descriptor.ProcessId
-                && process.StartTime.ToUniversalTime().Ticks == descriptor.ProcessStartUtcTicks
-                && Native.GetWindowThreadProcessId(root, out uint rootPid) == descriptor.ThreadId && rootPid == process.Id
-                && Native.GetWindowThreadProcessId(field, out uint fieldPid) == descriptor.ThreadId && fieldPid == process.Id
-                && Native.GetAncestor(field, 2) == root && GetDlgItem(root, 101) == field
-                && (ulong)(long)GetPropW(field, "TypeLay.NativeInput.Lifetime.v2") == descriptor.NativeCookie
-                && (!checkFocusRevision || (long)GetPropW(field, "TypeLay.OwnedFocusRevision.v1") == descriptor.NativeFocusRevision);
+            if (process.HasExited)
+                return OwnedSourceReadiness.ProcessExited;
+            if (process.Id != descriptor.ProcessId)
+                return OwnedSourceReadiness.ProcessIdentity;
+            if (process.StartTime.ToUniversalTime().Ticks != descriptor.ProcessStartUtcTicks)
+                return OwnedSourceReadiness.ProcessStart;
+            if (Native.GetWindowThreadProcessId(root, out uint rootPid) != descriptor.ThreadId)
+                return OwnedSourceReadiness.RootThread;
+            if (rootPid != process.Id)
+                return OwnedSourceReadiness.RootProcess;
+            if (Native.GetWindowThreadProcessId(field, out uint fieldPid) != descriptor.ThreadId)
+                return OwnedSourceReadiness.FieldThread;
+            if (fieldPid != process.Id)
+                return OwnedSourceReadiness.FieldProcess;
+            if (Native.GetAncestor(field, 2) != root)
+                return OwnedSourceReadiness.FieldRoot;
+            if (GetDlgItem(root, 101) != field)
+                return OwnedSourceReadiness.FieldControl;
+            if ((ulong)(long)GetPropW(field, "TypeLay.NativeInput.Lifetime.v2") != descriptor.NativeCookie)
+                return OwnedSourceReadiness.NativeCookie;
+            if (checkFocusRevision && (long)GetPropW(field, "TypeLay.OwnedFocusRevision.v1") != descriptor.NativeFocusRevision)
+                return OwnedSourceReadiness.FocusRevision;
+            return OwnedSourceReadiness.Ready;
         }
         catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            return false;
+            return OwnedSourceReadiness.DescriptorUnavailable;
         }
     }
     private void AcceptDescriptor(OwnedCaptureDescriptor descriptor, bool controlPrefixObserved)

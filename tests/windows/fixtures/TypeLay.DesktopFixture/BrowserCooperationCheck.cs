@@ -284,7 +284,13 @@ internal static partial class BrowserCooperationCheck
                 setup.Stage = "start-loopback-page";
                 server = new PageServer();
                 setup.Stage = "open-loopback-page";
-                await cdp.OpenPageAsync(server.Url, ct);
+                int pageProgress = 0;
+                await cdp.OpenPageAsync(server.Url, step =>
+                {
+                    setup.Stage = "open-loopback-page-" + step;
+                    if (pageProgress++ < 12)
+                        Record("scene-progress", setup);
+                }, ct);
                 setup.Stage = "focus-loopback-page";
                 await FocusPageAsync(cdp, windows, ct);
                 setup.Stage = "discover-loaded-extension";

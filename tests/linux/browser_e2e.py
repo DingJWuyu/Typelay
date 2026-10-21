@@ -37,6 +37,12 @@ TRANSPORT = """(() => {
     onDisconnect: {addListener: () => {}}
   })}};
   window.fixtureMessages = output;
+  window.addEventListener('keydown', event => {
+    if (event.key === 'Tab' && event.isTrusted && window.fixtureTabBusyMs) {
+      const until = performance.now() + window.fixtureTabBusyMs;
+      while (performance.now() < until) { /* Delay this real event before the adapter. */ }
+    }
+  }, true);
   window.fixtureF24Events = [];
   // Observe browser-dispatched input before the adapter can consume it.
   for (const type of ['keydown', 'keyup']) window.addEventListener(type, event => {
@@ -1239,6 +1245,12 @@ class BrowserContract(unittest.TestCase):
         self.assertLessEqual(result["snapshot"]["observedAtMs"], result["hostUpperAtReturn"])
 
     def test_capture_trace_is_numeric_and_tab_identifies_its_publication_round(self):
+        self.check_tab_timing(0)
+
+    def test_real_tab_delayed_before_adapter_reports_expired_local_check(self):
+        self.check_tab_timing(160)
+
+    def check_tab_timing(self, busy_ms):
         self.page.keyboard.insert_text("Hello")
         template = self.plan({"target": "", "text": "", "selection": {}, "observedAtMs": 0})
         result = self.page.evaluate(
@@ -1264,12 +1276,24 @@ class BrowserContract(unittest.TestCase):
         self.assertGreaterEqual(result["trace"]["pageCaptureMs"], 0)
         self.assertLessEqual(result["trace"]["pageCaptureMs"], 10000)
         self.assertIsNone(result["invalidTrace"])
+        self.page.evaluate("value => window.fixtureTabBusyMs = value", busy_ms)
         self.page.keyboard.press("Tab")
         diagnostic = self.page.evaluate(
             "fixtureMessages.findLast(item => item.event === 'tab-diagnostic')?.data"
         )
         self.assertIsNotNone(diagnostic)
         self.assertEqual(diagnostic["publicationRound"], 53)
+        self.assertGreaterEqual(diagnostic["eventToTabCheckMs"], 0)
+        self.assertGreaterEqual(diagnostic["tabCheckToWriteMs"], 0)
+        for prefix in ("event", "tabCheck"):
+            self.assertLessEqual(
+                diagnostic[prefix + "HostLowerMs"], diagnostic[prefix + "HostUpperMs"]
+            )
+        if busy_ms:
+            self.assertGreaterEqual(diagnostic["eventToTabCheckMs"], busy_ms - 2)
+            self.assertLess(diagnostic["remainingMs"], 0)
+            self.assertEqual(diagnostic["reason"], "StaleObservation")
+            self.assertEqual(self.page.locator("#source").input_value(), "Hello")
 
     def test_source_capture_reuses_description_with_live_focus_and_metadata_checks(self):
         self.page.keyboard.insert_text("Hello")

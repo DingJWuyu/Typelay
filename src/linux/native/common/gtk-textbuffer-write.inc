@@ -37,13 +37,22 @@ static gboolean textview_body_matches(GtkTextBuffer *buffer, const char *expecte
     g_free(text);
     return same;
 }
-static void textview_epoch_trace(const char *phase, const char *failure) {
+static JsonObject *textview_epoch_receipt(gboolean session, const char *phase, const char *failure) {
+    JsonObject *reply = receipt("RejectedBeforeMutation", "EpochChanged");
     static guint emitted;
     if (g_getenv("TYPELAY_TRACE") && emitted < 16) {
         emitted++;
-        g_printerr("TypeLay GTK%d TextView epoch phase=%s check=%s atMs=%" G_GINT64_FORMAT "\n",
-            GTK_MAJOR_VERSION, phase, failure ? failure : "unknown", tl_now());
+        if (session) {
+            g_printerr("TypeLay GTK%d TextView epoch phase=%s check=%s atMs=%" G_GINT64_FORMAT "\n",
+                GTK_MAJOR_VERSION, phase, failure ? failure : "unknown", tl_now());
+        } else {
+            JsonObject *diagnostic = json_object_new();
+            json_object_set_string_member(diagnostic, "phase", phase);
+            json_object_set_string_member(diagnostic, "check", failure ? failure : "unknown");
+            json_object_set_object_member(reply, "diagnostic", diagnostic);
+        }
     }
+    return reply;
 }
 static gboolean textview_guard(TextViewWrite *write, const char *text, gint cursor, gint bound,
                                const char **failure) {
@@ -131,10 +140,10 @@ static JsonObject *write_textview(Target *target, JsonObject *plan, JsonObject *
 
     textview_take(ticket);
     if (!textview_guard(&write, text, cursor, bound, &failure) || tl_now() > until) {
-        textview_epoch_trace("after-publication-take", failure ? failure : "expiry");
+        JsonObject *reply = textview_epoch_receipt(session, "after-publication-take", failure ? failure : "expiry");
         gtk_text_buffer_end_user_action(write.buffer);
         g_object_unref(write.buffer); g_object_unref(write.widget);
-        return receipt("RejectedBeforeMutation", "EpochChanged");
+        return reply;
     }
     if (!ticket) target->mutating = TRUE;
     phase = "delete";
@@ -143,10 +152,10 @@ static JsonObject *write_textview(Target *target, JsonObject *plan, JsonObject *
         gtk_text_buffer_get_iter_at_offset(write.buffer, &first, from);
         gtk_text_buffer_get_iter_at_offset(write.buffer, &last, to);
         if (!textview_ticket_claim(ticket, target)) {
-            textview_epoch_trace("before-delete", "ticket-claim");
+            JsonObject *reply = textview_epoch_receipt(session, "before-delete", "ticket-claim");
             gtk_text_buffer_end_user_action(write.buffer);
             g_object_unref(write.buffer); g_object_unref(write.widget);
-            return receipt("RejectedBeforeMutation", "EpochChanged");
+            return reply;
         }
         write.mutation_started = target->mutating = TRUE;
         gtk_text_buffer_delete(write.buffer, &first, &last);
@@ -167,10 +176,10 @@ static JsonObject *write_textview(Target *target, JsonObject *plan, JsonObject *
         gint inserted_cursor = deleted_cursor + ((deleted_cursor > from || (deleted_cursor == from && cursor_right)) ? count : 0);
         gint inserted_bound = deleted_bound + ((deleted_bound > from || (deleted_bound == from && bound_right)) ? count : 0);
         if (!write.mutation_started && !textview_ticket_claim(ticket, target)) {
-            textview_epoch_trace("before-insert", "ticket-claim");
+            JsonObject *reply = textview_epoch_receipt(session, "before-insert", "ticket-claim");
             gtk_text_buffer_end_user_action(write.buffer);
             g_object_unref(write.buffer); g_object_unref(write.widget);
-            return receipt("RejectedBeforeMutation", "EpochChanged");
+            return reply;
         }
         write.mutation_started = target->mutating = TRUE;
         gtk_text_buffer_insert(write.buffer, &at, replacement, -1);

@@ -174,8 +174,14 @@
     if (elapsed > 1500) { clock = publication = shortcut = null; retireCommandOwner(); return clockReject("clockExpired"); }
     return true;
   }
-  function now(upper = false) {
-    return clockValid() ? (upper ? clock.upper + monoNow() : Math.floor(clock.lower + monoNow())) : NaN;
+  function now(upper = false, observe = null) {
+    if (!clockValid()) return NaN;
+    const mono = monoNow();
+    if (observe) {
+      try { observe(mono, clock.lower, clock.upper); }
+      catch (_) { /* Diagnostics cannot change this original clock decision. */ }
+    }
+    return upper ? clock.upper + mono : Math.floor(clock.lower + mono);
   }
   function issued(field, basis, diagnostic = null, triggerMono = NaN) {
     const record = field?.authorities?.get(basis?.token);
@@ -1905,11 +1911,17 @@
     const modifiers = (event.ctrlKey ? 4 : 0) | (event.altKey ? 8 : 0) | (event.shiftKey ? 1 : 0);
     return !event.metaKey && binding && binding.keyval === keyval && binding.modifiers === modifiers;
   }
+  let tabDiagnosticCount = 0;
   function tabDiagnostic(event, field) {
     if (!configuration?.trace || event.key !== "Tab" || event.ctrlKey || event.altKey
-      || event.shiftKey || event.metaKey) return () => {};
+      || event.shiftKey || event.metaKey || tabDiagnosticCount >= 32) return () => {};
+    tabDiagnosticCount++;
     const current = publication, basis = current?.authority, mono = monoNow();
-    const detail = {publication: !!current, imeClear: field?.ime === "Clear",
+    const validEvent = Number.isFinite(event.timeStamp) && event.timeStamp >= 0 && event.timeStamp <= mono;
+    const detail = {eventToTabCheckMs: validEvent ? boundedMetric(mono - event.timeStamp) : null,
+      tabCheckToWriteMs: null, eventHostLowerMs: null, eventHostUpperMs: null,
+      tabCheckHostLowerMs: null, tabCheckHostUpperMs: null,
+      publication: !!current, imeClear: field?.ime === "Clear",
       publicationRound: Number.isInteger(current?.traceRound) && current.traceRound > 0
         && current.traceRound < 2147483648 ? current.traceRound : null,
       targetMatches: !!field && current?.target === field.id,
@@ -1917,10 +1929,22 @@
       focusMatches: !!field && field.focus === basis?.focusRevision,
       remainingMs: current ? Math.min(current.expiresAtPerformanceMs - mono,
         current.expiresAtWallMs - Date.now()) : null};
-    return reason => {
+    const report = reason => {
       try { send("tab-diagnostic", {...detail, reason}); }
       catch (_) { /* A diagnostic channel failure cannot change key handling. */ }
     };
+    report.observeWrite = (writeMono, lower, upper) => {
+      // The original successful now() owns this sample and clock proof. These
+      // are host-clock intervals, not exact native event delivery timestamps.
+      if (!Number.isFinite(writeMono) || writeMono < mono) return;
+      detail.tabCheckToWriteMs = boundedMetric(writeMono - mono);
+      const values = [lower + mono, upper + mono, lower + event.timeStamp, upper + event.timeStamp];
+      if (!Number.isFinite(lower) || !Number.isFinite(upper) || lower > upper
+        || !values.every(value => Number.isFinite(value) && value >= 0 && value < Number.MAX_SAFE_INTEGER)) return;
+      [detail.tabCheckHostLowerMs, detail.tabCheckHostUpperMs] = values.slice(0, 2);
+      if (validEvent) [detail.eventHostLowerMs, detail.eventHostUpperMs] = values.slice(2);
+    };
+    return report;
   }
   function observeHeld(press, event) {
     // Freeze this observation's proved host upper bound now. A later calibration
@@ -2032,7 +2056,7 @@
     if (consumed.size >= 128) { reportTab("capacity"); publication = null; refreshHint(); return; }
     consumed.set(permit.plan.id, monoNow() + 100);
     const {expiresAtPerformanceMs, expiresAtWallMs} = publication;
-    const acceptedAtMs = now();
+    const acceptedAtMs = now(false, reportTab.observeWrite);
     const receipt = write(field, {plan: permit.plan, authority: basis, generation: current.generation, expiresAtPerformanceMs, expiresAtWallMs}, false);
     reportTab(receipt.reason);
     publication = null; refreshHint();

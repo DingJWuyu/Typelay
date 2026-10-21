@@ -2774,6 +2774,21 @@ class Input:
                 "remainingMs": max(-1000, min(1000, remaining))
                 if type(remaining) in (int, float) and math.isfinite(remaining)
                 else None,
+                **{
+                    key: value.get(key)
+                    if type(value.get(key)) in (int, float)
+                    and math.isfinite(value[key])
+                    and 0 <= value[key] <= (2**53 - 1 if "Host" in key else 10000)
+                    else None
+                    for key in (
+                        "eventToTabCheckMs",
+                        "tabCheckToWriteMs",
+                        "eventHostLowerMs",
+                        "eventHostUpperMs",
+                        "tabCheckHostLowerMs",
+                        "tabCheckHostUpperMs",
+                    )
+                },
                 "publicationRound": round_id,
                 "publicationTiming": next(
                     (dict(item) for item in peer_rounds if item["round"] == round_id), None
@@ -2957,7 +2972,7 @@ class Input:
         if peer.browser_retired or generation != self.shortcut_config.get("generation"):
             return refused()
         try:
-            return await peer.link.ask(
+            reply = await peer.link.ask(
                 "direct",
                 {
                     "target": target,
@@ -2968,6 +2983,86 @@ class Input:
                     "expiresAtMs": now_ms() + 250,
                 },
             ) or refused(True)
+            if isinstance(reply, dict):
+                diagnostic = reply.pop("diagnostic", None)
+                fields = {"observed"} | {
+                    prefix + field
+                    for prefix in ("basis", "approved")
+                    for field in (
+                        "Context",
+                        "Epoch",
+                        "Input",
+                        "Server",
+                        "Applied",
+                        "Flags",
+                        "InputRevision",
+                        "ContentRevision",
+                        "FocusRevision",
+                    )
+                }
+                if (
+                    peer.backend == "gtk3"
+                    and os.environ.get("TYPELAY_TRACE")
+                    and getattr(self, "direct_trace_count", 0) < 16
+                    and reply == {"status": "RejectedBeforeMutation", "reason": "EpochChanged"}
+                    and isinstance(diagnostic, dict)
+                    and (
+                        (
+                            diagnostic.keys() == fields | {"phase"}
+                            and diagnostic.get("phase")
+                            in (
+                                "generation-before-ime",
+                                "generation-after-ime",
+                                "authority",
+                                "input-or-focus",
+                                "entry-focus",
+                            )
+                            and all(type(diagnostic[key]) is bool for key in fields)
+                        )
+                        or (
+                            diagnostic.keys() == {"phase", "check"}
+                            and (
+                                diagnostic.get("phase") == "after-publication-take"
+                                and diagnostic.get("check")
+                                in (
+                                    "ticket",
+                                    "generation",
+                                    "destroyed",
+                                    "quarantined",
+                                    "buffer",
+                                    "storage-revision",
+                                    "im-local",
+                                    "im-state",
+                                    "input-revision",
+                                    "focus",
+                                    "metadata",
+                                    "selection",
+                                    "body",
+                                    "expiry",
+                                )
+                                or diagnostic.get("phase") in ("before-delete", "before-insert")
+                                and diagnostic.get("check") == "ticket-claim"
+                            )
+                        )
+                    )
+                ):
+                    self.direct_trace_count = getattr(self, "direct_trace_count", 0) + 1
+                    try:
+                        print(
+                            "typelay-direct-diagnostic "
+                            + json.dumps(
+                                {
+                                    "atMs": now_ms(),
+                                    "reason": "EpochChanged",
+                                    "diagnostic": diagnostic,
+                                },
+                                separators=(",", ":"),
+                            ),
+                            file=sys.stderr,
+                        )
+                    except OSError:
+                        pass
+            return reply
         except (OSError, EOFError, TimeoutError):
             if peer.link.channel.alive:
                 peer.link.command("quarantine", {"target": target})

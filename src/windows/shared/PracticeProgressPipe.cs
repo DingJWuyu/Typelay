@@ -92,8 +92,17 @@ internal static class PracticeProgressPipe
 
     private static void Validate(PracticeMessage message)
     {
+        bool prefixDispatch = message.Kind is "test-prefix-root-hover-dispatched" or "test-prefix-root-drag-dispatched"
+            or "test-prefix-root-nonclient-hover-dispatched" or "test-prefix-root-button-dispatched"
+            or "test-prefix-source-hover-dispatched" or "test-prefix-source-selection-dispatched"
+            or "test-prefix-ime-language-dispatched";
+        if (prefixDispatch && (message.Progress is not null || message.Acceptance is not null
+            || message.AutomaticProgress is not null || message.InputCompletion is not null || message.Editing is not null
+            || message.Returning is not null || message.MouseReturn is not null || message.Completion is not null
+            || message.Exit is not null || message.ExitResult is not null || message.PrefixResult is not null))
+            throw new InvalidDataException("practice-prefix-dispatch");
         if (message.Connection == Guid.Empty || message.Run == Guid.Empty || message.Sequence <= 0
-            || message.Kind is not ("begin" or "retire" or "started" or "retired" or "restart" or "closed" or "progress"
+            || !prefixDispatch && message.Kind is not ("begin" or "retire" or "started" or "retired" or "restart" or "closed" or "progress"
                 or "begin-auto" or "source-ready" or "install" or "installed" or "revoke-plan" or "revoked-plan"
                 or "release-plan" or "released-plan" or "receipt" or "witness-consumed" or "witness-failed" or "auto-progress"
                 or "return-fence" or "return-fenced" or "return-resume" or "source-returned"

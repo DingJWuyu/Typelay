@@ -817,6 +817,118 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertEqual(frozen["target"], source["target"])
         self.assertEqual(frozen["authority"], native["authority"])
 
+    def direct_diagnostic_reply(self, diagnostic, *, count=0):
+        notice, native = self.completed_metadata_command("direct")
+        self.input.direct_trace_count = count
+
+        async def exercise():
+            task = asyncio.create_task(self.input.request("direct", {"expected": notice["source"]}))
+            for expected, response in (
+                ("describe", native),
+                (
+                    "direct",
+                    {
+                        "status": "RejectedBeforeMutation",
+                        "reason": "EpochChanged",
+                        "diagnostic": diagnostic,
+                    },
+                ),
+            ):
+                async with asyncio.timeout(1):
+                    while not (frames := self.native_frames(self.peer)):
+                        await asyncio.sleep(0)
+                self.assertEqual(len(frames), 1)
+                self.assertEqual(frames[0]["op"], expected)
+                self.peer.link.receive({"id": frames[0]["id"], "data": response})
+            return await asyncio.wait_for(task, 1)
+
+        output = io.StringIO()
+        with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}), contextlib.redirect_stderr(output):
+            result = asyncio.run(exercise())
+        self.assertEqual(result, {"status": "RejectedBeforeMutation", "reason": "EpochChanged"})
+        return output.getvalue()
+
+    @staticmethod
+    def direct_epoch_diagnostic():
+        return {
+            "phase": "authority",
+            "observed": True,
+            **{
+                prefix + field: True
+                for prefix in ("basis", "approved")
+                for field in (
+                    "Context",
+                    "Epoch",
+                    "Input",
+                    "Server",
+                    "Applied",
+                    "Flags",
+                    "InputRevision",
+                    "ContentRevision",
+                    "FocusRevision",
+                )
+            },
+        }
+
+    def test_direct_rejection_diagnostic_survives_native_reply_without_changing_receipt(self):
+        diagnostic = self.direct_epoch_diagnostic()
+        diagnostic["basisEpoch"] = False
+        output = self.direct_diagnostic_reply(diagnostic)
+        record = json.loads(output.removeprefix("typelay-direct-diagnostic "))
+        self.assertEqual(record["diagnostic"], diagnostic)
+        self.assertEqual(record["reason"], "EpochChanged")
+
+    def test_direct_rejection_discards_malformed_diagnostic_without_losing_receipt(self):
+        diagnostic = self.direct_epoch_diagnostic()
+        diagnostic["privateText"] = "must not be logged"
+        self.assertEqual(self.direct_diagnostic_reply(diagnostic), "")
+
+    def test_direct_rejection_diagnostic_requires_exact_boolean_types(self):
+        diagnostic = self.direct_epoch_diagnostic()
+        diagnostic["basisEpoch"] = 1
+        self.assertEqual(self.direct_diagnostic_reply(diagnostic), "")
+
+    def test_direct_rejection_diagnostic_requires_all_fields(self):
+        diagnostic = self.direct_epoch_diagnostic()
+        del diagnostic["observed"]
+        self.assertEqual(self.direct_diagnostic_reply(diagnostic), "")
+
+    def test_direct_rejection_diagnostic_rejects_unknown_phase(self):
+        diagnostic = self.direct_epoch_diagnostic()
+        diagnostic["phase"] = "untrusted native text"
+        self.assertEqual(self.direct_diagnostic_reply(diagnostic), "")
+
+    def test_direct_late_textview_rejection_diagnostic_survives_reply(self):
+        diagnostic = {"phase": "after-publication-take", "check": "im-local"}
+        output = self.direct_diagnostic_reply(diagnostic)
+        record = json.loads(output.removeprefix("typelay-direct-diagnostic "))
+        self.assertEqual(record["diagnostic"], diagnostic)
+
+    def test_direct_late_delete_ticket_rejection_diagnostic_survives_reply(self):
+        diagnostic = {"phase": "before-delete", "check": "ticket-claim"}
+        output = self.direct_diagnostic_reply(diagnostic)
+        self.assertEqual(
+            json.loads(output.removeprefix("typelay-direct-diagnostic "))["diagnostic"], diagnostic
+        )
+
+    def test_direct_late_insert_ticket_rejection_diagnostic_survives_reply(self):
+        diagnostic = {"phase": "before-insert", "check": "ticket-claim"}
+        output = self.direct_diagnostic_reply(diagnostic)
+        self.assertEqual(
+            json.loads(output.removeprefix("typelay-direct-diagnostic "))["diagnostic"], diagnostic
+        )
+
+    def test_direct_late_textview_rejection_rejects_unknown_check(self):
+        diagnostic = {"phase": "after-publication-take", "check": "private native text"}
+        self.assertEqual(self.direct_diagnostic_reply(diagnostic), "")
+
+    def test_direct_late_textview_rejection_rejects_mixed_shapes(self):
+        diagnostic = {"phase": "before-delete", "check": "ticket-claim", "observed": True}
+        self.assertEqual(self.direct_diagnostic_reply(diagnostic), "")
+
+    def test_direct_rejection_diagnostic_has_a_fixed_budget(self):
+        self.assertEqual(self.direct_diagnostic_reply(self.direct_epoch_diagnostic(), count=16), "")
+
     def test_fresh_metadata_cannot_freeze_another_targets_direct_capture(self):
         notice, _ = self.completed_metadata_command("direct", target="another-field")
         self.assertEqual(notice["rejection"], "TargetChanged")
@@ -4320,6 +4432,15 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertEqual(event["publicationRound"], 14)
         self.assertEqual(event["publicationTiming"], rounds[13])
         self.assertNotIn("source", event)
+        for key in (
+            "eventToTabCheckMs",
+            "tabCheckToWriteMs",
+            "eventHostLowerMs",
+            "eventHostUpperMs",
+            "tabCheckHostLowerMs",
+            "tabCheckHostUpperMs",
+        ):
+            self.assertIsNone(event[key])
         rounds[-1]["capturedMs"] = 1020
         self.input.browser_rounds[:] = [{"round": 100}]
         retained = self.input.diagnostics()["tabCaptureRounds"]
@@ -4334,6 +4455,36 @@ class InputFeedbackTests(unittest.TestCase):
                 "tab-diagnostic", {"reason": "StaleObservation", "publicationRound": 100}
             )
         self.assertEqual(self.input.diagnostics()["tabCaptureRounds"], [])
+
+    def test_tab_timing_logs_only_finite_nonnegative_numeric_observations(self):
+        peer = self.connect_peer("browser")
+        keys = (
+            "eventToTabCheckMs",
+            "tabCheckToWriteMs",
+            "eventHostLowerMs",
+            "eventHostUpperMs",
+            "tabCheckHostLowerMs",
+            "tabCheckHostUpperMs",
+        )
+        for invalid in (None, True, "2", -1, float("nan"), float("inf"), 2**53):
+            with self.subTest(invalid=invalid):
+                output = io.StringIO()
+                with (
+                    patch.dict(os.environ, {"TYPELAY_TRACE": "1"}),
+                    contextlib.redirect_stderr(output),
+                ):
+                    peer.event(
+                        "tab-diagnostic",
+                        {"reason": "StaleObservation", **dict.fromkeys(keys, invalid)},
+                    )
+                event = json.loads(output.getvalue().removeprefix("typelay-tab "))
+                self.assertTrue(all(event[key] is None for key in keys))
+        output = io.StringIO()
+        values = dict(zip(keys, (41.5, 2, 1000, 1008, 1041.5, 1049.5), strict=True))
+        with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}), contextlib.redirect_stderr(output):
+            peer.event("tab-diagnostic", {"reason": "None", **values})
+        event = json.loads(output.getvalue().removeprefix("typelay-tab "))
+        self.assertEqual({key: event[key] for key in keys}, values)
 
     def test_current_cli_without_an_approved_field_reports_a_source_free_refusal(self):
         self.focus(self.peer)

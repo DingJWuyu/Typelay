@@ -8,6 +8,18 @@ static GtkWidget *report_window, *report_first, *report_second, *other_window, *
 static GtkWidget *report_multiline, *excluded_views[3];
 static const char *report_path;
 static char *last_report;
+static guint report_source_id;
+static gboolean report_closed;
+static void fixture_destroyed(GtkWidget *window, gpointer unused) {
+    (void)window; (void)unused;
+    /* destroy is RUN_CLEANUP: stop before the class handler destroys children.
+     * gtk_main_quit alone does not cancel already-ready timeout dispatch. */
+    report_closed = TRUE;
+    guint source = report_source_id;
+    report_source_id = 0;
+    if (source) g_source_remove(source);
+    gtk_main_quit();
+}
 typedef struct {
     guint insertions, deletions, focus_in, focus_out;
 } EntryEvidence;
@@ -404,11 +416,16 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
 
 static gboolean report_state(gpointer unused) {
     (void)unused;
+    if (report_closed) {
+        report_source_id = 0;
+        return G_SOURCE_REMOVE;
+    }
     GtkWidget *active = other_window && gtk_window_is_active(GTK_WINDOW(other_window)) ? other_window : report_window;
     GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(active));
     JsonBuilder *builder = json_builder_new();
     json_builder_begin_object(builder);
     motion_report(builder);
+    if (report_closed) goto closed;
     json_builder_set_member_name(builder, "observedAtMs");
     json_builder_add_int_value(builder, g_get_monotonic_time() / 1000);
     json_builder_set_member_name(builder, "first");
@@ -452,6 +469,7 @@ static gboolean report_state(gpointer unused) {
         }
         TlFcitxStateV1 state = { .size = sizeof(state), .version = TL_FCITX_ABI_V1 };
         gboolean valid = inspect_ime(report_first, &state);
+        if (report_closed) goto closed;
         json_builder_set_member_name(builder, "cooperative");
         json_builder_add_boolean_value(builder, valid);
         json_builder_set_member_name(builder, "imeFocused");
@@ -462,6 +480,7 @@ static gboolean report_state(gpointer unused) {
         json_builder_add_boolean_value(builder, valid && (state.flags & TL_FCITX_COMPOSING));
         state = (TlFcitxStateV1){ .size = sizeof(state), .version = TL_FCITX_ABI_V1 };
         valid = inspect_ime(focus, &state);
+        if (report_closed) goto closed;
         json_builder_set_member_name(builder, "focusedImeClear");
         json_builder_add_boolean_value(builder, valid && ime_clear(&state));
         json_builder_set_member_name(builder, "focusedImeComposing");
@@ -562,6 +581,10 @@ static gboolean report_state(gpointer unused) {
     json_node_free(node);
     g_object_unref(builder);
     return G_SOURCE_CONTINUE;
+closed:
+    g_object_unref(builder);
+    report_source_id = 0;
+    return G_SOURCE_REMOVE;
 }
 
 /* An actual GTK client, not a production backend or a source-string assertion. */
@@ -618,7 +641,7 @@ int main(int argc, char **argv) {
         gtk_box_pack_start(GTK_BOX(box), excluded, FALSE, FALSE, 0);
     }
 
-    g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+    g_signal_connect(window, "destroy", G_CALLBACK(fixture_destroyed), NULL);
     gtk_widget_show_all(window);
     if (g_getenv("TYPELAY_FIXTURE_FULLSCREEN")) gtk_window_fullscreen(GTK_WINDOW(window));
     gtk_widget_grab_focus(first);
@@ -634,7 +657,7 @@ int main(int argc, char **argv) {
         gtk_entry_set_text(GTK_ENTRY(other_entry), "The other window is unchanged.");
         gtk_box_pack_start(GTK_BOX(other_box), other_entry, FALSE, FALSE, 0);
         gtk_container_add(GTK_CONTAINER(other_window), other_box);
-        g_signal_connect(other_window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+        g_signal_connect(other_window, "destroy", G_CALLBACK(fixture_destroyed), NULL);
         gtk_widget_show_all(other_window);
     }
     report_path = g_getenv("TYPELAY_FIXTURE_STATE");
@@ -653,7 +676,7 @@ int main(int argc, char **argv) {
             if (clock) g_signal_connect_object(clock, "before-paint",
                 G_CALLBACK(prepare_language_frame), window, 0);
         }
-        g_timeout_add(25, report_state, NULL);
+        report_source_id = g_timeout_add(25, report_state, NULL);
     }
     gtk_main();
     g_free(last_report);

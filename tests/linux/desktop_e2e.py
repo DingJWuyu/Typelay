@@ -3856,7 +3856,8 @@ def run(arguments):
                             )
 
                             request({"Action": {"CloseWindow": {"id": window["id"]}}})
-                            assert fixture.wait(timeout=5) == 0
+                            fixture_exit = fixture.wait(timeout=5)
+                            assert fixture_exit == 0, f"GTK fixture close exited {fixture_exit}"
                             stop()
                             settings["OnboardingComplete"] = False
                             settings["Mode"] = 0

@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using TypeLay.Windows.Testing;
 
 internal static partial class BrowserCooperationCheck
 {
@@ -216,35 +217,47 @@ internal static partial class BrowserCooperationCheck
             }, null, ct);
             return metadata;
         }
-        public async Task OpenPageAsync(string url, CancellationToken ct)
+        public async Task OpenPageAsync(string url, Action<string> stage, CancellationToken ct)
         {
+            stage("get-targets");
             var targets = (await CallAsync("Target.getTargets", new
             {
             }, null, ct)).GetProperty("targetInfos");
             var pages = targets.EnumerateArray().Where(target => target.GetProperty("type").GetString() == "page"
                 && target.GetProperty("url").GetString() == "about:blank").ToArray();
             Require(pages.Length == 1, "owned-initial-page-ambiguous");
+            stage("attach-page");
             var attach = await CallAsync("Target.attachToTarget", new
             {
                 targetId = pages[0].GetProperty("targetId").GetString(),
                 flatten = true
             }, null, ct);
             _page = attach.GetProperty("sessionId").GetString() ?? throw new Failure("cdp-page-session-missing");
+            stage("enable-page");
             await PageCallAsync("Page.enable", new
             {
             }, ct);
+            stage("enable-dom");
             await PageCallAsync("DOM.enable", new
             {
             }, ct);
-            await PageCallAsync("Page.navigate", new
+            stage("navigate");
+            var navigation = await PageCallAsync("Page.navigate", new
             {
                 url
             }, ct);
+            Require(BrowserPageOpenResponse.NavigationSucceeded(navigation), "owned-page-navigation-failed");
+            string lastReadiness = "unobserved";
             while (true)
             {
-                var ready = await EvaluateAsync("document.readyState==='complete' && typeof state==='function'", ct);
-                if (ready.ValueKind == JsonValueKind.True)
+                stage("readiness-response-" + lastReadiness);
+                var response = await EvaluateAsync("({documentComplete:document.readyState==='complete',stateAvailable:typeof state==='function'})", ct);
+                var ready = BrowserPageOpenResponse.Readiness(response) ?? throw new Failure("owned-page-readiness-invalid");
+                if (ready.DocumentComplete && ready.StateAvailable)
                     break;
+                lastReadiness = (ready.DocumentComplete ? "document-complete" : "document-incomplete")
+                    + (ready.StateAvailable ? "-state-available" : "-state-missing");
+                stage("readiness-pending-" + lastReadiness);
                 await Task.Delay(40, ct);
             }
         }
