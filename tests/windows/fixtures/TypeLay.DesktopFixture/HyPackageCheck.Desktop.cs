@@ -189,9 +189,10 @@ internal static partial class HyPackageCheck
                             string name = item.Current.Name;
                             if (name == "按需快捷键状态")
                                 headingFound = true;
-                            if (ShortcutCategory(name) is { } category)
+                            string? category = ShortcutCategory(name);
+                            if (category is not null)
                                 categories.Add(category);
-                            return name == "两个快捷键已启用；操作不会切换工作模式。";
+                            return category == "native-registered";
                         });
                         ct.ThrowIfCancellationRequested();
                         observation.HeadingFound = headingFound;
@@ -458,7 +459,7 @@ internal static partial class HyPackageCheck
         const string handoffPending = " 请释放全部按键并等待快捷键交接完成，再重试。";
         return name switch
         {
-            "两个快捷键已启用；操作不会切换工作模式。" => "native-registered",
+            _ when KeyboardHook.IsRegisteredShortcutStatus(name) => "native-registered",
             "快捷键输入观察未就绪，当前不会执行按需命令。" => "input-observation-unavailable",
             "新增快捷键仅在按需模式下启用。" => "not-configured",
             "新增快捷键仅在启用 TypeLay 的按需模式下生效。" => "disabled",

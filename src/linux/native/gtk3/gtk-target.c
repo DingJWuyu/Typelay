@@ -809,6 +809,40 @@ static gboolean direct_authority_matches(Target *target, JsonObject *basis, Json
         && (gint64)target->focus_revision == tl_integer(approved, "focusRevision", -1)
         && age >= 0 && age <= 150;
 }
+/* TextView keeps the original focused source and every non-transport version.
+ * Unlike Entry background direct, neither focus reset nor Detached is allowed.
+ * Empty provider output/reset can retire the old transport proof; only the
+ * current complete, short-lived approval may replace that proof. */
+static gboolean direct_textview_authority_matches(Target *target, JsonObject *basis, JsonObject *approved) {
+    JsonObject *original = tl_object(basis, "contextStamp");
+    JsonObject *fresh = tl_object(approved, "contextStamp");
+    static const char *const stamps[] = {"context", "epoch", "input", "server", "applied", "flags"};
+    static const char *const revisions[] = {"inputRevision", "contentRevision", "focusRevision"};
+    /* Missing or non-integer fields never match a cast/wrapped native counter. */
+    for (guint i = 0; i < G_N_ELEMENTS(stamps); i++)
+        if (tl_integer(original, stamps[i], -1) < 0 || tl_integer(fresh, stamps[i], -1) < 0) return FALSE;
+    for (guint i = 0; i < G_N_ELEMENTS(revisions); i++)
+        if (tl_integer(basis, revisions[i], -1) < 0 || tl_integer(approved, revisions[i], -1) < 0) return FALSE;
+    const TlFcitxStateV1 *state = &target->im_state;
+    gint64 original_epoch = tl_integer(original, "epoch", -1);
+    gint64 observed = tl_integer(approved, "observedAtMs", -1), now = tl_now();
+    return original && standard_textview(target) && target == tl_focused()
+        && target->im_observed && state_clear(state) && original_epoch >= 0
+        && (guint64)original_epoch <= state->epoch
+        && (gint64)state->context_generation == tl_integer(original, "context", -1)
+        && (gint64)state->input_epoch == tl_integer(original, "input", -1)
+        && (gint64)state->server_serial == tl_integer(original, "server", -1)
+        && (gint64)state->applied_serial == tl_integer(original, "applied", -1)
+        && (gint64)state->flags == tl_integer(original, "flags", -1)
+        && (gint64)target->input_revision == tl_integer(basis, "inputRevision", -1)
+        && (gint64)target->content_revision == tl_integer(basis, "contentRevision", -1)
+        && (gint64)target->focus_revision == tl_integer(basis, "focusRevision", -1)
+        && stamp_matches(target, approved)
+        && (gint64)target->input_revision == tl_integer(approved, "inputRevision", -1)
+        && (gint64)target->content_revision == tl_integer(approved, "contentRevision", -1)
+        && (gint64)target->focus_revision == tl_integer(approved, "focusRevision", -1)
+        && observed >= 0 && observed <= now && now - observed <= 150;
+}
 typedef struct {
     GtkWidget *top, *focused;
     gboolean background, changed;
@@ -945,7 +979,9 @@ static JsonObject *write_source(Target *target, JsonObject *request, gboolean di
     if (!tl_metadata_matches(target, approved) || !tl_metadata_matches(target, basis))
         return receipt("RejectedBeforeMutation", "Sensitive");
     if (ticket ? !tl_ordered_check(ticket, target, TRUE, TRUE)
-        : direct_entry ? !direct_authority_matches(target, basis, approved) : !stamp_matches(target, basis))
+        : direct_entry ? !direct_authority_matches(target, basis, approved)
+        : direct && standard_textview(target) ? !direct_textview_authority_matches(target, basis, approved)
+        : !stamp_matches(target, basis))
         return epoch_rejected(target, basis, approved, direct, "authority");
     if ((gint64)target->content_revision != tl_integer(basis, "contentRevision", -1))
         return receipt("RejectedBeforeMutation", "SourceChanged");

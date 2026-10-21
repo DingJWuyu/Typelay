@@ -864,7 +864,7 @@ internal static partial class ContinuousTranslationCheck
         var result = new SceneResult { Outcome = "running", Stage = "wait-shared-model" };
         var elapsed = Stopwatch.StartNew();
         string? feedbackCode = null;
-        bool capabilityObserved = false, sourceUnchangedBefore = false, focusBefore = false;
+        bool capabilityObserved = false, shortcutReadyObserved = false, sourceUnchangedBefore = false, focusBefore = false;
         bool selectionUnchangedBefore = false, overlayShown = false, verified = false;
         bool sourceMatched = false, focusRetained = false, zeroSubmits = false, submitCounterVerified = false;
         TextRange? selectionBefore = null;
@@ -924,6 +924,18 @@ internal static partial class ContinuousTranslationCheck
                 return row.State == ApplicationSupportState.Connected && row.Capabilities.DirectReplace;
             }, cancellation);
             capabilityObserved = true;
+            // Capability is reported before Runtime finishes validating the read.
+            // Wait for the same public readiness shown by settings and the tray,
+            // never an internal lease, a delay, or another shortcut attempt.
+            result.Stage = "direct-public-ready";
+            await UntilAsync(() =>
+            {
+                Require(feedbackCode is null, "direct-production-feedback");
+                Require(model.Ready, "model-unavailable");
+                Require(!overlayShown && !overlay.IsVisible, "direct-overlay-shown");
+                return controller.ShortcutStatus.Contains("当前输入框的直接替换快捷键已就绪。", StringComparison.Ordinal);
+            }, cancellation);
+            shortcutReadyObserved = true;
             result.Stage = "direct-before-shortcut";
             sourceUnchangedBefore = N.ReadText(field, Limits.MaxTextUnits) == source;
             selectionBefore = N.ReadSelection(field);
@@ -983,6 +995,7 @@ internal static partial class ContinuousTranslationCheck
             {
                 feedbackCode,
                 capabilityObserved,
+                shortcutReadyObserved,
                 sourceUnchangedBefore,
                 selectionUnchangedBefore,
                 selectionStart = selectionBefore?.Start,

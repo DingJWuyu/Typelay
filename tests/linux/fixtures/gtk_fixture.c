@@ -1,4 +1,5 @@
 #include <gtk/gtk.h>
+#include <glib/gstdio.h>
 #include <json-glib/json-glib.h>
 #include "../../../src/linux/native/fcitx5/typelay-fcitx-v1.h"
 
@@ -27,6 +28,7 @@ static EntryEvidence first_evidence, second_evidence;
 static JsonObject *first_insert_context, *first_delete_context;
 #include "gtk_reentry.inc"
 #include "gtk_input_notifications.inc"
+#include "gtk_direct_epoch.inc"
 
 static guint function_down[24], function_up[24];
 static gboolean observe_key(GtkWidget *widget, GdkEventKey *event, gpointer data) {
@@ -453,6 +455,7 @@ static gboolean report_state(gpointer unused) {
         json_builder_add_value(builder, transition);
     }
     json_builder_end_array(builder);
+    direct_control_report(builder);
     json_builder_set_member_name(builder, "focus");
     json_builder_add_string_value(builder, focus ? gtk_buildable_get_name(GTK_BUILDABLE(focus)) : "");
     if (g_getenv("TYPELAY_FIXTURE_COOPERATIVE")) {
@@ -662,6 +665,7 @@ int main(int argc, char **argv) {
         gtk_widget_show_all(other_window);
     }
     notification_fixture_init(view);
+    direct_control_init();
     report_path = g_getenv("TYPELAY_FIXTURE_STATE");
     if (report_path && g_path_is_absolute(report_path)) {
         report_window = window;

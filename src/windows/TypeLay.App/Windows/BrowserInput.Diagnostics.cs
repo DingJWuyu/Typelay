@@ -331,12 +331,17 @@ internal sealed partial class BrowserInput
             return;
         try
         {
+            // NativeReady is the existing registration diagnostic, not command authority.
+            const string prefix = "TypeLay · ", automationSuffix = " · 自动化测试";
+            string nativeStatus = assignedText.StartsWith(prefix, StringComparison.Ordinal) ? assignedText[prefix.Length..] : "";
+            if (nativeStatus.EndsWith(automationSuffix, StringComparison.Ordinal))
+                nativeStatus = nativeStatus[..^automationSuffix.Length];
             string status = assignedText switch
             {
                 "TypeLay · 浏览器快捷键已就绪。 · 自动化测试" or "TypeLay · 浏览器快捷键已就绪。" => "BrowserReady",
                 "TypeLay · 浏览器快捷键尚未就绪，请返回受支持的输入框。 · 自动化测试" or "TypeLay · 浏览器快捷键尚未就绪，请返回受支持的输入框。" => "BrowserNotReady",
                 "TypeLay · 浏览器快捷键连接中。 · 自动化测试" or "TypeLay · 浏览器快捷键连接中。" => "BrowserConnecting",
-                "TypeLay · 两个快捷键已启用；操作不会切换工作模式。 · 自动化测试" or "TypeLay · 两个快捷键已启用；操作不会切换工作模式。" => "NativeReady",
+                _ when KeyboardHook.IsRegisteredShortcutStatus(nativeStatus) => "NativeReady",
                 "TypeLay · 快捷键输入观察未就绪，当前不会执行按需命令。 · 自动化测试" or "TypeLay · 快捷键输入观察未就绪，当前不会执行按需命令。" => "InputNotReady",
                 "TypeLay · 已暂停 · 自动化测试" or "TypeLay · 已暂停" => "Paused",
                 _ => "Other"

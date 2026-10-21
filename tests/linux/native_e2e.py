@@ -120,6 +120,10 @@ def inside(arguments, notifications=None):
     environment.pop("TYPELAY_DESKTOP", None)
     if notifications is not None:
         environment["TYPELAY_FIXTURE_INPUT_NOTIFICATIONS"] = notifications
+    control_path = arguments.output / "direct-control.json"
+    if notifications == "direct":
+        control_path.unlink(missing_ok=True)
+        environment["TYPELAY_FIXTURE_DIRECT_CONTROL"] = str(control_path)
     state_path = arguments.output / "fixture.json"
     state_path.unlink(missing_ok=True)
     environment["TYPELAY_FIXTURE_STATE"] = str(state_path)
@@ -173,6 +177,10 @@ def inside(arguments, notifications=None):
         original = initial["first"] if notifications is None else initial["multiline"]["text"]
         description = client.describe()
         assert description["metadata"]["automationId"] == field
+        if notifications == "direct":
+            checks = direct_epoch_contract(client, description, state, wait_state, control_path)
+            (arguments.output / "direct-epoch-result.json").write_text(json.dumps(checks, indent=2))
+            return
         if notifications is not None:
             notification_contract(client, description, notifications, original, state)
             (arguments.output / f"notification-{notifications}-result.json").write_text(
@@ -490,6 +498,173 @@ def inside(arguments, notifications=None):
         faulthandler.cancel_dump_traceback_later()
         server.close()
         paths.native.unlink(missing_ok=True)
+
+
+def direct_epoch_contract(client, description, state, wait_state, control_path):
+    """Production requests against a controlled IM port, not real IME or native Undo evidence."""
+    generation = str(uuid.uuid4())
+    client.call(
+        "configure-shortcuts",
+        {
+            "enabled": True,
+            "generation": generation,
+            "sessionEnabled": False,
+            "wake": {"keyval": 0xFFC6, "modifiers": 0},
+            "direct": {},
+        },
+    )
+    target = description["target"]
+    sequence = 0
+
+    def send(action, *, rejected=False, repeated=False):
+        nonlocal sequence
+        before = state().get("directControl", {}).get("rejected", 0)
+        number = sequence if repeated else sequence + 1
+        pending = control_path.with_suffix(".tmp")
+        pending.write_text(json.dumps({"sequence": number, "action": action}))
+        pending.replace(control_path)
+        if rejected:
+            value = wait_state(lambda v: v.get("directControl", {}).get("rejected") == before + 1)
+            assert value["directControl"]["sequence"] == sequence
+        else:
+            sequence = number
+            value = wait_state(lambda v: v.get("directControl", {}).get("sequence") == sequence)
+        return value
+
+    cases = []
+    for mode in (
+        "epoch",
+        "input",
+        "context",
+        "serial",
+        "composition",
+        "focus",
+        "body",
+        "selection",
+        "rollback",
+        "prepare-input",
+        "stale-approved",
+        "missing-basis",
+        "missing-approved",
+        "approved-input",
+        "approved-content",
+        "approved-focus",
+        "approved-epoch",
+        "future-approved",
+        "malformed-basis",
+    ):
+        send("restore")
+        current = client.describe(target)
+        geometry = anchor_geometry(current["geometry"])
+        assert geometry is not None
+        native = client.call("capture", {"target": target, "authority": current["authority"]})
+        assert native is not None and native["ime"] == "Clear", (mode, client.capture_trace)
+        assert native["text"] == "Controlled original source"
+        write = plan(snapshot(native, client.hello, geometry), "Controlled replacement")
+        before = send(
+            mode
+            if mode
+            not in (
+                "stale-approved",
+                "missing-basis",
+                "missing-approved",
+                "approved-input",
+                "approved-content",
+                "approved-focus",
+                "approved-epoch",
+                "future-approved",
+                "malformed-basis",
+            )
+            else "epoch"
+        )
+        # Read the real current approval only after the controlled provider event has completed.
+        # No forged old epoch in the positive case and no focus restoration in the refusal case.
+        fresh = client.describe(target)
+        approved = fresh["authority"]
+        if mode == "epoch":
+            old_stamp = native["authority"]["contextStamp"]
+            new_stamp = approved["contextStamp"]
+            assert fresh["focused"] and new_stamp["epoch"] > old_stamp["epoch"]
+            assert {k: v for k, v in old_stamp.items() if k != "epoch"} == {
+                k: v for k, v in new_stamp.items() if k != "epoch"
+            }
+            for field in ("inputRevision", "contentRevision", "focusRevision"):
+                assert native["authority"][field] == approved[field], field
+        if mode == "stale-approved":
+            approved["observedAtMs"] = -(2**63)
+        if mode == "missing-basis":
+            del native["authority"]["contextStamp"]["input"]
+        if mode == "malformed-basis":
+            native["authority"]["contextStamp"]["input"] = str(
+                native["authority"]["contextStamp"]["input"]
+            )
+        if mode == "missing-approved":
+            del approved["contextStamp"]["applied"]
+        if mode in ("approved-input", "approved-content", "approved-focus"):
+            approved[mode.removeprefix("approved-") + "Revision"] += 1
+        if mode == "approved-epoch":
+            approved["contextStamp"]["epoch"] += 1
+        if mode == "future-approved":
+            approved["observedAtMs"] = now_ms() + 1000
+        result = client.call(
+            "direct",
+            {
+                "target": target,
+                "plan": write,
+                "authority": native["authority"],
+                "approved": approved,
+                "generation": generation,
+                "expiresAtMs": now_ms() + 250,
+                "diagnostic": True,
+            },
+        )
+        if mode == "epoch":
+            assert result["status"] == "Verified", (mode, result)
+            verified = result["verifiedSnapshot"]
+            assert verified["text"] == write["resultText"]
+            assert verified["selection"] == {"start": write["caret"], "end": write["caret"]}
+            after = wait_state(lambda v: v.get("multiline", {}).get("text") == write["resultText"])
+            assert (after["multiline"]["start"], after["multiline"]["end"]) == (
+                write["caret"],
+                write["caret"],
+            )
+            assert after["userActionsStarted"] == before["userActionsStarted"] + 1
+            assert after["userActionsFinished"] == before["userActionsFinished"] + 1
+        else:
+            assert result["status"] == "RejectedBeforeMutation", (mode, result)
+            if mode == "composition":
+                assert result["reason"] == "ImeUnclear", (mode, result)
+            elif mode == "prepare-input":
+                assert result["reason"] == "SourceChanged", (mode, result)
+            else:
+                assert result["reason"] == "EpochChanged", (mode, result)
+                assert result.get("diagnostic", {}).get("phase") == "authority", (mode, result)
+            # A fresh report barrier observes any actual native buffer callback, not a stale file.
+            after = send("prepare-input")
+            assert after["multiline"] == before["multiline"], (mode, result)
+            assert after["userActionsStarted"] == after["userActionsFinished"]
+        cases.append(
+            {
+                "case": mode,
+                "status": result["status"],
+                "reason": result["reason"],
+                "diagnostic": result.get("diagnostic"),
+            }
+        )
+    before = send("restore")
+    before_authority = client.describe(target)["authority"]
+    for action, repeated in (("unknown", False), ("epoch", True)):
+        after = send(action, rejected=True, repeated=repeated)
+        assert after["multiline"] == before["multiline"]
+        after_authority = client.describe(target)["authority"]
+        for field in ("contextStamp", "inputRevision", "contentRevision", "focusRevision"):
+            assert after_authority[field] == before_authority[field], (action, field)
+    return {
+        "scope": "controlled-textview-direct-epoch",
+        "cases": cases,
+        "controlRejectsUnknownAndRepeated": True,
+        "nativeUndoTested": False,
+    }
 
 
 def notification_contract(client, description, mode, original, state):
@@ -930,12 +1105,16 @@ if __name__ == "__main__":
                     "unknown",
                 ):
                     inside(args, notifications=mode)
+                inside(args, notifications="direct")
                 result = json.loads((args.output / "native-unknown-result.json").read_text())
                 result["controlledNotifications"] = [
                     json.loads(path.read_text())
                     for path in sorted(args.output.glob("notification-*-result.json"))
                 ]
                 assert len(result["controlledNotifications"]) == 8
+                result["controlledDirectEpoch"] = json.loads(
+                    (args.output / "direct-epoch-result.json").read_text()
+                )
                 (args.output / "native-result.json").write_text(json.dumps(result, indent=2))
         except BaseException:
             import traceback

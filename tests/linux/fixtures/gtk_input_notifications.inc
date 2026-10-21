@@ -4,13 +4,17 @@ typedef struct { GtkIMContext parent; } NotificationContext;
 typedef struct { GtkIMContextClass parent; } NotificationContextClass;
 G_DEFINE_TYPE(NotificationContext, notification_context, GTK_TYPE_IM_CONTEXT)
 static guint notification_signal;
-static guint64 notification_input = 47, notification_generation = 192;
+static guint64 notification_input = 47, notification_generation = 192, notification_epoch = 56;
+static guint64 notification_serial = 1;
+static guint notification_flags = TL_FCITX_KNOWN | TL_FCITX_FOCUSED;
+static gboolean notification_prepare_input;
 static GtkIMContext *notification_context_instance;
 static GtkWidget *notification_widget;
 static const char *notification_mode;
 static gboolean notification_during_probe, notification_nested;
 static void notification_emit(guint causes) {
     if (causes & TL_FCITX_CHANGE_INPUT) notification_input++;
+    notification_epoch++;
     g_signal_emit(notification_context_instance, notification_signal, 0, causes);
 }
 static gboolean notification_inspect(GtkIMContext *context, GtkWidget *widget, TlFcitxStateV1 *state) {
@@ -20,18 +24,26 @@ static gboolean notification_inspect(GtkIMContext *context, GtkWidget *widget, T
         notification_emit(g_strcmp0(notification_mode, "during-zero") == 0 ? 0 : TL_FCITX_CHANGE_INPUT);
     }
     *state = (TlFcitxStateV1){.size = sizeof *state, .version = TL_FCITX_ABI_V1,
-        .context_generation = notification_generation, .epoch = notification_input,
-        .input_epoch = notification_input, .server_serial = 1, .applied_serial = 1,
-        .flags = TL_FCITX_KNOWN | TL_FCITX_FOCUSED};
+        .context_generation = notification_generation, .epoch = notification_epoch,
+        .input_epoch = notification_input, .server_serial = notification_serial, .applied_serial = notification_serial,
+        .flags = notification_flags};
     return TRUE;
 }
 static gboolean notification_validate(GtkIMContext *context, GtkWidget *widget, const TlFcitxStateV1 *state) {
     return context == notification_context_instance && widget == notification_widget
-        && state->context_generation == notification_generation && state->input_epoch == notification_input;
+        && state->context_generation == notification_generation && state->input_epoch == notification_input
+        && state->epoch == notification_epoch && state->server_serial == notification_serial
+        && state->applied_serial == notification_serial && state->flags == notification_flags
+        && notification_flags == (TL_FCITX_KNOWN | TL_FCITX_FOCUSED) && gtk_widget_has_focus(widget);
 }
 static gboolean notification_prepare(GtkIMContext *context, GtkWidget *widget, const TlFcitxStateV1 *state) {
-    (void)context; (void)widget; (void)state;
-    return FALSE; /* This fixture never authorizes a write. */
+    if (g_strcmp0(notification_mode, "direct") != 0 || !notification_validate(context, widget, state))
+        return FALSE; /* Notification-only cases never authorize a write. */
+    if (notification_prepare_input) {
+        notification_prepare_input = FALSE;
+        notification_emit(TL_FCITX_CHANGE_INPUT);
+    }
+    return TRUE; /* Explicit controlled test port, not a real IME guarantee. */
 }
 static const TlFcitxCapabilityV1 notification_capability = {
     sizeof(TlFcitxCapabilityV1), TL_FCITX_ABI_V1,

@@ -163,3 +163,9 @@ python tests/shared/worker/ordinary_quality.py --python "$HY_PYTHON" --models "$
 `python tests/linux/test_input_notifications.py -v` 编译并运行生产私有通知账本，覆盖完整通知、缺额/多额、换代、回退、溢出、消费者重入及 probe 中通知；它不证明真实 GTK 或输入法可用。原 `native_e2e.py` Unknown-IME 拒绝场景保持不变，随后单独启动受控 IM context fixture，加载生产 GTK3 module，先保留旧 probe 缓存，再送入已完成通知及一次真实 F9。该对照包含完整15次通知、已结束的 producer 嵌套两通知，以及 probe 中输入/零cause、漏通知、context 换代、epoch 回退和未知cause的拒绝；不运行模型，不提供写回许可，不冒充真实 Fcitx Clear。
 
 去重依据锁定 provider 的唯一 `input_epoch++` 与同次同步 INPUT signal 对应关系，只处理已执行原 invalidation 的通知；原 revision 和许可撤销不恢复。消费者自身回调重入、probe 期间通知及不完整证据不允许去重。V1 不暴露其它监听者已结束的 producer 嵌套深度：若两次通知均完整处理、原 emit 栈已返回，且后续完整 inspect 的同 context 版本差额精确吻合，则两次均视为已处理输入。此逻辑不建立 Clear，仍须实际 provider inspect 成功；GIMP 真实应用和真实输入法验收另行执行。
+
+## GTK3 TextView 直接写回 transport proof 续接
+
+`native_e2e.py` 在原 Unknown-IME 和8组通知合同之后，单独启动 `direct` 受控 IM context fixture。控制文件只由隔离 fixture 的 GLib 主循环消费固定动作和严格递增序号，不进入生产进程；未知动作与重复序号拒绝。通过生产公开 capture 冻结原文和 authority，然后发送一次 cause=0 的 provider 版本变化，读取真实 fresh describe，再调用公开 direct。正例必须验证实际正文、选区、Verified snapshot 和原 `begin-user-action` / `end-user-action` 各一次。输入、context、serial、组成、焦点、正文、选区、epoch 回退、prepare 中输入以及缺失/不匹配/过期批准分别保持拒绝且不得改写当前正文和选区。
+
+续接只用于 GTK3 标准 TextView：旧 basis 除单调 transport epoch 外全部字段和三种 revision 精确保留，当前 focused Clear 与 fresh approved 完整 stamp 仍须成立，沿用150ms批准和原事务全部后验门。它不借用 Entry 的 Detached 路径，不改变 provider ABI。受控端口验证写入分组协议，不证明真实输入法、原子性或 GTK3 原生 Undo。真实 GIMP 的普通应用写回与原生 Undo 轨迹对照仍独立执行；本地对象编译不能替代这两层嵌套桌面执行。

@@ -54,7 +54,33 @@ internal sealed partial class KeyboardHook : IInputMonitor
     internal bool CanInterceptOwnedSessionKeys => Ready && _sessionEnabled && Volatile.Read(ref _sessionKeys).Supported;
     internal bool UsesUnmodifiedSessionKeys => Volatile.Read(ref _sessionKeys) is
     { Supported: true, AcceptModifiers: ShortcutModifiers.None, ExitModifiers: ShortcutModifiers.None };
-    public string ShortcutStatus => _hotkeys.Status;
+    public string ShortcutStatus
+    {
+        get
+        {
+            // Registration is not observation readiness. Keep failures and disabled
+            // modes authoritative, and expose only presentation through the existing
+            // settings/tray status. Reading this never renews or grants a lease.
+            var configuration = Volatile.Read(ref _shortcuts);
+            if (!_hotkeys.Registered || !configuration.Bindings.Any(binding => binding.Action == "direct"))
+                return _hotkeys.Status;
+            var published = Volatile.Read(ref _shortcutLease);
+            var lease = published?.Observation;
+            long now = WindowsInterruptClock.NowMs;
+            bool ready = ShortcutsReady && published?.DiagnosticGeneration == configuration.Generation
+                && lease is not null && lease.ContentEpoch == ContentEpoch && lease.ForegroundEpoch == ForegroundEpoch
+                && now >= lease.Source.ObservedAtMs && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs
+                && lease.Source.Access == FieldAccess.Supported && lease.Source.Ime == ImeState.Clear
+                && lease.Source.DirectWriteSupported && GetFocus(lease.Source.Target) == FocusMember.Source;
+            return _hotkeys.Status + (ready ? " 当前输入框的直接替换快捷键已就绪。"
+                : " 直接替换快捷键尚未就绪，请保持受支持输入框的焦点并等待观察完成。");
+        }
+    }
+    // These consumers observe registration, not permission to execute a command.
+    internal static bool IsRegisteredShortcutStatus(string status) => status is
+        "两个快捷键已启用；操作不会切换工作模式。"
+        or "两个快捷键已启用；操作不会切换工作模式。 当前输入框的直接替换快捷键已就绪。"
+        or "两个快捷键已启用；操作不会切换工作模式。 直接替换快捷键尚未就绪，请保持受支持输入框的焦点并等待观察完成。";
     internal IReadOnlyList<RegisteredShortcut> RegisteredShortcuts => _hotkeys.Bindings.ToArray();
     // Decode the exact supported pair. Source writing and no-write session
     // commands advertise separate capabilities.

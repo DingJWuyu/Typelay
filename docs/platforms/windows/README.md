@@ -79,18 +79,18 @@
 
 ### 当前可验证候选
 
-最近核对的验证基线为 [`fedaa46a`](https://github.com/DingJWuyu/Typelay/actions/runs/39576772994)，该运行已结束，Windows 完整检查失败。
+最近核对的验证基线为 [`1a1a8f75`](https://github.com/DingJWuyu/Typelay/actions/runs/39581196739)，该运行已结束，Windows 完整检查失败。
 
-- App.Tests：564 项中 557 项通过、7 项失败，原有 545 项全部通过。6 项新增 hover 负例的普通 F10 key-up 分派进入系统菜单，尚未返回原完成回执；另 1 项 Ready 动态文案检查涉及三次消息读取竞态。后继候选仍待对应验证。
-- 连续翻译全部 13 段通过或 verified，包含自有首次 Tab、编辑及完成链、普通字段、直接替换、按需练习、冷启动 Chrome 与新标签页单次快捷键；不外推物理输入法或所有应用。
+- App.Tests：567/567 通过，Runtime.Tests：1091/1091 通过；不代表桌面整链验收完成。
+- 连续翻译在 `owned-editor-single-click` 等待交接超时，后续自有回源/接受/完成未运行；普通直接替换报 `shortcut-staleobservation`。普通字段快捷键、持续预览、按需练习、冷启动 Chrome 与新标签页通过，整链仍失败，不沿用上一轮全部 13 段通过结果。
 - 浏览器合作整链通过；记事本设置与只读预览观察通过，但等待公开接受提示因 Unknown 安全缺口超时，后续编辑/直接替换及 Hy 未运行，不沿用较早结果。
 - 本轮未消除普通自动捕获的输入法安全缺口，Unknown 继续拒写；后继候选未经对应验证不记作修复。本轮无质量采集，5068 的 40 次诊断与 386 的 69 次响应仍是各自范围的既有证据，三项质量门继续关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
 
-当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39576772994)下载 [`typelay-windows-fedaa46acea57a31c262e36ab2fc762a9d76693c`](https://github.com/DingJWuyu/Typelay/actions/runs/39576772994/artifacts/12335655909)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
+当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39581196739)下载 [`typelay-windows-1a1a8f75e574e2647c368cf92ee37699fd623016`](https://github.com/DingJWuyu/Typelay/actions/runs/39581196739/artifacts/12336323512)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
 
-- 源码提交：`fedaa46acea57a31c262e36ab2fc762a9d76693c`。
-- 内层 ZIP：87,032,541 字节。
-- SHA-256：`c3e456a52715186a57cffe3d1d9efde14ad4907b329900c4384f49eacacad364`，已实际重算并核对包旁摘要。
+- 源码提交：`1a1a8f75e574e2647c368cf92ee37699fd623016`。
+- 内层 ZIP：87,032,630 字节。
+- SHA-256：`641f0ef9ae8319a43ea6373c7802ca2716efb6e4d05722e815dec5fd7ea3382a`，已实际重算并核对包旁摘要。
 - 用 `Get-FileHash .\TypeLay-Windows-preview.zip -Algorithm SHA256` 核对；不要将内层摘要用于外层 Actions ZIP。App、Broker、Practice 与 BrowserHost 必须来自同一个完整包。
 
 正式安装器的单向中英准备、Auto 同语无输出、缺方向拒绝与保留旧方向的补装已通过真实模型 API 检查；该检查本身没有操作输入框或触发 F10。安装库存损坏时保留原数据并禁用修改，目前仍缺少用户可执行的库存恢复入口。

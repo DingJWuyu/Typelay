@@ -24,7 +24,8 @@ internal sealed partial class PracticeHost : IDisposable
     private readonly Func<ProcessStartInfo, IChildProcess> _start;
     private SessionController? _session;
     private CancellationTokenSource? _communication;
-    private Channel<PracticeMessage>? _updates;
+    private Channel<QueuedPracticeMessage>? _updates;
+    private PracticeWriterTrace? _writerTrace;
     private Guid _connection;
     private long _sequence;
     private PracticeMessage? _pending;
@@ -109,13 +110,14 @@ internal sealed partial class PracticeHost : IDisposable
         if (_session is null)
             return;
         _communication = new CancellationTokenSource();
-        _updates = Channel.CreateBounded<PracticeMessage>(new BoundedChannelOptions(16)
+        _updates = Channel.CreateBounded<QueuedPracticeMessage>(new BoundedChannelOptions(16)
         {
             SingleReader = true,
             SingleWriter = true,
             FullMode = BoundedChannelFullMode.Wait
         });
-        _ = SendProgressAsync(child, _updates.Reader, _communication.Token);
+        _writerTrace = _monitor is { OwnedEditorTraceEnabled: true } monitor ? new(monitor) : null;
+        _ = SendProgressAsync(child, _updates.Reader, _communication.Token, _writerTrace);
         _ = ReadCommandsAsync(child, _communication.Token);
         BeginRun(child);
     }
@@ -284,11 +286,15 @@ internal sealed partial class PracticeHost : IDisposable
     {
         // Unlike coalesced display updates, control and ACKs may never be lost.
         // Exhaustion closes this connection rather than dropping a retirement.
-        if (_updates?.Writer.TryWrite(message) != true && _child is not null && _communication is not null)
+        var trace = _writerTrace;
+        var queued = trace?.Queued(message) ?? new QueuedPracticeMessage(message, null, false);
+        bool accepted = _updates?.Writer.TryWrite(queued) == true;
+        trace?.Published(queued, accepted);
+        if (!accepted && _child is not null && _communication is not null)
             CommunicationFailed(_child, _communication.Token);
     }
 
-    private async Task SendProgressAsync(IChildProcess child, ChannelReader<PracticeMessage> updates, CancellationToken cancellation)
+    private async Task SendProgressAsync(IChildProcess child, ChannelReader<QueuedPracticeMessage> updates, CancellationToken cancellation, PracticeWriterTrace? writerTrace)
     {
         // The sole writer consumes immutable frames. Neither waiting for a
         // frame nor completing pipe I/O needs the UI that admitted the control.
@@ -297,14 +303,25 @@ internal sealed partial class PracticeHost : IDisposable
         try
         {
             var stream = child.Process.StandardInput.BaseStream;
-            await foreach (var update in updates.ReadAllAsync(cancellation).ConfigureAwait(false))
+            await foreach (var queued in updates.ReadAllAsync(cancellation).ConfigureAwait(false))
             {
+                var update = queued.Message;
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
                 deadline.CancelAfter(TimeSpan.FromSeconds(2));
                 bool traceFence = traceEditing && update.Kind == "edit-fence" && update.Editing is not null;
                 if (traceFence)
                     NotifyFence(update.Editing!.Intent, OwnedEditorEvent.FenceSendStarted);
-                await PracticeProgressPipe.WriteAsync(stream, update, deadline.Token).ConfigureAwait(false);
+                writerTrace?.Started(queued);
+                try
+                {
+                    await PracticeProgressPipe.WriteAsync(stream, update, deadline.Token).ConfigureAwait(false);
+                }
+                catch
+                {
+                    writerTrace?.Finished(queued, false);
+                    throw;
+                }
+                writerTrace?.Finished(queued, true);
                 if (traceFence)
                     NotifyFence(update.Editing!.Intent, OwnedEditorEvent.FenceSendCompleted);
             }
@@ -326,6 +343,96 @@ internal sealed partial class PracticeHost : IDisposable
             if (!_dispatcher.HasShutdownStarted && !_dispatcher.HasShutdownFinished)
                 _dispatcher.BeginInvoke(notification);
         }
+    }
+
+    private sealed record QueuedPracticeMessage(PracticeMessage Message, WriterFrame? Frame, bool TraceFence,
+        WriterFrame? PreviousQueued = null, WriterFrame? InFlightAtQueue = null);
+    private sealed record WriterFrame(long Order, string Kind, long QueuedAtMs,
+        long? WriteStartedAtMs = null, long? WriteEndedAtMs = null, bool? Completed = null);
+
+    // Diagnostic-only, per connection. The writer owns the rolling window;
+    // immutable in-flight/last-enqueued snapshots alone cross threads. Order
+    // identifies samples, not channel ordering. These are managed await
+    // boundaries, not proof of when a synchronous OS pipe write ran.
+    private sealed class PracticeWriterTrace(KeyboardHook monitor)
+    {
+        private readonly Queue<WriterFrame> _recent = new(16);
+        private WriterFrame? _inFlight, _lastQueued;
+        private long _order;
+        private int _fences;
+
+        public QueuedPracticeMessage Queued(PracticeMessage message)
+        {
+            var frame = new WriterFrame(Interlocked.Increment(ref _order), message.Kind switch
+            {
+                "begin" or "begin-auto" or "progress" or "auto-progress" or "retire"
+                    or "install" or "revoke-plan" or "release-plan" or "exit-install" or "exit-clear"
+                    or "edit-fence" or "edit-cancel" or "return-fence" or "return-resume" or "return-cancel"
+                    or "completion-clear" or "finish-denied" or "finish-saved" or "finish-retry" => message.Kind,
+                _ => "other"
+            }, WindowsInterruptClock.NowMs);
+            var previous = Interlocked.Exchange(ref _lastQueued, frame);
+            bool fence = message.Kind == "edit-fence" && Interlocked.Increment(ref _fences) <= 16;
+            return new(message, frame, fence, previous, Volatile.Read(ref _inFlight));
+        }
+
+        public void Published(QueuedPracticeMessage queued, bool accepted)
+        {
+            if (queued.TraceFence)
+                Record(queued, "queued", new
+                {
+                    accepted,
+                    frame = queued.Frame,
+                    queued.PreviousQueued,
+                    queued.InFlightAtQueue
+                });
+        }
+
+        public void Started(QueuedPracticeMessage queued)
+        {
+            var frame = queued.Frame! with
+            {
+                WriteStartedAtMs = WindowsInterruptClock.NowMs
+            };
+            Volatile.Write(ref _inFlight, frame);
+            if (queued.TraceFence)
+                Record(queued, "write-started", new
+                {
+                    frame,
+                    preceding = _recent.ToArray()
+                });
+        }
+
+        public void Finished(QueuedPracticeMessage queued, bool completed)
+        {
+            var frame = _inFlight! with
+            {
+                WriteEndedAtMs = WindowsInterruptClock.NowMs,
+                Completed = completed
+            };
+            if (_recent.Count == 16)
+                _recent.Dequeue();
+            _recent.Enqueue(frame);
+            Volatile.Write(ref _inFlight, null);
+            if (queued.TraceFence || !completed)
+                Record(queued, "write-ended", new
+                {
+                    frame
+                });
+        }
+
+        private void Record(QueuedPracticeMessage queued, string stage, object detail) =>
+            monitor.QueueOwnedEditorTrace(new
+            {
+                operation = "owned-editor-writer",
+                stage,
+                connection = queued.Message.Connection,
+                run = queued.Message.Run,
+                sequence = queued.Message.Sequence,
+                frameOrder = queued.Frame!.Order,
+                intent = queued.Message.Editing?.Intent,
+                detail
+            });
     }
 
     private async Task ReadCommandsAsync(IChildProcess child, CancellationToken cancellation)

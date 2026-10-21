@@ -3,6 +3,10 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Interop;
+using System.Windows.Media;
 using TypeLay.App;
 using TypeLay.Core;
 using TypeLay.Runtime;
@@ -14,8 +18,164 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 namespace TypeLay.App.Tests;
 
 [Collection("Desktop")]
-public sealed class ShortcutFeedbackTests
+public sealed class ShortcutFeedbackTests(WpfDesktopFixture desktop)
 {
+    [Theory]
+    [InlineData("两个快捷键已启用；操作不会切换工作模式。", true)]
+    [InlineData("两个快捷键已启用；操作不会切换工作模式。 当前输入框的直接替换快捷键已就绪。", true)]
+    [InlineData("两个快捷键已启用；操作不会切换工作模式。 直接替换快捷键尚未就绪，请保持受支持输入框的焦点并等待观察完成。", true)]
+    [InlineData("两个快捷键已启用；操作不会切换工作模式。 unknown", false)]
+    [InlineData("两个快捷键已启用；操作不会切换工作模式。 当前输入框的直接替换快捷键已就绪。 unknown", false)]
+    [InlineData("两个快捷键已启用；操作不会切换工作模式。 直接替换快捷键尚未就绪，请保持受支持输入框的焦点并等待观察完成。 unknown", false)]
+    [InlineData("快捷键输入观察未就绪，当前不会执行按需命令。", false)]
+    public void RegistrationConsumersAcceptOnlyDefinedPublicStatuses(string status, bool registered) =>
+        Assert.Equal(registered, KeyboardHook.IsRegisteredShortcutStatus(status));
+
+    [Fact]
+    public Task RegisteredShortcutsPresentReadinessOnlyAfterCurrentPublication() => desktop.RunAsync(async () =>
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !File.Exists(Path.Combine(root.FullName, "TypeLay.slnx")))
+            root = root.Parent;
+        Assert.NotNull(root);
+        var start = new ProcessStartInfo("dotnet")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        start.ArgumentList.Add(Path.Combine(root.FullName,
+            "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"));
+        start.ArgumentList.Add("--stock-controls");
+        using var fixture = Process.Start(start)!;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        string settingsDirectory = Path.Combine(Path.GetTempPath(), "typelay-shortcut-status-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var line = await fixture.StandardOutput.ReadLineAsync(deadline.Token);
+            var host = JsonSerializer.Deserialize<FixtureDescriptor>(line ?? "null");
+            Assert.NotNull(host);
+            nint field = (nint)host.Fields.Single(value => value.Name == "a").Hwnd;
+            N.SendString(field, N.WM_SETTEXT, "Do not change this text");
+            Assert.True(N.PostMessage((nint)host.RootHwnd, N.FixtureFocus, (nuint)field, 0));
+            await Until(() => N.Focused() == ((nint)host.RootHwnd, field), deadline.Token);
+            using var hook = new KeyboardHook(allowInjectedInput: true);
+            await Until(() => hook.ShortcutsReady, deadline.Token);
+            // Registration and a capable capture do not mean Runtime has published
+            // a current shortcut basis. Observe the same public status as settings
+            // and the tray, without refreshing the lease or pressing a second time.
+            hook.ConfigureShortcuts(true, "Ctrl+Shift+F23", "Ctrl+Shift+F24",
+                SessionShortcutBindings.Default, true);
+            Assert.Contains("两个快捷键已启用", hook.ShortcutStatus);
+            const string ready = "当前输入框的直接替换快捷键已就绪。";
+            var settings = WindowsRuntime.CreateSettings(Path.Combine(settingsDirectory, "settings.json"));
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.OnDemand
+            });
+            using var model = WindowsRuntime.CreateModel(); // Presentation only; no model starts or downloads.
+            var window = new SettingsWindow(settings, model, () => { }, new WindowsApplicationSupport())
+            {
+                ShortcutStatus = () => hook.ShortcutStatus
+            };
+            window.ShowPage("shortcuts");
+            window.UpdateLayout();
+            Assert.True(N.PostMessage((nint)host.RootHwnd, N.FixtureFocus, (nuint)field, 0));
+            await Until(() => N.Focused() == ((nint)host.RootHwnd, field), deadline.Token);
+            void ExpectReady(bool expected)
+            {
+                string status = hook.ShortcutStatus;
+                Assert.Equal(expected, status.Contains(ready, StringComparison.Ordinal));
+                window.RefreshShortcutStatus();
+                Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == status);
+            }
+            ExpectReady(false);
+            var readySource = new InputSnapshot(new WindowsTarget(fixture.Id, fixture.StartTime.ToUniversalTime().Ticks,
+                host.RootHwnd, (long)field, "controlled-hook", "field-a", Guid.NewGuid()), "private source",
+                new(14, 14), new(10, 20, 300, 40), false, FieldAccess.Supported, ImeState.Clear,
+                WindowsInterruptClock.NowMs, 1, 1, DirectWriteSupported: true);
+            void PublishStatus(InputSnapshot snapshot, long? contentEpoch = null, long? foregroundEpoch = null) =>
+                hook.PublishShortcut(new(snapshot, contentEpoch ?? hook.ContentEpoch, foregroundEpoch ?? hook.ForegroundEpoch));
+            InputSnapshot FreshStatus() => readySource with
+            {
+                ObservedAtMs = WindowsInterruptClock.NowMs
+            };
+            PublishStatus(FreshStatus());
+            ExpectReady(true);
+            Assert.DoesNotContain(readySource.Text, hook.ShortcutStatus);
+            PublishStatus(FreshStatus() with
+            {
+                ObservedAtMs = WindowsInterruptClock.NowMs - Limits.ObservationMaxAgeMs - 1
+            });
+            ExpectReady(false);
+            PublishStatus(FreshStatus() with
+            {
+                ObservedAtMs = WindowsInterruptClock.NowMs + 10_000
+            });
+            ExpectReady(false);
+            PublishStatus(FreshStatus() with
+            {
+                Ime = ImeState.Unknown
+            });
+            ExpectReady(false);
+            PublishStatus(FreshStatus() with
+            {
+                DirectWriteSupported = false
+            });
+            ExpectReady(false);
+            PublishStatus(FreshStatus() with
+            {
+                Access = FieldAccess.Unsupported
+            });
+            ExpectReady(false);
+            PublishStatus(FreshStatus(), hook.ContentEpoch + 1);
+            ExpectReady(false);
+            PublishStatus(FreshStatus(), foregroundEpoch: hook.ForegroundEpoch + 1);
+            ExpectReady(false);
+            PublishStatus(FreshStatus() with
+            {
+                Target = new WindowsTarget(fixture.Id,
+                fixture.StartTime.ToUniversalTime().Ticks, 0, (long)field, "controlled-hook", "other", Guid.NewGuid())
+            });
+            ExpectReady(false);
+            window.Activate();
+            await Until(() => Native.GetForegroundWindow() == new WindowInteropHelper(window).Handle, deadline.Token);
+            PublishStatus(FreshStatus());
+            ExpectReady(false);
+            Assert.True(N.PostMessage((nint)host.RootHwnd, N.FixtureFocus, (nuint)field, 0));
+            await Until(() => N.Focused() == ((nint)host.RootHwnd, field), deadline.Token);
+            PublishStatus(FreshStatus());
+            ExpectReady(true);
+            hook.ConfigureShortcuts(true, "Ctrl+Shift+F22", "Ctrl+Shift+F24",
+                SessionShortcutBindings.Default, true);
+            ExpectReady(false);
+            PublishStatus(FreshStatus());
+            ExpectReady(true);
+            hook.Revoke();
+            ExpectReady(false);
+            hook.ConfigureShortcuts(false, "Ctrl+Shift+F22", "Ctrl+Shift+F24",
+                SessionShortcutBindings.Default, false);
+            PublishStatus(FreshStatus());
+            ExpectReady(false);
+            Assert.Equal("新增快捷键仅在启用 TypeLay 的按需模式下生效。", hook.ShortcutStatus);
+            window.PrepareForEmergencyShutdown();
+            window.Close();
+            Assert.Equal("Do not change this text", N.ReadText(field, Limits.MaxTextUnits));
+        }
+        finally
+        {
+            if (!fixture.HasExited)
+            {
+                fixture.Kill(true);
+                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                await fixture.WaitForExitAsync(cleanup.Token);
+            }
+            if (Directory.Exists(settingsDirectory))
+                Directory.Delete(settingsDirectory, true);
+        }
+    });
+
     [Fact]
     public async Task ExplicitShortcutWithoutSafeObservationReportsRefusalAndLeavesSourceUntouched()
     {
@@ -164,6 +324,17 @@ public sealed class ShortcutFeedbackTests
                 using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(3));
                 await fixture.WaitForExitAsync(cleanup.Token);
             }
+        }
+    }
+
+    private static IEnumerable<DependencyObject> Descendants(DependencyObject parent)
+    {
+        for (int index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            yield return child;
+            foreach (var descendant in Descendants(child))
+                yield return descendant;
         }
     }
 
