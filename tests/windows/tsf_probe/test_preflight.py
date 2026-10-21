@@ -56,6 +56,7 @@ class PreflightTests(unittest.TestCase):
         self.assertFalse(probe.push_eligible(event | {"deleted": True}, head, message, paths, True))
         for altered in (
             event | {"before": "0" * 40},
+            event | {"before": head},
             event | {"forced": True},
             event | {"after": "c" * 40},
             event | {"head_commit": {"id": head, "message": message + " changed"}},
@@ -127,13 +128,14 @@ class PreflightTests(unittest.TestCase):
                 ).stdout.strip()
 
             def commit(message):
-                git("add", ".")
+                git("add", "tests", "product.txt")
                 git(
                     "-c",
                     "user.name=Probe Test",
                     "-c",
                     "user.email=probe@example.invalid",
                     "commit",
+                    "--allow-empty",  # Test refusal of a commit with no tree change.
                     "-qm",
                     message,
                 )
@@ -143,14 +145,25 @@ class PreflightTests(unittest.TestCase):
             source = root / "tests/windows/tsf_probe/input.txt"
             source.parent.mkdir(parents=True)
             source.write_text("baseline", encoding="utf-8")
+            ordinary = root / "product.txt"
+            ordinary.write_text("baseline", encoding="utf-8")
             before = commit("baseline")
-            for marker in (*probe.MARKERS, "TypeLay-TSF-Unknown: true", "no opt-in"):
-                source.write_text(marker, encoding="utf-8")
-                message = "test: actual diagnostic source change\n\n" + marker
+            markers = (*probe.MARKERS, "TypeLay-TSF-Unknown: true", "no opt-in")
+            cases = [(marker, "probe") for marker in markers]
+            cases += [(marker, "ordinary") for marker in markers]
+            cases += [(marker, "empty") for marker in probe.MARKERS]
+            cases += [(probe.READ_MARKER, "same-head")]
+            cases += [(probe.READ_MARKER + "\n\n" + probe.LIFECYCLE_MARKER, "ordinary")]
+            for index, (marker, change) in enumerate(cases):
+                if change != "empty":
+                    (source if change == "probe" else ordinary).write_text(
+                        str(index), encoding="utf-8"
+                    )
+                message = "test: gate contract\n\n" + marker
                 after = commit(message)
                 event = {
                     "ref": "refs/heads/work/linux-usability",
-                    "before": before,
+                    "before": after if change == "same-head" else before,
                     "after": after,
                     "head_commit": {"id": after, "message": message},
                 }
@@ -173,12 +186,20 @@ class PreflightTests(unittest.TestCase):
                             "GITHUB_OUTPUT": str(output),
                         },
                     )
+                    mixed = probe.READ_MARKER in marker and probe.LIFECYCLE_MARKER in marker
+                    if (mixed or change == "same-head") and flag == "--check-native-push":
+                        self.assertNotEqual(0, result.returncode)
+                        self.assertEqual("", output.read_text(encoding="utf-8"))
+                        continue
                     self.assertEqual(0, result.returncode, result.stderr)
                     native = flag == "--check-native-push"
                     eligible = (
                         marker in (probe.LIFECYCLE_MARKER, probe.READ_MARKER)
                         if native
                         else marker == probe.MARKER
+                    )
+                    eligible = eligible and (
+                        change == "probe" or (change == "ordinary" and marker == probe.READ_MARKER)
                     )
                     level = (
                         ("read" if marker == probe.READ_MARKER else "lifecycle")

@@ -291,10 +291,22 @@ jobs:
           }
           dotnet "$fixture/TypeLay.DesktopFixture.dll" --verify-ordinary-notepad artifacts/ordinary-notepad artifacts/package/TypeLay artifacts/continuous-translation
           exit $LASTEXITCODE
-      # All earlier model consumers have exited before this production-only chain.
+      # Scene failure stays red; only independently verified owner exit admits Hy.
+      - name: Verify all prior model consumers have exited
+        id: hy-consumer-exit
+        if: ${{ !cancelled() && steps.windows-package.outcome == 'success' }}
+        shell: pwsh
+        env:
+          CONTINUOUS_NONCE: ${{ steps.windows-continuous.outputs.consumer_exit_nonce }}
+          BROWSER_NONCE: ${{ steps.windows-browser.outputs.consumer_exit_nonce }}
+          NOTEPAD_NONCE: ${{ steps.windows-ordinary-notepad.outputs.consumer_exit_nonce }}
+          WORKFLOW_CANCELLED: ${{ cancelled() }}
+        run: |
+          python eng/windows/verify-consumer-exit.py --continuous-proof artifacts/continuous-translation/consumer-exit.json --browser-proof artifacts/browser-cooperation/consumer-exit.json --notepad-proof artifacts/ordinary-notepad/consumer-exit.json --continuous-nonce "$env:CONTINUOUS_NONCE" --browser-nonce "$env:BROWSER_NONCE" --notepad-nonce "$env:NOTEPAD_NONCE" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT" --head "$env:GITHUB_SHA" --workflow-cancelled "$env:WORKFLOW_CANCELLED"
+          exit $LASTEXITCODE
       - name: Verify the shipped Hy ABI5 worker and production process owner
         id: hy-production
-        if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && steps.windows-ordinary-notepad.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && steps.hy-consumer-exit.outcome == 'success' }}
         timeout-minutes: 6
         shell: pwsh
         run: |

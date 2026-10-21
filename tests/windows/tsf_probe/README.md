@@ -9,7 +9,7 @@
 - 只在经 root/lead 确认的一次性 GitHub-hosted Windows job 上执行。环境标签是必要条件，不是权限证明；workflow 和 runner 生命周期证据必须另外审查。不得在用户电脑或长期 self-hosted runner 上设置标签绕过门槛。
 - 当前代码不含注册阶段。注册/辅助类别激活需另审，不能因为此报告有 `present` 而执行。
 
-独立 workflow 的 `observe` job 只监听既有授权分支 `work/linux-usability` 上本目录或该 workflow 的实际变更，且提交末段必须唯一为 `TypeLay-TSF-Preflight: true`。执行前核对事件与 Git HEAD、完整提交正文、非强推有效祖先以及真实 probe 文件或这一个独立 workflow 的差异；独立 workflow 的真实修复只有同次显式标记才可重新采集，无标记或仅其它文件变化均不采集。此入口不修改主 checks；与下一正常能力批同发，不为诊断造空提交。独立并发组不取消正式检查。远端发布及精确 opt-in 仍须 root 审核，由 lead 单写；未来注册不能继承此授权。
+独立 workflow 的 `observe` job 只准许既有授权分支 `work/linux-usability` 上本目录或该 workflow 的实际变更，且提交末段必须唯一为 `TypeLay-TSF-Preflight: true`。执行前核对事件与 Git HEAD、完整提交正文、非强推有效祖先以及真实 probe 文件或这一个独立 workflow 的差异；独立 workflow 的真实修复只有同次显式标记才可重新采集，无标记或仅其它文件变化均不采集。此入口不修改主 checks；与下一正常能力批同发，不为诊断造空提交。独立并发组不取消正式检查。远端发布及精确 opt-in 仍须 root 审核，由 lead 单写；未来注册不能继承此授权。
 
 诊断命令：
 
@@ -39,7 +39,9 @@ python -B -m unittest discover -s tests/windows/tsf_probe -p 'test_*.py' -v
 
 ## 原生隔离级别（执行须独立批准）
 
-同一 workflow 的 `isolated-native` job 只接受唯一终段 `TypeLay-TSF-Lifecycle: true` 或 `TypeLay-TSF-Read: true`。与 Preflight 三标记严格互斥，混合、未知及无标记不产生执行准入。共用 HEAD/祖先/真实路径门后输出枚举 `level=lifecycle/read`；失败不输出可执行级别。两个末端分别硬编码命令，不由标记拼接程序参数、没有默认 read。
+同一 workflow 的 `isolated-native` job 只接受唯一终段 `TypeLay-TSF-Lifecycle: true` 或 `TypeLay-TSF-Read: true`。与 Preflight 三标记严格互斥，混合、未知及无标记不产生执行准入。共用 HEAD/祖先/真实差异门后输出枚举 `level=lifecycle/read`；失败不输出可执行级别。两个末端分别硬编码命令，不由标记拼接程序参数、没有默认 read。
+
+workflow 监听授权分支的 push，但无标记时两个 job 都跳过、不分配 Windows runner。Preflight/Lifecycle 仍要求本目录或该 workflow 的真实变更；Read 可以随任何真实非空 tracked diff 的正常能力批执行，且 before 与 after 必须不同。每批都须明确唯一 Read 末段标记与 root 精确授权，不是自动后台读取；不为触发造探针 touch、空提交或复跑旧代码。
 
 每次是新的 GitHub-hosted Windows VM。native 的三个 .cpp、两个 .h 与 build_native.py 共六个编译输入的 Git blob 必须逐文件等于已验证生命周期基线 `8d5e3f922266b6f3a754dbfee967a9665106c425`，工作树也必须干净；日志列 blob 哈希。复用已装好的 MSVC 编译和纯合同测试，不下载安装或改原观察逻辑。
 

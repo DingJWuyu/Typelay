@@ -611,12 +611,21 @@ def _gtk4_source_glossary(out, environment, deadline):
 
                         def unchanged():
                             actual = state()
-                            assert actual["first"] == original["first"]
+                            assert actual["first"] == original["first"], (
+                                view_state,
+                                finish,
+                                "unchanged/source-text",
+                                len(original["first"]),
+                                len(actual["first"]),
+                            )
                             for name in ("start", "end", "insertions", "deletions"):
                                 assert actual["firstEntry"][name] == original["firstEntry"][name], (
                                     view_state,
                                     finish,
+                                    "unchanged/source",
                                     name,
+                                    original["firstEntry"][name],
+                                    actual["firstEntry"][name],
                                 )
                             candidate = actual["candidate"]
                             assert (
@@ -797,10 +806,23 @@ def _gtk4_source_glossary(out, environment, deadline):
                                 assert not call("overlay-glossary-open", request_data)["opened"]
                                 assert not events("sessionGlossaryAdd") and not events("beginEdit")
                                 actual = state()
-                                assert actual["first"] == original["first"]
+                                assert actual["first"] == original["first"], (
+                                    view_state,
+                                    finish,
+                                    "post-settings-model-change/source-text",
+                                    len(original["first"]),
+                                    len(actual["first"]),
+                                )
                                 for name in ("start", "end", "insertions", "deletions"):
                                     assert (
                                         actual["firstEntry"][name] == original["firstEntry"][name]
+                                    ), (
+                                        view_state,
+                                        finish,
+                                        "post-settings-model-change/source",
+                                        name,
+                                        original["firstEntry"][name],
+                                        actual["firstEntry"][name],
                                     )
                                 assert not any(
                                     item.get("event") == "accepted"

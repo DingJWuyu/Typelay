@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import alternative_quality
 import glossary_quality
@@ -296,6 +296,208 @@ class AlternativeHelloTests(unittest.IsolatedAsyncioTestCase):
                         await alternative_quality.request(process, report, args, "hello")
                 writer.seek(0)
                 self.assertEqual(read_frame(writer), {"id": 1, "op": "hello"})
+
+
+class StyledGlossaryPreparationTests(unittest.TestCase):
+    validate = QualityPreparationTests.validate
+
+    def test_combination_validate_only_freezes_eight_requests_and_never_overwrites(self):
+        import styled_glossary_quality as combined
+
+        (ROOT / "artifacts").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as temporary:
+            output = Path(temporary) / "combined.json"
+            result = self.validate("styled_glossary_quality.py", output)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            original = output.read_bytes()
+            report = json.loads(original)
+            self.assertEqual(report["workerStarts"], 0)
+            self.assertEqual(report["quality"], "not-run")
+            self.assertEqual(report["maximumTranslationRequests"], 8)
+            self.assertEqual(len(report["cases"]), 8)
+            limits = report["configuredLimits"]
+            self.assertEqual(
+                [
+                    limits[k]
+                    for k in (
+                        "workerRequestSeconds",
+                        "totalTimeoutSeconds",
+                        "cleanupAllowanceSeconds",
+                        "nativeThreads",
+                        "modelHandles",
+                    )
+                ],
+                [60, 600, 7, 2, 1],
+            )
+            self.assertEqual(limits["workerAddressSpaceBytesMaximum"], 2684354560)
+            self.assertEqual(
+                report["requiredCapabilities"], dict.fromkeys(combined.CAPABILITIES, 1)
+            )
+            retry = self.validate("styled_glossary_quality.py", output)
+            self.assertNotEqual(retry.returncode, 0)
+            self.assertEqual(output.read_bytes(), original)
+
+    def test_fixed_input_identity_schema_and_old_sources_are_preserved(self):
+        import hashlib
+
+        import styled_glossary_quality as combined
+
+        original = json.loads(combined.INPUTS.read_bytes())
+        holdout = json.loads(
+            (RUNNERS / "styled_quality_holdout_inputs.json").read_text(encoding="utf8")
+        )
+        for sample in original["samples"]:
+            old = next(item for item in holdout["samples"] if item["id"] == sample["id"])
+            self.assertEqual(sample["text"], old["text"])
+            self.assertEqual(sample["semantic_anchors"], old["semantic_anchors"])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "inputs.json"
+            path.write_bytes(b"{}")
+            with patch.object(combined, "INPUTS", path):
+                with self.assertRaisesRegex(ValueError, "fixed-input-sha256"):
+                    combined.prepare_report()
+                for change in ("schema", "style", "extra"):
+                    value = json.loads(json.dumps(original))
+                    if change == "schema":
+                        value["schema"] = True
+                    elif change == "style":
+                        value["samples"][0]["style"] = "natural"
+                    else:
+                        value["samples"][0]["unknown"] = True
+                    raw = json.dumps(value).encode()
+                    path.write_bytes(raw)
+                    with patch.object(combined, "INPUT_SHA256", hashlib.sha256(raw).hexdigest()):
+                        with self.assertRaisesRegex(ValueError, "fixed-input-.*schema"):
+                            combined.prepare_report()
+
+
+class StyledGlossaryCollectionTests(unittest.IsolatedAsyncioTestCase):
+    async def capture(self, *, missing=None, failure_at=None, stalled=False):
+        import styled_glossary_quality as combined
+        import styled_quality
+
+        report = combined.prepare_report()
+        installation = {
+            "expectedPackages": [{"id": "fixed-test-identity"}],
+            "expectedDirections": list(combined.DIRECTIONS),
+        }
+        hello = dict(
+            id=1,
+            status="ready",
+            code="",
+            elapsedMs=1,
+            packages=installation["expectedPackages"],
+            directions=installation["expectedDirections"],
+            **dict.fromkeys(combined.CAPABILITIES, 1),
+        )
+        if missing:
+            del hello[missing]
+        responses = [hello]
+        for number in range(2, 10):
+            response = dict(
+                id=number,
+                status="translated",
+                code="",
+                elapsedMs=2,
+                text=f"合成响应 {number}：并未保证。\r\nLéa 4",
+            )
+            if number == failure_at:
+                response.update(status="error", code="context-limit", text="")
+            responses.append(response)
+        wire = io.BytesIO()
+        for response in responses[:1] if stalled else responses:
+            write_frame(wire, response)
+        reader = asyncio.StreamReader()
+        reader.feed_data(wire.getvalue())
+        if not stalled:
+            reader.feed_eof()
+
+        class Input(io.BytesIO):
+            async def drain(self):
+                pass
+
+        writer = Input()
+        process = SimpleNamespace(stdin=writer, stdout=reader)
+
+        async def cleaned(_process, value):
+            self.assertIs(_process, process)
+            value.update(workerExitConfirmed=True, workerExitCode=0)
+
+        spawn = AsyncMock(return_value=process)
+        cleanup = AsyncMock(side_effect=cleaned)
+        args = SimpleNamespace(
+            python=Path("unused-python"), models=Path("unused-models"), worker=Path("unused-worker")
+        )
+        with (
+            patch.object(styled_quality, "installation", return_value=installation),
+            patch.object(styled_quality, "production_worker", return_value={}),
+            patch.object(styled_quality.asyncio, "create_subprocess_exec", spawn),
+            patch.object(styled_quality, "cleanup", cleanup),
+            patch.object(styled_quality, "TOTAL_TIMEOUT", 0.05 if stalled else 600),
+        ):
+            await combined.collect(args, report)
+        spawn.assert_awaited_once()
+        cleanup.assert_awaited_once()
+        writer.seek(0)
+        requests = []
+        while writer.tell() < len(writer.getvalue()):
+            requests.append(read_frame(writer))
+        return report, requests, responses, process
+
+    async def test_same_worker_sends_one_hello_and_four_operations_per_source_once(self):
+        import styled_glossary_quality as combined
+
+        report, requests, responses, process = await self.capture()
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(report["quality"], "not-reviewed")
+        self.assertEqual(requests[0], {"id": 1, "op": "hello"})
+        self.assertEqual(len(requests), 9)
+        self.assertEqual([r["id"] for r in requests], list(range(1, 10)))
+        for offset in (1, 5):
+            group = requests[offset : offset + 4]
+            self.assertEqual([r["op"] for r in group], [op for _, op in combined.OPERATIONS])
+            self.assertEqual(len({r["text"] for r in group}), 1)
+            self.assertEqual(len({(r["source"], r["target"]) for r in group}), 1)
+            self.assertNotIn("style", group[0])
+            self.assertNotIn("glossary", group[0])
+            self.assertNotIn("glossary", group[1])
+            self.assertNotIn("style", group[2])
+            self.assertEqual(group[1]["style"], "formal")
+            self.assertEqual(group[3]["style"], "formal")
+            self.assertEqual(group[2]["glossary"], group[3]["glossary"])
+        for case, response in zip(report["cases"], responses[1:], strict=True):
+            self.assertEqual(case["response"], response)
+            self.assertTrue(all(value is None for value in case["manualReview"].values()))
+        before = process.stdin.getvalue()
+        with self.assertRaisesRegex(ValueError, "must-start-once"):
+            await combined.collect_cases(process, report)
+        self.assertEqual(process.stdin.getvalue(), before)
+
+    async def test_missing_any_capability_stops_before_first_control_translation(self):
+        import styled_glossary_quality as combined
+
+        for capability in combined.CAPABILITIES:
+            with self.subTest(capability=capability):
+                report, requests, _, _ = await self.capture(missing=capability)
+                self.assertEqual(report["status"], "failed")
+                self.assertEqual(requests, [{"id": 1, "op": "hello"}])
+                self.assertTrue(all(case["response"] is None for case in report["cases"]))
+
+    async def test_refusal_keeps_raw_response_and_does_not_retry_or_run_remaining_cases(self):
+        report, requests, responses, _ = await self.capture(failure_at=5)
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(len(requests), 5)
+        self.assertEqual(report["cases"][3]["response"], responses[4])
+        self.assertTrue(all(case["response"] is None for case in report["cases"][4:]))
+        self.assertEqual(report["quality"], "not-reviewed")
+
+    async def test_total_deadline_stops_pending_exchange_and_cleans_without_retry(self):
+        report, requests, _, _ = await self.capture(stalled=True)
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["failureCode"], "timeout")
+        self.assertEqual(len(requests), 2)
+        self.assertTrue(report["workerExitConfirmed"])
+        self.assertEqual(report["cases"][0]["response"], None)
 
 
 if __name__ == "__main__":

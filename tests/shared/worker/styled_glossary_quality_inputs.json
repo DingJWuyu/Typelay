@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "samples": [
+    {
+      "id": "zh-fr-payment-attempt",
+      "direction": "zh_fr",
+      "text": "她已经收到四张发票，但还没有付款。如果财务今天确认金额，她会争取在周三前付清，不过不能保证。",
+      "semantic_anchors": [
+        "她已经收到四张发票",
+        "她尚未付款，不是未收到发票",
+        "财务今天确认金额是后续付款计划的条件",
+        "财务负责确认金额，她负责付款",
+        "她争取周三前付清，但没有保证能做到"
+      ],
+      "style": "formal",
+      "glossary": {
+        "version": 1,
+        "rules": [
+          {
+            "sourceTerm": "发票",
+            "targetTerm": "factures"
+          },
+          {
+            "sourceTerm": "财务",
+            "targetTerm": "service financier"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fr-zh-proposal-condition",
+      "direction": "fr_zh",
+      "text": "Je peux proposer deux solutions, mais je ne promets pas de terminer avant mardi. Si Léa accepte, elle enverra les trois fichiers demain.",
+      "semantic_anchors": [
+        "说话者可以提出两个方案",
+        "说话者没有承诺周二前完成，不能变成拒绝完成",
+        "莱娅同意是发送文件的条件",
+        "莱娅负责发送文件，不是说话者",
+        "发送的是三个文件，时间是明天"
+      ],
+      "style": "formal",
+      "glossary": {
+        "version": 1,
+        "rules": [
+          {
+            "sourceTerm": "solutions",
+            "targetTerm": "方案"
+          },
+          {
+            "sourceTerm": "Léa",
+            "targetTerm": "莱娅"
+          },
+          {
+            "sourceTerm": "fichiers",
+            "targetTerm": "文件"
+          }
+        ]
+      }
+    }
+  ]
+}

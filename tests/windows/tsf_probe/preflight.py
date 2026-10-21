@@ -313,7 +313,7 @@ def push_eligible(event, head, message, changed_paths, is_ancestor, *, marker=MA
     before, after = event.get("before", ""), event.get("after", "")
     if not all(re.fullmatch(r"[0-9a-f]{40}", value) for value in (before, after)):
         raise ValueError("unverified-push-identity")
-    if before == "0" * 40 or event.get("forced") or not is_ancestor:
+    if before == "0" * 40 or before == after or event.get("forced") or not is_ancestor:
         raise ValueError("unverified-push-ancestry")
     if after != head or head_commit.get("id") != head:
         raise ValueError("unverified-head")
@@ -328,6 +328,8 @@ def push_eligible(event, head, message, changed_paths, is_ancestor, *, marker=MA
         or "~~~" in message
     ):
         raise ValueError("invalid-opt-in-marker")
+    if marker == READ_MARKER:
+        return any(changed_paths)  # Actual tracked diff, not a synthetic probe touch.
     return any(
         path.startswith("tests/windows/tsf_probe/") or path == ".github/workflows/tsf-preflight.yml"
         for path in changed_paths

@@ -2,9 +2,6 @@ name: TSF isolated diagnostics (not acceptance)
 on:
   push:
     branches: [work/linux-usability]
-    paths:
-      - 'tests/windows/tsf_probe/**'
-      - '.github/workflows/tsf-preflight.yml'
 permissions:
   contents: read
 concurrency:

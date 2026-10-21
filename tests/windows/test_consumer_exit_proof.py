@@ -1,4 +1,4 @@
-"""Validate the future Hy prerequisite through its CLI, not process-name guesses."""
+"""Validate the Hy prerequisite through its CLI, not process-name guesses."""
 
 import copy
 import json
@@ -29,8 +29,11 @@ class ConsumerExitProofTests(unittest.TestCase):
             "--workflow-cancelled",
             "false",
         ]
-        for name, nonce in (("continuous", "b" * 32), ("browser", "c" * 32)):
-            mode = "--verify-continuous" if name == "continuous" else "--verify-browser-cooperation"
+        for name, nonce, mode in (
+            ("continuous", "b" * 32, "--verify-continuous"),
+            ("browser", "c" * 32, "--verify-browser-cooperation"),
+            ("notepad", "e" * 32, "--verify-ordinary-notepad"),
+        ):
             path = self.root / (name + ".json")
             proof = dict(
                 schemaVersion=1,
@@ -58,7 +61,7 @@ class ConsumerExitProofTests(unittest.TestCase):
         self.assertEqual(expected, result.returncode, result.stdout + result.stderr)
         self.assertEqual("no-active-owned-consumers\n" if expected == 0 else "", result.stdout)
 
-    def test_both_natural_exits_are_required(self):
+    def test_all_three_natural_exits_are_required(self):
         self.run_validator(0)
 
     def test_scene_failure_and_confirmed_forced_cleanup_do_not_erase_failure(self):
@@ -67,6 +70,20 @@ class ConsumerExitProofTests(unittest.TestCase):
         path.write_text(json.dumps(proof), encoding="utf-8")
         self.run_validator(0)
         self.assertEqual(23, json.loads(path.read_text())["rootExitCode"])
+
+    def test_notepad_scene_failure_with_confirmed_exit_allows_only_next_consumer(self):
+        path, proof = self.proofs[2]
+        proof["rootExitCode"] = 1
+        path.write_text(json.dumps(proof), encoding="utf-8")
+        self.run_validator(0)
+        self.assertEqual(1, json.loads(path.read_text())["rootExitCode"])
+        proof.update(rootKernelSignaled=False, activeProcesses=1, noActiveOwnedConsumers=False)
+        path.write_text(json.dumps(proof), encoding="utf-8")
+        self.run_validator(1)
+
+    def test_skipped_notepad_without_proof_cannot_authorize(self):
+        self.proofs[2][0].unlink()
+        self.run_validator(1)
 
     def test_each_report_rejects_stale_unknown_or_inconsistent_evidence(self):
         changes = dict(
@@ -131,13 +148,14 @@ class ConsumerExitProofTests(unittest.TestCase):
             "--head",
             "--continuous-nonce",
             "--browser-nonce",
+            "--notepad-nonce",
         ):
             command = self.command.copy()
             command[command.index(flag) + 1] = ""
             self.run_validator(1, command)
 
     def test_swapped_reports_and_invalid_utf8_fail_closed(self):
-        first, second = (entry[0] for entry in self.proofs)
+        first, second = (entry[0] for entry in self.proofs[:2])
         first_bytes, second_bytes = first.read_bytes(), second.read_bytes()
         first.write_bytes(second_bytes)
         second.write_bytes(first_bytes)
@@ -154,8 +172,10 @@ class ConsumerExitProofTests(unittest.TestCase):
             "--head",
             "--continuous-nonce",
             "--browser-nonce",
+            "--notepad-nonce",
             "--continuous-proof",
             "--browser-proof",
+            "--notepad-proof",
         ):
             with self.subTest(flag=flag):
                 command = self.command.copy()

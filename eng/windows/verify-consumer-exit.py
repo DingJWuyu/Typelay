@@ -1,9 +1,9 @@
-"""Check both owned fixture exits; never turn a failed scene into a passing scene.
+"""Check all three owned fixture exits; never turn a failed scene into a passing scene.
 
-Not wired into CI yet. The caller must supply run/attempt/head from the current
+The workflow caller must supply run/attempt/head from the current
 Actions context and each nonce from that invocation's GITHUB_OUTPUT, NOT from
 these reports. workflow-cancelled must come from the actual cancellation state;
-the eventual workflow must also guard execution with !cancelled(). This checks
+the workflow also guards execution with !cancelled(). This checks
 execution retirement only, not all resource reclamation or product acceptance.
 """
 
@@ -85,8 +85,10 @@ def main():
     for name in (
         "continuous-proof",
         "browser-proof",
+        "notepad-proof",
         "continuous-nonce",
         "browser-nonce",
+        "notepad-nonce",
         "run-id",
         "run-attempt",
         "head",
@@ -103,12 +105,16 @@ def main():
             and args.head != "0" * 40
             and matches(r"[0-9a-f]{32}", args.continuous_nonce)
             and matches(r"[0-9a-f]{32}", args.browser_nonce)
-            and args.continuous_nonce != args.browser_nonce
+            and matches(r"[0-9a-f]{32}", args.notepad_nonce)
+            and len({args.continuous_nonce, args.browser_nonce, args.notepad_nonce}) == 3
             and valid_report(
                 args.continuous_proof, "--verify-continuous", args.continuous_nonce, args
             )
             and valid_report(
                 args.browser_proof, "--verify-browser-cooperation", args.browser_nonce, args
+            )
+            and valid_report(
+                args.notepad_proof, "--verify-ordinary-notepad", args.notepad_nonce, args
             )
         )
     except (OSError, ValueError, RecursionError):
