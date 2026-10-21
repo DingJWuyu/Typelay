@@ -242,6 +242,24 @@ def inside(arguments):
             },
         )
         assert rejected == {"status": "RejectedBeforeMutation", "reason": "EpochChanged"}, rejected
+        # Trace is enabled in this fixture, but the public default schema stays
+        # exact. Only a typed opt-in may add read-only diagnostics.
+        diagnostic_request = {
+            "target": target,
+            "plan": write,
+            "authority": description["authority"],
+            "approved": description["authority"],
+            "expiresAtMs": now_ms() + 250,
+        }
+        for invalid in (False, "true", 1, None, {}, []):
+            result = client.call("direct", {**diagnostic_request, "diagnostic": invalid})
+            assert result == {"status": "RejectedBeforeMutation", "reason": "EpochChanged"}, result
+        traced = client.call("direct", {**diagnostic_request, "diagnostic": True})
+        assert (
+            traced["status"] == "RejectedBeforeMutation" and traced["reason"] == "EpochChanged"
+        ), traced
+        assert traced["diagnostic"]["phase"] == "generation-before-ime", traced
+        assert set(traced) == {"status", "reason", "diagnostic"}, traced
         generation = str(uuid.uuid4())
         client.call(
             "configure-shortcuts",

@@ -6,6 +6,38 @@ namespace TypeLay.Runtime.Tests;
 public sealed class OnDemandPracticeProgressTests
 {
     [Fact]
+    public void PreviewReadinessIsSameRunTargetAndConfigurationPresentationOnly()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        Guid run = Guid.NewGuid(), generation = s.Input.CommandGeneration;
+        Assert.True(s.Controller.BeginOnDemandPractice(run));
+        Assert.Null(s.Controller.PracticeProgress!.PreviewReady);
+        s.Controller.ObserveOnDemandPreviewReadiness(run, null, generation, true);
+        Assert.Null(s.Controller.PracticeProgress.PreviewReady);
+        s.Controller.ObserveOnDemandPreviewReadiness(run, null, generation, false);
+        Assert.False(s.Controller.PracticeProgress.PreviewReady);
+        Assert.True(s.Controller.BindOnDemandPractice(run, s.Source.Target));
+        s.Controller.ObserveOnDemandPreviewReadiness(Guid.NewGuid(), s.Source.Target, generation, true);
+        s.Controller.ObserveOnDemandPreviewReadiness(run, new("controlled", "other", Guid.NewGuid()), generation, true);
+        s.Controller.ObserveOnDemandPreviewReadiness(run, s.Source.Target, Guid.NewGuid(), true);
+        Assert.False(s.Controller.PracticeProgress.PreviewReady);
+        s.Controller.ObserveOnDemandPreviewReadiness(run, s.Source.Target, generation, true);
+        Assert.True(s.Controller.PracticeProgress.PreviewReady);
+        Assert.False(s.Controller.PracticeProgress.PreviewCompleted);
+        Assert.False(s.Controller.PracticeProgress.Completed);
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+        s.Input.ConfigureShortcuts(true, "Alt+F8", "Alt+F9", SessionShortcutBindings.Default, true);
+        s.Controller.ObserveOnDemandPreviewReadiness(run, s.Source.Target, generation, false);
+        Assert.False(s.Controller.PracticeProgress.PreviewReady); // Exact old display can retire after hook configuration changes.
+        s.Controller.ObserveOnDemandPreviewReadiness(run, s.Source.Target, generation, true);
+        Assert.False(s.Controller.PracticeProgress.PreviewReady); // It cannot become ready again under the old configuration.
+        Assert.True(s.Controller.EndOnDemandPractice(run));
+        s.Controller.ObserveOnDemandPreviewReadiness(run, s.Source.Target, generation, true);
+        Assert.Null(s.Controller.PracticeProgress);
+    }
+
+    [Fact]
     public void OwnedRunCreditsOnlyTheGeneratedPreviewThenItsVerifiedDirectReplacement()
     {
         using var s = new SessionScenario(WorkMode.OnDemand, experimental: true);

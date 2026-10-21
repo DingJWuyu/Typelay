@@ -1087,6 +1087,13 @@ internal static partial class ContinuousTranslationCheck
                 "practice-premature-progress");
             controller.OperationFeedback += value => feedbackCode ??= value.Code;
             var editor = ((Grid)((Border)overlay.Content).Child).Children.OfType<TextBox>().Single();
+            result.Stage = "practice-preview-ready";
+            string readyNotice = OnDemandPracticePresentation.Create(settings.Value,
+                controller.PracticeProgress! with
+                {
+                    PreviewReady = true
+                }).ProgressNotice;
+            await UntilAsync(() => N.ReadText(GetDlgItem(root, 103), 4096) == readyNotice, cancellation);
             result.Stage = "practice-preview-shortcut";
             Require(new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C, 0x78 }.All(key => GetAsyncKeyState(key) >= 0),
                 "practice-key-already-down");

@@ -1,4 +1,4 @@
-"""Pure GTK runner geometry checks, not native scrolling or GUI evidence."""
+"""Controlled GTK runner observations, not native scrolling or GUI evidence."""
 
 import sys
 import unittest
@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from desktop_e2e import settings_text_visible_point, settings_viewport_from_pane  # noqa: E402
 from gtk_session_reentry import (  # noqa: E402
+    check_preview_colors,
     click_point,
     clickable_control,
     expand_click_point,
@@ -17,6 +18,74 @@ from gtk_session_reentry import (  # noqa: E402
     validated_geometry,
 )
 from hy_package_e2e import package_scroll_value, rectangle_contains  # noqa: E402
+
+
+class GtkPreviewObservationTests(unittest.TestCase):
+    def test_refused_render_is_recorded_once_without_reading_or_retrying(self):
+        class Client:
+            hello = {"backend": "gtk3", "lifetime": "l"}
+            calls = []
+
+            def call(self, operation, request):
+                self.calls.append((operation, request))
+                return {"visible": False}
+
+        client, evidence = Client(), {}
+        with self.assertRaises(AssertionError):
+            check_preview_colors(
+                client,
+                {"target": "t", "authority": {}},
+                "g",
+                lambda: self.fail("refused render must not poll"),
+                {},
+                evidence,
+            )
+        self.assertEqual(len(client.calls), 1)
+        phase = evidence["previewColorPhases"][0]
+        self.assertEqual(phase["revision"], 1)
+        self.assertIs(phase["responseVisible"], False)
+        self.assertEqual(phase["state"], "ValidTranslation")
+        self.assertLessEqual(phase["expiresAtMs"] - phase["renderStartedAtMs"], 800)
+        self.assertNotIn("lastObservation", phase)
+
+    def test_eight_color_requests_keep_original_checks_and_bounded_observations(self):
+        class Client:
+            hello = {"backend": "gtk3", "lifetime": "l"}
+            requests = []
+
+            def call(self, operation, request):
+                self.requests.append(request)
+                return {"visible": True}
+
+        client, evidence = Client(), {}
+        initial = {"first": "source", "second": "other"}
+
+        def state():
+            view = client.requests[-1]["view"]
+            muted = (
+                view["state"] == "Translating"
+                and view["text"]
+                and not view["presentation"]["editorOwnsText"]
+            )
+            return {
+                **initial,
+                "observedAtMs": 10**15,
+                "focus": "fixture-first",
+                "imeClear": True,
+                "candidate": {
+                    "text": view["text"],
+                    "foreground": "rgb(102,103,113)" if muted else "rgb(34,35,39)",
+                },
+            }
+
+        check_preview_colors(
+            client, {"target": "t", "authority": {}}, "g", state, initial, evidence
+        )
+        self.assertEqual(len(client.requests), 8)
+        self.assertEqual(len(evidence["previewColorPhases"]), 8)
+        self.assertTrue(
+            all(p["lastObservation"]["textMatches"] for p in evidence["previewColorPhases"])
+        )
 
 
 class PackageControlScrollTests(unittest.TestCase):

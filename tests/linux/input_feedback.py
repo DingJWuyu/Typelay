@@ -817,7 +817,7 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertEqual(frozen["target"], source["target"])
         self.assertEqual(frozen["authority"], native["authority"])
 
-    def direct_diagnostic_reply(self, diagnostic, *, count=0):
+    def direct_diagnostic_reply(self, diagnostic, *, count=0, trace=True):
         notice, native = self.completed_metadata_command("direct")
         self.input.direct_trace_count = count
 
@@ -839,11 +839,19 @@ class InputFeedbackTests(unittest.TestCase):
                         await asyncio.sleep(0)
                 self.assertEqual(len(frames), 1)
                 self.assertEqual(frames[0]["op"], expected)
+                if expected == "direct":
+                    if trace:
+                        self.assertIs(frames[0]["data"]["diagnostic"], True)
+                    else:
+                        self.assertNotIn("diagnostic", frames[0]["data"])
                 self.peer.link.receive({"id": frames[0]["id"], "data": response})
             return await asyncio.wait_for(task, 1)
 
         output = io.StringIO()
-        with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}), contextlib.redirect_stderr(output):
+        with (
+            patch.dict(os.environ, {"TYPELAY_TRACE": "1" if trace else ""}),
+            contextlib.redirect_stderr(output),
+        ):
             result = asyncio.run(exercise())
         self.assertEqual(result, {"status": "RejectedBeforeMutation", "reason": "EpochChanged"})
         return output.getvalue()
@@ -925,6 +933,11 @@ class InputFeedbackTests(unittest.TestCase):
     def test_direct_late_textview_rejection_rejects_mixed_shapes(self):
         diagnostic = {"phase": "before-delete", "check": "ticket-claim", "observed": True}
         self.assertEqual(self.direct_diagnostic_reply(diagnostic), "")
+
+    def test_direct_without_trace_does_not_request_diagnostics(self):
+        self.assertEqual(
+            self.direct_diagnostic_reply(self.direct_epoch_diagnostic(), trace=False), ""
+        )
 
     def test_direct_rejection_diagnostic_has_a_fixed_budget(self):
         self.assertEqual(self.direct_diagnostic_reply(self.direct_epoch_diagnostic(), count=16), "")

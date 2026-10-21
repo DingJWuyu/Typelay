@@ -95,54 +95,102 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
     public Task AProcessedControlPrefixDistinguishesRootHoverFromInterveningInput(string change, bool accepted)
         => desktop.RunAsync(async () =>
     {
-        await using var scene = new QueueScene(true, observePrefixMessages: true);
-        await scene.Start(true, bindings: SessionShortcutBindings.Restore("Ctrl+F7", "Ctrl+F10"));
-        var selection = N.ReadSelection(scene.Field);
-        await scene.InstallExit();
-        await scene.PressControlPrefix(); // Real LL Ctrl and its ordinary source GUI dispatch.
-        nint target = change.StartsWith("source-", StringComparison.Ordinal) ? scene.Field : scene.Root;
-        (uint message, nuint word, nint data) = change switch
+        var scene = new QueueScene(true, observePrefixMessages: true);
+        Exception? failure = null;
+        string phase = "start";
+        try
         {
-            "root-nonclient-hover" => (0x00a0u, 2u, 0), // HTCAPTION, not button flags.
-            "root-drag" => (0x0200u, 9u, 0), // MK_CONTROL | MK_LBUTTON.
-            "root-button" => (0x0201u, 9u, 0),
-            "source-selection" => (N.EM_SETSEL, 1u, 2),
-            "ime-language" => (0x0051u, 0u, 0),
-            _ => (0x0200u, 8u, 0) // MK_CONTROL with no mouse button.
-        };
-        if (change == "sent-root-hover")
-            N.Send(target, message, word, data);
-        else
-        {
-            // Software GUI-message replay, not physical mouse/IME evidence.
-            // The receiver ACK is emitted only after this class of queued
-            // message has returned through its normal dispatch path.
-            Assert.True(N.PostMessage(target, message, word, data));
-            await scene.Wait(() => scene.Messages.Any(reply => reply.Kind == "test-prefix-" + change + "-dispatched"));
+            await scene.Start(true, bindings: SessionShortcutBindings.Restore("Ctrl+F7", "Ctrl+F10"));
+            phase = "source-read";
+            var selection = N.ReadSelection(scene.Field);
+            phase = "install-exit";
+            await scene.InstallExit();
+            phase = "control-prefix";
+            await scene.PressControlPrefix(); // Real LL Ctrl and its ordinary source GUI dispatch.
+            nint target = change.StartsWith("source-", StringComparison.Ordinal) ? scene.Field : scene.Root;
+            (uint message, nuint word, nint data) = change switch
+            {
+                "root-nonclient-hover" => (0x00a0u, 2u, 0), // HTCAPTION, not button flags.
+                "root-drag" => (0x0200u, 9u, 0), // MK_CONTROL | MK_LBUTTON.
+                "root-button" => (0x0201u, 9u, 0),
+                "source-selection" => (N.EM_SETSEL, 1u, 2),
+                "ime-language" => (0x0051u, 0u, 0),
+                _ => (0x0200u, 8u, 0) // MK_CONTROL with no mouse button.
+            };
+            phase = "intervening-message";
+            if (change == "sent-root-hover")
+                N.Send(target, message, word, data);
+            else
+            {
+                // Software GUI-message replay, not physical mouse/IME evidence.
+                // The receiver ACK is emitted only after this class of queued
+                // message has returned through its normal dispatch path.
+                Assert.True(N.PostMessage(target, message, word, data));
+                await scene.Wait(() => scene.Messages.Any(reply => reply.Kind == "test-prefix-" + change + "-dispatched"));
+            }
+            if (change == "source-selection")
+                selection = new(1, 2); // The requested mutation, never an acceptance write.
+            phase = "original-deadline";
+            long pressedAt = WindowsInterruptClock.NowMs;
+            Assert.InRange(pressedAt, scene.ExitLease!.ObservedAtMs, scene.ExitLease.ExpiresAtMs);
+            phase = "exit-down-dispatch";
+            scene.Key(scene.ExitKey, true);
+            await scene.WaitExitInput(1);
+            phase = "exit-down-result";
+            Assert.Equal(new PracticeInputCompletion(1, true, accepted), Assert.Single(scene.ExitInputs));
+            phase = "exit-up-dispatch";
+            scene.Key(scene.ExitKey, false);
+            await scene.WaitExitInput(2);
+            phase = "control-release-and-postconditions";
+            scene.Key(0x11, false);
+            var exits = scene.Messages.Where(reply => reply.Kind == "exit-completed").ToArray();
+            if (accepted)
+            {
+                var result = Assert.Single(exits).ExitResult!;
+                Assert.Equal(scene.ExitLease.Sequence, result.LeaseSequence);
+                Assert.InRange(result.AcceptedAtMs, scene.ExitLease.ObservedAtMs, scene.ExitLease.ExpiresAtMs);
+            }
+            else
+                Assert.Empty(exits);
+            Assert.Equal(0, scene.Receipts);
+            Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+            Assert.Equal(selection, N.ReadSelection(scene.Field));
+            Assert.Equal((scene.Root, scene.Field), N.Focused());
         }
-        if (change == "source-selection")
-            selection = new(1, 2); // The requested mutation, never an acceptance write.
-        long pressedAt = WindowsInterruptClock.NowMs;
-        Assert.InRange(pressedAt, scene.ExitLease!.ObservedAtMs, scene.ExitLease.ExpiresAtMs);
-        scene.Key(scene.ExitKey, true);
-        await scene.WaitExitInput(1);
-        Assert.Equal(new PracticeInputCompletion(1, true, accepted), Assert.Single(scene.ExitInputs));
-        scene.Key(scene.ExitKey, false);
-        await scene.WaitExitInput(2);
-        scene.Key(0x11, false);
-        var exits = scene.Messages.Where(reply => reply.Kind == "exit-completed").ToArray();
-        if (accepted)
+        catch (Exception error)
         {
-            var result = Assert.Single(exits).ExitResult!;
-            Assert.Equal(scene.ExitLease.Sequence, result.LeaseSequence);
-            Assert.InRange(result.AcceptedAtMs, scene.ExitLease.ObservedAtMs, scene.ExitLease.ExpiresAtMs);
+            // Observe the original receiver before cleanup releases keys or closes
+            // it. A blocked ordinary dispatch must not become a cleanup-only error.
+            uint thread = N.GetWindowThreadProcessId(scene.Root, out _);
+            int? threadError = thread == 0 ? Marshal.GetLastPInvokeError() : null;
+            var gui = new N.GuiThreadInfo { Size = (uint)Marshal.SizeOf<N.GuiThreadInfo>() };
+            bool? guiKnown = thread == 0 ? null : N.GetGUIThreadInfo(thread, ref gui);
+            int? guiError = guiKnown == false ? Marshal.GetLastPInvokeError() : null;
+            bool? menuMode = guiKnown == true ? (gui.Flags & 0x0004) != 0 : null;
+            bool? systemMenuMode = guiKnown == true ? (gui.Flags & 0x0008) != 0 : null;
+            bool? popupMenuMode = guiKnown == true ? (gui.Flags & 0x0010) != 0 : null;
+            string edges = string.Join(",", scene.ExitInputs.Select(edge =>
+                $"{edge.Sequence}:{edge.Down}:{edge.Consumed}"));
+            failure = new InvalidOperationException(
+                $"prefix-replay phase={phase} now={WindowsInterruptClock.NowMs} " +
+                $"exitInputs=[{edges}] exitCompleted={scene.Messages.Count(reply => reply.Kind == "exit-completed")} " +
+                $"receipts={scene.Receipts} threadKnown={thread != 0} threadError={threadError} " +
+                $"guiKnown={guiKnown} guiError={guiError} menuMode={menuMode} " +
+                $"systemMenuMode={systemMenuMode} popupMenuMode={popupMenuMode}", error);
         }
-        else
-            Assert.Empty(exits);
-        Assert.Equal(0, scene.Receipts);
-        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
-        Assert.Equal(selection, N.ReadSelection(scene.Field));
-        Assert.Equal((scene.Root, scene.Field), N.Focused());
+        finally
+        {
+            try
+            {
+                await scene.DisposeAsync();
+            }
+            catch (Exception cleanupError) when (failure is not null)
+            {
+                throw new AggregateException("prefix-replay failed; cleanup also failed", failure, cleanupError);
+            }
+        }
+        if (failure is not null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     });
 
     [Fact]

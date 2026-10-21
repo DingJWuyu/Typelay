@@ -888,7 +888,11 @@ static void command(JsonObject *frame) {
         capture_response(id, captured, trace, continuity);
     } else if (strcmp(operation, "direct") == 0) {
         tl_overlay_control_cancel();
-        respond(id, tl_write(target, data, TRUE));
+        JsonObject *reply = tl_write(target, data, TRUE);
+        /* Diagnostics never alter the default public write receipt contract. */
+        if (!g_getenv("TYPELAY_TRACE") || !boolean(data, "diagnostic"))
+            json_object_remove_member(reply, "diagnostic");
+        respond(id, reply);
     } else if (strcmp(operation, "return") == 0) {
         guint64 generation = ++return_generation, owner = connection_generation;
         JsonObject *basis = tl_object(data, "authority"), *practice = tl_object(data, "practiceReturn");

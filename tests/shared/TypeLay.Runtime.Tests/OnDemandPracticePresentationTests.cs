@@ -6,6 +6,23 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class OnDemandPracticePresentationTests
 {
+    [Theory]
+    [InlineData(null, "已识别练习输入框，尚未生成预览。")]
+    [InlineData(false, "已识别练习输入框，正在观察；请等待预览快捷键就绪。")]
+    [InlineData(true, "预览快捷键已就绪，可按 Alt+F8 查看译文。")]
+    public void OptionalReadinessKeepsUnreportedPlatformsNeutral(bool? ready, string notice)
+    {
+        var progress = new OnDemandPracticeProgress(Guid.NewGuid(), new("controlled", "source", Guid.NewGuid()),
+            Guid.NewGuid(), 0, 0, false, false, ready);
+        // Windows reports readiness; the Linux presentation bridge uses this
+        // same projection with null until its platform reports the boundary.
+        var view = OnDemandPracticePresentation.Create(new(Mode: WorkMode.OnDemand, WakeShortcut: "Alt+F8"), progress);
+        Assert.Equal(notice, view.ProgressNotice);
+        Assert.False(view.PreviewCompleted);
+        Assert.False(view.DirectReplacementCompleted);
+        Assert.False(view.Completed);
+    }
+
     [Fact]
     public void AutomaticModeMakesTheGlobalModeChangeExplicit()
     {

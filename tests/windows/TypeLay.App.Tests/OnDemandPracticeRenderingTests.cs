@@ -17,6 +17,135 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
 {
+    [Fact]
+    public Task PreviewCueWaitsForARealReadAndWithdrawsWhenPublicationExpires() => desktop.RunAsync(async () =>
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(25));
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-practice-preview-cue-" + Guid.NewGuid().ToString("N"));
+        string path = Path.Combine(directory, "settings.json");
+        ChildProcess? child = null;
+        var overlay = new OverlayWindow(automationTest: true);
+        using var broker = new PausedCaptureBroker(deadline.Token);
+        try
+        {
+            var settings = WindowsRuntime.CreateSettings(path);
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.OnDemand
+            });
+            using var model = WindowsRuntime.CreateModel(); // Real observations, no inference required.
+            using var host = new PracticeHost(info => child = new ChildProcess(info));
+            using var controller = WindowsRuntime.CreateSession(settings, model, overlay,
+                automationTest: true, broker: broker, practice: host);
+            host.Bind(controller);
+            await controller.StartAsync().WaitAsync(deadline.Token);
+            host.Open(path);
+            nint root = 0;
+            await Until(() =>
+            {
+                Assert.False(child!.Process.HasExited);
+                child.Process.Refresh();
+                root = child.Process.MainWindowHandle;
+                return root != 0 && GetDlgItem(root, 103) != 0 && controller.PracticeProgress is not null;
+            });
+            Assert.True(N.SetForegroundWindow(root));
+            Assert.True(N.PostMessage(root, 0x0007, 0, 0));
+            await Until(() => N.Focused() == (root, GetDlgItem(root, 101)));
+            await Until(() => controller.PracticeProgress?.PreviewReady == false && broker.Waiting);
+            var initial = controller.PracticeProgress!;
+            string ReadyNotice() => OnDemandPracticePresentation.Create(settings.Value,
+                controller.PracticeProgress! with
+                {
+                    PreviewReady = true
+                }).ProgressNotice;
+            Assert.DoesNotContain("已就绪", N.ReadText(GetDlgItem(root, 103), 4096));
+            Assert.Null(initial.Target); // A held real capture cannot bind or announce readiness.
+            broker.Resume();
+            await Until(() => controller.PracticeProgress?.Target is not null
+                && N.ReadText(GetDlgItem(root, 103), 4096) == ReadyNotice());
+            var bound = controller.PracticeProgress!;
+            Assert.Equal(initial.RunId, bound.RunId);
+            Assert.True(bound.PreviewReady);
+            broker.Pause(); // No replacement read can keep an old publication alive.
+            await Until(() => broker.Waiting && controller.PracticeProgress?.PreviewReady == false
+                && N.ReadText(GetDlgItem(root, 103), 4096) == OnDemandPracticePresentation.Create(settings.Value,
+                    controller.PracticeProgress).ProgressNotice);
+            Assert.Equal(bound.Target, controller.PracticeProgress!.Target);
+            Assert.False(controller.PracticeProgress.PreviewCompleted);
+            Assert.False(controller.PracticeProgress.Completed);
+            Assert.Equal(0, broker.Writes);
+            Assert.Equal(OnDemandPracticePresentation.Create(settings.Value).SampleText,
+                N.ReadText(GetDlgItem(root, 101), Limits.MaxTextUnits));
+            broker.Resume();
+            await Until(() => N.ReadText(GetDlgItem(root, 103), 4096) == ReadyNotice());
+            settings.Update(settings.Value with
+            {
+                WakeShortcut = "Alt+F8"
+            });
+            await Until(() => controller.PracticeProgress is null
+                && !N.ReadText(GetDlgItem(root, 103), 4096).Contains("已就绪", StringComparison.Ordinal));
+            Assert.Equal(0, broker.Writes);
+
+            async Task Until(Func<bool> condition)
+            {
+                while (!condition())
+                    await Task.Delay(15, deadline.Token);
+            }
+        }
+        finally
+        {
+            broker.Resume();
+            overlay.Close();
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    });
+
+    // Hold the real Broker request, not a manufactured capture or shortcut ACK.
+    private sealed class PausedCaptureBroker(CancellationToken cancellation) : IInputBroker
+    {
+        private readonly BrokerClient _inner = new();
+        private TaskCompletionSource? _resume = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool Waiting
+        {
+            get; private set;
+        }
+        public int Writes
+        {
+            get; private set;
+        }
+        public bool Available => _inner.Available;
+        public int ProcessId => _inner.ProcessId;
+        public Task StartAsync() => _inner.StartAsync();
+        public void Pause() => _resume = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public void Resume()
+        {
+            _resume?.TrySetResult();
+            _resume = null;
+        }
+        public async Task<BrokerResponse> CallAsync(BrokerRequest request, TimeSpan? timeout = null)
+        {
+            if (request.Op is "write" or "direct-write")
+                Writes++;
+            if (request.Op == "capture" && _resume is { } held)
+            {
+                Waiting = true;
+                try
+                {
+                    await held.Task.WaitAsync(cancellation);
+                }
+                finally { Waiting = false; }
+            }
+            return await _inner.CallAsync(request, timeout);
+        }
+        public void Dispose()
+        {
+            Resume();
+            _inner.Dispose();
+        }
+    }
+
     [Theory]
     [InlineData("current")]
     [InlineData("restart")]
@@ -330,6 +459,9 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             nint field = GetDlgItem(root, 101);
             await Focus(root);
             await Until(() => controller.PracticeProgress?.Target is not null);
+            await Until(() => controller.PracticeProgress?.PreviewReady == true
+                && N.ReadText(GetDlgItem(root, 103), 4096) == OnDemandPracticePresentation.Create(settings.Value,
+                    controller.PracticeProgress).ProgressNotice);
             var first = controller.PracticeProgress!;
             Assert.False(first.Completed); // Historical onboarding preference is never evidence.
             Assert.False(first.PreviewCompleted);
@@ -345,6 +477,9 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             Assert.NotEqual(nint.Zero, firstCookie);
 
             await Focus(otherRoot);
+            await Until(() => controller.PracticeProgress?.PreviewReady == false
+                && N.ReadText(GetDlgItem(root, 103), 4096) == OnDemandPracticePresentation.Create(settings.Value,
+                    controller.PracticeProgress).ProgressNotice);
             settings.Update(settings.Value with
             {
                 Theme = "dark"

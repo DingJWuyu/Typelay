@@ -79,18 +79,18 @@
 
 ### 当前可验证候选
 
-最近核对的验证基线为 [`7b72c139`](https://github.com/DingJWuyu/Typelay/actions/runs/39567718925)，该运行已结束，Windows 完整检查失败。
+最近核对的验证基线为 [`db73417b`](https://github.com/DingJWuyu/Typelay/actions/runs/39571928164)，该运行已结束，Windows 完整检查失败。
 
-- App.Tests：545 项中 544 项通过、1 项失败。此前 15 项红项本轮通过；当前唯一失败为 Ctrl 排队后 root hover 路径在期限内被拒，后继候选尚未经对应 GUI 验证。
-- 连续翻译在 `owned-editor-single-click` 报 `HostNotReady`；普通字段与直接替换等局部场景通过，不能据此记为整链通过。
-- 浏览器在 `open-loopback-page` 阶段 120 秒超时，尚未启动 App 或完成接入；记事本与 Hy 未运行，不沿用较早浏览器或记事本结果。
+- App.Tests：560 项中 554 项通过、6 项失败。此前 545 项及新增的 2 项正例、7 项管道测试通过；6 项新增 hover 负例均在 Dispose 清理阶段抛错，主断言结果被遮蔽，不能据此确认各负例原因。
+- 连续翻译中，自有首次 Tab、编辑交接、Tab/鼠标回源、人工稿接受与完成均 verified，普通字段、直接替换、持续翻译及冷启动 Chrome 通过；按需练习报 `practice-preview-feedback`，Chrome 新标签页报 `new-tab-production-feedback`，整链仍失败。
+- 浏览器合作整链通过；记事本设置与只读预览观察通过，但等待公开接受提示因 Unknown 安全缺口超时，后续编辑/直接替换及 Hy 未运行，不沿用较早结果。
 - 本轮未消除普通自动捕获的输入法安全缺口，Unknown 继续拒写；后继候选未经对应验证不记作修复。本轮无质量采集，5068 的 40 次诊断与 386 的 69 次响应仍是各自范围的既有证据，三项质量门继续关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
 
-当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39567718925)下载 [`typelay-windows-7b72c13931adcbad30ca19fa2dc16c5a75cabcd7`](https://github.com/DingJWuyu/Typelay/actions/runs/39567718925/artifacts/12329914841)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
+当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39571928164)下载 [`typelay-windows-db73417bf497cb81eac057771608ee91c7c744c1`](https://github.com/DingJWuyu/Typelay/actions/runs/39571928164/artifacts/12333930227)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
 
-- 源码提交：`7b72c13931adcbad30ca19fa2dc16c5a75cabcd7`。
-- 内层 ZIP：87,029,089 字节。
-- SHA-256：`3a3e961f1f50f804f532d5d3acb1ff82c433c8b1a1c83034e7fe70fd4612a9ef`，已实际重算并核对包旁摘要。
+- 源码提交：`db73417bf497cb81eac057771608ee91c7c744c1`。
+- 内层 ZIP：87,031,503 字节。
+- SHA-256：`bd5c13f878b50fc386a9dce93d919f535c4714fab1168b0700fd1a8218643076`，已实际重算并核对包旁摘要。
 - 用 `Get-FileHash .\TypeLay-Windows-preview.zip -Algorithm SHA256` 核对；不要将内层摘要用于外层 Actions ZIP。App、Broker、Practice 与 BrowserHost 必须来自同一个完整包。
 
 正式安装器的单向中英准备、Auto 同语无输出、缺方向拒绝与保留旧方向的补装已通过真实模型 API 检查；该检查本身没有操作输入框或触发 F10。安装库存损坏时保留原数据并禁用修改，目前仍缺少用户可执行的库存恢复入口。

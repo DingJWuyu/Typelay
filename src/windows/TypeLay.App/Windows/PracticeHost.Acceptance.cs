@@ -494,6 +494,11 @@ internal sealed partial class PracticeHost
     internal void PollAcceptance()
     {
         _dispatcher.VerifyAccess();
+        if (_session?.PracticeProgress is { } progress && progress.RunId == _runId)
+            _session.ObserveOnDemandPreviewReadiness(_runId, progress.Target, progress.CommandGeneration,
+                !_automatic && _nativeActive && _pending is null && _monitor is not null
+                    && progress.Target is { } target && _monitor.PreviewShortcutReady(target, progress.CommandGeneration,
+                        WindowsInterruptClock.NowMs));
         PollOwnedReturn();
         _ = _monitor?.OwnedPrefixPending; // Settle a prefix-only timeout even without a write plan.
         if (_latestExit is { } exit && !ExitBasisCurrent(exit))

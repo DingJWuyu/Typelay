@@ -295,7 +295,7 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                     )
                     return
                 if stage == "preview-colors":
-                    check_preview_colors(client, source, generation, state, initial)
+                    check_preview_colors(client, source, generation, state, initial, click_evidence)
                     print(
                         "GTK preview colors: current text and manual drafts retain normal contrast",
                         flush=True,
@@ -494,6 +494,8 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                     except (OSError, KeyError, TypeError, ValueError):
                         pass  # Preserve the original failure and fixture cleanup.
                 if click_evidence:
+                    if stage == "preview-colors":
+                        click_evidence["finalObservationTiming"] = "after-check-not-render-time"
                     try:
                         click_evidence["finalGeometry"] = observe_click_geometry(state())
                     except (OSError, AssertionError, KeyError, TypeError, ValueError):
@@ -603,12 +605,13 @@ def render_preview(
     )
 
     if evidence is not None:
+        evidence["responseVisible"] = result.get("visible")
         evidence["renderReturnedAtMs"] = now_ms()
         evidence["renderReturnedAtMonoMs"] = time.monotonic_ns() // 1_000_000
     return result
 
 
-def check_preview_colors(client, source, generation, state, initial):
+def check_preview_colors(client, source, generation, state, initial, evidence):
     # DTO-to-widget rendering only. Actual editing/return remains in desktop_e2e.
     normal, muted = "rgb(34,35,39)", "rgb(102,103,113)"
     cases = [
@@ -637,7 +640,12 @@ def check_preview_colors(client, source, generation, state, initial):
             ]
         )
     short_height = None
+    phases = evidence["previewColorPhases"] = []
     for revision, (view_state, text, owns_text, foreground, theme) in enumerate(cases, 1):
+        phase = None
+        if len(phases) < 8:
+            phase = {"state": view_state, "editorOwnsText": owns_text, "theme": theme}
+            phases.append(phase)
         assert render_preview(
             client,
             source,
@@ -648,12 +656,24 @@ def check_preview_colors(client, source, generation, state, initial):
             text=text,
             theme=theme,
             editor_owns_text=owns_text,
+            evidence=phase,
         )["visible"]
         rendered_at = time.monotonic_ns() // 1_000_000
 
         def rendered_state():
             value = state()
             candidate = value.get("candidate")
+            if phase is not None:
+                phase["lastObservation"] = {
+                    "observedAtMs": value.get("observedAtMs"),
+                    "sourceFocused": value.get("focus") == "fixture-first",
+                    "imeClear": value.get("imeClear"),
+                    "candidatePresent": bool(candidate),
+                    "textMatches": bool(candidate and candidate.get("text") == text),
+                    "foregroundMatches": bool(
+                        candidate and candidate.get("foreground") == foreground
+                    ),
+                }
             if (
                 value.get("observedAtMs", 0) <= rendered_at
                 or not candidate

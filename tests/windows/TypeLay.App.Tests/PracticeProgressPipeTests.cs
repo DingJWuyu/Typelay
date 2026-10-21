@@ -15,6 +15,39 @@ namespace TypeLay.App.Tests;
 public sealed class PracticeProgressPipeTests
 {
     [Theory]
+    [InlineData(null)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OptionalPreviewReadinessRoundTripsWithoutChangingPracticeProgress(bool? ready)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
+        using var writer = new AnonymousPipeServerStream(PipeDirection.Out);
+        using var reader = new AnonymousPipeClientStream(PipeDirection.In, writer.ClientSafePipeHandle);
+        Guid run = Guid.NewGuid();
+        var progress = new OnDemandPracticeProgress(run, new("controlled", "source", Guid.NewGuid()),
+            Guid.NewGuid(), 0, 0, false, false, ready);
+        var message = new PracticeMessage("progress", Guid.NewGuid(), run, 1, progress);
+        await PracticeProgressPipe.WriteAsync(writer, message, deadline.Token);
+        Assert.Equal(message, await PracticeProgressPipe.ReadAsync(reader, deadline.Token));
+        // An older sender omits the optional field; absence must not mean ready.
+        var legacy = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(message))!;
+        legacy["Progress"]!.AsObject().Remove("PreviewReady");
+        byte[] body = JsonSerializer.SerializeToUtf8Bytes(legacy);
+        byte[] prefix = new byte[4];
+        BinaryPrimitives.WriteInt32LittleEndian(prefix, body.Length);
+        await writer.WriteAsync(prefix, deadline.Token);
+        await writer.WriteAsync(body, deadline.Token);
+        await writer.FlushAsync(deadline.Token);
+        var received = await PracticeProgressPipe.ReadAsync(reader, deadline.Token);
+        Assert.Equal(progress with
+        {
+            PreviewReady = null
+        }, received.Progress);
+        Assert.False(received.Progress!.Completed);
+    }
+
+    [Theory]
     [InlineData("root-hover")]
     [InlineData("root-drag")]
     [InlineData("root-nonclient-hover")]

@@ -198,12 +198,15 @@ internal static partial class ContinuousTranslationCheck
             {
                 var captured = await CapturedAsync(sources[2], before);
                 Require(!overlay.IsVisible, "new-tab-preview-before-shortcut");
+                if (captured is not null)
+                    beforeShortcutObservationMs = lastSourceObservationMs;
                 return captured is not null;
             });
+            // CapturedAsync has just completed the full source-focus observation
+            // and checked the capture's identity, text and IME policy. No source
+            // action intervenes; do not repeat that asynchronous UIA read here.
             // A capture is not a native lease ACK. Send once at this observable
             // boundary; never wait for a publish log, add a delay, or retry F9.
-            await RequireSourceAsync();
-            beforeShortcutObservationMs = lastSourceObservationMs;
             Require(new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C, 0x78 }.All(key => GetAsyncKeyState(key) >= 0),
                 "new-tab-key-already-down");
             result.Stage = "new-tab-on-demand-shortcut";

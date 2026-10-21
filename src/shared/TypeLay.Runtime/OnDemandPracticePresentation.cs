@@ -3,9 +3,11 @@ using TypeLay.Core;
 namespace TypeLay.Runtime;
 
 // Ephemeral, body-free evidence for one owned practice run, never a write permit.
+// PreviewReady is optional presentation feedback, never input authority. Null means
+// this platform has not reported readiness, not that the shortcut is ready.
 // A null target means the host has not yet verified its native practice field.
 public sealed record OnDemandPracticeProgress(Guid RunId, TargetId? Target, Guid CommandGeneration,
-    long CommandSequence, long Revision, bool PreviewCompleted, bool DirectReplacementCompleted)
+    long CommandSequence, long Revision, bool PreviewCompleted, bool DirectReplacementCompleted, bool? PreviewReady = null)
 {
     public bool Completed => PreviewCompleted && DirectReplacementCompleted;
 }
@@ -33,6 +35,8 @@ public static class OnDemandPracticePresentation
             : progress.Target is null ? "练习输入框尚未连接，请点击输入框；若仍未连接，请检查应用支持。"
             : progress.Completed ? "按需练习已完成：已生成预览，并已验证直接替换。"
             : preview ? "已生成预览。请回到练习输入框，完成第 2 步直接替换。"
+            : progress.PreviewReady == false ? "已识别练习输入框，正在观察；请等待预览快捷键就绪。"
+            : progress.PreviewReady == true ? $"预览快捷键已就绪，可按 {settings.WakeShortcut} 查看译文。"
             : "已识别练习输入框，尚未生成预览。";
         return new("按需翻译练习", "用一段原文，练习预览和直接替换。练习内容只在本机处理。",
             english ? "Hello I would like to try local translation" : "你好我想试试本地翻译",

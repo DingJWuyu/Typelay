@@ -2981,6 +2981,7 @@ class Input:
                     "approved": description["authority"],
                     "generation": generation,
                     "expiresAtMs": now_ms() + 250,
+                    **({"diagnostic": True} if os.environ.get("TYPELAY_TRACE") else {}),
                 },
             ) or refused(True)
             if isinstance(reply, dict):

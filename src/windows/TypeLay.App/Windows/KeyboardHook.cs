@@ -171,6 +171,24 @@ internal sealed partial class KeyboardHook : IInputMonitor
         QueueShortcutTrace("publish", decoded ? "published" : "target-decode", lease,
             commandGeneration: generation, leaseCommandGeneration: generation);
     }
+    // A presentation observation only. The real command still independently
+    // checks its original lease when the user's input arrives.
+    internal bool PreviewShortcutReady(TargetId target, Guid generation, long now)
+    {
+        var configuration = Volatile.Read(ref _shortcuts);
+        var published = Volatile.Read(ref _shortcutLease);
+        if (!ShortcutsReady || configuration.Generation != generation
+            || !configuration.Bindings.Any(binding => binding.Action == "wake")
+            || published is null || published.DiagnosticGeneration != generation)
+            return false;
+        var lease = published.Observation;
+        return lease.Source.Target == target && lease.ContentEpoch == ContentEpoch
+            && lease.ForegroundEpoch == ForegroundEpoch
+            && now >= lease.Source.ObservedAtMs && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs
+            && lease.Source.Access == FieldAccess.Supported
+            && (lease.Source.Ime == ImeState.Clear || lease.Source.Ime == ImeState.Unknown && lease.Source.PreviewText is not null)
+            && Native.GetForegroundWindow() == published.RootHwnd;
+    }
     public void SetShortcuts(RegisteredShortcut[] shortcuts)
     {
         Volatile.Read(ref _sourceGlossaryReceipt)?.Revoke();
