@@ -238,6 +238,31 @@ internal static partial class HyPackageCheck
                 N.Send(field, N.EM_SETSEL, (nuint)selection.Start, (nint)selection.End);
                 Require(N.ReadText(field, Limits.MaxTextUnits) == text && N.ReadSelection(field) == selection
                     && N.Focused() == (root, field), "source-click-precondition-changed");
+                // Registration above does not establish a current source observation.
+                // Observe the existing public cue after the final focus/selection change.
+                scene.Stage = "wait-public-source-ready";
+                await WaitAsync(async () =>
+                {
+                    Require(N.ReadText(field, Limits.MaxTextUnits) == text && N.ReadSelection(field) == selection
+                        && N.Focused() == (root, field), "source-ready-precondition-changed");
+                    var statuses = await UiAsync(() => settings!.FindAll(TreeScope.Descendants,
+                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text))
+                        .Cast<AutomationElement>().Select(item => item.Current.Name)
+                        .Select(name => name == "两个快捷键已启用；操作不会切换工作模式。 当前输入框的直接替换快捷键已就绪。"
+                            ? "native-source-ready" : ShortcutCategory(name))
+                        .Where(category => category is not null).Distinct().ToArray(), ct);
+                    bool ready = statuses.Contains("native-source-ready");
+                    scene.Facts = new
+                    {
+                        publicShortcutStatusMatched = true,
+                        publicSourceReadyMatched = ready,
+                        statuses,
+                        sourceClicks = 1
+                    };
+                    return ready;
+                }, ct);
+                Require(N.ReadText(field, Limits.MaxTextUnits) == text && N.ReadSelection(field) == selection
+                    && N.Focused() == (root, field), "source-ready-precondition-changed");
                 scene.Stage = "single-wake-real-preview";
                 SendWakeOnce();
                 string translation = "";
@@ -277,6 +302,7 @@ internal static partial class HyPackageCheck
                     targetLanguage = "fr",
                     wakePresses = 1,
                     sourceClicks = 1,
+                    publicSourceReadyMatched = true,
                     publicCompletedCandidate = true,
                     sourceUnchanged = true,
                     selectionUnchanged = true,

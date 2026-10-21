@@ -26,7 +26,7 @@ IPC 不携带正文，只有有界状态、长度、选区和 fingerprint。fing
 
 ## 证据边界与待验证
 
-本版本不是支持能力。诊断协议 v2 的真实编译、纯合同测试和 no-DLL 正常启动/退出已在隔离 Windows 验证；该结果不证明目标侧 hook、策略查询或读取会话成功；缺 manager/context、取消/过期、父进程退出、目标销毁与晚到回调等只读阶段仍未在 Windows 上验证。缺中文 IME 环境只能建立无组合时的单次合成文档观察，不能建立中文组合/共存/连续观察或任何 Tab/写回能力。
+本版本不是支持能力。当前 v3 元数据候选未完成 Windows 编译或执行；诊断协议 v2 的真实编译、纯合同测试和 no-DLL 正常启动/退出已在隔离 Windows 验证；该结果不证明目标侧 hook、策略查询或读取会话成功；缺 manager/context、取消/过期、父进程退出、目标销毁与晚到回调等只读阶段仍未在 Windows 上验证。缺中文 IME 环境只能建立无组合时的单次合成文档观察，不能建立中文组合/共存/连续观察或任何 Tab/写回能力。
 
 源代码内 guard 不是实测证据；后续具体只读生命周期反例的执行编排仍须单独审查，不使用模拟 TSF 替代。
 
@@ -60,10 +60,20 @@ SetWindowsHookEx 使用 TID，不接受持有的线程句柄/创建时间。runn
 
 ## 发送与入口诊断
 
-协议版本与注册消息名均为 v2。SendMessageTimeout 前记录单调时刻并 SetLastError(0)，返回后紧邻保存 GetLastError，再记录返回时刻。sendAttempted/sendReturned/sendReturn 区分尝试、API 返回与 API 成败；messageResult 仅在非零 API 返回时有效，否则为 null。有效消息结果 0 不是失败，API 返回 0 且 LastError 0 只能表示通用失败。API 结果不能替代异步目标观察：发送超时后目标可能已经完成有效读取；反之发送成功不证明读取发生。[官方合同](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendmessagetimeoutw)
+当前协议版本与注册消息名均为 v3。SendMessageTimeout 前记录单调时刻并 SetLastError(0)，返回后紧邻保存 GetLastError，再记录返回时刻。sendAttempted/sendReturned/sendReturn 区分尝试、API 返回与 API 成败；messageResult 仅在非零 API 返回时有效，否则为 null。有效消息结果 0 不是失败，API 返回 0 且 LastError 0 只能表示通用失败。API 结果不能替代异步目标观察：发送超时后目标可能已经完成有效读取；反之发送成功不证明读取发生。[官方合同](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendmessagetimeoutw)
 
 目标仅在 header/版本/大小与当前目标进程创建身份、线程、字段匹配后原子 OR OwnedEntry(1)；父进程创建身份与模块引用取得后加 ValidationPassed(2)；进入 Submit 加 SubmitEntered(4)，调用/返回 RequestEditSession 分别加 RequestCalled(8)/RequestReturned(16)。阶段位不清零、不覆盖，允许值为 0/1/3/7/15/31。现有 BasicGuard、TSF READ、3 秒期限及正文/选区读取不变。入口位 0 仍无法区分 DLL 未进入、映射失败或 header 拒绝，绝不向未验证映射写日志。完成 callback、完整快照与正常清理仍是原验收条件。
 
 在 hook 前，使用 held 自有目标进程句柄只读查询签名与动态代码 policy，记录 query/known、数值错误及已定义标志位。任何查询失败停止；MicrosoftSignedOnly/StoreSignedOnly/MitigationOptIn 不兼容本次未签名实验 DLL 时停止。动态代码禁止位只约束动态生成/修改可执行代码，不等于普通 DLL 加载被禁止，也不是加载安全证明；不调用策略修改/放宽接口，不提权或绕过。[查询合同](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessmitigationpolicy)、[签名策略](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-process_mitigation_binary_signature_policy)、[动态代码策略](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-process_mitigation_dynamic_code_policy)
 
 所有新增字段都是固定有界元数据，无正文/地址/句柄。报告消费者严格校验版本、阶段、类型与范围；Lifecycle 要求全部发送/阶段为未开始且原清理成立，不能将全零诊断当读取成功。新候选先经独立 Lifecycle 编译、selftests、no-DLL 验证并保留六个源码 blob；Read 固定经审的 v2 生命周期基线 `889a06469e47632d55f2107174f7c3cd7c4a16ff`；未来源码变更仍须重新验证、审定固定基线并另批单次 Read。没有自动重试或写锁升级。
+
+## 单次 Transitory 栈元数据（v3 SOURCE）
+
+仅在原 top 会话已通过目标 guard、GetStatus 返回 Transitory 时，拒绝前做一次有界元数据采集，仍以 Unsupported/Transitory 结束，readSnapshotValid 始终为 false。协议/消息名升 v3，不把既有 v2 Lifecycle 或 Read 报告当作 v3 证据。现 workflow 的 Read 仍锁 v2 已验基线，新候选不能直接加载，须先另审 Lifecycle。
+
+仅查询当前 focused document 的 GetTop/GetBase/EnumContexts，一次 Next(3) 只保留最多两项，第三项立即 release 并判 overflow。逐项仅做规范 IUnknown 身份比较、GetDocumentMgr 归属、GetStatus、GetActiveView/GetWnd；不读任何项正文、不申请 base 会话、不跨 document 搜索或访问 parent compartment、不 Push/Pop/Create/Activate，不等待/重试到期望栈顶。每个阶段检查原目标与期限，前后比较 focused document/top/base；释放全部元数据 COM 引用后再做 Guard，并以无 COM 调用的 BasicGuard 封口；失败整块清空为 attempted + MetadataGuard/E_ABORT。stable 只表示前后采样一致，不是栈不会发生 ABA 变化的原子性证明。
+
+contextMetadata 只输出 attempted/complete、最多两项的 count、overflow、topEqualsBase、固定失败阶段与 HRESULT。stable 与各项 equalsTop/equalsBase/belongsToFocusedDocument/transitory/windowMatchesOwnedEdit 使用 0=unknown、1=no、2=yes；不输出对象指针、窗口句柄或正文。任何查询失败/归属变化/身份不稳定都清空部分结果为 unknown，仅保固定失败字段。complete 仅指元数据采集完成，不表示完整正文或读取能力；GetWnd 成功返回 NULL 时窗口对应仍 unknown。无采集时所有字段为初值、两项均 unknown，Lifecycle 必须严格符合这个默认状态。
+
+如果单层 top=base 且 Transitory，此次当前栈无替代入口，停止这条探针线并转架构选择；如有不同 base，也只证明下层 main context 存在，不可绕过 top 读它，不自动继续探测或重跑。官方规定文本服务只与栈顶交互，且栈最多两项；Transitory 仅表示预计短使用周期，不能据此断言已经证明正文截断。[Push 合同](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfdocumentmgr-push)、[状态定义](https://learn.microsoft.com/en-us/windows/win32/api/textstor/ns-textstor-ts_status)

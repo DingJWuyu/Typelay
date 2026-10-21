@@ -17,7 +17,7 @@ SPEC.loader.exec_module(validation)
 
 def diagnostics(*, read):
     return {
-        "protocolVersion": 2,
+        "protocolVersion": 3,
         "targetPhases": 31 if read else 0,
         "policyQueried": read,
         "signatureKnown": read,
@@ -37,9 +37,31 @@ def diagnostics(*, read):
     }
 
 
+def context_metadata():
+    empty = {
+        "equalsTop": 0,
+        "equalsBase": 0,
+        "belongsToFocusedDocument": 0,
+        "transitory": 0,
+        "windowMatchesOwnedEdit": 0,
+    }
+    return {
+        "attempted": False,
+        "complete": False,
+        "stable": 0,
+        "count": 0,
+        "overflow": False,
+        "topEqualsBase": 0,
+        "failureStage": 0,
+        "hresult": 0,
+        "contexts": [empty.copy(), empty.copy()],
+    }
+
+
 def observed_report():
     return {
         "diagnostics": diagnostics(read=True),
+        "contextMetadata": context_metadata(),
         "kind": "isolated-tsf-native",
         "status": "observed-not-acceptance",
         "reason": "single-read-observed",
@@ -158,7 +180,7 @@ class ReadValidationTests(unittest.TestCase):
         for phase in (0, 1, 3, 7, 15, 31):
             self.assertTrue(validation.diagnostics_valid(detail | {"targetPhases": phase}))
         for key, value in (
-            ("protocolVersion", 1),
+            ("protocolVersion", 2),
             ("protocolVersion", True),
             ("targetPhases", 2),
             ("targetPhases", 32),
@@ -231,6 +253,10 @@ class ReadValidationTests(unittest.TestCase):
             ("requestDispatched", True),
             ("sessionDestroyed", 1),
             ("diagnostics", diagnostics(read=True)),
+            (
+                "contextMetadata",
+                context_metadata() | {"attempted": True, "failureStage": 1, "hresult": -2147467260},
+            ),
         ):
             self.assertFalse(validation.lifecycle_observed(report | {key: value}))
         with tempfile.TemporaryDirectory() as directory:
@@ -244,6 +270,122 @@ class ReadValidationTests(unittest.TestCase):
             with redirect_stdout(output):
                 self.assertEqual(2, validation.main(["--kind", "lifecycle", "--report", str(path)]))
             self.assertNotIn("private-sentinel", output.getvalue())
+
+    def test_transitory_metadata_is_bounded_and_never_read_success(self):
+        empty = context_metadata()
+        self.assertTrue(validation.context_metadata_valid(empty))
+        row = {
+            "equalsTop": 2,
+            "equalsBase": 2,
+            "belongsToFocusedDocument": 2,
+            "transitory": 2,
+            "windowMatchesOwnedEdit": 2,
+        }
+        single = empty | {
+            "attempted": True,
+            "complete": True,
+            "stable": 2,
+            "count": 1,
+            "topEqualsBase": 2,
+            "contexts": [row, empty["contexts"][1]],
+        }
+        two = single | {
+            "count": 2,
+            "topEqualsBase": 1,
+            "contexts": [
+                row | {"equalsBase": 1},
+                row | {"equalsTop": 1, "transitory": 1, "windowMatchesOwnedEdit": 0},
+            ],
+        }
+        failed = empty | {"attempted": True, "failureStage": 9, "hresult": -2147467260}
+        overflow = failed | {"failureStage": 4, "overflow": True}
+        for metadata in (single, two, failed, overflow):
+            self.assertTrue(validation.context_metadata_valid(metadata))
+            self.assertFalse(
+                validation.read_observed(observed_report() | {"contextMetadata": metadata})
+            )
+        for patch in (
+            {"count": 3},
+            {"count": True},
+            {"topEqualsBase": 1},
+            {"stable": False},
+            {"stable": 0},
+            {"failureStage": 10},
+            {"hresult": -(2**31) - 1},
+            {"overflow": True},
+            {"attempted": False},
+            {"extra": "private-sentinel"},
+            {"contexts": [row]},
+            {"contexts": [row, row]},
+            {"contexts": [row | {"equalsTop": True}, empty["contexts"][1]]},
+            {"contexts": [row | {"transitory": 1}, empty["contexts"][1]]},
+            {"contexts": [row | {"belongsToFocusedDocument": 1}, empty["contexts"][1]]},
+        ):
+            self.assertFalse(validation.context_metadata_valid(single | patch))
+        self.assertFalse(
+            validation.context_metadata_valid(failed | {"contexts": single["contexts"]})
+        )
+        self.assertFalse(validation.context_metadata_valid(overflow | {"failureStage": 9}))
+        self.assertFalse(
+            validation.context_metadata_valid(
+                two | {"contexts": [row, row | {"equalsTop": 1, "equalsBase": 1}]}
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            for metadata in (single, two, failed, overflow, single | {"extra": "private-sentinel"}):
+                path.write_text(
+                    json.dumps(observed_report() | {"contextMetadata": metadata}), encoding="utf-8"
+                )
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(2, validation.main(["--kind", "read", "--report", str(path)]))
+                self.assertNotIn("private-sentinel", output.getvalue())
+
+    def test_post_cleanup_guard_failure_rejects_all_partial_metadata(self):
+        # Consumer contract only: real COM reentrancy remains a Windows test gap.
+        failed = context_metadata() | {
+            "attempted": True,
+            "failureStage": 1,
+            "hresult": -2147467260,
+        }
+        self.assertTrue(validation.context_metadata_valid(failed))
+        stale_row = {
+            "equalsTop": 2,
+            "equalsBase": 2,
+            "belongsToFocusedDocument": 2,
+            "transitory": 2,
+            "windowMatchesOwnedEdit": 2,
+        }
+        partials = [
+            failed
+            | {
+                "complete": True,
+                "stable": 2,
+                "count": 1,
+                "topEqualsBase": 2,
+                "contexts": [stale_row, context_metadata()["contexts"][1]],
+            },
+            failed | {"stable": 2, "count": 1, "topEqualsBase": 2},
+            failed | {"contexts": [stale_row, context_metadata()["contexts"][1]]},
+            failed | {"overflow": True},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            for metadata in [failed, *partials]:
+                with self.subTest(metadata=metadata):
+                    if metadata is not failed:
+                        self.assertFalse(validation.context_metadata_valid(metadata))
+                    path.write_text(
+                        json.dumps(observed_report() | {"contextMetadata": metadata}),
+                        encoding="utf-8",
+                    )
+                    output = io.StringIO()
+                    with redirect_stdout(output):
+                        self.assertEqual(
+                            2, validation.main(["--kind", "read", "--report", str(path)])
+                        )
+                    self.assertNotIn("contextMetadata", output.getvalue())
 
     def test_public_validator_rejects_invalid_report_without_logging_payload(self):
         with tempfile.TemporaryDirectory() as directory:

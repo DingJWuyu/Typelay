@@ -53,3 +53,5 @@ Read 只有完整合成正文逐字符匹配、有效 UTF-16 选区范围、一�
 该级别最多证明隔离 VM、自有合成文档的一次正文/选区观察与进程级移除。没有中文 IME 不伪装 Clear，更不证明共存、连续变化、运行中卸载或写回。TID 挂 hook 的非原子身份限制见 [native/README.md](native/README.md)，不外推用户应用生产安全。原生说明中的逐级权限规则仍有效；Read 入口存在不等于已获本次发布执行授权。远端精确提交/标记仍由 root 审核、lead 单写，不自动挂正式产品验收。
 
 诊断协议 v2 只增加发送 API 事实、经验证的目标阶段位与只读 mitigation 摘要，见 [native/README.md](native/README.md#发送与入口诊断)。诊断 v2 已完成真实编译、纯合同及 no-DLL Lifecycle 验证；Read 现锁定该已验提交，但一次实际 Read 仍须本批精确审批，不因基线更新自动执行。查询策略不可信或签名策略不兼容时在 hook 前停止，不修改系统策略。
+
+当前另有 v3 SOURCE 候选：仅在 Transitory 拒绝前采一次当前栈元数据，见 [native/README.md](native/README.md#单次-transitory-栈元数据v3-source)。它不读取 base 正文、不申请其它 context 会话，最终仍拒绝读取。v3 尚未完成 Windows 编译/执行，不能沿用 v2 证据；Read 固定 v2 基线不变，须新 Lifecycle 与独立审批。单层 Transitory 无替代时停止此探针线，不无限加字段或重试。

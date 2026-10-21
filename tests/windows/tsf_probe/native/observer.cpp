@@ -48,6 +48,16 @@ bool SameObject(IUnknown* a, IUnknown* b) noexcept {
     if (second) second->Release();
     return same;
 }
+Tri MetadataIdentity(IUnknown* a, IUnknown* b) noexcept {
+    if (!a || !b) return Unknown;
+    IUnknown *left = nullptr, *right = nullptr;
+    HRESULT ha = a->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&left));
+    HRESULT hb = b->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&right));
+    const Tri value = SUCCEEDED(ha) && SUCCEEDED(hb) && left && right ? (left == right ? Yes : No) : Unknown;
+    if (left) left->Release();
+    if (right) right->Release();
+    return value;
+}
 class Session final : public ITfEditSession {
     LONG references_ = 1;
     State* state_;
@@ -72,13 +82,135 @@ class Session final : public ITfEditSession {
         if (FAILED(hr) || window != state_->field) return AmbiguousWindow;
         return BasicGuard(state_);
     }
+    void CaptureStackMetadata() noexcept {
+        StackMetadata m{};
+        m.attempted = 1;
+        ITfDocumentMgr *document = nullptr, *afterDocument = nullptr, *owner = nullptr;
+        ITfContext *top = nullptr, *base = nullptr, *afterTop = nullptr, *afterBase = nullptr;
+        ITfContext* items[3]{};
+        IEnumTfContexts* enumerator = nullptr;
+        ITfContextView* view = nullptr;
+        auto Ready = [&](MetadataStage stage) {
+            m.failureStage = stage;
+            if (BasicGuard(state_) == None) return true;
+            m.failureStage = MetadataGuard;
+            return false;
+        };
+        auto Capture = [&]() -> HRESULT {
+            HRESULT hr;
+            if (!Ready(MetadataFocus)) return E_ABORT;
+            hr = manager_->GetFocus(&document);
+            if (FAILED(hr)) return hr;
+            if (!document) return E_FAIL;
+            if (!Ready(MetadataTopBase)) return E_ABORT;
+            hr = document->GetTop(&top);
+            if (FAILED(hr)) return hr;
+            if (MetadataIdentity(top, context_) != Yes) return E_ABORT;
+            if (!Ready(MetadataTopBase)) return E_ABORT;
+            hr = document->GetBase(&base);
+            if (FAILED(hr)) return hr;
+            m.topEqualsBase = MetadataIdentity(top, base);
+            if (m.topEqualsBase == Unknown) return E_FAIL;
+            if (!Ready(MetadataEnumeration)) return E_ABORT;
+            hr = document->EnumContexts(&enumerator);
+            if (FAILED(hr)) return hr;
+            if (!enumerator) return E_FAIL;
+            ULONG fetched = 0;
+            if (!Ready(MetadataEnumeration)) return E_ABORT;
+            // One bounded enumeration, never polling for a desired top context.
+            hr = enumerator->Next(3, items, &fetched);
+            if (items[2]) { items[2]->Release(); items[2] = nullptr; }
+            if (FAILED(hr)) return hr;
+            if (fetched > 2) { m.overflow = 1; return E_FAIL; }
+            if (hr != S_FALSE || fetched == 0) return E_FAIL;
+            m.count = static_cast<LONG>(fetched);
+            LONG topCount = 0, baseCount = 0;
+            for (ULONG i = 0; i < fetched; ++i) {
+                auto& row = m.contexts[i];
+                if (!Ready(MetadataMembership)) return E_ABORT;
+                row.equalsTop = MetadataIdentity(items[i], top);
+                row.equalsBase = MetadataIdentity(items[i], base);
+                if (row.equalsTop == Unknown || row.equalsBase == Unknown) return E_FAIL;
+                topCount += row.equalsTop == Yes; baseCount += row.equalsBase == Yes;
+                hr = items[i]->GetDocumentMgr(&owner);
+                if (FAILED(hr)) return hr;
+                row.belongsToFocusedDocument = MetadataIdentity(owner, document);
+                if (owner) { owner->Release(); owner = nullptr; }
+                if (row.belongsToFocusedDocument != Yes) return E_ABORT;
+                if (!Ready(MetadataStatus)) return E_ABORT;
+                TF_STATUS status{};
+                hr = items[i]->GetStatus(&status);
+                if (FAILED(hr)) return hr;
+                row.transitory = (status.dwStaticFlags & TF_SS_TRANSITORY) ? Yes : No;
+                if (row.equalsTop == Yes && row.transitory != Yes) return E_FAIL;
+                if (!Ready(MetadataView)) return E_ABORT;
+                hr = items[i]->GetActiveView(&view);
+                if (FAILED(hr)) return hr;
+                if (!view) return E_FAIL;
+                if (!Ready(MetadataWindow)) return E_ABORT;
+                HWND window = nullptr;
+                hr = view->GetWnd(&window);
+                view->Release(); view = nullptr;
+                if (FAILED(hr)) return hr;
+                row.windowMatchesOwnedEdit = !window ? Unknown : (window == state_->field ? Yes : No);
+            }
+            m.failureStage = MetadataEnumeration;
+            if (topCount != 1 || baseCount != 1 || (m.count == 1) != (m.topEqualsBase == Yes)) return E_FAIL;
+            if (!Ready(MetadataRecheck)) return E_ABORT;
+            hr = manager_->GetFocus(&afterDocument);
+            if (FAILED(hr)) return hr;
+            if (MetadataIdentity(afterDocument, document) != Yes) return E_ABORT;
+            if (!Ready(MetadataRecheck)) return E_ABORT;
+            hr = document->GetTop(&afterTop);
+            if (FAILED(hr)) return hr;
+            if (!Ready(MetadataRecheck)) return E_ABORT;
+            hr = document->GetBase(&afterBase);
+            if (FAILED(hr)) return hr;
+            if (MetadataIdentity(top, afterTop) != Yes || MetadataIdentity(base, afterBase) != Yes) return E_ABORT;
+            if (!Ready(MetadataGuard) || Guard() != None) return E_ABORT;
+            m.complete = 1; m.stable = Yes; m.failureStage = MetadataNone;
+            return S_OK;
+        };
+        HRESULT hr = E_UNEXPECTED;
+        try { hr = Capture(); } catch (...) { /* Fixed failure only, no exception text. */ }
+        if (FAILED(hr)) {
+            // No partial metadata can masquerade as a stable context snapshot.
+            StackMetadata unknown{};
+            unknown.attempted = 1; unknown.overflow = m.overflow;
+            unknown.failureStage = m.failureStage; unknown.hr = hr;
+            m = unknown;
+        }
+        if (view) view->Release();
+        if (owner) owner->Release();
+        for (auto* item : items) if (item) item->Release();
+        if (enumerator) enumerator->Release();
+        if (top) top->Release();
+        if (base) base->Release();
+        if (afterTop) afterTop->Release();
+        if (afterBase) afterBase->Release();
+        if (document) document->Release();
+        if (afterDocument) afterDocument->Release();
+        // Release can reenter or consume the deadline. Recheck after all metadata
+        // references are gone; Guard releases its own COM references internally.
+        // The final BasicGuard makes no COM calls and seals this sampled result.
+        if (Guard() != None || BasicGuard(state_) != None) {
+            m = {};
+            m.attempted = 1;
+            m.failureStage = MetadataGuard;
+            m.hr = E_ABORT;
+        }
+        state_->exchange->metadata = m;
+    }
     HRESULT Read(TfEditCookie cookie) {
         auto* e = state_->exchange;
         auto reason = Guard();
         if (reason != None) { Finish(state_, Rejected, reason); return S_OK; }
         TF_STATUS status{};
         if (FAILED(context_->GetStatus(&status))) { Finish(state_, Unsupported, NoContext); return S_OK; }
-        if (status.dwStaticFlags & TF_SS_TRANSITORY) { Finish(state_, Unsupported, Transitory); return S_OK; }
+        if (status.dwStaticFlags & TF_SS_TRANSITORY) {
+            CaptureStackMetadata();
+            Finish(state_, Unsupported, Transitory); return S_OK;
+        }
         ITfContextComposition* compositions = nullptr;
         IEnumITfCompositionView* enumerator = nullptr;
         ITfCompositionView* composition = nullptr;

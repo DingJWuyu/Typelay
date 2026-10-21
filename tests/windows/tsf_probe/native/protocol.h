@@ -6,9 +6,9 @@
 
 namespace probe {
 constexpr uint32_t kMagic = 0x46535450;
-constexpr uint32_t kVersion = 2;
+constexpr uint32_t kVersion = 3;
 constexpr size_t kMaxText = 4096;
-constexpr wchar_t kMessage[] = L"TypeLay.Isolated.TsfReadOnly.v2";
+constexpr wchar_t kMessage[] = L"TypeLay.Isolated.TsfReadOnly.v3";
 constexpr wchar_t kText[] = L"TypeLay isolated read-only probe\r\nThis document belongs to this test only: \u4e2d\u6587 \U0001F600.\r\n";
 constexpr uint32_t kTextLength = static_cast<uint32_t>(sizeof(kText) / sizeof(wchar_t) - 1);
 enum Status : LONG { Pending = 0, Observed = 1, Unsupported = 2, Rejected = 3, Fault = 4 };
@@ -18,6 +18,16 @@ enum Reason : LONG {
     ReadFailed, TooLong, Composing, ContentMismatch, CallbackException
 };
 enum Phase : LONG { OwnedEntry = 1, ValidationPassed = 2, SubmitEntered = 4, RequestCalled = 8, RequestReturned = 16 };
+enum Tri : LONG { Unknown = 0, No = 1, Yes = 2 };
+enum MetadataStage : LONG { MetadataNone = 0, MetadataGuard, MetadataFocus, MetadataTopBase,
+    MetadataEnumeration, MetadataMembership, MetadataStatus, MetadataView, MetadataWindow, MetadataRecheck };
+struct ContextMetadata {
+    LONG equalsTop, equalsBase, belongsToFocusedDocument, transitory, windowMatchesOwnedEdit;
+};
+struct StackMetadata {
+    LONG attempted, complete, stable, count, overflow, topEqualsBase, failureStage, hr;
+    ContextMetadata contexts[2];
+};
 struct Exchange {
     uint32_t magic, version, size, parentPid, targetPid, targetThread;
     uint64_t parentCreated, targetCreated, root, field, deadline;
@@ -27,6 +37,7 @@ struct Exchange {
     uint32_t textLength, selectionStart, selectionLength, compositionCount;
     uint64_t fingerprint;
     uint32_t exactSyntheticMatch;
+    StackMetadata metadata;
 };
 static_assert(sizeof(void*) == 8, "Only isolated x64 targets are supported");
 static_assert(std::is_standard_layout_v<Exchange>);

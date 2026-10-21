@@ -79,6 +79,19 @@ struct Diagnostics {
         std::printf("}");
     }
 };
+void PrintStackMetadata(const StackMetadata& m) noexcept {
+    std::printf(",\"contextMetadata\":{\"attempted\":%s,\"complete\":%s,\"stable\":%ld,"
+        "\"count\":%ld,\"overflow\":%s,\"topEqualsBase\":%ld,\"failureStage\":%ld,\"hresult\":%ld,\"contexts\":[",
+        m.attempted ? "true" : "false", m.complete ? "true" : "false", m.stable, m.count,
+        m.overflow ? "true" : "false", m.topEqualsBase, m.failureStage, m.hr);
+    for (unsigned i = 0; i < 2; ++i) {
+        const auto& row = m.contexts[i];
+        std::printf("%s{\"equalsTop\":%ld,\"equalsBase\":%ld,\"belongsToFocusedDocument\":%ld,"
+            "\"transitory\":%ld,\"windowMatchesOwnedEdit\":%ld}", i ? "," : "", row.equalsTop,
+            row.equalsBase, row.belongsToFocusedDocument, row.transitory, row.windowMatchesOwnedEdit);
+    }
+    std::printf("]}");
+}
 struct Owned {
     HANDLE job = nullptr, process = nullptr, thread = nullptr, targetThread = nullptr, mapping = nullptr;
     Exchange* exchange = nullptr;
@@ -155,7 +168,7 @@ int ProtocolSelfTest() {
     e.parentCreated = 1; e.targetCreated = 2; e.root = 3; e.field = 4; e.deadline = 5;
     Require(HeaderValid(e), "valid-header-refused");
     --e.size; Require(!HeaderValid(e), "truncated-header-accepted");
-    ++e.size; e.version = 1; Require(!HeaderValid(e), "old-version-accepted");
+    ++e.size; e.version = kVersion - 1; Require(!HeaderValid(e), "old-version-accepted");
     e.version = kVersion + 1; Require(!HeaderValid(e), "unknown-version-accepted");
     Require(kTextLength < kMaxText, "synthetic-input-too-long");
     Require(LifetimeReason(false, 9, 10, true, false) == None, "live-request-refused");
@@ -331,6 +344,7 @@ int wmain(int argc, wchar_t** argv) {
         result.textLength, result.selectionStart, result.selectionLength, result.compositionCount,
         result.exactSyntheticMatch ? "true" : "false", result.fingerprint);
     diagnostics.Print(result.phases, dispatched);
+    PrintStackMetadata(result.metadata);
     std::puts("}");
     return observed ? 0 : 2;
 }

@@ -30,7 +30,7 @@ def environment_observed(report, sha):
 
 def diagnostics_valid(detail):
     bounds = {
-        "protocolVersion": (2, 2),
+        "protocolVersion": (3, 3),
         "targetPhases": (0, 31),
         "signatureError": (0, 2**32 - 1),
         "signatureFlags": (0, 31),
@@ -105,6 +105,98 @@ def diagnostics_valid(detail):
     return (type(result) is int and 0 <= result < 2**64) if valid else result is None
 
 
+def context_metadata_valid(metadata):
+    keys = {
+        "attempted",
+        "complete",
+        "stable",
+        "count",
+        "overflow",
+        "topEqualsBase",
+        "failureStage",
+        "hresult",
+        "contexts",
+    }
+    row_keys = {
+        "equalsTop",
+        "equalsBase",
+        "belongsToFocusedDocument",
+        "transitory",
+        "windowMatchesOwnedEdit",
+    }
+    if type(metadata) is not dict or set(metadata) != keys:
+        return False
+    if any(type(metadata[key]) is not bool for key in ("attempted", "complete", "overflow")):
+        return False
+    limits = {
+        "stable": (0, 2),
+        "count": (0, 2),
+        "topEqualsBase": (0, 2),
+        "failureStage": (0, 9),
+        "hresult": (-(2**31), 2**31 - 1),
+    }
+    if any(
+        type(metadata[key]) is not int or not lo <= metadata[key] <= hi
+        for key, (lo, hi) in limits.items()
+    ):
+        return False
+    rows = metadata["contexts"]
+    if type(rows) is not list or len(rows) != 2:
+        return False
+    if any(
+        type(row) is not dict
+        or set(row) != row_keys
+        or any(type(value) is not int or value not in (0, 1, 2) for value in row.values())
+        for row in rows
+    ):
+        return False
+    if not metadata["complete"]:
+        if any(metadata[key] != 0 for key in ("stable", "count", "topEqualsBase")) or any(
+            any(row.values()) for row in rows
+        ):
+            return False
+        if not metadata["attempted"]:
+            return (
+                not metadata["overflow"]
+                and metadata["failureStage"] == 0
+                and metadata["hresult"] == 0
+            )
+        return (
+            metadata["failureStage"] != 0
+            and metadata["hresult"] < 0
+            and (not metadata["overflow"] or metadata["failureStage"] == 4)
+        )
+    if (
+        not metadata["attempted"]
+        or metadata["stable"] != 2
+        or metadata["overflow"]
+        or metadata["failureStage"] != 0
+        or metadata["hresult"] != 0
+        or metadata["count"] not in (1, 2)
+        or metadata["topEqualsBase"] != (2 if metadata["count"] == 1 else 1)
+    ):
+        return False
+    active = rows[: metadata["count"]]
+    if any(any(row.values()) for row in rows[metadata["count"] :]):
+        return False
+    if any(
+        row["equalsTop"] not in (1, 2)
+        or row["equalsBase"] not in (1, 2)
+        or row["belongsToFocusedDocument"] != 2
+        or row["transitory"] not in (1, 2)
+        for row in active
+    ):
+        return False
+    if (
+        sum(row["equalsTop"] == 2 for row in active) != 1
+        or sum(row["equalsBase"] == 2 for row in active) != 1
+    ):
+        return False
+    if metadata["count"] == 2 and any(row["equalsTop"] == row["equalsBase"] for row in active):
+        return False
+    return all(row["transitory"] == 2 for row in active if row["equalsTop"] == 2)
+
+
 def read_observed(report):
     return native_observed(report, read=True)
 
@@ -150,6 +242,7 @@ def native_observed(report, *, read):
         )
     extras = {
         "diagnostics",
+        "contextMetadata",
         "sessionDestroyed",
         "textLength",
         "selectionStart",
@@ -166,6 +259,11 @@ def native_observed(report, *, read):
     for key in ("sessionHr", "sessionDestroyed", "textLength", "selectionStart", "selectionLength"):
         if type(report[key]) is not int:
             return False
+    if (
+        not context_metadata_valid(report["contextMetadata"])
+        or report["contextMetadata"]["attempted"]
+    ):
+        return False  # Transitory metadata never upgrades a read/lifecycle to success.
     detail = report["diagnostics"]
     if not diagnostics_valid(detail):
         return False
