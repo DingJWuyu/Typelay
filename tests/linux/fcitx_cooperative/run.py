@@ -613,6 +613,8 @@ def main():
                     "--",
                     "xvfb-run",
                     "-a",
+                    "-s",
+                    "-screen 0 1280x960x24",
                     sys.executable,
                     str(Path(__file__).resolve()),
                     "--session",

@@ -14,6 +14,8 @@ from pathlib import Path
 
 # Fixed read-only queries. No text, window titles, input simulation or app launch.
 POWERSHELL = r"""
+$stage = 'bootstrap'
+try {
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
@@ -26,11 +28,13 @@ $result = [ordered]@{
     packageError = $null
     notepadProcesses = @()
 }
+$stage = 'languages'
 try {
     $result.languages = @(Get-WinUserLanguageList | Select-Object -First 32 | ForEach-Object {
         [ordered]@{ languageTag = $_.LanguageTag; inputMethodTips = @($_.InputMethodTips | Select-Object -First 32) }
     })
 } catch { $result.languageError = $_.Exception.GetType().FullName }
+$stage = 'notepad-file'
 if (Test-Path -LiteralPath $notepad -PathType Leaf) {
     $file = Get-Item -LiteralPath $notepad
     $result.notepadFile = [ordered]@{
@@ -38,11 +42,13 @@ if (Test-Path -LiteralPath $notepad -PathType Leaf) {
         sha256 = (Get-FileHash -LiteralPath $notepad -Algorithm SHA256).Hash
     }
 }
+$stage = 'packages'
 try {
     $result.notepadPackages = @(Get-AppxPackage -Name Microsoft.WindowsNotepad | Select-Object -First 8 | ForEach-Object {
         [ordered]@{ name = $_.Name; version = $_.Version.ToString(); architecture = $_.Architecture.ToString() }
     })
 } catch { $result.packageError = $_.Exception.GetType().FullName }
+$stage = 'existing-processes'
 $result.notepadProcesses = @(Get-Process -Name notepad -ErrorAction SilentlyContinue | Select-Object -First 16 | ForEach-Object {
     try {
         [ordered]@{ pid = $_.Id; startedUtc = $_.StartTime.ToUniversalTime().ToString('o');
@@ -52,8 +58,53 @@ $result.notepadProcesses = @(Get-Process -Name notepad -ErrorAction SilentlyCont
             sameSession = $null; error = $_.Exception.GetType().FullName }
     }
 })
+$stage = 'serialize'
 $result | ConvertTo-Json -Depth 8 -Compress
+} catch {
+    [ordered]@{ diagnostic = [ordered]@{
+        stage = $stage; category = 'powershell-query-failed'; hresult = [int]$_.Exception.HResult
+    } } | ConvertTo-Json -Depth 3 -Compress
+    exit 1
+}
 """
+
+
+QUERY_STAGES = frozenset(
+    ("bootstrap", "languages", "notepad-file", "packages", "existing-processes", "serialize")
+)
+
+
+def query_failure_diagnostic(stdout):
+    """Never copy raw process output; accept only a tiny, fixed failure envelope."""
+    if not isinstance(stdout, str) or len(stdout) > 2048:
+        return None
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate-diagnostic-key")
+            result[key] = value
+        return result
+
+    try:
+        envelope = json.loads(stdout.lstrip("\ufeff"), object_pairs_hook=unique_object)
+        if type(envelope) is not dict or set(envelope) != {"diagnostic"}:
+            return None
+        detail = envelope["diagnostic"]
+        if type(detail) is not dict or set(detail) != {"stage", "category", "hresult"}:
+            return None
+        if (
+            type(detail["stage"]) is not str
+            or detail["stage"] not in QUERY_STAGES
+            or detail["category"] != "powershell-query-failed"
+            or type(detail["hresult"]) is not int
+            or not -(2**31) <= detail["hresult"] < 2**31
+        ):
+            return None
+        return detail
+    except (ValueError, TypeError):
+        return None
 
 
 def admission(environment, system):
@@ -348,6 +399,7 @@ def main(argv=None):
             "blockers": admission(os.environ, platform.system()),
         }
         if not result["blockers"]:
+            failure_stage = "shell"
             try:
                 shell = (
                     Path(os.environ["WINDIR"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
@@ -361,7 +413,9 @@ def main(argv=None):
                     timeout=40,
                     check=True,
                 )
+                failure_stage = "decode"
                 metadata = json.loads(completed.stdout.lstrip("\ufeff"))
+                failure_stage = "native"
                 native = native_observation(
                     {
                         row["pid"]
@@ -369,6 +423,7 @@ def main(argv=None):
                         if row.get("sameSession") is True
                     }
                 )
+                failure_stage = "summary"
                 result.update(
                     metadata=metadata,
                     native=native,
@@ -382,6 +437,16 @@ def main(argv=None):
                     "TSF-observation-not-demonstrated",
                     "registration-requires-separate-review",
                 ]
+            except subprocess.CalledProcessError as error:
+                result["blockers"] = ["CalledProcessError"]
+                failure = {"stage": failure_stage}
+                if type(error.returncode) is int and -(2**31) <= error.returncode < 2**32:
+                    failure["exitCode"] = error.returncode
+                if failure_stage == "shell":
+                    detail = query_failure_diagnostic(error.stdout)
+                    if detail is not None:
+                        failure["queryDiagnostic"] = detail
+                result["failure"] = failure
             except (
                 OSError,
                 ValueError,
@@ -391,6 +456,7 @@ def main(argv=None):
                 subprocess.SubprocessError,
             ) as error:
                 result["blockers"] = [type(error).__name__]
+                result["failure"] = {"stage": failure_stage}
         json.dump(result, output, ensure_ascii=False, indent=2)
         output.write("\n")
     # 2 intentionally means no permission to proceed; collection is not acceptance.

@@ -313,6 +313,10 @@ def _gtk4_source_glossary(out, environment, deadline):
                         ).splitlines()
                     )
                     dimensions = int(geometry["WIDTH"]), int(geometry["HEIGHT"])
+                    display = tuple(
+                        int(value) for value in execute("xdotool", "getdisplaygeometry").split()
+                    )
+                    assert len(display) == 2 and all(value > 0 for value in display), display
 
                     def ready():
                         actual = state()
@@ -364,6 +368,7 @@ def _gtk4_source_glossary(out, environment, deadline):
                         "case": current_case,
                         "control": name,
                         "nestedSize": dimensions,
+                        "displaySize": display,
                         "nestedOrigin": [int(geometry[key]) for key in ("X", "Y")],
                         "beforeObservedAtMonoMs": actual.get("observedAtMs"),
                         "parent": {
@@ -378,6 +383,14 @@ def _gtk4_source_glossary(out, environment, deadline):
                     }
                     clicks.append(evidence)
                     click_path.write_text(json.dumps(clicks, indent=2) + "\n")
+                    # A window may extend past the X screen: XTest would silently
+                    # clamp an unreachable point, even when window bounds match GTK.
+                    assert all(
+                        0 <= origin + coordinate < limit
+                        for origin, coordinate, limit in zip(
+                            evidence["nestedOrigin"], pixel, display, strict=True
+                        )
+                    ), f"{name}: point outside actual X display: {evidence}"
                     # One move, then only a real crossing of this same control
                     # authorizes the one click. Never search offsets or move again.
                     execute("xdotool", "mousemove", "--window", window, *pixel)

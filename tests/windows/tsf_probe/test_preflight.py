@@ -234,6 +234,109 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual("unknown", result["notepadWindow"])
         self.assertEqual("unknown", result["chineseProfileConfiguration"])
 
+    @unittest.skipUnless(os.name == "nt", "requires existing Windows PowerShell 5.1 parser")
+    def test_fixed_query_parses_in_system_windows_powershell_without_execution(self):
+        shell = Path(os.environ["WINDIR"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+        parse_only = r"""
+$tokens = $null; $errors = $null
+[void][System.Management.Automation.Language.Parser]::ParseInput(
+    [Console]::In.ReadToEnd(), [ref]$tokens, [ref]$errors)
+if ($errors.Count -ne 0) { exit 1 }
+[Console]::WriteLine('fixed-query-parsed')
+"""
+        result = subprocess.run(
+            [str(shell), "-NoProfile", "-NonInteractive", "-Command", parse_only],
+            input=probe.POWERSHELL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(0, result.returncode, "fixed-script parse process failed")
+        self.assertEqual("fixed-query-parsed", result.stdout.strip())
+
+    def test_nonzero_query_stays_blocked_and_only_copies_strict_diagnostic(self):
+        detail = {
+            "stage": "notepad-file",
+            "category": "powershell-query-failed",
+            "hresult": -2147024891,
+        }
+        payloads = [
+            (json.dumps({"diagnostic": detail}), True),
+            ("private-sentinel", False),
+            (json.dumps({"diagnostic": detail | {"stage": "private-sentinel"}}), False),
+            (json.dumps({"diagnostic": detail | {"category": "private-sentinel"}}), False),
+            (json.dumps({"diagnostic": detail | {"message": "private-sentinel"}}), False),
+            (json.dumps({"diagnostic": detail | {"hresult": True}}), False),
+            (json.dumps({"diagnostic": detail | {"hresult": 2**31}}), False),
+            (json.dumps({"diagnostic": detail, "path": "private-sentinel"}), False),
+            ('{"diagnostic":{},"diagnostic":' + json.dumps(detail) + "}", False),
+            ("x" * 2049, False),
+        ]
+        for payload, valid in payloads:
+            with self.subTest(valid=valid), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "report.json"
+                error = subprocess.CalledProcessError(
+                    7, "fixed-query", output=payload, stderr="private-sentinel"
+                )
+                with (
+                    patch.object(probe, "admission", return_value=[]),
+                    patch.dict(os.environ, {"WINDIR": "C:/Windows"}),
+                    patch.object(
+                        probe,
+                        "subprocess",
+                        SimpleNamespace(
+                            run=Mock(side_effect=error),
+                            CalledProcessError=subprocess.CalledProcessError,
+                            SubprocessError=subprocess.SubprocessError,
+                        ),
+                    ),
+                    patch.object(probe, "native_observation") as native,
+                ):
+                    self.assertEqual(2, probe.main(["--output", str(path)]))
+                    native.assert_not_called()
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn("private-sentinel", text)
+                report = json.loads(text)
+                self.assertEqual("blocked", report["status"])
+                self.assertEqual(["CalledProcessError"], report["blockers"])
+                expected = {"stage": "shell", "exitCode": 7}
+                if valid:
+                    expected["queryDiagnostic"] = detail
+                self.assertEqual(expected, report["failure"])
+                self.assertFalse(report["productAcceptance"])
+                self.assertEqual(0, report["sourceTextReads"])
+
+    def test_successful_collection_still_returns_two_without_permission(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            with (
+                patch.object(probe, "admission", return_value=[]),
+                patch.dict(os.environ, {"WINDIR": "C:/Windows"}),
+                patch.object(
+                    probe,
+                    "subprocess",
+                    SimpleNamespace(
+                        run=Mock(
+                            return_value=subprocess.CompletedProcess(
+                                "fixed-query", 0, '{"notepadProcesses":[]}'
+                            )
+                        ),
+                        CalledProcessError=subprocess.CalledProcessError,
+                        SubprocessError=subprocess.SubprocessError,
+                    ),
+                ),
+                patch.object(probe, "native_observation", return_value={}),
+            ):
+                self.assertEqual(2, probe.main(["--output", str(path)]))
+            report = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual("observed-prerequisites-only", report["status"])
+            self.assertNotIn("failure", report)
+            self.assertEqual("unknown", report["capabilities"]["activeChineseImeInTarget"])
+            self.assertFalse(report["capabilities"]["registrationAllowed"])
+            self.assertFalse(report["capabilities"]["writebackAllowed"])
+
     def test_query_timeout_preserves_blocked_report(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "report.json"
@@ -248,6 +351,7 @@ class PreflightTests(unittest.TestCase):
                     SimpleNamespace(
                         run=Mock(side_effect=subprocess.TimeoutExpired("fixed-query", 40)),
                         SubprocessError=subprocess.SubprocessError,
+                        CalledProcessError=subprocess.CalledProcessError,
                     ),
                 ),
                 patch.object(probe, "native_observation") as native,
@@ -269,7 +373,11 @@ class PreflightTests(unittest.TestCase):
                 patch.object(
                     probe,
                     "subprocess",
-                    SimpleNamespace(run=Mock(), SubprocessError=subprocess.SubprocessError),
+                    SimpleNamespace(
+                        run=Mock(),
+                        SubprocessError=subprocess.SubprocessError,
+                        CalledProcessError=subprocess.CalledProcessError,
+                    ),
                 ) as query,
             ):
                 self.assert_stdlib_process_unaffected()

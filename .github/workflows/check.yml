@@ -557,6 +557,53 @@ jobs:
         id: fcitx
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: python tests/linux/fcitx_cooperative/run.py --core-version 5.1.22
+      - name: Collect bounded early GTK4 glossary failure evidence
+        if: ${{ !cancelled() && steps.fcitx.outcome == 'failure' }}
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import json, os, stat
+          from pathlib import Path
+          source = Path('artifacts/linux/fcitx-cooperative-5.1.22')
+          output = Path('artifacts/early-gtk4-glossary')
+          output.mkdir(parents=True, exist_ok=False)
+          names = ('gtk4-glossary-result.json', 'gtk4-glossary-state.json',
+                   'gtk4-glossary-clicks.json', 'gtk4-glossary-startup.json',
+                   'gtk4-glossary.log', 'gtk4-glossary-niri.log')
+          limit = 512 * 1024
+          evidence = []
+          for name in names:
+              item = {'name': name}
+              try:
+                  path = source / name
+                  info = path.lstat()
+                  item['bytes'] = info.st_size
+                  if not stat.S_ISREG(info.st_mode):
+                      item['omitted'] = 'not-regular-file'
+                  elif info.st_size > limit:
+                      item['omitted'] = 'size-limit'
+                  else:
+                      with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as stream:
+                          data = stream.read(limit + 1)
+                      if len(data) > limit:
+                          item['omitted'] = 'size-limit'
+                      else:
+                          (output / name).write_bytes(data)
+                          item['copiedBytes'] = len(data)
+              except OSError as error:
+                  item['omitted'] = type(error).__name__
+              evidence.append(item)
+          (output / 'manifest.json').write_text(json.dumps(evidence, indent=2) + '\n')
+          PY
+      - name: Preserve early GTK4 glossary failure evidence
+        if: ${{ !cancelled() && steps.fcitx.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: typelay-linux-gtk4-glossary-failure-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/early-gtk4-glossary/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Probe original Fcitx Qt input delivery boundaries
         id: qt
         if: ${{ !cancelled() && steps.fcitx.outcome == 'success' }}
