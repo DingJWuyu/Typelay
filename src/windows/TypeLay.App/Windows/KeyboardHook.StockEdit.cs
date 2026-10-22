@@ -83,10 +83,15 @@ internal sealed partial class KeyboardHook
             }
         } == proposed.Plan;
 
+    // Only the source-local executor supports modified acceptance. Ordinary
+    // asynchronous write dispatch remains restricted to unmodified bindings.
+    private bool StockSessionKeysReady => CanInterceptOwnedSessionKeys
+        && (UsesUnmodifiedSessionKeys || _stockExchange is not null && ShortcutsReady);
+
     private bool StockCandidateCurrent(StockCandidate candidate, long now) =>
         ReferenceEquals(Volatile.Read(ref _stockLatest), candidate)
         && Volatile.Read(ref _stockClosed) == 0 && !StockBudgetExceeded
-        && Ready && _sessionEnabled && UsesUnmodifiedSessionKeys
+        && StockSessionKeysReady
         && candidate.Lease.CommandGeneration == CommandGeneration
         && candidate.Lease.UserEpoch == UserEpoch && candidate.Lease.ForegroundEpoch == ForegroundEpoch
         && Volatile.Read(ref _lease) is { } currentLease
@@ -251,6 +256,7 @@ internal sealed partial class KeyboardHook
     internal void DisconnectStockAcceptance()
     {
         Interlocked.Exchange(ref _stockClosed, 1);
+        RetireSourceAcceptanceControl();
         Interlocked.Exchange(ref _stockDelivery, null)?.Delivered.TrySetResult();
         RevokeStockCandidate();
         Interlocked.Exchange(ref _stockActivation, null)?.Dispose();
@@ -308,7 +314,9 @@ internal sealed partial class KeyboardHook
         _stockPressClaimed = false;
         var activation = Volatile.Read(ref _stockActivation);
         var candidate = Volatile.Read(ref _stockInstalled);
-        if (StockBudgetExceeded || data.Key != Volatile.Read(ref _sessionKeys).Accept || !UsesUnmodifiedSessionKeys
+        if (StockBudgetExceeded || !StockSessionKeysReady
+            || data.Key != Volatile.Read(ref _sessionKeys).Accept
+            || CurrentModifiers != Volatile.Read(ref _sessionKeys).AcceptModifiers
             || activation is null || activation.Permit != permit
             || _stockExchange is not null && (candidate is null || !StockCandidateCurrent(candidate, now)))
             return true;
@@ -322,6 +330,8 @@ internal sealed partial class KeyboardHook
             if (result.ExceededBudget)
                 Interlocked.Exchange(ref _stockBudgetExceeded, 1);
             consume = _stockPressClaimed = result.Claimed;
+            if (consume)
+                RetireSourceAcceptanceControl();
             if (candidate is not null && result.Claimed)
                 Volatile.Write(ref candidate.Claimed, 1);
             if (consume && _stockExchange is not null)

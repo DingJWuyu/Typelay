@@ -36,11 +36,9 @@ class QualityExitSummaryTests(unittest.TestCase):
     def test_completed_fixed_diagnostics_reconciles_40_responses_after_actual_inside_exit(self):
         self.check_exit({"alternative": 32, "ordinary": 8}, diagnostics=True)
 
-    def test_completed_default_and_comparison_counts_remain_53_and_69(self):
+    def test_completed_default_and_ordinary_comparison_counts_are_53_and_16(self):
         self.check_exit({"alternative": 32, "styled": 16, "glossary": 5})
-        self.check_exit(
-            {"alternative": 32, "styled": 16, "styled-b": 16, "glossary": 5}, comparison=True
-        )
+        self.check_exit({"ordinary": 8, "ordinary-b": 8}, comparison=True)
 
     def test_fixed_diagnostics_rejects_missing_runner_wrong_count_and_unknown_exit(self):
         for defect in ("missing-ordinary", "short-ordinary", "wrong-total", "unknown-exit"):
@@ -78,7 +76,7 @@ class QualityExitSummaryTests(unittest.TestCase):
                         "alternative": ["translate", "translate-alternative"] * 16,
                         "ordinary": ["translate"] * 8,
                         "styled": ["translate-styled-v1"] * 16,
-                        "styled-b": ["translate-styled-v1"] * 16,
+                        "ordinary-b": ["translate"] * 8,
                         "glossary": ["translate-glossary-v1"] * 5,
                         "styled_glossary": [
                             "translate",
@@ -319,7 +317,7 @@ class CaptureHandoffTests(unittest.TestCase):
         self.assertEqual(capture.report["maximumTranslationRequests"], 40)
         self.assertEqual(Capture(self.output, 0).report["maximumTranslationRequests"], 53)
         self.assertEqual(
-            Capture(self.output, 0, comparison=True).report["maximumTranslationRequests"], 69
+            Capture(self.output, 0, comparison=True).report["maximumTranslationRequests"], 16
         )
         with self.assertRaisesRegex(ValueError, "exclusive"):
             Capture(self.output, 0, comparison=True, diagnostics=True)
@@ -494,14 +492,14 @@ class CaptureHandoffTests(unittest.TestCase):
         capture = Capture(self.output, time.monotonic() + 1000, comparison=True)
         with self.assertRaisesRegex(RuntimeError, "incomplete"):
             capture.run_comparison(generation, self.output / "absent-worker")
-        report = json.loads((self.output / "styled-quality.json").read_text())
+        report = json.loads((self.output / "ordinary-quality.json").read_text())
         self.assertEqual(report["workerStarts"], 0)
         self.assertEqual(report["decodeComparison"]["variant"], "A")
         self.assertFalse(report["decodeComparison"]["recipeVerified"])
-        self.assertEqual(capture.report["maximumTranslationRequests"], 69)
-        self.assertEqual([c["runner"] for c in capture.report["collections"]], ["styled"])
-        self.assertFalse((self.output / "styled-b-quality.json").exists())
-        self.assertFalse((self.output / "hy-decode").exists())
+        self.assertEqual(capture.report["maximumTranslationRequests"], 16)
+        self.assertEqual([c["runner"] for c in capture.report["collections"]], ["ordinary"])
+        self.assertFalse((self.output / "ordinary-b-quality.json").exists())
+        self.assertFalse((self.output / "ordinary-hy-decode").exists())
         with self.assertRaisesRegex(RuntimeError, "retried"):
             capture.run_comparison(generation, self.output / "absent-worker")
 
@@ -811,7 +809,7 @@ class DecodeComparisonProcessTests(unittest.TestCase):
         exhaust_a=False,
     ):
         # Controlled collector reports test the orchestration contract, NOT inference.
-        import styled_quality
+        import ordinary_quality
         from support.translation_quality_capture import inspect_report
 
         with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as directory:
@@ -825,19 +823,18 @@ class DecodeComparisonProcessTests(unittest.TestCase):
 
             def collector(name, arguments, *, comparison):
                 deadlines.append(comparison["work_deadline"])
-                report = styled_quality.prepare_report(include_holdout=True)
+                report = ordinary_quality.prepare_report()
                 report.update(
                     status="completed",
                     quality="not-reviewed",
                     workerStarts=1,
                     workerExitCode=0,
                     workerExitConfirmed=not (
-                        (name == "styled" and unknown_a) or (name == "styled-b" and unknown_b)
+                        (name == "ordinary" and unknown_a) or (name == "ordinary-b" and unknown_b)
                     ),
                 )
                 report["requests"] = [{"op": "hello"}] + [
-                    {"op": "translate-styled-v1"}
-                    for _ in range(15 if name == "styled-b" and short_b else 16)
+                    {"op": "translate"} for _ in range(7 if name == "ordinary-b" and short_b else 8)
                 ]
                 report["installation"] = {
                     "models": str(generation / "models"),
@@ -845,9 +842,9 @@ class DecodeComparisonProcessTests(unittest.TestCase):
                     "inventorySha256": hashlib.sha256(inventory.read_bytes()).hexdigest(),
                 }
                 (output / f"{name}-quality.json").write_text(json.dumps(report))
-                if change_inventory and name == "styled-b":
+                if change_inventory and name == "ordinary-b":
                     inventory.write_text('{"schema":3,"changed":true}')
-                if exhaust_a and name == "styled":
+                if exhaust_a and name == "ordinary":
                     clock[0] += 601
                 return 0
 
@@ -869,17 +866,17 @@ class DecodeComparisonProcessTests(unittest.TestCase):
                     self.assertTrue(capture.blocked)
                 else:
                     capture.run_comparison(generation, output / "actual-shipped-worker")
-                    self.assertEqual(capture.report["actualTranslationRequests"], 32)
+                    self.assertEqual(capture.report["actualTranslationRequests"], 16)
                     self.assertTrue(capture.report["workerExitConfirmed"])
-                    for name in ("styled", "styled-b"):
+                    for name in ("ordinary", "ordinary-b"):
                         raw, summary = inspect_report(name, output / f"{name}-quality.json")
-                        self.assertEqual(summary["actualTranslationRequests"], 16)
+                        self.assertEqual(summary["actualTranslationRequests"], 8)
                         self.assertTrue(raw["workerExitConfirmed"])
                         self.assertEqual(raw["workerExitCode"], 0)
                 self.assertEqual(len(deadlines), 1 if unknown_a or exhaust_a else 2)
                 self.assertEqual(len(set(deadlines)), 1)
                 self.assertEqual(
-                    (output / "styled-b-quality.json").exists(), not (unknown_a or exhaust_a)
+                    (output / "ordinary-b-quality.json").exists(), not (unknown_a or exhaust_a)
                 )
 
 
@@ -995,13 +992,22 @@ class CombinationOnlyTests(unittest.TestCase):
             ],
         )
         for combination, capture, expected in (
-            (True, types.SimpleNamespace(diagnostics=False), [("styled_glossary",)]),
+            (
+                True,
+                types.SimpleNamespace(diagnostics=False, comparison=False),
+                [("styled_glossary",)],
+            ),
             (
                 False,
-                types.SimpleNamespace(diagnostics=False),
+                types.SimpleNamespace(diagnostics=False, comparison=False),
                 [("alternative",), ("styled", "glossary")],
             ),
-            (False, types.SimpleNamespace(diagnostics=True), [("alternative",), ("ordinary",)]),
+            (
+                False,
+                types.SimpleNamespace(diagnostics=True, comparison=False),
+                [("alternative",), ("ordinary",)],
+            ),
+            (False, types.SimpleNamespace(diagnostics=False, comparison=True), [("ordinary",)]),
             (False, None, []),
         ):
             with self.subTest(combination=combination, expected=expected):
@@ -1033,7 +1039,10 @@ class CombinationOnlyTests(unittest.TestCase):
                 self.assertEqual(events.count("下载并使用…"), 1)
                 self.assertEqual(events.count("使用此模型"), 3)
                 self.assertEqual(events.count("移除…"), 1)
-                self.assertEqual(events.count("preview"), 0 if combination else 1)
+                self.assertEqual(
+                    events.count("preview"),
+                    0 if combination or (capture is not None and capture.comparison) else 1,
+                )
                 if combination:
                     self.assertEqual(requests, ["styled_glossary"])
                     self.assertEqual(collections(combination=True), {"styled_glossary": 8})
@@ -1073,7 +1082,7 @@ class CombinationOnlyTests(unittest.TestCase):
                     lambda: None,
                     lambda: next(inventories),
                     "fixed",
-                    capture=types.SimpleNamespace(diagnostics=False),
+                    capture=types.SimpleNamespace(diagnostics=False, comparison=False),
                     combination=True,
                 )
             self.assertNotIn("移除…", events)
@@ -1106,7 +1115,7 @@ class CombinationOnlyTests(unittest.TestCase):
                 lambda: None,
                 lambda: original,
                 "fixed",
-                capture=types.SimpleNamespace(diagnostics=False),
+                capture=types.SimpleNamespace(diagnostics=False, comparison=False),
                 combination=True,
             )
         self.assertEqual(events.count("collect"), 1)

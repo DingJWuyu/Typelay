@@ -35,6 +35,12 @@ public sealed record SessionShortcutAcknowledgement(TargetId Target, Guid Genera
 public sealed record InputLease(InputSnapshot Source, long UserEpoch, long ForegroundEpoch, bool EscapeAllowed,
     Guid CommandGeneration = default, long SessionRevision = 0,
     Guid? PracticeRunId = null, Guid? PracticeConnectionId = null);
+// Attribution of one configured acceptance Ctrl-down, not an input snapshot or
+// write permission. The monitor exposes it only while that exact transition is
+// still current; consumers must obtain a new real source observation afterward.
+public sealed record AcceptanceModifierTransition(InputLease Before, long SourceUserEpoch,
+    long ContentEpoch, long WindowEpoch, SessionShortcutBindings Bindings, long TriggeredAtMs);
+
 public sealed record ShortcutLease(InputSnapshot Source, long ContentEpoch, long ForegroundEpoch,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Application = null);
 
@@ -85,6 +91,8 @@ public interface IInputService : IDisposable
 /// <summary>Input authority, not a requirement to install a global keyboard hook.</summary>
 public interface IInputMonitor : IDisposable
 {
+    AcceptanceModifierTransition? AcceptanceModifierTransition => null;
+
     bool Ready
     {
         get;
@@ -144,4 +152,7 @@ public interface IInputMonitor : IDisposable
     void Publish(InputLease lease, AcceptancePermit? permit);
     void PublishShortcut(ShortcutLease lease);
     void Revoke();
+    // Preserve only this exact still-current modifier attribution while retiring
+    // all input permissions. Adapters without that lifecycle use ordinary revoke.
+    void RevokeAcceptanceModifier(AcceptanceModifierTransition transition) => Revoke();
 }

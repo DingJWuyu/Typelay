@@ -34,11 +34,7 @@ def collections(comparison=False, diagnostics=False, combination=False):
         return {"styled_glossary": 8}
     if diagnostics:
         return {"alternative": 32, "ordinary": 8}
-    return (
-        {"alternative": 32, "styled": 16, "styled-b": 16, "glossary": 5}
-        if comparison
-        else COLLECTIONS
-    )
+    return {"ordinary": 8, "ordinary-b": 8} if comparison else COLLECTIONS
 
 
 def process_status(pid):
@@ -103,7 +99,7 @@ def invoke_runner(name, arguments, *, comparison=None, shipped_worker=None):
         for key in saved_modules:
             del sys.modules[key]
         sys.path.insert(0, str(RUNNERS))
-        source_name = "styled" if name == "styled-b" else name
+        source_name = "ordinary" if name == "ordinary-b" else name
         sys.argv = [str(RUNNERS / f"{source_name}_quality.py"), *arguments]
         try:
             if shipped_worker is not None:
@@ -162,7 +158,7 @@ def inspect_report(name, output):
         "status": report.get("status"),
         "quality": report.get("quality", "not-run"),
         "maximumTranslationRequests": collections(
-            name == "styled-b", name == "ordinary", name == "styled_glossary"
+            name == "ordinary-b", name == "ordinary", name == "styled_glossary"
         )[name],
         "actualTranslationRequests": count,
         "actualHelloRequests": operations.count("hello"),
@@ -202,7 +198,7 @@ class Capture:
         if not self.comparison:
             raise RuntimeError("comparison was not explicitly selected")
         if self.blocked or any(
-            item["runner"] in ("styled", "styled-b") for item in self.report["collections"]
+            item["runner"] in ("ordinary", "ordinary-b") for item in self.report["collections"]
         ):
             raise RuntimeError("failed quality collection cannot be retried")
         if self.work_deadline - time.monotonic() < RUNNER_SECONDS:
@@ -214,25 +210,25 @@ class Capture:
         options = {
             "variant": "A",
             "work_deadline": deadline,
-            "experiment": self.output / "hy-decode",
+            "experiment": self.output / "ordinary-hy-decode",
         }
-        self.run("styled", generation, worker, comparison=options)
+        self.run("ordinary", generation, worker, comparison=options)
         if time.monotonic() >= deadline:
             self.blocked = True
-            raise TimeoutError("shared styled deadline exhausted before B")
+            raise TimeoutError("shared ordinary deadline exhausted before B")
         options["variant"] = "B"
         self.run(
-            "styled-b",
+            "ordinary-b",
             generation,
-            self.output / "hy-decode/worker/run_worker.py",
+            self.output / "ordinary-hy-decode/worker/run_worker.py",
             comparison=options,
         )
         if time.monotonic() - started > RUNNER_SECONDS:
             self.blocked = True
-            raise TimeoutError("shared styled comparison budget exceeded")
+            raise TimeoutError("shared ordinary comparison budget exceeded")
 
     def run(self, name, generation, worker, *, comparison=None):
-        if name not in self.collections or (name == "styled-b" and comparison is None):
+        if name not in self.collections or (name == "ordinary-b" and comparison is None):
             raise ValueError("collection not selected for this capture")
         if self.blocked:
             raise RuntimeError("failed quality collection cannot be retried or continued")
@@ -251,7 +247,7 @@ class Capture:
             arguments.append("--capture-decoding-boundary")
         if name != "alternative":
             arguments.extend(["--worker", str(worker)])
-        if name in ("styled", "styled-b"):
+        if name == "styled":
             arguments.append("--include-holdout")
         entry = {
             "runner": name,
@@ -304,7 +300,7 @@ class Capture:
             )
         if report is None:
             raise RuntimeError("quality report missing or unreadable; preserve all data")
-        source_name = "styled" if name in ("styled-b", "ordinary") else name
+        source_name = "styled" if name in ("ordinary-b", "ordinary") else name
         inputs = (RUNNERS / f"{source_name}_quality_inputs.json").read_bytes()
         expected = json.loads(inputs)["samples"]
         if name == "styled_glossary":
@@ -333,7 +329,7 @@ class Capture:
                     )
             expected = paired
         holdout_matches = True
-        if name in ("styled", "styled-b", "ordinary"):
+        if name in ("styled", "ordinary-b", "ordinary"):
             holdout = (RUNNERS / "styled_quality_holdout_inputs.json").read_bytes()
             expected.extend(json.loads(holdout)["samples"])
             holdout_matches = (

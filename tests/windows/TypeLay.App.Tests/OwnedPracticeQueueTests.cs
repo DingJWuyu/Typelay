@@ -921,70 +921,81 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
     {
         await using var scene = new QueueScene(interruption != "attempt");
         await scene.Start(true);
-        await scene.Install();
-        long installedAtMs = WindowsInterruptClock.NowMs;
-        long? inputStartedAtMs = null, inputReturnedAtMs = null, interruptionObservedAtMs = null, renewalCheckedAtMs = null;
-        bool canRenewAfterInterruption = true;
-        scene.PublishForRenewal();
-        long originalContentEpoch = scene.ContentEpoch;
-        Assert.True(scene.CanRenew(originalContentEpoch));
-        if (interruption == "expired")
+        // Prepare cross-process geometry and cursor positioning before the
+        // original lease. Restore only after the interruption has been checked.
+        Native.Point? originalPointer = interruption == "content" ? scene.PrepareSourceClick() : null;
+        try
         {
-            await scene.Wait(() => WindowsInterruptClock.NowMs > scene.Plan!.Permit.ExpiresAtMs);
-            Assert.False(scene.CanRenew(originalContentEpoch));
-        }
-        else
-        {
-            if (interruption == "content")
+            await scene.Install();
+            long installedAtMs = WindowsInterruptClock.NowMs;
+            long? inputStartedAtMs = null, inputReturnedAtMs = null, interruptionObservedAtMs = null, renewalCheckedAtMs = null;
+            bool canRenewAfterInterruption = true;
+            scene.PublishForRenewal();
+            long originalContentEpoch = scene.ContentEpoch;
+            Assert.True(scene.CanRenew(originalContentEpoch));
+            if (interruption == "expired")
             {
-                inputStartedAtMs = WindowsInterruptClock.NowMs;
-                scene.ClickSource();
-                inputReturnedAtMs = WindowsInterruptClock.NowMs;
-                await scene.Wait(() =>
-                {
-                    if (scene.ContentEpoch <= originalContentEpoch)
-                        return false;
-                    ObserveRenewalRefusal();
-                    return true;
-                });
+                await scene.Wait(() => WindowsInterruptClock.NowMs > scene.Plan!.Permit.ExpiresAtMs);
+                Assert.False(scene.CanRenew(originalContentEpoch));
             }
             else
             {
-                // A default-denied injected release records the old plan's
-                // attempt without a down edge changing ContentEpoch.
-                inputStartedAtMs = WindowsInterruptClock.NowMs;
-                scene.Key(9, false);
-                inputReturnedAtMs = WindowsInterruptClock.NowMs;
-                await scene.Wait(() =>
+                if (interruption == "content")
                 {
-                    if (!scene.PlanAttempted)
-                        return false;
-                    ObserveRenewalRefusal();
-                    return true;
-                });
+                    inputStartedAtMs = WindowsInterruptClock.NowMs;
+                    scene.ClickSource();
+                    inputReturnedAtMs = WindowsInterruptClock.NowMs;
+                    await scene.Wait(() =>
+                    {
+                        if (scene.ContentEpoch <= originalContentEpoch)
+                            return false;
+                        ObserveRenewalRefusal();
+                        return true;
+                    });
+                }
+                else
+                {
+                    // A default-denied injected release records the old plan's
+                    // attempt without a down edge changing ContentEpoch.
+                    inputStartedAtMs = WindowsInterruptClock.NowMs;
+                    scene.Key(9, false);
+                    inputReturnedAtMs = WindowsInterruptClock.NowMs;
+                    await scene.Wait(() =>
+                    {
+                        if (!scene.PlanAttempted)
+                            return false;
+                        ObserveRenewalRefusal();
+                        return true;
+                    });
+                }
+                bool withinOriginalDeadline = renewalCheckedAtMs <= scene.Plan!.Permit.ExpiresAtMs;
+                Assert.True(withinOriginalDeadline, withinOriginalDeadline ? null :
+                    "Renewal refusal must be checked before the original authorization expires. "
+                    + $"kind={interruption}; observed={scene.Plan.Permit.ObservedAtMs}; installed={installedAtMs}; "
+                    + $"inputStarted={inputStartedAtMs}; inputReturned={inputReturnedAtMs}; "
+                    + $"interruptionObserved={interruptionObservedAtMs}; "
+                    + $"expires={scene.Plan.Permit.ExpiresAtMs}; checked={renewalCheckedAtMs}");
+                Assert.False(canRenewAfterInterruption);
+                // Native focus observation is still required, but its cross-process
+                // latency must not move the already-completed renewal check.
+                if (interruption == "content")
+                    Assert.Equal((scene.Root, scene.Field), N.Focused());
+                else
+                    Assert.Equal(originalContentEpoch, scene.ContentEpoch);
             }
-            bool withinOriginalDeadline = renewalCheckedAtMs <= scene.Plan!.Permit.ExpiresAtMs;
-            Assert.True(withinOriginalDeadline, withinOriginalDeadline ? null :
-                "Renewal refusal must be checked before the original authorization expires. "
-                + $"kind={interruption}; observed={scene.Plan.Permit.ObservedAtMs}; installed={installedAtMs}; "
-                + $"inputStarted={inputStartedAtMs}; inputReturned={inputReturnedAtMs}; "
-                + $"interruptionObserved={interruptionObservedAtMs}; "
-                + $"expires={scene.Plan.Permit.ExpiresAtMs}; checked={renewalCheckedAtMs}");
-            Assert.False(canRenewAfterInterruption);
-            // Native focus observation is still required, but its cross-process
-            // latency must not move the already-completed renewal check.
-            if (interruption == "content")
-                Assert.Equal((scene.Root, scene.Field), N.Focused());
-            else
-                Assert.Equal(originalContentEpoch, scene.ContentEpoch);
+            void ObserveRenewalRefusal()
+            {
+                // One check at the first observed interruption, using the hook's
+                // real clock. Never wait for false or retry an expired observation.
+                interruptionObservedAtMs = WindowsInterruptClock.NowMs;
+                canRenewAfterInterruption = scene.CanRenew(originalContentEpoch);
+                renewalCheckedAtMs = WindowsInterruptClock.NowMs;
+            }
         }
-        void ObserveRenewalRefusal()
+        finally
         {
-            // One check at the first observed interruption, using the hook's
-            // real clock. Never wait for false or retry an expired observation.
-            interruptionObservedAtMs = WindowsInterruptClock.NowMs;
-            canRenewAfterInterruption = scene.CanRenew(originalContentEpoch);
-            renewalCheckedAtMs = WindowsInterruptClock.NowMs;
+            if (originalPointer is { } point)
+                Assert.True(SetCursorPos(point.X, point.Y));
         }
     });
 
@@ -1985,23 +1996,20 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             else
                 _pressed.Remove(key);
         }
-        public void ClickSource()
+        public Native.Point PrepareSourceClick()
         {
             Assert.True(N.GetWindowRect(Field, out var bounds));
             Assert.True(Native.GetCursorPos(out var previous));
             Assert.False(Native.GetAsyncKeyState(1) < 0);
-            try
-            {
-                Assert.True(SetCursorPos(bounds.Left + 12, bounds.Top + 12));
-                uint inserted = SendInput(2, [new KeyInput { MouseFlags = 2 }, new KeyInput { MouseFlags = 4 }], Marshal.SizeOf<KeyInput>());
-                if (inserted == 1)
-                    Assert.Equal(1u, SendInput(1, [new KeyInput { MouseFlags = 4 }], Marshal.SizeOf<KeyInput>()));
-                Assert.Equal(2u, inserted);
-            }
-            finally
-            {
-                Assert.True(SetCursorPos(previous.X, previous.Y));
-            }
+            Assert.True(SetCursorPos(bounds.Left + 12, bounds.Top + 12));
+            return previous;
+        }
+        public void ClickSource()
+        {
+            uint inserted = SendInput(2, [new KeyInput { MouseFlags = 2 }, new KeyInput { MouseFlags = 4 }], Marshal.SizeOf<KeyInput>());
+            if (inserted == 1)
+                Assert.Equal(1u, SendInput(1, [new KeyInput { MouseFlags = 4 }], Marshal.SizeOf<KeyInput>()));
+            Assert.Equal(2u, inserted);
         }
         private async Task Pump()
         {

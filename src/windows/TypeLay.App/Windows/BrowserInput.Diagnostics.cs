@@ -4,20 +4,22 @@ using TypeLay.Runtime;
 using TypeLay.Windows;
 namespace TypeLay.App;
 
-// Keep existing command/receipt evidence available after noisy observations,
+// Keep owner handoff and command/receipt evidence available after noisy observations,
 // while retaining the original process-wide maximum of 256 trace entries.
 internal sealed class BrowserTraceBudget
 {
-    private int _general, _commands;
-    public bool GeneralAvailable => Volatile.Read(ref _general) < 224;
+    private int _general, _owners, _commands;
+    public bool GeneralAvailable => Volatile.Read(ref _general) < 160;
+    public bool OwnersAvailable => Volatile.Read(ref _owners) < 64;
     public bool CommandsAvailable => Volatile.Read(ref _commands) < 32;
     public bool TryTake(string operation)
     {
         bool command = operation is "browser-command-approved" or "browser-command-path"
             or "browser-direct-Verified" or "browser-direct-RejectedBeforeMutation" or "browser-direct-OutcomeUnknown"
             or "browser-accept-Verified" or "browser-accept-RejectedBeforeMutation" or "browser-accept-OutcomeUnknown";
-        ref int count = ref (command ? ref _commands : ref _general);
-        int maximum = command ? 32 : 224;
+        bool owner = operation is "browser-owner" or "browser-page-owner" or "browser-tray";
+        ref int count = ref (command ? ref _commands : ref (owner ? ref _owners : ref _general));
+        int maximum = command ? 32 : owner ? 64 : 160;
         return Volatile.Read(ref count) < maximum && Interlocked.Increment(ref count) <= maximum;
     }
 }
@@ -136,6 +138,7 @@ internal sealed partial class BrowserInput
     private readonly record struct ObservationTraceKey(ObservationReason Reason, bool? Editor,
         bool? TextChanged, bool? FocusChanged, PageReason Capture, PageReason Clock);
     private Dictionary<ObservationStage, ObservationTraceKey>? _lastObservationTrace;
+    private bool OwnerTraceEnabled => !string.IsNullOrWhiteSpace(_tracePath) && TraceBudget.OwnersAvailable;
     private bool TraceEnabled => !string.IsNullOrWhiteSpace(_tracePath) && TraceBudget.GeneralAvailable;
     private InputCapture CaptureRejected(ObservationReason reason, BrowserReply? reply = null,
         bool? editor = null, long? observationAgeMs = null)
@@ -158,7 +161,7 @@ internal sealed partial class BrowserInput
     private void TraceObservation(ObservationStage stage, ObservationReason reason, JsonElement value = default,
         bool? editor = null, bool? textChanged = null, bool? focusChanged = null, long? observationAgeMs = null)
     {
-        if (stage == ObservationStage.None || !TraceEnabled)
+        if (stage == ObservationStage.None || !(TraceEnabled || OwnerTraceEnabled))
             return;
         try
         {
@@ -169,6 +172,8 @@ internal sealed partial class BrowserInput
             var capture = DiagnosticReason(String(diagnostics, "lastCaptureReason"));
             var clock = DiagnosticReason(String(diagnostics, "lastClockReason"));
             TracePageOwner(diagnostics);
+            if (!TraceEnabled)
+                return;
             var key = new ObservationTraceKey(reason, editor, textChanged, focusChanged, capture, clock);
             _lastObservationTrace ??= new();
             bool duplicate = _lastObservationTrace.TryGetValue(stage, out var previous) && previous == key;
@@ -254,7 +259,7 @@ internal sealed partial class BrowserInput
     private void TraceOwner(OwnerStage stage, OwnerReason reason, CommandOwner? owner = null, long? now = null,
         bool? released = null, JsonElement page = default)
     {
-        if (!TraceEnabled)
+        if (!OwnerTraceEnabled)
             return;
         try
         {
@@ -294,7 +299,7 @@ internal sealed partial class BrowserInput
     }
     private void TracePageOwner(JsonElement diagnostics)
     {
-        if (!TraceEnabled)
+        if (!OwnerTraceEnabled)
             return;
         try
         {
@@ -327,7 +332,7 @@ internal sealed partial class BrowserInput
     private static string? _lastTrayTrace;
     internal static void TraceTrayStatus(string? path, string assignedText)
     {
-        if (string.IsNullOrWhiteSpace(path) || !TraceBudget.GeneralAvailable)
+        if (string.IsNullOrWhiteSpace(path) || !TraceBudget.OwnersAvailable)
             return;
         try
         {

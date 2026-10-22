@@ -9,6 +9,8 @@ No model download, prompt edit, fallback, retry, or production behavior change.
 
 from __future__ import annotations
 
+import sys
+
 import styled_quality
 
 
@@ -40,4 +42,9 @@ async def collect(args, report):
 
 
 if __name__ == "__main__":
+    if "--decode-comparison" in sys.argv:
+        import hy_decode_comparison
+
+        sys.argv.remove("--decode-comparison")
+        raise SystemExit(hy_decode_comparison.ordinary_main())
     raise SystemExit(styled_quality.main(prepare_report, collect, __doc__))

@@ -21,7 +21,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
     private readonly Native.HookProc _callback, _mouseCallback;
     private readonly Native.WinEventProc _focusCallback;
     // Decode at the publication boundary, never allocate or parse an identity inside a hook callback.
-    private sealed record HookLease(InputLease Observation, nint RootHwnd);
+    private sealed record HookLease(InputLease Observation, nint RootHwnd, bool NativeStock);
     private sealed record HotkeyLease(ShortcutLease Observation, nint RootHwnd, Guid DiagnosticGeneration);
     private HookLease? _lease;
     private HotkeyLease? _shortcutLease;
@@ -50,6 +50,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
     private volatile bool _ready;
     public bool Ready => _ready;
     public bool CanInterceptAcceptance => CanInterceptOwnedSessionKeys && (UsesUnmodifiedSessionKeys
+        || _stockExchange is not null && ShortcutsReady
         || Volatile.Read(ref _ownedChannel) is { } channel && OwnedFocus(channel.Descriptor));
     internal bool CanInterceptOwnedSessionKeys => Ready && _sessionEnabled && Volatile.Read(ref _sessionKeys).Supported;
     internal bool UsesUnmodifiedSessionKeys => Volatile.Read(ref _sessionKeys) is
@@ -109,6 +110,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
         OwnedPracticeAcceptanceProtocol.TryParseKey(bindings.Exit, out uint exit, out var exitModifiers);
         Interlocked.Exchange(ref _sessionKeys, new(supported ? accept : 0, supported ? exit : 0,
             bindings, acceptModifiers, exitModifiers));
+        RetireSourceAcceptanceControl();
         // Outstanding consumed key releases remain owned by their original press.
     }
 
@@ -160,6 +162,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 if (ev == 3)
                     Interlocked.Increment(ref _windowEpoch);
                 Interlocked.Increment(ref _foregroundEpoch);
+                RetireSourceAcceptanceControl();
                 RevokeStockCandidate();
                 _gate.Revoke();
                 _ownedGate.Revoke();
@@ -190,7 +193,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 || lease.CommandGeneration != original.Observation.CommandGeneration
                 || lease.SessionRevision != original.Observation.SessionRevision || !lease.EscapeAllowed))
             Interlocked.Exchange(ref chord.Invalid, 1);
-        Interlocked.Exchange(ref _lease, new(lease, (nint)target.RootHwnd));
+        Interlocked.Exchange(ref _lease, new(lease, (nint)target.RootHwnd, target.Provider == "win32-edit-transaction-v2"));
         if (_ownedPracticeTarget?.Invoke(lease.Source.Target) == true)
         {
             RevokeStockCandidate();
@@ -238,6 +241,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
         InvalidateOrdinaryChord();
         var configuration = new ShortcutConfiguration(Guid.NewGuid(), shortcuts);
         Interlocked.Exchange(ref _shortcuts, configuration);
+        RetireSourceAcceptanceControl();
         var old = Interlocked.Exchange(ref _shortcutLease, null);
         QueueShortcutTrace("configure", "configured", old?.Observation,
             wakeRegistered: shortcuts.Any(binding => binding.Action == "wake"),
@@ -246,12 +250,37 @@ internal sealed partial class KeyboardHook : IInputMonitor
     }
     public void Revoke()
     {
+        try
+        {
+            RevokePermissions();
+        }
+        finally { RetireSourceAcceptanceControl(); }
+    }
+    public void RevokeAcceptanceModifier(AcceptanceModifierTransition transition)
+    {
+        var control = Volatile.Read(ref _sourceAcceptanceControl);
+        try
+        {
+            RevokePermissions();
+        }
+        finally
+        {
+            // Only the exact still-current attribution survives this narrow revoke.
+            // It never restores a group removed by a concurrent ordinary revoke.
+            if (control is null || !ReferenceEquals(control.Transition, transition)
+                || !ReferenceEquals(Volatile.Read(ref _sourceAcceptanceControl), control)
+                || !SourceAcceptanceControlCurrent(control, 0))
+                RetireSourceAcceptanceControl();
+        }
+    }
+    private void RevokePermissions()
+    {
+        Interlocked.Exchange(ref _lease, null);
         RevokeStockCandidate();
         _gate.Revoke();
         // The editor's normal Tick retires source writing, not its local command.
         if (Volatile.Read(ref _ordinaryChord)?.Source is not null)
             InvalidateOrdinaryChord();
-        Interlocked.Exchange(ref _lease, null);
         _revokeOwned?.Invoke();
         if (Interlocked.Exchange(ref _shortcutLease, null) is { } old)
             QueueShortcutTrace("revoke", "revoked", old.Observation, leaseCommandGeneration: old.DiagnosticGeneration);
@@ -637,6 +666,8 @@ internal sealed partial class KeyboardHook : IInputMonitor
             bool repeated = data.Key < 256 && _keys[data.Key];
             if (data.Key < 256)
                 _keys[data.Key] = down;
+            if (!down && ControlKey(data.Key))
+                RetireSourceAcceptanceControl();
             bool commandConsumed = data.Key < 256 && _commandConsumed[data.Key];
             if (!down && data.Key < 256)
                 _commandConsumed[data.Key] = false;
@@ -645,6 +676,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 commandConsumed = TryInvokeShortcut(data.Key, repeated, injected, out wake);
                 Interlocked.Increment(ref _contentEpoch);
             }
+            long sourceAcceptanceRetirement = Volatile.Read(ref _sourceAcceptanceRetirement);
             var binding = Volatile.Read(ref _lease);
             var lease = binding?.Observation;
             long now = WindowsInterruptClock.NowMs;
@@ -660,9 +692,14 @@ internal sealed partial class KeyboardHook : IInputMonitor
             int ordinary = ObserveOrdinaryChord(data, down, repeated, injected, now, binding, fresh, sessionKeys);
             if (ordinary != 0)
                 return ordinary > 0 ? 1 : Native.CallNextHookEx(_hook, code, wParam, lParam);
-            var decision = _gate.ProcessAcceptanceKey(new(data.Key, down, repeated, data.Key == sessionKeys.Accept && UsesUnmodifiedSessionKeys),
+            bool sourceBindingReady = UsesUnmodifiedSessionKeys || _stockExchange is not null && StockSessionKeysReady;
+            bool modifiersReady = sessionKeys.AcceptModifiers != ShortcutModifiers.Control
+                || SourceAcceptanceControlMatches(data, lease);
+            var decision = _gate.ProcessAcceptanceKey(new(data.Key, down, repeated,
+                    data.Key == sessionKeys.Accept && sourceBindingReady && modifiersReady, sessionKeys.AcceptModifiers),
                 new(lease?.Source.Target, source, lease?.Source.Ime ?? ImeState.Unknown,
-                    Modified, injected, fresh && UsesUnmodifiedSessionKeys, lease?.Source.InputEpoch ?? -1, lease?.Source.FocusEpoch ?? -1, now));
+                    Modified, injected, fresh && sourceBindingReady, lease?.Source.InputEpoch ?? -1,
+                    lease?.Source.FocusEpoch ?? -1, now, CurrentModifiers));
             if (StockAcceptance(decision, data, down, injected, lease, now, out bool stockConsume))
                 return stockConsume ? 1 : Native.CallNextHookEx(_hook, code, wParam, lParam);
             if (decision.Permit is not null)
@@ -702,6 +739,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             }
             else if (down)
             {
+                var control = CaptureSourceAcceptanceControl(data, repeated, injected, now, binding, source, sessionKeys, sourceAcceptanceRetirement);
                 // Revoke on every source keystroke, including injected input and modifier changes.
                 Interlocked.Increment(ref _userEpoch);
                 RevokeStockCandidate();
@@ -710,6 +748,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 // All other input remains conservative, including injected keys.
                 if (Native.GetForegroundWindow() != _editorHwnd)
                     Interlocked.Increment(ref _sourceUserEpoch);
+                PublishSourceAcceptanceControl(control);
             }
             completed = true;
             return commandConsumed ? 1 : Native.CallNextHookEx(_hook, code, wParam, lParam);
@@ -861,6 +900,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 RevokeOwnedPrefix();
                 InvalidateOrdinaryChord();
                 Interlocked.Increment(ref _contentEpoch);
+                RetireSourceAcceptanceControl();
             }
             if (message is 0x202 or 0x205 or 0x208 or 0x20C)
                 _mouseButtons = _mouseButtons > 0 ? _mouseButtons - 1 : 0;

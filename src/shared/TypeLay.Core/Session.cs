@@ -382,6 +382,26 @@ public sealed class Session
         return true;
     }
 
+    // The caller has attributed an acceptance-modifier transition. This retains
+    // only manual wording, never an old revision, snapshot or write permission.
+    public bool RebaseManualCandidate(InputSnapshot before, InputSnapshot fresh, long nowMs)
+    {
+        if (State != SessionState.EditedTranslationPending || _focus != FocusMember.Source
+            || _current != before || _manualSeed is null || _manualBasis != before.Text
+            || fresh.InputEpoch <= before.InputEpoch || WriteSafety.CheckSnapshot(fresh, nowMs) != Denial.None
+            || fresh with
+            {
+                ObservedAtMs = before.ObservedAtMs,
+                Bounds = before.Bounds,
+                InputEpoch = before.InputEpoch
+            } != before)
+            return false;
+        _revision++;
+        _previewRevision = _revision;
+        _current = fresh;
+        return true;
+    }
+
     public bool BeginEdit()
     {
         if (!CanBeginEdit)

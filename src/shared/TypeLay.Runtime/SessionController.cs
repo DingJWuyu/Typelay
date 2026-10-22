@@ -955,6 +955,21 @@ public sealed partial class SessionController : IDisposable
                 RevokeInput("target-changed");
                 _permitUntil = 0;
             }
+            if (ManualAcceptanceModifier(result, request, now) is { } modifier)
+            {
+                RevokeInput("acceptance-modifier", modifier);
+                _permitUntil = 0;
+                if (request.UserEpoch == modifier.Before.UserEpoch)
+                {
+                    // A read already in flight before Ctrl is not its new basis.
+                    // Keep only the unchanged candidate provenance until a fresh read.
+                    _nextCapture = 0;
+                    Render();
+                    return;
+                }
+                if (_session.RebaseManualCandidate(_session.Current!, snapshot, now))
+                    _generation++;
+            }
             _session.Observe(snapshot, result.Focus, now);
             bool styled = _settings.Value.Styles is not null && (_model.StyledTranslationCapability is not null
                 || _settings.Value.Glossary?.CouldApply(_settings.Value.Direction) == true);
@@ -1994,10 +2009,13 @@ public sealed partial class SessionController : IDisposable
             } == source
             && _hook.AcceptanceReady(new(source.Target, _hook.CommandGeneration, _generation), issued, nowMs);
     }
-    private void RevokeInput(string reason)
+    private void RevokeInput(string reason, AcceptanceModifierTransition? modifier = null)
     {
         _presentationPermit = null;
-        _hook.Revoke();
+        if (modifier is null)
+            _hook.Revoke();
+        else
+            _hook.RevokeAcceptanceModifier(modifier);
         if (!string.IsNullOrWhiteSpace(_tracePath))
             Trace("input-revoked", detail: new
             {

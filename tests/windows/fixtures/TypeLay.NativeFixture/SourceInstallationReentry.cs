@@ -87,6 +87,17 @@ internal sealed class SourceInstallationReentry : IDisposable
         return CallNextHookEx(0, code, wp, lp);
     }
 
+    internal void ObserveDispatchedInput(N.MessageStruct message)
+    {
+        // Called by the fixture's normal message pump only after dispatch/dialog
+        // handling. WH_CALLWNDPROC is not evidence that posted input was handled.
+        nint key = N.GetProp(_root, "TypeLay.Test.SourceDispatchKey.v1");
+        if (key != 0 && message.WParam == (nuint)key && IsOwnEdit(message.Hwnd)
+            && message.Message is 0x100 or 0x104)
+            N.SetProp(_root, "TypeLay.Test.SourceDispatchedDown.v1",
+                N.GetProp(_root, "TypeLay.Test.SourceDispatchedDown.v1") + 1);
+    }
+
     private nint Callback(int code, nuint wp, nint lp)
     {
         if (code >= 0)

@@ -2,6 +2,8 @@
 
 共享端口与规则见[工程架构](../../engineering/architecture.md)。本页描述 src/linux/ 内的平台职责；构建与验证见[开发说明](development.md)，用户安装与当前能力见[客户端说明](README.md)。
 
+Qt6 写回把选区设置也视为应用可观察的变更。普通接受键、有修饰键接受和直接写回共用此边界：尝试设置选区前的拒绝仍是 `RejectedBeforeMutation`；设置选区触发应用回调后若焦点、输入证据或原期限失效，则返回 `OutcomeUnknown` 并隔离原目标，不盲目恢复选区、重放按键或重试。接受键在这种未知结果下消费原按次并报告回执，直接写回仍答复原请求。此边界修正的新增真实 Qt 合作回归尚待运行，不代表 CI453 的低剩余期限接受失败已解决。
+
 ## 宿主与平台内共享
 
 `src/linux/TypeLay.Linux/` 是 Linux .NET 组合根，直接装配共享 Runtime，不复制会话控制器。其 .NET 宿主拥有串行事件循环、类型化输入/视图端口及 worker 生命周期；同级 `src/linux/desktop/` 的 GTK 进程负责 niri IPC、同用户 socket、设置界面和 Ayatana 托盘。Linux 子进程监督和 XDG 安装路径不进入共享层。

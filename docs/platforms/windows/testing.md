@@ -65,6 +65,8 @@ dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release 
 
 `SessionShortcutHookTests` 在自有 WPF 输入框上调用生产低级 Hook，验证 F8/F9 与 F6/F7 重新配置后的按住、重复及成对释放。已消费旧键的松开仍归旧操作，新的绑定不能抢走它；实际源字段收到的 F12 正向屏障用于确认消息已经分发。测试租约是明确的受控输入，不调用写入或模型，不能证明生产字段、物理输入法或真实写回安全。
 
+`NativeSourceControllerTests` 使用真实控制器、Broker 与源端 DLL，受控模型只提供固定译文。配置键回归覆盖 Tab/F7/F24、重绑后的原按键释放，以及原键旁路的源线程队列计数。Ctrl 场景另经真实 WPF 编辑窗口回源：源宿主正常消息泵完成 Ctrl 处理后才推进新捕获，检查人工稿、新许可、释放/额外修饰/配置变化/内容键与退休拒绝。消息泵观察不是 `WH_CALLWNDPROC` 对 posted 键盘消息的覆盖证明；F23 后置输入标记仅界定被测按键的队列断言。新增 Ctrl 桌面场景仍待 Windows 实际运行，共享受控端口测试不能替代这些证据。
+
 `OverlayRenderingTests` 同时覆盖默认 Tab/Esc 与无修饰 F1-F24 的编辑返回、退出、IME 事件、修饰键和旧键释放。第一次接受键仅请求返回原输入框；共享控制器仍须重新观察、取得许可并等待第二次接受。浮层动作携带显示时的 target、配置代次和会话 revision，迟到按钮与菜单不能借更新后的视图取得授权。缺少目标确认时可保留只读预览，但不得编辑或授予接受许可。
 
 ```powershell

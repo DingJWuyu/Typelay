@@ -23,8 +23,11 @@ public sealed partial class LanguagePickerInteractionTests
         var window = Assert.IsType<SettingsWindow>(fixture.Window);
         window.ShowPage("apps");
         await DrainAsync(window);
-        var requests = new List<string>();
-        support.CheckStarted += requests.Add;
+        // Page navigation cancels older checks and advances the generation too.
+        // Measure this click, rather than treating generation as a lifetime click count.
+        long beforeClick = support.CheckGeneration;
+        var requests = new List<(string Row, long Generation)>();
+        support.CheckStarted += row => requests.Add((row, support.CheckGeneration));
         var handle = new WindowInteropHelper(window).Handle;
         await Task.Run(() =>
         {
@@ -37,8 +40,8 @@ public sealed partial class LanguagePickerInteractionTests
         }, ct).WaitAsync(ct);
         while (window.IsVisible)
             await Task.Delay(20, ct);
-        Assert.Equal(["desktop-text"], requests);
-        Assert.Equal(1, support.CheckGeneration);
+        Assert.Equal(("desktop-text", beforeClick + 1), Assert.Single(requests));
+        Assert.Equal(beforeClick + 1, support.CheckGeneration);
     });
 
     [Theory]

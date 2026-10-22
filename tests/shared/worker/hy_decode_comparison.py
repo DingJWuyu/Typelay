@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -19,6 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ordinary_quality as ordinary  # noqa: E402
 import styled_quality as styled  # noqa: E402
 
 SEED = 20261020
@@ -219,15 +221,41 @@ def verify_variant(experiment, baseline_hash):
     return record
 
 
+def ordinary_prompt_identity():
+    # Source-derived identity, not a claim to observe native tokenization.
+    source = ROOT / "src/shared/TypeLay.Worker/native/hy/hy_adapter.cpp"
+    text = source.read_text(encoding="utf8")
+    template = re.search(r'TEMPLATE=R"HY\((.*?)\)HY";', text, re.S)
+    instruction = re.search(r"std::string instruction=(.*?);", text)
+    if template is None or instruction is None:
+        raise styled.CollectionError("ordinary-prompt-source-not-recognized")
+    return {
+        "evidence": "source-derived-not-runtime-token-trace",
+        "nativeSourceSha256": digest(source),
+        "chatTemplate": template.group(1),
+        "instructionExpression": instruction.group(1),
+        "systemMessage": None,
+        "input": "case.text, tokenized separately from instruction",
+        "runtimeTemplateValidation": "exact embedded-template equality required by adapter",
+        "truncationObserved": None,
+        "truncationEvidence": "native token counts and finish reason are not exposed; retain response code",
+    }
+
+
 def collect_main(*, variant, work_deadline, experiment):
-    def prepare(*, include_holdout=False):
-        if not include_holdout:
-            raise styled.CollectionError("comparison-requires-all-sixteen-requests")
-        report = styled.prepare_report(include_holdout=True)
+    def prepare():
+        report = ordinary.prepare_report()
+        report["promptIdentity"] = ordinary_prompt_identity()
+        report.update(
+            method="ordinary-fixed-decoder-comparison",
+            hypothesis="decoding-changes-ordinary-meaning-fidelity",
+            comparisonRequirement="same-eight-inputs-prompt-template-model-and-worker",
+        )
         report["decodeComparison"] = {
             "variant": variant,
             "workDeadline": work_deadline,
             "recipeVerified": False,
+            "plannedRecipe": RECIPE if variant == "B" else {"sampling": "greedy"},
         }
         return report
 
@@ -239,12 +267,17 @@ def collect_main(*, variant, work_deadline, experiment):
             baseline_hash = digest(args.worker.parent / "native/hy/libtypelay_hy.so")
             await prepare_variant(experiment, args.worker, work_deadline, report)
         else:
-            baseline = json.loads((args.output.parent / "styled-quality.json").read_text())
+            baseline_name = "ordinary-quality.json"
+            baseline = json.loads((args.output.parent / baseline_name).read_text(encoding="utf8"))
             if (
                 baseline["status"] != "completed"
                 or baseline["workerExitConfirmed"] is not True
                 or baseline["workerExitCode"] != 0
-                or len(baseline["requests"]) != 17
+                or len(baseline["requests"]) != 9
+                or baseline["workerSourceSha256"] != report["workerSourceSha256"]
+                or baseline["inputSha256"] != report["inputSha256"]
+                or baseline.get("holdoutInputSha256") != report.get("holdoutInputSha256")
+                or baseline.get("promptIdentity") != report["promptIdentity"]
             ):
                 raise styled.CollectionError("baseline-incomplete-no-retry")
             inventory = styled.installation(args)
@@ -268,14 +301,53 @@ def collect_main(*, variant, work_deadline, experiment):
         )
         if variant == "B":
             report["configuredLimits"]["sampling"] = RECIPE["sampling"]
-        await styled.collect(args, report, work_deadline=work_deadline)
+        await styled.collect(
+            args,
+            report,
+            work_deadline=work_deadline,
+            collect_cases=ordinary.collect_cases,
+        )
         if report.get("installation") != inventory:
             report.update(status="failed", failureCode="comparison-installed-generation-changed")
         actual = report.get("productionWorker", {}).get("manifestAdapter", {}).get("sha256")
         if actual != report["decodeComparison"]["nativeSha256"]:
             report.update(status="failed", failureCode="comparison-loaded-native-identity-mismatch")
 
-    return styled.main(prepare=prepare, collector=collect, allow_holdout=True)
+    return styled.main(prepare=prepare, collector=collect, allow_holdout=False)
+
+
+def ordinary_main():
+    """Run exactly A then B, using one shared deadline and the existing owned cleanup."""
+    args = styled.arguments()
+    if args.output.name != "ordinary-quality.json":
+        raise SystemExit("ordinary comparison --output must be named ordinary-quality.json")
+    second = args.output.with_name("ordinary-b-quality.json")
+    experiment = args.output.parent / "ordinary-hy-decode"
+    if second.exists() or experiment.exists():
+        raise SystemExit("comparison output or experiment already exists; preserve earlier results")
+    deadline = time.monotonic() + styled.TOTAL_TIMEOUT
+    original = sys.argv[:]
+    try:
+        result = collect_main(variant="A", work_deadline=deadline, experiment=experiment)
+        if result != 0 and not args.validate_only:
+            return result
+        sys.argv = [original[0], "--output", str(second)]
+        if args.validate_only:
+            sys.argv.append("--validate-only")
+        else:
+            sys.argv.extend(
+                [
+                    "--python",
+                    str(args.python),
+                    "--models",
+                    str(args.models),
+                    "--worker",
+                    str(experiment / "worker/run_worker.py"),
+                ]
+            )
+        return collect_main(variant="B", work_deadline=deadline, experiment=experiment)
+    finally:
+        sys.argv = original
 
 
 if __name__ == "__main__":

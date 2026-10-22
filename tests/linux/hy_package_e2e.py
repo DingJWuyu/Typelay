@@ -224,14 +224,17 @@ def exercise_model_lifecycle(
     if combination and capture is None:
         raise ValueError("combination-only-requires-capture")
     argos = ready(ARGOS, ["zh_en", "en_zh"], "original-argos")
-    if capture is not None and not combination:
+    if capture is not None and not combination and not capture.comparison:
         collect(("alternative",), argos)
     prepare_install()
     action("Hy-MT2 1.8B · 中文多语", "下载并使用…")
     hy = ready([HY], DIRECTIONS, "install-and-use-hy")
     if capture is not None and not combination:
-        collect(("ordinary",) if capture.diagnostics else ("styled", "glossary"), hy)
-    if not combination:
+        collect(
+            ("ordinary",) if capture.diagnostics or capture.comparison else ("styled", "glossary"),
+            hy,
+        )
+    if not combination and not (capture is not None and capture.comparison):
         preview()
     screenshot()
     action("Argos · 中文 → English", "使用此模型")
@@ -563,7 +566,7 @@ def run(arguments):
                 unchanged()
                 for name in names:
                     remaining()
-                    if name == "styled" and capture.comparison:
+                    if name == "ordinary" and capture.comparison:
                         capture.run_comparison(generation, package / "worker/run_worker.py")
                     else:
                         capture.run(name, generation, package / "worker/run_worker.py")
@@ -1070,13 +1073,25 @@ if __name__ == "__main__":
     if args.prepare_cache:
         if args.cache is None:
             parser.error("--prepare-cache requires --cache")
-        print(
-            json.dumps(
-                prepare_cache(
-                    args.package.resolve(), args.cache.resolve(), cache_only=args.cache_only
+        try:
+            report = prepare_cache(
+                args.package.resolve(), args.cache.resolve(), cache_only=args.cache_only
+            )
+        except (OSError, ValueError) as error:
+            print(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "quality": "not-run",
+                        "workerStarts": 0,
+                        "cacheOnly": args.cache_only,
+                        "failureCode": type(error).__name__,
+                        "reason": "existing-cache-or-native-verification-failed",
+                    }
                 )
             )
-        )
+            raise
+        print(json.dumps(report))
     else:
         if args.data is None or args.remaining_seconds is None:
             parser.error("--check-budget requires --data and --remaining-seconds")

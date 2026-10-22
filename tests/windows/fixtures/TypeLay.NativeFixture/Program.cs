@@ -188,12 +188,17 @@ internal static class Program
                     return 0;
                 if (status < 0)
                     return 1;
+                bool dispatchProbe = SourceDispatchProbe.BeforeDispatch(_root, message);
                 ApplyOwnedControls(); // The same outer-loop retirement boundary as Practice.
+                var dispatched = message;
                 if (!N.IsDialogMessage(_root, ref message))
                 {
                     N.TranslateMessage(ref message);
                     N.DispatchMessage(ref message);
                 }
+                sourceReentry?.ObserveDispatchedInput(dispatched);
+                if (dispatchProbe)
+                    SourceDispatchProbe.AfterDispatch(_root);
             }
         }
         finally { _hookHarness?.Dispose(); }
@@ -252,6 +257,8 @@ internal static class Program
             N.PostQuitMessage(0);
             return 0;
         }
+        if (SourceDispatchProbe.Handle(message, wParam, lParam))
+            return 0;
         if (SourceQueueWaitProbe.Handle(hwnd, message, wParam))
             return 0;
         // Stock Edit reports its actual focus through the normal parent

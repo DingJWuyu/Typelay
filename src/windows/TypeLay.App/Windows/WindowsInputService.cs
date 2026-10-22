@@ -73,7 +73,8 @@ internal sealed class WindowsInputService : IInputService
             var evidence = owned ? returnedDescriptor is not null
                 ? practice!.ObserveReturnCapture(context, result.Snapshot, result.Focus, startedAt)
                 : practice!.ObserveAutomaticTarget(result.Snapshot, result.Focus, startedAt) : null;
-            bool ordinaryCanIntercept = monitor is { CanInterceptAcceptance: true, UsesUnmodifiedSessionKeys: true };
+            bool ordinaryCanIntercept = monitor is { CanInterceptAcceptance: true }
+                && (monitor.UsesUnmodifiedSessionKeys || isolatedSourceAcceptance);
             // The local hook and WPF editor apply the same process-local configuration.
             // A stale capture cannot acknowledge a replacement configuration.
             var acknowledgement = result.Snapshot is { } source && context.SessionShortcuts is { } configuration

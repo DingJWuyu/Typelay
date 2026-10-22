@@ -61,6 +61,81 @@ class QualityPreparationTests(unittest.TestCase):
             self.assertEqual([c["text"] for c in report["cases"]], [c["text"] for c in expected])
             self.assertTrue(all(c["ordinary"] is None for c in report["cases"]))
 
+    def test_ordinary_decode_plan_has_two_fixed_arms_without_assets(self):
+        (ROOT / "artifacts").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as temporary:
+            output = Path(temporary) / "ordinary-quality.json"
+            result = self.validate("ordinary_quality.py", output, "--decode-comparison")
+            self.assertEqual(result.returncode, 2, result.stderr)
+            reports = [
+                json.loads(path.read_text())
+                for path in (output, output.with_name("ordinary-b-quality.json"))
+            ]
+            for arm, report in zip(("A", "B"), reports, strict=True):
+                self.assertEqual(report["decodeComparison"]["variant"], arm)
+                self.assertFalse(report["decodeComparison"]["recipeVerified"])
+                self.assertEqual(report["workerStarts"], 0)
+                self.assertEqual(report["quality"], "not-run")
+                self.assertEqual(report["maximumTranslationRequests"], 8)
+                self.assertEqual(len(report["cases"]), 8)
+                self.assertTrue(all(c["ordinary"] is None for c in report["cases"]))
+            self.assertEqual(reports[1]["decodeComparison"]["plannedRecipe"]["seed"], 20261020)
+            self.assertFalse((output.parent / "ordinary-hy-decode").exists())
+            repeated = self.validate("ordinary_quality.py", output, "--decode-comparison")
+            self.assertEqual(repeated.returncode, 2)
+            self.assertIn("already exists", repeated.stderr)
+
+    def test_ordinary_ab_stops_after_failed_a_and_restores_arguments(self):
+        import hy_decode_comparison
+
+        (ROOT / "artifacts").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as temporary:
+            argv = [
+                "ordinary_quality.py",
+                "--output",
+                str(Path(temporary) / "ordinary-quality.json"),
+                "--python",
+                "/absent/python",
+                "--models",
+                "/absent/models",
+                "--worker",
+                "/absent/worker",
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(hy_decode_comparison, "collect_main", return_value=2) as collect,
+            ):
+                self.assertEqual(hy_decode_comparison.ordinary_main(), 2)
+                self.assertEqual(collect.call_count, 1)
+                self.assertEqual(collect.call_args.kwargs["variant"], "A")
+                self.assertEqual(sys.argv, argv)
+
+    def test_ordinary_ab_keeps_one_deadline_and_runs_b_only_after_success(self):
+        import hy_decode_comparison
+
+        (ROOT / "artifacts").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as temporary:
+            argv = [
+                "ordinary_quality.py",
+                "--output",
+                str(Path(temporary) / "ordinary-quality.json"),
+                "--python",
+                "/absent/python",
+                "--models",
+                "/absent/models",
+                "--worker",
+                "/absent/worker",
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(hy_decode_comparison, "collect_main", side_effect=[0, 2]) as collect,
+            ):
+                self.assertEqual(hy_decode_comparison.ordinary_main(), 2)
+                first, second = [call.kwargs for call in collect.call_args_list]
+                self.assertEqual((first["variant"], second["variant"]), ("A", "B"))
+                self.assertEqual(first["work_deadline"], second["work_deadline"])
+                self.assertEqual(sys.argv, argv)
+
     def test_ordinary_preparation_comparison_is_independent_of_windows_default_encoding(self):
         original = Path.read_text
 

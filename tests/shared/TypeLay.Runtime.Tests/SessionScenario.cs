@@ -195,6 +195,11 @@ internal sealed class SessionScenario : IDisposable
     }
     internal sealed class InputMonitor : IInputMonitor
     {
+        public AcceptanceModifierTransition? AcceptanceModifierTransition
+        {
+            get; set;
+        }
+
         public GlossaryTranslationCapability? GlossaryTranslationCapability
         {
             get; set;
@@ -303,6 +308,14 @@ internal sealed class SessionScenario : IDisposable
         }
         public void Revoke()
         {
+            AcceptanceModifierTransition = null;
+            Permit = null;
+            Shortcut = null;
+        }
+        public void RevokeAcceptanceModifier(AcceptanceModifierTransition transition)
+        {
+            if (!ReferenceEquals(AcceptanceModifierTransition, transition))
+                AcceptanceModifierTransition = null;
             Permit = null;
             Shortcut = null;
         }

@@ -553,11 +553,11 @@ private:
         const bool observed = target && target->observed;
         // Fixed phases/reasons and numeric/boolean guards only. Never print
         // field body, labels, metadata hashes, plan strings or target IDs.
-        std::fprintf(stderr, "TypeLay Qt6 phase=%s reason=%s remainingMs=%lld field=%d provider=%d focused=%d "
+        std::fprintf(stderr, "TypeLay Qt6 phase=%s reason=%s atMs=%lld remainingMs=%lld field=%d provider=%d focused=%d "
             "published=%d mutating=%d probing=%d flags=%u contentSame=%d inputSame=%d focusSame=%d "
             "contextSame=%d fieldSame=%d epochSame=%d imeInputSame=%d serverSame=%d appliedSame=%d "
             "writeElapsedMs=%lld initialInspectMs=%lld prepareMs=%lld selectionMs=%lld\n",
-            phase, reason, static_cast<long long>(until - current), int(field), int(target && target->provider),
+            phase, reason, static_cast<long long>(current), static_cast<long long>(until - current), int(field), int(target && target->provider),
             int(field && QApplication::focusWidget() == target->field && QGuiApplication::focusObject() == target->field),
             int(!publication_.isEmpty()), int(target && target->mutating), int(target && target->probing),
             observed ? target->state.flags : 0u,
@@ -1274,10 +1274,11 @@ private:
         const auto basis = request.value("authority").toObject();
         const auto approved = direct ? request.value("approved").toObject() : basis;
         const auto identity = expected.value("target").toObject();
+        bool selectionMutationStarted = false;
         auto reject = [&](const char *phase, const char *reason) {
             traceGate(phase, target, basis, integer(request, "expiresAtMs", 0), reason,
                 writeStarted, inspectMs, prepareMs, selectionMs);
-            if (ordered && ordered->mutationStarted) {
+            if (selectionMutationStarted || (ordered && ordered->mutationStarted)) {
                 if (target) target->quarantined = true;
                 return receipt("OutcomeUnknown", "UnknownOutcome");
             }
@@ -1402,6 +1403,10 @@ private:
                 &ordered->ticket->before, &target->state)) return reject("write-ordered-claim", "EpochChanged");
             ordered->mutationStarted = true; // Selection itself is observable application state.
         }
+        // Selection invokes synchronous application callbacks on every path,
+        // not only ordered Ctrl chords. Once attempted, a refusal cannot promise
+        // an untouched target or safely replay the original acceptance key.
+        selectionMutationStarted = true;
         if (auto *line = target->line()) line->setSelection(int(from), int(to - from));
         else {
             QTextCursor cursor(document);

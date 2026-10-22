@@ -415,6 +415,11 @@ class DistributionTests(unittest.TestCase):
         self.assertTrue(state["gtkModuleInstalled"])
         self.assertTrue(state["browserHostInstalled"])
         self.assertFalse(state["wayland"])
+        self.assertEqual(set(state["desktopDependencies"]), {"gtk3Typelib", "glibEventLoop"})
+        for available in state["desktopDependencies"].values():
+            self.assertIsInstance(available, bool)
+        if not all(state["desktopDependencies"].values()):
+            self.assertIn("python-gobject", state["desktopDependencyHelp"])
         self.assertIsNone(state["session"])
         self.assertFalse(state["workerInstalled"])
         self.assertFalse(state["modelInventoryPresent"])

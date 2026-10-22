@@ -66,6 +66,7 @@ internal sealed partial class KeyboardHook
             Interlocked.Increment(ref _contentEpoch);
         if (focus)
             Interlocked.Increment(ref _foregroundEpoch);
+        RetireSourceAcceptanceControl();
         RevokeStockCandidate();
         _gate.Revoke();
     }

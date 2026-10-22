@@ -18,6 +18,8 @@
 
 本推荐包已通过 GTK4 人工编辑两阶段回写路径，包含短暂空观察时保护人工稿的共享层修复；Qt 真实组合输入与后台写回检查也已通过。包内源码标识、293项文件清单摘要与内层包摘要均已核对，安装包详情见[当前可验证候选](#当前可验证候选)。这些结果仍不构成模型质量或用户真机验收。
 
+后继候选 [`19bc171`](https://github.com/DingJWuyu/Typelay/actions/runs/39805414006) 的 GTK 与前序 Qt 检查通过，但搬迁包中的 Qt 按需 F12 接受在设置选区后因期限校验拒绝，完整 Linux 检查失败。修复尚待实际验证，因此不替换上述推荐包，也不把前序通过当成全链通过。
+
 现役输入路径：
 
 - [浏览器扩展](browser.md)：顶层 HTTP(S) 普通 input/textarea，以及已验证事务接口下的 Tiptap 单段文字/marks。Chromium/Firefox 已有实际扩展、本地主机和 Wayland+niri+真实模型链路证据，短租约续期空窗仍是风险；物理输入法、真实网页状态与撤销语义仍须验收。
@@ -224,7 +226,7 @@ binds {
 ~/.local/bin/typelay --quit
 ```
 
-`--doctor` 输出安装、niri 版本和本会话的服务状态，不包含正文、译文、窗口标题或进程参数。`trayAvailable` 表示托盘库可用，`trayConnected` 表示与面板完成注册，不代表图标已通过视觉验收。它不是兼容性认证；`nativePeers` 大于零只说明有应用连接，不代表该应用的全部控件可读取或替换。
+`--doctor` 输出安装、niri 版本和本会话的服务状态，不包含正文、译文、窗口标题或进程参数。源码中的诊断还会用启动器相同的系统 Python 检查设置需要的 GTK3/GDK3 类型库与 `gi.events`，即使没有显示服务器也能输出 `desktopDependencies`；缺失时给出 `desktopDependencyHelp`，并返回非零状态。请按提示检查系统 `python`、`python-gobject`、`gtk3` 包，不要通过重装翻译模型修复桌面依赖。它不会安装系统包、切换输入法或初始化 GTK 显示；类型库存在与事件循环可加载也不代表 GTK 原生库、桌面连接或实际设置窗口已验证。`trayAvailable` 表示托盘库可用，`trayConnected` 表示与面板完成注册，不代表图标已通过视觉验收。它不是兼容性认证；`nativePeers` 大于零只说明有应用连接，不代表该应用的全部控件可读取或替换。
 
 “登录 niri 时启动”写入 XDG autostart 文件，需要当前 niri 会话启动 XDG 自动启动目标。使用 `niri-session` 的 systemd 集成路径可按 niri 的官方集成文档配置；其他启动方式可在 niri 配置中显式加入：
 

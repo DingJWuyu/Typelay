@@ -1544,15 +1544,43 @@ def run_qt(
                 set_mode(1, session_keys=("F12", "F1"))
                 dormant_source(function_source)
                 key("ctrl+shift+F9")
-                wait_for(ready_to_accept, "mode switch lost the configured source acceptance route")
-                function_candidate = state()["editorText"]
-                before_write = trace_checkpoint()
-                key("F12")
-                wait_for(
-                    lambda: state()["first"]["text"] == function_candidate
-                    and verified_write(before_write),
-                    "configured F12 did not accept the on-demand candidate",
+                acceptance_timing = {"readyWaitStartedAtMs": now_ms()}
+                acceptance = wait_for(
+                    ready_to_accept, "mode switch lost the configured source acceptance route"
                 )
+                acceptance_timing.update(
+                    readyObservedAtMs=now_ms(),
+                    statusElapsedMs=acceptance.get("statusElapsedMs"),
+                    acceptanceRemainingMs=acceptance.get("acceptanceRemainingMs"),
+                    acceptanceHintRemainingMs=acceptance.get("acceptanceHintRemainingMs"),
+                )
+                function_candidate = state()["editorText"]
+                acceptance_timing["candidateObservedAtMs"] = now_ms()
+                before_write = trace_checkpoint()
+                acceptance_timing["traceCheckpointAtMs"] = now_ms()
+                try:
+                    # Exactly one real key, with the existing deadline. These
+                    # observations distinguish fixture preparation from delivery
+                    # and native write time; they do not renew or retry a permit.
+                    key("F12", timing=acceptance_timing)
+                    wait_for(
+                        lambda: state()["first"]["text"] == function_candidate
+                        and verified_write(before_write),
+                        "configured F12 did not accept the on-demand candidate",
+                    )
+                finally:
+                    acceptance_timing["finishedAtMs"] = now_ms()
+                    try:
+                        acceptance_timing["keys"] = {
+                            name: value
+                            for name, value in state().get("keys", {}).items()
+                            if name.startswith("firstF12")
+                        }
+                        (arguments.output / "qt-configured-f12-timing.json").write_text(
+                            json.dumps(acceptance_timing, indent=2) + "\n"
+                        )
+                    except Exception:
+                        pass  # Evidence must not replace the actual acceptance failure.
                 set_mode(0, session_keys=("Tab", "Esc"))
                 evidence.append(
                     "Qt6 configured source/editor keys: F1/F24 and F24/F12 through real settings, "

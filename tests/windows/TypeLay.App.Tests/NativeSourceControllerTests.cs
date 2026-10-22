@@ -511,6 +511,11 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         {
             get; private set;
         }
+        internal SessionViewToken? Token
+        {
+            get; private set;
+        }
+        internal string Candidate { get; private set; } = "";
         public void Configure(UserSettings settings)
         {
         }
@@ -518,6 +523,8 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         {
             State = session.State;
             CanAccept = canAccept;
+            Token = context?.Token;
+            Candidate = session.Candidate;
         }
         public void RenderPaused(PauseAnchor anchor, long revision)
         {

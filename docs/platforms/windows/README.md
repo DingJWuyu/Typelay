@@ -86,13 +86,13 @@
 - 浏览器合作七个场景及整步通过；记事本设置和只读预览观察通过，但等待公开接受提示仍因 Unknown 安全缺口超时，后续编辑/直接替换及 Hy 未运行。Windows 完整验收仍未通过。
 - 本轮未消除普通自动捕获的输入法安全缺口，Unknown 继续拒写；按需 CaptureDirect 既有 owner-thread 桥仍有同步 IMM 消息重入风险，不能据本轮连续链通过消除该限制。后继候选未经对应验证不记作修复。本轮无质量采集，5068 的 40 次诊断与 386 的 69 次响应仍是各自范围的既有证据，三项质量门继续关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
 
-最近已核对的候选为 [`4e6dabdd`](https://github.com/DingJWuyu/Typelay/actions/runs/39800213083)，共享检查通过，Windows 完整检查仍失败：
+最近已核对的候选为 [`19bc171`](https://github.com/DingJWuyu/Typelay/actions/runs/39805414006)，共享检查通过，Windows 完整检查仍失败：
 
-- App.Tests 690/693通过。未知结果隔离回归在源端 `Claimed=false` 处失败，本轮没有拒绝原因，不能猜测为写回不安全或已验证隔离；两个真实记事本隔离回归被测试清理中的 `ObjectDisposedException` 遮蔽主体结果，不能记作通过。
-- 连续翻译、合作浏览器、消费者退出证明及生产 Hy worker 检查通过。发行版 Notepad 检查本轮在设置页“检查连接”控件匹配不唯一处失败，自动预览、接受及后续场景均未运行。此前 [`4be188b8`](https://github.com/DingJWuyu/Typelay/actions/runs/39791124676) 已实际取得 Clear 与中文只读预览，但普通发行路径仍为 `writeSupported=false`，接受尚未完成；此前通过不替代本轮未运行结果。
-- Hy 设置中的安装、语言选择、模型切换、预览、移除与普通退出全链通过，进程退出码为0，worker 已确认退出。这是生命周期验证，不是模型质量放行。
+- App.Tests 694/700通过。真实系统记事本的隔离接受分支、未知结果隔离及消息队列等待回归通过；记事本撤回分支在预检失败，尚未进入撤回主体。另有自有输入框许可、源侧加词和设置连接入口回归失败，不能以部分通过开放普通发行能力。
+- 连续翻译在编辑器退出回源阶段失败；浏览器自动预览与 Tab 接受通过，但按需选区直接替换未取得公开就绪状态。后续发行版 Notepad 和 Hy worker/设置尾段未运行，消费者退出证明步骤也未通过，不能沿用此前结果记作本轮通过。
+- 已核对的 Hy 安装、语言选择、模型切换、预览、移除与普通退出全链通过证据来自 [`4e6dabdd`](https://github.com/DingJWuyu/Typelay/actions/runs/39800213083)，不是本轮执行结果；其进程退出码为0且 worker 已确认退出。生命周期通过不代表模型质量放行。
 
-完整 Controller/Broker/源受理接线仍只在隔离构造下启用，普通发行能力不开放；真实应用、物理键盘、中文输入法及消息队列兼容性仍须各自验证。本轮通过范围不开放模型质量门。本轮 Linux/Qt 范围未运行，[Linux 推荐预览](../linux/README.md#当前可验证候选)仍为已核对的 `4be188b8`；下面 Windows 下载仍保留单独核对过的旧基线。
+完整 Controller/Broker/源受理接线仍只在隔离构造下启用，普通发行能力不开放；真实应用、物理键盘、中文输入法及消息队列兼容性仍须各自验证。本轮通过范围不开放模型质量门。本轮 Linux 后段 Qt 检查失败，[Linux 推荐预览](../linux/README.md#当前可验证候选)仍为已核对的 `4be188b8`；下面 Windows 下载仍保留单独核对过的旧基线。
 
 下方可下载的是 `e1f55ebd` 预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654)下载 [`typelay-windows-e1f55ebd4da69c3d77c4a6447eaad2a146b8bfa6`](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654/artifacts/12342794943)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
 

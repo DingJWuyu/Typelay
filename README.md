@@ -17,6 +17,8 @@ Windows/Linux 同步推进共同产品功能与体验，各平台问题和验收
 
 ## 从源码开发
 
+三条线的当前进度、待办、负责人和先后关系统一见[当前开发状态与安排](docs/engineering/development-state.md)。
+
 长期集成入口是 trunk，main 保留为稳定发布分支。分支权限见 [AGENTS.md](AGENTS.md)；依赖、共享检查与 CI 见[工程开发流程](docs/engineering/development.md)，实际平台命令分别见 [Windows 开发](docs/platforms/windows/development.md)与 [Linux 开发](docs/platforms/linux/development.md)。验收证据分层见[测试协议](docs/engineering/testing.md)。
 
 ## 源码与文档导航

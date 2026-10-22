@@ -20,7 +20,7 @@ on:
         required: false
         default: false
       hy_decode_comparison:
-        description: Compare fixed Hy greedy and sampled decoding within the existing quality budget
+        description: "Compare only Hy ordinary greedy/sampled: 16 requests, 600 seconds, existing cache only"
         type: boolean
         required: false
         default: false
@@ -32,7 +32,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: typelay-checks-${{ github.ref }}
+  group: typelay-checks-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.check_mode == 'quality-only' && 'quality-only' || 'full' }}
   cancel-in-progress: true
 jobs:
   scope:
@@ -380,6 +380,7 @@ jobs:
     timeout-minutes: ${{ needs.scope.outputs.collect_quality == 'true' && 70 || 45 }}
     env:
       FIXED_MODEL_DIAGNOSTICS: ${{ needs.scope.outputs.fixed_model_diagnostics }}
+      HY_DECODE_COMPARISON: ${{ needs.scope.outputs.hy_decode_comparison }}
       # Explicit ordinary quality capture now means the fixed eight-request paired set.
       TYPELAY_COMBINATION_ONLY: ${{ needs.scope.outputs.collect_quality == 'true' && needs.scope.outputs.fixed_model_diagnostics != 'true' && needs.scope.outputs.hy_decode_comparison != 'true' }}
       TYPELAY_COLLECT_TRANSLATION_QUALITY: ${{ needs.scope.outputs.collect_quality == 'true' }}
@@ -515,6 +516,7 @@ jobs:
           python tests/linux/test_build_bundle.py -v
           python tests/linux/setup_e2e.py -v
           python tests/linux/test_desktop_session.py -v
+          python tests/linux/test_startup_diagnostics.py -v
           python tests/linux/test_desktop_scope_results.py -v
           python tests/linux/test_desktop_acceptance_observation.py -v
           python tests/linux/test_setup_scope_data.py -v
@@ -908,8 +910,16 @@ jobs:
           PYTHONDONTWRITEBYTECODE: ${{ needs.scope.outputs.collect_quality == 'true' && '1' || '' }}
         run: |
           set --
-          if [ "$FIXED_MODEL_DIAGNOSTICS" = true ] || [ "$TYPELAY_COMBINATION_ONLY" = true ]; then
+          if [ "$FIXED_MODEL_DIAGNOSTICS" = true ] || [ "$TYPELAY_COMBINATION_ONLY" = true ] || [ "$HY_DECODE_COMPARISON" = true ]; then
             set -- --cache-only
+          fi
+          if [ "$HY_DECODE_COMPARISON" = true ]; then
+            set +e
+            PYTHONPATH=src/shared/TypeLay.Worker python tests/shared/worker/ordinary_quality.py --decode-comparison --validate-only --output artifacts/linux/quality-plan/ordinary-quality.json
+            plan_status=$?
+            set -e
+            test "$plan_status" -eq 2
+            python -c 'import json,pathlib; reports=[json.loads(p.read_text()) for p in pathlib.Path("artifacts/linux/quality-plan").glob("*.json")]; assert len(reports)==2 and all(r["status"]=="not-run" and r["workerStarts"]==0 for r in reports)'
           fi
           python tests/linux/hy_package_e2e.py --prepare-cache --package artifacts/linux/package --cache artifacts/linux/hy-model-cache "$@" > artifacts/linux/hy-package/cache-verification.json
       - name: Save only fully verified Hy test model data
@@ -982,11 +992,12 @@ jobs:
             artifacts/linux/hy-package/*.json
             artifacts/linux/hy-package/*.log
             artifacts/linux/hy-package/*.png
+            artifacts/linux/quality-plan/*.json
             artifacts/linux/quality-capture/*.json
             artifacts/linux/quality-capture/*.log
             artifacts/linux/quality-capture/*.png
-            artifacts/linux/quality-capture/hy-decode/build.json
-            artifacts/linux/quality-capture/hy-decode/build.log
+            artifacts/linux/quality-capture/ordinary-hy-decode/build.json
+            artifacts/linux/quality-capture/ordinary-hy-decode/build.log
             artifacts/linux/native/libtypelay-gtk3.so
             artifacts/linux/native/typelay-supervise
             artifacts/TypeLay-Linux-preview-x86_64.tar.gz

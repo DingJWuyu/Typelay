@@ -666,7 +666,33 @@ internal sealed class UiaInputProvider : IDisposable
         return new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome);
     }
     internal sealed record ReturnForegroundFacts(bool IsControl, bool RootIsSource, bool RootOwnerIsSource,
-        bool OwnerIsSource, bool? IsChild, string WindowClass);
+        bool OwnerIsSource, bool? IsChild, string WindowClass)
+    {
+        public bool NativeFocusRestored
+        {
+            get; init;
+        }
+        public long? ActivationCompletedAtMs
+        {
+            get; init;
+        }
+        public long? CorrectionStartedAtMs
+        {
+            get; init;
+        }
+        public long? CorrectionCompletedAtMs
+        {
+            get; init;
+        }
+        public bool? BeforeCorrectionIsRoot
+        {
+            get; init;
+        }
+        public bool? BeforeCorrectionIsControl
+        {
+            get; init;
+        }
+    }
 
     private static ReturnForegroundFacts DescribeReturnForeground(nint foreground, WindowsTarget binding)
     {
@@ -790,6 +816,9 @@ internal sealed class UiaInputProvider : IDisposable
         if (!glossary && WindowsInterruptClock.NowMs >= request.ExpiresAtMs)
             return false;
         bool nativeFocusRestored = false;
+        bool traceReturn = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TYPELAY_TRACE"));
+        long? activationCompletedAtMs = null, correctionStartedAtMs = null, correctionCompletedAtMs = null;
+        bool? beforeCorrectionIsRoot = null, beforeCorrectionIsControl = null;
         if (!glossary && binding.Provider == NativeEditTransactions.Provider)
         {
             // Finish the one root activation before deciding whether the source
@@ -797,6 +826,8 @@ internal sealed class UiaInputProvider : IDisposable
             // focus operation after that exact native state has been verified.
             if (!CompleteReturnActivation(request, binding, out reason))
                 return false;
+            if (traceReturn)
+                activationCompletedAtMs = WindowsInterruptClock.NowMs;
             reason = "native-source-changed";
             if (!_edits.ConfirmsReturnIdentity(binding))
                 return false;
@@ -812,7 +843,19 @@ internal sealed class UiaInputProvider : IDisposable
         // Glossary returns never correct field focus. Ordinary non-native or
         // not-yet-restored fields keep the existing UIA correction path.
         if (!glossary && !nativeFocusRestored)
+        {
+            // Diagnose only: these snapshots never authorize or retry focus.
+            if (traceReturn)
+            {
+                nint beforeCorrection = GetForegroundWindow();
+                beforeCorrectionIsRoot = beforeCorrection == (nint)binding.RootHwnd;
+                beforeCorrectionIsControl = beforeCorrection == (nint)binding.ControlHwnd;
+                correctionStartedAtMs = WindowsInterruptClock.NowMs;
+            }
             _element.SetFocus();
+            if (traceReturn)
+                correctionCompletedAtMs = WindowsInterruptClock.NowMs;
+        }
         if (!glossary)
         {
             // A correction needs its own completion, not a second activation.
@@ -836,11 +879,19 @@ internal sealed class UiaInputProvider : IDisposable
                         : process == binding.ProcessId ? "activation-foreground-other-source-process"
                         : "activation-foreground-other-process";
                     if (thread != 0 && process == binding.ProcessId
-                        && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TYPELAY_TRACE")))
+                        && traceReturn)
                     {
                         try
                         {
-                            foregroundFacts = DescribeReturnForeground(foreground, binding);
+                            foregroundFacts = DescribeReturnForeground(foreground, binding) with
+                            {
+                                NativeFocusRestored = nativeFocusRestored,
+                                ActivationCompletedAtMs = activationCompletedAtMs,
+                                CorrectionStartedAtMs = correctionStartedAtMs,
+                                CorrectionCompletedAtMs = correctionCompletedAtMs,
+                                BeforeCorrectionIsRoot = beforeCorrectionIsRoot,
+                                BeforeCorrectionIsControl = beforeCorrectionIsControl
+                            };
                         }
                         catch (Exception error) when (error is not OutOfMemoryException) { }
                     }

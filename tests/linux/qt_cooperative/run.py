@@ -534,7 +534,9 @@ def language_options(native, captured, generation, state, window, environment):
     }
 
 
-def ordered_controls(out, env, children, delay_finished=False, language_options_only=False):
+def ordered_controls(
+    out, env, children, delay_finished=False, language_options_only=False, unmodified_reentry=False
+):
     """Real provider/native widgets with controlled host protocol; no model."""
     import hashlib
     import socket
@@ -553,7 +555,9 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = directory / "native.sock"
     mode = (
-        "language-options"
+        "unmodified-reentry"
+        if unmodified_reentry
+        else "language-options"
         if language_options_only
         else "ordered-delayed"
         if delay_finished
@@ -730,6 +734,115 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
 
             configure()
             prepare()
+            if unmodified_reentry:
+                configure("F12", "F1")
+                # No publication: rejection is before any selection mutation,
+                # so the original injected key pair must still reach the widget.
+                keys_before = state()["keys"]
+                run(["xdotool", "key", "--delay", "0", "F12"], env=environment)
+                wait(
+                    lambda: all(
+                        state()["keys"].get(f"firstF12{phase}", 0)
+                        == keys_before.get(f"firstF12{phase}", 0) + 1
+                        for phase in ("Press", "Release")
+                    )
+                    and settled(),
+                    "unpublished F12 passes its original pair",
+                )
+                fixture("on-selection", action="focus-second")
+                old_keys = state()["keys"]
+                publication = publish()
+                # The unbound sentinel follows the original F12 release in the
+                # same injected batch. Its actual destination-widget release is
+                # the barrier before asserting that neither F12 half leaked.
+                run(["xdotool", "key", "--delay", "0", "F12", "F23"], env=environment)
+                wait(
+                    lambda: state()["second"]["focused"]
+                    and state()["keys"].get("secondF23Release", 0)
+                    == old_keys.get("secondF23Release", 0) + 1
+                    and settled(),
+                    "ordinary selection callback moves focus and the trailing key retires",
+                )
+                native.describe()
+                accepted = [event for event in native.events if event.get("event") == "accepted"]
+                assert len(accepted) == 1, accepted
+                assert accepted[0]["data"]["planId"] == publication["permit"]["plan"]["id"]
+                assert accepted[0]["data"]["receipt"]["status"] == "OutcomeUnknown"
+                assert state()["first"]["text"] == "Original source"
+                assert state()["first"]["selectionLength"] == len("Original source")
+                for field in ("first", "second"):
+                    for phase in ("Press", "Release"):
+                        name = f"{field}F12{phase}"
+                        assert state()["keys"].get(name, 0) == old_keys.get(name, 0)
+                # Re-capture the SAME target with new real authority. This tests
+                # quarantine, rather than a stale plan's independent rejection.
+                fixture("focus", field="first")
+                wait(lambda: state()["first"]["focused"] and settled(), "source refocused")
+                description = native.describe()
+                assert description["target"] == publication["target"]
+                captured = native.call(
+                    "capture",
+                    {"target": description["target"], "authority": description["authority"]},
+                )
+                assert captured and captured["ime"] == "Clear"
+                assert captured["writeSupported"] is False
+                refused_keys = state()["keys"]
+                run(["xdotool", "key", "--delay", "0", "F12"], env=environment)
+                wait(
+                    lambda: all(
+                        state()["keys"].get(f"firstF12{phase}", 0)
+                        == refused_keys.get(f"firstF12{phase}", 0) + 1
+                        for phase in ("Press", "Release")
+                    )
+                    and settled(),
+                    "independent F12 passes through without replaying the old write",
+                )
+                native.describe()
+                assert (
+                    len([event for event in native.events if event.get("event") == "accepted"]) == 1
+                )
+                assert state()["first"]["text"] == "Original source"
+                result["f12_selection_reentry_unknown_consumed_and_quarantined"] = True
+                # A separate standard field exercises the shared direct call:
+                # its request must receive Unknown, not lose the reply or pretend
+                # that the synchronous selection callback never happened.
+                fixture("plain-visible", enabled=True)
+                fixture("set", field="plain", text="Original multiline source")
+                fixture("focus", field="plain")
+                wait(lambda: state()["plain"]["focused"] and settled(), "direct source focused")
+                fixture("on-selection", field="plain", action="focus-second")
+                direct = publish()
+                approved = native.describe(direct["target"])
+                receipt = native.call(
+                    "direct",
+                    {
+                        "target": direct["target"],
+                        "plan": direct["permit"]["plan"],
+                        "authority": direct["authority"],
+                        "approved": approved["authority"],
+                        "generation": generation,
+                        "expiresAtMs": now_ms() + 250,
+                    },
+                )
+                assert receipt["status"] == "OutcomeUnknown", receipt
+                assert state()["plain"]["text"] == "Original multiline source"
+                assert state()["second"]["focused"]
+                fixture("focus", field="plain")
+                wait(lambda: state()["plain"]["focused"] and settled(), "direct source refocused")
+                description = native.describe()
+                assert description["target"] == direct["target"]
+                captured = native.call(
+                    "capture",
+                    {"target": description["target"], "authority": description["authority"]},
+                )
+                assert captured and captured["ime"] == "Clear"
+                assert captured["writeSupported"] is False
+                result["direct_selection_reentry_unknown_replied_and_quarantined"] = True
+                fixture("quit")
+                assert client.wait(timeout=10) == 0
+                path.unlink(missing_ok=True)
+                (out / f"{mode}-result.json").write_text(json.dumps(result, indent=2) + "\n")
+                return result
             if language_options_only:
                 description = native.describe()
                 captured = native.call(
@@ -2262,6 +2375,9 @@ def session(out, fcitx, forced_sync_diagnostic=False, language_options_only=Fals
                         client.stdin.write("quit\n")
                         client.stdin.flush()
                         assert client.wait(timeout=10) == 0
+                results["unmodified_reentry"] = ordered_controls(
+                    out, env, children, unmodified_reentry=True
+                )
                 results["ordered"] = ordered_controls(out, env, children)
                 results["ordered_delayed"] = ordered_controls(
                     out, env, children, delay_finished=True

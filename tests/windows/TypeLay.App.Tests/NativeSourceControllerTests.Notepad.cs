@@ -190,6 +190,49 @@ public sealed partial class NativeSourceControllerTests
             throw new AggregateException(failures);
     }
 
+    [Fact]
+    public Task NotepadIsolationRejectsALiveOwnerButAcceptsItsProvenExit() => desktop.RunAsync(async () =>
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(28));
+        var source = await NotepadSource.Start(deadline.Token);
+        var failures = new List<Exception>();
+        // Keep an independent real handle through exit. An object and its PID
+        // are not evidence that the process can still receive desktop input.
+        Process? retained = null;
+        try
+        {
+            retained = Process.GetProcessById(source.ProcessId);
+            _ = retained.SafeHandle;
+            var error = await Assert.ThrowsAsync<IOException>(async () =>
+            {
+                await using var unexpected = await NotepadSource.Start(deadline.Token);
+            });
+            Assert.Contains("notepad-already-running", error.Message);
+            Assert.False(retained.HasExited);
+            Assert.Equal("你好", N.ReadText(source.Field, Limits.MaxTextUnits));
+        }
+        catch (Exception error) { failures.Add(error); }
+        finally
+        {
+            try
+            {
+                await source.DisposeAsync();
+            }
+            catch (Exception error) { failures.Add(new InvalidOperationException("Notepad isolation regression cleanup failed.", error)); }
+            if (failures.Count != 0)
+                retained?.Dispose();
+        }
+        if (failures.Count != 0)
+            throw new AggregateException(failures);
+        using (retained)
+        {
+            Assert.NotNull(retained);
+            Assert.True(retained.HasExited);
+            NotepadSource.RejectLiveProcesses([retained]);
+        }
+    });
+
     private sealed class NotepadBroker : IInputBroker, IAsyncDisposable
     {
         private readonly SemaphoreSlim _serial = new(1, 1);
@@ -366,7 +409,7 @@ public sealed partial class NativeSourceControllerTests
             var existing = Process.GetProcessesByName("notepad");
             try
             {
-                Assert.Empty(existing);
+                RejectLiveProcesses(existing);
             }
             finally { foreach (var process in existing) process.Dispose(); }
             string directory = Path.Combine(Path.GetTempPath(), "TypeLay.NotepadSource." + Guid.NewGuid().ToString("N"));
@@ -381,7 +424,9 @@ public sealed partial class NativeSourceControllerTests
             var source = new NotepadSource(new ChildProcess(info), directory);
             try
             {
-                Assert.Equal(executable, ProcessImage.Read(source._child.Process.SafeHandle), ignoreCase: true);
+                var image = ProcessImage.Read(source._child.Process.SafeHandle);
+                TestContext.Current.TestOutputHelper?.WriteLine($"notepad-start pid={source.ProcessId}; image={image}; started={source._child.Process.StartTime.ToUniversalTime():O}");
+                Assert.Equal(executable, image, ignoreCase: true);
                 Assert.True(IsWow64Process2(source._child.Process.Handle, out ushort machine, out ushort native));
                 Assert.Equal((ushort)0, machine);
                 Assert.Equal((ushort)0x8664, native);
@@ -430,12 +475,53 @@ public sealed partial class NativeSourceControllerTests
                 throw;
             }
         }
+        internal static void RejectLiveProcesses(IEnumerable<Process> existing)
+        {
+            var rejected = new List<string>();
+            foreach (var process in existing)
+            {
+                int pid = process.Id;
+                bool? exited = null;
+                string state;
+                try
+                {
+                    exited = process.HasExited;
+                    state = "exited=" + exited;
+                }
+                catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
+                {
+                    state = "exit-state-unavailable:" + error.GetType().Name;
+                }
+                string identity;
+                try
+                {
+                    string expected = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "notepad.exe");
+                    var image = ProcessImage.Read(process.SafeHandle);
+                    string label = image is null ? "exited" : string.Equals(image, expected, StringComparison.OrdinalIgnoreCase)
+                        ? expected : "other-image";
+                    identity = $"image={label}; started={process.StartTime.ToUniversalTime():O}";
+                }
+                catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+                {
+                    identity = "identity-unavailable:" + error.GetType().Name;
+                }
+                string observation = $"pid={pid}; {state}; {identity}";
+                TestContext.Current.TestOutputHelper?.WriteLine("notepad-preflight " + observation);
+                // This does not authorize terminating or attaching to an existing
+                // process. Live and unqueryable objects still block the scenario.
+                if (exited != true)
+                    rejected.Add(observation);
+            }
+            if (rejected.Count != 0)
+                throw new IOException("notepad-already-running: " + string.Join(" | ", rejected));
+        }
         public async ValueTask DisposeAsync()
         {
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             try
             {
                 await _child.TerminateAndWaitAsync(cleanup.Token);
+                TestContext.Current.TestOutputHelper?.WriteLine($"notepad-cleanup pid={ProcessId}; job-empty=true; root-exited={_child.Process.HasExited}; exit-code={_child.Process.ExitCode}");
             }
             finally { _child.Dispose(); }
             System.IO.Directory.Delete(Directory, true); // Only after whole-family proof.

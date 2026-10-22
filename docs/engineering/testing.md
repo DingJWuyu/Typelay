@@ -98,6 +98,8 @@ python tests/shared/worker/glossary_quality.py --validate-only \
 
 ## Linux 模型包生命周期中的显式质量采集
 
+同分支的默认产品检查与显式 `workflow_dispatch/check_mode=quality-only` 使用两个固定 concurrency group；push、PR、缺省或其它 check_mode 均归 full，不按实验参数增加组。每组仍取消本组旧 run，quality-only 不再取消正在运行的 full。Hy 与 Argos 质量实验由编排者串行派发到同一 quality-only 组，确认上一轮已终态再发下一轮；独立 runner 不共享推理 CPU。此为工作流配置约束，实际跨组并发仍须在 GitHub run 上验证，不能由静态检查推断。
+
 `tests/linux/native_e2e.py --desktop --desktop-scope model-packages --collect-translation-quality` 是显式入口。仅此 scope 接受采集标志；不传标志时，原240秒生命周期、260秒外层和原安装/切换/移除链不变。需先完成正式 Argos 双向安装，并有同期含 ABI5 的发行包、已验证的 Hy 模型/许可证缓存及现嵌套桌面依赖。数据和缓存都必须是本 checkout 的 `artifacts/` 下已存在、当前用户拥有的隔离目录，不能指向用户数据或缓存；输出目录必须全新，已有质量 JSON 不覆盖。入口本身不准备模型、复制权重或制造库存/Ready。
 
 现有 `check.yml` 的手动 `workflow_dispatch` 提供默认 `full` 的 `check_mode`，并可明确选择默认 false 的 `collect_translation_quality`。该输入为 true 或下述 push footer 经严格验证时，将现唯一 Linux 模型包生命周期调用切换为采集模式，输出到全新 `artifacts/linux/quality-capture`；不在成功移除 Hy 及缓存之后重复执行。`check_mode=full` 保持共享、Windows 与 Linux 原检查选择；只设置 `collect_translation_quality=true` 仍运行原完整检查。普通 push、PR 及默认手动执行均不采集。未选择解码对照或固定诊断时，workflow 显式传入 `--combination-only`，采集两个固定原源各四种 operation 的8个响应，替换原53响应采集并关闭额外 Hy 单句预览；完整检查中的原 Argos 自检和其它模型场景仍保留，8不是整轮推理总数。仅显式运行的 Linux job 为70分钟、该步骤为36分钟；原自动路径仍为45分钟、5分钟。采集前 admission 保留原磁盘检查；8响应模式要求至少1477秒：缓存恢复120秒、准备180秒、缓存保存120秒、采集及退出877秒、artifact余量180秒。其它采集模式仍要求2760秒，其中采集及退出2091秒、步骤启动/收尾69秒，其余余量相同；均不再叠加原5分钟生命周期。未准入即停止，不开始缓存准备。
@@ -138,11 +140,13 @@ python tests/linux/native_e2e.py --desktop --desktop-scope model-packages \
 
 ### 可选的 Hy 解码对照
 
-手动运行时，可在 `full` 或上述 `quality-only` 与 `collect_translation_quality=true` 之外明确设置 `hy_decode_comparison=true`。没有 dispatch 入口时，可在上述经验证的 push 采集 footer 同一末尾段中，紧接 `TypeLay-Quality-Capture: true` 下一行仅写 `TypeLay-Hy-Decode-Comparison: true`。两行各出现一次且顺序固定；对照标记单独出现、重复、换序、错误值或不在尾段均不启用采集，并保留完整检查。push 对照仍运行全部共享、Windows、Linux 检查，不提供 quality-only 捷径。该选项与8响应组合模式互斥，使用原53响应路径并将风格槽扩为 A/B 各16次，总计69次。它不改变发行模型或生产默认：A 使用同次实际发行 worker 的 greedy，B 在隔离产物目录中复用已验证 CPU 库编译另一个 adapter。两组使用同一安装代、模型、提示和固定样本，但 native/manifest 摘要必须分别记录，不能冒称同一二进制。
+手动运行时，可在 `full` 或上述 `quality-only` 与 `collect_translation_quality=true` 之外明确设置 `hy_decode_comparison=true`。没有 dispatch 入口时，可在上述经验证的 push 采集 footer 同一末尾段中，紧接 `TypeLay-Quality-Capture: true` 下一行仅写 `TypeLay-Hy-Decode-Comparison: true`。两行各出现一次且顺序固定；对照标记单独出现、重复、换序、错误值或不在尾段均不启用采集，并保留完整检查。push 对照仍运行全部共享、Windows、Linux 检查，不提供 quality-only 捷径。该选项默认 false，与8响应组合及固定诊断模式互斥，只采集普通翻译 A/B 各8次，共16次，不混采 Argos、风格、术语或额外 Hy 预览。风格独立 collector 保留其产品质量用途。它不改变发行模型或生产默认：A 使用同次实际发行 worker 的 greedy，B 在隔离产物目录中复用已验证 CPU 库编译另一个 adapter。两组使用同一安装代、模型、提示和固定样本，但 native/manifest 摘要必须分别记录，不能冒称同一二进制。
+
+CI 在该模式强制 `--cache-only`，先保存两臂 not-run 计划，再验证现有缓存；缺失、链接或哈希不符即失败，不下载补齐、不开始推理。计划在 `quality-plan/*.json`，未运行原因在 `hy-package/cache-verification.json` 及步骤日志；不能把计划当成实际采集。普通 release CI 默认不启用此模式。正式安装原有自检不计入16次采集，不能宣称整轮只有16次推理。
 
 B 采用明确的 Transformers v5.6.0 顺序：repetition penalty 1.05、temperature 0.7、top-k 20、top-p 0.6，最后用逐请求重置的固定 seed `20261020` 采样。这只是原产品资源预算下的四参数对照，不是原厂完整运行配置；ctx1024、新生成192 token、CPU2、2.5 GiB及原 EOG/截断拒绝保持不变。
 
-B 构建、真实 ELF/ABI 检查及 A/B 采集共用原风格槽600秒绝对截止，最终退出清理最多7秒，不增加外层预算。A 响应不完整或退出未确认时不开始 B 推理；不重试、不换 seed、不挑结果。分别保存 `styled-quality.json`、`styled-b-quality.json` 与 `hy-decode/build.json`、`build.log`，逐份核对响应和退出证明。采集或单 seed 样本改善都不能自动开放质量门；仍需逐项审阅全部保义锚点、记录退化及不确定性。
+B 构建、真实 ELF/ABI 检查及 A/B 采集共用600秒绝对截止，最终退出清理最多7秒，不增加外层预算。A 响应不完整或退出未确认时不开始 B 推理；不重试、不换 seed、不挑结果。分别保存 `ordinary-quality.json`、`ordinary-b-quality.json` 与 `ordinary-hy-decode/build.json`、`build.log`，逐份核对响应和退出证明。采集或单 seed 样本改善都不能自动开放质量门；仍需逐项审阅全部保义锚点、记录退化及不确定性。
 
 ## 结果表述
 
@@ -166,11 +170,11 @@ python tests/shared/worker/ordinary_quality.py --python "$HY_PYTHON" --models "$
 
 ### 显式固定模型根因诊断（40 响应）
 
-需要实际定位 Argos 原始候选与选择边界、Hy ordinary 与 styled 提示路径时，可在 `collect_translation_quality=true` 之外明确选择 `fixed_model_diagnostics=true`。它与 `hy_decode_comparison` 互斥，替换而非追加默认8响应组合采集或原53/69采集。无 dispatch 入口时，沿上述严格校验的 push footer，最后一个空行分隔段仅含相邻两行，依次为 `TypeLay-Quality-Capture: true` 与 `TypeLay-Fixed-Model-Diagnostics: true`。两行必须唯一、精确且顺序固定；与 comparison 共选或畸形标记不采集，完整检查保留。普通 push/default manual 行为不变。
+需要实际定位 Argos 原始候选与选择边界、Hy ordinary 与 styled 提示路径时，可在 `collect_translation_quality=true` 之外明确选择 `fixed_model_diagnostics=true`。它与 `hy_decode_comparison` 互斥，替换而非追加默认8响应组合采集或原53响应采集。无 dispatch 入口时，沿上述严格校验的 push footer，最后一个空行分隔段仅含相邻两行，依次为 `TypeLay-Quality-Capture: true` 与 `TypeLay-Fixed-Model-Diagnostics: true`。两行必须唯一、精确且顺序固定；与 comparison 共选或畸形标记不采集，完整检查保留。普通 push/default manual 行为不变。
 
 该选项只在原包生命周期的 Argos Ready/退出/同代独占锁之后执行 `alternative_quality.py --capture-decoding-boundary` 的32请求，Hy Ready/退出后执行 `ordinary_quality.py` 的8请求，合计40个诊断响应及另计2个 hello。不会执行 styled、glossary 或 B 采样；原生命周期自身的普通翻译 smoke 仍保留，另计且不是这40个诊断样本。instrumented Argos 入口必须先通过现有完整发行 worker Python 模块、requirements/catalog、模型/CPU锁及 ABI5 manifest 同源核验，原始报告明确记录插桩方法与 observer SHA；Hy 使用真实发行 worker 原 greedy。两模型各自固定输入、原始响应、库存与 worker 身份分开记录，不跨安装代或 native 版本冒称成对因果。
 
-复用同一现役安装、宿主退出与重启、精确代锁和退出确认，不增加模型所有者。诊断模式下 Hy cache preparation 使用 `--cache-only`，必须已有固定缓存完整文件，缺失、链接或哈希错误直接失败，禁止下载补齐；Argos 使用本次原有正式安装。原70分钟job、36分钟步骤、2061秒工作窗/30秒外层清理及每runner600秒/7秒清理均不增加。输出仍为 `quality-capture/alternative-quality.json`、`ordinary-quality.json` 和生命周期汇总，禁止覆盖；不新增模型或 HOME artifact。失败不重试或续跑，独立CLI的53响应和可选69响应路径保持原行为。此入口和无模型行为测试不是实测响应或质量放行，采集完成仍须按原义等锚点人工审阅，三项质量门保持关闭。
+复用同一现役安装、宿主退出与重启、精确代锁和退出确认，不增加模型所有者。诊断模式下 Hy cache preparation 使用 `--cache-only`，必须已有固定缓存完整文件，缺失、链接或哈希错误直接失败，禁止下载补齐；Argos 使用本次原有正式安装。原70分钟job、36分钟步骤、2061秒工作窗/30秒外层清理及每runner600秒/7秒清理均不增加。输出仍为 `quality-capture/alternative-quality.json`、`ordinary-quality.json` 和生命周期汇总，禁止覆盖；不新增模型或 HOME artifact。失败不重试或续跑，独立CLI的53响应路径保持原行为，解码对照改为上述16响应普通翻译。此入口和无模型行为测试不是实测响应或质量放行，采集完成仍须按原义等锚点人工审阅，三项质量门保持关闭。
 
 ## GTK 语言预览拒绝回归
 
@@ -195,3 +199,24 @@ python tests/shared/worker/ordinary_quality.py --python "$HY_PYTHON" --models "$
 `ordinary-gimp` 保留两张独立临时图像、同原文与实际译文、一次 TypeLay direct 和一次真实用户粘贴，各执行固定两次 Ctrl+Z。比较的是这两个实际轨迹，不循环重试到原文出现，也不向 GIMP 注入历史。GIMP `3.2.6-2` 的 Image Properties → Comment 本身不为评论修改建立 Undo：官方 [GIMP_3_2_6 comment editor](https://github.com/GNOME/gimp/blob/GIMP_3_2_6/app/widgets/gimpimagecommenteditor.c#L214-L218) 只设 `GIMP_PARASITE_PERSISTENT`；[image attach/detach](https://github.com/GNOME/gimp/blob/GIMP_3_2_6/app/core/gimpimage.c#L4499-L4502) 仅在 `UNDOABLE` 时推入历史，二者是[不同 flags](https://github.com/GNOME/gimp/blob/GIMP_3_2_6/libgimpbase/gimpparasite.h#L59-L75)。
 
 仅该已核版本/字段且原生粘贴两次均保持译文、TypeLay 完整轨迹相同时，报告 `nativeUndoSupported=false`、`undoRestoration=not-supported`，兼容性轨迹匹配单独记录，不宣称 Undo 功能通过或不存在的历史得到恢复。未来原生基线若实际恢复原文，则要求 TypeLay 同样完整轨迹；未知版本的不恢复行为、任意轨迹差异或动作数变化均失败。此项遵守规格 §17.2 的文本归属和 ADR-0002 请求保留宿主撤销语义，不改变冻结规格，不证明其它字段或已有图像编辑历史的完整性。普通应用退出、取消断开、恢复配置和 guardian 退出证明仍须继续完成，局部替换通过不等于整条验收通过。
+
+## Hy 普通翻译解码对照
+
+普通质量线的独立对照入口是 `ordinary_quality.py --decode-comparison`。它不接入自动 CI，不安装或下载资源。只复用正式安装成功的 Hy1.8B Q4_K_M、同期发行 worker 与 CPU runtime；调用点在 `hy_package_e2e.py` 安装并切换 Hy 成功后、移除前，路径与上述质量采集一致。准备阶段不能记作实际配置尝试。
+
+```sh
+PYTHONPATH=src/shared/TypeLay.Worker python tests/shared/worker/ordinary_quality.py \
+  --decode-comparison --validate-only \
+  --output artifacts/hy-ordinary-ab/ordinary-quality.json
+# 实际执行须先确认已有安装、发行包与预算，用新的输出目录：
+PYTHONPATH=src/shared/TypeLay.Worker python tests/shared/worker/ordinary_quality.py \
+  --decode-comparison --python "$components/runtime/venv/bin/python" \
+  --models "$components/models" --worker "$bundle/worker/run_worker.py" \
+  --output artifacts/hy-ordinary-ab-run/ordinary-quality.json
+```
+
+固定原四句与已冻结四句，共 8 句，每臂每句一次普通翻译，共 16 次。A 为生产 greedy，B 为已有 repetitionPenalty=1.05、temperature=0.7、top_k=20、top_p=0.6、seed=20261020（每请求重置）组合。两臂沿用同一普通 prompt、官方内嵌对话模板、worker 与模型库存，只改变 decoder；此组合对照不能区分其中每个参数的独立作用。B 的派生 adapter 只在忽略目录构建，不改生产默认或锁文件。
+
+共享 600 秒含构建与两臂，2 线程、单模型、2.5 GiB 地址空间；每请求仍为生产 60 秒/收帧 65 秒，构建及每臂退出各保留原最多 7 秒清理。无需复制模型；运行前另留至少 256 MiB 临时磁盘，实际构建占用仍须检查。身份不符、A 不完整、超时、拒绝或清理未确认即停止，不重跑挑结果。输出不可覆盖，分别为 `ordinary-quality.json`、`ordinary-b-quality.json` 与 `ordinary-hy-decode/` 构建证据；validate-only 只生成两个 not-run 计划并返回 2。
+
+报告保留输入、逐条原始响应/拒绝码/耗时、worker/native/源文件/库存身份及固定参数。`promptIdentity` 记录源码中的指令表达式和完整模板，明确不是运行时 token 轨迹；native 未暴露 token 数和结束原因，截断状态保留未知，不能把非空输出当作未截断。质量保持 not-reviewed，按既有语义锚点人工比较否定、数字、主体、条件、承诺及增漏义；当前句子已参与过诊断，不称为未见测试集。第二阶段若有依据，再固定一个 decoder 对比官方 prompt 与单个保义约束 prompt；本入口不实现 prompt 搜索或多模型评审，也不同时改变 prompt 与 decoder。

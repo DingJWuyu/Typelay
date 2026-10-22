@@ -100,6 +100,29 @@ public sealed class EditingWorkflowTests
         Assert.Equal("My wording", session.Preview);
     }
 
+    [Fact]
+    public void AttributedModifierRebaseRetainsOnlyCandidateNotOldPlans()
+    {
+        var (session, source) = Ready();
+        Assert.True(session.BeginEdit());
+        session.ChangeDraft("My wording");
+        Assert.True(session.ConfirmSourceReturn(source, 1300));
+        var oldPlan = Assert.IsType<WritePlan>(session.Prepare(source, Context(source), 1300).Plan);
+        var fresh = source with
+        {
+            InputEpoch = source.InputEpoch + 1,
+            ObservedAtMs = 1320
+        };
+        Assert.True(session.RebaseManualCandidate(source, fresh, 1320));
+        Assert.Equal("My wording", session.Candidate);
+        Assert.Equal(fresh, session.Current);
+        Assert.False(session.BeginWrite(oldPlan));
+        Assert.False(session.RebaseManualCandidate(source, fresh, 1320));
+        var next = Assert.IsType<WritePlan>(session.Prepare(fresh, Context(fresh), 1320).Plan);
+        Assert.NotEqual(oldPlan.Revision, next.Revision);
+        Assert.True(session.BeginWrite(next));
+    }
+
     [Fact(DisplayName = "manual-return-failure-preserves-draft")]
     public void ManualReturnFailurePreservesDraft()
     {

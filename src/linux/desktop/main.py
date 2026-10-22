@@ -232,7 +232,33 @@ def install_models(paths):
 def doctor(paths):
     from niri import contents, request
 
+    # Check settings dependencies in the launcher interpreter. Do not import
+    # Gtk: its Python overrides call init_check even without an explicit call.
+    dependencies = {"gtk3Typelib": False, "glibEventLoop": False}
+    try:
+        import gi
+
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("Gdk", "3.0")
+        dependencies["gtk3Typelib"] = True
+    except (ImportError, ValueError, OSError, RuntimeError):
+        pass
+    try:
+        from gi.events import GLibEventLoop
+
+        dependencies["glibEventLoop"] = callable(GLibEventLoop)
+    except (ImportError, ValueError, OSError, RuntimeError):
+        pass
     result = {
+        "desktopDependencies": dependencies,
+        "desktopDependencyHelp": (
+            None
+            if all(dependencies.values())
+            else "设置界面的系统 Python 依赖不可用。请在 CachyOS 检查 "
+            "pacman -Q python python-gobject gtk3；确认 /usr/bin/python3 可找到 GTK3 类型库并加载 "
+            "gi.events。通过系统包管理器修复后，重新运行 ~/.local/bin/typelay --doctor。"
+            "重装翻译模型不会修复这些桌面依赖。"
+        ),
         "target": "CachyOS x86_64 / niri / Wayland",
         "wayland": bool(os.environ.get("WAYLAND_DISPLAY")),
         "hostInstalled": (paths.home / "app/TypeLay.Linux").is_file(),
@@ -250,7 +276,14 @@ def doctor(paths):
     except (OSError, EOFError, ValueError):
         result["session"] = None
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0 if result["wayland"] and result["niriVersion"] and result["hostInstalled"] else 1
+    return (
+        0
+        if result["wayland"]
+        and result["niriVersion"]
+        and result["hostInstalled"]
+        and all(dependencies.values())
+        else 1
+    )
 
 
 async def translate_editor_snapshot(host, request, timeout):

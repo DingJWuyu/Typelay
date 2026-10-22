@@ -312,7 +312,7 @@ internal sealed partial class BrowserInput
                 ownerId = owner.Id,
                 generation = owner.Generation,
                 grantSequence = owner.GrantSequence,
-                traceOwner = TraceEnabled
+                traceOwner = OwnerTraceEnabled
             });
         else if (owner.MaxIssuedExpiry == 0)
             owner.RetirementAcknowledged = true;
@@ -403,7 +403,7 @@ internal sealed partial class BrowserInput
             documentToken = owner.Route.DocumentToken,
             ownerId = owner.Id,
             generation = owner.Generation,
-            traceOwner = TraceEnabled
+            traceOwner = OwnerTraceEnabled
         }, (int)Math.Max(1, owner.EstablishUntil - WindowsInterruptClock.NowMs));
         if (_commandOwner != owner)
         {
@@ -521,7 +521,7 @@ internal sealed partial class BrowserInput
                 expiresAtMs = expiry,
                 authority = policy.Authority,
                 releasedAtMs = _hook.CommandsReleasedAt,
-                traceOwner = TraceEnabled
+                traceOwner = OwnerTraceEnabled
             });
         }
         else
@@ -532,7 +532,7 @@ internal sealed partial class BrowserInput
                 generation = owner.Generation,
                 grantSequence = sequence,
                 expiresAtMs = expiry,
-                traceOwner = TraceEnabled
+                traceOwner = OwnerTraceEnabled
             });
         TraceOwner(activate ? OwnerStage.Activate : OwnerStage.Renew, OwnerReason.Sent, owner, now);
     }
@@ -724,7 +724,7 @@ internal sealed partial class BrowserInput
             ownerId = owner.Id,
             generation = owner.Generation,
             authority = policy.Authority,
-            traceOwner = TraceEnabled
+            traceOwner = OwnerTraceEnabled
         }, (int)Math.Max(1, policy.ExpiresAt - WindowsInterruptClock.NowMs));
         OwnerReason reason;
         long? now = null;

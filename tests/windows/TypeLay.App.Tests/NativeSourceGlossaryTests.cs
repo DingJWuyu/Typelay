@@ -36,15 +36,16 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
         string directory = Path.Combine(Path.GetTempPath(), "TypeLay.SourceGlossary." + Guid.NewGuid().ToString("N"));
         string? returnFocus = action == "barrier-wrong-field" ? "second"
             : action.StartsWith("return-", StringComparison.Ordinal) ? action[7..] : null;
-        await using var native = await ProductionForegroundWriteTests.Desktop.Start(returnFocus: returnFocus, returnTrace: Path.Combine(directory, "return"));
-        var overlay = new OverlayWindow(clientAreaAnimation: () => false);
-        using var monitor = new KeyboardHook(allowInjectedInput: true, editorHwnd: overlay.Handle);
-        while (!monitor.ShortcutsReady)
-            await Task.Delay(10, native.Token);
-        overlay.ConfigureOrdinaryInput(monitor);
-        Directory.CreateDirectory(directory);
+        var native = await ProductionForegroundWriteTests.Desktop.Start(returnFocus: returnFocus, returnTrace: Path.Combine(directory, "return"));
+        Exception? scenarioFailure = null;
         try
         {
+            var overlay = new OverlayWindow(clientAreaAnimation: () => false);
+            using var monitor = new KeyboardHook(allowInjectedInput: true, editorHwnd: overlay.Handle);
+            while (!monitor.ShortcutsReady)
+                await Task.Delay(10, native.Token);
+            overlay.ConfigureOrdinaryInput(monitor);
+            Directory.CreateDirectory(directory);
             var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
             var broker = new FixtureBroker(native);
             using var input = new WindowsInputService(broker, overlay.Handle, monitor: monitor);
@@ -272,10 +273,32 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
             view.HideQuietly();
             Assert.False(view.IsGlossarySourceWindowCurrent(entry!, initialEpoch, initialEpoch));
         }
+        catch (Exception error)
+        {
+            scenarioFailure = error;
+            throw;
+        }
         finally
         {
+            // The Broker may append its terminal trace after replying. Retire
+            // its real process before reading or deleting the trace directory.
+            Exception? cleanupFailure = null;
+            try
+            {
+                await native.DisposeAsync();
+            }
+            catch (Exception error) { cleanupFailure = error; }
             WriteReturnTrace(directory);
-            Directory.Delete(directory, true);
+            if (cleanupFailure is not null)
+            {
+                if (scenarioFailure is not null)
+                    throw new AggregateException("Source glossary scenario and process cleanup failed.", scenarioFailure, cleanupFailure);
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(cleanupFailure).Throw();
+            }
+            // Keep the trace when the scenario failed; cleanup must not mask
+            // its original assertion or destroy the corresponding evidence.
+            if (scenarioFailure is null)
+                Directory.Delete(directory, true);
         }
     });
 

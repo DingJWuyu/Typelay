@@ -532,14 +532,21 @@ public sealed class BrowserContractTests
     }
 
     [Fact]
-    public void BrowserTraceNoiseCannotConsumeReservedCommandAndReceiptBudget()
+    public void BrowserTraceNoiseCannotConsumeReservedOwnerCommandAndReceiptBudgets()
     {
         var budget = new BrowserTraceBudget();
-        for (int index = 0; index < 224; index++)
+        for (int index = 0; index < 160; index++)
             Assert.True(budget.TryTake("browser-observation"));
         Assert.False(budget.GeneralAvailable);
         Assert.True(budget.CommandsAvailable);
-        Assert.False(budget.TryTake("browser-owner"));
+        Assert.True(budget.OwnersAvailable);
+        string[] owners = ["browser-owner", "browser-page-owner", "browser-tray"];
+        for (int index = 0; index < 64; index++)
+            Assert.True(budget.TryTake(owners[index % owners.Length]));
+        Assert.False(budget.OwnersAvailable);
+        foreach (string operation in owners)
+            Assert.False(budget.TryTake(operation));
+        Assert.True(budget.CommandsAvailable);
         Assert.False(budget.TryTake("browser-direct-unrecognized"));
         string[] commands = ["browser-command-approved", "browser-command-path", "browser-direct-Verified",
             "browser-direct-RejectedBeforeMutation", "browser-direct-OutcomeUnknown",

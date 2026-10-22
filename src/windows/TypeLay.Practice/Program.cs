@@ -1094,7 +1094,8 @@ internal static partial class Program
     private static void InstallPlan(OwnedAcceptanceControl control, long? readCompletedAtMs, long? guiDequeuedAtMs)
     {
         bool trace = readCompletedAtMs is not null && _installTraceCount < 16;
-        long? appliedAtMs = null, ackWrittenAtMs = null;
+        long? mappingOpenedAtMs = null, planReadAtMs = null, resultOpenedAtMs = null;
+        long? validatedAtMs = null, appliedAtMs = null, ackWrittenAtMs = null;
         try
         {
             if (_editorFence is not null || _witnessFailed || _witness is null || _witness.Poisoned || _plan is not null
@@ -1103,8 +1104,14 @@ internal static partial class Program
                 || control.ResultBytes != OwnedPracticeAcceptanceProtocol.BodyBytes)
                 throw new InvalidDataException("practice-install-order");
             using var mapping = OwnedMapping.Open(control.PlanHandle, control.PlanBytes, false);
+            if (trace)
+                mappingOpenedAtMs = WindowsInterruptClock.NowMs;
             var plan = OwnedPracticeAcceptanceProtocol.ReadPlan(mapping); // Copy before granting anything.
+            if (trace)
+                planReadAtMs = WindowsInterruptClock.NowMs;
             _resultMapping = OwnedMapping.Open(control.ResultHandle, control.ResultBytes, true);
+            if (trace)
+                resultOpenedAtMs = WindowsInterruptClock.NowMs;
             if (plan.Connection != _connection || plan.Run != _run || plan.PlanSequence != control.PlanSequence
                 || plan.Permit.Plan.Id != control.PlanId || plan.Descriptor != Descriptor()
                 || _returnedSeal is { } returned && (plan.Descriptor != returned.Descriptor
@@ -1117,6 +1124,8 @@ internal static partial class Program
                 || target.Provider != "win32-edit-transaction-v2" || target.Lifetime == Guid.Empty
                 || WriteSafety.Validate(plan.Permit.Plan, plan.Permit.Plan.Expected, WindowsInterruptClock.NowMs) != Denial.None)
                 throw new InvalidDataException("practice-install-identity");
+            if (trace)
+                validatedAtMs = WindowsInterruptClock.NowMs;
             ClearPrefixProof();
             _plan = plan;
             _lastPlanSequence = plan.PlanSequence;
@@ -1145,6 +1154,10 @@ internal static partial class Program
                     planSequence = control.PlanSequence,
                     readCompletedAtMs,
                     guiDequeuedAtMs,
+                    mappingOpenedAtMs,
+                    planReadAtMs,
+                    resultOpenedAtMs,
+                    validatedAtMs,
                     appliedAtMs,
                     ackWrittenAtMs,
                     finishedAtMs = WindowsInterruptClock.NowMs

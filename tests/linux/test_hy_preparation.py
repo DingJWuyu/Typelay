@@ -114,6 +114,27 @@ class RuntimePreparationTests(unittest.TestCase):
                 prepare_cache(package, cache, cache_only=True)
             download.assert_not_called()
 
+    def test_cache_only_cli_failure_records_not_run_without_creating_cache(self):
+        output = io.StringIO()
+        cache = self.root / "absent-cache"
+        argv = [
+            "hy_package_e2e.py",
+            "--prepare-cache",
+            "--cache-only",
+            "--package",
+            str(self.root / "absent-package"),
+            "--cache",
+            str(cache),
+        ]
+        with patch.object(sys, "argv", argv), redirect_stdout(output), self.assertRaises(OSError):
+            runpy.run_path(str(ROOT / "tests/linux/hy_package_e2e.py"), run_name="__main__")
+        report = json.loads(output.getvalue())
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["quality"], "not-run")
+        self.assertEqual(report["workerStarts"], 0)
+        self.assertTrue(report["cacheOnly"])
+        self.assertFalse(cache.exists())
+
     def test_lifecycle_disk_budget_reserves_all_generations_and_cache(self):
         package = self.root / "package"
         package_worker(package)
