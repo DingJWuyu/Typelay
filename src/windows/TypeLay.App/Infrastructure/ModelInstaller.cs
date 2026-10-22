@@ -15,6 +15,8 @@ internal sealed record DownloadLock(string Name, string Version, string Url, str
 internal sealed class ModelInstaller
 {
     private readonly string _data, _worker, _cache, _localPackages;
+    private readonly ModelPackageCatalog _catalog;
+    private readonly Func<string, long> _availableDiskBytes;
     private string? _sourceModels;
     public bool CleanupPending
     {
@@ -24,12 +26,15 @@ internal sealed class ModelInstaller
     public ModelInstaller() : this(AppPaths.Data, AppPaths.Worker) { }
     internal ModelInstaller(string data, string worker, HttpMessageHandler? handler = null,
         TimeSpan? downloadTimeout = null, Func<ProcessStartInfo, IChildProcess>? startProcess = null,
-        TimeSpan? selfCheckTimeout = null, string? localPackages = null)
+        TimeSpan? selfCheckTimeout = null, string? localPackages = null, ModelPackageCatalog? catalog = null,
+        Func<string, long>? availableDiskBytes = null)
     {
         _data = Path.GetFullPath(data);
         _worker = Path.GetFullPath(worker);
         _cache = Path.Combine(_data, "downloads");
         _localPackages = localPackages ?? DefaultLocalPackages;
+        _catalog = catalog ?? ModelCatalog.Packages;
+        _availableDiskBytes = availableDiskBytes ?? AvailableDiskBytes;
         _http = new HttpClient(handler ?? new HttpClientHandler
         {
             AllowAutoRedirect = false,
@@ -74,7 +79,7 @@ internal sealed class ModelInstaller
         var stage = ModelSetupStage.Prepare;
         try
         {
-            string[] requested = requestedDirections?.ToArray() ?? ModelCatalog.Directions.Select(direction => direction.Id).ToArray();
+            string[] requested = requestedDirections?.ToArray() ?? _catalog.LegacyDirections.Select(direction => direction.Id).ToArray();
             if (!ModelCatalog.IsValidDirectionSet(requested))
                 throw new InvalidDataException("model-directions");
             ct.ThrowIfCancellationRequested();
@@ -92,7 +97,7 @@ internal sealed class ModelInstaller
             {
                 committed = [];
             }
-            var directions = ModelCatalog.Directions.Where(direction => requested.Contains(direction.Id, StringComparer.Ordinal)
+            var directions = _catalog.LegacyDirections.Where(direction => requested.Contains(direction.Id, StringComparer.Ordinal)
                 || committed.Contains(direction.Id, StringComparer.Ordinal)).ToArray();
             var selected = Array.AsReadOnly(directions.Select(direction => direction.Id).ToArray());
             _sourceModels = lease.ActivePaths.Models;
@@ -112,13 +117,12 @@ internal sealed class ModelInstaller
                     continue;
                 stage = ModelSetupStage.ModelDownload;
                 string modelUrl = direction.Url;
-                string archive = await Download(modelUrl, pair + "-" + direction.Version + ".argosmodel", null,
-                    $"下载{direction.SourceName} → {direction.TargetName} 模型", progress, ct);
-                // Argos publishes no archive checksum for these entries. HTTPS is the first-install
-                // authenticity boundary; the observed SHA is recorded, not misrepresented as upstream-pinned.
+                string archive = await Download(modelUrl, pair + "-" + direction.Version + ".argosmodel", direction.ArchivePin?.Sha256,
+                    $"下载{direction.SourceName} → {direction.TargetName} 模型", progress, ct, direction.ArchivePin?.Bytes);
+                // The catalog pin identifies a project-reviewed archive, not an upstream signature.
                 string extraction = Path.Combine(staging, pair);
                 stage = ModelSetupStage.ModelExtract;
-                await Task.Run(() => Extract(archive, extraction, stage, ct), ct);
+                await Task.Run(() => Extract(archive, extraction, stage, ct, direction.ArchivePin), ct);
                 stage = ModelSetupStage.ModelVerify;
                 string package;
                 try
@@ -147,7 +151,7 @@ internal sealed class ModelInstaller
                 Directory.Move(Path.Combine(package, "model"), Path.Combine(dest, "model"));
                 foreach (string file in Directory.GetFiles(package))
                     File.Copy(file, Path.Combine(dest, Path.GetFileName(file)), true);
-                _locks.Add(new("argos-" + pair, direction.Version, modelUrl, await Hash(archive, ct)));
+                _locks.Add(new("argos-" + pair, direction.Version, modelUrl, direction.ArchivePin?.Sha256 ?? await Hash(archive, ct)));
                 Directory.Delete(extraction, recursive: true);
             }
             stage = ModelSetupStage.ModelVerify;
@@ -331,7 +335,8 @@ internal sealed class ModelInstaller
                 files
             }, InventoryJson), ct);
     }
-    private static async Task CopyVerified(string source, string target, IReadOnlyList<FileEntry> expected, CancellationToken ct)
+    private static async Task<long> CopyVerified(string source, string target, IReadOnlyList<FileEntry> expected,
+        CancellationToken ct, long maxBytes)
     {
         if (expected.Count == 0 || expected.Count > 30000
             || expected.Select(file => file.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() != expected.Count)
@@ -339,22 +344,28 @@ internal sealed class ModelInstaller
         var actual = SafeFiles(source).Select(file => Path.GetRelativePath(source, file).Replace('\\', '/')).ToHashSet(StringComparer.Ordinal);
         if (!actual.SetEquals(expected.Select(file => file.Path)))
             throw new InvalidDataException("component-inventory");
+        long copied = 0;
         foreach (var file in expected)
         {
             ct.ThrowIfCancellationRequested();
             string input = FilePath(source, file.Path), output = FilePath(target, file.Path);
+            long size = new FileInfo(input).Length;
+            if (size > maxBytes - copied)
+                throw new InvalidDataException("component-size");
             if (file.Sha256.Length != 64 || !file.Sha256.All(Uri.IsHexDigit)
                 || !string.Equals(await Hash(input, ct), file.Sha256, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("component-integrity");
             Directory.CreateDirectory(Path.GetDirectoryName(output)!);
             await using (var from = File.OpenRead(input))
             await using (var to = new FileStream(output, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, true))
-                await from.CopyToAsync(to, ct);
+                await CopyExact(from, to, size, ct);
             if (!string.Equals(await Hash(output, ct), file.Sha256, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("component-integrity");
+            copied += size;
         }
+        return copied;
     }
-    private static async Task CopyRuntime(string source, string target, CancellationToken ct)
+    private static async Task<long> CopyRuntime(string source, string target, CancellationToken ct, long maxBytes)
     {
         string marker = Path.Combine(source, "runtime-inventory.json");
         if (!File.Exists(marker) || new FileInfo(marker).Length > 8 * 1024 * 1024
@@ -367,16 +378,18 @@ internal sealed class ModelInstaller
             ?? throw new InvalidDataException("runtime-repair-required");
         if (!files.Any(file => file.Path == "python/tools/python.exe"))
             throw new InvalidDataException("runtime-repair-required");
-        await CopyVerified(Path.Combine(source, "runtime"), Path.Combine(target, "runtime"), files, ct);
+        long copied = await CopyVerified(Path.Combine(source, "runtime"), Path.Combine(target, "runtime"), files, ct, maxBytes);
         File.Copy(marker, Path.Combine(target, "runtime-inventory.json"));
+        return copied;
     }
-    private void Preflight(string sourceRoot, ModelInstallationStore.PreparedInstallation prepared)
+    private long Preflight(string sourceRoot, ModelInstallationStore.PreparedInstallation prepared)
     {
-        long bytes = 64L * 1024 * 1024;
+        long sourceCopyBytes = 0;
         foreach (string name in new[] { "runtime", "models" })
             if (Directory.Exists(Path.Combine(sourceRoot, name)))
                 foreach (string file in SafeFiles(Path.Combine(sourceRoot, name)))
-                    bytes = checked(bytes + new FileInfo(file).Length);
+                    sourceCopyBytes = checked(sourceCopyBytes + new FileInfo(file).Length);
+        long bytes = checked(64L * 1024 * 1024 + sourceCopyBytes);
         var request = prepared.Request!;
         if (request.Operation is ModelPackageOperation.Install or ModelPackageOperation.Repair)
         {
@@ -385,16 +398,26 @@ internal sealed class ModelInstaller
             bytes = checked(bytes + 4L * 1024 * 1024 * 1024);
             foreach (string id in request.PackageIds)
             {
-                var package = ModelCatalog.Packages.Packages.Single(item => item.Id == id);
-                bytes = checked(bytes + (ModelCatalog.PackageDownloadBytes(package) is { } size
-                    ? checked(size * 2) : 3L * 1024 * 1024 * 1024));
+                var package = _catalog.Packages.Single(item => item.Id == id);
+                // Argos keeps its archive, extraction and verified staged copy on this
+                // volume simultaneously. Display bytes alone are not a disk budget.
+                long packageBytes = package.Backend == "argos"
+                    ? package.ArchivePin is { } pin ? Math.Max(3L * 1024 * 1024 * 1024, checked(pin.Bytes + 2 * pin.UnpackedBytes))
+                        : 5L * 1024 * 1024 * 1024
+                    : ModelCatalog.PackageDownloadBytes(package) is { } size ? checked(size * 2) : 3L * 1024 * 1024 * 1024;
+                bytes = checked(bytes + packageBytes);
             }
         }
-        var volume = DriveInfo.GetDrives().Where(drive => _data == drive.Name.TrimEnd(Path.DirectorySeparatorChar)
-            || _data.StartsWith(drive.Name.EndsWith(Path.DirectorySeparatorChar) ? drive.Name : drive.Name + Path.DirectorySeparatorChar,
-                StringComparison.OrdinalIgnoreCase)).OrderByDescending(drive => drive.Name.Length).First();
-        if (volume.AvailableFreeSpace < bytes)
+        if (_availableDiskBytes(_data) < bytes)
             throw new IOException("component-disk-space", unchecked((int)0x80070070));
+        return sourceCopyBytes;
+    }
+    private static long AvailableDiskBytes(string data)
+    {
+        var volume = DriveInfo.GetDrives().Where(drive => data == drive.Name.TrimEnd(Path.DirectorySeparatorChar)
+            || data.StartsWith(drive.Name.EndsWith(Path.DirectorySeparatorChar) ? drive.Name : drive.Name + Path.DirectorySeparatorChar,
+                StringComparison.OrdinalIgnoreCase)).OrderByDescending(drive => drive.Name.Length).First();
+        return volume.AvailableFreeSpace;
     }
     public Task<ModelInstallationStore.PreparedInstallation> PreparePackagesAsync(ModelPackageRequest request,
         IProgress<SetupProgress> progress, CancellationToken ct) =>
@@ -415,10 +438,10 @@ internal sealed class ModelInstaller
             request = prepared.Request!;
             var state = prepared.Source!;
             string sourceRoot = Path.GetDirectoryName(lease.ActivePaths.Models)!;
-            Preflight(sourceRoot, prepared);
+            long remainingSourceCopyBytes = Preflight(sourceRoot, prepared);
             stage = ModelSetupStage.Runtime;
             if (request.Operation is ModelPackageOperation.Select or ModelPackageOperation.Remove)
-                await CopyRuntime(sourceRoot, prepared.Root, ct);
+                remainingSourceCopyBytes -= await CopyRuntime(sourceRoot, prepared.Root, ct, remainingSourceCopyBytes);
             else
             {
                 Directory.CreateDirectory(_cache);
@@ -426,10 +449,11 @@ internal sealed class ModelInstaller
                 // reused; missing or damaged runtime bytes are repaired here only.
                 try
                 {
-                    await CopyRuntime(sourceRoot, prepared.Root, ct);
+                    remainingSourceCopyBytes -= await CopyRuntime(sourceRoot, prepared.Root, ct, remainingSourceCopyBytes);
                 }
-                catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException
-                    or JsonException or KeyNotFoundException or InvalidOperationException)
+                catch (Exception error) when (error is not InvalidDataException { Message: "component-size" }
+                    && (error is IOException or UnauthorizedAccessException or InvalidDataException
+                        or JsonException or KeyNotFoundException or InvalidOperationException))
                 {
                     string runtime = Path.Combine(prepared.Root, "runtime");
                     if (Directory.Exists(runtime))
@@ -450,13 +474,14 @@ internal sealed class ModelInstaller
                 string source = legacy ? Path.Combine(lease.ActivePaths.Models, item.Directions.Single().Id)
                     : PackageRoot(lease.ActivePaths.Models, item.Package);
                 var files = item.Files.Select(file => new FileEntry(file.Path, file.Sha256)).ToArray();
-                await CopyVerified(source, PackageRoot(prepared.Paths.Models, item.Package), files, ct);
+                remainingSourceCopyBytes -= await CopyVerified(source, PackageRoot(prepared.Paths.Models, item.Package),
+                    files, ct, remainingSourceCopyBytes);
                 packages.Add(new(item.Package.Id, item.Package.Version, item.Directions.Select(direction => direction.Id).ToArray(), files));
             }
             if (request.Operation is ModelPackageOperation.Install or ModelPackageOperation.Repair)
                 foreach (string id in request.PackageIds)
                 {
-                    var package = ModelCatalog.Packages.Packages.Single(item => item.Id == id);
+                    var package = _catalog.Packages.Single(item => item.Id == id);
                     string destination = PackageRoot(prepared.Paths.Models, package);
                     stage = ModelSetupStage.ModelDownload;
                     if (package.Backend == "hy-mt-llama-cpu")
@@ -506,10 +531,10 @@ internal sealed class ModelInstaller
         IProgress<SetupProgress> progress, CancellationToken ct)
     {
         var direction = package.Directions.Single();
-        string archive = await Download(package.Url, direction.Id + "-" + package.Version + ".argosmodel", null,
-            "下载 " + direction.SourceName + " → " + direction.TargetName, progress, ct);
+        string archive = await Download(package.Url, direction.Id + "-" + package.Version + ".argosmodel", package.ArchivePin?.Sha256,
+            "下载 " + direction.SourceName + " → " + direction.TargetName, progress, ct, package.ArchivePin?.Bytes);
         string extraction = Path.Combine(staging, "extract-" + package.Id);
-        Extract(archive, extraction, ModelSetupStage.ModelExtract, ct);
+        Extract(archive, extraction, ModelSetupStage.ModelExtract, ct, package.ArchivePin);
         try
         {
             var metadataPaths = Directory.GetFiles(extraction, "metadata.json", SearchOption.AllDirectories);
@@ -523,8 +548,9 @@ internal sealed class ModelInstaller
             string root = Path.GetDirectoryName(metadataPaths[0])!;
             foreach (string relative in ModelFiles)
                 RequireModelFile(Path.Combine(root, relative));
-            await CopyVerified(root, destination, await InventoryFiles(root, ct), ct);
-            _locks.Add(new(package.Id, package.Version, package.Url, await Hash(archive, ct)));
+            await CopyVerified(root, destination, await InventoryFiles(root, ct), ct,
+                package.ArchivePin?.UnpackedBytes ?? 2L * 1024 * 1024 * 1024);
+            _locks.Add(new(package.Id, package.Version, package.Url, package.ArchivePin?.Sha256 ?? await Hash(archive, ct)));
         }
         catch (Exception error) when (error is InvalidDataException or JsonException or KeyNotFoundException or InvalidOperationException)
         {
@@ -629,14 +655,19 @@ internal sealed class ModelInstaller
                         || !string.Equals(await Hash(Path.Combine(source, relative), ct), hash, StringComparison.OrdinalIgnoreCase))
                         return false;
             }
+            long copied = 0;
             foreach (string relative in ModelFiles)
             {
                 ct.ThrowIfCancellationRequested();
                 string target = Path.Combine(destination, relative);
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                 await using var input = File.OpenRead(Path.Combine(source, relative));
+                long size = input.Length;
+                if (size > 1024L * 1024 * 1024 - copied)
+                    throw new InvalidDataException("model-copy-size");
                 await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, true);
-                await input.CopyToAsync(output, ct);
+                await CopyExact(input, output, size, ct);
+                copied += size;
                 await output.DisposeAsync();
                 if (expected is not null && !string.Equals(await Hash(target, ct), expected[relative], StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException("model-copy-integrity");
@@ -706,7 +737,8 @@ internal sealed class ModelInstaller
         string destination = Path.Combine(_cache, Path.GetFileName(name));
         if (File.Exists(destination))
         {
-            if ((exactBytes is null || new FileInfo(destination).Length == exactBytes)
+            if (new FileInfo(destination).Length <= limit
+                && (exactBytes is null || new FileInfo(destination).Length == exactBytes)
                 && (expectedHash is null || (await Hash(destination, ct)).Equals(expectedHash, StringComparison.OrdinalIgnoreCase)))
                 return destination;
             File.Delete(destination);
@@ -731,6 +763,8 @@ internal sealed class ModelInstaller
             throw new InvalidDataException("download-range");
         if (!append)
             offset = 0;
+        if (response.Content.Headers.ContentLength is { } declared && declared > limit - offset)
+            throw new InvalidDataException("download-size");
         long? total = response.Content.Headers.ContentLength is { } length ? length + offset : null;
         if (total > limit || exactBytes is not null && total is not null && total != exactBytes)
             throw new InvalidDataException("download-size");
@@ -743,10 +777,10 @@ internal sealed class ModelInstaller
             long lastProgress = 0;
             while ((read = await source.ReadAsync(buffer, ct)) > 0)
             {
+                if (read > limit - offset)
+                    throw new InvalidDataException("download-size");
                 await file.WriteAsync(buffer.AsMemory(0, read), ct);
                 offset += read;
-                if (offset > limit)
-                    throw new InvalidDataException("download-size");
                 if (Environment.TickCount64 - lastProgress >= 80)
                 {
                     lastProgress = Environment.TickCount64;
@@ -797,42 +831,97 @@ internal sealed class ModelInstaller
         await using var file = File.OpenRead(path);
         return Convert.ToHexString(await SHA256.HashDataAsync(file, ct)).ToLowerInvariant();
     }
-    private static void Extract(string archive, string destination, ModelSetupStage stage, CancellationToken ct)
+    private static void Extract(string archive, string destination, ModelSetupStage stage, CancellationToken ct,
+        ModelArchivePin? pin = null)
     {
         try
         {
-            ExtractChecked(archive, destination, ct);
+            ExtractChecked(archive, destination, ct, pin);
         }
         catch (InvalidDataException)
         {
             throw new ModelSetupException(SetupFailureCategory.Integrity, stage, DeleteDamagedArchive(archive));
         }
     }
-    private static void ExtractChecked(string archive, string destination, CancellationToken ct)
+    private static void ExtractChecked(string archive, string destination, CancellationToken ct, ModelArchivePin? pin)
     {
         Directory.CreateDirectory(destination);
         string root = Path.GetFullPath(destination) + Path.DirectorySeparatorChar;
-        using var zip = ZipFile.OpenRead(archive);
+        using var archiveBytes = File.OpenRead(archive);
+        if (pin is not null)
+        {
+            // Validate the same opened bytes that ZipArchive will consume, not only
+            // an earlier download/cache observation of this path.
+            if (archiveBytes.Length != pin.Bytes || Convert.ToHexString(SHA256.HashData(archiveBytes)).ToLowerInvariant() != pin.Sha256)
+                throw new InvalidDataException("model-integrity");
+            archiveBytes.Position = 0;
+        }
+        ct.ThrowIfCancellationRequested();
+        using var zip = new ZipArchive(archiveBytes, ZipArchiveMode.Read);
         if (zip.Entries.Count > 30000)
             throw new InvalidDataException("zip-count");
         long total = 0;
+        long limit = pin?.UnpackedBytes ?? 2L * 1024 * 1024 * 1024;
         foreach (var entry in zip.Entries)
         {
             ct.ThrowIfCancellationRequested();
-            total = checked(total + entry.Length);
-            if (total > 2L * 1024 * 1024 * 1024 || entry.FullName.Length > 1024
+            if (entry.Length > limit - total || entry.FullName.Length > 1024
                 || ((entry.ExternalAttributes >> 16) & 0xF000) == 0xA000 || entry.FullName.Contains(':'))
                 throw new InvalidDataException("zip-entry");
+            total += entry.Length;
             string target = Path.GetFullPath(Path.Combine(destination, entry.FullName.Replace('/', Path.DirectorySeparatorChar)));
             if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("zip-path");
+            if (entry.FullName.EndsWith('/') && entry.Length != 0)
+                throw new InvalidDataException("zip-entry");
+        }
+        if (pin is not null && total != pin.UnpackedBytes)
+            throw new InvalidDataException("zip-size");
+        long written = 0;
+        byte[] buffer = new byte[65536];
+        foreach (var entry in zip.Entries)
+        {
+            ct.ThrowIfCancellationRequested();
+            string target = Path.GetFullPath(Path.Combine(destination, entry.FullName.Replace('/', Path.DirectorySeparatorChar)));
             if (entry.FullName.EndsWith('/'))
             {
                 Directory.CreateDirectory(target);
                 continue;
             }
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            entry.ExtractToFile(target, true);
+            using var input = entry.Open();
+            using var output = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.None);
+            long entryWritten = 0;
+            int read;
+            while ((read = input.Read(buffer)) > 0)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (read > entry.Length - entryWritten || read > limit - written)
+                    throw new InvalidDataException("zip-size");
+                output.Write(buffer, 0, read);
+                entryWritten += read;
+                written += read;
+            }
+            if (entryWritten != entry.Length)
+                throw new InvalidDataException("zip-size");
         }
+        if (written != total)
+            throw new InvalidDataException("zip-size");
+    }
+
+    private static async Task CopyExact(Stream input, Stream output, long size, CancellationToken ct)
+    {
+        byte[] buffer = new byte[65536];
+        long copied = 0;
+        int read;
+        while ((read = await input.ReadAsync(buffer, ct)) > 0)
+        {
+            if (read > size - copied)
+                throw new InvalidDataException("component-size");
+            await output.WriteAsync(buffer.AsMemory(0, read), ct);
+            copied += read;
+        }
+        if (copied != size)
+            throw new InvalidDataException("component-size");
     }
 }

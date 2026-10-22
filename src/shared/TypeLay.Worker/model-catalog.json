@@ -16,7 +16,12 @@
           "targetName": "English",
           "selfCheckText": "你好，我想确认一下明天下午的会议时间。"
         }
-      ]
+      ],
+      "archivePin": {
+        "sha256": "62e7af5a3a48b530e47b7b3e5c78c2de79073ecd815750d2bf3ab35b4a67da2d",
+        "bytes": 74481402,
+        "unpackedBytes": 86137496
+      }
     },
     {
       "id": "argos-en-zh",
@@ -33,7 +38,12 @@
           "targetName": "中文",
           "selfCheckText": "Please send me the final version."
         }
-      ]
+      ],
+      "archivePin": {
+        "sha256": "433e7c4f034d87fbe2353161e05f18646d7999452f801a4e1f0378522b9850ab",
+        "bytes": 70743021,
+        "unpackedBytes": 85640765
+      }
     },
     {
       "id": "hy-mt2-1-8b-q4-k-m",

@@ -617,6 +617,11 @@ class PackageCatalogTests(unittest.TestCase):
                 "1.9",
                 "https://argos-net.com/v1/translate-zh_en-1_9.argosmodel",
                 "你好，我想确认一下明天下午的会议时间。",
+                catalog.ArchivePin(
+                    "62e7af5a3a48b530e47b7b3e5c78c2de79073ecd815750d2bf3ab35b4a67da2d",
+                    74481402,
+                    86137496,
+                ),
             ),
         )
 
@@ -631,6 +636,11 @@ class PackageCatalogTests(unittest.TestCase):
                 "1.9",
                 "https://argos-net.com/v1/translate-en_zh-1_9.argosmodel",
                 "Please send me the final version.",
+                catalog.ArchivePin(
+                    "433e7c4f034d87fbe2353161e05f18646d7999452f801a4e1f0378522b9850ab",
+                    70743021,
+                    85640765,
+                ),
             ),
         )
 
@@ -933,3 +943,89 @@ class PackageCatalogTests(unittest.TestCase):
         )
         self.assertEqual(selected[0].package.id, "hy-mt-preview")
         self.assertEqual(selected[0].directions[0].version, "1.5")
+
+
+class ArchivePinCatalogTests(unittest.TestCase):
+    def test_project_pins_and_legacy_projection_have_exact_archive_bounds(self):
+        packages = catalog.load_package_catalog().packages
+        self.assertEqual(packages[0].directions[0].archive_pin.bytes, 74481402)
+        self.assertEqual(packages[1].directions[0].archive_pin.unpacked_bytes, 85640765)
+        self.assertIsNone(packages[2].directions[0].archive_pin)
+
+    def test_absent_pin_is_compatible_but_invalid_pin_fails_closed(self):
+        original = json.loads(
+            (Path(catalog.__file__).parent.parent / "model-catalog.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        valid = {"sha256": "a" * 64, "bytes": 100, "unpackedBytes": 200}
+        invalid = [
+            None,
+            {},
+            {**valid, "bytes": True},
+            {**valid, "bytes": 0},
+            {**valid, "bytes": 1024**3 + 1},
+            {**valid, "unpackedBytes": 2 * 1024**3 + 1},
+            {**valid, "unpackedBytes": False},
+            {**valid, "sha256": "A" * 64},
+            {**valid, "unknown": 1},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.json"
+            unpinned = copy.deepcopy(original)
+            unpinned["packages"][0].pop("archivePin", None)
+            path.write_text(json.dumps(unpinned), encoding="utf-8")
+            self.assertIsNone(
+                catalog.load_package_catalog(path).packages[0].directions[0].archive_pin
+            )
+            for value in invalid:
+                with self.subTest(value=value):
+                    changed = copy.deepcopy(original)
+                    changed["packages"][0]["archivePin"] = value
+                    path.write_text(json.dumps(changed), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "^model-catalog$"):
+                        catalog.load_package_catalog(path)
+            changed = copy.deepcopy(original)
+            changed["packages"][2]["archivePin"] = valid
+            path.write_text(json.dumps(changed), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "^model-catalog$"):
+                catalog.load_package_catalog(path)
+
+    def test_duplicate_pin_and_multiple_directions_are_rejected(self):
+        original = json.loads(
+            (Path(catalog.__file__).parent.parent / "model-catalog.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.json"
+            encoded = json.dumps(original)
+            for ambiguous in (
+                encoded.replace('"bytes": 74481402', '"bytes": 1, "bytes": 74481402'),
+                encoded.replace('"archivePin": {', '"archivePin": null, "archivePin": {', 1),
+            ):
+                path.write_text(ambiguous, encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "^model-catalog$"):
+                    catalog.load_package_catalog(path)
+            original["packages"][0]["directions"].append(original["packages"][1]["directions"][0])
+            path.write_text(json.dumps(original), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "^model-catalog$"):
+                catalog.load_package_catalog(path)
+
+    def test_direction_level_pin_is_not_silently_treated_as_absent(self):
+        original = json.loads(
+            (Path(catalog.__file__).parent.parent / "model-catalog.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.json"
+            for misplaced in (original["packages"][0]["archivePin"], None, {}):
+                with self.subTest(pin=misplaced):
+                    value = copy.deepcopy(original)
+                    package = value["packages"][0]
+                    package.pop("archivePin")
+                    package["directions"][0]["archivePin"] = misplaced
+                    path.write_text(json.dumps(value), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "^model-catalog$"):
+                        catalog.load_package_catalog(path)

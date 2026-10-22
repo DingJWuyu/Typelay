@@ -23,6 +23,7 @@ import time
 import unittest
 import urllib.error
 import zipfile
+from dataclasses import replace
 from email.message import Message
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -35,10 +36,11 @@ sys.path.insert(0, str(ROOT / "src/shared/TypeLay.Worker"))
 import setup  # noqa: E402
 from application_support import ApplicationSupport  # noqa: E402
 from paths import Paths  # noqa: E402
-from typelay_worker.catalog import load_catalog  # noqa: E402
+from typelay_worker.catalog import ArchivePin, load_catalog  # noqa: E402
 from wire import now_ms  # noqa: E402
 
-DIRECTIONS = {direction.id: direction for direction in load_catalog()}
+# Generic transport/archive fixtures intentionally cover the supported unpinned catalog path.
+DIRECTIONS = {direction.id: replace(direction, archive_pin=None) for direction in load_catalog()}
 
 
 class Response(io.BytesIO):
@@ -131,6 +133,141 @@ class PackageInstallationTests(unittest.TestCase):
                 setup.shutil, "disk_usage", return_value=type(usage)(16 * 1024**3, 0, 16 * 1024**3)
             )
         )
+
+    def pin_controlled_archive(self, body):
+        # The small fixture is a different reviewed artifact, never the production pin.
+        with zipfile.ZipFile(io.BytesIO(body)) as package:
+            unpacked = sum(item.file_size for item in package.infolist())
+        path = self.home / "worker/model-catalog.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value["packages"][0]["archivePin"] = {
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "bytes": len(body),
+            "unpackedBytes": unpacked,
+        }
+        path.write_text(json.dumps(value), encoding="utf-8")
+
+    def test_fresh_pinned_and_unknown_same_disk_budgets_are_enforced_before_runtime(self):
+        (self.old.parent / "current").unlink()
+        shutil.rmtree(self.old)
+        request = {
+            "format": 1,
+            "operation": "Install",
+            "packageIds": ["argos-zh-en", "argos-en-zh"],
+            "activePackages": ["argos-zh-en", "argos-en-zh"],
+            "expectedCurrent": None,
+        }
+        usage = shutil.disk_usage(self.data)
+        path = self.home / "worker/model-catalog.json"
+        for pinned, required in ((True, 2531595196), (False, 8657043456)):
+            if not pinned:
+                value = json.loads(path.read_text(encoding="utf-8"))
+                for package in value["packages"]:
+                    package.pop("archivePin", None)
+                path.write_text(json.dumps(value), encoding="utf-8")
+            for free in (required - 1, required):
+                with (
+                    self.subTest(pinned=pinned, free=free),
+                    patch.object(
+                        setup.shutil, "disk_usage", return_value=type(usage)(16 * 1024**3, 0, free)
+                    ),
+                    patch.object(
+                        setup,
+                        "prepare_runtime",
+                        side_effect=RuntimeError("controlled-stop-before-runtime"),
+                    ) as runtime,
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    self.assertEqual(
+                        setup.install_packages(self.home, self.data, self.cache, request), 1
+                    )
+                    self.assertEqual(runtime.call_count, int(free == required))
+                self.assertFalse((self.old.parent / "current").exists())
+                self.assertEqual(
+                    {item.name for item in self.old.parent.iterdir()}, {"install.lock"}
+                )
+
+    def test_fresh_pinned_separate_disk_checks_both_budgets(self):
+        (self.old.parent / "current").unlink()
+        shutil.rmtree(self.old)
+        request = {
+            "format": 1,
+            "operation": "Install",
+            "packageIds": ["argos-zh-en", "argos-en-zh"],
+            "activePackages": ["argos-zh-en", "argos-en-zh"],
+            "expectedCurrent": None,
+        }
+        real_stat = Path.stat
+
+        def separate(path, *args, **kwargs):
+            value = real_stat(path, *args, **kwargs)
+            if path == self.cache:
+                fields = list(value)
+                fields[2] += 1
+                return os.stat_result(fields)
+            return value
+
+        data_budget, cache_budget = 1312628949, 1286075111
+        for data_free, cache_free, accepted in (
+            (data_budget - 1, cache_budget, False),
+            (data_budget, cache_budget - 1, False),
+            (data_budget, cache_budget, True),
+        ):
+            with (
+                self.subTest(data=data_free, cache=cache_free),
+                patch.object(Path, "stat", separate),
+                patch.object(
+                    setup.shutil,
+                    "disk_usage",
+                    side_effect=lambda path: SimpleNamespace(
+                        free=data_free if path == self.data else cache_free
+                    ),
+                ),
+                patch.object(
+                    setup,
+                    "prepare_runtime",
+                    side_effect=RuntimeError("controlled-stop-before-runtime"),
+                ) as runtime,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(
+                    setup.install_packages(self.home, self.data, self.cache, request), 1
+                )
+                self.assertEqual(runtime.call_count, int(accepted))
+
+    def test_retained_copy_size_is_independent_of_new_archive_pin(self):
+        path = self.home / "worker/model-catalog.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        for package in value["packages"][:2]:
+            package["archivePin"]["unpackedBytes"] = 1
+        path.write_text(json.dumps(value), encoding="utf-8")
+        runtime_bytes = sum(
+            path.stat().st_size for path, _, _ in setup.runtime_copy_plan(self.old / "runtime")
+        )
+        copied_bytes = sum(
+            path.stat().st_size for path in (self.old / "models/packages").rglob("fixture")
+        )
+        required = runtime_bytes + copied_bytes + 64 * 1024**2
+        usage = shutil.disk_usage(self.data)
+        with patch.object(
+            setup.shutil, "disk_usage", return_value=type(usage)(usage.total, 0, required - 1)
+        ):
+            self.prepare(self.request(), success=False)
+        with patch.object(
+            setup.shutil, "disk_usage", return_value=type(usage)(usage.total, 0, required)
+        ):
+            candidate = self.prepare(self.request())
+        self.assertEqual(
+            json.loads((candidate / "models/installed.json").read_text())["packages"],
+            self.inventory["packages"],
+        )
+        source = self.old / "models/packages/argos-zh-en/1.9"
+        from typelay_worker.catalog import ModelFile
+
+        files = [ModelFile("fixture", hashlib.sha256(b"zh_en").hexdigest())]
+        with self.assertRaisesRegex(ValueError, "^model-package-size$"):
+            setup.copy_package(source, self.base / "bounded-copy", files, 4)
+        self.assertEqual((self.base / "bounded-copy/fixture").stat().st_size, 0)
 
     def save_inventory(self):
         (self.old / "models/installed.json").write_text(json.dumps(self.inventory))
@@ -393,6 +530,7 @@ class PackageInstallationTests(unittest.TestCase):
             ):
                 package.writestr(name, b"inert preparation bytes")
             package.writestr("stanza/unused.bin", b"excluded bytes")
+        self.pin_controlled_archive(archive.getvalue())
         requests = []
 
         def open_response(request, timeout):
@@ -473,6 +611,7 @@ class PackageInstallationTests(unittest.TestCase):
                 "model/shared_vocabulary.json",
             ):
                 package.writestr(name, b"inert preparation bytes")
+        self.pin_controlled_archive(archive.read_bytes())
         interpreter = self.old / "runtime/python/bin/python3.13"
         original = interpreter.read_bytes()
         real_popen = subprocess.Popen
@@ -547,11 +686,30 @@ class PackageInstallationTests(unittest.TestCase):
             self.assertTrue(process.called)
             self.assertTrue(all(call.args[0][0] != "uv" for call in process.call_args_list))
 
+    def test_offline_runtime_copy_cannot_grow_beyond_preflight_allowance(self):
+        original = setup.copy_runtime
+
+        def grow_after_preflight(source, destination, plan, *, limit):
+            with (source / "requirements.lock").open("ab") as stream:
+                stream.write(b"unexpected growth")
+            return original(source, destination, plan, limit=limit)
+
+        with (
+            patch.object(setup, "copy_runtime", side_effect=grow_after_preflight),
+            patch.object(setup.subprocess, "Popen") as process,
+        ):
+            self.prepare(self.request(), success=False)
+            process.assert_not_called()
+        self.assertEqual(
+            {path.name for path in self.old.parent.iterdir()},
+            {self.old.name, "current", "install.lock"},
+        )
+
     def test_runtime_rebuild_budget_is_checked_before_copy_or_network(self):
         usage = shutil.disk_usage(self.data)
         with (
             patch.object(
-                setup.shutil, "disk_usage", return_value=type(usage)(usage.total, 0, 4 * 1024**3)
+                setup.shutil, "disk_usage", return_value=type(usage)(usage.total, 0, 2 * 1024**3)
             ),
             patch.object(setup.subprocess, "Popen", wraps=subprocess.Popen) as process,
         ):
@@ -680,6 +838,55 @@ class PackageInstallationTests(unittest.TestCase):
 
 
 class ArchiveObservationTests(unittest.TestCase):
+    def test_pinned_archive_is_bound_before_extraction_and_to_declared_total(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "archive"
+            with zipfile.ZipFile(archive, "w") as package:
+                package.writestr(
+                    "metadata.json",
+                    json.dumps({"from_code": "zh", "to_code": "en", "package_version": "1.9"}),
+                )
+                for name in (
+                    "sentencepiece.model",
+                    "model/config.json",
+                    "model/model.bin",
+                    "model/shared_vocabulary.json",
+                ):
+                    package.writestr(name, b"controlled model bytes")
+            with zipfile.ZipFile(archive) as package:
+                unpacked = sum(item.file_size for item in package.infolist())
+            pin = ArchivePin(setup.digest(archive), archive.stat().st_size, unpacked)
+            direction = replace(DIRECTIONS["zh_en"], archive_pin=pin)
+            sizes = setup.extract_model(archive, root / "good", direction)
+            self.assertEqual(sizes["retainedBytes"], unpacked)
+            for invalid in (
+                replace(pin, sha256="0" * 64),
+                replace(pin, bytes=pin.bytes + 1),
+                replace(pin, unpacked_bytes=unpacked + 1),
+            ):
+                with (
+                    self.subTest(pin=invalid),
+                    self.assertRaisesRegex(ValueError, "^model-(fixed-hash|archive-size)$"),
+                ):
+                    setup.extract_model(
+                        archive, root / "bad", replace(direction, archive_pin=invalid)
+                    )
+            self.assertFalse((root / "bad").exists())
+            original = zipfile.ZipFile.open
+
+            def oversized(package, item, *args, **kwargs):
+                if isinstance(item, zipfile.ZipInfo) and item.filename == "model/model.bin":
+                    return io.BytesIO(b"x" * (item.file_size + 1))
+                return original(package, item, *args, **kwargs)
+
+            with (
+                patch.object(zipfile.ZipFile, "open", oversized),
+                self.assertRaisesRegex(ValueError, "^model-archive-size$"),
+            ):
+                setup.extract_model(archive, root / "oversized", direction)
+            self.assertEqual((root / "oversized/model/model.bin").stat().st_size, 0)
+
     def test_old_or_invalid_observations_are_explicitly_missing_without_private_data(self):
         direction = DIRECTIONS["zh_en"]
         for dependencies in (
@@ -740,6 +947,28 @@ class DownloadTests(unittest.TestCase):
             raise response
         return response
 
+    def test_pin_checks_fresh_and_cached_bytes_and_hash(self):
+        body = b"controlled fixed archive"
+        pin = ArchivePin(hashlib.sha256(body).hexdigest(), len(body), 100)
+        direction = replace(DIRECTIONS["zh_en"], archive_pin=pin)
+        self.responses.append(Response(body))
+        archive, _ = setup.download(direction, self.cache)
+        self.assertEqual(archive.read_bytes(), body)
+        setup.download(direction, self.cache)
+        self.assertEqual(len(self.requests), 1)
+        archive.write_bytes(b"x" * len(body))
+        self.responses.append(Response(body))
+        setup.download(direction, self.cache)
+        self.assertEqual(len(self.requests), 2)
+        archive.unlink()
+        self.responses.append(Response(b"x" * len(body)))
+        with self.assertRaisesRegex(ValueError, "^model-fixed-hash$"):
+            setup.download(direction, self.cache)
+        self.assertFalse(archive.exists())
+        self.responses.append(Response(body + b"x"))
+        with self.assertRaisesRegex(ValueError, "^model-download-limit$"):
+            setup.download(direction, self.cache)
+
     def interrupted(self, **headers):
         self.responses.append(
             Response(
@@ -789,6 +1018,28 @@ class DownloadTests(unittest.TestCase):
                 declared + 65536,
                 expected={"bytes": declared, "sha256": "0" * 64},
             )
+
+    def test_pinned_resume_still_requires_full_archive_hash(self):
+        body = b"firstsecond"
+        for sha in (hashlib.sha256(body).hexdigest(), "0" * 64):
+            with self.subTest(sha=sha):
+                self.interrupted()
+                self.responses.append(
+                    Response(
+                        b"second",
+                        206,
+                        {"Content-Length": 6, "Content-Range": "bytes 5-10/11", "ETag": '"v1"'},
+                    )
+                )
+                direction = replace(DIRECTIONS["zh_en"], archive_pin=ArchivePin(sha, 11, 20))
+                if sha == "0" * 64:
+                    with self.assertRaisesRegex(ValueError, "^model-fixed-hash$"):
+                        setup.download(direction, self.cache)
+                else:
+                    archive, _ = setup.download(direction, self.cache)
+                    self.assertEqual(archive.read_bytes(), body)
+                    archive.unlink()
+                self.assertFalse((self.cache / "zh_en-1.9.part").exists())
 
     def test_interruption_resumes_only_the_same_representation(self):
         self.interrupted()
@@ -2194,23 +2445,17 @@ class InstallationFailureTests(unittest.TestCase):
 
             output = io.StringIO()
 
-            def open_response(request, **kwargs):
-                if failure is not None:
-                    raise failure
-                if worker_result is not None:
-                    # These inert archive bytes only exercise install state transitions;
-                    # the external worker port is controlled, not real model inference.
-                    source, target = ("zh", "en") if "zh_en" in request.full_url else ("en", "zh")
+            # Bind this controlled distribution to its own inert artifacts, not
+            # the production model hashes. Keep all original failure/Ready assertions.
+            bodies = {}
+            if worker_result is not None:
+                for source, target in (("zh", "en"), ("en", "zh")):
                     archive = io.BytesIO()
                     with zipfile.ZipFile(archive, "w") as package:
                         package.writestr(
                             "metadata.json",
                             json.dumps(
-                                {
-                                    "from_code": source,
-                                    "to_code": target,
-                                    "package_version": "1.9",
-                                }
+                                {"from_code": source, "to_code": target, "package_version": "1.9"}
                             ),
                         )
                         for name in (
@@ -2220,7 +2465,30 @@ class InstallationFailureTests(unittest.TestCase):
                             "model/shared_vocabulary.json",
                         ):
                             package.writestr(name, b"inert controlled archive")
-                    return Response(archive.getvalue())
+                    bodies[source + "_" + target] = archive.getvalue()
+            elif response is not None:
+                bodies = {identity: response.getvalue() for identity in ("zh_en", "en_zh")}
+            catalog_path = base / "home/worker/model-catalog.json"
+            catalog_value = json.loads(catalog_path.read_text(encoding="utf-8"))
+            for entry in catalog_value["packages"]:
+                body = bodies.get(entry["directions"][0]["id"])
+                if body:
+                    unpacked = 1
+                    if zipfile.is_zipfile(io.BytesIO(body)):
+                        with zipfile.ZipFile(io.BytesIO(body)) as package:
+                            unpacked = sum(item.file_size for item in package.infolist())
+                    entry["archivePin"] = {
+                        "sha256": hashlib.sha256(body).hexdigest(),
+                        "bytes": len(body),
+                        "unpackedBytes": unpacked,
+                    }
+            catalog_path.write_text(json.dumps(catalog_value), encoding="utf-8")
+
+            def open_response(request, **kwargs):
+                if failure is not None:
+                    raise failure
+                if worker_result is not None:
+                    return Response(bodies["zh_en" if "zh_en" in request.full_url else "en_zh"])
                 return response
 
             opener = SimpleNamespace(open=open_response)

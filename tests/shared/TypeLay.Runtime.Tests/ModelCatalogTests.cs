@@ -7,6 +7,129 @@ namespace TypeLay.Runtime.Tests;
 public sealed class ModelCatalogTests
 {
     [Fact]
+    public void MalformedArchivePinCannotSilentlyBecomeAnUnpinnedPackage()
+    {
+        var value = PreviewCatalog();
+        value["packages"]![0]!["archivePin"] = new JsonObject
+        {
+            ["sha256"] = new string('a', 64),
+            ["bytes"] = false,
+            ["unpackedBytes"] = 100
+        };
+        using var document = JsonDocument.Parse(value.ToJsonString());
+        Assert.Throws<InvalidDataException>(() => ModelPackageCatalog.Parse(document.RootElement));
+    }
+
+    [Fact]
+    public void ArchivePinIsOptionalAndBoundToThePackageAndItsLegacyDirection()
+    {
+        var value = PreviewCatalog();
+        using (var missing = JsonDocument.Parse(value.ToJsonString()))
+        {
+            var package = ModelPackageCatalog.Parse(missing.RootElement).Packages[0];
+            Assert.Null(package.ArchivePin);
+            Assert.Null(package.Directions[0].ArchivePin);
+            Assert.Null(ModelCatalog.PackageDownloadBytes(package));
+        }
+        value["packages"]![0]!["archivePin"] = JsonNode.Parse("""
+            {"sha256":"62e7af5a3a48b530e47b7b3e5c78c2de79073ecd815750d2bf3ab35b4a67da2d",
+             "bytes":74481402,"unpackedBytes":86137496}
+            """);
+        using var document = JsonDocument.Parse(value.ToJsonString());
+        var catalog = ModelPackageCatalog.Parse(document.RootElement);
+        var pinned = catalog.Packages[0];
+        var pin = Assert.IsType<ModelArchivePin>(pinned.ArchivePin);
+        Assert.Equal("argos-zh-en", pinned.Id);
+        Assert.Equal("1.9", pinned.Version);
+        Assert.Equal("https://argos-net.com/v1/translate-zh_en-1_9.argosmodel", pinned.Url);
+        Assert.Same(pin, catalog.LegacyDirections[0].ArchivePin);
+        Assert.Equal(74481402, ModelCatalog.PackageDownloadBytes(pinned));
+        Assert.Equal(86137496, pin.UnpackedBytes);
+    }
+
+    [Theory]
+    [MemberData(nameof(InvalidArchivePins))]
+    public void PresentArchivePinMustHaveExactlyThreeValidFields(string pin)
+    {
+        var value = PreviewCatalog();
+        // Insert the raw pin so duplicate JSON properties remain observable to Parse.
+        value["packages"]![0]!["archivePin"] = "PIN";
+        using var document = JsonDocument.Parse(value.ToJsonString().Replace("\"PIN\"", pin, StringComparison.Ordinal));
+        Assert.Throws<InvalidDataException>(() => ModelPackageCatalog.Parse(document.RootElement));
+    }
+
+    public static IEnumerable<object[]> InvalidArchivePins()
+    {
+        foreach (string pin in new[] { "null", "false", "[]", "{}", "1", "\"pin\"" })
+            yield return [pin];
+        string valid = "{\"sha256\":\"" + new string('a', 64) + "\",\"bytes\":1,\"unpackedBytes\":1}";
+        foreach (string field in new[] { "sha256", "bytes", "unpackedBytes" })
+        {
+            var missing = JsonNode.Parse(valid)!;
+            missing.AsObject().Remove(field);
+            yield return [missing.ToJsonString()];
+            foreach (string invalid in field == "sha256"
+                ? new[] { "null", "false", "1", "\"short\"", "\"" + new string('g', 64) + "\"", "\"" + new string('A', 64) + "\"" }
+                : new[] { "null", "false", "true", "\"1\"", "0", "-1", "1.5", "1.0", "1e0", "9223372036854775808",
+                    field == "bytes" ? "1073741825" : "2147483649" })
+            {
+                var damaged = JsonNode.Parse(valid)!;
+                damaged[field] = JsonNode.Parse(invalid);
+                yield return [damaged.ToJsonString()];
+            }
+            yield return [valid[..^1] + ",\"" + field + "\":" + (field == "sha256" ? "\"" + new string('a', 64) + "\"" : "1") + "}"];
+        }
+        yield return [valid[..^1] + ",\"extra\":1}"];
+    }
+
+    [Fact]
+    public void ArchivePinAcceptsItsLimitsButCannotDescribeHyOrMultipleDirections()
+    {
+        var value = PreviewCatalog();
+        var pin = new JsonObject { ["sha256"] = new string('f', 64), ["bytes"] = 1073741824L, ["unpackedBytes"] = 2147483648L };
+        value["packages"]![0]!["archivePin"] = pin;
+        using (var document = JsonDocument.Parse(value.ToJsonString()))
+            Assert.Equal(2147483648L, ModelPackageCatalog.Parse(document.RootElement).Packages[0].ArchivePin!.UnpackedBytes);
+        value["packages"]![2]!["archivePin"] = pin.DeepClone();
+        using (var hy = JsonDocument.Parse(value.ToJsonString()))
+            Assert.Throws<InvalidDataException>(() => ModelPackageCatalog.Parse(hy.RootElement));
+        value["packages"]![2]!.AsObject().Remove("archivePin");
+        value["packages"]![0]!["directions"]!.AsArray().Add(value["packages"]![1]!["directions"]![0]!.DeepClone());
+        using var multiple = JsonDocument.Parse(value.ToJsonString());
+        Assert.Throws<InvalidDataException>(() => ModelPackageCatalog.Parse(multiple.RootElement));
+    }
+
+    [Fact]
+    public void ArchivePinCannotBeDuplicatedOrPlacedOnADirectionInsteadOfItsPackage()
+    {
+        var value = PreviewCatalog();
+        value["packages"]![0]!["directions"]![0]!["archivePin"] = null;
+        using (var misplaced = JsonDocument.Parse(value.ToJsonString()))
+            Assert.Throws<InvalidDataException>(() => ModelPackageCatalog.Parse(misplaced.RootElement));
+        value["packages"]![0]!["directions"]![0]!.AsObject().Remove("archivePin");
+        value["packages"]![0]!["archivePin"] = "PIN";
+        string pin = "{\"sha256\":\"" + new string('a', 64) + "\",\"bytes\":1,\"unpackedBytes\":1}";
+        string raw = value.ToJsonString().Replace("\"PIN\"", pin + ",\"archivePin\":" + pin, StringComparison.Ordinal);
+        using var duplicate = JsonDocument.Parse(raw);
+        Assert.Throws<InvalidDataException>(() => ModelPackageCatalog.Parse(duplicate.RootElement));
+    }
+
+    [Theory]
+    [InlineData("schema", "1")]
+    [InlineData("id", "\"ignored-id\"")]
+    [InlineData("version", "\"0.0\"")]
+    [InlineData("url", "\"https://ignored.example/model\"")]
+    [InlineData("source", "\"ignored-language\"")]
+    [InlineData("target", "\"ignored-language\"")]
+    public void CatalogIdentityCannotDependOnLastWinsForDuplicateObjectKeys(string property, string earlierValue)
+    {
+        string key = "\"" + property + "\":";
+        string raw = PreviewCatalog().ToJsonString().Replace(key, key + earlierValue + "," + key, StringComparison.Ordinal);
+        using var document = JsonDocument.Parse(raw);
+        Assert.Throws<InvalidDataException>(() => ModelPackageCatalog.Parse(document.RootElement));
+    }
+
+    [Fact]
     public void PackageMetadataPreservesTheOriginalPreparationBundle()
     {
         Assert.Equal(["argos-zh-en", "argos-en-zh"], ModelCatalog.Packages.Packages.Take(2).Select(package => package.Id));
@@ -72,7 +195,8 @@ public sealed class ModelCatalogTests
         Assert.Equal("https://argos-net.com/v1/translate-zh_en-1_9.argosmodel", chinese.Url);
         Assert.Equal("你好，我想确认一下明天下午的会议时间。", chinese.SelfCheckText);
         Assert.Equal(new ModelDirection("en_zh", "en", "zh", "English", "中文", "1.9",
-            "https://argos-net.com/v1/translate-en_zh-1_9.argosmodel", "Please send me the final version."),
+            "https://argos-net.com/v1/translate-en_zh-1_9.argosmodel", "Please send me the final version.",
+            ModelCatalog.Packages.Packages.Single(package => package.Id == "argos-en-zh").ArchivePin),
             ModelCatalog.Get("en_zh"));
         Assert.Throws<ArgumentException>(() => ModelCatalog.Get("fr_en"));
     }
@@ -136,7 +260,7 @@ public sealed class ModelCatalogTests
     public void FixedDownloadSizeComesFromThePublishedModelLock()
     {
         var selected = ModelCatalog.Packages.Packages.Single(package => package.Id == "argos-en-zh");
-        Assert.Null(ModelCatalog.PackageDownloadBytes(selected));
+        Assert.Equal(selected.ArchivePin?.Bytes, ModelCatalog.PackageDownloadBytes(selected));
         Assert.Equal(1133092087L, ModelCatalog.PackageDownloadBytes(ModelCatalog.Packages.Packages.Single(package => package.Backend == "hy-mt-llama-cpu")));
     }
 

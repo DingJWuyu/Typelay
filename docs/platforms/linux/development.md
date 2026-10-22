@@ -60,7 +60,7 @@ finalize 校验主包原始清单、构建提交、合作组件的固定来源�
 
 `installed.json` schema 3 保留完整 `packages` 和 `activePackages`。`activation.json` schema 3 仅有 `schema`、`previous`、`packages`、`operation`、`removedPackages`、`recoveryPrevious` 六字段。前两种旧 schema 迁移时须真实复制旧方向文件并重写清单。普通操作保留恢复前代；Remove 的 `recoveryPrevious` 为 null，不能因启动失败复活已移除包。库存记录不可读时显示未知并禁用包操作，不能猜成空库；恢复需要用户显式安排独立重装，不在包管理中自动覆盖。
 
-固定 Hy 文件大小与 SHA 从 worker 的生产 `model.lock.json` 读取，模型和许可证只下载一份，不按两方向重复。准备前按缓存、候选与保留前代保守预算空间，Hy 三份约 3.17 GiB，另加 Argos、runtime 和余量。未知大小的 Argos archive 仍受 1 GiB 上限约束。Confirmed 且旧进程退出已证明后才清历史代；缓存清理另获同一锁，重读 current/recovery 的完整库存引用。清理失败仅报告空间尚未释放，不把已成功切换报成失败。
+固定 Hy 文件大小与 SHA 从 worker 的生产 `model.lock.json` 读取，模型和许可证只下载一份，不按两方向重复。准备前按缓存、候选与保留前代保守预算空间，Hy 三份约 3.17 GiB，另加 Argos、runtime 和余量。Argos catalog 的可选 `archivePin` 仅用于单方向 Argos 包，严格包含 `sha256`、`bytes`、`unpackedBytes`：分别为小写 SHA256、压缩字节数和全 ZIP 声明解压字节数。当前中英双向 1.9 两包固定值来自项目真实安装的 CI 观测并经项目审核，不是上游签名或发布者认证；缓存记录的 catalog URL 也不是来源认证。存在但损坏的 pin 拒绝安装，缺失则仍采用每包 1 GiB 下载、2 GiB 解包的保守预算。带 pin 的缓存和新下载都必须匹配长度与 SHA；解包前再检查同一已打开 archive 的身份、全 ZIP 声明量，并按每文件声明量及累计上限约束实际写出，原路径、metadata 语言/版本和模型结构检查不变。新装中英双向按全 ZIP 声明量计费，而不是较小的保留文件量；同盘含 runtime 数据/缓存各 1 GiB 与 64 MiB 余量，准入为 2,531,595,196 字节。旧代复制独立按实际文件字节预留并限制写出，继续校验原库存 SHA；旧库存自身有效不表示它已经获得新 archive pin 的来源证明，也不因此改变其 Ready 状态。Confirmed 且旧进程退出已证明后才清历史代；缓存清理另获同一锁，重读 current/recovery 的完整库存引用。清理失败仅报告空间尚未释放，不把已成功切换报成失败。
 
 可用性只读检查为 `python desktop/setup.py --check-hy-runtime <发行目录>`，只调用 native 文件校验，不载入模型。内部 `--cleanup-packages <发行目录> <数据目录> <缓存目录>` 只由确认激活后的客户端调用，按固定包缓存清理，不扫描任意历史目录。缺 native 的发行包仍可删除非当前 Hy 库存，但不能下载、修复或切换到 Hy。
 

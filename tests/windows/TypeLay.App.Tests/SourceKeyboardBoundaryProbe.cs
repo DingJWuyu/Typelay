@@ -152,6 +152,93 @@ public sealed class SourceKeyboardBoundaryProbe
         Assert.True(status != "precondition_failed", $"{experiment}: {error}; results: {directory}");
     }
 
+    // Separate exact -method selector: the existing three-row diagnostic is unchanged.
+    [Theory(Explicit = true, Timeout = 60000)]
+    [InlineData("completion")]
+    [InlineData("deadline")]
+    [InlineData("focus-tail")]
+    [InlineData("queue-order")]
+    public async Task ObserveSelfOwnedConsumptionOrder(string experiment)
+    {
+        string directory = Path.Combine(Repository(), "artifacts", "source-consumption-order",
+            $"{DateTime.UtcNow:yyyyMMddTHHmmssfffZ}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        JsonElement? observation = null;
+        string? error = null;
+        bool processExited = false;
+        try
+        {
+            await ProductionForegroundWriteTests.RunConsumptionOrderProbe(experiment, value => observation = value, () => processExited = true);
+            Assert.NotNull(observation);
+            var value = observation.Value;
+            Assert.False(value.GetProperty("productionReadiness").GetBoolean());
+            Assert.Equal(0, Number(value, "overflow"));
+            Assert.Equal(JsonValueKind.Null, value.GetProperty("error").ValueKind);
+            Assert.True(value.GetProperty("hooksClosed").GetBoolean());
+            Assert.True(value.GetProperty("threadsExited").GetBoolean());
+            Assert.True(value.GetProperty("inputsPaired").GetBoolean());
+            string? status = value.GetProperty("status").GetString();
+            // A counterexample is useful diagnostic success, never product success.
+            // Inconclusive cannot turn this row green.
+            Assert.Contains(status, new[] { "mechanism_observed_not_product_acceptance", "observed_counterexample" });
+            Assert.Equal(2, value.GetProperty("roots").GetArrayLength());
+            var roots = value.GetProperty("roots").EnumerateArray().ToArray();
+            Assert.NotEqual(roots[0].GetProperty("ThreadId").GetUInt32(), roots[1].GetProperty("ThreadId").GetUInt32());
+            var events = value.GetProperty("events").EnumerateArray().ToArray();
+            Assert.NotEmpty(events);
+            foreach (var item in events)
+            {
+                long observedAt = item.GetProperty("ObservedAtMs").GetInt64();
+                if (observedAt != 0)
+                    Assert.Equal(100, item.GetProperty("ExpiresAtMs").GetInt64() - observedAt);
+                string kind = item.GetProperty("Kind").GetString()!;
+                if (kind == "real-foreground-and-thread-focus-confirmed")
+                {
+                    Assert.Equal(roots[Number(item, "Queue")].GetProperty("field").GetInt64(), item.GetProperty("FocusHwnd").GetInt64());
+                    Assert.Equal(roots[Number(item, "Queue")].GetProperty("root").GetInt64(), item.GetProperty("ForegroundHwnd").GetInt64());
+                }
+                if (kind is not ("real-foreground-and-thread-focus-confirmed" or "plan-revoked-config-changed" or "b-up-closed-before-a-resume"))
+                    Assert.Equal(roots[Number(item, "Queue")].GetProperty("ThreadId").GetUInt32(), item.GetProperty("Thread").GetUInt32());
+            }
+            if (experiment == "completion")
+            {
+                Assert.Contains(events, e => e.GetProperty("Kind").GetString() == "retrieval-enter" && Number(e, "Depth") == 2);
+                Assert.Contains(events, e => e.GetProperty("Kind").GetString() == "posted-wake-handler-no-authority"
+                    && Number(e, "Depth") == 1 && Number(e, "HookDepth") == 1);
+                Assert.Contains(events, e => e.GetProperty("Kind").GetString() == "hc-noremove"
+                    && !e.GetProperty("Claimed").GetBoolean());
+            }
+            foreach (var action in events.Where(e => e.GetProperty("Kind").GetString() == "no-body-action"))
+            {
+                Assert.Equal(0, Number(action, "Depth"));
+                Assert.Equal(0, Number(action, "HookDepth"));
+                Assert.True(action.GetProperty("AtMs").GetInt64() < action.GetProperty("ExpiresAtMs").GetInt64());
+                var returned = events.Single(e => e.GetProperty("Kind").GetString() == "claimed-outer-retrieval-actually-returned"
+                    && Number(e, "Phase") == Number(action, "Phase") && Number(e, "Queue") == Number(action, "Queue")
+                    && e.GetProperty("Generation").GetInt64() == action.GetProperty("Generation").GetInt64());
+                Assert.True(Number(returned, "Sequence") < Number(action, "Sequence"));
+            }
+        }
+        catch (Exception failure)
+        {
+            string detail = failure.ToString();
+            error = detail.Length <= 4096 ? detail : detail[..4096];
+        }
+        finally
+        {
+            await File.WriteAllTextAsync(Path.Combine(directory, "result.json"), JsonSerializer.Serialize(new
+            {
+                diagnosticOnly = true,
+                productionReadiness = false,
+                experiment,
+                processExited,
+                error,
+                observation
+            }, new JsonSerializerOptions { WriteIndented = true }), CancellationToken.None);
+        }
+        Assert.True(error is null, $"{experiment}: {error}; results: {directory}");
+    }
+
     private static async Task Arm(ProductionForegroundWriteTests.Desktop source, int mode)
     {
         await source.Focus(source.A);

@@ -7,6 +7,7 @@ using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using TypeLay.App;
 using TypeLay.Runtime;
 using Xunit;
@@ -15,6 +16,257 @@ namespace TypeLay.App.Tests;
 
 public sealed class ModelInstallerTests
 {
+    [Theory]
+    [InlineData(false, 1073741824L, 2147483648L, 5368709120L)]
+    [InlineData(true, 1073741824L, 2147483648L, 5368709120L)]
+    [InlineData(true, 100, 200, 3221225472L)]
+    public async Task PackageDiskAdmissionIncludesArchiveExtractionAndStagedCopyBeforeNetwork(bool pinned,
+        long archiveBytes, long unpackedBytes, long modelReserve)
+    {
+        using var files = new SetupFiles();
+        var catalog = Catalog(ModelArchive, pinned, (_, _) => unpackedBytes, (_, _) => archiveBytes);
+        // Runtime reserve and metadata margin are independent of the model reserve.
+        long needed = 64L * 1024 * 1024 + 4L * 1024 * 1024 * 1024 + modelReserve;
+        var rejectedNetwork = new ResponseHandler(_ => throw new HttpRequestException("controlled-offline"));
+        var rejected = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(rejectedNetwork,
+            catalog: catalog, availableDiskBytes: _ => needed - 1).PreparePackagesAsync(new(1,
+                ModelPackageOperation.Install, ["argos-zh-en"], ["argos-zh-en"], null), NoProgress, TestContext.Current.CancellationToken));
+        Assert.Equal(SetupFailureCategory.DiskSpace, rejected.Category);
+        Assert.Equal(ModelSetupStage.Prepare, rejected.Stage);
+        Assert.Empty(rejectedNetwork.Requests);
+        var admittedNetwork = new ResponseHandler(_ => throw new HttpRequestException("controlled-offline"));
+        var admitted = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(admittedNetwork,
+            catalog: catalog, availableDiskBytes: _ => needed).PreparePackagesAsync(new(1,
+                ModelPackageOperation.Install, ["argos-zh-en"], ["argos-zh-en"], null), NoProgress, TestContext.Current.CancellationToken));
+        Assert.Equal(SetupFailureCategory.Network, admitted.Category);
+        Assert.Equal(ModelSetupStage.Runtime, admitted.Stage);
+        Assert.NotEmpty(admittedNetwork.Requests);
+        Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
+    }
+
+    [Theory]
+    [InlineData(false, "valid")]
+    [InlineData(true, "valid")]
+    [InlineData(false, "hash")]
+    [InlineData(true, "hash")]
+    [InlineData(false, "length")]
+    [InlineData(true, "length")]
+    public async Task ArchiveCacheMustMatchBothPinFieldsBeforeEitherInstallPathUsesIt(bool packages, string defect)
+    {
+        using var files = new SetupFiles();
+        byte[] expected = ModelArchive("zh_en");
+        byte[] cached = (byte[])expected.Clone();
+        if (defect == "hash")
+            cached[^1] ^= 1;
+        if (defect == "length")
+            cached = [.. cached, 0];
+        Directory.CreateDirectory(Path.Combine(files.Root, "downloads"));
+        File.WriteAllBytes(files.CachedModel("zh_en"), cached);
+        var network = files.Responses(ModelArchive);
+        using var prepared = await PrepareZh(files, network, packages);
+        Assert.Equal(expected, File.ReadAllBytes(files.CachedModel("zh_en")));
+        Assert.Equal(defect != "valid", network.Requests.Contains("/v1/translate-zh_en-1_9.argosmodel"));
+        Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
+    }
+
+    [Theory]
+    [InlineData(false, "hash")]
+    [InlineData(true, "hash")]
+    [InlineData(false, "length")]
+    [InlineData(true, "length")]
+    [InlineData(false, "stream-overflow")]
+    [InlineData(true, "stream-overflow")]
+    [InlineData(false, "stream-short")]
+    [InlineData(true, "stream-short")]
+    public async Task NewArchiveMustMatchThePinAndCannotWritePastItsDownloadLimit(bool packages, string defect)
+    {
+        using var files = new SetupFiles();
+        byte[] bad = ModelArchive("zh_en");
+        if (defect == "hash")
+            bad[^1] ^= 1;
+        else if (defect == "stream-short")
+            bad = bad[..^1];
+        else
+            bad = [.. bad, 0];
+        var network = files.Responses(pair => pair == "zh_en" ? bad : ModelArchive(pair), unframedModels: defect.StartsWith("stream-", StringComparison.Ordinal));
+        var failure = await Assert.ThrowsAsync<ModelSetupException>(() => PrepareZh(files, network, packages));
+        Assert.Equal(SetupFailureCategory.Integrity, failure.Category);
+        Assert.Equal(ModelSetupStage.ModelDownload, failure.Stage);
+        Assert.False(File.Exists(files.CachedModel("zh_en")));
+        string partial = files.CachedModel("zh_en") + ".part";
+        if (File.Exists(partial))
+            Assert.InRange(new FileInfo(partial).Length, 0, ModelArchive("zh_en").LongLength);
+        Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
+        Assert.Empty(Directory.GetDirectories(Path.Combine(files.Root, "components")));
+    }
+
+    [Theory]
+    [InlineData(false, -1)]
+    [InlineData(true, -1)]
+    [InlineData(false, 1)]
+    [InlineData(true, 1)]
+    public async Task ZipDeclaredTotalMustEqualThePinBeforeInstallation(bool packages, int difference)
+    {
+        using var files = new SetupFiles();
+        var catalog = Catalog(ModelArchive, unpackedBytes: (_, bytes) => bytes + difference);
+        var failure = await Assert.ThrowsAsync<ModelSetupException>(() => PrepareZh(files, files.Responses(ModelArchive), packages, catalog));
+        Assert.Equal(SetupFailureCategory.Integrity, failure.Category);
+        Assert.Equal(ModelSetupStage.ModelExtract, failure.Stage);
+        Assert.False(File.Exists(files.CachedModel("zh_en")));
+        Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task ZipActualOutputMustMatchItsDeclarationEvenWithAValidArchiveHash(bool packages, bool oversizedDeclaration)
+    {
+        using var files = new SetupFiles();
+        byte[] malformed = ModelArchive("zh_en");
+        // Change the central-directory uncompressed size only. The compressed stream
+        // still contains the original model bytes; the supplied archive hash is valid.
+        for (int offset = 0; offset < malformed.Length - 46; offset++)
+        {
+            if (BitConverter.ToUInt32(malformed, offset) != 0x02014b50)
+                continue;
+            int nameLength = BitConverter.ToUInt16(malformed, offset + 28);
+            string name = Encoding.UTF8.GetString(malformed, offset + 46, nameLength);
+            if (name != "package/model/model.bin")
+                continue;
+            BitConverter.GetBytes(oversizedDeclaration ? 17u : 1u).CopyTo(malformed, offset + 24);
+            break;
+        }
+        byte[] Model(string pair) => pair == "zh_en" ? malformed : ModelArchive(pair);
+        var failure = await Assert.ThrowsAsync<ModelSetupException>(() => PrepareZh(files, files.Responses(Model), packages, Catalog(Model)));
+        Assert.Equal(SetupFailureCategory.Integrity, failure.Category);
+        Assert.Equal(ModelSetupStage.ModelExtract, failure.Stage);
+        Assert.False(File.Exists(files.CachedModel("zh_en")));
+        Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MissingPinRetainsTheLegacyBoundedInstallationPath(bool packages)
+    {
+        using var files = new SetupFiles();
+        using var prepared = await PrepareZh(files, files.Responses(ModelArchive), packages, Catalog(ModelArchive, pinned: false));
+        Assert.Equal(new[] { "zh_en" }, prepared.Directions);
+        Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
+    }
+
+    [Theory]
+    [InlineData("direction")]
+    [InlineData("wrong-version")]
+    [InlineData("missing-metadata")]
+    [InlineData("empty-model")]
+    public async Task PackageArchivePinDoesNotReplaceModelMetadataAndLayoutValidation(string defect)
+    {
+        using var files = new SetupFiles();
+        byte[] Model(string pair) => ModelArchive(pair, pair == "zh_en" ? defect : "");
+        var failure = await Assert.ThrowsAsync<ModelSetupException>(() => PrepareZh(files, files.Responses(Model), true, Catalog(Model)));
+        Assert.Equal(SetupFailureCategory.Integrity, failure.Category);
+        Assert.Equal(ModelSetupStage.ModelVerify, failure.Stage);
+        Assert.False(File.Exists(files.CachedModel("zh_en")));
+        Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ValidArchiveIdentityNeverPermitsAPathOutsideTheExtractionRoot(bool packages)
+    {
+        using var files = new SetupFiles();
+        byte[] bad = Archive(new()
+        {
+            ["../outside.txt"] = "escape"
+        });
+        byte[] Model(string pair) => pair == "zh_en" ? bad : ModelArchive(pair);
+        var failure = await Assert.ThrowsAsync<ModelSetupException>(() => PrepareZh(files, files.Responses(Model), packages, Catalog(Model)));
+        Assert.Equal(SetupFailureCategory.Integrity, failure.Category);
+        Assert.Equal(ModelSetupStage.ModelExtract, failure.Stage);
+        Assert.Empty(Directory.GetFiles(files.Root, "outside.txt", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task ChangedArchivePinDoesNotCertifyOrRejectAnAlreadyVerifiedPackageCopy()
+    {
+        using var files = new SetupFiles();
+        var store = new ModelInstallationStore(files.Root, Path.Combine(files.Root, "worker.py"));
+        using (var first = await PrepareZh(files, files.Responses(ModelArchive), packages: true))
+            first.PublishConfirmed();
+        var state = store.ReadInstallationState();
+        var network = new ResponseHandler(_ => throw new InvalidOperationException("offline-no-network"));
+        // This pin is smaller than the old installed files and would reject a fresh
+        // archive. Offline copies are instead governed by their actual bytes/hash.
+        var changed = Catalog(ModelArchive, unpackedBytes: (_, _) => 1);
+        string sourceRoot = Path.GetDirectoryName(store.InitialPaths().Models)!;
+        long required = 64L * 1024 * 1024 + new[] { "runtime", "models" }.Sum(name =>
+            Directory.GetFiles(Path.Combine(sourceRoot, name), "*", SearchOption.AllDirectories).Sum(file => new FileInfo(file).Length));
+        var rejected = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(
+            new ResponseHandler(_ => throw new InvalidOperationException("offline-no-network")), catalog: changed,
+            availableDiskBytes: _ => required - 1).PreparePackagesAsync(new(1, ModelPackageOperation.Select, [],
+                ["argos-zh-en"], state.Generation), NoProgress, TestContext.Current.CancellationToken));
+        Assert.Equal(SetupFailureCategory.DiskSpace, rejected.Category);
+        using var copied = await files.Installer(network, catalog: changed, availableDiskBytes: _ => required).PreparePackagesAsync(new(1,
+            ModelPackageOperation.Select, [], ["argos-zh-en"], state.Generation), NoProgress, TestContext.Current.CancellationToken);
+        string model = Path.Combine(copied.Paths.Models, "packages", "argos-zh-en", "1.9", "model", "model.bin");
+        Assert.Equal("controlled model", File.ReadAllText(model));
+        Assert.Empty(network.Requests);
+        using var inventory = JsonDocument.Parse(File.ReadAllText(Path.Combine(copied.Paths.Models, "installed.json")));
+        var file = inventory.RootElement.GetProperty("packages")[0].GetProperty("files").EnumerateArray()
+            .Single(item => item.GetProperty("path").GetString() == "model/model.bin");
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(model))).ToLowerInvariant(), file.GetProperty("sha256").GetString());
+        Assert.Equal(state.Generation, store.ReadInstallationState().Generation);
+    }
+
+    [Fact]
+    public async Task LegacyInstalledCopyKeepsItsActualHashInsteadOfClaimingTheNewArchivePin()
+    {
+        using var files = new SetupFiles();
+        using (var first = await PrepareZh(files, files.Responses(ModelArchive), packages: false))
+            first.PublishConfirmed();
+        var network = files.Responses(_ => throw new InvalidOperationException("local-model-must-be-reused"));
+        using var copied = await PrepareZh(files, network, packages: false,
+            Catalog(ModelArchive, unpackedBytes: (_, _) => 1));
+        string model = Path.Combine(copied.Paths.Models, "zh_en", "model", "model.bin");
+        Assert.Equal("controlled model", File.ReadAllText(model));
+        using var dependencies = JsonDocument.Parse(File.ReadAllText(Path.Combine(copied.Root, "dependency-lock.json")));
+        var modelLock = dependencies.RootElement.EnumerateArray().Single(item => item.GetProperty("Name").GetString() == "argos-zh_en");
+        Assert.Equal("local-installed-model:model/model.bin", modelLock.GetProperty("Url").GetString());
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(model))).ToLowerInvariant(), modelLock.GetProperty("Sha256").GetString());
+        Assert.DoesNotContain("/v1/translate-zh_en-1_9.argosmodel", network.Requests);
+    }
+
+    [Fact]
+    public async Task FailedPinnedSupplementLeavesThePublishedGenerationAndItsBytesUntouched()
+    {
+        using var files = new SetupFiles();
+        var store = new ModelInstallationStore(files.Root, Path.Combine(files.Root, "worker.py"));
+        using (var first = await PrepareZh(files, files.Responses(ModelArchive), packages: true))
+            first.PublishConfirmed();
+        string before = File.ReadAllText(Path.Combine(files.Root, "components.json"));
+        string oldModel = Path.Combine(store.InitialPaths().Models, "packages", "argos-zh-en", "1.9", "model", "model.bin");
+        var failure = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(files.Responses(pair =>
+            pair == "en_zh" ? [.. ModelArchive(pair), 0] : ModelArchive(pair))).PreparePackagesAsync(new(1,
+                ModelPackageOperation.Install, ["argos-en-zh"], ["argos-en-zh"], store.ReadInstallationState().Generation),
+                NoProgress, TestContext.Current.CancellationToken));
+        Assert.Equal(SetupFailureCategory.Integrity, failure.Category);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(files.Root, "components.json")));
+        Assert.Equal("controlled model", File.ReadAllText(oldModel));
+        Assert.Equal("argos-zh-en", Assert.Single(store.ReadInstallationState().CurrentPackages).Package.Id);
+    }
+
+    private static Task<ModelInstallationStore.PreparedInstallation> PrepareZh(SetupFiles files, HttpMessageHandler network,
+        bool packages, ModelPackageCatalog? catalog = null)
+    {
+        var installer = files.Installer(network, startProcess: files.Child(PassedCheck("zh_en")), catalog: catalog);
+        return packages ? installer.PreparePackagesAsync(new(1, ModelPackageOperation.Install, ["argos-zh-en"], ["argos-zh-en"], null),
+            NoProgress, TestContext.Current.CancellationToken) : installer.PrepareAsync(NoProgress, TestContext.Current.CancellationToken, ["zh_en"]);
+    }
+
     [Theory]
     [InlineData("{}")]
     [InlineData("{\"schema\":4}")]
@@ -334,7 +586,8 @@ public sealed class ModelInstallerTests
         File.WriteAllBytes(files.CachedModel("en_zh"), untouched);
         byte[] broken = ModelArchive("zh_en", defect);
         var first = files.Responses(pair => pair == "zh_en" ? broken : ModelArchive(pair));
-        var error = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(first).PrepareAsync(NoProgress,
+        var error = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(first,
+            catalog: Catalog(pair => pair == "zh_en" ? broken : ModelArchive(pair))).PrepareAsync(NoProgress,
             TestContext.Current.CancellationToken));
         Assert.Equal(SetupFailureCategory.Integrity, error.Category);
         Assert.Equal(ModelSetupStage.ModelVerify, error.Stage);
@@ -479,7 +732,7 @@ public sealed class ModelInstallerTests
             var error = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(files.Responses(ModelArchive))
                 .PrepareAsync(NoProgress, TestContext.Current.CancellationToken));
             Assert.Equal(SetupFailureCategory.Permission, error.Category);
-            Assert.Equal(ModelSetupStage.ModelExtract, error.Stage);
+            Assert.Equal(ModelSetupStage.ModelDownload, error.Stage);
         }
         Assert.Equal(archive, File.ReadAllBytes(files.CachedModel("zh_en")));
     }
@@ -496,7 +749,8 @@ public sealed class ModelInstallerTests
         {
             for (int attempt = 0; attempt < 2; attempt++)
             {
-                var error = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(files.Responses(ModelArchive))
+                var error = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(files.Responses(ModelArchive),
+                    catalog: Catalog(pair => pair == "zh_en" ? archive : ModelArchive(pair)))
                     .PrepareAsync(NoProgress, TestContext.Current.CancellationToken));
                 Assert.Equal(SetupFailureCategory.Integrity, error.Category);
                 Assert.Equal(ModelSetupStage.ModelVerify, error.Stage);
@@ -602,10 +856,12 @@ public sealed class ModelInstallerTests
         private readonly List<ObservedChild> _children = [];
         public SetupFiles() => Directory.CreateDirectory(Root);
         public ModelInstaller Installer(HttpMessageHandler handler, TimeSpan? downloadTimeout = null,
-            Func<ProcessStartInfo, IChildProcess>? startProcess = null, TimeSpan? selfCheckTimeout = null) =>
+            Func<ProcessStartInfo, IChildProcess>? startProcess = null, TimeSpan? selfCheckTimeout = null,
+            ModelPackageCatalog? catalog = null, Func<string, long>? availableDiskBytes = null) =>
             new(Root, Path.Combine(Root, "worker.py"), handler, downloadTimeout, startProcess,
                 selfCheckTimeout ?? TimeSpan.FromSeconds(5),
-                localPackages: Path.Combine(Root, "local-packages"));
+                localPackages: Path.Combine(Root, "local-packages"), catalog: catalog ?? Catalog(ModelArchive),
+                availableDiskBytes: availableDiskBytes);
         public string CachedModel(string pair) => Path.Combine(Root, "downloads", pair + "-1.9.argosmodel");
         public Func<ProcessStartInfo, IChildProcess> Child(string command) => _ =>
         {
@@ -639,7 +895,7 @@ public sealed class ModelInstallerTests
             Assert.NotEmpty(_children);
             Assert.All(_children, child => Assert.True(child.Exited));
         }
-        public ResponseHandler Responses(Func<string, byte[]> model)
+        public ResponseHandler Responses(Func<string, byte[]> model, bool unframedModels = false)
         {
             byte[] python = Archive(new()
             {
@@ -678,8 +934,8 @@ public sealed class ModelInstallerTests
                 } }
                 }),
                 "/fixture.whl" => Bytes(wheel),
-                "/v1/translate-zh_en-1_9.argosmodel" => Bytes(model("zh_en")),
-                "/v1/translate-en_zh-1_9.argosmodel" => Bytes(model("en_zh")),
+                "/v1/translate-zh_en-1_9.argosmodel" => ModelBytes(model("zh_en"), unframedModels),
+                "/v1/translate-en_zh-1_9.argosmodel" => ModelBytes(model("en_zh"), unframedModels),
                 _ => throw new InvalidOperationException("Unexpected setup request.")
             });
         }
@@ -731,6 +987,42 @@ public sealed class ModelInstallerTests
 
     private static HttpResponseMessage Json(object value) => Bytes(JsonSerializer.SerializeToUtf8Bytes(value));
     private static HttpResponseMessage Bytes(byte[] value) => new(HttpStatusCode.OK) { Content = new ByteArrayContent(value) };
+    private static HttpResponseMessage ModelBytes(byte[] value, bool unframed) => unframed
+        ? new(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new UnframedStream(value))
+        } : Bytes(value);
+    private sealed class UnframedStream(byte[] bytes) : MemoryStream(bytes)
+    {
+        public override bool CanSeek => false;
+    }
+
+    private static ModelPackageCatalog Catalog(Func<string, byte[]> model, bool pinned = true,
+        Func<string, long, long>? unpackedBytes = null, Func<string, long, long>? archiveBytes = null)
+    {
+        using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.ModelCatalog.json")!;
+        var value = JsonNode.Parse(stream)!;
+        foreach (var package in value["packages"]!.AsArray())
+        {
+            if (package!["backend"]!.GetValue<string>() != "argos")
+                continue;
+            package.AsObject().Remove("archivePin");
+            if (!pinned)
+                continue;
+            string pair = package["directions"]![0]!["id"]!.GetValue<string>();
+            byte[] bytes = model(pair);
+            using var zip = new ZipArchive(new MemoryStream(bytes));
+            long size = zip.Entries.Sum(entry => entry.Length);
+            package["archivePin"] = new JsonObject
+            {
+                ["sha256"] = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
+                ["bytes"] = archiveBytes?.Invoke(pair, bytes.LongLength) ?? bytes.LongLength,
+                ["unpackedBytes"] = unpackedBytes?.Invoke(pair, size) ?? size
+            };
+        }
+        using var document = JsonDocument.Parse(value.ToJsonString());
+        return ModelPackageCatalog.Parse(document.RootElement);
+    }
     private static byte[] ModelArchive(string pair) => ModelArchive(pair, "");
     private static byte[] ModelArchive(string pair, string defect)
     {

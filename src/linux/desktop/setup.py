@@ -303,11 +303,13 @@ def model_catalog(home):
 
 
 def download(direction, cache):
+    pin = direction.archive_pin
     return download_resource(
         direction.id,
         direction.url,
         cache / f"{direction.id}-{direction.version}.argosmodel",
-        MAX_ARCHIVE,
+        pin.bytes if pin is not None else MAX_ARCHIVE,
+        expected={"bytes": pin.bytes, "sha256": pin.sha256} if pin is not None else None,
     )
 
 
@@ -498,71 +500,100 @@ def download_resource(pair, url, archive, limit, *, expected=None, hosts=("argos
     raise OSError("model-download-retry")
 
 
+def copy_bounded(source, target, limit, error):
+    count = 0
+    while block := source.read(min(65536, limit - count + 1)):
+        if count + len(block) > limit:
+            raise ValueError(error)
+        target.write(block)
+        count += len(block)
+    return count
+
+
 def extract_model(archive, destination, direction):
-    with zipfile.ZipFile(archive) as package:
-        entries = package.infolist()
-        declared_bytes = sum(item.file_size for item in entries)
-        if len(entries) > 30000 or declared_bytes > 2 * MAX_ARCHIVE:
-            raise ValueError("model-archive-size")
-        names = set()
-        for item in entries:
-            path = PurePosixPath(item.filename)
+    pin = direction.archive_pin
+    with archive.open("rb") as stream:
+        compressed_bytes = os.fstat(stream.fileno()).st_size
+        archive_sha = hashlib.file_digest(stream, "sha256").hexdigest()
+        if pin is not None and (compressed_bytes != pin.bytes or archive_sha != pin.sha256):
+            raise ValueError("model-fixed-hash")
+        stream.seek(0)
+        with zipfile.ZipFile(stream) as package:
+            entries = package.infolist()
+            declared_bytes = sum(item.file_size for item in entries)
             if (
-                path.is_absolute()
-                or ".." in path.parts
-                or "\\" in item.filename
-                or ":" in item.filename
-                or len(item.filename) > 1024
-                or stat.S_ISLNK(item.external_attr >> 16)
-                or item.filename in names
+                len(entries) > 30000
+                or declared_bytes > 2 * MAX_ARCHIVE
+                or pin is not None
+                and declared_bytes != pin.unpacked_bytes
             ):
-                raise ValueError("model-archive-path")
-            names.add(item.filename)
-        metadata = [
-            item for item in entries if PurePosixPath(item.filename).name == "metadata.json"
-        ]
-        if len(metadata) != 1 or metadata[0].file_size > 65536:
-            raise ValueError("model-metadata")
-        description = json.loads(package.read(metadata[0]))
-        if (
-            description.get("from_code") != direction.source
-            or description.get("to_code") != direction.target
-            or description.get("package_version") != direction.version
-        ):
-            raise ValueError("model-direction")
-        root = PurePosixPath(metadata[0].filename).parent
-        retained_bytes = 0
-        for item in entries:
-            path = PurePosixPath(item.filename)
-            if item.is_dir() or not path.is_relative_to(root):
-                continue
-            relative = path.relative_to(root)
-            # Keep the CT2 model and all package-level metadata/licenses. Stanza
-            # dependencies are not part of TypeLay's actual translation engine.
-            if len(relative.parts) > 1 and relative.parts[0] != "model":
-                continue
-            output = destination.joinpath(*relative.parts)
-            output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            with package.open(item) as source_file, output.open("xb") as target_file:
-                shutil.copyfileobj(source_file, target_file, 65536)
-                retained_bytes += target_file.tell()
-        required = (
-            "metadata.json",
-            "sentencepiece.model",
-            "model/config.json",
-            "model/model.bin",
-            "model/shared_vocabulary.json",
-        )
-        if not all((destination / item).is_file() for item in required):
-            raise ValueError("model-layout")
-        # Observed archive bytes, including cache hits, are not a publisher pin.
-        # Diagnostics are returned only after the existing ZIP/layout gates pass.
-        return {
-            "observedSha256": digest(archive),
-            "compressedBytes": archive.stat().st_size,
-            "declaredUnpackedBytes": declared_bytes,
-            "retainedBytes": retained_bytes,
-        }
+                raise ValueError("model-archive-size")
+            names = set()
+            for item in entries:
+                path = PurePosixPath(item.filename)
+                if (
+                    path.is_absolute()
+                    or ".." in path.parts
+                    or "\\" in item.filename
+                    or ":" in item.filename
+                    or len(item.filename) > 1024
+                    or stat.S_ISLNK(item.external_attr >> 16)
+                    or item.filename in names
+                ):
+                    raise ValueError("model-archive-path")
+                names.add(item.filename)
+            metadata = [
+                item for item in entries if PurePosixPath(item.filename).name == "metadata.json"
+            ]
+            if len(metadata) != 1 or metadata[0].file_size > 65536:
+                raise ValueError("model-metadata")
+            description = json.loads(package.read(metadata[0]))
+            if (
+                description.get("from_code") != direction.source
+                or description.get("to_code") != direction.target
+                or description.get("package_version") != direction.version
+            ):
+                raise ValueError("model-direction")
+            root = PurePosixPath(metadata[0].filename).parent
+            retained_bytes = 0
+            for item in entries:
+                path = PurePosixPath(item.filename)
+                if item.is_dir() or not path.is_relative_to(root):
+                    continue
+                relative = path.relative_to(root)
+                # Keep the CT2 model and all package-level metadata/licenses. Stanza
+                # dependencies are not part of TypeLay's actual translation engine.
+                if len(relative.parts) > 1 and relative.parts[0] != "model":
+                    continue
+                output = destination.joinpath(*relative.parts)
+                output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                with package.open(item) as source_file, output.open("xb") as target_file:
+                    copied = copy_bounded(
+                        source_file,
+                        target_file,
+                        min(item.file_size, declared_bytes - retained_bytes),
+                        "model-archive-size",
+                    )
+                    if copied != item.file_size:
+                        raise ValueError("model-archive-size")
+                    retained_bytes += copied
+            required = (
+                "metadata.json",
+                "sentencepiece.model",
+                "model/config.json",
+                "model/model.bin",
+                "model/shared_vocabulary.json",
+            )
+            if not all((destination / item).is_file() for item in required):
+                raise ValueError("model-layout")
+            # Observed archive bytes, including cache hits, are not a publisher pin.
+            # Diagnostics are returned only after the existing ZIP/layout gates pass.
+            return {
+                "observedSha256": archive_sha,
+                "compressedBytes": compressed_bytes,
+                "declaredUnpackedBytes": declared_bytes,
+                "retainedBytes": retained_bytes,
+            }
 
 
 def argos_archive_observation(direction, sizes):
@@ -902,7 +933,7 @@ def plain_files(root):
     return result
 
 
-def copy_package(source, destination, files):
+def copy_package(source, destination, files, limit):
     expected = {item.path: item.sha256 for item in files}
     actual = plain_files(source)
     if {path.relative_to(source).as_posix() for path in actual} != set(expected):
@@ -913,7 +944,8 @@ def copy_package(source, destination, files):
             raise ValueError("model-package-hash")
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        shutil.copyfile(path, target)
+        with path.open("rb") as reader, target.open("xb") as writer:
+            limit -= copy_bounded(reader, writer, limit, "model-package-size")
         if digest(target) != expected[relative.as_posix()]:
             raise ValueError("model-package-hash")
 
@@ -941,11 +973,16 @@ def runtime_copy_plan(root):
     return result
 
 
-def copy_runtime(source, destination, plan):
+def copy_runtime(source, destination, plan, *, limit=None):
+    # Non-installation fixture copies also remain bounded; production passes
+    # the frozen allowance admitted before copying, never a new measurement.
+    if limit is None:
+        limit = sum(path.stat().st_size for path, _, _ in plan) + 64 * 1024 * 1024
     for path, relative, mode in plan:
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        shutil.copyfile(path, target)
+        with path.open("rb") as reader, target.open("xb") as writer:
+            limit -= copy_bounded(reader, writer, limit, "python-runtime-size")
         target.chmod(mode & 0o700)
     # Managed CPython is relocatable. venv metadata, entry points and activation
     # scripts are not: rewrite only bounded text in the copied venv, never binaries.
@@ -957,7 +994,12 @@ def copy_runtime(source, destination, plan):
                 text = path.read_text(encoding="utf-8")
             except UnicodeError:
                 continue
-            path.write_text(text.replace(str(source), str(destination)), encoding="utf-8")
+            encoded = text.replace(str(source), str(destination)).encode("utf-8")
+            growth = len(encoded) - path.stat().st_size
+            if growth > limit:
+                raise ValueError("python-runtime-size")
+            path.write_bytes(encoded)
+            limit -= growth
     executable = venv / "bin/python"
     result = subprocess.run(
         [
@@ -1140,6 +1182,7 @@ def install_packages(home, data, cache, request):
                 or fixed["directions"] != [direction.id for direction in package.directions]
             ):
                 raise ValueError("model-fixed-identity")
+        copy_limits = {}
         for item in installed:
             if item.package.id in retained and not (
                 operation == "Repair" and item.package.id in ids
@@ -1150,18 +1193,32 @@ def install_packages(home, data, cache, request):
                     if old_inventory["schema"] == 3
                     else Path(item.directions[0].id)
                 )
-                required_data += sum(path.stat().st_size for path in plain_files(source))
+                # Existing inventory proves its own files, not correspondence to a new pin.
+                # Reserve and enforce its actual copy size independently of archive budgets.
+                copy_limits[item.package.id] = sum(
+                    path.stat().st_size for path in plain_files(source)
+                )
+                required_data += copy_limits[item.package.id]
         if operation in ("Install", "Repair"):
             for package in selected:
                 if package.id not in ids:
                     continue
+                pin = package.directions[0].archive_pin
                 size = (
                     sum(fixed[key]["bytes"] for key in ("model", "model_license"))
                     if package.backend == "hy-mt-llama-cpu"
+                    else pin.bytes
+                    if pin is not None
                     else MAX_ARCHIVE
                 )
                 required_cache += size
-                required_data += size if package.backend == "hy-mt-llama-cpu" else 2 * MAX_ARCHIVE
+                required_data += (
+                    size
+                    if package.backend == "hy-mt-llama-cpu"
+                    else pin.unpacked_bytes
+                    if pin is not None
+                    else 2 * MAX_ARCHIVE
+                )
         margin = 64 * 1024 * 1024
         same_disk = data.stat().st_dev == cache.stat().st_dev
         if (
@@ -1180,7 +1237,12 @@ def install_packages(home, data, cache, request):
         requirements = None
         if runtime_plan is not None:
             try:
-                _, requirements = copy_runtime(source_runtime, version / "runtime", runtime_plan)
+                _, requirements = copy_runtime(
+                    source_runtime,
+                    version / "runtime",
+                    runtime_plan,
+                    limit=max(copied_runtime_bytes, runtime_budget),
+                )
             except Exception as error:
                 if not rebuildable(error):
                     raise
@@ -1309,7 +1371,7 @@ def install_packages(home, data, cache, request):
                         if file.path.startswith(direction + "/")
                     )
                 stage = "model-verify"
-                copy_package(source, destination, files)
+                copy_package(source, destination, files, copy_limits[package.id])
                 identity = package_identity(item)
                 if package.backend == "argos" and old_inventory["schema"] == 3:
                     entry = next(
@@ -1649,7 +1711,7 @@ def install(home, data, cache, requested_directions=None, repair=False):
             != sorted(direction.id for direction in directions)
         ):
             raise ValueError("model-self-check")
-        # Existing CI collects this successful self-check. Export only bounded
+        # The generation may be retired before artifact collection. Export only bounded
         # observations, never the inventory's paths or arbitrary metadata.
         check["archiveObservations"] = argos_archive_summary(inventory["dependencies"], directions)
         (version / "self-check.json").write_text(json.dumps(check), encoding="utf-8")

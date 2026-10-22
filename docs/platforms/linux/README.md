@@ -56,15 +56,16 @@ GTK 非纯文本/非标准控件、Qt QTextEdit/富文本/自绘控件、Electro
 
 ### 当前可验证候选
 
-推荐 [CI457 Linux 预览包](https://github.com/DingJWuyu/Typelay/actions/runs/39836918922/artifacts/12452217111)。[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39836918922)的 Linux 完整检查已通过；Windows 的检查结论独立，不代表两平台都已完成产品验收。
+推荐 [CI458 Linux 预览包](https://github.com/DingJWuyu/Typelay/actions/runs/39847577772/artifacts/12457092184)。[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39847577772)的 Linux 完整检查已通过；Windows 的检查结论独立，不代表两平台都已完成产品验收。
 
-- 源码：`34245873f985f808bee46f807d9ba2575e605b0b`；包内 `build-info.json` 同提交，`sourceDirty=false`。
-- 内层 `TypeLay-Linux-preview-x86_64.tar.gz`：281,110,309 字节。
-- SHA-256：`e0ac7abce94f7aba295327d6300f791e2ad23fdfa1bd94c6e1331df7c107f720`；内层 gzip/tar、293 项清单文件、路径与可执行权限均已核验。此摘要不适用于外层 Actions ZIP。
-- 检查包含设置/教程、GTK3/GTK4、浏览器 DOM 与 Firefox、Qt 合作探针及真实模型桌面链、GIMP 单次按需唤醒与直接替换/原生撤销对照、VS Code 手动命令和模型生命周期。Qt 重入拒绝/隔离及 GIMP 首次命令修复已通过本轮实际路径。
+- 源码：`b04cb203ebb1fcdf0a97592a61b6504a3a7794d9`；包内 `build-info.json` 同提交，`sourceDirty=false`。
+- 内层 `TypeLay-Linux-preview-x86_64.tar.gz`：281,109,108 字节。
+- SHA-256：`7a2954fd552ebef0637e2587b1d46ac377d0f7a8ffa805f4ce17b46c83b24abf`；内层 gzip/tar、293 项清单文件、路径与可执行权限均已核验。此摘要不适用于外层 Actions ZIP。
+- 检查包含设置/教程、GTK3/GTK4、浏览器 DOM 与 Firefox、Qt 合作探针及真实模型桌面链、GIMP 单次按需唤醒与直接替换/原生撤销对照、VS Code 手动命令和模型生命周期。Qt 重入隔离与 GIMP 首次命令路径仍通过；GIMP 该字段本身不支持原生撤销。
+- 包内 README 已按本包身份生成，不再要求转下载旧候选；包外相对文档链接指向该源码基准，四份配套文档可离线查阅。
 - 这是可体验的预览包，不是模型质量、物理输入法或全桌面产品验收通过。按需唤醒后空捕获仍可能丢失资格，须保持焦点后主动重试，不自动重放按键。
 
-本次已发布包内 README 仍写旧候选；包自身身份以 `build-info.json` 和上述摘要为准，不必按旧说明再次下载。此处修正仓库说明，不修改已发布产物。artifact 过期或换用后续提交时，应重新核对其摘要与检查结果。[Windows 验证与下载基线](../windows/README.md#当前可验证候选)独立记录。
+artifact 过期或换用后续提交时，应重新核对其摘要与检查结果。[Windows 验证与下载基线](../windows/README.md#当前可验证候选)独立记录。
 
 ## 安装、启动与首次配置
 

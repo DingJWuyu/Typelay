@@ -30,6 +30,9 @@ internal static class Program
             return HyAdapterCheck.Run(args[1..]);
         if (args.Length == 2 && args[0] == "--winevent-stack-probe" && Path.IsPathFullyQualified(args[1]))
             return WinEventStackProbe.Run(args[1]);
+        if (args.Length == 2 && args[0] == "--source-consumption-order"
+            && args[1] is "completion" or "deadline" or "focus-tail" or "queue-order")
+            return SourceKeyboardProbe.RunConsumptionOrder(args[1]);
         bool hookTest = args.Length == 1 && args[0] is "--hook-test" or "--hook-test-automation";
         bool ownedControls = (args.Length == 4 || args.Length == 5) && args[0] == "--owned-controls"
             && Path.IsPathFullyQualified(args[1]) && Guid.TryParse(args[2], out _ownedConnection)

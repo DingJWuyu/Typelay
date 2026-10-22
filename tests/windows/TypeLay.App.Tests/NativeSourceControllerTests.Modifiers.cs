@@ -93,7 +93,9 @@ public sealed partial class NativeSourceControllerTests
     [InlineData("content")]
     public Task ConfiguredControlUsesFreshSourceAndPreservesReturnedManualWording(string action) => desktop.RunAsync(async () =>
     {
-        await using var native = await ProductionForegroundWriteTests.Desktop.Start(isolatedSourceAcceptance: true);
+        using var brokerTrace = new BrokerReturnTraceFile();
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start(isolatedSourceAcceptance: true,
+            returnTrace: brokerTrace.Path);
         await native.Prepare(native.A, "你好", new(0, 2));
         var editor = new Window { Content = new TextBox(), Width = 350, Height = 120, Title = "TypeLay controlled manual editor" };
         nint editorHwnd = new WindowInteropHelper(editor).EnsureHandle();

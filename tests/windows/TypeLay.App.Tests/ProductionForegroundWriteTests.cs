@@ -991,6 +991,32 @@ public sealed class ProductionForegroundWriteTests
         public ValueTask DisposeAsync() => new(Stop(process));
     }
 
+    // Reuse this fixture owner's exact process handle and bounded kill/exit proof.
+    // No Broker, production lease or additional input hook is started for this diagnostic.
+    internal static async Task RunConsumptionOrderProbe(string experiment, Action<JsonElement> observed, Action exited)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        var process = StartProcess(Path.Combine(Repository(),
+            "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"),
+            "--source-consumption-order", experiment);
+        try
+        {
+            string? line = await process.StandardOutput.ReadLineAsync(deadline.Token);
+            using var document = JsonDocument.Parse(line ?? "null");
+            var result = document.RootElement.Clone();
+            observed(result); // Retain raw bounded observations even if exit/assertion fails.
+            Assert.Equal(process.Id, result.GetProperty("process").GetInt32());
+            await process.WaitForExitAsync(deadline.Token);
+            Assert.Equal(0, process.ExitCode);
+        }
+        finally
+        {
+            await Stop(process);
+            exited();
+        }
+    }
+
     private static Process StartProcess(params string[] arguments) => StartProcessWithTrace(null, arguments);
     private static Process StartProcessWithTrace(string? trace, params string[] arguments)
     {

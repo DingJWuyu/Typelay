@@ -12,6 +12,13 @@ _LEGACY_PACKAGES = (("argos-zh-en", "zh_en"), ("argos-en-zh", "en_zh"))
 
 
 @dataclass(frozen=True)
+class ArchivePin:
+    sha256: str
+    bytes: int
+    unpacked_bytes: int
+
+
+@dataclass(frozen=True)
 class ModelDirection:
     id: str
     source: str
@@ -21,6 +28,7 @@ class ModelDirection:
     version: str
     url: str
     self_check_text: str
+    archive_pin: ArchivePin | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +84,15 @@ def _text(value, key):
     return result
 
 
+def _unique_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("model-catalog")
+        value[key] = item
+    return value
+
+
 def load_package_catalog(path: Path | None = None) -> ModelPackageCatalog:
     """Read catalog schema 2. Its schema is independent of installed.json's schema."""
     if path is None:
@@ -85,7 +102,7 @@ def load_package_catalog(path: Path | None = None) -> ModelPackageCatalog:
             encoded = stream.read(16385)
         if len(encoded) > 16384:
             raise ValueError("model-catalog")
-        value = json.loads(encoded)
+        value = json.loads(encoded, object_pairs_hook=_unique_object)
         if (
             not isinstance(value, dict)
             or type(value["schema"]) is not int
@@ -124,6 +141,23 @@ def load_package_catalog(path: Path | None = None) -> ModelPackageCatalog:
                 or not entry["directions"]
             ):
                 raise ValueError("model-catalog")
+            pin = None
+            if "archivePin" in entry:
+                raw = entry["archivePin"]
+                if (
+                    backend != "argos"
+                    or len(entry["directions"]) != 1
+                    or not isinstance(raw, dict)
+                    or set(raw) != {"sha256", "bytes", "unpackedBytes"}
+                    or not isinstance(raw["sha256"], str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", raw["sha256"])
+                    or type(raw["bytes"]) is not int
+                    or not 0 < raw["bytes"] <= 1024**3
+                    or type(raw["unpackedBytes"]) is not int
+                    or not 0 < raw["unpackedBytes"] <= 2 * 1024**3
+                ):
+                    raise ValueError("model-catalog")
+                pin = ArchivePin(raw["sha256"], raw["bytes"], raw["unpackedBytes"])
             directions = []
             seen_directions = set()
             for item in entry["directions"]:
@@ -146,12 +180,21 @@ def load_package_catalog(path: Path | None = None) -> ModelPackageCatalog:
                     or identity in seen_directions
                     or "version" in item
                     or "url" in item
+                    or "archivePin" in item
                 ):
                     raise ValueError("model-catalog")
                 seen_directions.add(identity)
                 directions.append(
                     ModelDirection(
-                        identity, source, target, source_name, target_name, version, address, sample
+                        identity,
+                        source,
+                        target,
+                        source_name,
+                        target_name,
+                        version,
+                        address,
+                        sample,
+                        pin,
                     )
                 )
             seen_packages.add(package_id)

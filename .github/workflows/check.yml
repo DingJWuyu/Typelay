@@ -165,6 +165,14 @@ jobs:
         run: |
           & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.SourceKeyboardBoundaryProbe.ObserveSelfOwnedSourceKeyboardBoundary'
           exit $LASTEXITCODE
+      - name: Observe consumption return and cross-queue tails in owned sources
+        id: windows-source-consumption
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.SourceKeyboardBoundaryProbe.ObserveSelfOwnedConsumptionOrder'
+          exit $LASTEXITCODE
       - name: Observe standard Chrome profile after behavior tests
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: pwsh
@@ -363,6 +371,7 @@ jobs:
             artifacts/test-results/
             artifacts/source-ll-timeout/
             artifacts/source-keyboard-boundary/
+            artifacts/source-consumption-order/**/result.json
             artifacts/controller-trace.jsonl*
             artifacts/continuous-translation/result.json
             artifacts/continuous-translation/consumer-exit.json

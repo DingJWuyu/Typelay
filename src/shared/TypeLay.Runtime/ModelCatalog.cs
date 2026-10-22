@@ -4,7 +4,9 @@ using System.Text.RegularExpressions;
 namespace TypeLay.Runtime;
 
 public sealed record ModelDirection(string Id, string Source, string Target, string SourceName,
-    string TargetName, string Version, string Url, string SelfCheckText);
+    string TargetName, string Version, string Url, string SelfCheckText, ModelArchivePin? ArchivePin = null);
+// Project-reviewed archive identity, not an upstream signature or proof about an installed copy.
+public sealed record ModelArchivePin(string Sha256, long Bytes, long UnpackedBytes);
 public sealed record ModelLanguageChoice(string Code, string Label);
 public sealed record ModelPackageFile(string Path, string Sha256);
 
@@ -98,6 +100,8 @@ public static class ModelCatalog
 
     public static long? PackageDownloadBytes(ModelPackage package)
     {
+        if (package.Backend == "argos")
+            return package.ArchivePin?.Bytes;
         using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.HyModelLock.json")
             ?? throw new InvalidDataException("model-lock-missing");
         using var document = JsonDocument.Parse(stream);
@@ -140,7 +144,7 @@ public static class ModelCatalog
 public sealed class ModelPackage
 {
     internal ModelPackage(string id, string version, string backend, bool preview, string url,
-        ModelDirection[] directions)
+        ModelDirection[] directions, ModelArchivePin? archivePin)
     {
         Id = id;
         Version = version;
@@ -148,6 +152,7 @@ public sealed class ModelPackage
         Preview = preview;
         Url = url;
         Directions = Array.AsReadOnly(directions);
+        ArchivePin = archivePin;
     }
 
     public string Id
@@ -171,6 +176,10 @@ public sealed class ModelPackage
         get;
     }
     public IReadOnlyList<ModelDirection> Directions
+    {
+        get;
+    }
+    public ModelArchivePin? ArchivePin
     {
         get;
     }
@@ -226,6 +235,7 @@ public sealed class ModelPackageCatalog
     public static ModelPackageCatalog Parse(JsonElement value)
     {
         const string error = "model-catalog-invalid";
+        RequireUniqueObjectKeys(value, error);
         if (value.ValueKind != JsonValueKind.Object || Schema(value, error) != 2
             || value.TryGetProperty("directions", out _))
             throw new InvalidDataException(error);
@@ -247,6 +257,7 @@ public sealed class ModelPackageCatalog
                 || backend == "argos" && (url.Host != "argos-net.com" || !Regex.IsMatch(version, @"\A[0-9]+\.[0-9]+\z")))
                 throw new InvalidDataException(error);
             List<ModelDirection> directions = [];
+            var pin = ArchivePin(entry, backend, error);
             HashSet<string> directionIds = new(StringComparer.Ordinal);
             foreach (var item in NonemptyArray(entry, "directions", error).EnumerateArray())
             {
@@ -254,16 +265,54 @@ public sealed class ModelPackageCatalog
                 string target = Text(item, "target", error);
                 var direction = new ModelDirection(identity, source, target,
                     Text(item, "sourceName", error), Text(item, "targetName", error), version, address,
-                    Text(item, "selfCheckText", error));
+                    Text(item, "selfCheckText", error), pin);
                 if (!LanguageCode(source) || !LanguageCode(target) || source == target
                     || identity != source + "_" + target || !directionIds.Add(identity)
-                    || item.TryGetProperty("version", out _) || item.TryGetProperty("url", out _))
+                    || item.TryGetProperty("version", out _) || item.TryGetProperty("url", out _)
+                    || item.TryGetProperty("archivePin", out _))
                     throw new InvalidDataException(error);
                 directions.Add(direction);
             }
-            packages.Add(new ModelPackage(id, version, backend, preview.GetBoolean(), address, directions.ToArray()));
+            if (pin is not null && directions.Count != 1)
+                throw new InvalidDataException(error);
+            packages.Add(new ModelPackage(id, version, backend, preview.GetBoolean(), address, directions.ToArray(), pin));
         }
         return new ModelPackageCatalog(packages.ToArray());
+    }
+
+    private static void RequireUniqueObjectKeys(JsonElement value, string error)
+    {
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            HashSet<string> names = new(StringComparer.Ordinal);
+            foreach (var property in value.EnumerateObject())
+            {
+                if (!names.Add(property.Name))
+                    throw new InvalidDataException(error);
+                RequireUniqueObjectKeys(property.Value, error);
+            }
+        }
+        else if (value.ValueKind == JsonValueKind.Array)
+            foreach (var item in value.EnumerateArray())
+                RequireUniqueObjectKeys(item, error);
+    }
+
+    private static ModelArchivePin? ArchivePin(JsonElement package, string backend, string error)
+    {
+        if (!package.TryGetProperty("archivePin", out var pin))
+            return null;
+        if (backend != "argos" || pin.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException(error);
+        string[] keys = pin.EnumerateObject().Select(property => property.Name).Order(StringComparer.Ordinal).ToArray();
+        if (!keys.SequenceEqual(new[] { "bytes", "sha256", "unpackedBytes" }, StringComparer.Ordinal)
+            || pin.GetProperty("sha256").ValueKind != JsonValueKind.String
+            || !Regex.IsMatch(pin.GetProperty("sha256").GetString()!, @"\A[0-9a-f]{64}\z")
+            || pin.GetProperty("bytes").ValueKind != JsonValueKind.Number
+            || !pin.GetProperty("bytes").TryGetInt64(out long bytes) || bytes is <= 0 or > 1073741824L
+            || pin.GetProperty("unpackedBytes").ValueKind != JsonValueKind.Number
+            || !pin.GetProperty("unpackedBytes").TryGetInt64(out long unpacked) || unpacked is <= 0 or > 2147483648L)
+            throw new InvalidDataException(error);
+        return new(pin.GetProperty("sha256").GetString()!, bytes, unpacked);
     }
 
     public IReadOnlyList<ModelPackageSelection> ReadInstallationSelection(JsonElement inventory)
