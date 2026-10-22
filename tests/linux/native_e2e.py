@@ -1002,8 +1002,8 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             candidate = actual["candidate"]
                             assert (
                                 candidate["text"] == "Kept candidate"
-                                and not candidate["editable"]
-                                and not candidate["focused"]
+                                and candidate["editable"] is False
+                                and candidate["focused"] is False
                             )
                             assert not events("beginEdit")
                             assert not any(

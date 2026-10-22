@@ -29,6 +29,7 @@
     <Compile Include="../fixtures/TypeLay.DesktopFixture/HyPackageCheck.Processes.cs" Link="HyPackageCheck.Processes.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/NativeSourceSetup.cs" Link="NativeSourceSetup.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/ShellTrayObservation.cs" Link="ShellTrayObservation.cs" />
+    <Compile Include="../fixtures/TypeLay.DesktopFixture/ShellTraySelection.cs" Link="ShellTraySelection.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/HyPackageCheck.Mouse.cs" Link="HyPackageCheck.Mouse.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/HyPackageCheck.WritebackClick.cs" Link="HyPackageCheck.WritebackClick.cs" />
   </ItemGroup>

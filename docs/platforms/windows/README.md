@@ -86,7 +86,7 @@
 - 浏览器合作七个场景及整步通过；记事本设置和只读预览观察通过，但等待公开接受提示仍因 Unknown 安全缺口超时，后续编辑/直接替换及 Hy 未运行。Windows 完整验收仍未通过。
 - 本轮未消除普通自动捕获的输入法安全缺口，Unknown 继续拒写；按需 CaptureDirect 既有 owner-thread 桥仍有同步 IMM 消息重入风险，不能据本轮连续链通过消除该限制。后继候选未经对应验证不记作修复。本轮无质量采集，5068 的 40 次诊断与 386 的 69 次响应仍是各自范围的既有证据，三项质量门继续关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
 
-最近已核对的候选 [`376b8d4e`](https://github.com/DingJWuyu/Typelay/actions/runs/39761872812) 中 App.Tests 合同与完整连续交互检查通过。正式浏览器合作检查在首次 loopback 页面导航的响应校验阶段失败，尚未到 DOM 或快捷键；约 4.53 秒是整个场景耗时，不是导航超时。该浏览器的自然退出及内核零活动证明有效；随后未运行的 Notepad 没有当次 proof，不能把总消费者证明失败直接等同进程泄漏。Notepad 和 Hy 均未运行，因此本轮没有新的托盘退出结果。Windows 普通原生输入框安全接受缺口与质量门仍未闭合；之前的托盘发现问题也仍待实证。
+最近已核对的候选 [`cf616f90`](https://github.com/DingJWuyu/Typelay/actions/runs/39768099127) 中，正式浏览器合作链、发行包检查、受控 native adapter 与 Hy 生产 worker 检查通过，先前全部模型消费者的退出证明也通过。合同仍有截图撤销观察与系统菜单过渡测试失败；连续交互在首次唤醒前尚无已发布快捷键观察时被拒绝，尚未进入编辑测试。真实经典 Notepad 虽已显示预览，IME 仍为 Unknown，等待公开接受提示超时；这不是已解决的普通原生安全写回。Hy Settings 链的正常托盘退出仍未通过，新任务栏裁剪仅提供诊断，不证明产品图标注册成功或失败。Windows 普通原生输入框安全接受缺口与质量门仍未闭合。
 
 当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654)下载 [`typelay-windows-e1f55ebd4da69c3d77c4a6447eaad2a146b8bfa6`](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654/artifacts/12342794943)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
 

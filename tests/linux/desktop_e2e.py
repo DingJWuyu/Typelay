@@ -335,8 +335,8 @@ def fixture_module_identity(pid, executable, module):
     return result
 
 
-def prepare_key(stack, name):
-    """Preconnect to XTest; each call delivers one real down or up event."""
+def prepare_xtest(stack):
+    """Own one existing-display connection for an ordered real input sequence."""
     x11 = ctypes.CDLL("libX11.so.6")
     xtst = ctypes.CDLL("libXtst.so.6")
     display_type = ctypes.c_void_p
@@ -359,6 +359,12 @@ def prepare_key(stack, name):
     stack.callback(x11.XCloseDisplay, display)
     extension = [ctypes.c_int() for _ in range(4)]
     assert xtst.XTestQueryExtension(display, *(ctypes.byref(value) for value in extension))
+    return x11, xtst, display
+
+
+def prepare_key(stack, name, *, connection=None):
+    """Preconnect to XTest; each call delivers one real down or up event."""
+    x11, xtst, display = connection or prepare_xtest(stack)
     keycode = x11.XKeysymToKeycode(display, x11.XStringToKeysym(name.encode("ascii")))
     assert keycode, f"XTest DISPLAY has no {name} keycode"
 
@@ -378,6 +384,79 @@ def prepare_key(stack, name):
         assert sent, f"XTest refused {name} key event"
 
     return send_key
+
+
+def prepare_background_direct(stack, window):
+    connection = prepare_xtest(stack)
+    x11, xtst, display = connection
+    keys = {
+        name: prepare_key(stack, name, connection=connection)
+        for name in ("Control_L", "Shift_L", "F10", "1")
+    }
+    x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+    x11.XDefaultRootWindow.restype = ctypes.c_ulong
+    x11.XTranslateCoordinates.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_ulong),
+    ]
+    x11.XTranslateCoordinates.restype = ctypes.c_int
+    xtst.XTestFakeMotionEvent.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_ulong,
+    ]
+    xtst.XTestFakeMotionEvent.restype = ctypes.c_int
+    xtst.XTestFakeButtonEvent.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint,
+        ctypes.c_int,
+        ctypes.c_ulong,
+    ]
+    xtst.XTestFakeButtonEvent.restype = ctypes.c_int
+
+    def send(actual, changes_source):
+        entry = actual["secondEntry"]
+        x = int((entry["x"] + entry["width"] / 2) * actual["scale"])
+        y = int((entry["y"] + entry["height"] / 2) * actual["scale"])
+        root_x, root_y, child = ctypes.c_int(), ctypes.c_int(), ctypes.c_ulong()
+        assert x11.XTranslateCoordinates(
+            display,
+            int(window, 0),
+            x11.XDefaultRootWindow(display),
+            x,
+            y,
+            ctypes.byref(root_x),
+            ctypes.byref(root_y),
+            ctypes.byref(child),
+        ), "Cannot resolve the owned nested window coordinates"
+        # F10 captures synchronously in the GTK key handler. Queue the next
+        # actual events, not a poll/subprocess after an already-completed model.
+        assert xtst.XTestFakeMotionEvent(display, -1, root_x.value, root_y.value, 0)
+        for name, down in (
+            ("Control_L", True),
+            ("Shift_L", True),
+            ("F10", True),
+            ("F10", False),
+            ("Control_L", False),
+        ):
+            keys[name](down, sync=False)
+        if changes_source:
+            keys["1"](True, sync=False)
+            keys["1"](False, sync=False)
+        keys["Shift_L"](False, sync=False)
+        assert xtst.XTestFakeButtonEvent(display, 1, 1, 0)
+        assert xtst.XTestFakeButtonEvent(display, 1, 0, 0)
+        x11.XSync(display, 0)
+
+    return send
 
 
 def prepare_tab(stack):
@@ -3757,6 +3836,28 @@ def run(arguments):
                                 "without writing either source field"
                             )
 
+                        send_background_direct = prepare_background_direct(resources, nested[0])
+
+                        def direct_dispatch_since(offset):
+                            with (arguments.output / "inside.log").open("rb") as log:
+                                log.seek(offset)
+                                rows = log.read().decode("utf-8", errors="replace")
+                            matches = re.findall(
+                                rf"TypeLay GTK{4 if gtk4 else 3} shortcut phase=dispatched "
+                                r"gate=none reason=none commandId=(\d+) atMs=(\d+) "
+                                r"authorityAgeMs=\d+ elapsedMs=\d+ atUs=(\d+)",
+                                rows,
+                            )
+                            return (
+                                {
+                                    "commandId": int(matches[-1][0]),
+                                    "atMs": int(matches[-1][1]),
+                                    "atUs": int(matches[-1][2]),
+                                }
+                                if matches
+                                else None
+                            )
+
                         pending_direct = "正在直接翻译；可以切换输入框，当前操作仍绑定原输入框。"
                         for changes_source in (False, True):
                             click_entry("first")
@@ -3809,34 +3910,16 @@ def run(arguments):
                             before_feedback = (
                                 status().get("operationFeedback", {}).get("revision", 0)
                             )
-                            key("ctrl+shift+F10")
+                            key_trace_start = key_trace_checkpoint()
                             dispatched_at = now_ms()
-                            wait_for(
-                                lambda: status().get("serviceStatus") == pending_direct,
-                                "single GTK F10 did not dispatch before the background transition; "
-                                "a model result that already completed cannot prove this case",
-                            )
+                            send_background_direct(before, changes_source)
+                            # Actual module dispatch, not XTest send order, proves
+                            # the source was frozen. The fixture events below must
+                            # occur afterwards; an early result fails the case.
                             dispatched = wait_for(
-                                lambda: value
-                                if (value := gtk_state()).get("observedAtMs", 0) >= dispatched_at
-                                and value.get("imeClear")
-                                and (value["firstEntry"]["ime"] or {}).get("flags") == 3
-                                else None,
-                                "GTK F10 modifier releases did not retire in the actual source context",
+                                lambda: direct_dispatch_since(key_trace_start),
+                                "single GTK F10 did not freeze and dispatch the original source",
                             )
-                            assert (
-                                dispatched["first"] == source
-                                and dispatched["firstEntry"]["focused"]
-                            )
-                            if changes_source:
-                                # A real post-snapshot edit must survive the eventual
-                                # model result. There is no retry or model delay.
-                                key("exclam")
-                                wait_for(
-                                    lambda: gtk_state().get("first") == source + "!",
-                                    "actual post-snapshot GTK source edit did not arrive",
-                                )
-                            click_entry("second")
                             detached = wait_for(
                                 lambda: value
                                 if (value := gtk_state()).get("focus") == "fixture-second"
@@ -3861,16 +3944,27 @@ def run(arguments):
                             # The model may finish after A loses focus but before this
                             # snapshot. The synchronous mutation contexts below must
                             # prove B owned focus and retained its actual selection.
+                            assert dispatched["atMs"] >= dispatched_at
+                            assert detached["secondEntry"]["focusInAtUs"] > dispatched["atUs"]
+                            if changes_source:
+                                assert (
+                                    dispatched["atUs"]
+                                    < detached["firstInsertContext"]["atUs"]
+                                    < detached["secondEntry"]["focusInAtUs"]
+                                )
+                                assert (
+                                    detached["firstEntry"]["insertions"]
+                                    == first_before["insertions"] + 1
+                                )
+                                assert (
+                                    detached["firstEntry"]["deletions"] == first_before["deletions"]
+                                )
                             first_ime = detached["firstEntry"]["ime"]
                             assert first_ime and first_ime["flags"] == 17
                             assert first_ime["server"] == first_ime["applied"]
-                            assert (
-                                first_ime["context"] == dispatched["firstEntry"]["ime"]["context"]
-                            )
+                            assert first_ime["context"] == before["firstEntry"]["ime"]["context"]
                             if not changes_source:
-                                assert (
-                                    first_ime["input"] == dispatched["firstEntry"]["ime"]["input"]
-                                )
+                                assert first_ime["input"] == before["firstEntry"]["ime"]["input"]
                             terminal = (
                                 "输入内容、选区或字段已变化，TypeLay 未替换文字。请确认目标输入框后再操作。"
                                 if changes_source

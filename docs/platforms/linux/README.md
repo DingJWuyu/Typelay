@@ -16,7 +16,7 @@
 
 通过项不代表物理键盘、用户输入法或所有普通桌面应用已通过。5068 的 Argos 少于20分钟仍误译为保持20分钟，电话问题该次未复现但未证明修复；术语结构小样本保留了真实 CRLF，但不足以证明普遍结构安全或开放质量门。实际质量范围见[共同产品缺口](../../product/README.md#当前共同开发缺口)，后继修正不得提前算作 GUI 或质量通过。
 
-最近已核对的候选 [`376b8d4e`](https://github.com/DingJWuyu/Typelay/actions/runs/39761872812) 中，完整主包、首次设置与教程、实际 GTK3/GTK4 Entry、浏览器、VS Code、Qt 和正式 Hy 生命周期检查通过。GIMP 的 Settings 启动、编辑首次 Tab 只回源、第二次精确接受、Escape、按需/直接替换及退出清理通过，但没有原生撤销支持。Qt 新增同窗 QPlainTextEdit 后台替换、另一字段组合态保持、冲突/在途拒绝及写中换文档隔离均通过真实 provider/consumer 回归；不能替代物理键盘和用户输入法验收。GTK4 加词矩阵前 27 例通过，仍在 TextView 的 EditedTranslationPending/save 分支被词条 IME 资格拒绝；后续矩阵未完成，因此不将整条加词能力或该候选记为全绿，暂不替换上述推荐预览。[固定8响应组合采集](../../engineering/testing.md#linux-模型包生命周期中的显式质量采集)仍不构成质量放行。
+最近已核对的候选 [`cf616f90`](https://github.com/DingJWuyu/Typelay/actions/runs/39768099127) 中，完整主包、首次设置与教程、浏览器、VS Code、Qt、GIMP 与正式 Hy 生命周期检查通过；GIMP 仍不支持原生撤销。GTK4 加词的 40 个保存、取消及失效场景全部通过；GTK3 首例因测试观察器缺少候选编辑/焦点属性而中断，不能据此记为完整 80 例通过。正式 GTK3 后台冲突场景中源修改晚于模型写回，GTK4 后台直接替换被 EpochChanged 拒绝，均仍需修复或核实，不能沿用上一轮通过结论替代本轮。Qt 同窗 QPlainTextEdit 后台路径的真实 provider/consumer 回归通过，但不代表物理键盘和用户输入法验收。因此暂不替换上述推荐预览。[固定8响应组合采集](../../engineering/testing.md#linux-模型包生命周期中的显式质量采集)仍不构成质量放行。
 
 现役输入路径：
 

@@ -1166,8 +1166,10 @@ static void trace_shortcut(const ShortcutCommand *attempt, const char *phase, co
     /* Phases, gates and reasons are fixed literals; no body, metadata, target
        identity or caller-supplied generation enters this bounded diagnostic. */
     g_printerr("TypeLay GTK3 shortcut phase=%s gate=%s reason=%s commandId=%" G_GUINT64_FORMAT
-        " atMs=%" G_GINT64_FORMAT " authorityAgeMs=%" G_GINT64_FORMAT " elapsedMs=%" G_GINT64_FORMAT "\n",
-        phase, gate, reason, attempt->id, now, observed >= 0 ? now - observed : -1, now - attempt->triggered_at);
+        " atMs=%" G_GINT64_FORMAT " authorityAgeMs=%" G_GINT64_FORMAT " elapsedMs=%" G_GINT64_FORMAT
+        " atUs=%" G_GINT64_FORMAT "\n",
+        phase, gate, reason, attempt->id, now, observed >= 0 ? now - observed : -1, now - attempt->triggered_at,
+        g_get_monotonic_time());
 }
 static JsonObject *shortcut_probe_snapshot(guint64 input, guint64 content, guint64 focus,
                                             const TlFcitxStateV1 *state) {

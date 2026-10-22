@@ -390,7 +390,8 @@ internal static partial class ContinuousTranslationCheck
         string editorReturnOutcome = "not-run", editorExitOutcome = "not-run", sourceExitOutcome = "not-run";
         string? returnStatus = null;
         bool? returnTargetMatches = null;
-        bool candidateReady = false, draftChanged = false, draftRetained = false, freshAfterReturn = false;
+        bool candidateReady = false, shortcutReadyObserved = false;
+        bool draftChanged = false, draftRetained = false, freshAfterReturn = false;
         bool sourceUnchanged = false, selectionPreserved = false, zeroSubmits = false, submitCounterVerified = false;
         bool editorExitReturned = false, editorExitHidden = false, sourceExitHidden = false;
         int wakeAttempts = 0, editorClicks = 0;
@@ -491,6 +492,15 @@ internal static partial class ContinuousTranslationCheck
 
             result.Stage = "ordinary-clear-capture";
             await UntilAsync(() => controller.InputAvailable && FreshSource(0, 0), cancellation);
+            // The broker reply precedes Runtime validating and publishing it.
+            // This stock Edit also supports direct capture, so the existing
+            // public direct-ready status confirms that observation was applied.
+            // It is only a readiness cue: do not enable writing or send a direct
+            // command, inspect an internal lease, or retry the first wake.
+            result.Stage = "ordinary-public-ready";
+            await UntilAsync(() => controller.InputAvailable && FreshSource(0, 0)
+                && controller.ShortcutStatus.Contains("当前输入框的直接替换快捷键已就绪。", StringComparison.Ordinal), cancellation);
+            shortcutReadyObserved = true;
             Require(!overlay.IsVisible && settings.Value.WakeShortcut == "Ctrl+Shift+F9", "ordinary-on-demand-before-wake");
             Require(new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C, 0x76, 0x77, 0x78 }
                 .All(key => GetAsyncKeyState(key) >= 0), "ordinary-key-already-down");
@@ -676,6 +686,7 @@ internal static partial class ContinuousTranslationCheck
                 experimentalWriteback = false,
                 ordinaryWritebackVerified = false,
                 feedbackCode,
+                shortcutReadyObserved,
                 candidateReady,
                 firstCapture = firstCapture is null ? null : new
                 {

@@ -48,6 +48,10 @@ public sealed class ShellTrayObservationTests(WpfDesktopFixture desktop)
     [InlineData("private-prefix TypeLay private-status", "product-contained")]
     [InlineData("TypeLay-private-status", "product-contained")]
     [InlineData("Show hidden icons", "known-overflow")]
+    [InlineData("Show Hidden Icons", "known-overflow")]
+    [InlineData("SHOW HIDDEN ICONS", "known-overflow")]
+    [InlineData("Show hidden icons for another app", "other")]
+    [InlineData("Hidden icons", "other")]
     [InlineData("显示隐藏的图标", "known-overflow")]
     [InlineData("private-unrelated-name", "other")]
     [InlineData("private-typelay", "other")]
@@ -72,6 +76,49 @@ public sealed class ShellTrayObservationTests(WpfDesktopFixture desktop)
             var node = Assert.Single(sample.Nodes, item => item.AutomationId == "sample-icon");
             Assert.Equal(expectedClass, node.NameClass);
             Assert.DoesNotContain("private-", JsonSerializer.Serialize(sample));
+        }
+        finally { window.Close(); }
+    });
+
+    [Theory]
+    [InlineData("Show hidden icons", "SystemTrayIcon", true)]
+    [InlineData("Show Hidden Icons", "SystemTrayIcon", true)]
+    [InlineData("SHOW HIDDEN ICONS", "SystemTrayIcon", true)]
+    [InlineData("显示隐藏的图标", "SystemTrayIcon", true)]
+    [InlineData("", "NotificationChevron", true)]
+    [InlineData("Show hidden icons for another app", "SystemTrayIcon", false)]
+    [InlineData("Hidden icons", "SystemTrayIcon", false)]
+    [InlineData("Windows Security", "SystemTrayIcon", false)]
+    [InlineData("", "SystemTrayIcon", false)]
+    public Task OverflowSelectionUsesTheWholeAccessibleNameNotTheSharedSystemTrayId(
+        string accessibleName, string automationId, bool expected) => desktop.RunAsync(async () =>
+    {
+        using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+        var button = new Button();
+        AutomationProperties.SetName(button, accessibleName);
+        AutomationProperties.SetAutomationId(button, automationId);
+        var text = new TextBlock { Text = "Show Hidden Icons" };
+        AutomationProperties.SetAutomationId(text, "non-button");
+        var panel = new StackPanel();
+        panel.Children.Add(button);
+        panel.Children.Add(text);
+        var window = new Window { Content = panel };
+        try
+        {
+            window.Show();
+            window.UpdateLayout();
+            var root = AutomationElement.FromHandle(new WindowInteropHelper(window).Handle);
+            await Task.Run(() =>
+            {
+                var control = root.FindFirst(TreeScope.Descendants,
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
+                Assert.NotNull(control);
+                Assert.Equal(expected, ShellTraySelection.IsOverflowButton(control));
+                var nonButton = root.FindFirst(TreeScope.Descendants,
+                    new PropertyCondition(AutomationElement.AutomationIdProperty, "non-button"));
+                Assert.NotNull(nonButton);
+                Assert.False(ShellTraySelection.IsOverflowButton(nonButton));
+            }, limit.Token).WaitAsync(limit.Token);
         }
         finally { window.Close(); }
     });

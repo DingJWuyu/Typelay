@@ -23,6 +23,7 @@ static void fixture_destroyed(GtkWidget *window, gpointer unused) {
 }
 typedef struct {
     guint insertions, deletions, focus_in, focus_out;
+    gint64 focus_in_at_us;
 } EntryEvidence;
 static EntryEvidence first_evidence, second_evidence;
 static JsonObject *first_insert_context, *first_delete_context;
@@ -46,13 +47,17 @@ static GtkWidget *entry_client(GtkWidget *widget) {
 static void focus_changed(GObject *object, GParamSpec *spec, gpointer data) {
     (void)spec;
     EntryEvidence *evidence = data;
-    if (gtk_widget_has_focus(GTK_WIDGET(object))) evidence->focus_in++;
+    if (gtk_widget_has_focus(GTK_WIDGET(object))) {
+        evidence->focus_in++;
+        evidence->focus_in_at_us = g_get_monotonic_time();
+    }
     else evidence->focus_out++;
 }
 static void remember_entry_change(EntryEvidence *evidence, JsonObject **observation) {
     if (evidence != &first_evidence) return;
     if (*observation) json_object_unref(*observation);
     JsonObject *context = *observation = json_object_new();
+    json_object_set_int_member(context, "atUs", g_get_monotonic_time());
     gint start, end;
     gtk_editable_get_selection_bounds(GTK_EDITABLE(report_second), &start, &end);
     json_object_set_boolean_member(context, "secondFocused",
@@ -119,6 +124,7 @@ static void report_entry(JsonBuilder *builder, const char *name, GtkWidget *widg
     json_builder_set_member_name(builder, "end"); json_builder_add_int_value(builder, end);
     json_builder_set_member_name(builder, "insertions"); json_builder_add_int_value(builder, evidence->insertions);
     json_builder_set_member_name(builder, "deletions"); json_builder_add_int_value(builder, evidence->deletions);
+    json_builder_set_member_name(builder, "focusInAtUs"); json_builder_add_int_value(builder, evidence->focus_in_at_us);
     json_builder_set_member_name(builder, "focusIn"); json_builder_add_int_value(builder, evidence->focus_in);
     json_builder_set_member_name(builder, "focusOut"); json_builder_add_int_value(builder, evidence->focus_out);
     gint x, y;
@@ -545,6 +551,10 @@ static gboolean report_state(gpointer unused) {
             json_builder_add_int_value(builder, gtk_widget_get_allocated_width(candidate));
             json_builder_set_member_name(builder, "height");
             json_builder_add_int_value(builder, gtk_widget_get_allocated_height(candidate));
+            json_builder_set_member_name(builder, "editable");
+            json_builder_add_boolean_value(builder, gtk_text_view_get_editable(GTK_TEXT_VIEW(candidate)));
+            json_builder_set_member_name(builder, "focused");
+            json_builder_add_boolean_value(builder, gtk_widget_has_focus(candidate));
             GdkRGBA foreground;
             gtk_style_context_get_color(gtk_widget_get_style_context(candidate),
                 gtk_widget_get_state_flags(candidate), &foreground);

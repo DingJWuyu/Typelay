@@ -886,8 +886,7 @@ internal static partial class HyPackageCheck
                     discoveryToken.ThrowIfCancellationRequested();
                     if (!overflowOpened)
                     {
-                        var overflow = buttons.Where(button => !button.Current.IsOffscreen && (button.Current.AutomationId == "NotificationChevron"
-                            || button.Current.Name is "Show hidden icons" or "显示隐藏的图标")).ToArray();
+                        var overflow = buttons.Where(ShellTraySelection.IsOverflowButton).ToArray();
                         observation.VisibleOverflowMatches = overflow.Length;
                         Require(overflow.Length <= 1, "tray-overflow-ambiguous");
                         if (overflow.Length == 1)

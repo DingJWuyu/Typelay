@@ -155,9 +155,12 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                     Assert.Equal(scene.Descriptor.RootHwnd, (long)scene.Root);
                     var gui = new N.GuiThreadInfo { Size = (uint)Marshal.SizeOf<N.GuiThreadInfo>() };
                     Assert.True(N.GetGUIThreadInfo(thread, ref gui));
-                    if ((gui.Flags & 0x0004) == 0) // GUI_INMENUMODE.
+                    // Win32 can expose GUI_INMENUMODE before it finishes
+                    // selecting the system menu. Keep observing within the
+                    // original deadline; do not mistake that transition for a
+                    // different menu or cancel an unconfirmed mode.
+                    if ((gui.Flags & 0x000c) != 0x000c) // GUI_INMENUMODE | GUI_SYSTEMMENUMODE.
                         return false;
-                    Assert.NotEqual(0u, gui.Flags & 0x0008); // GUI_SYSTEMMENUMODE.
                     Assert.Equal(0u, gui.Flags & 0x0010); // Not GUI_POPUPMENUMODE.
                     Assert.Equal(scene.Root, gui.MenuOwner);
                     phase = "cancel-observed-system-menu";
