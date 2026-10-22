@@ -35,11 +35,30 @@ from ordinary_gimp import (  # noqa: E402
     fullscreen_content_origin,
     launched_application,
     properties_click_point,
+    properties_fullscreen_needed,
     returned_draft_ready,
     unique_owned_window,
     validate_nested_output,
 )
 from support.session_lifecycle import session_exit_confirmed  # noqa: E402
+
+
+class PropertiesLayoutLifecycleTests(unittest.TestCase):
+    def test_candidate_click_never_prepares_or_toggles_a_window(self):
+        self.assertFalse(properties_fullscreen_needed(12, 12, prepare=False))
+        for previous in (None, 11):
+            with self.subTest(previous=previous), self.assertRaises(AssertionError):
+                properties_fullscreen_needed(12, previous, prepare=False)
+
+    def test_preparation_requests_once_per_opened_properties_window(self):
+        prepared = None
+        requests = []
+        for window in (12, 12, 13, 13):
+            if properties_fullscreen_needed(window, prepared, prepare=True):
+                requests.append(window)
+                prepared = window
+            self.assertFalse(properties_fullscreen_needed(window, prepared, prepare=False))
+        self.assertEqual(requests, [12, 13])
 
 
 class DisconnectCompletionTests(unittest.TestCase):

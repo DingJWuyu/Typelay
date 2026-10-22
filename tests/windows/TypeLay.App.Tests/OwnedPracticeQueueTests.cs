@@ -920,12 +920,16 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         await scene.Start(true);
         await scene.Install();
         long installedAtMs = WindowsInterruptClock.NowMs;
-        long? inputStartedAtMs = null, inputReturnedAtMs = null, interruptionObservedAtMs = null, focusCheckedAtMs = null;
+        long? inputStartedAtMs = null, inputReturnedAtMs = null, interruptionObservedAtMs = null, renewalCheckedAtMs = null;
+        bool canRenewAfterInterruption = true;
         scene.PublishForRenewal();
         long originalContentEpoch = scene.ContentEpoch;
         Assert.True(scene.CanRenew(originalContentEpoch));
         if (interruption == "expired")
+        {
             await scene.Wait(() => WindowsInterruptClock.NowMs > scene.Plan!.Permit.ExpiresAtMs);
+            Assert.False(scene.CanRenew(originalContentEpoch));
+        }
         else
         {
             if (interruption == "content")
@@ -937,11 +941,9 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 {
                     if (scene.ContentEpoch <= originalContentEpoch)
                         return false;
-                    interruptionObservedAtMs = WindowsInterruptClock.NowMs;
+                    ObserveRenewalRefusal();
                     return true;
                 });
-                Assert.Equal((scene.Root, scene.Field), N.Focused());
-                focusCheckedAtMs = WindowsInterruptClock.NowMs;
             }
             else
             {
@@ -954,21 +956,33 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 {
                     if (!scene.PlanAttempted)
                         return false;
-                    interruptionObservedAtMs = WindowsInterruptClock.NowMs;
+                    ObserveRenewalRefusal();
                     return true;
                 });
-                Assert.Equal(originalContentEpoch, scene.ContentEpoch);
             }
-            long checkedAtMs = WindowsInterruptClock.NowMs;
-            bool withinOriginalDeadline = checkedAtMs <= scene.Plan!.Permit.ExpiresAtMs;
+            bool withinOriginalDeadline = renewalCheckedAtMs <= scene.Plan!.Permit.ExpiresAtMs;
             Assert.True(withinOriginalDeadline, withinOriginalDeadline ? null :
-                "The interruption must be observed before the original authorization expires. "
+                "Renewal refusal must be checked before the original authorization expires. "
                 + $"kind={interruption}; observed={scene.Plan.Permit.ObservedAtMs}; installed={installedAtMs}; "
                 + $"inputStarted={inputStartedAtMs}; inputReturned={inputReturnedAtMs}; "
-                + $"interruptionObserved={interruptionObservedAtMs}; focusChecked={focusCheckedAtMs}; "
-                + $"expires={scene.Plan.Permit.ExpiresAtMs}; checked={checkedAtMs}");
+                + $"interruptionObserved={interruptionObservedAtMs}; "
+                + $"expires={scene.Plan.Permit.ExpiresAtMs}; checked={renewalCheckedAtMs}");
+            Assert.False(canRenewAfterInterruption);
+            // Native focus observation is still required, but its cross-process
+            // latency must not move the already-completed renewal check.
+            if (interruption == "content")
+                Assert.Equal((scene.Root, scene.Field), N.Focused());
+            else
+                Assert.Equal(originalContentEpoch, scene.ContentEpoch);
         }
-        Assert.False(scene.CanRenew(originalContentEpoch));
+        void ObserveRenewalRefusal()
+        {
+            // One check at the first observed interruption, using the hook's
+            // real clock. Never wait for false or retry an expired observation.
+            interruptionObservedAtMs = WindowsInterruptClock.NowMs;
+            canRenewAfterInterruption = scene.CanRenew(originalContentEpoch);
+            renewalCheckedAtMs = WindowsInterruptClock.NowMs;
+        }
     });
 
     [Theory]

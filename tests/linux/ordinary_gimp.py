@@ -189,6 +189,15 @@ def fullscreen_content_origin(layout, output_size, *, full_output_proven=False):
     return tuple(int(v) for v in offset)
 
 
+def properties_fullscreen_needed(window_id, prepared_id, *, prepare):
+    if not prepare:
+        assert prepared_id == window_id, (
+            "GIMP properties layout was not prepared before candidate generation"
+        )
+        return False
+    return prepared_id != window_id
+
+
 def properties_click_point(
     window, current, measured, remeasured, output_size, *, full_output_proven=False
 ):
@@ -416,7 +425,9 @@ def run_gimp(
             ),
             "GIMP Image Properties did not open",
         )
-        focus_window(properties)
+        # Finish our fixture's window resize before selecting/typing in the
+        # source. Resizing a ready candidate moves its native popover anchor.
+        properties_click_context(prepare=True)
         tab = wait_for(lambda: find(application["pid"], "Comment"), "GIMP Comment tab missing")
         parent = tab.get_parent()
         selection = parent.get_selection_iface()
@@ -483,7 +494,7 @@ def run_gimp(
     def editor():
         return find(application["pid"], "TypeLay 译文候选")
 
-    def click_in_properties(node):
+    def properties_click_context(*, prepare=False):
         nonlocal fullscreen_properties
         focus_window(properties)
         # niri Window has no is_fullscreen property. Request fullscreen once
@@ -519,7 +530,7 @@ def run_gimp(
         assert animations_disabled, (
             "fullscreen origin proof requires isolated compositor animations off"
         )
-        if fullscreen_properties != properties["id"]:
+        if properties_fullscreen_needed(properties["id"], fullscreen_properties, prepare=prepare):
             request({"Action": {"FullscreenWindow": {"id": properties["id"]}}})
             fullscreen_properties = properties["id"]
 
@@ -555,11 +566,32 @@ def run_gimp(
             origin = fullscreen_content_origin(
                 current["layout"], expected, full_output_proven=proof
             )
-            return (current, origin, proof) if origin is not None else None
+            if origin is None:
+                return None
+            # A compositor allocation can precede GTK's configure handling.
+            # Await the owned dialog's actual allocation, not a guessed delay.
+            dialog = find(application["pid"], current["title"])
+            if dialog is None:
+                return None
+            assert dialog.get_role() == Atspi.Role.DIALOG, "unexpected GIMP properties role"
+            allocation = Atspi.Component.get_extents(
+                dialog.get_component_iface(), Atspi.CoordType.SCREEN
+            )
+            if (allocation.width, allocation.height) != tuple(expected):
+                return None
+            return current, origin, proof
 
-        current, _, _ = wait_for(
-            observed_fullscreen, "GIMP properties did not reach the observed full-output tile"
-        )
+        if prepare:
+            observed = wait_for(
+                observed_fullscreen, "GIMP properties did not reach the observed full-output tile"
+            )
+        else:
+            observed = observed_fullscreen()
+            assert observed is not None, "prepared GIMP properties geometry changed before click"
+        return observed[0], expected, outputs, observed_fullscreen
+
+    def click_in_properties(node):
+        current, expected, outputs, observed_fullscreen = properties_click_context()
 
         # GimpViewableDialog derives from GtkDialog, whose ATK role is DIALOG,
         # not FRAME. Bind both observations to this exact compositor title.

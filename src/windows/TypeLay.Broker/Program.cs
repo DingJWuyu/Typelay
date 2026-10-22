@@ -30,8 +30,9 @@ internal static class Program
                     || !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(token), Encoding.UTF8.GetBytes(request.Token)))
                     return 3;
                 last = request.Id;
+                using var captureTrace = CaptureTrace.BeginRequest(Environment.GetEnvironmentVariable("TYPELAY_TRACE"));
                 BrokerResponse response;
-                string? returnReason = null, returnErrorType = null;
+                string? returnReason = null, returnErrorType = null, diagnosticErrorType = null;
                 UiaInputProvider.ReturnForegroundFacts? returnForeground = null;
                 try
                 {
@@ -55,19 +56,24 @@ internal static class Program
                 {
                     if (request.Op is "return" or "return-glossary")
                         returnErrorType = ex.GetType().Name;
-                    string? trace = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
-                    if (request.Op is not ("return" or "return-glossary") && !string.IsNullOrWhiteSpace(trace))
-                    {
-                        try
-                        {
-                            File.AppendAllText(trace + ".broker.jsonl", "{\"atMs\":" + WindowsInterruptClock.NowMs
-                            + ",\"operation\":\"" + request.Op + "\",\"errorType\":\"" + ex.GetType().Name + "\"}" + Environment.NewLine);
-                        }
-                        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
-                    }
+                    if (request.Op is not ("return" or "return-glossary"))
+                        diagnosticErrorType = ex.GetType().Name;
                     response = new(BrokerProtocol.Version, request.Id, "unavailable");
                 }
                 Wire.WriteAsync(output, response).AsTask().GetAwaiter().GetResult();
+                // Complete the original response before diagnostic disk I/O. This
+                // synchronous flush can still delay the next request, not renew it.
+                captureTrace?.Flush(WindowsInterruptClock.NowMs);
+                if (diagnosticErrorType is not null
+                    && Environment.GetEnvironmentVariable("TYPELAY_TRACE") is { Length: > 0 } errorTracePath)
+                {
+                    try
+                    {
+                        File.AppendAllText(errorTracePath + ".broker.jsonl", "{\"atMs\":" + WindowsInterruptClock.NowMs
+                            + ",\"operation\":\"" + request.Op + "\",\"errorType\":\"" + diagnosticErrorType + "\"}" + Environment.NewLine);
+                    }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+                }
                 // Log only after replying so diagnostic disk I/O cannot delay the result.
                 // Opt-in outcomes only: no source, target, selection, exception text or identities.
                 if (request.Op is ("return" or "return-glossary")

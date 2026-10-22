@@ -7,16 +7,23 @@ namespace TypeLay.Broker;
 
 // Opt-in, fixed stage names only. Never include field text, metadata, identities,
 // window titles, exception messages or keyboard input in a diagnostic sample.
-internal sealed class CaptureTrace(string path) : IDisposable
+internal sealed class CaptureTrace(CaptureTrace.Request owner, long atMs) : IDisposable
 {
-    private readonly long _at = WindowsInterruptClock.NowMs;
+    [ThreadStatic] private static Request? _request;
     private readonly Stopwatch _watch = Stopwatch.StartNew();
     private readonly Dictionary<string, double> _stages = new();
     private string _stage = "start", _result = "exception";
     private double _last;
+    private bool _completed;
 
-    public static CaptureTrace? Start() => Environment.GetEnvironmentVariable("TYPELAY_TRACE") is { Length: > 0 } path
-        ? new(path + ".broker.jsonl") : null;
+    public static Request? BeginRequest(string? path)
+    {
+        if (_request is not null)
+            return null; // Diagnostics must not disrupt the request if misused.
+        return string.IsNullOrWhiteSpace(path) ? null : _request = new(path + ".broker.jsonl");
+    }
+
+    public static CaptureTrace? Start() => _request?.Start(WindowsInterruptClock.NowMs);
 
     public void Stage(string stage)
     {
@@ -28,18 +35,70 @@ internal sealed class CaptureTrace(string path) : IDisposable
     public void Result(string result) => _result = result;
     public void Dispose()
     {
+        if (_completed)
+            return;
+        _completed = true;
         Stage("complete");
-        try
+        owner.Complete(new(atMs, _result, Math.Round(_watch.Elapsed.TotalMilliseconds, 2), _stages));
+    }
+
+    internal sealed record Sample(long AtMs, string Result, double DurationMs, Dictionary<string, double> Stages);
+
+    // Broker executes one request at a time on its MTA thread. A write can capture
+    // once before mutation and once after; every other current operation uses <=1.
+    internal sealed class Request(string path) : IDisposable
+    {
+        private readonly List<Sample> _samples = new(2);
+        private int _started, _droppedCount;
+        private bool _closed;
+
+        public CaptureTrace? Start(long atMs)
         {
-            File.AppendAllText(path, JsonSerializer.Serialize(new
+            if (_closed)
+                return null;
+            if (_started == 2)
             {
-                atMs = _at,
-                operation = "capture",
-                result = _result,
-                durationMs = Math.Round(_watch.Elapsed.TotalMilliseconds, 2),
-                stages = _stages
-            }) + Environment.NewLine);
+                _droppedCount++;
+                return null;
+            }
+            _started++;
+            return new(this, atMs);
         }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        internal void Complete(Sample sample)
+        {
+            if (!_closed && _samples.Count < 2)
+                _samples.Add(sample);
+        }
+
+        public void Flush(long responseCompletedAtMs)
+        {
+            if (_closed)
+                return;
+            _closed = true;
+            try
+            {
+                foreach (var sample in _samples)
+                    File.AppendAllText(path, JsonSerializer.Serialize(new
+                    {
+                        atMs = sample.AtMs,
+                        operation = "capture",
+                        result = sample.Result,
+                        durationMs = sample.DurationMs,
+                        stages = sample.Stages,
+                        responseCompletedAtMs,
+                        droppedCount = _droppedCount
+                    }) + Environment.NewLine);
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+            finally { _samples.Clear(); }
+        }
+
+        public void Dispose()
+        {
+            _closed = true;
+            _samples.Clear();
+            if (ReferenceEquals(_request, this))
+                _request = null;
+        }
     }
 }
