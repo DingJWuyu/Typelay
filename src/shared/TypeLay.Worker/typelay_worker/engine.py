@@ -20,7 +20,10 @@ from .protocol import valid_text
 # claim that the first model solves arbitrary rich-text or glossary constraints.
 PROTECTED = re.compile(
     r"(https?://[^\s<>]+|www\.[^\s<>]+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|"
-    r"(?<!\w)@[\w.-]+|(?<!\w)#[0-9]+|\r\n|\r|\n|"
+    r"[#*0-9]\uFE0F?\u20E3|[\u00A9\u00AE]\uFE0F|"
+    # A mention/issue may start before a keycap; keep its combining suffix in the same span.
+    r"(?:(?<!\w)@[\w.-]+|(?<!\w)#[0-9]+)(?:(?<=[0-9])\uFE0F?\u20E3)?|"
+    r"\r\n|\r|\n|"
     r"[\U0001F1E6-\U0001FAFF\u2600-\u27BF][\U0001F1E6-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]*)"
 )
 HAN = re.compile(r"[\u3400-\u9fff\U00020000-\U0003134F]")

@@ -257,22 +257,15 @@ internal static partial class HyPackageCheck
                 scene.Stage = "navigate-public-application-support";
                 await NavigateAsync(settings, "▦  " + ApplicationSupportPresentation.Create([]).Title, ct);
                 scene.Stage = "find-public-desktop-connection-check";
+                int settingsHandle = await UiAsync(() => settings.Current.NativeWindowHandle, ct);
                 await UiAsync(() =>
                 {
-                    var title = Find(settings, AutomationElement.NameProperty, "桌面普通输入框", ControlType.Text);
-                    Require(title is not null && !title.Current.IsOffscreen, "ordinary-desktop-support-row-missing");
-                    var titleBounds = title!.Current.BoundingRectangle;
-                    var checks = settings.FindAll(TreeScope.Descendants, new AndCondition(
-                        new PropertyCondition(AutomationElement.NameProperty, "检查连接"),
-                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button)))
-                        .Cast<AutomationElement>().Where(button => !button.Current.IsOffscreen && button.Current.IsEnabled
-                            && button.Current.BoundingRectangle.Left >= titleBounds.Right
-                            && button.Current.BoundingRectangle.Top <= titleBounds.Bottom
-                            && button.Current.BoundingRectangle.Bottom >= titleBounds.Top).ToArray();
-                    Require(checks.Length == 1, "ordinary-desktop-connection-check-ambiguous");
+                    var check = SettingsSupportActions.DesktopConnectionCheck(settings, app.Process.Id);
                     scene.Stage = "invoke-public-desktop-connection-check";
-                    ((InvokePattern)checks[0].GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+                    ((InvokePattern)check.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
                 }, ct);
+                scene.Stage = "wait-public-desktop-connection-check-hide-settings";
+                await WaitAsync(() => Task.FromResult(!N.IsWindowVisible(settingsHandle)), ct);
                 scene.Facts = new
                 {
                     existingSameRunModels = true,

@@ -14,7 +14,7 @@ TypeLay.Windows.Contracts 引用 Core，拥有 App 与 Broker 共用的 DTO、�
 
 ## 输入后端的安全准入
 
-普通 `capture` 在 UIA/跨线程 IMM 为 Unknown 时，可对通过原有资格检查的系统 Edit 复用目标 GUI 线程原生只读捕获；[IMM 的线程身份检查](https://learn.microsoft.com/windows/win32/intl/developing-ime-aware-multiple-thread-applications)使 Broker 取不到 HIMC 不能证明源线程没有输入上下文。该观察独立于按需 `CaptureDirect`，成功也固定 `WriteSupported=false`、`DirectWriteSupported=false`；暂停、ComboBox、已有明确 UIA 组合态不增加此读取，失败保持原拒绝边界。只读绑定由原 Broker 所有者退休，已获直接任务资格的绑定不因普通观察清理而提前撤销。真实安装版记事本的新 Clear 结果仍待 Windows 验证，首接受及默认接受资格未因此通过或开放。
+普通 `capture` 在 UIA/跨线程 IMM 为 Unknown 时，可对通过原有资格检查的系统 Edit 复用目标 GUI 线程原生只读捕获；[IMM 的线程身份检查](https://learn.microsoft.com/windows/win32/intl/developing-ime-aware-multiple-thread-applications)使 Broker 取不到 HIMC 不能证明源线程没有输入上下文。该观察独立于按需 `CaptureDirect`，成功也固定 `WriteSupported=false`、`DirectWriteSupported=false`；暂停、ComboBox、已有明确 UIA 组合态不增加此读取，失败保持原拒绝边界。只读绑定由原 Broker 所有者退休，已获直接任务资格的绑定不因普通观察清理而提前撤销。[已核对的 Windows 检查](https://github.com/DingJWuyu/Typelay/actions/runs/39791124676)已在真实安装版系统记事本取得原生 Clear 与中文只读预览；接受提示仍因普通发行路径没有写入能力而未出现，不再归因为该样本的 IME Unknown。此证据只覆盖严格 x64、未被子类化的系统 `Edit`，不代表各种普通输入框都已具备相同能力，首接受及默认接受资格未因此通过或开放。
 
 隔离 Windows 测试另有默认关闭的系统 Edit 受理原型：原字段完成只读重验后，与快捷键超时撤回竞争同一个一次性共享状态。原字段先受理则消费本次按键及其释放；撤回先完成则不得修改正文或选区，原键旁路。已受理后的未知结果不重放按键，退休仅在确证静默或目标进程退出后擦除正文，保留受理事实。此路径目前只由测试接线，生产 `SourceLocalAcceptanceVersion` 仍为 0；未知线程队列关系、系统低级钩子超时及真实中文组合输入尚未验证，不能据本地编译或隔离原型宣布普通输入框安全接受完成。
 

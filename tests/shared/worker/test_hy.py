@@ -380,10 +380,12 @@ class HyContractTests(unittest.TestCase):
             for text, source, target in [
                 ("甲 https://example.com 乙", "example", "other"),
                 ("甲 https://example.com 乙", "甲 https://example.com", "other"),
+                ("甲 1️⃣ 乙", "1️⃣", "other"),
+                ("甲 ©️ 乙", "©️", "other"),
             ]
         ]
         _, replies = self.run_worker(requests)
-        self.assertEqual([r["code"] for r in replies[1:]], ["glossary-protected-conflict"] * 2)
+        self.assertEqual([r["code"] for r in replies[1:]], ["glossary-protected-conflict"] * 4)
         self.assertEqual(self.calls, [])
 
     def test_glossary_literal_pairs_preserve_manual_prefix_and_one_deadline(self):

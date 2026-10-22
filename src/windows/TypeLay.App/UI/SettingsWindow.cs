@@ -1160,6 +1160,7 @@ internal sealed class SettingsWindow : Window
         if (row.PrimaryAction is { } primary)
         {
             var next = UiTheme.Button(primary.Label, () => Run(primary));
+            AutomationProperties.SetAutomationId(next, "ApplicationSupport_" + row.Id + "_" + primary.Id);
             next.IsEnabled = primary.Id != ApplicationSupportAction.Refresh || _settings.Value.Enabled && _model.Ready;
             if (primary.Id == ApplicationSupportAction.Refresh)
                 _connectionChecks.Add(next);
@@ -1189,6 +1190,7 @@ internal sealed class SettingsWindow : Window
         foreach (var action in row.SecondaryActions)
         {
             var button = UiTheme.Button(action.Label, () => Run(action));
+            AutomationProperties.SetAutomationId(button, "ApplicationSupport_" + row.Id + "_" + action.Id);
             button.IsEnabled = action.Id != ApplicationSupportAction.Refresh || _settings.Value.Enabled && _model.Ready;
             if (action.Id == ApplicationSupportAction.Refresh)
                 _connectionChecks.Add(button);

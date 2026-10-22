@@ -168,6 +168,8 @@ class AlternativeTests(unittest.TestCase):
             {"text": "你好 a@example.test"},
             {"text": "你好 #12"},
             {"text": "你好🙂"},
+            {"text": "按1️⃣继续"},
+            {"previousCandidate": "Hello ©️"},
             {"text": "x" * 8193},
             {"source": []},
             {"target": "ja"},

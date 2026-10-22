@@ -19,11 +19,17 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed partial class NativeSourceControllerTests(WpfDesktopFixture desktop)
 {
-    [Fact]
-    public Task IsolatedControllerSettlesNativeSnapshotWithoutASecondWrite() => desktop.RunAsync(async () =>
+    [Theory]
+    [InlineData("Tab", 9, false)]
+    [InlineData("F7", 0x76, false)]
+    [InlineData("F24", 0x87, true)]
+    public Task IsolatedControllerSettlesNativeSnapshotWithoutASecondWrite(string accept, ushort key, bool rebind) => desktop.RunAsync(async () =>
     {
         await using var native = await ProductionForegroundWriteTests.Desktop.Start(isolatedSourceAcceptance: true);
         await native.Prepare(native.A, "你好", new(0, 2));
+        Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceObservedKey.v1", key));
+        const ushort barrierKey = 0x86; // F23 is distinct from every theory case.
+        Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceBarrierKey.v1", barrierKey));
         using var hook = new KeyboardHook(allowInjectedInput: true);
         await Until(() => hook.Ready, native.Token);
         using var broker = new FixtureBroker(native);
@@ -34,6 +40,10 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         try
         {
             var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
+            settings.Update(settings.Value with
+            {
+                AcceptShortcut = accept
+            });
             var loop = new Loop();
             var view = new View();
             using var controller = new SessionController(settings, new Translation(), view, hook, input, loop);
@@ -58,13 +68,16 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
                 broker.InstallationPermit.ExpiresAtMs);
             Assert.Equal("你好", N.ReadText(native.A, Limits.MaxTextUnits));
             pressed = true;
-            Tab(false);
+            Key(key, false);
             await Until(() => hook.StockLastActivation is not null, native.Token);
             Assert.True(hook.StockLastActivation!.Claimed);
             // Retiring the candidate does not give away the held press group.
-            hook.Revoke();
-            Tab(false);
-            Tab(true);
+            if (rebind)
+                hook.ConfigureSessionShortcuts(SessionShortcutBindings.Restore("F8", "F9"));
+            else
+                hook.Revoke();
+            Key(key, false);
+            Key(key, true);
             pressed = false;
             await Until(() => { loop.Advance(); return broker.Receipt is not null && view.State == SessionState.NoSession; }, native.Token);
             Assert.Equal(WriteStatus.Verified, broker.Receipt!.Status);
@@ -75,15 +88,34 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             Assert.Equal(new TextRange(5, 5), N.ReadSelection(native.A));
             Assert.Equal((native.Root, native.A), N.Focused());
             Assert.Equal(0, broker.Writes);
+            // ReadText/SendMessage does not drain queued input. Observe a real,
+            // later input marker on the source thread before asserting no leak.
+            Key(barrierKey, false);
+            Key(barrierKey, true);
+            await Until(() => N.GetProp(native.Root, "TypeLay.Test.SourceBarrierUp.v1") == 1, native.Token);
             Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceTabDown.v1"));
             Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceTabUp.v1"));
+            Assert.False(hook.StockPressOutstanding);
+            Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceObservedDown.v1"));
+            Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceObservedUp.v1"));
             Assert.False(view.CanAccept);
+            // A later, independent press is ordinary input, and also proves the
+            // source queue observer would detect a leaked claimed repeat/up.
+            Key(key, false);
+            Key(key, true);
+            Key(barrierKey, false);
+            Key(barrierKey, true);
+            await Until(() => N.GetProp(native.Root, "TypeLay.Test.SourceBarrierUp.v1") == 2, native.Token);
+            Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceObservedUp.v1"));
+            Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceObservedDown.v1"));
+            Assert.Equal("Hello", N.ReadText(native.A, Limits.MaxTextUnits));
+            Assert.Equal(0, broker.Writes);
             native.AssertZeroSubmits();
         }
         finally
         {
             if (pressed)
-                Tab(true);
+                Key(key, true);
             Directory.Delete(directory, true);
         }
     });
@@ -183,17 +215,27 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             using var controller = new SessionController(settings, new Translation(), view, hook, input, loop);
             await controller.StartAsync();
             await Until(() => { loop.Advance(); return view.CanAccept; }, native.Token);
-            var original = broker.InstallationPermit!.Plan.Expected;
+            var installedPermit = broker.InstallationPermit!;
+            var original = installedPermit.Plan.Expected;
             nint cookie = N.GetProp(native.A, "TypeLay.NativeInput.Lifetime.v2");
             Assert.NotEqual(nint.Zero, cookie);
             bool pressed = false;
             try
             {
+                long armStartedAt = WindowsInterruptClock.NowMs;
                 Assert.Equal((nuint)0, N.Send(native.Root, 0x8065, (nuint)broker.Installation!.Endpoint!.Nonce, 2));
+                long armedAt = WindowsInterruptClock.NowMs;
                 pressed = true;
                 Tab(false);
+                long tabSentAt = WindowsInterruptClock.NowMs;
                 await Until(() => hook.StockLastActivation is not null, native.Token);
-                Assert.True(hook.StockLastActivation!.Claimed);
+                var activation = hook.StockLastActivation!;
+                Assert.True(activation.Claimed,
+                    $"Source activation did not claim: status={activation.Receipt?.Status}, reason={activation.Receipt?.Reason}, "
+                    + $"budgetExceeded={activation.ExceededBudget}, elapsedMs={activation.ElapsedMs:F3}, "
+                    + $"observedAtMs={installedPermit.ObservedAtMs}, expiresAtMs={installedPermit.ExpiresAtMs}, "
+                    + $"armStartedAtMs={armStartedAt}, armedAtMs={armedAt}, tabSentAtMs={tabSentAt}, "
+                    + $"resultObservedAtMs={WindowsInterruptClock.NowMs}.");
                 Tab(true);
                 pressed = false;
                 hook.TryRead(out _); // Start the real native terminal receipt RPC.
@@ -490,8 +532,9 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         while (!condition())
             await Task.Delay(5, token);
     }
-    private static void Tab(bool up) => Assert.Equal(1u,
-        SendInput(1, [new KeyInput { Type = 1, Key = 9, Flags = up ? 2u : 0u }], Marshal.SizeOf<KeyInput>()));
+    private static void Tab(bool up) => Key(9, up);
+    private static void Key(ushort key, bool up) => Assert.Equal(1u,
+        SendInput(1, [new KeyInput { Type = 1, Key = key, Flags = up ? 2u : 0u }], Marshal.SizeOf<KeyInput>()));
     [StructLayout(LayoutKind.Explicit, Size = 40)]
     private struct KeyInput
     {

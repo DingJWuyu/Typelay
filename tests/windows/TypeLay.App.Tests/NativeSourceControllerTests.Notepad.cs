@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Windows.Automation;
 using TypeLay.Core;
@@ -27,92 +28,181 @@ public sealed partial class NativeSourceControllerTests
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(28));
         var token = deadline.Token;
-        await using var source = await NotepadSource.Start(token);
-        await using var broker = new NotepadBroker();
-        await broker.StartAsync();
-        using var hook = new KeyboardHook(allowInjectedInput: true);
-        await Until(() => hook.Ready, token);
-        using var input = new WindowsInputService(broker, 0, monitor: hook, isolatedSourceAcceptance: true);
-        var settings = new SettingsStore(Path.Combine(source.Directory, "settings.json"));
-        var loop = new Loop();
-        var view = new View();
-        using var controller = new SessionController(settings, new Translation(), view, hook, input, loop);
-        await controller.StartAsync();
-        await Until(() => { loop.Advance(); return view.CanAccept; }, token);
-        var installation = Assert.IsType<SourceAcceptanceResult>(broker.Installation);
-        Assert.True(installation.Installed);
-        Assert.Equal(source.ProcessId, installation.Target.AsWindows().ProcessId);
-        Assert.Equal((long)source.Field, installation.Target.AsWindows().ControlHwnd);
-        Assert.Equal("你好", N.ReadText(source.Field, Limits.MaxTextUnits));
-        Assert.Equal(new TextRange(0, 0), N.ReadSelection(source.Field));
-        if (withdraw)
+        var source = await NotepadSource.Start(token);
+        var broker = new NotepadBroker();
+        var failures = new List<Exception>();
+        string stage = "broker-start";
+        try
         {
-            var installed = installation;
-            settings.Update(settings.Value with
-            {
-                Enabled = false
-            });
-            await Until(() =>
-            {
-                loop.Advance();
-                return broker.Terminal is { Quiet: true } terminal && terminal.Grant == installed.Grant
-                    && terminal.Generation == installed.Generation && terminal.SessionRevision == installed.SessionRevision
-                    && terminal.Target == installed.Target && !view.CanAccept;
-            }, token);
-            Assert.False(broker.Claimed);
-            Assert.Null(hook.StockLastActivation);
+            await broker.StartAsync();
+            using var hook = new KeyboardHook(allowInjectedInput: true);
+            await Until(() => hook.Ready, token);
+            using var input = new WindowsInputService(broker, 0, monitor: hook, isolatedSourceAcceptance: true);
+            var settings = new SettingsStore(Path.Combine(source.Directory, "settings.json"));
+            var loop = new Loop();
+            var view = new View();
+            using var controller = new SessionController(settings, new Translation(), view, hook, input, loop);
+            stage = "controller-start";
+            await controller.StartAsync();
+            stage = "installation-and-acceptance";
+            await Until(() => { loop.Advance(); return view.CanAccept; }, token);
+            var installation = Assert.IsType<SourceAcceptanceResult>(broker.Installation);
+            Assert.True(installation.Installed);
+            Assert.Equal(source.ProcessId, installation.Target.AsWindows().ProcessId);
+            Assert.Equal((long)source.Field, installation.Target.AsWindows().ControlHwnd);
             Assert.Equal("你好", N.ReadText(source.Field, Limits.MaxTextUnits));
             Assert.Equal(new TextRange(0, 0), N.ReadSelection(source.Field));
-            try
+            if (withdraw)
             {
-                Tab(false);
+                stage = "withdrawal";
+                var installed = installation;
+                settings.Update(settings.Value with
+                {
+                    Enabled = false
+                });
+                await Until(() =>
+                {
+                    loop.Advance();
+                    return broker.Terminal is { Quiet: true } terminal && terminal.Grant == installed.Grant
+                        && terminal.Generation == installed.Generation && terminal.SessionRevision == installed.SessionRevision
+                        && terminal.Target == installed.Target && !view.CanAccept;
+                }, token);
+                Assert.False(broker.Claimed);
+                Assert.Null(hook.StockLastActivation);
+                Assert.Equal("你好", N.ReadText(source.Field, Limits.MaxTextUnits));
+                Assert.Equal(new TextRange(0, 0), N.ReadSelection(source.Field));
+                stage = "withdrawn-tab";
+                try
+                {
+                    Tab(false);
+                }
+                finally { Tab(true); }
+                await Until(() => N.ReadText(source.Field, Limits.MaxTextUnits) == "\t你好", token);
+                Assert.Null(hook.StockLastActivation);
+                Assert.Equal(new TextRange(1, 1), N.ReadSelection(source.Field));
             }
-            finally { Tab(true); }
-            await Until(() => N.ReadText(source.Field, Limits.MaxTextUnits) == "\t你好", token);
-            Assert.Null(hook.StockLastActivation);
-            Assert.Equal(new TextRange(1, 1), N.ReadSelection(source.Field));
+            else
+            {
+                stage = "single-acceptance";
+                bool pressed = true;
+                try
+                {
+                    Tab(false);
+                    await Until(() => hook.StockLastActivation is not null, token);
+                    Assert.True(hook.StockLastActivation!.Claimed);
+                    hook.Revoke(); // A claimed press still owns repeat and release.
+                    Tab(false);
+                    Tab(true);
+                    pressed = false;
+                    stage = "verified-receipt";
+                    await Until(() => { loop.Advance(); return broker.Receipt is not null && view.State == SessionState.NoSession; }, token);
+                    Assert.Equal(1, broker.Receipts);
+                    Assert.Equal(WriteStatus.Verified, broker.Receipt!.Status);
+                    Assert.NotNull(broker.Receipt.VerifiedSnapshot);
+                    Assert.Equal("Hello", broker.Receipt.VerifiedSnapshot!.Text);
+                    Assert.Equal(new TextRange(5, 5), broker.Receipt.VerifiedSnapshot.Selection);
+                    Assert.Equal(broker.Installation!.Target, broker.Receipt.VerifiedSnapshot.Target);
+                    Assert.True(broker.Quiet);
+                    Assert.True(broker.Claimed);
+                    Assert.Equal("Hello", N.ReadText(source.Field, Limits.MaxTextUnits));
+                    Assert.Equal(new TextRange(5, 5), N.ReadSelection(source.Field));
+                    Assert.False(view.CanAccept);
+                }
+                finally { if (pressed) Tab(true); }
+            }
+            Assert.Equal((source.Root, source.Field), N.Focused());
+            Assert.Equal(0, broker.Writes); // Source receipt, never a second Broker write.
+                                            // Exercise the actual application's native undo buffer. An unsupported
+                                            // undo is a failure, not a replacement WM_SETTEXT or a silently skipped case.
+            stage = "native-undo";
+            Assert.NotEqual((nuint)0, N.Send(source.Field, 0x00C7)); // EM_UNDO
+            await Until(() => N.ReadText(source.Field, Limits.MaxTextUnits) == "你好", token);
+            Assert.Equal((source.Root, source.Field), N.Focused());
+            Assert.Equal(0, broker.Writes);
+            stage = "scene-complete";
         }
-        else
+        catch (Exception error) { failures.Add(new InvalidOperationException("Notepad scene failed at " + stage, error)); }
+        finally
         {
-            bool pressed = true;
             try
             {
-                Tab(false);
-                await Until(() => hook.StockLastActivation is not null, token);
-                Assert.True(hook.StockLastActivation!.Claimed);
-                hook.Revoke(); // A claimed press still owns repeat and release.
-                Tab(false);
-                Tab(true);
-                pressed = false;
-                await Until(() => { loop.Advance(); return broker.Receipt is not null && view.State == SessionState.NoSession; }, token);
-                Assert.Equal(1, broker.Receipts);
-                Assert.Equal(WriteStatus.Verified, broker.Receipt!.Status);
-                Assert.NotNull(broker.Receipt.VerifiedSnapshot);
-                Assert.Equal("Hello", broker.Receipt.VerifiedSnapshot!.Text);
-                Assert.Equal(new TextRange(5, 5), broker.Receipt.VerifiedSnapshot.Selection);
-                Assert.Equal(broker.Installation!.Target, broker.Receipt.VerifiedSnapshot.Target);
-                Assert.True(broker.Quiet);
-                Assert.True(broker.Claimed);
-                Assert.Equal("Hello", N.ReadText(source.Field, Limits.MaxTextUnits));
-                Assert.Equal(new TextRange(5, 5), N.ReadSelection(source.Field));
-                Assert.False(view.CanAccept);
+                await broker.DisposeAsync();
             }
-            finally { if (pressed) Tab(true); }
+            catch (Exception error) { failures.Add(new InvalidOperationException("Notepad Broker cleanup failed after " + stage, error)); }
+            try
+            {
+                await source.DisposeAsync();
+            }
+            catch (Exception error) { failures.Add(new InvalidOperationException("Notepad source cleanup failed after " + stage, error)); }
         }
-        Assert.Equal((source.Root, source.Field), N.Focused());
-        Assert.Equal(0, broker.Writes); // Source receipt, never a second Broker write.
-        // Exercise the actual application's native undo buffer. An unsupported
-        // undo is a failure, not a replacement WM_SETTEXT or a silently skipped case.
-        Assert.NotEqual((nuint)0, N.Send(source.Field, 0x00C7)); // EM_UNDO
-        await Until(() => N.ReadText(source.Field, Limits.MaxTextUnits) == "你好", token);
-        Assert.Equal((source.Root, source.Field), N.Focused());
-        Assert.Equal(0, broker.Writes);
+        if (failures.Count != 0)
+            throw new AggregateException(failures);
     });
+
+    [Fact]
+    public async Task NotepadTransportCleanupRetainsItsOwnerUntilAnInFlightChildHasExited()
+    {
+        string identity = Guid.NewGuid().ToString("N");
+        string directory = Path.Combine(Path.GetTempPath(), "TypeLay.NotepadCleanup." + identity);
+        Directory.CreateDirectory(directory);
+        using var entered = new EventWaitHandle(false, EventResetMode.ManualReset, $"Local\\TypeLay.BrokerQueue.{identity}.entered");
+        using var release = new EventWaitHandle(false, EventResetMode.ManualReset, $"Local\\TypeLay.BrokerQueue.{identity}.release");
+        using var returned = new EventWaitHandle(false, EventResetMode.ManualReset, $"Local\\TypeLay.BrokerQueue.{identity}.return");
+        // This peer only controls a real blocked pipe request. It is not
+        // evidence for production Broker behavior or real Notepad acceptance.
+        var broker = new NotepadBroker(identity, Path.Combine(directory, "requests.jsonl"));
+        var failures = new List<Exception>();
+        try
+        {
+            await broker.StartAsync();
+            var pending = broker.CallAsync(new(BrokerProtocol.Version, 0, "capture", ""), TimeSpan.FromSeconds(10));
+            try
+            {
+                Assert.True(await Task.Run(() => entered.WaitOne(TimeSpan.FromSeconds(3))));
+                Assert.False(pending.IsCompleted);
+                await broker.DisposeAsync();
+                Assert.True(broker.CleanupConfirmed);
+                await Assert.ThrowsAnyAsync<IOException>(() => pending);
+                await Assert.ThrowsAsync<ObjectDisposedException>(() => broker.CallAsync(new(BrokerProtocol.Version, 0, "hello", "")));
+            }
+            finally
+            {
+                release.Set();
+                try
+                {
+                    await pending;
+                }
+                catch (IOException) { }
+            }
+        }
+        catch (Exception error) { failures.Add(error); }
+        finally
+        {
+            try
+            {
+                await broker.DisposeAsync();
+            }
+            catch (Exception error) { failures.Add(new InvalidOperationException("In-flight pipe cleanup failed.", error)); }
+            if (broker.CleanupConfirmed)
+                Directory.Delete(directory, true);
+        }
+        if (failures.Count != 0)
+            throw new AggregateException(failures);
+    }
 
     private sealed class NotepadBroker : IInputBroker, IAsyncDisposable
     {
-        private readonly BrokerClient _client;
+        private readonly SemaphoreSlim _serial = new(1, 1);
+        private readonly string _pipeToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+        private readonly string? _queueIdentity, _queueLog;
         private ChildProcess? _child;
+        private volatile bool _closing;
+        private long _sequence;
+        private Task? _cleanup;
+        internal bool CleanupConfirmed
+        {
+            get; private set;
+        }
         internal SourceAcceptanceResult? Installation
         {
             get; private set;
@@ -141,66 +231,112 @@ public sealed partial class NativeSourceControllerTests
         {
             get; private set;
         }
-        internal NotepadBroker()
+        internal NotepadBroker(string? queueIdentity = null, string? queueLog = null)
         {
-            _client = new BrokerClient(info =>
-            {
-                // Keep BrokerClient's real authentication, pipe framing, timeout
-                // and child owner. Only select the existing isolated test entry.
-                info.FileName = "dotnet";
-                info.ArgumentList.Clear();
-                info.ArgumentList.Add(Path.Combine(RepositoryDirectory(),
-                    "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"));
-                info.ArgumentList.Add("--source-broker");
-                try
-                {
-                    return _child = new ChildProcess(info);
-                }
-                catch (ChildProcessCleanupUnconfirmedException error)
-                {
-                    _child = error.Child as ChildProcess;
-                    throw;
-                }
-            });
+            _queueIdentity = queueIdentity;
+            _queueLog = queueLog;
         }
-        public bool Available => _client.Available;
-        public int ProcessId => _client.ProcessId;
-        public Task StartAsync() => _client.StartAsync();
+        public bool Available => _child is not null && !_closing;
+        public int ProcessId => _child?.Process.Id ?? 0;
+        public async Task StartAsync()
+        {
+            if (_child is not null)
+                return;
+            // Like ProductionForegroundWriteTests.Desktop, this test transport
+            // owns its child exactly once. BrokerClient owns and disposes its
+            // own child on pipe failure, so layering a second terminating owner
+            // around it races cleanup against its in-flight error path.
+            var info = new ProcessStartInfo("dotnet")
+            {
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            info.ArgumentList.Add(Path.Combine(RepositoryDirectory(),
+                "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"));
+            info.ArgumentList.Add(_queueIdentity is null ? "--source-broker" : "--broker-queue-probe");
+            if (_queueIdentity is not null)
+            {
+                info.ArgumentList.Add(_queueIdentity);
+                info.ArgumentList.Add(_queueLog!);
+            }
+            info.Environment["TYPELAY_PIPE_TOKEN"] = _pipeToken;
+            try
+            {
+                _child = new ChildProcess(info);
+            }
+            catch (ChildProcessCleanupUnconfirmedException error)
+            {
+                _child = error.Child as ChildProcess;
+                throw;
+            }
+            Assert.Equal("ready", (await CallAsync(new(BrokerProtocol.Version, 0, "hello", ""), TimeSpan.FromSeconds(10))).Status);
+        }
         public async Task<BrokerResponse> CallAsync(BrokerRequest request, TimeSpan? timeout = null)
         {
-            if (request.Op is "write" or "direct-write")
-                Writes++;
-            var response = await _client.CallAsync(request, timeout);
-            if (request.Op == "source-install" && response.SourceAcceptance is { Installed: true } installed)
+            ObjectDisposedException.ThrowIf(_closing, this);
+            await _serial.WaitAsync();
+            try
             {
-                Installation = installed;
-                Quiet = false;
-            }
-            if (request.Op is "source-retire" or "source-receipt" && response.SourceAcceptance is { } result)
-            {
-                Terminal = result;
-                Quiet = result.Quiet;
-                Claimed = result.Claimed;
-                if (request.Op == "source-receipt")
+                ObjectDisposedException.ThrowIf(_closing, this);
+                var child = _child ?? throw new IOException("notepad-broker-not-started");
+                using var cancellation = new CancellationTokenSource(timeout ?? TimeSpan.FromMilliseconds(1500));
+                long id = ++_sequence;
+                if (request.Op is "write" or "direct-write")
+                    Writes++;
+                await Wire.WriteAsync(child.Process.StandardInput.BaseStream, request with
                 {
-                    Receipts++;
-                    Receipt = result.Receipt;
+                    Id = id,
+                    Token = _pipeToken
+                }, cancellation.Token);
+                var response = await Wire.ReadAsync<BrokerResponse>(child.Process.StandardOutput.BaseStream, cancellation.Token);
+                Assert.Equal(BrokerProtocol.Version, response.Version);
+                Assert.Equal(id, response.Id);
+                if (request.Op == "source-install" && response.SourceAcceptance is { Installed: true } installed)
+                {
+                    Installation = installed;
+                    Quiet = false;
                 }
+                if (request.Op is "source-retire" or "source-receipt" && response.SourceAcceptance is { } result)
+                {
+                    Terminal = result;
+                    Quiet = result.Quiet;
+                    Claimed = result.Claimed;
+                    if (request.Op == "source-receipt")
+                    {
+                        Receipts++;
+                        Receipt = result.Receipt;
+                    }
+                }
+                return response;
             }
-            return response;
+            catch
+            {
+                // Match the production client's fail-closed admission without
+                // giving the RPC error path ownership of child disposal.
+                _closing = true;
+                throw;
+            }
+            finally { _serial.Release(); }
         }
-        public void Dispose()
+        public void Dispose() => _closing = true;
+        public ValueTask DisposeAsync() => new(_cleanup ??= CleanupAsync());
+        private async Task CleanupAsync()
         {
-        } // The test awaits exact child-family termination.
-        public async ValueTask DisposeAsync()
-        {
+            Dispose(); // No new RPC can acquire ownership during termination.
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             try
             {
                 if (_child is not null)
                     await _child.TerminateAndWaitAsync(cleanup.Token);
+                // The pipe reader may still be unwinding EOF; keep streams alive
+                // until that exact caller has left the real transport boundary.
+                await _serial.WaitAsync(cleanup.Token);
+                _serial.Release();
+                CleanupConfirmed = true;
             }
-            finally { _client.Dispose(); }
+            finally { _child?.Dispose(); }
         }
     }
 
@@ -284,7 +420,15 @@ public sealed partial class NativeSourceControllerTests
                 Assert.Equal(new TextRange(0, 0), N.ReadSelection(source.Field));
                 return source;
             }
-            catch { await source.DisposeAsync(); throw; }
+            catch (Exception failure)
+            {
+                try
+                {
+                    await source.DisposeAsync();
+                }
+                catch (Exception cleanup) { throw new AggregateException("Notepad startup and cleanup failed.", failure, cleanup); }
+                throw;
+            }
         }
         public async ValueTask DisposeAsync()
         {

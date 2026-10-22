@@ -49,6 +49,24 @@ internal sealed class SourceInstallationReentry : IDisposable
         if (code >= 0 && wp == 1)
         {
             var message = Marshal.PtrToStructure<QueueMessage>(lp);
+            // Explicitly selected by this fixture's test, never arbitrary user input.
+            nint observedKey = N.GetProp(_root, "TypeLay.Test.SourceObservedKey.v1");
+            if (observedKey != 0 && message.WParam == (nuint)observedKey)
+            {
+                string? property = message.Message is 0x100 or 0x104 ? "TypeLay.Test.SourceObservedDown.v1"
+                    : message.Message is 0x101 or 0x105 ? "TypeLay.Test.SourceObservedUp.v1" : null;
+                if (property is not null)
+                    N.SetProp(_root, property, N.GetProp(_root, property) + 1);
+            }
+
+            // A distinct, explicitly selected input key marks an observation
+            // boundary in the same source-thread input queue as the tested key.
+            nint barrierKey = N.GetProp(_root, "TypeLay.Test.SourceBarrierKey.v1");
+            if (barrierKey != 0 && message.WParam == (nuint)barrierKey
+                && message.Message is 0x101 or 0x105)
+                N.SetProp(_root, "TypeLay.Test.SourceBarrierUp.v1",
+                    N.GetProp(_root, "TypeLay.Test.SourceBarrierUp.v1") + 1);
+
             if (message.WParam == 9 && message.Message == 0x100)
             {
                 N.SetProp(_root, "TypeLay.Test.SourceTabDown.v1", ++_tabDowns);

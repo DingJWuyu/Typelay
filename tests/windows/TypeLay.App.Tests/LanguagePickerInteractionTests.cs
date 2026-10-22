@@ -19,7 +19,7 @@ using Xunit;
 namespace TypeLay.App.Tests;
 
 [Collection("Desktop")]
-public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
+public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
 {
     [Fact]
     public Task PublicTargetSelectionUsesThePickerItemAfterItsActiveLanguagesChange() => desktop.RunAsync(async () =>
@@ -467,7 +467,7 @@ public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
         {
             get;
         }
-        public LanguageWindowFixture(bool quickPanel, bool protocolModel = false)
+        public LanguageWindowFixture(bool quickPanel, bool protocolModel = false, WindowsApplicationSupport? support = null)
         {
             Path = System.IO.Path.Combine(_directory, "settings.json");
             Settings = new SettingsStore(Path);
@@ -510,7 +510,7 @@ public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
             }
             else
             {
-                var settingsWindow = new SettingsWindow(Settings, _model, () => Assert.Fail("Practice must not open."));
+                var settingsWindow = new SettingsWindow(Settings, _model, () => Assert.Fail("Practice must not open."), support: support);
                 Window = settingsWindow;
                 settingsWindow.ShowPage("language");
             }

@@ -46,6 +46,52 @@ class StructureTests(unittest.TestCase):
             preserve_structure("yes 👩‍💻 thanks 🙂", UppercaseSegment()), "YES 👩‍💻 THANKS 🙂"
         )
 
+    def test_keycaps_and_emoji_presentation_symbols_are_not_sent_to_model(self):
+        class ReplaceSegment:
+            def __init__(self):
+                self.inputs = []
+
+            def translate(self, text):
+                self.inputs.append(text)
+                return "translated"
+
+        for emoji in (
+            *(key + selector + "\u20e3" for key in "0123456789#*" for selector in ("", "\ufe0f")),
+            "©️",
+            "®️",
+        ):
+            with self.subTest(emoji=emoji):
+                translator = ReplaceSegment()
+                self.assertEqual(
+                    preserve_structure("按" + emoji + "继续", translator),
+                    "translated" + emoji + "translated",
+                )
+                self.assertEqual(translator.inputs, ["按", "继续"])
+
+    def test_keycap_is_not_split_by_overlapping_issue_or_mention(self):
+        class ReplaceSegment:
+            def translate(self, text):
+                return "translated"
+
+        for prefix in ("#", "@", "#12", "@Alice"):
+            for selector in ("", "\ufe0f"):
+                with self.subTest(prefix=prefix, selector=selector):
+                    protected = prefix + "1" + selector + "\u20e3"
+                    self.assertEqual(
+                        preserve_structure("按 " + protected + "继续", ReplaceSegment()),
+                        "translated " + protected + "translated",
+                    )
+
+    def test_plain_keycap_bases_stay_in_the_translatable_sentence(self):
+        class ReplaceSegment:
+            def translate(self, text):
+                self.asserted_input = text
+                return "translated"
+
+        translator = ReplaceSegment()
+        self.assertEqual(preserve_structure("第1次*尝试", translator), "translated")
+        self.assertEqual(translator.asserted_input, "第1次*尝试")
+
     def test_numeric(self):
         self.assertEqual(preserve_structure("14:30 12345", UppercaseSegment()), "14:30 12345")
 

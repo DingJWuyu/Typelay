@@ -308,7 +308,7 @@ internal sealed partial class KeyboardHook
         _stockPressClaimed = false;
         var activation = Volatile.Read(ref _stockActivation);
         var candidate = Volatile.Read(ref _stockInstalled);
-        if (StockBudgetExceeded || data.Key != 9 || !UsesUnmodifiedSessionKeys
+        if (StockBudgetExceeded || data.Key != Volatile.Read(ref _sessionKeys).Accept || !UsesUnmodifiedSessionKeys
             || activation is null || activation.Permit != permit
             || _stockExchange is not null && (candidate is null || !StockCandidateCurrent(candidate, now)))
             return true;
