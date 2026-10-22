@@ -529,6 +529,7 @@ jobs:
           python tests/linux/test_ordinary_desktop_lifecycle.py -v
           python tests/linux/test_gtk_preview_contract.py -v
           python tests/linux/test_qt_candidate_observation.py -v
+          python tests/linux/test_argos_repetition_process.py -v
           python eng/linux/build.py --with-test-fixture --hy-runtime artifacts/linux/hy-cpu-runtime
       - name: Verify resumable model downloads over isolated HTTP
         if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
@@ -671,6 +672,9 @@ jobs:
             artifacts/linux/qt-cooperative/async-transition.json
             artifacts/linux/qt-cooperative/async-result.json
             artifacts/linux/qt-cooperative/async-client.log
+            artifacts/linux/qt-cooperative/unmodified-reentry-result.json
+            artifacts/linux/qt-cooperative/unmodified-reentry-native-state.json
+            artifacts/linux/qt-cooperative/unmodified-reentry-native.log
             artifacts/linux/qt-cooperative/ordered-result.json
             artifacts/linux/qt-cooperative/ordered-native-state.json
             artifacts/linux/qt-cooperative/ordered-native.log

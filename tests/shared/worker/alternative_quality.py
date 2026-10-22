@@ -174,6 +174,9 @@ def installation(args):
     # Intent is not Ready. The real worker must verify all files and load both models.
     return {
         "inventorySha256": hashlib.sha256(raw).hexdigest(),
+        "runtimeLockSha256": hashlib.sha256(
+            (runtime / "requirements.lock").read_bytes()
+        ).hexdigest(),
         "schema": inventory["schema"],
         "models": str(args.models),
         "python": str(args.python),
@@ -256,6 +259,13 @@ async def request(process, report, args, operation, case=None, previous=None):
                 or packages != []
             ):
                 raise ValueError("incomplete-decoding-boundary")
+        penalty = getattr(args, "ordinary_repetition", None)
+        if penalty is not None and operation != "hello":
+            expected_options = dict(
+                beam_size=2, max_input_length=0, max_decoding_length=512, repetition_penalty=penalty
+            )
+            if calls[0].get("options") != expected_options:
+                raise ValueError("ordinary-experiment-options-mismatch")
         if operation == "hello":
             expected = report["installation"]
             if (
@@ -351,6 +361,11 @@ async def collect(args, report):
                         if getattr(args, "capture_decoding_boundary", False)
                         else [str(WORKER)]
                     ),
+                    *(
+                        ["--ordinary-repetition", str(args.ordinary_repetition)]
+                        if getattr(args, "ordinary_repetition", None) is not None
+                        else []
+                    ),
                     "--models",
                     str(args.models),
                     stdin=asyncio.subprocess.PIPE,
@@ -374,6 +389,8 @@ async def collect(args, report):
             for case in report["cases"]:
                 report["stage"] = case["id"] + ":ordinary"
                 case["ordinary"] = await request(process, report, args, "translate", case)
+                if getattr(args, "ordinary_repetition", None) is not None:
+                    continue
                 report["stage"] = case["id"] + ":alternative"
                 case["alternative"] = await request(
                     process, report, args, "translate-alternative", case, case["ordinary"]["text"]

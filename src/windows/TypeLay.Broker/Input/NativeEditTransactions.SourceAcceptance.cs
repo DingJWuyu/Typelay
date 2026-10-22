@@ -10,6 +10,7 @@ namespace TypeLay.Broker;
 
 internal sealed partial class NativeEditTransactions
 {
+    private const uint PendingSourceWorkReason = 0x10000;
     // Source prototype wired through authenticated Broker operations only when
     // explicitly enabled by the isolated fixture. Shipping defaults remain off.
     // Installation alone is neither acceptance nor a CompletedReceipt.
@@ -228,7 +229,9 @@ internal sealed partial class NativeEditTransactions
             return new(false, false, null, grant.View.ReadUInt32(64) == 1);
         }
         uint status = grant.View.ReadUInt32(SourceHeaderSize + 4);
-        Denial reason = (Denial)grant.View.ReadUInt32(SourceHeaderSize + 8);
+        uint nativeReason = grant.View.ReadUInt32(SourceHeaderSize + 8);
+        // Source-only pending-work detail does not alter the public denial.
+        Denial reason = nativeReason == PendingSourceWorkReason ? Denial.EpochChanged : (Denial)nativeReason;
         bool claimed = grant.View.ReadUInt32(64) == 1;
         WriteReceipt? receipt = Enum.IsDefined(reason) ? status switch
         {

@@ -59,6 +59,8 @@ API int ImmReleaseContext(HANDLE, HANDLE);
 #define MAX_UNITS 8192
 #define CAPACITY (MAX_UNITS + 1)
 #define VERSION 2
+// Source-only diagnostic. Managed source consumers retain EpochChanged semantics.
+#define SOURCE_PENDING_WORK 0x10000u
 // Aligned fixed header, followed by three bounded UTF-16 buffers.
 typedef struct {
     uint32_t version, status, reason, op, pid, thread;
@@ -433,7 +435,7 @@ static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accep
         if (*admission->reason || !qualify(tx) || !foreground_source(tx)
             || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie) { tx->reason = 2; return; }
         if (!authorization_current(tx) || GetTickCount64() > tx->deadline) { tx->reason = 14; return; }
-        if (GetQueueStatus(0x1dff) >> 16) { tx->reason = 15; return; }
+        if (GetQueueStatus(0x1dff) >> 16) { tx->reason = SOURCE_PENDING_WORK; return; }
         uint32_t armed = 0;
         // This actual aligned shared word is the only acceptance linearization
         // point. A timeout's Withdrawn value can never be reset or overwritten.

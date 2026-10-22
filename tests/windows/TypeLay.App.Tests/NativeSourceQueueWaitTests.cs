@@ -69,9 +69,11 @@ public sealed class NativeSourceQueueWaitTests(WpfDesktopFixture ui)
                             Assert.Equal(nint.Zero, Property("Work"));
                             Assert.Equal(nint.Zero, N.GetProp(desktop.Root, "TypeLay.Test.SourceTabDownUnits.v1"));
                             Assert.False(hook.StockLastActivation!.Claimed);
-                            // Native pending-queue rejection maps to reason 15
-                            // (EpochChanged). Expiry maps to 14 instead. No Edit
-                            // input/mutation has dispatched before this response.
+                            // Distinguish the actual pending-work guard from a
+                            // previously revoked source, without changing the
+                            // public EpochChanged denial. No Edit input/mutation
+                            // has dispatched before this response.
+                            Assert.Equal(StockEditActivation.PendingSourceWorkReason, hook.StockLastActivation.NativeReason);
                             Assert.Equal(Denial.EpochChanged, hook.StockLastActivation.Receipt?.Reason);
                         }
                         SendTab(true);
@@ -134,6 +136,7 @@ public sealed class NativeSourceQueueWaitTests(WpfDesktopFixture ui)
                     var retired = native.RetireSourceAcceptance(generation, permit!.Plan.Id);
                     Assert.True(retired.Quiet);
                     Assert.False(retired.Claimed);
+                    Assert.Equal(Denial.EpochChanged, retired.Receipt?.Reason);
                 }
                 else
                     Assert.Null(hook.StockLastActivation);

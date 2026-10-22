@@ -232,7 +232,7 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
                 var activation = hook.StockLastActivation!;
                 Assert.True(activation.Claimed,
                     $"Source activation did not claim: status={activation.Receipt?.Status}, reason={activation.Receipt?.Reason}, "
-                    + $"budgetExceeded={activation.ExceededBudget}, elapsedMs={activation.ElapsedMs:F3}, "
+                    + $"nativeReason=0x{activation.NativeReason:x}, budgetExceeded={activation.ExceededBudget}, elapsedMs={activation.ElapsedMs:F3}, "
                     + $"observedAtMs={installedPermit.ObservedAtMs}, expiresAtMs={installedPermit.ExpiresAtMs}, "
                     + $"armStartedAtMs={armStartedAt}, armedAtMs={armedAt}, tabSentAtMs={tabSentAt}, "
                     + $"resultObservedAtMs={WindowsInterruptClock.NowMs}.");
@@ -547,6 +547,7 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
     {
         [FieldOffset(0)] public uint Type;
         [FieldOffset(8)] public ushort Key;
+        [FieldOffset(10)] public ushort Scan;
         [FieldOffset(12)] public uint Flags;
     }
     [DllImport("user32.dll", SetLastError = true)]

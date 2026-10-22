@@ -30,6 +30,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     private SessionShortcutMessages _shortcutMessages = SettingsDraftPresentation.SessionShortcuts(SessionShortcutBindings.Default);
     private SessionViewContext? _viewContext;
     private SessionState _sessionState;
+    private string _previewStatus = "无当前译文";
     private (TargetId Target, RectPx Bounds)? _sourceAnchor;
     private InlineGlossaryForm? _glossary;
     private SessionViewToken? _glossaryEditorToken;
@@ -952,6 +953,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         _editor.Cursor = editable ? Cursors.IBeam : Cursors.Arrow;
         _editor.ToolTip = _canEditPreview && !_editing ? "点击译文编辑" : null;
         AutomationProperties.SetName(_editor, editable ? "编辑译文" : "译文预览");
+        AutomationProperties.SetItemStatus(_editor, _editing && _previewStatus == "当前译文" ? "编辑中的译文" : _previewStatus);
         if (_editing && _editor.IsKeyboardFocusWithin)
             _editor.SetResourceReference(Control.BorderBrushProperty, "Accent");
         else if (_editing || hover)
@@ -1052,6 +1054,18 @@ internal sealed partial class OverlayWindow : Window, ISessionView
                 Dot = StatusDot.Neutral
             };
         _hasPreview = session.Preview.Length > 0;
+        // Screen readers must distinguish actual current text from progress,
+        // failure messages and retained previews of an older source revision.
+        _previewStatus = session.State switch
+        {
+            SessionState.EditingTranslation when session.ManualSourceCurrent => "编辑中的译文",
+            SessionState.ReturningToSource when session.ManualSourceCurrent => "待返回的译文",
+            SessionState.ValidTranslation or SessionState.EditedTranslationPending or SessionState.Invalid
+                when session.HasCurrentPreview => "当前译文",
+            SessionState.Translating => "正在翻译",
+            SessionState.TranslationFailed => "翻译失败",
+            _ => "无当前译文"
+        };
         _canEditPreview = _viewContext?.CanEdit == true && session.CanBeginEdit && session.Candidate.Length > 0;
         _rendering = true;
         try
@@ -1371,6 +1385,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         _composing = false;
         _expanded = false;
         _hasPreview = false;
+        _previewStatus = "无当前译文";
         _canEditPreview = false;
         _rendering = true;
         try

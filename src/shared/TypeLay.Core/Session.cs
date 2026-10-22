@@ -41,6 +41,8 @@ public sealed class Session
     public string Candidate => _candidate;
     // A preview may lag appended input. Only Candidate in a ready state is writable.
     public string Preview => _preview;
+    // Display freshness only, never acceptance or write authorization.
+    public bool HasCurrentPreview => _preview.Length > 0 && _previewRevision == _revision;
     public string Draft => _draft;
     public long Revision => _revision;
     public TranslationStyle? Style => _style;

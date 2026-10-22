@@ -326,6 +326,7 @@ int main(int argc, char **argv) {
             {"tlqtPreedits", QJsonValue::fromVariant(qApp->property("tlqtPreedits"))}};
     });
     QString selectionAction, textAction, plainSelectionAction, plainTextAction;
+    QJsonObject selectionHandoff;
     auto replaceDocument = [&](const QString &text) {
         QPointer<QTextDocument> previous = plain->document();
         auto *document = new QTextDocument(plain);
@@ -347,7 +348,16 @@ int main(int argc, char **argv) {
         const auto pending = action;
         action.clear();
         if (pending == "rewrite") first->setText(QStringLiteral("Application changed this field"));
-        else if (pending == "focus-second") second->setFocus();
+        else if (pending == "focus-second") {
+            // Observe the real selection callback around Qt's focus-out path.
+            // QLineEdit may deselect on focus loss; the consumer must not undo
+            // application/Qt state after reporting an unknown write outcome.
+            const int start = first->selectionStart(), length = first->selectionLength();
+            second->setFocus();
+            selectionHandoff = {{"beforeStart", start}, {"beforeLength", length},
+                {"afterStart", first->selectionStart()}, {"afterLength", first->selectionLength()},
+                {"secondFocused", second->hasFocus()}};
+        }
         else if (pending == "read-only") first->setReadOnly(true);
         else if (pending == "nested") QCoreApplication::processEvents(QEventLoop::AllEvents);
     };
@@ -489,7 +499,7 @@ int main(int argc, char **argv) {
             {"fullscreen", window.isFullScreen()}, {"width", window.width()}, {"height", window.height()},
             {"scale", window.devicePixelRatioF()}, {"keys", observer.counts},
             {"commandSequence", qint64(observer.commandSequence)},
-            {"focusTransitions", qint64(observer.focusTransitions)}, {"firstChangeContext", firstChangeContext}, {"plainChangeContext", plainChangeContext},
+            {"focusTransitions", qint64(observer.focusTransitions)}, {"firstChangeContext", firstChangeContext}, {"selectionHandoff", selectionHandoff}, {"plainChangeContext", plainChangeContext},
             {"shortcutState", observer.shortcutState}, {"shortcutId", qint64(observer.shortcutId)},
             {"shortcutActionCount", qint64(observer.shortcutActionCount)},
             {"shortcutActionId", qint64(observer.shortcutActionId)}, {"shortcutHint", QToolTip::text()},

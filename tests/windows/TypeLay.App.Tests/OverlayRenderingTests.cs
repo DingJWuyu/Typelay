@@ -29,6 +29,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         {
             var text = new TextBox { Text = "Controlled displayed value", IsReadOnly = true };
             System.Windows.Automation.AutomationProperties.SetName(text, name);
+            System.Windows.Automation.AutomationProperties.SetItemStatus(text, "当前译文");
             panel.Children.Add(text);
         }
         var window = new Window { Content = panel, Width = 400, Height = 200 };
@@ -109,6 +110,107 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             }
             finally { overlay.Close(); window.Close(); }
         });
+
+    [Fact]
+    public Task OrdinaryObserverDistinguishesProgressOldPreviewAndCurrentDraft() => desktop.RunAsync(async () =>
+    {
+        var (window, input, source) = OpenSource();
+        var session = new Session(new("auto", "en"));
+        var overlay = new OverlayWindow(clientAreaAnimation: () => false)
+        {
+            BeginEditing = _ => session.BeginEdit(),
+            DraftChanged = text => session.ChangeDraft(text)
+        };
+        async Task Observe(string? expected)
+        {
+            overlay.UpdateLayout();
+            nint handle = overlay.Handle;
+            await Task.Run(() =>
+            {
+                var root = System.Windows.Automation.AutomationElement.FromHandle(handle);
+                var preview = TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, source.Text, false);
+                if (expected is null)
+                    Assert.Null(preview);
+                else
+                {
+                    Assert.NotNull(preview);
+                    var value = (System.Windows.Automation.ValuePattern)preview.GetCurrentPattern(System.Windows.Automation.ValuePattern.Pattern);
+                    Assert.Equal(expected, value.Current.Value);
+                }
+                Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, source.Text, true));
+            }, TestContext.Current.CancellationToken);
+            Assert.Equal(source.Text, input.Text);
+        }
+        void Render(bool canEdit = false) => overlay.Render(session, new UserSettings(), false,
+            context: EditableView(session.Current ?? source) with
+            {
+                CanEdit = canEdit
+            });
+        try
+        {
+            session.Observe(source, FocusMember.Source, 1000);
+            var job = Assert.IsType<TranslationJob>(session.TakeTranslationJob(1300));
+            Render();
+            await Observe(null); // Real displayed busy text is not a candidate.
+            Assert.True(session.Fail(job));
+            Render();
+            await Observe(null);
+
+            // A real result can equal a localized progress string. The observer
+            // uses public semantics, never a blacklist of translated sentences.
+            session = Ready(source with
+            {
+                WriteSupported = false
+            }, "正在翻译…");
+            Render();
+            await Observe("正在翻译…");
+            var appended = source with
+            {
+                Text = source.Text + " suffix",
+                InputEpoch = source.InputEpoch + 1
+            };
+            session.Observe(appended, FocusMember.Source, 1400);
+            Assert.Equal("正在翻译…", session.Preview);
+            Assert.False(session.HasCurrentPreview);
+            Render();
+            await Observe(null); // Retained old text is not the new revision's result.
+
+            session = Ready(source, "Initial translation");
+            Render(true);
+            var editor = Descendants(overlay).OfType<TextBox>().Single();
+            editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+            {
+                RoutedEvent = UIElement.PreviewMouseDownEvent
+            });
+            Assert.Equal(SessionState.EditingTranslation, session.State);
+            editor.Text = "人工修改的译文";
+            Assert.Equal(editor.Text, session.Draft);
+            await Observe("人工修改的译文");
+            Assert.True(session.RequestSourceReturn());
+            Render(true);
+            await Observe("人工修改的译文");
+            session.Observe(appended, FocusMember.Overlay, 1450);
+            Assert.False(session.ManualSourceCurrent);
+            Render(true);
+            await Observe(null);
+
+            // A different session/configuration must clear the previous editor's
+            // public candidate meaning even when the source HWND is unchanged.
+            session = new Session(new("auto", "fr"));
+            session.Observe(source, FocusMember.Source, 1500);
+            Render();
+            await Observe(null);
+            session.Observe(source with
+            {
+                Text = "",
+                Selection = new(0, 0),
+                InputEpoch = source.InputEpoch + 1
+            }, FocusMember.Source, 1600);
+            Render();
+            await Observe(null);
+        }
+        finally { overlay.Close(); window.Close(); }
+    });
 
     [Theory]
     [InlineData("ja", "日本語")]

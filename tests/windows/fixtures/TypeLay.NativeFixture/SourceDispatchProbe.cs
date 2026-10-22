@@ -28,7 +28,20 @@ internal static class SourceDispatchProbe
         N.SetProp(root, "TypeLay.Test.Dispatch.Removed.v1", 1);
         N.SetProp(root, "TypeLay.Test.Dispatch.Thread.v1", (nint)GetCurrentThreadId());
         N.SetProp(root, "TypeLay.Test.Dispatch.Field.v1", message.Hwnd);
-        N.SetProp(root, "TypeLay.Test.Dispatch.PendingKeys.v1", (nint)(GetQueueStatus(1) >> 16));
+        uint pendingKeys = GetQueueStatus(1) >> 16;
+        N.SetProp(root, "TypeLay.Test.Dispatch.PendingKeys.v1", (nint)pendingKeys);
+        // Only diagnose an already-failed empty-queue precondition. PM_NOREMOVE
+        // may service sent work, so never use it to clear a gate or let this
+        // scenario pass after the original queue observation was nonzero.
+        if (pendingKeys != 0)
+        {
+            bool found = PeekMessageW(out var next, 0, 0x100, 0x109, 0);
+            N.SetProp(root, "TypeLay.Test.Dispatch.NextKeyFound.v1", found ? 1 : 0);
+            N.SetProp(root, "TypeLay.Test.Dispatch.NextKeyMessage.v1", (nint)next.Message);
+            N.SetProp(root, "TypeLay.Test.Dispatch.NextKeyCode.v1", (nint)next.WParam);
+            N.SetProp(root, "TypeLay.Test.Dispatch.NextKeyBits.v1", next.LParam);
+            N.SetProp(root, "TypeLay.Test.Dispatch.RemovedKeyBits.v1", message.LParam);
+        }
         nint result = SendMessageW(coordinator, Coordinate, (nuint)root, 0);
         N.SetProp(root, "TypeLay.Test.Dispatch.Coordinated.v1", result);
         return true;
@@ -43,4 +56,7 @@ internal static class SourceDispatchProbe
     [DllImport("user32.dll")] private static extern nint SendMessageW(nint hwnd, uint message, nuint wParam, nint lParam);
     [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] private static extern uint GetQueueStatus(uint flags);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PeekMessageW(out N.MessageStruct message, nint hwnd, uint first, uint last, uint remove);
 }

@@ -13,7 +13,9 @@ namespace TypeLay.App;
 // us that guarantee. A timeout parameter is not a hard real-time hook bound.
 internal sealed class StockEditActivation : IDisposable
 {
-    internal sealed record Result(bool Claimed, WriteReceipt? Receipt, bool ExceededBudget, double ElapsedMs);
+    internal sealed record Result(bool Claimed, WriteReceipt? Receipt, bool ExceededBudget, double ElapsedMs,
+        uint NativeReason = 0);
+    internal const uint PendingSourceWorkReason = 0x10000;
     private const int Bytes = 49344, Header = 72;
     internal const uint BudgetMs = 5;
     private readonly MemoryMappedFile _mapping;
@@ -83,10 +85,12 @@ internal sealed class StockEditActivation : IDisposable
             double elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             bool claimed = (flags & 1) != 0;
             WriteReceipt? receipt = null;
+            uint nativeReason = 0;
             if ((flags & 2) != 0)
             {
                 uint status = _view.ReadUInt32(Header + 4);
-                Denial reason = (Denial)_view.ReadUInt32(Header + 8);
+                nativeReason = _view.ReadUInt32(Header + 8);
+                Denial reason = nativeReason == PendingSourceWorkReason ? Denial.EpochChanged : (Denial)nativeReason;
                 if (Enum.IsDefined(reason))
                     receipt = status switch
                     {
@@ -96,7 +100,7 @@ internal sealed class StockEditActivation : IDisposable
                         _ => null
                     };
             }
-            return new(claimed, receipt, (flags & 4) != 0 || elapsed > BudgetMs, elapsed);
+            return new(claimed, receipt, (flags & 4) != 0 || elapsed > BudgetMs, elapsed, nativeReason);
         }
         finally { Release(); }
     }

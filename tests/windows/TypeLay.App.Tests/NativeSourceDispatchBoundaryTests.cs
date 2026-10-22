@@ -17,14 +17,10 @@ public sealed class NativeSourceDispatchBoundaryTests(WpfDesktopFixture ui)
     // Right is ordinary supported keyboard navigation, not a programmatically
     // posted edit. SendInput traverses the production LL callback first. The
     // injected-input test option does not skip its epoch/revocation behavior.
-    [Fact]
-    public async Task RemovedButUndispatchedNavigationRevokesTheOldCandidateBeforeTab()
-    {
-        await RunScenario(installCandidate: false);
-        await RunScenario(installCandidate: true);
-    }
-
-    private Task RunScenario(bool installCandidate) => ui.RunAsync(async () =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task RemovedButUndispatchedNavigationRevokesTheOldCandidateBeforeTab(bool installCandidate) => ui.RunAsync(async () =>
     {
         await using var desktop = await ProductionForegroundWriteTests.Desktop.Start();
         await desktop.Prepare(desktop.A, "pre old post", new(0, 0));
@@ -56,7 +52,11 @@ public sealed class NativeSourceDispatchBoundaryTests(WpfDesktopFixture ui)
                 Assert.Equal((nint)0, Property("Dispatched"));
                 Assert.Equal((nint)sourceThread, Property("Thread"));
                 Assert.Equal(desktop.A, Property("Field"));
-                Assert.Equal((nint)0, Property("PendingKeys"));
+                Assert.True(Property("PendingKeys") == 0,
+                    $"Source keyboard queue-status precondition failed: candidate={installCandidate}, mask={Property("PendingKeys")}, "
+                    + $"nextFound={Property("NextKeyFound")}, message=0x{Property("NextKeyMessage"):x}, "
+                    + $"key=0x{Property("NextKeyCode"):x}, bits=0x{Property("NextKeyBits"):x}, "
+                    + $"removedBits=0x{Property("RemovedKeyBits"):x}.");
                 Assert.Equal("pre old post", N.ReadText(desktop.A, Limits.MaxTextUnits));
                 Assert.Equal(new TextRange(0, 0), N.ReadSelection(desktop.A));
                 Assert.Equal((desktop.Root, desktop.A), N.Focused());

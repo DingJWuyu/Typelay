@@ -68,7 +68,7 @@ class QualityPreparationTests(unittest.TestCase):
             result = self.validate("ordinary_quality.py", output, "--decode-comparison")
             self.assertEqual(result.returncode, 2, result.stderr)
             reports = [
-                json.loads(path.read_text())
+                json.loads(path.read_text(encoding="utf8"))
                 for path in (output, output.with_name("ordinary-b-quality.json"))
             ]
             for arm, report in zip(("A", "B"), reports, strict=True):
@@ -103,6 +103,18 @@ class QualityPreparationTests(unittest.TestCase):
             ]
             with (
                 patch.object(sys, "argv", argv),
+                # Admission and collection are controlled ports here, not native evidence.
+                patch.object(
+                    hy_decode_comparison.styled,
+                    "arguments",
+                    return_value=SimpleNamespace(
+                        output=Path(temporary) / "ordinary-quality.json",
+                        validate_only=False,
+                        python=Path("/absent/python"),
+                        models=Path("/absent/models"),
+                        worker=Path("/absent/worker"),
+                    ),
+                ),
                 patch.object(hy_decode_comparison, "collect_main", return_value=2) as collect,
             ):
                 self.assertEqual(hy_decode_comparison.ordinary_main(), 2)
@@ -128,6 +140,18 @@ class QualityPreparationTests(unittest.TestCase):
             ]
             with (
                 patch.object(sys, "argv", argv),
+                # Admission and collection are controlled ports here, not native evidence.
+                patch.object(
+                    hy_decode_comparison.styled,
+                    "arguments",
+                    return_value=SimpleNamespace(
+                        output=Path(temporary) / "ordinary-quality.json",
+                        validate_only=False,
+                        python=Path("/absent/python"),
+                        models=Path("/absent/models"),
+                        worker=Path("/absent/worker"),
+                    ),
+                ),
                 patch.object(hy_decode_comparison, "collect_main", side_effect=[0, 2]) as collect,
             ):
                 self.assertEqual(hy_decode_comparison.ordinary_main(), 2)
@@ -135,6 +159,33 @@ class QualityPreparationTests(unittest.TestCase):
                 self.assertEqual((first["variant"], second["variant"]), ("A", "B"))
                 self.assertEqual(first["work_deadline"], second["work_deadline"])
                 self.assertEqual(sys.argv, argv)
+
+    def test_ordinary_ab_real_collection_keeps_non_linux_admission_closed(self):
+        import hy_decode_comparison
+
+        (ROOT / "artifacts").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as temporary:
+            argv = [
+                "ordinary_quality.py",
+                "--output",
+                str(Path(temporary) / "ordinary-quality.json"),
+                "--python",
+                "/absent/python",
+                "--models",
+                "/absent/models",
+                "--worker",
+                "/absent/worker",
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(sys, "platform", "win32"),
+                patch.object(hy_decode_comparison, "collect_main") as collect,
+                patch("sys.stderr", new_callable=io.StringIO),
+            ):
+                with self.assertRaises(SystemExit) as error:
+                    hy_decode_comparison.ordinary_main()
+                self.assertEqual(error.exception.code, 2)
+                collect.assert_not_called()
 
     def test_ordinary_preparation_comparison_is_independent_of_windows_default_encoding(self):
         original = Path.read_text
@@ -144,6 +195,7 @@ class QualityPreparationTests(unittest.TestCase):
 
         with patch.object(Path, "read_text", windows_default):
             self.test_ordinary_diagnostic_validate_only_never_loads_assets()
+            self.test_ordinary_decode_plan_has_two_fixed_arms_without_assets()
 
     def test_glossary_preparation_keeps_full_inputs_and_review_unset_without_assets(self):
         (ROOT / "artifacts").mkdir(exist_ok=True)

@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "samples": [
+    {
+      "id": "holdout-zh-01",
+      "direction": "zh_en",
+      "text": "请不要取消明天的会议，我只是想把开始时间推迟十分钟。",
+      "semantic_anchors": [
+        "不取消；明天；只延后开始十分钟"
+      ]
+    },
+    {
+      "id": "holdout-zh-02",
+      "direction": "zh_en",
+      "text": "每组必须至少有三个人，但不能超过五个人。",
+      "semantic_anchors": [
+        "每组；人数下界三、上界五，均包含边界"
+      ]
+    },
+    {
+      "id": "holdout-zh-03",
+      "direction": "zh_en",
+      "text": "如果她今晚还没回复，我明早再联系她。",
+      "semantic_anchors": [
+        "今晚尚未回复是条件；我联系她；明早再联系"
+      ]
+    },
+    {
+      "id": "holdout-zh-04",
+      "direction": "zh_en",
+      "text": "我把钥匙交给了小林，小林又把钥匙还给了我。",
+      "semantic_anchors": [
+        "我给小林；同一钥匙；小林归还给我，重复主体不能省错"
+      ]
+    },
+    {
+      "id": "holdout-en-01",
+      "direction": "en_zh",
+      "text": "Please finish in less than fifteen minutes, not exactly fifteen minutes.",
+      "semantic_anchors": [
+        "严格少于十五分钟；明确不是恰好十五分钟"
+      ]
+    },
+    {
+      "id": "holdout-en-02",
+      "direction": "en_zh",
+      "text": "I sent her two copies, but she has not received either copy yet.",
+      "semantic_anchors": [
+        "我给她两份；她两份都尚未收到"
+      ]
+    },
+    {
+      "id": "holdout-en-03",
+      "direction": "en_zh",
+      "text": "We can postpone the call if you need more time, but we cannot cancel it.",
+      "semantic_anchors": [
+        "需要更多时间是条件；可以延期；不能取消"
+      ]
+    },
+    {
+      "id": "holdout-en-04",
+      "direction": "en_zh",
+      "text": "The red box is inside the blue box; the blue box is not inside the red box.",
+      "semantic_anchors": [
+        "红在蓝内；蓝不在红内；两个重复主体与否定方向"
+      ]
+    }
+  ]
+}

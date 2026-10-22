@@ -46,7 +46,9 @@ public sealed partial class NativeSourceControllerTests
             await controller.StartAsync();
             stage = "installation-and-acceptance";
             await Until(() => { loop.Advance(); return view.CanAccept; }, token);
+            long acceptanceReadyAt = WindowsInterruptClock.NowMs;
             var installation = Assert.IsType<SourceAcceptanceResult>(broker.Installation);
+            var installedPermit = Assert.IsType<AcceptancePermit>(broker.InstallationPermit);
             Assert.True(installation.Installed);
             Assert.Equal(source.ProcessId, installation.Target.AsWindows().ProcessId);
             Assert.Equal((long)source.Field, installation.Target.AsWindows().ControlHwnd);
@@ -87,9 +89,17 @@ public sealed partial class NativeSourceControllerTests
                 bool pressed = true;
                 try
                 {
+                    long tabStartedAt = WindowsInterruptClock.NowMs;
                     Tab(false);
+                    long tabSentAt = WindowsInterruptClock.NowMs;
                     await Until(() => hook.StockLastActivation is not null, token);
-                    Assert.True(hook.StockLastActivation!.Claimed);
+                    var activation = hook.StockLastActivation!;
+                    Assert.True(activation.Claimed,
+                        $"Notepad source activation did not claim: status={activation.Receipt?.Status}, reason={activation.Receipt?.Reason}, "
+                        + $"nativeReason=0x{activation.NativeReason:x}, budgetExceeded={activation.ExceededBudget}, elapsedMs={activation.ElapsedMs:F3}, "
+                        + $"observedAtMs={installedPermit.ObservedAtMs}, expiresAtMs={installedPermit.ExpiresAtMs}, "
+                        + $"acceptanceReadyAtMs={acceptanceReadyAt}, tabStartedAtMs={tabStartedAt}, tabSentAtMs={tabSentAt}, "
+                        + $"resultObservedAtMs={WindowsInterruptClock.NowMs}.");
                     hook.Revoke(); // A claimed press still owns repeat and release.
                     Tab(false);
                     Tab(true);
@@ -246,6 +256,10 @@ public sealed partial class NativeSourceControllerTests
         {
             get; private set;
         }
+        internal AcceptancePermit? InstallationPermit
+        {
+            get; private set;
+        }
         internal SourceAcceptanceResult? Installation
         {
             get; private set;
@@ -339,6 +353,7 @@ public sealed partial class NativeSourceControllerTests
                 if (request.Op == "source-install" && response.SourceAcceptance is { Installed: true } installed)
                 {
                     Installation = installed;
+                    InstallationPermit = request.SourceAcceptance?.Permit;
                     Quiet = false;
                 }
                 if (request.Op is "source-retire" or "source-receipt" && response.SourceAcceptance is { } result)

@@ -21,9 +21,12 @@ internal static class OverlayPreviewObservation
         var editor = candidates[0];
         if (!editor.Current.IsEnabled || !editor.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern))
             return null;
+        string status = editor.Current.ItemStatus;
+        if (status is not ("当前译文" or "编辑中的译文" or "待返回的译文"))
+            return null;
         var value = ((ValuePattern)pattern).Current;
         string name = editor.Current.Name;
-        if (string.IsNullOrWhiteSpace(value.Value) || value.Value == original
+        if (editor.Current.ItemStatus != status || string.IsNullOrWhiteSpace(value.Value) || value.Value == original
             || name == "译文预览" && !value.IsReadOnly)
             return null;
         if (!ready)

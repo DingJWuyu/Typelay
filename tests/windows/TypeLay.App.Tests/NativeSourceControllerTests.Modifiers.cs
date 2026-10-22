@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
@@ -12,8 +13,10 @@ namespace TypeLay.App.Tests;
 
 public sealed partial class NativeSourceControllerTests
 {
-    [Fact]
-    public Task APreControlGrantCannotAuthorizeTheConfiguredFunctionKey() => desktop.RunAsync(async () =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task APreControlGrantCannotAuthorizeTheConfiguredFunctionKey(bool withScanIdentity) => desktop.RunAsync(async () =>
     {
         await using var native = await ProductionForegroundWriteTests.Desktop.Start(isolatedSourceAcceptance: true);
         await native.Prepare(native.A, "你好", new(0, 2));
@@ -36,14 +39,20 @@ public sealed partial class NativeSourceControllerTests
         try
         {
             controlDown = true;
-            Key(0x11, false);
+            Control(false);
             await Until(() => N.GetProp(native.Root, "TypeLay.Test.SourceDispatchedDown.v1") == 1, native.Token);
+            // Distinguish an admitted Ctrl prefix from a missing scan identity.
+            // Neither may carry the pre-Ctrl write authorization forward.
+            if (withScanIdentity)
+                Assert.NotNull(hook.AcceptanceModifierTransition);
+            else
+                Assert.Null(hook.AcceptanceModifierTransition);
             Assert.False(hook.AcceptanceReady(token, permit, WindowsInterruptClock.NowMs));
             functionDown = true;
-            Key(0x76, false);
-            Key(0x76, true);
+            SourceScanKey(0x41, false);
+            SourceScanKey(0x41, true);
             functionDown = false;
-            Key(0x11, true);
+            Control(true);
             controlDown = false;
             barrierDown = true;
             Key(0x86, false);
@@ -60,11 +69,18 @@ public sealed partial class NativeSourceControllerTests
         finally
         {
             if (functionDown)
-                Key(0x76, true);
+                SourceScanKey(0x41, true);
             if (controlDown)
-                Key(0x11, true);
+                Control(true);
             if (barrierDown)
                 Key(0x86, true);
+        }
+        void Control(bool up)
+        {
+            if (withScanIdentity)
+                SourceScanKey(0x1d, up);
+            else
+                Key(0x11, up);
         }
     });
 
@@ -87,7 +103,7 @@ public sealed partial class NativeSourceControllerTests
         using var input = new WindowsInputService(broker, editorHwnd, monitor: hook, isolatedSourceAcceptance: true);
         string directory = Path.Combine(Path.GetTempPath(), "TypeLay.ControlSource." + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
-        const ushort function = 0x76, control = 0x11, shift = 0x10, barrier = 0x86;
+        const ushort function = 0x76, control = 0x11, barrier = 0x86;
         bool controlDown = false, functionDown = false, shiftDown = false, barrierDown = false;
         try
         {
@@ -116,7 +132,7 @@ public sealed partial class NativeSourceControllerTests
             var oldPermit = broker.InstallationPermit!;
             long previousUser = hook.UserEpoch;
             controlDown = true;
-            Key(control, false);
+            SourceScanKey(0x1d, false);
             await Until(() => N.GetProp(native.Root, "TypeLay.Test.SourceDispatchedDown.v1") == 1, native.Token);
             Assert.Equal(previousUser + 1, hook.UserEpoch);
             Assert.NotNull(hook.AcceptanceModifierTransition);
@@ -133,14 +149,14 @@ public sealed partial class NativeSourceControllerTests
             Assert.NotEqual(oldPermit.Plan.Revision, broker.InstallationPermit.Plan.Revision);
             if (action == "release")
             {
-                Key(control, true);
+                SourceScanKey(0x1d, true);
                 controlDown = false;
                 await Until(() => hook.AcceptanceModifierTransition is null, native.Token);
             }
             else if (action == "shift")
             {
                 shiftDown = true;
-                Key(shift, false);
+                SourceScanKey(0x2a, false);
                 await Until(() => hook.AcceptanceModifierTransition is null, native.Token);
             }
             else if (action == "revoke")
@@ -166,24 +182,24 @@ public sealed partial class NativeSourceControllerTests
                 Assert.Null(hook.AcceptanceModifierTransition);
             }
             functionDown = true;
-            Key(function, false);
+            SourceScanKey(0x41, false);
             if (action == "accept")
             {
                 await Until(() => hook.StockLastActivation is not null, native.Token);
                 Assert.True(hook.StockLastActivation!.Claimed);
                 hook.ConfigureSessionShortcuts(SessionShortcutBindings.Restore("F8", "F9"));
-                Key(function, false); // The original held group remains owned.
+                SourceScanKey(0x41, false); // The original held group remains owned.
             }
-            Key(function, true);
+            SourceScanKey(0x41, true);
             functionDown = false;
             if (controlDown)
             {
-                Key(control, true);
+                SourceScanKey(0x1d, true);
                 controlDown = false;
             }
             if (shiftDown)
             {
-                Key(shift, true);
+                SourceScanKey(0x2a, true);
                 shiftDown = false;
             }
             if (action == "accept")
@@ -213,15 +229,20 @@ public sealed partial class NativeSourceControllerTests
         finally
         {
             if (functionDown)
-                Key(function, true);
+                SourceScanKey(0x41, true);
             if (controlDown)
-                Key(control, true);
+                SourceScanKey(0x1d, true);
             if (shiftDown)
-                Key(shift, true);
+                SourceScanKey(0x2a, true);
             if (barrierDown)
                 Key(barrier, true);
             editor.Close();
             Directory.Delete(directory, true);
         }
     });
+
+    // Preserve physical press identity through the production hook. VK-only
+    // injection supplies no scan identity; Ctrl provenance requires one.
+    private static void SourceScanKey(ushort scan, bool up) => Assert.Equal(1u,
+        SendInput(1, [new KeyInput { Type = 1, Scan = scan, Flags = up ? 10u : 8u }], Marshal.SizeOf<KeyInput>()));
 }

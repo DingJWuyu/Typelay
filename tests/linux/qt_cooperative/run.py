@@ -769,7 +769,21 @@ def ordered_controls(
                 assert accepted[0]["data"]["planId"] == publication["permit"]["plan"]["id"]
                 assert accepted[0]["data"]["receipt"]["status"] == "OutcomeUnknown"
                 assert state()["first"]["text"] == "Original source"
-                assert state()["first"]["selectionLength"] == len("Original source")
+                # Prove selection was attempted at the synchronous callback,
+                # not that it survives focus loss: QLineEdit can deselect there.
+                # After Unknown, preserve the callback's actual state rather
+                # than restoring a stale selection in the original field.
+                handoff_state = state()
+                handoff = handoff_state["selectionHandoff"]
+                assert handoff["beforeStart"] == 0, handoff
+                assert handoff["beforeLength"] == len("Original source"), handoff
+                assert handoff["secondFocused"], handoff
+                assert handoff_state["first"]["selectionStart"] == handoff["afterStart"], (
+                    handoff_state
+                )
+                assert handoff_state["first"]["selectionLength"] == handoff["afterLength"], (
+                    handoff_state
+                )
                 for field in ("first", "second"):
                     for phase in ("Press", "Release"):
                         name = f"{field}F12{phase}"

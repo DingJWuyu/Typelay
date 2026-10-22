@@ -35,6 +35,32 @@
 
 测试失败保留命令、提交 SHA、平台、退出码和最小失败输出。只使用合成测试文本；TRX、临时包、日志与截图进入 artifacts/ 或 CI artifact，不将执行快照、阶段报告提交到源码树。
 
+## Argos 普通翻译单因素调优
+
+本节是下一轮实验合同，不是已执行结果。执行者固定负责 Argos，实际推理与 Hy 顺序使用模型资源；先确认同一正式安装代次可复用，再由集成负责人分配运行槽。当前机器没有模型或 CT2 时只准备采集，不下载以填满磁盘，也不手造安装状态。
+
+**第一轮只回答一个问题：普通翻译的重复惩罚是否损害保义。** 基线 A 为 `repetition_penalty=1.05`，候选 B 为 `1.0`；两者同用当前官方中英双向 1.9 包、固定依赖、CPU INT8、beam2、384 输入 token 拒绝上限、512 解码上限及同一线程数。候选只在隔离测试入口调整该参数，不改生产默认。取消重复惩罚可能改善应当重复的主体或词，也可能增加重复；这是待检验的假设，不是已发现根因。[CT2 官方参数说明](https://opennmt.net/CTranslate2/python/ctranslate2.Translator.html#ctranslate2.Translator.translate_batch)定义 `1.0` 为默认值，`>1` 惩罚已生成 token；实验仍固定仓库的 4.8.2 依赖，不随在线文档版本升级。已失败的 beam4 不作为新实验再计数。
+
+- 固定开发集：复用 `tests/shared/worker/alternative_quality_inputs.json` 的全部 16 句及原 SHA-256，顺序不变，只请求 `translate`，不请求另述。
+- 预先冻结留出集：`tests/shared/worker/argos_repetition_holdout.json` 八句在查看本轮输出前确定；不能根据模型输出改题。每句分别检查主体、否定/条件、数值边界和增漏义。留出结果不用于反复调这一轮参数；若后续据此修改方案，它们转为开发样本，并另设新的留出集。
+- A、B 各完整 24 个普通请求，共两套配置、48 个响应，不能宣称尝试了 48 套方案。同机顺序 A 后 B，不能拿历史不同机器的耗时作为公平性能对照；一组因错误提前停止仍保存全部已完成输出，不自动重试或换 seed。
+- 两组共享 600 秒总推理预算，含加载；每请求最多 90 秒，进程退出沿用每组至多 7 秒清理。A 不完整、身份核验失败、预算不足或退出未确认时不启动 B。禁止与 Hy、Windows GUI 或其他重负载在同一资源槽并跑；记录线程数、CPU、依赖锁、包与 worker/实验入口哈希、每请求原输出/失败/耗时及退出证据。
+- **采用条件**：逐句盲化对照复核后，开发集严重错义总数下降，留出集严重错义不增加，两组均没有新增数值/否定/主体错误或结构损坏；不能用自然度收益抵消保义退化。还须在新的留出样本独立复核并检查普通/另述共用消费者，才提出生产改动。小样本通过不是整体产品质量过关，也不开放另述/风格门。
+- **停止条件**：结果完全相同、严重错义未减少、出现上述退化，或运行身份/完整性/资源限制不满足时，本轮不采用；记录原因，不继续围绕单句盲扫参数。后续实验须另写有依据的单因素假设。
+
+留出集覆盖中英两个方向的严格时间边界、包含边界人数、否定/条件、重复主体与方向；其 SHA-256 为 `7fb5abd79757e67142a3e3be78f4457ea474550eda317f9bdaea7a379b0a6752`。runner 与隔离 worker 均核对固定文件，未匹配的任意输入在模型调用前拒绝。
+
+```sh
+components="$PWD/artifacts/linux/desktop-data/typelay/components/current"
+python tests/shared/worker/argos_repetition_comparison.py \
+  --python "$components/runtime/venv/bin/python" --models "$components/models" \
+  --output artifacts/argos-repetition/result.json
+```
+
+`--validate-only --output artifacts/argos-repetition/inputs-check.json` 不读取安装、不导入真实模型、不启动 worker，输出 `not-run` 并返回 2。完整运行输出两组完整原始响应和零初始化的人工复核字段；`completed` 只证明采集完成，不给语义通过结论。输出禁止覆盖。普通另述原入口仍保留原 32 请求，不默认运行本实验；CI 尚未接线。 无模型合同在共享 worker 套件运行；真实自有进程的成功、错误、超时和退出回归位于 `tests/linux/test_argos_repetition_process.py`，由 Linux 构建检查显式执行，不在 Windows 共享发现中运行 Linux 进程组操作。该回归使用受控响应，不是模型采集。
+
+执行渠道优先复用正式 CI 安装后的 `components/current` 中 Argos 双向模型与同代 venv，下节已有 runner 负责库存与进程校验。现有 `--fixed-model-diagnostics` 包含普通与另述，不是上述普通 A/B 入口；不能把该命令当作本轮已接线。当前工作流的 `--cache-only` 只作用于 Hy 缓存准备，Argos 安装步骤仍可能下载官方包；没有可验证的现成安装时，应先明确安装与资源预算，而不是称为“零下载实验”。运行前须先完成该入口的无模型行为回归，再由集成负责人安排独占模型资源槽。
+
 ## Argos 另述真实质量采集
 
 `tests/shared/worker/alternative_quality.py` 属于共享 worker 的人工质量采集，当前只在 Linux 执行；它不在 shared-check 或 CI 自动运行。仅复用正式安装器成功得到的同一代合法 schema1/2 或 schema3 Argos 双向模型和 venv，不下载依赖或权重、不改 installed.json、不手造 Ready，也不接受替代来源。固定输入 `alternative_quality_inputs.json` 的 SHA-256 为 `87452b28c414bc964afbd84542480dd46a65c0b4e15c42ad36422270413bcbe5`；文件只保留 schema 与 samples，16句、方向、顺序和语义锚点保持固定。生产 op 不暴露原始双候选，因此只启动一次生产 worker，完整校验后各方向初始化一次；schema1/2 hello 核对双向方向，并精确核对可选的已验证包身份；schema3 必须核对精确包身份；hello 不推理，每句原普通翻译后请求一次另述，最多32次翻译请求。无重试、重启、改题或挑选。每请求默认90秒、采集总计600秒，退出另有最多7秒的自有进程组清理，清理期间延后处理 Ctrl-C/TERM；失败仍保存已完成结果、失败阶段和进程退出码，未确认退出不算完成。正式 CI 的现有 `Install and verify actual local translation components` 步骤成功后可手动复用以下路径；工作流的显式采集见本页“Linux 模型包生命周期中的显式质量采集”：

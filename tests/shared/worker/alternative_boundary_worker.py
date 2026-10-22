@@ -1,7 +1,8 @@
 """Explicit frozen-fixture observer, never a shipped or general-purpose worker.
 
-Delegates inference and selection to the production worker unchanged. Only this
-entry point instruments the external CTranslate2 API and adds diagnostic frames.
+Delegates inference and selection to the production worker. The default observer
+is read-only; explicit ordinary comparison alters only repetition_penalty.
+This test entry point is never shipped.
 """
 
 from __future__ import annotations
@@ -29,8 +30,9 @@ def frozen_samples():
 
 
 class BoundaryObserver:
-    def __init__(self, samples):
+    def __init__(self, samples, ordinary_repetition=None):
         self.samples = samples
+        self.ordinary_repetition = ordinary_repetition
         self.index = 0
         self.pending = None
         self.previous = None
@@ -39,15 +41,22 @@ class BoundaryObserver:
 
     def accept(self, request):
         # Reject non-fixture content before it reaches a tokenizer or model.
-        if self.pending is not None or self.index > 32:
+        maximum = len(self.samples) * (1 if self.ordinary_repetition is not None else 2)
+        if self.pending is not None or self.index > maximum:
             raise ValueError("fixture-sequence")
         expected = {"id": self.index + 1, "op": "hello"}
         if self.index:
-            sample = self.samples[(self.index - 1) // 2]
+            sample = self.samples[
+                self.index - 1 if self.ordinary_repetition is not None else (self.index - 1) // 2
+            ]
             source, target = sample["direction"].split("_")
             expected.update(text=sample["text"], source=source, target=target)
-            expected["op"] = "translate" if self.index % 2 else "translate-alternative"
-            if not self.index % 2:
+            expected["op"] = (
+                "translate"
+                if self.ordinary_repetition is not None or self.index % 2
+                else "translate-alternative"
+            )
+            if self.ordinary_repetition is None and not self.index % 2:
                 expected["previousCandidate"] = self.previous
         if request != expected:
             raise ValueError("fixed-fixture-only")
@@ -95,12 +104,25 @@ class BoundaryObserver:
                         ).hexdigest(),
                     }
                 )
+                if observer.ordinary_repetition is not None:
+                    observer.packages[-1]["translatorOptions"] = dict(kwargs)
                 self.model = original(directory, *args, **kwargs)
 
             def translate_batch(self, source, **kwargs):
                 if observer.pending is None or observer.pending["op"] == "hello":
                     raise ValueError("fixture-inference-only")
-                # Copy before calling the external API; do not modify options or results.
+                # Only the explicit ordinary experiment may change one fixed option.
+                if observer.ordinary_repetition is not None:
+                    expected = dict(
+                        beam_size=2,
+                        max_input_length=0,
+                        max_decoding_length=512,
+                        repetition_penalty=1.05,
+                    )
+                    if kwargs != expected:
+                        raise ValueError("ordinary-baseline-options-changed")
+                    kwargs = {**kwargs, "repetition_penalty": observer.ordinary_repetition}
+                # Capture the exact effective API options and unchanged results.
                 call = {
                     "sourcePieces": [list(pieces) for pieces in source],
                     "options": dict(kwargs),
@@ -129,8 +151,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--fixed-fixture", action="store_true", required=True)
     parser.add_argument("--models", type=Path, required=True)
+    parser.add_argument("--ordinary-repetition", type=float, choices=(1.05, 1.0))
     args = parser.parse_args()
-    observer = BoundaryObserver(frozen_samples())
+    samples = frozen_samples()
+    if args.ordinary_repetition is not None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from argos_repetition_comparison import holdout_samples
+
+        samples += holdout_samples()
+    observer = BoundaryObserver(samples, args.ordinary_repetition)
     sys.path.insert(0, str(WORKER.parent))
     import ctranslate2
     import run_worker
