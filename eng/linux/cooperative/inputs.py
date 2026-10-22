@@ -105,10 +105,20 @@ QT_BUILD_INPUTS = (
 
 
 FCITX_TEST_INPUTS = (
+    "src/linux/native/CMakeLists.txt",
+    *(
+        str(path.relative_to(ROOT))
+        for path in sorted((ROOT / "src/linux/native/gtk3").glob("*"))
+        if path.is_file()
+    ),
     "tests/linux/fcitx_cooperative/run.py",
     "tests/linux/fcitx_cooperative/fixture.c",
     "tests/linux/native_e2e.py",
     "tests/linux/fixtures/gtk4_fixture.c",
+    "tests/linux/fixtures/gtk_fixture.c",
+    "tests/linux/fixtures/gtk_glossary.inc",
+    "tests/linux/fixtures/gtk_input_notifications.inc",
+    "tests/linux/fixtures/gtk_direct_epoch.inc",
     "tests/linux/fixtures/gtk_reentry.inc",
     "tests/linux/fixtures/gtk_motion.inc",
 )

@@ -53,8 +53,10 @@ internal sealed class ShellTrayObservation
             string className = current.ClassName, automationId = current.AutomationId;
             string nameClass = current.Name switch
             {
+                "" => "empty",
                 "TypeLay" => "product-exact",
                 string name when name.StartsWith("TypeLay · ", StringComparison.Ordinal) => "product-prefix",
+                string name when name.Contains("TypeLay", StringComparison.Ordinal) => "product-contained",
                 "Show hidden icons" or "显示隐藏的图标" => "known-overflow",
                 _ => "other"
             };

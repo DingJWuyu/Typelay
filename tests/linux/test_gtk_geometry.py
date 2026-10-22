@@ -19,7 +19,11 @@ from gtk_session_reentry import (  # noqa: E402
     validated_geometry,
 )
 from hy_package_e2e import package_scroll_value, rectangle_contains  # noqa: E402
-from native_e2e import glossary_hover_current, glossary_painted_geometry  # noqa: E402
+from native_e2e import (  # noqa: E402
+    glossary_hover_current,
+    glossary_interaction_loss,
+    glossary_painted_geometry,
+)
 
 
 class GlossaryPaintGeometryTests(unittest.TestCase):
@@ -117,6 +121,49 @@ class GlossaryPaintGeometryTests(unittest.TestCase):
             self.assertTrue(glossary_painted_geometry(c, 120))
             self.assertFalse(glossary_hover_current(c, 120, before, (976, 432), 108))
         self.assertFalse(glossary_hover_current(self.control(), 107, before, (976, 432), 108))
+
+
+class GlossaryInteractionLossTests(unittest.TestCase):
+    def test_initial_layout_and_stale_absence_are_not_loss(self):
+        self.assertIsNone(glossary_interaction_loss(None, None, {"visible": False}, 120, 100))
+        self.assertIsNone(
+            glossary_interaction_loss({"instance": 1}, None, {"visible": True}, 99, 100)
+        )
+        self.assertIsNone(
+            glossary_interaction_loss(
+                {"instance": 1}, {"instance": 1, "visible": True}, {"visible": True}, 120, 100
+            )
+        )
+
+    def test_refused_renewal_stops_even_with_old_visible_snapshot(self):
+        control = {"instance": 1, "visible": True}
+        self.assertEqual(
+            glossary_interaction_loss(control, control, {"visible": False}, 99, 100),
+            "renewal refused",
+        )
+
+    def test_fresh_disappearance_or_replacement_stops_old_interaction(self):
+        before = {
+            "instance": 1,
+            "surfaceGeometry": {"surfaceInstance": 2},
+            "paintObservation": {"mapGeneration": 3},
+        }
+        for current, reason in (
+            (None, "observed control disappeared"),
+            ({"instance": 4, "visible": True}, "control instance replaced"),
+            (
+                {"instance": 1, "visible": True, "surfaceGeometry": {"surfaceInstance": 5}},
+                "surfaceInstance replaced",
+            ),
+            (
+                {**before, "visible": True, "paintObservation": {"mapGeneration": 4}},
+                "mapGeneration replaced",
+            ),
+        ):
+            with self.subTest(reason=reason):
+                self.assertEqual(
+                    glossary_interaction_loss(before, current, {"visible": True}, 120, 100), reason
+                )
 
 
 class GtkPreviewObservationTests(unittest.TestCase):

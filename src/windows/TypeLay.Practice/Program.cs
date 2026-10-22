@@ -63,6 +63,8 @@ internal static partial class Program
     private static int _editorTraceCount;
     private static readonly List<object> AcceptanceRejectionTraces = [];
     private static int _acceptanceRejectionTraceCount;
+    private static object? _installTrace;
+    private static int _installTraceCount;
     private enum EditorEvent
     {
         Fenced, FenceRejected, App, Root, FocusGained, FocusLost, Left, Invalid,
@@ -400,7 +402,7 @@ internal static partial class Program
                 // The original reader has returned a complete, parsed frame.
                 // Only numeric timing crosses this existing bounded queue;
                 // EditorTraces and all trace projection remain GUI-owned.
-                long? readCompletedAtMs = message.Kind == "edit-fence" && !string.IsNullOrWhiteSpace(EditorTracePath)
+                long? readCompletedAtMs = message.Kind is "edit-fence" or "install" && !string.IsNullOrWhiteSpace(EditorTracePath)
                     ? WindowsInterruptClock.NowMs : null;
                 if (Interlocked.Increment(ref _pendingCount) > 16)
                     throw new InvalidDataException("practice-control-overflow");
@@ -563,7 +565,8 @@ internal static partial class Program
                             ApplyExitControl(message);
                             break;
                         case "install" when _automatic:
-                            InstallPlan(message.Acceptance ?? throw new InvalidDataException("practice-install-missing"));
+                            InstallPlan(message.Acceptance ?? throw new InvalidDataException("practice-install-missing"),
+                                pending.ReadCompletedAtMs, guiDequeuedAtMs);
                             break;
                         case "revoke-plan" when _automatic:
                             RequirePlan(message.Acceptance);
@@ -1046,7 +1049,7 @@ internal static partial class Program
 
     private static void FlushEditorTrace()
     {
-        if (EditorTraces.Count == 0 && AcceptanceRejectionTraces.Count == 0)
+        if (EditorTraces.Count == 0 && AcceptanceRejectionTraces.Count == 0 && _installTrace is null)
             return;
         try
         {
@@ -1075,6 +1078,8 @@ internal static partial class Program
                 }));
             foreach (var entry in AcceptanceRejectionTraces)
                 lines.AppendLine(JsonSerializer.Serialize(entry));
+            if (_installTrace is not null)
+                lines.AppendLine(JsonSerializer.Serialize(_installTrace));
             File.AppendAllText(EditorTracePath + ".practice.jsonl", lines.ToString());
         }
         catch (Exception error) when (error is not OutOfMemoryException) { }
@@ -1082,39 +1087,69 @@ internal static partial class Program
         {
             EditorTraces.Clear();
             AcceptanceRejectionTraces.Clear();
+            _installTrace = null;
         }
     }
 
-    private static void InstallPlan(OwnedAcceptanceControl control)
+    private static void InstallPlan(OwnedAcceptanceControl control, long? readCompletedAtMs, long? guiDequeuedAtMs)
     {
-        if (_editorFence is not null || _witnessFailed || _witness is null || _witness.Poisoned || _plan is not null
-            || control.PlanSequence <= _lastPlanSequence || control.PlanId == Guid.Empty
-            || control.PlanBytes != OwnedPracticeAcceptanceProtocol.BodyBytes
-            || control.ResultBytes != OwnedPracticeAcceptanceProtocol.BodyBytes)
-            throw new InvalidDataException("practice-install-order");
-        using var mapping = OwnedMapping.Open(control.PlanHandle, control.PlanBytes, false);
-        var plan = OwnedPracticeAcceptanceProtocol.ReadPlan(mapping); // Copy before granting anything.
-        _resultMapping = OwnedMapping.Open(control.ResultHandle, control.ResultBytes, true);
-        if (plan.Connection != _connection || plan.Run != _run || plan.PlanSequence != control.PlanSequence
-            || plan.Permit.Plan.Id != control.PlanId || plan.Descriptor != Descriptor()
-            || _returnedSeal is { } returned && (plan.Descriptor != returned.Descriptor
-                || plan.CommandGeneration == returned.Control.ReturningToken.CommandGeneration
-                || plan.SessionRevision <= returned.Control.ReturningToken.Revision)
-            || !SourceFocused() || plan.InstallWitnessSequence > _witness.Sequence
-            || !WindowsTarget.TryDecode(plan.Permit.Plan.Expected.Target, out var target)
-            || target.ProcessId != Environment.ProcessId || target.ProcessStartUtcTicks != ProcessStartUtcTicks
-            || target.RootHwnd != (long)_window || target.ControlHwnd != (long)_edit!.Handle
-            || target.Provider != "win32-edit-transaction-v2" || target.Lifetime == Guid.Empty
-            || WriteSafety.Validate(plan.Permit.Plan, plan.Permit.Plan.Expected, WindowsInterruptClock.NowMs) != Denial.None)
-            throw new InvalidDataException("practice-install-identity");
-        ClearPrefixProof();
-        _plan = plan;
-        _lastPlanSequence = plan.PlanSequence;
-        _installWitnessFloor = _witness.Sequence;
-        _transaction = CreateTransaction(plan);
-        _planReported = false;
-        _planActive = true;
-        Reply("installed", PlanControl());
+        bool trace = readCompletedAtMs is not null && _installTraceCount < 16;
+        long? appliedAtMs = null, ackWrittenAtMs = null;
+        try
+        {
+            if (_editorFence is not null || _witnessFailed || _witness is null || _witness.Poisoned || _plan is not null
+                || control.PlanSequence <= _lastPlanSequence || control.PlanId == Guid.Empty
+                || control.PlanBytes != OwnedPracticeAcceptanceProtocol.BodyBytes
+                || control.ResultBytes != OwnedPracticeAcceptanceProtocol.BodyBytes)
+                throw new InvalidDataException("practice-install-order");
+            using var mapping = OwnedMapping.Open(control.PlanHandle, control.PlanBytes, false);
+            var plan = OwnedPracticeAcceptanceProtocol.ReadPlan(mapping); // Copy before granting anything.
+            _resultMapping = OwnedMapping.Open(control.ResultHandle, control.ResultBytes, true);
+            if (plan.Connection != _connection || plan.Run != _run || plan.PlanSequence != control.PlanSequence
+                || plan.Permit.Plan.Id != control.PlanId || plan.Descriptor != Descriptor()
+                || _returnedSeal is { } returned && (plan.Descriptor != returned.Descriptor
+                    || plan.CommandGeneration == returned.Control.ReturningToken.CommandGeneration
+                    || plan.SessionRevision <= returned.Control.ReturningToken.Revision)
+                || !SourceFocused() || plan.InstallWitnessSequence > _witness.Sequence
+                || !WindowsTarget.TryDecode(plan.Permit.Plan.Expected.Target, out var target)
+                || target.ProcessId != Environment.ProcessId || target.ProcessStartUtcTicks != ProcessStartUtcTicks
+                || target.RootHwnd != (long)_window || target.ControlHwnd != (long)_edit!.Handle
+                || target.Provider != "win32-edit-transaction-v2" || target.Lifetime == Guid.Empty
+                || WriteSafety.Validate(plan.Permit.Plan, plan.Permit.Plan.Expected, WindowsInterruptClock.NowMs) != Denial.None)
+                throw new InvalidDataException("practice-install-identity");
+            ClearPrefixProof();
+            _plan = plan;
+            _lastPlanSequence = plan.PlanSequence;
+            _installWitnessFloor = _witness.Sequence;
+            _transaction = CreateTransaction(plan);
+            _planReported = false;
+            _planActive = true;
+            if (trace)
+                appliedAtMs = WindowsInterruptClock.NowMs;
+            Reply("installed", PlanControl());
+            if (trace)
+                ackWrittenAtMs = WindowsInterruptClock.NowMs;
+        }
+        finally
+        {
+            // Numeric observations only until the existing outer-loop flush,
+            // after installation/ACK or refusal. Never alter the original lease.
+            if (trace)
+                _installTrace = new
+                {
+                    operation = "owned-install-source",
+                    order = ++_installTraceCount,
+                    connection = _connection,
+                    run = _run,
+                    sequence = _sequence,
+                    planSequence = control.PlanSequence,
+                    readCompletedAtMs,
+                    guiDequeuedAtMs,
+                    appliedAtMs,
+                    ackWrittenAtMs,
+                    finishedAtMs = WindowsInterruptClock.NowMs
+                };
+        }
     }
 
     private static void RequirePlan(OwnedAcceptanceControl? control)

@@ -60,8 +60,9 @@ public:
     QJsonArray providerEvents;
     quint64 providerSequence = 0;
     quint64 commandSequence = 0;
+    bool plainPendingSwitch = false;
     bool firstPreedit = false, secondPreedit = false, plainPreedit = false, editorPreedit = false;
-    QString shortcutState, commandQueuedAction, commandDispatchedAction, controlAction;
+    QString shortcutState, commandQueuedAction, commandDispatchedAction, controlAction, plainHandoffAction;
     quint64 shortcutId = 0, shortcutActionCount = 0, shortcutActionId = 0, focusTransitions = 0;
     void applyCommandAction(QString &action) {
         const auto operation = action;
@@ -76,6 +77,8 @@ public:
             else if (operation == "focus-second-sensitive") first->setAccessibleName(QStringLiteral("Password"));
         }
     }
+signals:
+    void plainHandoff(const QString &action);
 public slots:
     void providerChanged(QObject *field, uint causes) {
         if (!field) return;
@@ -88,6 +91,13 @@ public slots:
         providerEvents.append(QJsonObject{{"sequence", qint64(++providerSequence)},
             {"atMs", observedAtMs()}, {"role", name}, {"causes", qint64(causes)}});
         while (providerEvents.size() > 64) providerEvents.removeFirst();
+        // The provider emits Focus from tlBind between its detach capture and
+        // finish. Mutate through ordinary widget API on that real callback stack.
+        if (field == second && causes == 2u && !plainHandoffAction.isEmpty()) {
+            const auto action = std::exchange(plainHandoffAction, QString());
+            counts.insert("plainHandoffs", counts.value("plainHandoffs").toInt() + 1);
+            emit plainHandoff(action);
+        }
     }
     void shortcutChanged(const QString &state, quint64 id) {
         shortcutState = state;
@@ -189,6 +199,12 @@ public:
         }
         if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease) return false;
         const auto *key = static_cast<QKeyEvent *>(event);
+        if (plainPendingSwitch && object == plain && event->type() == QEvent::KeyPress
+            && qApp->property("tlqtPendingForward").toInt() > 0) {
+            plainPendingSwitch = false;
+            second->setFocus(Qt::OtherFocusReason);
+            counts.insert("plainPendingSwitches", counts.value("plainPendingSwitches").toInt() + 1);
+        }
         if (object == first && key->key() == Qt::Key_Control && event->type() == QEvent::KeyPress) {
             const auto action = std::exchange(controlAction, QString());
             if (action == "rewrite") first->setText(QStringLiteral("Application changed this field"));
@@ -278,7 +294,7 @@ int main(int argc, char **argv) {
     QObject::connect(first, &QLineEdit::textEdited, [&] { ++firstEdits; });
     QObject::connect(second, &QLineEdit::textEdited, [&] { ++secondEdits; });
     int plainChanges = 0, plainContentsChanges = 0, plainDocumentGeneration = 0;
-    QJsonObject plainLastChange;
+    QJsonObject plainLastChange, plainChangeContext;
     QPointer<QTextDocument> observedDocument;
     QList<QMetaObject::Connection> plainConnections;
     auto observeDocument = [&] {
@@ -294,7 +310,21 @@ int main(int argc, char **argv) {
             }));
     };
     observeDocument();
-    QObject::connect(plain, &QPlainTextEdit::textChanged, [&] { ++plainChanges; observeDocument(); });
+    QObject::connect(plain, &QPlainTextEdit::textChanged, [&] {
+        ++plainChanges;
+        observeDocument();
+        // Same synchronous observation as firstChangeContext, for the actual
+        // multiline body notification. Never query or reset the current IM.
+        plainChangeContext = {{"plainChanges", plainChanges}, {"secondFocused", second->hasFocus()},
+            {"secondText", second->text()}, {"secondPreedit", observer.secondPreedit},
+            {"secondCursor", second->cursorPosition()}, {"secondSelectionStart", second->selectionStart()},
+            {"secondSelectionLength", second->selectionLength()},
+            {"focusTransitions", qint64(observer.focusTransitions)},
+            {"plainFocusIn", observer.counts.value("plainFocusIn")},
+            {"plainFocusOut", observer.counts.value("plainFocusOut")},
+            {"tlqtCommits", QJsonValue::fromVariant(qApp->property("tlqtCommits"))},
+            {"tlqtPreedits", QJsonValue::fromVariant(qApp->property("tlqtPreedits"))}};
+    });
     QString selectionAction, textAction, plainSelectionAction, plainTextAction;
     auto replaceDocument = [&](const QString &text) {
         QPointer<QTextDocument> previous = plain->document();
@@ -309,6 +339,10 @@ int main(int argc, char **argv) {
         observeDocument();
         if (previous) previous->deleteLater();
     };
+    QObject::connect(&observer, &KeyObserver::plainHandoff, [&](const QString &action) {
+        if (action == "document") replaceDocument(plain->toPlainText());
+        else if (action == "text") plain->setPlainText(QStringLiteral("Handoff source must survive"));
+    });
     auto applicationChange = [&](QString &action) {
         const auto pending = action;
         action.clear();
@@ -455,7 +489,7 @@ int main(int argc, char **argv) {
             {"fullscreen", window.isFullScreen()}, {"width", window.width()}, {"height", window.height()},
             {"scale", window.devicePixelRatioF()}, {"keys", observer.counts},
             {"commandSequence", qint64(observer.commandSequence)},
-            {"focusTransitions", qint64(observer.focusTransitions)}, {"firstChangeContext", firstChangeContext},
+            {"focusTransitions", qint64(observer.focusTransitions)}, {"firstChangeContext", firstChangeContext}, {"plainChangeContext", plainChangeContext},
             {"shortcutState", observer.shortcutState}, {"shortcutId", qint64(observer.shortcutId)},
             {"shortcutActionCount", qint64(observer.shortcutActionCount)},
             {"shortcutActionId", qint64(observer.shortcutActionId)}, {"shortcutHint", QToolTip::text()},
@@ -496,7 +530,7 @@ int main(int argc, char **argv) {
             {"editorGeometry", editor ? rectangle(editor) : QJsonObject()}};
         // Read the actual provider's optional research counters without issuing
         // another IM RPC that could perturb the consumer's short-lived proof.
-        for (const auto *name : {"tlqtPendingDbus", "tlqtPendingForward", "tlqtOutputDepth", "tlqtEngine", "tlqtRetired", "tlqtKeyReplies",
+        for (const auto *name : {"tlqtPendingDbus", "tlqtPendingForward", "tlqtOutputDepth", "tlqtEngine", "tlqtRetired", "tlqtKeyReplies", "tlqtCommits", "tlqtPreedits",
                                  "tlqtEditorProgrammaticSets", "tlqtEditorOwnedRenderSkips", "tlqtDelayedCompletion"}) {
             const auto value = qApp->property(name);
             state.insert(QLatin1String(name), value.isValid() ? QJsonValue::fromVariant(value) : QJsonValue());
@@ -673,6 +707,8 @@ int main(int argc, char **argv) {
             else if (op == "on-text") textAction = command.value("action").toString();
             else if (op == "on-command-queued") observer.commandQueuedAction = command.value("action").toString();
             else if (op == "on-command-dispatched") observer.commandDispatchedAction = command.value("action").toString();
+            else if (op == "plain-handoff") observer.plainHandoffAction = command.value("action").toString();
+            else if (op == "plain-pending-switch") observer.plainPendingSwitch = true;
             else if (op == "on-control") observer.controlAction = command.value("action").toString();
             else if (op == "editor-provider") {
                 auto *editor = window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"));

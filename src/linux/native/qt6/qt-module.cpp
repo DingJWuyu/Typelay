@@ -793,7 +793,7 @@ private:
     bool clearForWrite(Target *target, bool direct) const {
         if (clear(target->state)) return true;
         const auto &state = target->state;
-        return direct && target->line() && state.flags == (TlQtKnown | TlQtDetached)
+        return direct && standardField(target->field) && state.flags == (TlQtKnown | TlQtDetached)
             && state.serverSerial == state.appliedSerial
             && state.contextGeneration != 0 && state.fieldGeneration != 0;
     }
@@ -1300,10 +1300,10 @@ private:
         if (until <= current || until - current > (direct ? 250 : 100))
             return reject("write-deadline", "StaleObservation");
         const bool background = target->state.flags == (TlQtKnown | TlQtDetached);
-        const bool directLine = direct && target->line();
+        const bool directSource = direct && (target->line() || background);
         const qint64 approvedAge = now() - integer(approved, "observedAtMs");
         const bool authorized = direct
-            ? sourceAuthorityMatches(target, basis, !directLine) && authorityMatches(target, approved, !background)
+            ? sourceAuthorityMatches(target, basis, !directSource) && authorityMatches(target, approved, !background)
                 && integer(approved, "focusRevision") == qint64(target->focus)
                 && approvedAge >= 0 && approvedAge <= 150
             : ordered ? orderedValid(ordered->ticket) : authorityMatches(target, basis, true);

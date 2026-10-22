@@ -2478,11 +2478,21 @@ class InputFeedbackTests(unittest.TestCase):
 
         for backend, aria, capable, multiline, document, expected in (
             ("gtk3", "GtkEntry", True, False, 0, True),
-            ("gtk3", "GtkTextView", True, True, 1, False),
+            ("gtk3", "GtkTextView", True, True, 0, True),
+            ("gtk3", "GtkTextView", False, True, 0, False),
+            ("gtk3", "GtkTextView", True, False, 0, False),
+            ("gtk3", "GtkTextView", True, 1, 0, False),
+            ("gtk3", "GtkEntry", True, True, 0, False),
+            ("gtk3", "GtkSourceView", True, True, 0, False),
             ("gtk3", "GtkEntry", False, False, 0, False),
             ("gtk4", "GtkEntry", True, False, 0, True),
             ("gtk4", "GtkEntry", False, False, 0, False),
-            ("gtk4", "GtkTextView", True, True, 1, False),
+            ("gtk4", "GtkTextView", True, True, 0, True),
+            ("gtk4", "GtkTextView", False, True, 0, False),
+            ("gtk4", "GtkTextView", True, False, 0, False),
+            ("gtk4", "GtkTextView", True, 1, 0, False),
+            ("gtk4", "GtkEntry", True, True, 0, False),
+            ("gtk4", "GtkSourceView", True, True, 0, False),
             ("qt6", "GtkEntry", True, False, 0, False),
             ("qt6", "QLineEdit", True, False, 0, True),
             ("qt6", "QLineEdit", False, False, 0, False),
@@ -2499,16 +2509,23 @@ class InputFeedbackTests(unittest.TestCase):
                 self.assertEqual(target is not None, expected)
 
         for backend in ("gtk3", "gtk4"):
-            for context in (None, False, True, 0, -1):
-                with self.subTest(backend=backend, context=context):
-                    self.assertIsNone(
-                        asyncio.run(exercise(backend, "GtkEntry", True, context=context))
-                    )
-            for metadata in ({"password": True}, {"readOnly": True}, {"enabled": False}):
-                with self.subTest(backend=backend, metadata=metadata):
-                    self.assertIsNone(
-                        asyncio.run(exercise(backend, "GtkEntry", True, metadata=metadata))
-                    )
+            for aria, multiline in (("GtkEntry", False), ("GtkTextView", True)):
+                for context in (None, False, True, 0, -1):
+                    with self.subTest(backend=backend, aria=aria, context=context):
+                        self.assertIsNone(
+                            asyncio.run(
+                                exercise(backend, aria, True, multiline=multiline, context=context)
+                            )
+                        )
+                for metadata in ({"password": True}, {"readOnly": True}, {"enabled": False}):
+                    with self.subTest(backend=backend, aria=aria, metadata=metadata):
+                        self.assertIsNone(
+                            asyncio.run(
+                                exercise(
+                                    backend, aria, True, multiline=multiline, metadata=metadata
+                                )
+                            )
+                        )
 
     async def native_glossary_scenario(
         self,
@@ -2526,7 +2543,9 @@ class InputFeedbackTests(unittest.TestCase):
         def description():
             value = original(self)
             value["metadata"]["aria"] = (
-                ("QPlainTextEdit" if multiline else "QLineEdit") if backend == "qt6" else "GtkEntry"
+                ("QPlainTextEdit" if multiline else "QLineEdit")
+                if backend == "qt6"
+                else ("GtkTextView" if multiline else "GtkEntry")
             )
             value["metadata"]["documentGeneration"] = 1 if multiline else 0
             value["metadata"]["multiline"] = multiline
@@ -2706,9 +2725,9 @@ class InputFeedbackTests(unittest.TestCase):
         asyncio.run(exercise())
 
     def test_gtk_source_glossary_opens_without_entering_translation_editor(self):
-        async def exercise(backend):
+        async def exercise(backend, multiline, state):
             overlay, jobs, entry, request, emit = await self.native_glossary_scenario(
-                backend=backend
+                backend=backend, multiline=multiline, state=state
             )
             window = self.input.window_epoch
             self.native_glossary_transfer(entry, "Opening", 1, 2)
@@ -2721,12 +2740,14 @@ class InputFeedbackTests(unittest.TestCase):
             await self.settle_overlay(jobs)
             self.assertEqual(self.input.window_epoch, window)
             self.assertEqual(self.input.focus(), "Overlay")
-            self.assertEqual(overlay.value["state"], "ValidTranslation")
+            self.assertEqual(overlay.value["state"], state)
             self.assertNotIn("beginEdit", [operation for operation, _ in self.host.requests])
 
         for backend in ("gtk3", "gtk4"):
-            with self.subTest(backend=backend):
-                asyncio.run(exercise(backend))
+            for multiline in (False, True):
+                for state in ("ValidTranslation", "EditedTranslationPending"):
+                    with self.subTest(backend=backend, multiline=multiline, state=state):
+                        asyncio.run(exercise(backend, multiline, state))
 
     def test_gtk_glossary_begin_survives_its_own_acceptance_revocation_render(self):
         async def exercise(backend):
@@ -3093,6 +3114,16 @@ class InputFeedbackTests(unittest.TestCase):
 
     def test_gtk4_glossary_return_needs_fresh_original_source_clear_read_only_capture(self):
         self.native_glossary_return_capture("gtk4")
+
+    def test_gtk3_multiline_glossary_return_needs_fresh_original_source_clear_read_only_capture(
+        self,
+    ):
+        self.native_glossary_return_capture("gtk3", multiline=True)
+
+    def test_gtk4_multiline_glossary_return_needs_fresh_original_source_clear_read_only_capture(
+        self,
+    ):
+        self.native_glossary_return_capture("gtk4", multiline=True)
 
     def test_qt6_glossary_return_needs_fresh_original_source_clear_read_only_capture(self):
         self.native_glossary_return_capture("qt6")

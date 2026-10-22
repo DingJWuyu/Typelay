@@ -1311,15 +1311,20 @@ class Input:
     def gtk_source_glossary(peer, native):
         metadata, authority = native.get("metadata", {}), native.get("authority", {})
         context = authority.get("contextStamp", {}).get("context")
+        field = (
+            metadata.get("aria") == "GtkEntry"
+            and metadata.get("multiline") is False
+            or metadata.get("aria") == "GtkTextView"
+            and metadata.get("multiline") is True
+        )
         return bool(
             peer.backend in ("gtk3", "gtk4")
             and getattr(native, "route", None) is None
             and native.get("sourceGlossarySupported") is True
-            and metadata.get("aria") == "GtkEntry"
+            and field
             and metadata.get("password") is False
             and metadata.get("readOnly") is False
             and metadata.get("enabled") is True
-            and metadata.get("multiline") is False
             and authority.get("target") == native.get("target")
             and type(context) is int
             and context > 0

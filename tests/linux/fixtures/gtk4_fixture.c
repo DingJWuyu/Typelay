@@ -9,7 +9,6 @@ static GtkWidget *report_window, *report_first, *report_second, *other_window, *
 static GtkWidget *protected_fields[2], *report_multiline, *excluded_views[3];
 static const char *report_path;
 static char *last_report;
-static guint glossary_command;
 typedef struct {
     guint insertions, deletions, focus_in, focus_out;
 } EntryEvidence;
@@ -622,36 +621,7 @@ static GtkWidget *find_named_widget(GtkWidget *widget, const char *name) {
     }
     return NULL;
 }
-/* Host-app operations on real GTK objects; no TypeLay/provider state injection. */
-static void glossary_host_command(void) {
-    const char *path = g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND");
-    char *body = NULL;
-    if (!path || !g_file_get_contents(path, &body, NULL, NULL)) return;
-    guint serial = 0;
-    char action[32] = {0};
-    if (sscanf(body, "%u %31s", &serial, action) == 2 && serial > glossary_command) {
-        if (g_str_equal(action, "reset-inactive-term")) {
-            GtkWidget *term = find_named_widget(report_window, "typelay-glossary-source");
-            GtkWidget *client = term && GTK_IS_ENTRY(term) ? entry_client(term) : NULL;
-            if (!client || gtk_widget_has_focus(client)) g_error("Expected the inactive first glossary term");
-            GtkIMContext *context = g_object_get_data(G_OBJECT(client), TL_FCITX_CONTEXT_V1);
-            if (context && GTK_IS_IM_CONTEXT(context)) gtk_im_context_reset(context);
-            else g_error("No real inactive term GTK IM context to reset");
-        } else if (g_str_equal(action, "change-source")) {
-            char *changed = g_strconcat(gtk_editable_get_text(GTK_EDITABLE(report_first)), " changed", NULL);
-            gtk_editable_set_text(GTK_EDITABLE(report_first), changed);
-            g_free(changed);
-        } else if (g_str_equal(action, "replace-buffer")) {
-            GtkEntryBuffer *buffer = gtk_entry_buffer_new(gtk_editable_get_text(GTK_EDITABLE(report_first)), -1);
-            gtk_entry_set_buffer(GTK_ENTRY(report_first), buffer);
-            g_signal_connect_after(buffer, "inserted-text", G_CALLBACK(entry_inserted), &first_evidence);
-            g_signal_connect_after(buffer, "deleted-text", G_CALLBACK(entry_deleted), &first_evidence);
-            g_object_unref(buffer);
-        } else g_error("Unknown glossary fixture command");
-        glossary_command = serial;
-    }
-    g_free(body);
-}
+#include "gtk_glossary.inc"
 static gboolean report_state(gpointer unused) {
     (void)unused;
     glossary_host_command();
@@ -664,8 +634,7 @@ static gboolean report_state(gpointer unused) {
     JsonBuilder *builder = json_builder_new();
     json_builder_begin_object(builder);
     motion_report(builder);
-    json_builder_set_member_name(builder, "glossaryCommand");
-    json_builder_add_int_value(builder, glossary_command);
+    glossary_report(builder);
     json_builder_set_member_name(builder, "observedAtMs");
     json_builder_add_int_value(builder, g_get_monotonic_time() / 1000);
     json_builder_set_member_name(builder, "first");

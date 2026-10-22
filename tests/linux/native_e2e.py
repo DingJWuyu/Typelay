@@ -80,6 +80,28 @@ def glossary_hover_current(control, observed_at, before, point, moved_at):
     )
 
 
+def glossary_interaction_loss(before, current, renewed, observed_at, started):
+    """Reject a lost, already-observed control, not initial layout or post-click close."""
+    if before is None:
+        return None
+    if renewed.get("visible") is False:
+        return "renewal refused"
+    if type(observed_at) is not int or observed_at < started:
+        return None
+    if not current or current.get("visible") is not True:
+        return "observed control disappeared"
+    if current.get("instance") != before.get("instance"):
+        return "control instance replaced"
+    for section, key in (
+        ("surfaceGeometry", "surfaceInstance"),
+        ("paintObservation", "mapGeneration"),
+    ):
+        expected = before.get(section, {}).get(key)
+        if expected is not None and current.get(section, {}).get(key) != expected:
+            return f"{key} replaced"
+    return None
+
+
 class Native:
     def __init__(self, connection, *, deadline=None):
         self.connection = connection
@@ -168,12 +190,12 @@ def plan(source, replacement, scope=None):
     }
 
 
-def gtk4_source_glossary(out, environment, deadline):
+def gtk_source_glossary(out, environment, deadline, toolkit):
     """Use Wayland production admission inside the caller's owned Xvfb/session."""
-    config = out / "gtk4-glossary-niri.kdl"
-    ready = out / "gtk4-glossary-environment.json"
+    config = out / f"{toolkit}-glossary-niri.kdl"
+    ready = out / f"{toolkit}-glossary-environment.json"
     ready.unlink(missing_ok=True)
-    (out / "gtk4-glossary-clicks.json").unlink(missing_ok=True)
+    (out / f"{toolkit}-glossary-clicks.json").unlink(missing_ok=True)
     command = [
         sys.executable,
         "-c",
@@ -189,17 +211,17 @@ def gtk4_source_glossary(out, environment, deadline):
     nested_env = environment | {"GDK_BACKEND": "wayland", "LIBGL_ALWAYS_SOFTWARE": "1"}
     nested_env.pop("WAYLAND_DISPLAY", None)
     nested_env.pop("NIRI_SOCKET", None)
-    report = out / "gtk4-glossary-startup.json"
+    report = out / f"{toolkit}-glossary-startup.json"
     evidence = {"status": "not-run", "cleanup": False, "real_model_quality": False}
     report.write_text(json.dumps(evidence, indent=2) + "\n")
-    with (out / "gtk4-glossary-niri.log").open("w") as log:
+    with (out / f"{toolkit}-glossary-niri.log").open("w") as log:
         compositor = subprocess.Popen(
             ["niri", "--config", str(config)], env=nested_env, stdout=log, stderr=subprocess.STDOUT
         )
         evidence["pid"] = compositor.pid
         try:
             while time.monotonic() < deadline:
-                assert compositor.poll() is None, "nested niri exited before GTK4 glossary"
+                assert compositor.poll() is None, "nested niri exited before GTK glossary"
                 try:
                     connected = nested_env | json.loads(ready.read_text())
                 except (FileNotFoundError, json.JSONDecodeError):
@@ -215,10 +237,10 @@ def gtk4_source_glossary(out, environment, deadline):
                     ipc=connected["NIRI_SOCKET"],
                 )
                 report.write_text(json.dumps(evidence, indent=2) + "\n")
-                result = _gtk4_source_glossary(out, connected, deadline)
+                result = _gtk_source_glossary(out, connected, deadline, toolkit)
                 evidence["status"] = "passed"
                 return result
-            raise AssertionError("GTK4 glossary: original session deadline during niri startup")
+            raise AssertionError("GTK glossary: original session deadline during niri startup")
         except BaseException as error:
             evidence.update(status="failed", error=f"{type(error).__name__}: {error}")
             raise
@@ -234,8 +256,8 @@ def gtk4_source_glossary(out, environment, deadline):
             report.write_text(json.dumps(evidence, indent=2) + "\n")
 
 
-def _gtk4_source_glossary(out, environment, deadline):
-    """Real GTK4/Fcitx consumer, controlled public views, never model-quality evidence.
+def _gtk_source_glossary(out, environment, deadline, toolkit):
+    """Real GTK/Fcitx consumer, controlled public views, never model-quality evidence.
 
     The caller owns the daemon, HOME and Xvfb and supplies its original absolute
     session deadline. All cases share this budget, including socket I/O.
@@ -244,7 +266,7 @@ def _gtk4_source_glossary(out, environment, deadline):
 
     def remaining():
         value = deadline - time.monotonic()
-        assert value > 0, "GTK4 source glossary exhausted the existing session budget"
+        assert value > 0, "GTK source glossary exhausted the existing session budget"
         return value
 
     def execute(*args):
@@ -261,7 +283,7 @@ def _gtk4_source_glossary(out, environment, deadline):
             if value:
                 return value
             time.sleep(min(0.025, remaining()))
-        raise AssertionError(f"GTK4 source glossary session deadline: {label}")
+        raise AssertionError(f"GTK source glossary session deadline: {label}")
 
     identity = environment.get("WAYLAND_DISPLAY", "") + "\n" + environment.get("NIRI_SOCKET", "")
     directory = (
@@ -271,33 +293,35 @@ def _gtk4_source_glossary(out, environment, deadline):
     )
     directory.mkdir(parents=True, mode=0o700)
     path = directory / "native.sock"
-    state_path = out / "gtk4-glossary-state.json"
-    command_path = out / "gtk4-glossary-command"
+    state_path = out / f"{toolkit}-glossary-state.json"
+    command_path = out / f"{toolkit}-glossary-command"
     for owned in (path, state_path, command_path):
         owned.unlink(missing_ok=True)
     environment = environment | {
-        "GTK_PATH": str(out / "lib/gtk-4.0"),
+        "GTK_PATH": str(out / ("lib/gtk-4.0" if toolkit == "gtk4" else "lib/gtk-3.0")),
         "TYPELAY_FIXTURE_STATE": str(state_path),
         "TYPELAY_FIXTURE_GLOSSARY_COMMAND": str(command_path),
         "TYPELAY_FIXTURE_COOPERATIVE": "1",
         "TYPELAY_FIXTURE_FULLSCREEN": "1",
     }
     environment.pop("TYPELAY_DESKTOP", None)
+    if toolkit == "gtk3":
+        environment["GTK3_MODULES"] = str(out / "gtk3-native-build/libtypelay-gtk3.so")
     results = []
     current_case = None
     capture_admission = None
     protocol_observations = []
-    (out / "gtk4-glossary-result.json").unlink(missing_ok=True)
+    (out / f"{toolkit}-glossary-result.json").unlink(missing_ok=True)
     with (
         socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server,
-        (out / "gtk4-glossary.log").open("w") as log,
+        (out / f"{toolkit}-glossary.log").open("w") as log,
     ):
         server.bind(str(path))
         path.chmod(0o600)
         server.listen(1)
         server.settimeout(min(5, remaining()))
         process = subprocess.Popen(
-            [str(out / "gtk4-fixture")], env=environment, stdout=log, stderr=subprocess.STDOUT
+            [str(out / f"{toolkit}-fixture")], env=environment, stdout=log, stderr=subprocess.STDOUT
         )
         try:
             connection, _ = server.accept()
@@ -306,10 +330,20 @@ def _gtk4_source_glossary(out, environment, deadline):
                 native = Native(connection, deadline=deadline)
                 mappings = Path(f"/proc/{process.pid}/maps").read_text()
                 for library in (
-                    out / "lib/libtypelay-gtk4.so",
-                    out / "lib/gtk-4.0/4.0.0/immodules/libim-fcitx5.so",
+                    out
+                    / (
+                        "lib/libtypelay-gtk4.so"
+                        if toolkit == "gtk4"
+                        else "gtk3-native-build/libtypelay-gtk3.so"
+                    ),
+                    out
+                    / (
+                        "lib/gtk-4.0/4.0.0/immodules/libim-fcitx5.so"
+                        if toolkit == "gtk4"
+                        else "lib/im-fcitx5.so"
+                    ),
                 ):
-                    assert str(library.resolve()) in mappings, f"actual GTK4 must load {library}"
+                    assert str(library.resolve()) in mappings, f"actual GTK must load {library}"
 
                 def call(operation, data=None):
                     connection.settimeout(min(2, remaining()))
@@ -355,7 +389,13 @@ def _gtk4_source_glossary(out, environment, deadline):
 
                 def state():
                     try:
-                        return json.loads(state_path.read_text())
+                        value = json.loads(state_path.read_text())
+                        if current_case and current_case["source"] == "textview":
+                            source = value.get("glossarySource", {})
+                            value["first"] = source.get("text", "")
+                            value["firstEntry"] = source
+                            value["imeClear"] = source.get("imeClear", False)
+                        return value
                     except (FileNotFoundError, json.JSONDecodeError):
                         return {}
 
@@ -400,9 +440,9 @@ def _gtk4_source_glossary(out, environment, deadline):
                     wait_for(lambda: state().get("glossaryCommand") == serial, action)
 
                 clicks = []
-                click_path = out / "gtk4-glossary-clicks.json"
+                click_path = out / f"{toolkit}-glossary-clicks.json"
 
-                def point(name, *, overlay_control=False):
+                def point_observe(name, *, overlay_control=False, acquired=None):
                     started = time.monotonic_ns() // 1000000
                     geometry = dict(
                         line.split("=", 1)
@@ -417,10 +457,12 @@ def _gtk4_source_glossary(out, environment, deadline):
                     assert len(display) == 2 and all(value > 0 for value in display), display
 
                     observations = {}
+                    evidence = None
 
                     def ready():
+                        renewed = {}
                         if overlay_control:
-                            renew()
+                            renewed = renew()
                         actual = state()
                         parent = [actual.get(key) for key in ("width", "height", "scale")]
                         control = (
@@ -450,6 +492,32 @@ def _gtk4_source_glossary(out, environment, deadline):
                         }
                         observations.setdefault("first", metadata)
                         observations["last"] = metadata
+                        lost = glossary_interaction_loss(
+                            acquired, control, renewed, actual.get("observedAtMs"), started
+                        )
+                        if lost:
+                            failure = {
+                                "reason": lost,
+                                "acquiredInstance": acquired.get("instance"),
+                                "acquiredSurface": acquired.get("surfaceGeometry"),
+                                "acquiredPaint": acquired.get("paintObservation"),
+                                "observedAtMonoMs": now_ms(),
+                                "lastGeometry": dict(observations),
+                                "protocol": protocol_observations[-1],
+                            }
+                            if evidence is not None:
+                                evidence["interactionInvalidation"] = failure
+                            else:
+                                clicks.append(
+                                    {
+                                        "case": current_case,
+                                        "control": name,
+                                        "interactionInvalidation": failure,
+                                    }
+                                )
+                            raise AssertionError(
+                                f"{name}: acquired interaction invalidated: {lost}"
+                            )
                         if (
                             actual.get("observedAtMs", 0) <= started
                             or actual.get("fullscreen") is not True
@@ -463,15 +531,26 @@ def _gtk4_source_glossary(out, environment, deadline):
                             return None
                         if not control or overlay_control and not control.get("visible"):
                             return None
-                        if overlay_control and not glossary_painted_geometry(
-                            control, actual.get("observedAtMs")
+                        if (
+                            overlay_control
+                            and toolkit == "gtk4"
+                            and not glossary_painted_geometry(control, actual.get("observedAtMs"))
                         ):
                             return None
-                        surface = control.get("surfaceGeometry") if overlay_control else control
+                        surface = (
+                            control.get("surfaceGeometry")
+                            if overlay_control and toolkit == "gtk4"
+                            else control
+                        )
                         if not isinstance(surface, dict):
                             return None
-                        if overlay_control and (
-                            type(surface.get("scale")) is not int or surface["scale"] != parent[2]
+                        if (
+                            overlay_control
+                            and toolkit == "gtk4"
+                            and (
+                                type(surface.get("scale")) is not int
+                                or surface["scale"] != parent[2]
+                            )
                         ):
                             return None
                         rectangle = [surface.get(key) for key in ("x", "y")]
@@ -500,6 +579,7 @@ def _gtk4_source_glossary(out, environment, deadline):
                             f"{error}; started={started}; nested={dimensions}; "
                             f"display={display}; readiness={observations}"
                         ) from error
+                    acquired = control if overlay_control else None
                     evidence = {
                         "case": current_case,
                         "control": name,
@@ -521,7 +601,6 @@ def _gtk4_source_glossary(out, environment, deadline):
                         "moveStartedAtMonoMs": time.monotonic_ns() // 1000000,
                     }
                     clicks.append(evidence)
-                    click_path.write_text(json.dumps(clicks, indent=2) + "\n")
                     # A window may extend past the X screen: XTest would silently
                     # clamp an unreachable point, even when window bounds match GTK.
                     assert all(
@@ -559,14 +638,12 @@ def _gtk4_source_glossary(out, environment, deadline):
                             "status": "unavailable",
                             "error": type(error).__name__,
                         }
-                    click_path.write_text(json.dumps(clicks, indent=2) + "\n")
                     if overlay_control:
 
                         def hovered():
                             current = ready()
                             evidence["hoverGeometryReadiness"] = dict(observations)
                             if current is None:
-                                click_path.write_text(json.dumps(clicks, indent=2) + "\n")
                                 return None
                             observed, item, current_pixel = current
                             observation = {
@@ -592,10 +669,19 @@ def _gtk4_source_glossary(out, environment, deadline):
                             }
                             evidence.setdefault("firstHoverObservation", observation)
                             evidence["hoverObservation"] = observation
-                            click_path.write_text(json.dumps(clicks, indent=2) + "\n")
                             return (
                                 observed
-                                if glossary_hover_current(
+                                if (
+                                    toolkit == "gtk3"
+                                    and observed.get("observedAtMs", 0) >= moved_at
+                                    and item.get("pointerInside") is True
+                                    and all(
+                                        item.get(k) == control.get(k)
+                                        for k in ("instance", "x", "y", "width", "height")
+                                    )
+                                )
+                                or toolkit == "gtk4"
+                                and glossary_hover_current(
                                     item, observed.get("observedAtMs"), control, pixel, moved_at
                                 )
                                 else None
@@ -603,7 +689,6 @@ def _gtk4_source_glossary(out, environment, deadline):
 
                         wait_for(hovered, f"{name}: real pointer hover on same surface point")
                     evidence["clickStartedAtMonoMs"] = time.monotonic_ns() // 1000000
-                    click_path.write_text(json.dumps(clicks, indent=2) + "\n")
                     execute("xdotool", "click", "1")
                     following = state()
                     evidence.update(
@@ -611,9 +696,20 @@ def _gtk4_source_glossary(out, environment, deadline):
                         afterObservedAtMonoMs=following.get("observedAtMs"),
                         afterFocus=following.get("focus"),
                     )
-                    click_path.write_text(json.dumps(clicks, indent=2) + "\n")
 
-                for view_state in ("ValidTranslation", "EditedTranslationPending"):
+                def point(name, *, overlay_control=False, acquired=None):
+                    try:
+                        point_observe(name, overlay_control=overlay_control, acquired=acquired)
+                    finally:
+                        # Persist success or the first failure once, outside the
+                        # pointer/lease-sensitive polling and command sequence.
+                        click_path.write_text(json.dumps(clicks, indent=2) + "\n")
+
+                for source_kind, view_state in (
+                    (source, state)
+                    for source in ("entry", "textview")
+                    for state in ("ValidTranslation", "EditedTranslationPending")
+                ):
                     for finish in (
                         "save",
                         "cancel",
@@ -622,13 +718,20 @@ def _gtk4_source_glossary(out, environment, deadline):
                         "reset",
                         "external-focus",
                         "no-click-replay",
+                        "changed-selection",
+                        "expired",
                     ):
-                        current_case = {"state": view_state, "finish": finish}
+                        current_case = {
+                            "source": source_kind,
+                            "state": view_state,
+                            "finish": finish,
+                        }
                         capture_admission = None
                         call("overlay-hide")
                         call("configure-shortcuts", configuration)
-                        wait_for(lambda: state().get("firstEntry"), "GTK4 source observation")
-                        point("firstEntry")
+                        wait_for(lambda: state().get("firstEntry"), "GTK source observation")
+                        point("multiline" if source_kind == "textview" else "firstEntry")
+                        host("prepare-" + source_kind)
                         wait_for(lambda: state().get("imeClear"), "source real IM clear")
                         initial_source = state()
                         assert initial_source["firstEntry"]["focused"] is True
@@ -674,10 +777,13 @@ def _gtk4_source_glossary(out, environment, deadline):
                         captured = wait_for(
                             source_ready, "same source/context native capture ready"
                         )
+                        if source_kind == "textview":
+                            assert captured["text"] == "one 😀 PR\nnext line"
+                            assert captured["selection"] == {"start": 4, "end": 9}
                         authority = captured["authority"]
                         token = {
                             "target": {
-                                "backend": "linux-gtk4",
+                                "backend": "linux-" + toolkit,
                                 "value": target,
                                 "lifetime": native.hello["lifetime"],
                             },
@@ -752,7 +858,11 @@ def _gtk4_source_glossary(out, environment, deadline):
                                 name,
                             )
                             assert control["enabled"]
-                            point(name, overlay_control=True)
+                            point(
+                                name,
+                                overlay_control=True,
+                                acquired={"instance": control["instance"]},
+                            )
 
                         def events(operation):
                             renew()
@@ -982,9 +1092,22 @@ def _gtk4_source_glossary(out, environment, deadline):
                                     item.get("event") == "accepted"
                                     for item in native.events[before:]
                                 )
-                        elif finish in ("changed-source", "replaced-buffer", "external-focus"):
+                        elif finish in (
+                            "changed-source",
+                            "replaced-buffer",
+                            "changed-selection",
+                            "external-focus",
+                            "expired",
+                        ):
                             invalidation_start = len(native.events)
-                            if finish in ("changed-source", "replaced-buffer"):
+                            if finish == "expired":
+                                # No renewal: the native form must reject after its existing lease.
+                                expiry = now_ms() + 800
+                                call("overlay-renew", {**base, "expiresAtMs": expiry})
+                                wait_for(lambda: now_ms() > expiry, "original render lease elapsed")
+                            elif finish == "changed-selection":
+                                host("change-selection")
+                            elif finish in ("changed-source", "replaced-buffer"):
                                 host(
                                     "change-source"
                                     if finish == "changed-source"
@@ -1001,12 +1124,19 @@ def _gtk4_source_glossary(out, environment, deadline):
                                     for item in native.events[invalidation_start:]
                                 )
 
-                            wait_for(invalidated_source, "real source/provider invalidation")
+                            if finish != "expired":
+                                wait_for(invalidated_source, "real source/provider invalidation")
                             # The production host closes its view after this input
                             # event. Here the native contract must independently
                             # refuse the old form before any controlled-host hide.
                             assert not call("overlay-glossary-open", request_data)["opened"]
                             invalidated = state()
+                            if finish == "replaced-buffer":
+                                assert invalidated["first"] == original["first"]
+                                assert all(
+                                    invalidated["firstEntry"][k] == original["firstEntry"][k]
+                                    for k in ("start", "end")
+                                )
                             assert not events("sessionGlossaryAdd")
                             assert (
                                 call(
@@ -1114,6 +1244,7 @@ def _gtk4_source_glossary(out, environment, deadline):
                             unchanged()
                         results.append(
                             {
+                                "source": source_kind,
                                 "state": view_state,
                                 "finish": finish,
                                 "passed": True,
@@ -1121,11 +1252,8 @@ def _gtk4_source_glossary(out, environment, deadline):
                             }
                         )
                 call("overlay-hide")
-                point("multiline")
-                wait_for(lambda: state().get("focus") == "fixture-multiline", "TextView focus")
-                assert call("describe")["sourceGlossarySupported"] is False
         except BaseException as error:
-            (out / "gtk4-glossary-result.json").write_text(
+            (out / f"{toolkit}-glossary-result.json").write_text(
                 json.dumps(
                     {
                         "passed": False,
@@ -1149,7 +1277,7 @@ def _gtk4_source_glossary(out, environment, deadline):
                 process.kill()
                 process.wait(timeout=2)
             path.unlink(missing_ok=True)
-    (out / "gtk4-glossary-result.json").write_text(
+    (out / f"{toolkit}-glossary-result.json").write_text(
         json.dumps({"passed": True, "cases": results, "real_model_quality": False}, indent=2) + "\n"
     )
     return results

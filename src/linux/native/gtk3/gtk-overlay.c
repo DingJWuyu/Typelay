@@ -726,7 +726,7 @@ static gboolean glossary_source_basis(GlossaryForm *form) {
         && overlay.top == form->origin_top && target->widget && target->buffer
         && target->buffer == form->origin_buffer && overlay.text && overlay.glossary_draft_buffer
         && gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text)) == overlay.glossary_draft_buffer
-        && G_OBJECT_TYPE(target->widget) == GTK_TYPE_ENTRY && G_OBJECT_TYPE(target->buffer) == GTK_TYPE_ENTRY_BUFFER
+        && tl_source_glossary_supported(target)
         && !target->mutating && !target->quarantined && target->im_context && target->im_observed
         && g_object_get_data(G_OBJECT(target->widget), TL_FCITX_CONTEXT_V1) == target->im_context
         && (gint64)target->im_state.context_generation == tl_integer(tl_object(basis, "contextStamp"), "context", -1)
@@ -1310,7 +1310,7 @@ static gboolean glossary_source_ready(void) {
     const char *state = tl_string(overlay.view, "state");
     if (!target || target->dead || !target->widget || !target->buffer || !active()
         || (g_strcmp0(state, "ValidTranslation") != 0 && g_strcmp0(state, "EditedTranslationPending") != 0)
-        || G_OBJECT_TYPE(target->widget) != GTK_TYPE_ENTRY || G_OBJECT_TYPE(target->buffer) != GTK_TYPE_ENTRY_BUFFER
+        || !tl_source_glossary_supported(target)
         || gtk_window_get_focus(GTK_WINDOW(overlay.top)) != target->widget || tl_focused() != target
         || !translation_menu_current()
         || (overlay.pending_glossary && (!overlay.text || !overlay.glossary_draft_buffer

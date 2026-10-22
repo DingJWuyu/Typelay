@@ -226,15 +226,19 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
         => desktop.RunAsync(async () =>
         {
             await using var source = await Source.Start();
-            Assert.True(GetCursorPos(out var previous));
             using var entered = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(source.Process.Id, "entered"));
             using var release = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(source.Process.Id, "release"));
             try
             {
-                await NativeSourceSetup.ClickAsync(source.Root, source.Field, source.Process, source.Token);
+                // This contract starts from a prepared selection, not an input
+                // queue. Focus can already match before a newly injected click
+                // is dispatched; that click would then overwrite EM_SETSEL.
+                // ClickAsync has its own real-click contracts above.
+                N.Send(source.Root, N.FixtureFocus, (nuint)source.Field, 0);
                 while (N.Focused() != (source.Root, source.Field))
                     await Task.Delay(10, source.Token);
                 N.Send(source.Field, N.EM_SETSEL, 1, 5);
+                Assert.Equal(new TextRange(1, 5), N.ReadSelection(source.Field));
                 var observation = new NativeSourceSetup.Observation();
                 using var action = CancellationTokenSource.CreateLinkedTokenSource(source.Token);
                 if (scenario == "cancelled")
@@ -277,7 +281,6 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
             finally
             {
                 release.Set();
-                SetCursorPos(previous.X, previous.Y);
             }
         });
 

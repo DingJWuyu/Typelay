@@ -32,6 +32,12 @@ static gboolean plain_text_buffer(GtkTextBuffer *buffer) {
     }
     return TRUE;
 }
+gboolean tl_source_glossary_supported(Target *target) {
+    /* Reuse plain TextView structural admission, before any body access.
+       This capability is not an IME proof or a read/write authorization. */
+    return standard_entry(target) || (standard_textview(target)
+        && plain_text_buffer(GTK_TEXT_BUFFER(target->buffer)));
+}
 static const TlFcitxCapabilityV1 *im_capability(GtkIMContext *context) {
     if (!context || !GTK_IS_IM_CONTEXT(context)) return NULL;
     const TlFcitxCapabilityV1 *value = g_object_get_data(G_OBJECT(context), TL_FCITX_CAPABILITY_V1);
@@ -603,7 +609,7 @@ JsonObject *tl_describe(Target *target) {
     if (bounds) json_object_set_object_member(value, "geometry", bounds);
     else json_object_set_null_member(value, "geometry");
     json_object_set_boolean_member(value, "focused", tl_focused() == target);
-    json_object_set_boolean_member(value, "sourceGlossarySupported", standard_entry(target));
+    json_object_set_boolean_member(value, "sourceGlossarySupported", tl_source_glossary_supported(target));
     JsonObject *glossary = tl_overlay_glossary_source(target);
     if (glossary) json_object_set_object_member(value, "glossarySource", glossary);
     g_free(key);

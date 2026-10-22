@@ -296,6 +296,11 @@ internal sealed partial class PracticeHost
         var current = _acceptance;
         return new
         {
+            connection = _connection,
+            run = _runId,
+            sequence = _sequence,
+            planSequence = current?.Plan.PlanSequence,
+            generation = lease.CommandGeneration,
             runMatches = lease.PracticeRunId == _runId,
             connectionMatches = lease.PracticeConnectionId == _connection,
             generationMatches = lease.CommandGeneration == _monitor?.CommandGeneration,

@@ -324,7 +324,12 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         g_signal_connect(widget, "leave", G_CALLBACK(observe_expand_crossing), GINT_TO_POINTER(FALSE));
         g_signal_connect(widget, "unmap", G_CALLBACK(observe_expand_unmapped), NULL);
     }
-    if (expand || language_control(name)) {
+    GtkWidget *parent = gtk_widget_get_parent(widget);
+    if (GTK_IS_LABEL(widget) && parent
+        && g_strcmp0(gtk_widget_get_name(parent), "typelay-glossary-form") == 0)
+        name = "fixture-glossary-feedback";
+    if (expand || language_control(name) || g_str_has_prefix(name, "typelay-glossary-")
+        || g_str_equal(name, "fixture-glossary-feedback")) {
         json_builder_set_member_name(builder, name);
         json_builder_begin_object(builder);
         if (g_strcmp0(name, "typelay-menu-trigger") == 0
@@ -361,6 +366,10 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         json_builder_add_int_value(builder, language_instance(G_OBJECT(widget)));
         json_builder_set_member_name(builder, "visible");
         json_builder_add_boolean_value(builder, gtk_widget_get_mapped(widget));
+        if (!expand && !language_trigger) {
+            json_builder_set_member_name(builder, "pointerInside");
+            json_builder_add_boolean_value(builder, (gtk_widget_get_state_flags(widget) & GTK_STATE_FLAG_PRELIGHT) != 0);
+        }
         json_builder_set_member_name(builder, "enabled");
         json_builder_add_boolean_value(builder, gtk_widget_is_sensitive(widget));
         GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(report_window));
@@ -370,6 +379,13 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
             const char *label = gtk_button_get_label(GTK_BUTTON(widget));
             json_builder_set_member_name(builder, "text");
             json_builder_add_string_value(builder, label ? label : "");
+        }
+        if (GTK_IS_ENTRY(widget)) {
+            json_builder_set_member_name(builder, "text");
+            json_builder_add_string_value(builder, gtk_entry_get_text(GTK_ENTRY(widget)));
+        } else if (GTK_IS_LABEL(widget)) {
+            json_builder_set_member_name(builder, "text");
+            json_builder_add_string_value(builder, gtk_label_get_text(GTK_LABEL(widget)));
         }
         gint x, y;
         if (gtk_widget_translate_coordinates(widget, report_window, 0, 0, &x, &y)) {
@@ -427,16 +443,20 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
 
 #include "gtk_motion.inc"
 
+#include "gtk_glossary.inc"
+
 static gboolean report_state(gpointer unused) {
     (void)unused;
     if (report_closed) {
         report_source_id = 0;
         return G_SOURCE_REMOVE;
     }
+    glossary_host_command();
     GtkWidget *active = other_window && gtk_window_is_active(GTK_WINDOW(other_window)) ? other_window : report_window;
     GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(active));
     JsonBuilder *builder = json_builder_new();
     json_builder_begin_object(builder);
+    glossary_report(builder);
     motion_report(builder);
     if (report_closed) goto closed;
     json_builder_set_member_name(builder, "observedAtMs");

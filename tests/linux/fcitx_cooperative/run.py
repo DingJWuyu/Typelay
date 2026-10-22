@@ -88,6 +88,42 @@ def build(out: Path, core_version: str):
             *flags("gtk4", "json-glib-1.0"),
         ]
     )
+    run(
+        [
+            "cc",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-g",
+            ROOT / "tests/linux/fixtures/gtk_fixture.c",
+            "-o",
+            out / "gtk3-fixture",
+            *flags("gtk+-3.0", "json-glib-1.0"),
+        ]
+    )
+    run(
+        [
+            "cmake",
+            "-S",
+            ROOT / "src/linux/native",
+            "-B",
+            out / "gtk3-native-build",
+            "-G",
+            "Ninja",
+            "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+        ]
+    )
+    run(
+        [
+            "cmake",
+            "--build",
+            out / "gtk3-native-build",
+            "--target",
+            "typelay-gtk3",
+            "--parallel",
+            "2",
+        ]
+    )
     if hashes(FCITX_TEST_INPUTS) != inputs:
         raise RuntimeError("Test inputs changed during fixture compilation")
     (out / "test-inputs.json").write_text(
@@ -96,6 +132,7 @@ def build(out: Path, core_version: str):
                 "files": inputs,
                 "fixture_sha256": sha256(out / "fixture"),
                 "gtk4_fixture_sha256": sha256(out / "gtk4-fixture"),
+                "gtk3_fixture_sha256": sha256(out / "gtk3-fixture"),
                 "build_inputs_sha256": sha256(out / "build-inputs.json"),
                 "build_metadata_sha256": sha256(out / "versions.json"),
             },
@@ -105,8 +142,10 @@ def build(out: Path, core_version: str):
     )
 
 
-def wait(predicate, label):
-    deadline = time.monotonic() + 15
+def wait(predicate, label, *, deadline=None):
+    deadline = (
+        min(time.monotonic() + 15, deadline) if deadline is not None else time.monotonic() + 15
+    )
     while time.monotonic() < deadline:
         value = predicate()
         if value:
@@ -202,10 +241,29 @@ def fixed_compose_mapping(out: Path):
         raise
 
 
-def session(out: Path, core_version: str, deadline: float):
+def session(out: Path, core_version: str, deadline: float, glossary_toolkit=None):
+    def remaining():
+        budget = deadline - time.monotonic()
+        if budget <= 0:
+            raise TimeoutError("cooperative session operation deadline elapsed")
+        return budget
+
+    def session_run(args, **kwargs):
+        kwargs["timeout"] = min(kwargs.get("timeout", 180), remaining())
+        return run(args, **kwargs)
+
+    def session_wait(predicate, label):
+        remaining()
+        return wait(predicate, label, deadline=deadline)
+
+    evidence = out / f"{glossary_toolkit}-glossary-session" if glossary_toolkit else out
+    evidence.mkdir(parents=True, exist_ok=True)
     prefix = out / "core-prefix"
-    for name in ("command", "command.tmp", "state.json", "result.json"):
-        (out / name).unlink(missing_ok=True)
+    for name in ("command", "command.tmp", "state.json", "result.json", "cleanup.json"):
+        (evidence / name).unlink(missing_ok=True)
+    if glossary_toolkit:
+        for suffix in ("result.json", "startup.json"):
+            (out / f"{glossary_toolkit}-glossary-{suffix}").unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix="typelay-fcitx-cooperative-") as temporary:
         private = Path(temporary)
         env = os.environ.copy()
@@ -240,21 +298,24 @@ def session(out: Path, core_version: str, deadline: float):
             GDK_BACKEND="x11",
             TYPELAY_FCITX_PROBE="1",
             TYPELAY_FCITX_COOPERATIVE="1",
-            TYPELAY_COOPERATIVE_DIR=str(out),
+            TYPELAY_COOPERATIVE_DIR=str(evidence),
         )
         env["PKG_CONFIG_PATH"] = f"{prefix}/lib/pkgconfig:{prefix}/share/pkgconfig"
         versions = json.loads((out / "versions.json").read_text())
         assert versions["server_source_version"] == core_version
-        assert run([out / "fcitx5", "--version"], env=env, stderr=subprocess.STDOUT) == core_version
-        assert run(["pkg-config", "--modversion", "Fcitx5Core"], env=env) == core_version
+        assert (
+            session_run([out / "fcitx5", "--version"], env=env, stderr=subprocess.STDOUT)
+            == core_version
+        )
+        assert session_run(["pkg-config", "--modversion", "Fcitx5Core"], env=env) == core_version
         children = []
         mapping_connection = None
         with (
-            (out / "framework.log").open("w") as framework_log,
-            (out / "client.log").open("w") as client_log,
+            (evidence / "framework.log").open("w") as framework_log,
+            (evidence / "client.log").open("w") as client_log,
         ):
             try:
-                mapping_connection = fixed_compose_mapping(out)
+                mapping_connection = fixed_compose_mapping(evidence)
                 children.append(
                     subprocess.Popen(
                         [
@@ -278,29 +339,33 @@ def session(out: Path, core_version: str, deadline: float):
 
                 def state():
                     try:
-                        return json.loads((out / "state.json").read_text())
+                        return json.loads((evidence / "state.json").read_text())
                     except (FileNotFoundError, json.JSONDecodeError):
                         return {}
 
-                wait(lambda: state().get("ready"), "mapped GTK fixture")
-                windows = wait(
+                session_wait(lambda: state().get("ready"), "mapped GTK fixture")
+                windows = session_wait(
                     lambda: subprocess.run(
                         ["xdotool", "search", "--onlyvisible", "--pid", str(children[-1].pid)],
                         env=env,
                         text=True,
                         capture_output=True,
-                        timeout=5,
+                        timeout=min(5, remaining()),
                     ).stdout.split(),
                     "mapped fixture",
                 )
                 window = windows[0]
-                run(["xdotool", "windowfocus", "--sync", window], env=env)
-                wait(lambda: state().get("probe_valid"), "actual bound Fcitx IC handshake")
-                (out / "engine-before.txt").write_text(run(["fcitx5-remote", "-n"], env=env) + "\n")
-                run(["fcitx5-remote", "-o"], env=env)
-                run(["fcitx5-remote", "-s", "pinyin"], env=env)
-                (out / "engine-after.txt").write_text(run(["fcitx5-remote", "-n"], env=env) + "\n")
-                wait(lambda: state().get("known"), "patched engine cooperation")
+                session_run(["xdotool", "windowfocus", "--sync", window], env=env)
+                session_wait(lambda: state().get("probe_valid"), "actual bound Fcitx IC handshake")
+                (evidence / "engine-before.txt").write_text(
+                    session_run(["fcitx5-remote", "-n"], env=env) + "\n"
+                )
+                session_run(["fcitx5-remote", "-o"], env=env)
+                session_run(["fcitx5-remote", "-s", "pinyin"], env=env)
+                (evidence / "engine-after.txt").write_text(
+                    session_run(["fcitx5-remote", "-n"], env=env) + "\n"
+                )
+                session_wait(lambda: state().get("known"), "patched engine cooperation")
                 mappings = Path(f"/proc/{children[0].pid}/maps").read_text()
                 loaded = sorted(
                     {line.split()[-1] for line in mappings.splitlines() if "/" in line.split()[-1]}
@@ -321,7 +386,7 @@ def session(out: Path, core_version: str, deadline: float):
                 assert models and all(
                     path.is_relative_to(prefix / "lib/libime") for path in models
                 ), models
-                (out / "server-loaded-libraries.json").write_text(
+                (evidence / "server-loaded-libraries.json").write_text(
                     json.dumps(loaded, indent=2) + "\n"
                 )
                 request = 0
@@ -329,35 +394,44 @@ def session(out: Path, core_version: str, deadline: float):
                 def command(name):
                     nonlocal request
                     request += 1
-                    temp = out / "command.tmp"
+                    temp = evidence / "command.tmp"
                     temp.write_text(f"{request} {name}\n")
-                    temp.replace(out / "command")
-                    return wait(
+                    temp.replace(evidence / "command")
+                    return session_wait(
                         lambda: s if (s := state()).get("request") == request else None, name
                     )
 
-                run(["xdotool", "key", "--window", window, "dead_acute"], env=env)
-                wait(lambda: state().get("composing"), "real core XCompose sequence")
+                if glossary_toolkit:
+                    sys.path.insert(0, str(ROOT / "tests/linux"))
+                    from native_e2e import gtk_source_glossary
+
+                    gtk_source_glossary(out, env, deadline, glossary_toolkit)
+                    return
+
+                session_run(["xdotool", "key", "--window", window, "dead_acute"], env=env)
+                session_wait(lambda: state().get("composing"), "real core XCompose sequence")
                 assert command("capture")["result"] == "refused-ime"
-                run(["xdotool", "key", "--window", window, "e"], env=env)
-                wait(
+                session_run(["xdotool", "key", "--window", window, "e"], env=env)
+                session_wait(
                     lambda: state().get("settled") and state().get("length", 0) > 0,
                     "core compose commit",
                 )
                 key_queue_ack = state().get("key_queue_ack", 0)
-                run(["xdotool", "type", "--window", window, "--delay", "15", "nihao"], env=env)
+                session_run(
+                    ["xdotool", "type", "--window", window, "--delay", "15", "nihao"], env=env
+                )
                 # xdotool completion only means the X server received its events.
                 # Wait for a marker from the same actual GTK/Fcitx event queue
                 # before candidate selection, without changing the composition.
-                run(["xdotool", "key", "--window", window, "F24"], env=env)
-                wait(
+                session_run(["xdotool", "key", "--window", window, "F24"], env=env)
+                session_wait(
                     lambda: state().get("key_queue_ack", 0) > key_queue_ack,
                     "actual GTK/Fcitx typed-key queue acknowledgement",
                 )
-                wait(lambda: state().get("composing"), "real pinyin preedit")
+                session_wait(lambda: state().get("composing"), "real pinyin preedit")
                 assert command("capture")["result"] == "refused-ime"
                 assert command("candidate")["result"] == "refused-undelivered"
-                wait(
+                session_wait(
                     lambda: state().get("settled") and state().get("length", 0) > 0,
                     "actual candidate commit applied",
                 )
@@ -366,8 +440,8 @@ def session(out: Path, core_version: str, deadline: float):
                 assert state()["replacement"] is True
                 before = command("capture")
                 assert before["result"] == "captured"
-                run(["xdotool", "key", "--window", window, "Left"], env=env)
-                wait(
+                session_run(["xdotool", "key", "--window", window, "Left"], env=env)
+                session_wait(
                     lambda: state().get("epoch", 0) > before["epoch"],
                     "actual navigation input epoch",
                 )
@@ -375,10 +449,10 @@ def session(out: Path, core_version: str, deadline: float):
                 assert command("accept")["result"] == "refused-input"
                 before = command("capture")
                 assert before["result"] == "captured"
-                run(["xdotool", "key", "--window", window, "dead_acute"], env=env)
-                wait(lambda: state().get("composing"), "core compose before cancellation")
-                run(["xdotool", "key", "--window", window, "Escape"], env=env)
-                wait(lambda: state().get("settled"), "core compose cancellation")
+                session_run(["xdotool", "key", "--window", window, "dead_acute"], env=env)
+                session_wait(lambda: state().get("composing"), "core compose before cancellation")
+                session_run(["xdotool", "key", "--window", window, "Escape"], env=env)
+                session_wait(lambda: state().get("settled"), "core compose cancellation")
                 assert state()["unchanged_capture"] is True
                 assert command("accept")["result"] == "refused-input"
                 assert command("capture")["result"] == "captured"
@@ -388,7 +462,7 @@ def session(out: Path, core_version: str, deadline: float):
                 assert command("focus")["result"] == "focused-other"
                 assert command("accept")["result"] == "refused-focus"
                 assert command("refocus")["result"] == "focused-original"
-                wait(lambda: state().get("settled"), "context after refocus")
+                session_wait(lambda: state().get("settled"), "context after refocus")
                 assert command("capture")["result"] == "captured"
                 nested = command("accept-nested")
                 assert (
@@ -400,18 +474,20 @@ def session(out: Path, core_version: str, deadline: float):
                 changed = command("accept-reentrant-mutation")
                 assert changed["result"] == "outcome-unknown" and changed["nested_refused"]
                 assert command("clear")["result"] == "cleared"
-                run(["xdotool", "type", "--window", window, "--delay", "15", "1."], env=env)
-                wait(
+                session_run(["xdotool", "type", "--window", window, "--delay", "15", "1."], env=env)
+                session_wait(
                     lambda: state().get("settled") and state().get("length") == 2,
                     "numeric punctuation before old transaction",
                 )
                 assert command("deferred-switch")["result"] == "refused-old-pinyin-transaction"
-                wait(lambda: state().get("settled"), "actual keyboard engine cooperation")
-                assert run(["fcitx5-remote", "-n"], env=env) == "keyboard-us"
+                session_wait(lambda: state().get("settled"), "actual keyboard engine cooperation")
+                assert session_run(["fcitx5-remote", "-n"], env=env) == "keyboard-us"
                 (out / "engine-keyboard.txt").write_text("keyboard-us\n")
                 assert command("clear")["result"] == "cleared"
-                run(["xdotool", "type", "--window", window, "--delay", "15", "hello"], env=env)
-                wait(
+                session_run(
+                    ["xdotool", "type", "--window", window, "--delay", "15", "hello"], env=env
+                )
+                session_wait(
                     lambda: state().get("settled") and state().get("length") == 5,
                     "keyboard ordinary input",
                 )
@@ -421,7 +497,7 @@ def session(out: Path, core_version: str, deadline: float):
                 assert before_focus["result"] == "captured"
                 assert command("focus")["result"] == "focused-other"
                 assert command("refocus")["result"] == "focused-original"
-                after_focus = wait(
+                after_focus = session_wait(
                     lambda: s if (s := state()).get("settled") else None, "keyboard focus return"
                 )
                 assert after_focus["input_epoch"] == before_focus["input_epoch"]
@@ -433,41 +509,49 @@ def session(out: Path, core_version: str, deadline: float):
                 # The independent inactive A context is queried while real B input
                 # and then B pinyin composition are active. Preparation must not reset B.
                 assert command("focus")["result"] == "focused-other"
-                wait(lambda: state().get("other_focused"), "actual second field focus")
-                run(["xdotool", "type", "--window", window, "--delay", "15", "world"], env=env)
-                wait(lambda: state().get("other_length") == 5, "second field ordinary input")
+                session_wait(lambda: state().get("other_focused"), "actual second field focus")
+                session_run(
+                    ["xdotool", "type", "--window", window, "--delay", "15", "world"], env=env
+                )
+                session_wait(
+                    lambda: state().get("other_length") == 5, "second field ordinary input"
+                )
                 assert command("detached-proof")["result"] == "detached-clear"
-                run(["fcitx5-remote", "-s", "pinyin"], env=env)
-                assert run(["fcitx5-remote", "-n"], env=env) == "pinyin"
-                run(["xdotool", "type", "--window", window, "--delay", "15", "nihao"], env=env)
+                session_run(["fcitx5-remote", "-s", "pinyin"], env=env)
+                assert session_run(["fcitx5-remote", "-n"], env=env) == "pinyin"
+                session_run(
+                    ["xdotool", "type", "--window", window, "--delay", "15", "nihao"], env=env
+                )
                 ack = state().get("key_queue_ack", 0)
-                run(["xdotool", "key", "--window", window, "F24"], env=env)
-                wait(
+                session_run(["xdotool", "key", "--window", window, "F24"], env=env)
+                session_wait(
                     lambda: state().get("key_queue_ack", 0) > ack
                     and state().get("other_preedit", 0) > 0,
                     "second field real preedit delivered",
                 )
                 assert command("detached-proof")["result"] == "detached-clear"
                 assert state()["other_preedit"] > 0
-                run(["xdotool", "key", "--window", window, "Escape"], env=env)
-                wait(
+                session_run(["xdotool", "key", "--window", window, "Escape"], env=env)
+                session_wait(
                     lambda: state().get("other_preedit") == 0, "second field composition cancelled"
                 )
-                run(["fcitx5-remote", "-s", "keyboard-us"], env=env)
+                session_run(["fcitx5-remote", "-s", "keyboard-us"], env=env)
                 assert command("refocus")["result"] == "focused-original"
-                wait(lambda: state().get("settled"), "original keyboard field returned")
-                run(["xdotool", "key", "--window", window, "dead_acute"], env=env)
-                wait(
+                session_wait(lambda: state().get("settled"), "original keyboard field returned")
+                session_run(["xdotool", "key", "--window", window, "dead_acute"], env=env)
+                session_wait(
                     lambda: state().get("composing") or state().get("pending"),
                     "keyboard compose pending",
                 )
                 assert command("capture")["result"] == "refused-ime"
-                run(["xdotool", "key", "--window", window, "e"], env=env)
-                wait(lambda: state().get("settled"), "keyboard compose commit")
+                session_run(["xdotool", "key", "--window", window, "e"], env=env)
+                session_wait(lambda: state().get("settled"), "keyboard compose commit")
                 assert command("capture")["result"] == "captured"
                 assert command("accept-server-paused")["result"] == "accepted"
                 assert state()["replacement"] is True
-                wait(lambda: state().get("settled"), "owned server resumed after local-only write")
+                session_wait(
+                    lambda: state().get("settled"), "owned server resumed after local-only write"
+                )
                 for mode, key in (
                     ("QuickPhrase", "super+grave"),
                     ("Clipboard", "ctrl+semicolon"),
@@ -475,22 +559,13 @@ def session(out: Path, core_version: str, deadline: float):
                     ("IMSelector", "ctrl+alt+i"),
                 ):
                     before_mode = state()
-                    run(["xdotool", "key", "--window", window, key], env=env)
-                    wait(lambda: state().get("composing"), f"real active {mode} mode")
+                    session_run(["xdotool", "key", "--window", window, key], env=env)
+                    session_wait(lambda: state().get("composing"), f"real active {mode} mode")
                     assert state()["length"] == before_mode["length"]
                     assert command("capture")["result"] == "refused-ime"
-                    run(["xdotool", "key", "--window", window, "Escape"], env=env)
-                    wait(lambda: state().get("settled"), f"{mode} mode cancelled")
+                    session_run(["xdotool", "key", "--window", window, "Escape"], env=env)
+                    session_wait(lambda: state().get("settled"), f"{mode} mode cancelled")
                     assert command("capture")["result"] == "captured"
-
-                # Reuse this actual daemon and private desktop before the deliberate
-                # unknown-origin restarts. No new daemon or per-case time allowance.
-                sys.path.insert(0, str(ROOT / "tests/linux"))
-                from native_e2e import gtk4_source_glossary
-
-                gtk4_source_glossary(out, env, deadline)
-                run(["xdotool", "windowfocus", "--sync", window], env=env)
-                wait(lambda: state().get("settled"), "original GTK3 client refocused")
 
                 # Both unknown origins and unknown addon implementations keep
                 # ordinary input working while removing TypeLay authority.
@@ -505,7 +580,7 @@ def session(out: Path, core_version: str, deadline: float):
                 ):
                     generation = state()["generation"]
                     daemon.terminate()
-                    daemon.wait(timeout=5)
+                    daemon.wait(timeout=min(5, remaining()))
                     daemon = subprocess.Popen(
                         [
                             str(out / "fcitx5"),
@@ -518,28 +593,28 @@ def session(out: Path, core_version: str, deadline: float):
                         stderr=subprocess.STDOUT,
                     )
                     children.append(daemon)
-                    wait(
+                    session_wait(
                         lambda: state().get("probe_valid")
                         and state().get("generation", 0) > generation,
                         f"same GTK client reconnected for unknown {label}",
                     )
-                    run(["fcitx5-remote", "-s", "keyboard-us"], env=env)
-                    wait(
+                    session_run(["fcitx5-remote", "-s", "keyboard-us"], env=env)
+                    session_wait(
                         lambda: state().get("probe_valid") and not state().get("known"),
                         f"actual unreviewed {label} refuses capability",
                     )
                     assert command("capture")["result"] == "refused-ime"
                     assert command("clear")["result"] == "cleared"
-                    run(
+                    session_run(
                         ["xdotool", "type", "--window", window, "--delay", "15", "ordinary"],
                         env=env,
                     )
-                    wait(
+                    session_wait(
                         lambda: state().get("length") == 8,
                         f"ordinary input preserved with unknown {label}",
                     )
                 assert command("replace-delegate")["result"] == "old-delegate-released"
-                (out / "result.json").write_text(
+                (evidence / "result.json").write_text(
                     json.dumps(
                         {
                             "passed": True,
@@ -572,21 +647,60 @@ def session(out: Path, core_version: str, deadline: float):
                     + "\n"
                 )
                 command("quit")
-                children[1].wait(timeout=5)
+                children[1].wait(timeout=min(5, remaining()))
             finally:
-                for process in reversed(children):
-                    if process.poll() is None:
-                        process.send_signal(signal.SIGCONT)
-                        process.terminate()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait(timeout=5)
+                try:
+                    for process in reversed(children):
+                        if process.poll() is None:
+                            process.send_signal(signal.SIGCONT)
+                            process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=5)
+                finally:
+                    if mapping_connection:
+                        x11, display = mapping_connection
+                        x11.XCloseDisplay(display)
 
-                if mapping_connection:
-                    x11, display = mapping_connection
-                    x11.XCloseDisplay(display)
+                    (evidence / "cleanup.json").write_text(
+                        json.dumps(
+                            {
+                                "childrenExited": all(p.poll() is not None for p in children),
+                                "children": [
+                                    {"pid": p.pid, "returncode": p.returncode} for p in children
+                                ],
+                            }
+                        )
+                        + "\n"
+                    )
+
+
+def run_owned_session(command, *, env, timeout):
+    # Keep the session leader unreaped until its whole owned process group has
+    # been signalled. Its PID/PGID cannot be reused for an unrelated process.
+    # The last two seconds belong to emergency cleanup, not more test work.
+    if timeout <= 2:
+        raise ValueError("owned session needs a cleanup reserve")
+    deadline = time.monotonic() + timeout
+    process = subprocess.Popen(command, env=env, start_new_session=True)
+    try:
+        while os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+            remaining = deadline - 2 - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout - 2)
+            time.sleep(min(0.025, remaining))
+    finally:
+        # Covers timeout, interruption and an exited wrapper leaving children.
+        # All members inherit this new session; no names or user-wide PID scan.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=max(0, deadline - time.monotonic()))
+    if process.returncode:
+        raise subprocess.CalledProcessError(process.returncode, command)
 
 
 def main():
@@ -596,6 +710,7 @@ def main():
     parser.add_argument("--session", action="store_true")
     parser.add_argument("--session-deadline", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--build-only", action="store_true")
+    parser.add_argument("--glossary-toolkit", choices=("gtk3", "gtk4"), help=argparse.SUPPRESS)
     args = parser.parse_args()
     default_name = f"fcitx-cooperative-{CORE_VERSION}"
     out = (args.output or ROOT / "artifacts/linux" / default_name).resolve()
@@ -603,32 +718,36 @@ def main():
     if args.session:
         if args.session_deadline is None:
             parser.error("--session requires the outer absolute deadline")
-        session(out, args.core_version, args.session_deadline)
+        session(out, args.core_version, args.session_deadline, args.glossary_toolkit)
     else:
         build(out, args.core_version)
         if not args.build_only:
-            subprocess.run(
-                [
-                    "dbus-run-session",
-                    "--",
-                    "xvfb-run",
-                    "-a",
-                    "-s",
-                    "-screen 0 1280x960x24",
-                    sys.executable,
-                    str(Path(__file__).resolve()),
-                    "--session",
-                    "--session-deadline",
-                    str(time.monotonic() + 115),
-                    "--core-version",
-                    args.core_version,
-                    "--output",
-                    str(out),
-                ],
-                check=True,
-                timeout=120,
-                env=os.environ | {"TYPELAY_COOPERATIVE_OWNED_XVFB": "1"},
-            )
+            # Independent desktops/daemons reuse the same already-built assets.
+            for toolkit in (None, "gtk4", "gtk3"):
+                run_owned_session(
+                    [
+                        "dbus-run-session",
+                        "--",
+                        "xvfb-run",
+                        "-a",
+                        "-s",
+                        "-screen 0 1280x960x24",
+                        sys.executable,
+                        str(Path(__file__).resolve()),
+                        "--session",
+                        *(["--glossary-toolkit", toolkit] if toolkit else []),
+                        "--session-deadline",
+                        str(time.monotonic() + (115 if toolkit else 98)),
+                        "--core-version",
+                        args.core_version,
+                        "--output",
+                        str(out),
+                    ],
+                    timeout=145 if toolkit else 120,
+                    env=os.environ | {"TYPELAY_COOPERATIVE_OWNED_XVFB": "1"},
+                )
+                evidence = out / f"{toolkit}-glossary-session" if toolkit else out
+                assert json.loads((evidence / "cleanup.json").read_text())["childrenExited"]
 
 
 if __name__ == "__main__":

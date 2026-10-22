@@ -36,7 +36,42 @@ public sealed class ShellTrayObservationTests(WpfDesktopFixture desktop)
             string json = JsonSerializer.Serialize(sample);
             Assert.DoesNotContain("private-", json);
             Assert.All(sample.Nodes, node => Assert.Contains(node.NameClass,
-                new[] { "product-exact", "product-prefix", "known-overflow", "other" }));
+                new[] { "product-exact", "product-prefix", "product-contained", "empty", "known-overflow", "other" }));
+        }
+        finally { window.Close(); }
+    });
+
+    [Theory]
+    [InlineData("", "empty")]
+    [InlineData("TypeLay", "product-exact")]
+    [InlineData("TypeLay · private-status", "product-prefix")]
+    [InlineData("private-prefix TypeLay private-status", "product-contained")]
+    [InlineData("TypeLay-private-status", "product-contained")]
+    [InlineData("Show hidden icons", "known-overflow")]
+    [InlineData("显示隐藏的图标", "known-overflow")]
+    [InlineData("private-unrelated-name", "other")]
+    [InlineData("private-typelay", "other")]
+    public Task ObservationDistinguishesMissingAndEmbeddedProductNamesWithoutExportingThem(
+        string accessibleName, string expectedClass) => desktop.RunAsync(async () =>
+    {
+        using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+        var button = new Button();
+        AutomationProperties.SetName(button, accessibleName);
+        AutomationProperties.SetAutomationId(button, "sample-icon");
+        var window = new Window { Content = button };
+        try
+        {
+            window.Show();
+            window.UpdateLayout();
+            var root = AutomationElement.FromHandle(new WindowInteropHelper(window).Handle);
+            var sample = new ShellTrayObservation();
+            await Task.Run(() => sample.Capture([root], limit.Token), limit.Token).WaitAsync(limit.Token);
+            Assert.True(sample.Completed);
+            Assert.False(sample.Truncated);
+            Assert.Null(sample.ErrorType);
+            var node = Assert.Single(sample.Nodes, item => item.AutomationId == "sample-icon");
+            Assert.Equal(expectedClass, node.NameClass);
+            Assert.DoesNotContain("private-", JsonSerializer.Serialize(sample));
         }
         finally { window.Close(); }
     });

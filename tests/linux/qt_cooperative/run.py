@@ -1262,15 +1262,12 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                             for item in state()["providerEvents"]
                             if item["sequence"] > departure and item["role"] == field
                         ]
-                        # Only exact QLineEdit -> QLineEdit can seal a detached
-                        # background-write proof. Plain source -> first term must
-                        # not invent that proof (or its retirement notification).
-                        if field == "first":
-                            assert retirement and all(
-                                item["causes"] == (0 if legacy else 32) for item in retirement
-                            ), retirement
-                        else:
-                            assert retirement == [], retirement
+                        # Both standard source kinds can seal a same-window
+                        # proof on transfer to the first exact QLineEdit term.
+                        # Retirement is not a source edit or reusable write grant.
+                        assert retirement and all(
+                            item["causes"] == (0 if legacy else 32) for item in retirement
+                        ), retirement
                         renew()  # Drain the same public event stream the real host consumes.
                         assert not [
                             item
@@ -1289,10 +1286,12 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                         def save_with_term_retirement():
                             save_departure = state()["providerSequence"]
                             click("typelay-glossary-save")
-                            if field == "plain":
-                                # Both form terms are exact QLineEdits. Their
-                                # sealed proof is retired when Save takes focus,
-                                # even though the multiline source had no seal.
+                            if (
+                                field == "plain"
+                                and state()["overlayControls"]["typelay-glossary-save"]["focused"]
+                            ):
+                                # If Save reached its explicit focus handoff,
+                                # the first term's proof must retire there.
                                 term_retirement = [
                                     item
                                     for item in state()["providerEvents"]
@@ -1305,20 +1304,21 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                                 ), term_retirement
 
                         if legacy:
+                            # Observe the public pre-Save IM result rather than
+                            # assuming refusal timing from the source toolkit.
+                            focus = events("sessionGlossaryFocus")[-1]["value"]
+                            assert focus["ime"] in ("Clear", "Unknown"), focus
+                            clear_before_save = focus["ime"] == "Clear"
                             save_with_term_retirement()
-                            # LineEdit source retirement invalidates evidence at
-                            # Tab; Plain has no source seal, so its first term's
-                            # retirement invalidates evidence only as Save takes
-                            # focus. Both checks refuse, at different stages.
                             refusal = (
-                                "请先完成两个词的输入，确认输入法已结束组合后再保存。"
-                                if field == "first"
-                                else "输入法状态尚未确认，请完成输入后再保存。"
+                                "输入法状态尚未确认，请完成输入后再保存。"
+                                if clear_before_save
+                                else "请先完成两个词的输入，确认输入法已结束组合后再保存。"
                             )
                             observe(
                                 lambda value: value.get("glossary", {}).get("feedback") == refusal
                                 and value["overlayControls"]["typelay-glossary-save"]["focused"]
-                                == (field == "plain"),
+                                == clear_before_save,
                                 "absent or invalid opt-in remains Unknown and refuses Save",
                             )
                             assert not events("sessionGlossaryAdd")
@@ -1642,6 +1642,228 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                 "Translated result" if delay_finished else "Original source"
             )
             result[f"{phase}_revoke_consumes_with_unknown_outcome"] = True
+
+            if not delay_finished:
+                # Actual provider/consumer boundary, not a model or fabricated
+                # IM proof. Freeze A, then change focus before the direct reply.
+                def freeze_multiline():
+                    fixture("plain-visible", enabled=True)
+                    fixture("set", field="plain", text="A😀\nSecond\nThird")
+                    fixture("select", field="plain", start=4, length=6)
+                    fixture("set", field="second", text="Keep destination unchanged")
+                    fixture("focus", field="plain")
+                    wait(
+                        lambda: state().get("plain", {}).get("focused") and settled(),
+                        "multiline direct source focus and real IM retirement",
+                    )
+                    description = native.describe()
+                    captured = native.call(
+                        "capture",
+                        {"target": description["target"], "authority": description["authority"]},
+                    )
+                    assert captured and captured["writeSupported"] and captured["ime"] == "Clear"
+                    assert description["metadata"]["multiline"]
+                    assert captured["text"] == "A😀\nSecond\nThird"
+                    assert captured["selection"] == {"start": 4, "end": 10}
+                    source = {
+                        "target": {
+                            "backend": "linux-qt6",
+                            "value": captured["target"],
+                            "lifetime": native.hello["lifetime"],
+                        },
+                        "text": captured["text"],
+                        "selection": captured["selection"],
+                        "observedAtMs": captured["observedAtMs"],
+                        "inputEpoch": captured["authority"]["inputRevision"],
+                        "focusEpoch": captured["authority"]["focusRevision"],
+                        "multiline": True,
+                    }
+                    return captured, plan(source, "第二行", captured["selection"])
+
+                def replace_frozen(captured, replacement):
+                    approved = native.describe(captured["target"])
+                    return native.call(
+                        "direct",
+                        {
+                            "target": captured["target"],
+                            "plan": replacement,
+                            "authority": captured["authority"],
+                            "approved": approved["authority"],
+                            "generation": generation,
+                            "expiresAtMs": now_ms() + 250,
+                        },
+                    )
+
+                def destination_focused():
+                    return state().get("second", {}).get("focused") and settled()
+
+                for composing in (False, True):
+                    run(
+                        ["fcitx5-remote", "-s", "pinyin" if composing else "keyboard-us"],
+                        env=environment,
+                    )
+                    wait(
+                        lambda: state().get("tlqtEngine")
+                        == ("pinyin" if composing else "keyboard-us")
+                        and settled(),
+                        "direct case actual input engine",
+                    )
+                    captured, replacement = freeze_multiline()
+                    original_document = state()["plain"]["documentGeneration"]
+                    fixture("focus", field="second")
+                    wait(
+                        destination_focused, "same-window destination focus and real IM retirement"
+                    )
+                    if not composing:
+                        fixture("select", field="second", start=5, length=11)
+                        assert state()["second"]["selectionLength"] == 11
+                    if composing:
+                        run(["xdotool", "type", "--delay", "10", "nihao"], env=environment)
+                        wait(
+                            lambda: state().get("secondPreedit") and settled(),
+                            "destination real pinyin composition",
+                        )
+                    before = state()
+                    assert not before["plain"]["focused"]
+                    receipt = replace_frozen(captured, replacement)
+                    assert receipt["status"] == "Verified", receipt
+                    after = wait(
+                        lambda: value
+                        if (value := state()).get("plain", {}).get("text") == "A😀\n第二行\nThird"
+                        else None,
+                        "verified background replacement reaches the actual multiline widget",
+                    )
+                    assert after["plain"]["cursor"] == 7
+                    assert after["plain"]["selectionLength"] == 0
+                    assert after["plain"]["documentGeneration"] == original_document
+                    assert after["plain"]["undoAvailable"] and not after["plain"]["focused"]
+                    assert after["second"] == before["second"]
+                    assert after["secondPreedit"] == composing
+                    assert after["focusTransitions"] == before["focusTransitions"]
+                    changed = after["plainChangeContext"]
+                    assert changed["plainChanges"] == before["plain"]["changes"] + 1
+                    assert changed["secondFocused"]
+                    assert changed["secondText"] == before["second"]["text"]
+                    assert changed["secondCursor"] == before["second"]["cursor"]
+                    assert changed["secondSelectionStart"] == before["second"]["selectionStart"]
+                    assert changed["secondSelectionLength"] == before["second"]["selectionLength"]
+                    assert changed["secondPreedit"] == composing
+                    assert changed["focusTransitions"] == before["focusTransitions"]
+                    for event in ("plainFocusIn", "plainFocusOut"):
+                        assert changed[event] == before["keys"][event]
+                        assert after["keys"][event] == before["keys"][event]
+                    for counter in ("tlqtCommits", "tlqtPreedits"):
+                        assert type(before[counter]) is int
+                        assert changed[counter] == before[counter]
+                        assert after[counter] == before[counter]
+                    fixture("undo", field="plain")
+                    undone = state()
+                    assert undone["plain"]["text"] == "A😀\nSecond\nThird"
+                    assert undone["second"] == before["second"]
+                    assert undone["secondPreedit"] == composing
+                    assert undone["focusTransitions"] == before["focusTransitions"]
+                    if composing:
+                        run(["xdotool", "key", "space"], env=environment)
+                        wait(
+                            lambda: not state().get("secondPreedit")
+                            and state()["second"]["text"] != before["second"]["text"]
+                            and settled(),
+                            "destination original pinyin candidate still commits",
+                        )
+                result["qplaintextedit_background_selection_undo_and_destination_composition"] = (
+                    True
+                )
+                run(["fcitx5-remote", "-s", "keyboard-us"], env=environment)
+                wait(
+                    lambda: state().get("tlqtEngine") == "keyboard-us" and settled(),
+                    "keyboard engine restored for background refusal cases",
+                )
+                for conflict in (
+                    "text",
+                    "document",
+                    "selection",
+                    "handoff-text",
+                    "handoff-document",
+                    "inflight",
+                ):
+                    captured, replacement = freeze_multiline()
+                    if conflict == "inflight":
+                        switches = state()["keys"].get("plainPendingSwitches", 0)
+                        fixture("plain-pending-switch")
+                        run(["xdotool", "key", "a"], env=environment)
+                        wait(
+                            lambda: state()["keys"].get("plainPendingSwitches", 0) == switches + 1
+                            and destination_focused(),
+                            "application switches during the real pending QPA delivery",
+                        )
+                        approved = native.describe(captured["target"])
+                        assert approved["authority"].get("contextStamp", {}).get("flags") != 17
+                    else:
+                        handoffs = state()["keys"].get("plainHandoffs", 0)
+                        if conflict.startswith("handoff-"):
+                            fixture("plain-handoff", action=conflict.removeprefix("handoff-"))
+                        fixture("focus", field="second")
+                        wait(destination_focused, "destination focus before source conflict")
+                        if conflict.startswith("handoff-"):
+                            assert state()["keys"].get("plainHandoffs", 0) == handoffs + 1
+                            approved = native.describe(captured["target"])
+                            assert approved["authority"].get("contextStamp", {}).get("flags") != 17
+                        elif conflict == "text":
+                            fixture("set", field="plain", text="External source must survive")
+                        elif conflict == "document":
+                            # Same text is not the same storage identity.
+                            fixture("replace-document", field="plain", text=captured["text"])
+                        else:
+                            fixture("select", field="plain", start=0, length=1)
+                    before = state()
+                    receipt = replace_frozen(captured, replacement)
+                    assert receipt["status"] == "RejectedBeforeMutation", (conflict, receipt)
+                    # A fixture command drains the event loop without changing
+                    # either field, using the existing visibility operation.
+                    fixture("plain-visible", enabled=True)
+                    after = state()
+                    assert after["plain"] == before["plain"], conflict
+                    assert after["second"] == before["second"], conflict
+                    assert after["focusTransitions"] == before["focusTransitions"], conflict
+                result["qplaintextedit_background_conflicts_and_pending_input_refused"] = True
+                captured, replacement = freeze_multiline()
+                fixture("focus", field="second")
+                wait(destination_focused, "destination focus before reentrant document replacement")
+                fixture("on-text", field="plain", action="replace-document")
+                before = state()
+                receipt = replace_frozen(captured, replacement)
+                assert receipt["status"] == "OutcomeUnknown", receipt
+                after = wait(
+                    lambda: value
+                    if (value := state())["plain"]["text"] == "Replacement document must survive"
+                    else None,
+                    "application's replacement document survives the original transaction",
+                )
+                assert after["second"] == before["second"]
+                assert after["focusTransitions"] == before["focusTransitions"]
+                assert after["plain"]["documentGeneration"] != before["plain"]["documentGeneration"]
+                # Re-capture this same field with its CURRENT document and
+                # actual Clear proof. An old plan would also fail on conflict,
+                # so it cannot independently establish quarantine persistence.
+                fixture("focus", field="plain")
+                wait(
+                    lambda: state()["plain"]["focused"] and settled(),
+                    "quarantined field regains ordinary focus with retired input",
+                )
+                current = native.describe(captured["target"])
+                assert current["target"] == captured["target"]
+                assert current["sessionBindings"]["sourceReady"]
+                fresh = native.call(
+                    "capture", {"target": current["target"], "authority": current["authority"]}
+                )
+                assert fresh and fresh["ime"] == "Clear"
+                assert fresh["text"] == "Replacement document must survive"
+                assert fresh["target"] == captured["target"]
+                assert fresh["sessionBindings"]["sourceReady"]
+                assert fresh["writeSupported"] is False
+                result["qplaintextedit_background_reentrant_document_unknown_and_quarantined"] = (
+                    True
+                )
             fixture("quit")
             assert client.wait(timeout=10) == 0
     path.unlink(missing_ok=True)

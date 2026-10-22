@@ -769,10 +769,8 @@ static gboolean glossary_source_basis(GlossaryForm *form) {
         && overlay.top == form->origin_top && target->widget && target->buffer
         && target->buffer == form->origin_buffer && overlay.text && overlay.glossary_draft_buffer
         && gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text)) == overlay.glossary_draft_buffer
-        && G_OBJECT_TYPE(target->widget) == GTK_TYPE_ENTRY && G_OBJECT_TYPE(target->buffer) == GTK_TYPE_ENTRY_BUFFER
-        && target->client && target->client == form->origin_client && G_OBJECT_TYPE(target->client) == GTK_TYPE_TEXT
-        && gtk_widget_get_parent(target->client) == target->widget
-        && gtk_editable_get_delegate(GTK_EDITABLE(target->widget)) == GTK_EDITABLE(target->client)
+        && tl_source_glossary_supported(target)
+        && target->client && target->client == form->origin_client
         && !target->mutating && !target->quarantined && target->im_context && target->im_observed
         && g_object_get_data(G_OBJECT(target->client), TL_FCITX_CONTEXT_V1) == target->im_context
         && (gint64)target->im_state.context_generation == tl_integer(tl_object(basis, "contextStamp"), "context", -1)
@@ -1358,10 +1356,7 @@ static gboolean glossary_source_ready(void) {
     const char *state = tl_string(overlay.view, "state");
     if (!target || target->dead || !target->widget || !target->buffer || !active()
         || (g_strcmp0(state, "ValidTranslation") != 0 && g_strcmp0(state, "EditedTranslationPending") != 0)
-        || G_OBJECT_TYPE(target->widget) != GTK_TYPE_ENTRY || G_OBJECT_TYPE(target->buffer) != GTK_TYPE_ENTRY_BUFFER
-        || !target->client || G_OBJECT_TYPE(target->client) != GTK_TYPE_TEXT
-        || gtk_widget_get_parent(target->client) != target->widget
-        || gtk_editable_get_delegate(GTK_EDITABLE(target->widget)) != GTK_EDITABLE(target->client)
+        || !tl_source_glossary_supported(target)
         || gtk_window_get_focus(GTK_WINDOW(overlay.top)) != target->client || tl_focused() != target
         || !translation_menu_current()
         || (overlay.pending_glossary && (!overlay.text || !overlay.glossary_draft_buffer

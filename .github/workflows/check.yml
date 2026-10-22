@@ -581,7 +581,7 @@ jobs:
         id: fcitx
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: python tests/linux/fcitx_cooperative/run.py --core-version 5.1.22
-      - name: Collect bounded early GTK4 glossary failure evidence
+      - name: Collect bounded early GTK glossary failure evidence
         if: ${{ !cancelled() && steps.fcitx.outcome == 'failure' }}
         continue-on-error: true
         run: |
@@ -591,10 +591,14 @@ jobs:
           source = Path('artifacts/linux/fcitx-cooperative-5.1.22')
           output = Path('artifacts/early-gtk4-glossary')
           output.mkdir(parents=True, exist_ok=False)
-          names = ('gtk4-glossary-result.json', 'gtk4-glossary-state.json',
-                   'gtk4-glossary-clicks.json', 'gtk4-glossary-startup.json',
-                   'gtk4-glossary.log', 'gtk4-glossary-niri.log')
+          names = ('gtk3-glossary-result.json', 'gtk4-glossary-result.json',
+                   'gtk3-glossary-startup.json', 'gtk4-glossary-startup.json',
+                   'gtk3-glossary-session/cleanup.json', 'gtk4-glossary-session/cleanup.json',
+                   'gtk3-glossary-clicks.json', 'gtk4-glossary-clicks.json',
+                   'gtk3-glossary.log', 'gtk4-glossary.log',
+                   'gtk4-glossary-state.json', 'gtk4-glossary-niri.log')
           limit = 512 * 1024
+          remaining = 6 * limit  # Preserve the original six-file aggregate ceiling.
           evidence = []
           for name in names:
               item = {'name': name}
@@ -606,20 +610,31 @@ jobs:
                       item['omitted'] = 'not-regular-file'
                   elif info.st_size > limit:
                       item['omitted'] = 'size-limit'
+                  elif info.st_size > remaining:
+                      item['omitted'] = 'total-size-limit'
                   else:
-                      with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as stream:
-                          data = stream.read(limit + 1)
+                      parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                      try:
+                          descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+                          with os.fdopen(descriptor, 'rb') as stream:
+                              data = stream.read(limit + 1)
+                      finally:
+                          os.close(parent)
                       if len(data) > limit:
                           item['omitted'] = 'size-limit'
+                      elif len(data) > remaining:
+                          item['omitted'] = 'total-size-limit'
                       else:
+                          (output / name).parent.mkdir(parents=True, exist_ok=True)
                           (output / name).write_bytes(data)
+                          remaining -= len(data)
                           item['copiedBytes'] = len(data)
               except OSError as error:
                   item['omitted'] = type(error).__name__
               evidence.append(item)
           (output / 'manifest.json').write_text(json.dumps(evidence, indent=2) + '\n')
           PY
-      - name: Preserve early GTK4 glossary failure evidence
+      - name: Preserve early GTK glossary failure evidence
         if: ${{ !cancelled() && steps.fcitx.outcome == 'failure' }}
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -955,6 +970,8 @@ jobs:
             artifacts/linux/qt-cooperative/*.log
             artifacts/linux/fcitx-cooperative-5.1.22/*.json
             artifacts/linux/fcitx-cooperative-5.1.22/*.log
+            artifacts/linux/fcitx-cooperative-5.1.22/gtk*-glossary-session/*.json
+            artifacts/linux/fcitx-cooperative-5.1.22/gtk*-glossary-session/*.log
             ${{ steps.complete-package.outcome != 'success' && 'artifacts/TypeLay-Fcitx-cooperative.tar.gz' || '' }}
             artifacts/linux/desktop-data/typelay/components/*/self-check.json
             artifacts/linux/model-activation-metadata.json

@@ -994,6 +994,8 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         deadline.CancelAfter(TimeSpan.FromSeconds(25));
         string directory = Path.Combine(Path.GetTempPath(), "typelay-owned-host-" + Guid.NewGuid().ToString("N"));
         string path = Path.Combine(directory, "settings.json");
+        string sourceTracePath = Path.Combine(directory, "install-trace.jsonl");
+        bool traceEnabled = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TYPELAY_TRACE"));
         ChildProcess? child = null;
         var overlay = new OverlayWindow();
         bool tabDown = false;
@@ -1006,7 +1008,14 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 ExperimentalWriteback = false
             });
             using var model = WindowsRuntime.CreateModel(); // Controlled plans below do not invoke a model.
-            using var host = new PracticeHost(info => child = new ChildProcess(info));
+            using var host = new PracticeHost(info =>
+            {
+                // Isolate this child's bounded diagnostics from other tests.
+                // On failure the exact matching record is copied into the TRX.
+                if (traceEnabled)
+                    info.Environment["TYPELAY_TRACE"] = sourceTracePath;
+                return child = new ChildProcess(info);
+            });
             using var hook = new KeyboardHook(allowInjectedInput);
             host.Initialize(settings, hook, allowInjectedInput);
             host.InitializeEditing(overlay);
@@ -1163,6 +1172,8 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 {
                     long now = WindowsInterruptClock.NowMs;
                     if (now > plan.Permit.ExpiresAtMs)
+                    {
+                        var hostDiagnostics = System.Text.Json.JsonSerializer.SerializeToElement(host.AcceptanceDiagnostics(plan.Lease, plan.Permit));
                         Assert.Fail(
                         $"Original acceptance expired before its exact installation was observed; injected={allowInjectedInput}; "
                         + $"observed={plan.Permit.ObservedAtMs}; captured={plan.CapturedAtMs}; "
@@ -1175,9 +1186,11 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                         + $"editorReady={host.EditorReady(plan.Lease.Source.Target)}; "
                         + System.Text.Json.JsonSerializer.Serialize(new
                         {
-                            host = host.AcceptanceDiagnostics(plan.Lease, plan.Permit),
+                            host = hostDiagnostics,
+                            sourceInstall = ReadInstallTrace(hostDiagnostics),
                             hook = hook.AcceptanceDiagnostics(plan.Lease, plan.Permit)
                         }));
+                    }
                     Assert.False(child!.Process.HasExited);
                     deadline.Token.ThrowIfCancellationRequested();
                     // A 1 ms timer delay can span a Windows clock tick. Yield this
@@ -1185,6 +1198,50 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                     // so its ACK and input work can run before our next probe.
                     await Dispatcher.Yield(DispatcherPriority.Background);
                     deadline.Token.ThrowIfCancellationRequested();
+                }
+            }
+            object ReadInstallTrace(System.Text.Json.JsonElement expected)
+            {
+                if (!traceEnabled)
+                    return new
+                    {
+                        status = "disabled"
+                    };
+                try
+                {
+                    string file = sourceTracePath + ".practice.jsonl";
+                    if (!File.Exists(file))
+                        return new
+                        {
+                            status = "not-flushed"
+                        };
+                    foreach (string line in File.ReadLines(file))
+                    {
+                        using var record = System.Text.Json.JsonDocument.Parse(line);
+                        var value = record.RootElement;
+                        if (value.ValueKind != System.Text.Json.JsonValueKind.Object
+                            || !value.TryGetProperty("operation", out var operation)
+                            || operation.ValueKind != System.Text.Json.JsonValueKind.String
+                            || operation.GetString() != "owned-install-source")
+                            continue;
+                        if (new[] { "connection", "run", "sequence", "planSequence" }.All(key =>
+                            value.TryGetProperty(key, out var actual) && expected.TryGetProperty(key, out var wanted)
+                            && actual.ToString() == wanted.ToString()))
+                            return value.Clone();
+                    }
+                    return new
+                    {
+                        status = "exact-install-not-flushed"
+                    };
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+                {
+                    // Missing/incomplete trace is not evidence of a missed read.
+                    return new
+                    {
+                        status = "unavailable",
+                        error = error.GetType().Name
+                    };
                 }
             }
             async Task Until(Func<bool> condition)

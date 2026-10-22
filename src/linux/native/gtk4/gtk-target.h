@@ -42,6 +42,7 @@ void tl_forget(Target *target);
 Target *tl_focused(void);
 Target *tl_lookup(const char *id);
 void tl_discover(GtkWidget *widget, gboolean before_input);
+gboolean tl_source_glossary_supported(Target *target);
 JsonObject *tl_describe(Target *target);
 JsonObject *tl_capture(Target *target, JsonObject *authority);
 JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct);
