@@ -6,8 +6,32 @@ namespace TypeLay.Windows.Testing;
 // browser's error text or document URL in failure diagnostics.
 internal static class BrowserPageOpenResponse
 {
-    public static bool NavigationSucceeded(JsonElement response) => response.ValueKind == JsonValueKind.Object
-        && !response.TryGetProperty("errorText", out _);
+    public static bool NavigationSucceeded(JsonElement response) => NavigationFailure(response) == "none";
+
+    public static string NavigationFailure(JsonElement response)
+    {
+        if (response.ValueKind != JsonValueKind.Object)
+            return "invalid-response";
+        if (!response.TryGetProperty("errorText", out var error))
+            return "none";
+        if (error.ValueKind != JsonValueKind.String)
+            return "unknown";
+        // Exact matches only: never copy an untrusted suffix, URL or OS message.
+        return error.GetString() switch
+        {
+            "net::ERR_ABORTED" => "aborted",
+            "net::ERR_CONNECTION_REFUSED" => "connection-refused",
+            "net::ERR_CONNECTION_RESET" => "connection-reset",
+            "net::ERR_CONNECTION_CLOSED" => "connection-closed",
+            "net::ERR_EMPTY_RESPONSE" => "empty-response",
+            "net::ERR_INVALID_HTTP_RESPONSE" => "invalid-http-response",
+            "net::ERR_BLOCKED_BY_CLIENT" => "blocked-by-client",
+            "net::ERR_BLOCKED_BY_ADMINISTRATOR" => "blocked-by-administrator",
+            "net::ERR_UNSAFE_PORT" => "unsafe-port",
+            "net::ERR_TIMED_OUT" => "timed-out",
+            _ => "unknown"
+        };
+    }
 
     public static (bool DocumentComplete, bool StateAvailable)? Readiness(JsonElement response)
     {

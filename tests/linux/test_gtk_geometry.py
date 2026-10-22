@@ -26,6 +26,7 @@ from native_e2e import (  # noqa: E402
     glossary_menu_scroll_direction,
     glossary_painted_geometry,
     glossary_popup_fits,
+    glossary_save_outcome,
 )
 
 
@@ -124,6 +125,25 @@ class GlossaryPaintGeometryTests(unittest.TestCase):
             self.assertTrue(glossary_painted_geometry(c, 120))
             self.assertFalse(glossary_hover_current(c, 120, before, (976, 432), 108))
         self.assertFalse(glossary_hover_current(self.control(), 107, before, (976, 432), 108))
+
+
+class GlossarySaveOutcomeTests(unittest.TestCase):
+    def test_actual_ime_refusal_ends_one_click_without_waiting_for_deadline(self):
+        with self.assertRaisesRegex(AssertionError, "explicit Save refused"):
+            glossary_save_outcome(
+                [], {"fixture-glossary-feedback": {"text": "请先完成两个词条的输入法组合，再保存"}}
+            )
+
+    def test_pending_does_not_invent_success_or_refusal(self):
+        self.assertIsNone(glossary_save_outcome([], {}))
+        self.assertIsNone(
+            glossary_save_outcome(
+                [],
+                {"fixture-glossary-feedback": {"text": "仅保存明确填写的两个词，不从译文自动学习"}},
+            )
+        )
+        saved = {"formId": "owned-form", "rule": {"sourceTerm": "PR", "targetTerm": "pull request"}}
+        self.assertEqual(glossary_save_outcome([{"value": saved}], {}), saved)
 
 
 class GlossaryPopupSizeTests(unittest.TestCase):

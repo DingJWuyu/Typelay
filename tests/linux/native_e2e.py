@@ -80,6 +80,18 @@ def glossary_hover_current(control, observed_at, before, point, moved_at):
     )
 
 
+def glossary_save_outcome(events, controls):
+    if events:
+        return events[-1]["value"]
+    feedback = controls.get("fixture-glossary-feedback", {}).get("text")
+    assert feedback not in (
+        "请先完成两个词条的输入法组合，再保存",
+        "请明确填写源词和译词",
+        "每个词条最多 128 个 UTF-8 字节，请缩短后保存",
+    ), f"explicit Save refused: {feedback}"
+    return None
+
+
 def glossary_menu_scroll_advanced(snapshot, instance, previous, direction, after):
     if snapshot.get("observedAtMs", 0) <= after:
         return False
@@ -757,6 +769,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                 ):
                     for finish in (
                         "save",
+                        "pointer-save",
                         "cancel",
                         "changed-source",
                         "replaced-buffer",
@@ -866,7 +879,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             },
                             "presentation": {"visible": True, "editorOwnsText": False},
                         }
-                        if finish in ("save", "cancel"):
+                        if finish in ("save", "pointer-save", "cancel"):
                             view["canAccept"] = True
                             view["presentation"]["tabHint"] = "Tab 接受译文"
                         base = {
@@ -1030,7 +1043,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                         click("typelay-menu-trigger")
                         click("typelay-glossary-add")
                         observe(lambda _: events("sessionGlossaryBegin"), "explicit glossary click")
-                        if finish in ("save", "cancel"):
+                        if finish in ("save", "pointer-save", "cancel"):
                             # Runtime Begin revokes acceptance and renders before
                             # it returns the entry. This pending view is the
                             # native form's sourceView, not the initial preview.
@@ -1064,7 +1077,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             require_visible=True,
                         )
                         unchanged()
-                        if finish in ("save", "cancel"):
+                        if finish in ("save", "pointer-save", "cancel"):
                             form_instance = state()["overlayControls"]["typelay-glossary-form"][
                                 "instance"
                             ]
@@ -1264,7 +1277,10 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 and value.get("focusedImeClear"),
                                 "first term clear",
                             )
-                            execute("xdotool", "key", "Tab")
+                            if finish == "pointer-save":
+                                click("typelay-glossary-target")
+                            else:
+                                execute("xdotool", "key", "Tab")
                             observe(
                                 lambda value: value["overlayControls"]["typelay-glossary-target"][
                                     "focused"
@@ -1294,8 +1310,13 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 assert not events("sessionGlossaryAdd")
                             else:
                                 saved = observe(
-                                    lambda _: events("sessionGlossaryAdd"), "explicit save"
-                                )[-1]["value"]
+                                    lambda value: glossary_save_outcome(
+                                        events("sessionGlossaryAdd"),
+                                        value.get("overlayControls", {}),
+                                    ),
+                                    "explicit save",
+                                    require_visible=True,
+                                )
                                 assert (
                                     saved["formId"] == entry["formId"] and saved["token"] == token
                                 )

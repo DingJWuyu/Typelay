@@ -112,6 +112,127 @@ public sealed class ChildProcessTests
         await owner.TerminateAndWaitAsync(new CancellationToken(true));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SilentStderrThenBurstAndEofKeepTheProtocolAliveUntilOwnedTermination(bool model)
+    {
+        var start = PythonProbe("""
+            import os, sys
+            print('silent-ready', flush=True)
+            sys.stdin.buffer.read(1)
+            os.write(2, b'synthetic-error' * 4096)
+            print('drained', flush=True)
+            os.close(2)
+            print('stderr-closed', flush=True)
+            sys.stdin.buffer.read(1)
+            """);
+        using var owner = StartProbe(start, model);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        using var output = new StreamReader(owner.StandardOutput, Encoding.UTF8, leaveOpen: true);
+        Assert.Equal("silent-ready", await output.ReadLineAsync(deadline.Token).AsTask().WaitAsync(deadline.Token));
+        Assert.False(owner.Process.HasExited);
+        await owner.StandardInput.WriteAsync(new byte[] { 1 }, deadline.Token);
+        await owner.StandardInput.FlushAsync(deadline.Token);
+        Assert.Equal("drained", await output.ReadLineAsync(deadline.Token).AsTask().WaitAsync(deadline.Token));
+        Assert.Equal("stderr-closed", await output.ReadLineAsync(deadline.Token).AsTask().WaitAsync(deadline.Token));
+        Assert.False(owner.Process.HasExited); // Stderr EOF is not worker/protocol exit.
+        await owner.TerminateAndWaitAsync(deadline.Token);
+        Assert.True(owner.Process.HasExited);
+        await owner.TerminateAndWaitAsync(new CancellationToken(true));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task QuietStderrReaderRetiresWithTheExactTerminatedChild(bool model)
+    {
+        using var owner = StartProbe(PythonProbe("""
+            import sys
+            print('ready', flush=True)
+            sys.stdin.buffer.read(1)
+            """), model);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        using var output = new StreamReader(owner.StandardOutput, Encoding.UTF8, leaveOpen: true);
+        Assert.Equal("ready", await output.ReadLineAsync(deadline.Token).AsTask().WaitAsync(deadline.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            owner.TerminateAndWaitAsync(new CancellationToken(true)));
+        Assert.False(owner.Process.HasExited);
+        await owner.TerminateAndWaitAsync(deadline.Token);
+        Assert.True(owner.Process.HasExited);
+    }
+
+    [Fact]
+    public async Task StrictStderrDecodingFailureDoesNotTerminateTheAppOrProtocol()
+    {
+        var start = PythonProbe("""
+            import os, sys
+            os.write(2, b'\xff')
+            os.close(2)
+            print('alive', flush=True)
+            sys.stdin.buffer.read(1)
+            """);
+        start.StandardErrorEncoding = new UTF8Encoding(false, true);
+        using var owner = new ChildProcess(start);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        using var output = new StreamReader(owner.Process.StandardOutput.BaseStream, Encoding.UTF8, leaveOpen: true);
+        Assert.Equal("alive", await output.ReadLineAsync(deadline.Token).AsTask().WaitAsync(deadline.Token));
+        await owner.TerminateAndWaitAsync(deadline.Token);
+        Assert.True(owner.Process.HasExited);
+    }
+
+    [Fact]
+    public async Task ModelStderrLimitStillTerminatesTheOwnedWorker()
+    {
+        using var owner = StartProbe(PythonProbe("""
+            import os, sys
+            print('ready', flush=True)
+            sys.stdin.buffer.read(1)
+            for _ in range(17 * 256):
+                os.write(2, b'x' * 4096)
+            sys.stdin.buffer.read(1)
+            """), model: true);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        using var output = new StreamReader(owner.StandardOutput, Encoding.UTF8, leaveOpen: true);
+        Assert.Equal("ready", await output.ReadLineAsync(deadline.Token).AsTask().WaitAsync(deadline.Token));
+        await owner.StandardInput.WriteAsync(new byte[] { 1 }, deadline.Token);
+        await owner.StandardInput.FlushAsync(deadline.Token);
+        await owner.Process.WaitForExitAsync(deadline.Token);
+        Assert.NotEqual(0, owner.Process.ExitCode);
+        await owner.TerminateAndWaitAsync(deadline.Token);
+    }
+
+    private static ProcessStartInfo PythonProbe(string script)
+    {
+        string python = (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator)
+            .Select(directory => Path.Combine(directory.Trim('"'), "python.exe")).First(File.Exists);
+        var start = new ProcessStartInfo(Path.GetFullPath(python))
+        {
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        foreach (string argument in new[] { "-I", "-B", "-c", script })
+            start.ArgumentList.Add(argument);
+        return start;
+    }
+
+    private static IChildProcess StartProbe(ProcessStartInfo start, bool model)
+    {
+        if (!model)
+            return new ChildProcess(start);
+        using var inventory = JsonDocument.Parse("{\"schema\":1}");
+        var plan = ModelLoadPlan.Create(new(start.FileName, Path.GetFullPath("unused-worker"),
+            Path.GetFullPath("unused-models")), inventory.RootElement);
+        return new ModelChildProcess(start, plan);
+    }
+
     [Fact]
     public async Task GenerationStaysProtectedUntilEveryOwnerHasConfirmedExit()
     {

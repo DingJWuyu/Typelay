@@ -17,6 +17,18 @@ internal static partial class BrowserCooperationCheck
         private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
         private readonly CancellationTokenSource _stop = new();
         private readonly Task _serving;
+        public bool ConnectionAccepted
+        {
+            get; private set;
+        }
+        public bool PageRequestReceived
+        {
+            get; private set;
+        }
+        public bool PageResponseWritten
+        {
+            get; private set;
+        }
         public string Url
         {
             get;
@@ -62,6 +74,7 @@ internal static partial class BrowserCooperationCheck
                 while (!_stop.IsCancellationRequested)
                 {
                     using var client = await _listener.AcceptTcpClientAsync(_stop.Token);
+                    ConnectionAccepted = true;
                     using var request = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
                     request.CancelAfter(TimeSpan.FromSeconds(3));
                     try
@@ -72,6 +85,7 @@ internal static partial class BrowserCooperationCheck
                         if (line is null)
                             continue;
                         bool page = line == "GET /cooperation HTTP/1.1";
+                        PageRequestReceived |= page;
                         int size = line?.Length ?? 0;
                         while (!string.IsNullOrEmpty(line = await reader.ReadLineAsync(request.Token)))
                         {
@@ -83,6 +97,7 @@ internal static partial class BrowserCooperationCheck
                         string header = $"HTTP/1.1 {(page ? "200 OK" : "404 Not Found")}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {content.Length}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
                         await stream.WriteAsync(Encoding.ASCII.GetBytes(header), request.Token);
                         await stream.WriteAsync(content, request.Token);
+                        PageResponseWritten |= page;
                     }
                     catch (OperationCanceledException) when (!_stop.IsCancellationRequested) { }
                     catch (IOException) { } // An owned Chrome speculative connection can close without a request.
@@ -112,6 +127,7 @@ internal static partial class BrowserCooperationCheck
         private int _nextId;
         private string? _page;
         public ExtensionDiscovery Discovery { get; private set; } = new(0, 0, 0, 0, 0);
+        public string NavigationFailure { get; private set; } = "unobserved";
         private static readonly JsonSerializerOptions ReadJson = new() { PropertyNameCaseInsensitive = true };
         public static async Task<Cdp> ConnectAsync(string profile, Action<string> setStage, CancellationToken ct)
         {
@@ -254,6 +270,7 @@ internal static partial class BrowserCooperationCheck
             {
                 url
             }, ct);
+            NavigationFailure = BrowserPageOpenResponse.NavigationFailure(navigation);
             Require(BrowserPageOpenResponse.NavigationSucceeded(navigation), "owned-page-navigation-failed");
             string lastReadiness = "unobserved";
             while (true)

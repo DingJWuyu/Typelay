@@ -600,6 +600,13 @@ internal static partial class BrowserCooperationCheck
             extensionDistribution = "unpacked-development-validation-not-store-install",
             extensionId,
             extensionDiscovery = cdp?.Discovery,
+            pageNavigationFailure = cdp?.NavigationFailure ?? "unobserved",
+            loopbackPage = server is null ? null : new
+            {
+                server.ConnectionAccepted,
+                server.PageRequestReceived,
+                server.PageResponseWritten
+            },
             settingsIdentityDiscovered,
             preexistingEmptyHostedContainerPreserved = hostedContainer is not null,
             releaseConnectionUnmodified,

@@ -10,6 +10,7 @@ internal sealed class ChildProcess : IChildProcess
     private bool _assigned;
     private bool _exitProven;
     private bool _disposed;
+    private Thread? _errorReader;
     public Process Process
     {
         get;
@@ -37,12 +38,31 @@ internal sealed class ChildProcess : IChildProcess
         catch { Native.CloseHandle(_job); _job = 0; throw; }
         try
         {
-            // Never store native-library exception messages or a request's content.
-            if (info.RedirectStandardError)
-                _ = DrainErrors(Process.StandardError);
             if (!AssignProcessToJobObject(_job, Process.Handle))
                 throw new IOException("job-assign");
             _assigned = true;
+            // Redirected Windows stdio is a synchronous anonymous pipe. A quiet
+            // stderr must not occupy a shared worker needed by control frames.
+            // Start only after assignment, so a failed assignment owns no reader.
+            if (info.RedirectStandardError)
+            {
+                var errors = Process.StandardError;
+                _errorReader = new Thread(() =>
+                {
+                    // The former unobserved async drain could fault without
+                    // terminating the App. Keep that boundary on this thread.
+                    try
+                    {
+                        DrainErrors(errors);
+                    }
+                    catch (Exception error) when (error is not OutOfMemoryException) { }
+                })
+                {
+                    IsBackground = true,
+                    Name = "TypeLay child stderr"
+                };
+                _errorReader.Start();
+            }
         }
         catch
         {
@@ -57,15 +77,16 @@ internal sealed class ChildProcess : IChildProcess
             throw new ChildProcessCleanupUnconfirmedException(this);
         }
     }
-    private static async Task DrainErrors(StreamReader reader)
+    private static void DrainErrors(StreamReader reader)
     {
         char[] buffer = new char[1024];
         try
         {
-            while (await reader.ReadAsync(buffer) > 0)
+            while (reader.Read(buffer, 0, buffer.Length) > 0)
                 Array.Clear(buffer);
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException) { }
+        finally { Array.Clear(buffer); }
     }
     public async Task TerminateAndWaitAsync(CancellationToken cancellationToken)
     {
@@ -96,6 +117,11 @@ internal sealed class ChildProcess : IChildProcess
         }
         // Job accounting can reach zero before the root process is signaled.
         await Process.WaitForExitAsync(cancellationToken);
+        // Job/root exit and reader exit are separate proofs. Cancellation retains
+        // this same owner; background-thread status alone never proves release.
+        while (_errorReader?.IsAlive == true)
+            await Task.Delay(10, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         lock (_state)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);

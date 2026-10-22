@@ -1075,8 +1075,10 @@ static void glossary_close(gboolean restore, gboolean notify) {
          * its original read-only widget; fresh binding/IME ACK enables editing. */
         if (form->source_origin) {
             if (glossary_identity_current(form) && glossary_source_basis(form)
-                && glossary_contains(form, gtk_window_get_focus(GTK_WINDOW(overlay.top))))
-                gtk_entry_grab_focus_without_selecting(GTK_ENTRY(editor));
+                && glossary_contains(form, gtk_window_get_focus(GTK_WINDOW(overlay.top)))) {
+                if (GTK_IS_ENTRY(editor)) gtk_entry_grab_focus_without_selecting(GTK_ENTRY(editor));
+                else if (GTK_IS_TEXT_VIEW(editor)) gtk_widget_grab_focus(editor);
+            }
         } else {
             gtk_widget_set_focusable(editor, TRUE);
             if (glossary_identity_current(form) && overlay.text == editor
@@ -1316,6 +1318,14 @@ static gboolean glossary_dispatch(GtkEventControllerLegacy *controller, GdkEvent
     GlossaryForm *form = overlay.glossary;
     if (!glossary_current(form) || gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller)) != form->box
         || !glossary_contains(form, gtk_window_get_focus(GTK_WINDOW(overlay.top)))) return FALSE;
+    /* Like Tab, a pointer departure must observe the focused term before GTK
+     * moves focus to Save/scope/another term. The timer may not have sampled
+     * the last IM completion yet. This does not consume or replay the event;
+     * Unknown/composition and the other term's invalidation remain rejected. */
+    GdkEventType type = gdk_event_get_event_type(event);
+    GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(overlay.top));
+    if ((type == GDK_BUTTON_PRESS || type == GDK_TOUCH_BEGIN)
+        && (focus == form->clients[0] || focus == form->clients[1])) glossary_sync();
     return tl_dispatch_key(event);
 }
 static gboolean glossary_key_event(GtkEventControllerKey *controller, guint keyval, guint keycode,

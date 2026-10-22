@@ -21,6 +21,7 @@ internal sealed class ModelChildProcess : IChildProcess
     private Process? _observation;
     private FileStream? _input, _output, _errors, _modelUse;
     private bool _exitProven, _disposed;
+    private Thread? _errorReader;
 
     public Process Process => _observation ?? throw new InvalidOperationException("child-not-observable");
     public Stream StandardInput => _input ?? throw new InvalidOperationException("child-input-unavailable");
@@ -101,8 +102,24 @@ internal sealed class ModelChildProcess : IChildProcess
             Close(ref childOut);
             Close(ref childErr);
             _observation = Process.GetProcessById(checked((int)process.ProcessId));
-            // A bounded, body-free drain never runs on the protocol or UI thread.
-            _ = Task.Run(DrainErrorsAsync);
+            // This is a synchronous anonymous pipe. Its potentially lifelong
+            // silent read owns one thread, not a shared control/protocol worker.
+            var errors = _errors;
+            _errorReader = new Thread(() =>
+            {
+                // Unexpected failures used to fault only the drain Task. The
+                // existing drain still handles expected I/O/limit termination.
+                try
+                {
+                    DrainErrors(errors);
+                }
+                catch (Exception error) when (error is not OutOfMemoryException) { }
+            })
+            {
+                IsBackground = true,
+                Name = "TypeLay model stderr"
+            };
+            _errorReader.Start();
             SuspendedProcess.Resume(_job, _process, thread);
         }
         catch
@@ -160,7 +177,9 @@ internal sealed class ModelChildProcess : IChildProcess
                 if (!QueryInformationJobObject(_job, 1, out Accounting accounting, (uint)Marshal.SizeOf<Accounting>(), 0))
                     throw Failure("job-accounting-query");
                 // The root can be outside an empty job when assignment failed.
-                if (wait == 0 && accounting.ActiveProcesses == 0)
+                // Do not release the generation before the exact stderr reader
+                // also exited. Never wait/join while holding its termination lock.
+                if (wait == 0 && accounting.ActiveProcesses == 0 && _errorReader?.IsAlive != true)
                 {
                     _modelUse?.Dispose();
                     _modelUse = null;
@@ -182,15 +201,15 @@ internal sealed class ModelChildProcess : IChildProcess
             TerminateProcess(_process, 2);
     }
 
-    private async Task DrainErrorsAsync()
+    private void DrainErrors(FileStream errors)
     {
         byte[] buffer = new byte[4096];
         long total = 0;
         try
         {
-            while (_errors is { } errors)
+            while (true)
             {
-                int count = await errors.ReadAsync(buffer).ConfigureAwait(false);
+                int count = errors.Read(buffer, 0, buffer.Length);
                 Array.Clear(buffer);
                 if (count == 0)
                     return;

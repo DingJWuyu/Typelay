@@ -113,36 +113,11 @@ internal sealed partial class BrowserWindows : IDisposable
                 using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
                 byte[]? png = await Task.Run(() =>
                 {
-                    nint previousDpi = SetThreadDpiAwarenessContext(-4);
-                    if (previousDpi == 0)
-                        return null;
-                    try
+                    return CaptureWindowPng(window.Handle, () =>
                     {
-                        if (!GetWindowRect(window.Handle, out var bounds))
-                            return null;
-                        int width = bounds.Right - bounds.Left, height = bounds.Bottom - bounds.Top;
-                        if (width <= 0 || height <= 0 || width > 8192 || height > 8192 || (long)width * height > 16_000_000)
-                            return null;
-                        using var bitmap = new Bitmap(width, height);
-                        using var graphics = Graphics.FromImage(bitmap);
-                        Native.GetWindowThreadProcessId(window.Handle, out uint beforePrintProcess);
-                        if (beforePrintProcess != processId || owner.HasExited || deadline.IsCancellationRequested)
-                            return null;
-                        nint dc = graphics.GetHdc();
-                        bool printed;
-                        try
-                        {
-                            printed = PrintWindow(window.Handle, dc, 2);
-                        }
-                        finally { graphics.ReleaseHdc(dc); }
                         Native.GetWindowThreadProcessId(window.Handle, out uint currentProcess);
-                        if (!printed || currentProcess != processId || owner.HasExited || deadline.IsCancellationRequested)
-                            return null;
-                        using var buffer = new MemoryStream();
-                        bitmap.Save(buffer, ImageFormat.Png);
-                        return buffer.ToArray();
-                    }
-                    finally { SetThreadDpiAwarenessContext(previousDpi); }
+                        return currentProcess == processId && !owner.HasExited;
+                    }, deadline.Token);
                 }).WaitAsync(deadline.Token);
                 // Timed-out work can only discard its bytes. The awaiting test
                 // alone publishes an image after successful bounded completion.
@@ -155,6 +130,44 @@ internal sealed partial class BrowserWindows : IDisposable
                 log("Owned browser screenshot unavailable: " + error.GetType().Name);
             }
         }
+    }
+
+    // Caller owns the exact window/process identity and publication deadline.
+    // This captures only that HWND, never desktop pixels or overlapping windows.
+    internal static byte[]? CaptureWindowPng(nint window, Func<bool> identityMatches, CancellationToken token, int maximumPixels = 16_000_000)
+    {
+        token.ThrowIfCancellationRequested();
+        nint previousDpi = SetThreadDpiAwarenessContext(-4);
+        if (previousDpi == 0)
+            return null;
+        try
+        {
+            if (!identityMatches() || !GetWindowRect(window, out var bounds))
+                return null;
+            int width = bounds.Right - bounds.Left, height = bounds.Bottom - bounds.Top;
+            if (width <= 0 || height <= 0 || width > 8192 || height > 8192 || (long)width * height > Math.Min(maximumPixels, 16_000_000))
+                return null;
+            using var bitmap = new Bitmap(width, height);
+            using var graphics = Graphics.FromImage(bitmap);
+            token.ThrowIfCancellationRequested();
+            if (!identityMatches())
+                return null;
+            nint dc = graphics.GetHdc();
+            bool printed;
+            try
+            {
+                printed = PrintWindow(window, dc, 2);
+            }
+            finally { graphics.ReleaseHdc(dc); }
+            token.ThrowIfCancellationRequested();
+            if (!printed || !identityMatches())
+                return null;
+            using var buffer = new MemoryStream();
+            bitmap.Save(buffer, ImageFormat.Png);
+            token.ThrowIfCancellationRequested();
+            return buffer.ToArray();
+        }
+        finally { SetThreadDpiAwarenessContext(previousDpi); }
     }
 
     public static async Task<ProcessStartInfo> PageStartInfoAsync(string directory, string title, string initial,

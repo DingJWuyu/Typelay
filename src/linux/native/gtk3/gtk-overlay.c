@@ -582,7 +582,9 @@ static void close_language_popups_outside(GtkWidget *widget, gboolean trigger_cl
     }
 }
 static void trace_edit_click(const char *phase, const char *reason, gboolean candidate_hit);
+static void glossary_pointer_departure(GdkEvent *event);
 void tl_overlay_pointer(GdkEvent *event) {
+    glossary_pointer_departure(event);
     if (event->type == GDK_BUTTON_PRESS && event->button.button == 1 && overlay.target) {
         GtkWidget *widget = gtk_get_event_widget(event);
         trace_edit_click("pointer", "received", widget && overlay.text
@@ -907,6 +909,18 @@ static void glossary_sync(void) {
     }
     form->probing = FALSE;
     glossary_unref(form);
+}
+/* Observe a departing term at the same real pre-focus boundary as Tab. */
+static void glossary_pointer_departure(GdkEvent *event) {
+    if (event->type != GDK_BUTTON_PRESS && event->type != GDK_TOUCH_BEGIN) return;
+    GlossaryForm *form = overlay.glossary;
+    GtkWidget *receiver = gtk_get_event_widget(event);
+    if (!glossary_current(form) || !receiver
+        || !(receiver == form->box || gtk_widget_is_ancestor(receiver, form->box))) return;
+    GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(overlay.top));
+    if (focus == form->clients[0] || focus == form->clients[1]) glossary_sync();
+    /* No borrowed form/widget is used after the reentrant inspection. The
+     * original pointer continues normally; clicked revalidates all authority. */
 }
 static gboolean glossary_focus_emission(GSignalInvocationHint *hint, guint count, const GValue *values, gpointer data) {
     (void)hint;

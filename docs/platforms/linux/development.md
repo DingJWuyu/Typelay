@@ -121,7 +121,7 @@ Qt 的原生实现、provider FIFO、实际版本核对、构建和验证边界�
 | 网页普通字段 | Firefox/Chromium 扩展安装、input/textarea、切标签页、DOM 重建和框架受控值 | native messaging 路由、真实网页状态与撤销栈；详见浏览器说明 |
 | 富文本 | Tiptap 单段选区替换，保留范围外 marks 与原生撤销语义 | 其他版本、自定义 dispatcher、多段/列表/mention 尚未覆盖 |
 | 合作 GTK | GTK3/GTK4 标准 Entry、纯文本 TextView，模型、选区、编辑回源、组合与敏感字段拒绝；标准 Entry 同窗后台写回与原文冲突 | 已有隔离 niri 证据；GTK3 验证宿主 user-action 分组，GTK4 另验原生 undo/redo，实际应用及物理输入仍需验收；TextView 后台未覆盖 |
-| 合作 Qt6 | QLineEdit 自动/按需、F9/F10、选区、编辑回源、同窗后台写回/冲突拒绝；QPlainTextEdit 多行、undo/redo、真实拼音、结构拒绝和应用回调隔离 | 隔离 niri 及搬迁可选包已有证据；CachyOS 发行修订、实际应用与物理输入仍须验收；QPlainTextEdit→同窗 QLineEdit 后台实现已有真实 provider 回归待执行；跨窗口/应用后台未覆盖 |
+| 合作 Qt6 | QLineEdit 自动/按需、F9/F10、选区、编辑回源、同窗后台写回/冲突拒绝；QPlainTextEdit 多行、undo/redo、真实拼音、结构拒绝和应用回调隔离 | 隔离 niri 及搬迁可选包已有证据；CachyOS 发行修订、实际应用与物理输入仍须验收；QPlainTextEdit→同窗 QLineEdit 后台已通过真实 provider/consumer 回归；跨窗口/应用后台未覆盖 |
 | 其他输入框 | 带 tags/嵌入对象及非标准 GTK 控件、Electron/VS Code 自动浮层、Qt QTextEdit/富文本/自绘控件 | 尚未实现，不能标记通过 |
 
 未经实际执行的项目保持未验证。源码中存在实现、单元测试通过和嵌套桌面通过是三个不同层次的证据。
