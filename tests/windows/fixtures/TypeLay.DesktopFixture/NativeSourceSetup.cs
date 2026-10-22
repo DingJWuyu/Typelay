@@ -9,14 +9,29 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 // product readiness, an IME state, or a write permit.
 internal static class NativeSourceSetup
 {
+    // Explicit fixture layout preparation, never an implicit fallback for a
+    // refused click. Only this caller-owned ordinary window may be exposed;
+    // HWND_TOP is not HWND_TOPMOST and does not establish foreground or focus.
+    internal static void ExposeOwnedWindow(nint root, nint field, Process process, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        Check(IsOwnedField(root, field, process), FailureReason.SourceExposureIdentityChanged);
+        Check(N.IsWindowVisible(root) && N.IsWindowEnabled(root)
+            && N.IsWindowVisible(field) && N.IsWindowEnabled(field), FailureReason.SourceExposureUnavailable);
+        ct.ThrowIfCancellationRequested();
+        Check(SetWindowPos(root, 0, 0, 0, 0, 0, 0x0013), // NOMOVE | NOSIZE | NOACTIVATE.
+            FailureReason.SourceExposureFailed);
+    }
+
+    private static bool IsOwnedField(nint root, nint field, Process process) => !process.HasExited
+        && N.GetWindowThreadProcessId(root, out uint rootPid) != 0 && rootPid == process.Id
+        && N.GetWindowThreadProcessId(field, out uint fieldPid) != 0 && fieldPid == process.Id
+        && N.GetAncestor(field, 2) == root;
+
     internal static async Task ClickAsync(nint root, nint field, Process process, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         int processId = process.Id;
-        bool OwnedField() => !process.HasExited
-            && N.GetWindowThreadProcessId(root, out uint rootPid) != 0 && rootPid == processId
-            && N.GetWindowThreadProcessId(field, out uint fieldPid) != 0 && fieldPid == processId
-            && N.GetAncestor(field, 2) == root;
         // Only observation runs in the worker. A cancelled UIA wait cannot leave
         // a background action that later moves the pointer or clicks.
         var observed = await Task.Run(() =>
@@ -25,7 +40,7 @@ internal static class NativeSourceSetup
             Check(previousDpi != 0, FailureReason.SourceClickObservationDpiContext);
             try
             {
-                Check(OwnedField(), FailureReason.SourceClickIdentityChanged);
+                Check(IsOwnedField(root, field, process), FailureReason.SourceClickIdentityChanged);
                 var element = AutomationElement.FromHandle(field);
                 var current = element.Current;
                 Check(current.NativeWindowHandle == field && current.ProcessId == processId
@@ -63,7 +78,7 @@ internal static class NativeSourceSetup
             Check(click.ReleaseComplete, FailureReason.SourceClickReleaseIncomplete);
             Check(click.Complete, FailureReason.SourceClickIncomplete);
 
-            void CheckTarget() => Check(OwnedField() && N.IsWindowVisible(field) && N.IsWindowEnabled(field)
+            void CheckTarget() => Check(IsOwnedField(root, field, process) && N.IsWindowVisible(field) && N.IsWindowEnabled(field)
                 && N.GetWindowRect(field, out var bounds) && observed.X >= bounds.Left && observed.X < bounds.Right
                 && observed.Y >= bounds.Top && observed.Y < bounds.Bottom && WindowFromPoint(observed) == field,
                 FailureReason.SourceClickTargetChanged);
@@ -205,6 +220,9 @@ internal static class NativeSourceSetup
 
     internal enum FailureReason
     {
+        SourceExposureIdentityChanged,
+        SourceExposureUnavailable,
+        SourceExposureFailed,
         SourceClickObservationDpiContext,
         SourceClickIdentityChanged,
         SourceClickControlUnavailable,
@@ -225,6 +243,9 @@ internal static class NativeSourceSetup
         internal FailureReason Reason { get; } = reason;
         internal string Code => Reason switch
         {
+            FailureReason.SourceExposureIdentityChanged => "source-exposure-identity-changed",
+            FailureReason.SourceExposureUnavailable => "source-exposure-unavailable",
+            FailureReason.SourceExposureFailed => "source-exposure-failed",
             FailureReason.SourceClickObservationDpiContext => "source-click-observation-dpi-context",
             FailureReason.SourceClickIdentityChanged => "source-click-identity-changed",
             FailureReason.SourceClickControlUnavailable => "source-click-control-unavailable",
@@ -247,6 +268,9 @@ internal static class NativeSourceSetup
         if (!condition)
             throw new Failure(reason);
     }
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(nint window, nint after, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] private static extern nint SetThreadDpiAwarenessContext(nint context);
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(N.Point point);
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);

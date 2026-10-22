@@ -1,6 +1,8 @@
 // Never invoke on a user desktop. Real execution requires a separately reviewed
 // one-shot command on a disposable GitHub-hosted Windows VM.
+#define PSAPI_VERSION 2
 #include "protocol.h"
+#include <psapi.h>
 #include "outcome.h"
 #include <objbase.h>
 #include <cstdio>
@@ -44,7 +46,76 @@ bool Env(const wchar_t* name, const wchar_t* expected) noexcept {
     const DWORD size = GetEnvironmentVariableW(name, value, 128);
     return size && size < 128 && std::wcscmp(value, expected) == 0;
 }
+// Runner-only metadata, not target ABI or proof of hook execution/file bytes.
+struct ModuleObservation {
+    enum Stop : unsigned { NotRun, PathSeen, ScannedWithoutMatch, TargetUnavailable, Deadline,
+        LocalPathFailed, LocalPathTruncated, EnumerationFailed, CapacityExceeded,
+        InvalidEnumerationSize, ModulePathFailed, ModulePathTruncated };
+    bool attempted = false, completed = false, observerPathSeen = false;
+    Stop stop = NotRun;
+    DWORD error = 0;
+    ULONGLONG started = 0, ended = 0;
+    void Observe(HANDLE process, HMODULE localModule, ULONGLONG deadline) noexcept {
+        attempted = true;
+        started = GetTickCount64();
+        auto allowed = [&]() {
+            if (GetTickCount64() >= deadline) { stop = Deadline; return false; }
+            SetLastError(ERROR_SUCCESS);
+            const DWORD wait = WaitForSingleObject(process, 0);
+            if (wait != WAIT_TIMEOUT) {
+                stop = TargetUnavailable;
+                if (wait == WAIT_FAILED) error = GetLastError();
+                return false;
+            }
+            return true;
+        };
+        // Fixed storage/call count. No retries, target writes or new process handles.
+        // Each OS call is synchronous, not a hard-real-time bounded operation.
+        wchar_t expected[32768]{};
+        wchar_t path[32768]{};
+        HMODULE modules[256]{};
+        do {
+            if (!allowed()) break;
+            SetLastError(ERROR_SUCCESS);
+            const DWORD length = GetModuleFileNameW(localModule, expected, 32768);
+            if (!length) { error = GetLastError(); stop = LocalPathFailed; break; }
+            if (length >= 32767) { stop = LocalPathTruncated; break; }
+            if (!allowed()) break;
+            DWORD needed = 0;
+            SetLastError(ERROR_SUCCESS);
+            if (!K32EnumProcessModulesEx(process, modules, sizeof(modules), &needed, LIST_MODULES_64BIT)) {
+                error = GetLastError(); stop = EnumerationFailed; break;
+            }
+            if (needed > sizeof(modules)) { stop = CapacityExceeded; break; }
+            if (!needed || needed % sizeof(HMODULE)) { stop = InvalidEnumerationSize; break; }
+            const DWORD count = static_cast<DWORD>(needed / sizeof(HMODULE));
+            for (DWORD i = 0; i < count; ++i) {
+                if (!allowed()) break;
+                SetLastError(ERROR_SUCCESS);
+                const DWORD size = K32GetModuleFileNameExW(process, modules[i], path, 32768);
+                if (!size) { error = GetLastError(); stop = ModulePathFailed; break; }
+                if (size >= 32767) { stop = ModulePathTruncated; break; }
+                if (std::wcscmp(expected, path) == 0) {
+                    observerPathSeen = true; stop = PathSeen; break;
+                }
+            }
+            if (stop == NotRun) stop = ScannedWithoutMatch;
+            // A match is only a returned path, never mapped-byte identity. Module
+            // enumeration and path calls are not an atomic loader snapshot.
+            completed = stop == PathSeen || stop == ScannedWithoutMatch;
+        } while (false);
+        ended = GetTickCount64();
+    }
+    void Print() const noexcept {
+        std::printf(",\"moduleObservation\":{\"schemaVersion\":1,\"attempted\":%s,"
+            "\"completed\":%s,\"observerPathSeen\":%s,\"stopReason\":%u,\"win32Error\":%lu,"
+            "\"startedTick\":%llu,\"endedTick\":%llu}",
+            attempted ? "true" : "false", completed ? "true" : "false",
+            observerPathSeen ? "true" : "false", static_cast<unsigned>(stop), error, started, ended);
+    }
+};
 struct Diagnostics {
+    ModuleObservation moduleObservation;
     bool policyQueried = false, signatureKnown = false, dynamicKnown = false;
     DWORD signatureError = 0, dynamicError = 0, signatureFlags = 0, dynamicFlags = 0;
     bool sendReturned = false;
@@ -76,6 +147,7 @@ struct Diagnostics {
             static_cast<long long>(sendReturn), sendError, sendStarted, sendEnded, attempted && sendReturned && sendReturn != 0 ? "true" : "false");
         if (attempted && sendReturned && sendReturn != 0) std::printf("%llu", static_cast<unsigned long long>(messageResult));
         else std::printf("null");
+        moduleObservation.Print();
         std::printf("}");
     }
 };
@@ -308,6 +380,7 @@ int wmain(int argc, wchar_t** argv) {
             diagnostics.sendError = GetLastError(); // No intervening API may overwrite this.
             diagnostics.sendReturned = true;
             diagnostics.sendEnded = GetTickCount64();
+            diagnostics.moduleObservation.Observe(owned.process, owned.module, e->deadline);
             while (GetTickCount64() < e->deadline && WaitForSingleObject(owned.process, 0) == WAIT_TIMEOUT) {
                 if (InterlockedCompareExchange(&e->status, 0, 0) != Pending) break;
                 Sleep(10);

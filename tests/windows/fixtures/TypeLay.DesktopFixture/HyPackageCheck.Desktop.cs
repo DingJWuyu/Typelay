@@ -761,6 +761,10 @@ internal static partial class HyPackageCheck
     }
     private sealed class OrdinaryQuitObservation
     {
+        public ShellTrayObservation? FirstMissShellTree
+        {
+            get; set;
+        }
         public bool AppExitObserved
         {
             get; set;
@@ -844,6 +848,14 @@ internal static partial class HyPackageCheck
                 icon = matches[0];
                 return true;
             }
+            if (observation.FirstMissShellTree is null)
+            {
+                // The shell structure is evidence, not an alternate selector.
+                // A partial/failed sample cannot establish that an icon is absent.
+                observation.FirstMissShellTree = new ShellTrayObservation();
+                observation.FirstMissShellTree.Capture(trays.Cast<AutomationElement>(), ct);
+            }
+            ct.ThrowIfCancellationRequested();
             if (!overflowOpened)
             {
                 var overflow = buttons.Where(button => !button.Current.IsOffscreen && (button.Current.AutomationId == "NotificationChevron"
@@ -853,7 +865,9 @@ internal static partial class HyPackageCheck
                 if (overflow.Length == 1)
                 {
                     scene.Stage = "open-tray-overflow";
-                    ((InvokePattern)overflow[0].GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+                    var overflowInvoke = (InvokePattern)overflow[0].GetCurrentPattern(InvokePattern.Pattern);
+                    ct.ThrowIfCancellationRequested();
+                    overflowInvoke.Invoke();
                     observation.OverflowOpened = overflowOpened = true;
                     scene.Stage = "find-tray-icon";
                 }
@@ -865,11 +879,17 @@ internal static partial class HyPackageCheck
         {
             observation.IconInvokeSupported = icon!.TryGetCurrentPattern(InvokePattern.Pattern, out var invoke);
             if (observation.IconInvokeSupported)
+            {
+                ct.ThrowIfCancellationRequested();
                 ((InvokePattern)invoke).Invoke();
+            }
             else
             {
                 var point = icon.GetClickablePoint();
-                Require(icon.Current.BoundingRectangle.Contains(point) && SetCursorPos((int)point.X, (int)point.Y), "tray-click-point-unavailable");
+                Require(icon.Current.BoundingRectangle.Contains(point), "tray-click-point-unavailable");
+                ct.ThrowIfCancellationRequested();
+                Require(SetCursorPos((int)point.X, (int)point.Y), "tray-click-point-unavailable");
+                ct.ThrowIfCancellationRequested();
                 var click = SendLeftClick();
                 Require(click.ReleaseComplete, "tray-click-release-incomplete");
                 Require(click.Complete, "tray-click-incomplete");
@@ -892,7 +912,12 @@ internal static partial class HyPackageCheck
             return observation.QuitFound && observation.QuitEnabled && observation.QuitVisible;
         }, ct), ct);
         scene.Stage = "invoke-quit";
-        await UiAsync(() => ((InvokePattern)quit!.GetCurrentPattern(InvokePattern.Pattern)).Invoke(), ct);
+        await UiAsync(() =>
+        {
+            var quitInvoke = (InvokePattern)quit!.GetCurrentPattern(InvokePattern.Pattern);
+            ct.ThrowIfCancellationRequested();
+            quitInvoke.Invoke();
+        }, ct);
         observation.QuitInvokeReturned = true;
     }
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(N.Point point);

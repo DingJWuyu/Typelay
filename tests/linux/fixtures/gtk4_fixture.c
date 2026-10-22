@@ -294,6 +294,8 @@ typedef struct {
     gint64 mapped_at, requested_frame, layout_frame, paint_frame, painted_frame, painted_at;
     gint64 completed_layout_frame, completed_paint_frame;
     JsonNode *geometry;
+    char *label;
+    guint64 label_revision, painted_label_revision;
 } ControlPaint;
 
 static void control_paint_clear(ControlPaint *paint) {
@@ -310,6 +312,8 @@ static void control_paint_clear(ControlPaint *paint) {
     g_clear_object(&paint->clock);
     g_clear_pointer(&paint->geometry, json_node_unref);
     paint->painted_at = 0;
+    paint->painted_label_revision = 0;
+    g_clear_pointer(&paint->label, g_free);
 }
 static void control_paint_free(gpointer data) {
     ControlPaint *paint = data;
@@ -343,6 +347,7 @@ static void control_after_paint(GdkFrameClock *clock, gpointer data) {
     paint->painted_map_generation = paint->map_generation;
     paint->painted_frame = gdk_frame_clock_get_frame_counter(clock);
     paint->painted_at = g_get_monotonic_time() / 1000;
+    paint->painted_label_revision = paint->label_revision;
 }
 static gboolean control_request_frame(gpointer data) {
     GtkWidget *widget = data;
@@ -355,10 +360,31 @@ static gboolean control_request_frame(gpointer data) {
     }
     return G_SOURCE_REMOVE;
 }
+static void control_label_changed(GObject *object, GParamSpec *property, gpointer unused) {
+    (void)property; (void)unused;
+    GtkWidget *widget = GTK_WIDGET(object);
+    ControlPaint *paint = g_object_get_data(object, "fixture-control-paint");
+    const char *label = gtk_button_get_label(GTK_BUTTON(widget));
+    if (g_strcmp0(label, paint->label) == 0) return;
+    g_free(paint->label);
+    paint->label = g_strdup(label);
+    paint->label_revision++;
+    paint->painted_label_revision = 0;
+    /* A new label can still expose its previous allocation. Invalidate now,
+     * then request a complete later frame, never certify the in-progress one.
+     * Unchanged render notifications must not keep restarting this boundary. */
+    if (paint->clock && gtk_widget_get_mapped(widget) && !paint->request_source)
+        paint->request_source = g_idle_add_full(G_PRIORITY_DEFAULT_IDLE,
+            control_request_frame, g_object_ref(widget), g_object_unref);
+}
 static void control_paint_map(GtkWidget *widget, gpointer unused) {
     (void)unused;
     ControlPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-control-paint");
     control_paint_clear(paint);
+    if (GTK_IS_BUTTON(widget)) {
+        paint->label = g_strdup(gtk_button_get_label(GTK_BUTTON(widget)));
+        paint->label_revision++;
+    }
     paint->map_generation++;
     paint->mapped_at = g_get_monotonic_time() / 1000;
     GdkFrameClock *clock = gtk_widget_get_frame_clock(widget);
@@ -392,6 +418,8 @@ static void report_control_paint(JsonBuilder *builder, GtkWidget *widget, JsonNo
         g_object_set_data_full(G_OBJECT(widget), "fixture-control-paint", paint, control_paint_free);
         g_signal_connect(widget, "map", G_CALLBACK(control_paint_map), NULL);
         g_signal_connect(widget, "unmap", G_CALLBACK(control_paint_unmap), NULL);
+        if (GTK_IS_BUTTON(widget))
+            g_signal_connect(widget, "notify::label", G_CALLBACK(control_label_changed), NULL);
         if (gtk_widget_get_mapped(widget)) control_paint_map(widget, NULL);
     }
     GdkFrameClock *clock = gtk_widget_get_frame_clock(widget);
@@ -404,10 +432,13 @@ static void report_control_paint(JsonBuilder *builder, GtkWidget *widget, JsonNo
     gboolean ready = gtk_widget_get_mapped(widget) && geometry && paint->geometry
         && paint->painted_at >= paint->mapped_at && paint->painted_at > 0
         && paint->painted_map_generation == paint->map_generation
+        && paint->painted_label_revision == paint->label_revision
         && paint->painted_frame <= frame && json_node_equal(geometry, paint->geometry);
     json_builder_set_member_name(builder, "paintObservation");
     json_builder_begin_object(builder);
     json_builder_set_member_name(builder, "ready"); json_builder_add_boolean_value(builder, ready);
+    json_builder_set_member_name(builder, "labelRevision"); json_builder_add_int_value(builder, paint->label_revision);
+    json_builder_set_member_name(builder, "paintedLabelRevision"); json_builder_add_int_value(builder, paint->painted_label_revision);
     json_builder_set_member_name(builder, "mapGeneration"); json_builder_add_int_value(builder, paint->map_generation);
     json_builder_set_member_name(builder, "paintedMapGeneration"); json_builder_add_int_value(builder, paint->painted_map_generation);
     json_builder_set_member_name(builder, "requestedFrame"); json_builder_add_int_value(builder, paint->requested_frame);
@@ -473,8 +504,7 @@ static void report_control_surface(JsonBuilder *builder, GtkWidget *widget) {
     json_builder_set_member_name(builder, "surfaceGeometry");
     if (geometry) json_builder_add_value(builder, json_node_copy(geometry));
     else json_builder_add_null_value(builder);
-    if (g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND"))
-        report_control_paint(builder, widget, geometry);
+    report_control_paint(builder, widget, geometry);
     g_clear_pointer(&geometry, json_node_unref);
 }
 

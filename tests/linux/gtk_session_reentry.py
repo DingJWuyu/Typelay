@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 
 from geometry import anchor_geometry
-from native_e2e import Native, key, plan, snapshot
+from native_e2e import Native, glossary_painted_geometry, key, plan, snapshot
 from niri import contents, request
 from paths import peer_credentials, process_lineage
 from wire import now_ms, receive_sync
@@ -938,6 +938,16 @@ def language_trigger_point(actual, phase, dimensions, now, backend="gtk3", *, la
             return None
         bounds = control
     elif backend == "gtk4":
+        if layout:
+            paint = control.get("paintObservation", {})
+            if (
+                not glossary_painted_geometry(control, actual.get("observedAtMs"))
+                or type(paint.get("labelRevision")) is not int
+                or paint["labelRevision"] <= 0
+                or type(paint.get("paintedLabelRevision")) is not int
+                or paint.get("paintedLabelRevision") != paint["labelRevision"]
+            ):
+                return None
         bounds = control.get("surfaceGeometry")
         if (
             not isinstance(bounds, dict)
@@ -1006,6 +1016,8 @@ def click_language_trigger(state, nested, dimensions, phase, backend, *, layout=
                     "width",
                     "height",
                     "surfaceGeometry",
+                    "text",
+                    "paintObservation",
                     "pointerInside",
                     "pointerEnteredAtMs",
                     "pointerEnteredAtMonoMs",

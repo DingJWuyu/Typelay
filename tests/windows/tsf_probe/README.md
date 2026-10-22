@@ -55,3 +55,5 @@ Read 只有完整合成正文逐字符匹配、有效 UTF-16 选区范围、一�
 诊断协议 v2 只增加发送 API 事实、经验证的目标阶段位与只读 mitigation 摘要，见 [native/README.md](native/README.md#发送与入口诊断)。当前 Read 锁定下述 v3 已验生命周期提交；一次实际 Read 仍须本批精确审批，不因基线更新自动执行。查询策略不可信或签名策略不兼容时在 hook 前停止，不修改系统策略。
 
 当前 v3：仅在 Transitory 拒绝前采一次当前栈元数据，见 [native/README.md](native/README.md#单次-transitory-栈元数据v3)。它不读取 base 正文、不申请其它 context 会话，最终仍拒绝读取。v3 已完成真实 Windows 编译、纯合同及 no-DLL Lifecycle，元数据均为未开始；这不证明目标侧采集成功。Read 固定上述 v3 基线，一次栈观察仍待独立执行审批。单层 Transitory 无替代时停止此探针线，不无限加字段或重试。
+
+runner 的新增单次模块路径诊断见 [native/README.md](native/README.md#runner-单次模块路径观察非加载成功证明)。它复用自有 process 句柄及原期限，不改变上述六输入 Read 基线锁；新 runner 仍须另审 Lifecycle 后才能考虑更新 Read 基线。当前报告消费者要求 moduleObservation 的严格有界结构，但该结构不能补足 callback、已验证入口或读取证据。

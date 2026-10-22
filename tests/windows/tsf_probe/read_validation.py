@@ -28,6 +28,33 @@ def environment_observed(report, sha):
     )
 
 
+def module_observation_valid(detail):
+    bounds = {
+        "schemaVersion": (1, 1),
+        "stopReason": (0, 11),
+        "win32Error": (0, 2**32 - 1),
+        "startedTick": (0, 2**64 - 1),
+        "endedTick": (0, 2**64 - 1),
+    }
+    booleans = {"attempted", "completed", "observerPathSeen"}
+    if type(detail) is not dict or set(detail) != set(bounds) | booleans:
+        return False
+    if any(type(detail[k]) is not bool for k in booleans) or any(
+        type(detail[k]) is not int or not lo <= detail[k] <= hi for k, (lo, hi) in bounds.items()
+    ):
+        return False
+    stop = detail["stopReason"]
+    if not detail["attempted"]:
+        return not any(detail[k] for k in detail if k != "schemaVersion")
+    return (
+        stop != 0
+        and detail["endedTick"] >= detail["startedTick"]
+        and detail["completed"] == (stop in (1, 2))
+        and detail["observerPathSeen"] == (stop == 1)
+        and (stop in (3, 5, 7, 10) or detail["win32Error"] == 0)
+    )
+
+
 def diagnostics_valid(detail):
     bounds = {
         "protocolVersion": (3, 3),
@@ -49,7 +76,10 @@ def diagnostics_valid(detail):
         "sendReturned",
         "messageResultValid",
     }
-    if type(detail) is not dict or set(detail) != set(bounds) | booleans | {"messageResult"}:
+    if type(detail) is not dict or set(detail) != set(bounds) | booleans | {
+        "messageResult",
+        "moduleObservation",
+    }:
         return False
     if any(type(detail[key]) is not bool for key in booleans):
         return False
@@ -57,6 +87,13 @@ def diagnostics_valid(detail):
         type(detail[key]) is not int or not lo <= detail[key] <= hi
         for key, (lo, hi) in bounds.items()
     ):
+        return False
+    observation = detail["moduleObservation"]
+    if not module_observation_valid(observation):
+        return False
+    if observation["attempted"] != detail["sendReturned"]:
+        return False
+    if observation["attempted"] and observation["startedTick"] < detail["sendEndedTick"]:
         return False
     if detail["targetPhases"] not in (0, 1, 3, 7, 15, 31):
         return False

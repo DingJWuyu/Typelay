@@ -77,3 +77,17 @@ SetWindowsHookEx 使用 TID，不接受持有的线程句柄/创建时间。runn
 contextMetadata 只输出 attempted/complete、最多两项的 count、overflow、topEqualsBase、固定失败阶段与 HRESULT。stable 与各项 equalsTop/equalsBase/belongsToFocusedDocument/transitory/windowMatchesOwnedEdit 使用 0=unknown、1=no、2=yes；不输出对象指针、窗口句柄或正文。任何查询失败/归属变化/身份不稳定都清空部分结果为 unknown，仅保固定失败字段。complete 仅指元数据采集完成，不表示完整正文或读取能力；GetWnd 成功返回 NULL 时窗口对应仍 unknown。无采集时所有字段为初值、两项均 unknown，Lifecycle 必须严格符合这个默认状态。
 
 如果单层 top=base 且 Transitory，此次当前栈无替代入口，停止这条探针线并转架构选择；如有不同 base，也只证明下层 main context 存在，不可绕过 top 读它，不自动继续探测或重跑。官方规定文本服务只与栈顶交互，且栈最多两项；Transitory 仅表示预计短使用周期，不能据此断言已经证明正文截断。[Push 合同](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfdocumentmgr-push)、[状态定义](https://learn.microsoft.com/en-us/windows/win32/api/textstor/ns-textstor-ts_status)
+
+### runner 单次模块路径观察（非加载成功证明）
+
+`diagnostics.moduleObservation` 是 runner JSON 的 schemaVersion 1 元数据，不修改目标 Exchange、协议 v3、注册消息或 observer。它只在原 SendMessageTimeout 的返回值、LastError、返回时刻保存后执行。`startedTick/endedTick` 是这次观察的单调起止时刻，须晚于或等于 sendEndedTick；并不是模块实际加载时刻。Lifecycle 全部为未执行零值。新 producer 每条 sendReturned 路径均紧接调用 Observe，消费者要求 attempted 与 sendReturned 相等，不接受发送已返回而观察全零的报告。
+
+沿用 CreateProcess 返回并一直持有的独占目标 process 句柄，不重新 OpenProcess、不提高访问权限。用 runner 本轮已加载 observer 的完整模块路径作为比较值，不重新读取文件或 hash。K32EnumProcessModulesEx 固定256槽、至多一次，超容量不扩容不重试；最多256次 K32GetModuleFileNameExW，路径缓冲固定32768字符，失败或可能截断立即停止。完整路径逐字符比较，只产生保守的路径匹配观察，不按 basename 或模糊路径匹配。HMODULE 仅是查询值，不 CloseHandle，不向目标新增任何写入/消息。
+
+每次查询前检查原3秒绝对 deadline 与同一进程存活，查询时间消耗原剩余窗口，不增加期限或补等待。系统调用是同步 API，没有独立硬实时超时保证；最后一次调用也可能跨过期限。原500ms发送、取消、退出与 job 归零后 snapshot 规则不变。模块查询失败不替代既有读取结果，也不改变任何接受条件。
+
+只输出 attempted/completed/observerPathSeen、固定 stopReason、数值 win32Error 和时刻，无路径、模块名单、地址、句柄、标题或正文。stopReason：0未执行；1匹配路径；2扫描完未匹配；3目标退出或存活查询失败；4原期限到达；5本地模块路径失败；6本地路径可能截断；7枚举失败；8容量不足；9枚举长度无效；10目标模块路径失败；11目标模块路径可能截断。completed 仅对应1/2，表示本次查询流程完成，不表示原子快照；observerPathSeen 仅对应1。错误码只用于3/5/7/10，API失败且LastError=0仍保留失败分类。现消费者严格要求新增结构；旧报告保留为旧证据，不自动补零冒称新查询。
+
+模块列表可在枚举或路径查询间变化，系统 API 也可能返回不准确信息。匹配只表示一次查询返回了相同路径，不证明 DLL 初始化、Hook 进入、mapping/header 成功或已加载相同文件字节。路径重用、同路径文件替换及映像身份仍未证明；现有 source-baseline 编译输入锁不能消除这些运行期限制。未匹配/失败/超容量也不能证明从未加载。即使 observerPathSeen=true，最终 OwnedEntry=0 仍是“没有已验证入口发布证据”，callback/完整读取门保持不变，不升级 IME、普通输入框或写回能力。
+
+API：[EnumProcessModulesEx](https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-enumprocessmodulesex)、[GetModuleFileNameExW](https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getmodulefilenameexw)。runner 明确 PSAPI_VERSION=2，使用现有 Kernel32 的 K32 导出，不新增库/SDK。当前修改仅完成本地报告合同验证，Windows 编译、实际模块查询及 Read/Lifecycle 均需另审，不由合同测试推断。

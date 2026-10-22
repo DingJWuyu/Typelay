@@ -433,6 +433,69 @@ class GtkReentryGeometryTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "lease expired"):
             language_trigger_point(actual, phase, (1280, 800), 801)
 
+    def test_gtk4_language_trigger_waits_for_current_label_before_its_single_move(self):
+        # CI restore-valid-choices changed the same mapped trigger from width
+        # 210 to 88. The first post-render report still exposed the old bounds.
+        phase = {"renderReturnedAtMonoMs": 991044, "expiresAtMs": 991840}
+        button = GlossaryPaintGeometryTests().control()
+        button.update(x=744.0, y=124.0, width=210, instance=2)
+        surface = button["surfaceGeometry"]
+        surface.update(x=744.0, y=124.0, width=210, instance=2, surfaceInstance=1)
+        paint = button["paintObservation"]
+        paint.update(
+            geometry=dict(surface),
+            labelRevision=2,
+            paintedLabelRevision=1,
+            ready=False,
+            paintedAtMonoMs=991000,
+        )
+        actual = dict(
+            fullscreen=True,
+            width=1280,
+            height=800,
+            scale=1,
+            observedAtMs=991045,
+            overlayControls={"typelay-menu-trigger": button},
+        )
+        self.assertIsNone(language_trigger_point(actual, phase, (1280, 800), 991045, "gtk4"))
+        # Geometry alone cannot certify a new label, even before its width changes.
+        paint["ready"] = True
+        self.assertIsNone(language_trigger_point(actual, phase, (1280, 800), 991045, "gtk4"))
+        self.assertEqual(
+            language_trigger_point(actual, phase, (1280, 800), 991045, "gtk4", layout=False),
+            (849, 135),
+        )
+        button["width"] = surface["width"] = 88
+        paint.update(geometry=dict(surface), paintedLabelRevision=2, paintedAtMonoMs=991080)
+        actual["observedAtMs"] = 991090
+        self.assertEqual(
+            language_trigger_point(actual, phase, (1280, 800), 991090, "gtk4"), (788, 135)
+        )
+        for change in (
+            {"ready": False},
+            {"labelRevision": 0, "paintedLabelRevision": 0},
+            {"labelRevision": 1, "paintedLabelRevision": True},
+            {"labelRevision": 3},
+            {"paintedLabelRevision": 0},
+            {"geometry": {**surface, "width": 210}},
+            {"paintedMapGeneration": 1},
+        ):
+            with self.subTest(change=change):
+                changed = {
+                    **actual,
+                    "overlayControls": {
+                        "typelay-menu-trigger": {
+                            **button,
+                            "paintObservation": {**paint, **change},
+                        },
+                    },
+                }
+                self.assertIsNone(
+                    language_trigger_point(changed, phase, (1280, 800), 991090, "gtk4")
+                )
+        with self.assertRaisesRegex(AssertionError, "lease expired"):
+            language_trigger_point(actual, phase, (1280, 800), 991841, "gtk4")
+
     def test_language_trigger_hover_binds_fresh_instance_point_and_surface(self):
         phase = {"renderReturnedAtMonoMs": 100, "expiresAtMs": 800}
         button = {
@@ -449,6 +512,20 @@ class GtkReentryGeometryTests(unittest.TestCase):
             "pointerEnteredAtMonoMs": 190,
             "surfaceGeometry": {"x": 720, "y": 112, "scale": 1, "surfaceInstance": 8},
         }
+        painted = GlossaryPaintGeometryTests().control()
+        button["surfaceGeometry"] = {
+            **painted["surfaceGeometry"],
+            **button["surfaceGeometry"],
+            "instance": 7,
+            "width": 100,
+            "height": 28,
+        }
+        button["paintObservation"] = {
+            **painted["paintObservation"],
+            "geometry": dict(button["surfaceGeometry"]),
+            "labelRevision": 1,
+            "paintedLabelRevision": 1,
+        }
         actual = {
             "fullscreen": True,
             "width": 1280,
@@ -457,14 +534,18 @@ class GtkReentryGeometryTests(unittest.TestCase):
             "observedAtMs": 210,
             "overlayControls": {"typelay-menu-trigger": button},
         }
-        for backend, point in (("gtk3", (790, 136)), ("gtk4", (770, 126))):
+        for backend, point, layout in (
+            ("gtk3", (790, 136), False),
+            ("gtk4", (770, 126), False),
+            ("gtk4", (770, 126), True),
+        ):
 
             def current(snapshot, now=220):
                 return language_trigger_hover_current(
-                    snapshot, phase, (1280, 800), now, backend, 7, 8, point, 200, layout=False
+                    snapshot, phase, (1280, 800), now, backend, 7, 8, point, 200, layout=layout
                 )
 
-            with self.subTest(backend=backend):
+            with self.subTest(backend=backend, layout=layout):
                 self.assertTrue(current(actual))
                 self.assertFalse(current({**actual, "observedAtMs": 199}))
                 for scale in (1, 2):
@@ -479,7 +560,12 @@ class GtkReentryGeometryTests(unittest.TestCase):
                             "x": 724,
                             "y": 120,
                             "scale": scale,
+                            "width": 104,
                         },
+                    }
+                    moved["paintObservation"] = {
+                        **button["paintObservation"],
+                        "geometry": dict(moved["surfaceGeometry"]),
                     }
                     snapshot = {
                         **actual,
@@ -497,7 +583,7 @@ class GtkReentryGeometryTests(unittest.TestCase):
                             8,
                             tuple(value * scale for value in point),
                             200,
-                            layout=False,
+                            layout=layout,
                         )
                     )
                 for change in (
@@ -515,6 +601,15 @@ class GtkReentryGeometryTests(unittest.TestCase):
                         **actual,
                         "overlayControls": {"typelay-menu-trigger": {**button, **change}},
                     }
+                    changed_control = changed["overlayControls"]["typelay-menu-trigger"]
+                    changed_control["surfaceGeometry"] = {
+                        **button["surfaceGeometry"],
+                        **{key: changed_control[key] for key in ("instance", "width", "height")},
+                    }
+                    changed_control["paintObservation"] = {
+                        **button["paintObservation"],
+                        "geometry": dict(changed_control["surfaceGeometry"]),
+                    }
                     self.assertFalse(current(changed))
                 with self.assertRaisesRegex(AssertionError, "lease expired"):
                     current(actual, 801)
@@ -528,11 +623,21 @@ class GtkReentryGeometryTests(unittest.TestCase):
                 **actual,
                 "overlayControls": {"typelay-menu-trigger": {**button, "surfaceGeometry": surface}},
             }
-            self.assertFalse(
-                language_trigger_hover_current(
-                    changed, phase, (1280, 800), 220, "gtk4", 7, 8, (770, 126), 200, layout=False
+            for layout in (False, True):
+                self.assertFalse(
+                    language_trigger_hover_current(
+                        changed,
+                        phase,
+                        (1280, 800),
+                        220,
+                        "gtk4",
+                        7,
+                        8,
+                        (770, 126),
+                        200,
+                        layout=layout,
+                    )
                 )
-            )
 
     def test_click_maps_parent_local_point_at_native_scale(self):
         actual = {"fullscreen": True, "width": 640, "height": 400, "scale": 2}

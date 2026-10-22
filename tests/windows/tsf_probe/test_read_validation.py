@@ -17,6 +17,16 @@ SPEC.loader.exec_module(validation)
 
 def diagnostics(*, read):
     return {
+        "moduleObservation": {
+            "schemaVersion": 1,
+            "attempted": read,
+            "completed": read,
+            "observerPathSeen": False,
+            "stopReason": 2 if read else 0,
+            "win32Error": 0,
+            "startedTick": 11 if read else 0,
+            "endedTick": 12 if read else 0,
+        },
         "protocolVersion": 3,
         "targetPhases": 31 if read else 0,
         "policyQueried": read,
@@ -92,6 +102,93 @@ def observed_report():
 
 
 class ReadValidationTests(unittest.TestCase):
+    def test_returned_send_requires_module_observation_attempt(self):
+        detail = diagnostics(read=True)
+        detail["moduleObservation"] = diagnostics(read=False)["moduleObservation"]
+        self.assertFalse(validation.diagnostics_valid(detail))
+
+    def test_module_path_observation_never_rescues_missing_read(self):
+        report = observed_report()
+        report["diagnostics"]["moduleObservation"] = {
+            "schemaVersion": 1,
+            "attempted": True,
+            "completed": True,
+            "observerPathSeen": True,
+            "stopReason": 1,
+            "win32Error": 0,
+            "startedTick": 11,
+            "endedTick": 12,
+        }
+        self.assertTrue(validation.read_observed(report))
+        report["diagnostics"]["targetPhases"] = 0
+        report["callbackCount"] = 0
+        self.assertFalse(validation.read_observed(report))
+
+    def test_module_observation_outcomes_are_bounded_and_do_not_grant_acceptance(self):
+        for stop in range(1, 12):
+            row = {
+                "schemaVersion": 1,
+                "attempted": True,
+                "completed": stop in (1, 2),
+                "observerPathSeen": stop == 1,
+                "stopReason": stop,
+                "win32Error": 5 if stop in (3, 5, 7, 10) else 0,
+                "startedTick": 11,
+                "endedTick": 12,
+            }
+            with self.subTest(stop=stop):
+                detail = diagnostics(read=True) | {"moduleObservation": row}
+                self.assertTrue(validation.diagnostics_valid(detail))
+                self.assertTrue(
+                    validation.read_observed(observed_report() | {"diagnostics": detail})
+                )
+                self.assertFalse(
+                    validation.read_observed(
+                        observed_report() | {"diagnostics": detail, "callbackCount": 0}
+                    )
+                )
+                self.assertFalse(
+                    validation.diagnostics_valid(
+                        diagnostics(read=False) | {"moduleObservation": row}
+                    )
+                )
+                for key, value in (
+                    ("schemaVersion", 2),
+                    ("schemaVersion", True),
+                    ("attempted", False),
+                    ("completed", not row["completed"]),
+                    ("observerPathSeen", not row["observerPathSeen"]),
+                    ("stopReason", 12),
+                    ("stopReason", True),
+                    ("win32Error", -1),
+                    ("startedTick", 10),
+                    ("endedTick", 10),
+                    ("endedTick", 2**64),
+                    ("modulePath", "private-path-sentinel"),
+                ):
+                    self.assertFalse(
+                        validation.diagnostics_valid(
+                            detail | {"moduleObservation": row | {key: value}}
+                        ),
+                        (stop, key),
+                    )
+                self.assertFalse(
+                    validation.diagnostics_valid(
+                        detail | {"moduleObservation": row | {"completed": 1}}
+                    )
+                )
+        idle = diagnostics(read=False)
+        self.assertTrue(validation.diagnostics_valid(idle))
+        for key in ("observerPathSeen", "completed", "startedTick", "win32Error", "stopReason"):
+            self.assertFalse(
+                validation.diagnostics_valid(
+                    idle | {"moduleObservation": idle["moduleObservation"] | {key: 1}}
+                )
+            )
+        missing = diagnostics(read=True)
+        missing.pop("moduleObservation")
+        self.assertFalse(validation.diagnostics_valid(missing))
+
     def test_unknown_ime_limits_conclusion_not_environment_collection(self):
         report = {
             "schemaVersion": 1,
@@ -163,6 +260,7 @@ class ReadValidationTests(unittest.TestCase):
         }
         self.assertTrue(validation.read_observed(observed_report() | {"diagnostics": failed_send}))
         not_returned = detail | {
+            "moduleObservation": diagnostics(read=False)["moduleObservation"],
             "sendReturned": False,
             "sendReturn": 0,
             "sendStartedTick": 0,

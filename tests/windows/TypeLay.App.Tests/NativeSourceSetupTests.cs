@@ -92,6 +92,92 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
         });
 
     [Theory]
+    [InlineData("expose")]
+    [InlineData("topmost")]
+    [InlineData("cancelled")]
+    [InlineData("wrong-root")]
+    public Task ExplicitOwnedWindowExposurePreservesFocusAndGeometryBeforeTheSingleSourceClick(string scenario)
+        => desktop.RunAsync(async () =>
+        {
+            await using var source = await Source.Start();
+            Assert.True(N.GetWindowRect(source.Root, out var originalBounds));
+            Assert.True(N.GetWindowRect(source.Field, out var fieldBounds));
+            var point = new N.Point
+            {
+                X = fieldBounds.Left + (fieldBounds.Right - fieldBounds.Left) / 2,
+                Y = fieldBounds.Top + (fieldBounds.Bottom - fieldBounds.Top) / 2
+            };
+            var cover = new Window
+            {
+                Title = "TypeLay ordinary source cover",
+                Left = originalBounds.Left,
+                Top = originalBounds.Top,
+                Width = originalBounds.Right - originalBounds.Left,
+                Height = originalBounds.Bottom - originalBounds.Top,
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                Topmost = scenario == "topmost",
+                Content = new Button { Content = "not the source" }
+            };
+            int coverClicks = 0;
+            cover.PreviewMouseLeftButtonDown += (_, _) => coverClicks++;
+            var rendered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            cover.ContentRendered += (_, _) => rendered.TrySetResult();
+            Assert.True(GetCursorPos(out var previous));
+            try
+            {
+                cover.Show();
+                await rendered.Task.WaitAsync(source.Token);
+                Assert.True(cover.Activate());
+                nint coverRoot = new WindowInteropHelper(cover).Handle;
+                Assert.Equal(coverRoot, N.GetForegroundWindow());
+                Assert.Equal(coverRoot, N.GetAncestor(WindowFromPoint(point), 2));
+                Assert.Equal(0, N.GetStyle(source.Root, -20) & 0x8); // WS_EX_TOPMOST.
+                Assert.Equal(scenario == "topmost" ? 0x8 : 0, N.GetStyle(coverRoot, -20) & 0x8);
+                var beforeFocus = N.Focused();
+                using var action = CancellationTokenSource.CreateLinkedTokenSource(source.Token);
+                if (scenario == "cancelled")
+                    action.Cancel();
+                if (scenario == "cancelled")
+                    Assert.ThrowsAny<OperationCanceledException>(() => NativeSourceSetup.ExposeOwnedWindow(source.Root, source.Field, source.Process, action.Token));
+                else if (scenario == "wrong-root")
+                {
+                    var failure = Assert.Throws<NativeSourceSetup.Failure>(() => NativeSourceSetup.ExposeOwnedWindow(source.Field, source.Field, source.Process, action.Token));
+                    Assert.Equal("source-exposure-identity-changed", failure.Code);
+                }
+                else
+                    NativeSourceSetup.ExposeOwnedWindow(source.Root, source.Field, source.Process, action.Token);
+                Assert.Equal(beforeFocus, N.Focused());
+                Assert.Equal(coverRoot, N.GetForegroundWindow());
+                Assert.True(N.GetWindowRect(source.Root, out var afterBounds));
+                Assert.Equal(originalBounds, afterBounds);
+                Assert.Equal(0, N.GetStyle(source.Root, -20) & 0x8);
+                if (scenario == "expose")
+                {
+                    Assert.Equal(source.Field, WindowFromPoint(point));
+                    await NativeSourceSetup.ClickAsync(source.Root, source.Field, source.Process, source.Token);
+                    while (N.Focused() != (source.Root, source.Field))
+                        await Task.Delay(10, source.Token);
+                }
+                else
+                {
+                    Assert.Equal(coverRoot, N.GetAncestor(WindowFromPoint(point), 2));
+                    if (scenario == "topmost")
+                    {
+                        var failure = await Assert.ThrowsAsync<NativeSourceSetup.Failure>(() => NativeSourceSetup.ClickAsync(source.Root, source.Field, source.Process, source.Token));
+                        Assert.Equal("source-click-obscured", failure.Code);
+                    }
+                }
+                Assert.Equal(0, coverClicks);
+                Assert.Equal(Source.Text, N.ReadText(source.Field, Limits.MaxTextUnits));
+            }
+            finally
+            {
+                cover.Close();
+                SetCursorPos(previous.X, previous.Y);
+            }
+        });
+
+    [Theory]
     [InlineData("responsive")]
     [InlineData("busy")]
     [InlineData("changed-text")]
@@ -210,6 +296,7 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
             await process.WaitForExitAsync(cleanup.Token);
         }
     }
+    [DllImport("user32.dll")] private static extern nint WindowFromPoint(N.Point point);
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetCursorPos(out N.Point point);
     [DllImport("user32.dll")]

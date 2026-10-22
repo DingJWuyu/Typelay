@@ -50,8 +50,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
                 root = child.Process.MainWindowHandle;
                 return root != 0 && GetDlgItem(root, 103) != 0 && controller.PracticeProgress is not null;
             });
-            Assert.True(N.SetForegroundWindow(root));
-            Assert.True(N.PostMessage(root, 0x0007, 0, 0));
+            await ClickPracticeField(root, child!.Process, "preview-initial", deadline.Token);
             await Until(() => N.Focused() == (root, GetDlgItem(root, 101)));
             await Until(() => controller.PracticeProgress is { PreviewReady: false, DirectReady: false } && broker.Waiting);
             var initial = controller.PracticeProgress!;
@@ -404,7 +403,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             nint otherRoot = await Window(ordinary!);
             host.Open(path);
             nint ownedRoot = await Window(owned!);
-            await Focus(ownedRoot, "owned-initial");
+            await Focus(ownedRoot, owned!.Process, "owned-initial");
             await Until(() => controller.AutomaticPracticeProgress?.Target is not null);
 
             var next = settings.Value with
@@ -430,7 +429,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             settings.Update(next);
             Assert.Equal(!disconnect, host.IsAutomatic); // A normal ACK retains identity for restart.
 
-            await Focus(otherRoot, "unrelated-after-retirement");
+            await Focus(otherRoot, ordinary!.Process, "unrelated-after-retirement");
             InputSnapshot? captured = null;
             while (captured is null)
             {
@@ -455,7 +454,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
 
             if (!disconnect)
             {
-                await Focus(ownedRoot, "owned-after-retirement");
+                await Focus(ownedRoot, owned!.Process, "owned-after-retirement");
                 Assert.Null((await input.CaptureAsync(context)).Snapshot); // Old owned root stays reserved until exit.
             }
             Assert.Null(controller.AutomaticPracticeProgress);
@@ -472,10 +471,9 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
                 });
                 return root;
             }
-            async Task Focus(nint root, string phase)
+            async Task Focus(nint root, Process process, string phase)
             {
-                Assert.True(N.SetForegroundWindow(root));
-                Assert.True(N.PostMessage(root, 0x0007, 0, 0));
+                await ClickPracticeField(root, process, phase, deadline.Token);
                 N.FocusObservation last = default;
                 nint field = 0;
                 try
@@ -549,7 +547,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             Guid firstRun = controller.PracticeProgress!.RunId;
             nint root = await Window(child!);
             nint field = GetDlgItem(root, 101);
-            await Focus(root);
+            await Focus(root, child!.Process);
             await Until(() => controller.PracticeProgress?.Target is not null);
             await Until(() => controller.PracticeProgress?.PreviewReady == true
                 && N.ReadStaticNotice(GetDlgItem(root, 103)) == OnDemandPracticePresentation.Create(settings.Value,
@@ -568,7 +566,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             nint firstCookie = N.GetProp(field, "TypeLay.NativeInput.Lifetime.v2");
             Assert.NotEqual(nint.Zero, firstCookie);
 
-            await Focus(otherRoot);
+            await Focus(otherRoot, other!.Process);
             await Until(() => controller.PracticeProgress?.PreviewReady == false
                 && N.ReadStaticNotice(GetDlgItem(root, 103)) == OnDemandPracticePresentation.Create(settings.Value,
                     controller.PracticeProgress).ProgressNotice);
@@ -588,7 +586,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             await Until(() => checkedOther); // A real production capture of the same-titled foreign process completed.
             Assert.Null(controller.PracticeProgress!.Target);
             Assert.False(controller.PracticeProgress.Completed);
-            await Focus(root);
+            await Focus(root, child!.Process);
             await Until(() => controller.PracticeProgress?.Target is not null);
             Assert.Equal(secondRun, controller.PracticeProgress!.RunId);
             Assert.NotEqual(firstCookie, N.GetProp(field, "TypeLay.NativeInput.Lifetime.v2"));
@@ -619,10 +617,9 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
                 });
                 return window;
             }
-            async Task Focus(nint window)
+            async Task Focus(nint window, Process process)
             {
-                Assert.True(N.SetForegroundWindow(window));
-                Assert.True(N.PostMessage(window, 0x0007, 0, 0));
+                await ClickPracticeField(window, process, "current-practice", deadline.Token);
                 await Until(() => N.Focused() == (window, GetDlgItem(window, 101)));
             }
             async Task Until(Func<bool> condition)
@@ -638,6 +635,21 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
                 Directory.Delete(directory, true);
         }
     });
+
+    private static async Task ClickPracticeField(nint root, Process process, string phase, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        nint field = GetDlgItem(root, 101);
+        try
+        {
+            NativeSourceSetup.ExposeOwnedWindow(root, field, process, ct);
+            await NativeSourceSetup.ClickAsync(root, field, process, ct);
+        }
+        catch (NativeSourceSetup.Failure failure)
+        {
+            Assert.Fail($"Practice source click: phase={phase}; reason={failure.Code}.");
+        }
+    }
 
     [DllImport("user32.dll")]
     private static extern nint GetDlgItem(nint window, int id);

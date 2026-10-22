@@ -833,6 +833,8 @@ internal static partial class ContinuousTranslationCheck
                     N.SendString(field, N.WM_SETTEXT, "");
                 }
                 finally { sourceSetup.TextEndedAtMs = WindowsInterruptClock.NowMs; }
+                result.Stage = "expose-owned-source";
+                NativeSourceSetup.ExposeOwnedWindow(root, field, native.Process, setupDeadline.Token);
                 result.Stage = "click-visible-source";
                 sourceSetup.ClickStartedAtMs = WindowsInterruptClock.NowMs;
                 try
@@ -1025,6 +1027,8 @@ internal static partial class ContinuousTranslationCheck
                     N.SendString(field, N.WM_SETTEXT, source);
                 }
                 finally { sourceSetup.TextEndedAtMs = WindowsInterruptClock.NowMs; }
+                result.Stage = "expose-owned-source";
+                NativeSourceSetup.ExposeOwnedWindow(root, field, native.Process, setupDeadline.Token);
                 result.Stage = "click-visible-source";
                 sourceSetup.ClickStartedAtMs = WindowsInterruptClock.NowMs;
                 try
