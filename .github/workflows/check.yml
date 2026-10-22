@@ -806,7 +806,9 @@ jobs:
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
           python tests/linux/native_e2e.py --desktop --desktop-scope setup-tutorial --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/setup-tutorial
       - name: Exercise ordinary GIMP comments through shipped Settings
-        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome == 'success' }}
+        # Settings installs from the finalized main distribution, not the
+        # independently packaged runtime. A missing prerequisite is not a GIMP run.
+        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.complete-package.outcome == 'success' }}
         timeout-minutes: 6
         run: |
           export DISPLAY=:99

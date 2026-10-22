@@ -286,6 +286,7 @@ def _gtk4_source_glossary(out, environment, deadline):
     results = []
     current_case = None
     capture_admission = None
+    protocol_observations = []
     (out / "gtk4-glossary-result.json").unlink(missing_ok=True)
     with (
         socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server,
@@ -312,7 +313,45 @@ def _gtk4_source_glossary(out, environment, deadline):
 
                 def call(operation, data=None):
                     connection.settimeout(min(2, remaining()))
-                    return native.call(operation, data)
+                    # Bound passive evidence at the existing protocol boundary.
+                    # These are caller times, not native dispatch timestamps.
+                    observation = {
+                        "case": current_case,
+                        "operation": operation,
+                        "startedAtMs": now_ms(),
+                    }
+                    if data and "expiresAtMs" in data:
+                        observation["expiresAtMs"] = data["expiresAtMs"]
+                    protocol_observations.append(observation)
+                    del protocol_observations[:-64]
+                    before_events = len(native.events)
+                    try:
+                        result = native.call(operation, data)
+                        if isinstance(result, dict):
+                            observation["result"] = {
+                                key: result[key]
+                                for key in ("visible", "opened", "editing")
+                                if key in result
+                            }
+                        return result
+                    except BaseException as error:
+                        observation["errorType"] = type(error).__name__
+                        raise
+                    finally:
+                        observation["finishedAtMs"] = now_ms()
+                        # Do not retain source text, drafts or authority payloads.
+                        observation["overlayEvents"] = [
+                            {
+                                "operation": item["data"]["operation"],
+                                "value": item["data"]["value"],
+                                "revision": item["data"].get("revision"),
+                            }
+                            for item in native.events[max(before_events, len(native.events) - 16) :]
+                            if item.get("event") == "ui"
+                            and item.get("data", {}).get("operation")
+                            in ("focus", "visible", "composition")
+                            and type(item["data"].get("value")) is bool
+                        ]
 
                 def state():
                     try:
@@ -1093,6 +1132,7 @@ def _gtk4_source_glossary(out, environment, deadline):
                         "cases": results,
                         "failed_case": current_case,
                         "captureAdmission": capture_admission,
+                        "protocolObservations": protocol_observations,
                         "error": f"{type(error).__name__}: {error}",
                         "real_model_quality": False,
                     },

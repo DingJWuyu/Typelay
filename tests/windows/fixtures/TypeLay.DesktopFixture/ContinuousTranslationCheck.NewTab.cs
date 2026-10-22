@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using TypeLay.App;
 using TypeLay.Core;
 using TypeLay.Runtime;
+using TypeLay.Windows;
 using TypeLay.Windows.Contracts;
 using TypeLay.Windows.Testing;
 
@@ -28,6 +29,10 @@ internal static partial class ContinuousTranslationCheck
         int sourceObservationCount = 0;
         double sourceObservationTotalMs = 0, sourceObservationMaxMs = 0, lastSourceObservationMs = 0;
         double? beforeShortcutObservationMs = null;
+        long observerQueuedAtMs = 0, observerStartedAtMs = 0, observerCompletedAtMs = 0, observerResumedAtMs = 0;
+        object? beforeShortcutObservation = null;
+        long? shortcutCaptureObservedAtMs = null, shortcutCaptureReceivedAtMs = null, shortcutCaptureSelectedAtMs = null;
+        long? shortcutSendStartedAtMs = null, shortcutSendCompletedAtMs = null;
         try
         {
             await UntilAsync(() => { Require(model.Ready, "model-unavailable"); return !model.Busy; }, cancellation);
@@ -68,10 +73,12 @@ internal static partial class ContinuousTranslationCheck
                 // UIA ancestor reads must not occupy the WPF dispatcher that
                 // also schedules production captures. Await each read fully;
                 // never leave a timed-out read racing source cleanup or input.
+                observerQueuedAtMs = WindowsInterruptClock.NowMs;
                 string focus = await Task.Run(() =>
                 {
                     Require(Thread.CurrentThread.GetApartmentState() == ApartmentState.MTA,
                         "new-tab-observer-apartment");
+                    observerStartedAtMs = WindowsInterruptClock.NowMs;
                     var observation = Stopwatch.StartNew();
                     try
                     {
@@ -79,14 +86,21 @@ internal static partial class ContinuousTranslationCheck
                     }
                     finally
                     {
+                        observerCompletedAtMs = WindowsInterruptClock.NowMs;
                         lastSourceObservationMs = observation.Elapsed.TotalMilliseconds;
                         sourceObservationCount++;
                         sourceObservationTotalMs += lastSourceObservationMs;
                         sourceObservationMaxMs = Math.Max(sourceObservationMaxMs, lastSourceObservationMs);
                     }
                 }, cancellation);
+                observerResumedAtMs = WindowsInterruptClock.NowMs;
                 cancellation.ThrowIfCancellationRequested();
                 Require(focus == "source", "new-tab-" + focus);
+                RequireOperational();
+            }
+            void RequireOperational()
+            {
+                cancellation.ThrowIfCancellationRequested();
                 Require(broker.WriteRequests == 0, "new-tab-write-requested");
                 Require(model.Ready, "model-unavailable");
                 Require(feedbackCode is null, "new-tab-production-feedback");
@@ -94,6 +108,11 @@ internal static partial class ContinuousTranslationCheck
             async Task<InputSnapshot?> CapturedAsync(string expected, int afterCapture)
             {
                 await RequireSourceAsync();
+                return Captured(expected, afterCapture);
+            }
+            InputSnapshot? Captured(string expected, int afterCapture)
+            {
+                RequireOperational();
                 if (broker.Captures <= afterCapture || broker.LatestCapture is not { Focus: FocusMember.Source, Snapshot: { } snapshot })
                     return null;
                 Require(WindowsTarget.TryDecode(snapshot.Target, out var native)
@@ -192,19 +211,33 @@ internal static partial class ContinuousTranslationCheck
                 return !overlay.IsVisible;
             });
             result.Stage = "new-tab-on-demand-inactive-input";
-            before = broker.Captures;
             await AppendAsync(2);
-            await UntilObservedAsync(async () =>
+            // Check the internal document once, then observe a successor production
+            // response without competing UIA ancestor walks on every readiness poll.
+            // That response must independently retain source focus, target, text and
+            // IME policy. No capture is requested by this observer.
+            await RequireSourceAsync();
+            beforeShortcutObservationMs = lastSourceObservationMs;
+            beforeShortcutObservation = new
             {
-                var captured = await CapturedAsync(sources[2], before);
+                queuedAtMs = observerQueuedAtMs,
+                startedAtMs = observerStartedAtMs,
+                completedAtMs = observerCompletedAtMs,
+                resumedAtMs = observerResumedAtMs
+            };
+            before = broker.Captures;
+            await UntilObservedAsync(() =>
+            {
+                var captured = Captured(sources[2], before);
                 Require(!overlay.IsVisible, "new-tab-preview-before-shortcut");
                 if (captured is not null)
-                    beforeShortcutObservationMs = lastSourceObservationMs;
-                return captured is not null;
+                {
+                    shortcutCaptureObservedAtMs = captured.ObservedAtMs;
+                    shortcutCaptureReceivedAtMs = broker.LatestCaptureReceivedAtMs;
+                    shortcutCaptureSelectedAtMs = WindowsInterruptClock.NowMs;
+                }
+                return Task.FromResult(captured is not null);
             });
-            // CapturedAsync has just completed the full source-focus observation
-            // and checked the capture's identity, text and IME policy. No source
-            // action intervenes; do not repeat that asynchronous UIA read here.
             // A capture is not a native lease ACK. Send once at this observable
             // boundary; never wait for a publish log, add a delay, or retry F9.
             Require(new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C, 0x78 }.All(key => GetAsyncKeyState(key) >= 0),
@@ -213,7 +246,15 @@ internal static partial class ContinuousTranslationCheck
             before = broker.Captures;
             elapsed.Restart();
             shortcutAttempts++;
-            SendDirectShortcut(out shortcutInputsInserted, result.CleanupErrors, 0x78);
+            shortcutSendStartedAtMs = WindowsInterruptClock.NowMs;
+            try
+            {
+                SendDirectShortcut(out shortcutInputsInserted, result.CleanupErrors, 0x78);
+            }
+            finally
+            {
+                shortcutSendCompletedAtMs = WindowsInterruptClock.NowMs;
+            }
             first = await WaitPreviewAsync(2, before, elapsed, value => onDemand.FirstPreviewMs = value);
             onDemand.FirstCapture = NewTabSnapshotFacts.From(first);
             result.Stage = "new-tab-on-demand-refreshed-preview";
@@ -273,7 +314,16 @@ internal static partial class ContinuousTranslationCheck
                     count = sourceObservationCount,
                     totalMs = Math.Round(sourceObservationTotalMs, 2),
                     maxMs = Math.Round(sourceObservationMaxMs, 2),
-                    beforeShortcutMs = beforeShortcutObservationMs is { } observed ? Math.Round(observed, 2) : (double?)null
+                    beforeShortcutMs = beforeShortcutObservationMs is { } observed ? Math.Round(observed, 2) : (double?)null,
+                    beforeShortcut = beforeShortcutObservation
+                },
+                shortcutTiming = new
+                {
+                    captureObservedAtMs = shortcutCaptureObservedAtMs,
+                    captureReceivedAtMs = shortcutCaptureReceivedAtMs,
+                    captureSelectedAtMs = shortcutCaptureSelectedAtMs,
+                    sendStartedAtMs = shortcutSendStartedAtMs,
+                    sendCompletedAtMs = shortcutSendCompletedAtMs
                 }
             };
         }
@@ -298,6 +348,10 @@ internal static partial class ContinuousTranslationCheck
         {
             get; private set;
         }
+        public long? LatestCaptureReceivedAtMs
+        {
+            get; private set;
+        }
         public Task StartAsync() => _inner.StartAsync();
         public async Task<BrokerResponse> CallAsync(BrokerRequest request, TimeSpan? timeout = null)
         {
@@ -306,6 +360,7 @@ internal static partial class ContinuousTranslationCheck
             var response = await _inner.CallAsync(request, timeout);
             if (request.Op == "capture")
             {
+                LatestCaptureReceivedAtMs = WindowsInterruptClock.NowMs;
                 Captures++;
                 LatestCapture = response;
             }

@@ -45,6 +45,12 @@ internal sealed partial class PracticeHost
         // release advances the direct predecessor used for ACK identity.
         public long RenewalAttemptFloor => AttemptFloorSequence > 0 ? AttemptFloorSequence : Plan.PlanSequence;
         public string State { get; set; } = "install";
+        // Only TYPELAY_TRACE's existing immutable writer samples cross threads.
+        // Failure diagnostics never participate in installation or lease decisions.
+        private WriterFrame? _installTransport;
+        public WriterFrame? InstallTransport => Volatile.Read(ref _installTransport);
+        public void ObserveInstallTransport(WriterFrame observation) =>
+            Volatile.Write(ref _installTransport, observation);
         public long? InstalledHandledAtMs
         {
             get; set;
@@ -301,6 +307,7 @@ internal sealed partial class PracticeHost
             witnessPoisoned = _witnessWriter?.Poisoned,
             queuedPlan = _nextAcceptance is not null,
             acceptanceState = current?.State,
+            installTransport = current?.InstallTransport,
             installedHandledAtMs = current?.InstalledHandledAtMs,
             hookInstallReturnedAtMs = current?.HookInstallReturnedAtMs,
             planMatches = current?.Plan.Permit.Plan.Id == permit.Plan.Id,
@@ -642,7 +649,8 @@ internal sealed partial class PracticeHost
             PlanBytes: kind == "install" ? current.Input.Length : 0,
             ResultHandle: kind == "install" ? current.Result.RemoteHandle : 0,
             ResultBytes: kind == "install" ? current.Result.Length : 0);
-        Enqueue(new(kind, _connection, _runId, _sequence, Acceptance: control));
+        Enqueue(new(kind, _connection, _runId, _sequence, Acceptance: control),
+            kind == "install" ? current : null);
         _ = CheckPlanAcknowledgementAsync(current, kind, cancellation);
     }
     private async Task CheckPlanAcknowledgementAsync(PendingPlan current, string kind, CancellationToken cancellation)

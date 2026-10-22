@@ -208,7 +208,7 @@ internal static class Program
         });
         return toggle;
     }
-    internal static Drawing.Icon MakeTrayIcon()
+    private static Drawing.Icon MakeTrayIcon()
     {
         using var bitmap = new Drawing.Bitmap(32, 32);
         using (var g = Drawing.Graphics.FromImage(bitmap))

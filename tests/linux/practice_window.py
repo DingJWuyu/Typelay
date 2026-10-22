@@ -146,6 +146,9 @@ def run(presentation):
                     initial["presentation"]["confirmationText"] = "确认切换工作模式并开始练习？"
                     reply(pending("practiceStatus"), initial)
                     until(lambda: lesson.start.get_sensitive())
+                    assert lesson.source.get_text() == ""
+                    assert lesson.source.get_placeholder_text() == presentation["sampleText"]
+                    assert lesson.practice_run is None
                     lesson.source.set_text(source)
                     lesson.source.select_region(2, 7)
                     lesson.start.grab_focus()

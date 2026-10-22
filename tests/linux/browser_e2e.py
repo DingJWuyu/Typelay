@@ -2201,30 +2201,50 @@ class BrowserContract(unittest.TestCase):
         )
         self.page.mouse.click(rect["x"] + rect["width"] / 2, rect["y"] + rect["height"] / 2)
 
-    def observe_overlay_frames(self):
+    def observe_overlay_frames(self, *, start_on_click=False):
         # Public browser DOM/RAF observation of the real closed-shadow widgets.
         # It neither reads adapter variables nor supplies an animation model.
-        return self.overlay_dom(
-            self.overlay_control("TypeLay 译文", "textbox"),
-            """function() {
+        return self.cdp.send(
+            "Runtime.callFunctionOn",
+            {
+                "objectId": self.overlay_control("TypeLay 译文", "textbox"),
+                "arguments": (
+                    [{"objectId": self.overlay_control("展开")}] if start_on_click else []
+                ),
+                "returnByValue": True,
+                "functionDeclaration": """function(expandControl) {
           const editor = this, panel = editor.parentElement, host = panel.getRootNode().host;
           const exit = panel.querySelector('footer button');
           window.fixtureMotionFrames = [];
-          const start = performance.now();
-          function sample(now) {
-            fixtureMotionFrames.push({ms: now - start, connected: host.isConnected,
-              host: host.getBoundingClientRect().toJSON(), editor: editor.getBoundingClientRect().toJSON(),
-              exit: exit.getBoundingClientRect().toJSON(), text: editor.value,
-              start: editor.selectionStart, end: editor.selectionEnd,
-              sourceFocused: document.activeElement.id === 'source'});
-            if (now - start < 360) requestAnimationFrame(sample);
-            else window.fixtureMotionDone = true;
-          }
           window.fixtureMotionDone = false;
-          requestAnimationFrame(sample);
-          return start;
+          window.fixtureMotionStartedMs = null;
+          function startObservation() {
+            const start = performance.now();
+            window.fixtureMotionStartedMs = start;
+            function sample(now) {
+              fixtureMotionFrames.push({ms: now - start, connected: host.isConnected,
+                host: host.getBoundingClientRect().toJSON(), editor: editor.getBoundingClientRect().toJSON(),
+                exit: exit.getBoundingClientRect().toJSON(), text: editor.value,
+                start: editor.selectionStart, end: editor.selectionEnd,
+                sourceFocused: document.activeElement.id === 'source'});
+              if (now - start < 360) requestAnimationFrame(sample);
+              else window.fixtureMotionDone = true;
+            }
+            requestAnimationFrame(sample);
+            return start;
+          }
+          if (!expandControl) return startObservation();
+          // Preparation/AX/CDP latency must not consume the motion window.
+          // Only the resolved expand button's real click starts observation.
+          function onExpand(event) {
+            if (!event.isTrusted) return;
+            expandControl.removeEventListener('click', onExpand, true);
+            startObservation();
+          }
+          expandControl.addEventListener('click', onExpand, true);
         }""",
-        )
+            },
+        )["result"].get("value")
 
     def motion_frames(self):
         self.page.wait_for_function("window.fixtureMotionDone === true")
@@ -3050,11 +3070,11 @@ class BrowserContract(unittest.TestCase):
                   }, {once: true});
                 }""",
             )
-            sample_started = self.observe_overlay_frames()
+            self.observe_overlay_frames(start_on_click=True)
             self.click_overlay_control("展开")
             frames = self.motion_frames()
             diagnostics = self.page.evaluate("fixtureDraftResize")
-            diagnostics["sampleStartedMs"] = sample_started
+            diagnostics["sampleStartedMs"] = self.page.evaluate("fixtureMotionStartedMs")
             diagnostics["frameCount"] = len(frames)
             # The observer is time-bounded; cap serialized samples as well,
             # retaining the endpoint even on a high-refresh-rate display.

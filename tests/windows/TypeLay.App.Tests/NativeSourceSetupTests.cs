@@ -92,11 +92,11 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
         });
 
     [Theory]
-    [InlineData("expose")]
+    [InlineData("foreground")]
     [InlineData("topmost")]
     [InlineData("cancelled")]
     [InlineData("wrong-root")]
-    public Task ExplicitOwnedWindowExposurePreservesFocusAndGeometryBeforeTheSingleSourceClick(string scenario)
+    public Task ExplicitOwnedForegroundPreparationPreservesGeometryBeforeTheSingleSourceClick(string scenario)
         => desktop.RunAsync(async () =>
         {
             await using var source = await Source.Start();
@@ -139,25 +139,29 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                 if (scenario == "cancelled")
                     action.Cancel();
                 if (scenario == "cancelled")
-                    Assert.ThrowsAny<OperationCanceledException>(() => NativeSourceSetup.ExposeOwnedWindow(source.Root, source.Field, source.Process, action.Token));
+                    Assert.ThrowsAny<OperationCanceledException>(() => NativeSourceSetup.RequestOwnedForeground(source.Root, source.Field, source.Process, action.Token));
                 else if (scenario == "wrong-root")
                 {
-                    var failure = Assert.Throws<NativeSourceSetup.Failure>(() => NativeSourceSetup.ExposeOwnedWindow(source.Field, source.Field, source.Process, action.Token));
-                    Assert.Equal("source-exposure-identity-changed", failure.Code);
+                    var failure = Assert.Throws<NativeSourceSetup.Failure>(() => NativeSourceSetup.RequestOwnedForeground(source.Field, source.Field, source.Process, action.Token));
+                    Assert.Equal("source-foreground-identity-changed", failure.Code);
                 }
                 else
-                    NativeSourceSetup.ExposeOwnedWindow(source.Root, source.Field, source.Process, action.Token);
-                if (scenario == "expose")
+                    NativeSourceSetup.RequestOwnedForeground(source.Root, source.Field, source.Process, action.Token);
+                if (scenario == "foreground")
                     point = await NativeSourceSetup.WaitVisibleAsync(source.Root, source.Field, source.Process, observation, source.Token);
                 else if (scenario == "cancelled")
                     await Assert.ThrowsAnyAsync<OperationCanceledException>(() => NativeSourceSetup.WaitVisibleAsync(source.Root, source.Field, source.Process, observation, action.Token));
                 else if (scenario == "wrong-root")
                 {
                     var failure = await Assert.ThrowsAsync<NativeSourceSetup.Failure>(() => NativeSourceSetup.WaitVisibleAsync(source.Field, source.Field, source.Process, observation, action.Token));
-                    Assert.Equal("source-exposure-identity-changed", failure.Code);
+                    Assert.Equal("source-foreground-identity-changed", failure.Code);
                 }
                 else
                 {
+                    // Activation and the target thread's dispatch are distinct;
+                    // observe the one request before testing persistent occlusion.
+                    while (N.GetForegroundWindow() != source.Root)
+                        await Task.Delay(10, source.Token);
                     using var waitStop = CancellationTokenSource.CreateLinkedTokenSource(source.Token);
                     var waiting = NativeSourceSetup.WaitVisibleAsync(source.Root, source.Field, source.Process, observation, waitStop.Token);
                     Assert.False(waiting.IsCompleted);
@@ -165,12 +169,20 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                     waitStop.Cancel();
                     await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
                 }
-                Assert.Equal(beforeFocus, N.Focused());
-                Assert.Equal(coverRoot, N.GetForegroundWindow());
+                if (scenario is "cancelled" or "wrong-root")
+                {
+                    Assert.Equal(beforeFocus, N.Focused());
+                    Assert.Equal(coverRoot, N.GetForegroundWindow());
+                }
+                else
+                {
+                    Assert.True(observation.VisibilityForegroundMatched);
+                    Assert.Equal(source.Root, N.GetForegroundWindow());
+                }
                 Assert.True(N.GetWindowRect(source.Root, out var afterBounds));
                 Assert.Equal(originalBounds, afterBounds);
                 Assert.Equal(0, N.GetStyle(source.Root, -20) & 0x8);
-                if (scenario == "expose")
+                if (scenario == "foreground")
                 {
                     nint previousDpi = SetThreadDpiAwarenessContext(-4);
                     Assert.NotEqual(0, previousDpi);
@@ -198,7 +210,7 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
             finally
             {
                 TestContext.Current.TestOutputHelper?.WriteLine($"Source visibility: attempts={observation.VisibilityAttempts}; "
-                    + $"geometry={observation.VisibilityGeometryAvailable}; firstHit={observation.VisibilityFirstHit}; lastHit={observation.VisibilityLastHit}.");
+                    + $"foregroundMatched={observation.VisibilityForegroundMatched}; geometry={observation.VisibilityGeometryAvailable}; firstHit={observation.VisibilityFirstHit}; lastHit={observation.VisibilityLastHit}.");
                 cover.Close();
                 SetCursorPos(previous.X, previous.Y);
             }

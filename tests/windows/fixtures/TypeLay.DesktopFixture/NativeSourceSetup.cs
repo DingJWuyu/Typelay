@@ -9,22 +9,21 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 // product readiness, an IME state, or a write permit.
 internal static class NativeSourceSetup
 {
-    // Explicit fixture layout preparation, never an implicit fallback for a
-    // refused click. Only this caller-owned ordinary window may be exposed;
-    // HWND_TOP is not HWND_TOPMOST and does not establish foreground or focus.
-    internal static void ExposeOwnedWindow(nint root, nint field, Process process, CancellationToken ct)
+    // Explicit synthetic-fixture preparation, never a fallback for a refused
+    // click or production foreground policy. A request does not establish field
+    // focus, model readiness or a write permit; observe before the one real click.
+    internal static void RequestOwnedForeground(nint root, nint field, Process process, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        Check(IsOwnedField(root, field, process), FailureReason.SourceExposureIdentityChanged);
+        Check(IsOwnedField(root, field, process), FailureReason.SourceForegroundIdentityChanged);
         Check(N.IsWindowVisible(root) && N.IsWindowEnabled(root)
-            && N.IsWindowVisible(field) && N.IsWindowEnabled(field), FailureReason.SourceExposureUnavailable);
+            && N.IsWindowVisible(field) && N.IsWindowEnabled(field), FailureReason.SourceForegroundUnavailable);
         ct.ThrowIfCancellationRequested();
-        Check(SetWindowPos(root, 0, 0, 0, 0, 0, 0x0013), // NOMOVE | NOSIZE | NOACTIVATE.
-            FailureReason.SourceExposureFailed);
+        Check(N.SetForegroundWindow(root), FailureReason.SourceForegroundRefused);
     }
 
-    // SetWindowPos returning does not prove the current desktop hit test has
-    // reached this field. Observe only; never repeat exposure or synthesize input.
+    // Observe the requested foreground root and its current desktop hit test.
+    // Never repeat activation, move windows or synthesize input while waiting.
     internal static async Task<N.Point> WaitVisibleAsync(nint root, nint field, Process process,
         Observation observation, CancellationToken ct)
     {
@@ -35,8 +34,9 @@ internal static class NativeSourceSetup
             Check(previousDpi != 0, FailureReason.SourceClickObservationDpiContext);
             try
             {
-                Check(IsOwnedField(root, field, process), FailureReason.SourceExposureIdentityChanged);
+                Check(IsOwnedField(root, field, process), FailureReason.SourceForegroundIdentityChanged);
                 observation.VisibilityAttempts++;
+                observation.VisibilityForegroundMatched = N.GetForegroundWindow() == root;
                 bool boundsAvailable = N.GetWindowRect(field, out var bounds);
                 observation.VisibilityGeometryAvailable = N.IsWindowVisible(root) && N.IsWindowEnabled(root)
                     && N.IsWindowVisible(field) && N.IsWindowEnabled(field)
@@ -55,10 +55,10 @@ internal static class NativeSourceSetup
                             : N.GetWindowThreadProcessId(target, out uint pid) != 0 && pid == process.Id ? "other-owned" : "foreign";
                         if (x == xs[0])
                             hit = current;
-                        if (target == field)
+                        if (target == field && observation.VisibilityForegroundMatched)
                         {
                             RecordHit("field");
-                            Check(IsOwnedField(root, field, process), FailureReason.SourceExposureIdentityChanged);
+                            Check(IsOwnedField(root, field, process), FailureReason.SourceForegroundIdentityChanged);
                             ct.ThrowIfCancellationRequested();
                             return point;
                         }
@@ -190,6 +190,10 @@ internal static class NativeSourceSetup
         {
             get; internal set;
         }
+        public bool VisibilityForegroundMatched
+        {
+            get; internal set;
+        }
         public bool VisibilityGeometryAvailable
         {
             get; internal set;
@@ -294,9 +298,9 @@ internal static class NativeSourceSetup
 
     internal enum FailureReason
     {
-        SourceExposureIdentityChanged,
-        SourceExposureUnavailable,
-        SourceExposureFailed,
+        SourceForegroundIdentityChanged,
+        SourceForegroundUnavailable,
+        SourceForegroundRefused,
         SourceClickObservationDpiContext,
         SourceClickIdentityChanged,
         SourceClickControlHandleMismatch,
@@ -322,9 +326,9 @@ internal static class NativeSourceSetup
         internal FailureReason Reason { get; } = reason;
         internal string Code => Reason switch
         {
-            FailureReason.SourceExposureIdentityChanged => "source-exposure-identity-changed",
-            FailureReason.SourceExposureUnavailable => "source-exposure-unavailable",
-            FailureReason.SourceExposureFailed => "source-exposure-failed",
+            FailureReason.SourceForegroundIdentityChanged => "source-foreground-identity-changed",
+            FailureReason.SourceForegroundUnavailable => "source-foreground-unavailable",
+            FailureReason.SourceForegroundRefused => "source-foreground-refused",
             FailureReason.SourceClickObservationDpiContext => "source-click-observation-dpi-context",
             FailureReason.SourceClickIdentityChanged => "source-click-identity-changed",
             FailureReason.SourceClickControlHandleMismatch => "source-click-control-handle-mismatch",
@@ -352,9 +356,6 @@ internal static class NativeSourceSetup
         if (!condition)
             throw new Failure(reason);
     }
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetWindowPos(nint window, nint after, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] private static extern nint SetThreadDpiAwarenessContext(nint context);
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(N.Point point);
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);

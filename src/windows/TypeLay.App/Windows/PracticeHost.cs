@@ -282,12 +282,20 @@ internal sealed partial class PracticeHost : IDisposable
             Enqueue(new("progress", _connection, _runId, _sequence, progress));
     }
 
-    private void Enqueue(PracticeMessage message)
+    private void Enqueue(PracticeMessage message, PendingPlan? installObservation = null)
     {
         // Unlike coalesced display updates, control and ACKs may never be lost.
         // Exhaustion closes this connection rather than dropping a retirement.
         var trace = _writerTrace;
         var queued = trace?.Queued(message) ?? new QueuedPracticeMessage(message, null, false);
+        if (installObservation is not null && queued.Frame is { } frame)
+        {
+            installObservation.ObserveInstallTransport(frame);
+            queued = queued with
+            {
+                InstallObservation = installObservation
+            };
+        }
         bool accepted = _updates?.Writer.TryWrite(queued) == true;
         trace?.Published(queued, accepted);
         if (!accepted && _child is not null && _communication is not null)
@@ -346,7 +354,8 @@ internal sealed partial class PracticeHost : IDisposable
     }
 
     private sealed record QueuedPracticeMessage(PracticeMessage Message, WriterFrame? Frame, bool TraceFence,
-        WriterFrame? PreviousQueued = null, WriterFrame? InFlightAtQueue = null);
+        WriterFrame? PreviousQueued = null, WriterFrame? InFlightAtQueue = null,
+        PendingPlan? InstallObservation = null);
     private sealed record WriterFrame(long Order, string Kind, long QueuedAtMs,
         long? WriteStartedAtMs = null, long? WriteEndedAtMs = null, bool? Completed = null);
 
@@ -395,6 +404,7 @@ internal sealed partial class PracticeHost : IDisposable
                 WriteStartedAtMs = WindowsInterruptClock.NowMs
             };
             Volatile.Write(ref _inFlight, frame);
+            queued.InstallObservation?.ObserveInstallTransport(frame);
             if (queued.TraceFence)
                 Record(queued, "write-started", new
                 {
@@ -413,6 +423,7 @@ internal sealed partial class PracticeHost : IDisposable
             if (_recent.Count == 16)
                 _recent.Dequeue();
             _recent.Enqueue(frame);
+            queued.InstallObservation?.ObserveInstallTransport(frame);
             Volatile.Write(ref _inFlight, null);
             if (queued.TraceFence || !completed)
                 Record(queued, "write-ended", new

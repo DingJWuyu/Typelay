@@ -1,9 +1,10 @@
-"""Real process-lifetime checks for the ordinary-app test's cleanup evidence.
+"""Real process-lifetime checks for Linux desktop runners' cleanup evidence.
 
 No GIMP UI, model, input-method or product acceptance is exercised here.
 """
 
 import asyncio
+import json
 import shutil
 import subprocess
 import sys
@@ -18,7 +19,12 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 
 from application_support import ApplicationSupport  # noqa: E402
-from desktop_session import process_identity  # noqa: E402
+from desktop_session import (  # noqa: E402
+    boot_identity,
+    process_identity,
+    receipts,
+    session_identity,
+)
 from ordinary_gimp import (  # noqa: E402
     acceptable_candidate,
     comment_undo_evidence,
@@ -30,10 +36,10 @@ from ordinary_gimp import (  # noqa: E402
     launched_application,
     properties_click_point,
     returned_draft_ready,
-    session_exit_confirmed,
     unique_owned_window,
     validate_nested_output,
 )
+from support.session_lifecycle import session_exit_confirmed  # noqa: E402
 
 
 class DisconnectCompletionTests(unittest.TestCase):
@@ -247,31 +253,79 @@ class OrdinaryDesktopLifecycleTests(unittest.TestCase):
             child.stdin.close()
             child.stdout.close()
 
-    def test_removed_receipt_does_not_prove_guardian_exit(self):
+    def test_removed_receipt_and_exited_daemon_do_not_prove_guardian_exit(self):
         with tempfile.TemporaryDirectory() as directory:
-            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+            data = Path(directory)
+            processes = []
             try:
-                identity = process_identity(child.pid)
-                self.assertIsNotNone(identity)
-                # The guardian can unlink its receipt before fsync/lock cleanup.
-                self.assertFalse(session_exit_confirmed(Path(directory), [identity]))
-                child.terminate()
-                child.wait(timeout=5)
-                self.assertTrue(session_exit_confirmed(Path(directory), [identity]))
+                for _ in range(2):
+                    processes.append(
+                        subprocess.Popen(
+                            [sys.executable, "-c", "import sys; sys.stdin.read()"],
+                            stdin=subprocess.PIPE,
+                        )
+                    )
+                guardian, daemon = processes
+                guardian_identity = process_identity(guardian.pid)
+                daemon_identity = process_identity(daemon.pid)
+                self.assertIsNotNone(guardian_identity)
+                self.assertIsNotNone(daemon_identity)
+                root = data / "components/desktop-text/sessions"
+                root.mkdir(parents=True, mode=0o700)
+                receipt = root / ("a" * 32 + ".json")
+                receipt.write_text(
+                    json.dumps(
+                        {
+                            "schemaVersion": 1,
+                            "bootId": boot_identity(),
+                            "session": session_identity(),
+                            "kind": "daemon",
+                            "state": "running",
+                            "bundle": "fixture",
+                            "package": "fixture",
+                            "guardian": guardian_identity,
+                            "child": daemon_identity,
+                        }
+                    )
+                )
+                observed = receipts(data)[0]
+                identities = [observed["child"], observed["guardian"]]
+                self.assertFalse(session_exit_confirmed(data, identities))
+                daemon.stdin.close()
+                daemon.wait(timeout=5)
+                # A real receipt disappears after child exit, while its guardian
+                # still has final fsync/lock cleanup to complete.
+                receipt.unlink()
+                self.assertEqual(receipts(data), [])
+                self.assertIsNone(process_identity(daemon.pid))
+                self.assertFalse(session_exit_confirmed(data, identities))
+                # A live recycled PID is not the saved guardian: startTime is
+                # part of the identity, not just an informational diagnostic.
+                stale = {**guardian_identity, "startTime": guardian_identity["startTime"] + 1}
+                self.assertTrue(session_exit_confirmed(data, [stale]))
+                self.assertFalse(session_exit_confirmed(data, [guardian_identity]))
+                guardian.stdin.close()
+                guardian.wait(timeout=5)
+                self.assertTrue(session_exit_confirmed(data, identities))
             finally:
-                if child.poll() is None:
-                    child.kill()
-                    child.wait(timeout=5)
+                for process in processes:
+                    if process.stdin and not process.stdin.closed:
+                        process.stdin.close()
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=5)
 
     def test_denied_process_observation_is_not_exit(self):
         with tempfile.TemporaryDirectory() as directory:
-            with patch("ordinary_gimp.Path.read_text", side_effect=PermissionError("denied")):
+            with patch(
+                "support.session_lifecycle.Path.read_text", side_effect=PermissionError("denied")
+            ):
                 with self.assertRaises(PermissionError):
                     session_exit_confirmed(Path(directory), [{"pid": 12345, "startTime": 678}])
 
     def test_malformed_process_observation_is_not_exit(self):
         with tempfile.TemporaryDirectory() as directory:
-            with patch("ordinary_gimp.Path.read_text", return_value="invalid"):
+            with patch("support.session_lifecycle.Path.read_text", return_value="invalid"):
                 with self.assertRaises(ValueError):
                     session_exit_confirmed(Path(directory), [{"pid": 12345, "startTime": 678}])
 

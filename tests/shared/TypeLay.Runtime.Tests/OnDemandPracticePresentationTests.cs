@@ -49,6 +49,8 @@ public sealed class OnDemandPracticePresentationTests
     public void AutomaticModeMakesTheGlobalModeChangeExplicit()
     {
         var view = OnDemandPracticePresentation.Create(new());
+        Assert.Equal("你好我想试试本地翻译", view.SampleText);
+        Assert.False(view.LanguageNeedsChange);
         Assert.Equal("按需翻译练习", view.Title);
         Assert.Equal("用一段原文，练习预览和直接替换。练习内容只在本机处理。", view.Summary);
         Assert.Equal("开始练习后，这里会显示进度。", view.ProgressNotice);
@@ -90,6 +92,8 @@ public sealed class OnDemandPracticePresentationTests
     }
 
     [Theory]
+    [InlineData("auto", "en", false, "你好我想试试本地翻译")]
+    [InlineData("auto", "zh", false, "Hello I would like to try local translation")]
     [InlineData("zh", "en", false, "你好我想试试本地翻译")]
     [InlineData("en", "zh", false, "Hello I would like to try local translation")]
     [InlineData("zh", "zh", true, "你好我想试试本地翻译")]

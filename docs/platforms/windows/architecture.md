@@ -12,6 +12,12 @@ TypeLay.Windows.Contracts 引用 Core，拥有 App 与 Broker 共用的 DTO、�
 
 `TypeLay.Launcher` 是 Windows 原生入口。发布时从 C 源码编译，调用发行目录 bootstrap/start.ps1；它不包含 SDK 下载和源码编译功能。
 
+## 输入后端的安全准入
+
+当前生产路径没有 TSF 后端。候选后端必须分别证明精确字段身份与寿命、完整正文与 UTF-16 选区、真实输入法组合态与共存、连续编辑变化，以及独立的写入资格；静态输入 profile、模块路径匹配、回调进入或进程清理成功均不能代替这些能力证明。未取得有效读取快照时，初始零值不能解释为无组合或空正文，未知状态继续拒绝授权。
+
+新的 TSF 接入实验须先明确范围和授权；元数据完整不等于正文完整，不能因当前观察不足而擅自扩展到 base、parent 或修改输入法。隔离合成文档结果不外推普通输入框支持，单条有界路径停止也不代表 TSF 所有方案不可行。读取证据不自动授权写入、系统配置变更或运行中卸载。
+
 ## 浏览器合作输入
 
 Windows 浏览器适配通过 `WindowsInputRouter` 接入同一个 SessionController，页面实现来自 `src/shared/browser/`；平台只拥有 native-messaging 注册、传输、Hook 和视图路由。`TypeLay.BrowserHost` 由 Chrome 启动，双方按命名管道的实际进程核同用户、会话、发行路径和寿命，再核登记的精确扩展 origin。浏览器进程身份只筛选连接，字段授权仍由同一文档端口、目标、元数据、输入法与内容版本证明，不能由 PID 或最终前台窗口推导。标准 HTTP(S) 顶层 input/textarea 以外不开放此适配，失败不转 UIA 写入。

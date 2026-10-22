@@ -761,6 +761,7 @@ internal static partial class HyPackageCheck
     }
     private sealed class OrdinaryQuitObservation
     {
+        public int DiscoveryBudgetSeconds => 30;
         public ShellTrayObservation? FirstMissShellTree
         {
             get; set;
@@ -825,55 +826,70 @@ internal static partial class HyPackageCheck
         var observation = new OrdinaryQuitObservation();
         scene.Facts = observation;
         scene.Stage = "find-tray-icon";
-        await WaitAsync(async () => await UiAsync(() =>
+        // Discovery is not model installation: bound this stage independently
+        // while preserving an earlier lifecycle deadline and the cleanup reserve.
+        using var discovery = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        discovery.CancelAfter(TimeSpan.FromSeconds(observation.DiscoveryBudgetSeconds));
+        var discoveryToken = discovery.Token;
+        try
         {
-            observation.AppExitObserved = app.HasExited;
-            // Shell providers can expose the product name instead of its latest
-            // tooltip. This only finds the icon, never proves model/shortcut Ready.
-            var trays = AutomationElement.RootElement.FindAll(TreeScope.Children, new OrCondition(
-                new PropertyCondition(AutomationElement.ClassNameProperty, "Shell_TrayWnd"),
-                new PropertyCondition(AutomationElement.ClassNameProperty, "Shell_SecondaryTrayWnd"),
-                new PropertyCondition(AutomationElement.ClassNameProperty, "NotifyIconOverflowWindow"),
-                new PropertyCondition(AutomationElement.ClassNameProperty, "TopLevelWindowForOverflowXamlIsland")));
-            var buttons = trays.Cast<AutomationElement>().SelectMany(tray => tray.FindAll(TreeScope.Descendants,
-                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button)).Cast<AutomationElement>()).ToArray();
-            var matches = buttons.Where(button => !button.Current.IsOffscreen
-                && (button.Current.Name == "TypeLay" || button.Current.Name.StartsWith("TypeLay · ", StringComparison.Ordinal))).ToArray();
-            observation.TrayRoots = trays.Count;
-            observation.TrayButtons = buttons.Length;
-            observation.VisibleIconMatches = matches.Length;
-            Require(matches.Length <= 1, "tray-icon-ambiguous");
-            if (matches.Length == 1)
+            await WaitAsync(async () => await UiAsync(() =>
             {
-                icon = matches[0];
-                return true;
-            }
-            if (observation.FirstMissShellTree is null)
-            {
-                // The shell structure is evidence, not an alternate selector.
-                // A partial/failed sample cannot establish that an icon is absent.
-                observation.FirstMissShellTree = new ShellTrayObservation();
-                observation.FirstMissShellTree.Capture(trays.Cast<AutomationElement>(), ct);
-            }
-            ct.ThrowIfCancellationRequested();
-            if (!overflowOpened)
-            {
-                var overflow = buttons.Where(button => !button.Current.IsOffscreen && (button.Current.AutomationId == "NotificationChevron"
-                    || button.Current.Name is "Show hidden icons" or "显示隐藏的图标")).ToArray();
-                observation.VisibleOverflowMatches = overflow.Length;
-                Require(overflow.Length <= 1, "tray-overflow-ambiguous");
-                if (overflow.Length == 1)
+                discoveryToken.ThrowIfCancellationRequested();
+                observation.AppExitObserved = app.HasExited;
+                // Shell providers can expose the product name instead of its latest
+                // tooltip. This only finds the icon, never proves model/shortcut Ready.
+                var trays = AutomationElement.RootElement.FindAll(TreeScope.Children, new OrCondition(
+                    new PropertyCondition(AutomationElement.ClassNameProperty, "Shell_TrayWnd"),
+                    new PropertyCondition(AutomationElement.ClassNameProperty, "Shell_SecondaryTrayWnd"),
+                    new PropertyCondition(AutomationElement.ClassNameProperty, "NotifyIconOverflowWindow"),
+                    new PropertyCondition(AutomationElement.ClassNameProperty, "TopLevelWindowForOverflowXamlIsland")));
+                var buttons = trays.Cast<AutomationElement>().SelectMany(tray => tray.FindAll(TreeScope.Descendants,
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button)).Cast<AutomationElement>()).ToArray();
+                var matches = buttons.Where(button => !button.Current.IsOffscreen
+                    && (button.Current.Name == "TypeLay" || button.Current.Name.StartsWith("TypeLay · ", StringComparison.Ordinal))).ToArray();
+                discoveryToken.ThrowIfCancellationRequested();
+                observation.TrayRoots = trays.Count;
+                observation.TrayButtons = buttons.Length;
+                observation.VisibleIconMatches = matches.Length;
+                Require(matches.Length <= 1, "tray-icon-ambiguous");
+                if (matches.Length == 1)
                 {
-                    scene.Stage = "open-tray-overflow";
-                    var overflowInvoke = (InvokePattern)overflow[0].GetCurrentPattern(InvokePattern.Pattern);
-                    ct.ThrowIfCancellationRequested();
-                    overflowInvoke.Invoke();
-                    observation.OverflowOpened = overflowOpened = true;
-                    scene.Stage = "find-tray-icon";
+                    icon = matches[0];
+                    return true;
                 }
-            }
-            return false;
-        }, ct), ct);
+                if (observation.FirstMissShellTree is null)
+                {
+                    // The shell structure is evidence, not an alternate selector.
+                    // A partial/failed sample cannot establish that an icon is absent.
+                    observation.FirstMissShellTree = new ShellTrayObservation();
+                    observation.FirstMissShellTree.Capture(trays.Cast<AutomationElement>(), discoveryToken);
+                }
+                discoveryToken.ThrowIfCancellationRequested();
+                if (!overflowOpened)
+                {
+                    var overflow = buttons.Where(button => !button.Current.IsOffscreen && (button.Current.AutomationId == "NotificationChevron"
+                        || button.Current.Name is "Show hidden icons" or "显示隐藏的图标")).ToArray();
+                    observation.VisibleOverflowMatches = overflow.Length;
+                    Require(overflow.Length <= 1, "tray-overflow-ambiguous");
+                    if (overflow.Length == 1)
+                    {
+                        scene.Stage = "open-tray-overflow";
+                        var overflowInvoke = (InvokePattern)overflow[0].GetCurrentPattern(InvokePattern.Pattern);
+                        discoveryToken.ThrowIfCancellationRequested();
+                        overflowInvoke.Invoke();
+                        observation.OverflowOpened = overflowOpened = true;
+                        scene.Stage = "find-tray-icon";
+                    }
+                }
+                return false;
+            }, discoveryToken), discoveryToken);
+            discoveryToken.ThrowIfCancellationRequested();
+        }
+        catch (OperationCanceledException) when (discovery.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            throw new Failure("tray-discovery-deadline");
+        }
         scene.Stage = "activate-tray-icon";
         await UiAsync(() =>
         {

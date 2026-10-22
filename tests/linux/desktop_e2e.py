@@ -30,6 +30,7 @@ from setup import (
     read_metadata,
     runtime_copy_plan,
 )
+from support.session_lifecycle import session_exit_confirmed
 from wire import Decoder, encode, now_ms
 
 
@@ -955,7 +956,12 @@ def run(arguments):
                 control(False)
                 function(False)
 
-        start()
+        fresh_defaults = arguments.desktop_scope == "setup-tutorial"
+        if fresh_defaults:
+            assert not paths.settings.exists(), "first tutorial launch already has settings"
+        start(write_settings=not fresh_defaults)
+        if fresh_defaults:
+            assert not paths.settings.exists(), "startup persisted unsolicited preferences"
         # A duplicate background request must use the existing real session.
         subprocess.run([str(package / "typelay"), "--background"], env=environment, check=True)
         assert process.poll() is None
@@ -4171,11 +4177,20 @@ def run(arguments):
             if tutorial_scope:
                 # A separate GTK process exercises only the lesson's asynchronous
                 # control replies. Its private socket cannot touch the managed run.
+                initial_practice = control(paths, "practiceStatus")["presentation"]
+                if fresh_defaults:
+                    assert initial_practice["sampleText"] == "你好我想试试本地翻译"
+                    assert initial_practice["confirmationText"]
+                    automatic = control(paths, "practiceStatus", {"lesson": "automatic"})[
+                        "presentation"
+                    ]
+                    assert automatic["sampleText"] == "你好我想试试本地翻译"
+                    assert automatic["confirmationText"] is None
                 subprocess.run(
                     [
                         sys.executable,
                         str(Path(__file__).with_name("practice_window.py")),
-                        json.dumps(control(paths, "practiceStatus")["presentation"]),
+                        json.dumps(initial_practice),
                     ],
                     env={**environment, "GTK3_MODULES": "", "GTK_MODULES": ""},
                     check=True,
@@ -4674,6 +4689,54 @@ def run(arguments):
                 ), "connection choice is clipped before the user scrolls or focuses it"
             calibrate_settings_scroll(trial)
             assert preparation["secondaryActions"] == []
+            if fresh_defaults:
+                # Observe the shipped defaults before explicitly choosing the
+                # existing ASCII lesson's direction/mode through the real UI.
+                # Models were installed by CI, not by this tutorial invocation.
+                assert not paths.settings.exists()
+                assert not status()["setup"]["onboardingComplete"]
+                settings_page("常规")
+                mode = settings_control("设置：工作模式")
+                assert Atspi.Selection.is_child_selected(mode.get_selection_iface(), 0)
+                writeback = settings_control("设置：启用原生输入框替换")
+                assert not writeback.get_state_set().contains(Atspi.StateType.CHECKED)
+                settings_page("语言")
+                source_language = settings_control("设置：源语言")
+                target_language = settings_control("设置：目标语言")
+                assert Atspi.Selection.is_child_selected(source_language.get_selection_iface(), 0)
+                assert Atspi.Selection.is_child_selected(target_language.get_selection_iface(), 0)
+                assert not paths.settings.exists(), "viewing defaults changed preferences"
+                assert Atspi.Selection.select_child(source_language.get_selection_iface(), 2)
+                wait_for(
+                    lambda: paths.settings.is_file()
+                    and json.loads(paths.settings.read_text())["Source"] == "en",
+                    "explicit English source selection was not saved",
+                )
+                target_language = settings_control("设置：目标语言")
+                assert Atspi.Selection.select_child(target_language.get_selection_iface(), 1)
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text())["Target"] == "zh",
+                    "explicit Chinese target selection was not saved",
+                )
+                settings_page("常规")
+                mode = settings_control("设置：工作模式")
+                assert Atspi.Selection.select_child(mode.get_selection_iface(), 1)
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text())["Mode"] == 1,
+                    "explicit on-demand selection was not saved",
+                )
+                selected = json.loads(paths.settings.read_text())
+                assert (selected["Source"], selected["Target"]) == ("en", "zh")
+                assert selected["OnboardingComplete"] is False
+                assert selected["ExperimentalWriteback"] is False
+                settings_page("应用支持")
+                settings_scroll_calibration = None
+                evidence.append(
+                    "Empty settings first launch: Automatic, auto-to-English and writeback off; "
+                    "production Chinese practice sample rendered by the existing isolated GTK "
+                    "control test; explicit language/mode UI choices enter the original lesson. "
+                    "Uses the CI-installed model; no default Chinese input/translation claim"
+                )
             if settings_scope:
                 current_package = next(row for row in preparation["packageRows"] if row["current"])
                 repair = next(
@@ -7059,13 +7122,16 @@ def run(arguments):
                         row for row in receipts(paths.data) if row["kind"] == "daemon"
                     ]
                     assert len(daemon_receipts) == 1, daemon_receipts
-                    prior_daemon = daemon_receipts[0]["child"]
+                    prior_session = daemon_receipts[0]
+                    prior_daemon = prior_session["child"]
                     desktop_action("Disconnect", cancel=True)
                     assert process_identity(prior_daemon["pid"]) == prior_daemon
                     assert os.readlink(pointer) == prepared_target
                     desktop_action("Disconnect")
                     wait_for(
-                        lambda: not receipts(paths.data)
+                        lambda: session_exit_confirmed(
+                            paths.data, [prior_daemon, prior_session["guardian"]]
+                        )
                         and process_identity(prior_daemon["pid"]) != prior_daemon,
                         "ending connection did not release the actual private daemon and guardian",
                         timeout=30,
