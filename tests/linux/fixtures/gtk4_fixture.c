@@ -239,6 +239,190 @@ static void control_pointer_unmap(GtkWidget *widget, gpointer data) {
     (void)data;
     g_object_set_data(G_OBJECT(widget), "fixture-control-enter-at", NULL);
 }
+static JsonNode *control_surface_geometry(GtkWidget *widget) {
+    GtkNative *native = gtk_widget_get_native(widget);
+    GdkSurface *surface = native ? gtk_native_get_surface(native) : NULL;
+    GdkSurface *parent = gtk_native_get_surface(GTK_NATIVE(report_window));
+    if (!gtk_widget_get_mapped(widget)) return NULL;
+    graphene_point_t origin = GRAPHENE_POINT_INIT(0, 0), point;
+    double tx = 0, ty = 0;
+    if (!surface || !parent || !gdk_surface_get_mapped(surface) || !gdk_surface_get_mapped(parent)
+        || !gtk_widget_compute_point(widget, GTK_WIDGET(native), &origin, &point)) {
+        return NULL;
+    }
+    /* GtkNative's transform is surface -> widget; invert before translating
+     * the real popup surface to its parent. Widget-tree offsets are not a
+     * substitute for the compositor-configured popup position. */
+    gtk_native_get_surface_transform(native, &tx, &ty);
+    double x = (double)point.x - tx, y = (double)point.y - ty;
+    if (!gdk_surface_translate_coordinates(surface, parent, &x, &y)) {
+        return NULL;
+    }
+    JsonBuilder *builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "x"); json_builder_add_double_value(builder, x);
+    json_builder_set_member_name(builder, "y"); json_builder_add_double_value(builder, y);
+    json_builder_set_member_name(builder, "surfaceInstance");
+    json_builder_add_int_value(builder, language_instance(G_OBJECT(surface)));
+    json_builder_set_member_name(builder, "scale");
+    json_builder_add_int_value(builder, gdk_surface_get_scale_factor(surface));
+    json_builder_set_member_name(builder, "nativeX"); json_builder_add_double_value(builder, point.x);
+    json_builder_set_member_name(builder, "nativeY"); json_builder_add_double_value(builder, point.y);
+    json_builder_set_member_name(builder, "transformX"); json_builder_add_double_value(builder, tx);
+    json_builder_set_member_name(builder, "transformY"); json_builder_add_double_value(builder, ty);
+    json_builder_set_member_name(builder, "popup"); json_builder_add_boolean_value(builder, GDK_IS_POPUP(surface));
+    if (GDK_IS_POPUP(surface)) {
+        json_builder_set_member_name(builder, "popupX");
+        json_builder_add_int_value(builder, gdk_popup_get_position_x(GDK_POPUP(surface)));
+        json_builder_set_member_name(builder, "popupY");
+        json_builder_add_int_value(builder, gdk_popup_get_position_y(GDK_POPUP(surface)));
+    }
+    json_builder_set_member_name(builder, "width"); json_builder_add_int_value(builder, gtk_widget_get_width(widget));
+    json_builder_set_member_name(builder, "height"); json_builder_add_int_value(builder, gtk_widget_get_height(widget));
+    json_builder_set_member_name(builder, "instance"); json_builder_add_int_value(builder, language_instance(G_OBJECT(widget)));
+    json_builder_end_object(builder);
+    JsonNode *result = json_builder_get_root(builder);
+    g_object_unref(builder);
+    return result;
+}
+
+typedef struct {
+    GdkFrameClock *clock;
+    gulong handler, layout_handler, paint_handler;
+    guint request_source;
+    guint64 map_generation, painted_map_generation, surface_instance;
+    gint64 mapped_at, requested_frame, layout_frame, paint_frame, painted_frame, painted_at;
+    gint64 completed_layout_frame, completed_paint_frame;
+    JsonNode *geometry;
+} ControlPaint;
+
+static void control_paint_clear(ControlPaint *paint) {
+    if (paint->request_source) {
+        g_source_remove(paint->request_source);
+        paint->request_source = 0;
+    }
+    gulong handlers[] = {paint->handler, paint->layout_handler, paint->paint_handler};
+    for (guint i = 0; i < G_N_ELEMENTS(handlers); i++)
+        if (paint->clock && handlers[i] && g_signal_handler_is_connected(paint->clock, handlers[i]))
+            g_signal_handler_disconnect(paint->clock, handlers[i]);
+    paint->handler = paint->layout_handler = paint->paint_handler = 0;
+    paint->layout_frame = paint->paint_frame = -1;
+    g_clear_object(&paint->clock);
+    g_clear_pointer(&paint->geometry, json_node_unref);
+    paint->painted_at = 0;
+}
+static void control_paint_free(gpointer data) {
+    ControlPaint *paint = data;
+    control_paint_clear(paint);
+    g_free(paint);
+}
+static void control_layout(GdkFrameClock *clock, gpointer data) {
+    GtkWidget *widget = data;
+    ControlPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-control-paint");
+    if (paint && paint->clock == clock && gtk_widget_get_mapped(widget))
+        paint->layout_frame = gdk_frame_clock_get_frame_counter(clock);
+}
+static void control_paint(GdkFrameClock *clock, gpointer data) {
+    GtkWidget *widget = data;
+    ControlPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-control-paint");
+    if (paint && paint->clock == clock && gtk_widget_get_mapped(widget))
+        paint->paint_frame = gdk_frame_clock_get_frame_counter(clock);
+}
+static void control_after_paint(GdkFrameClock *clock, gpointer data) {
+    GtkWidget *widget = data;
+    ControlPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-control-paint");
+    if (!paint || paint->request_source || paint->clock != clock || !gtk_widget_get_mapped(widget)
+        || gtk_widget_get_frame_clock(widget) != clock
+        || gdk_frame_clock_get_frame_counter(clock) <= paint->requested_frame
+        || paint->layout_frame != gdk_frame_clock_get_frame_counter(clock)
+        || paint->paint_frame != paint->layout_frame) return;
+    g_clear_pointer(&paint->geometry, json_node_unref);
+    paint->geometry = control_surface_geometry(widget);
+    paint->completed_layout_frame = paint->layout_frame;
+    paint->completed_paint_frame = paint->paint_frame;
+    paint->painted_map_generation = paint->map_generation;
+    paint->painted_frame = gdk_frame_clock_get_frame_counter(clock);
+    paint->painted_at = g_get_monotonic_time() / 1000;
+}
+static gboolean control_request_frame(gpointer data) {
+    GtkWidget *widget = data;
+    ControlPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-control-paint");
+    paint->request_source = 0;
+    if (paint->clock && gtk_widget_get_mapped(widget)) {
+        paint->requested_frame = gdk_frame_clock_get_frame_counter(paint->clock);
+        gdk_frame_clock_request_phase(paint->clock, GDK_FRAME_CLOCK_PHASE_LAYOUT
+            | GDK_FRAME_CLOCK_PHASE_PAINT | GDK_FRAME_CLOCK_PHASE_AFTER_PAINT);
+    }
+    return G_SOURCE_REMOVE;
+}
+static void control_paint_map(GtkWidget *widget, gpointer unused) {
+    (void)unused;
+    ControlPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-control-paint");
+    control_paint_clear(paint);
+    paint->map_generation++;
+    paint->mapped_at = g_get_monotonic_time() / 1000;
+    GdkFrameClock *clock = gtk_widget_get_frame_clock(widget);
+    GtkNative *native = gtk_widget_get_native(widget);
+    GdkSurface *surface = native ? gtk_native_get_surface(native) : NULL;
+    paint->surface_instance = surface ? language_instance(G_OBJECT(surface)) : 0;
+    if (!clock || !surface) return;
+    paint->clock = g_object_ref(clock);
+    paint->requested_frame = gdk_frame_clock_get_frame_counter(clock);
+    paint->layout_handler = g_signal_connect_object(clock, "layout",
+        G_CALLBACK(control_layout), widget, G_CONNECT_AFTER);
+    paint->paint_handler = g_signal_connect_object(clock, "paint",
+        G_CALLBACK(control_paint), widget, G_CONNECT_AFTER);
+    paint->handler = g_signal_connect_object(clock, "after-paint",
+        G_CALLBACK(control_after_paint), widget, G_CONNECT_AFTER);
+    /* Map can run during layout; request once from the next idle dispatch so
+     * its phases cannot be consumed by that in-progress frame. Also covers
+     * discovery after map when no further natural frame would be scheduled. */
+    paint->request_source = g_idle_add_full(G_PRIORITY_DEFAULT_IDLE,
+        control_request_frame, g_object_ref(widget), g_object_unref);
+}
+static void control_paint_unmap(GtkWidget *widget, gpointer unused) {
+    (void)unused;
+    ControlPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-control-paint");
+    control_paint_clear(paint);
+}
+static void report_control_paint(JsonBuilder *builder, GtkWidget *widget, JsonNode *geometry) {
+    ControlPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-control-paint");
+    if (!paint) {
+        paint = g_new0(ControlPaint, 1);
+        g_object_set_data_full(G_OBJECT(widget), "fixture-control-paint", paint, control_paint_free);
+        g_signal_connect(widget, "map", G_CALLBACK(control_paint_map), NULL);
+        g_signal_connect(widget, "unmap", G_CALLBACK(control_paint_unmap), NULL);
+        if (gtk_widget_get_mapped(widget)) control_paint_map(widget, NULL);
+    }
+    GdkFrameClock *clock = gtk_widget_get_frame_clock(widget);
+    guint64 surface_instance = geometry
+        ? (guint64)json_object_get_int_member(json_node_get_object(geometry), "surfaceInstance") : 0;
+    if (gtk_widget_get_mapped(widget) && (paint->clock != clock
+        || (surface_instance && paint->surface_instance != surface_instance)))
+        control_paint_map(widget, NULL);
+    gint64 frame = paint->clock ? gdk_frame_clock_get_frame_counter(paint->clock) : -1;
+    gboolean ready = gtk_widget_get_mapped(widget) && geometry && paint->geometry
+        && paint->painted_at >= paint->mapped_at && paint->painted_at > 0
+        && paint->painted_map_generation == paint->map_generation
+        && paint->painted_frame <= frame && json_node_equal(geometry, paint->geometry);
+    json_builder_set_member_name(builder, "paintObservation");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "ready"); json_builder_add_boolean_value(builder, ready);
+    json_builder_set_member_name(builder, "mapGeneration"); json_builder_add_int_value(builder, paint->map_generation);
+    json_builder_set_member_name(builder, "paintedMapGeneration"); json_builder_add_int_value(builder, paint->painted_map_generation);
+    json_builder_set_member_name(builder, "requestedFrame"); json_builder_add_int_value(builder, paint->requested_frame);
+    json_builder_set_member_name(builder, "mappedAtMonoMs"); json_builder_add_int_value(builder, paint->mapped_at);
+    json_builder_set_member_name(builder, "frame"); json_builder_add_int_value(builder, frame);
+    json_builder_set_member_name(builder, "layoutFrame"); json_builder_add_int_value(builder, paint->completed_layout_frame);
+    json_builder_set_member_name(builder, "paintFrame"); json_builder_add_int_value(builder, paint->completed_paint_frame);
+    json_builder_set_member_name(builder, "paintedFrame"); json_builder_add_int_value(builder, paint->painted_frame);
+    json_builder_set_member_name(builder, "paintedAtMonoMs"); json_builder_add_int_value(builder, paint->painted_at);
+    json_builder_set_member_name(builder, "geometry");
+    if (paint->geometry) json_builder_add_value(builder, json_node_copy(paint->geometry));
+    else json_builder_add_null_value(builder);
+    json_builder_end_object(builder);
+}
+
 static void report_control_surface(JsonBuilder *builder, GtkWidget *widget) {
     GtkEventControllerMotion *motion = g_object_get_data(G_OBJECT(widget), "fixture-control-motion");
     if (!motion) {
@@ -285,41 +469,15 @@ static void report_control_surface(JsonBuilder *builder, GtkWidget *widget) {
         }
     }
     json_builder_end_object(builder);
-    graphene_point_t origin = GRAPHENE_POINT_INIT(0, 0), point;
-    double tx = 0, ty = 0;
+    JsonNode *geometry = control_surface_geometry(widget);
     json_builder_set_member_name(builder, "surfaceGeometry");
-    if (!surface || !parent || !gdk_surface_get_mapped(surface) || !gdk_surface_get_mapped(parent)
-        || !gtk_widget_compute_point(widget, GTK_WIDGET(native), &origin, &point)) {
-        json_builder_add_null_value(builder); return;
-    }
-    /* GtkNative's transform is surface -> widget; invert before translating
-     * the real popup surface to its parent. Widget-tree offsets are not a
-     * substitute for the compositor-configured popup position. */
-    gtk_native_get_surface_transform(native, &tx, &ty);
-    double x = (double)point.x - tx, y = (double)point.y - ty;
-    if (!gdk_surface_translate_coordinates(surface, parent, &x, &y)) {
-        json_builder_add_null_value(builder); return;
-    }
-    json_builder_begin_object(builder);
-    json_builder_set_member_name(builder, "x"); json_builder_add_double_value(builder, x);
-    json_builder_set_member_name(builder, "y"); json_builder_add_double_value(builder, y);
-    json_builder_set_member_name(builder, "surfaceInstance");
-    json_builder_add_int_value(builder, language_instance(G_OBJECT(surface)));
-    json_builder_set_member_name(builder, "scale");
-    json_builder_add_int_value(builder, gdk_surface_get_scale_factor(surface));
-    json_builder_set_member_name(builder, "nativeX"); json_builder_add_double_value(builder, point.x);
-    json_builder_set_member_name(builder, "nativeY"); json_builder_add_double_value(builder, point.y);
-    json_builder_set_member_name(builder, "transformX"); json_builder_add_double_value(builder, tx);
-    json_builder_set_member_name(builder, "transformY"); json_builder_add_double_value(builder, ty);
-    json_builder_set_member_name(builder, "popup"); json_builder_add_boolean_value(builder, GDK_IS_POPUP(surface));
-    if (GDK_IS_POPUP(surface)) {
-        json_builder_set_member_name(builder, "popupX");
-        json_builder_add_int_value(builder, gdk_popup_get_position_x(GDK_POPUP(surface)));
-        json_builder_set_member_name(builder, "popupY");
-        json_builder_add_int_value(builder, gdk_popup_get_position_y(GDK_POPUP(surface)));
-    }
-    json_builder_end_object(builder);
+    if (geometry) json_builder_add_value(builder, json_node_copy(geometry));
+    else json_builder_add_null_value(builder);
+    if (g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND"))
+        report_control_paint(builder, widget, geometry);
+    g_clear_pointer(&geometry, json_node_unref);
 }
+
 static void report_language_control(GtkWidget *widget, gpointer data) {
     JsonBuilder *builder = data;
     const char *name = gtk_widget_get_name(widget);

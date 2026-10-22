@@ -15,6 +15,8 @@ import re
 import select
 import shutil
 import signal
+import socket
+import ssl
 import stat
 import subprocess
 import sys
@@ -38,6 +40,9 @@ PREPARED_PREFIX = "TYPELAY_MODEL_PREPARED="
 
 FAILURE_PREFIX = "TYPELAY_SETUP_FAILURE="
 FAILURE_CODES = {"network", "disk-space", "integrity", "permission", "runtime", "unknown"}
+DOWNLOAD_RESOURCES = {"argos-zh-en", "argos-en-zh", "hy-model", "hy-license", "unknown"}
+NETWORK_REASONS = {"http", "dns", "tls", "timeout", "connection", "incomplete", "unknown"}
+ARGOS_RESOURCES = {"zh_en": "argos-zh-en", "en_zh": "argos-en-zh"}
 PRESENTATION_UNAVAILABLE = "无法读取安装结果说明，请重新启动 TypeLay 后重试。"
 FAILURE_STAGES = {
     "prepare",
@@ -125,11 +130,46 @@ def failure_code(line, previous=None):
             or value.get("category") not in FAILURE_CODES
             or value.get("stage") not in FAILURE_STAGES
             or set(value)
-            - {"category", "stage", "errno", "exitCode", "dataFreeBytes", "cacheFreeBytes"}
+            - {
+                "category",
+                "stage",
+                "errno",
+                "exitCode",
+                "dataFreeBytes",
+                "cacheFreeBytes",
+                "resource",
+                "networkReason",
+                "httpStatus",
+            }
+            or (
+                "resource" in value
+                and (
+                    value["stage"] != "model-download"
+                    or value["resource"] not in DOWNLOAD_RESOURCES
+                )
+            )
+            or (
+                "networkReason" in value
+                and (
+                    value["stage"] != "model-download"
+                    or value["category"] != "network"
+                    or value["networkReason"] not in NETWORK_REASONS
+                )
+            )
+            or (
+                "httpStatus" in value
+                and (
+                    value["stage"] != "model-download"
+                    or value["category"] != "network"
+                    or value.get("networkReason") != "http"
+                    or type(value["httpStatus"]) is not int
+                    or not 100 <= value["httpStatus"] <= 599
+                )
+            )
             or any(
                 type(number) is not int
                 for key, number in value.items()
-                if key not in ("category", "stage")
+                if key not in ("category", "stage", "resource", "networkReason")
             )
         ):
             return None
@@ -138,7 +178,7 @@ def failure_code(line, previous=None):
         return None
 
 
-def report_failure(error, stage="prepare", data=None, cache=None, home=None):
+def report_failure(error, stage="prepare", data=None, cache=None, home=None, resource="unknown"):
     cause = error.reason if isinstance(error, urllib.error.URLError) else error
     number = cause.errno if isinstance(cause, OSError) else None
     category = "unknown"
@@ -162,6 +202,29 @@ def report_failure(error, stage="prepare", data=None, cache=None, home=None):
     ):
         category = "runtime"
     diagnostic = {"category": category, "stage": stage}
+    if stage == "model-download":
+        diagnostic["resource"] = (
+            resource if type(resource) is str and resource in DOWNLOAD_RESOURCES else "unknown"
+        )
+        if category == "network":
+            reason = "unknown"
+            if isinstance(error, urllib.error.HTTPError):
+                reason = "http"
+                if type(error.code) is int and 100 <= error.code <= 599:
+                    diagnostic["httpStatus"] = error.code
+            elif isinstance(cause, socket.gaierror):
+                reason = "dns"
+            elif isinstance(cause, ssl.SSLError):
+                reason = "tls"
+            elif isinstance(cause, TimeoutError):
+                reason = "timeout"
+            elif isinstance(cause, ConnectionError):
+                reason = "connection"
+            elif isinstance(cause, http.client.IncompleteRead) or (
+                isinstance(error, OSError) and error.args == ("model-download-incomplete",)
+            ):
+                reason = "incomplete"
+            diagnostic["networkReason"] = reason
     if type(number) is int:
         diagnostic["errno"] = number
     if isinstance(error, subprocess.CalledProcessError) and type(error.returncode) is int:
@@ -915,6 +978,7 @@ def install_packages(home, data, cache, request):
     download_cache = private_directory(cache / "components")
     lock = os.open(components / "install.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     version, prepared, stage = None, False, "prepare"
+    resource = "unknown"
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         previous = current_generation(components)
@@ -1087,6 +1151,7 @@ def install_packages(home, data, cache, request):
                 )
                 if package.backend == "argos":
                     stage = "model-download"
+                    resource = ARGOS_RESOURCES.get(package.directions[0].id, "unknown")
                     archive, _ = download(package.directions[0], download_cache)
                     stage = "model-extract"
                     try:
@@ -1107,6 +1172,7 @@ def install_packages(home, data, cache, request):
                             else package.url.rsplit("/", 1)[0] + "/LICENSE.txt"
                         )
                         stage = "model-download"
+                        resource = "hy-model" if kind == "model" else "hy-license"
                         archive, _ = download_resource(
                             package.id,
                             url,
@@ -1198,7 +1264,7 @@ def install_packages(home, data, cache, request):
     except Paused:
         raise
     except Exception as error:
-        report_failure(error, stage, data, cache, home)
+        report_failure(error, stage, data, cache, home, resource)
         return 1
     finally:
         try:
@@ -1339,6 +1405,7 @@ def install(home, data, cache, requested_directions=None, repair=False):
         return result.decode().strip() if capture else None
 
     stage = "prepare"
+    resource = "unknown"
     try:
         current = components / "current"
         previous = os.readlink(current) if current.is_symlink() else None
@@ -1416,6 +1483,7 @@ def install(home, data, cache, requested_directions=None, repair=False):
         for direction in directions:
             pair = direction.id
             stage = "model-download"
+            resource = ARGOS_RESOURCES.get(direction.id, "unknown")
             archive, url = download(direction, download_cache)
             stage = "model-extract"
             try:
@@ -1505,7 +1573,7 @@ def install(home, data, cache, requested_directions=None, repair=False):
     except Paused:
         raise
     except Exception as error:
-        report_failure(error, stage, data, cache, home)
+        report_failure(error, stage, data, cache, home, resource)
         return 1
     finally:
         # Successful preparation hands cleanup ownership to activation. Callers

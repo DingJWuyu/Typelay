@@ -47,7 +47,7 @@ python packaging/linux/fcitx-cooperative/pack.py \
 
 ### 预检
 
-解压到独立用户目录即可，不需要安装或 sudo。以下只是用户审阅后明确执行的操作，不会由 TypeLay 自动执行。
+解压到独立用户目录即可，不需要安装或 sudo。完整 TypeLay 主包中的合作压缩包位于 `TypeLay-Linux-preview/support/desktop/TypeLay-Fcitx-cooperative.tar.gz`；使用主包时，先进入解压后的 `TypeLay-Linux-preview/support/desktop/` 目录。单独取得合作压缩包时，先进入该压缩包所在目录。两种来源均可从上述目录执行下列命令。以下只是用户审阅后明确执行的操作，不会由 TypeLay 自动执行。
 
 ```sh
 tar -xzf TypeLay-Fcitx-cooperative.tar.gz

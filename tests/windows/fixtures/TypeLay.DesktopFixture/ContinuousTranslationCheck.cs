@@ -960,6 +960,7 @@ internal static partial class ContinuousTranslationCheck
         uint inputsInserted = 0;
         long? verifiedMs = null;
         ChildProcess? native = null;
+        NativeSourceSetup.Observation? sourceSetup = null;
         OverlayWindow? overlay = null;
         SessionController? controller = null;
         try
@@ -986,12 +987,48 @@ internal static partial class ContinuousTranslationCheck
             nint root = (nint)host.RootHwnd;
             nint field = (nint)host.Fields.Single(item => item.Name == "a").Hwnd;
             result.Stage = "prepare-source";
-            N.SendString(field, N.WM_SETTEXT, source);
-            N.Send(field, N.EM_SETSEL, (nuint)source.Length, (nint)source.Length);
-            var selection = N.ReadSelection(field);
-            Require(selection == new TextRange(source.Length, source.Length), "direct-source-selection");
-            Require(N.PostMessage(root, N.FixtureFocus, (nuint)field, 0), "source-focus-request");
-            await UntilAsync(() => N.Focused() == (root, field), setupDeadline.Token);
+            sourceSetup = new NativeSourceSetup.Observation();
+            TextRange selection;
+            try
+            {
+                sourceSetup.TextStartedAtMs = WindowsInterruptClock.NowMs;
+                try { N.SendString(field, N.WM_SETTEXT, source); }
+                finally { sourceSetup.TextEndedAtMs = WindowsInterruptClock.NowMs; }
+                result.Stage = "click-visible-source";
+                sourceSetup.ClickStartedAtMs = WindowsInterruptClock.NowMs;
+                try { await NativeSourceSetup.ClickAsync(root, field, native.Process, setupDeadline.Token); }
+                finally { sourceSetup.ClickEndedAtMs = WindowsInterruptClock.NowMs; }
+                result.Stage = "wait-source-focus";
+                await UntilAsync(() =>
+                {
+                    sourceSetup.Observe(root, field, native.Process);
+                    Require(sourceSetup.IdentityMatched, "direct-source-identity-changed");
+                    return sourceSetup.FocusMatched;
+                }, setupDeadline.Token);
+                result.Stage = "set-source-selection";
+                setupDeadline.Token.ThrowIfCancellationRequested();
+                sourceSetup.SelectionStartedAtMs = WindowsInterruptClock.NowMs;
+                try
+                {
+                    N.Send(field, N.EM_SETSEL, (nuint)source.Length, (nint)source.Length);
+                    sourceSetup.SelectionCompleted = true;
+                }
+                finally { sourceSetup.SelectionEndedAtMs = WindowsInterruptClock.NowMs; }
+                sourceSetup.ReadStartedAtMs = sourceSetup.LastReadStartedAtMs = WindowsInterruptClock.NowMs;
+                sourceSetup.ReadAttempts = 1;
+                try
+                {
+                    selection = N.ReadSelection(field);
+                    Require(selection == new TextRange(source.Length, source.Length), "direct-source-selection");
+                    sourceSetup.ReadCompletedAtMs = WindowsInterruptClock.NowMs;
+                }
+                finally { sourceSetup.LastReadEndedAtMs = WindowsInterruptClock.NowMs; }
+            }
+            finally
+            {
+                sourceSetup.SetupEndedAtMs = WindowsInterruptClock.NowMs;
+                sourceSetup.Observe(root, field, native.Process);
+            }
             overlay = new OverlayWindow(automationTest: true);
             overlay.IsVisibleChanged += (_, _) => overlayShown |= overlay.IsVisible;
             var settings = CreateSettings(Path.Combine(directory, "direct", "settings.json"), WorkMode.OnDemand);
@@ -1081,6 +1118,7 @@ internal static partial class ContinuousTranslationCheck
             CompleteCleanup(result);
             result.Facts = new
             {
+                sourceSetup,
                 feedbackCode,
                 capabilityObserved,
                 shortcutReadyObserved,

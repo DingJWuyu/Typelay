@@ -21,6 +21,65 @@ from paths import Paths, peer_credentials  # noqa: E402
 from wire import encode, now_ms, receive_sync  # noqa: E402
 
 
+def glossary_painted_geometry(control, observed_at):
+    """Only the current mapped control's completed frame can supply a click point."""
+    paint, surface = control.get("paintObservation"), control.get("surfaceGeometry")
+    if not isinstance(paint, dict) or not isinstance(surface, dict):
+        return False
+    if control.get("visible") is not True or paint.get("ready") is not True:
+        return False
+    for key in ("mapGeneration", "mappedAtMonoMs", "paintedAtMonoMs"):
+        if type(paint.get(key)) is not int or paint[key] <= 0:
+            return False
+    if (
+        type(observed_at) is not int
+        or not paint["mappedAtMonoMs"] <= paint["paintedAtMonoMs"] <= observed_at
+        or type(paint.get("frame")) is not int
+        or paint["frame"] < 0
+        or type(paint.get("requestedFrame")) is not int
+        or type(paint.get("paintedMapGeneration")) is not int
+        or paint["paintedMapGeneration"] != paint["mapGeneration"]
+        or type(paint.get("paintedFrame")) is not int
+        or paint["paintedFrame"] <= paint["requestedFrame"]
+        or paint["paintedFrame"] > paint["frame"]
+        or type(paint.get("layoutFrame")) is not int
+        or paint["layoutFrame"] != paint["paintedFrame"]
+        or type(paint.get("paintFrame")) is not int
+        or paint["paintFrame"] != paint["paintedFrame"]
+        or paint.get("geometry") != surface
+    ):
+        return False
+    for key in ("instance", "surfaceInstance", "scale", "width", "height"):
+        if type(surface.get(key)) is not int or surface[key] <= 0:
+            return False
+    for key in ("x", "y", "nativeX", "nativeY", "transformX", "transformY"):
+        if type(surface.get(key)) not in (int, float) or not math.isfinite(surface[key]):
+            return False
+    if type(surface.get("popup")) is not bool:
+        return False
+    if surface["popup"] and any(type(surface.get(key)) is not int for key in ("popupX", "popupY")):
+        return False
+    return all(control.get(key) == surface[key] for key in ("instance", "width", "height"))
+
+
+def glossary_hover_current(control, observed_at, before, point, moved_at):
+    if not glossary_painted_geometry(control, observed_at) or observed_at < moved_at:
+        return False
+    surface, original = control["surfaceGeometry"], before["surfaceGeometry"]
+    return (
+        control.get("instance") == before.get("instance")
+        and surface["surfaceInstance"] == original["surfaceInstance"]
+        and surface["scale"] == original["scale"]
+        and control["paintObservation"]["mapGeneration"]
+        == before["paintObservation"]["mapGeneration"]
+        and surface["x"] <= point[0] / surface["scale"] < surface["x"] + surface["width"]
+        and surface["y"] <= point[1] / surface["scale"] < surface["y"] + surface["height"]
+        and control.get("pointerInside") is True
+        and type(control.get("pointerEnteredAtMonoMs")) is int
+        and control["pointerEnteredAtMonoMs"] > 0
+    )
+
+
 class Native:
     def __init__(self, connection, *, deadline=None):
         self.connection = connection
@@ -343,6 +402,8 @@ def _gtk4_source_glossary(out, environment, deadline):
                                     "width",
                                     "height",
                                     "surfaceGeometry",
+                                    "instance",
+                                    "paintObservation",
                                 )
                             }
                             if control
@@ -362,6 +423,10 @@ def _gtk4_source_glossary(out, environment, deadline):
                         ):
                             return None
                         if not control or overlay_control and not control.get("visible"):
+                            return None
+                        if overlay_control and not glossary_painted_geometry(
+                            control, actual.get("observedAtMs")
+                        ):
                             return None
                         surface = control.get("surfaceGeometry") if overlay_control else control
                         if not isinstance(surface, dict):
@@ -409,6 +474,9 @@ def _gtk4_source_glossary(out, environment, deadline):
                         },
                         "bounds": {key: control.get(key) for key in ("x", "y", "width", "height")},
                         "surfaceGeometry": control.get("surfaceGeometry"),
+                        "instance": control.get("instance"),
+                        "paintObservation": control.get("paintObservation"),
+                        "geometryReadiness": dict(observations),
                         "beforeFocus": actual.get("focus"),
                         "pixelPoint": pixel,
                         "moveStartedAtMonoMs": time.monotonic_ns() // 1000000,
@@ -454,27 +522,43 @@ def _gtk4_source_glossary(out, environment, deadline):
                         }
                     click_path.write_text(json.dumps(clicks, indent=2) + "\n")
                     if overlay_control:
-                        instance = control["instance"]
 
                         def hovered():
                             current = ready()
+                            evidence["hoverGeometryReadiness"] = dict(observations)
                             if current is None:
+                                click_path.write_text(json.dumps(clicks, indent=2) + "\n")
                                 return None
                             observed, item, current_pixel = current
-                            evidence["hoverObservation"] = {
+                            observation = {
                                 "observedAtMonoMs": observed.get("observedAtMs"),
-                                "control": item,
+                                "control": {
+                                    key: item.get(key)
+                                    for key in (
+                                        "instance",
+                                        "visible",
+                                        "enabled",
+                                        "x",
+                                        "y",
+                                        "width",
+                                        "height",
+                                        "surfaceGeometry",
+                                        "paintObservation",
+                                        "pointerInside",
+                                        "pointerEnteredAtMonoMs",
+                                        "pointerObservation",
+                                    )
+                                },
                                 "pixelPoint": current_pixel,
                             }
+                            evidence.setdefault("firstHoverObservation", observation)
+                            evidence["hoverObservation"] = observation
                             click_path.write_text(json.dumps(clicks, indent=2) + "\n")
                             return (
                                 observed
-                                if current_pixel == pixel
-                                and observed.get("observedAtMs", 0) >= moved_at
-                                and item.get("instance") == instance
-                                and item.get("pointerInside") is True
-                                and type(item.get("pointerEnteredAtMonoMs")) is int
-                                and item["pointerEnteredAtMonoMs"] > 0
+                                if glossary_hover_current(
+                                    item, observed.get("observedAtMs"), control, pixel, moved_at
+                                )
                                 else None
                             )
 

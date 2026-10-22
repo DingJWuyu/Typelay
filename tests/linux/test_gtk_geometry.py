@@ -19,6 +19,104 @@ from gtk_session_reentry import (  # noqa: E402
     validated_geometry,
 )
 from hy_package_e2e import package_scroll_value, rectangle_contains  # noqa: E402
+from native_e2e import glossary_hover_current, glossary_painted_geometry  # noqa: E402
+
+
+class GlossaryPaintGeometryTests(unittest.TestCase):
+    def control(self):
+        geometry = dict(
+            x=744.0,
+            y=421.0,
+            width=488,
+            height=22,
+            instance=224,
+            surfaceInstance=216,
+            scale=1,
+            nativeX=20.0,
+            nativeY=323.0,
+            transformX=0.0,
+            transformY=0.0,
+            popup=True,
+            popupX=724,
+            popupY=98,
+        )
+        return dict(
+            instance=224,
+            visible=True,
+            enabled=True,
+            width=488,
+            height=22,
+            surfaceGeometry=geometry,
+            pointerInside=True,
+            pointerEnteredAtMonoMs=110,
+            paintObservation=dict(
+                ready=True,
+                mapGeneration=2,
+                paintedMapGeneration=2,
+                requestedFrame=7,
+                mappedAtMonoMs=100,
+                paintedAtMonoMs=105,
+                frame=8,
+                paintedFrame=8,
+                layoutFrame=8,
+                paintFrame=8,
+                geometry=dict(geometry),
+            ),
+        )
+
+    def test_unpainted_reopen_is_not_clickable_even_with_fresh_mapped_geometry(self):
+        control = self.control()
+        self.assertTrue(glossary_painted_geometry(control, 120))
+        control["paintObservation"]["frame"] = 9
+        self.assertTrue(glossary_painted_geometry(control, 130))
+        control["paintObservation"]["ready"] = False
+        self.assertFalse(glossary_painted_geometry(control, 120))
+
+    def test_old_map_frame_surface_or_changed_allocation_cannot_authorize_move(self):
+        mutations = [
+            lambda c: c["paintObservation"].update(mappedAtMonoMs=106),
+            lambda c: c["paintObservation"].update(frame=7),
+            lambda c: c["paintObservation"].update(requestedFrame=8),
+            lambda c: c["paintObservation"].update(paintedMapGeneration=1),
+            lambda c: c["paintObservation"].update(layoutFrame=7),
+            lambda c: c["paintObservation"].update(paintFrame=7),
+            lambda c: c["paintObservation"].update(paintedAtMonoMs=121),
+            lambda c: c["paintObservation"].update(mapGeneration=0),
+            lambda c: c["surfaceGeometry"].update(surfaceInstance=217),
+            lambda c: c["surfaceGeometry"].update(y=274.0),
+            lambda c: c.update(instance=225),
+            lambda c: c.update(width=500),
+            lambda c: c.update(visible=False),
+        ]
+        for mutate in mutations:
+            c = self.control()
+            mutate(c)
+            with self.subTest(control=c):
+                self.assertFalse(glossary_painted_geometry(c, 120))
+
+    def test_fixed_point_must_hit_fresh_bounds_not_equal_new_center(self):
+        c = self.control()
+        before = self.control()
+        self.assertTrue(glossary_hover_current(c, 120, before, (976, 432), 108))
+        # Actual 8b824cf missed point: after relayout it is above the button.
+        self.assertFalse(glossary_hover_current(c, 120, before, (976, 285), 108))
+        for change in (dict(pointerInside=False), dict(pointerEnteredAtMonoMs=0)):
+            c = self.control()
+            c.update(change)
+            self.assertFalse(glossary_hover_current(c, 120, before, (976, 432), 108))
+        c = self.control()
+        c["paintObservation"].update(mapGeneration=3, paintedMapGeneration=3)
+        self.assertTrue(glossary_painted_geometry(c, 120))
+        self.assertFalse(glossary_hover_current(c, 120, before, (976, 432), 108))
+        for key, value in (("instance", 225), ("surfaceInstance", 217), ("scale", 2)):
+            c = self.control()
+            c["surfaceGeometry"][key] = value
+            c["paintObservation"]["geometry"][key] = value
+            if key == "instance":
+                c["instance"] = value
+            self.assertTrue(glossary_painted_geometry(c, 120))
+            self.assertFalse(glossary_hover_current(c, 120, before, (976, 432), 108))
+        self.assertFalse(glossary_hover_current(self.control(), 107, before, (976, 432), 108))
 
 
 class GtkPreviewObservationTests(unittest.TestCase):

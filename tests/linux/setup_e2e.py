@@ -5,12 +5,15 @@ import asyncio
 import contextlib
 import errno
 import hashlib
+import http.client
 import io
 import json
 import os
 import runpy
 import shutil
 import signal
+import socket
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -2178,6 +2181,138 @@ class InstallationFailureTests(unittest.TestCase):
         self.assertIn('"stage":"model-download"', output)
         self.assertIn(f'"errno":{errno.ECONNRESET}', output)
         self.assertIn("无法读取安装结果说明", output)
+
+    def test_http_failure_reports_only_status_and_fixed_resource(self):
+        error = urllib.error.HTTPError(
+            "https://user:private-token@example.invalid/private-path?secret=private-token",
+            503,
+            "private-token",
+            {"Authorization": "private-token"},
+            io.BytesIO(b"private-token"),
+        )
+        output = self.run_setup(error)
+        diagnostic = json.loads(
+            next(
+                line[len(setup.FAILURE_PREFIX) :]
+                for line in output.splitlines()
+                if line.startswith(setup.FAILURE_PREFIX)
+            )
+        )
+        self.assertEqual(diagnostic["resource"], "argos-zh-en")
+        self.assertEqual(diagnostic["networkReason"], "http")
+        self.assertEqual(diagnostic["httpStatus"], 503)
+        self.assertEqual(
+            setup.failure_code(setup.FAILURE_PREFIX + json.dumps(diagnostic)), "network"
+        )
+
+    def test_download_resource_tracks_requested_argos_direction(self):
+        output = self.run_setup(
+            urllib.error.URLError("private-token"), committed=("en_zh",), requested=("en_zh",)
+        )
+        self.assertIn('"resource":"argos-en-zh"', output)
+        self.assertIn('"stage":"model-download"', output)
+        self.assertIn('"category":"network"', output)
+
+    def test_network_reasons_use_types_not_private_exception_text(self):
+        class PrivateReason:
+            def __str__(self):
+                raise AssertionError("private reason must not be formatted")
+
+            __repr__ = __str__
+
+        class PrivateNetworkError(urllib.error.URLError):
+            def __str__(self):
+                raise AssertionError("private exception must not be formatted")
+
+            __repr__ = __str__
+
+        for error, reason in (
+            (PrivateNetworkError(PrivateReason()), "unknown"),
+            (
+                urllib.error.URLError("https://user:private-token@example.invalid/private"),
+                "unknown",
+            ),
+            (urllib.error.URLError(socket.gaierror(-2, "private-token")), "dns"),
+            (urllib.error.URLError(ssl.SSLError("private-token")), "tls"),
+            (urllib.error.URLError(TimeoutError("private-token")), "timeout"),
+            (
+                urllib.error.URLError(ConnectionResetError(errno.ECONNRESET, "private-token")),
+                "connection",
+            ),
+            (http.client.IncompleteRead(b"private-token", 123), "incomplete"),
+            (OSError("model-download-incomplete"), "incomplete"),
+        ):
+            with self.subTest(reason=reason):
+                output = self.run_setup(error)
+                diagnostic = json.loads(
+                    next(
+                        line[len(setup.FAILURE_PREFIX) :]
+                        for line in output.splitlines()
+                        if line.startswith(setup.FAILURE_PREFIX)
+                    )
+                )
+                self.assertEqual(diagnostic["category"], "network")
+                self.assertEqual(diagnostic["stage"], "model-download")
+                self.assertEqual(diagnostic["networkReason"], reason)
+                self.assertNotIn("httpStatus", diagnostic)
+                self.assertEqual(
+                    setup.failure_code(setup.FAILURE_PREFIX + json.dumps(diagnostic)), "network"
+                )
+
+    def test_failure_metadata_does_not_reflect_unknown_resources_or_http_codes(self):
+        for resource in ("private-token", [], None):
+            for code in (True, "private-token", 99, 600):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    setup.report_failure(
+                        urllib.error.HTTPError("private-token", code, "private-token", {}, None),
+                        "model-download",
+                        resource=resource,
+                    )
+                diagnostic = json.loads(
+                    output.getvalue().splitlines()[0][len(setup.FAILURE_PREFIX) :]
+                )
+                self.assertEqual(diagnostic["resource"], "unknown")
+                self.assertEqual(diagnostic["category"], "network")
+                self.assertNotIn("httpStatus", diagnostic)
+                self.assertNotIn("private-token", output.getvalue())
+
+    def test_gui_download_metadata_is_optional_and_strictly_allowlisted(self):
+        valid = {
+            "category": "network",
+            "stage": "model-download",
+            "resource": "hy-license",
+            "networkReason": "http",
+            "httpStatus": 503,
+        }
+        line = setup.FAILURE_PREFIX + json.dumps(valid)
+        self.assertEqual(setup.failure_code(line), "network")
+        self.assertEqual(setup.failure_code(line, "unknown"), "unknown")
+        for key, value in (
+            ("resource", "private-token"),
+            ("resource", []),
+            ("resource", True),
+            ("networkReason", "private-token"),
+            ("networkReason", []),
+            ("networkReason", "dns"),
+            ("httpStatus", True),
+            ("httpStatus", "503"),
+            ("httpStatus", 99),
+            ("httpStatus", 600),
+            ("stage", "runtime"),
+            ("category", "integrity"),
+        ):
+            with self.subTest(key=key, value=value):
+                self.assertIsNone(
+                    setup.failure_code(setup.FAILURE_PREFIX + json.dumps({**valid, key: value}))
+                )
+        for resource in ("argos-zh-en", "argos-en-zh", "hy-model", "hy-license", "unknown"):
+            self.assertEqual(
+                setup.failure_code(
+                    setup.FAILURE_PREFIX + json.dumps({**valid, "resource": resource})
+                ),
+                "network",
+            )
 
     def test_disk_space_failure_does_not_expose_the_path(self):
         output = self.run_setup(
