@@ -357,7 +357,26 @@ internal sealed partial class PracticeHost : IDisposable
         WriterFrame? PreviousQueued = null, WriterFrame? InFlightAtQueue = null,
         PendingPlan? InstallObservation = null);
     private sealed record WriterFrame(long Order, string Kind, long QueuedAtMs,
-        long? WriteStartedAtMs = null, long? WriteEndedAtMs = null, bool? Completed = null);
+        long? WriteStartedAtMs = null, long? WriteEndedAtMs = null, bool? Completed = null,
+        WriterScheduling? QueuedScheduling = null, WriterScheduling? StartedScheduling = null);
+
+    // Point observations, not a starvation verdict. Available workers are relative
+    // to the pool maximum, not proof that a worker was runnable at this instant.
+    private sealed record WriterScheduling(int ThreadId, bool PoolThread, bool HasSynchronizationContext,
+        bool DefaultTaskScheduler, int PoolThreads, long PendingWorkItems, long CompletedWorkItems,
+        int AvailableWorkers, int MinimumWorkers, int MaximumWorkers)
+    {
+        public static WriterScheduling Observe()
+        {
+            ThreadPool.GetAvailableThreads(out int available, out _);
+            ThreadPool.GetMinThreads(out int minimum, out _);
+            ThreadPool.GetMaxThreads(out int maximum, out _);
+            return new(Environment.CurrentManagedThreadId, Thread.CurrentThread.IsThreadPoolThread,
+                SynchronizationContext.Current is not null, TaskScheduler.Current == TaskScheduler.Default,
+                ThreadPool.ThreadCount, ThreadPool.PendingWorkItemCount, ThreadPool.CompletedWorkItemCount,
+                available, minimum, maximum);
+        }
+    }
 
     // Diagnostic-only, per connection. The writer owns the rolling window;
     // immutable in-flight/last-enqueued snapshots alone cross threads. Order
@@ -379,7 +398,7 @@ internal sealed partial class PracticeHost : IDisposable
                     or "edit-fence" or "edit-cancel" or "return-fence" or "return-resume" or "return-cancel"
                     or "completion-clear" or "finish-denied" or "finish-saved" or "finish-retry" => message.Kind,
                 _ => "other"
-            }, WindowsInterruptClock.NowMs);
+            }, WindowsInterruptClock.NowMs, QueuedScheduling: WriterScheduling.Observe());
             var previous = Interlocked.Exchange(ref _lastQueued, frame);
             bool fence = message.Kind == "edit-fence" && Interlocked.Increment(ref _fences) <= 16;
             return new(message, frame, fence, previous, Volatile.Read(ref _inFlight));
@@ -401,7 +420,8 @@ internal sealed partial class PracticeHost : IDisposable
         {
             var frame = queued.Frame! with
             {
-                WriteStartedAtMs = WindowsInterruptClock.NowMs
+                WriteStartedAtMs = WindowsInterruptClock.NowMs,
+                StartedScheduling = WriterScheduling.Observe()
             };
             Volatile.Write(ref _inFlight, frame);
             queued.InstallObservation?.ObserveInstallTransport(frame);

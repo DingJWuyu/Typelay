@@ -198,6 +198,7 @@ class Input:
         self.capture_counts = Counter()
         self.capture_started_at = 0
         self.capture_failures = []
+        self.native_capture_timing = None
         self.timing_metrics = {}
         self.browser_diagnostics = {}
         self.browser_capture = None
@@ -1517,6 +1518,9 @@ class Input:
             )
             if native_failure:
                 self.capture_failures[-1]["nativeFailure"] = native_failure
+            if self.native_capture_timing is not None:
+                # Caller await boundaries, not native execution times. No text or identities.
+                self.capture_failures[-1]["nativeCallerTiming"] = dict(self.native_capture_timing)
             if (
                 self.browser_rounds
                 and self.browser_rounds[-1]["startedMs"] == self.capture_started_at
@@ -1860,6 +1864,7 @@ class Input:
     async def capture(self, context):
         self.check_practice()
         self.capture_started_at = now_ms()
+        self.native_capture_timing = None
         settings_generation = self.settings_generation
         command_generation = self.shortcut_config.get("generation")
         glossary_return = self.source_glossary_return
@@ -1937,11 +1942,17 @@ class Input:
             self.browser_capture_counts[counter] = min(
                 self.browser_capture_counts[counter] + 1, 1000000
             )
+        native_timing = None
+        if peer.backend == "gtk3" and os.environ.get("TYPELAY_TRACE"):
+            native_timing = {"startedMs": self.capture_started_at, "describeStartedMs": now_ms()}
+            self.native_capture_timing = native_timing
         description = (
             cached["description"]
             if reuse
             else await peer.link.ask("describe", {"target": target} if target else {})
         )
+        if native_timing is not None:
+            native_timing["describeReturnedMs"] = now_ms()
         if round_timing is not None:
             round_timing["describedMs"] = now_ms()
         if peer.browser_retired:
@@ -1958,7 +1969,12 @@ class Input:
             return self.captured("glossary-return-identity-lost")
         policy_user_epoch = self.user_epoch
         policy_record = peer.shortcut
-        if not await self.approve(peer, description):
+        if native_timing is not None:
+            native_timing["approvalStartedMs"] = now_ms()
+        approved = await self.approve(peer, description)
+        if native_timing is not None:
+            native_timing["approvalReturnedMs"] = now_ms()
+        if not approved:
             return self.captured("excluded-or-sensitive")
         if peer.browser_retired:
             return self.captured("browser-connection-removed")
@@ -2030,9 +2046,13 @@ class Input:
         )
         if continuity is not None:
             capture_data["ownedSource"] = True
+        if native_timing is not None:
+            native_timing["captureStartedMs"] = now_ms()
         native = await peer.link.ask(
             "capture", capture_data, capture_trace=native_failure, capture_continuity=continuity
         )
+        if native_timing is not None:
+            native_timing["captureReturnedMs"] = now_ms()
         if peer.browser_retired:
             return self.captured("browser-connection-removed")
         if round_timing is not None:

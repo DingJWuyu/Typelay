@@ -1917,7 +1917,30 @@ static void update_popup_layout(GdkFrameClock *clock, gpointer unused) {
         || !gtk_widget_get_mapped(overlay.popover) || tl_now() > overlay.expires
         || !tl_configuration_current(overlay.generation)) return;
     GtkWidget *popover = g_object_ref(overlay.popover);
-    gtk_popover_present(GTK_POPOVER(popover));
+    /* A menu can outgrow both sides of a multiline field. Let its viewport
+     * shrink instead of forcing GtkPopover to pop down an undersized surface.
+     * Keep the existing anchor and placement; only bound scrollable content. */
+    if (overlay.menu && gtk_widget_get_visible(overlay.menu)) {
+        GtkWidget *menu = g_object_ref(overlay.menu);
+        JsonObject *geometry = tl_geometry(overlay.target);
+        if (geometry) {
+            JsonObject *bounds = tl_object(geometry, "bounds");
+            gint64 above = tl_integer(bounds, "y", 0);
+            gint64 below = tl_integer(geometry, "frameHeight", 0)
+                - above - tl_integer(bounds, "height", 0);
+            gint available = (gint)CLAMP(MAX(above, below), 1, G_MAXINT);
+            gint minimum = 0;
+            gtk_widget_measure(popover, GTK_ORIENTATION_VERTICAL,
+                MAX(1, gtk_widget_get_width(popover)), &minimum, NULL, NULL, NULL);
+            if (overlay.popover == popover && overlay.menu == menu)
+                gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(menu),
+                    MAX(1, available - minimum + 1));
+            json_object_unref(geometry);
+        }
+        g_object_unref(menu);
+    }
+    if (overlay.popover == popover && gtk_widget_get_mapped(popover))
+        gtk_popover_present(GTK_POPOVER(popover));
     g_object_unref(popover);
 }
 static void create(Target *target) {
@@ -2006,33 +2029,39 @@ static void create(Target *target) {
     gtk_box_append(GTK_BOX(overlay.footer), overlay.hint);
     overlay.exit = button(overlay.footer, "", "escape");
     gtk_box_append(GTK_BOX(overlay.card), overlay.footer);
-    overlay.menu = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    overlay.menu = gtk_scrolled_window_new();
+    gtk_widget_set_focusable(overlay.menu, FALSE);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(overlay.menu), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(overlay.menu), 1);
+    gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(overlay.menu), TRUE);
+    GtkWidget *menu_content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(overlay.menu), menu_content);
     gtk_widget_set_name(overlay.menu, "typelay-language-menu");
     GtkEventController *menu_keys = gtk_event_controller_key_new();
     gtk_event_controller_set_propagation_phase(menu_keys, GTK_PHASE_BUBBLE);
     g_signal_connect(menu_keys, "key-pressed", G_CALLBACK(language_menu_key), NULL);
     gtk_widget_add_controller(overlay.menu, menu_keys);
-    gtk_widget_set_margin_start(overlay.menu, 12);
-    gtk_widget_set_margin_end(overlay.menu, 12);
-    gtk_widget_set_margin_top(overlay.menu, 12);
-    gtk_widget_set_margin_bottom(overlay.menu, 12);
+    gtk_widget_set_margin_start(menu_content, 12);
+    gtk_widget_set_margin_end(menu_content, 12);
+    gtk_widget_set_margin_top(menu_content, 12);
+    gtk_widget_set_margin_bottom(menu_content, 12);
     overlay.source = language_button();
     overlay.destination = language_button();
     gtk_widget_set_name(overlay.source, "typelay-source-language");
     gtk_widget_set_name(overlay.destination, "typelay-target-language");
-    gtk_box_append(GTK_BOX(overlay.menu), gtk_label_new("源语言"));
-    gtk_box_append(GTK_BOX(overlay.menu), overlay.source);
-    gtk_box_append(GTK_BOX(overlay.menu), gtk_label_new("目标语言"));
-    gtk_box_append(GTK_BOX(overlay.menu), overlay.destination);
-    overlay.apply_languages = button(overlay.menu, "应用语言方向", "languages");
+    gtk_box_append(GTK_BOX(menu_content), gtk_label_new("源语言"));
+    gtk_box_append(GTK_BOX(menu_content), overlay.source);
+    gtk_box_append(GTK_BOX(menu_content), gtk_label_new("目标语言"));
+    gtk_box_append(GTK_BOX(menu_content), overlay.destination);
+    overlay.apply_languages = button(menu_content, "应用语言方向", "languages");
     gtk_widget_set_name(overlay.apply_languages, "typelay-apply-languages");
     overlay.style_label = gtk_label_new("当前应用风格");
-    gtk_box_append(GTK_BOX(overlay.menu), overlay.style_label);
-    overlay.style_inherit = button(overlay.menu, "继承", "style-inherit");
-    overlay.style_natural = button(overlay.menu, "自然", "style-natural");
-    overlay.style_formal = button(overlay.menu, "正式", "style-formal");
-    overlay.alternative = button(overlay.menu, "换种说法", "alternative");
-    overlay.glossary_action = button(overlay.menu, "加入术语表", "glossary");
+    gtk_box_append(GTK_BOX(menu_content), overlay.style_label);
+    overlay.style_inherit = button(menu_content, "继承", "style-inherit");
+    overlay.style_natural = button(menu_content, "自然", "style-natural");
+    overlay.style_formal = button(menu_content, "正式", "style-formal");
+    overlay.alternative = button(menu_content, "换种说法", "alternative");
+    overlay.glossary_action = button(menu_content, "加入术语表", "glossary");
     gtk_widget_set_name(overlay.glossary_action, "typelay-glossary-add");
     gtk_widget_set_name(overlay.style_inherit, "typelay-style-inherit");
     gtk_widget_set_name(overlay.style_natural, "typelay-style-natural");
@@ -2045,10 +2074,10 @@ static void create(Target *target) {
     gtk_label_set_wrap_mode(GTK_LABEL(overlay.action_feedback), PANGO_WRAP_WORD_CHAR);
     gtk_label_set_max_width_chars(GTK_LABEL(overlay.action_feedback), 40);
     gtk_widget_add_css_class(overlay.action_feedback, "dim-label");
-    gtk_box_append(GTK_BOX(overlay.menu), overlay.action_feedback);
-    button(overlay.menu, "复制译文", "copy");
-    button(overlay.menu, "排除此应用", "exclude");
-    button(overlay.menu, "设置…", "settings");
+    gtk_box_append(GTK_BOX(menu_content), overlay.action_feedback);
+    button(menu_content, "复制译文", "copy");
+    button(menu_content, "排除此应用", "exclude");
+    button(menu_content, "设置…", "settings");
     gtk_box_append(GTK_BOX(overlay.card), overlay.menu);
     overlay.css = gtk_css_provider_new();
     overlay.display = g_object_ref(gtk_widget_get_display(overlay.popover));

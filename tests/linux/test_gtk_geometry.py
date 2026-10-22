@@ -22,7 +22,10 @@ from hy_package_e2e import package_scroll_value, rectangle_contains  # noqa: E40
 from native_e2e import (  # noqa: E402
     glossary_hover_current,
     glossary_interaction_loss,
+    glossary_menu_scroll_advanced,
+    glossary_menu_scroll_direction,
     glossary_painted_geometry,
+    glossary_popup_fits,
 )
 
 
@@ -121,6 +124,62 @@ class GlossaryPaintGeometryTests(unittest.TestCase):
             self.assertTrue(glossary_painted_geometry(c, 120))
             self.assertFalse(glossary_hover_current(c, 120, before, (976, 432), 108))
         self.assertFalse(glossary_hover_current(self.control(), 107, before, (976, 432), 108))
+
+
+class GlossaryPopupSizeTests(unittest.TestCase):
+    def test_fresh_scroll_snapshot_waits_for_adjustment_without_another_wheel(self):
+        def snapshot(at, value, instance=7):
+            return {
+                "observedAtMs": at,
+                "overlayControls": {
+                    "typelay-language-menu": {
+                        "instance": instance,
+                        "visible": True,
+                        "scrollValue": value,
+                    }
+                },
+            }
+
+        self.assertFalse(glossary_menu_scroll_advanced(snapshot(99, 12), 7, 0, 1, 100))
+        self.assertFalse(glossary_menu_scroll_advanced(snapshot(101, 0), 7, 0, 1, 100))
+        self.assertTrue(glossary_menu_scroll_advanced(snapshot(102, 12), 7, 0, 1, 100))
+        self.assertTrue(glossary_menu_scroll_advanced(snapshot(103, 4), 7, 12, -1, 102))
+        with self.assertRaisesRegex(AssertionError, "menu lost"):
+            glossary_menu_scroll_advanced(snapshot(104, 15, 8), 7, 0, 1, 100)
+
+    def test_mapped_menu_action_needs_scroll_when_outside_viewport(self):
+        viewport = dict(y=100, height=200)
+        for y, expected in ((99, -1), (100, 0), (278, 0), (279, 1), (421, 1)):
+            with self.subTest(y=y):
+                control = dict(visible=True, surfaceGeometry=dict(y=y, height=22))
+                self.assertEqual(glossary_menu_scroll_direction(control, viewport), expected)
+        with self.assertRaisesRegex(AssertionError, "whole control"):
+            glossary_menu_scroll_direction(dict(surfaceGeometry=dict(y=100, height=201)), viewport)
+
+    def test_mapped_surface_must_fit_measured_minimum_in_both_axes(self):
+        popup = dict(
+            visible=True,
+            mapped=True,
+            surfaceMapped=True,
+            minimumWidth=520,
+            minimumHeight=150,
+            surfaceWidth=520,
+            surfaceHeight=434,
+        )
+        self.assertTrue(glossary_popup_fits(popup))
+        for change in (
+            dict(minimumHeight=450),
+            dict(minimumWidth=521),
+            dict(surfaceHeight=0),
+            dict(surfaceWidth=True),
+            dict(mapped=False),
+            dict(visible=False),
+            dict(surfaceMapped=False),
+        ):
+            with self.subTest(change=change):
+                self.assertFalse(glossary_popup_fits(popup | change))
+        self.assertFalse(glossary_popup_fits(None))
+        self.assertFalse(glossary_popup_fits({}))
 
 
 class GlossaryInteractionLossTests(unittest.TestCase):

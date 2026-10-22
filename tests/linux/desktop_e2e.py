@@ -298,6 +298,43 @@ def select_session_keys(paths, host_pid, accept, exit_key):
     wait_for(saved_pair, "production settings did not confirm the saved session key pair")
 
 
+def send_gtk_acceptance(gtk4, shortcut, send_tab, send_configured, timing):
+    # Preserve configured non-Tab keys and emit exactly one press/release pair.
+    if gtk4 and shortcut == "Tab":
+        send_tab(timing=timing)
+    else:
+        send_configured(shortcut, timing=timing)
+
+
+def fixture_module_identity(pid, executable, module):
+    """Record only this test fixture and its expected TypeLay module."""
+    proc = Path(f"/proc/{pid}")
+
+    def start_time():
+        return int((proc / "stat").read_text().rsplit(")", 1)[1].split()[19])
+
+    started = start_time()
+    executable, module = executable.resolve(), module.resolve()
+    assert (proc / "exe").resolve() == executable, "GTK fixture executable identity changed"
+    mapped = {
+        fields[5]
+        for line in (proc / "maps").read_text().splitlines()
+        if len(fields := line.split(maxsplit=5)) == 6
+    }
+    assert str(module) in mapped, f"GTK fixture did not load expected module: {module.name}"
+    result = {
+        "pid": pid,
+        "startTimeTicks": started,
+        "files": [
+            {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            for path in (executable, module)
+        ],
+    }
+    assert start_time() == started, "GTK fixture process lifetime changed"
+    assert (proc / "exe").resolve() == executable, "GTK fixture executable changed"
+    return result
+
+
 def prepare_key(stack, name):
     """Preconnect to XTest; each call delivers one real down or up event."""
     x11 = ctypes.CDLL("libX11.so.6")
@@ -2140,6 +2177,19 @@ def run(arguments):
                             lambda: gtk_state().get("imeFocused"),
                             "real cooperating input context did not focus",
                         )
+                        module = (
+                            cooperation / "lib/libtypelay-gtk4.so"
+                            if gtk4
+                            else arguments.native / "libtypelay-gtk3.so"
+                        )
+                        (arguments.output / "gtk-fixture-identity.json").write_text(
+                            json.dumps(
+                                fixture_module_identity(
+                                    fixture.pid, Path(fixture_command[-1]), module
+                                ),
+                                indent=2,
+                            )
+                        )
                         subprocess.run(["fcitx5-remote", "-o"], env=gtk_environment, check=True)
                         subprocess.run(
                             ["fcitx5-remote", "-s", "pinyin"], env=gtk_environment, check=True
@@ -2185,12 +2235,7 @@ def run(arguments):
                         before_write = trace_checkpoint()
                         key_timing = {}
                         key_started = now_ms()
-                        if gtk4:
-                            # One preconnected native injection, with no process
-                            # startup after readiness. This does not alter TTL.
-                            send_tab(timing=key_timing)
-                        else:
-                            key(accept_key, timing=key_timing)
+                        send_gtk_acceptance(gtk4, accept_key, send_tab, key, key_timing)
                         key_finished = now_ms()
                         gtk_acceptance_phases.append(
                             {
@@ -2213,11 +2258,24 @@ def run(arguments):
                             "GTK changed text without a verified production write receipt",
                         )
                         assert gtk_state()["focus"] == "fixture-first"
+                        gtk_acceptance_phases[-1]["keyObservationEndedAtMs"] = now_ms()
                         switch_im("keyboard-us")
                         typed_source = "Please send me the latest report."
                         enter_source(typed_source)
                         before_write = trace_checkpoint()
-                        key(accept_key)
+                        key_timing = {}
+                        key_started = now_ms()
+                        send_gtk_acceptance(gtk4, accept_key, send_tab, key, key_timing)
+                        gtk_acceptance_phases.append(
+                            {
+                                "stage": "actually-typed-accept",
+                                "gtk": 4 if gtk4 else 3,
+                                "readiness": last_acceptance_observation,
+                                "keySendStartedAtMs": key_started,
+                                "keySendFinishedAtMs": now_ms(),
+                                "injection": key_timing,
+                            }
+                        )
                         wait_for(
                             lambda: translated(gtk_state().get("first")),
                             f"GTK {accept_key} did not replace the actually typed source",
@@ -2227,6 +2285,7 @@ def run(arguments):
                             "actually typed GTK source did not receive a verified write receipt",
                         )
                         assert gtk_state()["focus"] == "fixture-first"
+                        gtk_acceptance_phases[-1]["keyObservationEndedAtMs"] = now_ms()
                         evidence.append(
                             "Wayland GTK keyboard-us: actual typed source, CPU translation, one configured acceptance key, verified write and retained focus"
                         )
@@ -7244,6 +7303,29 @@ def run(arguments):
     finally:
         if gtk_acceptance_phases:
             try:
+                try:
+                    trace = (arguments.output / "inside.log").read_text(errors="replace")
+                except OSError:
+                    trace = ""  # Missing native telemetry is unknown, not a delivered key.
+                native_keys = [
+                    dict(re.findall(r"(\w+)=([^ ]+)", line))
+                    for line in trace.splitlines()
+                    if "TypeLay GTK4 acceptance-timing operation=key " in line
+                ]
+                ended = now_ms()
+                for phase in gtk_acceptance_phases:
+                    if phase["gtk"] == 4:
+                        phase["nativeKeyTiming"] = next(
+                            (
+                                row
+                                for row in native_keys
+                                if row.get("enteredAtMs", "").isdigit()
+                                and phase["keySendStartedAtMs"]
+                                <= int(row["enteredAtMs"])
+                                <= phase.get("keyObservationEndedAtMs", ended)
+                            ),
+                            None,
+                        )
                 (arguments.output / "gtk-acceptance-phases.json").write_text(
                     json.dumps(gtk_acceptance_phases, indent=2)
                 )

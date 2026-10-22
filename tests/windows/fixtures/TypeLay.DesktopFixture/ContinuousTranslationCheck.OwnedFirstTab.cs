@@ -533,6 +533,8 @@ internal static partial class ContinuousTranslationCheck
         bool acceptanceHeld = false, controlHeld = false;
         object? returnProofObservation = null;
         int returnProofObservationCount = 0;
+        object? reentryObservation = null;
+        int reentryObservationCount = 0;
         try
         {
             if (kind == OwnedReturnKind.Tab)
@@ -561,8 +563,21 @@ internal static partial class ContinuousTranslationCheck
             var editorPoint = editor.PointToScreen(new Point(editor.ActualWidth / 2, Math.Min(20, editor.ActualHeight / 2)));
             Require(SetOwnedCursorPos((int)Math.Round(editorPoint.X), (int)Math.Round(editorPoint.Y)), "owned-return-editor-pointer");
             SendOwnedClick(result.CleanupErrors);
-            await UntilAsync(() => host.EditorHandoffComplete(target) && ReferenceEquals(Keyboard.FocusedElement, editor)
-                && !editor.IsReadOnly, cancellation);
+            await UntilAsync(() =>
+            {
+                bool handoffComplete = host.EditorHandoffComplete(target);
+                bool editorFocused = ReferenceEquals(Keyboard.FocusedElement, editor);
+                bool editorReadOnly = editor.IsReadOnly;
+                reentryObservation = new
+                {
+                    atMs = WindowsInterruptClock.NowMs,
+                    handoffComplete,
+                    editorFocused,
+                    editorReadOnly
+                };
+                reentryObservationCount++;
+                return handoffComplete && editorFocused && !editorReadOnly;
+            }, cancellation);
             reenteredDraft = editor.Text == draft;
             Require(reenteredDraft, "owned-return-reentry-overwrote-draft");
             SendOwnedLetter(kind == OwnedReturnKind.Tab ? (ushort)0x41 : (ushort)0x42, result.CleanupErrors);
@@ -689,6 +704,8 @@ internal static partial class ContinuousTranslationCheck
             kind = kind.ToString(),
             productionEditingEnabled = true,
             reenteredDraft,
+            reentryObservationCount,
+            reentryObservation,
             sourceFocus,
             sourceUnchanged,
             naturalCaret,

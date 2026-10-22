@@ -677,12 +677,16 @@ def session(out: Path, core_version: str, deadline: float, glossary_toolkit=None
                     )
 
 
-def run_owned_session(command, *, env, timeout):
+def run_owned_session(command, *, env, timeout, cleanup=None, ready_output=None):
     # Keep the session leader unreaped until its whole owned process group has
     # been signalled. Its PID/PGID cannot be reused for an unrelated process.
     # The last two seconds belong to emergency cleanup, not more test work.
     if timeout <= 2:
         raise ValueError("owned session needs a cleanup reserve")
+    if ready_output is not None and cleanup is None:
+        raise ValueError("core readiness requires current cleanup evidence")
+    if cleanup is not None:
+        cleanup.unlink(missing_ok=True)
     deadline = time.monotonic() + timeout
     process = subprocess.Popen(command, env=env, start_new_session=True)
     try:
@@ -701,6 +705,11 @@ def run_owned_session(command, *, env, timeout):
         process.wait(timeout=max(0, deadline - time.monotonic()))
     if process.returncode:
         raise subprocess.CalledProcessError(process.returncode, command)
+    if cleanup is not None and json.loads(cleanup.read_text()).get("childrenExited") is not True:
+        raise ValueError("owned session cleanup did not confirm all children exited")
+    if ready_output is not None:
+        with ready_output.open("a") as stream:
+            stream.write("core-ready=true\n")
 
 
 def main():
@@ -710,6 +719,9 @@ def main():
     parser.add_argument("--session", action="store_true")
     parser.add_argument("--session-deadline", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--build-only", action="store_true")
+    parser.add_argument(
+        "--core-ready-output", type=Path, help="Append verified core readiness for CI"
+    )
     parser.add_argument("--glossary-toolkit", choices=("gtk3", "gtk4"), help=argparse.SUPPRESS)
     args = parser.parse_args()
     default_name = f"fcitx-cooperative-{CORE_VERSION}"
@@ -724,6 +736,7 @@ def main():
         if not args.build_only:
             # Independent desktops/daemons reuse the same already-built assets.
             for toolkit in (None, "gtk4", "gtk3"):
+                evidence = out / f"{toolkit}-glossary-session" if toolkit else out
                 run_owned_session(
                     [
                         "dbus-run-session",
@@ -745,9 +758,9 @@ def main():
                     ],
                     timeout=145 if toolkit else 120,
                     env=os.environ | {"TYPELAY_COOPERATIVE_OWNED_XVFB": "1"},
+                    cleanup=evidence / "cleanup.json",
+                    ready_output=args.core_ready_output if toolkit is None else None,
                 )
-                evidence = out / f"{toolkit}-glossary-session" if toolkit else out
-                assert json.loads((evidence / "cleanup.json").read_text())["childrenExited"]
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 """Owned real-process cleanup; no display, input method, downloads or models."""
 
+import json
 import os
 import signal
 import subprocess
@@ -21,6 +22,32 @@ class CooperativeSessionCleanupTests(unittest.TestCase):
 
     def test_successful_wrapper_cannot_leave_owned_descendant(self):
         self.check_cleanup("success", None)
+
+    def test_core_readiness_requires_current_success_and_strict_cleanup(self):
+        for outcome, cleanup in ((0, True), (7, True), (0, False), (0, None), (0, 1)):
+            with (
+                self.subTest(outcome=outcome, cleanup=cleanup),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                evidence = root / "cleanup.json"
+                output = root / "actions-output"
+                # A previous run's successful cleanup must not authorize this run.
+                evidence.write_text(json.dumps({"childrenExited": True}))
+                script = "import pathlib,sys; "
+                if cleanup is not None:
+                    script += f"pathlib.Path({str(evidence)!r}).write_text({json.dumps({'childrenExited': cleanup})!r}); "
+                script += f"sys.exit({outcome})"
+                arguments = dict(env=os.environ, timeout=4, cleanup=evidence, ready_output=output)
+                if outcome == 0 and cleanup is True:
+                    run_owned_session([sys.executable, "-c", script], **arguments)
+                    self.assertEqual(output.read_text(), "core-ready=true\n")
+                else:
+                    with self.assertRaises(
+                        (subprocess.CalledProcessError, ValueError, FileNotFoundError)
+                    ):
+                        run_owned_session([sys.executable, "-c", script], **arguments)
+                    self.assertFalse(output.exists())
 
     def check_cleanup(self, mode, exception):
         with tempfile.TemporaryDirectory() as directory:

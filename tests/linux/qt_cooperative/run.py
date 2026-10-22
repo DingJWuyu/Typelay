@@ -7,6 +7,7 @@ xkbcommon/XCB, cmake, ninja, dbus-run-session, xvfb-run and xdotool.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import shlex
@@ -30,6 +31,19 @@ TEST_INPUTS = (
     "tests/linux/qt_cooperative/qpa_ack.cpp",
     "tests/linux/fixtures/qt_native_fixture.cpp",
 )
+
+
+def verify_fcitx_inputs(fcitx):
+    """Require current production binaries and compiled regression inputs before Qt runs."""
+    spec = importlib.util.spec_from_file_location(
+        "typelay_fcitx_pack", ROOT / "packaging/linux/fcitx-cooperative/pack.py"
+    )
+    recipe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(recipe)
+    recipe.metadata(fcitx)
+    if recipe.verify_tests(fcitx) is None:
+        raise ValueError("Qt probe requires compiled Fcitx regression inputs")
+    recipe.verify_sources(fcitx)
 
 
 def run(args, **kwargs):
@@ -2250,6 +2264,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=Path("artifacts/linux/qt-cooperative"))
     parser.add_argument("--fcitx-root", type=Path, required=True)
+    parser.add_argument(
+        "--verify-fcitx-build",
+        action="store_true",
+        help="Require matching local Fcitx production and fixture build inputs",
+    )
     parser.add_argument("--session", action="store_true")
     parser.add_argument("--forced-sync-diagnostic", action="store_true")
     parser.add_argument("--language-options-only", action="store_true")
@@ -2259,6 +2278,8 @@ if __name__ == "__main__":
     if args.session:
         session(out, fcitx, args.forced_sync_diagnostic, args.language_options_only)
     else:
+        if args.verify_fcitx_build:
+            verify_fcitx_inputs(fcitx)
         build(out, args.forced_sync_diagnostic)
         subprocess.run(
             [

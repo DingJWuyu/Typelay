@@ -86,6 +86,42 @@ class FcitxTestManifestTests(unittest.TestCase):
                     self.recipe.verify_tests(self.directory)
                 path.write_bytes(original)
 
+    def test_qt_probe_rejects_missing_stale_or_unbound_fcitx_inputs(self):
+        from qt_cooperative.run import verify_fcitx_inputs
+
+        versions = {
+            **dict.fromkeys(
+                (
+                    "server_source_version",
+                    "server_runtime_version",
+                    "linked_core_development_version",
+                ),
+                inputs.CORE_VERSION,
+            ),
+            "component_source_versions": inputs.SOURCE_VERSIONS,
+            "installed_private_versions": inputs.PRIVATE_VERSIONS,
+            "server_source_commit": inputs.FCITX_PINS["fcitx5"][0],
+        }
+        (self.directory / "pins.json").write_text(json.dumps(inputs.FCITX_PINS))
+        (self.directory / "versions.json").write_text(json.dumps(versions))
+        self.record["build_metadata_sha256"] = inputs.sha256(self.directory / "versions.json")
+        with self.assertRaisesRegex(ValueError, "requires compiled Fcitx regression inputs"):
+            verify_fcitx_inputs(self.directory)
+        self.record["files"][self.expected[0]] = "0" * 64
+        self.write_record()
+        with self.assertRaisesRegex(ValueError, "fixture inputs differ"):
+            verify_fcitx_inputs(self.directory)
+        self.record["files"] = inputs.hashes(self.expected)
+        (self.directory / "build-inputs.json").write_text(json.dumps({"files": {}}))
+        self.record["build_inputs_sha256"] = inputs.sha256(self.directory / "build-inputs.json")
+        self.write_record()
+        with self.assertRaisesRegex(ValueError, "identify every cooperation build input"):
+            verify_fcitx_inputs(self.directory)
+        versions["server_runtime_version"] = "unknown"
+        (self.directory / "versions.json").write_text(json.dumps(versions))
+        with self.assertRaisesRegex(ValueError, "server_runtime_version must be"):
+            verify_fcitx_inputs(self.directory)
+
 
 class WorkerBundleTests(unittest.TestCase):
     def test_argos_only_worker_has_runtime_python_and_locks_without_native_build_inputs(self):

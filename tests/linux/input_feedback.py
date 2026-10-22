@@ -948,20 +948,28 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertNotIn("source", notice)
         self.assertFalse(self.input.frozen)
 
-    def test_declined_capture_keeps_null_and_only_fixed_failure_metadata(self):
+    def declined_capture_diagnostics(self, trace):
+        self.clock.return_value = 1000
+
         async def exercise():
             peer = self.connect_peer("gtk3")
             self.focus(peer)
             self.host.capture_allowed = True
             self.native_frames(peer)
+            calls_before = self.clock.call_count
             task = asyncio.create_task(self.input.request("capture", {}))
             await asyncio.sleep(0)
-            describe = self.native_frames(peer)[0]
+            frames = self.native_frames(peer)
+            self.assertEqual([frame["op"] for frame in frames], ["describe"])
+            describe = frames[0]
+            self.clock.return_value = 1010
             peer.link.receive({"id": describe["id"], "data": self.description()})
             await asyncio.sleep(0)
             await asyncio.sleep(0)
-            capture = self.native_frames(peer)[0]
-            self.assertEqual(capture["op"], "capture")
+            frames = self.native_frames(peer)
+            self.assertEqual([frame["op"] for frame in frames], ["capture"])
+            capture = frames[0]
+            self.clock.return_value = 1020
             peer.link.receive(
                 {
                     "id": capture["id"],
@@ -974,16 +982,52 @@ class InputFeedbackTests(unittest.TestCase):
                 }
             )
             self.assertIsNone(await task)
+            clock_calls = self.clock.call_count - calls_before
             failure = self.input.diagnostics()["captureFailures"][-1]
             self.assertEqual(failure["reason"], "native-read-declined")
-            self.assertEqual(failure["nativeFailure"], {"reason": "ime-unavailable"})
+            if trace:
+                self.assertEqual(failure["nativeFailure"], {"reason": "ime-unavailable"})
+                self.assertEqual(
+                    failure["nativeCallerTiming"],
+                    {
+                        "startedMs": 1000,
+                        "describeStartedMs": 1000,
+                        "describeReturnedMs": 1010,
+                        "approvalStartedMs": 1010,
+                        "approvalReturnedMs": 1010,
+                        "captureStartedMs": 1010,
+                        "captureReturnedMs": 1020,
+                    },
+                )
+            else:
+                self.assertNotIn("nativeFailure", failure)
+                self.assertNotIn("nativeCallerTiming", failure)
             self.assertNotIn("private", json.dumps(failure))
+            return clock_calls
 
         with (
-            patch.dict(os.environ, {"TYPELAY_TRACE": "1"}),
+            patch.dict(os.environ, {"TYPELAY_TRACE": "1" if trace else ""}),
             contextlib.redirect_stderr(io.StringIO()),
         ):
-            asyncio.run(exercise())
+            return asyncio.run(exercise())
+
+    def test_declined_capture_keeps_null_and_only_fixed_failure_metadata(self):
+        self.declined_capture_diagnostics(True)
+
+    def test_trace_off_declined_capture_has_no_caller_timing(self):
+        self.declined_capture_diagnostics(False)
+
+    def test_caller_timing_adds_clocks_only_when_trace_is_enabled(self):
+        without_trace = self.declined_capture_diagnostics(False)
+        with_trace = self.declined_capture_diagnostics(True)
+        self.assertEqual(with_trace - without_trace, 6)
+
+    def test_caller_timing_stays_in_existing_sixteen_failure_budget(self):
+        for _ in range(18):
+            self.declined_capture_diagnostics(True)
+        failures = self.input.diagnostics()["captureFailures"]
+        self.assertEqual(len(failures), 16)
+        self.assertTrue(all("nativeCallerTiming" in item for item in failures))
 
     def practice_capture_identity_change(self, *, context_changed, focus_changed):
         self.peer = self.connect_peer("gtk3")

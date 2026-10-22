@@ -1,6 +1,9 @@
 """Status age and correlated direct-result oracles; not GUI or model evidence."""
 
+import hashlib
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -152,6 +155,51 @@ class BackgroundDirectRefusalTests(unittest.TestCase):
         report, rows = self.refusal()
         report["operationFeedback"]["code"] = "write-unconfirmed"
         self.assertFalse(background_direct_rejection_current(report, rows, 8))
+
+
+class AcceptanceInjectionTests(unittest.TestCase):
+    def test_only_default_gtk4_tab_uses_preconnected_single_injection(self):
+        from desktop_e2e import send_gtk_acceptance
+
+        for gtk4, shortcut, expected in (
+            (True, "Tab", "preconnected"),
+            (False, "Tab", "configured"),
+            (True, "Ctrl+F7", "configured"),
+        ):
+            calls = []
+            timing = {}
+
+            def tab(*, timing):
+                calls.append(("preconnected", "Tab", timing))
+
+            def configured(value, *, timing):
+                calls.append(("configured", value, timing))
+
+            send_gtk_acceptance(gtk4, shortcut, tab, configured, timing)
+            self.assertEqual(calls, [(expected, shortcut, timing)])
+
+
+class FixtureIdentityTests(unittest.TestCase):
+    def test_records_only_expected_test_process_files(self):
+        from desktop_e2e import fixture_module_identity
+
+        executable = Path(sys.executable).resolve()
+        record = fixture_module_identity(os.getpid(), executable, executable)
+        self.assertEqual(set(record), {"pid", "startTimeTicks", "files"})
+        self.assertEqual(record["pid"], os.getpid())
+        self.assertGreater(record["startTimeTicks"], 0)
+        expected = {
+            "path": str(executable),
+            "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+        }
+        self.assertEqual(record["files"], [expected, expected])
+
+    def test_unmapped_file_cannot_be_reported_as_loaded(self):
+        from desktop_e2e import fixture_module_identity
+
+        with tempfile.NamedTemporaryFile() as unmapped:
+            with self.assertRaisesRegex(AssertionError, "did not load expected module"):
+                fixture_module_identity(os.getpid(), Path(sys.executable), Path(unmapped.name))
 
 
 if __name__ == "__main__":

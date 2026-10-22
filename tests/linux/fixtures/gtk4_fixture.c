@@ -376,6 +376,20 @@ static void control_label_changed(GObject *object, GParamSpec *property, gpointe
         paint->request_source = g_idle_add_full(G_PRIORITY_DEFAULT_IDLE,
             control_request_frame, g_object_ref(widget), g_object_unref);
 }
+typedef struct {
+    GtkRequisition minimum, natural;
+    gint64 at;
+} PopupMeasure;
+static void remember_popup_measure(GtkWidget *widget) {
+    if (!g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND")) return;
+    GtkNative *native = gtk_widget_get_native(widget);
+    if (!native || !GTK_IS_POPOVER(native)
+        || g_strcmp0(gtk_widget_get_name(GTK_WIDGET(native)), "typelay-overlay") != 0) return;
+    PopupMeasure *size = g_new0(PopupMeasure, 1);
+    gtk_widget_get_preferred_size(GTK_WIDGET(native), &size->minimum, &size->natural);
+    size->at = g_get_monotonic_time() / 1000;
+    g_object_set_data_full(G_OBJECT(native), "fixture-popup-measure", size, g_free);
+}
 static void control_paint_map(GtkWidget *widget, gpointer unused) {
     (void)unused;
     ControlPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-control-paint");
@@ -386,6 +400,7 @@ static void control_paint_map(GtkWidget *widget, gpointer unused) {
     }
     paint->map_generation++;
     paint->mapped_at = g_get_monotonic_time() / 1000;
+    remember_popup_measure(widget);
     GdkFrameClock *clock = gtk_widget_get_frame_clock(widget);
     GtkNative *native = gtk_widget_get_native(widget);
     GdkSurface *surface = native ? gtk_native_get_surface(native) : NULL;
@@ -503,6 +518,17 @@ static void report_control_surface(JsonBuilder *builder, GtkWidget *widget) {
     json_builder_set_member_name(builder, "surfaceGeometry");
     if (geometry) json_builder_add_value(builder, json_node_copy(geometry));
     else json_builder_add_null_value(builder);
+    if (GTK_IS_SCROLLED_WINDOW(widget)
+        && g_strcmp0(gtk_widget_get_name(widget), "typelay-language-menu") == 0) {
+        GtkWidget *viewport = gtk_scrolled_window_get_child(GTK_SCROLLED_WINDOW(widget));
+        JsonNode *clip = viewport ? control_surface_geometry(viewport) : NULL;
+        json_builder_set_member_name(builder, "scrollViewport");
+        if (clip) json_builder_add_value(builder, clip);
+        else json_builder_add_null_value(builder);
+        GtkAdjustment *adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(widget));
+        json_builder_set_member_name(builder, "scrollValue");
+        json_builder_add_double_value(builder, gtk_adjustment_get_value(adjustment));
+    }
     report_control_paint(builder, widget, geometry);
     g_clear_pointer(&geometry, json_node_unref);
 }
@@ -621,6 +647,43 @@ static GtkWidget *find_named_widget(GtkWidget *widget, const char *name) {
     }
     return NULL;
 }
+/* Bounded public size facts survive a GtkPopover popdown after allocation. */
+static void report_overlay_popup(JsonBuilder *builder) {
+    GtkWidget *popup = find_named_widget(report_window, "typelay-overlay");
+    json_builder_set_member_name(builder, "overlayPopup");
+    if (!popup || !GTK_IS_POPOVER(popup)) { json_builder_add_null_value(builder); return; }
+    GtkRequisition minimum, natural;
+    gtk_widget_get_preferred_size(popup, &minimum, &natural);
+    PopupMeasure *last = g_object_get_data(G_OBJECT(popup), "fixture-popup-measure");
+    gboolean previous = minimum.height == 0 && last;
+    if (previous) { minimum = last->minimum; natural = last->natural; }
+    GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(popup));
+    GdkRectangle anchor = {0};
+    gboolean has_anchor = gtk_popover_get_pointing_to(GTK_POPOVER(popup), &anchor);
+    const char *names[] = {"minimumWidth", "minimumHeight", "naturalWidth", "naturalHeight",
+        "surfaceWidth", "surfaceHeight", "anchorX", "anchorY", "anchorWidth", "anchorHeight"};
+    gint values[] = {minimum.width, minimum.height, natural.width, natural.height,
+        surface ? gdk_surface_get_width(surface) : 0, surface ? gdk_surface_get_height(surface) : 0,
+        anchor.x, anchor.y, anchor.width, anchor.height};
+    json_builder_begin_object(builder);
+    for (guint index = 0; index < G_N_ELEMENTS(names); index++) {
+        json_builder_set_member_name(builder, names[index]);
+        json_builder_add_int_value(builder, values[index]);
+    }
+    json_builder_set_member_name(builder, "visible");
+    json_builder_add_boolean_value(builder, gtk_widget_get_visible(popup));
+    json_builder_set_member_name(builder, "mapped");
+    json_builder_add_boolean_value(builder, gtk_widget_get_mapped(popup));
+    json_builder_set_member_name(builder, "surfaceMapped");
+    json_builder_add_boolean_value(builder, surface && gdk_surface_get_mapped(surface));
+    json_builder_set_member_name(builder, "measurement");
+    json_builder_add_string_value(builder, previous ? "last-mapped" : "current");
+    json_builder_set_member_name(builder, "measuredAtMs");
+    json_builder_add_int_value(builder, previous ? last->at : g_get_monotonic_time() / 1000);
+    json_builder_set_member_name(builder, "hasAnchor");
+    json_builder_add_boolean_value(builder, has_anchor);
+    json_builder_end_object(builder);
+}
 #include "gtk_glossary.inc"
 static gboolean report_state(gpointer unused) {
     (void)unused;
@@ -685,6 +748,7 @@ static gboolean report_state(gpointer unused) {
         json_builder_add_int_value(builder, gtk_widget_get_height(report_window));
         json_builder_set_member_name(builder, "scale");
         json_builder_add_int_value(builder, gtk_widget_get_scale_factor(report_window));
+        if (g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND")) report_overlay_popup(builder);
         json_builder_set_member_name(builder, "overlayControls");
         json_builder_begin_object(builder);
         report_language_control(report_window, builder);

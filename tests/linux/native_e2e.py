@@ -80,6 +80,39 @@ def glossary_hover_current(control, observed_at, before, point, moved_at):
     )
 
 
+def glossary_menu_scroll_advanced(snapshot, instance, previous, direction, after):
+    if snapshot.get("observedAtMs", 0) <= after:
+        return False
+    menu = snapshot.get("overlayControls", {}).get("typelay-language-menu", {})
+    assert menu.get("instance") == instance and menu.get("visible") is True, "scrolled menu lost"
+    return direction * (menu.get("scrollValue", previous) - previous) > 0
+
+
+def glossary_menu_scroll_direction(control, viewport):
+    """Mapped menu children can still be clipped; scroll before attempting a click."""
+    if not isinstance(viewport, dict):
+        return 0
+    rectangle = control.get("surfaceGeometry")
+    assert isinstance(rectangle, dict), "menu control has no surface geometry"
+    y, height = rectangle["y"], rectangle["height"]
+    top, extent = viewport["y"], viewport["height"]
+    assert 0 < height <= extent, "menu viewport cannot expose the whole control"
+    return -1 if y < top else 1 if y + height > top + extent else 0
+
+
+def glossary_popup_fits(popup):
+    """A mapped surface must fit its measured GTK minimum, not just exist."""
+    if not isinstance(popup, dict) or any(
+        popup.get(key) is not True for key in ("visible", "mapped", "surfaceMapped")
+    ):
+        return False
+    for axis in ("Width", "Height"):
+        minimum, actual = popup.get("minimum" + axis), popup.get("surface" + axis)
+        if type(minimum) is not int or type(actual) is not int or not 0 < minimum <= actual:
+            return False
+    return True
+
+
 def glossary_interaction_loss(before, current, renewed, observed_at, started):
     """Reject a lost, already-observed control, not initial layout or post-click close."""
     if before is None:
@@ -442,7 +475,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                 clicks = []
                 click_path = out / f"{toolkit}-glossary-clicks.json"
 
-                def point_observe(name, *, overlay_control=False, acquired=None):
+                def point_observe(name, *, overlay_control=False, acquired=None, button=1):
                     started = time.monotonic_ns() // 1000000
                     geometry = dict(
                         line.split("=", 1)
@@ -474,6 +507,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             "observedAtMs": actual.get("observedAtMs"),
                             "fullscreen": actual.get("fullscreen"),
                             "parent": parent,
+                            "overlayPopup": actual.get("overlayPopup"),
                             "control": {
                                 key: control.get(key)
                                 for key in (
@@ -485,6 +519,8 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                     "surfaceGeometry",
                                     "instance",
                                     "paintObservation",
+                                    "scrollViewport",
+                                    "scrollValue",
                                 )
                             }
                             if control
@@ -530,6 +566,12 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                         ):
                             return None
                         if not control or overlay_control and not control.get("visible"):
+                            return None
+                        if (
+                            overlay_control
+                            and toolkit == "gtk4"
+                            and not glossary_popup_fits(actual.get("overlayPopup"))
+                        ):
                             return None
                         if (
                             overlay_control
@@ -583,6 +625,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                     evidence = {
                         "case": current_case,
                         "control": name,
+                        "button": button,
                         "nestedSize": dimensions,
                         "displaySize": display,
                         "nestedOrigin": [int(geometry[key]) for key in ("X", "Y")],
@@ -689,7 +732,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
 
                         wait_for(hovered, f"{name}: real pointer hover on same surface point")
                     evidence["clickStartedAtMonoMs"] = time.monotonic_ns() // 1000000
-                    execute("xdotool", "click", "1")
+                    execute("xdotool", "click", str(button))
                     following = state()
                     evidence.update(
                         clickReturnedAtMonoMs=time.monotonic_ns() // 1000000,
@@ -697,9 +740,11 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                         afterFocus=following.get("focus"),
                     )
 
-                def point(name, *, overlay_control=False, acquired=None):
+                def point(name, *, overlay_control=False, acquired=None, button=1):
                     try:
-                        point_observe(name, overlay_control=overlay_control, acquired=acquired)
+                        point_observe(
+                            name, overlay_control=overlay_control, acquired=acquired, button=button
+                        )
                     finally:
                         # Persist success or the first failure once, outside the
                         # pointer/lease-sensitive polling and command sequence.
@@ -721,6 +766,9 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                         "changed-selection",
                         "expired",
                     ):
+                        # Keep the preceding case as context, not the entire matrix
+                        # in every pointer evidence file or early-failure artifact.
+                        clicks[:] = [item for item in clicks if item["case"] == current_case]
                         current_case = {
                             "source": source_kind,
                             "state": view_state,
@@ -845,7 +893,9 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             def check():
                                 renewed = renew()
                                 if require_visible:
-                                    assert renewed["visible"], "opened source form lost on renewal"
+                                    assert renewed["visible"], (
+                                        f"{label}: rendered overlay lost on renewal"
+                                    )
                                 return predicate(state())
 
                             return wait_for(check, f"{view_state}/{finish}: {label}")
@@ -856,8 +906,53 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 if value.get("overlayControls", {}).get(name, {}).get("visible")
                                 else None,
                                 name,
+                                require_visible=True,
                             )
                             assert control["enabled"]
+                            while toolkit == "gtk4":
+                                actual = state()
+                                menu = actual.get("overlayControls", {}).get(
+                                    "typelay-language-menu", {}
+                                )
+                                # Form controls and the menu trigger are outside the menu viewport.
+                                if name not in (
+                                    "typelay-source-language",
+                                    "typelay-target-language",
+                                    "typelay-apply-languages",
+                                    "typelay-glossary-add",
+                                ):
+                                    break
+                                current = actual.get("overlayControls", {}).get(name, {})
+                                assert current.get("instance") == control["instance"], (
+                                    "menu control replaced before scroll"
+                                )
+                                if not current.get("surfaceGeometry") or not menu.get(
+                                    "scrollViewport"
+                                ):
+                                    break
+                                direction = glossary_menu_scroll_direction(
+                                    current, menu["scrollViewport"]
+                                )
+                                if not direction:
+                                    break
+                                previous = menu["scrollValue"]
+                                point(
+                                    "typelay-language-menu",
+                                    overlay_control=True,
+                                    acquired={"instance": menu["instance"]},
+                                    button=5 if direction > 0 else 4,
+                                )
+                                observe(
+                                    lambda value: glossary_menu_scroll_advanced(
+                                        value,
+                                        menu["instance"],
+                                        previous,
+                                        direction,
+                                        clicks[-1]["clickReturnedAtMonoMs"],
+                                    ),
+                                    "real menu scroll advancement",
+                                    require_visible=True,
+                                )
                             point(
                                 name,
                                 overlay_control=True,

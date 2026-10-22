@@ -519,6 +519,7 @@ jobs:
           python tests/linux/test_setup_scope_data.py -v
           python tests/linux/test_practice_session.py -v
           python tests/linux/test_fcitx_session_source.py -v
+          python -m unittest discover -s tests/linux -p test_fcitx_cooperative_session.py -v
           python tests/linux/test_input_notifications.py -v
           python tests/linux/test_gtk_geometry.py -v
           python tests/linux/test_gtk_accessibility_bounds.py -v
@@ -580,7 +581,7 @@ jobs:
       - name: Verify isolated Fcitx and GTK cooperative transactions
         id: fcitx
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: python tests/linux/fcitx_cooperative/run.py --core-version 5.1.22
+        run: python tests/linux/fcitx_cooperative/run.py --core-version 5.1.22 --core-ready-output "$GITHUB_OUTPUT"
       - name: Collect bounded early GTK glossary failure evidence
         if: ${{ !cancelled() && steps.fcitx.outcome == 'failure' }}
         continue-on-error: true
@@ -645,11 +646,13 @@ jobs:
           retention-days: 7
       - name: Probe original Fcitx Qt input delivery boundaries
         id: qt
-        if: ${{ !cancelled() && steps.fcitx.outcome == 'success' }}
+        # Later GTK glossary failures remain red but do not invalidate the
+        # current core session. The Qt runner rechecks build/test identity.
+        if: ${{ !cancelled() && steps.fcitx.outputs.core-ready == 'true' }}
         shell: bash
         run: |
           set -o pipefail
-          python tests/linux/qt_cooperative/run.py --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22 2>&1 | tee artifacts/linux/qt-cooperative-probe.log
+          python tests/linux/qt_cooperative/run.py --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22 --verify-fcitx-build 2>&1 | tee artifacts/linux/qt-cooperative-probe.log
       - name: Preserve early Qt probe failure evidence
         if: ${{ !cancelled() && steps.qt.outcome == 'failure' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
