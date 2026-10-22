@@ -126,24 +126,55 @@ internal static partial class HyPackageCheck
             await WaitAsync(() => Task.FromResult(N.ReadText(field, Limits.MaxTextUnits) == expected), ct);
             SourceUnchanged(expected);
         }
-        async Task<AutomationElement> OverlayEditor(bool ready)
+        async Task<AutomationElement> OverlayEditor(bool ready, Scene? scene = null)
         {
             AutomationElement? editor = null;
+            object? lastPublicObservation = null;
+            var observed = Stopwatch.StartNew();
             using var request = CancellationTokenSource.CreateLinkedTokenSource(ct);
             request.CancelAfter(TimeSpan.FromSeconds(90));
-            await WaitAsync(async () => await UiAsync(() =>
+            try
             {
-                Require(!app!.Process.HasExited, "ordinary-app-exited");
-                workers!.Check();
-                var overlays = AutomationElement.RootElement.FindAll(TreeScope.Children, new AndCondition(
-                    new PropertyCondition(AutomationElement.ProcessIdProperty, app.Process.Id),
-                    new PropertyCondition(AutomationElement.NameProperty, "TypeLay · 自动化测试"),
-                    new PropertyCondition(AutomationElement.IsOffscreenProperty, false)));
-                if (overlays.Count != 1)
-                    return false;
-                editor = OverlayPreviewObservation.Find(overlays[0], app.Process.Id, original, ready);
-                return editor is not null;
-            }, request.Token), request.Token);
+                await WaitAsync(async () => await UiAsync(() =>
+                {
+                    Require(!app!.Process.HasExited, "ordinary-app-exited");
+                    workers!.Check();
+                    var overlays = AutomationElement.RootElement.FindAll(TreeScope.Children, new AndCondition(
+                        new PropertyCondition(AutomationElement.ProcessIdProperty, app.Process.Id),
+                        new PropertyCondition(AutomationElement.NameProperty, "TypeLay · 自动化测试"),
+                        new PropertyCondition(AutomationElement.IsOffscreenProperty, false)));
+                    OverlayPreviewObservation.Observation? preview = null;
+                    editor = overlays.Count == 1
+                        ? OverlayPreviewObservation.Find(overlays[0], app.Process.Id, original, ready, out preview) : null;
+                    int? previewOnlyCueCount = scene is not null && editor is null && overlays.Count == 1 ? overlays[0].FindAll(TreeScope.Descendants, new AndCondition(
+                        new PropertyCondition(AutomationElement.ProcessIdProperty, app.Process.Id),
+                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text),
+                        new PropertyCondition(AutomationElement.NameProperty, "仅预览 · 自动化测试"),
+                        new PropertyCondition(AutomationElement.IsOffscreenProperty, false))).Count : null;
+                    var observation = new
+                    {
+                        elapsedMs = observed.ElapsedMilliseconds,
+                        overlayCount = overlays.Count,
+                        previewOnlyCueCount,
+                        preview
+                    };
+                    if (!request.IsCancellationRequested)
+                        lastPublicObservation = observation;
+                    return editor is not null;
+                }, request.Token), request.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // Freeze the original failed wait. Do not start a new observation,
+                // retry acceptance, or promote a current preview to a ready cue.
+                if (scene is not null)
+                    scene.Facts = new
+                    {
+                        requestedAcceptanceCue = ready,
+                        lastPublicObservation
+                    };
+                throw;
+            }
             return editor!;
         }
         try
@@ -298,7 +329,7 @@ internal static partial class HyPackageCheck
             await report.Phase("automatic-accept-and-undo", async scene =>
             {
                 scene.Stage = "await-public-acceptance-cue";
-                await OverlayEditor(true);
+                await OverlayEditor(true, scene);
                 scene.Stage = "press-single-acceptance-tab";
                 NotepadChord([0x09]);
                 scene.Stage = "await-exact-source-translation";

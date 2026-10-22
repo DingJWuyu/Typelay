@@ -435,7 +435,10 @@ static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accep
         if (*admission->reason || !qualify(tx) || !foreground_source(tx)
             || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie) { tx->reason = 2; return; }
         if (!authorization_current(tx) || GetTickCount64() > tx->deadline) { tx->reason = 14; return; }
-        if (GetQueueStatus(0x1dff) >> 16) { tx->reason = SOURCE_PENDING_WORK; return; }
+        // Keep only the already sampled queue-type hints in the diagnostic.
+        // No second queue read, message retrieval, or additional authority.
+        uint32_t pending_work = GetQueueStatus(0x1dff) >> 16;
+        if (pending_work) { tx->reason = SOURCE_PENDING_WORK | pending_work; return; }
         uint32_t armed = 0;
         // This actual aligned shared word is the only acceptance linearization
         // point. A timeout's Withdrawn value can never be reset or overwritten.

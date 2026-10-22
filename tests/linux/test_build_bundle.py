@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import re
 import shutil
 import struct
 import subprocess
@@ -29,6 +30,34 @@ from eng.linux.cooperative import inputs  # noqa: E402
 
 def digest(content):
     return hashlib.sha256(content).hexdigest()
+
+
+class PackageReadmeTests(unittest.TestCase):
+    def test_generated_readme_identifies_this_package_not_a_recommended_old_artifact(self):
+        for dirty in (False, True):
+            with self.subTest(dirty=dirty), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory)
+                identity = {"schemaVersion": 1, "sourceCommit": "a" * 40, "sourceDirty": dirty}
+                (output / "build-info.json").write_text(json.dumps(identity))
+                build.package_documentation(output, identity)
+                build.write_manifest(output)
+                readme = (output / "README.md").read_text()
+                for target in re.findall(r"\[[^\]]+\]\(([^)]+)\)", readme):
+                    if not target.startswith("#") and ":" not in target:
+                        self.assertTrue((output / target.partition("#")[0]).is_file(), target)
+                self.assertIn("a" * 40, readme)
+                self.assertIn("sourceDirty=" + str(dirty).lower(), readme)
+                self.assertIn("[build-info.json](build-info.json)", readme)
+                self.assertNotIn("/artifacts/", readme)
+                self.assertNotIn("4be188b", readme)
+                self.assertIn("## 安装、启动与首次配置", readme)
+                self.assertIn("sha256sum", readme)
+                self.assertIn("--install-models", readme)
+                self.assertIn("(fcitx.md", readme)
+                self.assertTrue((output / "fcitx.md").is_file())
+                self.assertIn("/blob/" + "a" * 40 + "/docs/product/README.md", readme)
+                self.assertNotIn("](..", readme)
+                self.assertIn("不代表", readme)
 
 
 class FcitxTestManifestTests(unittest.TestCase):

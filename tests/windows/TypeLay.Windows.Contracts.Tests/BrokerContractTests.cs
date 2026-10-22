@@ -7,6 +7,38 @@ namespace TypeLay.Windows.Contracts.Tests;
 
 public sealed class BrokerContractTests
 {
+    [Theory]
+    [InlineData(0x10000u)] // Older base-only native diagnostic.
+    [InlineData(0x10001u)] // Keyboard hint, not an identified Tab.
+    [InlineData(0x10008u)] // Posted work.
+    [InlineData(0x10149u)] // Several valid hints can coexist.
+    [InlineData(0x11dffu)] // All queried queue types.
+    public void SourcePendingQueueHintsRemainTheSamePublicDenial(uint raw)
+    {
+        Assert.True(SourceNativeReason.TryDecode(raw, out Denial reason));
+        Assert.Equal(Denial.EpochChanged, reason);
+    }
+
+    [Theory]
+    [InlineData(0x10200u)] // Not one of the queried queue flags.
+    [InlineData(0x12000u)]
+    [InlineData(0x20000u)] // Unknown diagnostic family.
+    [InlineData(uint.MaxValue)]
+    public void UnknownSourceDiagnosticBitsCannotBecomeAReceipt(uint raw)
+    {
+        Assert.False(SourceNativeReason.TryDecode(raw, out _));
+    }
+
+    [Theory]
+    [InlineData(Denial.None)]
+    [InlineData(Denial.TargetChanged)]
+    [InlineData(Denial.EpochChanged)]
+    public void OrdinarySourceReasonsKeepTheirPublicMeaning(Denial expected)
+    {
+        Assert.True(SourceNativeReason.TryDecode((uint)expected, out Denial actual));
+        Assert.Equal(expected, actual);
+    }
+
     [Fact]
     public async Task SourceGlossaryReturnCarriesOnlyOneCancelableFocusAttempt()
     {

@@ -22,6 +22,46 @@ namespace TypeLay.App.Tests;
 public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
 {
     [Fact]
+    public Task CurrentTranslationWithoutSourceWriteCapabilityIsPubliclyPreviewOnly() => desktop.RunAsync(async () =>
+    {
+        var (window, input, source) = OpenSource();
+        var overlay = new OverlayWindow(clientAreaAnimation: () => false);
+        try
+        {
+            async Task Observe(bool writeSupported)
+            {
+                var session = Ready(source with
+                {
+                    WriteSupported = writeSupported,
+                    DirectWriteSupported = true
+                }, "当前测试译文");
+                overlay.Render(session, new UserSettings(), false, context: EditableView(source));
+                overlay.UpdateLayout();
+                nint handle = overlay.Handle;
+                await Task.Run(() =>
+                {
+                    var root = System.Windows.Automation.AutomationElement.FromHandle(handle);
+                    var status = root.FindAll(System.Windows.Automation.TreeScope.Descendants,
+                        new System.Windows.Automation.AndCondition(
+                            new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.ControlTypeProperty, System.Windows.Automation.ControlType.Text),
+                            new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.NameProperty, writeSupported ? "译文就绪" : "仅预览"),
+                            new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.IsOffscreenProperty, false)));
+                    var displayed = Assert.Single(status.Cast<System.Windows.Automation.AutomationElement>());
+                    Assert.Equal(writeSupported ? "" : "当前不能通过接受键写回这条译文，接受键会交还原应用。", displayed.Current.HelpText);
+                    Assert.NotNull(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, source.Text, false));
+                    Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, source.Text, true));
+                }, TestContext.Current.CancellationToken);
+                Assert.Equal(source.Text, input.Text);
+            }
+            await Observe(false);
+            // Missing or expired acceptance alone is not a permanent capability denial.
+            await Observe(true);
+            await Observe(false);
+        }
+        finally { overlay.Close(); window.Close(); }
+    });
+
+    [Fact]
     public Task OrdinaryObserverRejectsMultipleDisplayedCandidateValues() => desktop.RunAsync(async () =>
     {
         var panel = new StackPanel();
@@ -46,7 +86,10 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                         new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.ControlTypeProperty, System.Windows.Automation.ControlType.Edit),
                         new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.IsOffscreenProperty, false))).Count);
                 Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, "original", false));
-                Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, "original", true));
+                Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, "original", true, out var observed));
+                Assert.Equal("candidate-count", observed.Result);
+                Assert.Equal(2, observed.CandidateCount);
+                Assert.Null(observed.AcceptanceCueCount);
             }, TestContext.Current.CancellationToken);
         }
         finally { window.Close(); }
@@ -91,6 +134,11 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                         CanEdit = editable
                     });
                 overlay.UpdateLayout();
+                if (!editable)
+                {
+                    Assert.Contains("译文预览", VisibleLabels(overlay));
+                    Assert.DoesNotContain("仅预览", VisibleLabels(overlay));
+                }
                 nint handle = overlay.Handle;
                 await Task.Run(() =>
                 {
@@ -103,7 +151,12 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                     Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, value.Current.Value, false));
                     Assert.Equal(editable ? "编辑译文" : "译文预览", preview.Current.Name);
                     Assert.Equal(editable && permit,
-                        TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, source.Text, true) is not null);
+                        TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, source.Text, true, out var observed) is not null);
+                    Assert.Equal(editable ? permit ? "acceptance-cue-present" : "acceptance-cue-count" : "preview-not-editable", observed.Result);
+                    Assert.Equal(editable ? "编辑译文" : "译文预览", observed.EditorName);
+                    Assert.Equal("当前译文", observed.TextStatus);
+                    Assert.True(observed.ValueReadOnly);
+                    Assert.Equal(editable ? permit ? 1 : 0 : (int?)null, observed.AcceptanceCueCount);
                     Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, -1, source.Text, false));
                 }, TestContext.Current.CancellationToken);
                 Assert.Equal(source.Text, input.Text);

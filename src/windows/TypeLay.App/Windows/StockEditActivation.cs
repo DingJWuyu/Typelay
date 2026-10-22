@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Microsoft.Win32.SafeHandles;
 using TypeLay.Core;
+using TypeLay.Windows.Contracts;
 
 namespace TypeLay.App;
 
@@ -15,7 +16,6 @@ internal sealed class StockEditActivation : IDisposable
 {
     internal sealed record Result(bool Claimed, WriteReceipt? Receipt, bool ExceededBudget, double ElapsedMs,
         uint NativeReason = 0);
-    internal const uint PendingSourceWorkReason = 0x10000;
     private const int Bytes = 49344, Header = 72;
     internal const uint BudgetMs = 5;
     private readonly MemoryMappedFile _mapping;
@@ -90,8 +90,7 @@ internal sealed class StockEditActivation : IDisposable
             {
                 uint status = _view.ReadUInt32(Header + 4);
                 nativeReason = _view.ReadUInt32(Header + 8);
-                Denial reason = nativeReason == PendingSourceWorkReason ? Denial.EpochChanged : (Denial)nativeReason;
-                if (Enum.IsDefined(reason))
+                if (SourceNativeReason.TryDecode(nativeReason, out Denial reason))
                     receipt = status switch
                     {
                         1 when claimed && reason == Denial.None => new(WriteStatus.Verified, reason),

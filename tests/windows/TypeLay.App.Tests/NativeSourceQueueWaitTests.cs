@@ -5,6 +5,7 @@ using System.Windows.Interop;
 using TypeLay.Core;
 using TypeLay.Runtime;
 using TypeLay.Windows;
+using TypeLay.Windows.Contracts;
 using Xunit;
 using NativeTransactions = BrokerProduction::TypeLay.Broker.NativeEditTransactions;
 using N = TypeLay.Platform.Windows.NativeMethods;
@@ -73,7 +74,11 @@ public sealed class NativeSourceQueueWaitTests(WpfDesktopFixture ui)
                             // previously revoked source, without changing the
                             // public EpochChanged denial. No Edit input/mutation
                             // has dispatched before this response.
-                            Assert.Equal(StockEditActivation.PendingSourceWorkReason, hook.StockLastActivation.NativeReason);
+                            uint nativeReason = hook.StockLastActivation.NativeReason;
+                            Assert.Equal(SourceNativeReason.PendingWork, nativeReason & ~SourceNativeReason.PendingQueueMask);
+                            // Our posted Work is still pending. Other queue hints
+                            // may coexist; a hint does not identify the original Tab.
+                            Assert.NotEqual(0u, nativeReason & 0x0008u); // QS_POSTMESSAGE
                             Assert.Equal(Denial.EpochChanged, hook.StockLastActivation.Receipt?.Reason);
                         }
                         SendTab(true);

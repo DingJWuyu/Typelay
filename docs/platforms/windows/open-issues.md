@@ -31,6 +31,14 @@
 
 源码入口：`KeyboardHook.TryInvokeShortcut`、共享 `SessionController.Shortcut` / `QueueDirect`、`NativeEditTransactions` 与 `UiaInputProvider`。
 
+### 正式 Notepad 只有预览，没有源接受能力
+
+[CI457](https://github.com/DingJWuyu/Typelay/actions/runs/39836918922) 的完整发行 App 在系统 `notepad.exe` 原生 `Edit` 中完成真实模型预览，随后在 `await-public-acceptance-cue` 的原 90 秒截止失败。`translate-done` 已有当前候选，源焦点与 IME 分别为 Source/Clear，但 `WriteSupported` 始终为 false；不能归为模型质量失败、继续等待或一般焦点故障。
+
+正式 Broker 通过 `NativeEditTransactions.Observe(direct:false)` 取得源线程只读观察，未开放源接受通道。公开实验写回勾选不授予该能力，测试专用 `sourcePrototype` 也不能成为发行能力。当前 WPF 代码对这种已完成结果显示中性“仅预览”，公开说明接受键交还原应用；短暂缺少许可但源能力存在时不冒称永久不支持。新提示及公开观察回归仍待真实 Windows 执行。提示修正不补齐接受功能，正式正向验收仍必须失败，不能改成“预期拒绝即通过”。
+
+原 artifact 没有 Notepad 失败截图或最后一帧公开元素事实；后续正向等待仅在原截止失败时保留既有 UIA 观察的最后状态与时间、预览元素和接受提示计数，不读取私有诊断来放行、不延时或重试。下一轮据这些事实区分当前预览、编辑入口、接受提示与显示绑定；源接受功能本身仍等待按键所有权与事务完整性闭合，LL 超时泄漏证据未被关闭。
+
 ## Chrome 新标签页中央搜索框未工作
 
 不能仅凭现象判断是“没有聚焦”或“Chrome 不支持”。浏览器自身顶栏、内置新标签页与普通网页输入区域的 UIA 类型、值/文本能力、只读属性、输入法状态和焦点身份可能不同，需查实际采集拒绝点。原问题应在新标签页中复现，先确认点击中央框和开始输入后，真实焦点仍在中央框还是移到了顶栏。

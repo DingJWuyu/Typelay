@@ -57,6 +57,48 @@ def run(*arguments):
     subprocess.run(list(map(str, arguments)), cwd=ROOT, check=True)
 
 
+def package_documentation(output, identity):
+    source = ROOT / "docs/platforms/linux"
+    bundled = ("browser.md", "fcitx.md", "qt.md", "vscode.md")
+    for name in bundled:
+        shutil.copy2(source / name, output / name)
+    text = (source / "README.md").read_text(encoding="utf-8")
+    heading = "### 当前可验证候选\n"
+    following = "## 安装、启动与首次配置\n"
+    if text.count(heading) != 1 or text.count(following) != 1:
+        raise ValueError("linux-readme-package-section")
+    start, end = text.index(heading), text.index(following)
+    if start >= end:
+        raise ValueError("linux-readme-package-section-order")
+    commit = identity["sourceCommit"]
+    upstream = "https://github.com/DingJWuyu/Typelay/blob/"
+    replacement = (
+        heading + "\n这是你当前解压的包，不需要根据仓库上一次推荐重新下载。\n\n"
+        f"- 本包源码基准：`{commit}`；`sourceDirty={str(identity['sourceDirty']).lower()}`。\n"
+        "- 身份记录：[build-info.json](build-info.json)；完整性清单："
+        "[MANIFEST.sha256](MANIFEST.sha256)。压缩包校验使用下载时随附的 `.sha256`。\n"
+        f"- [对应源码说明]({upstream}{commit}/docs/platforms/linux/README.md)；"
+        f"[最新推荐与检查结果]({upstream}trunk/docs/platforms/linux/README.md#当前可验证候选)。\n\n"
+        "构建身份不代表检查通过；请核对对应运行的 Linux 结果。模型质量、物理输入法和真机体验仍须分别验收。\n\n"
+    )
+    if identity["sourceDirty"]:
+        replacement += "此构建包含未提交改动；源码链接仅对应基准提交，不能代表包内全部修改。\n\n"
+    text = text[:start] + replacement + text[end:]
+
+    def link(match):
+        target = match[2]
+        if target.startswith("#") or ":" in target:
+            return match[0]
+        path, separator, anchor = target.partition("#")
+        if path in (*bundled, "build-info.json", "MANIFEST.sha256"):
+            return match[0]
+        relative = posixpath.normpath("docs/platforms/linux/" + path)
+        return match[1] + upstream + commit + "/" + relative + separator + anchor + match[3]
+
+    text = re.sub(r"(\[[^\]]+\]\()([^\)]+)(\))", link, text)
+    (output / "README.md").write_text(text, encoding="utf-8")
+
+
 def build(output, fixture=False, cooperation_package=None, hy_runtime=None):
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise RuntimeError("build-requires-linux-x86_64")
@@ -113,8 +155,7 @@ def build(output, fixture=False, cooperation_package=None, hy_runtime=None):
     for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"):
         if (ROOT / name).is_file():
             shutil.copy2(ROOT / name, output / name)
-    for name in ("README.md", "browser.md", "fcitx.md", "qt.md", "vscode.md"):
-        shutil.copy2(ROOT / "docs/platforms/linux" / name, output / name)
+    package_documentation(output, identity)
     if source_identity() != identity:
         raise ValueError("source-checkout-changed-during-build")
     (output / "build-info.json").write_text(json.dumps(identity) + "\n", encoding="utf-8")

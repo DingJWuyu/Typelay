@@ -1053,6 +1053,16 @@ internal sealed partial class OverlayWindow : Window, ISessionView
                 Status = "译文预览",
                 Dot = StatusDot.Neutral
             };
+        // A current model result does not establish a source acceptance channel.
+        // Keep the locked-preview presentation distinct from a temporarily absent permit.
+        bool previewOnly = !source.WriteSupported
+            && session.State is SessionState.ValidTranslation or SessionState.EditedTranslationPending;
+        if (previewOnly)
+            display = display with
+            {
+                Status = "仅预览",
+                Dot = StatusDot.Neutral
+            };
         _hasPreview = session.Preview.Length > 0;
         // Screen readers must distinguish actual current text from progress,
         // failure messages and retained previews of an older source revision.
@@ -1088,6 +1098,9 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             if (status.Length == 0)
                 status = _viewContext?.TranslationActions?.Feedback ?? status;
             _status.Text = status + (_automationTest ? " · 自动化测试" : "");
+            string previewHelp = previewOnly ? "当前不能通过接受键写回这条译文，接受键会交还原应用。" : "";
+            _status.ToolTip = previewOnly ? previewHelp : null;
+            AutomationProperties.SetHelpText(_status, previewHelp);
             string dotBrushKey = display.Dot == StatusDot.Green ? "Good" : display.Dot == StatusDot.Yellow ? "Warn" : "Muted";
             if (_dotBrushKey != dotBrushKey)
             {
