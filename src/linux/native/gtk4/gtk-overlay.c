@@ -87,6 +87,7 @@ typedef struct {
 } GlossaryHandoff;
 static GlossaryHandoff *glossary_handoff;
 static gboolean glossary_can_return(Target *target);
+static void hide_overlay(const char *reason);
 
 /* Only a local editor command, never a source write permit. Borrowed identities
  * are compared while the current overlay owns them, never dereferenced later. */
@@ -1595,32 +1596,44 @@ static void focus_changed(GObject *object, GParamSpec *property, gpointer data) 
     tl_overlay_sync();
     if (overlay.glossary && overlay.glossary->source_origin
         && (overlay.glossary->return_started || (focus && !glossary_contains(overlay.glossary, focus)))) {
-        tl_overlay_hide();
+        hide_overlay("glossary-focus-departure");
         return;
     }
     if (active() && tl_focused() != overlay.target && (paused() || tl_focused())) {
-        tl_overlay_hide();
+        hide_overlay("source-focus-changed");
     }
 }
 static void active_changed(GObject *object, GParamSpec *property, gpointer data) {
     (void)object; (void)property; (void)data;
     tl_overlay_control_cancel();
     if (!active()) {
-        tl_overlay_hide();
+        hide_overlay("window-inactive");
     }
 }
 static gboolean expired(gpointer data) {
     (void)data;
-    if (!overlay.popover || tl_now() > overlay.expires
-        || (paused() && !pause_current(overlay.target, overlay.authority))) {
+    gint64 now = tl_now();
+    const char *reason = !overlay.popover ? "timer-missing-popover"
+        : now > overlay.expires ? "timer-expired"
+        : paused() && !pause_current(overlay.target, overlay.authority) ? "timer-paused-authority" : NULL;
+    if (reason) {
         overlay.expiry_timer = 0;
-        tl_overlay_hide();
+        hide_overlay(reason);
         return G_SOURCE_REMOVE;
     }
     glossary_sync();
     return G_SOURCE_CONTINUE;
 }
-void tl_overlay_hide(void) {
+static void hide_overlay(const char *reason) {
+    /* Branch-local evidence only: no new focus/IME probe and no user text. */
+    static unsigned trace_count;
+    if (g_getenv("TYPELAY_TRACE") && overlay.popover && trace_count < 96) {
+        trace_count++;
+        g_printerr("TypeLay GTK4 overlay-hide reason=%s atMs=%" G_GINT64_FORMAT
+            " expiresAtMs=%" G_GINT64_FORMAT " revision=%" G_GINT64_FORMAT
+            " focused=%d glossary=%d\n", reason, tl_now(), overlay.expires,
+            overlay.revision, overlay.focused, overlay.glossary != NULL);
+    }
     tl_overlay_control_cancel();
     glossary_close(FALSE, TRUE);
     /* Clear state before destroy: source destruction and GTK callbacks are reentrant. */
@@ -1667,8 +1680,9 @@ void tl_overlay_hide(void) {
     if (authority) json_object_unref(authority);
     g_free(generation);
 }
+void tl_overlay_hide(void) { hide_overlay("external-revoke"); }
 void tl_overlay_forget(Target *target) {
-    if (overlay.target == target) tl_overlay_hide();
+    if (overlay.target == target) hide_overlay("target-forgotten");
 }
 static char *candidate(void) {
     GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text));
@@ -1808,7 +1822,7 @@ static void button_clicked(GtkButton *button, gpointer data) {
             : !pause_current(target, overlay.authority) ? "reject-authority" : NULL;
         if (rejected) {
             trace_resume(GTK_WIDGET(button), (gpointer)rejected);
-            tl_overlay_hide(); return;
+            hide_overlay(rejected); return;
         }
         if (overlay.target != target || overlay.revision != revision || !paused() || tl_now() > overlay.expires) {
             trace_resume(GTK_WIDGET(button), "reject-reentry"); return;
@@ -2259,7 +2273,7 @@ static gboolean render(Target *target, JsonObject *data) {
         || !json_object_equal(overlay.glossary->token, tl_object(tl_object(value, "viewContext"), "token"))))
         glossary_close(FALSE, TRUE);
     if (overlay.revision != tl_integer(data, "revision", -1)) overlay.pending_glossary = FALSE;
-    if (overlay.target != target || overlay.top != top) { tl_overlay_hide(); create(target); }
+    if (overlay.target != target || overlay.top != top) { hide_overlay("render-owner-changed"); create(target); }
     g_free(overlay.generation);
     overlay.generation = g_strdup(generation);
     overlay.expires = until;
@@ -2418,7 +2432,7 @@ JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject
         if (!visible && overlay.target == target
             && tl_configuration_current(tl_string(data, "generation"))
             && g_strcmp0(overlay.generation, tl_string(data, "generation")) == 0
-            && overlay.revision <= tl_integer(data, "revision", -1)) tl_overlay_hide();
+            && overlay.revision <= tl_integer(data, "revision", -1)) hide_overlay("render-rejected");
     } else if (strcmp(operation, "overlay-renew") == 0) {
         gint64 until = tl_integer(data, "expiresAtMs", 0), now = tl_now();
         if (overlay.target == target && active() && until >= now && until - now <= 1000
@@ -2435,8 +2449,8 @@ JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject
                 overlay.authority = tl_copy(tl_object(data, "authority"));
                 json_object_unref(geometry);
             }
-            else { if (geometry) json_object_unref(geometry); tl_overlay_hide(); }
-        } else tl_overlay_hide();
+            else { if (geometry) json_object_unref(geometry); hide_overlay("renew-geometry-or-generation"); }
+        } else hide_overlay("renew-admission-rejected");
     } else if (strcmp(operation, "overlay-glossary-open") == 0) glossary_open(target, data);
     else if (strcmp(operation, "overlay-glossary-result") == 0) glossary_result(target, data);
     else if (strcmp(operation, "overlay-glossary-close") == 0) {
@@ -2444,7 +2458,7 @@ JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject
         if (form && overlay.target == target && form->revision == tl_integer(data, "revision", -1)
             && g_strcmp0(form->generation, tl_string(data, "generation")) == 0
             && g_strcmp0(form->id, tl_string(data, "formId")) == 0) glossary_close(FALSE, FALSE);
-    } else if (strcmp(operation, "overlay-hide") == 0) tl_overlay_hide();
+    } else if (strcmp(operation, "overlay-hide") == 0) hide_overlay("host-hide");
     else if (strcmp(operation, "overlay-edit") == 0) {
         if (overlay.target != target || overlay.revision != tl_integer(data, "revision", -1)
             || g_strcmp0(overlay.generation, tl_string(data, "generation")) != 0) goto finished;

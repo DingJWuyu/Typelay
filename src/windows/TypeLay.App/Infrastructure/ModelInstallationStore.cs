@@ -723,6 +723,10 @@ internal sealed class ModelInstallationStore(string data, string worker,
         public ModelRuntimePaths Paths { get; } = paths;
         public IReadOnlyList<string> Directions { get; } = directions;
         public bool CleanupPending => lease.CleanupPending;
+        internal ModelReplacementFailure? ReplacementFailure
+        {
+            get; private set;
+        }
         internal void StartingSelfCheck() => lease.Started(id);
         internal void SelfCheckExited() => lease.Exited(id);
         public ModelLoadPlan CreateLoadPlan()
@@ -753,7 +757,9 @@ internal sealed class ModelInstallationStore(string data, string worker,
                 throw new ModelSetupException(SetupFailureCategory.Runtime, ModelSetupStage.Activate);
             ct.ThrowIfCancellationRequested();
             lease.Started(id);
-            var outcome = await model.ReloadAsync(plan, PublishConfirmed, ConfirmCurrent, ct);
+            ReplacementFailure = null;
+            var outcome = await model.ReloadAsync(plan, PublishConfirmed, ConfirmCurrent, ct,
+                failure => ReplacementFailure = failure);
             if (outcome == ModelPublicationOutcome.Confirmed)
                 // Keep the lease until retention finishes; cancellation cannot release
                 // it halfway through deletion or bring this disk work onto the UI.

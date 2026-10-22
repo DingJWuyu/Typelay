@@ -10,6 +10,22 @@ public enum ModelPublicationOutcome
     Confirmed, Unchanged, Unconfirmed
 }
 
+public enum ModelReplacementPhase
+{
+    Unknown, PreviousExit, CandidateStart, Publication
+}
+
+public enum ModelReplacementFailureCode
+{
+    Unknown, ChildCleanupUnconfirmed, HelloPackages, HelloDirections, Sequence, Inventory,
+    StartFailed, PublicationUnchanged, PublicationUnconfirmed
+}
+
+// The initial failure of an admitted replacement, before cleanup or recovery
+// can change the live client's FailureCode. No exception text or paths belong here.
+public sealed record ModelReplacementFailure(ModelReplacementPhase Phase,
+    ModelReplacementFailureCode FailureCode, ModelPublicationOutcome Outcome);
+
 // Frozen installation intent. Only the worker's exact hello grants capability.
 public sealed class ModelLoadPlan
 {

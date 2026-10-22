@@ -161,24 +161,37 @@ def main():
         samples += holdout_samples()
     observer = BoundaryObserver(samples, args.ordinary_repetition)
     sys.path.insert(0, str(WORKER.parent))
-    import ctranslate2
     import run_worker
 
-    original_translator = ctranslate2.Translator
-    original_read, original_write = run_worker.read_frame, run_worker.write_frame
-    original_argv = sys.argv
     try:
-        ctranslate2.Translator = observer.translator_factory(original_translator)
-        run_worker.read_frame = lambda stream: observer.accept(original_read(stream))
-        run_worker.write_frame = lambda stream, value: original_write(
-            stream, observer.response(value)
-        )
-        sys.argv = [str(WORKER), "--models", str(args.models)]
-        return run_worker.main()
-    finally:
-        ctranslate2.Translator = original_translator
-        run_worker.read_frame, run_worker.write_frame = original_read, original_write
-        sys.argv = original_argv
+        output = run_worker.isolate_protocol_output()
+    except Exception:
+        return 2
+    try:
+        with output:
+            # The observer imports CT2 earlier than LocalEngine; isolate that import too.
+            try:
+                import ctranslate2
+            except Exception:
+                return 2
+
+            original_translator = ctranslate2.Translator
+            original_read, original_write = run_worker.read_frame, run_worker.write_frame
+            original_argv = sys.argv
+            try:
+                ctranslate2.Translator = observer.translator_factory(original_translator)
+                run_worker.read_frame = lambda stream: observer.accept(original_read(stream))
+                run_worker.write_frame = lambda stream, value: original_write(
+                    stream, observer.response(value)
+                )
+                sys.argv = [str(WORKER), "--models", str(args.models)]
+                return run_worker.main(output)
+            finally:
+                ctranslate2.Translator = original_translator
+                run_worker.read_frame, run_worker.write_frame = original_read, original_write
+                sys.argv = original_argv
+    except OSError:
+        return 5
 
 
 if __name__ == "__main__":

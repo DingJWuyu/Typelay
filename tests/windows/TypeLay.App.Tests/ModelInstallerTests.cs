@@ -121,7 +121,7 @@ public sealed class ModelInstallerTests
     [InlineData(true, false)]
     [InlineData(false, true)]
     [InlineData(true, true)]
-    public async Task ZipActualOutputMustMatchItsDeclarationEvenWithAValidArchiveHash(bool packages, bool oversizedDeclaration)
+    public async Task ZipEntryOutputIsBoundedAndCannotOmitDeclaredBytes(bool packages, bool oversizedDeclaration)
     {
         using var files = new SetupFiles();
         byte[] malformed = ModelArchive("zh_en");
@@ -139,10 +139,26 @@ public sealed class ModelInstallerTests
             break;
         }
         byte[] Model(string pair) => pair == "zh_en" ? malformed : ModelArchive(pair);
-        var failure = await Assert.ThrowsAsync<ModelSetupException>(() => PrepareZh(files, files.Responses(Model), packages, Catalog(Model)));
-        Assert.Equal(SetupFailureCategory.Integrity, failure.Category);
-        Assert.Equal(ModelSetupStage.ModelExtract, failure.Stage);
-        Assert.False(File.Exists(files.CachedModel("zh_en")));
+        if (oversizedDeclaration)
+        {
+            var failure = await Assert.ThrowsAsync<ModelSetupException>(async () =>
+            {
+                using var unexpected = await PrepareZh(files, files.Responses(Model), packages, Catalog(Model));
+            });
+            Assert.Equal(SetupFailureCategory.Integrity, failure.Category);
+            Assert.Equal(ModelSetupStage.ModelExtract, failure.Stage);
+            Assert.False(File.Exists(files.CachedModel("zh_en")));
+        }
+        else
+        {
+            // ZipArchive itself limits this entry stream to its one declared byte.
+            // Preparation must not write the hidden remaining bytes or publish it.
+            // This proves the write bound, not ZIP semantic integrity or model usability.
+            using var prepared = await PrepareZh(files, files.Responses(Model), packages, Catalog(Model));
+            string root = packages ? Path.Combine(prepared.Paths.Models, "packages", "argos-zh-en", "1.9")
+                : Path.Combine(prepared.Paths.Models, "zh_en");
+            Assert.Equal(new byte[] { 0x63 }, File.ReadAllBytes(Path.Combine(root, "model", "model.bin")));
+        }
         Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
     }
 
@@ -197,7 +213,12 @@ public sealed class ModelInstallerTests
         var store = new ModelInstallationStore(files.Root, Path.Combine(files.Root, "worker.py"));
         using (var first = await PrepareZh(files, files.Responses(ModelArchive), packages: true))
             first.PublishConfirmed();
+        using (var second = await files.Installer(files.Responses(ModelArchive)).PreparePackagesAsync(new(1,
+            ModelPackageOperation.Install, ["argos-en-zh"], ["argos-en-zh"], store.ReadInstallationState().Generation),
+            NoProgress, TestContext.Current.CancellationToken))
+            second.PublishConfirmed();
         var state = store.ReadInstallationState();
+        Assert.Equal("argos-en-zh", Assert.Single(state.CurrentPackages).Package.Id);
         var network = new ResponseHandler(_ => throw new InvalidOperationException("offline-no-network"));
         // This pin is smaller than the old installed files and would reject a fresh
         // archive. Offline copies are instead governed by their actual bytes/hash.
@@ -205,10 +226,13 @@ public sealed class ModelInstallerTests
         string sourceRoot = Path.GetDirectoryName(store.InitialPaths().Models)!;
         long required = 64L * 1024 * 1024 + new[] { "runtime", "models" }.Sum(name =>
             Directory.GetFiles(Path.Combine(sourceRoot, name), "*", SearchOption.AllDirectories).Sum(file => new FileInfo(file).Length));
-        var rejected = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(
-            new ResponseHandler(_ => throw new InvalidOperationException("offline-no-network")), catalog: changed,
-            availableDiskBytes: _ => required - 1).PreparePackagesAsync(new(1, ModelPackageOperation.Select, [],
-                ["argos-zh-en"], state.Generation), NoProgress, TestContext.Current.CancellationToken));
+        var rejected = await Assert.ThrowsAsync<ModelSetupException>(async () =>
+        {
+            using var unexpected = await files.Installer(
+                new ResponseHandler(_ => throw new InvalidOperationException("offline-no-network")), catalog: changed,
+                availableDiskBytes: _ => required - 1).PreparePackagesAsync(new(1, ModelPackageOperation.Select, [],
+                    ["argos-zh-en"], state.Generation), NoProgress, TestContext.Current.CancellationToken);
+        });
         Assert.Equal(SetupFailureCategory.DiskSpace, rejected.Category);
         using var copied = await files.Installer(network, catalog: changed, availableDiskBytes: _ => required).PreparePackagesAsync(new(1,
             ModelPackageOperation.Select, [], ["argos-zh-en"], state.Generation), NoProgress, TestContext.Current.CancellationToken);

@@ -180,7 +180,6 @@ class HyContractTests(unittest.TestCase):
                 )
             )
         )
-        stdout = io.StringIO() if self_check else SimpleNamespace(buffer=outgoing)
         arguments = ["run_worker.py", "--models", str(self.root)] + (
             ["--self-check"] if self_check else []
         )
@@ -192,12 +191,11 @@ class HyContractTests(unittest.TestCase):
             patch("typelay_worker.hy_assets.verify_production", return_value=self.verified),
             patch.object(sys, "argv", arguments),
             patch.object(sys, "stdin", SimpleNamespace(buffer=incoming)),
-            patch.object(sys, "stdout", stdout),
             patch("time.monotonic", side_effect=lambda: self.clock),
         ):
-            status = run_worker.main()
+            status = run_worker.main(outgoing)
         if self_check:
-            return status, json.loads(stdout.getvalue())
+            return status, json.loads(outgoing.getvalue())
         outgoing.seek(0)
         responses = []
         while outgoing.tell() < len(outgoing.getvalue()):

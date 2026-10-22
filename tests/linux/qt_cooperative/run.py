@@ -17,6 +17,7 @@ import sys
 import tarfile
 import tempfile
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -30,6 +31,7 @@ TEST_INPUTS = (
     "tests/linux/qt_cooperative/fixture.cpp",
     "tests/linux/qt_cooperative/qpa_ack.cpp",
     "tests/linux/fixtures/qt_native_fixture.cpp",
+    "tests/linux/support/xtest.py",
 )
 
 
@@ -544,6 +546,7 @@ def ordered_controls(
 
     sys.path.insert(0, str(ROOT / "tests/linux"))
     from native_e2e import Native, plan
+    from support.xtest import prepare_key, prepare_xtest
     from wire import now_ms
 
     identity = env.get("WAYLAND_DISPLAY", "") + "\n" + env.get("NIRI_SOCKET", "")
@@ -599,7 +602,7 @@ def ordered_controls(
         )
         children.append(client)
         connection, _ = server.accept()
-        with connection:
+        with connection, ExitStack() as input_resources:
             native = Native(connection)
 
             def state():
@@ -1035,6 +1038,14 @@ def ordered_controls(
                 assert state()["first"]["text"] == "Original source"
                 result["explicit_revoke_passes_pair"] = True
 
+                # X11 connection/keycode setup is harness preparation, not a
+                # user's Ctrl-to-F7 interval. Finish it before the 100ms permit;
+                # keep real event delivery, provider retirement and renewal
+                # inside the original deadline, with no retry or extended TTL.
+                xtest = prepare_xtest(input_resources)
+                control_key = prepare_key(input_resources, "Control_L", connection=xtest)
+                function_key = prepare_key(input_resources, "F7", connection=xtest)
+                result["renewalTiming"] = []
                 # Match real Session.Prepare renewal: a new plan ID and fresh
                 # observation timestamps for the same source/candidate. The
                 # original Ctrl press still owns its original plan and deadline.
@@ -1045,19 +1056,32 @@ def ordered_controls(
                         [event for event in native.events if event.get("event") == "accepted"]
                     )
                     keys_before = state()["keys"]
+                    renewed_plan_id = str(uuid.uuid4())
+                    timing = {
+                        "changedInputEpoch": changed_epoch,
+                        "assertionsPassed": False,
+                        "control": {},
+                        "function": {},
+                    }
+                    result["renewalTiming"].append(timing)
+                    timing["publicationStartedAtMs"] = now_ms()
                     publication = publish()
-                    run(["xdotool", "keydown", "--delay", "0", "Control_L"], env=environment)
+                    timing["publicationReturnedAtMs"] = now_ms()
+                    timing["originalExpiresAtMs"] = publication["permit"]["expiresAtMs"]
                     try:
+                        control_key(True, timing=timing["control"])
                         wait(
                             lambda: state().get("keys", {}).get("controlPress", 0)
                             > keys_before.get("controlPress", 0)
                             and settled(),
                             "the original Ctrl reaches its ordinary destination",
                         )
+                        timing["controlObservedAtMs"] = now_ms()
                         current = native.describe()["authority"]
+                        timing["descriptionReturnedAtMs"] = now_ms()
                         renewed = json.loads(json.dumps(publication))
                         renewed["authority"] = current
-                        renewed["permit"]["plan"]["id"] = str(uuid.uuid4())
+                        renewed["permit"]["plan"]["id"] = renewed_plan_id
                         observed = current["observedAtMs"]
                         renewed["permit"]["plan"]["expected"]["observedAtMs"] = observed
                         renewed["permit"]["observedAtMs"] = observed
@@ -1067,26 +1091,28 @@ def ordered_controls(
                             # Equal text is insufficient when the captured input
                             # version changes; it cannot replace the frozen ticket.
                             renewed["permit"]["plan"]["expected"]["inputEpoch"] += 1
-                        assert native.call("publish", renewed)["published"]
+                        timing["renewalStartedAtMs"] = now_ms()
+                        published = native.call("publish", renewed)["published"]
+                        timing["renewalReturnedAtMs"] = now_ms()
+                        assert published
                         assert now_ms() < publication["permit"]["expiresAtMs"], (
-                            "renewal must execute within the original, unextended deadline"
+                            "renewal must execute within the original, unextended deadline",
+                            timing,
                         )
-                        run(["xdotool", "keydown", "--delay", "0", "F7"], env=environment)
+                        function_key(True, timing=timing["function"])
                     finally:
-                        run(
-                            [
-                                "xdotool",
-                                "keyup",
-                                "--delay",
-                                "0",
-                                "Control_L",
-                                "keyup",
-                                "--delay",
-                                "0",
-                                "F7",
-                            ],
-                            env=environment,
-                        )
+                        try:
+                            control_key(False, sync=False)
+                        finally:
+                            function_key(False)
+                        # Persist even a failed deadline after sending releases;
+                        # disk I/O must not spend the measured live permit.
+                        try:
+                            (out / f"{mode}-result.json").write_text(
+                                json.dumps(result, indent=2) + "\n"
+                            )
+                        except OSError:
+                            pass  # Keep the original boundary failure, not diagnostic I/O.
                     wait(
                         lambda: settled()
                         and (
@@ -1113,6 +1139,7 @@ def ordered_controls(
                         fixture("undo", field="first")
                         assert state()["first"]["text"] == "Original source"
                         result["same_candidate_renewal_receipt_keeps_original_plan"] = True
+                    timing["assertionsPassed"] = True
 
                 def render_view(
                     publication, state, text, owns_text, revision, translation_actions=None

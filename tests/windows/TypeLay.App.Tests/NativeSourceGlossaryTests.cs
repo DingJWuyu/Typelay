@@ -136,6 +136,8 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
             {
                 using var entered = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(native.FixtureProcessId, "entered"));
                 using var release = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(native.FixtureProcessId, "release"));
+                using var drained = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(native.FixtureProcessId, "drained"));
+                Assert.False(drained.WaitOne(0));
                 Assert.Equal((nuint)1, N.Send(native.Root, N.FixtureArmNullBarrier, action == "barrier-source" ? 1u : 0u));
                 nint expectedRoot = native.Root;
                 try
@@ -173,9 +175,24 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
                     }
                 }
                 finally { release.Set(); }
+                // A rejected/canceled Broker return can finish before the source
+                // GUI resumes its activation. Observe its existing posted marker
+                // before asserting the final focus; never correct or retry it.
+                var beforeDrain = N.ReadFocus();
+                Assert.True(N.PostMessage(native.Root, N.FixtureGuiDrained, 0, 0));
+                Assert.True(await Task.Run(() => drained.WaitOne(TimeSpan.FromSeconds(2)), native.Token),
+                    $"The source GUI did not process its post-barrier marker; broker={broker.ReturnStatus}.");
+                var afterDrain = N.ReadFocus();
+                nint expectedControl = action == "barrier-wrong-field" ? native.B : native.A;
+                Console.WriteLine($"glossary-return-drain: action={action}; editedPending={editedPending}; "
+                    + $"rootBefore={beforeDrain.Root == expectedRoot}; fieldBefore={beforeDrain.Control == expectedControl}; "
+                    + $"rootAfter={afterDrain.Root == expectedRoot}; fieldAfter={afterDrain.Control == expectedControl}; "
+                    + $"guiBefore={beforeDrain.GuiThreadInfoSucceeded}; guiErrorBefore={beforeDrain.GuiThreadInfoError}; "
+                    + $"guiAfter={afterDrain.GuiThreadInfoSucceeded}; guiErrorAfter={afterDrain.GuiThreadInfoError}; "
+                    + $"broker={broker.ReturnStatus}");
                 Assert.Equal(expectedRoot, Native.GetForegroundWindow());
                 if (action != "barrier-foreign")
-                    Assert.Equal((native.Root, action == "barrier-wrong-field" ? native.B : native.A), N.Focused());
+                    Assert.Equal((native.Root, expectedControl), (afterDrain.Root, afterDrain.Control));
             }
             else if (action.EndsWith("-pending", StringComparison.Ordinal))
             {

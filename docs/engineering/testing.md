@@ -24,6 +24,8 @@
 
 共享生产规则与协议回归位于 tests/shared/；平台测试分别位于 tests/windows/ 和 tests/linux/。fixtures 保存受控宿主/资源，support 保存本平台多个测试消费的库；不为目录对称建立没有实际消费者的共享 fixture/support。
 
+`tests/shared/worker/test_stdio.py` 启动真实隔离子进程，用窄受控 engine 在加载、翻译、关闭及解释器退出时写 Python stdout、`os.write(1, ...)`，Windows 另实际调用 `GetStdHandle`/`WriteFile`。严格读取原生产帧和自检 JSON，检查噪音仅进入 stderr、失败退出无异常正文、非法帧继续拒绝，以及专用输出在进程退出前关闭且不被子进程继承；固定语料诊断另覆盖 CT2 提前导入的同一隔离边界。这些是无模型 stdio/生命周期证据，不证明真实模型加载、激活或推理；Win32 分支须由 Windows 检查实际执行，Linux 通过不能替代它。
+
 术语回归使用现公开边界：真实临时settings文件验证损坏新字段不丢隐私排除、原子保存/失败/取消及旧表单拒覆盖；生产SessionController端口验证机器原源重译、迟到结果拒绝、长时间人工编辑保存不毁稿、原人工稿接受、Append冻结新规则与旧prefix、Direct提交前取消/提交中拒存。真实管道peer验证精确hello、专用op、Auto候选方向、无关方向保持普通、非Hy/旧worker拒绝和组合拒绝；worker帧与纯匹配验证冲突/边界/最长命中/保护段/每段缺词及统一deadline。native无模型回归验证结构化ABI边界与旧版本拒绝，不能证明真实tokenization、推理或质量。
 
 ## 平台验证入口

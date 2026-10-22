@@ -32,9 +32,11 @@ public sealed class ModelClient : ITranslationService, IDisposable
         public long Sequence;
         public int Requests;
     }
-    private sealed class Operation(CancellationToken request) : IDisposable
+    private sealed class Operation(CancellationToken request, Action<ModelReplacementFailure>? replacementFailed) : IDisposable
     {
         public CancellationTokenSource Superseded { get; } = new();
+        public Action<ModelReplacementFailure>? ReplacementFailed { get; } = replacementFailed;
+        public bool FailureReported;
         private CancellationTokenSource? _linked;
         public CancellationToken Token => (_linked ??= CancellationTokenSource.CreateLinkedTokenSource(request, Superseded.Token)).Token;
         public void Dispose()
@@ -297,10 +299,12 @@ public sealed class ModelClient : ITranslationService, IDisposable
         return result == ModelPublicationOutcome.Confirmed;
     }
 
-    // Caller holds its installation lease. Both callbacks are synchronous and
+    // Caller holds its installation lease. Callbacks are synchronous and
     // must not acquire store/process/UI locks. Unknown publication is never recovery evidence.
+    // The optional observer receives only this call's initial failure, before recovery.
     public Task<ModelPublicationOutcome> ReloadAsync(ModelLoadPlan plan, Func<ModelPublicationOutcome> publishConfirmed,
-        Func<ModelLoadPlan, bool> confirmCurrent, CancellationToken ct = default)
+        Func<ModelLoadPlan, bool> confirmCurrent, CancellationToken ct = default,
+        Action<ModelReplacementFailure>? replacementFailed = null)
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(publishConfirmed);
@@ -314,7 +318,7 @@ public sealed class ModelClient : ITranslationService, IDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             var previousOperation = _operation;
-            var operation = new Operation(ct);
+            var operation = new Operation(ct, replacementFailed);
             _operation = operation;
             ++_admission;
             if (_active is null)
@@ -366,7 +370,11 @@ public sealed class ModelClient : ITranslationService, IDisposable
             {
                 reapingFailed = true;
                 lock (_owner)
+                {
                     RequireOwner(operation);
+                    RecordReplacementFailure(operation, ModelReplacementPhase.PreviousExit,
+                        ModelReplacementFailureCode.ChildCleanupUnconfirmed, outcome);
+                }
                 return outcome;
             }
             lock (_owner)
@@ -387,6 +395,8 @@ public sealed class ModelClient : ITranslationService, IDisposable
                 lock (_owner)
                     RequireOwner(operation);
                 RecordFailure(operation, error);
+                RecordReplacementFailure(operation, ModelReplacementPhase.CandidateStart,
+                    ReplacementFailureCode(error), outcome);
                 return outcome;
             }
             lock (_owner)
@@ -404,11 +414,16 @@ public sealed class ModelClient : ITranslationService, IDisposable
                 {
                     outcome = ModelPublicationOutcome.Unconfirmed;
                     _failureCode = "model-publication-unconfirmed";
+                    RecordReplacementFailure(operation, ModelReplacementPhase.Publication,
+                        ModelReplacementFailureCode.PublicationUnconfirmed, outcome);
                     if (_active is { } active)
                         Retire(active);
                     _active = null;
                     return outcome;
                 }
+                if (outcome == ModelPublicationOutcome.Unchanged)
+                    RecordReplacementFailure(operation, ModelReplacementPhase.Publication,
+                        ModelReplacementFailureCode.PublicationUnchanged, outcome);
                 if (outcome == ModelPublicationOutcome.Unchanged || !Owns(operation))
                     return outcome;
                 // No cancellation/await between confirmed publication and takeover.
@@ -647,6 +662,30 @@ public sealed class ModelClient : ITranslationService, IDisposable
                 : error is IOException && error.Message is "model-hello-packages" or "model-hello-directions" or "model-sequence" or "model-inventory"
                     ? error.Message : "model-start-failed";
     }
+    private void RecordReplacementFailure(Operation operation, ModelReplacementPhase phase,
+        ModelReplacementFailureCode code, ModelPublicationOutcome outcome)
+    {
+        lock (_owner)
+        {
+            if (!Owns(operation) || operation.FailureReported || operation.ReplacementFailed is not { } report)
+                return;
+            operation.FailureReported = true;
+            try
+            {
+                report(new(phase, code, outcome));
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+        }
+    }
+    private static ModelReplacementFailureCode ReplacementFailureCode(Exception error) => error switch
+    {
+        ChildProcessCleanupUnconfirmedException => ModelReplacementFailureCode.ChildCleanupUnconfirmed,
+        IOException { Message: "model-hello-packages" } => ModelReplacementFailureCode.HelloPackages,
+        IOException { Message: "model-hello-directions" } => ModelReplacementFailureCode.HelloDirections,
+        IOException { Message: "model-sequence" } => ModelReplacementFailureCode.Sequence,
+        IOException { Message: "model-inventory" } => ModelReplacementFailureCode.Inventory,
+        _ => ModelReplacementFailureCode.StartFailed
+    };
     public Task<ModelResponse> TranslateAsync(TranslationJob job) => TranslateAsync(job, null);
 
     public Task<ModelResponse> TranslateAsync(TranslationJob job, VerifiedModelIdentity? expectedIdentity)

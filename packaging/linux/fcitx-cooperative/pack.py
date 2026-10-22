@@ -58,6 +58,7 @@ QT_TEST_INPUTS = (
     "tests/linux/qt_cooperative/fixture.cpp",
     "tests/linux/qt_cooperative/qpa_ack.cpp",
     "tests/linux/fixtures/qt_native_fixture.cpp",
+    "tests/linux/support/xtest.py",
 )
 SOURCE_CACHE_DIRS = {
     ".git",

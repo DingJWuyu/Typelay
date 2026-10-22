@@ -49,6 +49,7 @@ internal sealed class SettingsWindow : Window
     private string _page = "general", _setupStatus = "";
     private SetupFailureView? _setupFailure, _setupRecoveryFailure;
     private string? _setupFailureStage;
+    private ModelReplacementFailure? _setupReplacementFailure;
     private bool _setupPaused, _startingModel;
     private string? _renderedPage, _draftFeedback;
     private string? _settingsError;
@@ -1623,15 +1624,24 @@ internal sealed class SettingsWindow : Window
             var details = _preparationDiagnostics.Children.OfType<Expander>().SingleOrDefault();
             if (details is null)
             {
-                details = new Expander { Header = "安装诊断", Margin = new(0, 10, 0, 0), Content = UiTheme.Text("", 12, true) };
+                details = new Expander { Name = "PreparationDiagnostics", Header = "安装诊断", Margin = new(0, 10, 0, 0), Content = UiTheme.Text("", 12, true) };
                 _preparationDiagnostics.Children.Add(details);
             }
-            ((TextBlock)details.Content).Text = $"错误类别：{failure.Code}\n安装阶段：{_setupFailureStage}"
+            string stage = _setupFailureStage is "ModelStart" or "Preparation" ? _setupFailureStage
+                : Enum.TryParse<ModelSetupStage>(_setupFailureStage, out var parsed) && Enum.IsDefined(parsed) ? parsed.ToString() : "unknown";
+            string diagnostic = $"错误类别：{failure.Code}\n安装阶段：{stage}"
                 + (_setupRecoveryFailure is { } recovery ? $"\n恢复阻塞：{recovery.Code}" : "");
+            if (_setupReplacementFailure is { } replacement)
+                diagnostic += $"\n切换阶段：{DiagnosticValue(replacement.Phase)}"
+                    + $"\n切换原因：{DiagnosticValue(replacement.FailureCode)}\n发布确认：{DiagnosticValue(replacement.Outcome)}";
+            ((TextBlock)details.Content).Text = diagnostic;
+            AutomationProperties.SetHelpText(details, diagnostic);
         }
         else
             _preparationDiagnostics.Children.Clear();
     }
+    private static string DiagnosticValue<T>(T value) where T : struct, Enum =>
+        Enum.IsDefined(value) && value.ToString() != "Unknown" ? value.ToString() : "unknown";
     private void RefreshPreparationDirections(TranslationPreparationView view)
     {
         if (_preparationDirections is null)
@@ -1703,6 +1713,7 @@ internal sealed class SettingsWindow : Window
         _setupFailure = null;
         _setupRecoveryFailure = null;
         _setupFailureStage = null;
+        _setupReplacementFailure = null;
         _setupPaused = false;
         _setupStatus = "正在准备本地翻译组件…";
         bool acceptingProgress = true;
@@ -1754,7 +1765,8 @@ internal sealed class SettingsWindow : Window
             }
             else
                 SetupFailed(SetupFailureCategory.Runtime, "ModelStart",
-                    outcome == ModelPublicationOutcome.Unconfirmed ? SetupFailureCategory.Unknown : null);
+                    outcome == ModelPublicationOutcome.Unconfirmed ? SetupFailureCategory.Unknown : null,
+                    prepared.ReplacementFailure);
         }
         catch (OperationCanceledException) when (operation.IsCancellationRequested)
         {
@@ -1800,11 +1812,13 @@ internal sealed class SettingsWindow : Window
         SetupFailed(failure.Category, failure.Stage.ToString(), failure.RecoveryFailureCategory);
         RefreshPreparation();
     }
-    private void SetupFailed(SetupFailureCategory category, string stage, SetupFailureCategory? recovery = null)
+    private void SetupFailed(SetupFailureCategory category, string stage, SetupFailureCategory? recovery = null,
+        ModelReplacementFailure? replacement = null)
     {
         _setupFailure = SetupFailurePresentation.Create(category);
         _setupRecoveryFailure = recovery is { } blocked ? SetupFailurePresentation.Create(blocked) : null;
         _setupFailureStage = stage;
+        _setupReplacementFailure = replacement;
         _setupStatus = _setupFailure.Message + "\n" + (_setupRecoveryFailure is { } obstruction
             ? obstruction.Message + "\n" + obstruction.NextStep : _setupFailure.NextStep);
     }

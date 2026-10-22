@@ -36,6 +36,54 @@ public sealed class ModelClientReplacementTests
         Assert.Equal("old", (await client.TranslateTextAsync("later", new("en", "zh"))).Text);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PerAttemptDiagnosticRetainsTheCandidateFailureAcrossRecoveryWithoutAffectingTheOutcome(bool recoveryFails)
+    {
+        using var peers = new Peers();
+        using var client = peers.Client();
+        await client.StartAsync();
+        peers.BeforeStart = (name, peer) =>
+        {
+            if (recoveryFails && name == "old")
+                peer.Process.Kill();
+        };
+        var failures = new List<ModelReplacementFailure>();
+        Assert.Equal(ModelPublicationOutcome.Unchanged, await client.ReloadAsync(peers.Plan("invalid-hy"),
+            () => throw new Exception("must-not-publish"), _ => true, TestContext.Current.CancellationToken, failure =>
+            {
+                failures.Add(failure);
+                throw new InvalidOperationException("diagnostic-observer-must-not-change-outcome");
+            }));
+        var failure = Assert.Single(failures);
+        Assert.Equal(ModelReplacementPhase.CandidateStart, failure.Phase);
+        Assert.Equal(ModelReplacementFailureCode.HelloDirections, failure.FailureCode);
+        Assert.Equal(ModelPublicationOutcome.Unchanged, failure.Outcome);
+        Assert.Equal(!recoveryFails, client.Ready);
+        Assert.Equal(recoveryFails ? "model-start-failed" : "model-hello-directions", client.FailureCode);
+
+        var missing = peers.Plan("missing-runtime", hy: false);
+        File.Delete(missing.Paths.Python);
+        var rejectedFailures = new List<ModelReplacementFailure>();
+        Assert.Equal(ModelPublicationOutcome.Unchanged, await client.ReloadAsync(missing,
+            () => throw new Exception("must-not-publish"), _ => false, TestContext.Current.CancellationToken, rejectedFailures.Add));
+        Assert.Empty(rejectedFailures);
+
+        var nextFailures = new List<ModelReplacementFailure>();
+        var replacing = client.ReloadAsync(peers.Plan("held-hello-next", hy: false),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken, nextFailures.Add);
+        await peers.NextStarted(4);
+        await peers.Started[3].Wait("hello");
+        Assert.Empty(nextFailures);
+        await peers.Started[3].Release();
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await replacing);
+        Assert.Empty(nextFailures);
+        Assert.True(client.Ready);
+        Assert.Same(failure, Assert.Single(failures));
+        Assert.Equal(ModelReplacementFailureCode.HelloDirections, failure.FailureCode);
+    }
+
     [Fact]
     public async Task ExpectedDirectionsMustMatchTheServingCandidateBeforePublication()
     {
@@ -142,12 +190,15 @@ public sealed class ModelClientReplacementTests
         using var peers = new Peers();
         using var client = peers.Client();
         await client.StartAsync();
+        var failures = new List<ModelReplacementFailure>();
         Assert.Equal(ModelPublicationOutcome.Unchanged, await client.ReloadAsync(peers.Plan("new", hy: false),
-            () => ModelPublicationOutcome.Unchanged, _ => false, TestContext.Current.CancellationToken));
+            () => ModelPublicationOutcome.Unchanged, _ => false, TestContext.Current.CancellationToken, failures.Add));
         Assert.True(client.Ready);
         Assert.False(peers.Started[0].Exited);
         Assert.True(peers.Started[1].Exited);
         Assert.Equal("old", (await client.TranslateTextAsync("hello", new("en", "zh"))).Text);
+        Assert.Equal(new ModelReplacementFailure(ModelReplacementPhase.Publication,
+            ModelReplacementFailureCode.PublicationUnchanged, ModelPublicationOutcome.Unchanged), Assert.Single(failures));
     }
 
     [Fact]
@@ -356,10 +407,13 @@ public sealed class ModelClientReplacementTests
         await client.StartAsync();
         peers.Started[0].RefuseExitProof = true;
         var plan = peers.Plan("hy");
+        var failures = new List<ModelReplacementFailure>();
         Assert.Equal(ModelPublicationOutcome.Unchanged, await client.ReloadAsync(plan,
-            () => throw new Exception("must-not-publish"), _ => true, TestContext.Current.CancellationToken));
+            () => throw new Exception("must-not-publish"), _ => true, TestContext.Current.CancellationToken, failures.Add));
         Assert.False(client.Ready);
         Assert.Equal("child-cleanup-unconfirmed", client.FailureCode);
+        Assert.Equal(new ModelReplacementFailure(ModelReplacementPhase.PreviousExit,
+            ModelReplacementFailureCode.ChildCleanupUnconfirmed, ModelPublicationOutcome.Unchanged), Assert.Single(failures));
         Assert.Equal(ModelPublicationOutcome.Unchanged, await client.ReloadAsync(peers.Plan("new", hy: false),
             () => throw new Exception("must-not-publish"), _ => true, TestContext.Current.CancellationToken));
         Assert.Single(peers.Started);
@@ -378,14 +432,17 @@ public sealed class ModelClientReplacementTests
         using var client = peers.Client();
         await client.StartAsync();
         bool readback = false;
+        var failures = new List<ModelReplacementFailure>();
         Assert.Equal(ModelPublicationOutcome.Unconfirmed, await client.ReloadAsync(peers.Plan("hy"),
             () => throws ? throw new IOException("unknown") : ModelPublicationOutcome.Unconfirmed,
-            _ => { readback = true; return true; }, TestContext.Current.CancellationToken));
+            _ => { readback = true; return true; }, TestContext.Current.CancellationToken, failures.Add));
         Assert.False(readback);
         Assert.False(client.Ready);
         Assert.Empty(client.AvailableDirections);
         Assert.Equal(2, peers.Started.Count);
         Assert.All(peers.Started, peer => Assert.True(peer.Exited));
+        Assert.Equal(new ModelReplacementFailure(ModelReplacementPhase.Publication,
+            ModelReplacementFailureCode.PublicationUnconfirmed, ModelPublicationOutcome.Unconfirmed), Assert.Single(failures));
     }
 
     [Theory]

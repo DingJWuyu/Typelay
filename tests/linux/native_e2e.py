@@ -350,6 +350,8 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
         "TYPELAY_FIXTURE_FULLSCREEN": "1",
     }
     environment.pop("TYPELAY_DESKTOP", None)
+    if toolkit == "gtk4":
+        environment["TYPELAY_TRACE"] = "1"
     if toolkit == "gtk3":
         environment["GTK3_MODULES"] = str(out / "gtk3-native-build/libtypelay-gtk3.so")
     results = []

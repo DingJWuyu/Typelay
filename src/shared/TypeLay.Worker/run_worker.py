@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -14,7 +15,56 @@ from typelay_worker.engine import LocalEngine, Result
 from typelay_worker.protocol import read_frame, write_frame
 
 
-def main() -> int:
+def isolate_protocol_output():
+    """Reserve stdout for the protocol; redirect library output until process exit.
+
+    Only call at a process entry point, before importing native dependencies. The
+    caller owns the returned binary stream. Never restore stdout: native teardown
+    and interpreter shutdown can still emit diagnostics after the engine closes.
+    """
+    # A missing stderr must fail before dup() can reuse descriptor 2 for the protocol.
+    os.fstat(2)
+    descriptor = os.dup(1)
+    try:
+        # Windows duplicates of standard streams can otherwise remain inheritable.
+        os.set_inheritable(descriptor, False)
+        os.dup2(2, 1)
+        if sys.platform == "win32":
+            import ctypes
+            import msvcrt
+            from ctypes import wintypes
+
+            msvcrt.setmode(descriptor, os.O_BINARY)
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.SetStdHandle.argtypes = [wintypes.DWORD, wintypes.HANDLE]
+            kernel.SetStdHandle.restype = wintypes.BOOL
+            # CRT descriptors and the Win32 standard-handle table are distinct.
+            if not kernel.SetStdHandle(-11, msvcrt.get_osfhandle(2)):
+                raise ctypes.WinError(ctypes.get_last_error())
+        sys.stdout = sys.stderr
+        return os.fdopen(descriptor, "wb")
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def main(output=None) -> int:
+    # An explicit binary output keeps in-process protocol tests free of global fd changes.
+    if output is not None:
+        return _run(output)
+    try:
+        output = isolate_protocol_output()
+    except Exception:
+        return 2
+    try:
+        with output:
+            return _run(output)
+    except OSError:
+        # A failed flush can fail again on close after serve has already returned 5.
+        return 5
+
+
+def _run(output) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--models", type=Path, required=True)
     parser.add_argument("--self-check", action="store_true")
@@ -23,16 +73,22 @@ def main() -> int:
         engine = LocalEngine(args.models)
     except Exception:
         if args.self_check:
-            print(json.dumps({"status": "failed", "code": "dependency-or-model-load"}))
+            write_report(output, {"status": "failed", "code": "dependency-or-model-load"})
         # No stack traces or exception messages cross the privacy boundary.
         return 2
     try:
-        return serve(engine, args.self_check)
+        return serve(engine, args.self_check, output)
     finally:
         engine.close()
 
 
-def serve(engine, self_check):
+def write_report(output, report):
+    output.write((json.dumps(report) + "\n").encode("utf-8"))
+    output.flush()
+
+
+def serve(engine, self_check, output=None):
+    output = sys.stdout.buffer if output is None else output
     if self_check:
         results = []
         for direction in engine.self_check_directions:
@@ -56,7 +112,7 @@ def serve(engine, self_check):
         report = {"status": "passed" if passed else "failed", "device": "cpu", "results": results}
         if engine.schema == 3:
             report.update(packages=engine.packages, directions=engine.directions)
-        print(json.dumps(report))
+        write_report(output, report)
         return 0 if passed else 3
     last_id = 0
     while True:
@@ -174,7 +230,7 @@ def serve(engine, self_check):
             else:
                 response = {"id": request_id, "status": "error", "code": "unknown-operation"}
             response["elapsedMs"] = round((time.perf_counter() - start) * 1000, 2)
-            write_frame(sys.stdout.buffer, response)
+            write_frame(output, response)
             # Do not keep the last request/result alive while waiting for the next pipe frame.
             request.clear()
             response.clear()

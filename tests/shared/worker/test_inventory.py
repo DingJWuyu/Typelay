@@ -569,7 +569,6 @@ class InventoryTests(unittest.TestCase):
         if request is not None:
             write_frame(incoming, request)
         incoming.seek(0)
-        stdout = io.StringIO() if self_check else SimpleNamespace(buffer=outgoing)
         arguments = ["run_worker.py", "--models", str(self.root)]
         if self_check:
             arguments.append("--self-check")
@@ -577,11 +576,10 @@ class InventoryTests(unittest.TestCase):
             patch.dict(sys.modules, dependencies),
             patch.object(sys, "argv", arguments),
             patch.object(sys, "stdin", SimpleNamespace(buffer=incoming)),
-            patch.object(sys, "stdout", stdout),
         ):
-            result = run_worker.main()
+            result = run_worker.main(outgoing)
         if self_check:
-            return result, json.loads(stdout.getvalue()), loaded
+            return result, json.loads(outgoing.getvalue()), loaded
         outgoing.seek(0)
         if request is not None:
             responses = [read_frame(outgoing), read_frame(outgoing)] if outgoing.getvalue() else []

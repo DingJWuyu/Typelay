@@ -32,6 +32,7 @@ from setup import (
     runtime_copy_plan,
 )
 from support.session_lifecycle import session_exit_confirmed
+from support.xtest import prepare_key, prepare_xtest
 from wire import Decoder, encode, now_ms
 
 
@@ -334,57 +335,6 @@ def fixture_module_identity(pid, executable, module):
     assert start_time() == started, "GTK fixture process lifetime changed"
     assert (proc / "exe").resolve() == executable, "GTK fixture executable changed"
     return result
-
-
-def prepare_xtest(stack):
-    """Own one existing-display connection for an ordered real input sequence."""
-    x11 = ctypes.CDLL("libX11.so.6")
-    xtst = ctypes.CDLL("libXtst.so.6")
-    display_type = ctypes.c_void_p
-    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
-    x11.XOpenDisplay.restype = display_type
-    x11.XCloseDisplay.argtypes = [display_type]
-    x11.XCloseDisplay.restype = ctypes.c_int
-    x11.XStringToKeysym.argtypes = [ctypes.c_char_p]
-    x11.XStringToKeysym.restype = ctypes.c_ulong
-    x11.XKeysymToKeycode.argtypes = [display_type, ctypes.c_ulong]
-    x11.XKeysymToKeycode.restype = ctypes.c_ubyte
-    x11.XSync.argtypes = [display_type, ctypes.c_int]
-    x11.XSync.restype = ctypes.c_int
-    xtst.XTestQueryExtension.argtypes = [display_type] + [ctypes.POINTER(ctypes.c_int)] * 4
-    xtst.XTestQueryExtension.restype = ctypes.c_int
-    xtst.XTestFakeKeyEvent.argtypes = [display_type, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
-    xtst.XTestFakeKeyEvent.restype = ctypes.c_int
-    display = x11.XOpenDisplay(None)
-    assert display, "Cannot open existing XTest DISPLAY"
-    stack.callback(x11.XCloseDisplay, display)
-    extension = [ctypes.c_int() for _ in range(4)]
-    assert xtst.XTestQueryExtension(display, *(ctypes.byref(value) for value in extension))
-    return x11, xtst, display
-
-
-def prepare_key(stack, name, *, connection=None):
-    """Preconnect to XTest; each call delivers one real down or up event."""
-    x11, xtst, display = connection or prepare_xtest(stack)
-    keycode = x11.XKeysymToKeycode(display, x11.XStringToKeysym(name.encode("ascii")))
-    assert keycode, f"XTest DISPLAY has no {name} keycode"
-
-    def send_key(down, sync=True, *, timing=None):
-        if timing is not None:
-            timing["downStartedAtMs" if down else "upStartedAtMs"] = now_ms()
-        sent = xtst.XTestFakeKeyEvent(display, keycode, int(down), 0)
-        if timing is not None:
-            timing["downReturnedAtMs" if down else "upReturnedAtMs"] = now_ms()
-        # Flush and wait only for X server processing, not Wayland delivery.
-        if sync:
-            if timing is not None:
-                timing["xSyncStartedAtMs"] = now_ms()
-            x11.XSync(display, 0)
-            if timing is not None:
-                timing["xSyncReturnedAtMs"] = now_ms()
-        assert sent, f"XTest refused {name} key event"
-
-    return send_key
 
 
 def prepare_background_direct(stack, window):
@@ -2474,17 +2424,14 @@ def run(arguments):
                             == before_target["functionKeys"][6]["up"] + 1
                         )
                         assert not new_write_outcomes(offset)
+                        control_source_evidence = {
+                            "bindings": acknowledgement,
+                            "accepted": accepted,
+                            "exited": exited,
+                            "targetChanged": rejected,
+                        }
                         (arguments.output / "gtk-control-source.json").write_text(
-                            json.dumps(
-                                {
-                                    "bindings": acknowledgement,
-                                    "accepted": accepted,
-                                    "exited": exited,
-                                    "targetChanged": rejected,
-                                },
-                                indent=2,
-                            )
-                            + "\n"
+                            json.dumps(control_source_evidence, indent=2) + "\n"
                         )
                         multiline_original = gtk_state()["multiline"]["text"]
                         prefix, suffix = "Before 😀\n", "\nAfter untouched"
@@ -2523,6 +2470,8 @@ def run(arguments):
 
                         select_control_multiline()
                         wait_for(ready_to_accept, "GTK Ctrl TextView candidate was not ready")
+                        candidate_ready_at = time.monotonic_ns() // 1_000_000
+                        candidate_readiness = last_acceptance_observation
                         multiline_bindings = wait_for(
                             lambda: value
                             if (value := status().get("input", {}).get("sessionShortcuts"))
@@ -2531,7 +2480,47 @@ def run(arguments):
                             "GTK TextView did not confirm its current source/editor bindings",
                         )
                         assert multiline_bindings == acknowledgement
-                        before_multiline = gtk_state()
+                        first_multiline = gtk_state()
+                        candidate_observation = {
+                            "readiness": candidate_readiness,
+                            "readyObservedAtMonoMs": candidate_ready_at,
+                            "firstFixtureObservedAtMs": first_multiline.get("observedAtMs"),
+                            "firstCandidateLength": len(
+                                (first_multiline.get("candidate") or {}).get("text", "")
+                            ),
+                        }
+                        control_source_evidence["multilineCandidate"] = candidate_observation
+                        try:
+                            # Host readiness precedes the fixture's periodic
+                            # native-widget snapshot. Wait for actual rendered
+                            # content, not an older empty Translating frame.
+                            # Content requirements remain assertions, not filters
+                            # which could wait away a wrong translated candidate.
+                            before_multiline = wait_for(
+                                lambda: value
+                                if (value := gtk_state()).get("observedAtMs", 0)
+                                > candidate_ready_at
+                                and (value.get("candidate") or {}).get("text")
+                                else None,
+                                "GTK Ctrl TextView did not expose its rendered candidate",
+                            )
+                            candidate_observation.update(
+                                fixtureObservedAtMs=before_multiline["observedAtMs"],
+                                candidateLength=len(before_multiline["candidate"]["text"]),
+                            )
+                        finally:
+                            try:
+                                (arguments.output / "gtk-control-source.json").write_text(
+                                    json.dumps(control_source_evidence, indent=2) + "\n"
+                                )
+                            except OSError:
+                                pass  # Preserve the actual candidate-observation failure.
+                        assert before_multiline["focus"] == "fixture-multiline"
+                        assert before_multiline["multiline"]["text"] == multiline_original
+                        assert before_multiline["multiline"]["start"] == len(prefix)
+                        assert before_multiline["multiline"]["end"] == len(
+                            multiline_original
+                        ) - len(suffix)
                         middle = before_multiline["candidate"]["text"]
                         assert "\n" in middle and re.search(r"[\u3400-\u9fff]", middle)
                         expected_multiline = prefix + middle + suffix

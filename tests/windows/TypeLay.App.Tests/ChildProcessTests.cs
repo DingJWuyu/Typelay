@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.ComponentModel;
 using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Text.Json;
 using TypeLay.Runtime;
@@ -9,7 +10,7 @@ using Xunit;
 
 namespace TypeLay.App.Tests;
 
-public sealed class ChildProcessTests
+public sealed class ChildProcessTests(ITestOutputHelper output)
 {
     [Fact]
     public async Task CancelledExitProofRetainsTheOwnerForRetryAndSuccessfulProofIsIdempotent()
@@ -236,22 +237,92 @@ public sealed class ChildProcessTests
     [Fact]
     public async Task GenerationStaysProtectedUntilEveryOwnerHasConfirmedExit()
     {
-        using var generation = new Generation();
-        using var first = new ModelChildProcess(generation.StartInfo(), generation.Plan());
-        using var second = new ModelChildProcess(generation.StartInfo(), generation.Plan());
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(10));
-        Assert.False(first.Process.HasExited);
-        Assert.False(second.Process.HasExited);
-        Assert.Throws<IOException>(() => { using var exclusive = generation.ExclusiveUse(); });
-        Assert.Throws<IOException>(() => File.Delete(generation.UsePath));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first.TerminateAndWaitAsync(new CancellationToken(true)));
-        Assert.Throws<IOException>(() => { using var exclusive = generation.ExclusiveUse(); });
-        await first.TerminateAndWaitAsync(deadline.Token);
-        Assert.Throws<IOException>(() => { using var exclusive = generation.ExclusiveUse(); });
-        await second.TerminateAndWaitAsync(deadline.Token);
-        // Both owners still exist: release belongs to successful exit proof, not Dispose.
-        using var reclaimed = generation.ExclusiveUse();
+        Generation? generation = null;
+        ModelChildProcess? first = null, second = null;
+        bool firstExitProven = false, secondExitProven = false;
+        List<Exception> failures = [];
+        List<string> stages = [];
+        string stage = "generation.create";
+        void Enter(string next) => stages.Add(stage = next);
+
+        try
+        {
+            Enter("generation.create");
+            generation = new Generation();
+            Enter("first.create");
+            first = new ModelChildProcess(generation.StartInfo(), generation.Plan());
+            Enter("first.created");
+            Enter("second.create");
+            second = new ModelChildProcess(generation.StartInfo(), generation.Plan());
+            Enter("second.created");
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            deadline.CancelAfter(TimeSpan.FromSeconds(10));
+            Enter("first.assert-alive");
+            Assert.False(first.Process.HasExited);
+            Enter("second.assert-alive");
+            Assert.False(second.Process.HasExited);
+            Enter("both-owned.assert-exclusive-use-blocked");
+            Assert.Throws<IOException>(() => { using var exclusive = generation.ExclusiveUse(); });
+            Enter("both-owned.assert-delete-blocked");
+            Assert.Throws<IOException>(() => File.Delete(generation.UsePath));
+            Enter("first.cancelled-exit-check");
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first.TerminateAndWaitAsync(new CancellationToken(true)));
+            Enter("first.cancelled-exit-observed");
+            Enter("cancelled-exit.assert-exclusive-use-blocked");
+            Assert.Throws<IOException>(() => { using var exclusive = generation.ExclusiveUse(); });
+            Enter("first.exit-proof");
+            await first.TerminateAndWaitAsync(deadline.Token);
+            firstExitProven = true;
+            Enter("first.exit-proven");
+            Enter("second-owned.assert-exclusive-use-blocked");
+            Assert.Throws<IOException>(() => { using var exclusive = generation.ExclusiveUse(); });
+            Enter("second.exit-proof");
+            await second.TerminateAndWaitAsync(deadline.Token);
+            secondExitProven = true;
+            Enter("second.exit-proven");
+            // Both owners still exist: release belongs to successful exit proof, not Dispose.
+            Enter("both-exited.reclaim-exclusive-use");
+            using var reclaimed = generation.ExclusiveUse();
+            Enter("both-exited.exclusive-use-reclaimed");
+        }
+        catch (Exception error)
+        {
+            failures.Add(error);
+            stages.Add($"scenario-failed: stage={stage}; type={error.GetType().Name}; hresult=0x{error.HResult:x8}");
+        }
+        finally
+        {
+            // Unproven owners deliberately retain their use handles. A later
+            // generation-delete failure must not replace the original failure.
+            foreach (var (name, resource) in new (string, IDisposable?)[]
+                { ("second", second), ("first", first), ("generation", generation) })
+            {
+                if (resource is null)
+                    continue;
+                try
+                {
+                    Enter(name + ".dispose");
+                    resource.Dispose();
+                    Enter(name + ".disposed");
+                }
+                catch (Exception error)
+                {
+                    failures.Add(error);
+                    stages.Add($"cleanup-failed: owner={name}; type={error.GetType().Name}; hresult=0x{error.HResult:x8}");
+                }
+            }
+        }
+        try
+        {
+            output.WriteLine("generation-owner-stages: " + string.Join(" -> ", stages));
+            output.WriteLine($"generation-owner-proof: firstCreated={first is not null}; firstExitProven={firstExitProven}; " +
+                $"secondCreated={second is not null}; secondExitProven={secondExitProven}");
+        }
+        catch (Exception error) { failures.Add(error); }
+        if (failures.Count == 1)
+            ExceptionDispatchInfo.Capture(failures[0]).Throw();
+        if (failures.Count > 1)
+            throw new AggregateException("Generation ownership scenario and cleanup failures (in occurrence order).", failures);
     }
 
     [Fact]

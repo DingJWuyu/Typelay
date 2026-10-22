@@ -583,7 +583,18 @@ internal static partial class HyPackageCheck
             get; set;
         }
         public int ExpectedReadyRows { get; } = expectedReadyRows;
+        public int? WorkerStarts
+        {
+            get; set;
+        }
+        public PreparationDiagnostic? PreparationDiagnostic
+        {
+            get; set;
+        }
     }
+    private sealed record PreparationDiagnostic(string Observation, string? InstallationStage = null,
+        string? RecoveryFailure = null, string? ReplacementPhase = null, string? ReplacementFailureCode = null,
+        string? PublicationOutcome = null);
     private static async Task<int> ObserveActiveAsync(Process app, AutomationElement settings, WorkerObserver workers,
         string data, string worker, string[] expected, int priorPid, HashSet<string> generations, Scene scene, CancellationToken ct)
     {
@@ -625,6 +636,25 @@ internal static partial class HyPackageCheck
                 };
                 // Only an exact terminal failure message stops the check. Preparing,
                 // rollback/startup, paused, missing and unknown observations do not.
+                if (failure is not null)
+                {
+                    try
+                    {
+                        observation.PriorWorkerExited = workers.Exited(priorPid);
+                    }
+                    catch (Exception error) when (error is not OutOfMemoryException) { }
+                    observation.WorkerStarts = workers.Starts;
+                    // A single read of the existing public diagnostic, within the
+                    // original deadline. Diagnostic failure must not hide this failure.
+                    try
+                    {
+                        observation.PreparationDiagnostic = await UiAsync(() => ReadPreparationDiagnostic(settings), ct);
+                    }
+                    catch (Exception error) when (error is not OutOfMemoryException)
+                    {
+                        observation.PreparationDiagnostic = new("unavailable");
+                    }
+                }
                 Require(failure is null, "public-preparation-failed-" + failure?.Code);
                 return false;
             }
@@ -711,6 +741,34 @@ internal static partial class HyPackageCheck
     }
     private static Task<string> PublicStatusAsync(AutomationElement settings, CancellationToken ct) => UiAsync(() =>
         Find(settings, AutomationElement.AutomationIdProperty, "PreparationStatus")?.Current.Name ?? "", ct);
+    private static PreparationDiagnostic ReadPreparationDiagnostic(AutomationElement settings)
+    {
+        var diagnostic = Find(settings, AutomationElement.AutomationIdProperty, "PreparationDiagnostics");
+        if (diagnostic is null)
+            return new("missing");
+        string value = diagnostic.Current.HelpText;
+        if (value.Length > 512)
+            return new("unknown");
+        // Never retain arbitrary accessible text. Each recognized field is projected
+        // to a finite code; duplicate, numeric or future values remain unknown.
+        string? Line(string prefix)
+        {
+            var matching = value.Split('\n').Where(line => line.StartsWith(prefix, StringComparison.Ordinal)).ToArray();
+            return matching.Length == 0 ? null : matching.Length == 1 ? matching[0][prefix.Length..] : "unknown";
+        }
+        string? KnownEnum<T>(string? text) where T : struct, Enum => text is null ? null
+            : Enum.TryParse<T>(text, out var parsed) && Enum.IsDefined(parsed) && parsed.ToString() == text
+                && text != "Unknown" ? parsed.ToString() : "unknown";
+        string? stage = Line("安装阶段：");
+        string? recovery = Line("恢复阻塞：");
+        return new("observed",
+            stage is "ModelStart" or "Preparation" ? stage : KnownEnum<ModelSetupStage>(stage) ?? "unknown",
+            recovery is null ? null : Enum.GetValues<SetupFailureCategory>()
+                .Select(SetupFailurePresentation.Create).FirstOrDefault(item => item.Code == recovery)?.Code ?? "unknown",
+            KnownEnum<ModelReplacementPhase>(Line("切换阶段：")),
+            KnownEnum<ModelReplacementFailureCode>(Line("切换原因：")),
+            KnownEnum<ModelPublicationOutcome>(Line("发布确认：")));
+    }
     private static async Task NavigateAsync(AutomationElement settings, string label, CancellationToken ct)
     {
         await UiAsync(() => N.SetForegroundWindow((nint)settings.Current.NativeWindowHandle), ct);

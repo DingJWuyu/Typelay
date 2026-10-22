@@ -174,6 +174,17 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             Assert.DoesNotContain(Descendants(window).OfType<TextBlock>(), block => block.Text.Contains("已暂停"));
             var diagnostic = Descendants(window).OfType<Expander>().Single(expander => Equals(expander.Header, "安装诊断"));
             Assert.False(diagnostic.IsExpanded);
+            // The collapsed public diagnostic remains readable without clicking
+            // another control or losing the original failed preparation state.
+            nint handle = new WindowInteropHelper(window).Handle;
+            await Task.Run(() =>
+            {
+                var root = AutomationElement.FromHandle(handle);
+                var exposed = root.FindFirst(TreeScope.Descendants,
+                    new PropertyCondition(AutomationElement.AutomationIdProperty, "PreparationDiagnostics"));
+                Assert.NotNull(exposed);
+                Assert.Equal("错误类别：network\n安装阶段：Runtime", exposed.Current.HelpText);
+            }, TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
             diagnostic.IsExpanded = true;
             window.UpdateLayout();
             Assert.Contains(Descendants(diagnostic).OfType<TextBlock>(), block => block.Text.Contains("network")
