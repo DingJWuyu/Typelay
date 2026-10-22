@@ -859,8 +859,7 @@ internal static partial class HyPackageCheck
                         new PropertyCondition(AutomationElement.ClassNameProperty, "TopLevelWindowForOverflowXamlIsland")));
                     var buttons = trays.Cast<AutomationElement>().SelectMany(tray => tray.FindAll(TreeScope.Descendants,
                         new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button)).Cast<AutomationElement>()).ToArray();
-                    var matches = buttons.Where(button => !button.Current.IsOffscreen
-                        && (button.Current.Name == "TypeLay" || button.Current.Name.StartsWith("TypeLay · ", StringComparison.Ordinal))).ToArray();
+                    var matches = buttons.Where(ShellTraySelection.IsProductIcon).ToArray();
                     discoveryToken.ThrowIfCancellationRequested();
                     observation.TrayRoots = trays.Count;
                     observation.TrayButtons = buttons.Length;

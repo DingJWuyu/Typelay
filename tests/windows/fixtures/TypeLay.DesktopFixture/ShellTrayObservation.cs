@@ -56,6 +56,7 @@ internal sealed class ShellTrayObservation
                 "" => "empty",
                 "TypeLay" => "product-exact",
                 string name when name.StartsWith("TypeLay · ", StringComparison.Ordinal) => "product-prefix",
+                string name when ShellTraySelection.ContainsProductToken(name) => "product-contained-token",
                 string name when name.Contains("TypeLay", StringComparison.Ordinal) => "product-contained",
                 string name when ShellTraySelection.IsOverflowName(name) => "known-overflow",
                 _ => "other"

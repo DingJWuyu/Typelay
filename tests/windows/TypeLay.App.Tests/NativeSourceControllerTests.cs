@@ -17,7 +17,7 @@ namespace TypeLay.App.Tests;
 // Translation is controlled and SendInput is explicitly opted in: neither real
 // model quality nor physical keyboard/IME acceptance is claimed by these tests.
 [Collection("Desktop")]
-public sealed class NativeSourceControllerTests(WpfDesktopFixture desktop)
+public sealed partial class NativeSourceControllerTests(WpfDesktopFixture desktop)
 {
     [Fact]
     public Task IsolatedControllerSettlesNativeSnapshotWithoutASecondWrite() => desktop.RunAsync(async () =>
@@ -221,7 +221,13 @@ public sealed class NativeSourceControllerTests(WpfDesktopFixture desktop)
             Assert.True(N.SetProp(native.A, "TypeLay.NativeInput.Lifetime.v2", cookie));
             using var reader = new NativeTransactions();
             var source = Assert.IsType<InputSnapshot>(reader.Capture(original.Target.AsWindows(), original.Bounds, 1, 1));
-            Assert.Equal(original.Target, source.Target);
+            // Each reader owns a distinct binding lifetime, even for the same
+            // live native field. Do not forge the old Broker identity: the App
+            // must remain fenced when offered this genuinely fresh binding too.
+            Assert.Equal(original.Target.Backend, source.Target.Backend);
+            Assert.Equal(original.Target.Value, source.Target.Value);
+            Assert.NotEqual(Guid.Empty, source.Target.Lifetime);
+            Assert.NotEqual(original.Target.Lifetime, source.Target.Lifetime);
             Assert.Equal("Hello", source.Text);
             Assert.Equal(new TextRange(5, 5), source.Selection);
             Assert.True(hook.HasSessionConfiguration(new(hook.CommandGeneration, SessionShortcutBindings.Default)));

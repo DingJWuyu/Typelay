@@ -56,9 +56,15 @@ internal sealed class SourceInstallationReentry : IDisposable
                 // Count the documented repeat units, without editing the MSG.
                 _tabDownUnits += (int)((long)message.LParam & 0xffff);
                 N.SetProp(_root, "TypeLay.Test.SourceTabDownUnits.v1", _tabDownUnits);
+                N.SetProp(_root, "TypeLay.Test.SourceTabDownThread.v1", (nint)GetCurrentThreadId());
+                N.SetProp(_root, "TypeLay.Test.SourceTabDownWindow.v1", message.Hwnd);
             }
             if (message.WParam == 9 && message.Message == 0x101)
+            {
                 N.SetProp(_root, "TypeLay.Test.SourceTabUp.v1", ++_tabUps);
+                N.SetProp(_root, "TypeLay.Test.SourceTabUpThread.v1", (nint)GetCurrentThreadId());
+                N.SetProp(_root, "TypeLay.Test.SourceTabUpWindow.v1", message.Hwnd);
+            }
         }
         return CallNextHookEx(0, code, wp, lp);
     }

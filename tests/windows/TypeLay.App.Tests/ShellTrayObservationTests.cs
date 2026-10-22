@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
+using System.Windows.Automation.Peers;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using Xunit;
@@ -36,7 +37,7 @@ public sealed class ShellTrayObservationTests(WpfDesktopFixture desktop)
             string json = JsonSerializer.Serialize(sample);
             Assert.DoesNotContain("private-", json);
             Assert.All(sample.Nodes, node => Assert.Contains(node.NameClass,
-                new[] { "product-exact", "product-prefix", "product-contained", "empty", "known-overflow", "other" }));
+                new[] { "product-exact", "product-prefix", "product-contained-token", "product-contained", "empty", "known-overflow", "other" }));
         }
         finally { window.Close(); }
     });
@@ -45,8 +46,10 @@ public sealed class ShellTrayObservationTests(WpfDesktopFixture desktop)
     [InlineData("", "empty")]
     [InlineData("TypeLay", "product-exact")]
     [InlineData("TypeLay · private-status", "product-prefix")]
-    [InlineData("private-prefix TypeLay private-status", "product-contained")]
-    [InlineData("TypeLay-private-status", "product-contained")]
+    [InlineData("private-prefix TypeLay private-status", "product-contained-token")]
+    [InlineData("TypeLay-private-status", "product-contained-token")]
+    [InlineData("OtherTypeLay", "product-contained")]
+    [InlineData("TypeLayHelper", "product-contained")]
     [InlineData("Show hidden icons", "known-overflow")]
     [InlineData("Show Hidden Icons", "known-overflow")]
     [InlineData("SHOW HIDDEN ICONS", "known-overflow")]
@@ -130,6 +133,55 @@ public sealed class ShellTrayObservationTests(WpfDesktopFixture desktop)
         }
         finally { window.Close(); }
     });
+
+    [Theory]
+    [InlineData("TypeLay", "Button", "legacy", true)]
+    [InlineData("TypeLay · ready", "Button", "legacy", true)]
+    [InlineData("Notification: TypeLay · ready", "SystemTray.NormalButton", "NotifyItemIcon", true)]
+    [InlineData("Application\nTypeLay", "SystemTray.NormalButton", "NotifyItemIcon", true)]
+    [InlineData("Notification: TypeLay · ready", "Taskbar.TaskListButtonAutomationPeer", "NotifyItemIcon", false)]
+    [InlineData("Notification: TypeLay · ready", "SystemTray.NormalButton", "SystemTrayIcon", false)]
+    [InlineData("OtherTypeLay", "SystemTray.NormalButton", "NotifyItemIcon", false)]
+    [InlineData("TypeLayHelper", "SystemTray.NormalButton", "NotifyItemIcon", false)]
+    [InlineData("Other_TypeLay", "SystemTray.NormalButton", "NotifyItemIcon", false)]
+    [InlineData("Windows Security", "SystemTray.NormalButton", "NotifyItemIcon", false)]
+    public Task WrappedProductNamesRequireANotificationItemNotATaskbarButton(
+        string name, string className, string automationId, bool expected) => desktop.RunAsync(async () =>
+    {
+        using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+        var button = new TraySampleButton(className) { Width = 160, Height = 32 };
+        AutomationProperties.SetName(button, name);
+        AutomationProperties.SetAutomationId(button, automationId);
+        var window = new Window { Content = button };
+        try
+        {
+            window.Show();
+            window.UpdateLayout();
+            var root = AutomationElement.FromHandle(new WindowInteropHelper(window).Handle);
+            await Task.Run(() =>
+            {
+                var controls = root.FindAll(TreeScope.Descendants, new AndCondition(
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button),
+                    new PropertyCondition(AutomationElement.AutomationIdProperty, automationId)));
+                var control = Assert.Single(controls.Cast<AutomationElement>());
+                Assert.Equal(name, control.Current.Name);
+                Assert.Equal(className, control.Current.ClassName);
+                Assert.False(control.Current.IsOffscreen);
+                Assert.Equal(expected, ShellTraySelection.IsProductIcon(control));
+            }, limit.Token).WaitAsync(limit.Token);
+        }
+        finally { window.Close(); }
+    });
+
+    private sealed class TraySampleButton(string shellClassName) : Button
+    {
+        protected override AutomationPeer OnCreateAutomationPeer() => new TraySamplePeer(this, shellClassName);
+    }
+
+    private sealed class TraySamplePeer(Button owner, string shellClassName) : ButtonAutomationPeer(owner)
+    {
+        protected override string GetClassNameCore() => shellClassName;
+    }
 
     [Fact]
     public Task CapacityAndCancellationNeverReportACompleteObservation() => desktop.RunAsync(async () =>

@@ -30,7 +30,7 @@ internal static partial class HyPackageCheck
     private static async Task<int> OrdinaryNotepadAsync(string directory, string distribution, string modelArtifacts)
     {
         var report = new Report("ordinary-notepad-shipped-app", 540, "ordinary-app-preflight", "settings-and-model",
-            "automatic-preview-and-accept", "edit-return-and-undo", "on-demand-cancel-and-direct", "ordinary-exit");
+            "automatic-preview", "automatic-accept-and-undo", "edit-return-and-undo", "on-demand-cancel-and-direct", "ordinary-exit");
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(report.OperationBudgetSeconds));
         var ct = deadline.Token;
         report.OperationToken = ct;
@@ -282,7 +282,7 @@ internal static partial class HyPackageCheck
                     newOwnedUserData = true
                 };
             });
-            await report.Phase("automatic-preview-and-accept", async scene =>
+            await report.Phase("automatic-preview", async scene =>
             {
                 scene.Stage = "focus-original-source";
                 await FocusSource();
@@ -293,6 +293,17 @@ internal static partial class HyPackageCheck
                 translation = await UiAsync(() => ((ValuePattern)editor.GetCurrentPattern(ValuePattern.Pattern)).Current.Value, ct);
                 Require(translation.Any(character => character is >= '\u3400' and <= '\u9fff'), "ordinary-preview-not-target-language");
                 SourceUnchanged(original);
+                scene.Facts = new
+                {
+                    source = original,
+                    translation,
+                    punctuationRequired = false,
+                    sourceUnchanged = true,
+                    acceptanceVerified = false
+                };
+            });
+            await report.Phase("automatic-accept-and-undo", async scene =>
+            {
                 scene.Stage = "await-public-acceptance-cue";
                 await OverlayEditor(true);
                 scene.Stage = "press-single-acceptance-tab";

@@ -86,9 +86,15 @@
 - 浏览器合作七个场景及整步通过；记事本设置和只读预览观察通过，但等待公开接受提示仍因 Unknown 安全缺口超时，后续编辑/直接替换及 Hy 未运行。Windows 完整验收仍未通过。
 - 本轮未消除普通自动捕获的输入法安全缺口，Unknown 继续拒写；按需 CaptureDirect 既有 owner-thread 桥仍有同步 IMM 消息重入风险，不能据本轮连续链通过消除该限制。后继候选未经对应验证不记作修复。本轮无质量采集，5068 的 40 次诊断与 386 的 69 次响应仍是各自范围的既有证据，三项质量门继续关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
 
-最近已核对的候选 [`9f76f4be`](https://github.com/DingJWuyu/Typelay/actions/runs/39777668556) 中，源受理隔离原型14项真实 Windows 边界测试通过13项，另7项安装/退休测试全部通过；剩余撤回场景卡在原按键队列计数，未因此宣布完整旁路验证。普通只读观察及既有直接写入回归、截图撤销、托盘选择和连续交互检查通过。发行检查的原生 guard 测试另因链接替身缺失而失败，随后真实浏览器、Notepad 与 Hy 消费者未运行。新完整 Controller/Broker/源受理接线仍只在隔离构造下启用，默认能力不开放；真实应用、物理键盘、中文输入法及队列兼容性仍须各自验证。
+最近已核对的候选为 [`4be188b8`](https://github.com/DingJWuyu/Typelay/actions/runs/39791124676)，Windows 完整检查仍失败：
 
-当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654)下载 [`typelay-windows-e1f55ebd4da69c3d77c4a6447eaad2a146b8bfa6`](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654/artifacts/12342794943)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
+- App.Tests 677/678通过。唯一失败发生在隔离源受理回归的目标生命周期断言：独立读取器与 Broker 对同一原生字段使用不同绑定标识，后续隔离断言尚未执行，不能因此宣称隔离回归通过或发生第二次不安全写入。
+- 连续翻译、合作浏览器、消费者退出证明及生产 Hy worker 检查通过。普通 Notepad 已实际显示中文只读预览，输入法观察为 Clear，但普通发行路径仍为 `writeSupported=false`；检查等待公开接受提示超时，尚未注入接受键。后续人工编辑、直接替换及按需场景未运行。
+- Hy 设置中的安装、选择、预览与移除通过；普通退出检查卡在寻找托盘图标，尚未执行退出操作，不能据此诊断为产品进程无法退出。
+
+完整 Controller/Broker/源受理接线仍只在隔离构造下启用，普通发行能力不开放；真实应用、物理键盘、中文输入法及消息队列兼容性仍须各自验证。本轮通过范围不开放模型质量门。[Linux 推荐预览](../linux/README.md#当前可验证候选)已更新到此提交，下面 Windows 下载仍保留单独核对过的旧基线。
+
+下方可下载的是 `e1f55ebd` 预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654)下载 [`typelay-windows-e1f55ebd4da69c3d77c4a6447eaad2a146b8bfa6`](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654/artifacts/12342794943)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
 
 - 源码提交：`e1f55ebd4da69c3d77c4a6447eaad2a146b8bfa6`。
 - 内层 ZIP：87,038,548 字节。

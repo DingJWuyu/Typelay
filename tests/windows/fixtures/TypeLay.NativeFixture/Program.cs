@@ -252,6 +252,8 @@ internal static class Program
             N.PostQuitMessage(0);
             return 0;
         }
+        if (SourceQueueWaitProbe.Handle(hwnd, message, wParam))
+            return 0;
         // Stock Edit reports its actual focus through the normal parent
         // notification. Do not subclass it or synthesize IME/lifetime evidence.
         if (message == 0x0111 && ((wParam >> 16) & 0xffff) == 0x0100 && StockFields.Contains(lParam))
