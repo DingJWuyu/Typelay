@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using TypeLay.Core;
 using TypeLay.Platform.Windows;
 using Xunit;
@@ -25,9 +26,14 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
             await using var source = await Source.Start();
             var cover = new Window
             {
-                Title = "TypeLay source setup cover", Width = 1600, Height = 1000,
-                Left = 0, Top = 0, WindowStartupLocation = WindowStartupLocation.Manual,
-                Topmost = true, Content = new Button { Content = "not the source" }
+                Title = "TypeLay source setup cover",
+                Width = 1600,
+                Height = 1000,
+                Left = 0,
+                Top = 0,
+                WindowStartupLocation = WindowStartupLocation.Manual,
+                Topmost = true,
+                Content = new Button { Content = "not the source" }
             };
             int coverClicks = 0;
             cover.PreviewMouseLeftButtonDown += (_, _) => coverClicks++;
@@ -41,18 +47,34 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                     cover.Top = bounds.Top;
                     cover.Width = Math.Max(200, bounds.Right - bounds.Left);
                     cover.Height = Math.Max(200, bounds.Bottom - bounds.Top);
+                }
+                if (scenario == "visible")
+                {
+                    // Keep the source exposed but explicitly in the background,
+                    // as it can be between successive desktop scenes.
+                    cover.Width = 160;
+                    cover.Height = 100;
+                }
+                if (scenario is "covered" or "visible")
+                {
                     var rendered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                     cover.ContentRendered += (_, _) => rendered.TrySetResult();
                     cover.Show();
                     await rendered.Task.WaitAsync(source.Token);
+                    Assert.True(cover.Activate());
+                    Assert.Equal(new WindowInteropHelper(cover).Handle, N.GetForegroundWindow());
                 }
                 using var action = CancellationTokenSource.CreateLinkedTokenSource(source.Token);
-                if (scenario == "cancelled") action.Cancel();
+                if (scenario == "cancelled")
+                    action.Cancel();
                 nint root = scenario == "wrong-root" ? source.Field : source.Root;
                 if (scenario == "cancelled")
                     await Assert.ThrowsAnyAsync<OperationCanceledException>(() => NativeSourceSetup.ClickAsync(root, source.Field, source.Process, action.Token));
                 else if (scenario != "visible")
-                    await Assert.ThrowsAsync<InvalidOperationException>(() => NativeSourceSetup.ClickAsync(root, source.Field, source.Process, action.Token));
+                {
+                    var failure = await Assert.ThrowsAsync<NativeSourceSetup.Failure>(() => NativeSourceSetup.ClickAsync(root, source.Field, source.Process, action.Token));
+                    Assert.Equal(scenario == "covered" ? "source-click-obscured" : "source-click-identity-changed", failure.Code);
+                }
                 else
                 {
                     await NativeSourceSetup.ClickAsync(root, source.Field, source.Process, action.Token);
@@ -90,7 +112,8 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                 N.Send(source.Field, N.EM_SETSEL, 1, 5);
                 var observation = new NativeSourceSetup.Observation();
                 using var action = CancellationTokenSource.CreateLinkedTokenSource(source.Token);
-                if (scenario == "cancelled") action.Cancel();
+                if (scenario == "cancelled")
+                    action.Cancel();
                 if (scenario == "busy")
                 {
                     Assert.True(N.PostMessage(source.Root, N.FixtureBlockGui, 0, 0));
@@ -110,7 +133,10 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                 if (scenario == "cancelled")
                     await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
                 else if (scenario is "changed-text" or "wrong-field")
-                    await Assert.ThrowsAsync<InvalidOperationException>(() => waiting);
+                {
+                    var failure = await Assert.ThrowsAsync<NativeSourceSetup.Failure>(() => waiting);
+                    Assert.Equal(scenario == "changed-text" ? "source-response-text-changed" : "source-response-identity-or-focus-changed", failure.Code);
+                }
                 else
                 {
                     await waiting;
@@ -160,19 +186,26 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
             }
             catch
             {
-                try { await Stop(process); }
+                try
+                {
+                    await Stop(process);
+                }
                 finally { process.Dispose(); deadline.Dispose(); }
                 throw;
             }
         }
         public async ValueTask DisposeAsync()
         {
-            try { await Stop(process); }
+            try
+            {
+                await Stop(process);
+            }
             finally { process.Dispose(); deadline.Dispose(); }
         }
         private static async Task Stop(Process process)
         {
-            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            if (!process.HasExited)
+                process.Kill(entireProcessTree: true);
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await process.WaitForExitAsync(cleanup.Token);
         }

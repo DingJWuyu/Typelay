@@ -91,7 +91,7 @@ internal static partial class HyPackageCheck
             {
                 scene.Outcome = "failed";
                 scene.ErrorType = error.GetType().Name;
-                scene.Failure = error is Failure failure ? failure.Code : error is OperationCanceledException ? "deadline" : "operation-failed";
+                scene.Failure = error is Failure failure ? failure.Code : error is NativeSourceSetup.Failure sourceSetup ? sourceSetup.Code : error is OperationCanceledException ? "deadline" : "operation-failed";
                 if (error is N.NativeMessageException native)
                 {
                     scene.NativeOperation = native.Operation;

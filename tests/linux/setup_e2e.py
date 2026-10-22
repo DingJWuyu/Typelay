@@ -121,6 +121,17 @@ class PackageInstallationTests(unittest.TestCase):
         self.save_inventory()
         (self.old.parent / "current").symlink_to(self.old.name)
 
+    def assume_space_for_controlled_package_operation(self):
+        # These tiny archives and controlled runtimes exercise package behavior,
+        # not host capacity or real installation. Keep disk rejection tests real
+        # to their own explicit low-space preconditions, without this fixture.
+        usage = shutil.disk_usage(self.data)
+        self.enterContext(
+            patch.object(
+                setup.shutil, "disk_usage", return_value=type(usage)(16 * 1024**3, 0, 16 * 1024**3)
+            )
+        )
+
     def save_inventory(self):
         (self.old / "models/installed.json").write_text(json.dumps(self.inventory))
         active = [
@@ -200,6 +211,7 @@ class PackageInstallationTests(unittest.TestCase):
         self.assertEqual(activation["previous"], self.old.name)
 
     def test_new_hy_install_records_twelve_but_repair_and_select_preserve_existing_subset(self):
+        self.assume_space_for_controlled_package_operation()
         identity = "hy-mt2-1-8b-q4-k-m"
         assets = setup.hy_assets(self.home)
         fixed = json.loads((self.home / "worker/native/hy/model.lock.json").read_text())
@@ -366,6 +378,7 @@ class PackageInstallationTests(unittest.TestCase):
             json.loads('{"format":1,"format":1}', object_pairs_hook=setup.unique_object)
 
     def test_repair_fetches_only_the_requested_package_and_never_starts_a_model(self):
+        self.assume_space_for_controlled_package_operation()
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, "w") as package:
             package.writestr(
@@ -395,6 +408,7 @@ class PackageInstallationTests(unittest.TestCase):
         self.assertFalse((candidate / "self-check.json").exists())
 
     def test_repair_rebuilds_damaged_runtime_but_select_and_remove_stay_offline(self):
+        self.assume_space_for_controlled_package_operation()
         self.inventory["activePackages"] = ["argos-en-zh"]
         self.save_inventory()
         archive = self.cache / "components/zh_en-1.9.argosmodel"
@@ -475,6 +489,7 @@ class PackageInstallationTests(unittest.TestCase):
                 interpreter.chmod(0o700)
 
     def test_runtime_permission_failure_does_not_trigger_network_rebuild(self):
+        self.assume_space_for_controlled_package_operation()
         (self.old / "runtime/python/bin/python3.13").chmod(0o600)
         with patch.object(setup.subprocess, "Popen", wraps=subprocess.Popen) as process:
             self.prepare(
@@ -796,6 +811,38 @@ class DownloadTests(unittest.TestCase):
         archive, _ = setup.download(DIRECTIONS["zh_en"], self.cache)
         self.assertEqual(archive.read_bytes(), b"whole")
         self.assertIsNone(self.requests[-1].get_header("Range"))
+
+    def test_http_failure_closes_response_before_propagating_status(self):
+        for code in (503, 416):
+            with (
+                self.subTest(code=code),
+                urllib.error.HTTPError(
+                    "https://argos-net.com/model", code, "failure", {}, io.BytesIO(b"private body")
+                ) as error,
+            ):
+                self.responses.append(error)
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    setup.download(DIRECTIONS["zh_en"], self.cache)
+                self.assertIs(caught.exception, error)
+                self.assertEqual(caught.exception.code, code)
+                self.assertTrue(error.closed)
+                self.assertFalse((self.cache / "zh_en-1.9.argosmodel").exists())
+
+    def test_http_response_close_failure_preserves_the_network_error(self):
+        with urllib.error.HTTPError(
+            "https://argos-net.com/model", 503, "failure", {}, io.BytesIO(b"private body")
+        ) as error:
+            self.responses.append(error)
+            with (
+                patch.object(
+                    error, "close", side_effect=OSError("private cleanup failure")
+                ) as close,
+                self.assertRaises(urllib.error.HTTPError) as caught,
+            ):
+                setup.download(DIRECTIONS["zh_en"], self.cache)
+            close.assert_called_once_with()
+            self.assertIs(caught.exception, error)
+            self.assertEqual(caught.exception.code, 503)
 
     def test_download_limit_does_not_publish_an_archive(self):
         self.responses.append(
@@ -2190,6 +2237,7 @@ class InstallationFailureTests(unittest.TestCase):
             {"Authorization": "private-token"},
             io.BytesIO(b"private-token"),
         )
+        self.addCleanup(error.close)
         output = self.run_setup(error)
         diagnostic = json.loads(
             next(
@@ -2263,9 +2311,14 @@ class InstallationFailureTests(unittest.TestCase):
         for resource in ("private-token", [], None):
             for code in (True, "private-token", 99, 600):
                 output = io.StringIO()
-                with contextlib.redirect_stdout(output):
+                with (
+                    urllib.error.HTTPError(
+                        "private-token", code, "private-token", {}, None
+                    ) as error,
+                    contextlib.redirect_stdout(output),
+                ):
                     setup.report_failure(
-                        urllib.error.HTTPError("private-token", code, "private-token", {}, None),
+                        error,
                         "model-download",
                         resource=resource,
                     )

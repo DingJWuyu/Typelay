@@ -382,9 +382,13 @@ def download_resource(pair, url, archive, limit, *, expected=None, hosts=("argos
         try:
             response = opener.open(urllib.request.Request(url, headers=headers), timeout=45)
         except urllib.error.HTTPError as error:
+            try:
+                error.close()
+            except Exception:
+                # Response cleanup must not replace the original network failure.
+                raise error from None
             if error.code != 416 or not offset or attempt:
                 raise
-            error.close()
             discard()
             offset, saved, checksum = 0, {}, hashlib.sha256()
             continue

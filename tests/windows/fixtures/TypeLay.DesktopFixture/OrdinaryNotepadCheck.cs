@@ -393,10 +393,12 @@ internal static partial class HyPackageCheck
                     return source.Process.HasExited;
                 }, ct);
                 Require(source!.Process.ExitCode == 0, "ordinary-notepad-exit-code");
-                await OrdinaryQuitAsync(app!.Process, ct);
+                await OrdinaryQuitAsync(app!.Process, scene, ct);
+                scene.Stage = "await-app-exit";
                 using var exit = new CancellationTokenSource(TimeSpan.FromSeconds(5));
                 await app.Process.WaitForExitAsync(exit.Token);
                 Require(app.Process.ExitCode == 0, "ordinary-app-exit-code");
+                scene.Stage = "await-model-workers-exit";
                 await WaitAsync(() => Task.FromResult(workers!.AllExited()), exit.Token);
                 scene.Facts = new
                 {

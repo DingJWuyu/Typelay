@@ -22,51 +22,51 @@ internal static class NativeSourceSetup
         var observed = await Task.Run(() =>
         {
             nint previousDpi = SetThreadDpiAwarenessContext(-4);
-            Check(previousDpi != 0, "source-click-observation-dpi-context");
+            Check(previousDpi != 0, FailureReason.SourceClickObservationDpiContext);
             try
             {
-                Check(OwnedField(), "source-click-identity-changed");
+                Check(OwnedField(), FailureReason.SourceClickIdentityChanged);
                 var element = AutomationElement.FromHandle(field);
                 var current = element.Current;
                 Check(current.NativeWindowHandle == field && current.ProcessId == processId
                     && current.ControlType == ControlType.Edit && current.IsEnabled && !current.IsOffscreen,
-                    "source-click-control-unavailable");
+                    FailureReason.SourceClickControlUnavailable);
                 var bounds = current.BoundingRectangle;
                 Check(!bounds.IsEmpty && bounds.Width > 8 && bounds.Height > 8
                     && double.IsFinite(bounds.Left) && double.IsFinite(bounds.Top)
-                    && double.IsFinite(bounds.Right) && double.IsFinite(bounds.Bottom), "source-click-geometry-unavailable");
+                    && double.IsFinite(bounds.Right) && double.IsFinite(bounds.Bottom), FailureReason.SourceClickGeometryUnavailable);
                 foreach (double x in new[] { bounds.Left + bounds.Width / 2, bounds.Left + 4, bounds.Right - 4 })
                 {
                     double y = bounds.Top + bounds.Height / 2;
                     Check(x >= int.MinValue && x <= int.MaxValue && y >= int.MinValue && y <= int.MaxValue,
-                        "source-click-geometry-unavailable");
+                        FailureReason.SourceClickGeometryUnavailable);
                     var point = new N.Point { X = (int)x, Y = (int)y };
                     if (bounds.Contains(point.X, point.Y) && WindowFromPoint(point) == field)
                         return point;
                 }
-                throw new InvalidOperationException("source-click-obscured");
+                throw new Failure(FailureReason.SourceClickObscured);
             }
             finally { SetThreadDpiAwarenessContext(previousDpi); }
         }, ct).WaitAsync(ct);
         ct.ThrowIfCancellationRequested();
         nint previousClickDpi = SetThreadDpiAwarenessContext(-4);
-        Check(previousClickDpi != 0, "source-click-dpi-context");
+        Check(previousClickDpi != 0, FailureReason.SourceClickDpiContext);
         try
         {
             CheckTarget();
             Check(new[] { 0x01, 0x02, 0x04, 0x10, 0x11, 0x12, 0x5B, 0x5C }.All(key => GetAsyncKeyState(key) >= 0),
-                "source-click-input-already-held");
-            Check(SetCursorPos(observed.X, observed.Y), "source-click-cursor-unavailable");
+                FailureReason.SourceClickInputAlreadyHeld);
+            Check(SetCursorPos(observed.X, observed.Y), FailureReason.SourceClickCursorUnavailable);
             CheckTarget();
             ct.ThrowIfCancellationRequested();
             var click = HyPackageCheck.SendLeftClick();
-            Check(click.ReleaseComplete, "source-click-release-incomplete");
-            Check(click.Complete, "source-click-incomplete");
+            Check(click.ReleaseComplete, FailureReason.SourceClickReleaseIncomplete);
+            Check(click.Complete, FailureReason.SourceClickIncomplete);
 
             void CheckTarget() => Check(OwnedField() && N.IsWindowVisible(field) && N.IsWindowEnabled(field)
                 && N.GetWindowRect(field, out var bounds) && observed.X >= bounds.Left && observed.X < bounds.Right
                 && observed.Y >= bounds.Top && observed.Y < bounds.Bottom && WindowFromPoint(observed) == field,
-                "source-click-target-changed");
+                FailureReason.SourceClickTargetChanged);
         }
         finally { SetThreadDpiAwarenessContext(previousClickDpi); }
     }
@@ -82,13 +82,13 @@ internal static class NativeSourceSetup
         {
             ct.ThrowIfCancellationRequested();
             observation.Observe(root, field, process);
-            Check(observation.IdentityMatched && observation.FocusMatched, "source-response-identity-or-focus-changed");
+            Check(observation.IdentityMatched && observation.FocusMatched, FailureReason.SourceResponseIdentityOrFocusChanged);
             observation.ReadAttempts++;
             observation.LastReadStartedAtMs = WindowsInterruptClock.NowMs;
             bool responsive = false;
             try
             {
-                Check(N.ReadText(field, Limits.MaxTextUnits) == expectedText, "source-response-text-changed");
+                Check(N.ReadText(field, Limits.MaxTextUnits) == expectedText, FailureReason.SourceResponseTextChanged);
                 _ = N.ReadSelection(field); // The click may legitimately have moved the caret.
                 responsive = true;
             }
@@ -100,7 +100,7 @@ internal static class NativeSourceSetup
             }
             finally { observation.LastReadEndedAtMs = WindowsInterruptClock.NowMs; }
             observation.Observe(root, field, process);
-            Check(observation.IdentityMatched && observation.FocusMatched, "source-response-identity-or-focus-changed");
+            Check(observation.IdentityMatched && observation.FocusMatched, FailureReason.SourceResponseIdentityOrFocusChanged);
             if (responsive)
             {
                 ct.ThrowIfCancellationRequested();
@@ -114,25 +114,82 @@ internal static class NativeSourceSetup
     internal sealed class Observation
     {
         public long SetupStartedAtMs { get; } = WindowsInterruptClock.NowMs;
-        public long? SetupEndedAtMs { get; set; }
-        public long? TextStartedAtMs { get; set; }
-        public long? TextEndedAtMs { get; set; }
-        public long? ClickStartedAtMs { get; set; }
-        public long? ClickEndedAtMs { get; set; }
-        public long? ReadStartedAtMs { get; set; }
-        public long? LastReadStartedAtMs { get; set; }
-        public long? LastReadEndedAtMs { get; set; }
-        public long? ReadCompletedAtMs { get; set; }
-        public int ReadAttempts { get; set; }
-        public int ReadTimeouts { get; set; }
-        public long? SelectionStartedAtMs { get; set; }
-        public long? SelectionEndedAtMs { get; set; }
-        public bool SelectionCompleted { get; set; }
-        public bool ProcessAlive { get; private set; }
-        public bool RootMatched { get; private set; }
-        public bool FieldMatched { get; private set; }
-        public bool FieldRootMatched { get; private set; }
-        public bool FocusMatched { get; private set; }
+        public long? SetupEndedAtMs
+        {
+            get; set;
+        }
+        public long? TextStartedAtMs
+        {
+            get; set;
+        }
+        public long? TextEndedAtMs
+        {
+            get; set;
+        }
+        public long? ClickStartedAtMs
+        {
+            get; set;
+        }
+        public long? ClickEndedAtMs
+        {
+            get; set;
+        }
+        public long? ReadStartedAtMs
+        {
+            get; set;
+        }
+        public long? LastReadStartedAtMs
+        {
+            get; set;
+        }
+        public long? LastReadEndedAtMs
+        {
+            get; set;
+        }
+        public long? ReadCompletedAtMs
+        {
+            get; set;
+        }
+        public int ReadAttempts
+        {
+            get; set;
+        }
+        public int ReadTimeouts
+        {
+            get; set;
+        }
+        public long? SelectionStartedAtMs
+        {
+            get; set;
+        }
+        public long? SelectionEndedAtMs
+        {
+            get; set;
+        }
+        public bool SelectionCompleted
+        {
+            get; set;
+        }
+        public bool ProcessAlive
+        {
+            get; private set;
+        }
+        public bool RootMatched
+        {
+            get; private set;
+        }
+        public bool FieldMatched
+        {
+            get; private set;
+        }
+        public bool FieldRootMatched
+        {
+            get; private set;
+        }
+        public bool FocusMatched
+        {
+            get; private set;
+        }
         public bool IdentityMatched => ProcessAlive && RootMatched && FieldMatched && FieldRootMatched;
 
         // Fixed booleans only: no source text, handles, or raw process identities.
@@ -146,10 +203,49 @@ internal static class NativeSourceSetup
         }
     }
 
-    private static void Check(bool condition, string code)
+    internal enum FailureReason
+    {
+        SourceClickObservationDpiContext,
+        SourceClickIdentityChanged,
+        SourceClickControlUnavailable,
+        SourceClickGeometryUnavailable,
+        SourceClickObscured,
+        SourceClickDpiContext,
+        SourceClickInputAlreadyHeld,
+        SourceClickCursorUnavailable,
+        SourceClickReleaseIncomplete,
+        SourceClickIncomplete,
+        SourceClickTargetChanged,
+        SourceResponseIdentityOrFocusChanged,
+        SourceResponseTextChanged,
+    }
+
+    internal sealed class Failure(FailureReason reason) : InvalidOperationException
+    {
+        internal FailureReason Reason { get; } = reason;
+        internal string Code => Reason switch
+        {
+            FailureReason.SourceClickObservationDpiContext => "source-click-observation-dpi-context",
+            FailureReason.SourceClickIdentityChanged => "source-click-identity-changed",
+            FailureReason.SourceClickControlUnavailable => "source-click-control-unavailable",
+            FailureReason.SourceClickGeometryUnavailable => "source-click-geometry-unavailable",
+            FailureReason.SourceClickObscured => "source-click-obscured",
+            FailureReason.SourceClickDpiContext => "source-click-dpi-context",
+            FailureReason.SourceClickInputAlreadyHeld => "source-click-input-already-held",
+            FailureReason.SourceClickCursorUnavailable => "source-click-cursor-unavailable",
+            FailureReason.SourceClickReleaseIncomplete => "source-click-release-incomplete",
+            FailureReason.SourceClickIncomplete => "source-click-incomplete",
+            FailureReason.SourceClickTargetChanged => "source-click-target-changed",
+            FailureReason.SourceResponseIdentityOrFocusChanged => "source-response-identity-or-focus-changed",
+            FailureReason.SourceResponseTextChanged => "source-response-text-changed",
+            _ => "source-setup-failed"
+        };
+    }
+
+    private static void Check(bool condition, FailureReason reason)
     {
         if (!condition)
-            throw new InvalidOperationException(code);
+            throw new Failure(reason);
     }
     [DllImport("user32.dll")] private static extern nint SetThreadDpiAwarenessContext(nint context);
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(N.Point point);

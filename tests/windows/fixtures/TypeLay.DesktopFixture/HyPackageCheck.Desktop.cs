@@ -211,7 +211,10 @@ internal static partial class HyPackageCheck
                 try
                 {
                     sourceSetup.ClickStartedAtMs = WindowsInterruptClock.NowMs;
-                    try { await NativeSourceSetup.ClickAsync(root, field, source.Process, ct); }
+                    try
+                    {
+                        await NativeSourceSetup.ClickAsync(root, field, source.Process, ct);
+                    }
                     finally { sourceSetup.ClickEndedAtMs = WindowsInterruptClock.NowMs; }
                     scene.Stage = "wait-source-refocus";
                     await WaitAsync(() =>
@@ -397,11 +400,14 @@ internal static partial class HyPackageCheck
             });
             await report.Phase("ordinary-exit", async scene =>
             {
-                await OrdinaryQuitAsync(app!.Process, ct);
+                await OrdinaryQuitAsync(app!.Process, scene, ct);
+                scene.Stage = "await-app-exit";
                 using var exit = new CancellationTokenSource(TimeSpan.FromSeconds(5));
                 await app.Process.WaitForExitAsync(exit.Token);
                 Require(app.Process.ExitCode == 0, "ordinary-app-exit-code");
+                scene.Stage = "await-model-workers-exit";
                 await WaitAsync(() => Task.FromResult(workers!.AllExited()), exit.Token);
+                scene.Stage = "check-model-use-released";
                 CheckUseReleased(new ModelInstallationStore(data, worker).InitialPaths());
                 appExited = true;
                 scene.Facts = new
@@ -753,12 +759,71 @@ internal static partial class HyPackageCheck
         await invoke.WaitAsync(ct);
         scene.Stage = "await-real-publication-and-ready";
     }
-    private static async Task OrdinaryQuitAsync(Process app, CancellationToken ct)
+    private sealed class OrdinaryQuitObservation
+    {
+        public bool AppExitObserved
+        {
+            get; set;
+        }
+        public int TrayRoots
+        {
+            get; set;
+        }
+        public int TrayButtons
+        {
+            get; set;
+        }
+        public int VisibleIconMatches
+        {
+            get; set;
+        }
+        public int VisibleOverflowMatches
+        {
+            get; set;
+        }
+        public bool OverflowOpened
+        {
+            get; set;
+        }
+        public bool IconInvokeSupported
+        {
+            get; set;
+        }
+        public bool IconActivationReturned
+        {
+            get; set;
+        }
+        public bool SameProcessPanelFound
+        {
+            get; set;
+        }
+        public bool QuitFound
+        {
+            get; set;
+        }
+        public bool QuitEnabled
+        {
+            get; set;
+        }
+        public bool QuitVisible
+        {
+            get; set;
+        }
+        public bool QuitInvokeReturned
+        {
+            get; set;
+        }
+    }
+    private static async Task OrdinaryQuitAsync(Process app, Scene scene, CancellationToken ct)
     {
         AutomationElement? icon = null;
         bool overflowOpened = false;
+        var observation = new OrdinaryQuitObservation();
+        scene.Facts = observation;
+        scene.Stage = "find-tray-icon";
         await WaitAsync(async () => await UiAsync(() =>
         {
+            observation.AppExitObserved = app.HasExited;
             // Shell providers can expose the product name instead of its latest
             // tooltip. This only finds the icon, never proves model/shortcut Ready.
             var trays = AutomationElement.RootElement.FindAll(TreeScope.Children, new OrCondition(
@@ -770,6 +835,9 @@ internal static partial class HyPackageCheck
                 new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button)).Cast<AutomationElement>()).ToArray();
             var matches = buttons.Where(button => !button.Current.IsOffscreen
                 && (button.Current.Name == "TypeLay" || button.Current.Name.StartsWith("TypeLay · ", StringComparison.Ordinal))).ToArray();
+            observation.TrayRoots = trays.Count;
+            observation.TrayButtons = buttons.Length;
+            observation.VisibleIconMatches = matches.Length;
             Require(matches.Length <= 1, "tray-icon-ambiguous");
             if (matches.Length == 1)
             {
@@ -780,18 +848,23 @@ internal static partial class HyPackageCheck
             {
                 var overflow = buttons.Where(button => !button.Current.IsOffscreen && (button.Current.AutomationId == "NotificationChevron"
                     || button.Current.Name is "Show hidden icons" or "显示隐藏的图标")).ToArray();
+                observation.VisibleOverflowMatches = overflow.Length;
                 Require(overflow.Length <= 1, "tray-overflow-ambiguous");
                 if (overflow.Length == 1)
                 {
+                    scene.Stage = "open-tray-overflow";
                     ((InvokePattern)overflow[0].GetCurrentPattern(InvokePattern.Pattern)).Invoke();
-                    overflowOpened = true;
+                    observation.OverflowOpened = overflowOpened = true;
+                    scene.Stage = "find-tray-icon";
                 }
             }
             return false;
         }, ct), ct);
+        scene.Stage = "activate-tray-icon";
         await UiAsync(() =>
         {
-            if (icon!.TryGetCurrentPattern(InvokePattern.Pattern, out var invoke))
+            observation.IconInvokeSupported = icon!.TryGetCurrentPattern(InvokePattern.Pattern, out var invoke);
+            if (observation.IconInvokeSupported)
                 ((InvokePattern)invoke).Invoke();
             else
             {
@@ -802,16 +875,25 @@ internal static partial class HyPackageCheck
                 Require(click.Complete, "tray-click-incomplete");
             }
         }, ct);
+        observation.IconActivationReturned = true;
+        scene.Stage = "find-quick-panel-quit";
         AutomationElement? quit = null;
         await WaitAsync(async () => await UiAsync(() =>
         {
             var panel = AutomationElement.RootElement.FindFirst(TreeScope.Children, new AndCondition(
                 new PropertyCondition(AutomationElement.ProcessIdProperty, app.Id),
                 new PropertyCondition(AutomationElement.NameProperty, "TypeLay 快速面板")));
+            observation.AppExitObserved = app.HasExited;
+            observation.SameProcessPanelFound = panel is not null;
             quit = panel is null ? null : Find(panel, AutomationElement.NameProperty, "⏻    退出 TypeLay", ControlType.Button);
-            return quit is not null && quit.Current.IsEnabled && !quit.Current.IsOffscreen;
+            observation.QuitFound = quit is not null;
+            observation.QuitEnabled = quit is not null && quit.Current.IsEnabled;
+            observation.QuitVisible = quit is not null && !quit.Current.IsOffscreen;
+            return observation.QuitFound && observation.QuitEnabled && observation.QuitVisible;
         }, ct), ct);
+        scene.Stage = "invoke-quit";
         await UiAsync(() => ((InvokePattern)quit!.GetCurrentPattern(InvokePattern.Pattern)).Invoke(), ct);
+        observation.QuitInvokeReturned = true;
     }
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(N.Point point);
     private static void SendWakeOnce()

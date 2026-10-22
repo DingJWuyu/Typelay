@@ -100,11 +100,11 @@ python tests/shared/worker/glossary_quality.py --validate-only \
 
 `tests/linux/native_e2e.py --desktop --desktop-scope model-packages --collect-translation-quality` 是显式入口。仅此 scope 接受采集标志；不传标志时，原240秒生命周期、260秒外层和原安装/切换/移除链不变。需先完成正式 Argos 双向安装，并有同期含 ABI5 的发行包、已验证的 Hy 模型/许可证缓存及现嵌套桌面依赖。数据和缓存都必须是本 checkout 的 `artifacts/` 下已存在、当前用户拥有的隔离目录，不能指向用户数据或缓存；输出目录必须全新，已有质量 JSON 不覆盖。入口本身不准备模型、复制权重或制造库存/Ready。
 
-现有 `check.yml` 的手动 `workflow_dispatch` 提供默认 `full` 的 `check_mode`，并可明确选择默认 false 的 `collect_translation_quality`。只有该输入为 true，才将现唯一 Linux 模型包生命周期调用切换为上述采集模式，输出到全新 `artifacts/linux/quality-capture`；不在成功移除 Hy 及缓存之后重复执行。`check_mode=full` 保持共享、Windows 与 Linux 原检查选择；只设置 `collect_translation_quality=true` 仍运行原完整检查。push、PR 及默认手动执行均不采集。仅显式运行的 Linux job 为70分钟、该步骤为36分钟；原自动路径仍为45分钟、5分钟。采集前 admission 保留原磁盘检查，并要求至少2760秒：缓存恢复120秒、准备180秒、缓存保存120秒、采集及退出2091秒、步骤启动/收尾69秒、artifact余量180秒，不再叠加原5分钟生命周期。未准入即停止，不开始缓存准备。
+现有 `check.yml` 的手动 `workflow_dispatch` 提供默认 `full` 的 `check_mode`，并可明确选择默认 false 的 `collect_translation_quality`。该输入为 true 或下述 push footer 经严格验证时，将现唯一 Linux 模型包生命周期调用切换为采集模式，输出到全新 `artifacts/linux/quality-capture`；不在成功移除 Hy 及缓存之后重复执行。`check_mode=full` 保持共享、Windows 与 Linux 原检查选择；只设置 `collect_translation_quality=true` 仍运行原完整检查。普通 push、PR 及默认手动执行均不采集。未选择解码对照或固定诊断时，workflow 显式传入 `--combination-only`，采集两个固定原源各四种 operation 的8个响应，替换原53响应采集并关闭额外 Hy 单句预览；完整检查中的原 Argos 自检和其它模型场景仍保留，8不是整轮推理总数。仅显式运行的 Linux job 为70分钟、该步骤为36分钟；原自动路径仍为45分钟、5分钟。采集前 admission 保留原磁盘检查；8响应模式要求至少1477秒：缓存恢复120秒、准备180秒、缓存保存120秒、采集及退出877秒、artifact余量180秒。其它采集模式仍要求2760秒，其中采集及退出2091秒、步骤启动/收尾69秒，其余余量相同；均不再叠加原5分钟生命周期。未准入即停止，不开始缓存准备。
 
-明确选择 `check_mode=quality-only` 且 `collect_translation_quality=true` 才启用非验收采集；未同时确认采集或未知模式直接失败，不默认为缩减检查。该模式保留共享检查、同一 SHA 的 Linux 构建与完整包组装、原生 ABI/manifest/模型固定锁验证、正式 Argos 安装、GTK 运行基础及原 Hy 安装/切换/退出与53响应采集。包组装依赖的 Fcitx/Qt 构建探针仍运行；仅跳过 Windows 和无关浏览器、托盘、教程、GTK/Qt真实模型及 VS Code 交互场景。不复制模型或制造库存，不增加旁路质量执行器；名称与摘要明确标注不构成完整产品验收。该显式模式不改变 push/PR 的分流和失败封闭规则。
+明确选择 `check_mode=quality-only` 且 `collect_translation_quality=true` 才启用非验收采集；未同时确认采集或未知模式直接失败，不默认为缩减检查。该模式保留共享检查、同一 SHA 的 Linux 构建与完整包组装、原生 ABI/manifest/模型固定锁验证、正式 Argos 安装、GTK 运行基础及原 Hy 安装/切换/退出与所选固定响应采集（默认8响应）。包组装依赖的 Fcitx/Qt 构建探针仍运行；仅跳过 Windows 和无关浏览器、托盘、教程、GTK/Qt真实模型及 VS Code 交互场景。不复制模型或制造库存，不增加旁路质量执行器；名称与摘要明确标注不构成完整产品验收。该显式模式不改变 push/PR 的分流和失败封闭规则。
 
-默认53次采集没有手动 dispatch 入口时，可在已授权的 `work/linux-usability` 新提交的纯文本正文末尾，以空行分隔的最后一段仅写 `TypeLay-Quality-Capture: true`，明确请求同一次完整检查附带采集。仅已存在分支的非强推、有效祖先到新 HEAD、push 的 `after` 与 HEAD 相同，且事件 `head_commit` 的 ID 和完整正文与 Git HEAD 一致时生效。它强制保留共享、Windows 和 Linux 完整检查，不启用 Qt/练习部分验收，也不是 quality-only。普通提交、旧历史中的标记、正文中途/标题/引用/缩进文本、含反引号或波浪线代码围栏的正文、重复标记、PR、其它分支及证据不全均不启用采集；未验证的显式请求仍保留完整检查。采集布尔值由同一个 scope 输出驱动原有预算、无字节码准备及正式生命周期入口，不新增模型或另一套 runner。只为已有明确实验假设添加标记；后续普通提交不会继承采集请求。仍须等待同分支上一轮完成，避免并发组取消有价值的验证。
+默认8响应采集没有手动 dispatch 入口时，可在已授权的 `work/linux-usability` 新提交的纯文本正文末尾，以空行分隔的最后一段仅写 `TypeLay-Quality-Capture: true`，明确请求同一次完整检查附带采集。仅已存在分支的非强推、有效祖先到新 HEAD、push 的 `after` 与 HEAD 相同，且事件 `head_commit` 的 ID 和完整正文与 Git HEAD 一致时生效。它强制保留共享、Windows 和 Linux 完整检查，不启用 Qt/练习部分验收，也不是 quality-only。普通提交、旧历史中的标记、正文中途/标题/引用/缩进文本、含反引号或波浪线代码围栏的正文、重复标记、PR、其它分支及证据不全均不启用采集；未验证的显式请求仍保留完整检查。采集布尔值由同一个 scope 输出驱动原有预算、无字节码准备及正式生命周期入口，不新增模型或另一套 runner。只为已有明确实验假设添加标记；后续普通提交不会继承采集请求。仍须等待同分支上一轮完成，避免并发组取消有价值的验证。
 
 ```sh
 # 明确的非验收采集；不会修改默认 full 模式。
@@ -118,23 +118,25 @@ gh workflow run check.yml --repo DingJWuyu/Typelay --ref work/linux-usability \
 export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
 export XDG_CACHE_HOME="$PWD/artifacts/linux/hy-model-cache"
 python tests/linux/native_e2e.py --desktop --desktop-scope model-packages \
-  --collect-translation-quality --package artifacts/linux/package \
+  --collect-translation-quality --combination-only --package artifacts/linux/package \
   --native artifacts/linux/native --output artifacts/linux/quality-capture
 ```
 
-原宿主本轮实际加载 Argos 双向并 Ready 后，先正常退出宿主，核对原 desktop、Host 与 worker 的 PID/starttime 均退休及两个私有 socket 已移除，再执行现 `alternative_quality.py` 的16句/32请求。采集器继续唯一拥有自己的进程组及原 SIG/EOF/TERM/KILL 清理；退出证实后，以未改的库存、设置及精确同一安装代重启真实宿主，再次等待实际 hello Ready。随后沿原 GTK Install Hy 流程，Hy Ready 后同样停服，串行执行 `styled_quality.py --include-holdout` 的16请求和 `glossary_quality.py` 的5请求，每个退出已证实才进入下一个。再次同代重启后，原单句中译法、Select、回切及 Remove 断言全部保留。重启只接受初始化 `idle` 及精确同代；正常包事务仍要求迁代，未放宽原断言。
+8响应模式使用 `styled_glossary_quality.py` 与固定 `styled_glossary_quality_inputs.json`（SHA-256 `a12ac32993d521956e57f4d807dca7b7fd8d342d5473bc1bd9a1347907ad287a`）。两个原源分别为中译法、法译中，每句依次执行普通、Formal、术语、Formal与术语组合；hello 必须精确声明三项能力为整数1，不回退到普通翻译。Hy 缓存准备使用 `--cache-only`，缺失或校验失败即停止，不下载补齐。沿原五次模型事务安装 Hy、回切 Argos、选择已安装 Hy 后，在真实 Ready、原宿主退出及同代独占锁成立时仅采集这8个响应；确认采集 worker 退出后同代恢复宿主，再回切 Argos、核对原库存并移除 Hy。停服必须核对 desktop、Host、worker 的 PID/starttime 退休及两个私有 socket 移除，重启仍要求精确同代与实际 hello Ready。该模式不执行原32/16/5采集或额外 Hy 单句预览，不改变原 Argos 安装自检及完整检查的其它场景。
+
+独立 CLI 不传 `--combination-only` 且不选其它采集模式时，仍保留53响应路径，不是当前 workflow 默认：原宿主本轮实际加载 Argos 双向并 Ready 后，先正常退出宿主，核对原 desktop、Host 与 worker 的 PID/starttime 均退休及两个私有 socket 已移除，再执行现 `alternative_quality.py` 的16句/32请求。采集器继续唯一拥有自己的进程组及原 SIG/EOF/TERM/KILL 清理；退出证实后，以未改的库存、设置及精确同一安装代重启真实宿主，再次等待实际 hello Ready。随后沿原 GTK Install Hy 流程，Hy Ready 后同样停服，串行执行 `styled_quality.py --include-holdout` 的16请求和 `glossary_quality.py` 的5请求，每个退出已证实才进入下一个。再次同代重启后，原单句中译法、Select、回切及 Remove 断言全部保留。重启只接受初始化 `idle` 及精确同代；正常包事务仍要求迁代，未放宽原断言。
 
 采集期间仅锁住该自有 session、安装器与已实际服务的精确代的现有生产锁，拒绝 Host/installer 并发，不创建锁标记或遍历未知代。runner 在 fixture 进程中同步执行，有限隔离并恢复其 Python 模块、argv 与导入路径，避免已导入的发行包模块遮蔽当前采集源码；不增加 wrapper 模型所有者，不复制采集逻辑。
 
-每个 runner 保持600秒采集及最多7秒清理，原产品每请求期限和模型资源配置不变。fixture 原240秒只扣除实际采集 wall time；外层从启动起共2061秒工作窗口，另30秒退出余量，总2091秒，后3秒留给 compositor 清理。超过工作截止不再启动或恢复进程。compositor 提前退出或外层中断时，仅向本轮已核 PID/starttime 的 inside 进程发 TERM，等待 runner 原清理和 fixture finally；不能把 compositor 已退出当作 worker 退出证明。任意外部 SIGKILL、无法读取身份或缺少最终报告不构成回收保证。
+每个 runner 保持600秒采集及最多7秒清理，原产品每请求期限和模型资源配置不变。fixture 原240秒只扣除实际采集 wall time；8响应模式外层从启动起共847秒工作窗口，另30秒退出余量，总877秒；53响应、解码对照及固定诊断路径仍为2061秒工作窗口与30秒退出余量，总2091秒，后3秒留给 compositor 清理。超过工作截止不再启动或恢复进程。compositor 提前退出或外层中断时，仅向本轮已核 PID/starttime 的 inside 进程发 TERM，等待 runner 原清理和 fixture finally；不能把 compositor 已退出当作 worker 退出证明。任意外部 SIGKILL、无法读取身份或缺少最终报告不构成回收保证。
 
-输出的三个原始 JSON 保留完整原有响应及人工复核字段；`hy-package-result.json` 另记录总 wall time、采集时间、非采集时间、最多53个质量请求及实际记录的请求尝试数（包含失败在途请求，hello 另计；不包含原生命周期单句试译）。完成要求逐份 `workerStarts=1`、正常退出码0、`workerExitConfirmed=true`、`status=completed`、精确原始/holdout输入与库存身份，以及32/16/5请求，不能只以“不超过上限”放行。产生响应后 `quality` 保持 `not-reviewed`，尚未采集则如实为 `not-run`；两者都不是语言质量通过。
+8响应模式输出 `styled_glossary-quality.json`，53响应路径输出原三个 JSON，均保留完整原始请求、响应及初始为null的人工复核字段；`hy-package-result.json` 另记录总 wall time、采集时间、非采集时间、所选固定集合的最大质量请求数及实际记录的请求尝试数（包含失败在途请求，hello 另计；不包含原生命周期单句试译）。完成要求逐份 `workerStarts=1`、正常退出码0、`workerExitConfirmed=true`、`status=completed`、精确原始/holdout输入与库存身份，以及精确请求数（8响应模式为8次翻译、1次hello；53响应路径为32/16/5次翻译、各1次hello），不能只以“不超过上限”放行。产生响应后 `quality` 保持 `not-reviewed`，尚未采集则如实为 `not-run`；两者都不是语言质量通过。
 
-失败不重试，不继续恢复、Select 或 Remove。原 JSON、隔离数据和失败 HOME/搬迁包保留；缺失、坏或空的报告及退出未知均失败。outer 只在 fixture finally 后的本轮完成/失败标记、精确 inside 退出及各份退出证据齐全后收束。本入口的受控测试只证明参数、导入隔离、预算、取消/进程清理和失败保留；实际53请求、GTK全链、资源峰值与语言人工复核仍须分别执行，不能由这些测试推断。
+失败不重试，不继续恢复、Select 或 Remove。原 JSON、隔离数据和失败 HOME/搬迁包保留；缺失、坏或空的报告及退出未知均失败。outer 只在 fixture finally 后的本轮完成/失败标记、精确 inside 退出及各份退出证据齐全后收束。本入口的受控测试只证明参数、导入隔离、预算、取消/进程清理和失败保留；所选实际响应采集、GTK全链、资源峰值与语言人工复核仍须分别执行，不能由这些测试推断。
 
 ### 可选的 Hy 解码对照
 
-手动运行时，可在 `full` 或上述 `quality-only` 与 `collect_translation_quality=true` 之外明确设置 `hy_decode_comparison=true`。没有 dispatch 入口时，可在上述经验证的 push 采集 footer 同一末尾段中，紧接 `TypeLay-Quality-Capture: true` 下一行仅写 `TypeLay-Hy-Decode-Comparison: true`。两行各出现一次且顺序固定；对照标记单独出现、重复、换序、错误值或不在尾段均不启用采集，并保留完整检查。push 对照仍运行全部共享、Windows、Linux 检查，不提供 quality-only 捷径。默认仍采集53次；该选项将风格槽扩为 A/B 各16次，总计69次。它不改变发行模型或生产默认：A 使用同次实际发行 worker 的 greedy，B 在隔离产物目录中复用已验证 CPU 库编译另一个 adapter。两组使用同一安装代、模型、提示和固定样本，但 native/manifest 摘要必须分别记录，不能冒称同一二进制。
+手动运行时，可在 `full` 或上述 `quality-only` 与 `collect_translation_quality=true` 之外明确设置 `hy_decode_comparison=true`。没有 dispatch 入口时，可在上述经验证的 push 采集 footer 同一末尾段中，紧接 `TypeLay-Quality-Capture: true` 下一行仅写 `TypeLay-Hy-Decode-Comparison: true`。两行各出现一次且顺序固定；对照标记单独出现、重复、换序、错误值或不在尾段均不启用采集，并保留完整检查。push 对照仍运行全部共享、Windows、Linux 检查，不提供 quality-only 捷径。该选项与8响应组合模式互斥，使用原53响应路径并将风格槽扩为 A/B 各16次，总计69次。它不改变发行模型或生产默认：A 使用同次实际发行 worker 的 greedy，B 在隔离产物目录中复用已验证 CPU 库编译另一个 adapter。两组使用同一安装代、模型、提示和固定样本，但 native/manifest 摘要必须分别记录，不能冒称同一二进制。
 
 B 采用明确的 Transformers v5.6.0 顺序：repetition penalty 1.05、temperature 0.7、top-k 20、top-p 0.6，最后用逐请求重置的固定 seed `20261020` 采样。这只是原产品资源预算下的四参数对照，不是原厂完整运行配置；ctx1024、新生成192 token、CPU2、2.5 GiB及原 EOG/截断拒绝保持不变。
 
@@ -162,11 +164,11 @@ python tests/shared/worker/ordinary_quality.py --python "$HY_PYTHON" --models "$
 
 ### 显式固定模型根因诊断（40 响应）
 
-需要实际定位 Argos 原始候选与选择边界、Hy ordinary 与 styled 提示路径时，可在 `collect_translation_quality=true` 之外明确选择 `fixed_model_diagnostics=true`。它与 `hy_decode_comparison` 互斥，替换而非追加原53/69采集。无 dispatch 入口时，沿上述严格校验的 push footer，最后一个空行分隔段仅含相邻两行，依次为 `TypeLay-Quality-Capture: true` 与 `TypeLay-Fixed-Model-Diagnostics: true`。两行必须唯一、精确且顺序固定；与 comparison 共选或畸形标记不采集，完整检查保留。普通 push/default manual 行为不变。
+需要实际定位 Argos 原始候选与选择边界、Hy ordinary 与 styled 提示路径时，可在 `collect_translation_quality=true` 之外明确选择 `fixed_model_diagnostics=true`。它与 `hy_decode_comparison` 互斥，替换而非追加默认8响应组合采集或原53/69采集。无 dispatch 入口时，沿上述严格校验的 push footer，最后一个空行分隔段仅含相邻两行，依次为 `TypeLay-Quality-Capture: true` 与 `TypeLay-Fixed-Model-Diagnostics: true`。两行必须唯一、精确且顺序固定；与 comparison 共选或畸形标记不采集，完整检查保留。普通 push/default manual 行为不变。
 
 该选项只在原包生命周期的 Argos Ready/退出/同代独占锁之后执行 `alternative_quality.py --capture-decoding-boundary` 的32请求，Hy Ready/退出后执行 `ordinary_quality.py` 的8请求，合计40个诊断响应及另计2个 hello。不会执行 styled、glossary 或 B 采样；原生命周期自身的普通翻译 smoke 仍保留，另计且不是这40个诊断样本。instrumented Argos 入口必须先通过现有完整发行 worker Python 模块、requirements/catalog、模型/CPU锁及 ABI5 manifest 同源核验，原始报告明确记录插桩方法与 observer SHA；Hy 使用真实发行 worker 原 greedy。两模型各自固定输入、原始响应、库存与 worker 身份分开记录，不跨安装代或 native 版本冒称成对因果。
 
-复用同一现役安装、宿主退出与重启、精确代锁和退出确认，不增加模型所有者。诊断模式下 Hy cache preparation 使用 `--cache-only`，必须已有固定缓存完整文件，缺失、链接或哈希错误直接失败，禁止下载补齐；Argos 使用本次原有正式安装。原70分钟job、36分钟步骤、2061秒工作窗/30秒外层清理及每runner600秒/7秒清理均不增加。输出仍为 `quality-capture/alternative-quality.json`、`ordinary-quality.json` 和生命周期汇总，禁止覆盖；不新增模型或 HOME artifact。失败不重试或续跑，默认53和可选69保持原行为。此入口和无模型行为测试不是实测响应或质量放行，采集完成仍须按原义等锚点人工审阅，三项质量门保持关闭。
+复用同一现役安装、宿主退出与重启、精确代锁和退出确认，不增加模型所有者。诊断模式下 Hy cache preparation 使用 `--cache-only`，必须已有固定缓存完整文件，缺失、链接或哈希错误直接失败，禁止下载补齐；Argos 使用本次原有正式安装。原70分钟job、36分钟步骤、2061秒工作窗/30秒外层清理及每runner600秒/7秒清理均不增加。输出仍为 `quality-capture/alternative-quality.json`、`ordinary-quality.json` 和生命周期汇总，禁止覆盖；不新增模型或 HOME artifact。失败不重试或续跑，独立CLI的53响应和可选69响应路径保持原行为。此入口和无模型行为测试不是实测响应或质量放行，采集完成仍须按原义等锚点人工审阅，三项质量门保持关闭。
 
 ## GTK 语言预览拒绝回归
 

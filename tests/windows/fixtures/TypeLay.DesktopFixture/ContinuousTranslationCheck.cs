@@ -809,6 +809,7 @@ internal static partial class ContinuousTranslationCheck
         int firstPreviewSourceUnits = 0, finalSourceUnits = 0;
         bool sourceUnchanged = false, zeroSubmits = false, sourceFocusRetained = false, submitCounterVerified = false;
         ChildProcess? native = null;
+        NativeSourceSetup.Observation? sourceSetup = null;
         OverlayWindow? overlay = null;
         SessionController? controller = null;
         Task<string>? replay = null;
@@ -823,9 +824,35 @@ internal static partial class ContinuousTranslationCheck
             nint root = (nint)host.RootHwnd;
             nint field = (nint)host.Fields.Single(item => item.Name == "a").Hwnd;
             result.Stage = "prepare-source";
-            N.SendString(field, N.WM_SETTEXT, "");
-            Require(N.PostMessage(root, N.FixtureFocus, (nuint)field, 0), "source-focus-request");
-            await UntilAsync(() => N.Focused() == (root, field), setupDeadline.Token);
+            sourceSetup = new NativeSourceSetup.Observation();
+            try
+            {
+                sourceSetup.TextStartedAtMs = WindowsInterruptClock.NowMs;
+                try
+                {
+                    N.SendString(field, N.WM_SETTEXT, "");
+                }
+                finally { sourceSetup.TextEndedAtMs = WindowsInterruptClock.NowMs; }
+                result.Stage = "click-visible-source";
+                sourceSetup.ClickStartedAtMs = WindowsInterruptClock.NowMs;
+                try
+                {
+                    await NativeSourceSetup.ClickAsync(root, field, native.Process, setupDeadline.Token);
+                }
+                finally { sourceSetup.ClickEndedAtMs = WindowsInterruptClock.NowMs; }
+                result.Stage = "wait-source-focus";
+                await UntilAsync(() =>
+                {
+                    sourceSetup.Observe(root, field, native.Process);
+                    Require(sourceSetup.IdentityMatched, "continuous-source-identity-changed");
+                    return sourceSetup.FocusMatched;
+                }, setupDeadline.Token);
+            }
+            finally
+            {
+                sourceSetup.SetupEndedAtMs = WindowsInterruptClock.NowMs;
+                sourceSetup.Observe(root, field, native.Process);
+            }
             overlay = new OverlayWindow(automationTest: true);
             var settings = CreateSettings(Path.Combine(directory, "continuous", "settings.json"), WorkMode.Automatic);
             controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true);
@@ -932,6 +959,7 @@ internal static partial class ContinuousTranslationCheck
             CompleteCleanup(result);
             result.Facts = new
             {
+                sourceSetup,
                 firstPreviewMs,
                 refreshedPreviewMs,
                 firstPreviewSourceUnits,
@@ -992,11 +1020,17 @@ internal static partial class ContinuousTranslationCheck
             try
             {
                 sourceSetup.TextStartedAtMs = WindowsInterruptClock.NowMs;
-                try { N.SendString(field, N.WM_SETTEXT, source); }
+                try
+                {
+                    N.SendString(field, N.WM_SETTEXT, source);
+                }
                 finally { sourceSetup.TextEndedAtMs = WindowsInterruptClock.NowMs; }
                 result.Stage = "click-visible-source";
                 sourceSetup.ClickStartedAtMs = WindowsInterruptClock.NowMs;
-                try { await NativeSourceSetup.ClickAsync(root, field, native.Process, setupDeadline.Token); }
+                try
+                {
+                    await NativeSourceSetup.ClickAsync(root, field, native.Process, setupDeadline.Token);
+                }
                 finally { sourceSetup.ClickEndedAtMs = WindowsInterruptClock.NowMs; }
                 result.Stage = "wait-source-focus";
                 await UntilAsync(() =>
@@ -1364,6 +1398,7 @@ internal static partial class ContinuousTranslationCheck
             return;
         result.Outcome = "failed";
         result.Failure = error is CheckFailure check ? check.Code
+            : error is NativeSourceSetup.Failure sourceSetup ? sourceSetup.Code
             : error is TypeLay.Windows.Testing.BrowserWindows.Failure browser ? browser.Code
             : error is OperationCanceledException ? deadlineCode : "operation-failed";
         result.ErrorType = error.GetType().Name;
