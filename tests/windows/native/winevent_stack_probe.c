@@ -347,12 +347,20 @@ __declspec(dllexport) uint32_t ArmSourceClaim(HANDLE root, HANDLE edit, uint64_t
     claim_mapping = OpenFileMappingW(4, 0, name);
     if (!claim_mapping) return 3;
     claim_header = MapViewOfFile(claim_mapping, 4, 0, 0, sizeof(SourceClaimHeader));
-    if (!claim_header || claim_header->version != 2 || claim_header->bytes != 49336
+    if (!claim_header || claim_header->version != 3 || claim_header->bytes != 49344
         || claim_header->state != 1 || claim_header->claim || claim_header->tx.version != 2
         || claim_header->tx.pid != process_id || claim_header->tx.thread != thread_id
         || claim_header->tx.hwnd != (uint64_t)(uintptr_t)edit || claim_header->tx.cookie != current_cookie
-        || claim_header->tx.start != 4 || claim_header->tx.end != 7
-        || claim_header->tx.expected_selection_start || claim_header->tx.expected_selection_end) return 4;
+        || claim_header->tx.length < 0 || claim_header->tx.length > 8192
+        || claim_header->tx.start < 0 || claim_header->tx.end < claim_header->tx.start
+        || claim_header->tx.end > claim_header->tx.length
+        || claim_header->tx.expected_selection_start < 0
+        || claim_header->tx.expected_selection_end < claim_header->tx.expected_selection_start
+        || claim_header->tx.expected_selection_end > claim_header->tx.length
+        // The caret-location mode observes one exact selection transition.
+        // VALUECHANGE mode instead observes the native write for any valid scope.
+        || (mode == 1 && (claim_header->tx.start != 4 || claim_header->tx.end != 7
+            || claim_header->tx.expected_selection_start || claim_header->tx.expected_selection_end))) return 4;
     claim_mode = mode;
     uint32_t event = mode == 1 ? LocationChange : 0x800e;
     claim_hook = SetWinEventHook(event, event, module, on_source_claim, process_id, thread_id, InContext);

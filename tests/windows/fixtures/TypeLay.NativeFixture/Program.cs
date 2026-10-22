@@ -1,3 +1,5 @@
+extern alias BrokerProduction;
+
 using System.Collections.Concurrent;
 using TypeLay.Windows;
 using System.Diagnostics;
@@ -11,6 +13,7 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 
 internal static class Program
 {
+    [MTAThread]
     private static int Main(string[] args)
     {
         if (!OperatingSystem.IsWindows() || !Environment.Is64BitProcess)
@@ -18,6 +21,8 @@ internal static class Program
             Console.Error.WriteLine("Native fixture requires Windows x64.");
             return 2;
         }
+        if (args.Length == 1 && args[0] == "--source-broker")
+            return BrokerProduction::TypeLay.Broker.Program.Run(sourcePrototype: true);
         if (args.Length == 3 && args[0] == "--broker-queue-probe" && Guid.TryParse(args[1], out _)
             && Path.IsPathFullyQualified(args[2]))
             return BrokerQueueProbe.Run(args[1], args[2]).GetAwaiter().GetResult();

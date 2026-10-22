@@ -371,6 +371,17 @@ public sealed class Session
         && job.ConfigurationRevision == _configurationRevision && source.SameSource(job.Basis)
         && source.InputEpoch == job.Basis.InputEpoch;
 
+    // Keep the current manual text private while its source cannot be observed.
+    // Retiring the revision also prevents any old queued plan from reviving on return.
+    public bool SuspendManualObservation()
+    {
+        if (State != SessionState.EditedTranslationPending)
+            return false;
+        _revision++;
+        _focus = FocusMember.Other;
+        return true;
+    }
+
     public bool BeginEdit()
     {
         if (!CanBeginEdit)

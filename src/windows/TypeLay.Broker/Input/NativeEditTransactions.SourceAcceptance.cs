@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text;
 using TypeLay.Core;
 using TypeLay.Windows;
 
@@ -9,9 +10,9 @@ namespace TypeLay.Broker;
 
 internal sealed partial class NativeEditTransactions
 {
-    // Inactive source prototype. Only isolated tests wire the Windows consumer;
-    // no Broker RPC or default App publication calls these methods. Installing
-    // is NOT SourceLocalAcceptanceVersion=1, acceptance, or a CompletedReceipt.
+    // Source prototype wired through authenticated Broker operations only when
+    // explicitly enabled by the isolated fixture. Shipping defaults remain off.
+    // Installation alone is neither acceptance nor a CompletedReceipt.
     internal sealed record SourceInstallationResult(bool Installed, bool Quiet, WriteReceipt? Receipt, bool Claimed = false);
     internal sealed record SourceActivationEndpoint(ulong Nonce, ulong Command);
     private sealed class SourceGrant : IDisposable
@@ -66,8 +67,9 @@ internal sealed partial class NativeEditTransactions
             Mapping.Dispose();
         }
     }
-    private const int SourceHeaderSize = 72, SourceMappingSize = SourceHeaderSize + MappingSize;
+    private const int SourceHeaderSize = 72, SourceMappingSize = SourceHeaderSize + MappingSize + 8;
     private SourceGrant? _sourceGrant;
+    private (Guid Generation, Guid Grant, SourceInstallationResult Result)? _sourceTerminal;
     // Exact process handles remain owned until their source hook is detached.
     // PID/HWND disappearance alone is never used as a quiet acknowledgement.
     private readonly Dictionary<uint, Process> _sourceHookProcesses = new();
@@ -98,6 +100,7 @@ internal sealed partial class NativeEditTransactions
         if (process is null)
             return new(false, true, new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged));
 
+        _sourceTerminal = null;
         byte[] nonce = RandomNumberGenerator.GetBytes(8);
         ulong first = BitConverter.ToUInt64(nonce, 0);
         var mapping = MemoryMappedFile.CreateNew($"Local\\TypeLay.Source.{first:x16}",
@@ -106,7 +109,7 @@ internal sealed partial class NativeEditTransactions
         try
         {
             view = mapping.CreateViewAccessor(0, SourceMappingSize, MemoryMappedFileAccess.ReadWrite);
-            view.Write(0, 2u);
+            view.Write(0, 3u);
             view.Write(4, SourceMappingSize);
             view.WriteArray(16, generation.ToByteArray(), 0, 16);
             view.WriteArray(32, plan.Id.ToByteArray(), 0, 16);
@@ -152,9 +155,24 @@ internal sealed partial class NativeEditTransactions
     internal SourceInstallationResult RetireSourceAcceptance(Guid generation, Guid grant)
     {
         if (!MatchesSourceGrant(generation, grant))
-            return new(false, false, null);
+            return _sourceTerminal is { } terminal && terminal.Generation == generation && terminal.Grant == grant
+                ? terminal.Result : new(false, false, null);
         _sourceGrant!.Sealed = true;
         return ExchangeSourceGrant(_sourceRevokeMessage, retiring: true);
+    }
+
+    internal void ReleaseSourceCompletionBody(Guid generation, Guid grant)
+    {
+        if (_sourceTerminal is { } terminal && terminal.Generation == generation && terminal.Grant == grant)
+        {
+            var result = terminal.Result;
+            // Ownership of the full completion passes to this response only.
+            // A lost/repeated response can prove Claim/Quiet, not replay success.
+            _sourceTerminal = (generation, grant, result with
+            {
+                Receipt = result.Claimed ? new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome) : result.Receipt
+            });
+        }
     }
 
     private bool MatchesSourceGrant(Guid generation, Guid grant) => _sourceGrant is { } current
@@ -163,11 +181,11 @@ internal sealed partial class NativeEditTransactions
     private bool SourceInstallationAvailable()
     {
         if (_library == 0 || !NativeLibrary.TryGetExport(_library, "TypeLaySourceInstallationVersion", out nint version)
-            || Marshal.GetDelegateForFunctionPointer<ReadProtocolVersion>(version)() != 2)
+            || Marshal.GetDelegateForFunctionPointer<ReadProtocolVersion>(version)() != 3)
             return false;
-        _sourceInstallMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourceInstall.v2");
-        _sourceRevokeMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourceRevoke.v2");
-        _sourcePollMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourcePoll.v2");
+        _sourceInstallMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourceInstall.v3");
+        _sourceRevokeMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourceRevoke.v3");
+        _sourcePollMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourcePoll.v3");
         return _sourceInstallMessage != 0 && _sourceRevokeMessage != 0 && _sourcePollMessage != 0;
     }
 
@@ -179,14 +197,16 @@ internal sealed partial class NativeEditTransactions
             // The held process handle proves no callback can remain. This is
             // resource retirement, not a fabricated native execution receipt.
             bool claimObserved = grant.View.ReadUInt32(64) == 1;
+            var exited = new SourceInstallationResult(false, true, null, claimObserved);
+            _sourceTerminal = (grant.Generation, grant.Permit.Plan.Id, exited);
             grant.Dispose();
             _sourceGrant = null;
-            return new(false, true, null, claimObserved);
+            return exited;
         }
         if (grant.Command == ulong.MaxValue)
         {
             grant.Sealed = true;
-            return new(false, false, null);
+            return new(false, false, null, grant.View.ReadUInt32(64) == 1);
         }
         ulong command = ++grant.Command;
         // Requests are immutable after initial publication. Operations have
@@ -196,7 +216,7 @@ internal sealed partial class NativeEditTransactions
         if (sent == 0)
         {
             grant.Sealed = true;
-            return new(false, false, null); // Unknown installation, NOT a write outcome.
+            return new(false, false, null, grant.View.ReadUInt32(64) == 1); // Unknown installation, NOT a write outcome.
         }
         uint state = grant.View.ReadUInt32(8);
         uint operation = grant.View.ReadUInt32(12);
@@ -205,14 +225,14 @@ internal sealed partial class NativeEditTransactions
         if (acknowledgement != command || operation != expectedOperation)
         {
             grant.Sealed = true;
-            return new(false, false, null);
+            return new(false, false, null, grant.View.ReadUInt32(64) == 1);
         }
         uint status = grant.View.ReadUInt32(SourceHeaderSize + 4);
         Denial reason = (Denial)grant.View.ReadUInt32(SourceHeaderSize + 8);
         bool claimed = grant.View.ReadUInt32(64) == 1;
         WriteReceipt? receipt = Enum.IsDefined(reason) ? status switch
         {
-            1 when claimed && reason == Denial.None => new(WriteStatus.Verified, Denial.None),
+            1 when claimed && reason == Denial.None => ReadSourceCompletion(grant),
             2 when reason != Denial.None => new(WriteStatus.RejectedBeforeMutation, reason),
             3 when claimed => new(WriteStatus.OutcomeUnknown, reason),
             _ => null
@@ -227,10 +247,42 @@ internal sealed partial class NativeEditTransactions
         {
             // Only the synchronous source ACK permits releasing the mapping and
             // subsequently changing its consumer or removing the owning hook.
+            _sourceTerminal = (grant.Generation, grant.Permit.Plan.Id, new(installed, quiet, receipt, claimed));
             grant.Dispose();
             _sourceGrant = null;
         }
         return new(installed, quiet, receipt, claimed);
+    }
+
+    private static WriteReceipt ReadSourceCompletion(SourceGrant grant)
+    {
+        var view = grant.View;
+        int length = view.ReadInt32(SourceHeaderSize + 56);
+        var selection = new TextRange(view.ReadInt32(SourceHeaderSize + 72), view.ReadInt32(SourceHeaderSize + 76));
+        var ime = (ImeState)view.ReadInt32(SourceHeaderSize + 84);
+        long verifiedAt = view.ReadInt64(SourceHeaderSize + MappingSize);
+        var plan = grant.Permit.Plan;
+        if (length is < 0 or > Limits.MaxTextUnits || ime != ImeState.Clear
+            || verifiedAt < grant.Permit.ObservedAtMs || verifiedAt > WindowsInterruptClock.NowMs)
+            return new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome);
+        byte[] bytes = new byte[length * 2];
+        string observed;
+        try
+        {
+            view.ReadArray(SourceHeaderSize + HeaderSize + 2 * BufferBytes, bytes, 0, bytes.Length);
+            observed = Encoding.Unicode.GetString(bytes);
+        }
+        finally { CryptographicOperations.ZeroMemory(bytes); }
+        var snapshot = plan.Expected with
+        {
+            Text = observed,
+            Selection = selection,
+            Ime = ime,
+            ObservedAtMs = verifiedAt
+        };
+        if (!snapshot.IsUsable || observed != plan.ResultText || selection != new TextRange(plan.Caret, plan.Caret))
+            return new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome);
+        return new(WriteStatus.Verified, Denial.None, snapshot);
     }
 
     private bool RetireSourceBinding(Binding binding)

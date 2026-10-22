@@ -100,6 +100,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
         Volatile.Read(ref _sourceGlossaryReceipt)?.Revoke();
         RevokeOwnedPrefix();
         InvalidateOrdinaryChord();
+        RevokeStockCandidate();
         _gate.Revoke();
         _ownedGate.Revoke();
         Interlocked.Exchange(ref _lease, null);
@@ -159,6 +160,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 if (ev == 3)
                     Interlocked.Increment(ref _windowEpoch);
                 Interlocked.Increment(ref _foregroundEpoch);
+                RevokeStockCandidate();
                 _gate.Revoke();
                 _ownedGate.Revoke();
                 RevokeOwnedPrefix();
@@ -191,11 +193,14 @@ internal sealed partial class KeyboardHook : IInputMonitor
         Interlocked.Exchange(ref _lease, new(lease, (nint)target.RootHwnd));
         if (_ownedPracticeTarget?.Invoke(lease.Source.Target) == true)
         {
+            RevokeStockCandidate();
             _gate.Revoke();
             _publishOwned?.Invoke(lease, permit);
             return;
         }
-        if (permit is not null)
+        if (PublishStockCandidate(lease, permit))
+            return;
+        else if (permit is not null)
             _gate.Publish(permit);
         else
             _gate.Revoke();
@@ -228,6 +233,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
     }
     public void SetShortcuts(RegisteredShortcut[] shortcuts)
     {
+        RevokeStockCandidate();
         Volatile.Read(ref _sourceGlossaryReceipt)?.Revoke();
         InvalidateOrdinaryChord();
         var configuration = new ShortcutConfiguration(Guid.NewGuid(), shortcuts);
@@ -240,6 +246,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
     }
     public void Revoke()
     {
+        RevokeStockCandidate();
         _gate.Revoke();
         // The editor's normal Tick retires source writing, not its local command.
         if (Volatile.Read(ref _ordinaryChord)?.Source is not null)
@@ -251,8 +258,11 @@ internal sealed partial class KeyboardHook : IInputMonitor
     }
     public bool TryRead(out InputNotice? notice)
     {
+        PumpStockAcceptance();
         FlushShortcutTrace();
-        return _notices.TryDequeue(out notice);
+        bool read = _notices.TryDequeue(out notice);
+        ObserveStockNoticeDelivery(notice);
+        return read;
     }
     private void QueueShortcutTrace(string operation, string reason, ShortcutLease? lease = null, string? action = null,
         bool? wakeRegistered = null, bool? directRegistered = null, long? contentEpoch = null, long? foregroundEpoch = null,
@@ -573,6 +583,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
         if (chord.Editor is not null)
             return -1; // The actual WPF message must claim this original Fn.
         Interlocked.Exchange(ref function.Claimed, 1);
+        RevokeStockCandidate();
         _gate.Revoke();
         var lease = chord.Source!.Observation;
         _notices.Enqueue(new("escape", AcceptedAtMs: now, UserEpoch: UserEpoch, ForegroundEpoch: ForegroundEpoch,
@@ -678,6 +689,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
                     && lease!.Source.Ime == ImeState.Clear && lease.EscapeAllowed;
                 if (_escapeConsumed)
                 {
+                    RevokeStockCandidate();
                     _gate.Revoke();
                     _notices.Enqueue(new("escape", AcceptedAtMs: now, UserEpoch: UserEpoch, ForegroundEpoch: ForegroundEpoch,
                         CommandGeneration: lease!.CommandGeneration, Target: lease.Source.Target, SessionRevision: lease.SessionRevision));
@@ -692,6 +704,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             {
                 // Revoke on every source keystroke, including injected input and modifier changes.
                 Interlocked.Increment(ref _userEpoch);
+                RevokeStockCandidate();
                 _gate.Revoke();
                 // Local translation edits do not alter the saved source basis.
                 // All other input remains conservative, including injected keys.
@@ -844,6 +857,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             // A drag changes the selection even without a UIA focus event.
             if (message != 0x200 || _mouseButtons != 0)
             {
+                RevokeStockCandidate();
                 RevokeOwnedPrefix();
                 InvalidateOrdinaryChord();
                 Interlocked.Increment(ref _contentEpoch);
@@ -855,6 +869,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
     }
     public void Dispose()
     {
+        DisconnectStockAcceptance();
         Interlocked.Exchange(ref _sourceGlossaryReceipt, null)?.Revoke();
         _hotkeys.Dispose();
         Revoke();

@@ -504,7 +504,7 @@ internal sealed partial class KeyboardHook
     public bool AcceptanceReady(SessionViewToken token, AcceptancePermit issued, long nowMs)
     {
         if (_ownedPracticeTarget?.Invoke(token.Target) != true)
-            return true;
+            return StockAcceptanceReady(token, issued, nowMs);
         var installed = CurrentOwnedAcceptance(token, nowMs);
         if (installed is null || nowMs >= installed.ExpiresAtMs - OwnedAcceptanceHandoffMs)
             return false;

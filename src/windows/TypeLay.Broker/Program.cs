@@ -11,7 +11,9 @@ internal static class Program
 {
     // All UIA COM objects and calls remain on this one MTA thread, including disposal.
     [MTAThread]
-    private static int Main()
+    private static int Main() => Run();
+
+    internal static int Run(bool sourcePrototype = false)
     {
         string? token = Environment.GetEnvironmentVariable("TYPELAY_PIPE_TOKEN");
         Environment.SetEnvironmentVariable("TYPELAY_PIPE_TOKEN", null);
@@ -19,7 +21,7 @@ internal static class Program
             return 2;
         using var input = Console.OpenStandardInput();
         using var output = Console.OpenStandardOutput();
-        using var provider = new UiaInputProvider();
+        using var provider = new UiaInputProvider(sourcePrototype);
         long last = 0;
         try
         {
@@ -39,6 +41,8 @@ internal static class Program
                     response = request.Op switch
                     {
                         "hello" => new(BrokerProtocol.Version, request.Id, "ready"),
+                        "source-install" or "source-retire" or "source-receipt" => new(BrokerProtocol.Version,
+                            request.Id, "source-acceptance", SourceAcceptance: provider.SourceAcceptance(request)),
                         "clear" => Clear(provider, request),
                         "direct-clear" => ClearDirect(provider, request),
                         "write" => new(BrokerProtocol.Version, request.Id, "receipt", Receipt: provider.Write(request)),

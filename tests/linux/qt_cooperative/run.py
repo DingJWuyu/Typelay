@@ -1731,13 +1731,40 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                     if not composing:
                         fixture("select", field="second", start=5, length=11)
                         assert state()["second"]["selectionLength"] == 11
-                    if composing:
-                        run(["xdotool", "type", "--delay", "10", "nihao"], env=environment)
-                        wait(
-                            lambda: state().get("secondPreedit") and settled(),
-                            "destination real pinyin composition",
-                        )
                     before = state()
+                    if composing:
+                        text = "nihao"
+                        replies = before["tlqtKeyReplies"]
+                        assert type(replies) is int
+                        run(["xdotool", "type", "--delay", "10", text], env=environment)
+
+                        def destination_composition_ready():
+                            value = state()
+                            # A 20ms fixture snapshot can show an earlier prefix
+                            # already settled while later XTest keys are still
+                            # arriving. Observe every press/release completion,
+                            # then freeze that same retired snapshot, not the
+                            # first nonempty preedit. Do not send a barrier key
+                            # or query/reset B's real composition.
+                            if (
+                                value.get("tlqtKeyReplies") == replies + 2 * len(text)
+                                and value.get("secondPreedit")
+                                and all(
+                                    value.get(name) == 0
+                                    for name in (
+                                        "tlqtPendingDbus",
+                                        "tlqtPendingForward",
+                                        "tlqtOutputDepth",
+                                    )
+                                )
+                            ):
+                                return value
+                            return None
+
+                        before = wait(
+                            destination_composition_ready,
+                            "all destination pinyin key replies and real IM retirement",
+                        )
                     assert not before["plain"]["focused"]
                     receipt = replace_frozen(captured, replacement)
                     assert receipt["status"] == "Verified", receipt
@@ -1768,8 +1795,18 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                         assert after["keys"][event] == before["keys"][event]
                     for counter in ("tlqtCommits", "tlqtPreedits"):
                         assert type(before[counter]) is int
-                        assert changed[counter] == before[counter]
-                        assert after[counter] == before[counter]
+                        assert changed[counter] == before[counter], (
+                            counter,
+                            "during source change",
+                            before[counter],
+                            changed[counter],
+                        )
+                        assert after[counter] == before[counter], (
+                            counter,
+                            "after source change",
+                            before[counter],
+                            after[counter],
+                        )
                     fixture("undo", field="plain")
                     undone = state()
                     assert undone["plain"]["text"] == "A😀\nSecond\nThird"

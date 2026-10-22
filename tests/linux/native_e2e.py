@@ -1077,10 +1077,10 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             require_visible=True,
                         )
                         unchanged()
+                        form_instance = state()["overlayControls"]["typelay-glossary-form"][
+                            "instance"
+                        ]
                         if finish in ("save", "pointer-save", "cancel"):
-                            form_instance = state()["overlayControls"]["typelay-glossary-form"][
-                                "instance"
-                            ]
                             # The auxiliary ACK only withdraws edit affordances;
                             # it must retain this exact form and pending source.
                             auxiliary_view = {
@@ -1222,6 +1222,15 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                     else "replace-buffer"
                                 )
                             else:
+                                # Observe this focus loss before the unchanged
+                                # lease expires, so timer closure cannot pass it.
+                                focus_expiry = now_ms() + 800
+                                assert call("overlay-renew", {**base, "expiresAtMs": focus_expiry})[
+                                    "visible"
+                                ]
+                                current_form = state()["overlayControls"]["typelay-glossary-form"]
+                                assert current_form["instance"] == form_instance
+                                assert current_form["visible"] is True
                                 point("secondEntry")
 
                             def invalidated_source():
@@ -1232,13 +1241,58 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                     for item in native.events[invalidation_start:]
                                 )
 
-                            if finish != "expired":
+                            def external_focus_invalidated():
+                                description = call("describe", {"target": target})
+                                actual = state()
+                                form = actual.get("overlayControls", {}).get(
+                                    "typelay-glossary-form"
+                                )
+                                assert now_ms() < focus_expiry, (
+                                    "external focus closure was not observed before lease expiry"
+                                )
+                                return (
+                                    description is not None
+                                    and description["target"] == target
+                                    and description["focused"] is False
+                                    and actual.get("observedAtMs", 0)
+                                    > clicks[-1]["clickStartedAtMonoMs"]
+                                    and actual["secondEntry"]["focused"] is True
+                                    and actual["firstEntry"]["focused"] is False
+                                    and (
+                                        form is None
+                                        or form["instance"] == form_instance
+                                        and form["visible"] is False
+                                    )
+                                    and any(
+                                        item.get("event") == "ui"
+                                        and item.get("data", {}).get("target") == target
+                                        and item["data"].get("generation") == generation
+                                        and item["data"].get("revision") == base["revision"]
+                                        and item["data"].get("operation") == "visible"
+                                        and item["data"].get("value") is False
+                                        for item in native.events[invalidation_start:]
+                                    )
+                                )
+
+                            if finish == "external-focus":
+                                # The source already lost focus when the form
+                                # opened. Leaving it need not emit another input
+                                # event for that source; native closure is the
+                                # invalidation boundary for this transition.
+                                wait_for(external_focus_invalidated, "real external focus closure")
+                            elif finish != "expired":
                                 wait_for(invalidated_source, "real source/provider invalidation")
-                            # The production host closes its view after this input
-                            # event. Here the native contract must independently
-                            # refuse the old form before any controlled-host hide.
+                            # Native must refuse the old form after input, focus
+                            # loss or expiry, without any controlled-host hide.
                             assert not call("overlay-glossary-open", request_data)["opened"]
                             invalidated = state()
+                            if finish == "external-focus":
+                                assert invalidated["first"] == original["first"]
+                                for name in ("start", "end", "insertions", "deletions"):
+                                    assert (
+                                        invalidated["firstEntry"][name]
+                                        == original["firstEntry"][name]
+                                    )
                             if finish == "replaced-buffer":
                                 assert invalidated["first"] == original["first"]
                                 assert all(

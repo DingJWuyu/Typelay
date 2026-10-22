@@ -19,6 +19,20 @@ namespace TypeLay.App.Tests;
 public sealed class NativeSourceAcceptanceTests
 {
     [Fact]
+    public async Task PreviousPrivateSourceEnvelopeCannotInstallUnderTheNewProtocol()
+    {
+        await using var desktop = await ProductionForegroundWriteTests.Desktop.Start();
+        await desktop.Prepare(desktop.A, "pre old post", new(4, 7));
+        var snapshot = await desktop.Capture();
+        using var wire = new SourceWire(snapshot, version: 2);
+        wire.Send(1);
+        Assert.Equal(2u, wire.State);
+        Assert.Equal((uint)Denial.Unsupported, wire.Reason);
+        Assert.Equal(snapshot.Text, N.ReadText(desktop.A, Limits.MaxTextUnits));
+        Assert.Equal(snapshot.Selection, N.ReadSelection(desktop.A));
+    }
+
+    [Fact]
     public async Task InstallationAndExactRetirementNeverWriteOrMoveSelection()
     {
         await using var desktop = await ProductionForegroundWriteTests.Desktop.Start();
@@ -224,16 +238,16 @@ public sealed class NativeSourceAcceptanceTests
         internal uint State => _view.ReadUInt32(8);
         internal uint Reason => _view.ReadUInt32(80);
 
-        internal SourceWire(InputSnapshot source)
+        internal SourceWire(InputSnapshot source, uint version = 3)
         {
             var target = source.Target.AsWindows();
             _root = (nint)target.RootHwnd;
             byte[] nonce = RandomNumberGenerator.GetBytes(8);
             First = BitConverter.ToUInt64(nonce, 0);
-            _mapping = MemoryMappedFile.CreateNew($"Local\\TypeLay.Source.{First:x16}", 49336);
+            _mapping = MemoryMappedFile.CreateNew($"Local\\TypeLay.Source.{First:x16}", 49344);
             _view = _mapping.CreateViewAccessor();
-            _view.Write(0, 2u);
-            _view.Write(4, 49336u);
+            _view.Write(0, version);
+            _view.Write(4, 49344u);
             _view.WriteArray(16, Guid.NewGuid().ToByteArray(), 0, 16);
             _view.WriteArray(32, Guid.NewGuid().ToByteArray(), 0, 16);
             _view.Write(48, source.ObservedAtMs);
@@ -261,13 +275,13 @@ public sealed class NativeSourceAcceptanceTests
         {
             string name = operation == 1 ? "SourceInstall" : operation == 2 ? "SourceRevoke" : "SourcePoll";
             ulong command = ReserveCommand();
-            N.Send(_root, RegisterWindowMessageW($"TypeLay.NativeInput.{name}.v2"), (nuint)First, unchecked((nint)command));
+            N.Send(_root, RegisterWindowMessageW($"TypeLay.NativeInput.{name}.v3"), (nuint)First, unchecked((nint)command));
             Assert.Equal(command, _view.ReadUInt64(56));
             Assert.Equal((uint)operation, _view.ReadUInt32(12));
         }
         public void Dispose()
         {
-            _view.WriteArray(0, new byte[49336], 0, 49336);
+            _view.WriteArray(0, new byte[49344], 0, 49344);
             _view.Dispose();
             _mapping.Dispose();
         }

@@ -5,9 +5,31 @@ using TypeLay.Windows.Contracts;
 
 namespace TypeLay.App;
 
-internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
-    WindowsApplicationSupport? support = null, KeyboardHook? monitor = null, PracticeHost? practice = null) : IInputService
+internal sealed class WindowsInputService : IInputService
 {
+    private readonly IInputBroker broker;
+    private readonly nint overlay;
+    private readonly WindowsApplicationSupport? support;
+    private readonly KeyboardHook? monitor;
+    private readonly PracticeHost? practice;
+    private readonly bool isolatedSourceAcceptance;
+
+    internal WindowsInputService(IInputBroker broker, nint overlay,
+        WindowsApplicationSupport? support = null, KeyboardHook? monitor = null, PracticeHost? practice = null,
+        bool isolatedSourceAcceptance = false)
+    {
+        this.broker = broker;
+        this.overlay = overlay;
+        this.support = support;
+        this.monitor = monitor;
+        this.practice = practice;
+        this.isolatedSourceAcceptance = isolatedSourceAcceptance;
+        if (isolatedSourceAcceptance && monitor is not null)
+            monitor.ConfigureIsolatedStockAcceptance(async (operation, request) =>
+                (await broker.CallAsync(new(BrokerProtocol.Version, 0, operation, "",
+                    BoundTarget: request.Target, SourceAcceptance: request))).SourceAcceptance);
+    }
+
     public bool Available => broker.Available;
     public async Task StartAsync()
     {
@@ -15,7 +37,7 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
         {
             await broker.StartAsync();
         }
-        catch { support?.Disconnected(); throw; }
+        catch { monitor?.DisconnectStockAcceptance(); support?.Disconnected(); throw; }
     }
     private BrokerRequest Request(string operation, InputContext context) => new(BrokerProtocol.Version, 0, operation, "",
         context.UserEpoch, context.ForegroundEpoch, (long)overlay, context.BoundTarget,
@@ -42,6 +64,10 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
                     CaptureDirect = false
                 };
             var result = await broker.CallAsync(request);
+            // A native claim may complete while this read is in flight. Let the
+            // controller settle its exact receipt before observing post-write text.
+            if (isolatedSourceAcceptance && monitor is not null)
+                await monitor.WaitForStockAcceptanceDeliveryAsync();
             if (practice?.SuppressOwnedCapture(context) == true)
                 return new(null); // An in-flight pre-admission read cannot publish a new basis.
             var evidence = owned ? returnedDescriptor is not null
@@ -54,7 +80,10 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
                 && monitor?.HasSessionConfiguration(configuration) == true
                 ? new SessionShortcutAcknowledgement(source.Target, configuration.Generation, configuration.Bindings,
                     owned ? returnedDescriptor is not null && evidence is not null || practice!.SourceReady(source.Target) : true,
-                    owned ? practice!.EditorReady(source.Target) : true) : null;
+                    owned ? practice!.EditorReady(source.Target) : true,
+                    SourceLocalAcceptanceVersion: isolatedSourceAcceptance && !owned
+                        && source.WriteSupported && WindowsTarget.TryDecode(source.Target, out var nativeSource)
+                        && nativeSource.Provider == "win32-edit-transaction-v2" ? 1 : 0) : null;
             var capture = new InputCapture(result.Snapshot, result.Focus, result.Application,
                 result.UserEpoch, result.ForegroundEpoch, acknowledgement, evidence);
             support?.Observe(capture, broker.Available && monitor?.Ready == true,
@@ -65,7 +94,7 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
                     capture.Snapshot?.ObservedAtMs ?? 0, startedAt);
             return capture;
         }
-        catch { support?.Disconnected(); throw; }
+        catch { monitor?.DisconnectStockAcceptance(); support?.Disconnected(); throw; }
     }
     public async Task<PauseObservation> ObservePauseAsync(InputContext context)
     {
@@ -138,6 +167,7 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
     public async Task ClearAsync(InputContext context) => await broker.CallAsync(Request("clear", context));
     public void Dispose()
     {
+        monitor?.DisconnectStockAcceptance();
         support?.Disconnected();
         broker.Dispose();
     }

@@ -30,6 +30,11 @@ public sealed partial class SessionController : IDisposable
     private SessionShortcutAcknowledgement? _sessionShortcuts;
     // Provenance of the latest source observation, without retaining another text snapshot.
     private (long Revision, long SourceEpoch, long ContentEpoch, long ForegroundEpoch, long WindowEpoch) _alternativeObservation;
+    // Provenance only: the existing Session remains the sole owner of manual text.
+    private sealed record ManualObservation(long UserEpoch, long SourceEpoch, long ContentEpoch,
+        long ForegroundEpoch, long WindowEpoch, long ConfigurationRevision, Guid CommandGeneration,
+        Guid ConnectionId, long UnavailableUntil = 0);
+    private ManualObservation? _manualObservation;
     private readonly ISessionLoop _loop;
     private long _generation, _nextCapture, _permitUntil, _editTransitionUntil, _retryBrokerAt;
     private AcceptancePermit? _presentationPermit;
@@ -308,6 +313,7 @@ public sealed partial class SessionController : IDisposable
         _sessionShortcuts = null;
         _nextCapture = 0;
         _configurationRevision++;
+        _manualObservation = null;
         _commandFeedbackRevision++;
         if (_settings.Value.Enabled && OperationStatus == ResumeSaveFailureStatus)
             OperationStatus = null;
@@ -437,6 +443,8 @@ public sealed partial class SessionController : IDisposable
         if (_awaitingPractice is not null && (_automaticRetirementUnconfirmed || _automaticRetirement is { IsCompleted: false }))
             return;
         long now = _loop.NowMs;
+        if (_manualObservation is { UnavailableUntil: > 0 } && !ManualObservationIsCurrent(now))
+            StopSession("manual-observation-retired");
         if (_pendingDirect is { } pending && !_directRunning)
         {
             if (!_model.Ready || !_broker.Available || now - pending.TriggeredAtMs > 120_000)
@@ -578,6 +586,7 @@ public sealed partial class SessionController : IDisposable
     private SessionShortcutBindings CurrentSessionBindings =>
         SessionShortcutBindings.Restore(_settings.Value.AcceptShortcut, _settings.Value.ExitShortcut);
     private bool SessionBindingsReady(TargetId target, bool editor) => _settings.Value.Enabled
+        && _manualObservation is not { UnavailableUntil: > 0 }
         && _hook.Ready && _broker.Available && _sessionShortcuts is { SourceReady: true } acknowledgement
         && acknowledgement.Target == target && acknowledgement.Generation == _hook.CommandGeneration
         && acknowledgement.Bindings == CurrentSessionBindings && (!editor || acknowledgement.EditorReady);
@@ -705,6 +714,7 @@ public sealed partial class SessionController : IDisposable
         _capturing = true;
         long generation = _generation;
         long configurationRevision = _configurationRevision;
+        Guid connectionId = _hook.ConnectionId;
         long windowEpoch = _hook.WindowEpoch;
         long contentEpoch = _hook.ContentEpoch;
         long sourceGlossaryReadRevision = _sourceGlossaryReadRevision;
@@ -861,6 +871,8 @@ public sealed partial class SessionController : IDisposable
             {
                 captureExit = "capture-empty";
                 var pendingWake = _pendingWakeCapture;
+                if (result.Snapshot is null && !result.ForegroundExpired && SuspendManualObservation(now))
+                    return;
                 StopSession("capture-empty");
                 if (result.Snapshot is null && pendingWake is not null && pendingWake.Generation == generation
                     && pendingWake.FeedbackRevision == _commandFeedbackRevision
@@ -882,6 +894,22 @@ public sealed partial class SessionController : IDisposable
                 _permitUntil = 0;
                 Render();
                 return;
+            }
+            if (_manualObservation is { UnavailableUntil: > 0 })
+            {
+                // Only a new safe observation of the exact original source can
+                // expose the retained draft. Unknown or changed evidence retires it.
+                if (!ManualObservationIsCurrent(now) || result.ForegroundExpired || result.Focus != FocusMember.Source
+                    || result.UserEpoch != _hook.UserEpoch || result.ForegroundEpoch != _hook.ForegroundEpoch
+                    || !snapshot.IsUsable || _session.Current is not { } basis
+                    || snapshot.ObservedAtMs < _manualObservation.UnavailableUntil - Limits.ObservationMaxAgeMs
+                    || snapshot with
+                    {
+                        ObservedAtMs = basis.ObservedAtMs,
+                        Bounds = basis.Bounds
+                    } != basis)
+                    StopSession("manual-observation-changed");
+                _manualObservation = null;
             }
             if (_editTransitionUntil > now && result.Focus == FocusMember.Source
                 && _session.State == SessionState.EditingTranslation)
@@ -956,6 +984,10 @@ public sealed partial class SessionController : IDisposable
             // A keystroke arriving during a remote read must revoke acceptance, but
             // must not starve preview capture while the user continues typing.
             bool inputUnchanged = result.UserEpoch == _hook.UserEpoch && result.ForegroundEpoch == _hook.ForegroundEpoch;
+            _manualObservation = inputUnchanged && _session.State == SessionState.EditedTranslationPending
+                && result.Focus == FocusMember.Source
+                ? new(request.UserEpoch, request.SourceUserEpoch, contentEpoch, request.ForegroundEpoch,
+                    windowEpoch, configurationRevision, request.SessionShortcuts!.Generation, connectionId) : null;
             _alternativeObservation = inputUnchanged
                 ? (_session.Revision, request.SourceUserEpoch, contentEpoch, request.ForegroundEpoch, windowEpoch)
                 : default;
@@ -1848,10 +1880,41 @@ public sealed partial class SessionController : IDisposable
         return true;
     }
 
+    private bool ManualObservationIsCurrent(long now) => _manualObservation is { } observed
+        && _session.State == SessionState.EditedTranslationPending && _session.Current is { } source
+        && (observed.UnavailableUntil == 0 || now < observed.UnavailableUntil)
+        && observed.UserEpoch == _hook.UserEpoch && observed.SourceEpoch == _hook.SourceUserEpoch
+        && observed.ContentEpoch == _hook.ContentEpoch && observed.ForegroundEpoch == _hook.ForegroundEpoch
+        && observed.WindowEpoch == _hook.WindowEpoch && observed.ConfigurationRevision == _configurationRevision
+        && observed.CommandGeneration == _hook.CommandGeneration && observed.ConnectionId == _hook.ConnectionId
+        && _hook.Ready && _broker.Available && _hook.GetFocus(source.Target) == FocusMember.Source;
+
+    private bool SuspendManualObservation(long now)
+    {
+        if (!ManualObservationIsCurrent(now))
+            return false;
+        if (_manualObservation!.UnavailableUntil == 0)
+        {
+            if (!_session.SuspendManualObservation())
+                return false;
+            _manualObservation = _manualObservation with
+            {
+                UnavailableUntil = now + Limits.ObservationMaxAgeMs
+            };
+            _generation++;
+            _sessionShortcuts = null;
+        }
+        RevokeInput("manual-observation-unavailable");
+        _permitUntil = 0;
+        _overlay.HideQuietly();
+        return true;
+    }
+
     public void StopSession() => StopSession("stop-session");
     private void StopSession(string reason)
     {
         CancelGlossaryEntry();
+        _manualObservation = null;
         _styleObservation = null;
         if (_ownedPractice is not null || _awaitingPractice is not null || _awaitingPracticeReturn is not null)
             RetireAutomaticPractice();
@@ -1891,6 +1954,12 @@ public sealed partial class SessionController : IDisposable
         RetireInvalidGlossaryEntry();
         if (_disposed)
             return;
+        if (_manualObservation is { UnavailableUntil: > 0 })
+        {
+            _renderedAcceptanceReady = false;
+            _overlay.HideQuietly();
+            return;
+        }
         if (!_settings.Value.Enabled && PauseAnchorIsCurrent(_loop.NowMs))
         {
             _renderedAcceptanceReady = false;
@@ -1912,7 +1981,8 @@ public sealed partial class SessionController : IDisposable
     public void RefreshAcceptancePresentation() => Render();
     private bool CanPresentAcceptance(long nowMs)
     {
-        if (_glossaryEntry is not null || _presentationPermit is not { } issued || _permitUntil == 0 || nowMs > _permitUntil
+        if (_manualObservation is { UnavailableUntil: > 0 }
+            || _glossaryEntry is not null || _presentationPermit is not { } issued || _permitUntil == 0 || nowMs > _permitUntil
             || _session.State is not (SessionState.ValidTranslation or SessionState.EditedTranslationPending)
             || _session.Current is not { } source)
             return false;

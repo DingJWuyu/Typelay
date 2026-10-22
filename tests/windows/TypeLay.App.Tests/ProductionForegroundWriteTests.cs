@@ -761,7 +761,7 @@ public sealed class ProductionForegroundWriteTests
             _pipeToken = broker.StartInfo.Environment["TYPELAY_PIPE_TOKEN"]!;
             _isolatedDirectory = isolatedDirectory;
         }
-        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? returnTrace = null, string? sourceClaimProbe = null)
+        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? returnTrace = null, string? sourceClaimProbe = null, bool isolatedSourceAcceptance = false)
         {
             var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(30));
@@ -793,7 +793,10 @@ public sealed class ProductionForegroundWriteTests
                     }
                     finally { NativeLibrary.Free(library); }
                 }
-                broker = StartProcessWithTrace(returnTrace, Path.Combine(directory, "TypeLay.Broker.dll"));
+                broker = isolatedSourceAcceptance
+                    ? StartProcessWithTrace(returnTrace, Path.Combine(Repository(),
+                        "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"), "--source-broker")
+                    : StartProcessWithTrace(returnTrace, Path.Combine(directory, "TypeLay.Broker.dll"));
                 var desktop = new Desktop(fixture, broker, deadline, isolatedDirectory);
                 Assert.Equal("ready", (await desktop.Call(new(BrokerProtocol.Version, 0, "hello", ""))).Status);
                 return desktop;

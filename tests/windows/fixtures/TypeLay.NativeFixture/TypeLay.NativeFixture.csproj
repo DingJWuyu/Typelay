@@ -1,8 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- Keep the existing fixture launch contract while hosting the Windows Broker. -->
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <OutputPath>bin/$(Configuration)/net10.0/</OutputPath>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="../../../../src/windows/TypeLay.Broker/TypeLay.Broker.csproj" Aliases="BrokerProduction" />
     <ProjectReference Include="../../../../src/shared/TypeLay.Runtime/TypeLay.Runtime.csproj" />
     <ProjectReference Include="../../support/TypeLay.Platform.Windows/TypeLay.Platform.Windows.csproj" />
   </ItemGroup>

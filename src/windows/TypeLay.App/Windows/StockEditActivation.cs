@@ -7,19 +7,20 @@ using TypeLay.Core;
 
 namespace TypeLay.App;
 
-// Inactive prototype endpoint, installed only by the isolated desktop tests.
-// No RPC, capability publication, owned-practice identity or default route uses
-// it. The fixture knows its two queues do not attach; ordinary apps do not give
+// Isolated prototype endpoint. The authenticated opt-in Broker route and the
+// native boundary tests install it; no default route or owned-practice identity
+// uses it. The fixture knows its two queues do not attach; ordinary apps do not give
 // us that guarantee. A timeout parameter is not a hard real-time hook bound.
 internal sealed class StockEditActivation : IDisposable
 {
     internal sealed record Result(bool Claimed, WriteReceipt? Receipt, bool ExceededBudget, double ElapsedMs);
-    private const int Bytes = 49336, Header = 72;
+    private const int Bytes = 49344, Header = 72;
     internal const uint BudgetMs = 5;
     private readonly MemoryMappedFile _mapping;
     private readonly MemoryMappedViewAccessor _view;
     private readonly nint _library;
     private readonly ActivateNative _activate;
+    private readonly WithdrawNative _withdraw;
     private readonly ulong _nonce, _command;
     private readonly uint _message;
     private int _references = 1, _disposed, _invoked;
@@ -40,7 +41,7 @@ internal sealed class StockEditActivation : IDisposable
             _view = _mapping.CreateViewAccessor(0, Bytes, MemoryMappedFileAccess.ReadWrite);
             byte[] identity = new byte[16];
             _view.ReadArray(16, identity, 0, 16);
-            if (_view.ReadUInt32(0) != 2 || _view.ReadUInt32(4) != Bytes || new Guid(identity) != generation)
+            if (_view.ReadUInt32(0) != 3 || _view.ReadUInt32(4) != Bytes || new Guid(identity) != generation)
                 throw new InvalidOperationException("Source activation generation mismatch.");
             _view.ReadArray(32, identity, 0, 16);
             if (new Guid(identity) != permit.Plan.Id || command <= _view.ReadUInt64(56))
@@ -48,7 +49,9 @@ internal sealed class StockEditActivation : IDisposable
             _library = NativeLibrary.Load(Path.Combine(AppContext.BaseDirectory, "TypeLay.NativeInput.dll"));
             _activate = Marshal.GetDelegateForFunctionPointer<ActivateNative>(
                 NativeLibrary.GetExport(_library, "TypeLaySourceActivate"));
-            _message = RegisterWindowMessageW("TypeLay.NativeInput.SourceActivate.v2");
+            _withdraw = Marshal.GetDelegateForFunctionPointer<WithdrawNative>(
+                NativeLibrary.GetExport(_library, "TypeLaySourceWithdraw"));
+            _message = RegisterWindowMessageW("TypeLay.NativeInput.SourceActivate.v3");
             if (_message == 0)
                 throw new InvalidOperationException("Source activation message unavailable.");
         }
@@ -98,12 +101,33 @@ internal sealed class StockEditActivation : IDisposable
         finally { Release(); }
     }
 
+    // Withdraw authority synchronously, without sending to or waiting on the GUI.
+    // A claimed press remains claimed; retirement still needs the source's ACK.
+    internal void Withdraw()
+    {
+        int references;
+        do
+        {
+            references = Volatile.Read(ref _references);
+            if (references == 0)
+                return;
+        } while (Interlocked.CompareExchange(ref _references, references + 1, references) != references);
+        try
+        {
+            _withdraw(_view.SafeMemoryMappedViewHandle, Bytes);
+        }
+        finally { Release(); }
+    }
+
     public void Dispose()
     {
-        // This closes only the adapter's view. The Broker remains responsible
-        // for the grant mapping and hook through exact source retirement ACK.
+        // Revoke first, then close this adapter's view. The Broker still owns
+        // the grant mapping and hook through exact source retirement ACK.
         if (Interlocked.Exchange(ref _disposed, 1) == 0)
+        {
+            Withdraw();
             Release();
+        }
     }
     private void Release()
     {
@@ -117,6 +141,8 @@ internal sealed class StockEditActivation : IDisposable
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     private delegate uint ActivateNative(SafeMemoryMappedViewHandle view, uint bytes, ulong nonce,
         ulong command, uint timeout, uint message);
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate uint WithdrawNative(SafeMemoryMappedViewHandle view, uint bytes);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern uint RegisterWindowMessageW(string name);
 }

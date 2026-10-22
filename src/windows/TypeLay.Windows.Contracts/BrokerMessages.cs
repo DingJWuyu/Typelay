@@ -14,11 +14,11 @@ public sealed record BrokerRequest(int Version, long Id, string Op, string Token
     long UserEpoch = 0, long ForegroundEpoch = 0, long OverlayHwnd = 0,
     TargetId? BoundTarget = null, WritePlan? Plan = null, string[]? Excluded = null,
     long ExpiresAtMs = 0, long SourceUserEpoch = 0, bool CaptureDirect = false, OwnedCaptureDescriptor? OwnedCapture = null,
-    SourceGlossaryReturnAuthorization? SourceGlossaryReturn = null);
+    SourceGlossaryReturnAuthorization? SourceGlossaryReturn = null, SourceAcceptanceRequest? SourceAcceptance = null);
 public sealed record BrokerResponse(int Version, long Id, string Status,
     InputSnapshot? Snapshot = null, FocusMember Focus = FocusMember.Other,
     WriteReceipt? Receipt = null, string? Application = null,
-    long UserEpoch = 0, long ForegroundEpoch = 0, PauseAnchor? PauseAnchor = null);
+    long UserEpoch = 0, long ForegroundEpoch = 0, PauseAnchor? PauseAnchor = null, SourceAcceptanceResult? SourceAcceptance = null);
 
 // Exact metadata supplied only by the App-owned practice child. BeginSequence is
 // a run generation, not evidence of an IME context; IME is checked natively.
@@ -38,3 +38,12 @@ public sealed record SourceGlossaryReturnAuthorization(Guid Attempt, int Process
     public bool IsValid => Attempt != Guid.Empty && ProcessId > 0 && ProcessStartUtcTicks > 0;
     public string CancellationEventName => FormattableString.Invariant($"Local\\TypeLay.SourceGlossary.{ProcessId}.{Attempt:N}");
 }
+
+// Authenticated, exact-owner source prototype operations. A prepared endpoint is
+// not acceptance: only the native shared Claim word decides the original press.
+public sealed record SourceAcceptanceRequest(Guid Generation, long SessionRevision, TargetId Target,
+    Guid Grant, AcceptancePermit? Permit = null);
+public sealed record SourceActivationEndpoint(ulong Nonce, ulong Command);
+public sealed record SourceAcceptanceResult(Guid Generation, long SessionRevision, TargetId Target,
+    Guid Grant, bool Installed, bool Quiet, bool Claimed,
+    SourceActivationEndpoint? Endpoint = null, WriteReceipt? Receipt = null);

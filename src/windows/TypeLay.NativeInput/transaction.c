@@ -420,6 +420,9 @@ static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accep
         // Recheck on this GUI thread, before the first input side effect. Queue
         // status is deliberately conservative: any pending input, posted work,
         // timer, paint or sent work refuses. Never pump/remove messages to pass.
+        // GetQueueStatus also clears the queried new-message bits. This is NOT
+        // side-effect-free for filtered PeekMessage/WaitMessage hosts; only the
+        // controlled fixture pump is presently eligible for this prototype.
         if (*admission->reason || ime(hwnd) != 1) { tx->reason = 9; return; }
         if (read_text(tx, proc) - 1 != tx->length || !equal(tx->observed, tx->expected, tx->length)) {
             tx->reason = 3; return;
@@ -528,10 +531,12 @@ typedef struct {
     uint64_t acknowledgement;
     uint32_t claim, invoked; // Claim: Armed=0, Claimed=1, Withdrawn=2; never reused.
     Transaction tx;
+    uint64_t verified_at_ms; // Actual successful source verification, never poll time.
 } SourceInstallation;
 _Static_assert(offsetof(SourceInstallation, claim) == 64, "Aligned claim word");
 _Static_assert(offsetof(SourceInstallation, tx) == 72, "Source envelope layout");
-_Static_assert(sizeof(SourceInstallation) == 49336, "Source mapping length");
+_Static_assert(sizeof(SourceInstallation) == 49344, "Source mapping length");
+_Static_assert(offsetof(SourceInstallation, verified_at_ms) == 49336, "Source completion time layout");
 // One candidate per target process, owned by one GUI thread. Only owner is
 // atomic; all remaining members are exclusively accessed by that thread.
 // No retained body, mapped view, function pointer, subclass or module pin.
@@ -545,7 +550,7 @@ static SourceSlot source;
 // Covers unmatched requests too: a downstream hook cannot retire A, install B,
 // and let an outer rejected B request publish a false quiet ACK over that slot.
 static uint32_t source_callback;
-__declspec(dllexport) uint32_t TypeLaySourceInstallationVersion(void) { return 2; }
+__declspec(dllexport) uint32_t TypeLaySourceInstallationVersion(void) { return 3; }
 
 static void source_invalidate(const CallMessage *msg) {
     if (__atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) != GetCurrentThreadId() || source.reason) return;
@@ -640,7 +645,7 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
         copy(request, shared, sizeof(SourceInstallation));
         respond = (uint64_t)msg->lparam > request->acknowledgement;
         Transaction *tx = &request->tx;
-        if (request->version == 2 && request->bytes == sizeof(SourceInstallation)
+        if (request->version == 3 && request->bytes == sizeof(SourceInstallation)
             && respond
             && (request->generation[0] || request->generation[1]) && (request->grant[0] || request->grant[1])
             && tx->thread == thread && tx->pid == GetCurrentProcessId()
@@ -670,6 +675,11 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
                         SourceAdmission admission = { &shared->claim, &source.reason };
                         execute_guarded(tx, 0, 0, 0, &admission);
                     } else { tx->status = 2; tx->reason = source.reason ? source.reason : 6; }
+                    if (tx->status == 1) {
+                        uint64_t verified;
+                        QueryInterruptTimePrecise(&verified);
+                        request->verified_at_ms = verified / 10000;
+                    }
                     source.completed_status = tx->status;
                     source.completed_reason = tx->reason;
                     if (!source.reason) source.reason = 15; // Single use, including preclaim refusal.
@@ -711,6 +721,14 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
         // writes response fields; polling never treats an unsynchronised read as
         // an ACK. SendMessage completion establishes callback completion.
         if (respond) {
+            if (operation == 4 && request->tx.status == 1) {
+                shared->tx.length = request->tx.length;
+                shared->tx.selection_start = request->tx.selection_start;
+                shared->tx.selection_end = request->tx.selection_end;
+                shared->tx.ime = request->tx.ime;
+                copy(shared->tx.observed, request->tx.observed, sizeof(shared->tx.observed));
+                shared->verified_at_ms = request->verified_at_ms;
+            }
             shared->tx.status = request->tx.status;
             shared->tx.reason = request->tx.reason;
             shared->state = request->state;
@@ -731,7 +749,7 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
 // known not to attach queues. This is NOT an ordinary-process readiness proof.
 __declspec(dllexport) uint32_t TypeLaySourceActivate(SourceInstallation *shared, uint32_t bytes,
     uint64_t nonce, uint64_t command, uint32_t timeout, uint32_t message) {
-    if (!shared || bytes != sizeof(SourceInstallation) || shared->version != 2
+    if (!shared || bytes != sizeof(SourceInstallation) || shared->version != 3
         || shared->bytes != bytes || !command || !message || !timeout || timeout > 10) return 0;
     uint32_t unused = 0;
     // Global per-grant single use, including accidentally duplicated local
@@ -764,10 +782,10 @@ __declspec(dllexport) LRESULT TypeLayCallWndProc(int code, WPARAM wp, LPARAM lp)
     if (code >= 0) {
         const CallMessage *msg = (const CallMessage *)lp;
         static uint32_t source_install, source_revoke, source_poll, source_activate;
-        if (!source_install) source_install = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceInstall.v2");
-        if (!source_revoke) source_revoke = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceRevoke.v2");
-        if (!source_poll) source_poll = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourcePoll.v2");
-        if (!source_activate) source_activate = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceActivate.v2");
+        if (!source_install) source_install = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceInstall.v3");
+        if (!source_revoke) source_revoke = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceRevoke.v3");
+        if (!source_poll) source_poll = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourcePoll.v3");
+        if (!source_activate) source_activate = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceActivate.v3");
         if (source_install && msg->message == source_install) return source_message(code, wp, lp, 1);
         if (source_revoke && msg->message == source_revoke) return source_message(code, wp, lp, 2);
         if (source_poll && msg->message == source_poll) return source_message(code, wp, lp, 3);
@@ -817,4 +835,13 @@ __declspec(dllexport) LRESULT TypeLayCallWndProc(int code, WPARAM wp, LPARAM lp)
 }
 int DllMain(HANDLE module, uint32_t reason, void *reserved) {
     (void)module; (void)reason; (void)reserved; return 1;
+}
+
+// A local nonblocking withdrawal is not source Quiet or permission to free the
+// Broker owner. If Claim already won, the caller must preserve that press.
+__declspec(dllexport) uint32_t TypeLaySourceWithdraw(SourceInstallation *shared, uint32_t bytes) {
+    if (!shared || bytes != sizeof(SourceInstallation) || shared->version != 3 || shared->bytes != bytes) return 3;
+    uint32_t armed = 0;
+    __atomic_compare_exchange_n(&shared->claim, &armed, 2, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+    return __atomic_load_n(&shared->claim, __ATOMIC_ACQUIRE);
 }

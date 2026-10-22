@@ -14,9 +14,9 @@ internal sealed class SourceInstallationReentry : IDisposable
     private readonly Hook _callback, _queueCallback;
     private nint _hook;
     private readonly nint _queueHook;
-    private readonly uint _install = RegisterWindowMessageW("TypeLay.NativeInput.SourceInstall.v2");
-    private readonly uint _revoke = RegisterWindowMessageW("TypeLay.NativeInput.SourceRevoke.v2");
-    private readonly uint _activate = RegisterWindowMessageW("TypeLay.NativeInput.SourceActivate.v2");
+    private readonly uint _install = RegisterWindowMessageW("TypeLay.NativeInput.SourceInstall.v3");
+    private readonly uint _revoke = RegisterWindowMessageW("TypeLay.NativeInput.SourceRevoke.v3");
+    private readonly uint _activate = RegisterWindowMessageW("TypeLay.NativeInput.SourceActivate.v3");
     private readonly EventWaitHandle _entered, _release;
     private nuint _first;
     private nint _second;
@@ -24,7 +24,7 @@ internal sealed class SourceInstallationReentry : IDisposable
     private bool _delayReceipt;
     private uint _delayMessage;
     private bool _delayBefore;
-    private int _tabDowns, _tabUps;
+    private int _tabDowns, _tabDownUnits, _tabUps;
     private nint _withoutContext, _savedContext;
     private nint _postField;
     private uint _postMessage;
@@ -50,7 +50,13 @@ internal sealed class SourceInstallationReentry : IDisposable
         {
             var message = Marshal.PtrToStructure<QueueMessage>(lp);
             if (message.WParam == 9 && message.Message == 0x100)
+            {
                 N.SetProp(_root, "TypeLay.Test.SourceTabDown.v1", ++_tabDowns);
+                // A blocked GUI can receive several downs in one queue message.
+                // Count the documented repeat units, without editing the MSG.
+                _tabDownUnits += (int)((long)message.LParam & 0xffff);
+                N.SetProp(_root, "TypeLay.Test.SourceTabDownUnits.v1", _tabDownUnits);
+            }
             if (message.WParam == 9 && message.Message == 0x101)
                 N.SetProp(_root, "TypeLay.Test.SourceTabUp.v1", ++_tabUps);
         }

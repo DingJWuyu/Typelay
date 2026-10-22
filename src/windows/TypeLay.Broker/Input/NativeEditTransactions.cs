@@ -466,6 +466,7 @@ internal sealed partial class NativeEditTransactions : IDisposable
     public void Dispose()
     {
         Clear();
+        _sourceTerminal = null;
         // An unacknowledged source installation still owns this hook/module.
         // Keep the unresolved owner; disposing is not proof of native revocation.
         if (_sourceGrant is not null || _sourceHookProcesses.Count != 0)

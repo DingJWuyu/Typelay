@@ -86,7 +86,7 @@
 - 浏览器合作七个场景及整步通过；记事本设置和只读预览观察通过，但等待公开接受提示仍因 Unknown 安全缺口超时，后续编辑/直接替换及 Hy 未运行。Windows 完整验收仍未通过。
 - 本轮未消除普通自动捕获的输入法安全缺口，Unknown 继续拒写；按需 CaptureDirect 既有 owner-thread 桥仍有同步 IMM 消息重入风险，不能据本轮连续链通过消除该限制。后继候选未经对应验证不记作修复。本轮无质量采集，5068 的 40 次诊断与 386 的 69 次响应仍是各自范围的既有证据，三项质量门继续关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
 
-最近已核对的候选 [`01899305`](https://github.com/DingJWuyu/Typelay/actions/runs/39772384459) 中，正式浏览器合作链、连续交互、发行包检查、受控 native adapter 与 Hy 生产 worker 检查通过；ordinary 受控交互的两次唤醒、编辑回源及退出全部通过，写请求为零，不代表普通原生写回完成。合同仍有截图/托盘测试的观察假设失败，以及100毫秒安装许可内未收到 handled ACK 的失败；后者不能因诊断文件读取错误就判定原因。真实经典 Notepad 接受链仍未通过，之前的 Broker 跨线程 IMM Unknown 不能证明目标线程没有 HIMC。Hy Settings 正常退出已能打开托盘溢出区，但仍未找到精确产品图标。Windows 普通原生安全接受缺口与模型质量门仍未闭合。
+最近已核对的候选 [`9f76f4be`](https://github.com/DingJWuyu/Typelay/actions/runs/39777668556) 中，源受理隔离原型14项真实 Windows 边界测试通过13项，另7项安装/退休测试全部通过；剩余撤回场景卡在原按键队列计数，未因此宣布完整旁路验证。普通只读观察及既有直接写入回归、截图撤销、托盘选择和连续交互检查通过。发行检查的原生 guard 测试另因链接替身缺失而失败，随后真实浏览器、Notepad 与 Hy 消费者未运行。新完整 Controller/Broker/源受理接线仍只在隔离构造下启用，默认能力不开放；真实应用、物理键盘、中文输入法及队列兼容性仍须各自验证。
 
 当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654)下载 [`typelay-windows-e1f55ebd4da69c3d77c4a6447eaad2a146b8bfa6`](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654/artifacts/12342794943)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
 

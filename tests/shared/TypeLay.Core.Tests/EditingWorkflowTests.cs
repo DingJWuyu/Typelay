@@ -56,6 +56,50 @@ public sealed class EditingWorkflowTests
         Assert.False(session.BeginEdit());
     }
 
+    [Fact]
+    public void MissingManualObservationRevokesOldPlansWithoutDestroyingTheDraft()
+    {
+        var (session, source) = Ready();
+        Assert.True(session.BeginEdit());
+        session.ChangeDraft("My retained wording");
+        Assert.True(session.ConfirmSourceReturn(source, 1300));
+        var oldPlan = Assert.IsType<WritePlan>(session.Prepare(source, Context(source), 1300).Plan);
+        Assert.True(session.SuspendManualObservation());
+        Assert.Null(session.Prepare(source, Context(source), 1300).Plan);
+        Assert.False(session.BeginWrite(oldPlan));
+        Assert.Null(session.TakeTranslationJob(1300));
+        session.Observe(source, FocusMember.Source, 1300);
+        Assert.Equal("My retained wording", session.Candidate);
+        Assert.False(session.BeginWrite(oldPlan));
+        var freshPlan = Assert.IsType<WritePlan>(session.Prepare(source, Context(source), 1300).Plan);
+        Assert.NotEqual(oldPlan.Revision, freshPlan.Revision);
+        Assert.True(session.BeginWrite(freshPlan));
+    }
+
+    [Fact]
+    public void LateAutomaticResultCannotReplaceASuspendedOrResumedManualDraft()
+    {
+        var session = NewSession();
+        var source = Sample();
+        session.Observe(source, FocusMember.Source, 1000);
+        var job = Assert.IsType<TranslationJob>(session.TakeTranslationJob(1300));
+        Assert.True(session.Complete(job, "Machine wording"));
+        source = source with
+        {
+            ObservedAtMs = 1300
+        };
+        session.Observe(source, FocusMember.Source, 1300);
+        Assert.True(session.BeginEdit());
+        session.ChangeDraft("My wording");
+        Assert.True(session.ConfirmSourceReturn(source, 1300));
+        Assert.True(session.SuspendManualObservation());
+        Assert.False(session.Complete(job, "Late machine wording"));
+        session.Observe(source, FocusMember.Source, 1300);
+        Assert.False(session.Complete(job, "Late machine wording"));
+        Assert.Equal("My wording", session.Candidate);
+        Assert.Equal("My wording", session.Preview);
+    }
+
     [Fact(DisplayName = "manual-return-failure-preserves-draft")]
     public void ManualReturnFailurePreservesDraft()
     {

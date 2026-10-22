@@ -86,8 +86,25 @@ public sealed class NativeSourceActivationTests
         var retired = native.RetireSourceAcceptance(generation, permit.Plan.Id);
         Assert.True(retired.Quiet);
         Assert.False(retired.Claimed);
-        await Until(() => (long)N.GetProp(desktop.Root, "TypeLay.Test.SourceTabDown.v1") == 2
-            && (long)N.GetProp(desktop.Root, "TypeLay.Test.SourceTabUp.v1") == 1, desktop.Token);
+        Assert.Equal("pre old post", N.ReadText(desktop.A, Limits.MaxTextUnits));
+        Assert.Equal(new TextRange(0, 0), N.ReadSelection(desktop.A));
+        try
+        {
+            await Until(() => (long)N.GetProp(desktop.Root, "TypeLay.Test.SourceTabUp.v1") >= 1, desktop.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            Assert.Fail($"Withdrawn Tab did not reach source: rawDowns={N.GetProp(desktop.Root, "TypeLay.Test.SourceTabDown.v1")}, "
+                + $"downUnits={N.GetProp(desktop.Root, "TypeLay.Test.SourceTabDownUnits.v1")}, "
+                + $"ups={N.GetProp(desktop.Root, "TypeLay.Test.SourceTabUp.v1")}, "
+                + $"continued={N.GetProp(desktop.Root, "TypeLay.Test.SourcePreclaimContinued.v1")}, "
+                + $"delay={N.GetProp(desktop.Root, "TypeLay.Test.SourceDelay.v1")}, "
+                + $"text={N.ReadText(desktop.A, Limits.MaxTextUnits)}, selection={N.ReadSelection(desktop.A)}");
+        }
+        Assert.True((long)N.GetProp(desktop.Root, "TypeLay.Test.SourceTabDownUnits.v1") == 2,
+            $"Expected exactly two down units: rawDowns={N.GetProp(desktop.Root, "TypeLay.Test.SourceTabDown.v1")}, "
+            + $"downUnits={N.GetProp(desktop.Root, "TypeLay.Test.SourceTabDownUnits.v1")}");
+        Assert.Equal((nint)1, N.GetProp(desktop.Root, "TypeLay.Test.SourceTabUp.v1"));
         Assert.Equal("pre old post", N.ReadText(desktop.A, Limits.MaxTextUnits));
         Assert.Equal(new TextRange(0, 0), N.ReadSelection(desktop.A));
         Assert.False(hook.TryRead(out _));

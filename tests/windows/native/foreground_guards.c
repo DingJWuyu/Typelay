@@ -224,9 +224,18 @@ HANDLE GetAncestor(HANDLE hwnd, uint32_t flags) {
 }
 HANDLE GetForegroundWindow(void) { return field.foreground; }
 HANDLE GetFocus(void) { return field.focus; }
-// Existing v2/owned tests never supply SourceAdmission. This is link support,
-// not evidence for the source prototype's real Windows queue checks.
-uint32_t GetQueueStatus(uint32_t flags) { (void)flags; return 0; }
+// Existing v2/owned tests never supply SourceAdmission. COFF still resolves
+// the inactive activation export; fail if this executor-only harness reaches
+// those APIs instead of pretending to prove real Windows queue or IPC behavior.
+HANDLE GetActiveWindow(void) { field.invalid_call = 1; return 0; }
+uint32_t GetQueueStatus(uint32_t flags) { (void)flags; field.invalid_call = 1; return 0; }
+LRESULT SendMessageTimeoutW(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp,
+    uint32_t flags, uint32_t timeout, uintptr_t *result) {
+    (void)hwnd; (void)message; (void)wp; (void)lp; (void)flags; (void)timeout;
+    field.invalid_call = 1;
+    if (result) *result = 0;
+    return 0;
+}
 HANDLE GetParent(HANDLE hwnd) { require_source(hwnd); return handle(field.bad_parent ? OtherField : RootWindow); }
 int IsWindowUnicode(HANDLE hwnd) { require_source(hwnd); return 1; }
 int IsWindowEnabled(HANDLE hwnd) {

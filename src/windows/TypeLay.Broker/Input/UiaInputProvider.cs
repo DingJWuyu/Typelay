@@ -25,7 +25,76 @@ internal sealed class UiaInputProvider : IDisposable
     private FocusMember _lastFocus = FocusMember.Other;
     private string? _application;
     private readonly HashSet<(int, long, string)> _quarantine = new();
+    private readonly bool _sourcePrototype;
+    private SourceAcceptanceRequest? _sourceOwner;
+    public UiaInputProvider(bool sourcePrototype = false) => _sourcePrototype = sourcePrototype;
     public string? Application => _application;
+
+    public SourceAcceptanceResult SourceAcceptance(BrokerRequest request)
+    {
+        var identity = request.SourceAcceptance;
+        if (identity is null)
+            throw new ArgumentException("Missing source owner.");
+        SourceAcceptanceResult Result(bool installed = false, bool quiet = false, bool claimed = false,
+            SourceActivationEndpoint? endpoint = null, WriteReceipt? receipt = null) =>
+            new(identity.Generation, identity.SessionRevision, identity.Target, identity.Grant,
+                installed, quiet, claimed, endpoint, receipt);
+        if (!_sourcePrototype || identity.Generation == Guid.Empty || identity.Grant == Guid.Empty
+            || identity.SessionRevision <= 0)
+            return Result(receipt: new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported));
+        if (request.Op == "source-install")
+        {
+            // Reusing the last observation must not bypass an earlier uncertain
+            // native write, even if the original Runtime session no longer exists.
+            if (WindowsTarget.TryDecode(identity.Target, out var target)
+                && _quarantine.Contains((target.ProcessId, target.ProcessStartUtcTicks, target.ElementToken)))
+                return Result(receipt: new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged));
+            if (_sourceOwner is { Permit: not null } || _sourceOwner?.Grant == identity.Grant
+                || identity.Permit is not { } permit
+                || permit.Plan.Id != identity.Grant || permit.Plan.Expected.Target != identity.Target
+                || _previous is not { } current
+                || permit.Plan.Expected with
+                {
+                    ObservedAtMs = current.ObservedAtMs,
+                    Bounds = current.Bounds
+                } != current
+                || _ownedCapture is not null || _lastFocus != FocusMember.Source)
+                return Result(receipt: new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged));
+            var installed = _edits.InstallSourceAcceptance(identity.Generation, permit);
+            if (!installed.Quiet)
+                _sourceOwner = identity;
+            var endpoint = installed.Installed ? _edits.ReserveSourceActivation(identity.Generation, identity.Grant) : null;
+            return Result(installed.Installed && endpoint is not null, installed.Quiet, installed.Claimed,
+                endpoint is null ? null : new(endpoint.Nonce, endpoint.Command), installed.Receipt);
+        }
+        if (request.Op is not ("source-retire" or "source-receipt") || identity.Permit is not null
+            || _sourceOwner is not { } owner || owner.Generation != identity.Generation
+            || owner.SessionRevision != identity.SessionRevision || owner.Target != identity.Target || owner.Grant != identity.Grant)
+            return Result(receipt: new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged));
+        var terminal = _edits.RetireSourceAcceptance(identity.Generation, identity.Grant);
+        // Claim plus an uncertain response is already unsafe for every writer,
+        // including Direct. Quiet governs lifetime retirement, not quarantine.
+        // Permit is retained until the first terminal transfer, so repeated
+        // metadata-only Unknown after delivered Verified does not quarantine.
+        if (terminal.Claimed && owner.Permit is { } original
+            && terminal.Receipt is null or { Status: WriteStatus.OutcomeUnknown })
+            terminal = terminal with
+            {
+                Receipt = Unknown(original.Plan)
+            };
+        // Keep this exact owner for duplicate terminal reads. A new installation
+        // may replace it only once resource quiet has actually been confirmed.
+        if (terminal.Quiet)
+        {
+            _sourceOwner = owner with
+            {
+                Permit = null
+            };
+            _edits.ReleaseSourceCompletionBody(identity.Generation, identity.Grant);
+        }
+        return Result(quiet: terminal.Quiet, claimed: terminal.Claimed, receipt: terminal.Receipt);
+    }
+
     public void ClearDirect() => _edits.Clear();
 
     public (PauseAnchor?, FocusMember) ObservePause(BrokerRequest request)
@@ -337,7 +406,7 @@ internal sealed class UiaInputProvider : IDisposable
         // reader may supply real source-thread evidence without write capability.
         InputSnapshot? native = !comboBox && request.CaptureDirect
             ? _edits.Capture(id, bounds, _inputEpoch, _focusEpoch)
-            : !comboBox && request.Op == "capture" && ime == ImeState.Unknown
+            : !comboBox && request.Op == "capture" && (_sourcePrototype || ime == ImeState.Unknown)
                 ? _edits.Observe(id, bounds, _inputEpoch, _focusEpoch) : null;
         if (native is { } observed)
         {
@@ -356,7 +425,8 @@ internal sealed class UiaInputProvider : IDisposable
             _previous = observed with
             {
                 InputEpoch = _inputEpoch,
-                FocusEpoch = _focusEpoch
+                FocusEpoch = _focusEpoch,
+                WriteSupported = observed.WriteSupported || _sourcePrototype
             };
             trace?.Result("observed-native");
             return (_previous, FocusMember.Source);

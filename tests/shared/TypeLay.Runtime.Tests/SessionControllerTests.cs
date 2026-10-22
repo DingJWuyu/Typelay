@@ -2440,6 +2440,241 @@ public sealed class SessionControllerTests
         Assert.Null(s.Input.Permit);
     }
 
+    [Theory]
+    [InlineData(WorkMode.Automatic)]
+    [InlineData(WorkMode.OnDemand)]
+    public void TemporaryMissingObservationAfterSourceReturnPreservesTheManualDraft(WorkMode mode)
+    {
+        using var s = new SessionScenario(mode, experimental: true);
+        if (mode == WorkMode.OnDemand)
+            s.Command("wake");
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("retained manual draft");
+        s.View.ReturnRequested!(s.View.Token);
+        s.Tick();
+        Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+        var oldToken = s.View.Token;
+        var oldPermit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null));
+        Assert.False(s.View.Visible);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.View.BeginEditing!(oldToken));
+        s.Controller.RefreshAcceptancePresentation();
+        Assert.False(s.View.Visible);
+        s.Tick();
+        Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+        Assert.Equal("retained manual draft", s.View.Preview);
+        Assert.Equal("retained manual draft", Assert.IsType<AcceptancePermit>(s.Input.Permit).Plan.Replacement);
+        s.Input.Notices.Enqueue(new("accept", oldPermit, s.Loop.NowMs, s.Input.UserEpoch,
+            s.Input.ForegroundEpoch, CommandGeneration: s.Input.CommandGeneration));
+        s.Tick();
+        Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+        Assert.Equal("retained manual draft", s.View.Preview);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData("target")]
+    [InlineData("lifetime")]
+    [InlineData("text")]
+    [InlineData("selection")]
+    [InlineData("input")]
+    [InlineData("focus-epoch")]
+    [InlineData("password")]
+    [InlineData("ime")]
+    [InlineData("user")]
+    [InlineData("source-user")]
+    [InlineData("content")]
+    [InlineData("window")]
+    [InlineData("foreground")]
+    [InlineData("connection")]
+    [InlineData("settings")]
+    [InlineData("leave-family")]
+    public void ChangedEvidenceDuringMissingObservationRetiresTheManualDraft(string change)
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("must not reattach");
+        s.View.ReturnRequested!(s.View.Token);
+        s.Tick();
+        var original = s.Source;
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null));
+        switch (change)
+        {
+            case "target":
+                s.Source = s.Source with
+                {
+                    Target = new("controlled", "other", original.Target.Lifetime)
+                };
+                break;
+            case "lifetime":
+                s.Source = s.Source with
+                {
+                    Target = original.Target with
+                    {
+                        Lifetime = Guid.NewGuid()
+                    }
+                };
+                break;
+            case "text":
+                s.Source = s.Source with
+                {
+                    Text = "other"
+                };
+                break;
+            case "selection":
+                s.Source = s.Source with
+                {
+                    Selection = new(0, 5)
+                };
+                break;
+            case "input":
+                s.Source = s.Source with
+                {
+                    InputEpoch = 2
+                };
+                break;
+            case "focus-epoch":
+                s.Source = s.Source with
+                {
+                    FocusEpoch = 2
+                };
+                break;
+            case "password":
+                s.Source = s.Source with
+                {
+                    Access = FieldAccess.Password
+                };
+                break;
+            case "ime":
+                s.Source = s.Source with
+                {
+                    Ime = ImeState.Unknown,
+                    PreviewText = original.Text
+                };
+                break;
+            case "user":
+                s.Input.UserEpoch++;
+                break;
+            case "source-user":
+                s.Input.SourceUserEpoch++;
+                break;
+            case "content":
+                s.Input.ContentEpoch++;
+                break;
+            case "window":
+                s.Input.WindowEpoch++;
+                break;
+            case "foreground":
+                s.Input.ForegroundEpoch++;
+                break;
+            case "connection":
+                s.Input.ConnectionId = Guid.NewGuid();
+                break;
+            case "settings":
+                s.Settings.Update(s.Settings.Value with
+                {
+                    Target = "ja"
+                });
+                break;
+            case "leave-family":
+                s.Input.FocusedTarget = new("controlled", "other", Guid.NewGuid());
+                break;
+        }
+        if (change is "target" or "lifetime")
+            s.Input.FocusedTarget = s.Source.Target;
+        s.Tick();
+        s.Source = original;
+        s.Input.FocusedTarget = original.Target;
+        s.Tick();
+        Assert.NotEqual("must not reattach", s.View.Preview);
+        Assert.NotEqual("must not reattach", s.Input.Permit?.Plan.Replacement);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void ExplicitForegroundExpiryCannotPreserveOrResumeTheManualDraft(int stage)
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("expired foreground draft");
+        s.View.ReturnRequested!(s.View.Token);
+        s.Tick();
+        if (stage > 0)
+        {
+            s.Service.PendingCapture = new();
+            s.Tick();
+            s.CompleteCapture(new(null));
+        }
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(stage == 2 ? s.Fresh : null, FocusMember.Source,
+            UserEpoch: s.Input.UserEpoch, ForegroundEpoch: s.Input.ForegroundEpoch, ForegroundExpired: true));
+        s.Tick();
+        Assert.NotEqual("expired foreground draft", s.View.Preview);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void ObservationFromBeforeTheGapCannotRestoreTheManualDraft()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("must await a new observation");
+        s.View.ReturnRequested!(s.View.Token);
+        s.Tick();
+        var beforeGap = s.Fresh;
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null));
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(beforeGap, FocusMember.Source,
+            UserEpoch: s.Input.UserEpoch, ForegroundEpoch: s.Input.ForegroundEpoch));
+        s.Tick();
+        Assert.NotEqual("must await a new observation", s.View.Preview);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void RepeatedMissingObservationsDoNotExtendManualDraftRetention()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("expired draft");
+        s.View.ReturnRequested!(s.View.Token);
+        s.Tick();
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null));
+        s.Service.PendingCapture = new();
+        s.Tick(100);
+        s.CompleteCapture(new(null));
+        s.Tick(51);
+        Assert.NotEqual("expired draft", s.View.Preview);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
     [Fact]
     public void FailedSourceReturnResumesTheExistingDraftInsteadOfAcceptingIt()
     {
