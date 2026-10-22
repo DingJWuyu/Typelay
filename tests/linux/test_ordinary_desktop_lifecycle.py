@@ -3,6 +3,7 @@
 No GIMP UI, model, input-method or product acceptance is exercised here.
 """
 
+import asyncio
 import shutil
 import subprocess
 import sys
@@ -10,17 +11,20 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 
+from application_support import ApplicationSupport  # noqa: E402
 from desktop_session import process_identity  # noqa: E402
 from ordinary_gimp import (  # noqa: E402
     acceptable_candidate,
     comment_undo_evidence,
     completed_new_image,
     direct_write_receipt,
+    disconnect_completed,
     full_output_origin_proven,
     fullscreen_content_origin,
     launched_application,
@@ -30,6 +34,51 @@ from ordinary_gimp import (  # noqa: E402
     unique_owned_window,
     validate_nested_output,
 )
+
+
+class DisconnectCompletionTests(unittest.TestCase):
+    def test_removed_receipt_waits_for_public_disconnect_action_completion(self):
+        async def exercise(home):
+            support = ApplicationSupport(SimpleNamespace(home=home, data=home / "data"))
+            started, released = asyncio.Event(), asyncio.Event()
+            facts = [{"id": "desktop-text", "state": "AwaitingApproval", "supportedActions": []}]
+
+            async def stop():
+                started.set()
+                await released.wait()
+                return {"ok": True, "reason": "private-session-stopped"}
+
+            with (
+                patch.object(support.desktop_session, "stop_session", side_effect=stop),
+                patch.object(support, "refresh", new=AsyncMock()),
+            ):
+                action = asyncio.create_task(support.execute("desktop-text", "Disconnect"))
+                try:
+                    await asyncio.wait_for(started.wait(), timeout=5)
+                    # The receipt has disappeared, but the public action is
+                    # still awaiting the stop operation and must not pass.
+                    self.assertFalse(
+                        disconnect_completed(support.installed_application_view(facts), [])
+                    )
+                finally:
+                    released.set()
+                    await asyncio.wait_for(action, timeout=5)
+                self.assertTrue(disconnect_completed(support.installed_application_view(facts), []))
+
+        with tempfile.TemporaryDirectory() as directory:
+            asyncio.run(exercise(Path(directory)))
+
+    def test_successful_settings_result_requires_no_remaining_receipts(self):
+        completed = {"result": "本次连接已结束；接入组件保留，再次打开应用时会重新检查。"}
+        self.assertTrue(disconnect_completed(completed, []))
+        for state in ("starting", "running"):
+            with self.subTest(state=state):
+                self.assertFalse(disconnect_completed(completed, [{"state": state}]))
+
+    def test_missing_or_failed_settings_result_never_finishes_disconnect(self):
+        for application in ({}, {"result": "退出未确认"}):
+            with self.subTest(application=application):
+                self.assertFalse(disconnect_completed(application, []))
 
 
 class CommentUndoEvidenceTests(unittest.TestCase):

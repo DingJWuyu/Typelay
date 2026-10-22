@@ -210,6 +210,16 @@ def properties_click_point(
     return point
 
 
+def disconnect_completed(application, observed_receipts):
+    # Settings publishes this user-visible result only after stop_session has
+    # returned and released its action lock. Receipt removal alone happens
+    # earlier. Keep this in step with the public Disconnect completion text.
+    return (
+        application.get("result") == "本次连接已结束；接入组件保留，再次打开应用时会重新检查。"
+        and not observed_receipts
+    )
+
+
 def session_exit_confirmed(data, identities):
     """A removed receipt is not proof that its guardian finished final cleanup."""
     if receipts(data):
@@ -1011,7 +1021,7 @@ def run_gimp(
         assert any(r["kind"] == "daemon" and r["state"] == "running" for r in observe_receipts())
         desktop_action("Disconnect")
         wait_for(
-            lambda: not any(r["state"] == "running" for r in observe_receipts()),
+            lambda: disconnect_completed(installed_view(), observe_receipts()),
             "private session exit not confirmed",
         )
         assert (paths.data / "components/desktop-text/current").is_dir()
@@ -1041,6 +1051,14 @@ def run_gimp(
             observe_receipts()  # Includes any durable starting receipt after a failed launch.
             quit_gimp()
             result = asyncio.run(DesktopSession(paths).stop_session())
+            report["cleanupStopResult"] = {
+                "ok": result.get("ok") is True,
+                **{
+                    key: result[key][:128]
+                    for key in ("reason", "state")
+                    if isinstance(result.get(key), str)
+                },
+            }
             assert result["ok"], "owned private session cleanup unconfirmed"
             wait_for(
                 lambda: session_exit_confirmed(paths.data, identities.values()),

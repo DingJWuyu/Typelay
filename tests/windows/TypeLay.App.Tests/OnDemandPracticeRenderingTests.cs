@@ -3,6 +3,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Automation;
 using System.Windows.Media;
 using System.Windows.Threading;
 using TypeLay.App;
@@ -50,7 +51,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
                 root = child.Process.MainWindowHandle;
                 return root != 0 && GetDlgItem(root, 103) != 0 && controller.PracticeProgress is not null;
             });
-            await ClickPracticeField(root, child!.Process, "preview-initial", deadline.Token);
+            FocusPracticeField(root, child!.Process, "preview-initial", deadline.Token);
             await Until(() => N.Focused() == (root, GetDlgItem(root, 101)));
             await Until(() => controller.PracticeProgress is { PreviewReady: false, DirectReady: false } && broker.Waiting);
             var initial = controller.PracticeProgress!;
@@ -473,7 +474,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             }
             async Task Focus(nint root, Process process, string phase)
             {
-                await ClickPracticeField(root, process, phase, deadline.Token);
+                FocusPracticeField(root, process, phase, deadline.Token);
                 N.FocusObservation last = default;
                 nint field = 0;
                 try
@@ -619,7 +620,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             }
             async Task Focus(nint window, Process process)
             {
-                await ClickPracticeField(window, process, "current-practice", deadline.Token);
+                FocusPracticeField(window, process, "current-practice", deadline.Token);
                 await Until(() => N.Focused() == (window, GetDlgItem(window, 101)));
             }
             async Task Until(Func<bool> condition)
@@ -636,19 +637,22 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
         }
     });
 
-    private static async Task ClickPracticeField(nint root, Process process, string phase, CancellationToken ct)
+    private static void FocusPracticeField(nint root, Process process, string phase, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         nint field = GetDlgItem(root, 101);
-        try
-        {
-            NativeSourceSetup.ExposeOwnedWindow(root, field, process, ct);
-            await NativeSourceSetup.ClickAsync(root, field, process, ct);
-        }
-        catch (NativeSourceSetup.Failure failure)
-        {
-            Assert.Fail($"Practice source click: phase={phase}; reason={failure.Code}.");
-        }
+        Assert.True(!process.HasExited
+            && N.GetWindowThreadProcessId(root, out uint rootPid) != 0 && rootPid == process.Id
+            && N.GetWindowThreadProcessId(field, out uint fieldPid) != 0 && fieldPid == process.Id
+            && N.GetAncestor(field, 2) == root,
+            $"Practice source focus: phase={phase}; owned root/field identity changed.");
+        // These tests exercise binding, retirement and progress, not pointer
+        // targeting. Use the same public focus setup as OwnedPracticeQueueTests;
+        // the caller still observes the exact native root and field afterward.
+        ct.ThrowIfCancellationRequested();
+        Assert.True(N.SetForegroundWindow(root), $"Practice source focus: phase={phase}; foreground request refused.");
+        ct.ThrowIfCancellationRequested();
+        AutomationElement.FromHandle(field).SetFocus();
     }
 
     [DllImport("user32.dll")]

@@ -43,7 +43,7 @@ python -B -m unittest discover -s tests/windows/tsf_probe -p 'test_*.py' -v
 
 workflow 监听授权分支的 push，但无标记时两个 job 都跳过、不分配 Windows runner。Preflight/Lifecycle 仍要求本目录或该 workflow 的真实变更；Read 可以随任何真实非空 tracked diff 的正常能力批执行，且 before 与 after 必须不同。每批都须明确唯一 Read 末段标记与 root 精确授权，不是自动后台读取；不为触发造探针 touch、空提交或复跑旧代码。
 
-每次是新的 GitHub-hosted Windows VM。Read 的三个 .cpp、两个 .h 与 build_native.py 共六个编译输入的 Git blob 必须逐文件等于已验证生命周期基线 `d83f04a2fead9c3dd2978e6d3ce7f949f2c6329e`，工作树也必须干净；日志列 blob 哈希。复用已装好的 MSVC 编译和纯合同测试，不下载安装或改原观察逻辑。Lifecycle 可编译本批明确审过的新候选，但只能执行纯合同与 no-DLL 启退；两级均保留 source-baseline.json 的当前提交与六个 blob 清单。新 Lifecycle 通过及清单不自动升级 Read 基线；须 root 核验原报告后另审固定基线提交及一次 Read，不能把锁改成 HEAD。
+每次是新的 GitHub-hosted Windows VM。Read 的三个 .cpp、两个 .h 与 build_native.py 共六个编译输入的 Git blob 必须逐文件等于已验证生命周期基线 `d1525b7f1ed5da5a64601b32d9d23054ff618756`，工作树也必须干净；日志列 blob 哈希。复用已装好的 MSVC 编译和纯合同测试，不下载安装或改原观察逻辑。Lifecycle 可编译本批明确审过的新候选，但只能执行纯合同与 no-DLL 启退；两级均保留 source-baseline.json 的当前提交与六个 blob 清单。新 Lifecycle 通过及清单不自动升级 Read 基线；须 root 核验原报告后另审固定基线提交及一次 Read，不能把锁改成 HEAD。
 
 - `lifecycle`：固定 `runner.exe --lifecycle-only <新测试目录> <observer.dll绝对路径>`。只验证独占 Notepad 启退，不加载 observer。
 - `read`：先执行只读环境采集。exit 2 只是原协议返回值，必须同时验证 `observed-prerequisites-only`、当前 SHA 与零注册/激活/输入变化/正文读取，才能继续。Notepad 尚未在场与中文 IME 未证明均保留 unknown，不改系统补条件。然后且仅一次 `runner.exe --single-read <新测试目录> <observer.dll绝对路径>`。
@@ -56,4 +56,4 @@ Read 只有完整合成正文逐字符匹配、有效 UTF-16 选区范围、一�
 
 当前 v3：仅在 Transitory 拒绝前采一次当前栈元数据，见 [native/README.md](native/README.md#单次-transitory-栈元数据v3)。它不读取 base 正文、不申请其它 context 会话，最终仍拒绝读取。v3 已完成真实 Windows 编译、纯合同及 no-DLL Lifecycle，元数据均为未开始；这不证明目标侧采集成功。Read 固定上述 v3 基线，一次栈观察仍待独立执行审批。单层 Transitory 无替代时停止此探针线，不无限加字段或重试。
 
-runner 的新增单次模块路径诊断见 [native/README.md](native/README.md#runner-单次模块路径观察非加载成功证明)。它复用自有 process 句柄及原期限，不改变上述六输入 Read 基线锁；新 runner 仍须另审 Lifecycle 后才能考虑更新 Read 基线。当前报告消费者要求 moduleObservation 的严格有界结构，但该结构不能补足 callback、已验证入口或读取证据。
+runner 的新增单次模块路径诊断见 [native/README.md](native/README.md#runner-单次模块路径观察非加载成功证明)。它复用自有 process 句柄及原期限，不改变上述六输入 Read 基线锁；当前锁定 runner 已通过真实 Windows MSVC 三目标编译、纯合同与 no-DLL Lifecycle；发送、模块查询和读取均未开始，正常退出、job 归零与文件删除成立。该候选的 Read 与实际模块查询尚未执行，仍须 root 另审精确 manifest 与一次 Read 授权；若仍无有效入口或文档覆盖证据，停止且不自动重试，不扩大 base/parent/IME 权限。当前报告消费者要求 moduleObservation 的严格有界结构，但该结构不能补足 callback、已验证入口或读取证据。

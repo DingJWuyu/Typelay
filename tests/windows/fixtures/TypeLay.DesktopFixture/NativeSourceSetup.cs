@@ -23,6 +23,60 @@ internal static class NativeSourceSetup
             FailureReason.SourceExposureFailed);
     }
 
+    // SetWindowPos returning does not prove the current desktop hit test has
+    // reached this field. Observe only; never repeat exposure or synthesize input.
+    internal static async Task<N.Point> WaitVisibleAsync(nint root, nint field, Process process,
+        Observation observation, CancellationToken ct)
+    {
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            nint previousDpi = SetThreadDpiAwarenessContext(-4);
+            Check(previousDpi != 0, FailureReason.SourceClickObservationDpiContext);
+            try
+            {
+                Check(IsOwnedField(root, field, process), FailureReason.SourceExposureIdentityChanged);
+                observation.VisibilityAttempts++;
+                bool boundsAvailable = N.GetWindowRect(field, out var bounds);
+                observation.VisibilityGeometryAvailable = N.IsWindowVisible(root) && N.IsWindowEnabled(root)
+                    && N.IsWindowVisible(field) && N.IsWindowEnabled(field)
+                    && boundsAvailable
+                    && (long)bounds.Right - bounds.Left > 8 && (long)bounds.Bottom - bounds.Top > 8;
+                string hit = "none";
+                if (observation.VisibilityGeometryAvailable)
+                {
+                    int y = (int)((long)bounds.Top + ((long)bounds.Bottom - bounds.Top) / 2);
+                    int[] xs = [(int)((long)bounds.Left + ((long)bounds.Right - bounds.Left) / 2), bounds.Left + 4, bounds.Right - 4];
+                    foreach (int x in xs)
+                    {
+                        var point = new N.Point { X = x, Y = y };
+                        nint target = WindowFromPoint(point);
+                        string current = target == field ? "field" : target == root ? "source-root" : target == 0 ? "none"
+                            : N.GetWindowThreadProcessId(target, out uint pid) != 0 && pid == process.Id ? "other-owned" : "foreign";
+                        if (x == xs[0])
+                            hit = current;
+                        if (target == field)
+                        {
+                            RecordHit("field");
+                            Check(IsOwnedField(root, field, process), FailureReason.SourceExposureIdentityChanged);
+                            ct.ThrowIfCancellationRequested();
+                            return point;
+                        }
+                    }
+                }
+                RecordHit(hit);
+            }
+            finally { SetThreadDpiAwarenessContext(previousDpi); }
+            await Task.Delay(15, ct);
+        }
+
+        void RecordHit(string hit)
+        {
+            observation.VisibilityFirstHit ??= hit;
+            observation.VisibilityLastHit = hit;
+        }
+    }
+
     private static bool IsOwnedField(nint root, nint field, Process process) => !process.HasExited
         && N.GetWindowThreadProcessId(root, out uint rootPid) != 0 && rootPid == process.Id
         && N.GetWindowThreadProcessId(field, out uint fieldPid) != 0 && fieldPid == process.Id
@@ -43,9 +97,13 @@ internal static class NativeSourceSetup
                 Check(IsOwnedField(root, field, process), FailureReason.SourceClickIdentityChanged);
                 var element = AutomationElement.FromHandle(field);
                 var current = element.Current;
-                Check(current.NativeWindowHandle == field && current.ProcessId == processId
-                    && current.ControlType == ControlType.Edit && current.IsEnabled && !current.IsOffscreen,
-                    FailureReason.SourceClickControlUnavailable);
+                Check(current.NativeWindowHandle == field, FailureReason.SourceClickControlHandleMismatch);
+                Check(current.ProcessId == processId, FailureReason.SourceClickControlProcessMismatch);
+                var controlType = current.ControlType;
+                Check(controlType == ControlType.Edit, controlType == ControlType.Document
+                    ? FailureReason.SourceClickControlDocument : FailureReason.SourceClickControlTypeMismatch);
+                Check(current.IsEnabled, FailureReason.SourceClickControlDisabled);
+                Check(!current.IsOffscreen, FailureReason.SourceClickControlOffscreen);
                 var bounds = current.BoundingRectangle;
                 Check(!bounds.IsEmpty && bounds.Width > 8 && bounds.Height > 8
                     && double.IsFinite(bounds.Left) && double.IsFinite(bounds.Top)
@@ -128,6 +186,22 @@ internal static class NativeSourceSetup
 
     internal sealed class Observation
     {
+        public int VisibilityAttempts
+        {
+            get; internal set;
+        }
+        public bool VisibilityGeometryAvailable
+        {
+            get; internal set;
+        }
+        public string? VisibilityFirstHit
+        {
+            get; internal set;
+        }
+        public string? VisibilityLastHit
+        {
+            get; internal set;
+        }
         public long SetupStartedAtMs { get; } = WindowsInterruptClock.NowMs;
         public long? SetupEndedAtMs
         {
@@ -225,7 +299,12 @@ internal static class NativeSourceSetup
         SourceExposureFailed,
         SourceClickObservationDpiContext,
         SourceClickIdentityChanged,
-        SourceClickControlUnavailable,
+        SourceClickControlHandleMismatch,
+        SourceClickControlProcessMismatch,
+        SourceClickControlDocument,
+        SourceClickControlTypeMismatch,
+        SourceClickControlDisabled,
+        SourceClickControlOffscreen,
         SourceClickGeometryUnavailable,
         SourceClickObscured,
         SourceClickDpiContext,
@@ -248,7 +327,12 @@ internal static class NativeSourceSetup
             FailureReason.SourceExposureFailed => "source-exposure-failed",
             FailureReason.SourceClickObservationDpiContext => "source-click-observation-dpi-context",
             FailureReason.SourceClickIdentityChanged => "source-click-identity-changed",
-            FailureReason.SourceClickControlUnavailable => "source-click-control-unavailable",
+            FailureReason.SourceClickControlHandleMismatch => "source-click-control-handle-mismatch",
+            FailureReason.SourceClickControlProcessMismatch => "source-click-control-process-mismatch",
+            FailureReason.SourceClickControlDocument => "source-click-control-document",
+            FailureReason.SourceClickControlTypeMismatch => "source-click-control-type-mismatch",
+            FailureReason.SourceClickControlDisabled => "source-click-control-disabled",
+            FailureReason.SourceClickControlOffscreen => "source-click-control-offscreen",
             FailureReason.SourceClickGeometryUnavailable => "source-click-geometry-unavailable",
             FailureReason.SourceClickObscured => "source-click-obscured",
             FailureReason.SourceClickDpiContext => "source-click-dpi-context",

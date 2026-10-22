@@ -123,6 +123,7 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
             var rendered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             cover.ContentRendered += (_, _) => rendered.TrySetResult();
             Assert.True(GetCursorPos(out var previous));
+            var observation = new NativeSourceSetup.Observation();
             try
             {
                 cover.Show();
@@ -146,6 +147,24 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                 }
                 else
                     NativeSourceSetup.ExposeOwnedWindow(source.Root, source.Field, source.Process, action.Token);
+                if (scenario == "expose")
+                    point = await NativeSourceSetup.WaitVisibleAsync(source.Root, source.Field, source.Process, observation, source.Token);
+                else if (scenario == "cancelled")
+                    await Assert.ThrowsAnyAsync<OperationCanceledException>(() => NativeSourceSetup.WaitVisibleAsync(source.Root, source.Field, source.Process, observation, action.Token));
+                else if (scenario == "wrong-root")
+                {
+                    var failure = await Assert.ThrowsAsync<NativeSourceSetup.Failure>(() => NativeSourceSetup.WaitVisibleAsync(source.Field, source.Field, source.Process, observation, action.Token));
+                    Assert.Equal("source-exposure-identity-changed", failure.Code);
+                }
+                else
+                {
+                    using var waitStop = CancellationTokenSource.CreateLinkedTokenSource(source.Token);
+                    var waiting = NativeSourceSetup.WaitVisibleAsync(source.Root, source.Field, source.Process, observation, waitStop.Token);
+                    Assert.False(waiting.IsCompleted);
+                    Assert.Equal("foreign", observation.VisibilityLastHit);
+                    waitStop.Cancel();
+                    await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+                }
                 Assert.Equal(beforeFocus, N.Focused());
                 Assert.Equal(coverRoot, N.GetForegroundWindow());
                 Assert.True(N.GetWindowRect(source.Root, out var afterBounds));
@@ -153,7 +172,13 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                 Assert.Equal(0, N.GetStyle(source.Root, -20) & 0x8);
                 if (scenario == "expose")
                 {
-                    Assert.Equal(source.Field, WindowFromPoint(point));
+                    nint previousDpi = SetThreadDpiAwarenessContext(-4);
+                    Assert.NotEqual(0, previousDpi);
+                    try
+                    {
+                        Assert.Equal(source.Field, WindowFromPoint(point));
+                    }
+                    finally { SetThreadDpiAwarenessContext(previousDpi); }
                     await NativeSourceSetup.ClickAsync(source.Root, source.Field, source.Process, source.Token);
                     while (N.Focused() != (source.Root, source.Field))
                         await Task.Delay(10, source.Token);
@@ -172,6 +197,8 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
             }
             finally
             {
+                TestContext.Current.TestOutputHelper?.WriteLine($"Source visibility: attempts={observation.VisibilityAttempts}; "
+                    + $"geometry={observation.VisibilityGeometryAvailable}; firstHit={observation.VisibilityFirstHit}; lastHit={observation.VisibilityLastHit}.");
                 cover.Close();
                 SetCursorPos(previous.X, previous.Y);
             }
@@ -296,6 +323,7 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
             await process.WaitForExitAsync(cleanup.Token);
         }
     }
+    [DllImport("user32.dll")] private static extern nint SetThreadDpiAwarenessContext(nint context);
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(N.Point point);
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetCursorPos(out N.Point point);

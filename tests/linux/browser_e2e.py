@@ -2204,7 +2204,7 @@ class BrowserContract(unittest.TestCase):
     def observe_overlay_frames(self):
         # Public browser DOM/RAF observation of the real closed-shadow widgets.
         # It neither reads adapter variables nor supplies an animation model.
-        self.overlay_dom(
+        return self.overlay_dom(
             self.overlay_control("TypeLay 译文", "textbox"),
             """function() {
           const editor = this, panel = editor.parentElement, host = panel.getRootNode().host;
@@ -2222,6 +2222,7 @@ class BrowserContract(unittest.TestCase):
           }
           window.fixtureMotionDone = false;
           requestAnimationFrame(sample);
+          return start;
         }""",
         )
 
@@ -3030,9 +3031,46 @@ class BrowserContract(unittest.TestCase):
             selection = self.overlay_dom(
                 editor, "function() { return [this.selectionStart, this.selectionEnd]; }"
             )
-            self.observe_overlay_frames()
+            # Keep the original motion assertion, but distinguish a late click
+            # from a real jump/cancellation without logging the draft text.
+            self.overlay_dom(
+                editor,
+                """function() {
+                  const panel = this.parentElement, host = panel.getRootNode().host;
+                  const snapshot = () => ({ms: performance.now(),
+                    host: host.getBoundingClientRect().toJSON(),
+                    reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches});
+                  window.fixtureDraftResize = {beforeObservation: snapshot()};
+                  panel.addEventListener('click', event => {
+                    fixtureDraftResize.trustedClick = event.isTrusted;
+                    fixtureDraftResize.beforeClick = snapshot();
+                  }, {capture: true, once: true});
+                  panel.addEventListener('click', () => {
+                    fixtureDraftResize.afterClick = snapshot();
+                  }, {once: true});
+                }""",
+            )
+            sample_started = self.observe_overlay_frames()
             self.click_overlay_control("展开")
             frames = self.motion_frames()
+            diagnostics = self.page.evaluate("fixtureDraftResize")
+            diagnostics["sampleStartedMs"] = sample_started
+            diagnostics["frameCount"] = len(frames)
+            # The observer is time-bounded; cap serialized samples as well,
+            # retaining the endpoint even on a high-refresh-rate display.
+            diagnostic_frames = frames if len(frames) <= 120 else frames[:119] + frames[-1:]
+            diagnostics["frames"] = [
+                {
+                    **{key: value for key, value in frame.items() if key != "text"},
+                    "draftPreserved": frame["text"] == human_draft,
+                }
+                for frame in diagnostic_frames
+            ]
+            output = ROOT / "artifacts/linux/browser-native/overlay/motion"
+            output.mkdir(parents=True, exist_ok=True)
+            (output / "editor-draft-resize.json").write_text(
+                json.dumps(diagnostics, indent=2), encoding="utf-8"
+            )
             self.assertGreater(len({round(frame["host"]["height"], 1) for frame in frames}), 3)
             self.assertTrue(all(frame["text"] == human_draft for frame in frames))
             self.assertTrue(all([frame["start"], frame["end"]] == selection for frame in frames))

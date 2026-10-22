@@ -835,6 +835,8 @@ internal static partial class ContinuousTranslationCheck
                 finally { sourceSetup.TextEndedAtMs = WindowsInterruptClock.NowMs; }
                 result.Stage = "expose-owned-source";
                 NativeSourceSetup.ExposeOwnedWindow(root, field, native.Process, setupDeadline.Token);
+                result.Stage = "wait-visible-source";
+                await NativeSourceSetup.WaitVisibleAsync(root, field, native.Process, sourceSetup, setupDeadline.Token);
                 result.Stage = "click-visible-source";
                 sourceSetup.ClickStartedAtMs = WindowsInterruptClock.NowMs;
                 try
@@ -1029,6 +1031,8 @@ internal static partial class ContinuousTranslationCheck
                 finally { sourceSetup.TextEndedAtMs = WindowsInterruptClock.NowMs; }
                 result.Stage = "expose-owned-source";
                 NativeSourceSetup.ExposeOwnedWindow(root, field, native.Process, setupDeadline.Token);
+                result.Stage = "wait-visible-source";
+                await NativeSourceSetup.WaitVisibleAsync(root, field, native.Process, sourceSetup, setupDeadline.Token);
                 result.Stage = "click-visible-source";
                 sourceSetup.ClickStartedAtMs = WindowsInterruptClock.NowMs;
                 try

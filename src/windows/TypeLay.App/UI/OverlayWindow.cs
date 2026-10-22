@@ -844,11 +844,19 @@ internal sealed partial class OverlayWindow : Window, ISessionView
 
     internal bool RequestOwnedReturn(OwnedEditorControl control, OwnedReturnKind kind)
     {
+        SessionViewToken? alreadyReturning = null;
         if (_ownedEditor != control || _ownedReturning || !_ownedFocusAcquired || !_editing || _composing
             || _viewContext is not { CanEdit: true } context || context.Token != control.AdmittedToken
             || kind is OwnedReturnKind.Tab or OwnedReturnKind.Escape && !OwnsEditorFocus(control)
-            || _ownedEditorHost?.BeginOwnedReturn(context.Token, kind) != true)
+            || _ownedEditorHost?.BeginOwnedReturn(context.Token, kind, out alreadyReturning) != true)
         {
+            InvalidateOwnedEditor(OwnedEditorReason.UiRender);
+            return false;
+        }
+        if (alreadyReturning is { } originalToken)
+        {
+            if (_ownedEditor == control && _ownedReturning && _ownedReturningToken == originalToken)
+                return true; // The nested request already emitted the one return event.
             InvalidateOwnedEditor(OwnedEditorReason.UiRender);
             return false;
         }

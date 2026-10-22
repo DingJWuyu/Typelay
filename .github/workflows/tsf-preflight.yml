@@ -96,7 +96,7 @@ jobs:
             'tests/windows/tsf_probe/native/test_outcome.cpp', 'tests/windows/tsf_probe/native/protocol.h',
             'tests/windows/tsf_probe/native/outcome.h', 'tests/windows/tsf_probe/build_native.py')
           if ('${{ steps.gate.outputs.level }}' -eq 'read') {
-            git diff --exit-code d83f04a2fead9c3dd2978e6d3ce7f949f2c6329e HEAD -- @sources
+            git diff --exit-code d1525b7f1ed5da5a64601b32d9d23054ff618756 HEAD -- @sources
             if ($LASTEXITCODE -ne 0) { throw 'Native source differs from the verified lifecycle baseline' }
           }
           git diff --exit-code HEAD -- @sources

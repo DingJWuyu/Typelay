@@ -531,6 +531,8 @@ internal static partial class ContinuousTranslationCheck
         bool reenteredDraft = false, sourceUnchanged = false, zeroWrites = false;
         bool draftRetained = false, exactReturn = false, freshBinding = false, naturalCaret = false, sourceFocus = false;
         bool acceptanceHeld = false, controlHeld = false;
+        object? returnProofObservation = null;
+        int returnProofObservationCount = 0;
         try
         {
             if (kind == OwnedReturnKind.Tab)
@@ -595,15 +597,39 @@ internal static partial class ContinuousTranslationCheck
             result.Stage = prefix + "-proof";
             await UntilAsync(() =>
             {
+                // Preserve the actual last proof observation on a deadline.
+                // The postcondition flags below are assigned only after this
+                // wait succeeds; their defaults are not failure evidence.
+                var focus = N.Focused();
+                bool exactSourceFocus = focus == (root, field);
+                bool editorReadOnly = editor.IsReadOnly;
+                var returned = controller.AutomaticPracticeProgress;
+                bool returnedToSource = returned?.ReturnedToSource == true;
+                bool commandAdvanced = returned is not null && returned.CommandGeneration != progress.CommandGeneration;
+                bool acceptanceVisible = OwnedAcceptanceVisible(overlay);
+                returnProofObservation = new
+                {
+                    atMs = WindowsInterruptClock.NowMs,
+                    actualRoot = (long)focus.Root,
+                    actualControl = (long)focus.Control,
+                    expectedRoot = (long)root,
+                    expectedControl = (long)field,
+                    exactSourceFocus,
+                    editorReadOnly,
+                    progressAvailable = returned is not null,
+                    returnedToSource,
+                    commandAdvanced,
+                    acceptanceVisible,
+                    completedReturns = input.Returns.Count - returnCount
+                };
+                returnProofObservationCount++;
                 if (input.Returns.Count == returnCount + 1 && returnBinding is { } binding
                     && binding.RunId == progress.RunId && binding.ConnectionId == progress.ConnectionId
                     && binding.CommandGeneration == progress.CommandGeneration && binding.Target == target
                     && input.Returns[returnCount] is { Request.PracticeReturn: { } request, Result.Returned: false }
                     && request.Binding == binding)
                     throw new CheckFailure(prefix + "-rejected");
-                return N.Focused() == (root, field) && editor.IsReadOnly
-                    && controller.AutomaticPracticeProgress is { ReturnedToSource: true } returned
-                    && returned.CommandGeneration != progress.CommandGeneration && OwnedAcceptanceVisible(overlay);
+                return exactSourceFocus && editorReadOnly && returnedToSource && commandAdvanced && acceptanceVisible;
             }, cancellation);
             if (kind == OwnedReturnKind.Tab)
             {
@@ -669,7 +695,9 @@ internal static partial class ContinuousTranslationCheck
             draftRetained,
             zeroWrites,
             exactReturn,
-            freshBinding
+            freshBinding,
+            returnProofObservationCount,
+            returnProofObservation
         };
         CompleteCleanup(result);
         return result;

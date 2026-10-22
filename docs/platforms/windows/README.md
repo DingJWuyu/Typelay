@@ -79,12 +79,14 @@
 
 ### 当前可验证候选
 
-最近核对的验证基线为 [`e1f55ebd`](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654)，该运行已结束，Windows 完整检查失败。
+下方预览下载的验证基线为 [`e1f55ebd`](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654)，该运行已结束，Windows 完整检查失败。
 
 - App.Tests：577/577 通过，包含 Settings 回源与两项清理检查；Runtime.Tests：1091/1091 通过。不代表完整产品验收通过。
 - 连续翻译整链通过，包含自有编辑与接受、普通字段、直接替换、按需练习、冷启动 Chrome 与新标签页；不外推物理输入法或所有应用。
 - 浏览器合作七个场景及整步通过；记事本设置和只读预览观察通过，但等待公开接受提示仍因 Unknown 安全缺口超时，后续编辑/直接替换及 Hy 未运行。Windows 完整验收仍未通过。
 - 本轮未消除普通自动捕获的输入法安全缺口，Unknown 继续拒写；按需 CaptureDirect 既有 owner-thread 桥仍有同步 IMM 消息重入风险，不能据本轮连续链通过消除该限制。后继候选未经对应验证不记作修复。本轮无质量采集，5068 的 40 次诊断与 386 的 69 次响应仍是各自范围的既有证据，三项质量门继续关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
+
+最近已核对的候选 [`d1525b7f`](https://github.com/DingJWuyu/Typelay/actions/runs/39731697399) 仍未通过完整检查：App.Tests 为 607/612，通过数不抵消五项失败；自有编辑的鼠标回源失败使同一步后续普通字段、直接替换、按需练习和浏览器场景未运行，不能沿用旧版通过结果代替本轮验证。Hy 安装、切换、预览及移除通过，退出检查停在寻找托盘图标，未发出退出操作；这不是已证实的关闭失败。记事本接受能力仍未通过，普通输入框安全缺口及质量门保持不变。
 
 当前可下载的是同提交预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654)下载 [`typelay-windows-e1f55ebd4da69c3d77c4a6447eaad2a146b8bfa6`](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654/artifacts/12342794943)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
 

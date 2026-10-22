@@ -66,7 +66,7 @@ SetWindowsHookEx 使用 TID，不接受持有的线程句柄/创建时间。runn
 
 在 hook 前，使用 held 自有目标进程句柄只读查询签名与动态代码 policy，记录 query/known、数值错误及已定义标志位。任何查询失败停止；MicrosoftSignedOnly/StoreSignedOnly/MitigationOptIn 不兼容本次未签名实验 DLL 时停止。动态代码禁止位只约束动态生成/修改可执行代码，不等于普通 DLL 加载被禁止，也不是加载安全证明；不调用策略修改/放宽接口，不提权或绕过。[查询合同](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessmitigationpolicy)、[签名策略](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-process_mitigation_binary_signature_policy)、[动态代码策略](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-process_mitigation_dynamic_code_policy)
 
-所有新增字段都是固定有界元数据，无正文/地址/句柄。报告消费者严格校验版本、阶段、类型与范围；Lifecycle 要求全部发送/阶段为未开始且原清理成立，不能将全零诊断当读取成功。新候选先经独立 Lifecycle 编译、selftests、no-DLL 验证并保留六个源码 blob；Read 固定经审的 v3 生命周期基线 `d83f04a2fead9c3dd2978e6d3ce7f949f2c6329e`；未来源码变更仍须重新验证、审定固定基线并另批单次 Read。没有自动重试或写锁升级。
+所有新增字段都是固定有界元数据，无正文/地址/句柄。报告消费者严格校验版本、阶段、类型与范围；Lifecycle 要求全部发送/阶段为未开始且原清理成立，不能将全零诊断当读取成功。新候选先经独立 Lifecycle 编译、selftests、no-DLL 验证并保留六个源码 blob；Read 固定经审的 v3 生命周期基线 `d1525b7f1ed5da5a64601b32d9d23054ff618756`；未来源码变更仍须重新验证、审定固定基线并另批单次 Read。没有自动重试或写锁升级。
 
 ## 单次 Transitory 栈元数据（v3）
 
@@ -90,4 +90,4 @@ contextMetadata 只输出 attempted/complete、最多两项的 count、overflow�
 
 模块列表可在枚举或路径查询间变化，系统 API 也可能返回不准确信息。匹配只表示一次查询返回了相同路径，不证明 DLL 初始化、Hook 进入、mapping/header 成功或已加载相同文件字节。路径重用、同路径文件替换及映像身份仍未证明；现有 source-baseline 编译输入锁不能消除这些运行期限制。未匹配/失败/超容量也不能证明从未加载。即使 observerPathSeen=true，最终 OwnedEntry=0 仍是“没有已验证入口发布证据”，callback/完整读取门保持不变，不升级 IME、普通输入框或写回能力。
 
-API：[EnumProcessModulesEx](https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-enumprocessmodulesex)、[GetModuleFileNameExW](https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getmodulefilenameexw)。runner 明确 PSAPI_VERSION=2，使用现有 Kernel32 的 K32 导出，不新增库/SDK。当前修改仅完成本地报告合同验证，Windows 编译、实际模块查询及 Read/Lifecycle 均需另审，不由合同测试推断。
+API：[EnumProcessModulesEx](https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-enumprocessmodulesex)、[GetModuleFileNameExW](https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getmodulefilenameexw)。runner 明确 PSAPI_VERSION=2，使用现有 Kernel32 的 K32 导出，不新增库/SDK。当前锁定候选已在独立 Windows VM 完成真实 MSVC 三目标编译、纯合同与 no-DLL Lifecycle；requestDispatched、moduleObservation.attempted、readSnapshotValid、writebackAllowed 均为 false，正常退出、owned job 归零及合成文件删除成立。该候选的实际模块查询与 Read 尚未执行，仍须另审精确 manifest 与一次 Read，不能由编译或 Lifecycle 通过推断。若该次 Read 仍无有效入口或文档覆盖证据，停止并保留未知，不自动重试或扩大 base/parent/IME 权限。

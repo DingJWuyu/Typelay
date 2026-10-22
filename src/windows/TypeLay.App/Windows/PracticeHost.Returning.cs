@@ -27,24 +27,70 @@ internal sealed partial class PracticeHost
     }
     private PendingReturn? _returnAttempt;
 
-    internal bool BeginOwnedReturn(SessionViewToken displayed, OwnedReturnKind kind)
+    internal bool BeginOwnedReturn(SessionViewToken displayed, OwnedReturnKind kind, out SessionViewToken? alreadyReturning)
     {
         _dispatcher.VerifyAccess();
+        alreadyReturning = null;
         if (_returnAttempt is not null || _editorAttempt is not { Complete: true } editor
             || displayed != editor.Control.AdmittedToken || !EditorIdentityCurrent(editor)
             || _lastOwnedBinding is not { } binding || binding.Target != displayed.Target
-            || binding.CommandGeneration != displayed.CommandGeneration || _monitor is null
+            || binding.CommandGeneration != displayed.CommandGeneration || _monitor is not { } monitor
+            || _communication is not { IsCancellationRequested: false } communication
             || kind is OwnedReturnKind.Tab or OwnedReturnKind.Escape && !OwnsEditorFocus(displayed.Target)
-            || !_monitor.BeginOwnedReturnInput(kind, editor.Control.Descriptor, out var input)
+            || !monitor.BeginOwnedReturnInput(kind, editor.Control.Descriptor, out var input)
             || input is null || input.EditorIntent != editor.Control.Intent)
             return false;
+        // Native identity/hit-test observations can dispatch the overlay's
+        // departure before this caller resumes. Never replace the return that
+        // a nested request has already admitted for this exact original press.
+        if (!EditorIdentityCurrent(editor) || !ReturnAdmissionStillCurrent(editor, binding, input, monitor, communication))
+            return false;
+        if (_returnAttempt is { } existing)
+        {
+            // Mouse-up may fall between the two real hook snapshots. It only
+            // advances Released, not the press identity or original deadline;
+            // keep the already-published input object unchanged.
+            bool samePress = existing.Input == input || kind == OwnedReturnKind.Mouse
+                && (existing.Input with
+                {
+                    Released = input.Released
+                }) == input;
+            if (!ReferenceEquals(existing.Editor, editor) || existing.Binding != binding || !samePress
+                || existing.Control is not { } control || control.Kind != kind
+                || existing.Request is not { } request || request.Binding != binding || request.Token != control.ReturningToken
+                || !ReturnIdentityCurrent(existing)
+                // The validation itself includes native observations. Recheck
+                // its exact owner and terminal state after they return, too.
+                || !ReferenceEquals(_returnAttempt, existing) || existing.Cancelled || existing.Delivered
+                || !ReturnAdmissionStillCurrent(editor, binding, input, monitor, communication))
+                return false;
+            alreadyReturning = control.ReturningToken;
+            TraceReturn(existing, "Reused");
+            return true;
+        }
+        var cancellation = communication.Token;
         var pending = new PendingReturn(editor, binding, input);
         _returnAttempt = pending;
         RevokeAcceptance();
+        if (!ReferenceEquals(_returnAttempt, pending) || pending.Cancelled
+            || !ReturnAdmissionStillCurrent(editor, binding, input, monitor, communication))
+            return false;
         TraceReturn(pending, "Armed");
-        _ = ExpireOwnedReturnAsync(pending, _communication!.Token);
+        _ = ExpireOwnedReturnAsync(pending, cancellation);
         return true;
     }
+
+    // No native calls: these checks run after the last potentially reentrant
+    // observation, immediately before publishing or reusing an attempt.
+    private bool ReturnAdmissionStillCurrent(PendingEditor editor, OwnedPracticeBinding binding,
+        KeyboardHook.ReturnInput input, KeyboardHook monitor, CancellationTokenSource communication) =>
+        !_disposed && !editor.Cancelled && ReferenceEquals(_editorAttempt, editor)
+        && ReferenceEquals(_child, editor.Child) && _connection == editor.Connection && _runId == editor.Run
+        && _sequence == editor.Sequence && _nativeActive && _pending is null
+        && _descriptor == editor.Control.Descriptor && _target == editor.Control.AdmittedToken.Target
+        && _lastOwnedBinding == binding && ReferenceEquals(_communication, communication) && !communication.IsCancellationRequested
+        && ReferenceEquals(_monitor, monitor) && monitor.ShortcutsReady && monitor.CommandGeneration == binding.CommandGeneration
+        && monitor.OwnedEditorForegroundCurrent(editor.Control.Intent) && monitor.OwnedReturnInputCurrent(input);
 
     internal void AdmitOwnedReturnToken(Guid editorIntent, SessionViewToken token)
     {
