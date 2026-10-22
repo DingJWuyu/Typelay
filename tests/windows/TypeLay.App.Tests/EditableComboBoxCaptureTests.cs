@@ -17,8 +17,10 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class EditableComboBoxCaptureTests(WpfDesktopFixture desktop)
 {
-    [Fact]
-    public async Task EditableComboBoxPreviewsCommittedTextButNeverGrantsWritePermission()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task EditableComboBoxPreviewsCommittedTextButNeverGrantsWritePermission(bool captureDirect)
     {
         await desktop.RunAsync(async () =>
         {
@@ -65,7 +67,7 @@ public sealed class EditableComboBoxCaptureTests(WpfDesktopFixture desktop)
                     Assert.Equal(AutomationProperties.GetAutomationId(field), observed.AutomationId);
                     Assert.Equal(Environment.ProcessId, observed.ProcessId);
                     Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
-                    return await broker.CallAsync(new(BrokerProtocol.Version, 0, "capture", "", CaptureDirect: true))
+                    return await broker.CallAsync(new(BrokerProtocol.Version, 0, "capture", "", CaptureDirect: captureDirect))
                         .WaitAsync(deadline.Token);
                 }
                 var first = (await Capture(editable)).Snapshot;

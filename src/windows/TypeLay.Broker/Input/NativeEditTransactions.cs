@@ -12,7 +12,7 @@ namespace TypeLay.Broker;
 
 // Owns bounded native bindings, never source text. The actual compare/replacement
 // is performed by the stock Edit's GUI thread, not by this cross-process caller.
-internal sealed class NativeEditTransactions : IDisposable
+internal sealed partial class NativeEditTransactions : IDisposable
 {
     public const string Provider = "win32-edit-transaction-v2";
     private const uint ProtocolVersion = 2;
@@ -22,10 +22,17 @@ internal sealed class NativeEditTransactions : IDisposable
     private nint _library, _procedure;
     private uint _message, _ownedCaptureMessage;
     private sealed record Binding(WindowsTarget Original, WindowsTarget Target, ulong Cookie, uint Thread, long TouchedAt,
-        bool Initialized = false, OwnedCaptureDescriptor? Owned = null);
+        bool Initialized = false, OwnedCaptureDescriptor? Owned = null, bool DirectCaptured = false);
     private sealed record Result(uint Status, Denial Reason, string Text, TextRange Selection, bool Multiline, ImeState Ime);
 
-    public InputSnapshot? Capture(WindowsTarget identity, RectPx bounds, long inputEpoch, long focusEpoch)
+    public InputSnapshot? Capture(WindowsTarget identity, RectPx bounds, long inputEpoch, long focusEpoch) =>
+        Capture(identity, bounds, inputEpoch, focusEpoch, direct: true);
+
+    // Reuse the source-thread reader without advertising its independent writer.
+    public InputSnapshot? Observe(WindowsTarget identity, RectPx bounds, long inputEpoch, long focusEpoch) =>
+        Capture(identity, bounds, inputEpoch, focusEpoch, direct: false);
+
+    private InputSnapshot? Capture(WindowsTarget identity, RectPx bounds, long inputEpoch, long focusEpoch, bool direct)
     {
         Prune();
         var binding = Bind(identity);
@@ -45,9 +52,14 @@ internal sealed class NativeEditTransactions : IDisposable
         }
         if (result.Status != 1 || result.Ime != ImeState.Clear || !result.Selection.IsValid(result.Text))
             return null;
+        if (direct)
+            _bindings[identity.ControlHwnd] = _bindings[identity.ControlHwnd] with
+            {
+                DirectCaptured = true
+            };
         return new(binding.Target, result.Text, result.Selection, bounds, result.Multiline,
             FieldAccess.Supported, result.Ime, WindowsInterruptClock.NowMs, inputEpoch, focusEpoch,
-            WriteSupported: true, DirectWriteSupported: true);
+            WriteSupported: direct, DirectWriteSupported: direct);
     }
 
     public InputSnapshot? CaptureOwned(WindowsTarget identity, OwnedCaptureDescriptor owned, RectPx bounds,
@@ -240,6 +252,8 @@ internal sealed class NativeEditTransactions : IDisposable
                 return existing;
             }
             Release(existing);
+            if (_bindings.ContainsKey(identity.ControlHwnd))
+                return null;
         }
         if (_bindings.Count >= 32)
             return null;
@@ -333,6 +347,36 @@ internal sealed class NativeEditTransactions : IDisposable
         string name = $"Local\\TypeLay.Input.{first:x16}{second:x16}";
         using var mapping = MemoryMappedFile.CreateNew(name, MappingSize, MemoryMappedFileAccess.ReadWrite);
         using var view = mapping.CreateViewAccessor(0, MappingSize, MemoryMappedFileAccess.ReadWrite);
+        FillTransaction(view, binding, operation, plan, expiresAtMs);
+        if (binding.Owned is { } current && !IsCurrentOwned(current))
+            return new(2, Denial.TargetChanged, "", new(0, 0), false, ImeState.Unknown);
+        // A timeout after dispatch is an unknown write outcome, never a safe retry.
+        nint sent = SendMessageTimeoutW((nint)binding.Target.ControlHwnd, message, (nuint)first,
+            unchecked((nint)second), 2 | 0x20, 700, out _);
+        if (sent == 0)
+            return new(0, Denial.PlatformFailure, "", new(0, 0), false, ImeState.Unknown);
+        uint status = view.ReadUInt32(4);
+        Denial reason = (Denial)view.ReadUInt32(8);
+        int length = view.ReadInt32(56);
+        string text = "";
+        if (status == 1 && operation != 3 && length is >= 0 and <= Limits.MaxTextUnits)
+        {
+            byte[] bytes = new byte[length * 2];
+            view.ReadArray(HeaderSize + 2 * BufferBytes, bytes, 0, bytes.Length);
+            text = Encoding.Unicode.GetString(bytes);
+            CryptographicOperations.ZeroMemory(bytes);
+        }
+        var result = new Result(status, Enum.IsDefined(reason) ? reason : Denial.PlatformFailure, text,
+            new(view.ReadInt32(72), view.ReadInt32(76)), view.ReadInt32(80) != 0, (ImeState)view.ReadInt32(84));
+        // Only clear after a completed synchronous exchange. On timeout the native
+        // callback may still own a view; its deadline and single-use status apply.
+        byte[] zero = new byte[MappingSize];
+        view.WriteArray(0, zero, 0, zero.Length);
+        return result;
+    }
+
+    private static void FillTransaction(MemoryMappedViewAccessor view, Binding binding, uint operation, WritePlan? plan, long expiresAtMs)
+    {
         view.Write(0, ProtocolVersion);
         view.Write(12, operation);
         view.Write(16, (uint)binding.Target.ProcessId);
@@ -365,31 +409,6 @@ internal sealed class NativeEditTransactions : IDisposable
             WriteText(view, HeaderSize, plan.Expected.Text);
             WriteText(view, HeaderSize + BufferBytes, plan.Replacement);
         }
-        if (binding.Owned is { } current && !IsCurrentOwned(current))
-            return new(2, Denial.TargetChanged, "", new(0, 0), false, ImeState.Unknown);
-        // A timeout after dispatch is an unknown write outcome, never a safe retry.
-        nint sent = SendMessageTimeoutW((nint)binding.Target.ControlHwnd, message, (nuint)first,
-            unchecked((nint)second), 2 | 0x20, 700, out _);
-        if (sent == 0)
-            return new(0, Denial.PlatformFailure, "", new(0, 0), false, ImeState.Unknown);
-        uint status = view.ReadUInt32(4);
-        Denial reason = (Denial)view.ReadUInt32(8);
-        int length = view.ReadInt32(56);
-        string text = "";
-        if (status == 1 && operation != 3 && length is >= 0 and <= Limits.MaxTextUnits)
-        {
-            byte[] bytes = new byte[length * 2];
-            view.ReadArray(HeaderSize + 2 * BufferBytes, bytes, 0, bytes.Length);
-            text = Encoding.Unicode.GetString(bytes);
-            CryptographicOperations.ZeroMemory(bytes);
-        }
-        var result = new Result(status, Enum.IsDefined(reason) ? reason : Denial.PlatformFailure, text,
-            new(view.ReadInt32(72), view.ReadInt32(76)), view.ReadInt32(80) != 0, (ImeState)view.ReadInt32(84));
-        // Only clear after a completed synchronous exchange. On timeout the native
-        // callback may still own a view; its deadline and single-use status apply.
-        byte[] zero = new byte[MappingSize];
-        view.WriteArray(0, zero, 0, zero.Length);
-        return result;
     }
 
     private static void WriteText(MemoryMappedViewAccessor view, long offset, string text)
@@ -406,6 +425,8 @@ internal sealed class NativeEditTransactions : IDisposable
     }
     private void Release(Binding binding)
     {
+        if (!RetireSourceBinding(binding))
+            return;
         try
         {
             // Owned lifetime retirement belongs to the host's ordered control
@@ -414,9 +435,28 @@ internal sealed class NativeEditTransactions : IDisposable
                 Invoke(binding, 3);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        if (!_bindings.Values.Any(value => value.Thread == binding.Thread && value.Target != binding.Target)
+            && _hooks.TryGetValue(binding.Thread, out nint hook))
+        {
+            if (_sourceHookProcesses.ContainsKey(binding.Thread))
+            {
+                if (!DetachSourceHook(binding.Thread, hook))
+                    return;
+            }
+            else
+            {
+                _hooks.Remove(binding.Thread);
+                UnhookWindowsHookEx(hook);
+            }
+        }
         _bindings.Remove(binding.Target.ControlHwnd);
-        if (!_bindings.Values.Any(value => value.Thread == binding.Thread) && _hooks.Remove(binding.Thread, out nint hook))
-            UnhookWindowsHookEx(hook);
+    }
+    public void ClearObservations()
+    {
+        // Direct jobs outlive the current foreground observation. Do not retire
+        // their source binding when an automatic observation or session clears.
+        foreach (var binding in _bindings.Values.Where(value => value.Owned is null && !value.DirectCaptured).ToArray())
+            Release(binding);
     }
     public void Clear()
     {
@@ -426,6 +466,10 @@ internal sealed class NativeEditTransactions : IDisposable
     public void Dispose()
     {
         Clear();
+        // An unacknowledged source installation still owns this hook/module.
+        // Keep the unresolved owner; disposing is not proof of native revocation.
+        if (_sourceGrant is not null || _sourceHookProcesses.Count != 0)
+            return;
         if (_library != 0)
             NativeLibrary.Free(_library);
         _library = 0;

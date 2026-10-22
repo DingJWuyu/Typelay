@@ -311,6 +311,49 @@ static void prepare_trigger_frame(GtkWidget *widget, gpointer data) {
 static void prepare_language_frame(GdkFrameClock *clock, GtkWidget *window) {
     prepare_trigger_frame(window, clock);
 }
+/* GtkEntry only prelights its icons, not its text area. Observe the real
+ * registered input window crossing instead of treating a CSS flag as hover.
+ * Returning FALSE leaves the production event/focus handling untouched. */
+static gboolean glossary_entry_crossing(GtkWidget *widget, GdkEventCrossing *event, gpointer unused) {
+    (void)unused;
+    gpointer owner = NULL;
+    if (event->send_event || !event->window) return FALSE;
+    gdk_window_get_user_data(event->window, &owner);
+    if (owner != widget) return FALSE;
+    if (event->type == GDK_ENTER_NOTIFY) {
+        g_object_set_data_full(G_OBJECT(widget), "fixture-glossary-pointer-window",
+            g_object_ref(event->window), g_object_unref);
+        g_object_set_data(G_OBJECT(widget), "fixture-glossary-pointer-entered",
+            (gpointer)(gintptr)(g_get_monotonic_time() / 1000));
+    } else if (event->type == GDK_LEAVE_NOTIFY
+        && g_object_get_data(G_OBJECT(widget), "fixture-glossary-pointer-window") == event->window) {
+        g_object_set_data(G_OBJECT(widget), "fixture-glossary-pointer-window", NULL);
+        g_object_set_data(G_OBJECT(widget), "fixture-glossary-pointer-entered", NULL);
+    }
+    return FALSE;
+}
+static void glossary_entry_unmapped(GtkWidget *widget, gpointer unused) {
+    (void)unused;
+    g_object_set_data(G_OBJECT(widget), "fixture-glossary-pointer-window", NULL);
+    g_object_set_data(G_OBJECT(widget), "fixture-glossary-pointer-entered", NULL);
+}
+static void report_glossary_entry_pointer(JsonBuilder *builder, GtkWidget *widget) {
+    if (!g_object_get_data(G_OBJECT(widget), "fixture-glossary-pointer-watched")) {
+        g_object_set_data(G_OBJECT(widget), "fixture-glossary-pointer-watched", GINT_TO_POINTER(TRUE));
+        /* GtkEntry already selects crossing events on its input windows. */
+        g_signal_connect(widget, "enter-notify-event", G_CALLBACK(glossary_entry_crossing), NULL);
+        g_signal_connect(widget, "leave-notify-event", G_CALLBACK(glossary_entry_crossing), NULL);
+        g_signal_connect(widget, "unmap", G_CALLBACK(glossary_entry_unmapped), NULL);
+        g_signal_connect(widget, "destroy", G_CALLBACK(glossary_entry_unmapped), NULL);
+    }
+    GdkWindow *window = g_object_get_data(G_OBJECT(widget), "fixture-glossary-pointer-window");
+    json_builder_set_member_name(builder, "pointerInside");
+    json_builder_add_boolean_value(builder, gtk_widget_get_mapped(widget)
+        && window && !gdk_window_is_destroyed(window) && gdk_window_is_visible(window));
+    json_builder_set_member_name(builder, "pointerEnteredAtMonoMs");
+    json_builder_add_int_value(builder,
+        (gintptr)g_object_get_data(G_OBJECT(widget), "fixture-glossary-pointer-entered"));
+}
 static void report_language_control(GtkWidget *widget, gpointer data) {
     JsonBuilder *builder = data;
     const char *name = gtk_widget_get_name(widget);
@@ -372,7 +415,9 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         json_builder_add_int_value(builder, language_instance(G_OBJECT(widget)));
         json_builder_set_member_name(builder, "visible");
         json_builder_add_boolean_value(builder, gtk_widget_get_mapped(widget));
-        if (!expand && !language_trigger) {
+        if (GTK_IS_ENTRY(widget) && g_str_has_prefix(name, "typelay-glossary-")) {
+            report_glossary_entry_pointer(builder, widget);
+        } else if (!expand && !language_trigger) {
             json_builder_set_member_name(builder, "pointerInside");
             json_builder_add_boolean_value(builder, (gtk_widget_get_state_flags(widget) & GTK_STATE_FLAG_PRELIGHT) != 0);
         }

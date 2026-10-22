@@ -22,6 +22,38 @@ internal static class WinEventStackProbe
     private static FinishRetirement? _finishRetirement;
     private static nint _ownedControl;
     private static uint _armStatus;
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ClaimObservation
+    {
+        public uint Installed, Removed, Callbacks, Action, Claim, Event;
+    }
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate uint ArmClaim(nint root, nint edit, ulong nonce, uint mode);
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate uint FinishClaim(ref ClaimObservation observation);
+    private static ArmClaim? _armClaim;
+    private static FinishClaim? _finishClaim;
+    public static void LoadSourceClaim(string path)
+    {
+        nint probe = NativeLibrary.Load(path); // Fixture-only callbacks live until process exit.
+        _armClaim = Marshal.GetDelegateForFunctionPointer<ArmClaim>(NativeLibrary.GetExport(probe, "ArmSourceClaim"));
+        _finishClaim = Marshal.GetDelegateForFunctionPointer<FinishClaim>(NativeLibrary.GetExport(probe, "FinishSourceClaim"));
+    }
+    public static uint ArmSourceClaim(nint root, nint edit, ulong nonce, uint mode) =>
+        _armClaim?.Invoke(root, edit, nonce, mode) ?? 1;
+    public static uint FinishSourceClaim(nint root)
+    {
+        if (_finishClaim is null)
+            return 1;
+        var result = new ClaimObservation();
+        uint status = _finishClaim(ref result);
+        N.SetProp(root, "TypeLay.Test.SourceClaimInstalled.v1", (nint)result.Installed);
+        N.SetProp(root, "TypeLay.Test.SourceClaimRemoved.v1", (nint)result.Removed);
+        N.SetProp(root, "TypeLay.Test.SourceClaimCallbacks.v1", (nint)result.Callbacks);
+        N.SetProp(root, "TypeLay.Test.SourceClaimAction.v1", (nint)result.Action);
+        N.SetProp(root, "TypeLay.Test.SourceClaimObserved.v1", (nint)result.Claim);
+        return status;
+    }
 
     public static void LoadRetirement(string testLibraryPath, string productionLibraryPath)
     {

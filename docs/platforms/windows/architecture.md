@@ -14,6 +14,10 @@ TypeLay.Windows.Contracts 引用 Core，拥有 App 与 Broker 共用的 DTO、�
 
 ## 输入后端的安全准入
 
+普通 `capture` 在 UIA/跨线程 IMM 为 Unknown 时，可对通过原有资格检查的系统 Edit 复用目标 GUI 线程原生只读捕获；[IMM 的线程身份检查](https://learn.microsoft.com/windows/win32/intl/developing-ime-aware-multiple-thread-applications)使 Broker 取不到 HIMC 不能证明源线程没有输入上下文。该观察独立于按需 `CaptureDirect`，成功也固定 `WriteSupported=false`、`DirectWriteSupported=false`；暂停、ComboBox、已有明确 UIA 组合态不增加此读取，失败保持原拒绝边界。只读绑定由原 Broker 所有者退休，已获直接任务资格的绑定不因普通观察清理而提前撤销。真实安装版记事本的新 Clear 结果仍待 Windows 验证，首接受及默认接受资格未因此通过或开放。
+
+隔离 Windows 测试另有默认关闭的系统 Edit 受理原型：原字段完成只读重验后，与快捷键超时撤回竞争同一个一次性共享状态。原字段先受理则消费本次按键及其释放；撤回先完成则不得修改正文或选区，原键旁路。已受理后的未知结果不重放按键，退休仅在确证静默或目标进程退出后擦除正文，保留受理事实。此路径目前只由测试接线，生产 `SourceLocalAcceptanceVersion` 仍为 0；未知线程队列关系、系统低级钩子超时及真实中文组合输入尚未验证，不能据本地编译或隔离原型宣布普通输入框安全接受完成。
+
 当前生产路径没有 TSF 后端。候选后端必须分别证明精确字段身份与寿命、完整正文与 UTF-16 选区、真实输入法组合态与共存、连续编辑变化，以及独立的写入资格；静态输入 profile、模块路径匹配、回调进入或进程清理成功均不能代替这些能力证明。未取得有效读取快照时，初始零值不能解释为无组合或空正文，未知状态继续拒绝授权。
 
 新的 TSF 接入实验须先明确范围和授权；元数据完整不等于正文完整，不能因当前观察不足而擅自扩展到 base、parent 或修改输入法。隔离合成文档结果不外推普通输入框支持，单条有界路径停止也不代表 TSF 所有方案不可行。读取证据不自动授权写入、系统配置变更或运行中卸载。

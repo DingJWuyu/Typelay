@@ -46,6 +46,7 @@ def build_winevent_probe(work):
             "UnhookWindowsHookEx",
             "RegisterWindowMessageW",
             "GetPropW",
+            "RemovePropW",
         ],
     }
     for library, exports in libraries.items():

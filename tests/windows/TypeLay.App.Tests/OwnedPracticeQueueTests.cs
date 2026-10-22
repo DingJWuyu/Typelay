@@ -1218,7 +1218,16 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                         {
                             status = "not-flushed"
                         };
-                    foreach (string line in File.ReadLines(file))
+                    // The source can still be appending its post-ACK trace.
+                    // Share that writer without waiting or reopening: a partial
+                    // record remains unavailable evidence, never an install ACK.
+                    using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                    using var reader = new StreamReader(stream);
+                    string contents = reader.ReadToEnd();
+                    int completeEnd = contents.LastIndexOf('\n');
+                    // A concurrent append may leave a final partial record.
+                    // Only complete lines can describe this exact installation.
+                    foreach (string line in contents[..(completeEnd + 1)].Split('\n', StringSplitOptions.RemoveEmptyEntries))
                     {
                         using var record = System.Text.Json.JsonDocument.Parse(line);
                         var value = record.RootElement;
@@ -1243,7 +1252,8 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                     return new
                     {
                         status = "unavailable",
-                        error = error.GetType().Name
+                        error = error.GetType().Name,
+                        errorCode = error.HResult
                     };
                 }
             }

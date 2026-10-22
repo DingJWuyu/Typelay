@@ -28,6 +28,9 @@ API HANDLE GetAncestor(HANDLE, uint32_t);
 API HANDLE GetParent(HANDLE);
 API HANDLE GetForegroundWindow(void);
 API HANDLE GetFocus(void);
+API HANDLE GetActiveWindow(void);
+API uint32_t GetQueueStatus(uint32_t);
+API LRESULT SendMessageTimeoutW(HANDLE, uint32_t, WPARAM, LPARAM, uint32_t, uint32_t, uintptr_t *);
 API HANDLE GetKeyboardLayout(uint32_t);
 API int IsWindowUnicode(HANDLE);
 API int IsWindowEnabled(HANDLE);
@@ -349,8 +352,9 @@ static int owned_input_preflight(Transaction *tx, WNDPROC proc, uint64_t revisio
     if (GetTickCount64() > tx->deadline) { tx->reason = 14; return 0; }
     return 1;
 }
+typedef struct { uint32_t *claim; const uint32_t *reason; } SourceAdmission;
 static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accepted,
-    const OwnedInputContext *expected_input) {
+    const OwnedInputContext *expected_input, const SourceAdmission *admission) {
     tx->status = 2; tx->reason = 6; // RejectedBeforeMutation / Unsupported.
     if (tx->version != VERSION || !tx->cookie || GetTickCount64() > tx->deadline) return;
     HANDLE hwnd = (HANDLE)(uintptr_t)tx->hwnd;
@@ -412,6 +416,28 @@ static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accep
     if (!owned_focus_current(focus_revision)) { tx->reason = 10; return; }
     if (!owned_input_preflight(tx, proc, focus_revision, expected_input,
         tx->expected_selection_start, tx->expected_selection_end)) return;
+    if (admission) {
+        // Recheck on this GUI thread, before the first input side effect. Queue
+        // status is deliberately conservative: any pending input, posted work,
+        // timer, paint or sent work refuses. Never pump/remove messages to pass.
+        if (*admission->reason || ime(hwnd) != 1) { tx->reason = 9; return; }
+        if (read_text(tx, proc) - 1 != tx->length || !equal(tx->observed, tx->expected, tx->length)) {
+            tx->reason = 3; return;
+        }
+        if (tx->selection_start != tx->expected_selection_start || tx->selection_end != tx->expected_selection_end) {
+            tx->reason = 4; return;
+        }
+        if (*admission->reason || !qualify(tx) || !foreground_source(tx)
+            || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie) { tx->reason = 2; return; }
+        if (!authorization_current(tx) || GetTickCount64() > tx->deadline) { tx->reason = 14; return; }
+        if (GetQueueStatus(0x1dff) >> 16) { tx->reason = 15; return; }
+        uint32_t armed = 0;
+        // This actual aligned shared word is the only acceptance linearization
+        // point. A timeout's Withdrawn value can never be reset or overwritten.
+        if (!__atomic_compare_exchange_n(admission->claim, &armed, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            tx->reason = 14; return;
+        }
+    }
     // This is the only owned acceptance point. Everything above is a read-only
     // preflight. The caller has removed its single-use local plan; only a true
     // return may consume the original queue message, even if selection callbacks
@@ -448,7 +474,7 @@ static void execute(Transaction *tx) {
     if (tx->op < 1 || tx->op > 5) { tx->status = 2; tx->reason = 6; return; }
     if (owned.hwnd == (HANDLE)(uintptr_t)tx->hwnd && owned.automatic
         && (tx->op == 2 || tx->op == 5)) { tx->status = 2; tx->reason = 6; return; }
-    execute_guarded(tx, 0, 0, 0);
+    execute_guarded(tx, 0, 0, 0, 0);
 }
 
 __declspec(dllexport) uint32_t TypeLayOwnedCaptureVersion(void) { return 2; }
@@ -462,7 +488,7 @@ static void execute_owned_capture(Transaction *tx) {
         || owned.retired || !owned.automatic || tx->cookie != owned.cookie || !owned_focus_current(revision)) {
         tx->status = 2; tx->reason = 2; return;
     }
-    execute_guarded(tx, revision, 0, 0);
+    execute_guarded(tx, revision, 0, 0, 0);
 }
 
 // Local-only entry: the independent practice GUI owns this private buffer. The
@@ -480,7 +506,7 @@ static int try_execute_owned(Transaction *tx, uint32_t bytes, uint64_t expected_
         return 0;
     }
     int accepted = 0;
-    execute_guarded(tx, expected_focus_revision, &accepted, expected_input);
+    execute_guarded(tx, expected_focus_revision, &accepted, expected_input, 0);
     return accepted;
 }
 __declspec(dllexport) int TypeLayOwnedEditTryExecute(Transaction *tx, uint32_t bytes,
@@ -492,9 +518,261 @@ __declspec(dllexport) int TypeLayOwnedEditTryExecuteWithInputContext(Transaction
     const OwnedInputContext expected = {expected_context, expected_layout};
     return try_execute_owned(tx, bytes, expected_focus_revision, &expected);
 }
+
+// Inactive ordinary-Edit source prototype. No production publication enables
+// this consumer. Its independent version is not SourceLocalAcceptanceVersion.
+typedef struct {
+    uint32_t version, bytes, state, acknowledged_operation;
+    uint64_t generation[2], grant[2];
+    int64_t observed_at_ms;
+    uint64_t acknowledgement;
+    uint32_t claim, invoked; // Claim: Armed=0, Claimed=1, Withdrawn=2; never reused.
+    Transaction tx;
+} SourceInstallation;
+_Static_assert(offsetof(SourceInstallation, claim) == 64, "Aligned claim word");
+_Static_assert(offsetof(SourceInstallation, tx) == 72, "Source envelope layout");
+_Static_assert(sizeof(SourceInstallation) == 49336, "Source mapping length");
+// One candidate per target process, owned by one GUI thread. Only owner is
+// atomic; all remaining members are exclusively accessed by that thread.
+// No retained body, mapped view, function pointer, subclass or module pin.
+typedef struct {
+    uint32_t owner;
+    uint32_t busy, reason, completed_status, completed_reason;
+    uint64_t nonce, generation[2], grant[2], hwnd, root, cookie;
+    int64_t expires;
+} SourceSlot;
+static SourceSlot source;
+// Covers unmatched requests too: a downstream hook cannot retire A, install B,
+// and let an outer rejected B request publish a false quiet ACK over that slot.
+static uint32_t source_callback;
+__declspec(dllexport) uint32_t TypeLaySourceInstallationVersion(void) { return 2; }
+
+static void source_invalidate(const CallMessage *msg) {
+    if (__atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) != GetCurrentThreadId() || source.reason) return;
+    if (msg->hwnd == (HANDLE)(uintptr_t)source.hwnd) {
+        switch (msg->message) {
+        case 0x08: case 0x82: // KILLFOCUS / NCDESTROY: a round trip cannot revive it.
+            source.reason = 2; break;
+        case 0x0c: case 0xb1: case 0xc2: case 0xcc: case 0xcf:
+        case 0x51: case 0x10d: case 0x10e: case 0x10f:
+        case 0x100: case 0x101: case 0x102: case 0x104: case 0x105:
+        case 0x201: case 0x204: case 0x207:
+            source.reason = 15; break;
+        }
+    }
+    if (msg->hwnd == (HANDLE)(uintptr_t)source.root
+        && (msg->message == 0x82 || (msg->message == 0x06 && !(msg->wparam & 0xffff))
+            || (msg->message == 0x1c && !msg->wparam))) source.reason = 2;
+}
+static int source_identity(const SourceInstallation *request, const CallMessage *msg) {
+    return source.nonce == (uint64_t)msg->wparam
+        && source.hwnd == request->tx.hwnd && source.root == request->tx.root
+        && source.cookie == request->tx.cookie && source.expires == request->tx.authorization_deadline_ms
+        && source.generation[0] == request->generation[0] && source.generation[1] == request->generation[1]
+        && source.grant[0] == request->grant[0] && source.grant[1] == request->grant[1];
+}
+static uint32_t source_preflight(SourceInstallation *request) {
+    Transaction *tx = &request->tx;
+    uint64_t now;
+    QueryInterruptTimePrecise(&now);
+    if (request->observed_at_ms <= 0 || now / 10000 < (uint64_t)request->observed_at_ms
+        || tx->authorization_deadline_ms < request->observed_at_ms
+        || tx->authorization_deadline_ms - request->observed_at_ms > 100
+        || !authorization_current(tx)) return 14;
+    uint32_t root_pid = 0;
+    if (owned.hwnd == (HANDLE)(uintptr_t)tx->hwnd || !foreground_source(tx)
+        || GetWindowThreadProcessId((HANDLE)(uintptr_t)tx->root, &root_pid) != tx->thread
+        || root_pid != tx->pid || !IsWindowVisible((HANDLE)(uintptr_t)tx->hwnd)
+        || !IsWindowVisible((HANDLE)(uintptr_t)tx->root)
+        || !IsWindowEnabled((HANDLE)(uintptr_t)tx->root) || IsIconic((HANDLE)(uintptr_t)tx->root)) return 2;
+    if (tx->version != VERSION || tx->op != 5 || tx->status || !tx->cookie
+        || !valid(tx->expected, tx->length) || !valid(tx->replacement, tx->replacement_length)
+        || !tx->replacement_length || !boundary(tx->expected, tx->length, tx->start)
+        || !boundary(tx->expected, tx->length, tx->end) || tx->end < tx->start
+        || !boundary(tx->expected, tx->length, tx->expected_selection_start)
+        || !boundary(tx->expected, tx->length, tx->expected_selection_end)
+        || tx->expected_selection_end < tx->expected_selection_start
+        || tx->length - (tx->end - tx->start) + tx->replacement_length > MAX_UNITS) return 18;
+    int length = tx->length;
+    // Reuse the production read-only operation, never op5 execution. Its result
+    // is installation preflight, not a completed write or a renewed snapshot.
+    tx->op = 4;
+    execute_guarded(tx, 0, 0, 0, 0);
+    tx->op = 5;
+    uint32_t reason = tx->status == 1 ? 0 : tx->reason;
+    if (!reason && (tx->length != length || !equal(tx->observed, tx->expected, length))) reason = 3;
+    if (!reason && (tx->selection_start != tx->expected_selection_start
+        || tx->selection_end != tx->expected_selection_end)) reason = 4;
+    tx->length = length;
+    if (!reason && (!qualify(tx) || !foreground_source(tx)
+        || (uint64_t)(uintptr_t)GetPropW((HANDLE)(uintptr_t)tx->hwnd, property) != tx->cookie)) reason = 2;
+    if (!reason && !authorization_current(tx)) reason = 14;
+    return reason;
+}
+static HANDLE source_mapping(const CallMessage *msg) {
+    WCHAR name[64];
+    const WCHAR prefix[] = L"Local\\TypeLay.Source.";
+    const WCHAR digits[] = L"0123456789abcdef";
+    int i = 0;
+    for (; prefix[i]; i++) name[i] = prefix[i];
+    uint64_t bits = (uint64_t)msg->wparam;
+    for (int shift = 60; shift >= 0; shift -= 4) name[i++] = digits[(bits >> shift) & 15];
+    name[i] = 0;
+    return OpenFileMappingW(6, 0, name);
+}
+static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation) {
+    const CallMessage *msg = (const CallMessage *)lp;
+    uint32_t thread = GetCurrentThreadId(), empty_callback = 0;
+    if (!__atomic_compare_exchange_n(&source_callback, &empty_callback, thread, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        // Nested exact revocation may fence the outer installation, but cannot
+        // acknowledge quiet while any outer source callback is still active.
+        if (operation == 2 && __atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) == thread
+            && source.root == (uint64_t)(uintptr_t)msg->hwnd
+            && source.nonce == (uint64_t)msg->wparam
+            && !source.reason) source.reason = 15;
+        return CallNextHookEx(0, code, wp, lp);
+    }
+    HANDLE mapping = source_mapping(msg);
+    SourceInstallation *shared = mapping ? MapViewOfFile(mapping, 6, 0, 0, sizeof(SourceInstallation)) : 0;
+    SourceInstallation *request = shared ? HeapAlloc(GetProcessHeap(), 8, sizeof(SourceInstallation)) : 0;
+    int matched = 0, quiet = 0, respond = 0;
+    if (request) {
+        copy(request, shared, sizeof(SourceInstallation));
+        respond = (uint64_t)msg->lparam > request->acknowledgement;
+        Transaction *tx = &request->tx;
+        if (request->version == 2 && request->bytes == sizeof(SourceInstallation)
+            && respond
+            && (request->generation[0] || request->generation[1]) && (request->grant[0] || request->grant[1])
+            && tx->thread == thread && tx->pid == GetCurrentProcessId()
+            && tx->root == (uint64_t)(uintptr_t)msg->hwnd) {
+            uint32_t empty = 0;
+            if (operation == 1 && request->state == 0
+                && __atomic_compare_exchange_n(&source.owner, &empty, thread, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+                source.busy = 0; source.reason = 0;
+                source.completed_status = source.completed_reason = 0;
+                source.nonce = (uint64_t)msg->wparam;
+                copy(source.generation, request->generation, sizeof(source.generation));
+                copy(source.grant, request->grant, sizeof(source.grant));
+                source.hwnd = tx->hwnd; source.root = tx->root; source.cookie = tx->cookie;
+                source.expires = tx->authorization_deadline_ms;
+                source.busy++;
+                uint32_t reason = source_preflight(request);
+                if (reason && !source.reason) source.reason = reason;
+                source.busy--;
+            }
+            matched = __atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) == thread && source_identity(request, msg);
+            if (matched) {
+                source.busy++;
+                if (operation == 2 && !source.reason) source.reason = 15;
+                if (!source.reason && !authorization_current(tx)) source.reason = 14;
+                if (operation == 4 && !source.completed_status) {
+                    if (!source.reason && request->state == 1) {
+                        SourceAdmission admission = { &shared->claim, &source.reason };
+                        execute_guarded(tx, 0, 0, 0, &admission);
+                    } else { tx->status = 2; tx->reason = source.reason ? source.reason : 6; }
+                    source.completed_status = tx->status;
+                    source.completed_reason = tx->reason;
+                    if (!source.reason) source.reason = 15; // Single use, including preclaim refusal.
+                }
+                // Only an explicit retirement may relinquish the source slot.
+                // A nested revoke records cancellation but cannot claim quiet.
+                quiet = operation == 2 && source.busy == 1;
+            } else {
+                request->state = 3;
+                // A previous quiet ACK may have been lost after execution.
+                // With the slot already gone, Claimed cannot be downgraded to
+                // a claim that no mutation happened. Retire conservatively.
+                int claimed = __atomic_load_n(&shared->claim, __ATOMIC_ACQUIRE) == 1;
+                tx->status = claimed ? 3 : 2; tx->reason = claimed ? 20 : 2;
+            }
+        } else if (respond) {
+            // Malformed identity cannot prove retirement of an existing slot.
+            request->state = 2; tx->status = 2; tx->reason = 6;
+        }
+    }
+    // No quiet acknowledgement before the rest of this callback chain returns.
+    // Reentrant callbacks can only revoke the original slot, never replace it.
+    LRESULT result = CallNextHookEx(0, code, wp, lp);
+    if (request) {
+        if (matched) {
+            if (!source.reason && !authorization_current(&request->tx)) source.reason = 14;
+            request->tx.status = source.completed_status ? source.completed_status : source.reason ? 2 : 0;
+            request->tx.reason = source.completed_status ? source.completed_reason : source.reason;
+            request->state = quiet ? 3 : source.completed_status || source.reason ? 2 : 1;
+            source.busy--;
+            if (quiet) {
+                wipe(&source.nonce, sizeof(source) - offsetof(SourceSlot, nonce));
+                source.reason = 0;
+                source.completed_status = source.completed_reason = 0;
+                __atomic_store_n(&source.owner, 0, __ATOMIC_RELEASE);
+            }
+        }
+        // The broker writes the request once before dispatch. Only the source
+        // writes response fields; polling never treats an unsynchronised read as
+        // an ACK. SendMessage completion establishes callback completion.
+        if (respond) {
+            shared->tx.status = request->tx.status;
+            shared->tx.reason = request->tx.reason;
+            shared->state = request->state;
+            shared->acknowledged_operation = operation;
+            shared->acknowledgement = (uint64_t)msg->lparam;
+        }
+        wipe(request, sizeof(SourceInstallation));
+        HeapFree(GetProcessHeap(), 0, request);
+    }
+    if (shared) UnmapViewOfFile(shared);
+    if (mapping) CloseHandle(mapping);
+    __atomic_store_n(&source_callback, 0, __ATOMIC_RELEASE);
+    return result;
+}
+// Called only by the inactive Windows adapter, with its already-open local view.
+// The view stays owned through source quiet ACK, including all timeout paths.
+// Different focus queues are observed, not locked: only the isolated fixture is
+// known not to attach queues. This is NOT an ordinary-process readiness proof.
+__declspec(dllexport) uint32_t TypeLaySourceActivate(SourceInstallation *shared, uint32_t bytes,
+    uint64_t nonce, uint64_t command, uint32_t timeout, uint32_t message) {
+    if (!shared || bytes != sizeof(SourceInstallation) || shared->version != 2
+        || shared->bytes != bytes || !command || !message || !timeout || timeout > 10) return 0;
+    uint32_t unused = 0;
+    // Global per-grant single use, including accidentally duplicated local
+    // endpoint objects. Retirement never clears either this word or claim.
+    if (!__atomic_compare_exchange_n(&shared->invoked, &unused, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return 0;
+    uint64_t started, ended;
+    QueryInterruptTimePrecise(&started);
+    Transaction *tx = &shared->tx;
+    uint32_t pid = 0;
+    LRESULT sent = 0;
+    if (tx->thread != GetCurrentThreadId() && !GetFocus() && !GetActiveWindow()
+        && GetWindowThreadProcessId((HANDLE)(uintptr_t)tx->root, &pid) == tx->thread && pid == tx->pid
+        && GetForegroundWindow() == (HANDLE)(uintptr_t)tx->root
+        && shared->state == 1 && __atomic_load_n(&shared->claim, __ATOMIC_ACQUIRE) == 0
+        && authorization_current(tx)) {
+        uintptr_t result = 0;
+        // One exact window, no pumping, broadcast, retries or NOTIMEOUTIFNOTHUNG.
+        sent = SendMessageTimeoutW((HANDLE)(uintptr_t)tx->root, message, (WPARAM)nonce,
+            (LPARAM)command, 0x23, timeout, &result);
+    }
+    uint32_t armed = 0;
+    __atomic_compare_exchange_n(&shared->claim, &armed, 2, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+    uint32_t flags = __atomic_load_n(&shared->claim, __ATOMIC_ACQUIRE) == 1 ? 1 : 0;
+    if (sent && shared->acknowledgement == command && shared->acknowledged_operation == 4) flags |= 2;
+    QueryInterruptTimePrecise(&ended);
+    if (ended < started || ended - started > (uint64_t)timeout * 10000) flags |= 4;
+    return flags;
+}
 __declspec(dllexport) LRESULT TypeLayCallWndProc(int code, WPARAM wp, LPARAM lp) {
     if (code >= 0) {
         const CallMessage *msg = (const CallMessage *)lp;
+        static uint32_t source_install, source_revoke, source_poll, source_activate;
+        if (!source_install) source_install = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceInstall.v2");
+        if (!source_revoke) source_revoke = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceRevoke.v2");
+        if (!source_poll) source_poll = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourcePoll.v2");
+        if (!source_activate) source_activate = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceActivate.v2");
+        if (source_install && msg->message == source_install) return source_message(code, wp, lp, 1);
+        if (source_revoke && msg->message == source_revoke) return source_message(code, wp, lp, 2);
+        if (source_poll && msg->message == source_poll) return source_message(code, wp, lp, 3);
+        if (source_activate && msg->message == source_activate) return source_message(code, wp, lp, 4);
+        source_invalidate(msg);
         if (msg->message == 0x82) {
             if (msg->hwnd == owned.hwnd) owned.retired = 1;
             RemovePropW(msg->hwnd, property);

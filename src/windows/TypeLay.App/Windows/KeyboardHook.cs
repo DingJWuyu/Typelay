@@ -610,6 +610,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
         long Sequence, long TriggeredAtMs, long ForegroundEpoch, long WindowEpoch);
     private nint OnKey(int code, nint wParam, nint lParam)
     {
+        long callbackStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         if (code < 0)
             return Native.CallNextHookEx(_hook, code, wParam, lParam);
         DeferredWake? wake = null;
@@ -651,6 +652,8 @@ internal sealed partial class KeyboardHook : IInputMonitor
             var decision = _gate.ProcessAcceptanceKey(new(data.Key, down, repeated, data.Key == sessionKeys.Accept && UsesUnmodifiedSessionKeys),
                 new(lease?.Source.Target, source, lease?.Source.Ime ?? ImeState.Unknown,
                     Modified, injected, fresh && UsesUnmodifiedSessionKeys, lease?.Source.InputEpoch ?? -1, lease?.Source.FocusEpoch ?? -1, now));
+            if (StockAcceptance(decision, data, down, injected, lease, now, out bool stockConsume))
+                return stockConsume ? 1 : Native.CallNextHookEx(_hook, code, wParam, lParam);
             if (decision.Permit is not null)
                 _notices.Enqueue(new("accept", decision.Permit, now, UserEpoch, ForegroundEpoch,
                     CommandGeneration: lease!.CommandGeneration, SessionRevision: lease.SessionRevision));
@@ -715,6 +718,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
                     commandGeneration: wake.Generation, commandSequence: wake.Sequence);
             }
             ObserveCommandRelease();
+            RecordStockCallback(callbackStarted);
         }
     }
     private static bool IsModifier(uint key) => key is 0x10 or 0x11 or 0x12 or 0x5B or 0x5C

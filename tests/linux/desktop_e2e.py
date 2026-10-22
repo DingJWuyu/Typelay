@@ -3473,12 +3473,29 @@ def run(arguments):
                                 subprocess.run(["xdotool", "keyup", "F7"], check=True, timeout=2)
                             wait_for(ready_to_accept, "released F7 did not allow fresh capture")
                             before_write = trace_checkpoint()
-                            key("F7")
+                            key_timing = {}
+                            key_started = now_ms()
+                            # This is a new down/up, not the held press above.
+                            # Do not spend its observed 100 ms permit launching
+                            # xdotool; XSync still does not prove GTK delivery.
+                            control_keys["F7"](True, sync=False, timing=key_timing)
+                            control_keys["F7"](False, timing=key_timing)
+                            gtk_acceptance_phases.append(
+                                {
+                                    "stage": "rebound-f7-independent-accept",
+                                    "gtk": 4 if gtk4 else 3,
+                                    "readiness": last_acceptance_observation,
+                                    "keySendStartedAtMs": key_started,
+                                    "keySendFinishedAtMs": now_ms(),
+                                    "injection": key_timing,
+                                }
+                            )
                             wait_for(
                                 lambda: gtk_state()["first"] != source_before
                                 and verified_write(before_write),
                                 "independent F7 press did not accept after rebinding",
                             )
+                            gtk_acceptance_phases[-1]["keyObservationEndedAtMs"] = now_ms()
                             evidence.append(
                                 "GTK F1/F24: original editor press only returns; repeat/release "
                                 "stay consumed after focus return/hide; unbound held F7 stays "

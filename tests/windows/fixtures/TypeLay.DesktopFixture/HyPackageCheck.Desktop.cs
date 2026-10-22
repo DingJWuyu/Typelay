@@ -766,6 +766,10 @@ internal static partial class HyPackageCheck
         {
             get; set;
         }
+        public ShellTrayObservation? FirstMissAfterOverflowShellTree
+        {
+            get; set;
+        }
         public bool AppExitObserved
         {
             get; set;
@@ -882,6 +886,17 @@ internal static partial class HyPackageCheck
                         }
                         if (firstMiss)
                             return false;
+                    }
+                    discoveryToken.ThrowIfCancellationRequested();
+                    if (overflowOpened && observation.FirstMissAfterOverflowShellTree is null
+                        && trays.Cast<AutomationElement>().Any(tray => !tray.Current.IsOffscreen
+                            && tray.Current.ClassName is "NotifyIconOverflowWindow" or "TopLevelWindowForOverflowXamlIsland"))
+                    {
+                        // The pre-expansion sample cannot describe hidden tray icons.
+                        // Observe the first miss with an actual visible overflow root,
+                        // without changing selection, exposing names, or renewing the budget.
+                        observation.FirstMissAfterOverflowShellTree = new ShellTrayObservation();
+                        observation.FirstMissAfterOverflowShellTree.Capture(trays.Cast<AutomationElement>(), discoveryToken);
                     }
                     discoveryToken.ThrowIfCancellationRequested();
                     if (!overflowOpened)

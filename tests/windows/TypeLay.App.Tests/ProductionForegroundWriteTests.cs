@@ -597,7 +597,7 @@ public sealed class ProductionForegroundWriteTests
         }
     }
 
-    private static async Task BuildWinEventProbe(string directory)
+    internal static async Task BuildWinEventProbe(string directory)
     {
         var info = new ProcessStartInfo("python")
         {
@@ -761,7 +761,7 @@ public sealed class ProductionForegroundWriteTests
             _pipeToken = broker.StartInfo.Environment["TYPELAY_PIPE_TOKEN"]!;
             _isolatedDirectory = isolatedDirectory;
         }
-        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? returnTrace = null)
+        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? returnTrace = null, string? sourceClaimProbe = null)
         {
             var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(30));
@@ -770,7 +770,7 @@ public sealed class ProductionForegroundWriteTests
             string? isolatedDirectory = null;
             try
             {
-                fixture = await StockFixture.Start(deadline.Token, owned, retirementProbe, returnFocus);
+                fixture = await StockFixture.Start(deadline.Token, owned, retirementProbe, returnFocus, sourceClaimProbe);
                 string directory = Path.Combine(Repository(), "src/windows/TypeLay.Broker/bin/Release/net10.0-windows");
                 if (withoutNativeDll)
                 {
@@ -894,7 +894,7 @@ public sealed class ProductionForegroundWriteTests
         public nint Field(string name) => (nint)host.Fields.Single(value => value.Name == name).Hwnd;
         private Guid _connection, _run;
         private long _sequence = 1;
-        public static async Task<StockFixture> Start(CancellationToken token, bool owned = false, string? retirementProbe = null, string? returnFocus = null)
+        public static async Task<StockFixture> Start(CancellationToken token, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? sourceClaimProbe = null)
         {
             Guid connection = Guid.NewGuid(), run = Guid.NewGuid();
             string assembly = Path.Combine(Repository(),
@@ -912,6 +912,12 @@ public sealed class ProductionForegroundWriteTests
                 Assert.False(owned);
                 Assert.Contains(returnFocus, new[] { "root", "second" });
                 arguments = [.. arguments, "--return-focus", returnFocus];
+            }
+            if (sourceClaimProbe is not null)
+            {
+                Assert.False(owned);
+                Assert.Null(returnFocus);
+                arguments = [.. arguments, "--source-claim-probe", sourceClaimProbe];
             }
             var process = StartProcess(arguments);
             try

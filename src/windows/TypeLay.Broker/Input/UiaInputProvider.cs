@@ -332,21 +332,28 @@ internal sealed class UiaInputProvider : IDisposable
         var id = new WindowsTarget(info.ProcessId, start, (long)root, info.NativeWindowHandle,
             value is null ? "uia-text-preview-v2" : "uia-value-text-v2", token, new Guid(idBytes.AsSpan(0, 16)));
         trace?.Stage("native-capture");
-        if (!comboBox && request.CaptureDirect && _edits.Capture(id, bounds, _inputEpoch, _focusEpoch) is { } direct)
+        // Cross-thread IMM failure does not establish the source thread's IME
+        // state. For an ordinary observation only, the qualified stock Edit
+        // reader may supply real source-thread evidence without write capability.
+        InputSnapshot? native = !comboBox && request.CaptureDirect
+            ? _edits.Capture(id, bounds, _inputEpoch, _focusEpoch)
+            : !comboBox && request.Op == "capture" && ime == ImeState.Unknown
+                ? _edits.Observe(id, bounds, _inputEpoch, _focusEpoch) : null;
+        if (native is { } observed)
         {
             trace?.Stage("focus-recheck");
             if (!StillFocused(root, token))
                 return Reject("focus-changed-native");
-            if (_previous?.Target != direct.Target || _lastFocus != FocusMember.Source)
+            if (_previous?.Target != observed.Target || _lastFocus != FocusMember.Source)
                 _focusEpoch++;
-            if (_previous?.Target != direct.Target || _previous.Text != direct.Text
+            if (_previous?.Target != observed.Target || _previous.Text != observed.Text
                 || _lastSourceUserEpoch != request.SourceUserEpoch)
                 _inputEpoch++;
             _lastSourceUserEpoch = request.SourceUserEpoch;
             _lastFocus = FocusMember.Source;
             _element = element;
             _application = app;
-            _previous = direct with
+            _previous = observed with
             {
                 InputEpoch = _inputEpoch,
                 FocusEpoch = _focusEpoch
@@ -845,6 +852,7 @@ internal sealed class UiaInputProvider : IDisposable
     {
         if (expected is { } id && _previous?.Target != id)
             return;
+        _edits.ClearObservations();
         _previous = null;
         _ownedCapture = null;
         _element = null;

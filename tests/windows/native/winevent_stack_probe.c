@@ -34,6 +34,7 @@ API intptr_t CallNextHookEx(HANDLE, int, uintptr_t, intptr_t);
 API int UnhookWindowsHookEx(HANDLE);
 API uint32_t RegisterWindowMessageW(const WCHAR *);
 API HANDLE GetPropW(HANDLE, const WCHAR *);
+API HANDLE RemovePropW(HANDLE, const WCHAR *);
 API HANDLE OpenFileMappingW(uint32_t, int, const WCHAR *);
 API void *MapViewOfFile(HANDLE, uint32_t, uint32_t, uint32_t, size_t);
 API int UnmapViewOfFile(const void *);
@@ -287,6 +288,90 @@ __declspec(dllexport) uint32_t FinishOwnedRetirement(RetirementObservation *out)
         mapping = 0;
     }
     *out = retirement;
+    return status;
+}
+
+// Ordinary source prototype regression: observe the actual stock notification
+// stack after the shared claim, not a synthetic EM_SETSEL dispatch/subclass.
+typedef struct {
+    uint32_t version, bytes, state, operation;
+    uint64_t generation[2], grant[2];
+    int64_t observed;
+    uint64_t acknowledgement;
+    uint32_t claim, reserved;
+    WireHeader tx;
+} SourceClaimHeader;
+_Static_assert(offsetof(SourceClaimHeader, tx) == 72, "Source claim header");
+typedef struct { uint32_t installed, removed, callbacks, action, claim, event; } ClaimObservation;
+static volatile const SourceClaimHeader *claim_header;
+static HANDLE claim_mapping, claim_hook;
+static uint32_t claim_mode;
+static ClaimObservation claim_observation;
+static void on_source_claim(HANDLE hook, uint32_t event, HANDLE hwnd, int32_t object,
+    int32_t child, uint32_t event_thread, uint32_t event_time) {
+    (void)hook; (void)event_time;
+    if (!claim_header || claim_observation.action || hwnd != source || child != 0
+        || event_thread != thread_id || GetCurrentThreadId() != thread_id
+        || GetCurrentProcessId() != process_id || claim_header->state != 1
+        || claim_header->claim != 1 || claim_header->tx.status != 0) return;
+    if (claim_mode == 1) {
+        if (event != LocationChange || object != -8) return;
+        int32_t start = -1, end = -1;
+        CallWindowProcW(edit_procedure, source, 0xb0, (uintptr_t)&start, (intptr_t)&end);
+        if (start != 4 || end != 7) return;
+    } else if (event != 0x800e || object != -4) return; // Real VALUECHANGE notification.
+    claim_observation.callbacks++;
+    claim_observation.claim = claim_header->claim;
+    claim_observation.event = event;
+    claim_observation.action = (uint64_t)(uintptr_t)RemovePropW(source, lifetime) == current_cookie ? 1 : 2;
+}
+__declspec(dllexport) uint32_t ArmSourceClaim(HANDLE root, HANDLE edit, uint64_t nonce, uint32_t mode) {
+    if (used || !module || (mode != 1 && mode != 2)) return 1;
+    used = 1;
+    process_id = GetCurrentProcessId(); thread_id = GetCurrentThreadId(); source = edit;
+    uint32_t pid = 0;
+    WindowClass stock;
+    if (GetWindowThreadProcessId(edit, &pid) != thread_id || pid != process_id
+        || GetAncestor(edit, 2) != root || GetForegroundWindow() != root || GetFocus() != edit
+        || !GetClassInfoW(0, (const WCHAR *)L"Edit", &stock) || !stock.procedure
+        || GetWindowLongPtrW(edit, -4) != (intptr_t)stock.procedure
+        || GetClassLongPtrW(edit, -24) != (intptr_t)stock.procedure) return 2;
+    edit_procedure = stock.procedure;
+    current_cookie = (uint64_t)(uintptr_t)GetPropW(edit, lifetime);
+    WCHAR name[64];
+    const WCHAR prefix[] = L"Local\\TypeLay.Source.", digits[] = L"0123456789abcdef";
+    int i = 0;
+    for (; prefix[i]; i++) name[i] = prefix[i];
+    for (int shift = 60; shift >= 0; shift -= 4) name[i++] = digits[(nonce >> shift) & 15];
+    name[i] = 0;
+    claim_mapping = OpenFileMappingW(4, 0, name);
+    if (!claim_mapping) return 3;
+    claim_header = MapViewOfFile(claim_mapping, 4, 0, 0, sizeof(SourceClaimHeader));
+    if (!claim_header || claim_header->version != 2 || claim_header->bytes != 49336
+        || claim_header->state != 1 || claim_header->claim || claim_header->tx.version != 2
+        || claim_header->tx.pid != process_id || claim_header->tx.thread != thread_id
+        || claim_header->tx.hwnd != (uint64_t)(uintptr_t)edit || claim_header->tx.cookie != current_cookie
+        || claim_header->tx.start != 4 || claim_header->tx.end != 7
+        || claim_header->tx.expected_selection_start || claim_header->tx.expected_selection_end) return 4;
+    claim_mode = mode;
+    uint32_t event = mode == 1 ? LocationChange : 0x800e;
+    claim_hook = SetWinEventHook(event, event, module, on_source_claim, process_id, thread_id, InContext);
+    if (!claim_hook) return 5;
+    claim_observation.installed = 1;
+    return 0;
+}
+__declspec(dllexport) uint32_t FinishSourceClaim(ClaimObservation *out) {
+    if (!out || GetCurrentThreadId() != thread_id) return 1;
+    uint32_t status = 0;
+    if (claim_hook) {
+        if (UnhookWinEvent(claim_hook)) claim_observation.removed++;
+        else status = 2;
+        claim_hook = 0;
+    }
+    if (claim_header && !UnmapViewOfFile((const void *)claim_header)) status = 3;
+    if (claim_mapping && !CloseHandle(claim_mapping)) status = 3;
+    claim_header = 0; claim_mapping = 0;
+    *out = claim_observation;
     return status;
 }
 

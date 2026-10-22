@@ -93,6 +93,44 @@ public sealed class ProductionDirectWriteTests(ITestOutputHelper output)
             }
             await Call(new(BrokerProtocol.Version, 0, "hello", ""));
             N.SendString(b, N.WM_SETTEXT, "B must remain unchanged");
+            // Automatic observation must reach the existing source-thread IMM
+            // reader without acquiring either write capability. Broker-side IMM
+            // is not a valid observation of another thread's input context.
+            await Focus(a);
+            N.SendString(a, N.WM_SETTEXT, "A🙂你好Z");
+            N.Send(a, N.EM_SETSEL, 3, 5);
+            async Task<InputSnapshot> ReadOnlyCapture()
+            {
+                var observed = await Call(new(BrokerProtocol.Version, 0, "capture", ""));
+                var snapshot = Assert.IsType<InputSnapshot>(observed.Snapshot);
+                Assert.True(WindowsTarget.TryDecode(snapshot.Target, out var nativeTarget));
+                Assert.Equal("win32-edit-transaction-v2", nativeTarget.Provider);
+                Assert.Equal(ImeState.Clear, snapshot.Ime);
+                Assert.Equal("A🙂你好Z", snapshot.Text);
+                Assert.Equal(new TextRange(3, 5), snapshot.Selection);
+                Assert.False(snapshot.WriteSupported);
+                Assert.False(snapshot.DirectWriteSupported);
+                Assert.Equal("A🙂你好Z", N.ReadText(a, Limits.MaxTextUnits));
+                Assert.Equal(((nint)host.RootHwnd, a), N.Focused());
+                Assert.Equal(0, (long)N.Send((nint)host.RootHwnd, N.FixtureSubmitCount));
+                return snapshot;
+            }
+            var readOnly = await ReadOnlyCapture();
+            Assert.Equal(WriteStatus.RejectedBeforeMutation, (await Write(Plan(readOnly, "Hello"))).Status);
+            // Clearing an observation retires its native cookie through the same
+            // owner; no direct job exists yet that could require the binding.
+            Assert.NotEqual(0, N.GetProp(a, "TypeLay.NativeInput.Lifetime.v2"));
+            await Call(new(BrokerProtocol.Version, 0, "clear", "", BoundTarget: readOnly.Target));
+            Assert.Equal(0, N.GetProp(a, "TypeLay.NativeInput.Lifetime.v2"));
+            var freshReadOnly = await ReadOnlyCapture();
+            Assert.NotEqual(readOnly.Target.Lifetime, freshReadOnly.Target.Lifetime);
+            await Call(new(BrokerProtocol.Version, 0, "observe-pause", ""));
+            Assert.Equal(0, N.GetProp(a, "TypeLay.NativeInput.Lifetime.v2"));
+            Assert.Equal("A🙂你好Z", N.ReadText(a, Limits.MaxTextUnits));
+            N.Send(a, 0x00cf, 1); // EM_SETREADONLY: policy rejection cannot install a reader.
+            Assert.Null((await Call(new(BrokerProtocol.Version, 0, "capture", ""))).Snapshot);
+            Assert.Equal(0, N.GetProp(a, "TypeLay.NativeInput.Lifetime.v2"));
+            N.Send(a, 0x00cf, 0);
             var source = await Capture("A🙂你好Z", new(3, 5));
             // The system's multiline Edit exposes TextPattern without ValuePattern.
             // Its absence must not be mistaken for readonly during bound writeback.
@@ -103,6 +141,12 @@ public sealed class ProductionDirectWriteTests(ITestOutputHelper output)
                 Assert.True(element.TryGetCurrentPattern(TextPattern.Pattern, out var textPattern));
                 Assert.False(Assert.IsType<bool>(((TextPattern)textPattern).DocumentRange.GetAttributeValue(TextPattern.IsReadOnlyAttribute)));
             }
+            // Switching the request back to automatic cannot inherit direct
+            // capability, but must not retire a previously issued direct job.
+            var automaticAgain = await ReadOnlyCapture();
+            Assert.Equal(source.Target, automaticAgain.Target);
+            await Call(new(BrokerProtocol.Version, 0, "clear", "", BoundTarget: automaticAgain.Target));
+            Assert.NotEqual(0, N.GetProp(a, "TypeLay.NativeInput.Lifetime.v2"));
             var plan = Plan(source, "Hello");
             await Focus(b);
             Assert.Equal(WriteStatus.Verified, (await Write(plan)).Status);

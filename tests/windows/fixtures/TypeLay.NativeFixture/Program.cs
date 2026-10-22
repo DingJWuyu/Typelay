@@ -39,7 +39,10 @@ internal static class Program
             && args[1] == "--return-focus" && args[2] is "root" or "second";
         if (returnFocusCase)
             _returnFocusCase = args[2];
-        bool stockControls = ownedControls || returnFocusCase || (args.Length == 1 && args[0] == "--stock-controls");
+        bool sourceClaimCase = args.Length == 3 && args[0] == "--stock-controls" && args[1] == "--source-claim-probe";
+        if (sourceClaimCase)
+            _sourceClaimProbe = args[2];
+        bool stockControls = ownedControls || returnFocusCase || sourceClaimCase || (args.Length == 1 && args[0] == "--stock-controls");
         if (args.Length != 0 && !hookTest && !stockControls)
             return 2;
         return RunWindows(hookTest, args.Contains("--hook-test-automation", StringComparer.Ordinal), stockControls);
@@ -47,6 +50,7 @@ internal static class Program
 
     private static string? _ownedPath;
     private static string? _retirementProbePath;
+    private static string? _sourceClaimProbe;
     private static Guid _ownedConnection, _ownedRun;
     private static long _ownedSequence = 1;
     private static OwnedPracticeField? _ownedField;
@@ -117,6 +121,8 @@ internal static class Program
         _barrierEntered = barrierEntered;
         _barrierRelease = barrierRelease;
         _barrierDrained = barrierDrained;
+        using var sourceReentry = stockControls && _ownedPath is null
+            ? new SourceInstallationReentry(_root, barrierEntered!, barrierRelease!) : null;
         var fields = new List<FixtureField>();
         Add("A / single line", "a", "你好，我想测试 TypeLay。", 0, FieldAccess.Supported, 50);
         Add("B / multiline and selection", "b", "Hello 🙂 明天下午见, thanks.\r\nSecond line.", 4 | 0x1000 | 0x40,
@@ -128,6 +134,8 @@ internal static class Program
             30, 515, 300, 34, _root, (nint)200, instance, 0);
         _replayField = (nint)fields[0].Hwnd;
         _secondField = (nint)fields[1].Hwnd;
+        if (_sourceClaimProbe is not null)
+            WinEventStackProbe.LoadSourceClaim(_sourceClaimProbe);
         if (!hookTest)
         {
             N.CreateWindow(0, "Button", "Continuous input (100 ms / committed-text replay)", 0x50010000,
@@ -295,6 +303,10 @@ internal static class Program
             return (nint)WinEventStackProbe.Arm(_root, _replayField, wParam, lParam);
         if (message == WinEventStackProbe.FinishRetirementMessage && _retirementProbePath is not null)
             return (nint)WinEventStackProbe.Finish();
+        if (message == 0x8065 && _sourceClaimProbe is not null)
+            return (nint)WinEventStackProbe.ArmSourceClaim(_root, _replayField, (ulong)wParam, (uint)lParam);
+        if (message == 0x8066 && _sourceClaimProbe is not null)
+            return (nint)WinEventStackProbe.FinishSourceClaim(_root);
         if (message == N.FixtureArmNullBarrier && _barrierEntered is not null && _barrierRelease is not null)
         {
             _barrierEntered.Reset();

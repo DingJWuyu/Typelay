@@ -94,7 +94,7 @@ public sealed class ShellTrayObservationTests(WpfDesktopFixture desktop)
         string accessibleName, string automationId, bool expected) => desktop.RunAsync(async () =>
     {
         using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(25));
-        var button = new Button();
+        var button = new Button { Width = 160, Height = 32 };
         AutomationProperties.SetName(button, accessibleName);
         AutomationProperties.SetAutomationId(button, automationId);
         var text = new TextBlock { Text = "Show Hidden Icons" };
@@ -110,9 +110,17 @@ public sealed class ShellTrayObservationTests(WpfDesktopFixture desktop)
             var root = AutomationElement.FromHandle(new WindowInteropHelper(window).Handle);
             await Task.Run(() =>
             {
-                var control = root.FindFirst(TreeScope.Descendants,
-                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
-                Assert.NotNull(control);
+                // Window chrome also exposes buttons. Identify the fixture control
+                // before testing the selector, rather than accepting the first button.
+                var controls = root.FindAll(TreeScope.Descendants, new AndCondition(
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button),
+                    new PropertyCondition(AutomationElement.AutomationIdProperty, automationId)));
+                var control = Assert.Single(controls.Cast<AutomationElement>());
+                Assert.Equal(automationId, control.Current.AutomationId);
+                Assert.Equal(accessibleName, control.Current.Name);
+                Assert.False(control.Current.IsOffscreen);
+                Assert.True(control.Current.BoundingRectangle.Width > 0);
+                Assert.True(control.Current.BoundingRectangle.Height > 0);
                 Assert.Equal(expected, ShellTraySelection.IsOverflowButton(control));
                 var nonButton = root.FindFirst(TreeScope.Descendants,
                     new PropertyCondition(AutomationElement.AutomationIdProperty, "non-button"));
