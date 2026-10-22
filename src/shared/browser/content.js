@@ -299,7 +299,7 @@
     return check(!!field, "FieldMissing") && check(!field.richText, "RichField")
       && check(!field.dead, "FieldDead") && check(!field.quarantined, "FieldQuarantined")
       && check(focused(field), "NotFocused") && check(basis?.target === field.id, "TargetMismatch")
-      && check(approved(field, basis), "Metadata") && checkIssued()
+      && check(approved(field, basis, false, diagnostic), "Metadata") && checkIssued()
       && check(Number.isSafeInteger(basis.observedAtMs), "PolicyTimeInvalid")
       && check(basis.observedAtMs >= 0, "PolicyTimeInvalid")
       && check(Number.isFinite(now(true)), "ClockUnavailable")
@@ -527,10 +527,27 @@
         && overlay.glossary.returned && glossaryCurrent() && focused(field)
         ? {formId: overlay.glossary.entry.formId, token: overlay.glossary.entry.token} : null};
   }
-  function approved(field, basis, domOnly = false) {
+  function approved(field, basis, domOnly = false, diagnostic = null) {
     const meta = field && metadata(field, domOnly);
-    return !!meta && !meta.password && meta.enabled && !meta.readOnly && !meta.offscreen
-      && basis?.target === field.id && basis.metadataKey === JSON.stringify(meta);
+    // Classify only the first original refusal, from this same metadata read.
+    // Never emit metadata values or grant a fresh policy while handling a key.
+    const check = (value, reason) => commandCheck(value, diagnostic, reason);
+    const sameMetadata = () => {
+      const same = basis.metadataKey === JSON.stringify(meta);
+      let reason = "PolicyMetadataChanged";
+      if (!same && diagnostic && typeof basis.metadataKey === "string" && basis.metadataKey.length <= 8192) {
+        try {
+          const previous = JSON.parse(basis.metadataKey);
+          if (typeof previous?.hasTextEdit === "boolean" && previous.hasTextEdit !== meta.hasTextEdit)
+            reason = "PolicyMetadataImeCapabilityChanged";
+        } catch (_) { /* Malformed authority still fails the original equality. */ }
+      }
+      return check(same, reason);
+    };
+    return check(!!meta, "PolicyMetadataUnavailable") && check(!meta.password, "PolicyMetadataSensitive")
+      && check(meta.enabled, "PolicyMetadataDisabled") && check(!meta.readOnly, "PolicyMetadataReadOnly")
+      && check(!meta.offscreen, "PolicyMetadataOffscreen")
+      && check(basis?.target === field.id, "PolicyTargetMismatch") && sameMetadata();
   }
   function pauseCurrent(field, basis, domOnly = false) {
     return !!field && field.ime === "Clear" && focused(field) && approved(field, basis, domOnly)

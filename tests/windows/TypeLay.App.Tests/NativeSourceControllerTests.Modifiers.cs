@@ -125,8 +125,29 @@ public sealed partial class NativeSourceControllerTests
             editor.Activate();
             await Until(() => Native.GetForegroundWindow() == editorHwnd, native.Token);
             view.DraftChanged!("Hand edited");
-            view.ReturnRequested!(Assert.IsType<SessionViewToken>(view.Token));
-            await Until(() => { loop.Advance(); return view.State == SessionState.EditedTranslationPending && view.CanAccept; }, native.Token);
+            var returnTrace = new SourceReturnTrace(native.Root, native.A, editorHwnd, hook, view,
+                broker.InstallationPermit?.Plan.Expected.Target);
+            broker.ObserveResponse = returnTrace.Response;
+            try
+            {
+                returnTrace.Observe("before-return");
+                view.ReturnRequested!(Assert.IsType<SessionViewToken>(view.Token));
+                await Until(() =>
+                {
+                    loop.Advance();
+                    returnTrace.Observe("waiting");
+                    return view.State == SessionState.EditedTranslationPending && view.CanAccept;
+                }, native.Token);
+            }
+            catch (Exception error)
+            {
+                returnTrace.Observe("failed", new
+                {
+                    exceptionType = error.GetType().Name
+                }, failed: true);
+                Assert.Fail($"Configured Ctrl source return failed before Ctrl/revoke, action={action}: {returnTrace.Summary()}");
+            }
+            finally { broker.ObserveResponse = null; }
             Assert.Equal("Hand edited", view.Candidate);
             var oldGrant = broker.Installation!.Grant;
             var oldPermit = broker.InstallationPermit!;

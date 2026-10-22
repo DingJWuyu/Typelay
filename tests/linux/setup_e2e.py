@@ -392,6 +392,7 @@ class PackageInstallationTests(unittest.TestCase):
                 "model/shared_vocabulary.json",
             ):
                 package.writestr(name, b"inert preparation bytes")
+            package.writestr("stanza/unused.bin", b"excluded bytes")
         requests = []
 
         def open_response(request, timeout):
@@ -406,6 +407,53 @@ class PackageInstallationTests(unittest.TestCase):
         prepared = json.loads((candidate / "models/installed.json").read_text())
         self.assertEqual(prepared["packages"][1], self.inventory["packages"][1])
         self.assertFalse((candidate / "self-check.json").exists())
+        observation = prepared["packages"][0]["archiveObservation"]
+        self.assertEqual(observation["packageId"], "argos-zh-en")
+        self.assertEqual(observation["version"], "1.9")
+        self.assertEqual(observation["catalogUrl"], requests[0])
+        self.assertEqual(observation["provenance"], "observed-local-archive-not-publisher-verified")
+        self.assertEqual(observation["compressedBytes"], len(archive.getvalue()))
+        self.assertEqual(
+            observation["observedSha256"], hashlib.sha256(archive.getvalue()).hexdigest()
+        )
+        with zipfile.ZipFile(archive) as package:
+            total = sum(item.file_size for item in package.infolist())
+        self.assertEqual(observation["declaredUnpackedBytes"], total)
+        self.assertEqual(observation["retainedBytes"], total - len(b"excluded bytes"))
+        self.assertNotIn(str(self.base), json.dumps(observation))
+        cached_candidate = self.prepare(
+            self.request("Repair", ["argos-zh-en"], ["argos-zh-en", "argos-en-zh"]),
+            opener=SimpleNamespace(open=open_response),
+        )
+        cached_inventory = json.loads((cached_candidate / "models/installed.json").read_text())
+        self.assertEqual(len(requests), 1)  # Cache reuse does not add a provenance request.
+        self.assertEqual(cached_inventory["packages"][0]["archiveObservation"], observation)
+
+    def test_selection_preserves_only_bounded_argos_archive_observations(self):
+        observation = {
+            "packageId": "argos-en-zh",
+            "version": "1.9",
+            "catalogUrl": DIRECTIONS["en_zh"].url,
+            "provenance": "observed-local-archive-not-publisher-verified",
+            "observedSha256": "a" * 64,
+            "compressedBytes": 100,
+            "declaredUnpackedBytes": 200,
+            "retainedBytes": 150,
+        }
+        self.inventory["packages"][1]["archiveObservation"] = observation
+        self.save_inventory()
+        candidate = self.prepare(self.request())
+        prepared = json.loads((candidate / "models/installed.json").read_text())
+        self.assertEqual(prepared["packages"][1]["archiveObservation"], observation)
+        self.assertNotIn("archiveObservation", prepared["packages"][0])
+
+    def test_invalid_optional_observation_does_not_authorize_or_leak_paths(self):
+        self.inventory["packages"][1]["archiveObservation"] = {"secretPath": str(self.base)}
+        self.save_inventory()
+        candidate = self.prepare(self.request())
+        prepared = json.loads((candidate / "models/installed.json").read_text())
+        self.assertNotIn("archiveObservation", prepared["packages"][1])
+        self.assertEqual(prepared["packages"][1]["files"], self.inventory["packages"][1]["files"])
 
     def test_repair_rebuilds_damaged_runtime_but_select_and_remove_stay_offline(self):
         self.assume_space_for_controlled_package_operation()
@@ -629,6 +677,44 @@ class PackageInstallationTests(unittest.TestCase):
             {path.name for path in self.old.parent.iterdir()},
             {self.old.name, "current", "install.lock"},
         )
+
+
+class ArchiveObservationTests(unittest.TestCase):
+    def test_old_or_invalid_observations_are_explicitly_missing_without_private_data(self):
+        direction = DIRECTIONS["zh_en"]
+        for dependencies in (
+            [],
+            [{"name": "zh_en", "observedSha256": "a" * 64}],
+            [{"name": "zh_en", "catalogUrl": "/private/path", "secret": "never export"}],
+        ):
+            with self.subTest(dependencies=dependencies):
+                self.assertEqual(
+                    setup.argos_archive_summary(dependencies, [direction]),
+                    [{"packageId": "argos-zh-en", "version": "1.9", "status": "missing"}],
+                )
+
+    def test_invalid_archives_never_return_size_evidence(self):
+        cases = {
+            "path": [("../outside", b"bad")],
+            "duplicate": [("duplicate", b"one"), ("duplicate", b"two")],
+            "layout": [],
+        }
+        for kind, extras in cases.items():
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                archive = root / "controlled.argosmodel"
+                with zipfile.ZipFile(archive, "w") as package:
+                    package.writestr(
+                        "metadata.json",
+                        json.dumps({"from_code": "zh", "to_code": "en", "package_version": "1.9"}),
+                    )
+                    for name, content in extras:
+                        package.writestr(name, content)
+                with self.assertRaisesRegex(
+                    ValueError, "^model-archive-path$" if extras else "^model-layout$"
+                ):
+                    setup.extract_model(archive, root / "extracted", DIRECTIONS["zh_en"])
+                self.assertFalse((root / "outside").exists())
 
 
 class DownloadTests(unittest.TestCase):
@@ -2187,6 +2273,48 @@ class InstallationFailureTests(unittest.TestCase):
                     candidate / "runtime/python/cpython-3.13.16-linux-x86_64-gnu/bin/python3.13",
                 )
                 self.assertTrue((candidate / "self-check.json").is_file())
+                check = json.loads((candidate / "self-check.json").read_text())
+                self.assertEqual(check["status"], "passed")
+                self.assertEqual(check["device"], "cpu")
+                self.assertEqual(
+                    sorted(item["direction"] for item in check["results"]),
+                    sorted(expected_directions),
+                )
+                for item in check["archiveObservations"]:
+                    self.assertEqual(
+                        set(item),
+                        {
+                            "status",
+                            "packageId",
+                            "version",
+                            "catalogUrl",
+                            "provenance",
+                            "observedSha256",
+                            "compressedBytes",
+                            "declaredUnpackedBytes",
+                            "retainedBytes",
+                        },
+                    )
+                self.assertEqual(len(check["archiveObservations"]), len(expected_directions))
+                self.assertTrue(
+                    all(item["status"] == "recorded" for item in check["archiveObservations"])
+                )
+                self.assertNotIn(str(base), json.dumps(check["archiveObservations"]))
+                inventory = json.loads((candidate / "models/installed.json").read_text())
+                for dependency in inventory["dependencies"]:
+                    direction = DIRECTIONS[dependency["name"]]
+                    archive = (
+                        base / "cache/components" / f"{direction.id}-{direction.version}.argosmodel"
+                    )
+                    self.assertEqual(dependency["catalogUrl"], direction.url)
+                    self.assertEqual(dependency["compressedBytes"], archive.stat().st_size)
+                    self.assertEqual(
+                        dependency["observedSha256"],
+                        hashlib.sha256(archive.read_bytes()).hexdigest(),
+                    )
+                    self.assertEqual(
+                        dependency["provenance"], "observed-local-archive-not-publisher-verified"
+                    )
                 activation = {
                     "schema": 1 if len(expected_directions) == 2 else 2,
                     "previous": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -2774,6 +2902,7 @@ if __name__ == "__main__":
         "CatalogTests",
         "PackageInstallationTests",
         "DownloadTests",
+        "ArchiveObservationTests",
         "InstallationFailureTests",
         "ApplicationSupportTests",
         "PresentationProcessTests",

@@ -839,8 +839,14 @@ def ordered_controls(
                     },
                 )
                 assert receipt["status"] == "OutcomeUnknown", receipt
-                assert state()["plain"]["text"] == "Original multiline source"
-                assert state()["second"]["focused"]
+                # The native reply and fixture's 20 ms snapshot timer are
+                # separate channels. Observe after the reply and wait for this
+                # command's acknowledgement, not an arbitrary time or retry.
+                fixture("observe")
+                observed = state()
+                assert observed["plain"]["selectionAction"] == "", observed
+                assert observed["plain"]["text"] == "Original multiline source", observed
+                assert observed["second"]["focused"], observed
                 fixture("focus", field="plain")
                 wait(lambda: state()["plain"]["focused"] and settled(), "direct source refocused")
                 description = native.describe()

@@ -205,6 +205,9 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             await using var native = await ProductionForegroundWriteTests.Desktop.Start(isolatedSourceAcceptance: true,
                 sourceClaimProbe: Path.Combine(directory, "TypeLay.WinEventProbe.dll"));
             await native.Prepare(native.A, "你好", new(0, 2));
+            using var setupDispatched = EventWaitHandle.OpenExisting(
+                N.FixtureGuiBarrierName(native.FixtureProcessId, "drained"));
+            Assert.False(setupDispatched.WaitOne(0));
             using var hook = new KeyboardHook(allowInjectedInput: true);
             await Until(() => hook.Ready, native.Token);
             using var broker = new FixtureBroker(native) { HoldReceipt = true };
@@ -225,6 +228,15 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
                 long armStartedAt = WindowsInterruptClock.NowMs;
                 Assert.Equal((nuint)0, N.Send(native.Root, 0x8065, (nuint)broker.Installation!.Endpoint!.Nonce, 2));
                 long armedAt = WindowsInterruptClock.NowMs;
+                // A synchronous arm reply alone does not establish that the
+                // source has returned to its normal posted-message pump. Use
+                // its existing one-shot dispatch ACK, not a delay or a new lease.
+                Assert.True(N.PostMessage(native.Root, N.FixtureGuiDrained, 0, 0));
+                await Until(() => setupDispatched.WaitOne(0), native.Token);
+                long setupDispatchedAt = WindowsInterruptClock.NowMs;
+                Assert.Same(installedPermit, broker.InstallationPermit);
+                Assert.True(setupDispatchedAt <= installedPermit.ExpiresAtMs,
+                    "The original permit expired before source setup dispatch completed.");
                 pressed = true;
                 Tab(false);
                 long tabSentAt = WindowsInterruptClock.NowMs;
@@ -234,7 +246,7 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
                     $"Source activation did not claim: status={activation.Receipt?.Status}, reason={activation.Receipt?.Reason}, "
                     + $"nativeReason=0x{activation.NativeReason:x}, budgetExceeded={activation.ExceededBudget}, elapsedMs={activation.ElapsedMs:F3}, "
                     + $"observedAtMs={installedPermit.ObservedAtMs}, expiresAtMs={installedPermit.ExpiresAtMs}, "
-                    + $"armStartedAtMs={armStartedAt}, armedAtMs={armedAt}, tabSentAtMs={tabSentAt}, "
+                    + $"armStartedAtMs={armStartedAt}, armedAtMs={armedAt}, setupDispatchedAtMs={setupDispatchedAt}, tabSentAtMs={tabSentAt}, "
                     + $"resultObservedAtMs={WindowsInterruptClock.NowMs}.");
                 Tab(true);
                 pressed = false;
@@ -379,6 +391,11 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         internal TaskCompletionSource ReleaseReceipt { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TaskCompletionSource InstallReceived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TaskCompletionSource ReleaseInstall { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Only the Ctrl return diagnostic opts in; no production consumer.
+        internal Action<BrokerRequest, BrokerResponse>? ObserveResponse
+        {
+            get; set;
+        }
         public bool Available => true;
         public int ProcessId => native.BrokerProcessId;
         public Task StartAsync() => Task.CompletedTask;
@@ -401,6 +418,7 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
                     }
                 }
                 var result = await native.Call(request);
+                ObserveResponse?.Invoke(request, result);
                 if (request.Op == "capture")
                     Captures++;
                 if (request.Op == "source-install")

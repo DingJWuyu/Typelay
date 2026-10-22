@@ -47,7 +47,8 @@ internal sealed partial class BrowserInput
         SourceNotFocused, SnapshotUnavailable, EvidenceRejected, DirectUnsupported,
         FrozenCapacity, Queued, Expired, Rejected, Delivered,
         PolicyFieldMismatch, PolicyFieldMissing, PolicyRichField, PolicyFieldDead, PolicyFieldQuarantined, PolicyNotFocused,
-        PolicyTargetMismatch, PolicyMetadata, PolicyAuthorityMissing, PolicyAuthorityChanged, PolicyAuthorityExpired, PolicyAuthorityClock, PolicyTimeInvalid, PolicyClockUnavailable
+        PolicyTargetMismatch, PolicyMetadata, PolicyMetadataUnavailable, PolicyMetadataSensitive, PolicyMetadataDisabled,
+        PolicyMetadataReadOnly, PolicyMetadataOffscreen, PolicyMetadataChanged, PolicyMetadataImeCapabilityChanged, PolicyAuthorityMissing, PolicyAuthorityChanged, PolicyAuthorityExpired, PolicyAuthorityClock, PolicyTimeInvalid, PolicyClockUnavailable
     }
     private bool CommandTraceEnabled => !string.IsNullOrWhiteSpace(_tracePath) && TraceBudget.CommandsAvailable;
     private void TraceCommandPath(CommandPathStage stage, CommandPathReason reason, string? kind,
@@ -101,6 +102,8 @@ internal sealed partial class BrowserInput
                 or "PolicyMissing" or "PolicyExpired"
                 or "PolicyFieldMismatch" or "PolicyFieldMissing" or "PolicyRichField" or "PolicyFieldDead"
                 or "PolicyFieldQuarantined" or "PolicyNotFocused" or "PolicyTargetMismatch" or "PolicyMetadata"
+                or "PolicyMetadataUnavailable" or "PolicyMetadataSensitive" or "PolicyMetadataDisabled"
+                or "PolicyMetadataReadOnly" or "PolicyMetadataOffscreen" or "PolicyMetadataChanged" or "PolicyMetadataImeCapabilityChanged"
                 or "PolicyAuthorityMissing" or "PolicyTimeInvalid" or "PolicyClockUnavailable" or "PolicyAuthorityChanged" or "PolicyAuthorityExpired" or "PolicyAuthorityClock"
                 ? Enum.Parse<CommandPathReason>(rawReason) : CommandPathReason.Unknown;
             TraceCommandPath(CommandPathStage.Page, reason, String(data, "kind"),

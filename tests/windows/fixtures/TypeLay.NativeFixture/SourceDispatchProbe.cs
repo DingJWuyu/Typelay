@@ -30,18 +30,15 @@ internal static class SourceDispatchProbe
         N.SetProp(root, "TypeLay.Test.Dispatch.Field.v1", message.Hwnd);
         uint pendingKeys = GetQueueStatus(1) >> 16;
         N.SetProp(root, "TypeLay.Test.Dispatch.PendingKeys.v1", (nint)pendingKeys);
-        // Only diagnose an already-failed empty-queue precondition. PM_NOREMOVE
-        // may service sent work, so never use it to clear a gate or let this
-        // scenario pass after the original queue observation was nonzero.
-        if (pendingKeys != 0)
-        {
-            bool found = PeekMessageW(out var next, 0, 0x100, 0x109, 0);
-            N.SetProp(root, "TypeLay.Test.Dispatch.NextKeyFound.v1", found ? 1 : 0);
-            N.SetProp(root, "TypeLay.Test.Dispatch.NextKeyMessage.v1", (nint)next.Message);
-            N.SetProp(root, "TypeLay.Test.Dispatch.NextKeyCode.v1", (nint)next.WParam);
-            N.SetProp(root, "TypeLay.Test.Dispatch.NextKeyBits.v1", next.LParam);
-            N.SetProp(root, "TypeLay.Test.Dispatch.RemovedKeyBits.v1", message.LParam);
-        }
+        // QS_KEY is a wake hint, not proof of another retrievable key. Inspect
+        // once without removing a message. The original Right remains in our
+        // caller's local MSG until the unchanged outer loop dispatches it.
+        bool found = PeekMessageW(out var next, 0, 0x100, 0x109, 0);
+        N.SetProp(root, "TypeLay.Test.Dispatch.NextKeyFound.v1", found ? 1 : 0);
+        N.SetProp(root, "TypeLay.Test.Dispatch.NextKeyMessage.v1", (nint)next.Message);
+        N.SetProp(root, "TypeLay.Test.Dispatch.NextKeyCode.v1", (nint)next.WParam);
+        N.SetProp(root, "TypeLay.Test.Dispatch.NextKeyBits.v1", next.LParam);
+        N.SetProp(root, "TypeLay.Test.Dispatch.RemovedKeyBits.v1", message.LParam);
         nint result = SendMessageW(coordinator, Coordinate, (nuint)root, 0);
         N.SetProp(root, "TypeLay.Test.Dispatch.Coordinated.v1", result);
         return true;

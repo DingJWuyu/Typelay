@@ -149,6 +149,14 @@ jobs:
           path: artifacts/test-results/*.trx
           if-no-files-found: error
           retention-days: 14
+      - name: Observe claimed-key low-level callback timeout in owned sources
+        id: windows-source-timeout
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.NativeSourceTimeoutProbe.RecordClaimThenLowLevelCallbackTimeout'
+          exit $LASTEXITCODE
       - name: Observe standard Chrome profile after behavior tests
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: pwsh
@@ -345,6 +353,7 @@ jobs:
           name: typelay-windows-${{ github.sha }}
           path: |
             artifacts/test-results/
+            artifacts/source-ll-timeout/
             artifacts/controller-trace.jsonl*
             artifacts/continuous-translation/result.json
             artifacts/continuous-translation/consumer-exit.json

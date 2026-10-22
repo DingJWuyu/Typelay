@@ -738,6 +738,10 @@ int main(int argc, char **argv) {
                 window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"))->setPlainText(command.value("text").toString());
             else if (op == "fullscreen") { if (command.value("enabled").toBool()) window.showFullScreen(); else window.showNormal(); }
             else if (op == "quit") app.quit();
+            else if (op == "observe") {
+                // Acknowledge a fresh snapshot without changing widgets. This
+                // can follow a native-socket reply that predates the timer.
+            }
             ++observer.commandSequence;
             publish();
         }

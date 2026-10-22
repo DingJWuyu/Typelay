@@ -52,8 +52,8 @@ public sealed class NativeSourceDispatchBoundaryTests(WpfDesktopFixture ui)
                 Assert.Equal((nint)0, Property("Dispatched"));
                 Assert.Equal((nint)sourceThread, Property("Thread"));
                 Assert.Equal(desktop.A, Property("Field"));
-                Assert.True(Property("PendingKeys") == 0,
-                    $"Source keyboard queue-status precondition failed: candidate={installCandidate}, mask={Property("PendingKeys")}, "
+                Assert.True(Property("NextKeyFound") == 0,
+                    $"Another keyboard message remained after removing Right: candidate={installCandidate}, mask={Property("PendingKeys")}, "
                     + $"nextFound={Property("NextKeyFound")}, message=0x{Property("NextKeyMessage"):x}, "
                     + $"key=0x{Property("NextKeyCode"):x}, bits=0x{Property("NextKeyBits"):x}, "
                     + $"removedBits=0x{Property("RemovedKeyBits"):x}.");
@@ -116,6 +116,8 @@ public sealed class NativeSourceDispatchBoundaryTests(WpfDesktopFixture ui)
             // Both callbacks have completed and the original input reached the
             // stock Edit's normal pump. No direct Activate/republished lease can
             // bypass the ordinary key's withdrawal and fabricate a claim.
+            // A source-queue guard cannot manufacture this pass: an attempted
+            // activation, even one safely refused, would publish a nonnull result.
             Assert.Null(hook.StockLastActivation);
             Assert.Equal((nint)1, N.GetProp(desktop.Root, "TypeLay.Test.SourceObservedDown.v1"));
             Assert.Equal((nint)1, Property("Caret"));

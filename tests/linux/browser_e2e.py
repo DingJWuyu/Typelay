@@ -597,6 +597,29 @@ class BrowserContract(unittest.TestCase):
           && item.data.state === 'active') < fixtureMessages.findIndex(item => item.event === 'source-command')""")
         )
 
+    def test_source_command_reports_changed_metadata_without_capturing_or_writing(self):
+        self.type_source()
+        self.activate_source_command_owner(trace_command=True)
+        self.page.locator("#source").evaluate(
+            "element => element.setAttribute('aria-label', 'Changed label')"
+        )
+        self.page.keyboard.press("F10")
+        commands = self.source_commands()
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0]["data"]["reason"], "PolicyUnavailable")
+        self.assertNotIn("native", commands[0]["data"])
+        diagnostics = self.page.evaluate(
+            "fixtureMessages.filter(item => item.event === 'source-command-diagnostic').map(item => item.data)"
+        )
+        self.assertEqual(len(diagnostics), 1)
+        self.assertEqual(diagnostics[0]["firstReason"], "PolicyMetadataChanged")
+        self.assertEqual(diagnostics[0]["policyCheckPhase"], "before-capture")
+        self.assertTrue(diagnostics[0]["commandSent"])
+        self.assertFalse(diagnostics[0]["hasNative"])
+        self.assertNotIn("Changed label", json.dumps(diagnostics))
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.page.evaluate("fixturePassedCommandKeys"), [])
+
     def test_source_command_diagnostic_observes_unowned_original_key_without_a_command(self):
         self.type_source()
         self.command(

@@ -501,7 +501,8 @@ def download_resource(pair, url, archive, limit, *, expected=None, hosts=("argos
 def extract_model(archive, destination, direction):
     with zipfile.ZipFile(archive) as package:
         entries = package.infolist()
-        if len(entries) > 30000 or sum(item.file_size for item in entries) > 2 * MAX_ARCHIVE:
+        declared_bytes = sum(item.file_size for item in entries)
+        if len(entries) > 30000 or declared_bytes > 2 * MAX_ARCHIVE:
             raise ValueError("model-archive-size")
         names = set()
         for item in entries:
@@ -530,6 +531,7 @@ def extract_model(archive, destination, direction):
         ):
             raise ValueError("model-direction")
         root = PurePosixPath(metadata[0].filename).parent
+        retained_bytes = 0
         for item in entries:
             path = PurePosixPath(item.filename)
             if item.is_dir() or not path.is_relative_to(root):
@@ -543,6 +545,7 @@ def extract_model(archive, destination, direction):
             output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             with package.open(item) as source_file, output.open("xb") as target_file:
                 shutil.copyfileobj(source_file, target_file, 65536)
+                retained_bytes += target_file.tell()
         required = (
             "metadata.json",
             "sentencepiece.model",
@@ -552,6 +555,87 @@ def extract_model(archive, destination, direction):
         )
         if not all((destination / item).is_file() for item in required):
             raise ValueError("model-layout")
+        # Observed archive bytes, including cache hits, are not a publisher pin.
+        # Diagnostics are returned only after the existing ZIP/layout gates pass.
+        return {
+            "observedSha256": digest(archive),
+            "compressedBytes": archive.stat().st_size,
+            "declaredUnpackedBytes": declared_bytes,
+            "retainedBytes": retained_bytes,
+        }
+
+
+def argos_archive_observation(direction, sizes):
+    return {
+        "packageId": ARGOS_RESOURCES[direction.id],
+        "version": direction.version,
+        "catalogUrl": direction.url,
+        "provenance": "observed-local-archive-not-publisher-verified",
+        **sizes,
+    }
+
+
+def retained_argos_observation(value, direction):
+    # Optional diagnostics never grant identity, Ready, or space-budget credit.
+    # Carry only our bounded, path-free shape; do not propagate arbitrary fields
+    # from an editable old inventory into a later diagnostic artifact.
+    if not isinstance(value, dict):
+        return None
+    sizes = {
+        key: value.get(key)
+        for key in ("observedSha256", "compressedBytes", "declaredUnpackedBytes", "retainedBytes")
+    }
+    if (
+        value != argos_archive_observation(direction, sizes)
+        or not isinstance(sizes["observedSha256"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", sizes["observedSha256"])
+        or any(
+            type(sizes[key]) is not int
+            for key in ("compressedBytes", "declaredUnpackedBytes", "retainedBytes")
+        )
+    ):
+        return None
+    if not (
+        0 < sizes["compressedBytes"] <= MAX_ARCHIVE
+        and 0 < sizes["retainedBytes"] <= sizes["declaredUnpackedBytes"] <= 2 * MAX_ARCHIVE
+    ):
+        return None
+    return value.copy()
+
+
+def argos_archive_summary(dependencies, directions):
+    """Path-free successful-install diagnostics; never a readiness decision."""
+    result = []
+    keys = (
+        "packageId",
+        "version",
+        "catalogUrl",
+        "provenance",
+        "observedSha256",
+        "compressedBytes",
+        "declaredUnpackedBytes",
+        "retainedBytes",
+    )
+    for direction in directions:
+        matches = [
+            item
+            for item in dependencies
+            if isinstance(item, dict) and item.get("name") == direction.id
+        ]
+        observation = retained_argos_observation(
+            {key: matches[0].get(key) for key in keys} if len(matches) == 1 else None,
+            direction,
+        )
+        result.append(
+            {"status": "recorded", **observation}
+            if observation is not None
+            else {
+                "packageId": ARGOS_RESOURCES[direction.id],
+                "version": direction.version,
+                "status": "missing",
+            }
+        )
+    return result
 
 
 def legacy_directions(value, catalog):
@@ -1147,6 +1231,7 @@ def install_packages(home, data, cache, request):
         from typelay_worker.catalog import ModelFile, read_file_manifest
 
         for package in selected:
+            observation = None
             destination = models / "packages" / package.id / package.version
             replacing = operation in ("Install", "Repair") and package.id in ids
             if replacing:
@@ -1159,7 +1244,8 @@ def install_packages(home, data, cache, request):
                     archive, _ = download(package.directions[0], download_cache)
                     stage = "model-extract"
                     try:
-                        extract_model(archive, destination, package.directions[0])
+                        sizes = extract_model(archive, destination, package.directions[0])
+                        observation = argos_archive_observation(package.directions[0], sizes)
                     except (ValueError, zipfile.BadZipFile):
                         archive.unlink(missing_ok=True)
                         raise
@@ -1225,9 +1311,17 @@ def install_packages(home, data, cache, request):
                 stage = "model-verify"
                 copy_package(source, destination, files)
                 identity = package_identity(item)
+                if package.backend == "argos" and old_inventory["schema"] == 3:
+                    entry = next(
+                        entry for entry in old_inventory["packages"] if entry["id"] == package.id
+                    )
+                    observation = retained_argos_observation(
+                        entry.get("archiveObservation"), package.directions[0]
+                    )
             packages.append(
                 {
                     **identity,
+                    **({"archiveObservation": observation} if observation is not None else {}),
                     "files": [{"path": file.path, "sha256": file.sha256} for file in files],
                 }
             )
@@ -1491,19 +1585,19 @@ def install(home, data, cache, requested_directions=None, repair=False):
             archive, url = download(direction, download_cache)
             stage = "model-extract"
             try:
-                extract_model(archive, models / pair, direction)
+                sizes = extract_model(archive, models / pair, direction)
             except (ValueError, zipfile.BadZipFile):
                 archive.unlink(missing_ok=True)
                 raise
             stage = "model-verify"
-            # No upstream archive hash exists for these pinned Argos entries.
-            # This is a recorded first-install TLS download hash, not a publisher pin.
+            # Catalog URL names the requested artifact, not proven cache origin.
+            # Existing archive bytes are observed, never publisher-verified.
             dependencies.append(
                 {
                     "name": pair,
                     "version": direction.version,
                     "url": url,
-                    "observedSha256": digest(archive),
+                    **argos_archive_observation(direction, sizes),
                 }
             )
         inventory = {
@@ -1555,7 +1649,10 @@ def install(home, data, cache, requested_directions=None, repair=False):
             != sorted(direction.id for direction in directions)
         ):
             raise ValueError("model-self-check")
-        (version / "self-check.json").write_bytes(result)
+        # Existing CI collects this successful self-check. Export only bounded
+        # observations, never the inventory's paths or arbitrary metadata.
+        check["archiveObservations"] = argos_archive_summary(inventory["dependencies"], directions)
+        (version / "self-check.json").write_text(json.dumps(check), encoding="utf-8")
         # Prepare records the exact predecessor under the installation flock.
         # The host rechecks it after reacquiring that same lock, before hello.
         with (version / "activation.json").open("x", encoding="utf-8") as stream:
