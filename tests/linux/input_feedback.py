@@ -633,6 +633,7 @@ class InputFeedbackTests(unittest.TestCase):
     async def approved_shortcut_capture(
         self, *, mutation=None, allowed=True, stamp=1200, target="ordinary-field", prior=True
     ):
+        self.clock.return_value = 1000
         self.peer = self.connect_peer("gtk3")
         original_description = self.description
 
@@ -647,6 +648,8 @@ class InputFeedbackTests(unittest.TestCase):
             self.input.notification(
                 "publishShortcut", {"lease": publication["lease"], "generation": self.generation}
             )
+        else:
+            self.input.revoke(shortcuts=True)
         self.native_frames(self.peer)
         issued = set(self.input.issued)
         self.clock.return_value = 1200
@@ -680,6 +683,8 @@ class InputFeedbackTests(unittest.TestCase):
                         published.append(frame["data"])
                     elif frame["op"] == "capture":
                         self.peer.link.receive({"id": frame["id"], "data": None})
+        self.host.ask = original_ask
+        self.description = original_description
         self.assertIsNone(operation.result())
         self.assertLessEqual(set(self.input.issued), issued)
         return published, current
@@ -736,9 +741,12 @@ class InputFeedbackTests(unittest.TestCase):
         )
         self.assertEqual(published, [])
 
-    def test_changed_target_does_not_inherit_the_previous_command_policy(self):
-        published, _ = asyncio.run(self.approved_shortcut_capture(target="another-field"))
-        self.assertEqual(published, [])
+    def test_changed_target_requires_its_own_current_metadata_approval(self):
+        published, current = asyncio.run(self.approved_shortcut_capture(target="another-field"))
+        self.assertEqual(len(published), 1)
+        self.assertEqual(published[0]["target"], "another-field")
+        self.assertEqual(published[0]["authority"], current["authority"])
+        self.assertEqual(self.host.notices, [])
 
     def test_future_metadata_does_not_refresh_a_command(self):
         published, _ = asyncio.run(self.approved_shortcut_capture(stamp=1201))
@@ -762,10 +770,73 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertNotIn("source", self.host.notices[-1])
         self.assertFalse(self.input.frozen)
 
-    def test_metadata_approval_without_prior_policy_cannot_create_a_command_target(self):
-        published, _ = asyncio.run(self.approved_shortcut_capture(prior=False))
+    def test_first_field_approval_establishes_only_command_metadata_without_body_capture(self):
+        published, current = asyncio.run(self.approved_shortcut_capture(prior=False))
+        self.assertEqual(len(published), 1)
+        self.assertEqual(published[0]["authority"], current["authority"])
+        self.assertEqual(set(self.peer.shortcut), {"target", "window", "authority"})
+        self.assertEqual(self.host.notices, [])
+        self.assertFalse(self.input.frozen)
+
+    def test_initial_policy_revoked_during_approval_is_not_created(self):
+        published, _ = asyncio.run(
+            self.approved_shortcut_capture(
+                prior=False, mutation=lambda: self.input.revoke(shortcuts=True)
+            )
+        )
         self.assertEqual(published, [])
         self.assertIsNone(self.peer.shortcut)
+
+    def test_new_field_with_denied_metadata_cannot_receive_the_old_policy(self):
+        published, _ = asyncio.run(
+            self.approved_shortcut_capture(target="another-field", allowed=False)
+        )
+        self.assertEqual(published, [])
+
+    def test_initial_or_changed_target_policy_keeps_approval_safety_gates(self):
+        for prior, target in ((False, "ordinary-field"), (True, "another-field")):
+            for gate in (
+                "denied",
+                "expired",
+                "future",
+                "input",
+                "window",
+                "foreground",
+                "settings",
+                "configuration",
+                "revoke",
+                "disconnect",
+            ):
+                with self.subTest(prior=prior, target=target, gate=gate):
+
+                    def mutation():
+                        if gate in ("input", "window", "foreground"):
+                            name = {
+                                "input": "user_epoch",
+                                "window": "window_epoch",
+                                "foreground": "foreground_epoch",
+                            }[gate]
+                            setattr(self.input, name, getattr(self.input, name) + 1)
+                        elif gate == "settings":
+                            self.input.notification("settings", {"enabled": True})
+                        elif gate == "configuration":
+                            self.generation = str(uuid.uuid4())
+                            self.configure()
+                        elif gate == "revoke":
+                            self.input.revoke(shortcuts=True)
+                        elif gate == "disconnect":
+                            self.input.lost(self.peer)
+
+                    published, _ = asyncio.run(
+                        self.approved_shortcut_capture(
+                            prior=prior,
+                            target=target,
+                            allowed=gate != "denied",
+                            stamp={"expired": 1049, "future": 1201}.get(gate, 1200),
+                            mutation=mutation,
+                        )
+                    )
+                    self.assertEqual(published, [])
 
     def test_revoked_policy_is_not_restored_by_an_inflight_approval(self):
         published, _ = asyncio.run(
@@ -967,8 +1038,16 @@ class InputFeedbackTests(unittest.TestCase):
             await asyncio.sleep(0)
             await asyncio.sleep(0)
             frames = self.native_frames(peer)
-            self.assertEqual([frame["op"] for frame in frames], ["capture"])
-            capture = frames[0]
+            self.assertEqual([frame["op"] for frame in frames], ["publish-shortcut", "capture"])
+            self.assertEqual(
+                frames[0]["data"],
+                {
+                    "target": self.description()["target"],
+                    "authority": self.description()["authority"],
+                    "generation": self.generation,
+                },
+            )
+            capture = frames[1]
             self.clock.return_value = 1020
             peer.link.receive(
                 {
@@ -2071,6 +2150,17 @@ class InputFeedbackTests(unittest.TestCase):
             while True:
                 requests = self.native_frames(self.peer)
                 if requests:
+                    if expected == "capture" and self.peer.backend == "gtk3":
+                        self.assertEqual(requests[0]["op"], "publish-shortcut")
+                        self.assertEqual(
+                            requests[0]["data"],
+                            {
+                                "target": description["target"],
+                                "authority": description["authority"],
+                                "generation": self.generation,
+                            },
+                        )
+                        requests = requests[1:]
                     self.assertEqual([frame["op"] for frame in requests], [expected])
                     self.peer.link.receive({"id": requests[0]["id"], "data": result})
                     return

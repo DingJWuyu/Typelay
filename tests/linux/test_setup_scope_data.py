@@ -10,7 +10,9 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
-from desktop_e2e import copy_setup_model_data  # noqa: E402
+sys.path.insert(0, str(ROOT / "src/shared/TypeLay.Worker"))
+from desktop_e2e import copy_setup_model_data, record_direction_archives  # noqa: E402
+from typelay_worker.catalog import load_catalog  # noqa: E402
 
 
 class SetupScopeDataTests(unittest.TestCase):
@@ -114,6 +116,87 @@ class SetupScopeDataTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "python-runtime-path"):
             copy_setup_model_data(self.source, destination)
         self.assertFalse((destination / "typelay/components/current").is_symlink())
+
+
+class DirectionArchiveEvidenceTests(unittest.TestCase):
+    def test_each_completed_inventory_is_retained_after_source_inventory_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            directions = load_catalog(ROOT / "src/shared/TypeLay.Worker/model-catalog.json")
+            observed = {
+                "packageId": "argos-zh-en",
+                "version": "1.9",
+                "catalogUrl": directions[0].url,
+                "provenance": "observed-local-archive-not-publisher-verified",
+                "observedSha256": "a" * 64,
+                "compressedBytes": 100,
+                "declaredUnpackedBytes": 300,
+                "retainedBytes": 200,
+                "localPath": str(root / "private-model"),
+            }
+            result = {"outcome": "running"}
+            marker = root / "installed.json"
+            for inventory, selected in (
+                ({"schema": 2, "dependencies": [{"name": "zh_en", **observed}]}, directions[:1]),
+                (
+                    {
+                        "schema": 3,
+                        "packages": [
+                            {"id": "argos-zh-en", "archiveObservation": observed},
+                            {"id": "argos-en-zh", "files": [{"path": "private-file"}]},
+                        ],
+                    },
+                    directions,
+                ),
+            ):
+                marker.write_text(json.dumps(inventory), encoding="utf8")
+                record_direction_archives(
+                    result, json.loads(marker.read_text(encoding="utf8")), selected
+                )
+                marker.unlink()
+            # Persist the accumulated summary after the source inventories are gone.
+            output = root / "direction-installation.json"
+            output.write_text(json.dumps(result), encoding="utf8")
+            captured = json.loads(output.read_text(encoding="utf8"))
+            self.assertEqual(captured["outcome"], "running")
+            first, second = captured["archiveObservations"]
+            self.assertEqual(first["schema"], 2)
+            self.assertEqual(first["directions"], ["zh_en"])
+            self.assertEqual(second["schema"], 3)
+            self.assertEqual(second["directions"], ["zh_en", "en_zh"])
+            expected = {key: value for key, value in observed.items() if key != "localPath"}
+            self.assertEqual(first["packages"], [{"status": "recorded", **expected}])
+            self.assertEqual(
+                second["packages"],
+                [
+                    {"status": "recorded", **expected},
+                    {"packageId": "argos-en-zh", "version": "1.9", "status": "missing"},
+                ],
+            )
+            self.assertNotIn(str(root), output.read_text(encoding="utf8"))
+            self.assertNotIn("files", output.read_text(encoding="utf8"))
+
+    def test_unusable_optional_observations_remain_missing_without_invented_sizes(self):
+        directions = load_catalog(ROOT / "src/shared/TypeLay.Worker/model-catalog.json")[:1]
+        for value in (None, "invalid", {"observedSha256": "bad", "compressedBytes": True}):
+            with self.subTest(value=value):
+                result = {}
+                record_direction_archives(
+                    result,
+                    {
+                        "schema": 3,
+                        "packages": [
+                            {"id": "argos-zh-en", "archiveObservation": value},
+                        ],
+                    },
+                    directions,
+                )
+                self.assertEqual(
+                    result["archiveObservations"][0]["packages"],
+                    [
+                        {"packageId": "argos-zh-en", "version": "1.9", "status": "missing"},
+                    ],
+                )
 
 
 if __name__ == "__main__":

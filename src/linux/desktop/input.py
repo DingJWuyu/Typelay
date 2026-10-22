@@ -1988,8 +1988,8 @@ class Input:
         if self.enabled is False or settings_generation != self.settings_generation:
             return self.captured("settings-changed")
         # Reading a rapidly changing body can fail after allowField has already
-        # approved fresh metadata. Keep the existing GTK3 command target's policy
-        # current independently of that read, without retaining body/write rights.
+        # approved fresh metadata. Establish the GTK3 command target from this
+        # approval, including its first observation, without body/write rights.
         # This is a new Core approval with its original observation time, never a
         # renewed old lease. The native key still captures synchronously and checks
         # its original 150 ms age, IME, metadata and command-local revisions.
@@ -1997,8 +1997,12 @@ class Input:
         policy_stamp = authority.get("observedAtMs")
         if (
             peer.backend == "gtk3"
-            and policy_record is not None
             and peer.shortcut is policy_record
+            and practice is None
+            and self.practice_authorization is None
+            and glossary_return is None
+            and returning is None
+            and publication_generation == self.publication_generation
             and self.shortcut_config.get("enabled")
             and command_generation == self.shortcut_config.get("generation")
             and focus == "Source"
@@ -2010,13 +2014,11 @@ class Input:
             and foreground_epoch == self.foreground_epoch
             and policy_user_epoch == self.user_epoch
             and self.fresh()
-            and policy_record["target"] == target_id(peer, description["target"])
-            and policy_record["window"]["id"] == window["id"]
             and type(policy_stamp) is int
             and 0 <= now_ms() - policy_stamp <= 150
         ):
             peer.shortcut = {
-                "target": policy_record["target"],
+                "target": target_id(peer, description["target"]),
                 "window": window,
                 "authority": authority,
             }

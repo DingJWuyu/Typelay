@@ -168,6 +168,7 @@ internal sealed partial class BrowserInput : IDisposable
             wake = _wake,
             direct = _direct,
             sourceLocalAcceptanceVersion = 1,
+            trace = !string.IsNullOrWhiteSpace(_tracePath),
             traceCommand = !string.IsNullOrWhiteSpace(_tracePath)
         };
         CancelEditorTransition();

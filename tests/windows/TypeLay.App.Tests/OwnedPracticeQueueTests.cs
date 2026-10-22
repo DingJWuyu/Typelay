@@ -1188,21 +1188,56 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                     if (now > plan.Permit.ExpiresAtMs)
                     {
                         var hostDiagnostics = System.Text.Json.JsonSerializer.SerializeToElement(host.AcceptanceDiagnostics(plan.Lease, plan.Permit));
-                        Assert.Fail(
-                        $"Original acceptance expired before its exact installation was observed; injected={allowInjectedInput}; "
-                        + $"observed={plan.Permit.ObservedAtMs}; captured={plan.CapturedAtMs}; "
-                        + $"published={publishedAtMs}; expires={plan.Permit.ExpiresAtMs}; now={now}; "
-                        + $"probeStarted={lastProbeStartedAtMs}; probeCompleted={lastProbeCompletedAtMs}; maxProbeGap={maxProbeGapMs}; "
-                        + $"userEpochMatched={hook.UserEpoch == plan.Lease.UserEpoch}; "
-                        + $"foregroundEpochMatched={hook.ForegroundEpoch == plan.Lease.ForegroundEpoch}; "
-                        + $"focus={hook.GetFocus(plan.Lease.Source.Target)}; "
-                        + $"sourceReady={host.SourceReady(plan.Lease.Source.Target)}; "
-                        + $"editorReady={host.EditorReady(plan.Lease.Source.Target)}; "
-                        + System.Text.Json.JsonSerializer.Serialize(new
+                        // Freeze the expired verdict before yielding. Late evidence
+                        // can explain this failure, never install/renew the plan or
+                        // turn a late ACK into a successful acceptance observation.
+                        string expiredMessage =
+                            $"Original acceptance expired before its exact installation was observed; injected={allowInjectedInput}; "
+                            + $"observed={plan.Permit.ObservedAtMs}; captured={plan.CapturedAtMs}; "
+                            + $"published={publishedAtMs}; expires={plan.Permit.ExpiresAtMs}; now={now}; "
+                            + $"probeStarted={lastProbeStartedAtMs}; probeCompleted={lastProbeCompletedAtMs}; maxProbeGap={maxProbeGapMs}; "
+                            + $"userEpochMatched={hook.UserEpoch == plan.Lease.UserEpoch}; "
+                            + $"foregroundEpochMatched={hook.ForegroundEpoch == plan.Lease.ForegroundEpoch}; "
+                            + $"focus={hook.GetFocus(plan.Lease.Source.Target)}; "
+                            + $"sourceReady={host.SourceReady(plan.Lease.Source.Target)}; "
+                            + $"editorReady={host.EditorReady(plan.Lease.Source.Target)}; ";
+                        var expiredSnapshot = System.Text.Json.JsonSerializer.SerializeToElement(new
                         {
+                            planId = plan.Permit.Plan.Id,
+                            observedAtMs = plan.Permit.ObservedAtMs,
+                            expiresAtMs = plan.Permit.ExpiresAtMs,
+                            failedAtMs = now,
                             host = hostDiagnostics,
                             sourceInstall = ReadInstallTrace(hostDiagnostics),
                             hook = hook.AcceptanceDiagnostics(plan.Lease, plan.Permit)
+                        });
+                        // Source tracing flushes only after its existing install/ACK
+                        // path. Preserve that exact record before teardown deletes
+                        // this owned directory. This is a diagnostic-only bound,
+                        // also cut short by the original overall test cancellation.
+                        object lateSourceInstall = ReadInstallTrace(hostDiagnostics);
+                        long evidenceDeadline = WindowsInterruptClock.NowMs + 1000;
+                        while (traceEnabled && lateSourceInstall is not System.Text.Json.JsonElement
+                            && !child!.Process.HasExited && WindowsInterruptClock.NowMs < evidenceDeadline
+                            && !deadline.IsCancellationRequested)
+                        {
+                            try
+                            {
+                                await Task.Delay(10, deadline.Token);
+                            }
+                            catch (OperationCanceledException) { break; }
+                            lateSourceInstall = ReadInstallTrace(hostDiagnostics);
+                        }
+                        if (traceEnabled && lateSourceInstall is not System.Text.Json.JsonElement)
+                            lateSourceInstall = ReadInstallTrace(hostDiagnostics); // Include a final flush at process exit.
+                        Assert.Fail(expiredMessage + System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            expiredSnapshot,
+                            lateSourceInstall,
+                            evidenceObservedAtMs = WindowsInterruptClock.NowMs,
+                            evidenceDeadlineMs = evidenceDeadline,
+                            processExited = child!.Process.HasExited,
+                            overallDeadlineReached = deadline.IsCancellationRequested
                         }));
                     }
                     Assert.False(child!.Process.HasExited);

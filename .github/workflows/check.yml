@@ -157,6 +157,14 @@ jobs:
         run: |
           & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.NativeSourceTimeoutProbe.RecordClaimThenLowLevelCallbackTimeout'
           exit $LASTEXITCODE
+      - name: Observe source-thread keyboard boundaries in owned sources
+        id: windows-source-keyboard
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        timeout-minutes: 4
+        shell: pwsh
+        run: |
+          & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.SourceKeyboardBoundaryProbe.ObserveSelfOwnedSourceKeyboardBoundary'
+          exit $LASTEXITCODE
       - name: Observe standard Chrome profile after behavior tests
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: pwsh
@@ -354,6 +362,7 @@ jobs:
           path: |
             artifacts/test-results/
             artifacts/source-ll-timeout/
+            artifacts/source-keyboard-boundary/
             artifacts/controller-trace.jsonl*
             artifacts/continuous-translation/result.json
             artifacts/continuous-translation/consumer-exit.json

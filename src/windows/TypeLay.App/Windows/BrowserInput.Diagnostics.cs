@@ -14,7 +14,7 @@ internal sealed class BrowserTraceBudget
     public bool CommandsAvailable => Volatile.Read(ref _commands) < 32;
     public bool TryTake(string operation)
     {
-        bool command = operation is "browser-command-approved" or "browser-command-path"
+        bool command = operation is "browser-command-approved" or "browser-command-path" or "browser-tab"
             or "browser-direct-Verified" or "browser-direct-RejectedBeforeMutation" or "browser-direct-OutcomeUnknown"
             or "browser-accept-Verified" or "browser-accept-RejectedBeforeMutation" or "browser-accept-OutcomeUnknown";
         bool owner = operation is "browser-owner" or "browser-page-owner" or "browser-tray";
@@ -83,6 +83,35 @@ internal sealed partial class BrowserInput
                     BrowserPolicyRenewalPhase.Approve => "approve",
                     _ => null
                 }
+            });
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { }
+    }
+    private void TracePageTab(JsonElement data)
+    {
+        if (!CommandTraceEnabled || data.ValueKind != JsonValueKind.Object)
+            return;
+        try
+        {
+            string? rawReason = String(data, "reason");
+            // Reuse the content adapter's existing first key-decision evidence.
+            // Never forward arbitrary page strings, authority, target or text.
+            string reason = rawReason is "target-unfocused" or "composing" or "ime-unknown"
+                or "no-publication" or "authority-changed" or "no-permit" or "capacity"
+                or "held" or "repeat" or "BadPlan" or "StaleObservation" or "Sensitive"
+                or "ImeUnclear" or "SourceChanged" or "EpochChanged" or "SelectionChanged"
+                or "InvalidText" or "UnknownOutcome" or "None" ? rawReason : "unknown";
+            Trace("browser-tab", new
+            {
+                reason,
+                publication = Boolean(data, "publication"),
+                imeClear = Boolean(data, "imeClear"),
+                targetMatches = Boolean(data, "targetMatches"),
+                inputMatches = Boolean(data, "inputMatches"),
+                focusMatches = Boolean(data, "focusMatches"),
+                remainingMs = DiagnosticMetric(data, "remainingMs"),
+                eventToTabCheckMs = DiagnosticMetric(data, "eventToTabCheckMs"),
+                tabCheckToWriteMs = DiagnosticMetric(data, "tabCheckToWriteMs")
             });
         }
         catch (Exception error) when (error is not OutOfMemoryException) { }

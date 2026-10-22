@@ -761,7 +761,7 @@ public sealed class ProductionForegroundWriteTests
             _pipeToken = broker.StartInfo.Environment["TYPELAY_PIPE_TOKEN"]!;
             _isolatedDirectory = isolatedDirectory;
         }
-        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? returnTrace = null, string? sourceClaimProbe = null, bool isolatedSourceAcceptance = false)
+        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? returnTrace = null, string? sourceClaimProbe = null, bool isolatedSourceAcceptance = false, bool sourceKeyboardProbe = false)
         {
             var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(30));
@@ -770,7 +770,7 @@ public sealed class ProductionForegroundWriteTests
             string? isolatedDirectory = null;
             try
             {
-                fixture = await StockFixture.Start(deadline.Token, owned, retirementProbe, returnFocus, sourceClaimProbe);
+                fixture = await StockFixture.Start(deadline.Token, owned, retirementProbe, returnFocus, sourceClaimProbe, sourceKeyboardProbe);
                 string directory = Path.Combine(Repository(), "src/windows/TypeLay.Broker/bin/Release/net10.0-windows");
                 if (withoutNativeDll)
                 {
@@ -820,6 +820,7 @@ public sealed class ProductionForegroundWriteTests
             N.SendString(field, N.WM_SETTEXT, text);
             N.Send(field, N.EM_SETSEL, (nuint)selection.Start, (nint)selection.End);
         }
+        internal Task<JsonElement> KeyboardProbeSnapshot() => _fixture.KeyboardProbeSnapshot(Token);
         public async Task<InputSnapshot> Capture()
         {
             var reply = await Call(new(BrokerProtocol.Version, 0, "capture", "", CaptureDirect: true));
@@ -897,7 +898,7 @@ public sealed class ProductionForegroundWriteTests
         public nint Field(string name) => (nint)host.Fields.Single(value => value.Name == name).Hwnd;
         private Guid _connection, _run;
         private long _sequence = 1;
-        public static async Task<StockFixture> Start(CancellationToken token, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? sourceClaimProbe = null)
+        public static async Task<StockFixture> Start(CancellationToken token, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? sourceClaimProbe = null, bool sourceKeyboardProbe = false)
         {
             Guid connection = Guid.NewGuid(), run = Guid.NewGuid();
             string assembly = Path.Combine(Repository(),
@@ -922,6 +923,13 @@ public sealed class ProductionForegroundWriteTests
                 Assert.Null(returnFocus);
                 arguments = [.. arguments, "--source-claim-probe", sourceClaimProbe];
             }
+            if (sourceKeyboardProbe)
+            {
+                Assert.False(owned);
+                Assert.Null(returnFocus);
+                Assert.Null(sourceClaimProbe);
+                arguments = [.. arguments, "--source-keyboard-probe"];
+            }
             var process = StartProcess(arguments);
             try
             {
@@ -940,6 +948,12 @@ public sealed class ProductionForegroundWriteTests
                 await Stop(process);
                 throw;
             }
+        }
+        internal async Task<JsonElement> KeyboardProbeSnapshot(CancellationToken token)
+        {
+            Assert.True(N.PostMessage(Root, 0x8081, 0, 0));
+            string? line = await process.StandardOutput.ReadLineAsync(token);
+            return JsonSerializer.Deserialize<JsonElement>(line ?? "null");
         }
         public async Task OwnedControl(string kind, CancellationToken token)
         {

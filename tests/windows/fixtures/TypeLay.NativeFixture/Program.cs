@@ -47,12 +47,15 @@ internal static class Program
         bool sourceClaimCase = args.Length == 3 && args[0] == "--stock-controls" && args[1] == "--source-claim-probe";
         if (sourceClaimCase)
             _sourceClaimProbe = args[2];
-        bool stockControls = ownedControls || returnFocusCase || sourceClaimCase || (args.Length == 1 && args[0] == "--stock-controls");
+        _sourceKeyboardProbeEnabled = args.Length == 2 && args[0] == "--stock-controls" && args[1] == "--source-keyboard-probe";
+        bool stockControls = _sourceKeyboardProbeEnabled || ownedControls || returnFocusCase || sourceClaimCase || (args.Length == 1 && args[0] == "--stock-controls");
         if (args.Length != 0 && !hookTest && !stockControls)
             return 2;
         return RunWindows(hookTest, args.Contains("--hook-test-automation", StringComparer.Ordinal), stockControls);
     }
 
+    private static bool _sourceKeyboardProbeEnabled;
+    private static SourceKeyboardProbe? _sourceKeyboardProbe;
     private static string? _ownedPath;
     private static string? _retirementProbePath;
     private static string? _sourceClaimProbe;
@@ -139,6 +142,8 @@ internal static class Program
             30, 515, 300, 34, _root, (nint)200, instance, 0);
         _replayField = (nint)fields[0].Hwnd;
         _secondField = (nint)fields[1].Hwnd;
+        if (_sourceKeyboardProbeEnabled)
+            _sourceKeyboardProbe = new(_root, _replayField);
         if (_sourceClaimProbe is not null)
             WinEventStackProbe.LoadSourceClaim(_sourceClaimProbe);
         if (!hookTest)
@@ -183,6 +188,7 @@ internal static class Program
         {
             while (true)
             {
+                _sourceKeyboardProbe?.BeforeRead();
                 int status = N.GetMessage(out N.MessageStruct message, 0, 0, 0);
                 if (status == 0)
                     return 0;
@@ -191,17 +197,19 @@ internal static class Program
                 bool dispatchProbe = SourceDispatchProbe.BeforeDispatch(_root, message);
                 ApplyOwnedControls(); // The same outer-loop retirement boundary as Practice.
                 var dispatched = message;
+                _sourceKeyboardProbe?.Dispatch(dispatched, after: false);
                 if (!N.IsDialogMessage(_root, ref message))
                 {
                     N.TranslateMessage(ref message);
                     N.DispatchMessage(ref message);
                 }
+                _sourceKeyboardProbe?.Dispatch(dispatched, after: true);
                 sourceReentry?.ObserveDispatchedInput(dispatched);
                 if (dispatchProbe)
                     SourceDispatchProbe.AfterDispatch(_root);
             }
         }
-        finally { _hookHarness?.Dispose(); }
+        finally { _sourceKeyboardProbe?.Dispose(); _hookHarness?.Dispose(); }
 
         void Add(string caption, string name, string text, uint editStyle, FieldAccess classification, int y, int height = 32)
         {
@@ -369,6 +377,27 @@ internal static class Program
                 return N.Send(field, 0x00d2) == 0 ? 1 : 0;
             }
             catch (N.NativeMessageException) { return 0; }
+        }
+        if (_sourceKeyboardProbe is { } keyboardProbe && message == SourceKeyboardProbe.Arm)
+        {
+            keyboardProbe.Configure((int)wParam);
+            return 1;
+        }
+        if (_sourceKeyboardProbe is { } closingProbe && message == SourceKeyboardProbe.Close)
+        {
+            try
+            {
+                closingProbe.Dispose();
+                _sourceKeyboardProbe = null;
+                return 1;
+            }
+            catch { return 0; }
+        }
+        if (_sourceKeyboardProbe is { } snapshotProbe && message == SourceKeyboardProbe.Snapshot)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(snapshotProbe.Read()));
+            Console.Out.Flush();
+            return 1;
         }
         if (message == N.FixtureFocus && (PreviousProcedures.ContainsKey((nint)wParam) || StockFields.Contains((nint)wParam)))
         {

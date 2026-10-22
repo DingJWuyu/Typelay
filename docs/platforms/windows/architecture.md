@@ -78,6 +78,10 @@ WPF 暂停视图清除文本及撤销状态，只显示共享呈现定义中的�
 
 B-01 的一个具体交错是：源线程已经确认 Claim 并完成写入，但低级键盘回调尚未返回消费结果，Windows 已因回调超时放行原键。[系统文档](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc)明确说明超时可放行输入并静默移除 hook；写后回执不能倒推出原键已被吞掉。显式诊断 `NativeSourceTimeoutProbe.RecordClaimThenLowLevelCallbackTimeout` 仅在测试自有进程、自有 LL hook 上复用真实 `StockEditActivation`，比较正常组与 Claim 后受控暂停组，不修改生产 hook、原生 DLL、默认开关或系统配置。输出记录原始激活结果、退休回执、原 Tab 队列计数、文本及清理结果；`observed_leak` 是风险实证，`not_observed` 不构成安全证明，前置或清理失败为 `precondition_failed`。调用见[Windows 开发](development.md#源接受低级回调超时诊断)。这不是完整生产输入链验收，也不覆盖物理按键或真实输入法，不能用探针运行成功关闭 B-01。
 
+**该交错已经实际观察到，不再只是待测风险。** CI456 的自有源诊断结果（`source-ll-timeout/20261022T181445488Z-aed5d0cb65ff4a65adc2e4f3d0991680/result.json`）中，正常组为 `not_observed`；Claim 后暂停组回调保持 1601.9607ms，观察时仍在回调内，原 Tab down 已到达源队列一次，up 为零，结果为 `observed_leak`。两组均已 Claim，最终正文为 `Hello`，退休回执与清理均完成。因此，写入成功与原键泄漏可以同时发生；现有跨线程“源写完成后由 LL 返回值吞首键”的设计不能作为正式开启接受的安全依据。`ExperimentalWriteback` 及普通源接受默认门仍保持关闭。该证据只否定这一交错下的安全性，不证明系统已经移除 hook、不覆盖所有风险，也不等于完整生产链或物理输入法验收。
+
+下一步先验证[自有源线程键盘边界](development.md#自有源线程键盘边界诊断)：源线程的 PM_NOREMOVE / HC_ACTION、伪消息阴性对照及 IsDialogMessage 前消费，仅观察和消费、不写正文。这些实验不能替代原 MSG.Time 关联见证，也未闭合跨线程移焦后的 repeat/up 所有权；必须先取得实际结果，再决定后续设计。仍有回归价值的隔离原型与测试保留，不因普通回归全绿开放默认写回。
+
 按下时的短效接受许可与已消费按键的远程执行期限是两个边界，具体值以 Core 的 Limits 为准。派发前核验 Hook 输入/焦点版本，Broker 写前重读、期限检查与写后核验不能省略。浮层编辑按键与源字段输入版本必须区分，避免把译文编辑误判成原文变化。
 
 共享配置可保留 Ctrl+功能键的阶段性表达。Windows 实现仅在自有 stock Edit 练习支持源接受/退出与编辑回源/退出：原 Ctrl 消息沿自有 GUI 正常分发，以原票、精确修饰键及同次输入上下文裁决功能键，不重建原观察或延长期限。仅当前 GUI 线程的被动消息观察安装成功才报告 `ControlPrefixObserved`；观察只推进失效版本，不授写权。私有见证协议 v4 关联原前缀序号与真实修饰键，旧版本拒绝；owned native v3 现场核对 HIMC/HKL，通用事务与 owned capture 版本不变。四个操作的精确键冲突统一拒绝。该组合链已通过真实 Windows 软件输入的首接受、编辑退出、键与鼠标回源、人工稿接受及完成保存；物理按键和实际输入法仍待验证。设置现提供 Ctrl+F1–F24；普通输入框另以原退出观察和编辑器原 token 支持零写组合退出、编辑回源，源 Ctrl 立即推进输入版本并撤销写许可，后继功能键不能换绑新字段。WPF 仅消费本次实际消息与 Hook 原按次匹配的命令，整组释放后才开始新按次。普通回源仍经原目标、配置与新鲜焦点核验。已注册的普通 stock Edit 在全局 UIA 焦点尚未确认时，可由原 native 生命周期的精确线程焦点前后夹一次新的 UIA 身份与 FieldPolicy 元数据检查来确认零写回源；不创建或更新绑定，后续仍须完整 fresh capture 与 Core 原稿基线确认。该替代分支已在真实模型链执行，后续新捕获保稿、编辑退出和源退出均通过；普通源内组合接受仍关闭，不扩大 B-01 或通用 UIA 写回。公开设置选择、保存与重开已通过实际检查，普通系统 Edit 无写路径已通过本轮软件输入检查，默认键和既有按需组合不变。

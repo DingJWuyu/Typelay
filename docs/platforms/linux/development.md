@@ -34,7 +34,7 @@ finalize 校验主包原始清单、构建提交、合作组件的固定来源�
 
 正式安装复用已下载或命中的本地 Argos ZIP，不额外请求网络。在全部 ZIP 路径、重复条目、方向和模型布局检查通过后，`models/installed.json` 的 schema 3 包条目记录可选 `archiveObservation`；现役旧式 CLI 安装入口在原 `dependencies` 中记录同组数据。`compressedBytes` 和 `observedSha256` 对应本地归档实际字节，`declaredUnpackedBytes` 是 ZIP 全条目声明大小之和（含未保留的 Stanza 文件），`retainedBytes` 是实际写出的模型及根级元数据/许可证字节数。目录项不计实际保留量。
 
-维护者用这些记录审计安装磁盘预算；它们不是发布者签名、可信固定锁或 Ready 资格，也不改变当前准入上限。`catalogUrl` 只是目录指定的 URL，不能证明命中缓存的来源。记录只含包 ID、版本、固定 URL、哈希和计数，不含用户目录、文本或凭据。Linux 保留包重建仅携带形状有效的既有观测；没有旧证据时不补造。Windows/共享读者忽略该可选字段，不承诺 Windows 重建会保留或生成它。现役 CLI 正式安装在真实自检通过后，将白名单摘要写入既有 `self-check.json.archiveObservations`，由现有 CI 产物收集；缺失或无效旧观测标为 `missing`，不伪造尺寸或降低自检门。安装失败不生成成功摘要；不上传模型包、整个缓存或含文件路径的完整 inventory。
+维护者用这些记录审计安装磁盘预算；它们不是发布者签名、可信固定锁或 Ready 资格，也不改变当前准入上限。`catalogUrl` 只是目录指定的 URL，不能证明命中缓存的来源。记录只含包 ID、版本、固定 URL、哈希和计数，不含用户目录、文本或凭据。Linux 保留包重建仅携带形状有效的既有观测；没有旧证据时不补造。Windows/共享读者忽略该可选字段，不承诺 Windows 重建会保留或生成它。现役 CLI 正式安装在真实自检通过后，将白名单摘要写入既有 `self-check.json.archiveObservations`；该文件可能随旧代清理，不能假定最终 CI 产物一定包含它。真实 Settings 方向安装测试在每次单向/双向就绪及库存断言通过后，立即把白名单摘要累积到既有、会上传的 `direction-installation.json.archiveObservations`，不依赖旧代留存。缺失或无效观测逐包标为 `missing`，不补造尺寸或降低 Ready、自检与原安装断言；后续测试失败保留已完成安装的观测，但整条 `outcome` 仍为失败。不上传模型包、整个缓存或含文件路径的完整 inventory。
 
 ## Hy worker 可选构建
 

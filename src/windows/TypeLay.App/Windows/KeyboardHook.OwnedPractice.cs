@@ -579,7 +579,8 @@ internal sealed partial class KeyboardHook
     private int _ownedInputRejectionTraceCount;
     private void QueueOwnedInputRejection(string stage, long now, OwnedInstalled? installed, OwnedPrefix? prefix,
         bool repeated, bool injected, bool? exact = null, bool? fresh = null, bool? firstControl = null,
-        bool? prefixDown = null, bool? chordAction = null, bool? acceptBinding = null)
+        bool? prefixDown = null, bool? chordAction = null, bool? acceptBinding = null,
+        bool? otherKeyHeld = null, ShortcutModifiers? modifiers = null, bool? inputAllowed = null, bool? scanValid = null)
     {
         if (!OwnedEditorTraceEnabled || _ownedInputRejectionTraceCount >= 16)
             return;
@@ -602,6 +603,10 @@ internal sealed partial class KeyboardHook
                 exact,
                 fresh,
                 firstControl,
+                otherKeyHeld,
+                modifiers,
+                inputAllowed,
+                scanValid,
                 prefixDown,
                 chordAction,
                 acceptBinding,
@@ -682,9 +687,13 @@ internal sealed partial class KeyboardHook
                 && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs && !channel.Writer.Poisoned;
             var exit = CurrentOwnedExit(now);
             long witnessSequence = checked(channel.Writer.Sequence + 1);
-            bool firstControl = down && !repeated && ControlKey(data.Key) && !OtherKeyHeld(data.Key)
-                && CurrentModifiers == ShortcutModifiers.Control
-                && (!injected || _allowInjectedInput) && data.Scan is > 0 and <= 255;
+            bool controlDown = down && !repeated && ControlKey(data.Key);
+            bool? otherKeyHeld = controlDown ? OtherKeyHeld(data.Key) : null;
+            var modifiers = CurrentModifiers;
+            bool inputAllowed = !injected || _allowInjectedInput;
+            bool scanValid = data.Scan is > 0 and <= 255;
+            bool firstControl = controlDown && otherKeyHeld == false
+                && modifiers == ShortcutModifiers.Control && inputAllowed && scanValid;
             bool prefixDown = false;
             if (firstControl && prefix is null && exact)
             {
@@ -760,7 +769,8 @@ internal sealed partial class KeyboardHook
                 && (ControlKey(data.Key) && !prefixDown && !samePrefixRepeat
                     || data.Key == acceptanceKey && decision.Permit is null))
                 QueueOwnedInputRejection(ControlKey(data.Key) ? "prefix" : "acceptance", now, installed, prefix,
-                    repeated, injected, exact, fresh, firstControl, prefixDown, chordAction, acceptBinding);
+                    repeated, injected, exact, fresh, firstControl, prefixDown, chordAction, acceptBinding,
+                    otherKeyHeld, modifiers, inputAllowed, scanValid);
             return true; // Every original MSG goes to its application unchanged.
         }
         finally { channel.Writer.Exit(); }

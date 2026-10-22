@@ -16,7 +16,10 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class BrowserCaptureTests(ITestOutputHelper output)
 {
-    [Fact]
+    // Cooperative budget: 120s browser preparation + 20s capture, with room
+    // for diagnostics/cleanup. Synchronous UIA calls need the outer executor's
+    // process deadline; xUnit cancellation cannot terminate them. No launch retry.
+    [Fact(Timeout = 160000)]
     public async Task ChromePageSearchCapturesAndUpdatesWithoutSentencePunctuation()
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-browser-" + Guid.NewGuid().ToString("N"));
@@ -30,17 +33,27 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
         BrowserWindows? windows = null;
         ChildProcess? ownedBrowser = null;
         bool failed = false;
+        string stage = "external-browser-setup", captureOutcome = "not-run";
         try
         {
+            using var setup = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            setup.CancelAfter(TimeSpan.FromSeconds(120));
             Directory.CreateDirectory(directory);
             const string initial = "ordinary search without punctuation";
             var start = await BrowserWindows.PageStartInfoAsync(directory, title, initial,
-                Path.Combine(diagnostics, "chrome.log"), output.WriteLine, TestContext.Current.CancellationToken);
+                Path.Combine(diagnostics, "chrome.log"), output.WriteLine, setup.Token);
+            setup.Token.ThrowIfCancellationRequested();
             ownedBrowser = new ChildProcess(start);
             windows = new(ownedBrowser.Process, title);
+            stage = "external-page-ready";
+            nint window = await windows.PreparePageAsync(output.WriteLine, setup.Token);
+            setup.Token.ThrowIfCancellationRequested();
+            // The external application must be ready before measuring product
+            // acquisition. This does not renew any capture/authority deadline.
+            captureOutcome = "running";
+            stage = "broker-start";
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(20));
-            nint window = await windows.PreparePageAsync(output.WriteLine, deadline.Token);
             using var broker = new BrokerClient();
             using var input = new WindowsInputService(broker, 0);
             await input.StartAsync().WaitAsync(deadline.Token);
@@ -61,24 +74,33 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
                 ReportFocus(window);
                 throw new Xunit.Sdk.XunitException("The ordinary page search field was not captured; inspect the broker's fixed stage/rejection trace.");
             }
+            stage = "capture-initial";
             var first = await Observe(initial);
             Assert.True(WindowsTarget.TryDecode(first.Target, out var target));
             Assert.Equal((long)window, target.RootHwnd);
             Assert.False(first.DirectWriteSupported);
             if (first.Ime != ImeState.Clear)
                 Assert.False(first.WriteSupported);
+            stage = "type-update";
             BrowserWindows.Keys(0x23); // End, then actual Unicode input with no punctuation or DOM value injection.
             const string appended = " and more words";
             BrowserWindows.TypeText(appended);
+            stage = "capture-update";
             var next = await Observe(initial + appended);
             Assert.Equal(first.Target, next.Target);
             Assert.True(next.InputEpoch > first.InputEpoch);
             Assert.True(next.ObservedAtMs >= first.ObservedAtMs);
             Assert.Equal((long)Native.GetForegroundWindow(), target.RootHwnd);
+            captureOutcome = "passed";
+            stage = "complete";
+            output.WriteLine($"Browser acquisition: stage={stage}; captureOutcome={captureOutcome}");
         }
         catch
         {
             failed = true;
+            if (captureOutcome == "running")
+                captureOutcome = "failed";
+            output.WriteLine($"Browser acquisition failed: stage={stage}; captureOutcome={captureOutcome}");
             try
             {
                 if (windows is not null)

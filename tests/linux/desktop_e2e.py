@@ -24,6 +24,7 @@ from native_e2e import key
 from niri import contents, request
 from paths import Paths
 from setup import (
+    argos_archive_summary,
     copy_runtime,
     current_generation,
     model_catalog,
@@ -469,6 +470,28 @@ def prepare_tab(stack):
     return send_tab
 
 
+def record_direction_archives(result, marker, directions):
+    """Preserve path-free evidence before a completed generation is retired."""
+    if marker["schema"] == 3:
+        dependencies = [
+            {**observation, "name": direction.id}
+            for direction in directions
+            for package in marker["packages"]
+            if package.get("id") == "argos-" + direction.id.replace("_", "-")
+            for observation in [package.get("archiveObservation")]
+            if isinstance(observation, dict)
+        ]
+    else:
+        dependencies = marker["dependencies"]
+    result.setdefault("archiveObservations", []).append(
+        {
+            "schema": marker["schema"],
+            "directions": [direction.id for direction in directions],
+            "packages": argos_archive_summary(dependencies, directions),
+        }
+    )
+
+
 def verify_direction_installation(arguments, environment):
     """Real settings installation and worker inference, using the existing two archives."""
     from support.gtk_accessibility import Atspi, named, select_settings_page
@@ -610,6 +633,11 @@ def verify_direction_installation(arguments, environment):
                             assert {
                                 row["name"]: row["observedSha256"] for row in marker["dependencies"]
                             } == {identity: cached[identity][0] for identity in expected}
+                        record_direction_archives(
+                            result,
+                            marker,
+                            [direction for direction in catalog if direction.id in expected],
+                        )
                         return root
 
                     def inference(generation, expected, requests):

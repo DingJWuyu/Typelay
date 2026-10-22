@@ -990,6 +990,11 @@ internal sealed partial class BrowserInput
         }
         // An authenticated route transports diagnostics, but never makes them
         // commands. This branch cannot enqueue a Runtime notice or read a field.
+        if (name == "tab-diagnostic")
+        {
+            TracePageTab(value);
+            return;
+        }
         if (name == "source-command-diagnostic")
         {
             TracePageCommand(value);

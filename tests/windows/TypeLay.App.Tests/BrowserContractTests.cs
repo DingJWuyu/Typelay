@@ -548,7 +548,7 @@ public sealed class BrowserContractTests
             Assert.False(budget.TryTake(operation));
         Assert.True(budget.CommandsAvailable);
         Assert.False(budget.TryTake("browser-direct-unrecognized"));
-        string[] commands = ["browser-command-approved", "browser-command-path", "browser-direct-Verified",
+        string[] commands = ["browser-command-approved", "browser-command-path", "browser-tab", "browser-direct-Verified",
             "browser-direct-RejectedBeforeMutation", "browser-direct-OutcomeUnknown",
             "browser-accept-Verified", "browser-accept-RejectedBeforeMutation", "browser-accept-OutcomeUnknown"];
         for (int index = 0; index < 32; index++)

@@ -152,6 +152,19 @@ class BrowserContract(unittest.TestCase):
                 }
               };
             })();"""
+        command_metadata_setup = ""
+        if (
+            self._testMethodName
+            == "test_source_command_reports_changed_metadata_without_capturing_or_writing"
+        ):
+            # Change associated label text at the real key boundary, before the
+            # production capture listener. Unlike a field attribute change, this
+            # retains the field/policy and exercises its live metadata comparison.
+            command_metadata_setup = """window.addEventListener('keydown', event => {
+              if (event.isTrusted && event.key === 'F10' && !event.repeat) {
+                document.querySelector('label').firstChild.data = 'Changed label ';
+              }
+            }, true);"""
         bridge = (
             BRIDGE.read_text()
             if self._testMethodName
@@ -162,7 +175,13 @@ class BrowserContract(unittest.TestCase):
             else ""
         )
         self.context.add_init_script(
-            clock_setup + TRANSPORT + "\n" + bridge + "\n" + CONTENT.read_text()
+            clock_setup
+            + command_metadata_setup
+            + TRANSPORT
+            + "\n"
+            + bridge
+            + "\n"
+            + CONTENT.read_text()
         )
         self.page = self.context.new_page()
         self.cdp = self.context.new_cdp_session(self.page)
@@ -600,10 +619,8 @@ class BrowserContract(unittest.TestCase):
     def test_source_command_reports_changed_metadata_without_capturing_or_writing(self):
         self.type_source()
         self.activate_source_command_owner(trace_command=True)
-        self.page.locator("#source").evaluate(
-            "element => element.setAttribute('aria-label', 'Changed label')"
-        )
         self.page.keyboard.press("F10")
+        self.assertEqual(self.page.locator("label").text_content(), "Changed label ")
         commands = self.source_commands()
         self.assertEqual(len(commands), 1)
         self.assertEqual(commands[0]["data"]["reason"], "PolicyUnavailable")
@@ -617,6 +634,28 @@ class BrowserContract(unittest.TestCase):
         self.assertTrue(diagnostics[0]["commandSent"])
         self.assertFalse(diagnostics[0]["hasNative"])
         self.assertNotIn("Changed label", json.dumps(diagnostics))
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.page.evaluate("fixturePassedCommandKeys"), [])
+
+    def test_source_command_attribute_change_retires_policy_before_capture(self):
+        self.type_source()
+        self.activate_source_command_owner(trace_command=True)
+        self.page.locator("#source").evaluate(
+            "element => element.setAttribute('aria-label', 'Changed label')"
+        )
+        self.page.keyboard.press("F10")
+        commands = self.source_commands()
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0]["data"]["reason"], "PolicyUnavailable")
+        self.assertNotIn("native", commands[0]["data"])
+        diagnostics = self.page.evaluate(
+            "fixtureMessages.filter(item => item.event === 'source-command-diagnostic').map(item => item.data)"
+        )
+        self.assertEqual(len(diagnostics), 1)
+        self.assertEqual(diagnostics[0]["firstReason"], "PolicyMissing")
+        self.assertIsNone(diagnostics[0]["policyCheckPhase"])
+        self.assertTrue(diagnostics[0]["commandSent"])
+        self.assertFalse(diagnostics[0]["hasNative"])
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.page.evaluate("fixturePassedCommandKeys"), [])
 
