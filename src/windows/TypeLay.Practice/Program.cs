@@ -1103,6 +1103,7 @@ internal static partial class Program
     private static void InstallPlan(OwnedAcceptanceControl control, long? readCompletedAtMs, long? guiDequeuedAtMs)
     {
         bool trace = readCompletedAtMs is not null && _installTraceCount < 16;
+        var readTiming = trace ? new OwnedPracticeAcceptanceProtocol.ReadTiming() : null;
         long? mappingOpenedAtMs = null, planReadAtMs = null, resultOpenedAtMs = null;
         long? validatedAtMs = null, appliedAtMs = null, ackWrittenAtMs = null;
         try
@@ -1115,7 +1116,7 @@ internal static partial class Program
             using var mapping = OwnedMapping.Open(control.PlanHandle, control.PlanBytes, false);
             if (trace)
                 mappingOpenedAtMs = WindowsInterruptClock.NowMs;
-            var plan = OwnedPracticeAcceptanceProtocol.ReadPlan(mapping); // Copy before granting anything.
+            var plan = OwnedPracticeAcceptanceProtocol.ReadPlan(mapping, readTiming); // Copy before granting anything.
             if (trace)
                 planReadAtMs = WindowsInterruptClock.NowMs;
             _resultMapping = OwnedMapping.Open(control.ResultHandle, control.ResultBytes, true);
@@ -1164,6 +1165,13 @@ internal static partial class Program
                     readCompletedAtMs,
                     guiDequeuedAtMs,
                     mappingOpenedAtMs,
+                    // Completion boundaries include prior instrumentation overhead,
+                    // scheduling and runtime pauses, not just work/CPU duration.
+                    // In particular, mappingOpenedAtMs follows MapViewOfFile.
+                    copyCompletedAtMs = readTiming?.CopyCompletedAtMs,
+                    deserializeCompletedAtMs = readTiming?.DeserializeCompletedAtMs,
+                    zeroCompletedAtMs = readTiming?.ZeroCompletedAtMs,
+                    validateCompletedAtMs = readTiming?.ValidateCompletedAtMs,
                     planReadAtMs,
                     resultOpenedAtMs,
                     validatedAtMs,

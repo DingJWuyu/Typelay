@@ -87,10 +87,29 @@ internal static class OwnedPracticeAcceptanceProtocol
         mapping.WriteInt32(0, Version);
         return mapping;
     }
-    public static OwnedAcceptancePlan ReadPlan(OwnedMapping mapping)
+    // Optional numeric observations for the existing bounded source-install trace.
+    // No body data or callbacks cross this internal boundary. A missing timestamp
+    // means that boundary was not observed, including a failed clock query.
+    internal sealed class ReadTiming
     {
-        var plan = ReadBody<OwnedAcceptancePlan>(mapping);
+        internal long? CopyCompletedAtMs, DeserializeCompletedAtMs, ZeroCompletedAtMs, ValidateCompletedAtMs;
+
+        internal static long? NowMs()
+        {
+            try
+            {
+                return WindowsInterruptClock.NowMs;
+            }
+            catch (Exception) { return null; } // Diagnostics must not mask a read/cleanup exception.
+        }
+    }
+
+    public static OwnedAcceptancePlan ReadPlan(OwnedMapping mapping, ReadTiming? timing = null)
+    {
+        var plan = ReadBody<OwnedAcceptancePlan>(mapping, timing);
         ValidatePlan(plan);
+        if (timing is not null)
+            timing.ValidateCompletedAtMs = ReadTiming.NowMs();
         return plan;
     }
     public static void WriteResult(OwnedMapping mapping, OwnedAcceptanceResult result) => WriteBody(mapping, result);
@@ -109,7 +128,7 @@ internal static class OwnedPracticeAcceptanceProtocol
         }
         finally { CryptographicOperations.ZeroMemory(bytes); }
     }
-    private static T ReadBody<T>(OwnedMapping mapping)
+    private static T ReadBody<T>(OwnedMapping mapping, ReadTiming? timing = null)
     {
         if (mapping.Length != BodyBytes || mapping.ReadInt32(0) != Version)
             throw new InvalidDataException("practice-body-version");
@@ -120,9 +139,19 @@ internal static class OwnedPracticeAcceptanceProtocol
         byte[] bytes = mapping.ReadBytes(8, length);
         try
         {
-            return JsonSerializer.Deserialize<T>(bytes, Json) ?? throw new InvalidDataException("practice-body");
+            if (timing is not null)
+                timing.CopyCompletedAtMs = ReadTiming.NowMs();
+            var value = JsonSerializer.Deserialize<T>(bytes, Json) ?? throw new InvalidDataException("practice-body");
+            if (timing is not null)
+                timing.DeserializeCompletedAtMs = ReadTiming.NowMs();
+            return value;
         }
-        finally { CryptographicOperations.ZeroMemory(bytes); }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(bytes);
+            if (timing is not null)
+                timing.ZeroCompletedAtMs = ReadTiming.NowMs();
+        }
     }
     public static void ValidatePlan(OwnedAcceptancePlan plan)
     {

@@ -47,9 +47,29 @@ public sealed partial class NativeSourceControllerTests
             stage = "controller-start";
             await controller.StartAsync();
             stage = "installation-and-acceptance";
-            await Until(() => { loop.Advance(); return view.CanAccept; }, token);
+            await Until(() =>
+            {
+                // The isolated positive case prepares one original install, not
+                // concurrent observation. Once it starts, repaint its ACK without
+                // a fixture Tick queuing another capture. This does not resolve
+                // production polling concurrency or identify a native queue sender.
+                if (withdraw || broker.InstallsStarted == 0)
+                    loop.Advance();
+                else
+                    controller.RefreshAcceptancePresentation();
+                return view.CanAccept;
+            }, token);
             long acceptanceReadyAt = WindowsInterruptClock.NowMs;
             rpcTrace?.Checkpoint("ready-loop-exited");
+            if (!withdraw)
+            {
+                var preparedRpc = rpcTrace!.Snapshot();
+                // Fail immediately, rather than drain outstanding RPC work or
+                // replace the original permit. Pending is not a native queue read.
+                Assert.True(preparedRpc.Pending == 0,
+                    preparedRpc.Pending != 0
+                        ? $"Notepad positive setup still has outstanding RPC work: {JsonSerializer.Serialize(preparedRpc)}." : null);
+            }
             var installation = Assert.IsType<SourceAcceptanceResult>(broker.Installation);
             var installedPermit = Assert.IsType<AcceptancePermit>(broker.InstallationPermit);
             Assert.True(installation.Installed);
@@ -272,6 +292,10 @@ public sealed partial class NativeSourceControllerTests
         {
             get; private set;
         }
+        internal int InstallsStarted
+        {
+            get; private set;
+        }
         internal AcceptancePermit? InstallationPermit
         {
             get; private set;
@@ -349,6 +373,8 @@ public sealed partial class NativeSourceControllerTests
         public async Task<BrokerResponse> CallAsync(BrokerRequest request, TimeSpan? timeout = null)
         {
             ObjectDisposedException.ThrowIf(_closing, this);
+            if (request.Op == "source-install")
+                InstallsStarted++;
             long traceId = RpcTrace?.Queued(request.Op) ?? 0;
             bool admitted = false, failed = true;
             try

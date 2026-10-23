@@ -10,14 +10,14 @@
 
 - **已发布源码完整恢复**：环境回退后，从 CI468 shared artifact `12480153131` 恢复远端 `091fd796c496388e04a18689c67868145a5bc586` 的完整源码；实际 tree 为 `5dbdda82b1d415397db8580ca1878ab6dc7a2d95`，与发布树一致。本地恢复基准 `88d8738f030d630ba3f1aa63b90c2a34a87af585` 是独立本地提交，不是远端提交或原历史恢复。恢复收据在工作区 `artifacts/ci468-source-recovery/verification.json`。
 - **研究原件当前不可读**：旧模型原始输出、资源/退出监督记录和独立审查原件，以及 Mozilla 未发布的 5 文件补丁与 33 项测试原件未随源码恢复。下文已完成试验及质量判断保留为此前报告事实，当前暂不能据原件独立复核；不将摘要当原件、不改写为从未运行，也不重造或补录原始证据。已发布输入数据和代码可读，不等于其执行证据恢复。
-- **Mozilla 授权暂停**：构建从未执行，未下载权重、未推理。先恢复或重新形成可审源码差异，重新冻结、审查并取得构建授权后才讨论执行；此前测试报告不作为当前源码准入证明。
+- **Mozilla 新一轮有界构建已超时停止**：已从官方固定源重新准备1141项身份清单及3个依赖，另形成并审查2文件CMake关闭自动获取补丁；这不是旧5文件/192限制/33项测试原件恢复。本轮configure exit0，实际cache/编译与链接命令已独立核查；唯一translator-cli构建在共享600秒截止时被停止，终端收据为rejected/deadline_exceeded，监督exit1、build最终-15，含清理600.102秒，survivingGroups为空。未完成构建，不是模型质量失败；未运行CLI或模型。新的1200秒工具构建续段仅准备中、未执行，不把旧失败清零；模型请求60秒/总600秒不变。现有环境网络策略保持、不自动获取，不宣称OS禁网；bwrap被拒后未绕过。
 
-本页于 2026-10-23 核对。最近终态为远端 `091fd796c496388e04a18689c67868145a5bc586` 的 [CI468](https://github.com/DingJWuyu/Typelay/actions/runs/39904552393)：共享与Linux检查通过，Windows失败，整轮失败。App 756/757，唯一失败为NativeSourceSetup的foreground准备等待；连续场景在ordinary-editor-control-return触发desktop-deadline，但自有练习全链含finish已通过。合作浏览器检查本轮通过，不能据一次未复现关闭此前metadata/Ready根因；正式Notepad接受失败，Hy包生命周期10场景与生产worker 5场景分别通过，前者含普通退出；两组模型质量均未审。终态、日志、App TRX和连续场景原件已重新取得，位于工作区 `artifacts/ci468-current/`；这不恢复旧模型研究原件。Linux新包已按实际产物完成身份、ZIP CRC、gzip EOF、293项清单及README核验，推荐更新为CI468；Windows失败不改变该独立结论。
+本页于 2026-10-23 核对。最近终态为[CI469](https://github.com/DingJWuyu/Typelay/actions/runs/39907614462)（远端 `5d6c5b60ba03b1717885e0a8abed29190305ed76`）：共享通过、Windows失败、Linux按范围跳过，整轮失败。App 755/757，两项失败分别为隔离Notepad正向测试的在途capture与OwnedPracticeQueue源安装迟到；正式Notepad仍在接受提示等待失败。连续场景和浏览器全部7场景通过，Hy包生命周期10场景与生产worker 5场景分别通过，两组质量均未审。实际终态、日志、TRX及场景JSON已取得于工作区 `artifacts/ci469-current/`，不恢复旧模型研究原件。无新Linux包，继续推荐已完整检查及核验的CI468包。
 
 | 对象 | 当前证据 | 结论 |
 | --- | --- | --- |
 | Linux 推荐预览 `091fd796` | CI468 完整 Linux 检查通过；包身份、gzip/ZIP、293 项清单及本包 README 核验通过 | 已交付[下载入口](https://github.com/DingJWuyu/Typelay/actions/runs/39904552393/artifacts/12480483952)；仍需用户真机、物理键盘和输入法体验，不是所有应用验收 |
-| Windows 当前基准 | CI468 App 756/757；foreground准备等待失败。连续场景普通编辑回源超时，自有练习全链通过；合作浏览器通过；正式Notepad接受失败 | 按当前失败边界继续诊断；浏览器一次通过不证明metadata/Ready根因已修，普通生产写能力仍未闭合 |
+| Windows 当前基准 | CI469 App 755/757；隔离Notepad正向在途capture、OwnedPracticeQueue安装迟到失败；连续/浏览器/Hy通过，正式Notepad接受失败 | 两项测试边界按最小候选真实复验；局部通过不证明此前metadata/Ready或回源失败根因已修，普通生产写能力仍未闭合 |
 | Linux 当前候选 | CI468完整Linux检查与当前包身份/293项清单核验通过 | 当前源同帧候选准备本轮真实通过，但前序expected未记录，不能据一次成功断言唯一空候选根因。继续现有安装与稳定性维护，不开可选扩展 |
 | Windows 接受安全 | LL 暂停泄漏原键；CI459 新探针又实测 B-up 清全局 claim 后 A 的旧 repeat 漏出，未覆盖 B 也有尾键缺口 | 普通生产写支持继续关闭；首键/文本事务仍缺必要能力。跨未合作接收者整组尾键保证是工程推导，已向用户提出具体切窗行为问题，未答前不变更合同或门 |
 | 翻译质量 | Hy 三种实际配置及 Q6 包对照仍有保义风险；既试 Qwen 配方无质量放行依据；Argos 新完整两臂各24条已完成，但否定和时长约束仍有错误 | 默认不变，开发集不冒充独立验收集 |
@@ -29,7 +29,7 @@
 | 责任线 | 当前下一动作 | 关闭条件 |
 | --- | --- | --- |
 | Linux 维护 | 推荐468包；GTK4候选准备修正本轮实际通过，继续现有安装/稳定性维护 | 后继实际改动再跑相应检查；真机、物理输入与质量验收不与软件检查混同 |
-| Windows 主开发 | 处理当前foreground准备与普通编辑回源失败；浏览器metadata/Ready前序根因未因本轮通过而关闭；普通接受结构性缺口与待确认尾键产品边界单列 | 当前候选真实交互与退出证据；完整安全条件成立后才讨论普通写支持 |
+| Windows 主开发 | 复验隔离Notepad正向首install后准备相位及源读取4节点诊断；普通接受结构性缺口与待确认尾键产品边界单列 | 当前候选真实交互与退出证据；完整安全条件成立后才讨论普通写支持 |
 | Argos 调优 | 此前报告新环境两臂完整48条与独立保义复核已完成，当前原件缺失待恢复；23/24对文本相同，不采用rep1.0；后续需要新假设，已用holdout不再作未见验收或据其追调 | 不放宽 AS/CPU/线程/期限，失败原件保留；稳定性前缀成功也不能补作完整 A/B，完整比较须另冻结 |
 | Hy 调优 | 此前报告官方 Q6 的实际词表审计、原 4+4 及独立保义复核完成，当前原件缺失待恢复；仍有改义，不采用。后续只按具体保义假设推进，不为增加配置数盲扫 | 原资源门、完整词表/映射与真实输出成立；不宣称纯位宽因果，失败停止 |
 | 替代模型 | 以下为此前报告、原件缺失暂不可独立复核：Qwen3-1.7B 官方非思考采样八句已完成，独立复核有三句严重改义，不采用；Liquid 官方 LFM2.5-1.2B固定8句完成且独立复核仍有2句严重改义，不采用；转查有明确新假设的专用NMT/蒸馏路线及独立验证集 | 固定官方身份、预算与单配方假设后才启动；未下载、未加载不得写成兼容或质量通过 |
@@ -63,14 +63,14 @@ Argos 精确安装合同 → 合法空间准入 → 固定参数采集 ─┐
 
 | 当前问题 | 已知事实与本地动作 | 下一证据与关闭条件 |
 | --- | --- | --- |
-| 前台准备测试等待 | CI468 App其余756项通过；NativeSourceSetup foreground变体在ClickAsync返回后的N.Focused精确等待失败。source visibility的foreground/geometry为true不足以确定焦点失败根因 | 候选仅补原阶段时间与首末焦点分类，已独审及managedCompile/format通过，未验GUI；下一步按原场景真实复验。不改生产、期限或断言，诊断不作修复结论 |
+| 隔离Notepad正向准备相位 | CI469正向测试失败时capture 12仍在途，Pending=1；这是隔离测试边界，不是正式Notepad生产写能力通过或其唯一根因 | 未发布候选在正向首install后仅Refresh、不Tick，并即时断言Pending=0；withdraw分支及生产并发不改。独审、App/Practice/NativeFixture托管Compile与formatter通过，GUI待新CI真实复验 |
 | 回源后的精确源窗口身份 | canonical-root 窄修在CI461原ConfiguredControl六变体通过；普通回源ACK不作新IME证据，后继fresh capture仍须Clear，普通接受继续关闭 | 保留完整原门及回归，不由一次通过宣称所有rawchild路径支持 |
 | 首次展开高度回弹 | CI462 LiveDraft 回归在首次展开严格单调性失败，未走到收起或禁用动画；原 TRX 未含帧高度 | 补原340ms内最多128组 Render 前后公开几何；原中间尺寸数量、单调与草稿/焦点/undo 断言不变，未宣称修复 |
-| 浏览器扩展元数据发现 | CI467 targets6/workers3/candidates2/metadataRead1/matching0；第一候选可读但manifest不匹配，第二候选evaluate有响应但JS异常或无value未区分。未到Ready，无App trace | 分类器只读取原响应，最多32条enum/boolean/严格className白名单；原attach/evaluate/detach、身份判定和截止不变。本地Contracts105项与DesktopFixture Compile通过，CI468浏览器全部7场景通过，metadata与Ready旧失败本轮未复现，不声称前序异常根因已修 |
-| 合作浏览器direct可用性等待 | CI466 automatic Tab写入通过；direct-selection输入准备已完成但尚未按快捷键，30秒Ready等待失败。续期ACK迟到后退休，NoRefresh持续；General160条预算已耗尽，无法恢复完整input时序 | 同总256配额为input/owner/command保留记录，源计数不冒称已授权生命周期，ACK ingress到UI年龄仅诊断。Wire/FIFO/RPC屏障/授权期限和原输入次数不改；CI468浏览器检查通过，前序Ready失败原因仍未唯一定位 |
-| 自有练习通过、普通编辑回源失败 | CI468自有练习全链含finish通过，保存/关闭/磁盘回读均true；随后ordinary-editor-control-return超时。完整trace确认回源后有新capture、EditedTranslationPending/focusSource、长度62，但不足以证明FreshSource/Ready/草稿相等组合谓词成立；freshAfterReturn默认false不能解释成没有新capture或稿丢失 | 候选仅补原Focus等待及原组合谓词首末短路值投影，未求值为null；原查询数/顺序/token/期限/断言不变。增量独审、managedCompile/format通过，下一步本候选真实复验，未验GUI，不宣称修复 |
-| 切换与退出的保留诊断 | Hy 在CI465完整链通过，normalQuit/exitCode0/allModelWorkersExited 均为真；CI468 Hy包生命周期10场景与生产worker 5场景分别通过；包生命周期ordinary-exit原JSON确认normalQuit=true、exitCode=0、allModelWorkersExited=true，质量not-reviewed | 原单次失败诊断、全部清理异常和回归保留，不单为等待复现重复运行；新失败再按实际首因推进 |
-| 正式 Notepad 的接受能力缺失 | 候选已完成、IME Clear、源焦点有效，但普通生产源持续 WriteSupported=false；此前90s正向门失败；CI468正式Notepad已运行，preflight/设置模型/预览通过，接受与撤销失败，后续场景未运行；原JSON为await-public-acceptance-cue等待90秒deadline，最后仍为preview-only、acceptanceCueCount=0，能力缺口仍在 | 真正实现且证明源接受安全后，原正向门才能通过；不能用“预览可见”代替接受成功 |
+| 浏览器扩展元数据发现 | CI467 targets6/workers3/candidates2/metadataRead1/matching0；第一候选可读但manifest不匹配，第二候选evaluate有响应但JS异常或无value未区分。未到Ready，无App trace | 分类器只读取原响应，最多32条enum/boolean/严格className白名单；原attach/evaluate/detach、身份判定和截止不变。本地Contracts105项与DesktopFixture Compile通过，CI469浏览器全部7场景通过，metadata与Ready旧失败本轮未复现，不声称前序异常根因已修 |
+| 合作浏览器direct可用性等待 | CI466 automatic Tab写入通过；direct-selection输入准备已完成但尚未按快捷键，30秒Ready等待失败。续期ACK迟到后退休，NoRefresh持续；General160条预算已耗尽，无法恢复完整input时序 | 同总256配额为input/owner/command保留记录，源计数不冒称已授权生命周期，ACK ingress到UI年龄仅诊断。Wire/FIFO/RPC屏障/授权期限和原输入次数不改；CI469浏览器检查通过，前序Ready失败原因仍未唯一定位 |
+| 自有源安装时序与普通回源 | CI469连续场景整体通过，不能倒推CI468普通编辑回源超时根因；App OwnedPracticeQueue的allowInjectedInput=false变体在原100ms门内未安装，迟到记录mappingOpened至planRead相隔56ms | 候选只增源读取copy/deserialize/zero/validate四节点有界trace；TTL、协议、规则及原断言不改。独审与托管Compile/formatter通过，下一步本候选真实复验，不把诊断当修复 |
+| 切换与退出的保留诊断 | Hy 在CI465完整链通过，normalQuit/exitCode0/allModelWorkersExited 均为真；CI469 Hy包生命周期10场景与生产worker 5场景分别通过；包生命周期ordinary-exit原JSON确认normalQuit=true、exitCode=0、allModelWorkersExited=true，质量not-reviewed | 原单次失败诊断、全部清理异常和回归保留，不单为等待复现重复运行；新失败再按实际首因推进 |
+| 正式 Notepad 的接受能力缺失 | 候选已完成、IME Clear、源焦点有效，但普通生产源持续 WriteSupported=false；此前90s正向门失败；CI469正式Notepad已运行，preflight/设置模型/预览通过，接受与撤销失败，后续场景未运行；原JSON为await-public-acceptance-cue等待90秒deadline，最后仍为preview-only、acceptanceCueCount=0，能力缺口仍在 | 真正实现且证明源接受安全后，原正向门才能通过；不能用“预览可见”代替接受成功 |
 | 通用源按键边界 | CI459 completion/deadline 为局部机制通过；queue-order 的 clear-on-up 为 observed_counterexample，A 旧 repeat 漏出；retain 分支按预案未运行。focus-tail 未覆盖 B 有真实缺口 | 现有 LL/UIA 缺同一真实输入事件的消费与写事务边界；自有 Practice 的源泵可提供局部见证，但无法覆盖未合作 B 的尾键。未找到现有接入范围内满足完整合同的下一路线；普通写继续关闭，不重复无具体算法的探针。新增源端接入需独立方案与授权，缩小产品目标须用户明确决定；TSF/线程 Hook 不是现成保证。主动切窗后尾键如何交付的产品问题待用户答复，不把增强故障模型冒称规格逐字要求 |
 
 CI458 的“仅预览”公开 WPF 回归已通过，Notepad 最后公开观察也是一条 preview-only、零 acceptance cue；UI 误导已修，不等于写能力已修。Unknown 在 CI462 的失败已取得明确 sent-work 类型，已补可区分在途 RPC 的证据，三项记录回归在 CI463 通过，CI464重叠证据已推动测试准备相位隔离，CI465通过但仍不移除原拒绝门。连续翻译和合作浏览器的既有通过不补作其它场景证据。源线程局部探针不是通用输入框支持；不得重定义“认领”来抹掉既有尾键消费契约。
@@ -89,7 +89,7 @@ CI458 的“仅预览”公开 WPF 回归已通过，Notepad 最后公开观察�
 - **替代模型的现役判据**：已试 Qwen 配方没有采用依据，原响应此前报告存于忽略目录、当前不可读，不在本页保留关闭试验流水。新调研确认 Liquid 官方 LFM2.5-1.2B Instruct Q8 有目标语言及固定 runtime 的源级路径，其自定义许可证也不能冒称 Apache；用户已确认本人独立开发者符合收入门槛；固定官方Q8在补严采集器尾段输出上限并重新独审后，原8句全部真实完成，资源/退出/词表EOG门成立。独立非盲复核2严重、2较小、1未决、3未见重大，不采用，不据8条已见诊断句宣称产品质量；商业发行的许可/notice条款另行核对。此前只回收可重新下载的权重缓存并保留译文/token/资源/源码/审查，当前研究原件暂不可读。Qwen3-1.7B 原完整提示的官方非思考采样准备已通过独立审查，旧权重缓存已回收，已完成新下载、静态核包及执行前双审，固定八句已真实 EOG 完成且资源/退出门通过；独立非盲复核为三句严重、一句较小、两句歧义、两句未见实质错误，不采用；完成后曾报告仅回收可重新下载的权重缓存、保留输出/运行时/审查，当前研究原件暂不可读；官方禁用 greedy 的原句只针对 thinking，不否定旧非思考结果。Qwen3.5-0.8B 未找到模型发布方官方 GGUF，不用第三方转换顶替；官方源转换仅证实源码路径存在，缺依赖且未证明预算内峰值，未进入转换。
 - **其余方向**：MADLAD 初始化已核超出现预算；M2M100 的 CT2 支持不代表转换峰值可控，现无已证明的预算内转换路径；TranslateGemma4B 暂缓资源与条款核查。未实测的候选不写成质量失败。协议见[测试方法](testing.md)，共同要求见[产品缺口](../product/README.md#当前共同开发缺口)。
 
-模型下一步以可证伪假设为准：32条现有独立诊断任务（Argos24、Hy/Qwen/Liquid共用8）保留回归；新增24条合成日常开发数据已通过独立agent双语/结构预检并准备，尚无模型输出；恢复树已核可读56条输入：`alternative_quality_inputs.json` 16条、`argos_repetition_holdout.json` 8条、`styled_quality_inputs.json` 与 `styled_quality_holdout_inputs.json` 各4条、`ordinary_daily_inputs.json` 24条，均在 `tests/shared/worker/`；Qwen/LFM当次执行副本与输出/监督仍不可复核。输入可读不等于已评56条或执行证据已恢复。新的16条最终验证尚未创建，待候选配置冻结后独立编制；日常覆盖与风险挑战分开，不将agent复核冒称专业译者盲评。调研已确认小客户端可依赖云端，专用NMT可用蒸馏/数据训练实现端侧；这些只支持候选筛选，不证明同资源预算内可用。Mozilla中英有向小模型与OPUS旧对照仅完成官方身份/许可/方向初筛；此前Mozilla固定源码、局部工具及整请求192拒绝补丁已报告准备，独审曾指出CMake自动submodule路径与stdout完成检查缺口；其后未发布的5文件补丁和33项测试原件现已不可读，不能用摘要确认修正或测试通过。构建授权已暂停，构建从未执行；恢复或重新形成源码后须重新冻结复审，并取得授权。未下载权重、未推理。未经明确产品决策不扩大预算、上传文本或启用云端。
+模型下一步以可证伪假设为准：32条现有独立诊断任务（Argos24、Hy/Qwen/Liquid共用8）保留回归；新增24条合成日常开发数据已通过独立agent双语/结构预检并准备，尚无模型输出；恢复树已核可读56条输入：`alternative_quality_inputs.json` 16条、`argos_repetition_holdout.json` 8条、`styled_quality_inputs.json` 与 `styled_quality_holdout_inputs.json` 各4条、`ordinary_daily_inputs.json` 24条，均在 `tests/shared/worker/`；Qwen/LFM当次执行副本与输出/监督仍不可复核。输入可读不等于已评56条或执行证据已恢复。新的16条最终验证尚未创建，待候选配置冻结后独立编制；日常覆盖与风险挑战分开，不将agent复核冒称专业译者盲评。调研已确认小客户端可依赖云端，专用NMT可用蒸馏/数据训练实现端侧；这些只支持候选筛选，不证明同资源预算内可用。Mozilla中英有向小模型与OPUS旧对照仅完成官方身份/许可/方向初筛；此前Mozilla固定源码、局部工具及整请求192拒绝补丁已报告准备，独审曾指出CMake自动submodule路径与stdout完成检查缺口；其后未发布的5文件补丁和33项测试原件现已不可读，不能用摘要确认修正或测试通过。旧丢失补丁阶段未执行构建；当前另行冻结并审查的新2文件构建输入已执行唯一受监督构建并按截止停止。`artifacts/translation-products-research/mozilla-build-inputs-current/` 的实际configure输出、生成命令及 `execution-current/result.json` 可读；构建约82%触共享截止，日志无编译stderr不等于构建成功。准备README/plan的“尚未执行”描述是启动前冻结内容，不作为实时状态。复制/核验/configure/唯一build共享600秒，configure最多60秒、parallel1、两核affinity、AS 2.5GiB、清理最多7秒、0重试；本轮未形成构建成功或192运行时保护、模型兼容、质量准入证据。新的1200秒工具构建续段仅准备中，尚未执行；须以新冻结输入与独立授权/审查准入，不覆盖旧600秒失败，也不扩大模型请求60秒/总600秒预算。未下载权重，未运行CLI或模型。未经明确产品决策不扩大预算、上传文本或启用云端。
 
 ## 每条线都要做的维护
 
