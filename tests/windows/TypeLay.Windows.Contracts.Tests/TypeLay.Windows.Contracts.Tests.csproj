@@ -10,6 +10,7 @@
     <Compile Include="../../../src/windows/shared/WindowsInterruptClock.cs" Link="WindowsInterruptClock.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/BrowserExtensionMetadataResponse.cs" Link="BrowserExtensionMetadataResponse.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/BrowserPageOpenResponse.cs" Link="BrowserPageOpenResponse.cs" />
+    <Compile Include="../fixtures/TypeLay.DesktopFixture/HyPackageDirections.cs" Link="HyPackageDirections.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/OwnedConfirmationDialog.cs" Link="OwnedConfirmationDialog.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/OrdinaryApplicationCleanup.cs" Link="OrdinaryApplicationCleanup.cs" />
     <ProjectReference Include="../../../src/windows/TypeLay.Windows.Contracts/TypeLay.Windows.Contracts.csproj" />

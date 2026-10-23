@@ -574,24 +574,21 @@ public sealed class ModelClient : ITranslationService, IDisposable
         if (hello.Packages is not null)
             connection.VerifiedIdentity = new(plan);
         connection.Directions = Array.AsReadOnly(hello.Directions!.ToArray());
+        AdvancedTranslationScope? scope = hello.StyledTranslationVersion is not null || hello.GlossaryTranslationVersion is not null
+            ? new(plan.ActivePackages.SelectMany(item => item.Directions), hello.AdvancedTranslationDirections ?? plan.Directions)
+            : null;
         if (hello.StyledTranslationVersion == 1)
-            connection.StyledTranslationCapability = new(connection.Admission);
+            connection.StyledTranslationCapability = new(connection.Admission, scope);
         if (hello.GlossaryTranslationVersion == 1)
-            connection.GlossaryTranslationCapability = new(connection.Admission);
+            connection.GlossaryTranslationCapability = new(connection.Admission, scope);
         if (hello.StyledGlossaryTranslationVersion == 1)
-            connection.StyledGlossaryTranslationCapability = new(connection.Admission);
+            connection.StyledGlossaryTranslationCapability = new(connection.Admission, scope);
         return connection;
     }
     private static void ValidateHello(ModelLoadPlan plan, ModelResponse hello)
     {
         if (hello.Status != "ready")
             throw new IOException("model-hello-status");
-        // The candidate English extension has no advanced operations. Until the
-        // protocol has direction-scoped capabilities, do not accept a package-wide claim.
-        if (plan.UsesHy && plan.Directions.Any(direction => direction is "zh_en" or "en_zh")
-            && (hello.StyledTranslationVersion is not null || hello.GlossaryTranslationVersion is not null
-                || hello.StyledGlossaryTranslationVersion is not null))
-            throw new IOException("model-hello-capabilities");
         if (hello.StyledTranslationVersion is { } styledVersion && (styledVersion != 1 || !plan.UsesHy))
             throw new IOException("model-hello-capabilities");
         if (hello.GlossaryTranslationVersion is { } glossaryVersion && (glossaryVersion != 1 || !plan.UsesHy))
@@ -603,6 +600,22 @@ public sealed class ModelClient : ITranslationService, IDisposable
             || directions.Distinct(StringComparer.Ordinal).Count() != directions.Length
             || !directions.ToHashSet(StringComparer.Ordinal).SetEquals(plan.Directions))
             throw new IOException("model-hello-directions");
+        bool advanced = hello.StyledTranslationVersion is not null || hello.GlossaryTranslationVersion is not null
+            || hello.StyledGlossaryTranslationVersion is not null;
+        if (hello.AdvancedTranslationDirections is { } scope)
+        {
+            if (!advanced || !plan.UsesHy || scope.Length == 0 || scope.Any(string.IsNullOrEmpty)
+                || scope.Distinct(StringComparer.Ordinal).Count() != scope.Length
+                || scope.Any(direction => !plan.Directions.Contains(direction, StringComparer.Ordinal)))
+                throw new IOException("model-hello-capabilities");
+            // This optional scope cannot grant new native operations. Only the
+            // unchanged ABI5 twelve-direction lock supplies advanced pairs.
+            var native = ModelCatalog.DefaultInstallationDirections(plan.ActivePackages.Single().Package);
+            if (scope.Any(direction => !native.Any(item => item.Id == direction)))
+                throw new IOException("model-hello-capabilities");
+        }
+        else if (advanced && plan.Directions.Any(direction => direction is "zh_en" or "en_zh"))
+            throw new IOException("model-hello-capabilities");
         if (plan.InventorySchema != 3 && hello.Packages is null)
             return;
         if (hello.Packages is not { Length: > 0 } packages || packages.Length != plan.ActivePackages.Count)
@@ -727,11 +740,15 @@ public sealed class ModelClient : ITranslationService, IDisposable
             if (_disposed || _active is null || _operation is not null
                 || expectedIdentity is not null && !ReferenceEquals(expectedIdentity, _active.VerifiedIdentity))
                 return new(0, "error", Code: "not-ready");
-            if (request.Op == "translate-styled-glossary-v1" && (!_active.Plan.UsesHy || _active.StyledGlossaryTranslationCapability is null))
+            var direction = new LanguageDirection(request.Source, request.Target);
+            if (request.Op == "translate-styled-glossary-v1" && (!_active.Plan.UsesHy
+                || _active.StyledGlossaryTranslationCapability?.Supports(direction) != true))
                 return new(0, "error", Code: "glossary-combination-unavailable");
-            if (request.Op == "translate-glossary-v1" && (!_active.Plan.UsesHy || _active.GlossaryTranslationCapability is null))
+            if (request.Op == "translate-glossary-v1" && (!_active.Plan.UsesHy
+                || _active.GlossaryTranslationCapability?.Supports(direction) != true))
                 return new(0, "error", Code: "glossary-unavailable");
-            if (request.Op == "translate-styled-v1" && !_active.Plan.UsesHy)
+            if (request.Op == "translate-styled-v1" && (!_active.Plan.UsesHy
+                || _active.StyledTranslationCapability?.Supports(direction) != true))
                 return new(0, "error", Code: "style-unavailable");
             if (request.Op == "translate-alternative" && _active.Plan.UsesHy)
                 return new(0, "error", Code: "alternative-unavailable");
@@ -756,6 +773,8 @@ public sealed class ModelClient : ITranslationService, IDisposable
             try
             {
                 var response = await ExchangeAsync(connection, request, TimeSpan.FromSeconds(90), CancellationToken.None);
+                if (response.AdvancedTranslationDirections is not null)
+                    throw new IOException("model-translation-response");
                 if (request.Op is "translate-alternative" or "translate-styled-v1" or "translate-glossary-v1" or "translate-styled-glossary-v1")
                 {
                     lock (_owner)

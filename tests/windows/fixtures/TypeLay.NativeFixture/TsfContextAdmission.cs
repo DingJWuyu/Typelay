@@ -5,7 +5,7 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 // Stage one only: query the existing TSF objects of this fixture's own stock Edit.
 // No activation, context creation, sink, message-pump replacement or edit session.
 [SupportedOSPlatform("windows")]
-internal static class TsfContextAdmission
+internal static partial class TsfContextAdmission
 {
     internal const uint ObserveMessage = 0x8090;
 
@@ -230,9 +230,9 @@ internal static class TsfContextAdmission
     [ComImport, Guid("aa80e7fd-2021-11d2-93e0-0060b067b86e"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface ITfContext
     {
-        [PreserveSig] int RequestEditSession(uint client, nint session, uint flags, out int result);
+        [PreserveSig] int RequestEditSession(uint client, ITsfProbeEditSession session, uint flags, out int result);
         [PreserveSig] int InWriteSession(uint client, out int writing);
-        [PreserveSig] int GetSelection(uint cookie, uint index, uint count, nint selection, out uint fetched);
+        [PreserveSig] int GetSelection(uint cookie, uint index, uint count, out Selection selection, out uint fetched);
         [PreserveSig] int SetSelection(uint cookie, uint count, nint selection);
         [PreserveSig] int GetStart(uint cookie, out nint range);
         [PreserveSig] int GetEnd(uint cookie, out nint range);

@@ -1027,7 +1027,18 @@ def copy_runtime(source, destination, plan, *, limit=None):
             "-I",
             "-B",
             "-c",
-            "import json,sys,ctranslate2,sentencepiece; print(json.dumps({'prefix':sys.prefix,'basePrefix':sys.base_prefix,'dependencies':[ctranslate2.__file__,sentencepiece.__file__]}))",
+            # Native imports and teardown can write directly to fd 1. Reserve
+            # one JSON stream before importing, and never restore stdout.
+            "import json,os,sys\n"
+            "os.fstat(2)\n"
+            "output=os.fdopen(os.dup(1),'w',encoding='utf-8')\n"
+            "os.set_inheritable(output.fileno(),False)\n"
+            "os.dup2(2,1)\n"
+            "sys.stdout=sys.stderr\n"
+            "import ctranslate2,sentencepiece\n"
+            "with output:\n"
+            " output.write(json.dumps({'prefix':sys.prefix,'basePrefix':sys.base_prefix,"
+            "'dependencies':[ctranslate2.__file__,sentencepiece.__file__]}))\n",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

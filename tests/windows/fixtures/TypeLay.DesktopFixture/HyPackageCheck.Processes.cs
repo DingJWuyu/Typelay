@@ -204,6 +204,8 @@ internal static partial class HyPackageCheck
             lock (_gate)
                 return _workers.TryGetValue(pid, out var worker) && ProcessImage.Exited(worker.Process.SafeHandle);
         }
+        public long StartTimeUtcTicks(int pid) => Guard(() => _workers[pid].Process.StartTime.ToUniversalTime().Ticks);
+
         public string GenerationRoot(int pid)
         {
             lock (_gate)

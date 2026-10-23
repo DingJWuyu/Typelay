@@ -20,7 +20,7 @@ namespace TypeLay.App.Tests;
 // transaction wire. Both run against separate-process, unmodified system Edit
 // controls. The wire cases isolate GUI-thread guards from Broker preflight.
 [Collection("Desktop")]
-public sealed class ProductionForegroundWriteTests
+public sealed partial class ProductionForegroundWriteTests
 {
     [Fact]
     public async Task NativeReturnRejectsTheOriginalBindingAfterCookieLossBeforeMovingFocus()

@@ -244,12 +244,67 @@ class HyContractTests(unittest.TestCase):
         self.assertEqual(replies[3]["code"], "language-unavailable")
         self.assertEqual(self.english_calls, [13, 14])
         self.assertEqual((self.opened, self.closed), (1, 1))
+        self.assertNotIn("advancedTranslationDirections", replies[0])
         for key in (
             "styledTranslationVersion",
             "glossaryTranslationVersion",
             "styledGlossaryTranslationVersion",
         ):
             self.assertNotIn(key, replies[0])
+
+    def test_candidate_english_preserves_selected_original_advanced_operations(self):
+        self.candidate_english(["zh_ja", "ja_zh", "zh_en", "en_zh"])
+        self.verified["styled_glossary"] = True
+        self.output_text = "固定"
+        combined = self.combined_request()
+        status, replies = self.run_worker(
+            [
+                {key: value for key, value in combined.items() if key != "glossary"}
+                | {"op": "translate-styled-v1"},
+                {key: value for key, value in combined.items() if key != "style"}
+                | {"op": "translate-glossary-v1"},
+                combined,
+            ]
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(replies[0]["advancedTranslationDirections"], ["zh_ja", "ja_zh"])
+        for key in (
+            "styledTranslationVersion",
+            "glossaryTranslationVersion",
+            "styledGlossaryTranslationVersion",
+        ):
+            self.assertEqual(replies[0][key], 1)
+        self.assertEqual([reply["text"] for reply in replies[1:]], ["固定"] * 3)
+        self.assertEqual(self.english_calls, [])
+
+    def test_candidate_advanced_auto_requires_every_selected_source_for_its_target(self):
+        self.candidate_english(["zh_ja", "ja_zh", "zh_en", "en_zh"])
+        self.verified["styled_glossary"] = True
+        self.output_text = "固定"
+        for operation, rejected in (
+            ("translate-styled-v1", "style-unavailable"),
+            ("translate-glossary-v1", "glossary-unavailable"),
+            ("translate-styled-glossary-v1", "glossary-combination-unavailable"),
+        ):
+            with self.subTest(operation=operation):
+                request = self.combined_request(op=operation)
+                if operation == "translate-styled-v1":
+                    request.pop("glossary")
+                if operation == "translate-glossary-v1":
+                    request.pop("style")
+                _, replies = self.run_worker(
+                    [
+                        {**request, "source": "auto", "target": "zh"},
+                        {**request, "source": "auto", "target": "ja"},
+                    ],
+                    detected=lambda text: "zh",
+                )
+                self.assertEqual(
+                    (replies[1]["status"], replies[1]["code"], replies[1]["text"]),
+                    ("error", rejected, ""),
+                )
+                self.assertEqual(replies[2]["text"], "固定")
+        self.assertEqual(self.english_calls, [])
 
     def test_candidate_english_requires_verified_capability_and_actual_export(self):
         for missing in ("manifest", "symbol"):
@@ -281,6 +336,7 @@ class HyContractTests(unittest.TestCase):
             self.assertEqual(replies[0][key], 1)
         self.assertEqual(replies[1]["code"], "language-unavailable")
         self.assertEqual(self.english_calls, [])
+        self.assertNotIn("advancedTranslationDirections", replies[0])
         self.assertEqual((self.opened, self.closed), (1, 1))
 
     def test_candidate_english_refuses_advanced_operations_even_with_no_matching_glossary(self):
@@ -316,7 +372,7 @@ class HyContractTests(unittest.TestCase):
             "glossaryTranslationVersion",
             "styledGlossaryTranslationVersion",
         ):
-            self.assertNotIn(key, replies[0])
+            self.assertEqual(replies[0][key], 1)
 
     def test_candidate_english_keeps_limits_and_eog_failure_closed(self):
         self.candidate_english()

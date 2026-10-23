@@ -837,6 +837,40 @@ class PackageInstallationTests(unittest.TestCase):
                 interpreter.write_bytes(original)
                 interpreter.chmod(0o700)
 
+    def test_dependency_diagnostics_do_not_corrupt_offline_runtime_preparation(self):
+        runtime = self.old / "runtime"
+        interpreter = runtime / "python/bin/python3.13"
+        # Run the actual probe code in a real process. Only dependency imports
+        # and the relocatable interpreter identity are controlled here.
+        interpreter.write_text(
+            "#!/usr/bin/python3\nimport sys\nfrom pathlib import Path\n"
+            "r=Path(sys.argv[0]).parents[2]\n"
+            "sys.prefix=str(r/'venv');sys.base_prefix=str(r/'python')\n"
+            "sys.path.insert(0,str(r/'venv/dependencies'))\n"
+            "exec(sys.argv[-1])\n"
+        )
+        dependencies = runtime / "venv/dependencies"
+        dependencies.mkdir()
+        noisy = (
+            "import atexit,ctypes,os\n"
+            "os.write(1,b'native import diagnostic\\n')\n"
+            "print('python import diagnostic')\n"
+            "ctypes.CDLL(None).puts(b'buffered native diagnostic')\n"
+            "atexit.register(os.write,1,b'native shutdown diagnostic\\n')\n"
+        )
+        for module in ("ctranslate2", "sentencepiece"):
+            (dependencies / (module + ".py")).write_text(noisy)
+        before = (self.old / "models/installed.json").read_bytes()
+        candidate = self.prepare(self.request(active=self.inventory["activePackages"]))
+        prepared = json.loads((candidate / "models/installed.json").read_text())
+        self.assertEqual(prepared["packages"], self.inventory["packages"])
+        self.assertEqual(prepared["activePackages"], self.inventory["activePackages"])
+        self.assertEqual((self.old / "models/installed.json").read_bytes(), before)
+        self.assertEqual(os.readlink(self.old.parent / "current"), self.old.name)
+        # Routing diagnostics away is not permission to accept foreign dependencies.
+        (dependencies / "sentencepiece.py").write_text(noisy + "__file__='/usr/bin/python3'\n")
+        self.prepare(self.request(), success=False)
+
     def test_runtime_permission_failure_does_not_trigger_network_rebuild(self):
         self.assume_space_for_controlled_package_operation()
         (self.old / "runtime/python/bin/python3.13").chmod(0o600)

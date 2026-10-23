@@ -38,6 +38,13 @@ internal static class Program
             _tsfContextAdmission = true;
             return TsfContextAdmission.RunSta(RunTsfAdmissionWindows);
         }
+        if (args.Length == 3 && args[0] == "--stock-controls" && args[1] == "--tsf-key-routing"
+            && args[2] is "Tab" or "End")
+        {
+            _tsfContextAdmission = true;
+            _tsfProbeKey = args[2] == "Tab" ? 9u : 0x23u;
+            return TsfContextAdmission.RunSta(RunTsfAdmissionWindows);
+        }
         bool hookTest = args.Length == 1 && args[0] is "--hook-test" or "--hook-test-automation";
         bool ownedControls = (args.Length == 4 || args.Length == 5) && args[0] == "--owned-controls"
             && Path.IsPathFullyQualified(args[1]) && Guid.TryParse(args[2], out _ownedConnection)
@@ -72,6 +79,9 @@ internal static class Program
     private static string? _sourceSynchronousPath;
     private static bool _tsfContextAdmission;
     private static int _tsfFocusVersion, _tsfObservations;
+    private static uint _tsfProbeKey;
+    private static TsfContextAdmission.KeyProbe? _tsfKeyProbe;
+    private static bool _tsfKeyResultWritten, _tsfCloseRequested;
     private static bool _sourceKeyboardProbeEnabled;
     private static SourceKeyboardProbe? _sourceKeyboardProbe;
     private static string? _ownedPath;
@@ -125,6 +135,7 @@ internal static class Program
         }
         finally
         {
+            CloseTsfKeyProbe();
             // Covers startup failures as well as the message loop. The stock
             // controls must be destroyed before RunSta balances COM ownership.
             if (_root != 0 && N.IsWindow(_root))
@@ -133,6 +144,32 @@ internal static class Program
                 if (!N.DestroyWindow(_root))
                     throw new InvalidOperationException("TSF fixture window cleanup failed.");
             }
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void CloseTsfKeyProbe()
+    {
+        if (_tsfKeyProbe is null || _tsfKeyResultWritten)
+            return;
+        bool clean = _tsfKeyProbe.Close();
+        _tsfKeyResultWritten = true;
+        try
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new
+            {
+                phase = "closed",
+                result = _tsfKeyProbe.Result
+            }));
+            Console.Out.Flush();
+        }
+        finally
+        {
+            // Unadvise failure means the CCW may still be callable. Keep all
+            // strong references and stop this owned process even if evidence
+            // output fails; never unload COM beneath a potentially live sink.
+            if (!clean)
+                Environment.Exit(2);
         }
     }
 
@@ -243,6 +280,12 @@ internal static class Program
                     N.TranslateMessage(ref message);
                     N.DispatchMessage(ref message);
                 }
+                _tsfKeyProbe?.AfterDispatch(dispatched);
+                if (_tsfCloseRequested)
+                {
+                    _tsfCloseRequested = false;
+                    N.PostMessage(_root, 0x0010, 0, 0);
+                }
                 _sourceKeyboardProbe?.Dispatch(dispatched, after: true);
                 sourceReentry?.ObserveDispatchedInput(dispatched);
                 if (dispatchProbe)
@@ -304,6 +347,15 @@ internal static class Program
     [SupportedOSPlatform("windows")]
     private static nint RootWindowProc(nint hwnd, uint message, nuint wParam, nint lParam)
     {
+        if (_tsfProbeKey != 0 && message == 0x0010) // WM_CLOSE, outside any TSF callback.
+        {
+            if (_tsfKeyProbe?.ComOperationActive == true)
+            {
+                _tsfCloseRequested = true;
+                return 0;
+            }
+            CloseTsfKeyProbe();
+        }
         if (message == 0x0002)
         {
             N.PostQuitMessage(0);
@@ -320,7 +372,33 @@ internal static class Program
         {
             _lastFocusedField = lParam; // EN_SETFOCUS
             if (_tsfContextAdmission)
+            {
                 _tsfFocusVersion++;
+                _tsfKeyProbe?.FocusChanged();
+            }
+        }
+        if (_tsfProbeKey != 0 && message == TsfContextAdmission.BeginKeyMessage
+            && _tsfKeyProbe is null && StockFields.Contains((nint)wParam) && lParam == 0)
+        {
+            _tsfKeyProbe = new(_root, (nint)wParam, _tsfProbeKey, () => _tsfFocusVersion);
+            _tsfKeyProbe.Begin();
+            Console.WriteLine(JsonSerializer.Serialize(new
+            {
+                phase = "begun",
+                result = _tsfKeyProbe.Result
+            }));
+            Console.Out.Flush();
+            return 1;
+        }
+        if (_tsfProbeKey != 0 && message == TsfContextAdmission.KeyProgressMessage && _tsfKeyProbe is not null)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new
+            {
+                phase = "progress",
+                inputUpObserved = _tsfKeyProbe.Result.InputUpObserved
+            }));
+            Console.Out.Flush();
+            return 1;
         }
         if (_tsfContextAdmission && message == TsfContextAdmission.ObserveMessage
             && ++_tsfObservations <= 4 && StockFields.Contains((nint)wParam) && lParam == 0)
@@ -333,7 +411,10 @@ internal static class Program
         if (_tsfContextAdmission && message == 0x0113 && wParam == 4)
         {
             KillTimer(_root, 4);
-            N.DestroyWindow(_root);
+            if (_tsfProbeKey != 0)
+                N.PostMessage(_root, 0x0010, 0, 0);
+            else
+                N.DestroyWindow(_root);
             return 0;
         }
         if (message == 0x0007 && _lastFocusedField != 0 && N.IsWindow(_lastFocusedField))

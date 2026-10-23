@@ -13,9 +13,9 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 // a translator, nor uses the stage-1 audit/NDJSON worker.
 internal static partial class HyPackageCheck
 {
-    private const string HyId = "hy-mt2-1-8b-q4-k-m";
-    private const string HyVersion = "a0c709d9fac510f2c807aa3af52872340dc37a4a";
-    private static readonly string[] HyDirections = ["zh_ja", "ja_zh", "zh_ko", "ko_zh", "zh_fr", "fr_zh", "zh_es", "es_zh", "zh_de", "de_zh", "zh_pt", "pt_zh"];
+    private const string HyId = HyPackageDirections.PackageId;
+    private const string HyVersion = HyPackageDirections.Version;
+    private static readonly string[] HyDirections = HyPackageDirections.Original.ToArray();
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
     private sealed class Scene(string name)
     {
@@ -71,7 +71,12 @@ internal static partial class HyPackageCheck
         {
             get; set;
         }
-        public Scene[] Scenes { get; } = names.Select(name => new Scene(name)).ToArray();
+        public List<Scene> Scenes { get; } = names.Select(name => new Scene(name)).ToList();
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? EnglishAcceptance
+        {
+            get; set;
+        }
         public List<string> CleanupErrors { get; } = [];
         public string Quality => "not-reviewed";
         public async Task Phase(string name, Func<Scene, Task> action)
@@ -104,7 +109,8 @@ internal static partial class HyPackageCheck
         }
         public async Task<int> Save(string directory)
         {
-            Outcome = Scenes[0].Name.EndsWith("prerequisite", StringComparison.Ordinal) && Scenes[0].Outcome != "passed" ? "not-run"
+            Outcome = EnglishAcceptance == "catalog-rejected" ? "failed"
+                : Scenes[0].Name.EndsWith("prerequisite", StringComparison.Ordinal) && Scenes[0].Outcome != "passed" ? "not-run"
                 : !OperationDeadlineReached && Scenes.All(scene => scene.Outcome == "passed") && CleanupErrors.Count == 0 ? "passed" : "failed";
             await File.WriteAllTextAsync(Path.Combine(directory, "result.json"), JsonSerializer.Serialize(this, Json));
             Console.WriteLine($"{Suite}: {Outcome}; {string.Join(", ", Scenes.Select(scene => scene.Name + "=" + scene.Outcome))}");

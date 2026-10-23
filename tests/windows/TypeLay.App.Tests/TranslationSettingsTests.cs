@@ -421,6 +421,56 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         Assert.Null(scene.Reload().Styles);
     });
 
+    [Fact]
+    public Task CandidateEnglishDisablesStyleChangesButKeepsSavedChoiceAndRecoveryControls() => desktop.RunAsync(async () =>
+    {
+        using var scene = new SettingsScene(new(Source: "zh", Target: "ja",
+            Styles: new(TranslationStyle.Formal, new Dictionary<string, TranslationStyle> { ["saved.app"] = TranslationStyle.Natural }),
+            Glossary: new(1, [new("PR", "pull request", "zh", "en")])), released: true);
+        scene.Window.ShowPage("translation");
+        await scene.StartStyleModelAsync(englishCandidate: true);
+        var choice = Named<ComboBox>(scene.Window, "默认翻译风格");
+        Assert.True(choice.IsEnabled);
+        Assert.Null(choice.ToolTip);
+        Assert.Empty(AutomationProperties.GetHelpText(choice));
+        scene.Settings.Update(scene.Settings.Value with
+        {
+            Target = "en"
+        });
+        Assert.False(choice.IsEnabled);
+        Assert.Equal("当前模型或语言设置不支持翻译风格。", choice.ToolTip);
+        Assert.Equal(choice.ToolTip, AutomationProperties.GetHelpText(choice));
+        Assert.True(ToolTipService.GetShowOnDisabled(choice));
+        Assert.Equal(1, choice.SelectedIndex);
+        Assert.Equal("style-unavailable", scene.Controller.GetStyleSettingsState().UnavailableReason);
+        Assert.Equal(TranslationStyle.Formal, scene.Reload().Styles!.Default);
+        scene.Settings.Update(scene.Settings.Value with
+        {
+            Target = "ja"
+        });
+        Assert.True(choice.IsEnabled);
+        Assert.Null(choice.ToolTip);
+        Assert.Empty(AutomationProperties.GetHelpText(choice));
+        scene.Settings.Update(scene.Settings.Value with
+        {
+            Target = "en"
+        });
+        var remove = Named<Button>(scene.Window, "移除风格覆盖 saved.app");
+        Assert.True(remove.IsEnabled);
+        remove.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Empty(scene.Reload().Styles!.Applications!);
+        Assert.True(scene.Controller.GetStyleSettingsState().CanReset);
+        ConfirmReset(scene.Window, confirm: false);
+        Assert.NotNull(scene.Reload().Styles);
+        ConfirmReset(scene.Window, confirm: true);
+        Assert.Null(scene.Reload().Styles);
+        scene.Window.ShowPage("glossary");
+        Named<Button>(scene.Window, "删除术语 1").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Click(scene.Window, SettingsDraftPresentation.Create().SaveLabel);
+        Assert.Empty(scene.Reload().Glossary!.Rules);
+        Assert.Equal("en", scene.Reload().Target);
+    });
+
     private static void ConfirmReset(SettingsWindow window, bool confirm)
     {
         Exception? failure = null;
@@ -525,28 +575,47 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         }
         // A real framed peer negotiates production ModelClient identity. It never
         // loads a model or produces a translation and is not language-quality evidence.
-        public async Task StartStyleModelAsync()
+        public async Task StartStyleModelAsync(bool englishCandidate = false)
         {
             File.WriteAllText(_paths.Python, "controlled process port");
-            File.WriteAllText(_paths.Worker, """
+            string worker = """
                 import json, struct, sys
                 while header := sys.stdin.buffer.read(4):
                     request = json.loads(sys.stdin.buffer.read(struct.unpack('<I', header)[0]))
                     assert request['op'] == 'hello'
                     response = {'id': request['id'], 'status': 'ready', 'directions': ['zh_ja'],
                         'packages': [{'id': 'hy-mt2-1-8b-q4-k-m', 'version': 'a0c709d9fac510f2c807aa3af52872340dc37a4a', 'directions': ['zh_ja']}],
-                        'styledTranslationVersion': 1, 'glossaryTranslationVersion': 1}
+                        'styledTranslationVersion': 1, 'glossaryTranslationVersion': 1, 'styledGlossaryTranslationVersion': 1}
                     encoded = json.dumps(response).encode()
                     sys.stdout.buffer.write(struct.pack('<I', len(encoded)) + encoded)
                     sys.stdout.buffer.flush()
-                """);
-            using var inventory = JsonDocument.Parse("""
+                """;
+            string inventoryJson = """
                 {"schema":3,"activePackages":["hy-mt2-1-8b-q4-k-m"],"packages":[{"id":"hy-mt2-1-8b-q4-k-m","version":"a0c709d9fac510f2c807aa3af52872340dc37a4a","directions":["zh_ja"],"files":[{"path":"model.gguf","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}]}]}
-                """);
+                """;
+            ModelPackageCatalog? catalog = null;
+            if (englishCandidate)
+            {
+                using var source = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.ModelCatalog.json")!;
+                var value = System.Text.Json.Nodes.JsonNode.Parse(source)!;
+                foreach (int index in new[] { 0, 1 })
+                    value["packages"]![2]!["directions"]!.AsArray().Add(value["packages"]![index]!["directions"]![0]!.DeepClone());
+                using var document = JsonDocument.Parse(value.ToJsonString());
+                catalog = ModelPackageCatalog.Parse(document.RootElement);
+                var directions = catalog.Packages.Single(package => package.Id == "hy-mt2-1-8b-q4-k-m").Directions;
+                string all = JsonSerializer.Serialize(directions.Select(direction => direction.Id));
+                string advanced = JsonSerializer.Serialize(directions.Where(direction => direction.Source != "en" && direction.Target != "en")
+                    .Select(direction => direction.Id));
+                worker = worker.Replace("['zh_ja']", all, StringComparison.Ordinal)
+                    .Replace("'styledTranslationVersion': 1", "'advancedTranslationDirections': " + advanced + ", 'styledTranslationVersion': 1", StringComparison.Ordinal);
+                inventoryJson = inventoryJson.Replace("[\"zh_ja\"]", all, StringComparison.Ordinal);
+            }
+            File.WriteAllText(_paths.Worker, worker);
+            using var inventory = JsonDocument.Parse(inventoryJson);
             File.WriteAllText(Path.Combine(_directory, "installed.json"), inventory.RootElement.GetRawText());
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(10));
-            Assert.Equal(ModelPublicationOutcome.Confirmed, await _model.ReloadAsync(ModelLoadPlan.Create(_paths, inventory.RootElement),
+            Assert.Equal(ModelPublicationOutcome.Confirmed, await _model.ReloadAsync(ModelLoadPlan.Create(_paths, inventory.RootElement, catalog),
                 () => ModelPublicationOutcome.Confirmed, _ => false, timeout.Token));
             Assert.NotNull(_model.VerifiedIdentity);
         }

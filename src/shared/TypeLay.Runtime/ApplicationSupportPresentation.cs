@@ -13,11 +13,12 @@ public static class ApplicationSupportPresentation
     };
 
     public static TranslationPreparationView Preparation(TranslationPreparationFact facts,
-        TranslationPreparationNextStep nextStep = TranslationPreparationNextStep.TryIt)
+        TranslationPreparationNextStep nextStep = TranslationPreparationNextStep.TryIt, ModelPackageCatalog? catalog = null)
     {
+        catalog ??= ModelCatalog.Packages;
         var view = PreparationCore(facts, nextStep);
         if (facts.Packages is { } packages)
-            return PackagePreparation(facts, packages, view, nextStep);
+            return PackagePreparation(facts, packages, view, nextStep, catalog);
         var installed = facts.InstalledDirections ?? [];
         if (facts.Phase == TranslationPreparationPhase.Idle && facts.FailureCategory is null)
         {
@@ -29,7 +30,8 @@ public static class ApplicationSupportPresentation
                     PrimaryAction = new(TranslationPreparationAction.Repair, "完整修复本地翻译…"),
                     SecondaryActions = []
                 };
-            else if (installed.Count > 0 && !ModelCatalog.IsCompleteDirectionSet(installed))
+            else if (installed.Count > 0 && (installed.Count != catalog.LegacyDirections.Count
+                || !installed.ToHashSet(StringComparer.Ordinal).SetEquals(catalog.LegacyDirections.Select(direction => direction.Id))))
                 view = view with
                 {
                     SecondaryActions = [new(TranslationPreparationAction.CompleteDirections, "补齐另一方向"), .. view.SecondaryActions]
@@ -39,14 +41,14 @@ public static class ApplicationSupportPresentation
                 {
                     StatusText = "本地翻译已就绪 · " + string.Join("、", ready.Select(id =>
                 {
-                    var direction = ModelCatalog.Get(id);
+                    var direction = LegacyDirection(catalog, id);
                     return direction.SourceName + " → " + direction.TargetName;
                 }))
                 };
         }
         return view with
         {
-            Directions = ModelCatalog.Directions.Select(direction => new TranslationPreparationDirectionView(
+            Directions = catalog.LegacyDirections.Select(direction => new TranslationPreparationDirectionView(
                 direction.Id, direction.SourceName + " → " + direction.TargetName,
                 installed.Contains(direction.Id, StringComparer.Ordinal))).ToArray(),
             CanSelectDirections = facts.InstallationIntentKnown && installed.Count == 0
@@ -54,9 +56,10 @@ public static class ApplicationSupportPresentation
         };
     }
     private static TranslationPreparationView PackagePreparation(TranslationPreparationFact facts,
-        ModelPackageManagementFact packages, TranslationPreparationView view, TranslationPreparationNextStep nextStep)
+        ModelPackageManagementFact packages, TranslationPreparationView view, TranslationPreparationNextStep nextStep,
+        ModelPackageCatalog catalog)
     {
-        var rows = ModelCatalog.Packages.Packages.Select(package => PackageRow(package, packages)).ToArray();
+        var rows = catalog.Packages.Select(package => PackageRow(package, packages, catalog)).ToArray();
         string currentText = !packages.InventoryKnown ? "当前模型无法确认"
             : packages.CurrentPackages.Count == 0 ? "尚未选择本地模型"
             : "当前模型：" + string.Join("、", packages.CurrentPackages.Select(item => PackageTitle(item.Package)));
@@ -101,7 +104,7 @@ public static class ApplicationSupportPresentation
         {
             // Legacy hello proves ordinary directions, not exact package identity.
             // Both hosts display that readiness without manufacturing ReadyPackages.
-            var ready = legacyDirections.Select(ModelCatalog.Get).ToArray();
+            var ready = legacyDirections.Select(id => LegacyDirection(catalog, id)).ToArray();
             bool covered = packages.Source == packages.Target || ready.Any(direction =>
                 direction.Target == packages.Target && (packages.Source == "auto" || direction.Source == packages.Source));
             view = view with
@@ -119,7 +122,7 @@ public static class ApplicationSupportPresentation
         {
             CurrentModelText = currentText,
             PackageRows = rows,
-            Directions = ModelCatalog.Directions.Select(direction => new TranslationPreparationDirectionView(
+            Directions = catalog.LegacyDirections.Select(direction => new TranslationPreparationDirectionView(
                 direction.Id, DirectionLabel(direction), packages.InstalledPackages.Any(item =>
                     item.Directions.Any(installed => installed.Id == direction.Id)))).ToArray(),
             CanSelectDirections = packages.InventoryKnown && packages.InstalledPackages.Count == 0
@@ -127,7 +130,7 @@ public static class ApplicationSupportPresentation
         };
     }
 
-    private static ModelPackageRow PackageRow(ModelPackage package, ModelPackageManagementFact? facts)
+    private static ModelPackageRow PackageRow(ModelPackage package, ModelPackageManagementFact? facts, ModelPackageCatalog catalog)
     {
         var installed = facts?.InstalledPackages.FirstOrDefault(item => SamePackage(item, package));
         var current = facts?.CurrentPackages.FirstOrDefault(item => SamePackage(item, package));
@@ -139,18 +142,22 @@ public static class ApplicationSupportPresentation
             : unavailable.Length > 0 ? unavailable
             : current is not null ? ready is not null ? "当前 · 已就绪" : "当前 · 尚未就绪"
             : installed is not null ? "已安装" : "尚未安装";
+        bool englishCandidate = HasCandidateEnglishDirections(package);
+        if (englishCandidate && facts is { InventoryKnown: true } && installed is not null)
+            status += " · 已安装：" + PackageCoverage(package, installed.Directions);
         long? bytes = ModelCatalog.PackageDownloadBytes(package);
         string download = bytes is { } count ? (count / 1_000_000_000d).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) + " GB 下载" : "";
         string license = package.Backend == "hy-mt-llama-cpu" ? new Uri(new Uri(package.Url), "LICENSE.txt").AbsoluteUri : "";
         return new(package.Id, package.Version, PackageTitle(package), package.Preview,
-            package.Directions.Select(direction => direction.Id).ToArray(), PackageCoverage(package),
+            package.Directions.Select(direction => direction.Id).ToArray(),
+            (englishCandidate ? "目录可用：" : "") + PackageCoverage(package),
             installed is not null, current is not null, ready is not null,
             installed?.Directions.Select(direction => direction.Id).ToArray() ?? [],
             current?.Directions.Select(direction => direction.Id).ToArray() ?? [],
             ready?.Directions.Select(direction => direction.Id).ToArray() ?? [], bytes, download, license,
             package.Preview ? "预览版可能出现漏译或表达偏差，请核对译文。仅支持列出的中文双向直译，不会经英语中转。模型许可证随包保留。"
                 : "翻译在本机运行，输入内容不会上传。模型许可证随包保留。",
-            status, facts is null || !facts.InventoryKnown ? [] : PackageActions(package, facts, installed is not null, current is not null, available));
+            status, facts is null || !facts.InventoryKnown ? [] : PackageActions(package, facts, installed, current is not null, available, catalog));
     }
 
     private static bool SamePackage(ModelPackageSelection selection, ModelPackage package) =>
@@ -158,24 +165,28 @@ public static class ApplicationSupportPresentation
 
     private static string PackageTitle(ModelPackage package) => package.Backend == "hy-mt-llama-cpu"
         ? "Hy-MT2 1.8B · 中文多语" : "Argos · " + string.Join("、", package.Directions.Select(DirectionLabel));
-    private static string PackageCoverage(ModelPackage package)
+    private static string PackageCoverage(ModelPackage package, IReadOnlyList<ModelDirection>? directions = null)
     {
-        var fromChinese = package.Directions.Where(direction => direction.Source == "zh").ToArray();
-        if (package.Backend == "hy-mt-llama-cpu" && fromChinese.Length * 2 == package.Directions.Count
-            && fromChinese.All(direction => package.Directions.Any(reverse =>
+        directions ??= package.Directions;
+        var fromChinese = directions.Where(direction => direction.Source == "zh").ToArray();
+        if (package.Backend == "hy-mt-llama-cpu" && fromChinese.Length * 2 == directions.Count
+            && fromChinese.All(direction => directions.Any(reverse =>
                 reverse.Source == direction.Target && reverse.Target == "zh")))
             return "中文 ↔ " + string.Join("、", fromChinese.Select(direction => direction.TargetName));
-        return string.Join("、", package.Directions.Select(DirectionLabel));
+        return string.Join("、", directions.Select(DirectionLabel));
     }
+    private static ModelDirection LegacyDirection(ModelPackageCatalog catalog, string id) =>
+        catalog.LegacyDirections.FirstOrDefault(direction => direction.Id == id)
+            ?? throw new ArgumentException("model-direction", nameof(id));
     private static string DirectionLabel(ModelDirection direction) => direction.SourceName + " → " + direction.TargetName;
 
     private static ModelPackageActionView[] PackageActions(ModelPackage package, ModelPackageManagementFact facts,
-        bool installed, bool current, bool available)
+        ModelPackageSelection? installed, bool current, bool available, ModelPackageCatalog catalog)
     {
         List<ModelPackageActionView> actions = [];
         string[] active = facts.CurrentPackages.Select(item => item.Package.Id).ToArray();
         string[] selected = package.Backend == "argos"
-            ? ModelCatalog.Packages.Packages.Where(item => item.Backend == "argos"
+            ? catalog.Packages.Where(item => item.Backend == "argos"
                 && (item.Id == package.Id || facts.InstalledPackages.Any(entry => SamePackage(entry, item))))
                 .Select(item => item.Id).ToArray()
             : [package.Id];
@@ -185,32 +196,68 @@ public static class ApplicationSupportPresentation
                 new(1, operation, ids, next, facts.Generation));
         string size = ModelCatalog.PackageDownloadBytes(package) is { } bytes
             ? $"下载约 {(bytes / 1_000_000_000d).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)} GB。" : "";
-        if (!installed && available)
+        if (installed is null && available)
             actions.Add(Action(ModelPackageOperation.Install, "下载并使用…", [package.Id], selected,
                 "将从 " + (package.Backend == "hy-mt-llama-cpu" ? "Hugging Face" : "Argos")
                 + " 下载并使用 " + PackageTitle(package) + "。" + size
                 + "缺少的私有运行组件由 " + facts.RuntimeDownloadSources + " 准备。安装还需要运行组件、缓存和切换副本空间，开始前会检查可用空间。现有模型保留；语言设置不变。"
                 + (package.Preview ? "这是预览版，请核对译文。" : "")
-                + "翻译在本机运行，输入内容不会上传。"));
-        else if (installed)
+                + "翻译在本机运行，输入内容不会上传。"
+                + (HasCandidateEnglishDirections(package) ? "本次默认安装十二方向，不包含中英方向；之后可单独确认补充。" : "")));
+        else if (installed is not null)
         {
             if (!current && available)
                 actions.Add(Action(ModelPackageOperation.Select, "使用此模型", [], selected,
-                    "将切换到 " + string.Join("、", ModelCatalog.Packages.Packages.Where(item => selected.Contains(item.Id)).Select(PackageTitle))
+                    "将切换到 " + string.Join("、", catalog.Packages.Where(item => selected.Contains(item.Id)).Select(PackageTitle))
                     + "。切换时翻译会短暂不可用；不会下载模型，语言设置不变。"));
             bool activeAvailable = facts.CurrentPackages.All(item => item.Package.Backend == "argos")
                 || facts is { HyRuntimeAvailable: true, HyUnavailableReason: null };
             if (activeAvailable && active.Length > 0)
             {
                 if (available)
+                {
+                    if (CanSupplementEnglish(package, installed, facts))
+                        actions.Add(new("补充中英方向…", enabled, true,
+                            "将为已安装的 " + PackageTitle(package) + " 补充中文 → English 和 English → 中文。"
+                            + "复用已验证的本地权重，不会下载模型，也不会修复运行组件。"
+                            + "当前模型选择和语言设置保持不变；新增方向仍须模型加载验证后才能使用。取消不会更改已安装方向。",
+                            new(2, ModelPackageOperation.Install, [package.Id], active.ToArray(), facts.Generation)
+                            {
+                                AddDirections = ["zh_en", "en_zh"]
+                            }));
                     actions.Add(Action(ModelPackageOperation.Repair, "修复…", [package.Id], active,
                         "将重新准备 " + PackageTitle(package) + "，可能需要下载。当前模型选择和语言设置保持不变。"));
+                }
                 if (!current)
                     actions.Add(Action(ModelPackageOperation.Remove, "移除…", [package.Id], active,
                         "将移除 " + PackageTitle(package) + " 的已安装副本。当前模型继续保留；以后使用时需要重新下载。"));
             }
         }
         return actions.ToArray();
+    }
+
+    private static bool HasCandidateEnglishDirections(ModelPackage package) =>
+        package is { Id: "hy-mt2-1-8b-q4-k-m", Backend: "hy-mt-llama-cpu" }
+        && package.Directions.Any(direction => direction.Id == "zh_en")
+        && package.Directions.Any(direction => direction.Id == "en_zh");
+
+    private static bool CanSupplementEnglish(ModelPackage package, ModelPackageSelection installed,
+        ModelPackageManagementFact facts)
+    {
+        // The candidate catalog only makes the pair available. Existing installation
+        // consent and the current selection must remain separate and exact.
+        return HasCandidateEnglishDirections(package)
+            && installed.Directions.Count > 0
+            && installed.Directions.All(direction => direction.Id is not ("zh_en" or "en_zh")
+                && package.Directions.Any(candidate => candidate.Id == direction.Id))
+            && facts.Generation is { Length: 32 } generation
+            && generation.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f')
+            && facts.CurrentPackages.Select(item => item.Package.Id).Distinct(StringComparer.Ordinal).Count()
+                == facts.CurrentPackages.Count
+            && (facts.CurrentPackages.All(item => item.Package.Backend == "argos")
+                || facts.CurrentPackages.Count == 1 && facts.CurrentPackages[0].Package.Backend == "hy-mt-llama-cpu")
+            && facts.CurrentPackages.All(current => facts.InstalledPackages.Any(item => SamePackage(item, current.Package)
+                && item.Directions.Select(direction => direction.Id).SequenceEqual(current.Directions.Select(direction => direction.Id))));
     }
 
     private static TranslationPreparationView PreparationCore(TranslationPreparationFact facts,

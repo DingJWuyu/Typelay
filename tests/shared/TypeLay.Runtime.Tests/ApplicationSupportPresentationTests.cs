@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Xunit;
 
 namespace TypeLay.Runtime.Tests;
@@ -278,6 +279,217 @@ public sealed class ApplicationSupportPresentationTests
     }
 
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void CandidateCatalogOffersAnExplicitEnglishSupplementWithoutSelectingAnotherModel(bool hyCurrent)
+    {
+        var catalog = EnglishCandidateCatalog();
+        var installed = PackageSelections("argos-zh-en", "hy-mt2-1-8b-q4-k-m");
+        var current = installed.Where(item => (item.Package.Backend == "hy-mt-llama-cpu") == hyCurrent).ToArray();
+        var facts = new ModelPackageManagementFact(new string('a', 32), true, installed, current, current,
+            true, null, "zh", "en", false);
+        var view = ApplicationSupportPresentation.Preparation(new(true, true, Packages: facts), catalog: catalog);
+        var hy = Assert.Single(view.PackageRows, row => row.Preview);
+        var supplement = Assert.Single(hy.Actions, action => action.Request.Format == 2);
+
+        Assert.Equal("补充中英方向…", supplement.Label);
+        Assert.True(supplement.Enabled);
+        Assert.True(supplement.RequiresConfirmation);
+        Assert.Equal(ModelPackageOperation.Install, supplement.Request.Operation);
+        Assert.Equal(["hy-mt2-1-8b-q4-k-m"], supplement.Request.PackageIds);
+        Assert.Equal(hyCurrent ? ["hy-mt2-1-8b-q4-k-m"] : ["argos-zh-en"], supplement.Request.ActivePackages);
+        Assert.Equal(new string('a', 32), supplement.Request.ExpectedCurrent);
+        Assert.Equal(["zh_en", "en_zh"], Assert.IsType<string[]>(supplement.Request.AddDirections));
+        Assert.Contains("不会下载模型", supplement.ConfirmationText);
+        Assert.Contains("当前模型选择和语言设置保持不变", supplement.ConfirmationText);
+        Assert.Contains("取消不会更改", supplement.ConfirmationText);
+        Assert.StartsWith("目录可用：", hy.CoverageText);
+        Assert.Contains("English", hy.CoverageText);
+        Assert.Contains("已安装：", hy.AvailabilityText);
+        Assert.DoesNotContain("English", hy.AvailabilityText);
+        Assert.Equal(14, hy.DirectionIds.Length);
+        Assert.Equal(12, hy.InstalledDirectionIds.Length);
+        Assert.DoesNotContain("zh_en", hy.InstalledDirectionIds);
+        Assert.DoesNotContain("en_zh", hy.CurrentDirectionIds);
+        Assert.DoesNotContain("zh_en", hy.ReadyDirectionIds);
+        Assert.All(hy.Actions.Where(action => action != supplement), action =>
+        {
+            Assert.Equal(1, action.Request.Format);
+            Assert.Null(action.Request.AddDirections);
+        });
+        Assert.Equal(12, ModelCatalog.Packages.Packages.Single(package => package.Backend == "hy-mt-llama-cpu").Directions.Count);
+    }
+
+    [Theory]
+    [InlineData("none")]
+    [InlineData("zh_en")]
+    [InlineData("en_zh")]
+    public void APartialOrPublicCatalogNeverOffersTheEnglishSupplement(string direction)
+    {
+        var catalog = direction == "none" ? ModelCatalog.Packages : EnglishCandidateCatalog([direction]);
+        var installed = PackageSelections("hy-mt2-1-8b-q4-k-m");
+        var facts = new ModelPackageManagementFact(new string('b', 32), true, installed, installed, [],
+            true, null, "zh", "ja", false);
+        var view = ApplicationSupportPresentation.Preparation(new(false, true, Packages: facts), catalog: catalog);
+        Assert.DoesNotContain(view.PackageRows.SelectMany(row => row.Actions), action => action.Request.Format == 2);
+    }
+
+    [Fact]
+    public void AnEnglishCandidateStillOffersOnlyTheExistingDefaultInstallForANewPackage()
+    {
+        var catalog = EnglishCandidateCatalog();
+        var facts = new ModelPackageManagementFact(null, true, [], [], [], true, null, "zh", "en", false);
+        var hy = ApplicationSupportPresentation.Preparation(new(false, false, Packages: facts), catalog: catalog)
+            .PackageRows.Single(row => row.Preview);
+        var install = Assert.Single(hy.Actions);
+        Assert.Equal("下载并使用…", install.Label);
+        Assert.Contains("本次默认安装十二方向，不包含中英方向", install.ConfirmationText);
+        Assert.Equal(1, install.Request.Format);
+        Assert.Null(install.Request.AddDirections);
+        Assert.Equal(12, ModelCatalog.DefaultInstallationDirections(catalog.Packages.Single(package => package.Preview)).Count);
+        Assert.Empty(hy.InstalledDirectionIds);
+    }
+
+    [Theory]
+    [InlineData("zh_en")]
+    [InlineData("en_zh")]
+    [InlineData("both")]
+    public void AnAlreadyInstalledEnglishDirectionCannotBeSilentlyReplacedOrCompleted(string english)
+    {
+        var catalog = EnglishCandidateCatalog();
+        string[] directions = english == "both" ? ["zh_ja", "zh_en", "en_zh"] : ["zh_ja", english];
+        var installed = PackageSelections("hy-mt2-1-8b-q4-k-m", catalog: catalog, directionIds: directions);
+        var facts = new ModelPackageManagementFact(new string('b', 32), true, installed, installed, [],
+            true, null, "zh", "en", false);
+        var row = ApplicationSupportPresentation.Preparation(new(false, true, Packages: facts), catalog: catalog)
+            .PackageRows.Single(item => item.Preview);
+        Assert.DoesNotContain(row.Actions, action => action.Request.Format == 2);
+        var repair = Assert.Single(row.Actions, action => action.Request.Operation == ModelPackageOperation.Repair);
+        Assert.Equal(1, repair.Request.Format);
+        Assert.Null(repair.Request.AddDirections);
+    }
+
+    [Theory]
+    [InlineData("inventory-unknown")]
+    [InlineData("generation-unknown")]
+    [InlineData("generation-invalid")]
+    [InlineData("current-unknown")]
+    [InlineData("current-mixed")]
+    [InlineData("current-duplicate")]
+    [InlineData("current-not-installed")]
+    [InlineData("runtime-unavailable")]
+    [InlineData("runtime-unverified")]
+    public void UnknownOrUnsupportedExistingStateCannotOfferAnEnglishSupplement(string state)
+    {
+        var installed = PackageSelections("argos-zh-en", "hy-mt2-1-8b-q4-k-m");
+        var active = installed.Where(item => item.Package.Backend == "hy-mt-llama-cpu").ToArray();
+        var facts = new ModelPackageManagementFact(new string('c', 32), true, installed, active, [],
+            true, null, "zh", "en", false);
+        facts = state switch
+        {
+            "inventory-unknown" => facts with
+            {
+                InventoryKnown = false
+            },
+            "generation-unknown" => facts with
+            {
+                Generation = null
+            },
+            "generation-invalid" => facts with
+            {
+                Generation = "old-generation"
+            },
+            "current-unknown" => facts with
+            {
+                CurrentPackages = []
+            },
+            "current-mixed" => facts with
+            {
+                CurrentPackages = installed
+            },
+            "current-duplicate" => facts with
+            {
+                CurrentPackages = [active[0], active[0]]
+            },
+            "current-not-installed" => facts with
+            {
+                CurrentPackages = PackageSelections("argos-en-zh")
+            },
+            "runtime-unavailable" => facts with
+            {
+                HyRuntimeAvailable = false
+            },
+            "runtime-unverified" => facts with
+            {
+                HyUnavailableReason = "native-unavailable"
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(state))
+        };
+        var view = ApplicationSupportPresentation.Preparation(new(false, true, Packages: facts), catalog: EnglishCandidateCatalog());
+        Assert.DoesNotContain(view.PackageRows.SelectMany(row => row.Actions), action => action.Request.Format == 2);
+    }
+
+    [Fact]
+    public void AnEnglishSupplementKeepsTheExactObservedActiveOrderAndIndependentFrozenArrays()
+    {
+        var catalog = EnglishCandidateCatalog();
+        var argos = PackageSelections("argos-zh-en", "argos-en-zh");
+        var installed = argos.Concat(PackageSelections("hy-mt2-1-8b-q4-k-m", onlyDirection: "zh_ja")).ToArray();
+        var current = new[] { argos[1], argos[0] };
+        var facts = new ModelPackageManagementFact(new string('d', 32), true, installed, current, [],
+            true, null, "auto", "en", false);
+        var view = ApplicationSupportPresentation.Preparation(new(false, true, Packages: facts), catalog: catalog);
+        var row = view.PackageRows.Single(item => item.Preview);
+        var request = Assert.Single(row.Actions, action => action.Request.Format == 2).Request;
+        var next = ApplicationSupportPresentation.Preparation(new(false, true, Packages: facts), catalog: catalog)
+            .PackageRows.Single(item => item.Preview).Actions.Single(action => action.Request.Format == 2).Request;
+        Assert.Equal(["argos-en-zh", "argos-zh-en"], request.ActivePackages);
+        Assert.Equal(["zh_ja"], row.InstalledDirectionIds);
+        current[0] = installed.Single(item => item.Package.Preview);
+        Assert.Equal(["argos-en-zh", "argos-zh-en"], request.ActivePackages);
+        Assert.Equal(new string('d', 32), request.ExpectedCurrent);
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        options.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+        var wire = JsonSerializer.SerializeToElement(request, options);
+        Assert.Equal(2, wire.GetProperty("format").GetInt32());
+        Assert.Equal("Install", wire.GetProperty("operation").GetString());
+        Assert.Equal(["zh_en", "en_zh"], wire.GetProperty("addDirections").EnumerateArray().Select(item => item.GetString()));
+        request.ActivePackages[0] = "changed";
+        Assert.IsType<string[]>(request.AddDirections)[0] = "changed";
+        Assert.Equal(["argos-en-zh", "argos-zh-en"], next.ActivePackages);
+        Assert.Equal(["zh_en", "en_zh"], Assert.IsType<string[]>(next.AddDirections));
+        Assert.Equal(["argos-en-zh", "argos-zh-en"],
+            row.Actions.Single(action => action.Request.Operation == ModelPackageOperation.Repair).Request.ActivePackages);
+    }
+
+    [Fact]
+    public void AnExistingOperationDisablesTheSupplementWithoutChangingItsConfirmedScope()
+    {
+        var installed = PackageSelections("hy-mt2-1-8b-q4-k-m");
+        var facts = new ModelPackageManagementFact(new string('e', 32), true, installed, installed, [],
+            true, null, "zh", "en", true);
+        var view = ApplicationSupportPresentation.Preparation(new(false, true, TranslationPreparationPhase.Paused,
+            Packages: facts), catalog: EnglishCandidateCatalog());
+        var action = Assert.Single(view.PackageRows.Single(row => row.Preview).Actions, action => action.Request.Format == 2);
+        Assert.False(action.Enabled);
+        Assert.Equal(TranslationPreparationAction.Resume, view.PrimaryAction.Id);
+        Assert.Equal(["zh_en", "en_zh"], Assert.IsType<string[]>(action.Request.AddDirections));
+    }
+
+    private static ModelPackageCatalog EnglishCandidateCatalog(string[]? englishDirections = null)
+    {
+        using var source = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.ModelCatalog.json")!;
+        var value = JsonNode.Parse(source)!;
+        var packages = value["packages"]!.AsArray();
+        var hy = packages.Single(package => package!["backend"]!.GetValue<string>() == "hy-mt-llama-cpu")!;
+        foreach (var package in packages.Where(package => package!["backend"]!.GetValue<string>() == "argos"
+            && (englishDirections is null || englishDirections.Contains(package!["directions"]![0]!["id"]!.GetValue<string>()))))
+            hy["directions"]!.AsArray().Add(package!["directions"]![0]!.DeepClone());
+        using var document = JsonDocument.Parse(value.ToJsonString());
+        return ModelPackageCatalog.Parse(document.RootElement);
+    }
+
+    [Theory]
     [InlineData(TranslationPreparationPhase.Failed)]
     [InlineData(TranslationPreparationPhase.Paused)]
     public void MissingCurrentDirectionDoesNotReplaceThePreparationRecoveryReason(TranslationPreparationPhase phase)
@@ -306,22 +518,24 @@ public sealed class ApplicationSupportPresentationTests
     }
 
     private static IReadOnlyList<ModelPackageSelection> PackageSelections(string first, string? second = null,
-        string? onlyDirection = null)
+        string? onlyDirection = null, ModelPackageCatalog? catalog = null, string[]? directionIds = null)
     {
+        catalog ??= ModelCatalog.Packages;
         string[] ids = second is null ? [first] : [first, second];
         var inventory = JsonSerializer.SerializeToElement(new
         {
             schema = 3,
-            packages = ModelCatalog.Packages.Packages.Where(package => ids.Contains(package.Id)).Select(package => new
+            packages = catalog.Packages.Where(package => ids.Contains(package.Id)).Select(package => new
             {
                 id = package.Id,
                 version = package.Version,
-                directions = package.Directions.Where(direction => onlyDirection is null || direction.Id == onlyDirection)
+                directions = package.Directions.Where(direction => (onlyDirection is null || direction.Id == onlyDirection)
+                    && (directionIds is null || directionIds.Contains(direction.Id)))
                     .Select(direction => direction.Id).ToArray(),
                 files = new[] { new { path = "fixture.bin", sha256 = new string('0', 64) } }
             }).ToArray()
         });
-        return ModelCatalog.ReadInstallationSelection(inventory);
+        return catalog.ReadInstallationSelection(inventory);
     }
 
     [Fact]

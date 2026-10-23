@@ -35,7 +35,10 @@ internal static partial class HyPackageCheck
         string[] cacheFiles = [];
         var generations = new HashSet<string>(StringComparer.Ordinal);
         string[] argos = [];
-        int lastWorker = 0;
+        int lastWorker = 0, appGenerationBaseline = 0;
+        bool candidateEnglish = false;
+        string[] expectedHyDirections = HyDirections;
+        report.EnglishAcceptance = "catalog-not-verified";
         ChildProcess StartOwned(ProcessStartInfo info)
         {
             try
@@ -50,6 +53,29 @@ internal static partial class HyPackageCheck
                 throw;
             }
         }
+        async Task StartApplicationAsync(string trace, Scene? revealSettings = null)
+        {
+            var info = StartInfo(Path.Combine(distribution, "app", "TypeLay.App.exe"));
+            info.ArgumentList.Add("--automation-test");
+            info.Environment["TYPELAY_HOME"] = distribution; // The real launcher's resource root; never a data override.
+            info.Environment["TYPELAY_TRACE"] = Path.Combine(directory, trace); // Opt-in metadata for this owned test process only.
+            appExited = false;
+            app = StartOwned(info);
+            workers = new WorkerObserver(app.Process, data);
+            workers.Start();
+            if (revealSettings is not null)
+                await OpenSettingsThroughTrayAsync(app.Process, revealSettings, ct);
+            settings = await SettingsAsync(app.Process, ct);
+            if (revealSettings is not null)
+                await NavigateAsync(settings, "▦  " + ApplicationSupportPresentation.Create([]).Title, ct);
+            await WaitAsync(async () =>
+            {
+                workers!.Check();
+                return (await PublicStatusAsync(settings, ct)).StartsWith("本地翻译已就绪", StringComparison.Ordinal);
+            }, ct);
+            lastWorker = workers.RequireCurrent(new ModelInstallationStore(data, worker).InitialPaths().Python);
+            Require(workers.Starts == 1, "unexpected-initial-worker-restart");
+        }
         try
         {
             await report.Phase("production-prerequisite", async scene =>
@@ -62,6 +88,20 @@ internal static partial class HyPackageCheck
                 report.ReleaseIdentity = await ReleaseIdentityAsync(distribution, ct);
                 report.LoadedReleaseAssembliesMatched = true;
                 Require(result.RootElement.GetProperty("releaseIdentity").GetString() == report.ReleaseIdentity, "production-prerequisite-release-mismatch");
+                try
+                {
+                    candidateEnglish = await RequiresCandidateEnglishAsync(distribution, ct);
+                }
+                catch (Exception error) when (error is not OutOfMemoryException)
+                {
+                    report.EnglishAcceptance = "catalog-rejected";
+                    throw;
+                }
+                report.EnglishAcceptance = candidateEnglish ? "not-run" : "not-offered-not-run";
+                if (candidateEnglish)
+                    report.Scenes.InsertRange(report.Scenes.FindIndex(item => item.Name == "return-to-argos"),
+                        new[] { "cancel-english", "supplement-english", "cold-start-english", "preview-zh-en", "preview-en-zh" }
+                            .Select(name => new Scene(name)));
             });
             await report.Phase("setup", async scene =>
             {
@@ -85,21 +125,7 @@ internal static partial class HyPackageCheck
                 await File.WriteAllTextAsync(Path.Combine(data, "settings.json"), JsonSerializer.Serialize(new UserSettings(
                     Source: "zh", Target: "en", Theme: "light", Mode: WorkMode.OnDemand,
                     OnboardingComplete: false, ExperimentalWriteback: false)), ct);
-                var info = StartInfo(Path.Combine(distribution, "app", "TypeLay.App.exe"));
-                info.ArgumentList.Add("--automation-test");
-                info.Environment["TYPELAY_HOME"] = distribution; // The real launcher's resource root; never a data override.
-                info.Environment["TYPELAY_TRACE"] = Path.Combine(directory, "trace.jsonl"); // Opt-in metadata for this owned test process only.
-                app = StartOwned(info);
-                workers = new WorkerObserver(app.Process, data);
-                workers.Start();
-                settings = await SettingsAsync(app.Process, ct);
-                await WaitAsync(async () =>
-                {
-                    workers!.Check();
-                    return (await PublicStatusAsync(settings, ct)).StartsWith("本地翻译已就绪", StringComparison.Ordinal);
-                }, ct);
-                lastWorker = workers.RequireCurrent(new ModelInstallationStore(data, worker).InitialPaths().Python);
-                Require(workers.Starts == 1, "unexpected-initial-worker-restart");
+                await StartApplicationAsync("trace.jsonl");
                 scene.Facts = new
                 {
                     workerPid = lastWorker,
@@ -112,7 +138,10 @@ internal static partial class HyPackageCheck
             await report.Phase("install-hy", async scene =>
             {
                 await PackageActionAsync(app!.Process, settings!, HyId, ModelPackageOperation.Install, scene, ct);
-                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, [HyId], lastWorker, generations, scene, ct);
+                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, [HyId], lastWorker, generations, scene, ct, expectedHyDirections, appGenerationBaseline);
+                if (!candidateEnglish)
+                    Require(await UiAsync(() => Find(settings!, AutomationElement.AutomationIdProperty,
+                        "ModelPackage_" + HyId + "_Install", ControlType.Button) is null, ct), "unexpected-english-supplement-action");
                 scene.Facts = CaptureInstallation(data, worker, lastWorker);
             });
             await report.Phase("choose-french", async scene =>
@@ -134,22 +163,21 @@ internal static partial class HyPackageCheck
             await report.Phase("select-argos", async scene =>
             {
                 await PackageActionAsync(app!.Process, settings!, argos[0], ModelPackageOperation.Select, scene, ct);
-                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, argos, lastWorker, generations, scene, ct);
+                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, argos, lastWorker, generations, scene, ct, expectedHyDirections, appGenerationBaseline);
                 Require(ReadSettings(data) is { Source: "zh", Target: "fr" }, "model-switch-changed-language");
                 scene.Facts = CaptureInstallation(data, worker, lastWorker);
             });
             await report.Phase("select-hy", async scene =>
             {
                 await PackageActionAsync(app!.Process, settings!, HyId, ModelPackageOperation.Select, scene, ct);
-                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, [HyId], lastWorker, generations, scene, ct);
+                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, [HyId], lastWorker, generations, scene, ct, expectedHyDirections, appGenerationBaseline);
                 Require(ReadSettings(data) is { Source: "zh", Target: "fr" }, "model-switch-changed-language");
                 scene.Facts = CaptureInstallation(data, worker, lastWorker);
             });
-            await report.Phase("ordinary-preview", async scene =>
+            async Task PreviewAsync(Scene scene, string text, LanguageDirection direction)
             {
-                // The only translation request in this suite. No private readiness
-                // channel, replacement controller, fixture translator or accept key.
-                const string text = "请告诉我明天下午的会议时间。";
+                // Each phase uses this same public preview path, with no private
+                // readiness channel, replacement translator or accept key.
                 scene.Stage = "start-stock-edit";
                 var info = StartInfo(Environment.ProcessPath ?? "dotnet");
                 // When launched by the SDK, Environment.ProcessPath is dotnet.
@@ -170,7 +198,8 @@ internal static partial class HyPackageCheck
                 await WaitAsync(() => Task.FromResult(N.Focused() == (root, field)), ct);
                 var selection = N.ReadSelection(field);
                 Require(selection == new TextRange(text.Length, text.Length), "source-selection");
-                Require(ReadSettings(data) is { Source: "zh", Target: "fr", ExperimentalWriteback: false, Mode: WorkMode.OnDemand }, "preview-settings-changed");
+                Require(ReadSettings(data) is { ExperimentalWriteback: false, Mode: WorkMode.OnDemand } saved
+                    && saved.Direction == direction, "preview-settings-changed");
                 await NavigateWithoutFocusAsync(settings!, "⌨  快捷键", ct);
                 scene.Stage = "wait-public-shortcut-status";
                 await WaitAsync(async () =>
@@ -327,8 +356,8 @@ internal static partial class HyPackageCheck
                     sourceSetup,
                     source = text,
                     translation,
-                    sourceLanguage = "zh",
-                    targetLanguage = "fr",
+                    sourceLanguage = direction.Source,
+                    targetLanguage = direction.Target,
                     wakePresses = 1,
                     sourceClicks = 1,
                     publicSourceReadyMatched = true,
@@ -343,11 +372,127 @@ internal static partial class HyPackageCheck
                 using var exit = new CancellationTokenSource(TimeSpan.FromSeconds(5));
                 await source.Process.WaitForExitAsync(exit.Token);
                 await source.TerminateAndWaitAsync(exit.Token);
-            });
+                source.Dispose();
+                source = null;
+            }
+            await report.Phase("ordinary-preview", scene => PreviewAsync(scene, "请告诉我明天下午的会议时间。", new("zh", "fr")));
+            if (candidateEnglish)
+            {
+                report.EnglishAcceptance = "incomplete";
+                var originalLanguage = ReadSettings(data)?.Direction;
+                Require(originalLanguage == new LanguageDirection("zh", "fr"), "candidate-original-language");
+                await report.Phase("cancel-english", async scene =>
+                {
+                    var before = CandidateSnapshot.Read(data, worker);
+                    int starts = workers!.Starts;
+                    await PackageActionAsync(app!.Process, settings!, HyId, ModelPackageOperation.Install, scene, ct,
+                        confirm: false, expectedLabel: "补充中英方向…");
+                    before.RequireUnchanged(CandidateSnapshot.Read(data, worker));
+                    Require(workers.Starts == starts && workers.RequireCurrent(new ModelInstallationStore(data, worker).InitialPaths().Python) == lastWorker,
+                        "cancel-restarted-worker");
+                    scene.Facts = new
+                    {
+                        currentActiveInventoryAndSettingsUnchanged = true,
+                        workerPid = lastWorker
+                    };
+                });
+                await report.Phase("supplement-english", async scene =>
+                {
+                    var before = CandidateSnapshot.Read(data, worker);
+                    await PackageActionAsync(app!.Process, settings!, HyId, ModelPackageOperation.Install, scene, ct,
+                        expectedLabel: "补充中英方向…");
+                    expectedHyDirections = HyPackageDirections.Candidate.ToArray();
+                    lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, [HyId], lastWorker,
+                        generations, scene, ct, expectedHyDirections, appGenerationBaseline);
+                    before.RequireSupplemented(CandidateSnapshot.Read(data, worker));
+                    scene.Facts = new
+                    {
+                        installation = CaptureInstallation(data, worker, lastWorker),
+                        priorActiveAndSettingsUnchanged = true,
+                        inventoryFileIdentitiesUnchanged = true
+                    };
+                });
+                await report.Phase("cold-start-english", async scene =>
+                {
+                    var before = CandidateSnapshot.Read(data, worker);
+                    int priorApp = app!.Process.Id, priorWorker = lastWorker;
+                    long priorAppStart = app.Process.StartTime.ToUniversalTime().Ticks;
+                    long priorWorkerStart = workers!.StartTimeUtcTicks(priorWorker);
+                    await OrdinaryQuitAsync(app.Process, scene, ct);
+                    using (var exit = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+                    {
+                        await app.Process.WaitForExitAsync(exit.Token);
+                        Require(app.Process.ExitCode == 0, "cold-app-exit-code");
+                        await WaitAsync(() => Task.FromResult(workers!.AllExited()), exit.Token);
+                        CheckUseReleased(new ModelInstallationStore(data, worker).InitialPaths());
+                        using (var install = new FileStream(Path.Combine(data, "components.lock"), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                            Require(install.Length == 0, "cold-install-lock-invalid");
+                        // The root and observed workers exited naturally. The same
+                        // production owner must also prove the whole job before reuse.
+                        await app.TerminateAndWaitAsync(exit.Token);
+                    }
+                    appExited = true;
+                    await workers!.StopAsync();
+                    workers.Dispose();
+                    workers = null;
+                    app.Dispose();
+                    app = null;
+                    before.RequireUnchanged(CandidateSnapshot.Read(data, worker));
+                    appGenerationBaseline = generations.Count;
+                    await StartApplicationAsync("trace-cold.jsonl", scene);
+                    before.RequireUnchanged(CandidateSnapshot.Read(data, worker));
+                    Require(app!.Process.Id != priorApp || app.Process.StartTime.ToUniversalTime().Ticks != priorAppStart,
+                        "cold-app-identity-reused");
+                    Require(lastWorker != priorWorker || workers!.StartTimeUtcTicks(lastWorker) != priorWorkerStart,
+                        "cold-worker-identity-reused");
+                    var current = new ModelInstallationStore(data, worker).ReadInstallationState();
+                    Require(current.CurrentPackages.Single().Directions.Select(item => item.Id).ToHashSet(StringComparer.Ordinal)
+                        .SetEquals(expectedHyDirections), "cold-directions-changed");
+                    await NavigateAsync(settings!, "文  语言", ct);
+                    await WaitAsync(async () => await UiAsync(() => Find(settings!, AutomationElement.NameProperty,
+                        "当前模型支持 14 个翻译方向", ControlType.Text) is not null, ct), ct);
+                    scene.Facts = new
+                    {
+                        generation = current.Generation,
+                        priorApp,
+                        priorAppStart,
+                        priorWorker,
+                        priorWorkerStart,
+                        appPid = app!.Process.Id,
+                        appStart = app.Process.StartTime.ToUniversalTime().Ticks,
+                        workerPid = lastWorker,
+                        workerStart = workers!.StartTimeUtcTicks(lastWorker),
+                        publicSettingsOpened = true,
+                        originalAppExitCode = 0,
+                        originalWorkersExited = true,
+                        originalFamilyExitConfirmed = true,
+                        sameInventoryAndSettings = true,
+                        realLoadedDirections = 14,
+                        newWorkerStarts = workers!.Starts
+                    };
+                });
+                await report.Phase("preview-zh-en", async scene =>
+                {
+                    await NavigateAsync(settings!, "文  语言", ct);
+                    await SettingsLanguageActions.SelectTargetAsync(settings!, "English", stage => scene.Stage = stage, ct);
+                    await WaitAsync(() => Task.FromResult(ReadSettings(data)?.Direction == new LanguageDirection("zh", "en")), ct);
+                    await PreviewAsync(scene, "请把窗户关上。", new("zh", "en"));
+                });
+                await report.Phase("preview-en-zh", async scene =>
+                {
+                    await SwapLanguagesAsync(settings!, data, new("zh", "en"), new("en", "zh"), ct);
+                    await PreviewAsync(scene, "Please send me the address.", new("en", "zh"));
+                    await SwapLanguagesAsync(settings!, data, new("en", "zh"), new("zh", "en"), ct);
+                    await SettingsLanguageActions.SelectTargetAsync(settings!, "Français", stage => scene.Stage = stage, ct);
+                    await WaitAsync(() => Task.FromResult(ReadSettings(data)?.Direction == originalLanguage), ct);
+                    await NavigateAsync(settings!, "▦  " + ApplicationSupportPresentation.Create([]).Title, ct);
+                });
+                report.EnglishAcceptance = "passed";
+            }
             await report.Phase("return-to-argos", async scene =>
             {
                 await PackageActionAsync(app!.Process, settings!, argos[0], ModelPackageOperation.Select, scene, ct);
-                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, argos, lastWorker, generations, scene, ct);
+                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, argos, lastWorker, generations, scene, ct, expectedHyDirections, appGenerationBaseline);
                 Require(ReadSettings(data) is { Source: "zh", Target: "fr" }, "model-switch-changed-language");
                 scene.Facts = CaptureInstallation(data, worker, lastWorker);
             });
@@ -359,7 +504,7 @@ internal static partial class HyPackageCheck
                 try
                 {
                     await PackageActionAsync(app!.Process, settings!, HyId, ModelPackageOperation.Remove, scene, ct);
-                    lastWorker = await ObserveActiveAsync(app.Process, settings!, workers, data, worker, argos, lastWorker, generations, scene, ct);
+                    lastWorker = await ObserveActiveAsync(app.Process, settings!, workers, data, worker, argos, lastWorker, generations, scene, ct, expectedHyDirections, appGenerationBaseline);
                     var published = new ModelInstallationStore(data, worker);
                     workers.CompleteInactiveHyRemoval(published.ReadInstallationState().Generation!, published.InitialPaths().Python);
                 }
@@ -596,7 +741,8 @@ internal static partial class HyPackageCheck
         string? RecoveryFailure = null, string? ReplacementPhase = null, string? ReplacementFailureCode = null,
         string? PublicationOutcome = null);
     private static async Task<int> ObserveActiveAsync(Process app, AutomationElement settings, WorkerObserver workers,
-        string data, string worker, string[] expected, int priorPid, HashSet<string> generations, Scene scene, CancellationToken ct)
+        string data, string worker, string[] expected, int priorPid, HashSet<string> generations, Scene scene, CancellationToken ct,
+        string[] expectedHyDirections, int appGenerationBaseline)
     {
         AutomationElement? details = null;
         await WaitAsync(async () =>
@@ -691,10 +837,10 @@ internal static partial class HyPackageCheck
         Require(inventory.RootElement.GetProperty("schema").GetInt32() == 3, "schema3-inventory-required");
         if (expected.SequenceEqual(new[] { HyId }))
             Require(current.CurrentPackages.Single().Package.Version == HyVersion
-                && current.CurrentPackages.Single().Directions.Select(item => item.Id).ToHashSet(StringComparer.Ordinal).SetEquals(HyDirections), "hy-active-inventory-mismatch");
+                && current.CurrentPackages.Single().Directions.Select(item => item.Id).ToHashSet(StringComparer.Ordinal).SetEquals(expectedHyDirections), "hy-active-inventory-mismatch");
         int pid = workers.RequireCurrent(paths.Python);
         Require(pid != priorPid, "model-worker-not-replaced");
-        Require(workers.Starts == generations.Count + 1, "unexpected-model-worker-restart");
+        Require(workers.Starts == generations.Count - appGenerationBaseline + 1, "unexpected-model-worker-restart");
         string retired = workers.GenerationRoot(priorPid);
         string marker = Path.Combine(retired, ModelInstallationStore.ModelUseLockName);
         if (File.Exists(marker))
@@ -791,9 +937,11 @@ internal static partial class HyPackageCheck
         }, ct), ct);
     }
     private static async Task PackageActionAsync(Process app, AutomationElement settings, string package,
-        ModelPackageOperation operation, Scene scene, CancellationToken ct)
+        ModelPackageOperation operation, Scene scene, CancellationToken ct, bool confirm = true, string? expectedLabel = null)
     {
         var button = await SettingsPackageActions.FindAsync(settings, package, operation, stage => scene.Stage = stage, ct);
+        if (expectedLabel is not null)
+            Require(await UiAsync(() => button.Current.Name == expectedLabel, ct), "package-action-label-mismatch");
         scene.Stage = "invoke-package-action";
         Task invoke = Task.Run(() => ((InvokePattern)button.GetCurrentPattern(InvokePattern.Pattern)).Invoke(), ct);
         AutomationElement? confirmation = null;
@@ -808,14 +956,14 @@ internal static partial class HyPackageCheck
         }, ct), ct);
         await UiAsync(() =>
         {
-            // Standard MessageBox IDOK is 1. Match the actual owning dialog,
+            // Standard MessageBox IDOK=1 / IDCANCEL=2. Match the actual owning dialog,
             // irrespective of the hosted runner's localized button caption.
-            var accept = Find(confirmation!, AutomationElement.AutomationIdProperty, "1", ControlType.Button);
+            var accept = Find(confirmation!, AutomationElement.AutomationIdProperty, confirm ? "1" : "2", ControlType.Button);
             Require(accept is not null && accept.Current.IsEnabled, "package-confirmation-unavailable");
             ((InvokePattern)accept!.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
         }, ct);
         await invoke.WaitAsync(ct);
-        scene.Stage = "await-real-publication-and-ready";
+        scene.Stage = confirm ? "await-real-publication-and-ready" : "cancel-returned";
     }
     private sealed class OrdinaryQuitObservation
     {
@@ -887,10 +1035,38 @@ internal static partial class HyPackageCheck
     }
     private static async Task OrdinaryQuitAsync(Process app, Scene scene, CancellationToken ct, string? directory = null)
     {
-        AutomationElement? icon = null;
-        bool overflowOpened = false;
         var observation = new OrdinaryQuitObservation();
         scene.Facts = observation;
+        await OpenQuickPanelAsync(app, scene, observation, ct, directory);
+        scene.Stage = "find-quick-panel-quit";
+        AutomationElement? quit = null;
+        await WaitAsync(async () => await UiAsync(() =>
+        {
+            var panel = AutomationElement.RootElement.FindFirst(TreeScope.Children, new AndCondition(
+                new PropertyCondition(AutomationElement.ProcessIdProperty, app.Id),
+                new PropertyCondition(AutomationElement.NameProperty, "TypeLay 快速面板")));
+            observation.AppExitObserved = app.HasExited;
+            observation.SameProcessPanelFound = panel is not null;
+            quit = panel is null ? null : Find(panel, AutomationElement.NameProperty, "⏻    退出 TypeLay", ControlType.Button);
+            observation.QuitFound = quit is not null;
+            observation.QuitEnabled = quit is not null && quit.Current.IsEnabled;
+            observation.QuitVisible = quit is not null && !quit.Current.IsOffscreen;
+            return observation.QuitFound && observation.QuitEnabled && observation.QuitVisible;
+        }, ct), ct);
+        scene.Stage = "invoke-quit";
+        await UiAsync(() =>
+        {
+            var quitInvoke = (InvokePattern)quit!.GetCurrentPattern(InvokePattern.Pattern);
+            ct.ThrowIfCancellationRequested();
+            quitInvoke.Invoke();
+        }, ct);
+        observation.QuitInvokeReturned = true;
+    }
+    private static async Task OpenQuickPanelAsync(Process app, Scene scene, OrdinaryQuitObservation observation,
+        CancellationToken ct, string? directory)
+    {
+        AutomationElement? icon = null;
+        bool overflowOpened = false;
         scene.Stage = "find-tray-icon";
         // Discovery is not model installation: bound this stage independently
         // while preserving an earlier lifecycle deadline and the cleanup reserve.
@@ -1005,29 +1181,6 @@ internal static partial class HyPackageCheck
             }
         }, ct);
         observation.IconActivationReturned = true;
-        scene.Stage = "find-quick-panel-quit";
-        AutomationElement? quit = null;
-        await WaitAsync(async () => await UiAsync(() =>
-        {
-            var panel = AutomationElement.RootElement.FindFirst(TreeScope.Children, new AndCondition(
-                new PropertyCondition(AutomationElement.ProcessIdProperty, app.Id),
-                new PropertyCondition(AutomationElement.NameProperty, "TypeLay 快速面板")));
-            observation.AppExitObserved = app.HasExited;
-            observation.SameProcessPanelFound = panel is not null;
-            quit = panel is null ? null : Find(panel, AutomationElement.NameProperty, "⏻    退出 TypeLay", ControlType.Button);
-            observation.QuitFound = quit is not null;
-            observation.QuitEnabled = quit is not null && quit.Current.IsEnabled;
-            observation.QuitVisible = quit is not null && !quit.Current.IsOffscreen;
-            return observation.QuitFound && observation.QuitEnabled && observation.QuitVisible;
-        }, ct), ct);
-        scene.Stage = "invoke-quit";
-        await UiAsync(() =>
-        {
-            var quitInvoke = (InvokePattern)quit!.GetCurrentPattern(InvokePattern.Pattern);
-            ct.ThrowIfCancellationRequested();
-            quitInvoke.Invoke();
-        }, ct);
-        observation.QuitInvokeReturned = true;
     }
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(N.Point point);
     private static void SendWakeOnce()

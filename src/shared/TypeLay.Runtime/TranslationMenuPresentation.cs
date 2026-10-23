@@ -9,9 +9,9 @@ public sealed record TranslationMenuState(long SettingsRevision, bool StyleRelea
     string? AlternativeUnavailableReason, string? Feedback, bool GlossaryReleased = false,
     bool CanOpenGlossary = false, string? GlossaryUnavailableReason = null);
 
-internal static class TranslationMenuPresentation
+public static class TranslationMenuPresentation
 {
-    internal static string? Reason(string? code) => code switch
+    public static string? Reason(string? code) => code switch
     {
         null => null,
         "manual-style-locked" => "请先完成当前编辑",
@@ -19,6 +19,7 @@ internal static class TranslationMenuPresentation
         "style-stale" or "style-application-unavailable" or "alternative-source-unavailable" => "当前输入已变化，请重新打开菜单",
         "style-save-failed" => "未能保存，请重试",
         "style-canceled" => "操作已取消",
+        "style-unavailable" => "当前模型或语言设置不支持翻译风格。",
         "glossary-combination-unavailable" => "暂不支持同时应用风格与术语表",
         "glossary-combination-not-released" => "当前模型方向尚未开放风格与术语同时应用",
         "style-not-released" => "当前模型方向尚未开放翻译风格",

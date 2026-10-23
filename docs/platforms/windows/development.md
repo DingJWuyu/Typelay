@@ -92,9 +92,32 @@ if ($LASTEXITCODE -ne 0) { throw '既有 TSF context 未准入或清理失败，
 
 CI 在 Windows build 成功后、既有同步源实验之后，以独立 `continue-on-error: true` 研究步骤显式调用上述唯一方法，外限2分钟，不加入默认产品测试或扩大场景。既有 always artifact 保存该目录的 `runner.log`、`runner.json` 和唯一原始 `result.json`。runner 记录源码 SHA、原退出码、文件数量/缺失状态、原实验状态、退出/清理证据及观察数量；必要条件未满足单列 `prerequisite-not-met`，程序失败、缺失/重复结果和清理未确认分别保留。步骤的非零退出不是产品或模型否决，零退出也只代表既有 context 首门观察，不是键盘或写能力通过；尚在 `running` 或退出码为空的记录属于未完成。
 
-[微软原文](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-tf_getthreadmgr)允许 `S_OK` 但 manager 为 NULL；[GetWnd](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontextview-getwnd)也不保证非 NULL 或精确字段 HWND。早期[微软 TSF 文章](https://learn.microsoft.com/en-us/archive/msdn-magazine/2007/july/speak-up-support-dictation-with-text-services-framework)说明普通 Edit 可以由系统提供 TSF 支持，故值得核验，但不是当前系统配置的成功保证。此入口尚未取得 Windows 实测结果；Linux 托管编译不能证明 COM ABI 或标准控件实际可用。
+[微软原文](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-tf_getthreadmgr)允许 `S_OK` 但 manager 为 NULL；[GetWnd](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontextview-getwnd)也不保证非 NULL 或精确字段 HWND。早期[微软 TSF 文章](https://learn.microsoft.com/en-us/archive/msdn-magazine/2007/july/speak-up-support-dictation-with-text-services-framework)说明普通 Edit 可以由系统提供 TSF 支持，故值得核验，但不是当前系统配置的成功保证。[CI473](https://github.com/DingJWuyu/Typelay/actions/runs/39934831201) 已确认本入口四次观察、错误字段负控及 A/B/A 精确 context/view、引用释放与正常进程退出；该结果仍不是键路由、读锁或写支持。Linux 托管编译不能补作 Windows COM 实测。
 
 仅三次精确 context 观察及清理全通过，才进入下一独立阶段：在真实 context 上订阅观察 sink，始终 `pfEaten=false`，分别报告实际 test/key 回调；需要 client id 时明确记录 Activate 前后及同线程配对 Deactivate。同步只读锁、真实 composition/focus 失效、旧排队键、注入拒绝和第三方部署仍须各自证明。首门缺失、错误 view 或不能清理即停止这条具体条件下的后续实现，不用合成 context、改泵或注册服务补成成功；新路线须经 root 重新裁决，不推论 TSF 全部不可行。
+
+### 独立被动键路由与同步选区读取
+
+普通源接受仍缺少实际接收边界。首门已证明 CI 的自有 stock Edit 存在精确 context，因此下一有界实验只问：原泵下 Tab/End 的处理询问是否到达该 context，以及当场的一次同步只读请求是否真的能读取选区。日常发生频率仍未知；此实验能淘汰不成立的必要路径，不把机制结果转成产品能力。它是另一显式入口，不改变上述首门或默认产品测试：
+
+```powershell
+& ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe `
+  -explicit only -method 'TypeLay.App.Tests.TsfKeyRoutingProbe.ObservePassiveTabAndEndRoutingAndSynchronousSelectionRead'
+```
+
+每键使用独立自有进程、同一个未改造 stock Edit 和原 `GetMessage/IsDialogMessage/TranslateMessage/DispatchMessage` 路径。取得已有 manager/document/context/view 并核精确身份、HWND、线程、焦点与版本后，明确做一次 [Activate](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfthreadmgr-activate) 取得 client ID，立即重核同一基线；这一步是状态变更，结果标记 `ActivatedForReadProbe`，不称纯查询。只通过原 context 的 [ITfSource](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfsource-advisesink) 安装自己的一个 sink，不注册服务、创建 context/textstore、手动调用键管理器或替换输入法。
+
+所有 OnTest/OnKey 的 `pfEaten` 始终为 false。仅第一个指定键、非重复且身份稳定的 OnTestKeyDown 尝试一次 `TF_ES_SYNC | TF_ES_READ`；无异步回退或重试。[RequestEditSession](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontext-requesteditsession) 的外层 HRESULT、session HRESULT、实际同步进入/退出顺序分别保存；DoEditSession 用真实 cookie 执行 [GetSelection(default, 1)](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontext-getselection)，记录 HRESULT/fetched/range 存在及释放，不读取正文或改变选区。`SynchronousSessionObserved` 不单独证明可读，只有 `SelectionReadSucceeded` 才包含完整同步读取条件。每次 COM 回调/读取前后重新核身份，重入、读取中焦点变化或晚到 session 均拒绝。
+
+自动化只对精确自有前台进程发送一次 SendInput down/up，**不证明物理来源或生产注入拒绝**。End 从位置1的 caret 起验证默认移动到单行末尾；Tab 验证默认转到 B。原泵 after-dispatch 仅记录实际 key-up 完成，不消费或补发消息。文本不变、零提交及子进程退出必须证明。Tab 正常导航后的 focusVersion 变化会关闭后继读取资格，但不撤销此前完整同步读取的记录；不要求 up 仍到 A 或 OnTest 恰好一次。[Context sink](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nn-msctf-itfcontextkeyeventsink) 不接收输入法已过滤/preserved 的键；[TestKeyDown](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfkeystrokemgr-testkeydown) 返回 false 后没有 OnKeyDown 不是失败。
+
+`artifacts/tsf-key-routing/<唯一目录>/result.json` 分键保存开始/关闭原件、自动化默认效果和清理。`prerequisite-not-met`、`test-route-not-observed`、`route-observed-synchronous-lock-refused`、`synchronous-session-selection-unavailable`、`selection-read-observed` 是不同研究结果；仅无回调的 `TF_E_LOCKED` / `TF_E_SYNCHRONOUS` 及同步回调内的 `TF_E_NOSELECTION` 作为文档明确的读取阴性；未知 HRESULT、参数错误、无效 cookie、异步响应或成功却无同步回调不算正常拒锁。预期阴性不使实验程序失败，也绝不表示产品通过。异常、身份失守或清理未证单列 `probe-failed` 并非零退出。外层 `research-observation-complete-not-product-acceptance` 只说明两键研究已完整收尾，须继续检查各键状态，不能据退出0开启能力。
+
+关闭发生在回调及 setup/cleanup COM 调用栈外，可重入关闭请求只延到原外层泵，先封准入，再 [Unadvise](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfsource-unadvisesink) 自己的 cookie、释放自己的引用并同 STA 平衡单次 Deactivate。解除未成功时保留 sink/COM 强引用，直接非零退出这个自有隔离进程，不先卸载仍可回调的对象，也不标记正常清理。每进程仍限25秒宿主、29秒线程、30秒操作，清理单独4秒正常退出及5秒精确进程回收；整体 xUnit 90秒，调用者需另设外限。
+
+CI 在 Windows build 成功后、首门之后以独立 `continue-on-error: true`、2分钟外限调用这个唯一 selector；runner 记录 source SHA、退出码、唯一结果及两键各自 status/route/session/read，summary 逐键展示，不据 exit0 宣称准入。早期研究 artifact 白名单保存 runner.json/log 与每次唯一 result.json，末尾原全包亦保留该目录。缺文件、重复结果、清理未证和程序失败分列；超时留下 running/null exit 时属于未完成，不拼成成功。
+
+此新阶段尚未 Windows 实测。无路由、拒锁或准入失败就是本次 profile/控件/键/原泵条件下的终态，不改 `pfEaten` 为 true、不绕过 Tab 导航或扩大控件矩阵制造成功。即使正向成立，真实 composition、旧排队键隔离、物理输入、唯一消费、原子写与第三方部署仍未证明；后继须由 root 按新证据裁决，生产 WriteSupported/Practice 许可链保持不变。
 
 ## 自有双队列消费顺序诊断
 

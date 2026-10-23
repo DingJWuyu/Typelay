@@ -1542,7 +1542,8 @@ internal sealed class SettingsWindow : Window
         var frozen = action.Request with
         {
             PackageIds = action.Request.PackageIds.ToArray(),
-            ActivePackages = action.Request.ActivePackages.ToArray()
+            ActivePackages = action.Request.ActivePackages.ToArray(),
+            AddDirections = action.Request.AddDirections?.ToArray()
         };
         string confirmation = action.ConfirmationText + "\n\n本次操作需要复制保留的模型和运行组件。旧副本未确认退出时会继续保留，不会立即释放磁盘空间。";
         if (MessageBox.Show(this, confirmation, "本地模型", MessageBoxButton.OKCancel,
@@ -1829,6 +1830,7 @@ internal sealed class SettingsWindow : Window
             return;
         var choices = new ComboBox { MinWidth = 155, ItemsSource = new[] { "自然", "正式" } };
         AutomationProperties.SetName(choices, "默认翻译风格");
+        ToolTipService.SetShowOnDisabled(choices, true);
         bool updating = false;
         var savedChoice = UiTheme.Text("", 12, true);
         if (state.IsReleased)
@@ -1868,6 +1870,9 @@ internal sealed class SettingsWindow : Window
             updating = true;
             choices.SelectedIndex = current.SavedPreferences is { } preferences ? preferences.Default == TranslationStyle.Formal ? 1 : 0 : -1;
             choices.IsEnabled = current.IsReleased && current.CanChange && current.Session is null && !_savingTranslation;
+            string? unavailable = choices.IsEnabled ? null : TranslationMenuPresentation.Reason(current.UnavailableReason);
+            choices.ToolTip = unavailable;
+            AutomationProperties.SetHelpText(choices, unavailable ?? "");
             savedChoice.Text = current.SavedPreferences is null ? "未设置"
                 : current.SavedPreferences.Default == TranslationStyle.Formal ? "正式" : "自然";
             updating = false;

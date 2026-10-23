@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Windows.Automation;
 using TypeLay.Core;
 using TypeLay.Windows;
@@ -19,7 +20,60 @@ internal static class NativeSourceSetup
         Check(N.IsWindowVisible(root) && N.IsWindowEnabled(root)
             && N.IsWindowVisible(field) && N.IsWindowEnabled(field), FailureReason.SourceForegroundUnavailable);
         ct.ThrowIfCancellationRequested();
-        Check(N.SetForegroundWindow(root), FailureReason.SourceForegroundRefused);
+        var before = ReadForeground();
+        ct.ThrowIfCancellationRequested();
+        if (!N.SetForegroundWindow(root))
+        {
+            var after = ReadForeground();
+            // Retain facts in the TRX exception, not a guessed eligibility cause.
+            // SetForegroundWindow has no documented last-error contract.
+            throw new Failure(FailureReason.SourceForegroundRefused, JsonSerializer.Serialize(new
+            {
+                Reason = nameof(FailureReason.SourceForegroundRefused),
+                CallerProcessId = Environment.ProcessId,
+                CallerThreadId = GetCurrentThreadId(),
+                SourceProcessId = process.Id,
+                SourceRoot = (long)root,
+                SourceField = (long)field,
+                Before = before,
+                After = after
+            }));
+        }
+    }
+
+    // These bounded reads are non-atomic observations, not foreground permission
+    // or exact-focus proofs. Never query foreign window titles or document text.
+    private static object ReadForeground()
+    {
+        long startedAtMs = WindowsInterruptClock.NowMs;
+        nint root = N.GetForegroundWindow();
+        uint rootProcessId = 0;
+        uint rootThreadId = root == 0 ? 0 : N.GetWindowThreadProcessId(root, out rootProcessId);
+        int? rootError = root != 0 && rootThreadId == 0 ? Marshal.GetLastPInvokeError() : null;
+        var info = new N.GuiThreadInfo { Size = (uint)Marshal.SizeOf<N.GuiThreadInfo>() };
+        bool? guiRead = rootThreadId == 0 ? null : N.GetGUIThreadInfo(rootThreadId, ref info);
+        int? guiError = guiRead == false ? Marshal.GetLastPInvokeError() : null;
+        nint control = guiRead == true ? info.Focus : 0;
+        uint controlProcessId = 0;
+        uint controlThreadId = control == 0 ? 0 : N.GetWindowThreadProcessId(control, out controlProcessId);
+        int? controlError = control != 0 && controlThreadId == 0 ? Marshal.GetLastPInvokeError() : null;
+        return new
+        {
+            StartedAtMs = startedAtMs,
+            CompletedAtMs = WindowsInterruptClock.NowMs,
+            Root = (long)root,
+            RootProcessId = rootProcessId,
+            RootThreadId = rootThreadId,
+            RootLookupError = rootError,
+            Control = (long)control,
+            ControlProcessId = controlProcessId,
+            ControlThreadId = controlThreadId,
+            ControlLookupError = controlError,
+            GuiThreadInfoSucceeded = guiRead,
+            GuiThreadInfoError = guiError,
+            // GUITHREADINFO: GUI_INMENUMODE=4, SYSTEMMENUMODE=8, POPUPMENUMODE=16.
+            GuiFlags = guiRead == true ? (uint?)info.Flags : null
+        };
     }
 
     // Observe the requested foreground root and its current desktop hit test.
@@ -321,7 +375,7 @@ internal static class NativeSourceSetup
         SourceResponseTextChanged,
     }
 
-    internal sealed class Failure(FailureReason reason) : InvalidOperationException
+    internal sealed class Failure(FailureReason reason, string? detail = null) : InvalidOperationException(detail)
     {
         internal FailureReason Reason { get; } = reason;
         internal string Code => Reason switch
@@ -356,6 +410,7 @@ internal static class NativeSourceSetup
         if (!condition)
             throw new Failure(reason);
     }
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] private static extern nint SetThreadDpiAwarenessContext(nint context);
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(N.Point point);
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);

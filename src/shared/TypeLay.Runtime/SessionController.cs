@@ -1225,6 +1225,8 @@ public sealed partial class SessionController : IDisposable
                     SetCommandStatus("尚未准备本次翻译所需方向，请到“准备翻译”补充模型；原文未作替换。", feedbackRevision, "language-unavailable");
                 else if (response.Code.StartsWith("glossary-", StringComparison.Ordinal))
                     SetCommandStatus("术语规则未能应用，未执行直接替换。", feedbackRevision, response.Code);
+                else if (response.Code.StartsWith("style-", StringComparison.Ordinal))
+                    SetCommandStatus("翻译风格未能应用，未执行直接替换。", feedbackRevision, response.Code);
                 else
                     SetCommandStatus(response.Status == "no-translation" ? "当前文本无需翻译，未作替换。" : "直接翻译未完成，原文未作替换。", feedbackRevision,
                         response.Status == "no-translation" ? "no-translation" : "translation-failed");
@@ -1460,14 +1462,15 @@ public sealed partial class SessionController : IDisposable
     }
 
     private bool TechnicalTranslationAvailable(TranslationOperation operation) =>
-        TechnicalTranslationAvailable(operation, _model.VerifiedIdentity);
+        TechnicalTranslationAvailable(operation, _model.VerifiedIdentity, _settings.Value.Direction);
 
-    private bool TechnicalTranslationAvailable(TranslationOperation operation, VerifiedModelIdentity? identity) => _model.Ready
+    private bool TechnicalTranslationAvailable(TranslationOperation operation, VerifiedModelIdentity? identity,
+        LanguageDirection direction) => _model.Ready
         && identity is not null && operation switch
         {
-            TranslationOperation.Style => _model.StyledTranslationCapability is not null,
-            TranslationOperation.Glossary => _model.GlossaryTranslationCapability is not null,
-            TranslationOperation.StyledGlossary => _model.StyledGlossaryTranslationCapability is not null,
+            TranslationOperation.Style => _model.StyledTranslationCapability?.Supports(direction) == true,
+            TranslationOperation.Glossary => _model.GlossaryTranslationCapability?.Supports(direction) == true,
+            TranslationOperation.StyledGlossary => _model.StyledGlossaryTranslationCapability?.Supports(direction) == true,
             TranslationOperation.Alternative => identity.AlternativeTranslationAvailable,
             _ => false
         };
@@ -1479,7 +1482,7 @@ public sealed partial class SessionController : IDisposable
     {
         identity = _model.VerifiedIdentity;
         string name = operation == TranslationOperation.StyledGlossary ? "glossary-combination" : operation.ToString().ToLowerInvariant();
-        if (!TechnicalTranslationAvailable(operation, identity) || !ReferenceEquals(identity, _model.VerifiedIdentity))
+        if (!TechnicalTranslationAvailable(operation, identity, direction) || !ReferenceEquals(identity, _model.VerifiedIdentity))
             return name + "-unavailable";
         return _translationRelease.IsReleased(operation)
             && _translationRelease.Allows(operation, identity!, direction) ? null : name + "-not-released";

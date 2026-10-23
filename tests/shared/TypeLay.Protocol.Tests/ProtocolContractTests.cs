@@ -19,6 +19,24 @@ public sealed class ProtocolContractTests
     }
 
     [Fact]
+    public async Task AdvancedDirectionScopeRoundTripsWithoutChangingLegacyHelloWire()
+    {
+        const string raw = """{"id":1,"status":"ready","styledTranslationVersion":1,"advancedTranslationDirections":["zh_ja","ja_zh"]}""";
+        var scoped = JsonSerializer.Deserialize<ModelResponse>(raw, Wire.Json)!;
+        using var stream = new MemoryStream();
+        await Wire.WriteAsync(stream, scoped, TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        var roundTrip = await Wire.ReadAsync<ModelResponse>(stream, TestContext.Current.CancellationToken);
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(roundTrip, Wire.Json));
+        Assert.Equal(new[] { "zh_ja", "ja_zh" }, json.RootElement.GetProperty("advancedTranslationDirections")
+            .EnumerateArray().Select(item => item.GetString()).ToArray());
+        using var legacy = JsonDocument.Parse(JsonSerializer.Serialize(new ModelResponse(1, "ready", StyledTranslationVersion: 1), Wire.Json));
+        Assert.False(legacy.RootElement.TryGetProperty("advancedTranslationDirections", out _));
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<ModelResponse>(
+            """{"id":1,"status":"ready","advancedTranslationDirections":[1]}""", Wire.Json));
+    }
+
+    [Fact]
     public async Task AlternativeFramesCarryTheFrozenCandidateWithoutChangingOrdinaryRequests()
     {
         var request = new ModelRequest(8, "translate-alternative", "原始源句", "auto", "en",

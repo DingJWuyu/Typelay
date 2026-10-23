@@ -130,6 +130,12 @@ def serve(engine, self_check, output=None):
                     response["packages"] = engine.packages
                 if engine.styled_translation_version is not None:
                     response["styledTranslationVersion"] = engine.styled_translation_version
+                if engine.styled_translation_version is not None and set(
+                    engine.advanced_translation_directions
+                ) != set(engine.directions):
+                    response["advancedTranslationDirections"] = (
+                        engine.advanced_translation_directions
+                    )
                 if engine.glossary_translation_version is not None:
                     response["glossaryTranslationVersion"] = engine.glossary_translation_version
                 if engine.styled_glossary_translation_version is not None:

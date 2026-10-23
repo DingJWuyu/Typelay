@@ -101,9 +101,18 @@ public interface ISessionView
 }
 
 // A negotiated protocol feature for one worker connection, not a quality claim.
-public sealed record StyledTranslationCapability(long Revision);
-public sealed record GlossaryTranslationCapability(long Revision);
-public sealed record StyledGlossaryTranslationCapability(long Revision);
+public sealed record StyledTranslationCapability(long Revision, AdvancedTranslationScope? Scope = null)
+{
+    public bool Supports(LanguageDirection direction) => Scope?.Supports(direction) ?? true;
+}
+public sealed record GlossaryTranslationCapability(long Revision, AdvancedTranslationScope? Scope = null)
+{
+    public bool Supports(LanguageDirection direction) => Scope?.Supports(direction) ?? true;
+}
+public sealed record StyledGlossaryTranslationCapability(long Revision, AdvancedTranslationScope? Scope = null)
+{
+    public bool Supports(LanguageDirection direction) => Scope?.Supports(direction) ?? true;
+}
 
 public interface ITranslationService
 {

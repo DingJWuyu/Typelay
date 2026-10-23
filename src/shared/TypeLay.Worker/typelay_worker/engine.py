@@ -12,6 +12,7 @@ from typing import Protocol
 
 from .catalog import load_package_catalog
 from .glossary import parse_glossary, required_targets_present, segment_terms
+from .hy_assets import DIRECTIONS as HY_ADVANCED_DIRECTIONS
 from .inventory import verify_inventory
 from .protocol import valid_text
 
@@ -262,19 +263,30 @@ class LocalEngine:
         )
 
     @property
+    def advanced_translation_directions(self):
+        if len(self._selection) != 1 or self._selection[0].package.backend != "hy-mt-llama-cpu":
+            return ()
+        return tuple(
+            direction.id
+            for direction in self._selection[0].directions
+            if direction.id in HY_ADVANCED_DIRECTIONS
+        )
+
+    def _supports_advanced_direction(self, source, target):
+        possible = tuple(
+            direction.id
+            for item in self._selection
+            for direction in item.directions
+            if direction.target == target and (source == "auto" or direction.source == source)
+        )
+        return bool(possible) and all(
+            direction in self.advanced_translation_directions for direction in possible
+        )
+
+    @property
     def styled_translation_version(self):
         # Successful loading establishes a protocol feature, not language quality.
-        return (
-            1
-            if len(self._selection) == 1
-            and self._selection[0].package.backend == "hy-mt-llama-cpu"
-            # The current hello is package-wide, not per direction. A candidate
-            # including English must not advertise advanced operations for all pairs.
-            and not any(
-                direction.id in ("zh_en", "en_zh") for direction in self._selection[0].directions
-            )
-            else None
-        )
+        return 1 if self.advanced_translation_directions else None
 
     @property
     def glossary_translation_version(self):
@@ -351,14 +363,22 @@ class LocalEngine:
             or not isinstance(target, str)
         ):
             return Result("error", code="invalid-request")
-        if self._selection[0].package.backend != "hy-mt-llama-cpu":
+        if not self._supports_advanced_direction(source, target):
             return Result("error", code="style-unavailable")
         return self._translate(text, source, target, preserved, style)
 
     def translate_styled_glossary(self, text, source, target, style, glossary, preserved=None):
-        if type(style) is not str or style not in ("natural", "formal"):
+        if (
+            type(style) is not str
+            or style not in ("natural", "formal")
+            or not isinstance(source, str)
+            or not isinstance(target, str)
+        ):
             return Result("error", code="invalid-request")
-        if self.styled_glossary_translation_version is None:
+        if (
+            self.styled_glossary_translation_version is None
+            or not self._supports_advanced_direction(source, target)
+        ):
             return Result("error", code="glossary-combination-unavailable")
         return self._translate_glossary(text, source, target, glossary, preserved, style)
 
@@ -372,7 +392,7 @@ class LocalEngine:
             return Result("error", code=str(error))
         if not isinstance(source, str) or not isinstance(target, str):
             return Result("error", code="invalid-request")
-        if self._selection[0].package.backend != "hy-mt-llama-cpu":
+        if not self._supports_advanced_direction(source, target):
             return Result("error", code="glossary-unavailable")
         return self._translate(text, source, target, preserved, style, rules)
 

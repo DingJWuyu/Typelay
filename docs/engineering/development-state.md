@@ -4,22 +4,23 @@
 
 ## 先看结论
 
-本页于 2026-10-23 核对。**Windows 普通源写入仍未支持，CI473 的准备失败已有本地修正，TSF 正从上下文观察推进到自然键路由与同步只读验证；Hy 中英独立16条已审，非公开兼容基础已集成，实际候选14的无模型构建与 Host 预检通过，正在准备真实产品链。** 编译、研究探针、采集和无模型预检都不能替代产品验收。
+本页于 2026-10-23 核对。**Windows 普通源写入仍有架构缺口：连续初始化修正已实测通过，前台准备及人工稿回源问题仍待首因证据；phase2 键路由/同步只读实验已本地完成待运行。Hy 中英真实产品链已通过，方向级能力、设置动作与明确提示已本地集成，正式默认未变。** 编译、研究观察与 smoke 不代替完整产品验收。
 
 ### 当前身份与最近 CI
 
-- 本地代码集成基准 `b742ddc`，包括 `2877d6e` 提前上传 Windows 诊断、`300476e` 自有前台导航与 ordinary 初始化修正、`b742ddc` 非公开 Hy 中英兼容基础。**这三项尚未远端发布**，不得用 CI473 结果替它们背书。唯一发布者已只读确认远端仍为下述 `c1f242f`、无并发变更；下一候选先发已集成的37文件及本状态页，不等待 phase2 新实验。
-- 最近终态为 [CI473](https://github.com/DingJWuyu/Typelay/actions/runs/39934831201)，单次自动运行、整体失败。远端源码 `c1f242fcd11a58603b6180e2a1004c4361dd18bc`、tree `e5f9c1b23e042d7c54a33dcf8267f928cdcecc19`，对应本地发布基准 `e742ae9`。原件、终态与包核验收据在上层工作区 `../artifacts/ci473-current/`。
+- [CI474](https://github.com/DingJWuyu/Typelay/actions/runs/39948256660) 已于 2026-10-23 12:06:01 UTC 终态 failure，唯一自动 push、attempt1。远端 `796e81816079b13cf1f25a2d2bc3278e7936d1cd`、tree `5f525c4e44f9c4d19ac481886930868aca383a94`，精确对应本地冻结 `59d1218` 的38文件；用户明确批准后发布，没有夹带后继。
+- 本地后继已集成 Windows phase2、模型安装探针修复、方向级能力与消费端、候选补方向动作，以及两处 Windows 失败的有界观察改进。前29文件组合 Runtime1287/1287、Protocol19/19、worker167/167、App.Tests/NativeFixture Compile、Ruff/YAML/格式通过；后加两诊断文件分别 Compile/格式通过，真实 Windows 尚未执行。诊断不等于故障修复。后续发布范围与手动启用中英预览已分别询问用户，尚待回答，不扩大原38文件批准。最终本地候选共39文件，另含Windows候选设置验收准备；集成后Windows.Contracts111/111、App.Tests/DesktopFixture Compile、定点格式和冷启日志上传白名单检查通过。
+- 本轮5份原ZIP及 head/SHA均核验；837条源码归档与冻结树逐项一致。证据根目录 `../artifacts/ci474-current/approved-publication-20261023/`，含 `terminal-verification.json`、`artifact-integrity-verified.json`、`verified-result-summary.json`。
 
-| CI473 范围 | 实际结果 | 能证明与不能证明的边界 |
+| CI474 范围 | 实际结果 | 边界 |
 | --- | --- | --- |
-| 共享检查 | 1641 项通过 | 只对应上述远端源码，不包含本地新增 Hy 基础 |
-| Windows App | 已执行759项，743通过、16失败；16项均在首次 `StockFixture.Focus → Desktop.Prepare` 焦点断言失败 | 失败尚未到各自被测事务；本地修正仅 Compile，须新 Windows CI 复验，不写成已修复 |
-| Windows 连续场景 | 失败于 `ordinary-start-source`，`EM_SETSEL` 返回 Win32 1460；前面的自有源场景有通过原件 | 不把自有源成功补作普通源成功；原失败及未运行后继保留 |
-| 正式 Notepad | 仍为 `writeSupported=false`，接受正向门失败 | 预览、模型就绪和焦点有效不等于接受能力 |
-| TSF phase1 | 共4次观察：1次 wrong-field 阴性，A→B→A 三次 exact existing context 正向；引用释放、正常退出通过 | 未测试自然键路由、同步读锁、composition 或生产写入 |
-| 同步机制与既有产品回归 | 六模式5..10全部机制观察成立、输入配对与清理通过；browser7、Hy生产5、包生命周期10通过 | 裸机制不是普通源许可链；既有 Hy 场景不是候选14产品链 |
-| Linux | 隔离 Fcitx/GTK 已过；实模 GTK 与 GTK4 两步骤失败 | 原件留存，不宣称根因已定或已修；推荐仍为 CI468 |
+| 共享 | 1649/1649通过 | 对应远端59d1218内容，不是后继scope组合1287的远端证明 |
+| Windows App | 758/775通过，17失败 | 原16项在唯一SetForegroundWindow返回false处拒绝，尚未进入被测写事务；第17项回源已focused但人工稿等待失败，尚未发送Ctrl/接受 |
+| 连续场景 | 通过；ordinary焦点840853→840968，唯一选区设置840968→840970，原文/选区保持、writeRequests=0 | ordinary初始化修正已实测，ordinaryWritebackVerified=false，不证明普通写回 |
+| 正式Notepad | 18条观测均writeSupported=false，90.009秒等待接受提示超时，后3场景未运行 | 仍仅预览，不宣称接受/撤销通过 |
+| 六同步与TSF phase1 | 六模式5..10及清理通过；wrong-field阴性+A→B→A三次精确context阳性、引用释放/正常退出 | phase2不在本轮；键路由、同步锁、composition、生产写尚未证实 |
+| Browser/Hy | 7/5/10场景通过；Hy normalQuit、exit0、allModelWorkersExited均真 | 既有12方向路径，quality not-reviewed，不证明新14 GUI或整体翻译质量 |
+| Linux | GTK、GTK4、隔离Fcitx及Hy生命周期通过；仅Qt动画采样断言失败，观察高度仅100和280两档 | 未证实本批代码因果，不另开Linux线，推荐CI468不变 |
 
 ## 怎么安排，谁负责
 
@@ -27,11 +28,11 @@
 
 | 责任线 | 当前负责人及工作区 | 当前下一动作 | 本批关闭条件与后继 |
 | --- | --- | --- | --- |
-| Windows 集成与发布复验 | root；发布交唯一写者，集成区 `Typelay-ci468-recovered` | 组合 App.Tests/DesktopFixture Compile 与 Runtime1224 已过，交唯一发布者冻结的37文件与状态页，不等 phase2；发布后跟踪新 CI | 核对远端 commit/tree、原 App 失败、ordinary 初始化及诊断原件；Compile 不算复验。正式 Notepad 缺口仍由接入线继续，不因等待 CI 暂停它或模型线 |
-| Windows 普通源接入 | `prepare_windows_tsf_admission`，独立 advisor；`Typelay-windows-tsf-keyprobe` | 实现 phase2 自有 stock Edit 的自然键路由与同步只读，交独审并完成本地 Compile；本地编译已通过；最终窄审修正另行核验 | 取得真实路由、同步只读、原键/文本保持及完整清理证据，逐项区分未准入与程序失败；仅满足研究必要条件，不开启生产写、不注入第三方 |
-| Hy 中英实际产品链 | `implement_hy_english_candidate_support`，独立 advisor；`Typelay-hy-english-candidate` | 复用已通过的 stage-a4 实际候选；runner 已冻结并经 root 窄审，正在执行一次真实 Host/安装链 | 下一批为旧12激活 → 故障候选拒绝并保留旧代 → 成功扩到14 → 两条 smoke → 全部退出及锁复取；**当前已获一次模型执行准入，结果待核，不冒称通过**。失败保原件并停止余下阶段，不以 mock 或静态测试代替 |
+| Windows 集成与发布复验 | root；授权后交唯一发布者 | CI474终态与原件已核；下一批含phase2及两处失败观察，待后续范围批准后冻结发布 | 原16行与人工稿回源要取得可区分原因的新事实；不盲重跑或以诊断通过冒称修好 |
+| Windows 当前失败 | 前台与回源作者已交付，root集成并按新结果续接 | SetForeground拒绝时保前后窗口/进程/菜单事实；回源保首段、全局及return后首次异常与末段；均不改产品调用 | 已确认第17项35ms内回源focused，随后目标生命周期变化使状态回到ValidTranslation；先清绑定的来源未知，需新原件，不延时/重试/弱化身份 |
+| Hy 交付接入 | root集成；模型作者与消费者按新证据续接 | 方向scope、设置动作与提示已集成/独审，组合检查通过；现有Windows设置验收已准备旧12原10场景/候选14追加5场景，目录门111项及Compile通过，实际GUI/模型未运行；预览启用待用户产品决定 | 旧12hello/能力保留，14中English高级请求明确拒绝且不清偏好、不普通降级；原active/语言保持，公开默认不自动改变 |
 | 候选裁决与资源协调 | root | 对实质变化做独审、分配编译/推理槽，按结果安排后继；保持公开 catalog、默认与预算不变 | 本地兼容 GO 不等于产品或质量放行；真实失败恢复、方向授权、原选择和退出均有原件后才裁决下一阶段，公开采用另行决定 |
-| Linux | 暂不派工 | 保留 CI468 推荐包及 CI473 两项失败证据，不新增扩展或重复归因 | 用户要求恢复，或证据表明当前共享改动造成回归时由 root 明确安排 |
+| Linux | 暂不派工 | 保留 CI468 推荐包及 CI474 Qt失败证据，不新增扩展或重复归因 | 用户要求恢复，或证据表明当前共享改动造成回归时由 root 明确安排 |
 
 同机重编译与模型推理错开，模型推理串行。槽位由 root 按实际 owned 进程退出及所有权证据交接，不按代理结束消息释放；远端 CI 不占本地编译槽。代码、输入、身份、权限及资源合同未变时不反复全量审查，只复核实质变化与受影响边界。
 
@@ -39,31 +40,39 @@
 
 具体产品约束见 [Windows 待办](../platforms/windows/open-issues.md)。普通输入框接受译文、F10 替换与连续输入是核心场景；正式 Notepad 已证明仅预览，误写或丢稿影响高，日常发生频率未知。按[实际价值判断](testing.md#实际价值判断)优先闭合首键、原子写入、IME 与身份，而不是为归因本身重复跑已过场景。
 
-- **准备修正待实际复验**：`300476e` 在源准备边界显式完成自有前台导航，并修正 ordinary 初始选择准备。App/桌面 fixture 托管 Compile 已过，日志在 `../Typelay-windows-source-next/artifacts/windows-source-next/ci473-*-compile.log`。原文本、焦点、选区、撤销与许可断言不放宽；未取得新 Windows 结果前不声称16项或1460已解决。
+- **准备问题分开报告**：ordinary初始化已在CI474原JSON实测通过，原1460本轮未复现；原16项前台准备仍失败。`b390de9`仅补失败前后窗口/进程/线程、菜单状态及读取错误，不采标题/正文、不增加SetForeground重试或修改权限。下一轮观察“调用者无前台资格”等假设，不把唯一API返回false推为唯一根因。
+- **人工稿回源并非Broker没有返回**：原CI474回源35ms内focused，之后同进程/同元素但目标lifetime变化，30秒等待的EditedTranslationPending未成立；Ctrl/accept尚未执行。旧trace丢失中间27.3秒，`cbe7060`/`3ed3861`保留首8条、全局与return后每类首次观察及末段，仍最多64条；Broker扫描最多1MiB/4096行，首次非native前后分列，截断明确unknown。只是补首因观察，不改焦点、捕获、期限、源生命周期或原断言。
 - **诊断先于后续失败留存**：`2877d6e` 提前上传源研究原始诊断，避免后续失败遮蔽已完成研究；它改善可观测性，不改变产品能力。
-- **TSF 下一门是 phase2，不再重复 phase1**：CI473 已证实自有 stock Edit 的既有 context 与精确 view 可观察，且 wrong-field 被拒绝。当前实现自然键路由与同步只读研究，不造合成 context、不注册或注入第三方、不写文本；未取得能力不得用推测或降级绕过。phase1 原 JSON 明确 `keyRouting/synchronousReadLock/composition=not-tested`。
+- **TSF 下一门是 phase2，不再重复 phase1**：CI473 已证实自有 stock Edit 的既有 context 与精确 view 可观察，且 wrong-field 被拒绝。实现及独立CI接线已完成、本地Compile通过，下一实际步骤是自然键路由与同步只读研究，不造合成 context、不注册或注入第三方、不写文本；未取得能力不得用推测或降级绕过。phase1 原 JSON 明确 `keyRouting/synchronousReadLock/composition=not-tested`。
 - **生产接受仍关闭**：六同步实验与 TSF context 阳性都不是完整许可见证。必须保留首键、同目标有效按键消费、原子文本事务、IME 与精确源身份边界；未知即拒绝。用户已决定接受后主动切换应用时，后续 repeat/up 交给新应用，跨应用尾键抑制不再是要求。
 - 已过的几何、浏览器 metadata/Ready、源安装与退出回归保留，不作为现役排程再派工；旧故障未复现不等于根因已证实。新真实失败出现时按首因推进，不靠扩大期限、重试或跳过断言制造绿色。
 
-## 模型：非公开 Hy 中英兼容基础已集成，真实产品链已准入待结果
+## 模型：非公开 Hy 中英兼容基础已集成，非公开真实产品链已通过，继续交付接入取舍
 
 ### 当前已完成的证据
 
 - **独立16条已审**：固定 Hy 与 Argos 默认各16翻译＋1 hello，整轮39.099秒、零重试，两个 owned 进程组退出并释放锁。Hy 为14条未见实质问题、1较小、1退款动作未决；Argos 为7重大、4较小、5未见问题，保守口径至少5对明确重大修复。只支持进入兼容/产品验收准备，未决不算通过，台灯错义及其他方向已知缺陷不消失。原件与审查在 `artifacts/paired-daily16-run-20261023-01/`，退出/结构复核在 `artifacts/paired-daily16-execution-20261023-01/`。评审先冻匿名判断再揭盲，但见过旧定性摘要，且不是专业译者验收，不宣称完全盲评或真实用户错误率。
-- **兼容基础双独审 GO**：作者提交 `86b58f1`、集成提交 `b742ddc` 已审。Runtime1224、worker165、Linux setup108、supervisor/http各1、payload12、prepare11、ELF无模型ABI11通过；Windows仅 Compile。检查原件在 `../Typelay-hy-english-candidate/artifacts/`。这些不是实际 Windows 运行或模型安装恢复的替代证据。
+- **兼容基础双独审 GO**：作者提交 `86b58f1`、集成提交 `b742ddc` 已审。Runtime1224、worker165、Linux setup108、supervisor/http各1、payload12、prepare11、ELF无模型ABI11通过；基础的既有12方向已在CI474 Windows生产与生命周期实跑通过；后继scope及14 GUI仍未跑。检查原件在 `../Typelay-hy-english-candidate/artifacts/`。这些不是实际 Windows 运行或模型安装恢复的替代证据。
 - **stage-a4 是真实无模型通过**：`../Typelay-hy-english-candidate/artifacts/hy-candidate14-product-preparation/stage-a4/` 的 build/native/Host 均退出0，Host 准备视图真实读到嵌入候选14方向；空数据 `modelReady=false`，没有模型 worker、没有复制权重，所有 owned 进程退出，总13.806秒。前序 SDK 构建失败原件保留，是构建前置失败，不是模型失败；stage-a4 不补作那些失败通过。
+
+- **真实产品链首轮在安装前置失败**：B 阶段5.195秒退出2，尚未复制权重、启动 Host 或模型，零翻译，C–F 未运行；所有 owned 进程/组退出、drain 收尾，原代元数据不变且锁可重取。原件在同准备目录 `product-round-01/`。一次零模型依赖探针实际退出0，证实 `ctranslate2` 导入时 UCX 拒绝诊断污染 stdout 后才输出合法 JSON，不是 Python 重定位错误；保持 socket 权限拒绝不变，仅修探针协议输出隔离。精确原件在 `runtime-import-probe/`。修复 `6767f05` 仅分离探针的 JSON 输出，真实依赖 red/green、导入/退出原生 FD 污染及外来依赖路径拒绝回归通过，setup109/109 通过；原许可拒绝保持，不重跑无变化的失败轮。
+
+- **真实产品链 round03 完整通过**：`product-round-03/result.json` SHA-256 `4b9a377fa08755c349ec84cbfd27ec2d64a4c3ef2a558821b8e788e3cda95623`，实际exit0、47.765秒。旧12真实激活后，故意移走新候选license使替换失败；旧worker25退役，恢复worker35使用同旧代12方向，current/active保持，并保留本次失败诊断。随后新14实际Ready，两条冻结中英smoke返回非空正确译文且文档/版本/选区绑定保持。Host正常退出0、双EOF、0外层清理信号、drain全部收尾/0取消、owned及组无残留，install及三use锁可重取，原seed完整性复核不变。3147原帧完整保存，不是质量评估、GUI或Windows验收。
+- **运行环境限定与失败证据保留**：round02在Host激活阶段OOM，未翻译，旧失败不覆盖。相同硬AS下零模型对照显示Host虚拟地址接近2.5GiB而RSS约51MiB；仅给实验Host设置 `DOTNET_GCRegionRange=20000000`（512MiB预留）后，虚拟地址减少约783MiB，原 `DOTNET_GCHeapHardLimit=10000000`（256MiB提交）、AS2.5GiB及CPU0/1不变。round03使用这个明确环境，不证明未设置它的默认运行资源行为，也未定位旧OOM的具体失败分配点。模型、采样、token与原预算均未扩大。runner修正为持续排空，保留最多65536帧/16MiB完整原帧；原512帧门不再用于长轮，产品10ms事件行为不改。
 
 ### 必须保持的兼容边界
 
-正式 catalog 仍12方向，ABI5、greedy、模型权重锁、默认与公开 UI 不变。新增是非公开 `english-v1` 能力及显式 format2 `Install/addDirections` 事务；旧 Repair 不扩方向。选中库存、manifest 与原生导出共同授予能力，不因库里有入口就宣称已安装；事务失败须保旧代与 active 选择。**跨旧版本恢复尚未完成，不承诺旧版本自动恢复14方向。**
+正式 catalog 仍12方向，ABI5、greedy、模型权重锁、默认与公开 UI 不变。新增是非公开 `english-v1` 能力及显式 format2 `Install/addDirections` 事务；旧 Repair 不扩方向。选中库存、manifest 与原生导出共同授予能力，不因库里有入口就宣称已安装；事务失败须保旧代与 active 选择。候选14仍有原12高级能力的non-null作用域，English已有风格/术语请求必须明确拒绝而非普通翻译降级；保留Argos原有休眠偏好语义，重置/删除不受新增应用资格门阻挡。**跨旧版本恢复尚未完成，不承诺旧版本自动恢复14方向。**
 
-下一次实际产品链只沿真实 Host、生产安装/激活和 editor snapshot 入口，验证旧12、预期故障后的旧代保留、成功14及两条冻结 smoke。候选构建物与原件分开，原安装证据只读，不手造 inventory/hash/current，不用研究 worker 或 mock Ready 顶替。只有实际观察到旧 worker 退休与替换时才声称覆盖恢复；preflight 拒绝只证明未切换。两条 smoke 不是质量复评，不重跑已消费16题；实际模型阶段获准后才执行，任何非预期失败立即停止余下阶段并保存已运行/失败/未运行及退出区别。
+已通过的产品链沿真实 Host、生产安装/激活和 editor snapshot 入口，不手造 Ready/current，不以研究worker代替。两条 smoke 不替代独立16条质量证据，也不抹除已知错义。方向级高级能力兼容、明确升级动作与禁用原因提示已实现并完成本地组合检查，不再重复扩方向/失败恢复实验或扫已消费样本；当前公开UI、catalog与默认保持不变。
+
+- **候选设置验收代码已准备、未实跑**：`9b49b22`复用现有Windows Hy包生命周期。实际同包目录仅允许完整旧12或候选14；旧12保持原10场景，标明中英未提供且未运行。候选14追加真实取消/确认、同代正常退出冷启、两个普通预览，保留原语言/选择与所有权证明；目录不合法失败，不由worker自报决定跳过。公开catalog、默认和生产代码不改，原960秒预算不增加；冷启日志精确列入现有artifact白名单。Contracts111/111和两消费者Compile只证明本地检查，真实GUI、14冷启和本轮两句仍待最终候选运行。
 
 ### 资源与采用条件
 
 - SDK 构建与模型推理预算分开，不因构建前置失败扩大模型预算。模型保持两核 CPU affinity、硬地址空间2.5GiB、单请求及加载/hello60秒、单共享600秒、清理最多7秒、失败停止、零推理重试；推理与重编译不得重叠。两核 affinity 不等于只有两个线程，点采样不冒充连续资源证明。
 - Hy/Qwen context1024、output192；Argos保留生产输入384 pieces、输出512拒绝界；Mozilla保留整请求192 token保护。原身份、模板、参数、原响应、失败与退出证据必须保留；冻结模型合同不因 SDK 独立构建而变化。
-- 真实链准入前核实际二进制与模型身份、空间、锁、owned进程与资源槽；runner/合同已冻结并取得本次准入，后续新一轮仍须按结果裁决。兼容成功只证明该链，不自动证明高级操作、完整 GUI、物理输入或质量合格；不改默认、不上传文本、不启用云端，不无假设扫参或扩候选。
+- 真实链准入前核实际二进制与模型身份、空间、锁、owned进程与资源槽；round03 身份/环境/原始结果已冻结并核验，后续仅按实质新增风险安排验证。兼容成功只证明该链，不自动证明高级操作、完整 GUI、物理输入或质量合格；不改默认、不上传文本、不启用云端，不无假设扫参或扩候选。
 
 ### 仍约束当前取舍的质量事实
 
@@ -80,7 +89,7 @@
 
 ## Linux 与恢复证据边界
 
-- Linux 仍推荐 CI468 `091fd796` [体验包](https://github.com/DingJWuyu/Typelay/actions/runs/39904552393/artifacts/12480483952)，其完整检查、包身份、gzip/ZIP、293项清单及本包说明已有核验；仍需用户真机、物理键盘和输入法体验，不是所有应用验收。CI473 隔离已过、实模 GTK/GTK4 失败如上，当前不派修复或扩展任务。
+- Linux 仍推荐 CI468 `091fd796` [体验包](https://github.com/DingJWuyu/Typelay/actions/runs/39904552393/artifacts/12480483952)，其完整检查、包身份、gzip/ZIP、293项清单及本包说明已有核验；仍需用户真机、物理键盘和输入法体验，不是所有应用验收。CI474 的 GTK/GTK4 本轮通过、Qt 动画采样失败如上，当前不派修复或扩展任务。
 - 按需唤醒后空捕获仍保守中止：恢复同一目标不证明期间未离开焦点家族；未取得有效顺序与屏障证据不恢复唤醒，见[架构约束](../platforms/linux/architecture.md#按需唤醒与缺失捕获)。可选富文本、非合作控件、Electron/VS Code 自动浮层扩展暂不开展。
 - 已发布 CI468 源码从 shared artifact `12480153131` 完整恢复，tree `5dbdda82b1d415397db8580ca1878ab6dc7a2d95` 与发布一致；本地恢复基准 `88d8738` 是独立提交，不冒称远端历史恢复。收据在 `artifacts/ci468-source-recovery/verification.json`。
 - 旧模型原始输出、资源/退出和独审原件，以及 Mozilla 未发布5文件补丁/33项测试原件仍缺失；可读的新证据不冒称旧证据恢复。未注明的 `artifacts/` 相对本集成工作区；模型兼容和 CI473 的跨工作区路径已分别明确。原始日志与模型留在被忽略目录，不提交或另建历史快照。
