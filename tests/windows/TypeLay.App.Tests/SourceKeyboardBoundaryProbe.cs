@@ -7,7 +7,8 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 
 namespace TypeLay.App.Tests;
 
-// Mechanism diagnostics only. No write plan, LL witness or physical-input claim.
+// Explicit mechanism diagnostics: read-only boundaries and a separately selected
+// self-owned native transaction. No production permit, LL witness or physical-input claim.
 [Collection("Desktop")]
 public sealed class SourceKeyboardBoundaryProbe
 {
@@ -152,12 +153,140 @@ public sealed class SourceKeyboardBoundaryProbe
         Assert.True(status != "precondition_failed", $"{experiment}: {error}; results: {directory}");
     }
 
+    // Explicit only: real source-thread WH_KEYBOARD + production owned native transaction.
+    // Does not enable ordinary acceptance or claim a production permit/physical input.
+    [Theory(Explicit = true, Timeout = 60000)]
+    [InlineData(5)] // first down, repeat and up: one native acceptance
+    [InlineData(6)] // HC_NOREMOVE must not write
+    [InlineData(7)] // newer text must survive; original key bypasses
+    [InlineData(8)] // original admission already expired
+    [InlineData(9)] // source callback paused after native acceptance
+    [InlineData(10)] // wrong lifetime cookie
+    public async Task ObserveSelfOwnedSynchronousAcceptance(int mode)
+    {
+        string directory = Path.Combine(Repository(), "artifacts", "source-synchronous-acceptance",
+            $"{DateTime.UtcNow:yyyyMMddTHHmmssfffZ}-{Guid.NewGuid():N}-{mode}");
+        Directory.CreateDirectory(directory);
+        var observations = new List<object>();
+        var inputs = new ProbeInputs();
+        ProductionForegroundWriteTests.Desktop? source = null;
+        string status = "precondition_failed";
+        string? error = null;
+        bool hooksClosed = false, processesExited = false, inputsPaired = false;
+        bool pausedObserved = false;
+        try
+        {
+            source = await ProductionForegroundWriteTests.Desktop.Start(sourceSynchronousProbe: true);
+            string original = N.ReadText(source.A, Limits.MaxTextUnits);
+            string other = N.ReadText(source.B, Limits.MaxTextUnits);
+            await Arm(source, mode);
+            inputs.SendRepeatedPair(source.Root, 9, 0x0f);
+            inputs.SendPair(source.Root, 0x86, 0);
+            if (mode == 9)
+            {
+                // GetProp does not dispatch a message to the held source GUI thread.
+                while (N.GetProp(source.Root, "TypeLay.Test.SourceSync.Paused.v1") == 0
+                    && N.GetProp(source.Root, "TypeLay.Test.SourceBarrierUp.v1") == 0)
+                    await Task.Delay(1, source.Token);
+                if (N.GetProp(source.Root, "TypeLay.Test.SourceSync.Paused.v1") != 1)
+                {
+                    await Snapshot(source, observations, "pause-precondition-not-observed");
+                    throw new InvalidOperationException("Native acceptance/pause was not observed; inspect the actual receipt.");
+                }
+                pausedObserved = true;
+                Assert.Equal((nint)0, N.GetProp(source.Root, "TypeLay.Test.SourceSync.Dispatched.v1"));
+            }
+            while (N.GetProp(source.Root, "TypeLay.Test.SourceBarrierUp.v1") != 1)
+                await Task.Delay(5, source.Token);
+            var snapshot = await Snapshot(source, observations, "source-synchronous-transaction");
+            var sync = snapshot.GetProperty("synchronous");
+            Assert.Equal(1, Number(sync, "nativeCalls"));
+            bool expectedAccept = mode is 5 or 6 or 9;
+            Assert.Equal(expectedAccept, sync.GetProperty("accepted").GetBoolean());
+            Assert.Equal(expectedAccept ? 1 : 2, Number(sync, "status"));
+            Assert.Equal(expectedAccept ? 1 : 0, Number(sync, "bodyChanges"));
+            Assert.Equal(expectedAccept ? 0 : 3, Number(snapshot, "before"));
+            Assert.Equal(expectedAccept ? 0 : 3, Number(snapshot, "after"));
+            Assert.Equal(other, N.ReadText(source.B, Limits.MaxTextUnits));
+            if (expectedAccept)
+            {
+                Assert.Equal(1, Number(sync, "ime")); // Observed by native; never manufactured.
+                Assert.Equal(1, Number(sync, "repeatConsumed"));
+                Assert.Equal(1, Number(sync, "upConsumed"));
+                Assert.Equal("Synchronous source acceptance.", N.ReadText(source.A, Limits.MaxTextUnits));
+                Assert.Equal(new TextRange(30, 30), N.ReadSelection(source.A));
+                Assert.Equal(source.A, N.Focused().Control);
+                Assert.NotEqual((nuint)0, N.Send(source.A, 0x00c6)); // EM_CANUNDO
+                N.Send(source.A, 0x00c7); // EM_UNDO
+                Assert.Equal(original, N.ReadText(source.A, Limits.MaxTextUnits));
+            }
+            else
+            {
+                Assert.Equal(mode == 7 ? original + " newer edit" : original, N.ReadText(source.A, Limits.MaxTextUnits));
+                Assert.Equal(mode == 7 ? 3 : mode == 8 ? 14 : 2, Number(sync, "reason"));
+            }
+            if (mode == 6)
+            {
+                Assert.True(Number(snapshot, "noRemove") >= 2);
+                Assert.Equal(0, Number(sync, "peekNativeCalls"));
+                Assert.Equal(0, Number(snapshot, "firstConsumed"));
+                Assert.Equal(0, Number(snapshot, "secondConsumed"));
+                Assert.True(snapshot.GetProperty("firstFound").GetBoolean());
+                Assert.True(snapshot.GetProperty("secondFound").GetBoolean());
+            }
+            if (mode == 9)
+                Assert.True(sync.GetProperty("pauseFinished").GetInt64() - sync.GetProperty("pauseStarted").GetInt64() >= 1000);
+            source.AssertZeroSubmits();
+            status = "mechanism_observed_not_product_acceptance";
+        }
+        catch (Exception failure) { error = failure.ToString(); }
+        finally
+        {
+            try
+            {
+                inputs.Cleanup();
+                inputsPaired = true;
+            }
+            catch (Exception failure) { error += "\nInput cleanup: " + failure; }
+            if (source is not null)
+            {
+                try
+                {
+                    hooksClosed = N.Send(source.Root, 0x8082) == 1;
+                }
+                catch (Exception failure) { error += "\nHook cleanup: " + failure; }
+                try
+                {
+                    await source.DisposeAsync();
+                    processesExited = true;
+                }
+                catch (Exception failure) { error += "\nProcess cleanup: " + failure; }
+            }
+            if (!hooksClosed || !processesExited || !inputsPaired)
+                status = "precondition_failed";
+            await File.WriteAllTextAsync(Path.Combine(directory, "result.json"), JsonSerializer.Serialize(new
+            {
+                diagnosticOnly = true,
+                productionReadiness = false,
+                mode,
+                status,
+                error,
+                hooksClosed,
+                processesExited,
+                inputsPaired,
+                pausedObserved,
+                inputs = inputs.Records,
+                observations,
+                scope = "Owned source only; synthetic bounded plan; real native IME gate; no Notepad capability or physical-input proof."
+            }, new JsonSerializerOptions { WriteIndented = true }), CancellationToken.None);
+        }
+        Assert.True(status != "precondition_failed", $"{mode}: {error}; results: {directory}");
+    }
+
     // Separate exact -method selector: the existing three-row diagnostic is unchanged.
     [Theory(Explicit = true, Timeout = 60000)]
     [InlineData("completion")]
     [InlineData("deadline")]
-    [InlineData("focus-tail")]
-    [InlineData("queue-order")]
     public async Task ObserveSelfOwnedConsumptionOrder(string experiment)
     {
         string directory = Path.Combine(Repository(), "artifacts", "source-consumption-order",
@@ -178,9 +307,7 @@ public sealed class SourceKeyboardBoundaryProbe
             Assert.True(value.GetProperty("threadsExited").GetBoolean());
             Assert.True(value.GetProperty("inputsPaired").GetBoolean());
             string? status = value.GetProperty("status").GetString();
-            // A counterexample is useful diagnostic success, never product success.
-            // Inconclusive cannot turn this row green.
-            Assert.Contains(status, new[] { "mechanism_observed_not_product_acceptance", "observed_counterexample" });
+            Assert.Equal("mechanism_observed_not_product_acceptance", status);
             Assert.Equal(2, value.GetProperty("roots").GetArrayLength());
             var roots = value.GetProperty("roots").EnumerateArray().ToArray();
             Assert.NotEqual(roots[0].GetProperty("ThreadId").GetUInt32(), roots[1].GetProperty("ThreadId").GetUInt32());
@@ -197,7 +324,7 @@ public sealed class SourceKeyboardBoundaryProbe
                     Assert.Equal(roots[Number(item, "Queue")].GetProperty("field").GetInt64(), item.GetProperty("FocusHwnd").GetInt64());
                     Assert.Equal(roots[Number(item, "Queue")].GetProperty("root").GetInt64(), item.GetProperty("ForegroundHwnd").GetInt64());
                 }
-                if (kind is not ("real-foreground-and-thread-focus-confirmed" or "plan-revoked-config-changed" or "b-up-closed-before-a-resume"))
+                if (kind != "real-foreground-and-thread-focus-confirmed")
                     Assert.Equal(roots[Number(item, "Queue")].GetProperty("ThreadId").GetUInt32(), item.GetProperty("Thread").GetUInt32());
             }
             if (experiment == "completion")
@@ -269,6 +396,17 @@ public sealed class SourceKeyboardBoundaryProbe
             public string State { get; set; } = "unknown_down_return";
         }
         internal List<Press> Records { get; } = [];
+        internal void SendRepeatedPair(nint root, ushort key, ushort scan)
+        {
+            Assert.Equal(root, Native.GetForegroundWindow());
+            var press = new Press(key, scan);
+            Records.Add(press);
+            uint sent = Inject(key, scan, false);
+            press.State = sent == 1 ? "down_pending" : "not_sent";
+            Assert.Equal(1u, sent);
+            Assert.Equal(1u, Inject(key, scan, false));
+            Release(press);
+        }
         internal void SendPair(nint root, ushort key, ushort scan)
         {
             Assert.Equal(root, Native.GetForegroundWindow());

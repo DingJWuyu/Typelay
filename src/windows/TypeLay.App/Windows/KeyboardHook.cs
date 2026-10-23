@@ -27,6 +27,8 @@ internal sealed partial class KeyboardHook : IInputMonitor
     }
     private sealed record HotkeyLease(ShortcutLease Observation, WindowsTarget Target, Guid DiagnosticGeneration);
     private HookLease? _lease;
+    private WindowsTarget? _acceptancePressTarget;
+    private uint? _acceptancePressKey;
     private HotkeyLease? _shortcutLease;
     private ShortcutConfiguration _shortcuts = new(Guid.NewGuid(), []);
     private long _contentEpoch, _commandSequence;
@@ -703,6 +705,10 @@ internal sealed partial class KeyboardHook : IInputMonitor
             var binding = Volatile.Read(ref _lease);
             var lease = binding?.Observation;
             long now = WindowsInterruptClock.NowMs;
+            // A held acceptance key belongs to the original source only. Once
+            // another app receives input, its repeats/releases follow Windows.
+            if (_acceptancePressTarget is { } pressTarget && !IsSourceForeground(pressTarget))
+                _acceptancePressTarget = null;
             ObserveReturnKey(data, down, repeated, injected, now);
             var sessionKeys = Volatile.Read(ref _sessionKeys);
             bool fresh = _sessionEnabled && sessionKeys.Supported && lease is not null && lease.CommandGeneration == CommandGeneration && lease.UserEpoch == UserEpoch && lease.ForegroundEpoch == ForegroundEpoch
@@ -726,12 +732,23 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 new(lease?.Source.Target, acceptanceSource, lease?.Source.Ime ?? ImeState.Unknown,
                     Modified, injected, fresh && sourceBindingReady, lease?.Source.InputEpoch ?? -1,
                     lease?.Source.FocusEpoch ?? -1, now, CurrentModifiers));
-            if (StockAcceptance(decision, data, down, injected, lease, now, out bool stockConsume))
+            if (decision.Permit is not null)
+            {
+                _acceptancePressTarget = binding!.Target;
+                _acceptancePressKey = data.Key;
+            }
+            bool sourcePress = _acceptancePressTarget is not null;
+            if (!down && _acceptancePressKey == data.Key)
+            {
+                _acceptancePressTarget = null;
+                _acceptancePressKey = null;
+            }
+            if (StockAcceptance(decision, data, down, injected, lease, now, sourcePress, out bool stockConsume))
                 return stockConsume ? 1 : Native.CallNextHookEx(_hook, code, wParam, lParam);
             if (decision.Permit is not null)
                 _notices.Enqueue(new("accept", decision.Permit, now, UserEpoch, ForegroundEpoch,
                     CommandGeneration: lease!.CommandGeneration, SessionRevision: lease.SessionRevision));
-            if (decision.Consume)
+            if (decision.Consume && sourcePress)
                 return 1;
             if (_escapeKeyDown == data.Key)
             {

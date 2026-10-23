@@ -290,7 +290,7 @@ internal sealed partial class KeyboardHook
     }
 
     private bool StockAcceptance(AcceptanceDecision decision, Native.KeyData data, bool down,
-        bool injected, InputLease? lease, long now, out bool consume)
+        bool injected, InputLease? lease, long now, bool sourcePress, out bool consume)
     {
         consume = false;
         if (!_stockPrototype || injected && !_allowInjectedInput)
@@ -299,7 +299,7 @@ internal sealed partial class KeyboardHook
         {
             // The Core gate has also observed this event, but its prospective
             // decision is never the Windows press's final ownership authority.
-            consume = _stockPressClaimed;
+            consume = _stockPressClaimed && sourcePress;
             if (!down)
             {
                 _stockPress = null;

@@ -31,7 +31,7 @@ internal static class Program
         if (args.Length == 2 && args[0] == "--winevent-stack-probe" && Path.IsPathFullyQualified(args[1]))
             return WinEventStackProbe.Run(args[1]);
         if (args.Length == 2 && args[0] == "--source-consumption-order"
-            && args[1] is "completion" or "deadline" or "focus-tail" or "queue-order")
+            && args[1] is "completion" or "deadline")
             return SourceKeyboardProbe.RunConsumptionOrder(args[1]);
         bool hookTest = args.Length == 1 && args[0] is "--hook-test" or "--hook-test-automation";
         bool ownedControls = (args.Length == 4 || args.Length == 5) && args[0] == "--owned-controls"
@@ -51,12 +51,20 @@ internal static class Program
         if (sourceClaimCase)
             _sourceClaimProbe = args[2];
         _sourceKeyboardProbeEnabled = args.Length == 2 && args[0] == "--stock-controls" && args[1] == "--source-keyboard-probe";
+        bool synchronousProbe = args.Length == 3 && args[0] == "--stock-controls"
+            && args[1] == "--source-sync-probe" && Path.IsPathFullyQualified(args[2]);
+        if (synchronousProbe)
+        {
+            _sourceKeyboardProbeEnabled = true;
+            _sourceSynchronousPath = args[2];
+        }
         bool stockControls = _sourceKeyboardProbeEnabled || ownedControls || returnFocusCase || sourceClaimCase || (args.Length == 1 && args[0] == "--stock-controls");
         if (args.Length != 0 && !hookTest && !stockControls)
             return 2;
         return RunWindows(hookTest, args.Contains("--hook-test-automation", StringComparer.Ordinal), stockControls);
     }
 
+    private static string? _sourceSynchronousPath;
     private static bool _sourceKeyboardProbeEnabled;
     private static SourceKeyboardProbe? _sourceKeyboardProbe;
     private static string? _ownedPath;
@@ -146,7 +154,7 @@ internal static class Program
         _replayField = (nint)fields[0].Hwnd;
         _secondField = (nint)fields[1].Hwnd;
         if (_sourceKeyboardProbeEnabled)
-            _sourceKeyboardProbe = new(_root, _replayField);
+            _sourceKeyboardProbe = new(_root, _replayField, _sourceSynchronousPath);
         if (_sourceClaimProbe is not null)
             WinEventStackProbe.LoadSourceClaim(_sourceClaimProbe);
         if (!hookTest)
@@ -268,6 +276,7 @@ internal static class Program
             N.PostQuitMessage(0);
             return 0;
         }
+        _sourceKeyboardProbe?.ObserveFocus(message, wParam, lParam);
         if (SourceDispatchProbe.Handle(message, wParam, lParam))
             return 0;
         if (SourceQueueWaitProbe.Handle(hwnd, message, wParam))

@@ -22,11 +22,16 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
     private record struct Event(string Stage, int Code, uint Key, long Bits, uint Thread,
         uint Process, bool FocusIsField, bool Consumed);
     private delegate nint HookProc(int code, nint wp, nint lp);
-    internal SourceKeyboardProbe(nint root, nint field)
+    internal SourceKeyboardProbe(nint root, nint field, string? synchronousLibrary = null)
     {
         _root = root;
         _field = field;
         _thread = GetCurrentThreadId();
+        if (synchronousLibrary is not null)
+        {
+            _synchronousField = new(field, synchronousLibrary);
+            _synchronousField.Begin(automatic: true);
+        }
         _keyboard = Keyboard;
         _sent = Sent;
         _keyboardHook = SetWindowsHookExW(2, _keyboard, 0, _thread);
@@ -40,7 +45,7 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
     internal void Configure(int mode)
     {
         // 1: peek+consume F7, 2: observe F7, 3: observe Tab, 4: consume Tab.
-        if (mode is < 1 or > 4)
+        if (mode is < 1 or > 10 || mode > 4 && _synchronousField is null)
             throw new ArgumentOutOfRangeException(nameof(mode));
         _mode = mode;
         _key = mode <= 2 ? 0x76u : 9u;
@@ -48,8 +53,10 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
         _firstFound = _secondFound = false;
         _firstConsumed = _secondConsumed = 0;
         _error = null;
-        _peekPending = mode == 1;
-        N.SetProp(_root, ReadyProperty, mode == 1 ? 0 : mode);
+        _peekPending = mode is 1 or 6;
+        if (mode > 4)
+            PrepareSynchronous(mode);
+        N.SetProp(_root, ReadyProperty, _peekPending ? 0 : mode);
     }
     // This bounded wait is in the opted-in outer pump, never in a callback.
     internal void BeforeRead()
@@ -57,7 +64,7 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
         if (!_peekPending)
             return;
         _peekPending = false;
-        N.SetProp(_root, ReadyProperty, 1);
+        N.SetProp(_root, ReadyProperty, _mode);
         if (MsgWaitForMultipleObjectsEx(0, 0, 5000, 1, 4) != 0)
         {
             _error = "keyboard-input-wait-failed";
@@ -79,7 +86,11 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
         if (after)
             _after++;
         else
+        {
             _before++;
+            if (_synchronousField is not null)
+                N.SetProp(_root, "TypeLay.Test.SourceSync.Dispatched.v1", _before);
+        }
         Record(after ? "after-dialog-or-dispatch" : "before-dialog", (int)message.Message,
             (uint)message.WParam, message.LParam, false);
     }
@@ -87,6 +98,8 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
     {
         if (code < 0 || _mode == 0 || (uint)wp != _key)
             return CallNextHookEx(_keyboardHook, code, wp, lp);
+        if (_mode > 4)
+            return SynchronousKeyboard(code, wp, lp);
         bool down = (unchecked((ulong)(long)lp) & 0x80000000) == 0;
         if (code == 3)
             _noRemove++;
@@ -143,6 +156,7 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
         secondConsumed = _secondConsumed,
         rawDowns = (long)N.GetProp(_root, "TypeLay.Test.SourceObservedDown.v1"),
         rawUps = (long)N.GetProp(_root, "TypeLay.Test.SourceObservedUp.v1"),
+        synchronous = SynchronousResult(),
         events = _events.Take(_count).ToArray()
     };
     public void Dispose()
@@ -155,6 +169,7 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
         GC.KeepAlive(_sent);
         if (!keyboard || !sent)
             throw new InvalidOperationException("Self-owned source hooks failed to unhook.");
+        _synchronousField?.Retire();
         _disposed = true;
     }
     [StructLayout(LayoutKind.Sequential)]

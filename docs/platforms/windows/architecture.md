@@ -88,11 +88,9 @@ B-01 的一个具体交错是：源线程已经确认 Claim 并完成写入，�
 
 [自有源线程键盘边界](development.md#自有源线程键盘边界诊断)与[双队列消费顺序诊断](development.md#自有双队列消费顺序诊断)已取得[实际 Windows 软件输入结果](https://github.com/DingJWuyu/Typelay/actions/runs/39856028233)。前者观察到 PM_NOREMOVE 不消费、伪消息阴性对照及 IsDialogMessage 前消费；后者的 completion/deadline 只验证受控泵的实际 native 检索返回和合成 admission 原期限。`PostMessage` 仅唤醒，同步重入可提前派发 posted handler；动作边界必须是包含认领回调的最外层 `GetMessage`/`PeekMessage` 已实际返回，不能用回调末尾或 posted handler 代替。上述局部结果均没有正文事务或生产授权，不保证第三方消息泵。
 
-**按 up 清全局 claim 的简化设计已被真实交错否定。** B 先消费 up 并清 claim 后，A 先前排队、尚未检索的旧 repeat 仍到达原消息路径；双线程都装 Hook 不能避免这个反例。保留 claim 的后臂按预案记为 `not_run_design_rejected`，不是已测通过或等待盲重跑。focus-tail 的已覆盖 B 路径局部消费正常，未覆盖 B 的负控则收到 repeat/up，证明该设计存在接收者覆盖缺口。
+[接受后主动切换应用的产品边界](../../product/README.md#接受后主动切换应用时的-tab)规定：新应用正常接收后续 repeat/up，不继续跨应用抑制。Windows Hook 将已认领按次的尾键消费限定于认领时的原源应用；观察到另一应用接收输入后，该按次不再恢复消费资格。原按次仍不能产生第二张许可或第二次写入。源应用内的撤销、配置改变或执行期限耗尽只禁止后续动作，不重放已消费的原键；认领前失败仍完整旁路。
 
-认领前失败必须整组旁路；认领后的撤销、配置改变或执行期限耗尽只禁止后续动作，不释放尚未闭合的按次、不重放原键；新未认领按次不能继承旧消费决定。独立队列不能假定为全局检索序列，按 HWND 或队列保留 bool 也没有解决旧 repeat 与新 press 的归属。`WH_KEYBOARD` 没有完整 MSG、原输入时间或注入 flags；[WH_GETMESSAGE](https://learn.microsoft.com/en-us/windows/win32/winmsg/getmsgproc) 可以取得实际 MSG，但 [MSG](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-msg) 不提供文档化的全局按次 ID。不能以毫秒时间、全局 down 计数或 [GetFocus](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getfocus) 的当前焦点冒认排队消息的原按次或原目标；[按窗口/消息范围过滤检索](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getmessagew)也使单个 up 或 posted marker 不能证明所有旧尾键已经排空。
-
-**当前缺口是输入裁决与文本事务、跨接收者尾键所有权两项能力，不只是定时或分类小缺陷。** 自有 Practice 的[局部事件与事务边界](#自有练习与首-tab-接受)不能控制移焦后未合作接收者的尾键。现有外部 Hook/UIA 接口与实现尚无同时保证完整旁路、旧尾键全消费、新按次不误吞的路线。后续候选须先明确原事件身份、所有接收者覆盖及消费/事务协调，再决定最小实验；不以更多相同探针替代缺失机制。全局 Hook 的 bitness/desktop/DLL 与安装线程约束仍未解决，也不套用 LL 超时规则为线程 Hook 作无失效保证。普通输入框仍是产品目标，源端接入、全局 Hook 或 TSF 等新范围须独立方案与授权，不能靠缩小支持范围或改写“认领”关闭 B-01。**普通生产接受继续关闭，所有诊断固定 `productionReadiness=false`。**
+**当前阻塞仍是原输入事件的消费裁决与文本事务协调。** 自有 Practice 提供[局部事件与事务边界](#自有练习与首-tab-接受)，不代表外部 Hook/UIA 已解决首键超时或并发写覆盖。跨应用全局认领直到松键不再是产品要求，相应双队列增强合同诊断已移除；不能把这项范围澄清当作 B-01 修复。普通输入框仍是产品目标，源端接入、全局 Hook 或 TSF 等新范围须独立方案与授权。**普通生产接受继续关闭，所有诊断固定 `productionReadiness=false`。**
 
 按下时的短效接受许可与已消费按键的远程执行期限是两个边界，具体值以 Core 的 Limits 为准。派发前核验 Hook 输入/焦点版本，Broker 写前重读、期限检查与写后核验不能省略。浮层编辑按键与源字段输入版本必须区分，避免把译文编辑误判成原文变化。
 
@@ -110,7 +108,7 @@ B-01 的一个具体交错是：源线程已经确认 Claim 并完成写入，�
 
 **精确捕获：**`capture-owned` 绑定 PID/启动时间、根/控件 HWND、线程、cookie、run 代次和 native FocusRevision，在读取正文及安装 hook 前核验。宿主每轮从精确控件 HWND 重新取得 UIA 元数据和 runtime-id，保留字段策略、应用排除和原目标隔离；不再以全局 UIA 焦点查询发现此自有字段。独立 `TypeLay.NativeInput.OwnedCapture.v2` 消息使用 owned 专属 op6，旧 owned 组件与通用 Transaction.v2 hook 不接收；op6 的专属焦点版本字段不是写入截止时间。原生在正文读取前后核对资格、IME、焦点版本及直接子控件的当前可见几何；UIA 边界仅用于显示，不替代身份。这一专路不改变第三方捕获或许可期限，该专路已通过受控 Windows 的真实模型首 Tab，物理设备与长期稳定性仍待验证。精确 Edit 的 EN_SETFOCUS/EN_KILLFOCUS 与顶层 WM_ACTIVATE 在其它操作前推进单调 native FocusRevision 并撤权；Begin/Retire 不重置计数。捕获、安装、键见证和执行固定同一版本，最终回到相同 HWND 不能恢复旧授权。
 
-**键与执行：**该自有自动接受路径的 LL Hook 不吞原 Tab，只发布有界 FIFO 事件见证；真实消息仍到自有 GUI 队列，在 IsDialogMessage 前与一次许可共同裁决。安装前事件不追认，丢序、歧义和 overflow 撤权。native TryExecute 的无副作用前置门全部通过后才标记 accepted 并调用 SETSEL；GUI 只消费 accepted 的原键。前置失败沿原消息路径放行；接受后失败按实际拒绝或 Unknown 回执处理，不补发 Tab。正文、选区、IME、身份和原期限仍在 SETSEL 后再次核验。这提供自有 GUI 对当前真实 MSG 的消费决定与源事务边界，不证明移焦后未合作接收者的尾键已被消费，也不把本地见证序号变成跨队列按次身份。
+**键与执行：**该自有自动接受路径的 LL Hook 不吞原 Tab，只发布有界 FIFO 事件见证；真实消息仍到自有 GUI 队列，在 IsDialogMessage 前与一次许可共同裁决。安装前事件不追认，丢序、歧义和 overflow 撤权。native TryExecute 的无副作用前置门全部通过后才标记 accepted 并调用 SETSEL；GUI 只消费 accepted 的原键。前置失败沿原消息路径放行；接受后失败按实际拒绝或 Unknown 回执处理，不补发 Tab。正文、选区、IME、身份和原期限仍在 SETSEL 后再次核验。这提供自有 GUI 对当前真实 MSG 的消费决定与源事务边界，移焦到其他应用后的尾键交给新应用，不把本地见证序号变成跨队列按次身份。
 
 **源框退出：**默认 Esc 使用独立、无写权的退出租约，绑定当前练习、配置、焦点版本与原期限；独立退出序号关联原次 FIFO 见证，旧协议版本明确拒绝。即使当前没有写许可，源 GUI 仍可在精确身份、焦点和 IME 校验后结束会话；此路径不读正文、不调用 SETSEL，也不创建写许可。配置变化、退休或过期撤销退出资格。真实 Windows 软件输入已验证默认源 Esc 结束会话且保持练习窗口、原文、选区与焦点，无写许可及按住跨退休的配对也已通过；生产注入、旧绑定、过期与配置变更负控均拒绝。物理键仍待验证。
 

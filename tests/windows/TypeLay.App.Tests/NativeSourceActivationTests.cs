@@ -16,6 +16,69 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class NativeSourceActivationTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AcceptedTabPassesRepeatAndReleaseToAnotherApplication(bool nativeActivation)
+    {
+        await using var source = await ProductionForegroundWriteTests.Desktop.Start();
+        await using var receiver = await ProductionForegroundWriteTests.Desktop.Start();
+        await receiver.Prepare(receiver.A, "Other application", new(0, 0));
+        await source.Prepare(source.A, "pre old post", new(0, 0));
+        Assert.NotEqual(source.FixtureProcessId, receiver.FixtureProcessId);
+        using var hook = new KeyboardHook(allowInjectedInput: true);
+        await Until(() => hook.Ready, source.Token);
+        Assert.All(new[] { 9, 0x10, 0x11, 0x12, 0x5B, 0x5C }, key => Assert.False(Native.GetAsyncKeyState(key) < 0));
+        var observed = await source.Capture();
+        using var native = new NativeTransactions();
+        var permit = NativeSourceAcceptanceTests.CapturePermit(native, observed, new(4, 7));
+        Guid generation = Guid.NewGuid();
+        using var activation = nativeActivation ? Install(native, generation, permit) : null;
+        if (activation is not null)
+            Assert.True(hook.InstallStockEditActivation(Lease(hook, permit), activation));
+        else
+            hook.Publish(Lease(hook, permit), permit);
+        bool pressed = false;
+        try
+        {
+            SendTab(false);
+            pressed = true;
+            InputNotice? accepted = null;
+            await Until(() => accepted is not null || hook.TryRead(out accepted), source.Token);
+            Assert.Equal("accept", accepted!.Kind);
+            Assert.Equal(permit, accepted.Permit);
+            if (nativeActivation)
+                Assert.Equal(WriteStatus.Verified, accepted.CompletedReceipt!.Status);
+
+            // The user changes apps after acceptance while the same Tab is held.
+            // B has no TypeLay source grant and receives ordinary Windows input.
+            await receiver.Focus(receiver.A);
+            SendTab(false);
+            SendTab(true);
+            pressed = false;
+            await Until(() => N.GetProp(receiver.Root, "TypeLay.Test.SourceTabUp.v1") == 1, receiver.Token);
+            Assert.Equal((nint)1, N.GetProp(receiver.Root, "TypeLay.Test.SourceTabDownUnits.v1"));
+            Assert.Equal(nint.Zero, N.GetProp(source.Root, "TypeLay.Test.SourceTabDown.v1"));
+            Assert.Equal(nint.Zero, N.GetProp(source.Root, "TypeLay.Test.SourceTabUp.v1"));
+            Assert.False(hook.TryRead(out _));
+            Assert.Equal("Other application", N.ReadText(receiver.A, Limits.MaxTextUnits));
+            Assert.Equal(nativeActivation ? "pre Hello post" : "pre old post", N.ReadText(source.A, Limits.MaxTextUnits));
+            if (nativeActivation)
+            {
+                var retired = native.RetireSourceAcceptance(generation, permit.Plan.Id);
+                Assert.True(retired.Quiet);
+                Assert.True(retired.Claimed);
+                Assert.Equal(WriteStatus.Verified, retired.Receipt!.Status);
+                await source.Focus(source.A);
+                N.Send(source.A, 0x00c7); // Explicit native Undo, never automatic recovery.
+                Assert.Equal("pre old post", N.ReadText(source.A, Limits.MaxTextUnits));
+            }
+            source.AssertZeroSubmits();
+            receiver.AssertZeroSubmits();
+        }
+        finally { if (pressed) SendTab(true); }
+    }
+
     [Fact]
     public async Task ProductionInjectionPolicyNeverActivatesEvenAnInstalledNativeGrant()
     {

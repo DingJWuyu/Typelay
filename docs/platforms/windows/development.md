@@ -52,7 +52,7 @@ if ($LASTEXITCODE -ne 0) { throw '低级回调诊断前置或清理失败，请�
 
 ## 自有源线程键盘边界诊断
 
-`SourceKeyboardBoundaryProbe` 只观察自有 NativeFixture 源线程的 `WH_KEYBOARD` 和原消息泵，不写正文、不安装低级 Hook，不启用正式接受。先按上节构建，在独占已解锁 Windows 测试桌面显式运行：
+`ObserveSelfOwnedSourceKeyboardBoundary` 只观察自有 NativeFixture 源线程的 `WH_KEYBOARD` 和原消息泵，不写正文、不安装低级 Hook，不启用正式接受。先按上节构建，在独占已解锁 Windows 测试桌面显式运行：
 
 ```powershell
 & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe `
@@ -64,9 +64,23 @@ if ($LASTEXITCODE -ne 0) { throw '源线程诊断前置、观察或清理失败�
 
 每例写入独立的 `artifacts/source-keyboard-boundary/<UTC时间-唯一标识>/result.json`，不覆盖失败。`mechanism_observed_not_product_acceptance` 仅表示这些机制本次被观察；`precondition_failed` 表示未取得预期观察或清理失败。本入口已取得真实 Windows 软件输入的局部机制观察，当前结果与限制见 [B-01](architecture.md#b-01非原子写回与按键所有权)。它不证明物理输入、LL 与实际 MSG 的逐事件关联、跨线程 repeat/up 归属或整组接受，也不准许打开正式写回。后两类交错实验不在本入口范围。
 
+## 自有源线程同步正文事务实验
+
+这是尚待 Windows 执行的显式机制实验，不加入默认检查。复用上述 NativeFixture 的真实 stock Edit、源 GUI 线程 `WH_KEYBOARD` 及生产 `OwnedPracticeField.TryExecute`；仅 `HC_ACTION` 首次 down 同步执行，accepted 后非零返回，前置拒绝旁路，`HC_NOREMOVE` 不写。计划是固定原期限的合成实验计划，不是正式控制器许可。源控件的真实 IME 门不变，Unknown 不能补成 Clear。
+
+```powershell
+& ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe `
+  -explicit only -method 'TypeLay.App.Tests.SourceKeyboardBoundaryProbe.ObserveSelfOwnedSynchronousAcceptance'
+if ($LASTEXITCODE -ne 0) { throw '同步源实验失败，保留结果，不重试或开启生产接受。' }
+```
+
+六行覆盖正常首键与 repeat/up 一次写入、PM_NOREMOVE 零写、原文冲突/原期限失效/错误 cookie 的零写旁路，以及一次 native accepted 后回调返回前的 1200ms 有界暂停。记录 native 调用次数、实际 EN_CHANGE 次数、回执、GUI dispatch 前后计数、焦点、选区与 Undo；暂停中从另一线程只读属性观察原键尚未进入 dialog/控件路径，不用队列 hook 的先后顺序推导目标收到消息。结果保存在 `artifacts/source-synchronous-acceptance/<唯一目录>/result.json`，固定 `productionReadiness=false`。每行原 30 秒 owner 预算与 60 秒 xUnit 上限不变，清理自有按键和 hook；运行器须有外层总截止并保存失败证据。
+
+该实验不安装第三方源组件，不涉及 Notepad，不提供物理键、真实中文组合态及完整生产许可关联的验收证据。与旧 LL 写后超时反例比较的是同步源内机制，不代表 hook/TSF 自动解决普通输入框支持；原生产写回门继续关闭。既有只读边界与双队列实验保持原覆盖，不扩展跨应用尾键要求。
+
 ## 自有双队列消费顺序诊断
 
-这是独立于上述三个源键盘探针的入口，已取得 clear-on-up 漏键反例，当前结论见 [B-01](architecture.md#b-01非原子写回与按键所有权)；不能把诊断成功解释为接受安全。只有新机制或明确回归目的才重跑，不盲重试已否定的简化设计。执行须在独占、已解锁的 Windows x64 测试桌面、现有 Release 构建完成后显式进行：
+这是独立于上述三个源键盘探针的入口，仅保留实际检索返回与原期限的局部机制检查，当前边界见 [B-01](architecture.md#b-01非原子写回与按键所有权)；不能把诊断成功解释为接受安全。只有新机制或明确回归目的才重跑。执行须在独占、已解锁的 Windows x64 测试桌面、现有 Release 构建完成后显式进行：
 
 ```powershell
 & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe `
@@ -74,16 +88,14 @@ if ($LASTEXITCODE -ne 0) { throw '源线程诊断前置、观察或清理失败�
 if ($LASTEXITCODE -ne 0) { throw '消费顺序诊断失败或交错未建立，请保留结果，不自动重跑。' }
 ```
 
-四行各启动一个自有 NativeFixture 进程，只有两个无 parent/owner 关系的 GUI root、两个 GUI 线程及最多两个 thread-specific `WH_KEYBOARD`；协调线程没有窗口。不启动 Broker，不安装全局/低级 Hook、TSF 或驱动，不使用 `AttachThreadInput`，不注入第三方、不读写正文。固定合成 F7/F8/F23 输入不是物理输入法或生产授权：
+两行各启动一个自有 NativeFixture 进程，只有两个无 parent/owner 关系的 GUI root、两个 GUI 线程及最多两个 thread-specific `WH_KEYBOARD`；协调线程没有窗口。不启动 Broker，不安装全局/低级 Hook、TSF 或驱动，不使用 `AttachThreadInput`，不注入第三方、不读写正文。固定合成 F7/F23 输入不是物理输入法或生产授权：
 
 1. `completion` 用真实 `HC_NOREMOVE` 对照、同步跨线程重入及嵌套 `PeekMessage`，让 posted handler 在原 Hook/外层检索尚未退栈时执行；无正文动作只能在包含原回调的最外层 native 检索实际返回后执行。记录检索代次、深度、线程及先后序号，不能用回调末尾 flag 或 posted handler 代替返回证明。
 2. `deadline` 分别观察认领前过期/撤销的整组旁路，与合法认领后原期限耗尽/撤销的零动作、整组仍消费。固定合成 admission 从第一次真实键盘观察起计 100ms；返回、repeat、up 均不续期，生产所需前置检查没有由此实现或后移。
-3. `focus-tail` 在 A 认领后撤销计划并改变合成配置，实际激活 B 并核对 B 线程焦点，再发送 repeat/up。双 Hook 观察尾键消费及新独立按次、无关键旁路；卸除 B 的 Hook 后作自有负控，记录覆盖缺口。每个有输入的队列用实际派发的后置 F23-up 观察，不用 posted/WM_NULL 或读正文声称排空。
-4. `queue-order` 只尝试一次 A 旧 repeat 已由 PM_NOREMOVE 观察、B 先消费 up、A 再检索旧 repeat 的交错。A 的停取键盘阶段仍允许 sent activation；若 Windows 同步/调度阻止真实焦点或交错建立，结果为 `inconclusive`，该行失败，不能解释为安全。如果获得 clear-on-up 漏键反例，简化设计立即关闭，保留 claim 的后臂标为 `not_run_design_rejected`；只有前臂获得可解释无泄漏观察时，才检查长期保留 claim 是否吞掉新的独立同键按次。不改变等待或重发输入求绿，也不假设独立队列共享全局检索顺序。
 
 每行沿现有进程 owner 的 30 秒操作截止（子端最多 25 秒观察、独立 4 秒清理）及 60 秒 xUnit 外限；外部执行器为整入口另设 5 分钟进程总寿命。512 条事件、48 条输入和 8 条观察固定容量；溢出、身份错误、注入结果未知、Hook/线程/进程退出未证实均失败。仅为确认成功的 down 配对 up，清理不借用已取消的操作 token。每行结果保存到 `artifacts/source-consumption-order/<UTC时间-唯一标识>/result.json`，保留原事件与独立进程退出结果，不覆盖旧失败。
 
-`mechanism_observed_not_product_acceptance` 只表示取得限定机制观察；`observed_counterexample` 是已观察的简化设计反例，仍可作为诊断成功；`inconclusive` 为前提未建立，`mechanical_failure` 为入口/身份/观察断言或清理失败，两者均不得转绿。所有结果固定 `productionReadiness=false`。当前 CI 保留原三行的精确 selector 与 4 分钟预算，并以独立显式步骤选择新四行、设置 5 分钟外限。新步骤失败仍使 Windows job 失败；只向既有始终上传的 artifact 增加 `artifacts/source-consumption-order/**/result.json` 白名单，不上传整个 artifacts。75 分钟 job 与后续模型链的原 admission 预算保持不变；本步骤占用前置预算，不绕过 admission 或挤占模型验收保留量。
+`mechanism_observed_not_product_acceptance` 只表示取得限定机制观察；前提未建立或入口/身份/观察断言、清理失败均不得转绿。所有结果固定 `productionReadiness=false`。当前 CI 保留原三行的精确 selector 与 4 分钟预算，并以独立显式步骤选择这两行、设置 5 分钟外限。新步骤失败仍使 Windows job 失败；只向既有始终上传的 artifact 增加 `artifacts/source-consumption-order/**/result.json` 白名单，不上传整个 artifacts。75 分钟 job 与后续模型链的原 admission 预算保持不变；本步骤占用前置预算，不绕过 admission 或挤占模型验收保留量。
 
 ## Hy 生产载荷候选构建
 

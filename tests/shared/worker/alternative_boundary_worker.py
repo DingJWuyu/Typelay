@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 WORKER = ROOT / "src/shared/TypeLay.Worker/run_worker.py"
 INPUTS = Path(__file__).with_name("alternative_quality_inputs.json")
-INPUT_SHA256 = "87452b28c414bc964afbd84542480dd46a65c0b4e15c42ad36422270413bcbe5"
+INPUT_SHA256 = "549a7b2a214b73045070a9d1d0495cef4a41c8eb72130a01bafdc8d348bf7759"
 
 
 def frozen_samples():

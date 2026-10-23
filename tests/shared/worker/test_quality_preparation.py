@@ -21,6 +21,52 @@ RUNNERS = Path(__file__).resolve().parent
 
 
 class QualityPreparationTests(unittest.TestCase):
+    def test_revised_role_anchor_is_shared_by_collector_and_boundary(self):
+        import alternative_boundary_worker
+
+        report = alternative_quality.prepare_report(
+            SimpleNamespace(request_timeout=60, total_timeout=600)
+        )
+        samples = alternative_boundary_worker.frozen_samples()
+        self.assertEqual(len(samples), 16)
+        self.assertEqual(
+            [{key: case[key] for key in sample} for case, sample in zip(report["cases"], samples)],
+            samples,
+        )
+        role = next(sample for sample in samples if sample["id"] == "zh-roles-01")
+        self.assertEqual(role["text"], "李明给了王芳三本书，但王芳只借给我两本。")
+        self.assertEqual(role["direction"], "zh_en")
+        self.assertEqual(
+            role["semantic_anchors"],
+            [
+                "李明给王芳",
+                "三本书",
+                "王芳借给我",
+                "只有两本",
+                "交付与借出主体、方向及数量不变，不要求赠予所有权",
+            ],
+        )
+        self.assertEqual(report["quality"], "not-run")
+        self.assertEqual(report["workerStarts"], 0)
+        self.assertEqual(report["requests"], [])
+
+    def test_previous_role_anchor_version_is_rejected_before_collection(self):
+        import alternative_boundary_worker
+
+        current = alternative_quality.INPUTS.read_text(encoding="utf-8")
+        previous = current.replace(
+            "交付与借出主体、方向及数量不变，不要求赠予所有权", "赠予与借出区别"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "previous-inputs.json"
+            path.write_text(previous, encoding="utf-8")
+            with patch.object(alternative_quality, "INPUTS", path):
+                with self.assertRaisesRegex(ValueError, "frozen-input-sha256"):
+                    alternative_quality.prepare_report(SimpleNamespace())
+            with patch.object(alternative_boundary_worker, "INPUTS", path):
+                with self.assertRaisesRegex(ValueError, "frozen-input-sha256"):
+                    alternative_boundary_worker.frozen_samples()
+
     def validate(self, runner, output, *options):
         return subprocess.run(
             [

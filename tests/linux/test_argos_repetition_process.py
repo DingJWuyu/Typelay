@@ -47,7 +47,7 @@ while True:
  response=dict(id=request['id'],status='ready' if hello else 'translated',text='' if hello else 'controlled-'+str(request['id']),code='',elapsedMs=1)
  if hello: response['directions']=['en_zh','zh_en']
  if not hello and Path(__file__).with_name('fail').exists(): response.update(status='error',code='controlled-error')
- response['decodingBoundary']=dict(inputSha256='87452b28c414bc964afbd84542480dd46a65c0b4e15c42ad36422270413bcbe5',packages=[{},{}] if hello else [],calls=[] if hello else [dict(sourcePieces=[['x']],results=[{}],options=dict(beam_size=2,max_input_length=0,max_decoding_length=512,repetition_penalty=float(sys.argv[sys.argv.index('--ordinary-repetition')+1])))])
+ response['decodingBoundary']=dict(inputSha256='549a7b2a214b73045070a9d1d0495cef4a41c8eb72130a01bafdc8d348bf7759',packages=[{},{}] if hello else [],calls=[] if hello else [dict(sourcePieces=[['x']],results=[{}],options=dict(beam_size=2,max_input_length=0,max_decoding_length=512,repetition_penalty=float(sys.argv[sys.argv.index('--ordinary-repetition')+1])))])
  data=json.dumps(response).encode();sys.stdout.buffer.write(struct.pack('<i',len(data))+data);sys.stdout.buffer.flush()
 """)
             args = SimpleNamespace(

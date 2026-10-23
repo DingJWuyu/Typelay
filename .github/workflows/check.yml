@@ -134,6 +134,29 @@ jobs:
         id: windows-build
         shell: pwsh
         run: ./dev.ps1 build
+      # Bounded mechanism experiment, not a product release gate. Reassess after this result.
+      - name: Observe synchronous acceptance inside the owned source thread
+        id: windows-source-synchronous
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $directory = 'artifacts/source-synchronous-acceptance'
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          @{ kind = 'mechanism-experiment'; status = 'running'; expectedRows = 6; sourceSha = $env:GITHUB_SHA } | ConvertTo-Json | Set-Content "$directory/runner.json"
+          & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.SourceKeyboardBoundaryProbe.ObserveSelfOwnedSynchronousAcceptance' 2>&1 | Tee-Object -FilePath "$directory/runner.log"
+          $code = $LASTEXITCODE
+          $rows = @(Get-ChildItem -LiteralPath $directory -Filter result.json -File -Recurse | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json })
+          $modes = @($rows | ForEach-Object { [int]$_.mode } | Sort-Object)
+          $complete = ($modes -join ',') -eq '5,6,7,8,9,10'
+          $failed = @($rows | Where-Object { $_.status -ne 'mechanism_observed_not_product_acceptance' -or -not $_.hooksClosed -or -not $_.processesExited -or -not $_.inputsPaired })
+          $status = if (-not $complete) { 'incomplete' } elseif ($code -eq 0 -and $failed.Count -eq 0) { 'mechanism-observed' } else { 'experiment-failed' }
+          @{ kind = 'mechanism-experiment'; status = $status; exitCode = $code; expectedRows = 6; observedModes = $modes; productAcceptance = $false; sourceSha = $env:GITHUB_SHA } | ConvertTo-Json | Set-Content "$directory/runner.json"
+          if (-not $complete -or $failed.Count -ne 0) { exit 1 }
+          exit $code
       - name: Verify Windows behavior and contracts
         id: windows-contracts
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
@@ -165,7 +188,7 @@ jobs:
         run: |
           & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.SourceKeyboardBoundaryProbe.ObserveSelfOwnedSourceKeyboardBoundary'
           exit $LASTEXITCODE
-      - name: Observe consumption return and cross-queue tails in owned sources
+      - name: Observe consumption return and admission deadline in owned sources
         id: windows-source-consumption
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         timeout-minutes: 5
@@ -371,6 +394,7 @@ jobs:
             artifacts/test-results/
             artifacts/source-ll-timeout/
             artifacts/source-keyboard-boundary/
+            artifacts/source-synchronous-acceptance/
             artifacts/source-consumption-order/**/result.json
             artifacts/controller-trace.jsonl*
             artifacts/continuous-translation/result.json

@@ -35,8 +35,8 @@ internal sealed partial class SourceKeyboardProbe
 
     private sealed class OrderRun(string experiment) : IDisposable
     {
-        internal const ushort Key = 0x76, Other = 0x77, Marker = 0x86;
-        internal const uint Wake = 0x8088, Reenter = 0x8089, Nested = 0x808a, Focus = 0x808b, Disable = 0x808c;
+        internal const ushort Key = 0x76, Marker = 0x86;
+        internal const uint Wake = 0x8088, Reenter = 0x8089, Nested = 0x808a, Focus = 0x808b;
         internal readonly object Sync = new();
         internal readonly CancellationTokenSource Deadline = new(TimeSpan.FromSeconds(25));
         internal readonly OrderPump[] Pumps = new OrderPump[2];
@@ -44,11 +44,11 @@ internal sealed partial class SourceKeyboardProbe
         private int _count, _overflow, _phase, _config, _admissionConfig, _claimOwner, _inputCount, _observationCount;
         private volatile int _actions;
         private long _observedAt, _expiresAt, _claimGeneration;
-        private bool _attempted, _pending, _revoked, _retain, _downPending, _inputUnknown;
+        private bool _attempted, _pending, _revoked, _downPending, _inputUnknown;
         private volatile bool _claim;
         private string _mode = "starting", _status = "precondition_failed";
         internal volatile string? Error;
-        internal bool Interpretable => Error is null && _status is "mechanism_observed_not_product_acceptance" or "observed_counterexample";
+        internal bool Interpretable => Error is null && _status == "mechanism_observed_not_product_acceptance";
         private bool _closed;
         private string? _cleanupError;
         private readonly object?[] _observations = new object[8];
@@ -118,7 +118,7 @@ internal sealed partial class SourceKeyboardProbe
                 Require(N.GetWindowThreadProcessId(pump.Root, out uint process) == pump.ThreadId
                     && process == Environment.ProcessId, "root-identity-mismatch");
             }
-            foreach (int key in new[] { (int)Key, Other, Marker, 0x10, 0x11, 0x12, 0x5b, 0x5c })
+            foreach (int key in new[] { (int)Key, Marker, 0x10, 0x11, 0x12, 0x5b, 0x5c })
                 Require((GetAsyncKeyState(key) & 0x8000) == 0, "preexisting-key-held");
             if (experiment == "completion")
             {
@@ -142,16 +142,8 @@ internal sealed partial class SourceKeyboardProbe
                     Summary("original-deadline-and-revocation-observed");
                 }
             }
-            else if (experiment == "focus-tail")
-            {
-                CrossFocus(false);
-                CrossFocus(true);
-            }
             else
-            {
-                Require(experiment == "queue-order", "unknown-experiment");
-                QueueOrder();
-            }
+                throw new InvalidOperationException("unknown-experiment");
             if (_status == "precondition_failed")
                 _status = "mechanism_observed_not_product_acceptance";
         }
@@ -164,7 +156,7 @@ internal sealed partial class SourceKeyboardProbe
                 _phase++;
                 _mode = mode;
                 _observedAt = _expiresAt = 0;
-                _attempted = _pending = _retain = false;
+                _attempted = _pending = false;
                 _revoked = mode == "pre-revoked";
                 _admissionConfig = ++_config;
                 _actions = 0;
@@ -175,140 +167,6 @@ internal sealed partial class SourceKeyboardProbe
             }
             Post(Pumps[0], Wake);
             Wait(() => Pumps[0].PeekPrepared, "first-peek-not-prepared");
-        }
-        private void CrossFocus(bool uncovered)
-        {
-            Begin(uncovered ? "uncovered-b" : "covered-b");
-            Down(Pumps[0]);
-            Wait(() => _actions == 1, "claim-action-not-observed");
-            lock (Sync)
-            {
-                _revoked = true;
-                _config++;
-            }
-            Record(Pumps[0], "plan-revoked-config-changed");
-            if (uncovered)
-            {
-                Post(Pumps[1], Disable);
-                Wait(() => Pumps[1].HookClosed, "b-hook-not-closed");
-            }
-            FocusOn(Pumps[1]);
-            Repeat(Pumps[1]);
-            Up(Pumps[1]);
-            Mark(Pumps[1]);
-            Require(Pumps[1].RawKey == (uncovered ? 2 : 0), "tail-coverage-result-mismatch");
-            if (uncovered)
-            {
-                Require(_claim, "uncovered-up-unexpectedly-closed-claim");
-                // Only teardown after the exact successful injected up and B's real marker.
-                lock (Sync)
-                    _claim = false;
-            }
-            else
-            {
-                Require(!_claim, "covered-up-did-not-close-claim");
-                Pair(Pumps[1], Key);
-                Pair(Pumps[1], Other);
-                Mark(Pumps[1]);
-                Require(Pumps[1].RawKey == 2 && Pumps[1].RawOther == 2,
-                    "new-or-unrelated-press-did-not-bypass");
-            }
-            FocusOn(Pumps[0]);
-            Mark(Pumps[0]);
-            Require(Pumps[0].RawKey == 0, "initial-down-leaked");
-            Summary(uncovered ? "observed_coverage_gap" : "covered-tail-and-new-press-observed");
-        }
-        private void QueueOrder()
-        {
-            Begin("clear-on-up");
-            Down(Pumps[0]);
-            Wait(() => _actions == 1, "initial-claim-not-observed");
-            Pumps[0].Park = true;
-            Post(Pumps[0], Wake);
-            Wait(() => Pumps[0].Parked, "a-not-parked");
-            Repeat(Pumps[0]);
-            Pumps[0].InspectRepeat = true;
-            Post(Pumps[0], Wake);
-            Wait(() => Pumps[0].RepeatInspected, "pending-repeat-inspection-timeout");
-            if (!Pumps[0].RepeatPending)
-            {
-                Inconclusive("a-original-repeat-not-observed-pending");
-                return;
-            }
-            // A services sent activation messages, but deliberately does not remove keys.
-            // Windows may serialize this transfer behind A's queued repeat: that is inconclusive.
-            try
-            {
-                FocusOn(Pumps[1]);
-            }
-            catch (InvalidOperationException error) when (error.Message == "real-focus-not-established")
-            {
-                Inconclusive("cross-queue-focus-transfer-not-established");
-                return;
-            }
-            Up(Pumps[1]);
-            try
-            {
-                Mark(Pumps[1]);
-            }
-            catch (InvalidOperationException error) when (error.Message == "queue-did-not-dispatch-post-input-marker")
-            {
-                Inconclusive("b-input-blocked-behind-a-pending-repeat");
-                return;
-            }
-            Pumps[0].RepeatInspected = false;
-            Pumps[0].InspectRepeat = true;
-            Post(Pumps[0], Wake);
-            Wait(() => Pumps[0].RepeatInspected, "second-pending-repeat-inspection-timeout");
-            if (_claim || Pumps[1].ConsumedUps != 1 || !Pumps[0].RepeatPending)
-            {
-                Inconclusive("b-up-before-a-repeat-not-established");
-                return;
-            }
-            Record(Pumps[1], "b-up-closed-before-a-resume");
-            Pumps[0].Park = false;
-            Post(Pumps[0], Wake);
-            Wait(() => !Pumps[0].Parked, "a-resume-timeout");
-            FocusOn(Pumps[0]);
-            Mark(Pumps[0]);
-            if (Pumps[0].RawRepeats == 1)
-            {
-                Summary("observed_counterexample_clear_on_up");
-                _status = "observed_counterexample";
-                Observation(new
-                {
-                    phase = "retain-claim",
-                    status = "not_run_design_rejected"
-                });
-                return; // No waiting/retry variation after a decisive counterexample.
-            }
-            Require(Pumps[0].ConsumedRepeats == 1, "old-repeat-outcome-unexplained");
-            Summary("interleaving-observed-without-leak");
-            Begin("retain-claim");
-            _retain = true;
-            Down(Pumps[0]);
-            Wait(() => _actions == 1, "retained-claim-not-observed");
-            FocusOn(Pumps[1]);
-            Up(Pumps[1]);
-            Mark(Pumps[1]);
-            Pair(Pumps[1], Key);
-            Mark(Pumps[1]);
-            Require(Pumps[1].ConsumedFreshDowns == 1 && Pumps[1].RawKey == 0,
-                "retained-claim-new-press-outcome-unexplained");
-            FocusOn(Pumps[0]);
-            Mark(Pumps[0]);
-            Summary("observed_counterexample_retained_claim");
-            _status = "observed_counterexample";
-            _claim = false;
-        }
-        private void Inconclusive(string reason)
-        {
-            _status = "inconclusive";
-            Observation(new
-            {
-                phase = _mode,
-                status = reason
-            });
         }
         private void Summary(string status)
         {
@@ -324,12 +182,7 @@ internal sealed partial class SourceKeyboardProbe
                     {
                         p.Index,
                         p.RawKey,
-                        p.RawRepeats,
-                        p.RawOther,
-                        p.MarkerUps,
-                        p.ConsumedUps,
-                        p.ConsumedRepeats,
-                        p.ConsumedFreshDowns
+                        p.MarkerUps
                     }).ToArray()
                 });
         }
@@ -362,21 +215,6 @@ internal sealed partial class SourceKeyboardProbe
             _inputUnknown = false;
             Require(sent == 1, "input-not-inserted");
         }
-        private void Down(OrderPump pump)
-        {
-            Input(pump, Key, false);
-            _downPending = true;
-        }
-        private void Repeat(OrderPump pump)
-        {
-            Require(_downPending, "repeat-without-down");
-            Input(pump, Key, false);
-        }
-        private void Up(OrderPump pump)
-        {
-            Input(pump, Key, true);
-            _downPending = false;
-        }
         private void Pair(OrderPump pump, ushort key)
         {
             Require(!_downPending, "pair-with-held-key");
@@ -400,7 +238,7 @@ internal sealed partial class SourceKeyboardProbe
             if (code < 0)
                 return CallNextHookEx(0, code, wp, lp);
             uint key = (uint)wp;
-            if (key is not (Key or Other or Marker))
+            if (key is not (Key or Marker))
             {
                 Fail("unexpected-keyboard-input");
                 return CallNextHookEx(0, code, wp, lp);
@@ -434,14 +272,8 @@ internal sealed partial class SourceKeyboardProbe
                     }
                     if (consume && up)
                     {
-                        pump.ConsumedUps++;
-                        if (!_retain)
-                            _claim = false;
+                        _claim = false;
                     }
-                    if (consume && !up && repeat)
-                        pump.ConsumedRepeats++;
-                    if (consume && !up && !repeat)
-                        pump.ConsumedFreshDowns++;
                 }
             }
             if (first && _mode is "reentrant" or "post-expired" or "post-revoked")
@@ -519,7 +351,6 @@ internal sealed partial class SourceKeyboardProbe
             foreach (var pump in Pumps)
                 if (pump is not null)
                 {
-                    pump.Park = false;
                     if (pump.Root != 0)
                         N.PostMessage(pump.Root, Wake, 0, 0);
                 }
@@ -546,7 +377,6 @@ internal sealed partial class SourceKeyboardProbe
                 if (pump is not null)
                 {
                     pump.Stop = true;
-                    pump.Park = false;
                     if (pump.Root != 0)
                         N.PostMessage(pump.Root, Wake, 0, 0);
                 }
@@ -592,13 +422,12 @@ internal sealed partial class SourceKeyboardProbe
         internal nint Root, Field;
         internal uint ThreadId;
         internal long Generation;
-        internal int Depth, HookDepth, RawKey, RawRepeats, RawOther, ConsumedUps, ConsumedRepeats, ConsumedFreshDowns, NestedHandler;
+        internal int Depth, HookDepth, RawKey, NestedHandler;
         internal volatile int MarkerUps;
-        internal volatile bool Ready, PreparePeek, PeekPrepared, Park, Parked, InspectRepeat, RepeatInspected, RepeatPending, Stop, HookClosed, Exited;
+        internal volatile bool Ready, PreparePeek, PeekPrepared, Stop, HookClosed, Exited;
         private Thread? _thread;
         private SourceKeyboardProbe? _hook;
         private N.WindowProc? _procedure;
-        private N.MessageStruct? _pendingRepeat;
         internal bool IsOwnFocused() => ThreadId == GetCurrentThreadId() && GetFocus() == Field
             && N.GetForegroundWindow() == Root && N.GetAncestor(Field, 2) == Root
             && N.GetWindowThreadProcessId(Field, out uint process) == ThreadId && process == Environment.ProcessId
@@ -609,7 +438,7 @@ internal sealed partial class SourceKeyboardProbe
             _thread.Start();
         }
         internal bool Join(int timeout) => _thread is null || _thread.Join(timeout);
-        internal void ResetCounts() => RawKey = RawRepeats = RawOther = MarkerUps = ConsumedUps = ConsumedRepeats = ConsumedFreshDowns = NestedHandler = 0;
+        internal void ResetCounts() => RawKey = MarkerUps = NestedHandler = 0;
         private void Enter(bool trace)
         {
             if (Depth++ == 0)
@@ -670,40 +499,6 @@ internal sealed partial class SourceKeyboardProbe
                             "first-original-down-not-observed");
                         run.AfterFirstPeek(this);
                     }
-                    if (Park)
-                    {
-                        Parked = true;
-                        while (Park && !Stop && !run.Deadline.IsCancellationRequested)
-                        {
-                            if (InspectRepeat)
-                            {
-                                InspectRepeat = false;
-                                uint available = MsgWaitForMultipleObjectsEx(0, 0, 1000, 1, 4);
-                                bool found = false;
-                                // Initialize separately so a failed wait never reads an undefined MSG.
-                                var current = default(N.MessageStruct);
-                                if (available == 0)
-                                {
-                                    // Exactly one actual inspection per requested boundary, never remove/reinject.
-                                    found = Peek(out current, 0x100, 0x101, false, true);
-                                }
-                                RepeatPending = found && current.Hwnd == Field && current.Message == 0x100
-                                    && current.WParam == OrderRun.Key && ((long)current.LParam & 0xc0000000L) == 0x40000000L;
-                                if (RepeatPending && _pendingRepeat is { } previous)
-                                    RepeatPending = previous.Hwnd == current.Hwnd && previous.Message == current.Message
-                                        && previous.WParam == current.WParam && previous.LParam == current.LParam && previous.Time == current.Time;
-                                if (RepeatPending)
-                                    _pendingRepeat = current;
-                                run.Record(this, RepeatPending ? "old-repeat-still-not-removed" : "old-repeat-precondition-absent");
-                                RepeatInspected = true;
-                            }
-                            // A filtered Peek still services sent activation/reentry. It never removes keyboard input.
-                            if (Peek(out var control, OrderRun.Wake, OrderRun.Disable, true, false))
-                                N.DispatchMessage(ref control);
-                            Thread.Sleep(1);
-                        }
-                        Parked = false;
-                    }
                     if (Stop)
                         break;
                     Enter(true);
@@ -715,16 +510,10 @@ internal sealed partial class SourceKeyboardProbe
                     if (message.Message is 0x100 or 0x101)
                     {
                         run.Require(message.Hwnd == Field, "retrieved-key-target-mismatch");
-                        run.Require(message.WParam is OrderRun.Key or OrderRun.Other or OrderRun.Marker, "unexpected-source-key");
+                        run.Require(message.WParam is OrderRun.Key or OrderRun.Marker, "unexpected-source-key");
                         run.Record(this, "raw-key-before-dispatch", (int)message.Message, (uint)message.WParam, (long)message.LParam, message.Hwnd, message.Time);
                         if (message.WParam == OrderRun.Key)
-                        {
                             RawKey++;
-                            if (message.Message == 0x100 && ((long)message.LParam & 0x40000000L) != 0)
-                                RawRepeats++;
-                        }
-                        if (message.WParam == OrderRun.Other)
-                            RawOther++;
                     }
                     run.Require(message.Message is not (0x102 or 0x106), "unexpected-source-character");
                     N.TranslateMessage(ref message);
@@ -781,13 +570,6 @@ internal sealed partial class SourceKeyboardProbe
                 if (message == OrderRun.Nested)
                 {
                     run.NestedAction(this);
-                    return 1;
-                }
-                if (message == OrderRun.Disable)
-                {
-                    _hook?.Dispose();
-                    _hook = null;
-                    HookClosed = true;
                     return 1;
                 }
                 return N.DefWindowProc(hwnd, message, wp, lp);
