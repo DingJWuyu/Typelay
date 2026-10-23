@@ -93,6 +93,8 @@ if ($LASTEXITCODE -ne 0) { throw '普通 source MSG 研究失败，保留原结�
 1. 同一个首 Tab 两次 `PM_NOREMOVE` 均不消耗 invoked/claim，再由 `PM_REMOVE` 执行一次普通 source 事务。native 返回后、原 GetMessage 返回前，fixture 的 managed hook 有界暂停1200ms；外部只读属性确认原泵尚未返回。原泵在 GetMessage 下一条语句记录实际返回 MSG，随后仍走原 IsDialogMessage/TranslateMessage/DispatchMessage。验证一次真实正文变化、原字段焦点、零导航/提交、随后同字段 repeat/up 消费及 Undo。
 2. 安装后真实修改源文，首 Tab 不被改写、零 claim 和正文替换，实际选区保持，原 dialog 自然转焦 B。portable API 边界另核拒绝不进入 SETSEL；真实 Windows 此行不声称观察到了每一次底层 API 调用。
 
+新两行的 GETMESSAGE delegate 与实际创建 SourceInstallation 的测试内 `NativeTransactions` 一律绑定 `AppContext.BaseDirectory/TypeLay.NativeInput.dll` 的同一绝对路径，不借独立 Broker 观察进程输出目录里的同名副本。fixture 在任何 grant 之前，从实际持有的 HMODULE 采一次完整路径；既有后置结果记录该路径/进程内 module base、安装结果及许可身份/原期限，后置断言路径与 owner 一致，不在许可窗口内查询或枚举模块。独立 Broker 的观察 hook 及原清理顺序保持；不能据路径对齐推称目标进程仅有一个模块/slot，也不能把后置 TargetChanged 唯一归因到 GETMESSAGE 内。该对齐修正已知接线前提，真实正例仍须后继 Windows 原件验证。
+
 native 在调用一次 CallNextHookEx **之前**占住 source callback 寿命门，之后重核原 MSG 与同 grant。claim CAS 赢后立即原地置 `MSG.message=WM_NULL`，两者之间没有 OS 调用、回调、分配或日志，再进入首个 SETSEL；拒绝前不改 MSG，受理后出现拒绝或未知也不恢复/重注入原键。普通 source 的完整回执仍来自实际重验，MSG 路径不伪造 sent command ACK，退休由原 poll/retire 协议确认。NOREMOVE 不耗一次尝试，其他失败不以 repeat 重试。
 
 输入是既有受控 SendInput，不证明物理来源、严格软件注入拒绝、旧排队键历史或真实 composition。先 Next 再执行不能约束上游 hook 在本实现返回后改写或提前分发 MSG，结论仅限自有受控 hook 链。fixture 尾键资格独立锁存离焦，返回同 HWND 不能复活；此片不新增跨应用尾键矩阵。HIMC/HKL 与 exact-context 无组合观察均不授全局 Clear；不安装或切换 IME，不恢复已退役 TSF 全文路径。

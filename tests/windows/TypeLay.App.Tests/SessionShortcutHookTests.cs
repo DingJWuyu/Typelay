@@ -595,6 +595,80 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FocusDiagnosticsPreserveClassificationAndBoundRejectedSamples(bool tracing)
+    {
+        string path = Path.Combine(Path.GetTempPath(), "typelay-focus-trace-" + Guid.NewGuid().ToString("N") + ".jsonl");
+        string? previous = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
+        Environment.SetEnvironmentVariable("TYPELAY_TRACE", tracing ? path : null);
+        try
+        {
+            await desktop.RunAsync(async () =>
+            {
+                var input = new TextBox { Text = "private-focus-source-marker" };
+                var source = new Window { Content = input, Width = 420, Height = 160, Title = "private-focus-source-title" };
+                var editor = new Window { Width = 350, Height = 120, Title = "private-focus-editor-title" };
+                var other = new Window { Width = 350, Height = 120, Title = "private-focus-other-title" };
+                nint sourceHwnd = new WindowInteropHelper(source).EnsureHandle();
+                nint editorHwnd = new WindowInteropHelper(editor).EnsureHandle();
+                nint otherHwnd = new WindowInteropHelper(other).EnsureHandle();
+                using var process = Process.GetCurrentProcess();
+                TargetId target = new WindowsTarget(process.Id, process.StartTime.ToUniversalTime().Ticks,
+                    (long)sourceHwnd, (long)sourceHwnd, "controlled-hook", "private-focus-target-marker", Guid.NewGuid());
+                using var hook = new KeyboardHook(editorHwnd: editorHwnd);
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+                deadline.CancelAfter(TimeSpan.FromSeconds(10));
+
+                source.Show();
+                source.Activate();
+                input.Focus();
+                await Until(() => hook.ShortcutsReady && Native.GetForegroundWindow() == sourceHwnd, deadline.Token);
+                Assert.Equal(FocusMember.Source, hook.GetFocus(target));
+                editor.Show();
+                editor.Activate();
+                await Until(() => Native.GetForegroundWindow() == editorHwnd, deadline.Token);
+                Assert.Equal(FocusMember.Overlay, hook.GetFocus(target));
+                other.Show();
+                other.Activate();
+                await Until(() => Native.GetForegroundWindow() == otherHwnd, deadline.Token);
+                for (int index = 0; index < 12; index++)
+                    Assert.Equal(FocusMember.Other, hook.GetFocus(target));
+                Assert.False(hook.TryRead(out _)); // Flush the existing diagnostic queue.
+                for (int index = 0; index < 12; index++)
+                    Assert.Equal(FocusMember.Other, hook.GetFocus(target));
+                Assert.False(hook.TryRead(out _)); // Repeated flushes cannot grow refusal output.
+                source.Activate();
+                await Until(() => Native.GetForegroundWindow() == sourceHwnd, deadline.Token);
+                Assert.Equal(FocusMember.Source, hook.GetFocus(target));
+                Assert.Equal("private-focus-source-marker", input.Text);
+                Assert.Equal(tracing, File.Exists(path));
+                if (!tracing)
+                    return;
+
+                string trace = File.ReadAllText(path);
+                Assert.DoesNotContain("private-", trace);
+                var entries = File.ReadAllLines(path).Select(line => JsonSerializer.Deserialize<JsonElement>(line)).ToArray();
+                var refusals = entries.Where(item => item.GetProperty("operation").GetString() == "source-focus-refused").ToArray();
+                Assert.Equal(8, refusals.Length);
+                Assert.All(refusals, item =>
+                {
+                    Assert.Equal("other", item.GetProperty("foregroundSample").GetString());
+                    Assert.Equal("outside-source-and-editor", item.GetProperty("reason").GetString());
+                    Assert.True(item.GetProperty("queuedAtMs").GetInt64() > 0);
+                });
+                var overflow = Assert.Single(entries, item => item.GetProperty("operation").GetString() == "source-focus-trace-overflow");
+                Assert.Equal(4, overflow.GetProperty("droppedAtLeast").GetInt32());
+            });
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TYPELAY_TRACE", previous);
+            File.Delete(path);
+        }
+    }
+
     private static async Task Until(Func<bool> ready, CancellationToken cancellation)
     {
         var elapsed = Stopwatch.StartNew();

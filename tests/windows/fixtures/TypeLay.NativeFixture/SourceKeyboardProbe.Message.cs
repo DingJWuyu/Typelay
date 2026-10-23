@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 using TypeLay.Core;
 using TypeLay.Windows;
 using N = TypeLay.Platform.Windows.NativeMethods;
@@ -10,6 +11,7 @@ internal sealed partial class SourceKeyboardProbe
     // Native calls Next exactly once. The wrapper only supplies a bounded pause
     // and same-field tail handling for this controlled synthetic-input fixture.
     private nint _messageLibrary, _messageHook;
+    private string? _messageModulePath;
     private HookProc? _messageNative, _messageCallback;
     private bool _messageAttempted, _messageAccepted, _messageHeld, _insideMessageNative;
     private int _messageFirstDownAttempts, _messageBodyChanges, _messageRepeats, _messageUps;
@@ -24,6 +26,13 @@ internal sealed partial class SourceKeyboardProbe
     private void InitializeMessageProbe(string library)
     {
         _messageLibrary = NativeLibrary.Load(library);
+        // Observe the actual loaded handle once, before any source grant exists.
+        // Identical bytes or a matching basename do not identify module-local slots.
+        var path = new StringBuilder(32768);
+        uint length = GetModuleFileNameW(_messageLibrary, path, (uint)path.Capacity);
+        if (length == 0 || length >= (uint)path.Capacity)
+            throw new InvalidOperationException("Message callback module path unavailable.");
+        _messageModulePath = Path.GetFullPath(path.ToString());
         _messageNative = Marshal.GetDelegateForFunctionPointer<HookProc>(
             NativeLibrary.GetExport(_messageLibrary, "TypeLaySourceGetMessageProc"));
         _messageCallback = Message;
@@ -154,6 +163,9 @@ internal sealed partial class SourceKeyboardProbe
 
     private object? MessageResult() => _messageNative is null ? null : new
     {
+        moduleRole = "source-getmessage-callback",
+        modulePath = _messageModulePath,
+        moduleBase = (long)_messageLibrary, // Process-local evidence, not a cross-process identity.
         firstDownAttempts = _messageFirstDownAttempts,
         accepted = _messageAccepted,
         bodyChanges = _messageBodyChanges,
@@ -169,6 +181,9 @@ internal sealed partial class SourceKeyboardProbe
         selectionAfter = N.ReadSelection(_field),
         sourceDeparted = _sourceDeparted
     };
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint GetModuleFileNameW(nint module, StringBuilder path, uint size);
 
     private bool DisposeMessageProbe()
     {

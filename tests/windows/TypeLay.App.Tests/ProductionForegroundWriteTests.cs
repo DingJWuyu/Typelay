@@ -1027,8 +1027,11 @@ public sealed partial class ProductionForegroundWriteTests
                 Assert.False(owned || sourceKeyboardProbe || sourceSynchronousProbe);
                 Assert.Null(returnFocus);
                 Assert.Null(sourceClaimProbe);
-                arguments = [.. arguments, "--source-message-probe", Path.Combine(Repository(),
-                    "src/windows/TypeLay.Broker/bin/Release/net10.0-windows/TypeLay.NativeInput.dll")];
+                // The direct NativeTransactions owner loads from this test process's
+                // base directory. Bind GETMESSAGE to that exact DLL, not the separate
+                // Broker observer's same-named copy with independent static slots.
+                arguments = [.. arguments, "--source-message-probe",
+                    Path.Combine(AppContext.BaseDirectory, "TypeLay.NativeInput.dll")];
             }
             if (sourceKeyboardProbe)
             {

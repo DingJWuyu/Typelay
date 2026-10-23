@@ -17,6 +17,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
     private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
     private readonly ConcurrentQueue<object> _shortcutTrace = new();
     private int _shortcutTraceCount, _shortcutTraceDropped, _ordinaryKeyTraceSamples;
+    private int _sourceFocusTraceSamples, _sourceFocusTraceDropped, _sourceFocusTraceOverflowReported;
     private readonly Thread _thread;
     private readonly Native.HookProc _callback, _mouseCallback;
     private readonly Native.WinEventProc _focusCallback;
@@ -150,8 +151,44 @@ internal sealed partial class KeyboardHook : IInputMonitor
         // again after the source check can see editor -> source as neither,
         // causing Runtime to retire the draft and its original Broker binding.
         nint foreground = Native.GetForegroundWindow();
-        return IsSourceForeground(native, foreground) ? FocusMember.Source
-            : foreground == _editorHwnd && _editorHwnd != 0 ? FocusMember.Overlay : FocusMember.Other;
+        if (IsSourceForeground(native, foreground))
+            return FocusMember.Source;
+        if (foreground == _editorHwnd && _editorHwnd != 0)
+            return FocusMember.Overlay;
+        QueueSourceFocusRefusal(native, foreground);
+        return FocusMember.Other;
+    }
+    private void QueueSourceFocusRefusal(WindowsTarget target, nint foreground)
+    {
+        if (string.IsNullOrWhiteSpace(_tracePath))
+            return;
+        if (Interlocked.Increment(ref _sourceFocusTraceSamples) > 8)
+        {
+            Interlocked.Decrement(ref _sourceFocusTraceSamples);
+            Interlocked.Increment(ref _sourceFocusTraceDropped);
+            return;
+        }
+        if (Interlocked.Increment(ref _shortcutTraceCount) > 64)
+        {
+            Interlocked.Decrement(ref _shortcutTraceCount);
+            Interlocked.Increment(ref _sourceFocusTraceDropped);
+            return;
+        }
+        // Reuse the first foreground sample that was actually classified.
+        // A source-field refusal includes its strict identity/focus checks and
+        // existing final foreground recheck; their individual cause is unknown.
+        // Time and epochs below describe queuing, not an atomic OS observation.
+        bool sourceField = foreground != 0 && foreground == (nint)target.ControlHwnd;
+        _shortcutTrace.Enqueue(new
+        {
+            queuedAtMs = WindowsInterruptClock.NowMs,
+            operation = "source-focus-refused",
+            foregroundSample = foreground == 0 ? "none" : sourceField ? "source-field" : "other",
+            reason = foreground == 0 ? "foreground-unavailable"
+                : sourceField ? "source-field-unconfirmed" : "outside-source-and-editor",
+            windowEpoch = WindowEpoch,
+            foregroundEpoch = ForegroundEpoch
+        });
     }
     private bool IsSourceForeground(WindowsTarget target) => IsSourceForeground(target, Native.GetForegroundWindow());
     private bool IsSourceForeground(WindowsTarget target, nint foreground)
@@ -444,6 +481,16 @@ internal sealed partial class KeyboardHook : IInputMonitor
                     atMs = WindowsInterruptClock.NowMs,
                     operation = "shortcut-trace-overflow",
                     dropped
+                }));
+            int focusDropped = Volatile.Read(ref _sourceFocusTraceDropped);
+            if (focusDropped != 0 && Interlocked.Exchange(ref _sourceFocusTraceOverflowReported, 1) == 0)
+                lines.AppendLine(System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    atMs = WindowsInterruptClock.NowMs,
+                    operation = "source-focus-trace-overflow",
+                    // Only one overflow row per hook. Later refusals remain
+                    // unrecorded, so this is deliberately a lower bound.
+                    droppedAtLeast = focusDropped
                 }));
             if (lines.Length != 0)
                 File.AppendAllText(_tracePath, lines.ToString());

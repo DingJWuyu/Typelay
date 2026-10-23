@@ -3,6 +3,7 @@ extern alias BrokerProduction;
 using System.IO;
 using System.Text.Json;
 using TypeLay.Core;
+using TypeLay.Windows.Contracts;
 using Xunit;
 using NativeTransactions = BrokerProduction::TypeLay.Broker.NativeEditTransactions;
 using N = TypeLay.Platform.Windows.NativeMethods;
@@ -26,7 +27,8 @@ public sealed partial class SourceKeyboardBoundaryProbe
         ProductionForegroundWriteTests.Desktop? source = null;
         NativeTransactions? native = null;
         AcceptancePermit? permit = null;
-        NativeTransactions.SourceInstallationResult? terminal = null;
+        NativeTransactions.SourceInstallationResult? installed = null, terminal = null;
+        string ownerLibrary = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "TypeLay.NativeInput.dll"));
         Guid generation = Guid.NewGuid();
         string status = "precondition_failed";
         string? error = null;
@@ -44,7 +46,8 @@ public sealed partial class SourceKeyboardBoundaryProbe
             var observed = await source.Capture();
             native = new NativeTransactions();
             permit = NativeSourceAcceptanceTests.CapturePermit(native, observed, new(4, 7));
-            Assert.True(native.InstallSourceAcceptance(generation, permit).Installed);
+            installed = native.InstallSourceAcceptance(generation, permit);
+            Assert.True(installed.Installed);
             // Arm is a posted fixture command, not a new capture or authorization.
             Assert.True(N.PostMessage(source.Root, 0x8080, (nuint)mode, 0));
             while (N.GetProp(source.Root, "TypeLay.Test.KeyboardProbe.Ready.v1") != mode)
@@ -72,6 +75,11 @@ public sealed partial class SourceKeyboardBoundaryProbe
                 await Task.Delay(1, source.Token);
             var snapshot = await Snapshot(source, observations, "ordinary-source-message");
             var message = snapshot.GetProperty("sourceMessage");
+            // Check the cached actual module path only after the original retrieval
+            // and tail barrier. This adds no query to the 100ms admission window.
+            Assert.True(string.Equals(ownerLibrary, message.GetProperty("modulePath").GetString(),
+                StringComparison.OrdinalIgnoreCase));
+            Assert.NotEqual(0L, message.GetProperty("moduleBase").GetInt64());
             bool accepted = mode == 11;
             Assert.Equal(1, Number(message, "firstDownAttempts"));
             Assert.True(message.GetProperty("firstRetrievalMatches").GetBoolean());
@@ -167,6 +175,20 @@ public sealed partial class SourceKeyboardBoundaryProbe
                 processesExited,
                 inputsPaired,
                 pausedObserved,
+                ownerLibrary,
+                installed,
+                grantIdentity = permit is null ? null : new
+                {
+                    generation,
+                    grant = permit.Plan.Id,
+                    target = permit.Plan.Expected.Target.AsWindows(),
+                    permit.Plan.Expected.Selection,
+                    permit.Plan.Scope,
+                    permit.ObservedAtMs,
+                    permit.ExpiresAtMs,
+                    permit.InputEpoch,
+                    permit.FocusEpoch
+                },
                 terminal,
                 inputs = inputs.Records,
                 observations,
