@@ -52,13 +52,6 @@ internal static class Program
             _tsfSourceKeyboardRead = true;
             return TsfContextAdmission.RunSta(RunTsfAdmissionWindows);
         }
-        if (args.Length == 3 && args[0] == "--stock-controls" && args[1] == "--tsf-owned-write"
-            && args[2] is "success" or "changed-body" or "changed-selection" or "invalidated-focus-generation")
-        {
-            _tsfContextAdmission = true;
-            _tsfWriteScenario = args[2];
-            return TsfContextAdmission.RunSta(RunTsfAdmissionWindows);
-        }
         bool hookTest = args.Length == 1 && args[0] is "--hook-test" or "--hook-test-automation";
         bool ownedControls = (args.Length == 4 || args.Length == 5) && args[0] == "--owned-controls"
             && Path.IsPathFullyQualified(args[1]) && Guid.TryParse(args[2], out _ownedConnection)
@@ -96,9 +89,6 @@ internal static class Program
     private static uint _tsfProbeKey;
     private static bool _tsfSourceKeyboardRead;
     private static TsfContextAdmission.KeyProbe? _tsfKeyProbe;
-    private static TsfContextAdmission.OwnedWriteProbe? _tsfWriteProbe;
-    private static string? _tsfWriteScenario;
-    private static bool _tsfWriteResultWritten;
     private static bool _tsfKeyResultWritten, _tsfCloseRequested;
     private static bool _sourceKeyboardProbeEnabled;
     private static SourceKeyboardProbe? _sourceKeyboardProbe;
@@ -154,7 +144,6 @@ internal static class Program
         finally
         {
             CloseTsfKeyProbe();
-            CloseTsfWriteProbe();
             // Covers startup failures as well as the message loop. The stock
             // controls must be destroyed before RunSta balances COM ownership.
             if (_root != 0 && N.IsWindow(_root))
@@ -163,30 +152,6 @@ internal static class Program
                 if (!N.DestroyWindow(_root))
                     throw new InvalidOperationException("TSF fixture window cleanup failed.");
             }
-        }
-    }
-
-    [SupportedOSPlatform("windows")]
-    private static void CloseTsfWriteProbe()
-    {
-        if (_tsfWriteProbe is null || _tsfWriteResultWritten)
-            return;
-        bool clean = _tsfWriteProbe.Close();
-        _tsfWriteResultWritten = true;
-        try
-        {
-            Console.WriteLine(JsonSerializer.Serialize(new
-            {
-                phase = "write-closed",
-                result = _tsfWriteProbe.Result
-            }));
-            Console.Out.Flush();
-        }
-        finally
-        {
-            // A live hook/session must not outlive its strong references.
-            if (!clean)
-                Environment.Exit(2);
         }
     }
 
@@ -340,7 +305,6 @@ internal static class Program
                         || !N.SetProp(_root, N.FixtureClickReceipt, preparationClickMarker)))
                     throw new InvalidOperationException("Fixture preparation click receipt failed.");
                 _tsfKeyProbe?.AfterDispatch(dispatched);
-                _tsfWriteProbe?.AfterDispatch(dispatched);
                 if (_tsfCloseRequested)
                 {
                     _tsfCloseRequested = false;
@@ -408,17 +372,15 @@ internal static class Program
     [SupportedOSPlatform("windows")]
     private static nint RootWindowProc(nint hwnd, uint message, nuint wParam, nint lParam)
     {
-        if ((_tsfProbeKey != 0 || _tsfWriteScenario is not null) && message == 0x0010) // WM_CLOSE, outside any TSF callback.
+        if (_tsfProbeKey != 0 && message == 0x0010) // WM_CLOSE, outside any TSF callback.
         {
-            // Reentrant close revokes now; only destruction waits for the stack.
-            _tsfWriteProbe?.RevokeForClose();
-            if (_tsfKeyProbe?.ComOperationActive == true || _tsfWriteProbe?.ComOperationActive == true)
+            // Destruction waits until the TSF callback stack has returned.
+            if (_tsfKeyProbe?.ComOperationActive == true)
             {
                 _tsfCloseRequested = true;
                 return 0;
             }
             CloseTsfKeyProbe();
-            CloseTsfWriteProbe();
         }
         if (message == 0x0002)
         {
@@ -442,49 +404,6 @@ internal static class Program
         {
             _tsfFocusVersion++;
             _tsfKeyProbe?.FocusChanged();
-            _tsfWriteProbe?.FocusChanged();
-        }
-        if (_tsfWriteScenario is not null && message == TsfContextAdmission.BeginWriteMessage
-            && _tsfWriteProbe is null && (nint)wParam == _replayField && lParam == 0)
-        {
-            _tsfWriteProbe = new(_root, _replayField, () => _tsfFocusVersion);
-            _tsfWriteProbe.Begin();
-            if (_tsfWriteProbe.Result.SnapshotCaptured)
-            {
-                // Controlled changes AFTER freezing the expectation. These are
-                // counterexample setup, never fallback writes for a TSF failure.
-                if (_tsfWriteScenario == "changed-body")
-                {
-                    N.SendString(_replayField, N.WM_SETTEXT, "A🙂新稿Z");
-                    N.Send(_replayField, N.EM_SETSEL, 3, 5);
-                }
-                else if (_tsfWriteScenario == "changed-selection")
-                    N.Send(_replayField, N.EM_SETSEL, 0, 1);
-                else if (_tsfWriteScenario == "invalidated-focus-generation")
-                {
-                    N.SetFocus(_secondField);
-                    N.SetFocus(_replayField); // Same HWND does not restore the original generation.
-                    N.Send(_replayField, N.EM_SETSEL, 3, 5);
-                }
-            }
-            Console.WriteLine(JsonSerializer.Serialize(new
-            {
-                phase = "write-begun",
-                result = _tsfWriteProbe.Result
-            }));
-            Console.Out.Flush();
-            return 1;
-        }
-        if (_tsfWriteScenario is not null && message == TsfContextAdmission.WriteProgressMessage && _tsfWriteProbe is not null)
-        {
-            Console.WriteLine(JsonSerializer.Serialize(new
-            {
-                phase = "write-progress",
-                inputUpObserved = _tsfWriteProbe.Result.InputUpObserved,
-                result = _tsfWriteProbe.Result.InputUpObserved ? _tsfWriteProbe.Result : null
-            }));
-            Console.Out.Flush();
-            return 1;
         }
         if (_tsfProbeKey != 0 && message == TsfContextAdmission.BeginKeyMessage
             && _tsfKeyProbe is null && StockFields.Contains((nint)wParam) && lParam == 0)
@@ -520,7 +439,7 @@ internal static class Program
         if (_tsfContextAdmission && message == 0x0113 && wParam == 4)
         {
             KillTimer(_root, 4);
-            if (_tsfProbeKey != 0 || _tsfWriteScenario is not null)
+            if (_tsfProbeKey != 0)
                 N.PostMessage(_root, 0x0010, 0, 0);
             else
                 N.DestroyWindow(_root);

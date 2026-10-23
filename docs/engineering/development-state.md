@@ -4,9 +4,11 @@
 
 ## 先看结论
 
-本页于 2026-10-23 19:17 UTC 核对。**CI480 的完整 Linux job、共享检查、Windows 常规行为与双端 Hy 生命周期均已通过。Linux 体验推荐已决定升级为 CI480；Windows 普通源接受仍未完成，正式 Notepad 接受失败，新 TSF RW 研究只证明获得同步锁后零写拒绝。** 模型质量、高级 scope、真实 IME、物理输入和所有应用仍不能由这些结果推出。
+本页于 2026-10-23 20:01 UTC 核对。**CI480 的完整 Linux job、共享检查、Windows 常规行为与双端 Hy 生命周期均已通过。Linux 体验推荐已决定升级为 CI480；Windows 普通源接受仍未完成，正式 Notepad 接受失败，新 TSF RW 研究只证明获得同步锁后零写拒绝。** 模型质量、高级 scope、真实 IME、物理输入和所有应用仍不能由这些结果推出。
 
 ### 当前发布身份与证据
+
+- [CI481](https://github.com/DingJWuyu/Typelay/actions/runs/40010604024) 已由6文件唯一push触发，19:20:15 UTC创建、attempt1，19:35:08 UTC completed/failure。冻结本地 `2046d0ad6fdb3102c9133bb349985db338aad97f` 对应远端 `7bfba411f3b54a1190b56051271a0561c0411f18`、tree `5e20d8c9b82b2c2c8a845c58259504c4fe6998ea`、parent `2342a747`；精确读回成功。当前推荐包仍为独立验收的CI480，不随纯诊断/文档运行自动更换。CI481 App782/784，两项root hover失败；Windows Hy15通过、Notepad失败；Linux isolated GTK4 glossary与Qt probe失败，Qt真实模型/GIMP/Hy因依赖门跳过，不能把artifact上传成功或CI480结果套作本轮通过。纠正原件：`../artifacts/ci481-current/linux-terminal-status-corrected.json`。
 
 - [CI480](https://github.com/DingJWuyu/Typelay/actions/runs/40007045279) 为唯一 push、attempt1，18:53:43 UTC 创建，19:15:36 UTC completed/failure。冻结本地 `6e9f5463b5b993064cb0dc3f2d2be105fc7ca38f` 的17文件精确对应远端 `2342a747864b9694e3beebf1ca16c4aa44e078db`、tree `e46dc73d0d5d78c50f7813ed285e1369026f9b1b`、parent `f9ce8b5a`，非强推及读回已核。
 - 原件入口 `../artifacts/ci480-current/terminal-evidence-verified.json`：4份ZIP、源码849项、Windows551文件身份与Linux293项清单均已核。Linux完整成功不是setup-only/Qt-only/quality-only；Windows总体失败不能抹去Linux结果，也不能由常规绿色掩盖研究失败。
@@ -28,8 +30,11 @@
 
 | 责任线 | 负责人 | 当前动作与完成条件 |
 | --- | --- | --- |
-| TSF拒绝差值证据 | root集成；finish_tsf_write_validation | 作者0c2146a已集成67725ff，四文件双轴GO、folder格式/YAML/diff通过。只从既有合成字符串记录长度/选区/首差码元/固定类别及hook完成后的只读原生效果；不归一化、不改比较/100ms/一次请求，Undo/Submit仍在verified终态后。实际差值待下一CI，根因未知，未编译/Windows实跑 |
-| 下一批发布/验证 | publish_next_verified_fix_batch，root冻结 | CI480原件已齐。发布已审差值证据与当前文档后跟精确CI至终态，首例结果决定下一修复，不拿continue-on-error颜色当研究通过 |
+| 原生输入身份绑定 | bind_native_source_input_identity | 在普通source本地slot固定fresh HIMC/HKL，沿原lifetime/generation/foreground/deadline最终复核，不能直接套owned专属qualifier；WM_IME_SETCONTEXT仅撤销旧grant。最终修订634e668已撤额外owned末次IMM采样，source末IMM后复核无回调资格元数据；portable 14序列通过、Standards GO、Spec增量待审，另批集成。默认生产关闭，不声称全部TSF profile、真实组合或owned末期任意重入已闭合 |
+| 间歇hover诊断 | root集成60fe2fc | 两项CI481在150ms内被额外source hover撤前缀；保原门/8场景，仅既有16条trace增加原MSG类别/队列来源/当时坐标的当前几何分类与capture，双轴GO/纯folder过，未实跑。当前命中不是历史路由证明，不称已修 |
+| Qt探针首错诊断 | root集成08fb979 | 保原一次describe/capture及Clear/writeSupported，失败才记场景、原DTO/时点/fixture与最近16事件，双轴GO/Ruff/消费者4项过。CI481首错是glossary publish，不是旧renewalTiming落盘false；根因待新原件 |
+| GTK4 glossary正向存活前提 | root集成eda0481 | 原件两次串行call共914ms无续约，生产另有200ms续约，800ms自然到期正确。仅在save/pointer-save/cancel pending render成功后/首次open前复用renew，调用前已过期则失败；双轴GO、geometry47及Ruff通过，真实40GUI待CI。不改通用helper、过期阴性、租期或输入次数；不是完整异步仿真 |
+| 下一批发布/验证 | publish_next_verified_fix_batch，root冻结 | CI481终态与早期原件已齐；同批退役失效实验、同步现役文档并发已审诊断/就绪修复，当前native身份新实现未审好则另批，不阻塞已就绪工作。新CI跟到终态，不拿continue-on-error颜色当研究通过 |
 | Windows输入信任与部署 | root | UIAccess范围待用户明确裁决；保持严格注入拒绝。同步RW局部证据不授予旧键身份/IME/第三方部署/原子产品写入资格 |
 | Linux体验交付 | root；assess_linux_candidate_adoption | 采用CI480已独立核验的包，在线推荐更新；不重打已验包、不发布stable。保留用户真机反馈与模型/高级scope限制 |
 | 模型后继 | root | 保持双端已过生命周期回归及原默认。高级scope/source dispatch与质量证据独立处理；没有新假设不重复扫参或扩预算 |
@@ -39,6 +44,8 @@
 本地MSBuild/测试曾被socket权限拒绝，正式审核路径启动失败；未绕过或重试这些动作。独立`dotnet format whitespace --folder`不加载项目，已实际运行并通过，不代表编译恢复。同机重编译/模型推理错开，模型推理串行，按实际owned进程退出交接资源槽。
 
 ## Windows：仍需闭合的普通源能力
+
+- **当前TSF全文路径已退役**：CI481精确Top context实际0单位/0:0，而native快照及完成后原文为6单位/3:5，零写、焦点B、另一字段不变、submit0且正常清理。它否定当前context的全文对应，不证明全部stock Edit或TSF不可用。作者b785a7c集成65976ad，专属实现/四例/CI入口删除、双轴GO；保native六例、手动READ/composition、COM布局与全部产品门，不恢复自动READ凑运行。后续TSF最多先作为有待绑定的组合观察源，不能none直接授全局IME Clear。
 
 具体产品约束见 [Windows 待办](../platforms/windows/open-issues.md)。普通输入框接受译文、F10 替换与连续输入是核心场景；正式 Notepad 仍仅预览，误写或丢稿影响高，日常发生频率未知。按[实际价值判断](testing.md#实际价值判断)优先闭合首键、原子写入、IME 与身份，不为归因本身重复跑已过场景。
 

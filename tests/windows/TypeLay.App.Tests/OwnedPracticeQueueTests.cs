@@ -100,9 +100,13 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         Exception? failure = null;
         string phase = "start";
         long? pressedAt = null;
+        string pointerBeforeLease = "not-observed";
         try
         {
             await scene.Start(true, bindings: SessionShortcutBindings.Restore("Ctrl+F7", "Ctrl+F10"));
+            // Observe setup only; do not move the pointer, drain input, or change
+            // the original ticket/press sequence to make a root replay succeed.
+            pointerBeforeLease = scene.PointerTarget();
             phase = "source-read";
             var selection = N.ReadSelection(scene.Field);
             phase = "install-exit";
@@ -215,7 +219,9 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 $"guiKnown={guiKnown} guiError={guiError} menuMode={menuMode} " +
                 $"systemMenuMode={systemMenuMode} popupMenuMode={popupMenuMode} " +
                 $"leaseObserved={scene.ExitLease?.ObservedAtMs} leaseExpires={scene.ExitLease?.ExpiresAtMs} " +
-                $"pressStarted={pressedAt} rejectionTrace={scene.ReadExitRejectionTrace()}", error);
+                $"pressStarted={pressedAt} pointerBeforeLease={pointerBeforeLease} pointerAtFailure={scene.PointerTarget()} " +
+                $"prefixDispatches=[{string.Join(",", scene.Messages.Where(reply => reply.Kind.StartsWith("test-prefix-", StringComparison.Ordinal)).Select(reply => reply.Kind))}] " +
+                $"rejectionTrace={scene.ReadExitRejectionTrace()}", error);
         }
         finally
         {
@@ -2042,6 +2048,14 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             Assert.True(SetCursorPos(bounds.Left + 12, bounds.Top + 12));
             return previous;
         }
+        public string PointerTarget()
+        {
+            if (!Native.GetCursorPos(out var point))
+                return "unavailable";
+            nint hit = WindowFromPoint(point);
+            return hit == 0 ? "unknown" : hit == Field ? "source" : hit == Root ? "root"
+                : N.GetAncestor(hit, 2) == Root ? "owned-child" : "other";
+        }
         public void ClickSource()
         {
             uint inserted = SendInput(2, [new KeyInput { MouseFlags = 2 }, new KeyInput { MouseFlags = 4 }], Marshal.SizeOf<KeyInput>());
@@ -2139,6 +2153,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         [FieldOffset(20)] public uint MouseFlags;
     }
     [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] private static extern nint WindowFromPoint(Native.Point point);
     [DllImport("user32.dll")] private static extern nint GetDlgItem(nint window, int id);
     [DllImport("user32.dll")] private static extern nint GetWindow(nint window, uint command);
     [DllImport("user32.dll")] private static extern nint GetWindowLongPtrW(nint window, int index);

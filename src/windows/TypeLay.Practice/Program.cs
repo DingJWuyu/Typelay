@@ -240,7 +240,8 @@ internal static partial class Program
                 if (!consumed)
                 {
                     if (_prefixDispatch is not null || _prefixProof is not null)
-                        ObserveOrdinaryInput(message.Window, message.Id, message.WParam, message.LParam, sent: false);
+                        ObserveOrdinaryInput(message.Window, message.Id, message.WParam, message.LParam, sent: false,
+                            queuedMessage: message, inputQueue: inputQueue);
                     if (!Native.IsDialogMessageW(_window, ref message))
                     {
                         Native.TranslateMessage(ref message);
@@ -1296,7 +1297,8 @@ internal static partial class Program
         return Native.CallNextHookEx(0, code, wParam, lParam);
     }
 
-    private static void ObserveOrdinaryInput(nint window, uint id, nuint wParam, nint lParam, bool sent)
+    private static void ObserveOrdinaryInput(nint window, uint id, nuint wParam, nint lParam, bool sent,
+        Native.Message? queuedMessage = null, bool? inputQueue = null)
     {
         if (_inputObservation == 0 || _retired || _edit is not { } edit || _owned is null)
             return;
@@ -1345,14 +1347,33 @@ internal static partial class Program
         bool discardedProof = _prefixProof is not null;
         InvalidateGuiInput(!hover || _prefixDispatch is not null || _prefixProof is not null);
         if (discardedProof && InputRejectionTraceEnabled)
+        {
+            // The original rejection is already final. Classify only its queued
+            // cursor point against the two owned HWNDs, using current geometry;
+            // this is not proof of routing at enqueue time or physical movement.
+            // Sent-message observation has no MSG.pt and stays explicitly unknown.
+            long invalidatedAtMs = WindowsInterruptClock.NowMs;
+            nint? pointWindow = queuedMessage is { } queued ? Native.WindowFromPoint(queued.Point) : null;
+            nint capture = Native.GetCapture(); // Only this source GUI thread's capture.
             QueueInputRejection(new
             {
                 operation = "owned-prefix-invalidated",
+                atMs = invalidatedAtMs,
                 reason = hover ? "hover" : imeOrLanguage ? "ime-language" : sourceMutation || changed ? "source-mutation" : "input",
+                messageId = id,
                 sent,
+                inputQueue,
+                messageAtMs = queuedMessage?.Time,
                 source,
-                root
+                root,
+                queuedPointHitKnown = pointWindow is null ? (bool?)null : pointWindow != 0,
+                queuedPointHitsSource = pointWindow is null || pointWindow == 0 ? (bool?)null : pointWindow == edit.Handle,
+                queuedPointHitsRoot = pointWindow is null || pointWindow == 0 ? (bool?)null : pointWindow == _window,
+                threadCapturePresent = capture != 0,
+                threadCaptureIsSource = capture == edit.Handle,
+                threadCaptureIsRoot = capture == _window
             });
+        }
     }
 
     // Existing queue-fixture opt-in only. Observe real normal dispatch, never
@@ -2404,6 +2425,7 @@ internal static partial class Program
         [DllImport("user32.dll")] internal static extern bool UnhookWindowsHookEx(nint hook);
         [DllImport("user32.dll")] internal static extern nint CallNextHookEx(nint hook, int code, nuint wParam, nint lParam);
         [DllImport("user32.dll")] internal static extern nint GetFocus();
+        [DllImport("user32.dll")] internal static extern nint GetCapture();
         [DllImport("user32.dll")] internal static extern uint GetMessagePos();
         [DllImport("user32.dll")] internal static extern nint WindowFromPoint(Point point);
         [DllImport("user32.dll")] internal static extern short GetKeyState(int virtualKey);

@@ -666,14 +666,39 @@ def ordered_controls(
                     },
                 )
 
-            def publish(replacement_text="Translated result"):
+            def publish(replacement_text="Translated result", *, case=None):
                 wait(settled, "genuine IM retirement before original publication")
+                timing = {"descriptionStartedAtMs": now_ms()}
                 description = native.describe()
+                timing["descriptionReturnedAtMs"] = now_ms()
+                timing["captureStartedAtMs"] = now_ms()
                 captured = native.call(
                     "capture",
                     {"target": description["target"], "authority": description["authority"]},
                 )
-                assert captured and captured["writeSupported"] and captured["ime"] == "Clear"
+                timing["captureReturnedAtMs"] = now_ms()
+                admitted = captured and captured["writeSupported"] and captured["ime"] == "Clear"
+                if not admitted:
+                    # Preserve the one failed exchange, not a second describe
+                    # or capture that could replace its original IM/authority
+                    # evidence. The fixture contains only synthetic test text.
+                    failure = {
+                        "status": "failed-before-publication",
+                        "case": case,
+                        "timing": timing,
+                        "description": description,
+                        "captured": captured,
+                        "fixture": state(),
+                        "recentNativeEvents": native.events[-16:],
+                    }
+                    result["publicationFailure"] = failure
+                    try:
+                        (out / f"{mode}-result.json").write_text(
+                            json.dumps(result, indent=2) + "\n"
+                        )
+                    except OSError:
+                        pass  # Keep the actual admission failure in the assertion/log.
+                    assert admitted, failure
                 source = {
                     "target": {
                         "backend": "linux-qt6",
@@ -1230,7 +1255,14 @@ def ordered_controls(
                         ), "fixture must observe the real multiline provider before form transfer"
                     else:
                         prepare()
-                    publication = publish()
+                    publication = publish(
+                        case={
+                            "scenario": "source-glossary",
+                            "state": view_state,
+                            "finish": finish,
+                            "field": field,
+                        }
+                    )
                     target = publication["target"]
                     actions = {
                         "settingsRevision": 12,

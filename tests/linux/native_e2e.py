@@ -1124,14 +1124,24 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                     },
                                 },
                             }
+                            pending_expiry = now_ms() + 800
                             assert call(
                                 "overlay-render",
                                 {
                                     **base,
-                                    "expiresAtMs": now_ms() + 800,
+                                    "expiresAtMs": pending_expiry,
                                     "view": view,
                                 },
                             )["visible"]
+                            # The desktop renews independently while waiting for
+                            # render replies. Prepare this positive form action
+                            # only if that render lease has not already elapsed.
+                            assert now_ms() < pending_expiry, (
+                                "pending glossary render lease expired before open preparation"
+                            )
+                            assert renew()["visible"], (
+                                "pending glossary overlay lost before open preparation"
+                            )
                         assert call("overlay-glossary-open", request_data)["opened"]
                         observe(
                             lambda value: value["overlayControls"]
