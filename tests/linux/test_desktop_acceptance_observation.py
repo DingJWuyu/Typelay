@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
@@ -177,6 +178,74 @@ class AcceptanceInjectionTests(unittest.TestCase):
 
             send_gtk_acceptance(gtk4, shortcut, tab, configured, timing)
             self.assertEqual(calls, [(expected, shortcut, timing)])
+
+
+class AcceptanceAttemptTests(unittest.TestCase):
+    def test_trace_io_finishes_before_readiness_and_one_original_pair(self):
+        from desktop_e2e import observe_and_send_gtk_acceptance
+
+        clock = [0]
+        sent = []
+        phase = {}
+
+        def checkpoint():
+            # Synthetic slow trace I/O, not a decomposition of CI461's delay.
+            clock[0] += 120
+            return 42
+
+        def ready():
+            return {"expiresAtMs": clock[0] + 95, "candidate": "exact manual draft"}
+
+        def send(*, timing):
+            self.assertLess(clock[0], phase["readiness"]["expiresAtMs"])
+            sent.extend(("down", "up"))
+            timing["downStartedAtMs"] = clock[0]
+
+        with patch("desktop_e2e.now_ms", side_effect=lambda: clock[0]):
+            before = observe_and_send_gtk_acceptance(checkpoint, ready, send, phase)
+        self.assertEqual(before, 42)
+        self.assertEqual(sent, ["down", "up"])
+        self.assertEqual(phase["checkpointFinishedAtMs"], 120)
+        self.assertEqual(phase["readinessStartedAtMs"], 120)
+        self.assertEqual(
+            phase["readiness"], {"expiresAtMs": 215, "candidate": "exact manual draft"}
+        )
+        self.assertEqual(phase["keySendStartedAtMs"], 120)
+        self.assertEqual(phase["injection"], {"downStartedAtMs": 120})
+
+    def test_failed_send_keeps_attempt_timing_without_replay(self):
+        from desktop_e2e import observe_and_send_gtk_acceptance
+
+        phase = {}
+        sent = []
+
+        def send(*, timing):
+            sent.append("down")
+            timing["downStartedAtMs"] = 10
+            raise OSError("injection failed")
+
+        with patch("desktop_e2e.now_ms", return_value=10):
+            with self.assertRaisesRegex(OSError, "injection failed"):
+                observe_and_send_gtk_acceptance(lambda: 42, lambda: {"ready": True}, send, phase)
+        self.assertEqual(sent, ["down"])
+        self.assertEqual(phase["keySendFinishedAtMs"], 10)
+        self.assertEqual(phase["injection"], {"downStartedAtMs": 10})
+
+    def test_failed_readiness_sends_nothing(self):
+        from desktop_e2e import observe_and_send_gtk_acceptance
+
+        sent = []
+        phase = {}
+
+        def ready():
+            raise AssertionError("manual candidate not ready")
+
+        with self.assertRaisesRegex(AssertionError, "manual candidate not ready"):
+            observe_and_send_gtk_acceptance(
+                lambda: 42, ready, lambda **_: sent.append("down"), phase
+            )
+        self.assertEqual(sent, [])
+        self.assertNotIn("keySendStartedAtMs", phase)
 
 
 class FixtureIdentityTests(unittest.TestCase):

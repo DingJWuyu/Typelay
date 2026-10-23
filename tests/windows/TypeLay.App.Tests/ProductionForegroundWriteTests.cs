@@ -182,7 +182,13 @@ public sealed class ProductionForegroundWriteTests
     public async Task NativeForegroundChildKeepsOnlyItsExactSourceBinding(string foreground, bool direct)
     {
         await using var desktop = await Desktop.Start();
-        await desktop.Prepare(desktop.A, "A🙂你好Z", new(3, 5));
+        // This field may already be focused. Complete each preparation command,
+        // rather than letting a posted same-field focus outlive the later raw
+        // foreground change merely because the requested focus already matches.
+        N.Send(desktop.Root, N.FixtureFocus, (nuint)desktop.A);
+        Assert.Equal((desktop.Root, desktop.A), N.Focused());
+        N.SendString(desktop.A, N.WM_SETTEXT, "A🙂你好Z");
+        N.Send(desktop.A, N.EM_SETSEL, 3, 5);
         var source = await desktop.Capture();
         nint cookie = N.GetProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2");
         string otherText = N.ReadText(desktop.B, Limits.MaxTextUnits);
@@ -195,10 +201,8 @@ public sealed class ProductionForegroundWriteTests
         while (!hook.Ready && startup.Elapsed < TimeSpan.FromSeconds(2))
             await Task.Delay(10, desktop.Token);
         Assert.True(hook.Ready);
-        if (elsewhere is not null)
-            await elsewhere.Focus(field, desktop.Token);
-        else
-            await desktop.Focus(field);
+        N.Send(root, N.FixtureFocus, (nuint)field);
+        Assert.Equal((root, field), N.Focused());
         // Exercise the Win32 state seen after CI460's UIA correction, without
         // depending on whether a particular provider happens to produce it.
         Assert.True(N.SetForegroundWindow(field));

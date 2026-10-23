@@ -126,7 +126,7 @@ public sealed partial class NativeSourceControllerTests
         {
             var focus = N.ReadFocus();
             string foreground = focus.Root == 0 ? "null" : focus.Root == root ? "source"
-                : focus.Root == editor ? "editor" : "other";
+                : focus.Root == field ? "source-field" : focus.Root == editor ? "editor" : "other";
             // Reuse the existing read, never query another HWND to fill a gap.
             // A missing source observation leaves its thread comparison unknown.
             if (focus.ThreadId != 0)

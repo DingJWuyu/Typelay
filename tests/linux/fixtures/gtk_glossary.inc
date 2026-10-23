@@ -20,6 +20,41 @@ static char *glossary_body(GtkTextBuffer *buffer) {
     return gtk_text_buffer_get_text(buffer, &start, &end, TRUE);
 }
 #if GTK_MAJOR_VERSION == 3
+/* event-after is emitted after the specific button handler, even when that
+ * handler consumes the event. This observes only the real fixture TextView;
+ * it neither consumes input nor changes focus, selection or provider state. */
+static guint glossary_source_release_sequence, glossary_source_release_instance;
+static gint64 glossary_source_released_at;
+static gboolean glossary_source_release_focused;
+static void glossary_source_event_after(GtkWidget *widget, GdkEvent *event, gpointer unused) {
+    (void)unused;
+    if (widget != report_multiline || event->type != GDK_BUTTON_RELEASE
+        || event->button.button != GDK_BUTTON_PRIMARY || event->any.send_event
+        || gtk_get_event_widget(event) != widget) return;
+    glossary_source_release_sequence++;
+    glossary_source_release_instance = language_instance(G_OBJECT(widget));
+    glossary_source_released_at = g_get_monotonic_time() / 1000;
+    glossary_source_release_focused = gtk_widget_has_focus(widget);
+}
+static void glossary_report_source_pointer(JsonBuilder *builder) {
+    if (!g_object_get_data(G_OBJECT(report_multiline), "fixture-glossary-release-watched")) {
+        g_object_set_data(G_OBJECT(report_multiline), "fixture-glossary-release-watched", GINT_TO_POINTER(1));
+        g_signal_connect(report_multiline, "event-after", G_CALLBACK(glossary_source_event_after), NULL);
+    }
+    json_builder_set_member_name(builder, "instance");
+    json_builder_add_int_value(builder, language_instance(G_OBJECT(report_multiline)));
+    json_builder_set_member_name(builder, "pointerRelease");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "sequence");
+    json_builder_add_int_value(builder, glossary_source_release_sequence);
+    json_builder_set_member_name(builder, "instance");
+    json_builder_add_int_value(builder, glossary_source_release_instance);
+    json_builder_set_member_name(builder, "atMs");
+    json_builder_add_int_value(builder, glossary_source_released_at);
+    json_builder_set_member_name(builder, "focused");
+    json_builder_add_boolean_value(builder, glossary_source_release_focused);
+    json_builder_end_object(builder);
+}
 static void glossary_find_child(GtkWidget *widget, gpointer data);
 static GtkWidget *find_named_widget(GtkWidget *widget, const char *name) {
     if (g_strcmp0(gtk_widget_get_name(widget), name) == 0) return widget;
@@ -116,6 +151,9 @@ static void glossary_report(JsonBuilder *builder) {
     json_builder_add_int_value(builder, glossary_command);
     json_builder_set_member_name(builder, "glossarySource");
     json_builder_begin_object(builder);
+#if GTK_MAJOR_VERSION == 3
+    glossary_report_source_pointer(builder);
+#endif
     GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(report_multiline));
     char *text = glossary_body(buffer);
     GtkTextIter start, end;

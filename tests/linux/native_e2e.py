@@ -21,6 +21,29 @@ from paths import Paths, peer_credentials  # noqa: E402
 from wire import encode, now_ms, receive_sync  # noqa: E402
 
 
+def glossary_source_click_ready(snapshot, baseline, clicked_at):
+    """Admit preparation only after this GTK3 TextView dispatched one release."""
+    source = snapshot.get("glossarySource", {})
+    released = source.get("pointerRelease", {})
+    instance = baseline.get("instance")
+    sequence = baseline.get("pointerRelease", {}).get("sequence")
+    observed_at, released_at = snapshot.get("observedAtMs"), released.get("atMs")
+    if not all(type(value) is int for value in (instance, sequence, observed_at, released_at)):
+        return None
+    if (
+        instance <= 0
+        or source.get("instance") != instance
+        or released.get("instance") != instance
+        or type(released.get("sequence")) is not int
+        or released["sequence"] != sequence + 1
+        or not clicked_at <= released_at <= observed_at
+        or released.get("focused") is not True
+        or source.get("focused") is not True
+    ):
+        return None
+    return snapshot
+
+
 def glossary_painted_geometry(control, observed_at):
     """Only the current mapped control's completed frame can supply a click point."""
     paint, surface = control.get("paintObservation"), control.get("surfaceGeometry")
@@ -657,6 +680,12 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                         "pixelPoint": pixel,
                         "moveStartedAtMonoMs": time.monotonic_ns() // 1000000,
                     }
+                    if name == "multiline" and toolkit == "gtk3" and not overlay_control:
+                        source = actual["glossarySource"]
+                        evidence["sourcePointerBaseline"] = {
+                            "instance": source["instance"],
+                            "pointerRelease": source["pointerRelease"],
+                        }
                     clicks.append(evidence)
                     # A window may extend past the X screen: XTest would silently
                     # clamp an unreachable point, even when window bounds match GTK.
@@ -753,10 +782,11 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                         afterObservedAtMonoMs=following.get("observedAtMs"),
                         afterFocus=following.get("focus"),
                     )
+                    return evidence
 
                 def point(name, *, overlay_control=False, acquired=None, button=1):
                     try:
-                        point_observe(
+                        return point_observe(
                             name, overlay_control=overlay_control, acquired=acquired, button=button
                         )
                     finally:
@@ -789,11 +819,29 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             "state": view_state,
                             "finish": finish,
                         }
-                        capture_admission = None
+                        capture_admission = {"rejectedCaptures": 0, "unavailableDescriptions": 0}
                         call("overlay-hide")
                         call("configure-shortcuts", configuration)
                         wait_for(lambda: state().get("firstEntry"), "GTK source observation")
-                        point("multiline" if source_kind == "textview" else "firstEntry")
+                        source_click = point(
+                            "multiline" if source_kind == "textview" else "firstEntry"
+                        )
+                        if toolkit == "gtk3" and source_kind == "textview":
+                            # xdotool completion is not GTK event completion. Do
+                            # not let a delayed source click undo the one setup
+                            # selection. No extra click or prepare is issued.
+                            released = wait_for(
+                                lambda: glossary_source_click_ready(
+                                    state(),
+                                    source_click["sourcePointerBaseline"],
+                                    source_click["clickStartedAtMonoMs"],
+                                ),
+                                "source click dispatched before textview preparation",
+                            )
+                            capture_admission["sourceClick"] = {
+                                "observedAtMs": released["observedAtMs"],
+                                **released["glossarySource"]["pointerRelease"],
+                            }
                         host("prepare-" + source_kind)
                         wait_for(lambda: state().get("imeClear"), "source real IM clear")
                         initial_source = state()
@@ -801,7 +849,15 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                         expected_context = initial_source["firstEntry"]["ime"]["context"]
                         assert type(expected_context) is int and expected_context > 0
                         target = None
-                        capture_admission = {"rejectedCaptures": 0, "unavailableDescriptions": 0}
+                        if source_kind == "textview":
+                            capture_admission["preparedSource"] = {
+                                "observedAtMs": initial_source["observedAtMs"],
+                                "command": initial_source["glossaryCommand"],
+                                "selection": {
+                                    key: initial_source["firstEntry"][key]
+                                    for key in ("start", "end")
+                                },
+                            }
 
                         def source_ready():
                             nonlocal target
@@ -827,6 +883,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             if value is None:
                                 capture_admission["rejectedCaptures"] += 1
                                 return None
+                            capture_admission["capturedSelection"] = value["selection"]
                             assert value["ime"] == "Clear" and value["target"] == target
                             assert value["authority"]["contextStamp"]["context"] == expected_context
                             assert value["text"] == initial_source["first"]

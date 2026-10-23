@@ -27,7 +27,63 @@ from native_e2e import (  # noqa: E402
     glossary_painted_geometry,
     glossary_popup_fits,
     glossary_save_outcome,
+    glossary_source_click_ready,
 )
+
+
+class GlossarySourcePreparationTests(unittest.TestCase):
+    def test_preparation_waits_for_this_sources_completed_click_not_sender_return(self):
+        baseline = {"instance": 17, "pointerRelease": {"sequence": 5}}
+        source = {
+            "instance": 17,
+            "focused": True,
+            "pointerRelease": {"instance": 17, "sequence": 5, "atMs": 90, "focused": True},
+        }
+        observed = {"observedAtMs": 110, "glossarySource": source}
+        # The sender has returned and focus is already equal, but the GTK
+        # source has not dispatched this click's release yet.
+        self.assertIsNone(glossary_source_click_ready(observed, baseline, 100))
+        source["pointerRelease"] = {"instance": 17, "sequence": 6, "atMs": 115, "focused": True}
+        self.assertIsNone(glossary_source_click_ready(observed, baseline, 100))
+        observed["observedAtMs"] = 116
+        self.assertIs(glossary_source_click_ready(observed, baseline, 100), observed)
+
+    def test_old_missing_other_widget_or_unfocused_release_cannot_prepare_source(self):
+        baseline = {"instance": 17, "pointerRelease": {"sequence": 5}}
+        for change in (
+            {"instance": 18},
+            {"sequence": 5},
+            {"sequence": 7},
+            {"atMs": 99},
+            {"focused": False},
+        ):
+            with self.subTest(change=change):
+                released = {"instance": 17, "sequence": 6, "atMs": 115, "focused": True, **change}
+                observed = {
+                    "observedAtMs": 116,
+                    "glossarySource": {"instance": 17, "focused": True, "pointerRelease": released},
+                }
+                self.assertIsNone(glossary_source_click_ready(observed, baseline, 100))
+        for source in (
+            {},
+            {"instance": 17, "focused": True},
+            {
+                "instance": 18,
+                "focused": True,
+                "pointerRelease": {"instance": 17, "sequence": 6, "atMs": 115, "focused": True},
+            },
+            {
+                "instance": 17,
+                "focused": False,
+                "pointerRelease": {"instance": 17, "sequence": 6, "atMs": 115, "focused": True},
+            },
+        ):
+            with self.subTest(source=source):
+                self.assertIsNone(
+                    glossary_source_click_ready(
+                        {"observedAtMs": 116, "glossarySource": source}, baseline, 100
+                    )
+                )
 
 
 class GlossaryPaintGeometryTests(unittest.TestCase):

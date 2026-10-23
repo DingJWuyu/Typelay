@@ -308,6 +308,24 @@ def send_gtk_acceptance(gtk4, shortcut, send_tab, send_configured, timing):
         send_configured(shortcut, timing=timing)
 
 
+def observe_and_send_gtk_acceptance(checkpoint, await_ready, send, phase):
+    """Record one test acceptance attempt, not a lease or delivery guarantee."""
+    # Trace I/O is test preparation, not part of the product's short lease.
+    phase["checkpointStartedAtMs"] = now_ms()
+    before_write = checkpoint()
+    phase["checkpointFinishedAtMs"] = now_ms()
+    phase["readinessStartedAtMs"] = now_ms()
+    phase["readiness"] = await_ready()
+    phase["readinessFinishedAtMs"] = now_ms()
+    phase["injection"] = {}
+    phase["keySendStartedAtMs"] = now_ms()
+    try:
+        send(timing=phase["injection"])
+    finally:
+        phase["keySendFinishedAtMs"] = now_ms()
+    return before_write
+
+
 def fixture_module_identity(pid, executable, module):
     """Record only this test fixture and its expected TypeLay module."""
     proc = Path(f"/proc/{pid}")
@@ -2213,7 +2231,7 @@ def run(arguments):
                                 and gtk_state().get("imeClear"),
                                 "real keyboard input did not reach the exact GTK source",
                             )
-                            wait_for(
+                            return wait_for(
                                 ready_to_accept,
                                 "typed GTK source did not receive a model candidate",
                             )
@@ -2633,13 +2651,34 @@ def run(arguments):
                         set_session_keys(*ordinary_pair)
                         request({"Action": {"FocusWindow": {"id": window["id"]}}})
                         click_entry("first")
-                        enter_source(typed_source)
-                        offset = trace_checkpoint()
-                        key(accept_key)
-                        wait_for(
-                            lambda: translated(gtk_state()["first"]) and verified_write(offset),
-                            "ordinary GTK acceptance did not recover after Ctrl configuration",
-                        )
+                        recovery_phase = {
+                            "stage": "ordinary-after-control-accept",
+                            "gtk": 4 if gtk4 else 3,
+                            "shortcut": accept_key,
+                            "injectionTransport": "xdotool",
+                        }
+                        gtk_acceptance_phases.append(recovery_phase)
+
+                        def ordinary_source_ready():
+                            # Keep the original input preparation and final Ready
+                            # wait; do not add a second observation budget.
+                            ready = enter_source(typed_source)
+                            recovery_phase["readinessObservation"] = last_acceptance_observation
+                            return ready
+
+                        try:
+                            offset = observe_and_send_gtk_acceptance(
+                                trace_checkpoint,
+                                ordinary_source_ready,
+                                lambda *, timing: key(accept_key, timing=timing),
+                                recovery_phase,
+                            )
+                            wait_for(
+                                lambda: translated(gtk_state()["first"]) and verified_write(offset),
+                                "ordinary GTK acceptance did not recover after Ctrl configuration",
+                            )
+                        finally:
+                            recovery_phase["keyObservationEndedAtMs"] = now_ms()
                         evidence.append(
                             "Wayland GtkEntry: public Ctrl+Fn source capability, one verified model write, "
                             "repeat/release ownership, independent exit, target-change refusal, restored ordinary acceptance"
@@ -2937,6 +2976,23 @@ def run(arguments):
                             function_index = (
                                 int(main_key[1:]) - 1 if main_key.startswith("F") else None
                             )
+                            # Resolve the XTest connection and F1 keycode before
+                            # observing the short acceptance lease, not after Ready.
+                            prepared_function = (
+                                prepare_key(resources, main_key)
+                                if gtk4 and accept_key == "F1"
+                                else None
+                            )
+
+                            def send_manual_acceptance(*, timing):
+                                if prepared_function is not None:
+                                    prepared_function(True, sync=False, timing=timing)
+                                    prepared_function(False, timing=timing)
+                                elif control_editor:
+                                    send_control_key(main_key)
+                                else:
+                                    key(accept_key, timing=timing)
+
                             editing_source = "Please review this note."
                             enter_source(editing_source)
                             if control_editor:
@@ -3100,23 +3156,54 @@ def run(arguments):
                                 )
                                 assert gtk_state()["first"] == editing_source
                                 assert not new_write_outcomes(before_return)
+                            phase = None
+                            try:
+                                if hold_return:
+                                    phase = {
+                                        "stage": "manual-draft-accept",
+                                        "gtk": 4 if gtk4 else 3,
+                                        "shortcut": accept_key,
+                                        "injectionTransport": (
+                                            "preconnected-xtest"
+                                            if prepared_function is not None or control_editor
+                                            else "xdotool"
+                                        ),
+                                        "edited": edited,
+                                        "returned": gtk_state(),
+                                        "returnRepeat": key_trace_since(
+                                            repeated, "function", "repeat"
+                                        ),
+                                        "returnRelease": key_trace_since(
+                                            released, "function", "release"
+                                        ),
+                                    }
+                                    gtk_acceptance_phases.append(phase)
+                                    before_write = observe_and_send_gtk_acceptance(
+                                        trace_checkpoint,
+                                        lambda: wait_for(
+                                            lambda: ready_to_accept("EditedTranslationPending"),
+                                            "held key release did not retain the recaptured manual candidate",
+                                        ),
+                                        send_manual_acceptance,
+                                        phase,
+                                    )
+                                else:
+                                    before_write = trace_checkpoint()
+                                    if control_editor:
+                                        send_control_key(main_key)
+                                    else:
+                                        key(accept_key)
                                 wait_for(
-                                    lambda: ready_to_accept("EditedTranslationPending"),
-                                    "held key release did not retain the recaptured manual candidate",
+                                    lambda: gtk_state().get("first") == draft,
+                                    f"second {accept_key} did not accept the exact manual draft",
                                 )
-                            before_write = trace_checkpoint()
-                            if control_editor:
-                                send_control_key(main_key)
-                            else:
-                                key(accept_key)
-                            wait_for(
-                                lambda: gtk_state().get("first") == draft,
-                                f"second {accept_key} did not accept the exact manual draft",
-                            )
-                            wait_for(
-                                lambda: verified_write(before_write),
-                                "manual draft acceptance did not receive a verified write receipt",
-                            )
+                                wait_for(
+                                    lambda: verified_write(before_write),
+                                    "manual draft acceptance did not receive a verified write receipt",
+                                )
+                            finally:
+                                if phase is not None:
+                                    phase["keyObservationEndedAtMs"] = now_ms()
                             assert gtk_state()["focus"] == "fixture-first"
                             assert len(new_write_outcomes(before_write)) == 1
                             evidence.append(
@@ -7436,18 +7523,22 @@ def run(arguments):
                 except OSError:
                     trace = ""  # Missing native telemetry is unknown, not a delivered key.
                 native_keys = [
-                    dict(re.findall(r"(\w+)=([^ ]+)", line))
+                    (
+                        int(re.search(r"TypeLay GTK([34])", line)[1]),
+                        dict(re.findall(r"(\w+)=([^ ]+)", line)),
+                    )
                     for line in trace.splitlines()
-                    if "TypeLay GTK4 acceptance-timing operation=key " in line
+                    if re.search(r"TypeLay GTK[34] acceptance-timing operation=key ", line)
                 ]
                 ended = now_ms()
                 for phase in gtk_acceptance_phases:
-                    if phase["gtk"] == 4:
+                    if "keySendStartedAtMs" in phase:
                         phase["nativeKeyTiming"] = next(
                             (
                                 row
-                                for row in native_keys
-                                if row.get("enteredAtMs", "").isdigit()
+                                for gtk, row in native_keys
+                                if gtk == phase["gtk"]
+                                and row.get("enteredAtMs", "").isdigit()
                                 and phase["keySendStartedAtMs"]
                                 <= int(row["enteredAtMs"])
                                 <= phase.get("keyObservationEndedAtMs", ended)
