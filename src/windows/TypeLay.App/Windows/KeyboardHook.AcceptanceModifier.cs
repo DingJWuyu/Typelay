@@ -56,7 +56,7 @@ internal sealed partial class KeyboardHook
             && UserEpoch == before.Before.UserEpoch + 1 && SourceUserEpoch == before.SourceUserEpoch + 1
             && ContentEpoch == before.ContentEpoch + contentIncrement && WindowEpoch == before.WindowEpoch
             && ForegroundEpoch == before.Before.ForegroundEpoch
-            && Native.GetForegroundWindow() == control.Lease.RootHwnd;
+            && IsSourceForeground(control.Lease.Target);
     }
 
     private bool SourceAcceptanceControlMatches(Native.KeyData data, InputLease? lease) =>

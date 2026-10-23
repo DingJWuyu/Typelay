@@ -96,7 +96,7 @@ internal sealed partial class KeyboardHook
         && candidate.Lease.UserEpoch == UserEpoch && candidate.Lease.ForegroundEpoch == ForegroundEpoch
         && Volatile.Read(ref _lease) is { } currentLease
         && ReferenceEquals(currentLease.Observation, Volatile.Read(ref _stockCurrentLease))
-        && Native.GetForegroundWindow() == currentLease.RootHwnd
+        && IsSourceForeground(currentLease.Target)
         && now >= candidate.Permit.ObservedAtMs && now <= candidate.Permit.ExpiresAtMs;
 
     private bool StockAcceptanceReady(SessionViewToken token, AcceptancePermit permit, long now)

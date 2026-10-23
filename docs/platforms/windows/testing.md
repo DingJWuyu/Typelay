@@ -71,6 +71,10 @@ dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release 
 
 `ConfiguredControlUsesFreshSourceAndPreservesReturnedManualWording` 的回源失败保留最多 64 条变化观察，只从既有焦点读取和 Broker 响应比较源字段、进程寿命、UIA 元素、目标寿命和首次已观察线程，不补查身份；目标寿命不是原生 cookie 的证明。该测试另启用现有 `TYPELAY_TRACE`：它会多一次修正前的前台读取及拒绝后的窗口分类，不能宣称与未启用诊断的运行无扰动等价。Broker 退出后仅从日志前 64 KiB 选取最多四条固定无正文 `return` 结果进入 TRX，明确截断或遗漏；不输出完整捕获日志。原回源操作、期限、断言和后续安全门不变，诊断不是根因修复。
 
+`NativeReturnCompletesRootActivationBeforeCorrectingAnotherField` 将两种实际前提分开：同 root 的 B→A，以及另一进程持焦后激活原 root、但宿主不自动恢复字段。后一种复用 fixture 既有 `--return-focus root`，对原一次回源在首个 WM_NULL barrier 内先断言实际 root 焦点，不加补焦点或重试。两种前提均保留成功、原 800 ms 到期及原 cookie 丢失三分支；成功允许 raw foreground 是原 root 或精确原字段，但须同时核原 GA_ROOT、PID/TID、精确 keyboard focus 与原 cookie，再重新捕获同一目标寿命与明确 Clear。原文、选区及其它字段不变，这两种 correction 前拒绝不再修正字段焦点。回源已结束且 barrier 释放后，复用既有 posted drained ACK 观察末态，不延长回源期限。有限无正文失败事实区分 raw foreground、GA_ROOT/ROOTOWNER、精确 keyboard focus 与原 cookie；祖先链不成为替代放行条件。此回归区分 root 激活与字段 correction，不证明 UIA 内部激活调用顺序。
+
+`NativeForegroundChildKeepsOnlyItsExactSourceBinding` 另以真实 Win32 前台字段前提检查公开 Broker capture 与 Hook 焦点分类：精确原字段的普通与 direct capture 均保持同一根、目标寿命、文本、选区和 Clear，普通 capture 的两项写能力仍为 false；同根其它字段及别根不能被认作旧源。它不依赖 UIA 偶然产生 child foreground，也不以私有方法调用证明成功。现役 native API 边界回归补足精确 rawfield 正向及 sibling/owned modal/根身份/PID/TID/焦点/cookie/实际 IME 缺失、错误、composing/期限负控，选区回调改变前台仍零正文写入，owned capture/接受仍拒绝 rawfield。这些 API stub 检查及托管编译不构成真实 Windows GUI、UIA 重入或物理 IME 证据；跨进程回源和原 ConfiguredControl 端到端正向须在 Windows 单独执行。
+
 `OverlayRenderingTests` 同时覆盖默认 Tab/Esc 与无修饰 F1-F24 的编辑返回、退出、IME 事件、修饰键和旧键释放。第一次接受键仅请求返回原输入框；共享控制器仍须重新观察、取得许可并等待第二次接受。浮层动作携带显示时的 target、配置代次和会话 revision，迟到按钮与菜单不能借更新后的视图取得授权。缺少目标确认时可保留只读预览，但不得编辑或授予接受许可。
 
 ```powershell

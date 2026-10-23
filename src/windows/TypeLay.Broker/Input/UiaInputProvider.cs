@@ -104,7 +104,7 @@ internal sealed class UiaInputProvider : IDisposable
         Clear();
         static (PauseAnchor?, FocusMember) Reject() => (null, FocusMember.Other);
         nint root = GetForegroundWindow();
-        if (root == 0 || root == (nint)request.OverlayHwnd)
+        if (root == 0 || root == (nint)request.OverlayHwnd || GetAncestor(root, 2) != root)
             return Reject();
         AutomationElement? element;
         using (_metadataCache.Activate())
@@ -307,7 +307,8 @@ internal sealed class UiaInputProvider : IDisposable
         }
         trace?.Stage("foreground");
         nint foreground = GetForegroundWindow();
-        bool overlay = request.OverlayHwnd != 0 && foreground == (nint)request.OverlayHwnd;
+        nint root = GetAncestor(foreground, 2);
+        bool overlay = request.OverlayHwnd != 0 && root == (nint)request.OverlayHwnd;
         // An unfocused Chromium edit need not expose a caret/selection. Keep its binding
         // for ReturnToSource, without turning the old observation into a fresh write lease.
         if (overlay)
@@ -316,7 +317,7 @@ internal sealed class UiaInputProvider : IDisposable
         AutomationElement? focused;
         using (_metadataCache.Activate())
             focused = AutomationElement.FocusedElement;
-        if (focused is null || foreground == 0)
+        if (focused is null || root == 0)
             return Reject("no-focused-element");
         AutomationElement element = focused;
         // Raw and managed providers must refer to the same element, captured in the same MTA.
@@ -325,6 +326,11 @@ internal sealed class UiaInputProvider : IDisposable
         if (_native.BindFocused() != token)
             return Reject("focused-identity-changed");
         var info = element.Cached;
+        // RootHwnd is a top-level identity, not the raw foreground handle. The
+        // exceptional child must be this exact field, never a sibling or owned
+        // dialog. Native lifetime/focus/IME checks remain mandatory below.
+        if (foreground != root && foreground != (nint)info.NativeWindowHandle)
+            return Reject("foreground-not-focused-field");
         bool comboBox = info.ControlType == ControlType.ComboBox;
         if (info.ControlType != ControlType.Edit && info.ControlType != ControlType.Document && !comboBox)
             return Reject("not-edit-control");
@@ -343,7 +349,6 @@ internal sealed class UiaInputProvider : IDisposable
         long start = process.StartTime.ToUniversalTime().Ticks;
         if (_quarantine.Contains((info.ProcessId, start, token)))
             return Reject("quarantined-target");
-        nint root = foreground;
         bool inDocument = false, rootSeen = false;
         var previousTarget = _previous?.Target.AsWindows();
         bool sameBinding = previousTarget is { } previous && previous.ProcessId == info.ProcessId
@@ -404,14 +409,17 @@ internal sealed class UiaInputProvider : IDisposable
         // Cross-thread IMM failure does not establish the source thread's IME
         // state. For an ordinary observation only, the qualified stock Edit
         // reader may supply real source-thread evidence without write capability.
+        // An exact foreground child also needs this same native observation,
+        // rather than a UIA-only identity, even when cross-thread IMM was Clear.
         InputSnapshot? native = !comboBox && request.CaptureDirect
             ? _edits.Capture(id, bounds, _inputEpoch, _focusEpoch)
-            : !comboBox && request.Op == "capture" && (_sourcePrototype || ime == ImeState.Unknown)
+            : !comboBox && request.Op == "capture" && (_sourcePrototype || ime == ImeState.Unknown
+                || foreground != root && ime == ImeState.Clear)
                 ? _edits.Observe(id, bounds, _inputEpoch, _focusEpoch) : null;
         if (native is { } observed)
         {
             trace?.Stage("focus-recheck");
-            if (!StillFocused(root, token))
+            if (!StillFocused(root, token, observed.Target.AsWindows()))
                 return Reject("focus-changed-native");
             if (_previous?.Target != observed.Target || _lastFocus != FocusMember.Source)
                 _focusEpoch++;
@@ -431,6 +439,10 @@ internal sealed class UiaInputProvider : IDisposable
             trace?.Result("observed-native");
             return (_previous, FocusMember.Source);
         }
+        // A raw child cannot fall back from failed native identity/IME evidence
+        // into a new UIA binding. In particular, Unknown stays a refusal.
+        if (foreground != root)
+            return Reject("native-child-unconfirmed");
         trace?.Stage("caret-geometry");
         // Geometry does not participate in writing. Reuse idle line geometry for
         // at most 200 ms, refreshing immediately after typing or field movement.
@@ -515,7 +527,8 @@ internal sealed class UiaInputProvider : IDisposable
         trace?.Result("observed-clear");
         return (snapshot, focus);
     }
-    private static bool StillFocused(nint root, string token) => GetForegroundWindow() == root
+    private bool StillFocused(nint root, string token, WindowsTarget? native = null) =>
+        (GetForegroundWindow() == root || native is { } target && _edits.ConfirmsReturnFocus(target))
         && AutomationElement.FocusedElement is { } focused && string.Join('.', focused.GetRuntimeId()) == token;
 
     public WriteReceipt Write(BrokerRequest request)
@@ -542,7 +555,8 @@ internal sealed class UiaInputProvider : IDisposable
             Denial reason = WriteSafety.Validate(plan, fresh, WindowsInterruptClock.NowMs);
             if (reason != Denial.None)
                 return new(WriteStatus.RejectedBeforeMutation, reason);
-            if (_element is null || GetForegroundWindow() != (nint)target.RootHwnd)
+            if (_element is null || (GetForegroundWindow() != (nint)target.RootHwnd
+                && (target.Provider != NativeEditTransactions.Provider || !_edits.ConfirmsReturnFocus(target))))
                 return new(WriteStatus.RejectedBeforeMutation, Denial.EpochChanged);
             if (target.Provider != NativeEditTransactions.Provider
                 && _native.Composition((nint)target.RootHwnd) != ImeState.Clear)
@@ -866,7 +880,9 @@ internal sealed class UiaInputProvider : IDisposable
             if (WindowsInterruptClock.NowMs >= request.ExpiresAtMs)
                 return false;
             nint foreground = GetForegroundWindow(); // One original post-barrier observation.
-            if (foreground != (nint)binding.RootHwnd)
+            if (foreground != (nint)binding.RootHwnd
+                && (foreground != (nint)binding.ControlHwnd || binding.Provider != NativeEditTransactions.Provider
+                    || !_edits.ConfirmsReturnFocus(binding)))
             {
                 if (foreground == 0)
                     reason = "activation-foreground-none";

@@ -4,7 +4,7 @@
 
 ## 当前可用范围与验收边界
 
-这是正在完成桌面验证的预览客户端，不是已通过完整产品验收的 Linux 正式版。[产品验收入口](https://github.com/DingJWuyu/Typelay/blob/trunk/README.md#产品验收入口)统一规定冻结基线与已接受增量；本页能力表描述实现和证据，不降低产品要求，也不构成永久应用支持名单。
+这是正在完成桌面验证的预览客户端，不是已通过完整产品验收的 Linux 正式版。[产品验收入口](../../../README.md#产品验收入口)统一规定冻结基线与已接受增量；本页能力表描述实现和证据，不降低产品要求，也不构成永久应用支持名单。
 
 当前推荐包与检查范围集中记录在[当前可验证候选](#当前可验证候选)。隔离桌面检查不代表物理键盘、用户输入法、所有普通应用或模型翻译质量通过，实际质量边界见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
 
@@ -17,7 +17,7 @@ GIMP 3.2.6 的 Comment 字段原生不支持本页测试中的撤销：直接替
 - [合作 Qt6](qt.md)：标准 QLineEdit/QPlainTextEdit，复用同一宿主、模型与会话；可选包已通过实际构建、中文空格目录搬迁和 `launch --qt6` 的模型及同窗单行后台写回验证。Arch 同上游 Qt/GTK 版本的结果不代表用户 CachyOS 发行修订或实机验收。
 - [VS Code 手动命令](vscode.md)：选择文字或明确选择整篇文档，经本地模型预览并确认替换。它是额外的手动功能，不监听通用输入框、不接管 Tab，不计入自动浮层对齐。
 
-GTK 非纯文本/非标准控件、Qt QTextEdit/富文本/自绘控件、Electron/VS Code 自动浮层、更广富文本和输入法事务能力仍是开发缺口，不能标成“只需真机验证”。终端/命令区按产品策略默认排除。GTK 父窗口定位契约见 [ADR-0004](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/linux/adr/0004-native-anchors.md)。
+GTK 非纯文本/非标准控件、Qt QTextEdit/富文本/自绘控件、Electron/VS Code 自动浮层、更广富文本和输入法事务能力仍是开发缺口，不能标成“只需真机验证”。终端/命令区按产品策略默认排除。GTK 父窗口定位契约见 [ADR-0004](adr/0004-native-anchors.md)。
 
 共同安装恢复、模型准备、受管组件准备/练习/退出/移除已有实际搬迁包与桌面链路证据。浏览器 DOM、Chromium/Firefox 本地主机和 Qt 完整模型流程已有通过记录；短许可仍会因调度和观察时效安全拒绝。GTK 接受使用 100ms 许可，Qt 唤醒/直接任务的入口观察限制与它不同，不能用一次通过消除偶发不可用风险，详见各适配器页。
 
@@ -31,7 +31,7 @@ GTK 非纯文本/非标准控件、Qt QTextEdit/富文本/自绘控件、Electro
 
 ## 与 Windows 的功能对齐
 
-[现役产品验收入口](https://github.com/DingJWuyu/Typelay/blob/trunk/README.md#产品验收入口)包含冻结基线及已接受的双模式/直接替换增量，Windows 的现有缺陷不是 Linux 应复制的行为。共享 `Core`/`Runtime` 只保留一份会话、许可和模型编排；输入、渲染、安装保留平台边界。下面区分实现范围和验收，不能用一端通过替代另一端。
+[现役产品验收入口](../../../README.md#产品验收入口)包含冻结基线及已接受的双模式/直接替换增量，Windows 的现有缺陷不是 Linux 应复制的行为。共享 `Core`/`Runtime` 只保留一份会话、许可和模型编排；输入、渲染、安装保留平台边界。下面区分实现范围和验收，不能用一端通过替代另一端。
 
 | 功能 | 两端共同实现与 Linux 当前范围 | 尚需对齐或验证 |
 | --- | --- | --- |
@@ -42,25 +42,25 @@ GTK 非纯文本/非标准控件、Qt QTextEdit/富文本/自绘控件、Electro
 | 直接替换 | 绑定原目标生命周期，在源事件线程写入；实际类型恰为标准 GTK3/GTK4 Entry、Qt QLineEdit 的字段已验证同窗后台写原字段、保持另一字段焦点/正文及原文冲突拒绝 | Qt QPlainTextEdit→同窗 QLineEdit 后台已通过真实 provider/consumer 回归，物理设备验收仍未完成；GTK TextView 与跨窗口/应用后台仍未覆盖，不转写新焦点 |
 | IME/焦点 | 未知状态不授予编辑/接受资格，源框与浮层属于同一会话 | Linux 合作 Fcitx 需用户手动切换私有会话，仍未达到无需输入法协作的通用体验 |
 | 语言与模型 | 默认 Argos 中英；可选 Hy 十二方向预览，实际可用语言动态映射与设置语言搜索已有代码 | 检查范围见当前候选，GIMP 原生 Undo 限制见本页开头；真实安装/切换的范围见下方[可选模型](#可选多语言预览模型)，握手方向不等于质量通过 |
-| 风格/换种说法/术语 | 已发布源码已接真实后端、双端设置和浮层操作 | 三项质量发布门全部关闭；主动加词的状态缺口与质量要求见[产品开发缺口](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/product/README.md#当前共同开发缺口) |
+| 风格/换种说法/术语 | 已发布源码已接真实后端、双端设置和浮层操作 | 三项质量发布门全部关闭；主动加词的状态缺口与质量要求见[产品开发缺口](../../product/README.md#当前共同开发缺口) |
 | 设置/托盘与暂停 | 启停、模式、方向、交换、排除、主题、启动项、模型状态和退出已实现，托盘保留恢复入口 | 设置已按常规、语言、快捷键、应用支持分组，790×560 首屏、原生侧栏键盘导航与跨页保存已通过隔离桌面验证；实机缩放和平台托盘仍须分别验收 |
 | 安装/首次使用 | 显式模型安装、校验后启用、设置持久化、单会话与退出清理已有实现 | Linux 已实现下载暂停/验证后续传与显式本地试译引导；独立 GTK 实操窗口复用生产自动胶囊/两阶段 Tab，需已启用合作组件；普通未合作环境仅提供接入指引，真实实操结果以对应提交 CI 为准 |
 
-共同未完要求统一见[产品开发缺口](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/product/README.md#当前共同开发缺口)，不属于平台天然限制或仅待真机测试。共享边界见 [架构约束](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/engineering/architecture.md)，Windows 未结问题见 [Windows 待办](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/windows/open-issues.md)。
+共同未完要求统一见[产品开发缺口](../../product/README.md#当前共同开发缺口)，不属于平台天然限制或仅待真机测试。共享边界见 [架构约束](../../engineering/architecture.md)，Windows 未结问题见 [Windows 待办](../windows/open-issues.md)。
 
 源码开发、架构和产品基线链接指向仓库在线文档；browser.md、fcitx.md、qt.md、vscode.md 随发行包提供，可离线查阅接入步骤。
 
 ## 获取发行包
 
-作为稳定版本使用前，须确认目标提交的 Linux 完整检查通过。开发候选允许取用已成功完成“Attach the matching desktop components to the main distribution”封装的产物，但须先阅读该提交的失败与未验范围；封装成功不代表桌面验收通过。下载 `typelay-linux-<commit>` artifact ZIP，解压其中的 `TypeLay-Linux-preview-x86_64.tar.gz` 及 `.sha256`。同次 Windows 检查有独立结论，不能仅凭工作流总状态判断 Linux 包。完整主包已经附带匹配桌面合作组件，无需另找第二个输入法压缩包。仅设置界面的部分检查会跳过合作组件封装，其 setup-only 包不能作为完整接入包。需要源码构建时，依赖与命令见[Linux 开发说明](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/linux/development.md#构建)。发行包自带 .NET 运行时；GTK、PyGObject、Ayatana 等桌面依赖仍由系统包管理器提供。
+作为稳定版本使用前，须确认目标提交的 Linux 完整检查通过。开发候选允许取用已成功完成“Attach the matching desktop components to the main distribution”封装的产物，但须先阅读该提交的失败与未验范围；封装成功不代表桌面验收通过。下载 `typelay-linux-<commit>` artifact ZIP，解压其中的 `TypeLay-Linux-preview-x86_64.tar.gz` 及 `.sha256`。同次 Windows 检查有独立结论，不能仅凭工作流总状态判断 Linux 包。完整主包已经附带匹配桌面合作组件，无需另找第二个输入法压缩包。仅设置界面的部分检查会跳过合作组件封装，其 setup-only 包不能作为完整接入包。需要源码构建时，依赖与命令见[Linux 开发说明](development.md#构建)。发行包自带 .NET 运行时；GTK、PyGObject、Ayatana 等桌面依赖仍由系统包管理器提供。
 
 ### 当前可验证候选
 
-推荐 [CI458 Linux 预览包](https://github.com/DingJWuyu/Typelay/actions/runs/39847577772/artifacts/12457092184)。[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39847577772)的 Linux 完整检查已通过；Windows 的检查结论独立，不代表两平台都已完成产品验收。
+推荐 [CI460 Linux 预览包](https://github.com/DingJWuyu/Typelay/actions/runs/39866684209/artifacts/12465855276)。[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39866684209)的 Linux 完整检查已通过；Windows 的检查结论独立，不代表两平台都已完成产品验收。
 
-- 源码：`b04cb203ebb1fcdf0a97592a61b6504a3a7794d9`；包内 `build-info.json` 同提交，`sourceDirty=false`。
-- 内层 `TypeLay-Linux-preview-x86_64.tar.gz`：281,109,108 字节。
-- SHA-256：`7a2954fd552ebef0637e2587b1d46ac377d0f7a8ffa805f4ce17b46c83b24abf`；内层 gzip/tar、293 项清单文件、路径与可执行权限均已核验。此摘要不适用于外层 Actions ZIP。
+- 源码：`cb2e3302a485f4f6b6f883d4c814a1f7ca2c3ed6`；包内 `build-info.json` 同提交，`sourceDirty=false`。
+- 内层 `TypeLay-Linux-preview-x86_64.tar.gz`：281,112,144 字节。
+- SHA-256：`a8db31eb183ec27aab150ad9e07a4e4f457310836ec8a09b6c6108c61ad467eb`；内层 gzip/tar、293 项清单文件、路径与可执行权限均已核验。此摘要不适用于外层 Actions ZIP。
 - 检查包含设置/教程、GTK3/GTK4、浏览器 DOM 与 Firefox、Qt 合作探针及真实模型桌面链、GIMP 单次按需唤醒与直接替换/原生撤销对照、VS Code 手动命令和模型生命周期。Qt 重入隔离与 GIMP 首次命令路径仍通过；GIMP 该字段本身不支持原生撤销。
 - 包内 README 已按本包身份生成，不再要求转下载旧候选；包外相对文档链接指向该源码基准，四份配套文档可离线查阅。
 - 这是可体验的预览包，不是模型质量、物理输入法或全桌面产品验收通过。按需唤醒后空捕获仍可能丢失资格，须保持焦点后主动重试，不自动重放按键。
@@ -246,4 +246,4 @@ python install.py uninstall --purge
 
 ## 开发与验收
 
-构建、发行包验证、托盘与实际桌面验收统一见[Linux 开发说明](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/linux/development.md)；内部共享、输入能力与坐标契约见[Linux 架构](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/linux/architecture.md)。本页能力表不代替对应提交的执行证据。
+构建、发行包验证、托盘与实际桌面验收统一见[Linux 开发说明](development.md)；内部共享、输入能力与坐标契约见[Linux 架构](architecture.md)。本页能力表不代替对应提交的执行证据。

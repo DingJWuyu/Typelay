@@ -15,10 +15,11 @@ enum Scenario {
     SelectionChangedAfterSelection,
     AuthorizationExpiredAfterSelection,
     OwnedFocusRoundTripAfterSelection,
-    InputContextChangedAfterSelection
+    InputContextChangedAfterSelection,
+    ForegroundChangedAfterSelection
 };
 enum {
-    SourceWindow = 1, RootWindow = 2, OtherField = 3,
+    SourceWindow = 1, RootWindow = 2, OtherField = 3, OtherRoot = 4,
     ProcessId = 41, ThreadId = 42, LifetimeCookie = 43,
     GetText = 0x0d, GetTextLength = 0x0e, GetSelection = 0xb0,
     SetSelection = 0xb1, ReplaceSelection = 0xc2,
@@ -30,7 +31,8 @@ static const WCHAR written_text[] = L"pre fresh post";
 static Transaction request;
 static struct {
     enum Scenario scenario;
-    HANDLE foreground, focus;
+    HANDLE foreground, focus, source_ancestor, root_ancestor;
+    uint32_t root_pid, root_thread;
     uint64_t coarse_ms, precise_100ns, cookie, focus_revision;
     int start, end, length;
     int set_calls, replace_calls, text_reads, length_reads, selection_reads, injected_changes, boundary_checked, invalid_call;
@@ -140,7 +142,8 @@ static LRESULT stock_edit(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
         // text and expected selection. The replacement scope is deliberately
         // different from that initial collapsed selection.
         require(field.set_calls == 1 && field.replace_calls == 0);
-        require(field.foreground == handle(RootWindow) && field.focus == handle(SourceWindow));
+        require((field.foreground == handle(RootWindow) || field.foreground == handle(SourceWindow))
+            && field.focus == handle(SourceWindow));
         require(field.start == 12 && field.end == 12 && field.length == 12);
         require(equal(field.text, initial_text, 13));
         require(field.coarse_ms == 100 && request.deadline == 600);
@@ -154,6 +157,12 @@ static LRESULT stock_edit(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
         case FocusChangedAfterSelection:
             // Same root, different field: checking only the root is insufficient.
             field.focus = handle(OtherField);
+            field.injected_changes++;
+            break;
+        case ForegroundChangedAfterSelection:
+            // The source still has keyboard focus, but a different child is
+            // foreground. A shared ancestor cannot authorize the replacement.
+            field.foreground = handle(OtherField);
             field.injected_changes++;
             break;
         case SelectionChangedAfterSelection:
@@ -213,14 +222,20 @@ void QueryInterruptTimePrecise(uint64_t *value) { *value = field.precise_100ns; 
 uint32_t GetCurrentThreadId(void) { return ThreadId; }
 uint32_t GetCurrentProcessId(void) { return ProcessId; }
 uint32_t GetWindowThreadProcessId(HANDLE hwnd, uint32_t *pid) {
-    require(hwnd == handle(SourceWindow) || hwnd == handle(RootWindow));
-    *pid = ProcessId;
-    return ThreadId;
+    require(hwnd == handle(SourceWindow) || hwnd == handle(RootWindow)
+        || hwnd == handle(OtherField) || hwnd == handle(OtherRoot));
+    *pid = hwnd == handle(RootWindow) ? field.root_pid : ProcessId;
+    return hwnd == handle(RootWindow) ? field.root_thread : ThreadId;
 }
 HANDLE GetAncestor(HANDLE hwnd, uint32_t flags) {
-    require_source(hwnd);
-    require(flags == 2);
-    return handle(RootWindow);
+    require(hwnd == handle(SourceWindow) || hwnd == handle(RootWindow)
+        || hwnd == handle(OtherField) || hwnd == handle(OtherRoot));
+    require(flags == 2 || flags == 3);
+    // The sibling shares both source PID/TID and root. The owned dialog shares
+    // PID/TID and root owner, but is a distinct top-level root.
+    if (hwnd == handle(OtherField)) return handle(RootWindow);
+    if (hwnd == handle(OtherRoot)) return handle(flags == 2 ? OtherRoot : RootWindow);
+    return hwnd == handle(RootWindow) ? field.root_ancestor : field.source_ancestor;
 }
 HANDLE GetForegroundWindow(void) { return field.foreground; }
 HANDLE GetFocus(void) { return field.focus; }
@@ -351,6 +366,9 @@ static void prepare_transaction(enum Scenario scenario) {
     field.style = 0x50000000; // Current WS_CHILD | WS_VISIBLE, not a configured safety flag.
     field.foreground = handle(RootWindow);
     field.focus = handle(SourceWindow);
+    field.source_ancestor = field.root_ancestor = handle(RootWindow);
+    field.root_pid = ProcessId;
+    field.root_thread = ThreadId;
     field.coarse_ms = 100;
     field.precise_100ns = 10000000;
     field.start = field.end = field.length = 12;
@@ -413,6 +431,54 @@ static int expired_original_authorization_rejects_with_fresh_transaction_budget(
     return rejected_without_text_write(14) && field.precise_100ns == 10010000
         && field.focus == handle(SourceWindow) && field.start == 4 && field.end == 7;
 }
+static int exact_field_foreground_keeps_the_original_transaction_guards(void) {
+    for (int fault = 0; fault < 17; fault++) {
+        wipe(&field, sizeof(field));
+        field.cookie = LifetimeCookie;
+        prepare_transaction(Unchanged);
+        field.foreground = handle(SourceWindow);
+        switch (fault) {
+        case 0: break;
+        case 1: field.foreground = handle(OtherField); break;
+        case 2: field.source_ancestor = handle(OtherRoot); break;
+        case 3: field.focus = handle(OtherField); break;
+        case 4: field.cookie++; break;
+        case 5: field.input_context = 0; break;
+        case 6: request.authorization_deadline_ms = 999; break;
+        case 7: request.pid++; break;
+        case 8: request.thread++; break;
+        case 9: field.root_ancestor = handle(OtherRoot); break;
+        case 10: field.composition_bytes = 2; break;
+        case 11: field.root_pid++; break;
+        case 12: field.root_thread++; break;
+        case 13: field.foreground = handle(OtherRoot); break;
+        case 14: field.composition_bytes = -1; break;
+        case 15: field.focus = 0; break;
+        case 16: request.deadline = 99; break;
+        }
+        HANDLE foreground = field.foreground, focus = field.focus;
+        uint64_t cookie = field.cookie;
+        int64_t authorization = request.authorization_deadline_ms;
+        execute(&request);
+        if (field.invalid_call || field.foreground != foreground || field.focus != focus
+            || field.cookie != cookie || request.authorization_deadline_ms != authorization) return 0;
+        if (!fault) {
+            if (request.status != 1 || request.reason || field.set_calls != 1 || field.replace_calls != 1
+                || !equal(field.text, written_text, 15) || field.start != 9 || field.end != 9
+                || request.length != 14 || request.selection_start != 9 || request.selection_end != 9
+                || !equal(request.observed, written_text, 15)) return 0;
+        } else if (request.status != 2 || field.set_calls || field.replace_calls
+            || field.start != 12 || field.end != 12 || !equal(field.text, initial_text, 13)) return 0;
+    }
+    wipe(&field, sizeof(field));
+    field.cookie = LifetimeCookie;
+    prepare_transaction(ForegroundChangedAfterSelection);
+    field.foreground = handle(SourceWindow);
+    execute(&request);
+    return request.status == 2 && request.reason == 10 && field.set_calls == 1 && !field.replace_calls
+        && field.foreground == handle(OtherField) && field.focus == handle(SourceWindow)
+        && equal(field.text, initial_text, 13) && !field.invalid_call;
+}
 static int unknown_wire_operations_cannot_read_the_source(void) {
     const uint32_t operations[] = {0, 6, UINT32_MAX};
     for (int i = 0; i < 3; i++) {
@@ -468,7 +534,7 @@ static int owned_preflight_refuses_without_consuming_or_mutating(void) {
     HANDLE hwnd = handle(SourceWindow);
     uint64_t revision = TypeLayOwnedFocusRevision(hwnd, 0);
     if (!revision || field.focus_revision != revision) return 0;
-    for (int fault = 0; fault < 6; fault++) {
+    for (int fault = 0; fault < 7; fault++) {
         prepare_transaction(Unchanged);
         uint64_t expected_revision = TypeLayOwnedFocusRevision(hwnd, 0);
         switch (fault) {
@@ -484,14 +550,15 @@ static int owned_preflight_refuses_without_consuming_or_mutating(void) {
         case 3: field.composition_bytes = -1; break;
         case 4: request.authorization_deadline_ms = 999; break;
         case 5: field.start = field.end = 0; break;
+        case 6: field.foreground = hwnd; break;
         }
         int selection = field.start;
         if (TypeLayOwnedEditTryExecute(&request, sizeof(request), expected_revision) != 0
             || request.status != 2 || field.set_calls || field.replace_calls
             || field.start != selection || field.end != selection
-            || field.focus != hwnd || field.foreground != handle(RootWindow)
+            || field.focus != hwnd || field.foreground != (fault == 6 ? hwnd : handle(RootWindow))
             || !equal(field.text, initial_text, 13) || field.invalid_call) return 0;
-        const uint32_t reasons[] = {10, 3, 9, 9, 14, 4};
+        const uint32_t reasons[] = {10, 3, 9, 9, 14, 4, 10};
         if (request.reason != reasons[fault]) return 0;
     }
     return TypeLayOwnedFocusRevision(hwnd, 0) > revision;
@@ -522,6 +589,13 @@ static int owned_capture_rechecks_the_exact_focus_revision_before_reading(void) 
     execute_owned_capture(&request);
     if (request.status != 1 || request.reason || field.text_reads != 1
         || !equal(request.observed, initial_text, 13) || field.set_calls || field.replace_calls) return 0;
+    prepare_transaction(Unchanged);
+    request.op = 6;
+    request.authorization_deadline_ms = (int64_t)revision;
+    field.foreground = hwnd;
+    execute_owned_capture(&request);
+    if (request.status != 2 || field.text_reads || field.set_calls || field.replace_calls
+        || field.foreground != hwnd || field.focus != hwnd) return 0;
     // Same-root A -> B -> A; matching HWNDs and cookie do not recover the old read.
     field.focus = handle(OtherField);
     if (!TypeLayOwnedFocusRevision(hwnd, 1)) return 0;
@@ -664,6 +738,7 @@ static int run_checks(void) {
     if (!changed_focus_rejects_without_text_write()) return 2;
     if (!changed_selection_rejects_without_text_write()) return 3;
     if (!expired_original_authorization_rejects_with_fresh_transaction_budget()) return 4;
+    if (!exact_field_foreground_keeps_the_original_transaction_guards()) return 17;
     if (!unknown_wire_operations_cannot_read_the_source()) return 10;
     if (!owned_lifetime_cannot_be_restored_by_capture_or_release()) return 5;
     if (!automatic_lifetime_cannot_use_the_ordinary_write_route()) return 12;

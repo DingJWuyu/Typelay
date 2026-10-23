@@ -78,7 +78,7 @@ def package_documentation(output, identity):
         "- 身份记录：[build-info.json](build-info.json)；完整性清单："
         "[MANIFEST.sha256](MANIFEST.sha256)。压缩包校验使用下载时随附的 `.sha256`。\n"
         f"- [对应源码说明]({upstream}{commit}/docs/platforms/linux/README.md)；"
-        f"[最新推荐与检查结果]({upstream}trunk/docs/platforms/linux/README.md#当前可验证候选)。\n\n"
+        "[构建与检查记录](https://github.com/DingJWuyu/Typelay/actions/workflows/check.yml)。\n\n"
         "构建身份不代表检查通过；请核对对应运行的 Linux 结果。模型质量、物理输入法和真机体验仍须分别验收。\n\n"
     )
     if identity["sourceDirty"]:

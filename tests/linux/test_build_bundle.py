@@ -34,6 +34,22 @@ def digest(content):
 
 
 class PackageReadmeTests(unittest.TestCase):
+    def test_generated_readme_source_links_follow_this_build(self):
+        for commit in ("a" * 40, "b" * 40):
+            with self.subTest(commit=commit), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory)
+                identity = {"schemaVersion": 1, "sourceCommit": commit, "sourceDirty": False}
+                build.package_documentation(output, identity)
+                readme = (output / "README.md").read_text()
+                upstream = "https://github.com/DingJWuyu/Typelay/blob/"
+                self.assertIn(
+                    f"[Linux 开发说明]({upstream}{commit}/docs/platforms/linux/development.md#构建)",
+                    readme,
+                )
+                for target in re.findall(r"\[[^\]]+\]\(([^)]+)\)", readme):
+                    if target.startswith(upstream):
+                        self.assertTrue(target.startswith(upstream + commit + "/"), target)
+
     def test_generated_readme_identifies_this_package_not_a_recommended_old_artifact(self):
         for dirty in (False, True):
             with self.subTest(dirty=dirty), tempfile.TemporaryDirectory() as directory:
@@ -54,8 +70,17 @@ class PackageReadmeTests(unittest.TestCase):
                 self.assertIn("## 安装、启动与首次配置", readme)
                 self.assertIn("sha256sum", readme)
                 self.assertIn("--install-models", readme)
-                self.assertIn("(fcitx.md", readme)
-                self.assertTrue((output / "fcitx.md").is_file())
+                for name in ("browser.md", "fcitx.md", "qt.md", "vscode.md"):
+                    self.assertIn("(" + name, readme)
+                    self.assertEqual(
+                        (output / name).read_bytes(),
+                        (ROOT / "docs/platforms/linux" / name).read_bytes(),
+                    )
+                self.assertIn(
+                    "[构建与检查记录](https://github.com/DingJWuyu/Typelay/actions/workflows/check.yml)",
+                    readme,
+                )
+                self.assertNotIn("最新推荐与检查结果", readme)
                 self.assertIn("/blob/" + "a" * 40 + "/docs/product/README.md", readme)
                 self.assertNotIn("](..", readme)
                 self.assertIn("不代表", readme)

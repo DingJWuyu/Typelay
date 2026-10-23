@@ -87,10 +87,23 @@ static const WCHAR owned_capture_message_name[] = L"TypeLay.NativeInput.OwnedCap
 
 __declspec(dllexport) uint32_t TypeLayNativeProtocolVersion(void) { return VERSION; }
 
+static int foreground_window(const Transaction *tx) {
+    HANDLE foreground = GetForegroundWindow(), root = (HANDLE)(uintptr_t)tx->root;
+    HANDLE hwnd = (HANDLE)(uintptr_t)tx->hwnd;
+    if (foreground == root) return 1;
+    // UIA may leave the exact ordinary Edit as the raw foreground HWND. It is
+    // not a new root or permission for sibling fields/owned dialogs. This shape
+    // check never substitutes the caller's lifetime, IME or original deadline.
+    uint32_t pid = 0;
+    return hwnd && hwnd != root && foreground == hwnd && owned.hwnd != hwnd
+        && GetAncestor(root, 2) == root && GetAncestor(hwnd, 2) == root
+        && GetWindowThreadProcessId(hwnd, &pid) == tx->thread && pid == tx->pid
+        && GetWindowThreadProcessId(root, &pid) == tx->thread && pid == tx->pid;
+}
 static int foreground_source(const Transaction *tx) {
     // This hook executes on the source's GUI thread, so GetFocus identifies the
     // exact field, rather than merely another field inside the same root window.
-    return GetForegroundWindow() == (HANDLE)(uintptr_t)tx->root
+    return foreground_window(tx)
         && GetFocus() == (HANDLE)(uintptr_t)tx->hwnd;
 }
 static int authorization_current(const Transaction *tx) {
@@ -767,7 +780,7 @@ __declspec(dllexport) uint32_t TypeLaySourceActivate(SourceInstallation *shared,
     LRESULT sent = 0;
     if (tx->thread != GetCurrentThreadId() && !GetFocus() && !GetActiveWindow()
         && GetWindowThreadProcessId((HANDLE)(uintptr_t)tx->root, &pid) == tx->thread && pid == tx->pid
-        && GetForegroundWindow() == (HANDLE)(uintptr_t)tx->root
+        && foreground_window(tx)
         && shared->state == 1 && __atomic_load_n(&shared->claim, __ATOMIC_ACQUIRE) == 0
         && authorization_current(tx)) {
         uintptr_t result = 0;

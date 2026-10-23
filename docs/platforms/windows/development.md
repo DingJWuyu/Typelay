@@ -62,11 +62,11 @@ if ($LASTEXITCODE -ne 0) { throw '源线程诊断前置、观察或清理失败�
 
 三个独立用例分别核验：普通 GetMessage 对照及两次 PM_NOREMOVE 不消费、随后 HC_ACTION 一次消费；posted/sent 伪消息不取得键盘 Hook 权威，同时软件输入有真实正控；Tab 原始导航与在 IsDialogMessage 前消费 down 的焦点对照。固定容量记录保留源线程/进程、原键位、阶段、消费次数与原计数；溢出、未知注入结果及清理失败均失败。每个新按次先确认自有源前台，只为已确认成功的 down 配对 up；每例有原 owner 的 30 秒操作截止及独立清理，xUnit 上限 60 秒。外部执行器应另设总寿命并始终收集结果，不影响普通回归的过滤或失败判定。
 
-每例写入独立的 `artifacts/source-keyboard-boundary/<UTC时间-唯一标识>/result.json`，不覆盖失败。`mechanism_observed_not_product_acceptance` 仅表示这些机制本次被观察；`precondition_failed` 表示未取得预期观察或清理失败。本入口尚待真实 Windows 运行，不能据编译或 xUnit 通过认定物理输入、LL 与 MSG.Time 关联、跨线程 repeat/up 归属或整组接受已闭合，也不准许打开正式写回。后两类交错实验不在本入口范围。
+每例写入独立的 `artifacts/source-keyboard-boundary/<UTC时间-唯一标识>/result.json`，不覆盖失败。`mechanism_observed_not_product_acceptance` 仅表示这些机制本次被观察；`precondition_failed` 表示未取得预期观察或清理失败。本入口已取得真实 Windows 软件输入的局部机制观察，当前结果与限制见 [B-01](architecture.md#b-01非原子写回与按键所有权)。它不证明物理输入、LL 与实际 MSG 的逐事件关联、跨线程 repeat/up 归属或整组接受，也不准许打开正式写回。后两类交错实验不在本入口范围。
 
 ## 自有双队列消费顺序诊断
 
-这是独立于上述三个源键盘探针的新入口，尚未取得实际 Windows 结果。仅在独占、已解锁的 Windows x64 测试桌面、现有 Release 构建完成后显式执行：
+这是独立于上述三个源键盘探针的入口，已取得 clear-on-up 漏键反例，当前结论见 [B-01](architecture.md#b-01非原子写回与按键所有权)；不能把诊断成功解释为接受安全。只有新机制或明确回归目的才重跑，不盲重试已否定的简化设计。执行须在独占、已解锁的 Windows x64 测试桌面、现有 Release 构建完成后显式进行：
 
 ```powershell
 & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe `

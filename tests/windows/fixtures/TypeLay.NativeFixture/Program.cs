@@ -278,8 +278,9 @@ internal static class Program
             _lastFocusedField = lParam; // EN_SETFOCUS
         if (message == 0x0007 && _lastFocusedField != 0 && N.IsWindow(_lastFocusedField))
         {
-            // Controlled host policies exercise refusal when activation does
-            // not restore the original field. Broker must not correct either.
+            // Controlled host policies exercise activation that does not restore
+            // the original field. Glossary return must not correct either;
+            // ordinary explicit return may correct field focus.
             if (_returnFocusCase != "root")
                 N.SetFocus(_returnFocusCase == "second" ? _secondField : _lastFocusedField);
             return 0;

@@ -21,8 +21,11 @@ internal sealed partial class KeyboardHook : IInputMonitor
     private readonly Native.HookProc _callback, _mouseCallback;
     private readonly Native.WinEventProc _focusCallback;
     // Decode at the publication boundary, never allocate or parse an identity inside a hook callback.
-    private sealed record HookLease(InputLease Observation, nint RootHwnd, bool NativeStock);
-    private sealed record HotkeyLease(ShortcutLease Observation, nint RootHwnd, Guid DiagnosticGeneration);
+    private sealed record HookLease(InputLease Observation, WindowsTarget Target)
+    {
+        public bool NativeStock => Target.Provider == "win32-edit-transaction-v2";
+    }
+    private sealed record HotkeyLease(ShortcutLease Observation, WindowsTarget Target, Guid DiagnosticGeneration);
     private HookLease? _lease;
     private HotkeyLease? _shortcutLease;
     private ShortcutConfiguration _shortcuts = new(Guid.NewGuid(), []);
@@ -141,9 +144,29 @@ internal sealed partial class KeyboardHook : IInputMonitor
         if (_ownedSource is { } owned && target == owned.Target)
             return _ownedEditorFocus?.Invoke(target) == true ? FocusMember.Overlay
                 : _ownedReturnFocus?.Invoke(target) == true || OwnedFocus(owned.Descriptor) ? FocusMember.Source : FocusMember.Other;
-        nint foreground = Native.GetForegroundWindow();
-        return foreground == (nint)native.RootHwnd ? FocusMember.Source
-            : foreground == _editorHwnd && _editorHwnd != 0 ? FocusMember.Overlay : FocusMember.Other;
+        return IsSourceForeground(native) ? FocusMember.Source
+            : Native.GetForegroundWindow() == _editorHwnd && _editorHwnd != 0 ? FocusMember.Overlay : FocusMember.Other;
+    }
+    private bool IsSourceForeground(WindowsTarget target)
+    {
+        nint foreground = Native.GetForegroundWindow(), root = (nint)target.RootHwnd, field = (nint)target.ControlHwnd;
+        if (foreground == root)
+            return true;
+        // Observation/candidate filtering only. The original Broker binding and
+        // installed source descriptor still authorize with their own lifetime,
+        // cookie, thread, IME and deadline; a current property is not that proof.
+        // Direct key claims, owned practice and glossary retain their separate
+        // exact-root guards; only the installed native prototype can claim here.
+        if (target.Provider != "win32-edit-transaction-v2" || field == 0 || foreground != field
+            || (_ownedSource is { } owned && owned.Descriptor.ControlHwnd == target.ControlHwnd)
+            || (_ownedChannel is { } channel && channel.Descriptor.ControlHwnd == target.ControlHwnd)
+            || Native.GetAncestor(root, 2) != root || Native.GetAncestor(field, 2) != root)
+            return false;
+        uint thread = Native.GetWindowThreadProcessId(field, out uint process);
+        var info = new GuiThreadInfo { Size = Marshal.SizeOf<GuiThreadInfo>() };
+        return thread != 0 && process == target.ProcessId
+            && Native.GetWindowThreadProcessId(root, out uint rootProcess) == thread && rootProcess == process
+            && GetGUIThreadInfo(thread, ref info) && info.Focus == field && Native.GetForegroundWindow() == field;
     }
     public bool ShortcutsReady => _ready && _mouseHook != 0;
     public KeyboardHook(bool allowInjectedInput = false, nint editorHwnd = 0)
@@ -193,7 +216,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 || lease.CommandGeneration != original.Observation.CommandGeneration
                 || lease.SessionRevision != original.Observation.SessionRevision || !lease.EscapeAllowed))
             Interlocked.Exchange(ref chord.Invalid, 1);
-        Interlocked.Exchange(ref _lease, new(lease, (nint)target.RootHwnd, target.Provider == "win32-edit-transaction-v2"));
+        Interlocked.Exchange(ref _lease, new(lease, target));
         if (_ownedPracticeTarget?.Invoke(lease.Source.Target) == true)
         {
             RevokeStockCandidate();
@@ -212,7 +235,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
     {
         bool decoded = WindowsTarget.TryDecode(lease.Source.Target, out var target);
         Guid generation = CommandGeneration;
-        Interlocked.Exchange(ref _shortcutLease, decoded ? new(lease, (nint)target.RootHwnd, generation) : null);
+        Interlocked.Exchange(ref _shortcutLease, decoded ? new(lease, target, generation) : null);
         QueueShortcutTrace("publish", decoded ? "published" : "target-decode", lease,
             commandGeneration: generation, leaseCommandGeneration: generation);
     }
@@ -232,7 +255,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             && now >= lease.Source.ObservedAtMs && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs
             && lease.Source.Access == FieldAccess.Supported
             && (lease.Source.Ime == ImeState.Clear || lease.Source.Ime == ImeState.Unknown && lease.Source.PreviewText is not null)
-            && Native.GetForegroundWindow() == published.RootHwnd;
+            && IsSourceForeground(published.Target);
     }
     public void SetShortcuts(RegisteredShortcut[] shortcuts)
     {
@@ -509,7 +532,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
                     : editor.Token.CommandGeneration != CommandGeneration ? "editor-configuration-changed"
                     : Native.GetForegroundWindow() != _editorHwnd ? "editor-not-foreground" : null
                 : chord.Source is not { } source ? "source-missing"
-                    : Native.GetForegroundWindow() != source.RootHwnd ? "source-not-foreground"
+                    : Native.GetForegroundWindow() != (nint)source.Target.RootHwnd ? "source-not-foreground"
                     : now < source.Observation.Source.ObservedAtMs ? "source-clock"
                     : now - source.Observation.Source.ObservedAtMs > Limits.ObservationMaxAgeMs ? "source-expired" : null;
         return refusal is null;
@@ -562,7 +585,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             {
                 editor = null;
                 string? sourceRefusal = !fresh ? "source-not-fresh" : source is null ? "source-missing"
-                    : Native.GetForegroundWindow() != source.RootHwnd ? "source-not-foreground"
+                    : Native.GetForegroundWindow() != (nint)source.Target.RootHwnd ? "source-not-foreground"
                     : !source.Observation.EscapeAllowed ? "source-exit-not-allowed"
                     : source.Observation.Source.Ime != ImeState.Clear ? "source-ime"
                     : keys.ExitModifiers != ShortcutModifiers.Control ? "source-binding" : null;
@@ -646,7 +669,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
 
     private bool Modified => _keys[0x10] || _keys[0x11] || _keys[0x12] || _keys[0xA0] || _keys[0xA1]
         || _keys[0xA2] || _keys[0xA3] || _keys[0xA4] || _keys[0xA5] || _keys[0x5B] || _keys[0x5C];
-    private sealed record DeferredWake(TargetId Target, nint RootHwnd, Guid Generation,
+    private sealed record DeferredWake(TargetId Target, WindowsTarget NativeTarget, Guid Generation,
         long Sequence, long TriggeredAtMs, long ForegroundEpoch, long WindowEpoch);
     private nint OnKey(int code, nint wParam, nint lParam)
     {
@@ -684,7 +707,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             var sessionKeys = Volatile.Read(ref _sessionKeys);
             bool fresh = _sessionEnabled && sessionKeys.Supported && lease is not null && lease.CommandGeneration == CommandGeneration && lease.UserEpoch == UserEpoch && lease.ForegroundEpoch == ForegroundEpoch
                 && now >= lease.Source.ObservedAtMs && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs;
-            bool source = fresh && Native.GetForegroundWindow() == (nint)binding!.RootHwnd;
+            bool source = fresh && IsSourceForeground(binding!.Target);
             if (PairOrdinaryChord(data, down, repeated))
                 return 1;
             if (ObserveOwnedKey(data, down, repeated, injected, now, sessionKeys.Accept))
@@ -695,9 +718,12 @@ internal sealed partial class KeyboardHook : IInputMonitor
             bool sourceBindingReady = UsesUnmodifiedSessionKeys || _stockExchange is not null && StockSessionKeysReady;
             bool modifiersReady = sessionKeys.AcceptModifiers != ShortcutModifiers.Control
                 || SourceAcceptanceControlMatches(data, lease);
+            // Without the native executor, the Core decision itself consumes
+            // the key. Do not extend that claim from a classification alone.
+            bool acceptanceSource = source && (_stockPrototype || Native.GetForegroundWindow() == (nint)binding!.Target.RootHwnd);
             var decision = _gate.ProcessAcceptanceKey(new(data.Key, down, repeated,
                     data.Key == sessionKeys.Accept && sourceBindingReady && modifiersReady, sessionKeys.AcceptModifiers),
-                new(lease?.Source.Target, source, lease?.Source.Ime ?? ImeState.Unknown,
+                new(lease?.Source.Target, acceptanceSource, lease?.Source.Ime ?? ImeState.Unknown,
                     Modified, injected, fresh && sourceBindingReady, lease?.Source.InputEpoch ?? -1,
                     lease?.Source.FocusEpoch ?? -1, now, CurrentModifiers));
             if (StockAcceptance(decision, data, down, injected, lease, now, out bool stockConsume))
@@ -721,7 +747,8 @@ internal sealed partial class KeyboardHook : IInputMonitor
             else if (down && data.Key == sessionKeys.Exit && !repeated && _escapeKeyDown is null)
             {
                 _escapeKeyDown = data.Key;
-                _escapeConsumed = source && (!injected || _allowInjectedInput) && !Modified
+                _escapeConsumed = source && Native.GetForegroundWindow() == (nint)binding!.Target.RootHwnd
+                    && (!injected || _allowInjectedInput) && !Modified
                     && sessionKeys.ExitModifiers == ShortcutModifiers.None && Volatile.Read(ref _ordinaryChord) is null
                     && lease!.Source.Ime == ImeState.Clear && lease.EscapeAllowed;
                 if (_escapeConsumed)
@@ -759,7 +786,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             {
                 bool current = completed && wake.Generation == CommandGeneration
                     && wake.ForegroundEpoch == ForegroundEpoch && wake.WindowEpoch == WindowEpoch
-                    && Native.GetForegroundWindow() == wake.RootHwnd;
+                    && IsSourceForeground(wake.NativeTarget);
                 _notices.Enqueue(new("wake", AcceptedAtMs: wake.TriggeredAtMs,
                     CommandGeneration: wake.Generation, CommandSequence: wake.Sequence,
                     Rejection: current ? Denial.None : Denial.NotSourceFocus,
@@ -849,7 +876,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             Reject(Denial.StaleObservation, "future-or-stale");
             return true;
         }
-        if (Native.GetForegroundWindow() != (nint)nativeLease!.RootHwnd)
+        if (!IsSourceForeground(nativeLease!.Target))
         {
             Reject(Denial.NotSourceFocus, "root");
             return true;
@@ -873,7 +900,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 Reject(Denial.StaleObservation, "generation");
                 return true;
             }
-            wake = new(lease.Source.Target, nativeLease.RootHwnd, configuration.Generation, sequence,
+            wake = new(lease.Source.Target, nativeLease.Target, configuration.Generation, sequence,
                 now, foregroundEpoch, WindowEpoch);
             return true;
         }

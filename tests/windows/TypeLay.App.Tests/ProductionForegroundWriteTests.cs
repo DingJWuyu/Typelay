@@ -67,33 +67,50 @@ public sealed class ProductionForegroundWriteTests
     }
 
     [Theory]
-    [InlineData("success")]
-    [InlineData("timeout")]
-    [InlineData("cookie-lost")]
-    public async Task NativeReturnCompletesRootActivationBeforeCorrectingAnotherField(string change)
+    [InlineData("success", false)]
+    [InlineData("timeout", false)]
+    [InlineData("cookie-lost", false)]
+    [InlineData("success", true)]
+    [InlineData("timeout", true)]
+    [InlineData("cookie-lost", true)]
+    public async Task NativeReturnCompletesRootActivationBeforeCorrectingAnotherField(string change, bool activateFromElsewhere)
     {
-        await using var desktop = await Desktop.Start();
+        await using var desktop = await Desktop.Start(returnFocus: activateFromElsewhere ? "root" : null);
         await desktop.Prepare(desktop.A, "A🙂你好Z", new(3, 5));
         var source = await desktop.Capture();
+        nint originalCookie = N.GetProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2");
+        Assert.NotEqual(nint.Zero, originalCookie);
+        uint sourceThread = N.GetWindowThreadProcessId(desktop.A, out uint sourceProcess);
+        Assert.NotEqual(0u, sourceThread);
         await desktop.Focus(desktop.B);
         string otherText = N.ReadText(desktop.B, Limits.MaxTextUnits);
+        await using var elsewhere = activateFromElsewhere ? await StockFixture.Start(desktop.Token) : null;
+        if (elsewhere is not null)
+            await elsewhere.Focus(elsewhere.A, desktop.Token);
+        string? elsewhereText = elsewhere is null ? null : N.ReadText(elsewhere.A, Limits.MaxTextUnits);
         using var entered = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(desktop.FixtureProcessId, "entered"));
         using var release = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(desktop.FixtureProcessId, "release"));
+        using var drained = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(desktop.FixtureProcessId, "drained"));
         Assert.Equal((nuint)1, N.Send(desktop.Root, N.FixtureArmNullBarrier));
         long expiresAt = WindowsInterruptClock.NowMs + 800;
         var pending = desktop.Call(new(BrokerProtocol.Version, 0, "return", "", BoundTarget: source.Target,
+            OverlayHwnd: (long)(elsewhere?.Root ?? 0),
             ExpiresAtMs: expiresAt));
         BrokerResponse returned;
         try
         {
             Assert.True(await Task.Run(() => entered.WaitOne(TimeSpan.FromSeconds(2)), desktop.Token),
                 "The original root must receive the real no-op completion message.");
+            // Unlike the same-root B-to-A case, this host deliberately leaves
+            // keyboard focus on its root after cross-process activation. The
+            // original return must correct it once without changing the bound
+            // top-level root/field identity or renewing its deadline.
+            Assert.Equal((desktop.Root, activateFromElsewhere ? desktop.Root : desktop.B), N.Focused());
             if (change == "timeout")
             {
                 // Keep the real receiver blocked until the original request's
                 // budget ends. No delay, renewed request or extra activation.
                 returned = await pending;
-                Assert.Equal("denied", returned.Status);
             }
             else
             {
@@ -102,21 +119,116 @@ public sealed class ProductionForegroundWriteTests
                     Assert.NotEqual(nint.Zero, N.RemoveProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2"));
                 release.Set();
                 returned = await pending;
-                Assert.Equal(change == "success" ? "focused" : "denied", returned.Status);
             }
         }
         finally { release.Set(); }
         // A successful explicit release, not the fixture's two-second escape,
         // must have completed the receiver even in the request-timeout case.
         Assert.Equal((nuint)1, N.Send(desktop.Root, N.FixtureBarrierStatus));
-        // Denial does not undo the already requested focus operation. Only a
-        // verified reply may acknowledge success; no case may modify the body.
+        Assert.True(N.PostMessage(desktop.Root, N.FixtureGuiDrained, 0, 0));
+        Assert.True(await Task.Run(() => drained.WaitOne(TimeSpan.FromSeconds(2)), desktop.Token));
+        var afterReturn = N.ReadFocus();
+        // One bounded, body-free failure record distinguishes raw foreground
+        // identity from ancestry and actual keyboard focus. These observations
+        // are not substitute acceptance predicates or a second return attempt.
+        string facts = JsonSerializer.Serialize(new
+        {
+            atMs = WindowsInterruptClock.NowMs,
+            returned.Status,
+            foregroundIsRoot = afterReturn.Root == desktop.Root,
+            foregroundIsField = afterReturn.Root == desktop.A,
+            foregroundRootIsSource = N.GetAncestor(afterReturn.Root, 2) == desktop.Root,
+            foregroundRootOwnerIsSource = N.GetAncestor(afterReturn.Root, 3) == desktop.Root,
+            foregroundProcessIsSource = afterReturn.ProcessId == sourceProcess,
+            foregroundThreadIsSource = afterReturn.ThreadId == sourceThread,
+            afterReturn.GuiThreadInfoSucceeded,
+            focusIsSourceField = afterReturn.Control == desktop.A,
+            cookieIsOriginal = N.GetProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2") == originalCookie
+        });
+        Assert.True(returned.Status == (change == "success" ? "focused" : "denied"), facts);
+        // Denial retains completed root activation, but expiration or cookie
+        // loss before correction must leave field focus unchanged. No branch
+        // may modify the body or selection.
         if (change == "success")
-            Assert.Equal((desktop.Root, desktop.A), N.Focused());
+        {
+            Assert.True((afterReturn.Root == desktop.Root || afterReturn.Root == desktop.A)
+                && N.GetAncestor(afterReturn.Root, 2) == desktop.Root
+                && afterReturn.ProcessId == sourceProcess && afterReturn.ThreadId == sourceThread
+                && afterReturn.GuiThreadInfoSucceeded == true && afterReturn.Control == desktop.A
+                && N.GetProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2") == originalCookie, facts);
+            var observed = await desktop.Capture();
+            Assert.Equal(source.Target, observed.Target);
+            Assert.Equal(ImeState.Clear, observed.Ime);
+        }
+        else
+            Assert.True(afterReturn.Root == desktop.Root
+                && afterReturn.Control == (activateFromElsewhere ? desktop.Root : desktop.B), facts);
         Assert.Equal(source.Text, N.ReadText(desktop.A, Limits.MaxTextUnits));
         Assert.Equal(otherText, N.ReadText(desktop.B, Limits.MaxTextUnits));
         Assert.Equal(source.Selection, N.ReadSelection(desktop.A));
         desktop.AssertZeroSubmits();
+        if (elsewhere is not null)
+        {
+            Assert.Equal(elsewhereText, N.ReadText(elsewhere.A, Limits.MaxTextUnits));
+            elsewhere.AssertZeroSubmits();
+        }
+    }
+
+    [Theory]
+    [InlineData("source", false)]
+    [InlineData("source", true)]
+    [InlineData("sibling", false)]
+    [InlineData("other-root", false)]
+    public async Task NativeForegroundChildKeepsOnlyItsExactSourceBinding(string foreground, bool direct)
+    {
+        await using var desktop = await Desktop.Start();
+        await desktop.Prepare(desktop.A, "A🙂你好Z", new(3, 5));
+        var source = await desktop.Capture();
+        nint cookie = N.GetProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2");
+        string otherText = N.ReadText(desktop.B, Limits.MaxTextUnits);
+        await using var elsewhere = foreground == "other-root" ? await StockFixture.Start(desktop.Token) : null;
+        nint field = foreground == "source" ? desktop.A : elsewhere?.A ?? desktop.B;
+        nint root = elsewhere?.Root ?? desktop.Root;
+        using var hook = new KeyboardHook();
+        // Observe startup before disposal can race the hook thread's creation.
+        var startup = Stopwatch.StartNew();
+        while (!hook.Ready && startup.Elapsed < TimeSpan.FromSeconds(2))
+            await Task.Delay(10, desktop.Token);
+        Assert.True(hook.Ready);
+        if (elsewhere is not null)
+            await elsewhere.Focus(field, desktop.Token);
+        else
+            await desktop.Focus(field);
+        // Exercise the Win32 state seen after CI460's UIA correction, without
+        // depending on whether a particular provider happens to produce it.
+        Assert.True(N.SetForegroundWindow(field));
+        N.Send(root, 0);
+        Assert.Equal((field, field), N.Focused());
+        Assert.Equal(root, N.GetAncestor(field, 2));
+        Assert.Equal(foreground == "source" ? FocusMember.Source : FocusMember.Other, hook.GetFocus(source.Target));
+
+        var reply = await desktop.Call(new(BrokerProtocol.Version, 0, "capture", "", CaptureDirect: direct));
+        if (foreground == "source")
+        {
+            Assert.Equal(FocusMember.Source, reply.Focus);
+            Assert.NotNull(reply.Snapshot);
+            Assert.Equal(source.Target, reply.Snapshot.Target);
+            Assert.Equal((long)desktop.Root, reply.Snapshot.Target.AsWindows().RootHwnd);
+            Assert.Equal(ImeState.Clear, reply.Snapshot.Ime);
+            Assert.Equal(source.Text, reply.Snapshot.Text);
+            Assert.Equal(source.Selection, reply.Snapshot.Selection);
+            Assert.Equal(direct, reply.Snapshot.WriteSupported);
+            Assert.Equal(direct, reply.Snapshot.DirectWriteSupported);
+        }
+        else
+            Assert.NotEqual(source.Target, reply.Snapshot?.Target);
+        Assert.Equal(cookie, N.GetProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2"));
+        Assert.Equal(source.Text, N.ReadText(desktop.A, Limits.MaxTextUnits));
+        Assert.Equal(source.Selection, N.ReadSelection(desktop.A));
+        Assert.Equal(otherText, N.ReadText(desktop.B, Limits.MaxTextUnits));
+        Assert.Equal((field, field), N.Focused());
+        desktop.AssertZeroSubmits();
+        elsewhere?.AssertZeroSubmits();
     }
 
     [Theory]

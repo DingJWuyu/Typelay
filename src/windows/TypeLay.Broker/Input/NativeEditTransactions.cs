@@ -174,10 +174,25 @@ internal sealed partial class NativeEditTransactions : IDisposable
         if (!ConfirmsReturnIdentity(target))
             return false;
         var binding = _bindings[target.ControlHwnd];
-        var gui = new GuiThreadInfo { Size = (uint)Marshal.SizeOf<GuiThreadInfo>() };
-        return GetGUIThreadInfo(binding.Thread, ref gui) && gui.Focus == (nint)target.ControlHwnd
-            && GetForegroundWindow() == (nint)target.RootHwnd
-            && unchecked((ulong)(long)GetPropW((nint)target.ControlHwnd, "TypeLay.NativeInput.Lifetime.v2")) == binding.Cookie;
+        nint root = (nint)target.RootHwnd, control = (nint)target.ControlHwnd;
+        nint foreground = GetForegroundWindow();
+        bool ExactFocus()
+        {
+            var gui = new GuiThreadInfo { Size = (uint)Marshal.SizeOf<GuiThreadInfo>() };
+            return GetGUIThreadInfo(binding.Thread, ref gui) && gui.Focus == control
+                && GetForegroundWindow() == foreground
+                && unchecked((ulong)(long)GetPropW(control, "TypeLay.NativeInput.Lifetime.v2")) == binding.Cookie;
+        }
+        if (foreground != root)
+        {
+            // UIA may leave the exact Edit as raw foreground. An ancestor or
+            // same-process match alone is not enough: keep the original binding
+            // and exact GUI focus. Capture/return/write retain their own IME gates.
+            if (foreground != control || GetWindowThreadProcessId(root, out uint pid) != binding.Thread
+                || pid != target.ProcessId)
+                return false;
+        }
+        return ExactFocus();
     }
 
     public WriteReceipt Write(WritePlan plan) => Write(plan, 2, 0);

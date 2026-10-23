@@ -16,7 +16,7 @@ TypeLay.Windows.Contracts 引用 Core，拥有 App 与 Broker 共用的 DTO、�
 
 普通 `capture` 在 UIA/跨线程 IMM 为 Unknown 时，可对通过原有资格检查的系统 Edit 复用目标 GUI 线程原生只读捕获；[IMM 的线程身份检查](https://learn.microsoft.com/windows/win32/intl/developing-ime-aware-multiple-thread-applications)使 Broker 取不到 HIMC 不能证明源线程没有输入上下文。该观察独立于按需 `CaptureDirect`，成功也固定 `WriteSupported=false`、`DirectWriteSupported=false`；暂停、ComboBox、已有明确 UIA 组合态不增加此读取，失败保持原拒绝边界。只读绑定由原 Broker 所有者退休，已获直接任务资格的绑定不因普通观察清理而提前撤销。[已核对的 Windows 检查](https://github.com/DingJWuyu/Typelay/actions/runs/39791124676)已在真实安装版系统记事本取得原生 Clear 与中文只读预览；接受提示仍因普通发行路径没有写入能力而未出现，不再归因为该样本的 IME Unknown。此证据只覆盖严格 x64、未被子类化的系统 `Edit`，不代表各种普通输入框都已具备相同能力，首接受及默认接受资格未因此通过或开放。
 
-隔离 Windows 测试另有默认关闭的系统 Edit 受理原型：原字段完成只读重验后，与快捷键超时撤回竞争同一个一次性共享状态。原字段先受理则消费本次按键及其释放；撤回先完成则不得修改正文或选区，原键旁路。已受理后的未知结果不重放按键，退休仅在确证静默或目标进程退出后擦除正文，保留受理事实。此路径目前只由测试接线，生产 `SourceLocalAcceptanceVersion` 仍为 0；未知线程队列关系、系统低级钩子超时及真实中文组合输入尚未验证，不能据本地编译或隔离原型宣布普通输入框安全接受完成。
+隔离 Windows 测试另有默认关闭的系统 Edit 受理原型：原字段完成只读重验后，与快捷键超时撤回竞争同一个一次性共享状态。撤回先完成则不得修改正文或选区，原键旁路；原字段先受理后，原型依赖低级 Hook 返回值消费原键。此关联已被源写成功而原键泄漏的实际反例否定，见 [B-01](#b-01非原子写回与按键所有权)。已受理后的未知结果不重放按键，退休仅在确证静默或目标进程退出后擦除正文，保留受理事实。此路径目前只由测试接线，生产 `SourceLocalAcceptanceVersion` 仍为 0；跨队列按次归属与真实中文组合输入仍未闭合，不能据隔离原型宣布普通输入框安全接受完成。
 
 该隔离原型现经现有认证 Broker 通道连接完整控制器：仅隔离构造声明可准备计划的能力，实际安装确认前不发布按键许可或可接受提示。单个在途安装配合一个最新候选，不延长原100ms许可；失效立即撤回未受理状态，受理后的整组按键仍由原操作收束。完成回执来自源端实际核验的正文、选区、输入法与完成时间，不从替换计划猜测，也不再发第二次写入。私有源协议版本为3，普通原生事务版本2保持不变。正式 Broker 入口固定关闭该构造；测试宿主使用同一路由显式启用，不新增用户开关。
 
@@ -54,6 +54,8 @@ UI 经固定同目录 Host 的参数列表串行执行注册维护，输出和�
 
 WindowsTarget 保留 PID/进程启动时间、根/控件 HWND、provider、元素令牌与生命周期。Broker 协议 v3 固定跨进程授权时钟，v1/v2 客户端或服务端不能混用；worker 帧与消息不变。
 
+普通 stock Edit 的 RootHwnd 使用 raw foreground 的 `GA_ROOT`，不把字段 child 造为新根，也不以 `GA_ROOTOWNER` 合并 owned dialog。raw foreground 不等于原 root 时，只有精确原字段、匹配的源 PID、root/field 同 GUI 线程、同一 `GA_ROOT` 和精确 native keyboard focus 才可能通过 App 前置筛选；Broker/native 仍持原 binding/descriptor 核原 PID/TID、cookie、生命周期、IME 与原期限。Capture 复用本次原 native 读取的 Clear；普通回源 ACK 只确认身份/焦点，不新增全文或 IME 读取，后继完整 fresh capture 才核实际 Clear 与 Core 原稿基线、决定新许可，不能把 ACK 当作新的末态 IME 样本。真实 Unknown、另一字段或另一根不能靠祖先关系补证。App 分类器没有原 native cookie，只用于观察、preview/候选筛选，不能代替安装 descriptor 或最终执行授权；非 prototype Core 接受、源 Esc 和普通源 Ctrl 退出等直接认领门仍要求原 raw root，自有练习与术语另守各自原门。这不新增 wire、ABI、焦点操作或重试，不代表所有 rawchild 控制已支持，普通生产接受仍关闭。
+
 App、Hook 与 Broker 的观测、触发、许可和执行期限统一使用 `src/windows/shared/WindowsInterruptClock.cs`。App/Broker 链接同一份平台内部源，Contracts 仍只含协议 DTO。时间值是 `QueryInterruptTimePrecise` 的自启动以来中断时间向下取整为毫秒，包含睡眠时间，不随 .NET 的 `Environment.TickCount64` 行为变化。整数取整误差小于 1ms；这不是浏览器端校准、睡眠恢复或物理按键已经验收的证明。所有 Core 期限保持不变。P/Invoke 使用 Windows SDK 的 `api-ms-win-core-realtime-l1-1-1.dll` 导入合同，要求 Windows 10 / Server 2016 或更新系统，不降级到粗粒度时钟。
 
 系统 Edit 的共享内存事务保留仅覆盖 GUI 线程派发的私有 500ms 预算，C# 生产端与 C 执行端均显式调用 `GetTickCount64`。前台写入另将原 Broker 请求的授权截止时间原样传给目标线程，按同一 `QueryInterruptTimePrecise` 毫秒域校验；两项期限必须同时有效，私有预算不能续签原许可，两个时间域不相减。后台 F10 的 op2 路径仍沿其既有独立事务预算。模型下载进度限频不参与授权，保留普通运行时时钟。
@@ -82,15 +84,15 @@ WPF 暂停视图清除文本及撤销状态，只显示共享呈现定义中的�
 
 B-01 的一个具体交错是：源线程已经确认 Claim 并完成写入，但低级键盘回调尚未返回消费结果，Windows 已因回调超时放行原键。[系统文档](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc)明确说明超时可放行输入并静默移除 hook；写后回执不能倒推出原键已被吞掉。显式诊断 `NativeSourceTimeoutProbe.RecordClaimThenLowLevelCallbackTimeout` 仅在测试自有进程、自有 LL hook 上复用真实 `StockEditActivation`，比较正常组与 Claim 后受控暂停组，不修改生产 hook、原生 DLL、默认开关或系统配置。输出记录原始激活结果、退休回执、原 Tab 队列计数、文本及清理结果；`observed_leak` 是风险实证，`not_observed` 不构成安全证明，前置或清理失败为 `precondition_failed`。调用见[Windows 开发](development.md#源接受低级回调超时诊断)。这不是完整生产输入链验收，也不覆盖物理按键或真实输入法，不能用探针运行成功关闭 B-01。
 
-**该交错已经实际观察到，不再只是待测风险。** CI456 的自有源诊断结果（`source-ll-timeout/20261022T181445488Z-aed5d0cb65ff4a65adc2e4f3d0991680/result.json`）中，正常组为 `not_observed`；Claim 后暂停组回调保持 1601.9607ms，观察时仍在回调内，原 Tab down 已到达源队列一次，up 为零，结果为 `observed_leak`。两组均已 Claim，最终正文为 `Hello`，退休回执与清理均完成。因此，写入成功与原键泄漏可以同时发生；现有跨线程“源写完成后由 LL 返回值吞首键”的设计不能作为正式开启接受的安全依据。`ExperimentalWriteback` 及普通源接受默认门仍保持关闭。该证据只否定这一交错下的安全性，不证明系统已经移除 hook、不覆盖所有风险，也不等于完整生产链或物理输入法验收。
+**该交错已经实际观察到，不再只是待测风险。** 自有源诊断中，Claim 后暂停低级回调时，源已写入译文，原 Tab down 却在回调返回前到达源队列；退休回执与清理均完成。因此，源写成功或回调返回前的耗时检查都不能证明原键已被吞掉。这否定现有“源写完成后由 LL 返回值吞首键”的安全性，不证明系统已经移除 Hook，也不是完整生产链或物理输入法验收。
 
-下一步先验证[自有源线程键盘边界](development.md#自有源线程键盘边界诊断)：源线程的 PM_NOREMOVE / HC_ACTION、伪消息阴性对照及 IsDialogMessage 前消费，仅观察和消费、不写正文。这些实验不能替代原 MSG.Time 关联见证，也未闭合跨线程移焦后的 repeat/up 所有权；必须先取得实际结果，再决定后续设计。仍有回归价值的隔离原型与测试保留，不因普通回归全绿开放默认写回。
+[自有源线程键盘边界](development.md#自有源线程键盘边界诊断)与[双队列消费顺序诊断](development.md#自有双队列消费顺序诊断)已取得[实际 Windows 软件输入结果](https://github.com/DingJWuyu/Typelay/actions/runs/39856028233)。前者观察到 PM_NOREMOVE 不消费、伪消息阴性对照及 IsDialogMessage 前消费；后者的 completion/deadline 只验证受控泵的实际 native 检索返回和合成 admission 原期限。`PostMessage` 仅唤醒，同步重入可提前派发 posted handler；动作边界必须是包含认领回调的最外层 `GetMessage`/`PeekMessage` 已实际返回，不能用回调末尾或 posted handler 代替。上述局部结果均没有正文事务或生产授权，不保证第三方消息泵。
 
-新的[自有双队列消费顺序诊断](development.md#自有双队列消费顺序诊断)只研究受控消息泵的实际 native 检索返回、合成 admission 原期限以及跨线程尾键/队列交错，不是接受实现。`PostMessage` 仅唤醒；同步重入可以提前派发 posted handler，所以动作边界必须是包含认领回调的最外层 `GetMessage`/`PeekMessage` 已实际返回，不能只凭回调结束标记。该推论只覆盖本进程已控制并记录深度/代次的泵，不保证第三方消息泵。
+**按 up 清全局 claim 的简化设计已被真实交错否定。** B 先消费 up 并清 claim 后，A 先前排队、尚未检索的旧 repeat 仍到达原消息路径；双线程都装 Hook 不能避免这个反例。保留 claim 的后臂按预案记为 `not_run_design_rejected`，不是已测通过或等待盲重跑。focus-tail 的已覆盖 B 路径局部消费正常，未覆盖 B 的负控则收到 repeat/up，证明该设计存在接收者覆盖缺口。
 
-认领前失败必须整组旁路；认领后的撤销、配置改变或执行期限耗尽只禁止后续动作，不释放尚未闭合的按次、不重放原键。双线程均装 Hook 仍不自动证明按次归属：B 的 up 可能先于 A 尚未检索的旧 repeat；按 up 立即释放和无限保留 claim 各有需实际证伪的风险。独立队列没有在本探针中被假定为全局输入序列；交错建立失败必须保留为未决。
+认领前失败必须整组旁路；认领后的撤销、配置改变或执行期限耗尽只禁止后续动作，不释放尚未闭合的按次、不重放原键；新未认领按次不能继承旧消费决定。独立队列不能假定为全局检索序列，按 HWND 或队列保留 bool 也没有解决旧 repeat 与新 press 的归属。`WH_KEYBOARD` 没有完整 MSG、原输入时间或注入 flags；[WH_GETMESSAGE](https://learn.microsoft.com/en-us/windows/win32/winmsg/getmsgproc) 可以取得实际 MSG，但 [MSG](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-msg) 不提供文档化的全局按次 ID。不能以毫秒时间、全局 down 计数或 [GetFocus](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getfocus) 的当前焦点冒认排队消息的原按次或原目标；[按窗口/消息范围过滤检索](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getmessagew)也使单个 up 或 posted marker 不能证明所有旧尾键已经排空。
 
-本诊断尚无实际 Windows 结果，不能用 Compile 通过代替。`WH_KEYBOARD` 没有完整 `MSG`、原输入时间或注入 flags；探针只记录实际返回 MSG，不以 `GetMessageTime` 冒认待消费事件。完整源事件关联、未覆盖线程、物理 IME 与正文原生事务仍缺失。全局 Hook 的 bitness/desktop/DLL 与安装线程约束亦未因此解决，不套用 LL 超时文档为它作无失效保证。**普通生产接受继续关闭，所有诊断固定 `productionReadiness=false`。**
+**当前缺口是输入裁决与文本事务、跨接收者尾键所有权两项能力，不只是定时或分类小缺陷。** 自有 Practice 的[局部事件与事务边界](#自有练习与首-tab-接受)不能控制移焦后未合作接收者的尾键。现有外部 Hook/UIA 接口与实现尚无同时保证完整旁路、旧尾键全消费、新按次不误吞的路线。后续候选须先明确原事件身份、所有接收者覆盖及消费/事务协调，再决定最小实验；不以更多相同探针替代缺失机制。全局 Hook 的 bitness/desktop/DLL 与安装线程约束仍未解决，也不套用 LL 超时规则为线程 Hook 作无失效保证。普通输入框仍是产品目标，源端接入、全局 Hook 或 TSF 等新范围须独立方案与授权，不能靠缩小支持范围或改写“认领”关闭 B-01。**普通生产接受继续关闭，所有诊断固定 `productionReadiness=false`。**
 
 按下时的短效接受许可与已消费按键的远程执行期限是两个边界，具体值以 Core 的 Limits 为准。派发前核验 Hook 输入/焦点版本，Broker 写前重读、期限检查与写后核验不能省略。浮层编辑按键与源字段输入版本必须区分，避免把译文编辑误判成原文变化。
 
@@ -108,7 +110,7 @@ B-01 的一个具体交错是：源线程已经确认 Claim 并完成写入，�
 
 **精确捕获：**`capture-owned` 绑定 PID/启动时间、根/控件 HWND、线程、cookie、run 代次和 native FocusRevision，在读取正文及安装 hook 前核验。宿主每轮从精确控件 HWND 重新取得 UIA 元数据和 runtime-id，保留字段策略、应用排除和原目标隔离；不再以全局 UIA 焦点查询发现此自有字段。独立 `TypeLay.NativeInput.OwnedCapture.v2` 消息使用 owned 专属 op6，旧 owned 组件与通用 Transaction.v2 hook 不接收；op6 的专属焦点版本字段不是写入截止时间。原生在正文读取前后核对资格、IME、焦点版本及直接子控件的当前可见几何；UIA 边界仅用于显示，不替代身份。这一专路不改变第三方捕获或许可期限，该专路已通过受控 Windows 的真实模型首 Tab，物理设备与长期稳定性仍待验证。精确 Edit 的 EN_SETFOCUS/EN_KILLFOCUS 与顶层 WM_ACTIVATE 在其它操作前推进单调 native FocusRevision 并撤权；Begin/Retire 不重置计数。捕获、安装、键见证和执行固定同一版本，最终回到相同 HWND 不能恢复旧授权。
 
-**键与执行：**该自有自动接受路径的 LL Hook 不吞原 Tab，只发布有界 FIFO 事件见证；真实消息仍到自有 GUI 队列，在 IsDialogMessage 前与一次许可共同裁决。安装前事件不追认，丢序、歧义和 overflow 撤权。native TryExecute 的无副作用前置门全部通过后才标记 accepted 并调用 SETSEL；GUI 只消费 accepted 的原键。前置失败沿原消息路径放行；接受后失败按实际拒绝或 Unknown 回执处理，不补发 Tab。正文、选区、IME、身份和原期限仍在 SETSEL 后再次核验。
+**键与执行：**该自有自动接受路径的 LL Hook 不吞原 Tab，只发布有界 FIFO 事件见证；真实消息仍到自有 GUI 队列，在 IsDialogMessage 前与一次许可共同裁决。安装前事件不追认，丢序、歧义和 overflow 撤权。native TryExecute 的无副作用前置门全部通过后才标记 accepted 并调用 SETSEL；GUI 只消费 accepted 的原键。前置失败沿原消息路径放行；接受后失败按实际拒绝或 Unknown 回执处理，不补发 Tab。正文、选区、IME、身份和原期限仍在 SETSEL 后再次核验。这提供自有 GUI 对当前真实 MSG 的消费决定与源事务边界，不证明移焦后未合作接收者的尾键已被消费，也不把本地见证序号变成跨队列按次身份。
 
 **源框退出：**默认 Esc 使用独立、无写权的退出租约，绑定当前练习、配置、焦点版本与原期限；独立退出序号关联原次 FIFO 见证，旧协议版本明确拒绝。即使当前没有写许可，源 GUI 仍可在精确身份、焦点和 IME 校验后结束会话；此路径不读正文、不调用 SETSEL，也不创建写许可。配置变化、退休或过期撤销退出资格。真实 Windows 软件输入已验证默认源 Esc 结束会话且保持练习窗口、原文、选区与焦点，无写许可及按住跨退休的配对也已通过；生产注入、旧绑定、过期与配置变更负控均拒绝。物理键仍待验证。
 
