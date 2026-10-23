@@ -206,6 +206,8 @@ public sealed partial class ProductionForegroundWriteTests
                     Assert.InRange(closed.GetProperty("RequestCount").GetInt32(), 0, 1);
                     foreach (var item in closed.GetProperty("Events").EnumerateArray())
                         Assert.False(item.GetProperty("Eaten").GetBoolean());
+                    if (run.SourceKeyboardRead)
+                        CheckCompositionObservation(closed);
                     if (run.Status == "observed")
                     {
                         Assert.True(closed.GetProperty("InputUpObserved").GetBoolean());
@@ -237,6 +239,59 @@ public sealed partial class ProductionForegroundWriteTests
             var value = document.RootElement.Clone();
             Assert.Equal(phase, value.GetProperty("phase").GetString());
             return value;
+        }
+    }
+
+    private static void CheckCompositionObservation(JsonElement result)
+    {
+        Assert.Equal("positive-not-run", result.GetProperty("RealImePositive").GetString());
+        string? state = result.GetProperty("CompositionState").GetString();
+        Assert.Contains(state, new[] { "unknown", "present", "none-in-exact-context-at-read" });
+        var inventory = result.GetProperty("InputProfiles");
+        if (inventory.ValueKind != JsonValueKind.Null)
+        {
+            Clean(inventory);
+            Assert.Contains(inventory.GetProperty("Status").GetString(), new[] { "unknown", "complete", "truncated" });
+            Assert.Equal(inventory.GetProperty("Status").GetString() == "complete", inventory.GetProperty("Complete").GetBoolean());
+            Assert.Contains(inventory.GetProperty("ActiveState").GetString(), new[] { "observed", "not-active", "unknown" });
+            var profiles = inventory.GetProperty("Profiles");
+            Assert.InRange(profiles.GetArrayLength(), 0, 64);
+            if (inventory.GetProperty("Status").GetString() == "complete")
+            {
+                Assert.Equal(0, inventory.GetProperty("CreateHResult").GetInt32());
+                Assert.Equal(0, inventory.GetProperty("EnumHResult").GetInt32());
+                Assert.Equal(1, inventory.GetProperty("NextHResult").GetInt32());
+                Assert.Equal(0u, inventory.GetProperty("Fetched").GetUInt32());
+            }
+            if (inventory.GetProperty("Status").GetString() == "truncated")
+                Assert.Equal(64, profiles.GetArrayLength());
+        }
+        var sample = result.GetProperty("Composition");
+        if (sample.ValueKind == JsonValueKind.Null)
+        {
+            Assert.Equal("unknown", state);
+            Assert.False(result.GetProperty("SourceHookReadObserved").GetBoolean());
+            return;
+        }
+        Clean(sample);
+        if (state == "unknown")
+            return; // Unknown is an observation, never a production Clear grant.
+        Assert.True(result.GetProperty("SourceHookReadObserved").GetBoolean());
+        Assert.Equal(state, sample.GetProperty("ObservedState").GetString());
+        Assert.Equal(0, sample.GetProperty("QueryHResult").GetInt32());
+        Assert.Equal(0, sample.GetProperty("FindHResult").GetInt32());
+        bool present = state == "present";
+        Assert.Equal(present ? 0 : 1, sample.GetProperty("NextHResult").GetInt32());
+        Assert.Equal(present ? 1u : 0u, sample.GetProperty("Fetched").GetUInt32());
+        Assert.Equal(present, sample.GetProperty("ViewPresent").GetBoolean());
+
+        void Clean(JsonElement observation)
+        {
+            Assert.True(observation.GetProperty("Attempted").GetBoolean());
+            Assert.Equal(result.GetProperty("Thread").GetUInt32(), observation.GetProperty("Thread").GetUInt32());
+            Assert.True(observation.GetProperty("ReferencesReleased").GetBoolean());
+            Assert.False(observation.GetProperty("ContractFailure").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, observation.GetProperty("Error").ValueKind);
         }
     }
 

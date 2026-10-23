@@ -138,7 +138,7 @@ worker 入口在加载模型依赖前保存不可继承的专用二进制输出�
 
 模型包目录由 worker 随包的单份 `model-catalog.json` 定义，Runtime 嵌入同一文件。目录 schema2 以包描述 backend、版本、下载地址和直接方向；正式目录包含原 Argos 中英双向与固定 revision 的 Hy-MT2 Q4_K_M 中文与日语、韩语、法语、西班牙语、德语、葡萄牙语互译的新装十二方向预览包，目录另列可手动补充的中英双向。LegacyDirections、默认安装集合和原语言选项继续保留中英方向；设置接受目录已知的直接方向、Auto 与同语，不随安装或离线状态重置。Runtime 接受显式 schema3 加载计划。Linux 准备卡消费精确库存、当前选择与实际 hello 的包/版本/方向子集，提供明确确认的下载并使用、切换、修复及非当前包移除；Windows 亦接入 schema3 包事务和共享包操作呈现，原 schema1/2 安装与启动保持兼容；Windows 开发候选仅在包内 ABI5 生产组件齐备时提供 Hy 下载与使用入口，实际加载仍须通过 worker 的完整校验；两端实际验证状态见 [Windows 当前候选](../platforms/windows/README.md#当前可验证候选)和 [Linux 验证边界](../platforms/linux/README.md#当前可用范围与验收边界)。
 
-模型包呈现复用 `TranslationPreparationView` 的 `PackageRows` 与 `CurrentModelText`。目录覆盖不是已安装或已加载方向；缺少当前方向时只提示，不更改语言或暗中切包。Linux 的可选语言取实际安装且平台可用的包方向，同时保留默认中英和已保存值；Windows 设置与快捷面板按实际已加载方向更新语言选择，同一列表刷新保留搜索和焦点；离线或已保存值不在当前模型能力内时如实回显，不自动改值。
+模型包呈现复用 `TranslationPreparationView` 的 `PackageRows` 与 `CurrentModelText`。`CurrentModelText` 说明安装记录中的当前选择，不代表该模型已经加载；Windows 翻译页沿用这项选择说明，运行状态仍单独显示。输入长度限制随模型而异，超限拒绝而不截断原文生成可接受候选。目录覆盖不是已安装或已加载方向；缺少当前方向时只提示，不更改语言或暗中切包。Linux 的可选语言取实际安装且平台可用的包方向，同时保留默认中英和已保存值；Windows 设置与快捷面板按实际已加载方向更新语言选择，同一列表刷新保留搜索和焦点；离线或已保存值不在当前模型能力内时如实回显，不自动改值。
 
 浮层语言呈现复用准备状态中的 `languageChoices`，GTK3、GTK4 和 Qt 按 code 映射现有菜单，浏览器与 Windows 显示真实语言名称；未知值不再回退显示为英语或自动识别。原生浮层缺失或不合法的选项数据时关闭语言修改。浮层保存复用现有 `traySettings` 的 source/target 局部更新，失败保留最后确认值，结果未知不声称保存成功；不再提交旧的全量设置。原生模块须由目标应用重启后加载同期版本。
 

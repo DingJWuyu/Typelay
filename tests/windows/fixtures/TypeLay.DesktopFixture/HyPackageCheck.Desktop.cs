@@ -67,7 +67,7 @@ internal static partial class HyPackageCheck
                 await OpenSettingsThroughTrayAsync(app.Process, revealSettings, ct);
             settings = await SettingsAsync(app.Process, ct);
             if (revealSettings is not null)
-                await NavigateAsync(settings, "▦  " + ApplicationSupportPresentation.Create([]).Title, ct);
+                await NavigateAsync(settings, "▦  " + ApplicationSupportPresentation.Create([]).Title, "应用支持", ct);
             await WaitAsync(async () =>
             {
                 workers!.Check();
@@ -147,12 +147,12 @@ internal static partial class HyPackageCheck
             await report.Phase("choose-french", async scene =>
             {
                 scene.Stage = "navigate-to-languages";
-                await NavigateAsync(settings!, "文  语言", ct);
+                await NavigateAsync(settings!, "文  语言", "语言", ct);
                 await SettingsLanguageActions.SelectTargetAsync(settings!, "Français", stage => scene.Stage = stage, ct);
                 scene.Stage = "await-french-settings-save";
                 await WaitAsync(() => Task.FromResult(ReadSettings(data) is { Source: "zh", Target: "fr" }), ct);
                 scene.Stage = "return-to-package-settings";
-                await NavigateAsync(settings!, "▦  " + ApplicationSupportPresentation.Create([]).Title, ct);
+                await NavigateAsync(settings!, "▦  " + ApplicationSupportPresentation.Create([]).Title, "应用支持", ct);
                 scene.Facts = new
                 {
                     source = "zh",
@@ -200,7 +200,7 @@ internal static partial class HyPackageCheck
                 Require(selection == new TextRange(text.Length, text.Length), "source-selection");
                 Require(ReadSettings(data) is { ExperimentalWriteback: false, Mode: WorkMode.OnDemand } saved
                     && saved.Direction == direction, "preview-settings-changed");
-                await NavigateWithoutFocusAsync(settings!, "⌨  快捷键", ct);
+                await NavigateWithoutFocusAsync(settings!, "⌨  快捷键", "快捷键", ct);
                 scene.Stage = "wait-public-shortcut-status";
                 await WaitAsync(async () =>
                 {
@@ -367,7 +367,7 @@ internal static partial class HyPackageCheck
                     submits = 0,
                     workerPid = lastWorker
                 };
-                await NavigateAsync(settings!, "▦  " + ApplicationSupportPresentation.Create([]).Title, ct);
+                await NavigateAsync(settings!, "▦  " + ApplicationSupportPresentation.Create([]).Title, "应用支持", ct);
                 Require(N.PostMessage(root, 0x0010, 0, 0), "source-close-request");
                 using var exit = new CancellationTokenSource(TimeSpan.FromSeconds(5));
                 await source.Process.WaitForExitAsync(exit.Token);
@@ -448,7 +448,7 @@ internal static partial class HyPackageCheck
                     var current = new ModelInstallationStore(data, worker).ReadInstallationState();
                     Require(current.CurrentPackages.Single().Directions.Select(item => item.Id).ToHashSet(StringComparer.Ordinal)
                         .SetEquals(expectedHyDirections), "cold-directions-changed");
-                    await NavigateAsync(settings!, "文  语言", ct);
+                    await NavigateAsync(settings!, "文  语言", "语言", ct);
                     await WaitAsync(async () => await UiAsync(() => Find(settings!, AutomationElement.NameProperty,
                         "当前模型支持 14 个翻译方向", ControlType.Text) is not null, ct), ct);
                     scene.Facts = new
@@ -473,7 +473,7 @@ internal static partial class HyPackageCheck
                 });
                 await report.Phase("preview-zh-en", async scene =>
                 {
-                    await NavigateAsync(settings!, "文  语言", ct);
+                    await NavigateAsync(settings!, "文  语言", "语言", ct);
                     await SettingsLanguageActions.SelectTargetAsync(settings!, "English", stage => scene.Stage = stage, ct);
                     await WaitAsync(() => Task.FromResult(ReadSettings(data)?.Direction == new LanguageDirection("zh", "en")), ct);
                     await PreviewAsync(scene, "请把窗户关上。", new("zh", "en"));
@@ -485,7 +485,7 @@ internal static partial class HyPackageCheck
                     await SwapLanguagesAsync(settings!, data, new("en", "zh"), new("zh", "en"), ct);
                     await SettingsLanguageActions.SelectTargetAsync(settings!, "Français", stage => scene.Stage = stage, ct);
                     await WaitAsync(() => Task.FromResult(ReadSettings(data)?.Direction == originalLanguage), ct);
-                    await NavigateAsync(settings!, "▦  " + ApplicationSupportPresentation.Create([]).Title, ct);
+                    await NavigateAsync(settings!, "▦  " + ApplicationSupportPresentation.Create([]).Title, "应用支持", ct);
                 });
                 report.EnglishAcceptance = "passed";
             }
@@ -927,27 +927,13 @@ internal static partial class HyPackageCheck
             KnownEnum<ModelReplacementFailureCode>(Line("切换原因：")),
             KnownEnum<ModelPublicationOutcome>(Line("发布确认：")));
     }
-    private static async Task NavigateAsync(AutomationElement settings, string label, CancellationToken ct)
+    private static async Task NavigateAsync(AutomationElement settings, string label, string heading, CancellationToken ct)
     {
         await UiAsync(() => N.SetForegroundWindow((nint)settings.Current.NativeWindowHandle), ct);
-        await NavigateWithoutFocusAsync(settings, label, ct);
+        await NavigateWithoutFocusAsync(settings, label, heading, ct);
     }
-    private static async Task NavigateWithoutFocusAsync(AutomationElement settings, string label, CancellationToken ct)
-    {
-        int[]? previous = null;
-        await UiAsync(() =>
-        {
-            var button = Find(settings, AutomationElement.NameProperty, label, ControlType.Button);
-            Require(button is not null, "settings-navigation-unavailable");
-            previous = button!.GetRuntimeId();
-            ((InvokePattern)button.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
-        }, ct);
-        await WaitAsync(async () => await UiAsync(() =>
-        {
-            var button = Find(settings, AutomationElement.NameProperty, label, ControlType.Button);
-            return button is not null && !button.GetRuntimeId().SequenceEqual(previous!);
-        }, ct), ct);
-    }
+    private static Task NavigateWithoutFocusAsync(AutomationElement settings, string label, string heading, CancellationToken ct) =>
+        SettingsPageActions.OpenAsync(settings, label, heading, ct);
     private static async Task PackageActionAsync(Process app, AutomationElement settings, string package,
         ModelPackageOperation operation, Scene scene, CancellationToken ct, bool confirm = true, string? expectedLabel = null)
     {

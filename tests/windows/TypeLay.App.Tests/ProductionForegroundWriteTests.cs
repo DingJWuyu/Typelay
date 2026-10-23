@@ -872,10 +872,10 @@ public sealed partial class ProductionForegroundWriteTests
         public Task Focus(nint field) => _fixture.Focus(field, Token);
         public async Task Prepare(nint field, string text, TextRange selection)
         {
-            // This setup already requires exact foreground focus before mutation.
-            // Navigate once as the fixture owner, not only from the background child.
-            RequestForeground(field);
-            await Focus(field);
+            // Owning the child does not grant foreground activation rights.
+            // Click only the visible owned field, then observe exact focus before
+            // initializing text/selection or capturing any product authorization.
+            await _fixture.ClickAndObserveFocus(field, Token);
             N.SendString(field, N.WM_SETTEXT, text);
             N.Send(field, N.EM_SETSEL, (nuint)selection.Start, (nint)selection.End);
         }
@@ -951,6 +951,7 @@ public sealed partial class ProductionForegroundWriteTests
 
     private sealed class StockFixture(Process process, FixtureDescriptor host) : IAsyncDisposable
     {
+        private static long _preparationClickSequence;
         public nint Root => (nint)host.RootHwnd;
         public nint A => Field("a");
         public int ProcessId => process.Id;
@@ -1045,13 +1046,31 @@ public sealed partial class ProductionForegroundWriteTests
         // request is not field-focus evidence; Focus retains its exact check.
         public void RequestForeground(nint field, CancellationToken token) =>
             NativeSourceSetup.RequestOwnedForeground(Root, field, process, token);
+        public async Task ClickAndObserveFocus(nint field, CancellationToken token)
+        {
+            nint marker = checked((nint)Interlocked.Increment(ref _preparationClickSequence));
+            Assert.True(marker > 0);
+            await NativeSourceSetup.ClickAsync(Root, field, process, token, (nuint)marker);
+            // Do not post FixtureFocus here: that would conceal a click which
+            // failed to activate/focus the intended field. Focus can already
+            // match while input is queued, so also require this mouse-up's receipt.
+            await WaitFocused(field, token, marker);
+        }
         public async Task Focus(nint field, CancellationToken token)
         {
             Assert.True(N.PostMessage(Root, N.FixtureFocus, (nuint)field, 0));
+            await WaitFocused(field, token);
+        }
+        private async Task WaitFocused(nint field, CancellationToken token, nint clickMarker = 0)
+        {
             var until = Stopwatch.StartNew();
-            while (N.Focused() != (Root, field) && until.Elapsed < TimeSpan.FromSeconds(2))
+            while ((N.Focused() != (Root, field) || !ClickDispatched()) && until.Elapsed < TimeSpan.FromSeconds(2))
                 await Task.Delay(10, token);
             Assert.Equal((Root, field), N.Focused());
+            Assert.True(ClickDispatched(), "The owned field did not finish dispatching this preparation click.");
+
+            bool ClickDispatched() => clickMarker == 0
+                || (N.GetProp(Root, N.FixtureClickReceipt) == clickMarker && N.GetProp(Root, N.FixtureClickField) == field);
         }
         public void AssertZeroSubmits() => Assert.Equal((nuint)0, N.Send(Root, N.FixtureSubmitCount));
         public void AssertSubmitCounterWorks()

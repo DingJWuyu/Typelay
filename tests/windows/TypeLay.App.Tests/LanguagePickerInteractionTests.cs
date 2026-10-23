@@ -22,6 +22,69 @@ namespace TypeLay.App.Tests;
 public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
 {
     [Fact]
+    public Task PublicPageNavigationCanReopenMountedLanguageAndShortcutPages() => desktop.RunAsync(async () =>
+    {
+        using var fixture = new LanguageWindowFixture(quickPanel: false);
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        limit.CancelAfter(TimeSpan.FromSeconds(10));
+        var ct = limit.Token;
+        var window = Assert.IsType<SettingsWindow>(fixture.Window);
+        window.ShowPage("apps");
+        await DrainAsync(window);
+        byte[] saved = File.ReadAllBytes(fixture.Path);
+        nint handle = new WindowInteropHelper(window).Handle;
+        var root = await Task.Run(() => AutomationElement.FromHandle(handle), ct).WaitAsync(ct);
+
+        foreach (var (label, heading) in new[] { ("文  语言", "语言"), ("⌨  快捷键", "快捷键") })
+        {
+            await SettingsPageActions.OpenAsync(root, label, heading, ct);
+            await DrainAsync(window);
+            var title = Descendants(window).OfType<TextBlock>().Single(text => text.Text == heading);
+            await SettingsPageActions.OpenAsync(root, label, heading, ct);
+            await DrainAsync(window);
+            Assert.Same(title, Descendants(window).OfType<TextBlock>().Single(text => text.Text == heading));
+            Assert.Equal(saved, File.ReadAllBytes(fixture.Path));
+        }
+    });
+
+    [Fact]
+    public Task ModelRefreshUpdatesTheTranslationSettingsSelectionWithoutAFixedModelLimit() => desktop.RunAsync(async () =>
+    {
+        using var fixture = new LanguageWindowFixture(quickPanel: false, protocolModel: true);
+        var window = Assert.IsType<SettingsWindow>(fixture.Window);
+        window.ShowPage("translation");
+        await DrainAsync(window);
+        var heading = Descendants(window).OfType<TextBlock>().Single(text => text.Text == "本地翻译模型");
+        var labels = Assert.IsType<StackPanel>(heading.Parent).Children.OfType<TextBlock>().ToArray();
+        var description = Assert.Single(labels, text => !ReferenceEquals(text, heading));
+        var row = Assert.IsType<Grid>(VisualTreeHelper.GetParent(heading.Parent));
+        var status = Assert.Single(row.Children.OfType<TextBlock>());
+        Assert.Equal("当前模型无法确认", description.Text); // The fixture's legacy marker is not a valid inventory.
+        Assert.DoesNotContain("已就绪", status.Text);
+        const string longText = "输入长度限制因模型而异；超过限制时会停止，请缩短选区后重试。不会在后台截断原文后给出可接受候选。换行、URL、mention 和编号采用显式结构保护。";
+        Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == longText);
+
+        foreach (var (package, expected) in new[]
+        {
+            ("argos-zh-en", "当前选择：Argos · 中文 → English"),
+            ("hy-mt2-1-8b-q4-k-m", "当前选择：Hy-MT2 1.8B · 中文多语"),
+            ("argos-zh-en", "当前选择：Argos · 中文 → English")
+        })
+        {
+            await fixture.SwitchModelAsync([package], ["zh_en"]);
+            Assert.Equal(expected, description.Text);
+            Assert.Equal("本地翻译已就绪", status.Text);
+            Assert.Same(heading, Descendants(window).OfType<TextBlock>().Single(text => text.Text == "本地翻译模型"));
+            Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == longText);
+        }
+        window.ShowPage("language");
+        window.ShowPage("translation");
+        await DrainAsync(window);
+        Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "当前选择：Argos · 中文 → English");
+        Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == longText);
+    });
+
+    [Fact]
     public Task PublicTargetSelectionUsesThePickerItemAfterItsActiveLanguagesChange() => desktop.RunAsync(async () =>
     {
         using var fixture = new LanguageWindowFixture(quickPanel: false, protocolModel: true);
@@ -510,7 +573,8 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
             }
             else
             {
-                var settingsWindow = new SettingsWindow(Settings, _model, () => Assert.Fail("Practice must not open."), support: support);
+                var settingsWindow = new SettingsWindow(Settings, _model, () => Assert.Fail("Practice must not open."), support: support,
+                    installations: new ModelInstallationStore(_directory, _worker));
                 Window = settingsWindow;
                 settingsWindow.ShowPage("language");
             }

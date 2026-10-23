@@ -279,6 +279,16 @@ internal static class Program
                     return 0;
                 if (status < 0)
                     return 1;
+                // Freeze this retrieved mouse event before any dispatch/reentry.
+                // Only our controlled stock fixture consumes this test marker.
+                nint preparationClickMarker = message.Message == 0x0202 && StockFields.Contains(message.Hwnd)
+                    ? GetMessageExtraInfo() : 0;
+                if (preparationClickMarker != 0 && _preparationClickBarrierField == message.Hwnd)
+                {
+                    _preparationClickBarrierField = 0;
+                    _barrierEntered!.Set();
+                    _barrierStatus = WaitForSingleObject(_barrierRelease!.SafeWaitHandle.DangerousGetHandle(), 2_000) == 0 ? 1 : 2;
+                }
                 bool dispatchProbe = SourceDispatchProbe.BeforeDispatch(_root, message);
                 ApplyOwnedControls(); // The same outer-loop retirement boundary as Practice.
                 var dispatched = message;
@@ -288,6 +298,12 @@ internal static class Program
                     N.TranslateMessage(ref message);
                     N.DispatchMessage(ref message);
                 }
+                // Publish only after the actual field's mouse-up handling returns,
+                // never after SendInput insertion or a separate posted/sent barrier.
+                if (preparationClickMarker != 0
+                    && (!N.SetProp(_root, N.FixtureClickField, dispatched.Hwnd)
+                        || !N.SetProp(_root, N.FixtureClickReceipt, preparationClickMarker)))
+                    throw new InvalidOperationException("Fixture preparation click receipt failed.");
                 _tsfKeyProbe?.AfterDispatch(dispatched);
                 if (_tsfCloseRequested)
                 {
@@ -346,6 +362,7 @@ internal static class Program
     private static int _barrierStatus;
     private static bool _blockNextNull;
     private static bool _changeAfterNull;
+    private static nint _preparationClickBarrierField;
     private static readonly Dictionary<nint, nint> PreviousProcedures = new();
     private static readonly HashSet<nint> StockFields = new();
     // Keep delegates alive as long as the HWNDs exist.
@@ -489,6 +506,15 @@ internal static class Program
             _barrierStatus = 0;
             _blockNextNull = true;
             _changeAfterNull = wParam == 1;
+            return 1;
+        }
+        if (message == N.FixtureArmClickBarrier && _barrierEntered is not null && _barrierRelease is not null
+            && StockFields.Contains((nint)wParam) && lParam == 0)
+        {
+            _barrierEntered.Reset();
+            _barrierRelease.Reset();
+            _barrierStatus = 0;
+            _preparationClickBarrierField = (nint)wParam;
             return 1;
         }
         if ((message == N.FixtureBlockGui || (message == 0 && _blockNextNull))
@@ -679,5 +705,6 @@ internal static class Program
     [DllImport("user32.dll")] private static extern nuint SetTimer(nint hwnd, nuint id, uint interval, nint callback);
     [DllImport("user32.dll")][return: MarshalAs(UnmanagedType.Bool)] private static extern bool KillTimer(nint hwnd, nuint id);
     [DllImport("user32.dll")] private static extern nint GetFocus();
+    [DllImport("user32.dll")] private static extern nint GetMessageExtraInfo();
     [DllImport("kernel32.dll")] private static extern uint WaitForSingleObject(nint handle, uint milliseconds);
 }

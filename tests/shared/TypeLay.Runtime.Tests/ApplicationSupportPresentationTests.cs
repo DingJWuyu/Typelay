@@ -126,6 +126,54 @@ public sealed class ApplicationSupportPresentationTests
         Assert.Equal(new string('a', 32), select.Request.ExpectedCurrent);
     }
 
+    [Fact]
+    public void CurrentModelDescriptionNamesTheSelectionWithoutClaimingItHasLoaded()
+    {
+        var argos = PackageSelections("argos-zh-en");
+        var hy = PackageSelections("hy-mt2-1-8b-q4-k-m");
+        var packages = new ModelPackageManagementFact(new string('a', 32), true, [.. argos, .. hy], argos, argos,
+            true, null, "zh", "en", false);
+        var ready = ApplicationSupportPresentation.Preparation(new(true, true, Packages: packages));
+        Assert.Equal("当前选择：Argos · 中文 → English", ready.CurrentModelText);
+        Assert.StartsWith("本地翻译已就绪", ready.StatusText);
+
+        var switching = ApplicationSupportPresentation.Preparation(new(false, true, TranslationPreparationPhase.StartingModel,
+            Packages: packages with
+            {
+                CurrentPackages = hy,
+                ReadyPackages = []
+            }));
+        Assert.Equal("当前选择：Hy-MT2 1.8B · 中文多语", switching.CurrentModelText);
+        Assert.DoesNotContain("已就绪", switching.StatusText);
+        Assert.All(switching.PackageRows, row => Assert.False(row.Ready));
+
+        var loaded = ApplicationSupportPresentation.Preparation(new(true, true,
+            Packages: packages with
+            {
+                CurrentPackages = hy,
+                ReadyPackages = hy
+            }));
+        Assert.Equal(switching.CurrentModelText, loaded.CurrentModelText);
+        Assert.StartsWith("本地翻译已就绪", loaded.StatusText);
+        var restored = ApplicationSupportPresentation.Preparation(new(true, true, Packages: packages));
+        Assert.Equal(ready.CurrentModelText, restored.CurrentModelText);
+
+        var unselected = ApplicationSupportPresentation.Preparation(new(false, false,
+            Packages: packages with
+            {
+                InstalledPackages = [],
+                CurrentPackages = [],
+                ReadyPackages = []
+            }));
+        Assert.Equal("尚未选择本地模型", unselected.CurrentModelText);
+        var unknown = ApplicationSupportPresentation.Preparation(new(false, true,
+            Packages: packages with
+            {
+                InventoryKnown = false
+            }));
+        Assert.Equal("当前模型无法确认", unknown.CurrentModelText);
+    }
+
     [Theory]
     [InlineData(TranslationPreparationNextStep.TryIt)]
     [InlineData(TranslationPreparationNextStep.ChooseConnection)]

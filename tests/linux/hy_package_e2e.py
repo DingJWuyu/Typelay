@@ -974,7 +974,9 @@ def run(arguments):
             assert workers() == [worker] and process_identity(worker) == worker_identity
             unchanged = state()
             assert unchanged["modelReady"] and unchanged["modelDirections"] == DIRECTIONS
-            assert unchanged["setup"]["installation"] == "ready"
+            # Cancelling clears the pending installation request, not the loaded
+            # model. The operation returns to idle while modelReady stays true.
+            assert unchanged["setup"]["installation"] == "idle"
             report["stages"].append({"stage": "cancel-english-preview", "unchanged": True})
 
             action("Hy-MT2 1.8B · 中文多语", "补充中英方向…")

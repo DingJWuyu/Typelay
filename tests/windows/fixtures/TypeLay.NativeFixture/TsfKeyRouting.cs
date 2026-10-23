@@ -83,6 +83,16 @@ internal static partial class TsfContextAdmission
                 _sink = new(this);
                 if (sourceKeyboardRead)
                 {
+                    // Read-only inventory, outside the source hook/read stack.
+                    Result.InputProfiles = ObserveProfiles();
+                    Result.ReferencesReleased &= Result.InputProfiles.ReferencesReleased;
+                    if (Result.InputProfiles.Error is not null || Result.InputProfiles.ContractFailure)
+                        Result.Error = Result.InputProfiles.Error ?? "ProfileInventoryContractFailure";
+                    if (!Result.ReferencesReleased || Result.Error is not null || !Exact())
+                    {
+                        Deny("profile_inventory_not_clean_or_identity_changed");
+                        return;
+                    }
                     _keyboard = Keyboard;
                     _keyboardHook = SetWindowsHookExW(2, _keyboard, 0, _thread);
                     if (_keyboardHook == 0)
@@ -373,6 +383,16 @@ internal static partial class TsfContextAdmission
                 Result.SelectionHResult = _context!.GetSelection(cookie, uint.MaxValue, 1, out selection, out uint fetched);
                 Result.SelectionFetched = fetched;
                 Result.SelectionRangePresent = selection.Range != 0;
+                if (sourceKeyboardRead && Result.SelectionHResult == 0 && fetched == 1 && selection.Range != 0
+                    && _eligible && !Result.Reentered && Exact())
+                {
+                    Result.Composition = ObserveComposition(_context, cookie);
+                    Result.ReferencesReleased &= Result.Composition.ReferencesReleased;
+                    if (Result.Composition.Error is not null || Result.Composition.ContractFailure)
+                        Result.Error = Result.Composition.Error ?? "CompositionContractFailure";
+                    if (!Result.ReferencesReleased || Result.Error is not null)
+                        Result.ReadInvalidated = true;
+                }
                 if (!Exact())
                     Result.ReadInvalidated = true;
                 return Result.SelectionHResult == 0 && fetched == 1 && selection.Range != 0
@@ -559,6 +579,19 @@ internal static partial class TsfContextAdmission
         public bool SourceHookReadObserved => SourceKeyboardRead && SelectionReadSucceeded
             && ReadHookEntry > 0 && ReadHookEntry < RequestStart && RequestEnd < ReadHookExit;
         public List<HookObservation> HookEvents { get; } = [];
+        public ProfileInventory? InputProfiles
+        {
+            get; set;
+        }
+        public CompositionSnapshot? Composition
+        {
+            get; set;
+        }
+        public string CompositionState => SourceHookReadObserved && ReferencesReleased
+            && !Overflow && !CallbackIdentityChanged && Error is null
+            && Composition is { ReferencesReleased: true, ContractFailure: false, Error: null } sample
+                ? sample.ObservedState : "unknown";
+        public string RealImePositive => "positive-not-run";
         public bool RouteObserved
         {
             get; set;

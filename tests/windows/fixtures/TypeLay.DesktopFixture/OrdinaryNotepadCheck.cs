@@ -281,12 +281,12 @@ internal static partial class HyPackageCheck
                 scene.Stage = "await-public-model-ready";
                 await WaitAsync(async () => (await PublicStatusAsync(settings, ct)).StartsWith("本地翻译已就绪", StringComparison.Ordinal), ct);
                 scene.Stage = "navigate-public-general";
-                await NavigateAsync(settings, "⌂  常规", ct);
+                await NavigateAsync(settings, "⌂  常规", "常规", ct);
                 await EnableNotepadWriteback(settings, app.Process.Id, stage => scene.Stage = stage, ct);
                 scene.Stage = "await-public-writeback-setting-saved";
                 await WaitAsync(() => Task.FromResult(ReadSettings(data)?.ExperimentalWriteback == true), ct);
                 scene.Stage = "navigate-public-application-support";
-                await NavigateAsync(settings, "▦  " + ApplicationSupportPresentation.Create([]).Title, ct);
+                await NavigateAsync(settings, "▦  " + ApplicationSupportPresentation.Create([]).Title, "应用支持", ct);
                 scene.Stage = "find-public-desktop-connection-check";
                 int settingsHandle = await UiAsync(() => settings.Current.NativeWindowHandle, ct);
                 await UiAsync(() =>
@@ -373,7 +373,7 @@ internal static partial class HyPackageCheck
             {
                 await ShowNotepadSettings(app!.Process, ct);
                 settings = await SettingsAsync(app.Process, ct);
-                await NavigateAsync(settings!, "⌂  常规", ct);
+                await NavigateAsync(settings!, "⌂  常规", "常规", ct);
                 await UiAsync(() =>
                 {
                     var combo = Find(settings!, AutomationElement.NameProperty, "工作模式", ControlType.ComboBox);

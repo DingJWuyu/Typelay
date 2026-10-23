@@ -16,6 +16,58 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
 {
+    [Fact]
+    public Task PreparingAnAlreadyFocusedSourceWaitsForItsClickBeforeInitializingSelection()
+        => desktop.RunAsync(async () =>
+        {
+            await using var source = await ProductionForegroundWriteTests.Desktop.Start();
+            await source.Prepare(source.A, "Initial source", new(1, 3));
+            Assert.Equal((source.Root, source.A), N.Focused());
+            nint previousReceipt = N.GetProp(source.Root, N.FixtureClickReceipt);
+            Assert.NotEqual(nint.Zero, previousReceipt);
+            using var entered = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(source.FixtureProcessId, "entered"));
+            using var release = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(source.FixtureProcessId, "release"));
+            Task? preparing = null;
+            bool failed = false;
+            try
+            {
+                Assert.Equal((nuint)1, N.Send(source.Root, N.FixtureArmClickBarrier, (nuint)source.A));
+                preparing = source.Prepare(source.A, "Prepared selection", new(1, 5));
+                Assert.True(await Task.Run(() => entered.WaitOne(TimeSpan.FromSeconds(2)), source.Token));
+                // The real mouse-up has been retrieved, but not dispatched. These
+                // observations do not send messages to the blocked source thread.
+                Assert.Equal((source.Root, source.A), N.Focused());
+                Assert.Equal(previousReceipt, N.GetProp(source.Root, N.FixtureClickReceipt));
+                Assert.False(preparing.IsCompleted);
+                release.Set();
+                await preparing;
+                Assert.Equal((nuint)1, N.Send(source.Root, N.FixtureBarrierStatus));
+                Assert.NotEqual(previousReceipt, N.GetProp(source.Root, N.FixtureClickReceipt));
+                Assert.Equal(source.A, N.GetProp(source.Root, N.FixtureClickField));
+                Assert.Equal("Prepared selection", N.ReadText(source.A, Limits.MaxTextUnits));
+                Assert.Equal(new TextRange(1, 5), N.ReadSelection(source.A));
+                source.AssertZeroSubmits();
+            }
+            catch { failed = true; throw; }
+            finally
+            {
+                release.Set();
+                // Join the bounded preparation before disposing its source, even
+                // if an earlier assertion failed while the mouse-up was held.
+                if (preparing is not null)
+                {
+                    try
+                    {
+                        await preparing;
+                    }
+                    catch (Exception error) when (failed)
+                    {
+                        TestContext.Current.TestOutputHelper?.WriteLine("Preparation cleanup also failed: " + error);
+                    }
+                }
+            }
+        });
+
     [Theory]
     [InlineData("visible")]
     [InlineData("covered")]

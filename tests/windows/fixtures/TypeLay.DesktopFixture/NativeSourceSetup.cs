@@ -136,7 +136,7 @@ internal static class NativeSourceSetup
         && N.GetWindowThreadProcessId(field, out uint fieldPid) != 0 && fieldPid == process.Id
         && N.GetAncestor(field, 2) == root;
 
-    internal static async Task ClickAsync(nint root, nint field, Process process, CancellationToken ct)
+    internal static async Task ClickAsync(nint root, nint field, Process process, CancellationToken ct, nuint marker = 0)
     {
         ct.ThrowIfCancellationRequested();
         int processId = process.Id;
@@ -186,7 +186,7 @@ internal static class NativeSourceSetup
             Check(SetCursorPos(observed.X, observed.Y), FailureReason.SourceClickCursorUnavailable);
             CheckTarget();
             ct.ThrowIfCancellationRequested();
-            var click = HyPackageCheck.SendLeftClick();
+            var click = HyPackageCheck.SendLeftClick(marker);
             Check(click.ReleaseComplete, FailureReason.SourceClickReleaseIncomplete);
             Check(click.Complete, FailureReason.SourceClickIncomplete);
 

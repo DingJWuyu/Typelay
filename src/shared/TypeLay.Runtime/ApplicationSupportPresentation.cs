@@ -62,7 +62,7 @@ public static class ApplicationSupportPresentation
         var rows = catalog.Packages.Select(package => PackageRow(package, packages, catalog)).ToArray();
         string currentText = !packages.InventoryKnown ? "当前模型无法确认"
             : packages.CurrentPackages.Count == 0 ? "尚未选择本地模型"
-            : "当前模型：" + string.Join("、", packages.CurrentPackages.Select(item => PackageTitle(item.Package)));
+            : "当前选择：" + string.Join("、", packages.CurrentPackages.Select(item => PackageTitle(item.Package)));
         bool idle = facts.Phase == TranslationPreparationPhase.Idle && facts.FailureCategory is null;
         if (!packages.InventoryKnown)
             view = view with

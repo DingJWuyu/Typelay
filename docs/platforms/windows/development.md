@@ -129,7 +129,17 @@ CI 在 Windows build 成功后、首门之后以独立 `continue-on-error: true`
 
 回调全栈（含 CallNextHookEx）沿原外层关闭门防重入，先关闭资格、解除自己的 hook，再释放 COM/平衡 Activate；卸载失败保留 callback 与引用，并沿 owned 进程 fail-stop，不宣称清理成功。保留25秒宿主、29秒线程、30秒操作及4秒正常清理/5秒精确回收外限；显式 xUnit 60秒、CI 独立2分钟，原75分钟 job与模型预算不增。`artifacts/tsf-source-key-read/<唯一目录>/result.json` 与 runner.json/log 逐项保存 route/session/read、原键效果和退出，exit0只说明研究结果完整。
 
-尚未 Windows 实跑；Linux Compile/格式不证明 hook/COM 合同。即使阳性，旧排队键、注入身份、真实 IME、RW/原子写和第三方部署仍未证明。跨进程 hook 需要位数匹配且真实位于目标 GUI 线程的原生 DLL及另外授权，不能由当前自有线程实验推导普通 Notepad 支持。
+源 hook 的同栈读取、原 Tab 与清理已在 [CI477](https://github.com/DingJWuyu/Typelay/actions/runs/39990193024) 获得阳性；Linux Compile/格式不代替这项 Windows 实测。旧排队键、注入身份、真实 IME、RW/原子写和第三方部署仍未证明。跨进程 hook 需要位数匹配且真实位于目标 GUI 线程的原生 DLL及另外授权，不能由当前自有线程实验推导普通 Notepad 支持。
+
+### 同次源读取中的 composition 三态与输入配置库存
+
+CI477 原件的 composition 仍为 not-tested，以下增量尚未 Windows 实跑。复用原 selector、同一 Tab 和同一次 `SYNC | READ`，不新增锁请求、矩阵或 CI 步骤。在真实 `DoEditSession` cookie 下查询精确 context 的 `ITfContextComposition.FindComposition(cookie, null)`，再只取 `Next(1)`。NULL range 覆盖该 context 的全部组合，不仅是当前选区；不读取组合文字，不调用 StartComposition、TerminateComposition 或其它写入口。官方合同见 [FindComposition](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontextcomposition-findcomposition) 与 [Next](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-ienumitfcompositionview-next)。
+
+结果严格分为 `present`、`none-in-exact-context-at-read`、`unknown`。有组合需要成功取得一个真实 composition view；无组合仅在新枚举 S_FALSE、fetched=0、空 view，且原读锁、精确身份、回调与释放全部成立时给出。接口不可用、拒锁、异常输出、重入或身份失效不能算无组合；不确定所有权不能算清理成功。该快照不能替代生产 ImeState.Clear，也未证明跨时段的组合开始/结束或配置切换失效。
+
+同一自有 STA 在 hook 外仅以 `CoCreateInstance(CLSID_TF_InputProcessorProfiles)` 读取 [GetActiveProfile](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-getactiveprofile) 和有界 [EnumProfiles(0)](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-enumprofiles) 库存，最多64项，只保存 ID、状态与 HRESULT；截断/失败为未知，不推断已安装或可用。没有安装、启用、切换 profile、持久设置修改或第三方加载。库存不等于实际 IME 可组合，空枚举也不构成真实 IME 正例。本阶段固定 `realImePositive=positive-not-run`；真实用户 IME 的组合开始/取消须另有明确环境和有界自有场景后验证，不能自造 composition 求覆盖。
+
+所有 enum/view 在原 STA 释放，保留当前截止、原键转发和退出要求。只读门不可用或未知即保持不准入，真实正例环境未证时止于观察/契约准备，不扩 fakeIME 矩阵；Linux 静态编译不代替 Windows 实测。结果与库存沿既有 source-key-read artifact 和2分钟研究步骤汇总，生产能力、模型及 job 预算不变。
 
 ## 自有双队列消费顺序诊断
 

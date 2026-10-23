@@ -101,7 +101,7 @@ internal static partial class HyPackageCheck
         LanguageDirection before, LanguageDirection after, CancellationToken ct)
     {
         Require(ReadSettings(data)?.Direction == before, "swap-language-precondition");
-        await NavigateAsync(settings, "文  语言", ct);
+        await NavigateAsync(settings, "文  语言", "语言", ct);
         await UiAsync(() =>
         {
             var swap = Find(settings, AutomationElement.NameProperty, "交换", ControlType.Button);

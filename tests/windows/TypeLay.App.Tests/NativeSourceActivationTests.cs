@@ -21,9 +21,11 @@ public sealed class NativeSourceActivationTests
     [InlineData(true)]
     public async Task AcceptedTabPassesRepeatAndReleaseToAnotherApplication(bool nativeActivation)
     {
-        await using var source = await ProductionForegroundWriteTests.Desktop.Start();
         await using var receiver = await ProductionForegroundWriteTests.Desktop.Start();
         await receiver.Prepare(receiver.A, "Other application", new(0, 0));
+        // Prepare each newly shown fixture before the next same-position window
+        // can cover its field. Later cross-application navigation stays explicit.
+        await using var source = await ProductionForegroundWriteTests.Desktop.Start();
         await source.Prepare(source.A, "pre old post", new(0, 0));
         Assert.NotEqual(source.FixtureProcessId, receiver.FixtureProcessId);
         using var hook = new KeyboardHook(allowInjectedInput: true);

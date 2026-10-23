@@ -301,8 +301,8 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $false
           $directory = 'artifacts/tsf-source-key-read'
           New-Item -ItemType Directory -Path $directory -Force | Out-Null
-          $runner = [ordered]@{ kind = 'research-observation'; status = 'running'; sourceSha = $env:GITHUB_SHA; exitCode = $null; productAcceptance = $false; resultCount = 0; resultMissing = $null; resultStatus = $null; mechanismStatus = 'unobserved'; cases = @(); error = $null }
-          $runner | ConvertTo-Json -Depth 5 | Set-Content "$directory/runner.json"
+          $runner = [ordered]@{ kind = 'research-observation'; status = 'running'; sourceSha = $env:GITHUB_SHA; exitCode = $null; productAcceptance = $false; resultCount = 0; resultMissing = $null; resultStatus = $null; mechanismStatus = 'unobserved'; realImePositive = 'positive-not-run'; cases = @(); error = $null }
+          $runner | ConvertTo-Json -Depth 8 | Set-Content "$directory/runner.json"
           New-Item -ItemType File -Path "$directory/runner.log" -Force | Out-Null
           try {
             & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.TsfKeyRoutingProbe.ObserveSourceKeyboardSynchronousSelectionRead' 2>&1 | Tee-Object -FilePath "$directory/runner.log"
@@ -324,11 +324,23 @@ jobs:
               foreach ($case in $cases) {
                 $closed = $case.Closed
                 $route = $closed.RouteObserved; $session = $closed.SynchronousSessionObserved; $read = $closed.SelectionReadSucceeded
-                $runner.cases += [ordered]@{ key = $case.Key; status = $case.Status; readStatus = $case.ReadStatus; sourceHookReadObserved = $closed.SourceHookReadObserved; hookInstalled = $closed.SourceHookInstalled; hookRemoved = $closed.SourceHookRemoved; readHookEntry = $closed.ReadHookEntry; readHookExit = $closed.ReadHookExit; focusAfterInput = $case.FocusAfterInput; selectionUnchanged = $case.SelectionUnchanged; routeObserved = $route; synchronousSessionObserved = $session; selectionReadSucceeded = $read; requestHResult = $closed.RequestHResult; sessionHResult = $closed.SessionHResult; selectionHResult = $closed.SelectionHResult; denial = $closed.Denial; processExited = $case.ProcessExited; normalShutdown = $case.NormalShutdown; cleanupComplete = $closed.CleanupComplete; defaultEffectVerified = $case.DefaultEffectVerified; error = $case.Error }
+                $runner.cases += [ordered]@{ key = $case.Key; status = $case.Status; readStatus = $case.ReadStatus; sourceHookReadObserved = $closed.SourceHookReadObserved; compositionState = $closed.CompositionState; composition = $closed.Composition; inputProfiles = $closed.InputProfiles; realImePositive = $closed.RealImePositive; hookInstalled = $closed.SourceHookInstalled; hookRemoved = $closed.SourceHookRemoved; readHookEntry = $closed.ReadHookEntry; readHookExit = $closed.ReadHookExit; focusAfterInput = $case.FocusAfterInput; selectionUnchanged = $case.SelectionUnchanged; routeObserved = $route; synchronousSessionObserved = $session; selectionReadSucceeded = $read; requestHResult = $closed.RequestHResult; sessionHResult = $closed.SessionHResult; selectionHResult = $closed.SelectionHResult; denial = $closed.Denial; processExited = $case.ProcessExited; normalShutdown = $case.NormalShutdown; cleanupComplete = $closed.CleanupComplete; defaultEffectVerified = $case.DefaultEffectVerified; error = $case.Error }
                 foreach ($value in @($case.ProcessExited, $case.NormalShutdown, $closed.CleanupComplete, $closed.Unadvised, $closed.ActivationBalanced, $closed.ReferencesReleased, $closed.SourceHookRemoved)) {
                   if ($value -isnot [bool] -or -not $value) { $clean = $false }
                 }
                 if ($closed.SourceKeyboardRead -ne $true -or $closed.Advised -ne $false -or $null -ne $closed.AdviseHResult -or $closed.SourceHookReadObserved -isnot [bool] -or $route -isnot [bool] -or $session -isnot [bool] -or $read -isnot [bool] -or $closed.ProductionReadiness -ne $false -or $null -ne $case.Error -or $null -ne $closed.Error) { $valid = $false }
+                if ($closed.CompositionState -notin @('unknown', 'present', 'none-in-exact-context-at-read') -or $closed.RealImePositive -ne 'positive-not-run') { $valid = $false }
+                foreach ($observation in @($closed.Composition, $closed.InputProfiles)) {
+                  if ($null -ne $observation) {
+                    if ($observation.ReferencesReleased -ne $true) { $clean = $false }
+                    if ($observation.Attempted -ne $true -or $observation.Thread -ne $closed.Thread -or $observation.ContractFailure -ne $false -or $null -ne $observation.Error) { $valid = $false }
+                  }
+                }
+                if ($closed.CompositionState -ne 'unknown') {
+                  $sample = $closed.Composition
+                  $present = $closed.CompositionState -eq 'present'
+                  if ($closed.SourceHookReadObserved -ne $true -or $sample.ObservedState -ne $closed.CompositionState -or $sample.QueryHResult -ne 0 -or $sample.FindHResult -ne 0 -or $sample.NextHResult -ne $(if ($present) { 0 } else { 1 }) -or $sample.Fetched -ne $(if ($present) { 1 } else { 0 }) -or $sample.ViewPresent -ne $present) { $valid = $false }
+                }
                 if ($case.Status -eq 'prerequisite-not-met') {
                   if ([string]::IsNullOrEmpty($closed.Denial) -or $route -ne $false -or $session -ne $false -or $read -ne $false -or $case.InputsInserted -ne 0) { $valid = $false }
                 } else {
@@ -353,7 +365,7 @@ jobs:
                 $runner.status = 'cleanup-unconfirmed'
               } elseif ($runner.exitCode -ne 0 -or $row.status -eq 'probe-failed') {
                 $runner.status = 'probe-failed'
-              } elseif (-not $valid -or $row.sourceKeyboardRead -ne $true -or $row.contextKeySink -ne 'not-subscribed' -or $row.consumption -ne 'unchanged-CallNextHookEx-result' -or $row.diagnosticOnly -ne $true -or $row.productionReadiness -ne $false -or $row.status -ne 'research-observation-complete-not-product-acceptance') {
+              } elseif (-not $valid -or $row.composition -ne 'tri-state-exact-context-read' -or $row.realImePositive -ne 'positive-not-run' -or $row.sourceKeyboardRead -ne $true -or $row.contextKeySink -ne 'not-subscribed' -or $row.consumption -ne 'unchanged-CallNextHookEx-result' -or $row.diagnosticOnly -ne $true -or $row.productionReadiness -ne $false -or $row.status -ne 'research-observation-complete-not-product-acceptance') {
                 $runner.status = 'invalid-observations'
               } else {
                 $runner.status = 'research-observation-complete-not-product-acceptance'
@@ -363,11 +375,11 @@ jobs:
             $runner.error = $_.Exception.GetType().Name
             if ($runner.status -eq 'running') { $runner.status = 'runner-failed' }
           } finally {
-            $runner | ConvertTo-Json -Depth 5 | Set-Content "$directory/runner.json"
+            $runner | ConvertTo-Json -Depth 8 | Set-Content "$directory/runner.json"
           }
-          "TSF source-hook read research: $($runner.status); mechanism=$($runner.mechanismStatus); exitCode=$($runner.exitCode). Completion is not capability admission, product acceptance, or a model verdict." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "TSF source-hook read research: $($runner.status); mechanism=$($runner.mechanismStatus); exitCode=$($runner.exitCode). Completion is not capability admission, product acceptance, or a model verdict; composition absence and profile inventory do not prove real IME safety." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
           foreach ($case in $runner.cases) {
-            "$($case.key): status=$($case.status); route=$($case.routeObserved); synchronousSession=$($case.synchronousSessionObserved); selectionRead=$($case.selectionReadSucceeded); hookStackRead=$($case.sourceHookReadObserved); focus=$($case.focusAfterInput); originalKey=$($case.defaultEffectVerified); normalShutdown=$($case.normalShutdown)." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "$($case.key): status=$($case.status); route=$($case.routeObserved); synchronousSession=$($case.synchronousSessionObserved); selectionRead=$($case.selectionReadSucceeded); hookStackRead=$($case.sourceHookReadObserved); focus=$($case.focusAfterInput); originalKey=$($case.defaultEffectVerified); composition=$($case.compositionState); profileInventory=$($case.inputProfiles.Status); realIme=$($case.realImePositive); normalShutdown=$($case.normalShutdown)." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
           }
           if ($runner.status -ne 'research-observation-complete-not-product-acceptance') { exit 1 }
           exit 0

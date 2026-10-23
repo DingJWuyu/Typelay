@@ -81,7 +81,7 @@ internal sealed class SettingsWindow : Window
     private CancellationTokenSource? _install;
     private ProgressBar? _progress;
     private TextBlock? _progressLabel, _practiceStatus;
-    private TextBlock? _preparationStatus, _preparationGuidance, _modelStatus;
+    private TextBlock? _preparationStatus, _preparationGuidance, _modelStatus, _modelDescription;
     private Button? _preparationPrimary;
     private Border? _preparationCard;
     private StackPanel? _preparationSecondary, _preparationDiagnostics, _preparationDirections;
@@ -444,7 +444,7 @@ internal sealed class SettingsWindow : Window
         _progress = null;
         _progressLabel = null;
         _practiceStatus = null;
-        _preparationStatus = _preparationGuidance = _modelStatus = null;
+        _preparationStatus = _preparationGuidance = _modelStatus = _modelDescription = null;
         _preparationPrimary = null;
         _preparationCard = null;
         _preparationSecondary = _preparationDiagnostics = _preparationDirections = null;
@@ -487,6 +487,7 @@ internal sealed class SettingsWindow : Window
     private void Heading(string name, string description = "")
     {
         var title = UiTheme.Text(name, 24, bold: true);
+        AutomationProperties.SetAutomationId(title, "SettingsPageHeading");
         title.Margin = new(0, 0, 30, description.Length == 0 ? 18 : 0);
         _content.Children.Add(title);
         if (description.Length == 0)
@@ -501,7 +502,7 @@ internal sealed class SettingsWindow : Window
         line.SetResourceReference(Border.BackgroundProperty, "Line");
         _content.Children.Add(line);
     }
-    private void Row(string name, string description, UIElement control)
+    private TextBlock? Row(string name, string description, UIElement control)
     {
         var grid = new Grid { MinHeight = 44, Margin = new(0, 3, 0, 3) };
         grid.ColumnDefinitions.Add(new());
@@ -511,9 +512,10 @@ internal sealed class SettingsWindow : Window
         });
         var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 0, 20, 0) };
         texts.Children.Add(UiTheme.Text(name, 12.5));
+        TextBlock? desc = null;
         if (description.Length > 0)
         {
-            var desc = UiTheme.Text(description, 12, true);
+            desc = UiTheme.Text(description, 12, true);
             desc.Margin = new(0, 3, 0, 0);
             texts.Children.Add(desc);
         }
@@ -521,6 +523,7 @@ internal sealed class SettingsWindow : Window
         Grid.SetColumn(control, 1);
         grid.Children.Add(control);
         _content.Children.Add(grid);
+        return desc;
     }
     private TextBlock Note(string title, string text)
     {
@@ -1401,10 +1404,10 @@ internal sealed class SettingsWindow : Window
     {
         Heading("翻译");
         TranslationStyles();
-        Row("本地翻译模型", "CTranslate2 · Argos 中英模型 · CPU INT8", _modelStatus = UiTheme.Text(_model.Status, 12, true));
+        _modelDescription = Row("本地翻译模型", PreparationView().CurrentModelText, _modelStatus = UiTheme.Text(_model.Status, 12, true));
         InstallCard();
         Rule();
-        Note("较长文本", "当前单段模型输入超过 384 个 token 时停止并提示缩短选区；不会在后台截断原文后给出可接受候选。换行、URL、mention 和编号采用显式结构保护。");
+        Note("较长文本", "输入长度限制因模型而异；超过限制时会停止，请缩短选区后重试。不会在后台截断原文后给出可接受候选。换行、URL、mention 和编号采用显式结构保护。");
     }
     private void InstallCard(bool compact = false)
     {
@@ -1586,6 +1589,8 @@ internal sealed class SettingsWindow : Window
             || _preparationSecondary is null || _preparationDiagnostics is null || _progress is null || _progressLabel is null)
             return;
         var view = PreparationView();
+        if (_modelDescription is not null)
+            _modelDescription.Text = view.CurrentModelText;
         RefreshPreparationDirections(view);
         RefreshPackageRows(view);
         if (_preparationCard is not null)

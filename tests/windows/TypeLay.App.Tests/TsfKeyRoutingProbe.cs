@@ -48,7 +48,8 @@ public sealed class TsfKeyRoutingProbe
                 sourceKeyboardRead = sourceKeyboard,
                 contextKeySink = sourceKeyboard ? "not-subscribed" : "passive-observer",
                 messagePump = "unchanged-IsDialogMessage",
-                composition = "not-tested",
+                composition = sourceKeyboard ? "tri-state-exact-context-read" : "not-tested",
+                realImePositive = "positive-not-run",
                 queuedKeyIdentity = "not-proven",
                 cases
             }, new JsonSerializerOptions { WriteIndented = true });
