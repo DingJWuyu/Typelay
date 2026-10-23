@@ -97,6 +97,8 @@ if ($LASTEXITCODE -ne 0) { throw '普通 source MSG 研究失败，保留原结�
 
 终态结果的 `NativeResponse` 仅在既有命令收到有效 Quiet ACK 后保留已经采样的 native status/raw reason，并在释放映射前读取现有 shared invoked 字；超时、错 ACK、仅进程退出或非 Quiet 结果保持 null。不增加接受过程内查询、消息或轮询，也不改变公开拒绝映射。`0x10000 | queue flags` 区分 pending-work 拒绝与普通 raw 15，queue flags 只是队列类型提示；invoked=1 只说明此 grant 的共享尝试位已消费，不证明 claim、正文执行或特定 module 的完成。多个 module 仍可回链写同一响应，raw 15 也不标识具体撤销事件；这份已确认终态 wire 快照不能当作唯一 GETMESSAGE 拒因的完整轨迹。
 
+`firstReturnQueueHints` 只在首次实际外层 GetMessage 返回后、记录事件和发布 Returned 属性之前，采一次同一 `0x1dff` mask 的 GetQueueStatus 高字；未观察到该返回时为 null，不用零代替缺失。此调用会清除所查询的 new-message 标志，不是无副作用观察，但不读取、移除或派发消息，不修改已返回的 native 决策，也不重试或续票。原 fixture 此后没有 WaitMessage 或第二次 BeforeRead 等待，原 dialog 路径不变。原 runner 的正常尾键流程等待 Returned；失败清理和错过暂停观察时的 Snapshot 投递不保证在采样后，不能据采样位置排除这些工作。高字清零只说明提示在两个采样边界间消失，不能证明它原先属于当前 Tab；非零也不证明具体消息可取。前者转入独立机制前提判断、不继续同层堆日志，后者再定位真实工作来源；均不放宽 pending-work 门。
+
 native 在调用一次 CallNextHookEx **之前**占住 source callback 寿命门，之后重核原 MSG 与同 grant。claim CAS 赢后立即原地置 `MSG.message=WM_NULL`，两者之间没有 OS 调用、回调、分配或日志，再进入首个 SETSEL；拒绝前不改 MSG，受理后出现拒绝或未知也不恢复/重注入原键。普通 source 的完整回执仍来自实际重验，MSG 路径不伪造 sent command ACK，退休由原 poll/retire 协议确认。NOREMOVE 不耗一次尝试，其他失败不以 repeat 重试。
 
 输入是既有受控 SendInput，不证明物理来源、严格软件注入拒绝、旧排队键历史或真实 composition。先 Next 再执行不能约束上游 hook 在本实现返回后改写或提前分发 MSG，结论仅限自有受控 hook 链。fixture 尾键资格独立锁存离焦，返回同 HWND 不能复活；此片不新增跨应用尾键矩阵。HIMC/HKL 与 exact-context 无组合观察均不授全局 Clear；不安装或切换 IME，不恢复已退役 TSF 全文路径。

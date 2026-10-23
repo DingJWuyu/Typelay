@@ -64,7 +64,9 @@ internal static class Program
                         diagnosticErrorType = ex.GetType().Name;
                     response = new(BrokerProtocol.Version, request.Id, "unavailable");
                 }
-                Wire.WriteAsync(output, response).AsTask().GetAwaiter().GetResult();
+                Stream responseOutput = request.Op == "capture" && captureTrace is not null
+                    ? captureTrace.ObserveResponse(output) : output;
+                Wire.WriteAsync(responseOutput, response).AsTask().GetAwaiter().GetResult();
                 // Complete the original response before diagnostic disk I/O. This
                 // synchronous flush can still delay the next request, not renew it.
                 captureTrace?.Flush(WindowsInterruptClock.NowMs);

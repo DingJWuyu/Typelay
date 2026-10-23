@@ -1,5 +1,6 @@
 using System.Text.Json;
 using TypeLay.Broker;
+using TypeLay.Protocol;
 using Xunit;
 
 namespace TypeLay.Windows.Contracts.Tests;
@@ -115,6 +116,171 @@ public sealed class CaptureTraceTests
     {
         Assert.Null(CaptureTrace.BeginRequest(null));
         Assert.Null(CaptureTrace.Start());
+    }
+
+    [Theory]
+    [InlineData("prefix")]
+    [InlineData("payload")]
+    [InlineData("flush")]
+    public async Task SlowResponseDistinguishesPendingStagesWithoutCompletingOrChangingTheFrame(string stage)
+    {
+        await InDirectoryAsync(async path =>
+        {
+            long now = 100;
+            using var request = new CaptureTrace.Request(path + ".broker.jsonl");
+            using (var capture = request.Start(90))
+                capture!.Result("observed-clear");
+            using var output = new ResponseStream(stage);
+            using var cancellation = new CancellationTokenSource();
+            Stream observed = request.ObserveResponse(output, () => now);
+            var pending = Wire.WriteAsync(observed, new
+            {
+                text = "synthetic-private-body"
+            }, cancellation.Token);
+            Assert.False(pending.IsCompleted);
+            Assert.False(File.Exists(path + ".broker.jsonl"));
+            Assert.Equal(cancellation.Token, output.LastToken);
+            now = 160;
+            output.Release();
+            await pending;
+            request.Flush(165);
+            using var sample = JsonDocument.Parse(Assert.Single(File.ReadAllLines(path + ".broker.jsonl")));
+            var delivery = sample.RootElement.GetProperty("responseDelivery");
+            Assert.Equal(100, delivery.GetProperty("startedAtMs").GetInt64());
+            var boundary = delivery.GetProperty(stage);
+            Assert.Equal(100, boundary.GetProperty("calledAtMs").GetInt64());
+            Assert.Equal(100, boundary.GetProperty("returnedAtMs").GetInt64());
+            Assert.False(boundary.GetProperty("completedAtReturn").GetBoolean());
+            if (stage != "flush")
+                Assert.Equal(160, delivery.GetProperty(stage == "prefix" ? "payload" : "flush")
+                    .GetProperty("calledAtMs").GetInt64());
+            Assert.Equal(165, sample.RootElement.GetProperty("responseCompletedAtMs").GetInt64());
+            Assert.DoesNotContain("synthetic-private-body", sample.RootElement.GetRawText());
+            Assert.Equal(2, output.Writes);
+            Assert.Equal(1, output.Flushes);
+            output.Position = 0;
+            using var frame = await Wire.ReadAsync<JsonDocument>(output);
+            Assert.Equal("synthetic-private-body", frame.RootElement.GetProperty("text").GetString());
+            request.Dispose();
+            Assert.True(output.CanWrite);
+        });
+    }
+
+    [Fact]
+    public async Task SlowSynchronousCallIsNotReportedAsAnAsynchronousWait()
+    {
+        await InDirectoryAsync(async path =>
+        {
+            long now = 100;
+            using var request = new CaptureTrace.Request(path + ".broker.jsonl");
+            using (var capture = request.Start(90))
+                capture!.Result("observed-clear");
+            using var output = new ResponseStream("none", () => now = 160);
+            await Wire.WriteAsync(request.ObserveResponse(output, () => now), 42);
+            request.Flush(165);
+            using var sample = JsonDocument.Parse(Assert.Single(File.ReadAllLines(path + ".broker.jsonl")));
+            var prefix = sample.RootElement.GetProperty("responseDelivery").GetProperty("prefix");
+            Assert.Equal(100, prefix.GetProperty("calledAtMs").GetInt64());
+            Assert.Equal(160, prefix.GetProperty("returnedAtMs").GetInt64());
+            Assert.True(prefix.GetProperty("completedAtReturn").GetBoolean());
+        });
+    }
+
+    [Fact]
+    public async Task FastResponseKeepsTheExistingSchemaAndUnsampledResponseKeepsItsOriginalStream()
+    {
+        await InDirectoryAsync(async path =>
+        {
+            using var request = new CaptureTrace.Request(path + ".broker.jsonl");
+            using var output = new MemoryStream();
+            Assert.Same(output, request.ObserveResponse(output, () => 100));
+            using (var capture = request.Start(90))
+                capture!.Result("observed-clear");
+            await Wire.WriteAsync(request.ObserveResponse(output, () => 100), 42);
+            request.Flush(103);
+            using var sample = JsonDocument.Parse(Assert.Single(File.ReadAllLines(path + ".broker.jsonl")));
+            Assert.False(sample.RootElement.TryGetProperty("responseDelivery", out _));
+            Assert.Equal(103, sample.RootElement.GetProperty("responseCompletedAtMs").GetInt64());
+        });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FailedResponsePreservesFailureOrCancellationAndDoesNotPublishIncompleteTiming(bool cancelled)
+    {
+        await InDirectoryAsync(async path =>
+        {
+            using (var request = new CaptureTrace.Request(path + ".broker.jsonl"))
+            {
+                using (var capture = request.Start(90))
+                    capture!.Result("observed-clear");
+                using var output = new ResponseStream("flush");
+                using var cancellation = new CancellationTokenSource();
+                var pending = Wire.WriteAsync(request.ObserveResponse(output, () => 100), 42, cancellation.Token);
+                if (cancelled)
+                {
+                    cancellation.Cancel();
+                    output.Cancel(cancellation.Token);
+                    var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending.AsTask());
+                    Assert.Equal(cancellation.Token, error.CancellationToken);
+                }
+                else
+                {
+                    var failure = new IOException("synthetic-response-failure");
+                    output.Fail(failure);
+                    Assert.Same(failure, await Assert.ThrowsAsync<IOException>(() => pending.AsTask()));
+                }
+            }
+            Assert.False(File.Exists(path + ".broker.jsonl"));
+        });
+    }
+
+    private sealed class ResponseStream(string pendingStage, Action? duringPrefix = null) : MemoryStream
+    {
+        private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int Writes
+        {
+            get; private set;
+        }
+        public int Flushes
+        {
+            get; private set;
+        }
+        public CancellationToken LastToken
+        {
+            get; private set;
+        }
+        public void Release() => _completion.SetResult();
+        public void Fail(Exception error) => _completion.SetException(error);
+        public void Cancel(CancellationToken cancellationToken) => _completion.SetCanceled(cancellationToken);
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            LastToken = cancellationToken;
+            Writes++;
+            if (Writes == 1)
+                duringPrefix?.Invoke();
+            base.Write(buffer.Span);
+            return pendingStage == (Writes == 1 ? "prefix" : "payload")
+                ? new(_completion.Task) : ValueTask.CompletedTask;
+        }
+        public override Task FlushAsync(CancellationToken cancellationToken)
+        {
+            LastToken = cancellationToken;
+            Flushes++;
+            return pendingStage == "flush" ? _completion.Task : Task.CompletedTask;
+        }
+    }
+
+    private static async Task InDirectoryAsync(Func<string, Task> check)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-capture-trace-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await check(Path.Combine(directory, "trace.jsonl"));
+        }
+        finally { Directory.Delete(directory, true); }
     }
 
     private static void InDirectory(Action<string> check)

@@ -17,6 +17,7 @@ internal sealed partial class SourceKeyboardProbe
     private int _messageFirstDownAttempts, _messageBodyChanges, _messageRepeats, _messageUps;
     private int _messageReturns, _messageNullReturns, _messageNoRemove;
     private long _messagePressBits, _messagePauseStarted, _messagePauseFinished;
+    private uint? _messageFirstReturnQueueHints;
     private TextRange? _messageSelectionBefore;
     private N.MessageStruct _messageOriginal;
     private bool _messageFirstReturnMatches;
@@ -47,6 +48,7 @@ internal sealed partial class SourceKeyboardProbe
         _messageFirstDownAttempts = _messageBodyChanges = _messageRepeats = _messageUps = 0;
         _messageReturns = _messageNullReturns = _messageNoRemove = 0;
         _messagePauseStarted = _messagePauseFinished = 0;
+        _messageFirstReturnQueueHints = null;
         _messageFirstReturnMatches = false;
         N.SetProp(_root, MessagePausedProperty, 0);
         N.SetProp(_root, MessageReturnedProperty, 0);
@@ -147,8 +149,15 @@ internal sealed partial class SourceKeyboardProbe
             || message.Message is not (0 or 0x100 or 0x101))
             return;
         if (_messageReturns == 0)
+        {
+            // One observation after the real outer retrieval, before publishing
+            // Returned. This clears queried
+            // new-message flags, but never retrieves or dispatches a message.
+            // It is not authority and cannot retry the native call that returned.
+            _messageFirstReturnQueueHints = GetQueueStatus(0x1dff) >> 16;
             _messageFirstReturnMatches = SameMessage(_messageOriginal, message, ignoreMessage: _messageAccepted)
                 && message.Message == (_messageAccepted ? 0u : _messageOriginal.Message);
+        }
         _messageReturns++;
         if (message.Message == 0)
             _messageNullReturns++;
@@ -173,6 +182,7 @@ internal sealed partial class SourceKeyboardProbe
         upConsumed = _messageUps,
         noRemove = _messageNoRemove,
         firstRetrievalMatches = _messageFirstReturnMatches,
+        firstReturnQueueHints = _messageFirstReturnQueueHints,
         retrievalReturns = _messageReturns,
         nullReturns = _messageNullReturns,
         pauseStarted = _messagePauseStarted,
@@ -184,6 +194,9 @@ internal sealed partial class SourceKeyboardProbe
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern uint GetModuleFileNameW(nint module, StringBuilder path, uint size);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetQueueStatus(uint flags);
 
     private bool DisposeMessageProbe()
     {
