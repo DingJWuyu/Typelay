@@ -393,6 +393,11 @@ internal static partial class ContinuousTranslationCheck
         bool? returnTargetMatches = null;
         bool candidateReady = false, shortcutReadyObserved = false;
         bool draftChanged = false, draftRetained = false, freshAfterReturn = false;
+        string returnWaitPhase = "not-started";
+        long? returnFocusCompletedAtMs = null;
+        int returnFocusChecks = 0, returnPresentationChecks = 0;
+        bool? firstReturnFocus = null, lastReturnFocus = null;
+        object? firstReturnPresentation = null, lastReturnPresentation = null;
         bool sourceUnchanged = false, selectionPreserved = false, zeroSubmits = false, submitCounterVerified = false;
         bool editorExitReturned = false, editorExitHidden = false, sourceExitHidden = false;
         int wakeAttempts = 0, editorClicks = 0;
@@ -533,10 +538,56 @@ internal static partial class ContinuousTranslationCheck
             returnTargetMatches = broker.ReturnTarget == target;
             Require(returnTargetMatches == true, "ordinary-return-target-mismatch");
             Require(returnStatus == "focused", "ordinary-return-not-focused");
-            await UntilAsync(() => N.Focused() == (root, field), cancellation);
+            returnWaitPhase = "focus";
+            await UntilAsync(() =>
+            {
+                bool matches = N.Focused() == (root, field);
+                firstReturnFocus ??= matches;
+                lastReturnFocus = matches;
+                returnFocusChecks++;
+                return matches;
+            }, cancellation);
+            returnFocusCompletedAtMs = WindowsInterruptClock.NowMs;
             // The observed capture must have started after the real Broker return
             // completed. Runtime must then expose the retained draft as editable.
-            await UntilAsync(() => FreshSource(beforeReturn, 1) && ReadyPresentation() && editor.Text == draft, cancellation);
+            returnWaitPhase = "presentation";
+            await UntilAsync(() =>
+            {
+                bool? fresh = null, overlayVisible = null, editorVisible = null, latinText = null;
+                bool? readOnly = null, editHint = null, draftMatches = null;
+                try
+                {
+                    // Expand only the existing ReadyPresentation/VisibleTranslation
+                    // conjunction, in exactly its original short-circuit order.
+                    // Null means that operand was not reached, not a failed test.
+                    return (fresh = FreshSource(beforeReturn, 1)).Value
+                        && (overlayVisible = overlay.IsVisible).Value
+                        && (editorVisible = editor.IsVisible).Value
+                        && (latinText = editor.Text.Any(character => character is >= 'A' and <= 'Z' or >= 'a' and <= 'z')).Value
+                        && (readOnly = editor.IsReadOnly).Value
+                        && (editHint = Equals(editor.ToolTip, "点击译文编辑")).Value
+                        && (draftMatches = editor.Text == draft).Value;
+                }
+                finally
+                {
+                    long atMs = WindowsInterruptClock.NowMs;
+                    lastReturnPresentation = new
+                    {
+                        atMs,
+                        remainingMs = _desktopDeadlineAtMs - atMs,
+                        fresh,
+                        overlayVisible,
+                        editorVisible,
+                        latinText,
+                        readOnly,
+                        editHint,
+                        draftMatches
+                    };
+                    firstReturnPresentation ??= lastReturnPresentation;
+                    returnPresentationChecks++;
+                }
+            }, cancellation);
+            returnWaitPhase = "complete";
             freshAfterReturn = true;
             draftRetained = editor.Text == draft;
             editorReturnOutcome = "verified";
@@ -705,7 +756,15 @@ internal static partial class ContinuousTranslationCheck
                     inputsInserted = returnInputs,
                     draftChanged,
                     freshAfterReturn,
-                    draftRetained
+                    draftRetained,
+                    returnWaitPhase,
+                    returnFocusCompletedAtMs,
+                    returnFocusChecks,
+                    firstReturnFocus,
+                    lastReturnFocus,
+                    returnPresentationChecks,
+                    firstReturnPresentation,
+                    lastReturnPresentation
                 },
                 editorExit = new
                 {

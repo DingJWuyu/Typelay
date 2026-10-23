@@ -7,6 +7,7 @@ using System.Windows.Controls;
 using System.Windows.Interop;
 using TypeLay.Core;
 using TypeLay.Platform.Windows;
+using TypeLay.Windows;
 using Xunit;
 using N = TypeLay.Platform.Windows.NativeMethods;
 
@@ -124,12 +125,17 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
             cover.ContentRendered += (_, _) => rendered.TrySetResult();
             Assert.True(GetCursorPos(out var previous));
             var observation = new NativeSourceSetup.Observation();
+            long? coverRenderedAtMs = null, visibleAtMs = null, focusWaitStartedAtMs = null, focusMatchedAtMs = null;
+            int focusObservations = 0;
+            (N.FocusObservation Focus, long AtMs)? firstFocus = null, lastFocus = null;
+            nint coverRoot = 0;
             try
             {
                 cover.Show();
                 await rendered.Task.WaitAsync(source.Token);
+                coverRenderedAtMs = WindowsInterruptClock.NowMs;
                 Assert.True(cover.Activate());
-                nint coverRoot = new WindowInteropHelper(cover).Handle;
+                coverRoot = new WindowInteropHelper(cover).Handle;
                 Assert.Equal(coverRoot, N.GetForegroundWindow());
                 Assert.Equal(coverRoot, N.GetAncestor(WindowFromPoint(point), 2));
                 Assert.Equal(0, N.GetStyle(source.Root, -20) & 0x8); // WS_EX_TOPMOST.
@@ -148,7 +154,10 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                 else
                     NativeSourceSetup.RequestOwnedForeground(source.Root, source.Field, source.Process, action.Token);
                 if (scenario == "foreground")
+                {
                     point = await NativeSourceSetup.WaitVisibleAsync(source.Root, source.Field, source.Process, observation, source.Token);
+                    visibleAtMs = WindowsInterruptClock.NowMs;
+                }
                 else if (scenario == "cancelled")
                     await Assert.ThrowsAnyAsync<OperationCanceledException>(() => NativeSourceSetup.WaitVisibleAsync(source.Root, source.Field, source.Process, observation, action.Token));
                 else if (scenario == "wrong-root")
@@ -191,9 +200,23 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                         Assert.Equal(source.Field, WindowFromPoint(point));
                     }
                     finally { SetThreadDpiAwarenessContext(previousDpi); }
+                    observation.ClickStartedAtMs = WindowsInterruptClock.NowMs;
                     await NativeSourceSetup.ClickAsync(source.Root, source.Field, source.Process, source.Token);
-                    while (N.Focused() != (source.Root, source.Field))
+                    observation.ClickEndedAtMs = WindowsInterruptClock.NowMs;
+                    focusWaitStartedAtMs = WindowsInterruptClock.NowMs;
+                    while (true)
+                    {
+                        // Focused() already performs this one ReadFocus call. Keep
+                        // its exact comparison, but retain the discarded error facts.
+                        var focus = N.ReadFocus();
+                        lastFocus = (focus, WindowsInterruptClock.NowMs);
+                        firstFocus ??= lastFocus;
+                        focusObservations++;
+                        if ((focus.Root, focus.Control) == (source.Root, source.Field))
+                            break;
                         await Task.Delay(10, source.Token);
+                    }
+                    focusMatchedAtMs = WindowsInterruptClock.NowMs;
                 }
                 else
                 {
@@ -211,8 +234,40 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
             {
                 TestContext.Current.TestOutputHelper?.WriteLine($"Source visibility: attempts={observation.VisibilityAttempts}; "
                     + $"foregroundMatched={observation.VisibilityForegroundMatched}; geometry={observation.VisibilityGeometryAvailable}; firstHit={observation.VisibilityFirstHit}; lastHit={observation.VisibilityLastHit}.");
+                TestContext.Current.TestOutputHelper?.WriteLine("Source focus wait: " + JsonSerializer.Serialize(new
+                {
+                    budgetMs = 10000,
+                    sourceReadyMs = Since(source.ReadyAtMs),
+                    coverRenderedMs = Since(coverRenderedAtMs),
+                    visibleMs = Since(visibleAtMs),
+                    clickStartedMs = Since(observation.ClickStartedAtMs),
+                    clickReturnedMs = Since(observation.ClickEndedAtMs),
+                    focusWaitStartedMs = Since(focusWaitStartedAtMs),
+                    focusMatchedMs = Since(focusMatchedAtMs),
+                    focusObservations,
+                    first = Project(firstFocus),
+                    last = Project(lastFocus)
+                }));
                 cover.Close();
                 SetCursorPos(previous.X, previous.Y);
+            }
+            long? Since(long? atMs) => atMs - source.BudgetStartedAtMs;
+            object? Project((N.FocusObservation Focus, long AtMs)? item)
+            {
+                if (item is not { } sample)
+                    return null;
+                var focus = sample.Focus;
+                return new
+                {
+                    atMs = Since(sample.AtMs),
+                    root = focus.Root == source.Root ? "source" : focus.Root == coverRoot && coverRoot != 0 ? "cover"
+                        : focus.Root == 0 ? "none" : "other",
+                    control = focus.Control == source.Field ? "source-field" : focus.Control == source.OtherField ? "other-field"
+                        : focus.Control == 0 ? "none" : "other",
+                    focus.ThreadLookupError,
+                    focus.GuiThreadInfoSucceeded,
+                    focus.GuiThreadInfoError
+                };
             }
         });
 
@@ -284,10 +339,15 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
             }
         });
 
-    private sealed class Source(Process process, FixtureDescriptor descriptor, CancellationTokenSource deadline) : IAsyncDisposable
+    private sealed class Source(Process process, FixtureDescriptor descriptor, CancellationTokenSource deadline, long budgetStartedAtMs) : IAsyncDisposable
     {
         internal const string Text = "Synthetic stock source 🙂";
         internal Process Process => process;
+        internal long BudgetStartedAtMs => budgetStartedAtMs;
+        internal long ReadyAtMs
+        {
+            get; private set;
+        }
         internal CancellationToken Token => deadline.Token;
         internal nint Root => (nint)descriptor.RootHwnd;
         internal nint Field => (nint)descriptor.Fields.Single(item => item.Name == "a").Hwnd;
@@ -301,6 +361,7 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
             start.ArgumentList.Add(Path.Combine(root, "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"));
             start.ArgumentList.Add("--stock-controls");
             var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            long budgetStartedAtMs = WindowsInterruptClock.NowMs;
             deadline.CancelAfter(TimeSpan.FromSeconds(10));
             var process = Process.Start(start)!;
             try
@@ -308,8 +369,9 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                 var descriptor = JsonSerializer.Deserialize<FixtureDescriptor>(await process.StandardOutput.ReadLineAsync(deadline.Token) ?? "null");
                 Assert.NotNull(descriptor);
                 Assert.Equal(process.Id, descriptor.ProcessId);
-                var source = new Source(process, descriptor, deadline);
+                var source = new Source(process, descriptor, deadline, budgetStartedAtMs);
                 N.SendString(source.Field, N.WM_SETTEXT, Text);
+                source.ReadyAtMs = WindowsInterruptClock.NowMs;
                 return source;
             }
             catch
