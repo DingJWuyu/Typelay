@@ -325,12 +325,12 @@ jobs:
                 foreach ($value in @($row.hooksClosed, $row.processesExited, $row.inputsPaired, $row.terminal.Quiet)) {
                   if ($value -isnot [bool] -or -not $value) { $clean = $false }
                 }
-                if ($row.diagnosticOnly -ne $true -or $row.productionReadiness -ne $false
-                    -or $row.status -ne 'mechanism_observed_not_product_acceptance' -or $null -ne $row.error
-                    -or $null -eq $message -or $message.firstDownAttempts -ne 1 -or $message.firstRetrievalMatches -ne $true
-                    -or $null -eq $row.terminal.Receipt
-                    -or $row.terminal.Claimed -ne ($row.mode -eq 11)
-                    -or $row.mode -eq 11 -and $row.pausedObserved -ne $true) { $valid = $false }
+                if ($row.diagnosticOnly -ne $true -or $row.productionReadiness -ne $false -or
+                    $row.status -ne 'mechanism_observed_not_product_acceptance' -or $null -ne $row.error -or
+                    $null -eq $message -or $message.firstDownAttempts -ne 1 -or $message.firstRetrievalMatches -ne $true -or
+                    $null -eq $row.terminal.Receipt -or
+                    $row.terminal.Claimed -ne ($row.mode -eq 11) -or
+                    ($row.mode -eq 11 -and $row.pausedObserved -ne $true)) { $valid = $false }
               }
               if (-not $clean) { $runner.status = 'cleanup-unconfirmed' }
               elseif ($runner.exitCode -ne 0) { $runner.status = 'experiment-failed' }
