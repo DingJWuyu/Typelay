@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from desktop_e2e import (  # noqa: E402
     acceptance_observation_current,
     background_direct_rejection_current,
+    gtk_candidate_observation_current,
 )
 
 
@@ -100,6 +101,52 @@ class AcceptanceObservationTests(unittest.TestCase):
                         0,
                     )
                 )
+
+
+class GtkCandidateObservationTests(unittest.TestCase):
+    def snapshot(self):
+        return {
+            "observedAtMs": 120,
+            "first": "Please send me the latest report.",
+            "focus": "fixture-first",
+            "focusedImeClear": True,
+            "focusedImeComposing": False,
+            "candidate": {"text": "请给我最新的报告。", "editablePreview": True},
+        }
+
+    def test_current_candidate_keeps_source_and_counts_in_one_snapshot(self):
+        snapshot = self.snapshot()
+        snapshot["firstEntry"] = {"insertions": 68, "deletions": 4}
+        self.assertIs(gtk_candidate_observation_current(snapshot, snapshot["first"], 120), snapshot)
+
+    def test_empty_or_uneditable_preview_is_not_the_expected_candidate(self):
+        for candidate in (
+            None,
+            {},
+            {"text": "", "editablePreview": True},
+            {"text": "old preview", "editablePreview": False},
+        ):
+            with self.subTest(candidate=candidate):
+                snapshot = self.snapshot()
+                snapshot["candidate"] = candidate
+                self.assertIsNone(
+                    gtk_candidate_observation_current(snapshot, snapshot["first"], 120)
+                )
+
+    def test_old_or_unrelated_source_and_unclear_context_are_rejected(self):
+        for change in (
+            {"observedAtMs": 119},
+            {"first": "another source"},
+            {"focus": "fixture-second"},
+            {"focusedImeClear": False},
+            {"focusedImeComposing": True},
+        ):
+            with self.subTest(change=change):
+                snapshot = self.snapshot()
+                source = snapshot["first"]
+                snapshot.update(change)
+                self.assertIsNone(gtk_candidate_observation_current(snapshot, source, 120))
+        self.assertIsNone(gtk_candidate_observation_current({}, "source", 120))
 
 
 class BackgroundDirectRefusalTests(unittest.TestCase):

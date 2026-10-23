@@ -36,6 +36,22 @@ from support.xtest import prepare_key, prepare_xtest
 from wire import Decoder, encode, now_ms
 
 
+def gtk_candidate_observation_current(snapshot, source, not_before_ms):
+    """Freeze a fresh rendered candidate and its source evidence from one fixture report."""
+    candidate = snapshot.get("candidate") or {}
+    if (
+        snapshot.get("observedAtMs", -1) < not_before_ms
+        or snapshot.get("first") != source
+        or snapshot.get("focus") != "fixture-first"
+        or snapshot.get("focusedImeClear") is not True
+        or snapshot.get("focusedImeComposing") is not False
+        or not candidate.get("text")
+        or candidate.get("editablePreview") is not True
+    ):
+        return None
+    return snapshot
+
+
 def background_direct_rejection_current(report, rows, previous_feedback):
     """Match the new single direct plan's refusal, not a prior status string."""
     direct = [
@@ -2387,15 +2403,62 @@ def run(arguments):
                         }
                         assert acknowledgement["sourceReady"]
                         assert acknowledgement["editorReady"] is True
-                        candidate = gtk_state()["candidate"]["text"]
-                        before = gtk_state()
+                        if gtk4:
+                            acceptance_deadline = time.monotonic() + 15
+                            # Host readiness can precede the fixture's 25 ms render report.
+                            # Share the original readiness budget and freeze one report.
+                            candidate_boundary = now_ms()
+                            before = wait_for(
+                                lambda: gtk_candidate_observation_current(
+                                    gtk_state(), typed_source, candidate_boundary
+                                ),
+                                "GTK Ctrl acceptance did not expose a fresh current candidate",
+                                timeout=acceptance_deadline - time.monotonic(),
+                            )
+                            candidate = before["candidate"]["text"]
+                        else:
+                            candidate = gtk_state()["candidate"]["text"]
+                            before = gtk_state()
                         offset, dispatch_offset = trace_checkpoint(), key_trace_checkpoint()
-                        wait_for(ready_to_accept, "GTK Ctrl acceptance was not ready")
-                        send_control_key("F7", repeat=True)
+                        if gtk4:
+                            acceptance_evidence = {
+                                "candidateBoundaryMs": candidate_boundary,
+                                "before": before,
+                                "expectedCandidate": candidate,
+                                "traceOffset": offset,
+                            }
+                            acceptance_path = arguments.output / "gtk-control-acceptance.json"
+                            acceptance_path.write_text(json.dumps(acceptance_evidence, indent=2))
                         wait_for(
-                            lambda: gtk_state()["first"] == candidate and verified_write(offset),
-                            "GTK Ctrl+F7 did not verify the real model candidate exactly once",
+                            ready_to_accept,
+                            "GTK Ctrl acceptance was not ready",
+                            timeout=acceptance_deadline - time.monotonic() if gtk4 else 15,
                         )
+                        send_control_key("F7", repeat=True)
+                        try:
+                            wait_for(
+                                lambda: gtk_state()["first"] == candidate
+                                and verified_write(offset),
+                                "GTK Ctrl+F7 did not verify the real model candidate exactly once",
+                            )
+                        finally:
+                            if gtk4:
+                                failed = sys.exc_info()[0] is not None
+                                try:
+                                    acceptance_evidence["after"] = gtk_state()
+                                    acceptance_evidence["writeOutcomes"] = new_write_outcomes(
+                                        offset
+                                    )
+                                    acceptance_path.write_text(
+                                        json.dumps(acceptance_evidence, indent=2)
+                                    )
+                                except (AssertionError, OSError, ValueError) as error:
+                                    if not failed:
+                                        raise
+                                    print(
+                                        f"GTK Ctrl acceptance evidence failed: {error}",
+                                        file=sys.stderr,
+                                    )
                         observed_key(dispatch_offset, "function", "release", True)
                         accepted = gtk_state()
                         assert accepted["focus"] == "fixture-first"

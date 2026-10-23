@@ -3,6 +3,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Windows.Automation;
 using TypeLay.Core;
 using TypeLay.Protocol;
@@ -29,7 +30,8 @@ public sealed partial class NativeSourceControllerTests
         deadline.CancelAfter(TimeSpan.FromSeconds(28));
         var token = deadline.Token;
         var source = await NotepadSource.Start(token);
-        var broker = new NotepadBroker();
+        var rpcTrace = withdraw ? null : new SourceRpcTrace(() => WindowsInterruptClock.NowMs);
+        var broker = new NotepadBroker { RpcTrace = rpcTrace };
         var failures = new List<Exception>();
         string stage = "broker-start";
         try
@@ -47,13 +49,17 @@ public sealed partial class NativeSourceControllerTests
             stage = "installation-and-acceptance";
             await Until(() => { loop.Advance(); return view.CanAccept; }, token);
             long acceptanceReadyAt = WindowsInterruptClock.NowMs;
+            rpcTrace?.Checkpoint("ready-loop-exited");
             var installation = Assert.IsType<SourceAcceptanceResult>(broker.Installation);
             var installedPermit = Assert.IsType<AcceptancePermit>(broker.InstallationPermit);
             Assert.True(installation.Installed);
             Assert.Equal(source.ProcessId, installation.Target.AsWindows().ProcessId);
             Assert.Equal((long)source.Field, installation.Target.AsWindows().ControlHwnd);
+            rpcTrace?.Checkpoint("before-source-read");
             Assert.Equal("你好", N.ReadText(source.Field, Limits.MaxTextUnits));
+            rpcTrace?.Checkpoint("after-text-read");
             Assert.Equal(new TextRange(0, 0), N.ReadSelection(source.Field));
+            rpcTrace?.Checkpoint("after-selection-read");
             if (withdraw)
             {
                 stage = "withdrawal";
@@ -89,17 +95,21 @@ public sealed partial class NativeSourceControllerTests
                 bool pressed = true;
                 try
                 {
+                    rpcTrace?.Checkpoint("before-tab");
                     long tabStartedAt = WindowsInterruptClock.NowMs;
                     Tab(false);
                     long tabSentAt = WindowsInterruptClock.NowMs;
+                    rpcTrace?.Checkpoint("after-tab");
                     await Until(() => hook.StockLastActivation is not null, token);
                     var activation = hook.StockLastActivation!;
+                    rpcTrace?.Checkpoint("activation-observed");
                     Assert.True(activation.Claimed,
                         $"Notepad source activation did not claim: status={activation.Receipt?.Status}, reason={activation.Receipt?.Reason}, "
                         + $"nativeReason=0x{activation.NativeReason:x}, budgetExceeded={activation.ExceededBudget}, elapsedMs={activation.ElapsedMs:F3}, "
                         + $"observedAtMs={installedPermit.ObservedAtMs}, expiresAtMs={installedPermit.ExpiresAtMs}, "
                         + $"acceptanceReadyAtMs={acceptanceReadyAt}, tabStartedAtMs={tabStartedAt}, tabSentAtMs={tabSentAt}, "
-                        + $"resultObservedAtMs={WindowsInterruptClock.NowMs}.");
+                        + $"resultObservedAtMs={WindowsInterruptClock.NowMs}, "
+                        + $"rpcTrace={(!activation.Claimed ? JsonSerializer.Serialize(rpcTrace!.Snapshot()) : "not-needed")}.");
                     hook.Revoke(); // A claimed press still owns repeat and release.
                     Tab(false);
                     Tab(true);
@@ -252,6 +262,12 @@ public sealed partial class NativeSourceControllerTests
         private volatile bool _closing;
         private long _sequence;
         private Task? _cleanup;
+        // Opt-in caller metadata only. InFlight includes processing after a
+        // response; neither timestamp identifies a native sent-message sender.
+        internal SourceRpcTrace? RpcTrace
+        {
+            get; init;
+        }
         internal bool CleanupConfirmed
         {
             get; private set;
@@ -333,9 +349,13 @@ public sealed partial class NativeSourceControllerTests
         public async Task<BrokerResponse> CallAsync(BrokerRequest request, TimeSpan? timeout = null)
         {
             ObjectDisposedException.ThrowIf(_closing, this);
-            await _serial.WaitAsync();
+            long traceId = RpcTrace?.Queued(request.Op) ?? 0;
+            bool admitted = false, failed = true;
             try
             {
+                await _serial.WaitAsync();
+                admitted = true;
+                RpcTrace?.Admitted(traceId);
                 ObjectDisposedException.ThrowIf(_closing, this);
                 var child = _child ?? throw new IOException("notepad-broker-not-started");
                 using var cancellation = new CancellationTokenSource(timeout ?? TimeSpan.FromMilliseconds(1500));
@@ -347,7 +367,9 @@ public sealed partial class NativeSourceControllerTests
                     Id = id,
                     Token = _pipeToken
                 }, cancellation.Token);
+                RpcTrace?.Dispatched(traceId); // Pipe write completed, not source dispatch.
                 var response = await Wire.ReadAsync<BrokerResponse>(child.Process.StandardOutput.BaseStream, cancellation.Token);
+                RpcTrace?.Response(traceId);
                 Assert.Equal(BrokerProtocol.Version, response.Version);
                 Assert.Equal(id, response.Id);
                 if (request.Op == "source-install" && response.SourceAcceptance is { Installed: true } installed)
@@ -367,6 +389,7 @@ public sealed partial class NativeSourceControllerTests
                         Receipt = result.Receipt;
                     }
                 }
+                failed = false;
                 return response;
             }
             catch
@@ -376,7 +399,12 @@ public sealed partial class NativeSourceControllerTests
                 _closing = true;
                 throw;
             }
-            finally { _serial.Release(); }
+            finally
+            {
+                RpcTrace?.Finished(traceId, failed);
+                if (admitted)
+                    _serial.Release();
+            }
         }
         public void Dispose() => _closing = true;
         public ValueTask DisposeAsync() => new(_cleanup ??= CleanupAsync());
