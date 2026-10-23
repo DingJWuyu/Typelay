@@ -131,6 +131,9 @@ internal static partial class Program
         bool registered = false;
         try
         {
+            // Prepare fixed metadata before input is possible, not within a live permit.
+            if (_connection != Guid.Empty)
+                OwnedPracticeAcceptanceProtocol.PreparePlanReaderMetadata();
             _instance = Native.GetModuleHandleW(null);
             var windowClass = new Native.WindowClass
             {

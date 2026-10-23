@@ -42,6 +42,7 @@ def main() -> None:
             "GetQueueStatus",
             "SendMessageTimeoutW",
             "GetKeyboardLayout",
+            "GetKeyState",
             "IsWindowUnicode",
             "IsWindowEnabled",
             "IsWindowVisible",

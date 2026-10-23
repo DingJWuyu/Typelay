@@ -10,7 +10,7 @@ namespace TypeLay.App.Tests;
 // Explicit mechanism diagnostics: read-only boundaries and a separately selected
 // self-owned native transaction. No production permit, LL witness or physical-input claim.
 [Collection("Desktop")]
-public sealed class SourceKeyboardBoundaryProbe
+public sealed partial class SourceKeyboardBoundaryProbe
 {
     [Theory(Explicit = true, Timeout = 60000)]
     [InlineData("peek")]
@@ -432,6 +432,24 @@ public sealed class SourceKeyboardBoundaryProbe
             public string State { get; set; } = "unknown_down_return";
         }
         internal List<Press> Records { get; } = [];
+        internal Press SendDown(nint root, ushort key, ushort scan)
+        {
+            Assert.Equal(root, Native.GetForegroundWindow());
+            var press = new Press(key, scan);
+            Records.Add(press);
+            uint sent = Inject(key, scan, false);
+            press.State = sent == 1 ? "down_pending" : "not_sent";
+            Assert.Equal(1u, sent);
+            return press;
+        }
+        internal void FinishDown(nint root, Press press, bool repeat)
+        {
+            Assert.Equal(root, Native.GetForegroundWindow());
+            Assert.Equal("down_pending", press.State);
+            if (repeat)
+                Assert.Equal(1u, Inject(press.Key, press.Scan, false));
+            Release(press);
+        }
         internal void SendRepeatedPair(nint root, ushort key, ushort scan)
         {
             Assert.Equal(root, Native.GetForegroundWindow());

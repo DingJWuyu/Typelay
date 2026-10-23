@@ -233,6 +233,9 @@ class NativeForegroundGuardTests(unittest.TestCase):
                 13: "owned capture rechecks dynamic qualification before and after reading",
                 17: "exact-field foreground preserves focus, identity, IME and deadline guards",
                 18: "source installation binds input identity and cannot revive a revoked grant",
+                19: "source PM_REMOVE commits the same MSG before selection",
+                20: "NOREMOVE and downstream nested removal cannot spend the grant",
+                21: "source MSG refusal, revocation and withdrawal cannot restore or replay",
             }
             self.assertEqual(
                 result.returncode,

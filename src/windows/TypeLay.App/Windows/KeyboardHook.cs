@@ -385,7 +385,8 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 commandGeneration: configuration.Generation);
     }
     internal void QueueOrdinaryKeyTrace(string stage, string reason, string? entryRefusal = null,
-        bool? handled = null, bool? repeat = null, int? messageFlags = null)
+        bool? handled = null, bool? repeat = null, int? messageFlags = null,
+        long? observedAtMs = null, string? sourceFreshnessRefusal = null)
     {
         if (string.IsNullOrWhiteSpace(_tracePath))
             return;
@@ -394,8 +395,10 @@ internal sealed partial class KeyboardHook : IInputMonitor
             Interlocked.Decrement(ref _ordinaryKeyTraceSamples);
             return;
         }
-        // Shared bound for the original Ctrl, Fn and WPF stages. Only fixed
-        // labels and already observed metadata; no extra clock or identity read.
+        // Shared bound for Ctrl, rejected Fn and WPF results. Successful Fn
+        // admission adds no result beyond the later WPF action/escape notice;
+        // reserve those samples for a later source exit in the same session.
+        // Only fixed labels and observed metadata, never another live read.
         if (Interlocked.Increment(ref _shortcutTraceCount) > 64)
         {
             Interlocked.Decrement(ref _shortcutTraceCount);
@@ -406,10 +409,12 @@ internal sealed partial class KeyboardHook : IInputMonitor
         {
             _shortcutTrace.Enqueue(new
             {
+                atMs = observedAtMs,
                 operation = "ordinary-editor-key",
                 stage,
                 reason,
                 entryRefusal,
+                sourceFreshnessRefusal,
                 handled,
                 repeat,
                 messageFlags
@@ -569,7 +574,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
         return consumed;
     }
     private int ObserveOrdinaryChord(Native.KeyData input, bool down, bool repeated, bool injected, long now,
-        HookLease? source, bool fresh, SessionKeys keys)
+        HookLease? source, bool fresh, string? freshnessRefusal, SessionKeys keys)
     {
         var chord = Volatile.Read(ref _ordinaryChord);
         bool traceOrdinary = keys.AcceptModifiers == ShortcutModifiers.Control || keys.ExitModifiers == ShortcutModifiers.Control;
@@ -599,7 +604,8 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 if (sourceRefusal is not null)
                 {
                     if (traceOrdinary)
-                        QueueOrdinaryKeyTrace("control", sourceRefusal, editorRefusal);
+                        QueueOrdinaryKeyTrace("control", sourceRefusal, editorRefusal,
+                            observedAtMs: now, sourceFreshnessRefusal: !fresh ? freshnessRefusal : null);
                     return 0;
                 }
             }
@@ -608,12 +614,12 @@ internal sealed partial class KeyboardHook : IInputMonitor
             Interlocked.Exchange(ref _ordinaryChord, new(input, source, editor, CommandGeneration,
                 UserEpoch + 1, SourceUserEpoch + (editor is null ? 1 : 0), ForegroundEpoch, WindowEpoch, ContentEpoch));
             if (traceOrdinary)
-                QueueOrdinaryKeyTrace("control", "admitted", editorRefusal);
+                QueueOrdinaryKeyTrace("control", "admitted", editorRefusal, observedAtMs: now);
             return 0;
         }
         // Classify only the already received Ctrl down, never log arbitrary keys.
         if (traceOrdinary && down && !repeated && ControlKey(input.Key))
-            QueueOrdinaryKeyTrace("control", controlRefusal);
+            QueueOrdinaryKeyTrace("control", controlRefusal, observedAtMs: now);
         if (chord is null)
             return 0;
         var function = Volatile.Read(ref chord.Function);
@@ -633,12 +639,11 @@ internal sealed partial class KeyboardHook : IInputMonitor
         {
             Interlocked.Exchange(ref chord.Invalid, 1);
             if (configured && down && !repeated)
-                QueueOrdinaryKeyTrace("function", functionRefusal!);
+                QueueOrdinaryKeyTrace("function", functionRefusal!, observedAtMs: now);
             return 0;
         }
         function = new(input, now);
         Volatile.Write(ref chord.Function, function);
-        QueueOrdinaryKeyTrace("function", "admitted");
         if (chord.Editor is not null)
             return -1; // The actual WPF message must claim this original Fn.
         Interlocked.Exchange(ref function.Claimed, 1);
@@ -716,14 +721,23 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 _acceptancePressTarget = null;
             ObserveReturnKey(data, down, repeated, injected, now);
             var sessionKeys = Volatile.Read(ref _sessionKeys);
-            bool fresh = _sessionEnabled && sessionKeys.Supported && lease is not null && lease.CommandGeneration == CommandGeneration && lease.UserEpoch == UserEpoch && lease.ForegroundEpoch == ForegroundEpoch
-                && now >= lease.Source.ObservedAtMs && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs;
+            // Retain the original short-circuit reads and first failed gate.
+            // A later source-exit diagnostic must not reobserve changed state.
+            string? freshnessRefusal = !_sessionEnabled ? "session-disabled"
+                : !sessionKeys.Supported ? "session-bindings-unsupported"
+                : lease is null ? "source-lease-missing"
+                : lease.CommandGeneration != CommandGeneration ? "configuration-changed"
+                : lease.UserEpoch != UserEpoch ? "user-epoch-changed"
+                : lease.ForegroundEpoch != ForegroundEpoch ? "foreground-epoch-changed"
+                : now < lease.Source.ObservedAtMs ? "source-clock"
+                : now - lease.Source.ObservedAtMs > Limits.ObservationMaxAgeMs ? "source-expired" : null;
+            bool fresh = freshnessRefusal is null;
             bool source = fresh && IsSourceForeground(binding!.Target);
             if (PairOrdinaryChord(data, down, repeated))
                 return 1;
             if (ObserveOwnedKey(data, down, repeated, injected, now, sessionKeys.Accept))
                 return Native.CallNextHookEx(_hook, code, wParam, lParam);
-            int ordinary = ObserveOrdinaryChord(data, down, repeated, injected, now, binding, fresh, sessionKeys);
+            int ordinary = ObserveOrdinaryChord(data, down, repeated, injected, now, binding, fresh, freshnessRefusal, sessionKeys);
             if (ordinary != 0)
                 return ordinary > 0 ? 1 : Native.CallNextHookEx(_hook, code, wParam, lParam);
             bool sourceBindingReady = UsesUnmodifiedSessionKeys || _stockExchange is not null && StockSessionKeysReady;

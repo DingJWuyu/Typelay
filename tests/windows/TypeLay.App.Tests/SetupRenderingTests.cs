@@ -42,6 +42,10 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             window.UpdateLayout();
             nint handle = new WindowInteropHelper(window).Handle;
             var root = await Task.Run(() => AutomationElement.FromHandle(handle), ct).WaitAsync(ct);
+            var notReady = await Task.Run(() => SettingsPackageActions.ReadPreparationStatus(root), ct).WaitAsync(ct);
+            Assert.Equal("not-ready", notReady.State);
+            Assert.False(notReady.Ready);
+            Assert.Null(notReady.FailureCode);
             var details = await SettingsPackageActions.OpenDetailsAsync(root, _ => { }, ct);
             string[] packages = ["argos-zh-en", "argos-en-zh", "hy-mt2-1-8b-q4-k-m", "missing-package"];
             var before = await Task.Run(() => SettingsPackageActions.ReadStatuses(details, packages), ct).WaitAsync(ct);
@@ -53,6 +57,19 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             details = await SettingsPackageActions.OpenDetailsAsync(root, _ => { }, ct);
             var ready = await Task.Run(() => SettingsPackageActions.ReadStatuses(details, packages), ct).WaitAsync(ct);
             Assert.Equal<string?>(["当前 · 已就绪", "当前 · 已就绪", "当前安装包不含可用的 Hy 运行组件", null], ready.AsEnumerable());
+            var status = await Task.Run(() => SettingsPackageActions.ReadPreparationStatus(root), ct).WaitAsync(ct);
+            Assert.Equal("ready", status.State);
+            Assert.True(status.Ready);
+            Assert.Null(status.FailureCode);
+
+            // A page without the preparation card must not reuse the previous
+            // Ready observation or collapse a missing element into "not-ready".
+            window.ShowPage("shortcuts");
+            window.UpdateLayout();
+            var missing = await Task.Run(() => SettingsPackageActions.ReadPreparationStatus(root), ct).WaitAsync(ct);
+            Assert.Equal("missing", missing.State);
+            Assert.False(missing.Ready);
+            Assert.Null(missing.FailureCode);
         }
         finally { await ClosePreparation(window, directory); }
     });
@@ -212,6 +229,10 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             await Task.Run(() =>
             {
                 var root = AutomationElement.FromHandle(handle);
+                var status = SettingsPackageActions.ReadPreparationStatus(root);
+                Assert.Equal("failed-network", status.State);
+                Assert.False(status.Ready);
+                Assert.Equal("network", status.FailureCode);
                 var exposed = root.FindFirst(TreeScope.Descendants,
                     new PropertyCondition(AutomationElement.AutomationIdProperty, "PreparationDiagnostics"));
                 Assert.NotNull(exposed);

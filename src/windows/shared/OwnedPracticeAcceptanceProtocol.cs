@@ -46,6 +46,12 @@ internal static class OwnedPracticeAcceptanceProtocol
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
 
+    internal static void PreparePlanReaderMetadata()
+    {
+        Json.MakeReadOnly(populateMissingResolver: true);
+        _ = Json.GetTypeInfo(typeof(OwnedAcceptancePlan));
+    }
+
     internal static bool TryParseKey(string text, out uint key, out ShortcutModifiers modifiers)
     {
         modifiers = text.StartsWith("Ctrl+", StringComparison.Ordinal) ? ShortcutModifiers.Control : ShortcutModifiers.None;

@@ -24,6 +24,7 @@ internal sealed partial class SourceKeyboardProbe
 
     internal void ObserveFocus(uint message, nuint wp, nint lp)
     {
+        ObserveMessageFocus(message, wp, lp);
         if (_synchronousField is not null && message == 0x0111 && lp == _field
             && ((wp >> 16) & 0xffff) == 0x300 && _insideWrite)
             _bodyChanges++;

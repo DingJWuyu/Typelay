@@ -32,6 +32,7 @@ API HANDLE GetActiveWindow(void);
 API uint32_t GetQueueStatus(uint32_t);
 API LRESULT SendMessageTimeoutW(HANDLE, uint32_t, WPARAM, LPARAM, uint32_t, uint32_t, uintptr_t *);
 API HANDLE GetKeyboardLayout(uint32_t);
+API int16_t GetKeyState(int);
 API int IsWindowUnicode(HANDLE);
 API int IsWindowEnabled(HANDLE);
 API int IsWindowVisible(HANDLE);
@@ -76,6 +77,16 @@ _Static_assert(offsetof(Transaction, authorization_deadline_ms) == 96, "Authoriz
 _Static_assert(sizeof(Transaction) == 49264, "Protocol mapping length");
 
 typedef struct { LPARAM lparam; WPARAM wparam; uint32_t message; HANDLE hwnd; } CallMessage;
+typedef struct {
+    HANDLE hwnd; uint32_t message; WPARAM wparam; LPARAM lparam;
+    uint32_t time; Point point; uint32_t private_value;
+} QueueMessage;
+_Static_assert(sizeof(QueueMessage) == 48, "Windows x64 MSG layout");
+static int same_queue_message(const QueueMessage *a, const QueueMessage *b) {
+    return a->hwnd == b->hwnd && a->message == b->message && a->wparam == b->wparam
+        && a->lparam == b->lparam && a->time == b->time && a->point.x == b->point.x
+        && a->point.y == b->point.y && a->private_value == b->private_value;
+}
 static const WCHAR property[] = L"TypeLay.NativeInput.Lifetime.v2";
 static const WCHAR focus_property[] = L"TypeLay.OwnedFocusRevision.v1";
 // Only the independent practice process opts in. Its GUI thread retains this
@@ -376,7 +387,10 @@ static int owned_input_preflight(Transaction *tx, WNDPROC proc, uint64_t revisio
 // Source-only guard. The source slot is bound by the outer callback and cannot
 // be replaced while it is active; this never uses owned practice qualification.
 static int source_input_current(Transaction *tx);
-typedef struct { uint32_t *claim; const uint32_t *reason; } SourceAdmission;
+typedef struct {
+    uint32_t *claim; const uint32_t *reason;
+    QueueMessage *message; const QueueMessage *expected_message;
+} SourceAdmission;
 static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accepted,
     const OwnedInputContext *expected_input, const SourceAdmission *admission) {
     tx->status = 2; tx->reason = 6; // RejectedBeforeMutation / Unsupported.
@@ -459,12 +473,19 @@ static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accep
         // No second queue read, message retrieval, or additional authority.
         uint32_t pending_work = GetQueueStatus(0x1dff) >> 16;
         if (pending_work) { tx->reason = SOURCE_PENDING_WORK | pending_work; return; }
+        if (admission->message && !same_queue_message(admission->message, admission->expected_message)) {
+            tx->reason = 15; return;
+        }
         uint32_t armed = 0;
         // This actual aligned shared word is the only acceptance linearization
         // point. A timeout's Withdrawn value can never be reset or overwritten.
         if (!__atomic_compare_exchange_n(admission->claim, &armed, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
             tx->reason = 14; return;
         }
+        // This source-thread MSG is still inside the same PM_REMOVE callback.
+        // No call, allocation or logging may separate claim from this local
+        // commitment. A later refusal/unknown must not restore or reinject Tab.
+        if (admission->message) admission->message->message = 0; // WM_NULL
     }
     // This is the only owned acceptance point. Everything above is a read-only
     // preflight. The caller has removed its single-use local plan; only a true
@@ -598,8 +619,8 @@ static void source_invalidate(const CallMessage *msg) {
         && (msg->message == 0x82 || (msg->message == 0x06 && !(msg->wparam & 0xffff))
             || (msg->message == 0x1c && !msg->wparam))) source.reason = 2;
 }
-static int source_identity(const SourceInstallation *request, const CallMessage *msg) {
-    return source.nonce == (uint64_t)msg->wparam
+static int source_identity(const SourceInstallation *request, uint64_t nonce) {
+    return source.nonce == nonce
         && source.hwnd == request->tx.hwnd && source.root == request->tx.root
         && source.cookie == request->tx.cookie && source.expires == request->tx.authorization_deadline_ms
         && source.generation[0] == request->generation[0] && source.generation[1] == request->generation[1]
@@ -680,13 +701,40 @@ static uint32_t source_preflight(SourceInstallation *request) {
     if (!reason && !source_input_current(tx)) reason = tx->reason;
     return reason;
 }
-static HANDLE source_mapping(const CallMessage *msg) {
+// Both transports execute the same ordinary-source plan. Only the message
+// callback supplies an actual MSG; the inactive cross-thread route is unchanged.
+static void source_execute_once(SourceInstallation *shared, SourceInstallation *request,
+    QueueMessage *message, const QueueMessage *expected_message) {
+    Transaction *tx = &request->tx;
+    if (!source.reason && request->state == 1) {
+        SourceAdmission admission = { &shared->claim, &source.reason, message, expected_message };
+        execute_guarded(tx, 0, 0, 0, &admission);
+    } else { tx->status = 2; tx->reason = source.reason ? source.reason : 6; }
+    if (tx->status == 1) {
+        uint64_t verified;
+        QueryInterruptTimePrecise(&verified);
+        request->verified_at_ms = verified / 10000;
+    }
+    source.completed_status = tx->status;
+    source.completed_reason = tx->reason;
+    if (!source.reason) source.reason = 15; // Single use, including preclaim refusal.
+}
+static void source_publish_completion(SourceInstallation *shared, const SourceInstallation *request) {
+    if (request->tx.status != 1) return;
+    shared->tx.length = request->tx.length;
+    shared->tx.selection_start = request->tx.selection_start;
+    shared->tx.selection_end = request->tx.selection_end;
+    shared->tx.ime = request->tx.ime;
+    copy(shared->tx.observed, request->tx.observed, sizeof(shared->tx.observed));
+    shared->verified_at_ms = request->verified_at_ms;
+}
+static HANDLE source_mapping(uint64_t nonce) {
     WCHAR name[64];
     const WCHAR prefix[] = L"Local\\TypeLay.Source.";
     const WCHAR digits[] = L"0123456789abcdef";
     int i = 0;
     for (; prefix[i]; i++) name[i] = prefix[i];
-    uint64_t bits = (uint64_t)msg->wparam;
+    uint64_t bits = nonce;
     for (int shift = 60; shift >= 0; shift -= 4) name[i++] = digits[(bits >> shift) & 15];
     name[i] = 0;
     return OpenFileMappingW(6, 0, name);
@@ -703,7 +751,7 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
             && !source.reason) source.reason = 15;
         return CallNextHookEx(0, code, wp, lp);
     }
-    HANDLE mapping = source_mapping(msg);
+    HANDLE mapping = source_mapping((uint64_t)msg->wparam);
     SourceInstallation *shared = mapping ? MapViewOfFile(mapping, 6, 0, 0, sizeof(SourceInstallation)) : 0;
     SourceInstallation *request = shared ? HeapAlloc(GetProcessHeap(), 8, sizeof(SourceInstallation)) : 0;
     int matched = 0, quiet = 0, respond = 0;
@@ -732,25 +780,13 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
                 if (reason && !source.reason) source.reason = reason;
                 source.busy--;
             }
-            matched = __atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) == thread && source_identity(request, msg);
+            matched = __atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) == thread && source_identity(request, (uint64_t)msg->wparam);
             if (matched) {
                 source.busy++;
                 if (operation == 2 && !source.reason) source.reason = 15;
                 if (!source.reason && !authorization_current(tx)) source.reason = 14;
-                if (operation == 4 && !source.completed_status) {
-                    if (!source.reason && request->state == 1) {
-                        SourceAdmission admission = { &shared->claim, &source.reason };
-                        execute_guarded(tx, 0, 0, 0, &admission);
-                    } else { tx->status = 2; tx->reason = source.reason ? source.reason : 6; }
-                    if (tx->status == 1) {
-                        uint64_t verified;
-                        QueryInterruptTimePrecise(&verified);
-                        request->verified_at_ms = verified / 10000;
-                    }
-                    source.completed_status = tx->status;
-                    source.completed_reason = tx->reason;
-                    if (!source.reason) source.reason = 15; // Single use, including preclaim refusal.
-                }
+                if (operation == 4 && !source.completed_status)
+                    source_execute_once(shared, request, 0, 0);
                 // Only an explicit retirement may relinquish the source slot.
                 // A nested revoke records cancellation but cannot claim quiet.
                 quiet = operation == 2 && source.busy == 1;
@@ -790,14 +826,7 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
         // writes response fields; polling never treats an unsynchronised read as
         // an ACK. SendMessage completion establishes callback completion.
         if (respond) {
-            if (operation == 4 && request->tx.status == 1) {
-                shared->tx.length = request->tx.length;
-                shared->tx.selection_start = request->tx.selection_start;
-                shared->tx.selection_end = request->tx.selection_end;
-                shared->tx.ime = request->tx.ime;
-                copy(shared->tx.observed, request->tx.observed, sizeof(shared->tx.observed));
-                shared->verified_at_ms = request->verified_at_ms;
-            }
+            if (operation == 4) source_publish_completion(shared, request);
             shared->tx.status = request->tx.status;
             shared->tx.reason = request->tx.reason;
             shared->state = request->state;
@@ -809,6 +838,68 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
     }
     if (shared) UnmapViewOfFile(shared);
     if (mapping) CloseHandle(mapping);
+    __atomic_store_n(&source_callback, 0, __ATOMIC_RELEASE);
+    return result;
+}
+// Research-only ABI addition. No shipping App/Broker installs this callback.
+// The opted-in self-owned fixture supplies the real WH_GETMESSAGE arguments.
+// This fixed, unmodified Tab path has no strict origin/old-queued-key or real
+// composition authority. In particular, posted messages are not physical input.
+// CallNext first cannot constrain an upstream hook after we return: evidence is
+// restricted to the controlled fixture chain and its actual outer pump return.
+__declspec(dllexport) LRESULT TypeLaySourceGetMessageProc(int code, WPARAM wp, LPARAM lp) {
+    QueueMessage *message = (QueueMessage *)lp;
+    uint32_t thread = GetCurrentThreadId(), empty_callback = 0;
+    if (code != 0 || wp != 1 || !message || message->message != 0x100 || message->wparam != 9
+        || ((uintptr_t)message->lparam & 0xc0000000u)
+        || __atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) != thread
+        || source.hwnd != (uint64_t)(uintptr_t)message->hwnd || source.completed_status
+        || GetKeyState(0x10) < 0 || GetKeyState(0x11) < 0 || GetKeyState(0x12) < 0
+        || GetKeyState(0x5b) < 0 || GetKeyState(0x5c) < 0
+        || !__atomic_compare_exchange_n(&source_callback, &empty_callback, thread, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return CallNextHookEx(0, code, wp, lp);
+    // Protect the complete downstream chain as well as execution. Nested revoke
+    // may latch a reason, but cannot acknowledge quiet, replace this grant or
+    // accept an inner retrieved message while this original MSG is still held.
+    // Explicit byte copy keeps this freestanding ABI independent of CRT helpers.
+    QueueMessage original;
+    copy(&original, message, sizeof(original));
+    uint64_t nonce = source.nonce;
+    source.busy++;
+    LRESULT result = CallNextHookEx(0, code, wp, lp);
+    HANDLE mapping = source_mapping(nonce);
+    SourceInstallation *shared = mapping ? MapViewOfFile(mapping, 6, 0, 0, sizeof(SourceInstallation)) : 0;
+    SourceInstallation *request = shared ? HeapAlloc(GetProcessHeap(), 8, sizeof(SourceInstallation)) : 0;
+    if (request) {
+        copy(request, shared, sizeof(SourceInstallation));
+        if (request->version == 3 && request->bytes == sizeof(SourceInstallation)
+            && __atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) == thread
+            && source_identity(request, nonce) && request->tx.thread == thread
+            && request->tx.pid == GetCurrentProcessId()) {
+            uint32_t unused = 0;
+            if (!__atomic_compare_exchange_n(&shared->invoked, &unused, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)
+                && !source.reason) source.reason = 14;
+            if (!same_queue_message(message, &original) && !source.reason) source.reason = 15;
+            source_execute_once(shared, request, message, &original);
+            source_publish_completion(shared, request);
+            shared->tx.status = source.completed_status;
+            shared->tx.reason = source.completed_reason;
+            shared->state = 2;
+            // This was not a sent protocol command. Poll/retire will publish
+            // their own real command ACK; never fabricate one for this MSG.
+        } else {
+            source.completed_status = 2; source.completed_reason = 2;
+            if (!source.reason) source.reason = 2;
+        }
+        wipe(request, sizeof(SourceInstallation));
+        HeapFree(GetProcessHeap(), 0, request);
+    } else {
+        source.completed_status = 2; source.completed_reason = 6;
+        if (!source.reason) source.reason = 6;
+    }
+    if (shared) UnmapViewOfFile(shared);
+    if (mapping) CloseHandle(mapping);
+    source.busy--;
     __atomic_store_n(&source_callback, 0, __ATOMIC_RELEASE);
     return result;
 }

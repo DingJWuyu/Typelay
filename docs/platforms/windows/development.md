@@ -78,6 +78,27 @@ if ($LASTEXITCODE -ne 0) { throw '同步源实验失败，保留结果，不重�
 
 HIMC/HKL 只提供离散身份样本，既有 owned 执行的任意末期重入安全、TSF profile 连续性及组合权限仍未闭合。该实验不安装第三方源组件，不涉及 Notepad，不提供物理键、真实中文组合态及完整生产许可关联的验收证据。与旧 LL 写后超时反例比较的是同步源内机制，不代表 hook/TSF 自动解决普通输入框支持；原生产写回门继续关闭。既有只读边界与双队列实验保持原覆盖，不扩展跨应用尾键要求。
 
+## 普通 source 事务与同一 MSG 的受控接线
+
+`ObserveOrdinarySourceMessageAcceptance` 只验证一个缺失节点：已安装的普通 `SourceInstallation` 能否在源线程实际 `PM_REMOVE` 的同一个 MSG 上承诺消费，然后执行原生正文事务。它不借 `OwnedPracticeField`，也不再从源线程调用明确要求跨线程的 `TypeLaySourceActivate`。正式 App/Broker 不安装新的 `TypeLaySourceGetMessageProc` 导出，`SourceLocalAcceptanceVersion` 与默认关闭门不变。该导出是 native ABI 增量，普通事务 v2 和 source v3 wire 不变。
+
+```powershell
+& ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe `
+  -explicit only -method 'TypeLay.App.Tests.SourceKeyboardBoundaryProbe.ObserveOrdinarySourceMessageAcceptance'
+if ($LASTEXITCODE -ne 0) { throw '普通 source MSG 研究失败，保留原结果，不重试。' }
+```
+
+仅两个自有 stock Edit 场景，保留既有六项 owned 同步实验原覆盖：
+
+1. 同一个首 Tab 两次 `PM_NOREMOVE` 均不消耗 invoked/claim，再由 `PM_REMOVE` 执行一次普通 source 事务。native 返回后、原 GetMessage 返回前，fixture 的 managed hook 有界暂停1200ms；外部只读属性确认原泵尚未返回。原泵在 GetMessage 下一条语句记录实际返回 MSG，随后仍走原 IsDialogMessage/TranslateMessage/DispatchMessage。验证一次真实正文变化、原字段焦点、零导航/提交、随后同字段 repeat/up 消费及 Undo。
+2. 安装后真实修改源文，首 Tab 不被改写、零 claim 和正文替换，实际选区保持，原 dialog 自然转焦 B。portable API 边界另核拒绝不进入 SETSEL；真实 Windows 此行不声称观察到了每一次底层 API 调用。
+
+native 在调用一次 CallNextHookEx **之前**占住 source callback 寿命门，之后重核原 MSG 与同 grant。claim CAS 赢后立即原地置 `MSG.message=WM_NULL`，两者之间没有 OS 调用、回调、分配或日志，再进入首个 SETSEL；拒绝前不改 MSG，受理后出现拒绝或未知也不恢复/重注入原键。普通 source 的完整回执仍来自实际重验，MSG 路径不伪造 sent command ACK，退休由原 poll/retire 协议确认。NOREMOVE 不耗一次尝试，其他失败不以 repeat 重试。
+
+输入是既有受控 SendInput，不证明物理来源、严格软件注入拒绝、旧排队键历史或真实 composition。先 Next 再执行不能约束上游 hook 在本实现返回后改写或提前分发 MSG，结论仅限自有受控 hook 链。fixture 尾键资格独立锁存离焦，返回同 HWND 不能复活；此片不新增跨应用尾键矩阵。HIMC/HKL 与 exact-context 无组合观察均不授全局 Clear；不安装或切换 IME，不恢复已退役 TSF 全文路径。
+
+保持原100ms grant 与 pending-work 拒绝门，首 down 单独发送，确认后才发尾键和后置屏障，不预排它们造成 pending 再放宽门求成功。两行沿原30秒 owner/60秒单项上限，独立 CI 步骤复用退役 owned-TSF 的2分钟预算，Windows 总 job 仍75分钟，模型与其它步骤不变。`artifacts/source-message-acceptance/<唯一目录>/result.json`、runner.json/log 进入既有早期 source artifact 与末尾 artifact；runner 按实际退出码、两行完整性和清理区分成功观察、失败、缺失/重复及清理未知，`running`/空退出码仍是未完成。continue-on-error 仅使其它独立验收继续，不把研究失败改为通过。新增 Windows 两行尚须实际执行；expiry/cookie/pending/revoke 的新 MSG 负控目前仅覆盖 portable API 边界及原 source 回归，不冒充新入口已在 Windows 复验。
+
 ## 自有标准 Edit 的既有 TSF context 准入
 
 `ObserveExistingContextOfSelfOwnedStockEdit` 是普通 xUnit 回归默认不运行的第一阶段必要条件检查，不是键盘或写支持。它复用 NativeFixture 的未 subclass stock Edit，但在独立 STA GUI 线程创建和运行；普通 fixture 的 MTA、消息泵和生产路径不改。仅查询该线程的 `TF_GetThreadMgr → GetFocus → GetTop → GetActiveView → GetWnd`，要求 HWND 恰为当前自有字段，并重核 canonical IUnknown 身份、原生焦点和本次焦点通知版本。不给 root、NULL、base 或 parent 作替代映射。

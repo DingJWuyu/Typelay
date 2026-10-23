@@ -77,13 +77,19 @@ internal static class Program
             _sourceKeyboardProbeEnabled = true;
             _sourceSynchronousPath = args[2];
         }
+        if (args.Length == 3 && args[0] == "--stock-controls"
+            && args[1] == "--source-message-probe" && Path.IsPathFullyQualified(args[2]))
+        {
+            _sourceKeyboardProbeEnabled = true;
+            _sourceMessagePath = args[2];
+        }
         bool stockControls = _sourceKeyboardProbeEnabled || ownedControls || returnFocusCase || sourceClaimCase || (args.Length == 1 && args[0] == "--stock-controls");
         if (args.Length != 0 && !hookTest && !stockControls)
             return 2;
         return RunWindows(hookTest, args.Contains("--hook-test-automation", StringComparer.Ordinal), stockControls);
     }
 
-    private static string? _sourceSynchronousPath;
+    private static string? _sourceSynchronousPath, _sourceMessagePath;
     private static bool _tsfContextAdmission;
     private static int _tsfFocusVersion, _tsfObservations;
     private static uint _tsfProbeKey;
@@ -226,7 +232,7 @@ internal static class Program
         _replayField = (nint)fields[0].Hwnd;
         _secondField = (nint)fields[1].Hwnd;
         if (_sourceKeyboardProbeEnabled)
-            _sourceKeyboardProbe = new(_root, _replayField, _sourceSynchronousPath);
+            _sourceKeyboardProbe = new(_root, _replayField, _sourceSynchronousPath, _sourceMessagePath);
         if (_sourceClaimProbe is not null)
             WinEventStackProbe.LoadSourceClaim(_sourceClaimProbe);
         if (!hookTest)
@@ -275,6 +281,7 @@ internal static class Program
             {
                 _sourceKeyboardProbe?.BeforeRead();
                 int status = N.GetMessage(out N.MessageStruct message, 0, 0, 0);
+                _sourceKeyboardProbe?.MessageRetrievalReturned(status, message);
                 if (status == 0)
                     return 0;
                 if (status < 0)

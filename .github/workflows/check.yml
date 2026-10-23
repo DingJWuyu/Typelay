@@ -290,8 +290,67 @@ jobs:
           }
           if ($runner.status -ne 'research-observation-complete-not-product-acceptance') { exit 1 }
           exit 0
+      # Reuses the retired owned-TSF write step's two-minute budget; no production gate.
+      - name: Observe ordinary source claim on the same removed message
+        id: windows-source-message
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $directory = 'artifacts/source-message-acceptance'
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          $runner = [ordered]@{ kind = 'mechanism-experiment'; status = 'running'; sourceSha = $env:GITHUB_SHA; exitCode = $null; expectedRows = 2; observedModes = @(); resultCount = 0; productAcceptance = $false; productionReadiness = $false; cases = @(); error = $null }
+          $runner | ConvertTo-Json -Depth 6 | Set-Content "$directory/runner.json"
+          New-Item -ItemType File -Path "$directory/runner.log" -Force | Out-Null
+          try {
+            & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.SourceKeyboardBoundaryProbe.ObserveOrdinarySourceMessageAcceptance' 2>&1 | Tee-Object -FilePath "$directory/runner.log"
+            $runner.exitCode = $LASTEXITCODE
+            $files = @(Get-ChildItem -LiteralPath $directory -Filter result.json -File -Recurse)
+            $runner.resultCount = $files.Count
+            if ($files.Count -eq 0) {
+              $runner.status = 'missing-result'
+            } elseif ($files.Count -ne 2) {
+              $runner.status = 'incomplete-or-nonunique-result'
+            } else {
+              $rows = @($files | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json })
+              $runner.observedModes = @($rows | ForEach-Object { [int]$_.mode } | Sort-Object)
+              $valid = ($runner.observedModes -join ',') -eq '11,12'
+              $clean = $true
+              foreach ($row in $rows) {
+                $message = if (@($row.observations).Count -gt 0) { $row.observations[-1].source.sourceMessage } else { $null }
+                $runner.cases += [ordered]@{ mode = $row.mode; status = $row.status; claimed = $row.terminal.Claimed; quiet = $row.terminal.Quiet; firstDownAttempts = $message.firstDownAttempts; bodyChanges = $message.bodyChanges; nullReturns = $message.nullReturns; pausedObserved = $row.pausedObserved; hooksClosed = $row.hooksClosed; processesExited = $row.processesExited; inputsPaired = $row.inputsPaired; error = $row.error }
+                foreach ($value in @($row.hooksClosed, $row.processesExited, $row.inputsPaired, $row.terminal.Quiet)) {
+                  if ($value -isnot [bool] -or -not $value) { $clean = $false }
+                }
+                if ($row.diagnosticOnly -ne $true -or $row.productionReadiness -ne $false
+                    -or $row.status -ne 'mechanism_observed_not_product_acceptance' -or $null -ne $row.error
+                    -or $null -eq $message -or $message.firstDownAttempts -ne 1 -or $message.firstRetrievalMatches -ne $true
+                    -or $null -eq $row.terminal.Receipt
+                    -or $row.terminal.Claimed -ne ($row.mode -eq 11)
+                    -or $row.mode -eq 11 -and $row.pausedObserved -ne $true) { $valid = $false }
+              }
+              if (-not $clean) { $runner.status = 'cleanup-unconfirmed' }
+              elseif ($runner.exitCode -ne 0) { $runner.status = 'experiment-failed' }
+              elseif (-not $valid) { $runner.status = 'invalid-observations' }
+              else { $runner.status = 'mechanism-observed-not-product-acceptance' }
+            }
+          } catch {
+            $runner.error = $_.Exception.GetType().Name
+            if ($runner.status -eq 'running') { $runner.status = 'runner-failed' }
+          } finally {
+            $runner | ConvertTo-Json -Depth 6 | Set-Content "$directory/runner.json"
+          }
+          "Ordinary source MSG research: $($runner.status); exitCode=$($runner.exitCode). Controlled hook chain only, not strict input origin, real IME, or production acceptance." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          foreach ($case in $runner.cases) {
+            "Mode $($case.mode): $($case.status); claimed=$($case.claimed); bodyChanges=$($case.bodyChanges); returnedNull=$($case.nullReturns); quiet=$($case.quiet); processExited=$($case.processesExited)." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
+          if ($runner.status -ne 'mechanism-observed-not-product-acceptance') { exit 1 }
+          exit 0
       - name: Preserve early Windows source research evidence
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' && hashFiles('artifacts/source-synchronous-acceptance/runner.*', 'artifacts/tsf-context-admission/runner.*', 'artifacts/tsf-key-routing/runner.*') != '' }}
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' && hashFiles('artifacts/source-synchronous-acceptance/runner.*', 'artifacts/tsf-context-admission/runner.*', 'artifacts/tsf-key-routing/runner.*', 'artifacts/source-message-acceptance/runner.*') != '' }}
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -306,6 +365,9 @@ jobs:
             artifacts/tsf-key-routing/runner.json
             artifacts/tsf-key-routing/runner.log
             artifacts/tsf-key-routing/*/result.json
+            artifacts/source-message-acceptance/runner.json
+            artifacts/source-message-acceptance/runner.log
+            artifacts/source-message-acceptance/*/result.json
           if-no-files-found: warn
           retention-days: 14
       - name: Verify Windows behavior and contracts
@@ -546,6 +608,7 @@ jobs:
             artifacts/source-ll-timeout/
             artifacts/source-keyboard-boundary/
             artifacts/source-synchronous-acceptance/
+            artifacts/source-message-acceptance/
             artifacts/tsf-context-admission/
             artifacts/tsf-key-routing/
             artifacts/source-consumption-order/**/result.json

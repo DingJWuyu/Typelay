@@ -711,6 +711,10 @@ internal static partial class HyPackageCheck
         {
             get; set;
         }
+        public bool? ExpectedHyDirectionsMatched
+        {
+            get; set;
+        }
         public string? PublicPreparationState
         {
             get; set;
@@ -740,24 +744,34 @@ internal static partial class HyPackageCheck
         {
             get; set;
         }
+        public PreparationFailureDiagnostic? FirstPreparationFailure
+        {
+            get; set;
+        }
     }
     private sealed record PreparationDiagnostic(string Observation, string? InstallationStage = null,
         string? RecoveryFailure = null, string? ReplacementPhase = null, string? ReplacementFailureCode = null,
         string? PublicationOutcome = null);
+    private sealed record PreparationFailureDiagnostic(string FailureCode, long ObservedAtMs, PreparationDiagnostic Detail);
     private static async Task<int> ObserveActiveAsync(Process app, AutomationElement settings, WorkerObserver workers,
         string data, string worker, string[] expected, int priorPid, HashSet<string> generations, Scene scene, CancellationToken ct,
         string[] expectedHyDirections, int appGenerationBaseline)
     {
         AutomationElement? details = null;
+        PreparationFailureDiagnostic? firstFailure = null;
         await WaitAsync(async () =>
         {
-            // Retain only the current poll's observed state. A null
-            // means not reached or not completed, never a failed readiness check.
-            var observation = new ActiveObservation(expected.Length);
+            // All current-poll fields start unknown. Only the separately named,
+            // timestamped first-failure snapshot survives a later interrupted read.
+            var observation = new ActiveObservation(expected.Length)
+            {
+                FirstPreparationFailure = firstFailure
+            };
             scene.Facts = observation;
             Require(!app.HasExited, "shipped-app-exited");
             observation.Gate = "worker-observer";
             workers.Check();
+            observation.WorkerStarts = workers.Starts;
             observation.Gate = "inventory";
             var state = new ModelInstallationStore(data, worker).ReadInstallationState();
             observation.InventoryKnown = state.InventoryKnown;
@@ -766,27 +780,21 @@ internal static partial class HyPackageCheck
             observation.Gate = "active-packages";
             observation.CurrentPackageIds = state.CurrentPackages.Select(item => item.Package.Id).ToArray();
             observation.ExpectedActiveMatched = observation.CurrentPackageIds.ToHashSet(StringComparer.Ordinal).SetEquals(expected);
+            if (expected.SequenceEqual(new[] { HyId }))
+                observation.ExpectedHyDirectionsMatched = state.CurrentPackages.Count == 1
+                    && state.CurrentPackages[0].Package.Id == HyId
+                    && state.CurrentPackages[0].Directions.Select(item => item.Id).ToHashSet(StringComparer.Ordinal).SetEquals(expectedHyDirections);
             if (observation.ExpectedActiveMatched != true)
             {
                 // A failed preparation leaves the old inventory active. Observe the
                 // public outcome here instead of hiding it behind the inventory gate
                 // until the suite deadline. Never retain arbitrary UI text.
                 observation.Gate = "public-preparation-status";
-                string preparation = await PublicStatusAsync(settings, ct);
-                var failure = Enum.GetValues<SetupFailureCategory>()
-                    .Select(SetupFailurePresentation.Create).FirstOrDefault(item => item.Message == preparation);
-                observation.PublicPreparationState = failure is not null ? "failed-" + failure.Code : preparation switch
-                {
-                    "正在准备本地翻译组件…" => "preparing",
-                    "正在暂停，保留已验证的下载进度…" => "pausing",
-                    "正在启动本地翻译…" => "starting-model",
-                    _ when preparation == SetupFailurePresentation.PausedMessage => "paused",
-                    _ when preparation.StartsWith("本地翻译已就绪", StringComparison.Ordinal) => "ready",
-                    _ => "unrecognized"
-                };
+                var preparation = await UiAsync(() => SettingsPackageActions.ReadPreparationStatus(settings), ct);
+                observation.PublicPreparationState = preparation.State;
                 // Only an exact terminal failure message stops the check. Preparing,
                 // rollback/startup, paused, missing and unknown observations do not.
-                if (failure is not null)
+                if (preparation.FailureCode is not null)
                 {
                     try
                     {
@@ -805,7 +813,7 @@ internal static partial class HyPackageCheck
                         observation.PreparationDiagnostic = new("unavailable");
                     }
                 }
-                Require(failure is null, "public-preparation-failed-" + failure?.Code);
+                Require(preparation.FailureCode is null, "public-preparation-failed-" + preparation.FailureCode);
                 return false;
             }
             observation.Gate = "prior-worker-exit";
@@ -813,8 +821,27 @@ internal static partial class HyPackageCheck
             if (observation.PriorWorkerExited != true)
                 return false;
             observation.Gate = "public-status";
-            string status = await PublicStatusAsync(settings, ct);
-            observation.PublicReady = status.StartsWith("本地翻译已就绪", StringComparison.Ordinal);
+            var status = await UiAsync(() => SettingsPackageActions.ReadPreparationStatus(settings), ct);
+            observation.PublicPreparationState = status.State;
+            observation.PublicReady = status.Ready;
+            // Supplement/repair can keep exactly the same active package IDs even
+            // after failure. Retain the first exact public failure diagnostic once,
+            // within the original deadline; preserve this branch's wait semantics.
+            if (status.FailureCode is not null && firstFailure is null)
+            {
+                long observedAtMs = WindowsInterruptClock.NowMs;
+                PreparationDiagnostic diagnostic;
+                try
+                {
+                    diagnostic = await UiAsync(() => ReadPreparationDiagnostic(settings), ct);
+                }
+                catch (Exception error) when (error is not OutOfMemoryException)
+                {
+                    diagnostic = new("unavailable");
+                }
+                firstFailure = new(status.FailureCode, observedAtMs, diagnostic);
+                observation.FirstPreparationFailure = firstFailure;
+            }
             if (observation.PublicReady != true)
                 return false;
             // The successful first install saves OnboardingComplete and rebuilds

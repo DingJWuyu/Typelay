@@ -8,6 +8,34 @@ namespace TypeLay.Windows.Testing;
 // regression. It only reveals existing details/actions; it never enables or invokes an action.
 internal static class SettingsPackageActions
 {
+    internal sealed record PreparationStatus(string State, bool Ready, string? FailureCode);
+
+    public static PreparationStatus ReadPreparationStatus(AutomationElement settings)
+    {
+        // Preserve the lifecycle's single status-element query and Ready predicate.
+        // Only finite categories survive the observation; never retain UI text.
+        var element = settings.FindFirst(TreeScope.Descendants,
+            new PropertyCondition(AutomationElement.AutomationIdProperty, "PreparationStatus"));
+        string? status = element?.Current.Name;
+        var failure = Enum.GetValues<SetupFailureCategory>().Select(SetupFailurePresentation.Create)
+            .FirstOrDefault(item => item.Message == status);
+        bool ready = status?.StartsWith("本地翻译已就绪", StringComparison.Ordinal) == true;
+        string state = failure is not null ? "failed-" + failure.Code : status switch
+        {
+            null => "missing",
+            "正在准备本地翻译组件…" => "preparing",
+            "正在暂停，保留已验证的下载进度…" => "pausing",
+            "正在启动本地翻译…" => "starting-model",
+            "本地翻译尚未就绪" => "not-ready",
+            "本地翻译组件尚未准备" => "not-prepared",
+            "本地组件安装记录无法读取" => "inventory-unreadable",
+            _ when status == SetupFailurePresentation.PausedMessage => "paused",
+            _ when ready => "ready",
+            _ => "unrecognized"
+        };
+        return new(state, ready, failure?.Code);
+    }
+
     public static string?[] ReadStatuses(AutomationElement details, IEnumerable<string> packages) =>
         packages.Select(package =>
         {
