@@ -20,12 +20,11 @@ public sealed partial class ProductionForegroundWriteTests
             get; init;
         }
         public string Status { get; set; } = "not-started";
-        public string DecisionMode { get; init; } = "Observe";
-        public string? ReadStatus
+        public bool SourceKeyboardRead
         {
-            get; set;
+            get; init;
         }
-        public string? MechanismDenial
+        public string? ReadStatus
         {
             get; set;
         }
@@ -34,10 +33,6 @@ public sealed partial class ProductionForegroundWriteTests
             get; set;
         }
         public bool SelectionUnchanged
-        {
-            get; set;
-        }
-        public bool ExpectedKeyEffectVerified
         {
             get; set;
         }
@@ -81,16 +76,15 @@ public sealed partial class ProductionForegroundWriteTests
 
     internal static async Task RunTsfKeyRoutingProbe(TsfKeyRun run)
     {
-        Assert.Contains(run.DecisionMode, new[] { "Observe", "Reject", "Consume" });
-        bool decision = run.DecisionMode != "Observe";
-        if (decision)
+        if (run.SourceKeyboardRead)
             Assert.Equal("Tab", run.Key);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(30));
-        var process = StartProcess(Path.Combine(Repository(),
-            "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"),
-            "--stock-controls", decision ? "--tsf-key-decision" : "--tsf-key-routing",
-            decision ? run.DecisionMode : run.Key);
+        string fixture = Path.Combine(Repository(),
+            "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll");
+        var process = run.SourceKeyboardRead
+            ? StartProcess(fixture, "--stock-controls", "--tsf-source-key-read")
+            : StartProcess(fixture, "--stock-controls", "--tsf-key-routing", run.Key);
         nint root = 0;
         bool began = false;
         var errors = new List<Exception>();
@@ -120,14 +114,15 @@ public sealed partial class ProductionForegroundWriteTests
             run.Begun = begun.GetProperty("result").Clone();
             Assert.Equal(process.Id, run.Begun.Value.GetProperty("Process").GetInt32());
             Assert.False(run.Begun.Value.GetProperty("ProductionReadiness").GetBoolean());
-            Assert.Equal(run.DecisionMode, run.Begun.Value.GetProperty("DecisionMode").GetString());
+            Assert.Equal(run.SourceKeyboardRead, run.Begun.Value.GetProperty("SourceKeyboardRead").GetBoolean());
             if (run.Begun.Value.GetProperty("Denial").ValueKind != JsonValueKind.Null)
             {
                 run.Status = "prerequisite-not-met";
             }
             else
             {
-                Assert.True(run.Begun.Value.GetProperty("Advised").GetBoolean());
+                Assert.Equal(!run.SourceKeyboardRead, run.Begun.Value.GetProperty("Advised").GetBoolean());
+                Assert.Equal(run.SourceKeyboardRead, run.Begun.Value.GetProperty("SourceHookInstalled").GetBoolean());
                 Assert.Equal((root, a), N.Focused());
                 ushort key = run.Key == "Tab" ? (ushort)9 : (ushort)0x23;
                 foreach (int modifier in new[] { 0x10, 0x11, 0x12, 0x5b, 0x5c, key })
@@ -159,14 +154,8 @@ public sealed partial class ProductionForegroundWriteTests
                 var focus = N.Focused();
                 run.FocusAfterInput = focus == (root, a) ? "a" : focus == (root, b) ? "b" : "other";
                 run.SelectionUnchanged = N.ReadSelection(a) == new TextRange(1, 1);
-                if (decision)
-                {
-                    // Preserve the real result before judging it. In particular,
-                    // Test=true must not be mistaken for successful consumption.
+                if (run.SourceKeyboardRead)
                     run.DefaultEffectVerified = focus == (root, b);
-                    run.ExpectedKeyEffectVerified = run.DecisionMode == "Reject"
-                        ? run.DefaultEffectVerified : focus == (root, a) && run.SelectionUnchanged;
-                }
                 else
                 {
                     if (run.Key == "Tab")
@@ -177,7 +166,6 @@ public sealed partial class ProductionForegroundWriteTests
                         Assert.Equal(new TextRange(originalA.Length, originalA.Length), N.ReadSelection(a));
                     }
                     run.DefaultEffectVerified = true;
-                    run.ExpectedKeyEffectVerified = true;
                 }
                 Assert.Equal(originalA, N.ReadText(a, Limits.MaxTextUnits));
                 Assert.Equal(originalB, N.ReadText(b, Limits.MaxTextUnits));
@@ -204,6 +192,8 @@ public sealed partial class ProductionForegroundWriteTests
                 {
                     Assert.True(closed.GetProperty("CleanupComplete").GetBoolean());
                     Assert.True(closed.GetProperty("Unadvised").GetBoolean());
+                    Assert.True(closed.GetProperty("SourceHookRemoved").GetBoolean());
+                    Assert.Equal(JsonValueKind.Null, closed.GetProperty("HookRemoveError").ValueKind);
                     Assert.True(closed.GetProperty("ActivationBalanced").GetBoolean());
                     Assert.True(closed.GetProperty("ReferencesReleased").GetBoolean());
                     Assert.False(closed.GetProperty("WrongThread").GetBoolean());
@@ -214,31 +204,13 @@ public sealed partial class ProductionForegroundWriteTests
                     Assert.False(closed.GetProperty("CallbackIdentityChanged").GetBoolean());
                     Assert.Equal(JsonValueKind.Null, closed.GetProperty("Error").ValueKind);
                     Assert.InRange(closed.GetProperty("RequestCount").GetInt32(), 0, 1);
-                    Assert.Equal(run.DecisionMode, closed.GetProperty("DecisionMode").GetString());
                     foreach (var item in closed.GetProperty("Events").EnumerateArray())
-                    {
-                        if (!decision || item.GetProperty("Kind").GetString() is "up" or "test-up")
-                            Assert.False(item.GetProperty("Eaten").GetBoolean());
-                        else if (item.GetProperty("Eaten").GetBoolean())
-                        {
-                            Assert.Equal(9u, item.GetProperty("Key").GetUInt32());
-                            Assert.False(item.GetProperty("Repeat").GetBoolean());
-                            Assert.True(item.GetProperty("Exact").GetBoolean());
-                            Assert.True(item.GetProperty("ModifiersClear").GetBoolean());
-                            if (item.GetProperty("Kind").GetString() == "down")
-                            {
-                                Assert.Equal("Consume", run.DecisionMode);
-                                Assert.True(closed.GetProperty("SelectionReadSucceeded").GetBoolean());
-                            }
-                            else
-                                Assert.Equal("test-down", item.GetProperty("Kind").GetString());
-                        }
-                    }
+                        Assert.False(item.GetProperty("Eaten").GetBoolean());
                     if (run.Status == "observed")
                     {
                         Assert.True(closed.GetProperty("InputUpObserved").GetBoolean());
                         run.ReadStatus = ReadStatus(closed);
-                        run.Status = decision ? DecisionStatus(run, closed) : run.ReadStatus;
+                        run.Status = run.SourceKeyboardRead ? SourceReadStatus(run, closed) : run.ReadStatus;
                     }
                 }
             }
@@ -268,34 +240,37 @@ public sealed partial class ProductionForegroundWriteTests
         }
     }
 
-    private static string DecisionStatus(TsfKeyRun run, JsonElement result)
+    private static string SourceReadStatus(TsfKeyRun run, JsonElement result)
     {
-        int offers = result.GetProperty("TestOfferCount").GetInt32();
-        int downs = result.GetProperty("KeyDownCount").GetInt32();
-        bool consumed = result.GetProperty("KeyDownConsumed").GetBoolean();
-        var events = result.GetProperty("Events").EnumerateArray().ToArray();
-        Assert.Equal(offers, events.Count(item => item.GetProperty("Kind").GetString() == "test-down"
-            && item.GetProperty("Eaten").GetBoolean()));
-        Assert.Equal(consumed ? 1 : 0, events.Count(item => item.GetProperty("Kind").GetString() == "down"
-            && item.GetProperty("Eaten").GetBoolean()));
+        Assert.True(result.GetProperty("SourceKeyboardRead").GetBoolean());
+        Assert.True(result.GetProperty("SourceHookInstalled").GetBoolean());
+        Assert.False(result.GetProperty("Advised").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, result.GetProperty("AdviseHResult").ValueKind);
+        foreach (var hook in result.GetProperty("HookEvents").EnumerateArray())
+        {
+            Assert.True(hook.GetProperty("Forwarded").GetBoolean());
+            Assert.Equal(JsonValueKind.Number, hook.GetProperty("NextResult").ValueKind);
+            Assert.Equal(result.GetProperty("Thread").GetUInt32(), hook.GetProperty("Thread").GetUInt32());
+        }
         if (result.GetProperty("RequestCount").GetInt32() == 1)
         {
-            Assert.True(offers > 0);
-            Assert.Contains(events, item => item.GetProperty("Kind").GetString() == "down"
-                && item.GetProperty("Sequence").GetInt32() < result.GetProperty("RequestStart").GetInt32());
+            var hook = result.GetProperty("HookEvents").EnumerateArray().Single(item =>
+                item.GetProperty("Entry").GetInt32() == result.GetProperty("ReadHookEntry").GetInt32());
+            Assert.Equal(0, hook.GetProperty("Code").GetInt32());
+            Assert.Equal(9u, hook.GetProperty("Key").GetUInt32());
+            Assert.Equal(0L, hook.GetProperty("Bits").GetInt64() & 0xc0000000L);
+            Assert.True(hook.GetProperty("Entry").GetInt32() < result.GetProperty("RequestStart").GetInt32());
+            Assert.Equal(hook.GetProperty("Exit").GetInt32(), result.GetProperty("ReadHookExit").GetInt32());
+            Assert.True(result.GetProperty("RequestEnd").GetInt32() < hook.GetProperty("Exit").GetInt32());
         }
-        if (offers == 0)
-            run.MechanismDenial = "test-offer-not-observed";
-        else if (downs != 1)
-            run.MechanismDenial = downs == 0 ? "natural-key-down-not-observed" : "multiple-key-down-callbacks";
-        else if (run.ReadStatus != "selection-read-observed")
-            run.MechanismDenial = run.ReadStatus;
-        else if (run.DecisionMode == "Reject" && (consumed || !run.DefaultEffectVerified))
-            run.MechanismDenial = "rejected-tab-did-not-navigate";
-        else if (run.DecisionMode == "Consume" && (!consumed || !run.ExpectedKeyEffectVerified))
-            run.MechanismDenial = "consumed-tab-did-not-preserve-focus-and-selection";
-        return run.MechanismDenial is not null ? "mechanism-not-admitted"
-            : run.DecisionMode == "Reject" ? "rejection-preserved-navigation" : "consumption-suppressed-navigation";
+        if (!run.DefaultEffectVerified)
+            return "original-key-not-preserved";
+        if (!run.SelectionUnchanged)
+            return "original-selection-not-preserved";
+        if (run.ReadStatus != "selection-read-observed")
+            return run.ReadStatus!;
+        Assert.True(result.GetProperty("SourceHookReadObserved").GetBoolean());
+        return "source-read-and-original-key-observed";
     }
 
     private static string ReadStatus(JsonElement result)
@@ -312,7 +287,8 @@ public sealed partial class ProductionForegroundWriteTests
             Assert.Equal(0, entered);
             Assert.Equal(0, exited);
             Assert.Equal(JsonValueKind.Null, result.GetProperty("RequestHResult").ValueKind);
-            return "test-route-not-observed";
+            return result.GetProperty("SourceKeyboardRead").GetBoolean()
+                ? "source-route-not-observed" : "test-route-not-observed";
         }
         Assert.True(result.GetProperty("RouteObserved").GetBoolean());
         int request = result.GetProperty("RequestHResult").GetInt32();

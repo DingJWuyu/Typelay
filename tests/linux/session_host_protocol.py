@@ -29,6 +29,20 @@ from vscode_e2e import profile_data_home  # noqa: E402
 
 HOST = None
 SUPERVISOR = None
+HY_DEFAULT_DIRECTIONS = [
+    "zh_ja",
+    "ja_zh",
+    "zh_ko",
+    "ko_zh",
+    "zh_fr",
+    "fr_zh",
+    "zh_es",
+    "es_zh",
+    "zh_de",
+    "de_zh",
+    "zh_pt",
+    "pt_zh",
+]
 
 
 class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
@@ -136,11 +150,20 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
                     / "src/shared/TypeLay.Worker/model-catalog.json"
                 ).read_text()
             )
+            # Catalog availability is not installed capability. Match a normal
+            # Hy installation unless the scenario explicitly supplies a subset.
+            fixed = json.loads(
+                (ROOT / "src/shared/TypeLay.Worker/native/hy/model.lock.json").read_text()
+            )
+            installed_directions = {
+                fixed["package_id"]: fixed["directions"],
+                **(package_directions or {}),
+            }
             packages = [
                 {
                     "id": item["id"],
                     "version": item["version"],
-                    "directions": (package_directions or {}).get(
+                    "directions": installed_directions.get(
                         item["id"], [direction["id"] for direction in item["directions"]]
                     ),
                     "files": [{"path": "model-file", "sha256": "0" * 64}],
@@ -264,20 +287,7 @@ while True:
         self.assertFalse(Path(f"/proc/{old_root.joinpath('pid').read_text()}").exists())
         self.assertEqual(
             self.latest("status")["modelDirections"],
-            [
-                "zh_ja",
-                "ja_zh",
-                "zh_ko",
-                "ko_zh",
-                "zh_fr",
-                "fr_zh",
-                "zh_es",
-                "es_zh",
-                "zh_de",
-                "de_zh",
-                "zh_pt",
-                "pt_zh",
-            ],
+            HY_DEFAULT_DIRECTIONS,
         )
         self.assertEqual(hy_root.joinpath("requests").read_text().splitlines(), ["hello"])
         argos, argos_root = self.model_generation(
@@ -400,8 +410,9 @@ while True:
         self.assertEqual(self.latest("status")["modelDirections"], ["zh_ja"])
         row = next(row for row in view["packageRows"] if row["preview"])
         self.assertEqual(row["installedDirectionIds"], ["zh_ja"])
+        self.assertEqual(row["currentDirectionIds"], ["zh_ja"])
         self.assertEqual(row["readyDirectionIds"], ["zh_ja"])
-        self.assertEqual(len(row["directionIds"]), 12)
+        self.assertEqual(row["directionIds"], [*HY_DEFAULT_DIRECTIONS, "zh_en", "en_zh"])
         await self.ask(
             "translationPreparation",
             {

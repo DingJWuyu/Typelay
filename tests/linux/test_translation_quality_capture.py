@@ -1054,6 +1054,57 @@ class CombinationOnlyTests(unittest.TestCase):
                         events.index("return-to-argos-before-remove"),
                     )
 
+    def test_preview_extension_runs_only_in_the_ordinary_installed_hy_phase(self):
+        import hy_package_e2e as lifecycle
+
+        for quality in (False, True):
+            events = []
+            lifecycle.exercise_model_lifecycle(
+                lambda title, label: events.append(label),
+                lambda *args: events.append(args[-1]) or args[-1],
+                lambda: None,
+                lambda *args: None,
+                lambda: None,
+                lambda: None,
+                lambda: None,
+                "fixed",
+                capture=types.SimpleNamespace(diagnostics=False, comparison=False)
+                if quality
+                else None,
+                english_preview=lambda: events.append("english-preview"),
+            )
+            self.assertEqual(events.count("english-preview"), 0 if quality else 1)
+            if not quality:
+                self.assertLess(
+                    events.index("select-installed-hy"), events.index("english-preview")
+                )
+                self.assertLess(
+                    events.index("english-preview"), events.index("return-to-argos-before-remove")
+                )
+
+    def test_preview_extension_failure_stops_before_return_and_remove(self):
+        import hy_package_e2e as lifecycle
+
+        events = []
+
+        def failed():
+            raise RuntimeError("preview-failed")
+
+        with self.assertRaisesRegex(RuntimeError, "preview-failed"):
+            lifecycle.exercise_model_lifecycle(
+                lambda title, label: events.append(label),
+                lambda *args: events.append(args[-1]),
+                lambda: None,
+                lambda *args: None,
+                lambda: None,
+                lambda: None,
+                lambda: None,
+                "fixed",
+                english_preview=failed,
+            )
+        self.assertNotIn("return-to-argos-before-remove", events)
+        self.assertNotIn("移除…", events)
+
     def test_combination_lifecycle_invalid_or_failed_restore_never_removes_or_succeeds(self):
         import copy
 

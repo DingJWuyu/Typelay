@@ -8,13 +8,7 @@ internal static partial class TsfContextAdmission
 {
     internal const uint BeginKeyMessage = 0x8091, KeyProgressMessage = 0x8092;
 
-    internal enum KeyDecisionMode
-    {
-        Observe, Reject, Consume
-    }
-
-    internal sealed class KeyProbe(nint root, nint field, uint key, Func<int> focusVersion,
-        KeyDecisionMode mode = KeyDecisionMode.Observe)
+    internal sealed class KeyProbe(nint root, nint field, uint key, Func<int> focusVersion, bool sourceKeyboardRead = false)
     {
         private readonly uint _thread = GetCurrentThreadId();
         private readonly int _focusVersion = focusVersion();
@@ -27,10 +21,13 @@ internal static partial class TsfContextAdmission
         private ITfSource? _source;
         private TsfProbeCallbacks? _sink;
         private uint _client, _cookie;
+        private KeyboardHook? _keyboard;
+        private nint _keyboardHook;
+        private int _hookDepth;
         private bool _activated, _advised, _eligible, _closed;
         private bool _inCallback, _inRequest, _inRead, _inSetup, _inCleanup;
         private int _sequence;
-        internal bool ComOperationActive => _inCallback || _inRequest || _inRead || _inSetup || _inCleanup;
+        internal bool ComOperationActive => _inCallback || _inRequest || _inRead || _inSetup || _inCleanup || _hookDepth != 0;
 
         internal KeyResult Result
         {
@@ -40,7 +37,7 @@ internal static partial class TsfContextAdmission
             Process = Environment.ProcessId,
             Thread = GetCurrentThreadId(),
             Key = key,
-            DecisionMode = mode.ToString(),
+            SourceKeyboardRead = sourceKeyboardRead,
             Field = (long)field,
             Apartment = Thread.CurrentThread.GetApartmentState().ToString()
         };
@@ -83,28 +80,43 @@ internal static partial class TsfContextAdmission
                     return;
                 }
                 Result.AfterActivateExact = true;
-                if (_context is not ITfSource source)
-                {
-                    Deny("source_interface_unavailable");
-                    return;
-                }
-                _source = source;
                 _sink = new(this);
-                Guid iid = typeof(ITsfProbeKeySink).GUID;
-                Result.AdviseHResult = _source.AdviseSink(ref iid, _sink, out _cookie);
-                _advised = Result.AdviseHResult == 0;
-                if (!_advised)
+                if (sourceKeyboardRead)
                 {
-                    Deny("advise_refused");
-                    return;
+                    _keyboard = Keyboard;
+                    _keyboardHook = SetWindowsHookExW(2, _keyboard, 0, _thread);
+                    if (_keyboardHook == 0)
+                    {
+                        Result.HookInstallError = Marshal.GetLastWin32Error();
+                        Deny("source_hook_unavailable");
+                        return;
+                    }
+                    Result.SourceHookInstalled = true;
+                }
+                else
+                {
+                    if (_context is not ITfSource source)
+                    {
+                        Deny("source_interface_unavailable");
+                        return;
+                    }
+                    _source = source;
+                    Guid iid = typeof(ITsfProbeKeySink).GUID;
+                    Result.AdviseHResult = _source.AdviseSink(ref iid, _sink, out _cookie);
+                    _advised = Result.AdviseHResult == 0;
+                    if (!_advised)
+                    {
+                        Deny("advise_refused");
+                        return;
+                    }
+                    Result.Advised = true;
                 }
                 if (!Exact())
                 {
-                    Deny("advise_changed_identity");
+                    Deny("callback_install_changed_identity");
                     return;
                 }
                 _eligible = true;
-                Result.Advised = true;
             }
             catch (Exception error) { Result.Error = error.GetType().Name; Deny("setup_exception"); }
             finally { _inSetup = false; }
@@ -158,12 +170,13 @@ internal static partial class TsfContextAdmission
                 Result.InputUpObserved = true;
         }
 
-        internal bool Key(string kind, nuint wParam, nint lParam)
+        internal int Key(string kind, nuint wParam, nint lParam)
         {
+            // Shared by always-false CCW wrappers and the non-consuming source hook.
             if (GetCurrentThreadId() != _thread)
             {
                 Result.WrongThread = true;
-                return false;
+                return 0;
             }
             if (_inCallback)
             {
@@ -171,60 +184,41 @@ internal static partial class TsfContextAdmission
                 _eligible = false;
                 if (_inRequest)
                     Result.ReadInvalidated = true;
-                return false;
+                return 0;
             }
             _inCallback = true;
-            bool exactAtEntry = false, requestedHere = false, handled = false;
-            int observation = -1;
+            bool exactAtEntry = false, requestedHere = false;
             try
             {
                 if (Result.Events.Count >= 16)
                 {
                     Result.Overflow = true;
                     _eligible = false;
-                    return false;
-                }
-                if (kind == "down" && wParam == key)
-                {
-                    Result.KeyDownCount++;
-                    if (mode != KeyDecisionMode.Observe && Result.KeyDownCount > 1)
-                        _eligible = false;
+                    return 0;
                 }
                 bool exact = !_closed && _eligible && !Result.WrongThread && !Result.Reentered
                     && Exact() && _eligible && !Result.Reentered;
                 exactAtEntry = exact;
                 bool repeat = ((long)lParam & (1L << 30)) != 0;
-                bool? modifiersClear = mode == KeyDecisionMode.Observe ? null : ModifiersClear();
-                observation = Result.Events.Count;
-                Result.Events.Add(new(++_sequence, kind, (uint)wParam, repeat, _thread, exact, false, modifiersClear));
+                Result.Events.Add(new(++_sequence, kind, (uint)wParam, repeat, _thread, exact, false));
                 if (!exact)
                     _eligible = false;
-                if (wParam != key || repeat || !exact || modifiersClear == false || Result.RequestCount != 0)
-                    return false;
-                if (mode != KeyDecisionMode.Observe && kind == "test-down")
+                if (kind != (sourceKeyboardRead ? "source-down" : "test-down") || wParam != key
+                    || repeat || !exact || Result.RequestCount != 0 || sourceKeyboardRead && !ModifiersClear())
+                    return 0;
+                Result.RouteObserved = true;
+                requestedHere = true;
+                Result.RequestCount++;
+                Result.RequestStart = ++_sequence;
+                _inRequest = true;
+                try
                 {
-                    // This is only an offer, not consumption or an event identity.
-                    // Repeated test inquiries may precede the one natural down.
-                    handled = Result.KeyDownCount == 0;
+                    Result.RequestHResult = _context!.RequestEditSession(_client, _sink!, 0x1 | 0x2, out int session);
+                    Result.SessionHResult = session;
                 }
-                else if (kind == (mode == KeyDecisionMode.Observe ? "test-down" : "down")
-                    && (mode == KeyDecisionMode.Observe || Result.TestOfferCount > 0))
-                {
-                    Result.RouteObserved = true;
-                    requestedHere = true;
-                    Result.RequestCount++;
-                    Result.RequestStart = ++_sequence;
-                    _inRequest = true;
-                    try
-                    {
-                        Result.RequestHResult = _context!.RequestEditSession(_client, _sink!, 0x1 | 0x2, out int session);
-                        Result.SessionHResult = session;
-                    }
-                    finally { _inRequest = false; Result.RequestEnd = ++_sequence; }
-                    if (!Exact())
-                        Result.ReadInvalidated = true;
-                    handled = mode == KeyDecisionMode.Consume && Result.SelectionReadSucceeded;
-                }
+                finally { _inRequest = false; Result.RequestEnd = ++_sequence; }
+                if (!Exact())
+                    Result.ReadInvalidated = true;
             }
             catch (Exception error)
             {
@@ -250,28 +244,105 @@ internal static partial class TsfContextAdmission
                     _eligible = false;
                     Result.ReadInvalidated = true;
                 }
-                finally
-                {
-                    handled &= _eligible && !Result.ReadInvalidated && !Result.Reentered
-                        && !Result.WrongThread && Result.Error is null && Result.ReferencesReleased;
-                    if (observation >= 0)
-                        Result.Events[observation] = Result.Events[observation] with
-                        {
-                            Eaten = handled
-                        };
-                    if (handled && kind == "test-down")
-                        Result.TestOfferCount++;
-                    if (handled && kind == "down")
-                        Result.KeyDownConsumed = true;
-                    _inCallback = false;
-                }
+                finally { _inCallback = false; }
             }
-            return handled;
+            return 0;
+        }
+
+        private nint Keyboard(int code, nuint wParam, nint lParam)
+        {
+            _hookDepth++;
+            int observation = -1, entry = 0;
+            bool requestedHere = false;
+            try
+            {
+                try
+                {
+                    // Any actionable nested key invalidates the whole source stack,
+                    // even when it is not the one key recorded by this probe.
+                    bool reentered = code >= 0 && (_hookDepth != 1 || _inCallback || _inRequest || _inRead);
+                    if (reentered)
+                    {
+                        Result.Reentered = true;
+                        _eligible = false;
+                        if (_inRequest)
+                            Result.ReadInvalidated = true;
+                    }
+                    // Negative codes and unrelated keys are forwarded untouched.
+                    if (code >= 0 && wParam == key)
+                    {
+                        entry = ++_sequence;
+                        if (Result.HookEvents.Count == 16)
+                        {
+                            Result.Overflow = true;
+                            _eligible = false;
+                        }
+                        else
+                        {
+                            observation = Result.HookEvents.Count;
+                            Result.HookEvents.Add(new(entry, 0, code, (uint)wParam, (long)lParam,
+                                GetCurrentThreadId(), false, null));
+                        }
+                        if (!reentered && code == 0 && observation >= 0)
+                        {
+                            int requests = Result.RequestCount;
+                            bool up = ((long)lParam & (1L << 31)) != 0;
+                            Key(up ? "source-up" : "source-down", wParam, lParam);
+                            requestedHere = Result.RequestCount != requests;
+                            if (requestedHere)
+                                Result.ReadHookEntry = entry;
+                        }
+                    }
+                }
+                catch (Exception error)
+                {
+                    Result.Error = error.GetType().Name;
+                    Result.ReadInvalidated = true;
+                    _eligible = false;
+                }
+                // Never replace the next hook's result with zero, claim a key,
+                // or synthesize another input, including on a local read failure.
+                nint next = CallNextHookEx(_keyboardHook, code, wParam, lParam);
+                try
+                {
+                    if (requestedHere && (!Exact() || !_eligible || Result.Reentered))
+                        Result.ReadInvalidated = true;
+                }
+                catch (Exception error)
+                {
+                    Result.Error = error.GetType().Name;
+                    Result.ReadInvalidated = true;
+                    _eligible = false;
+                }
+                if (observation >= 0)
+                {
+                    int exit = ++_sequence;
+                    Result.HookEvents[observation] = Result.HookEvents[observation] with
+                    {
+                        Exit = exit,
+                        Forwarded = true,
+                        NextResult = (long)next
+                    };
+                    if (requestedHere)
+                        Result.ReadHookExit = exit;
+                }
+                return next;
+            }
+            finally { _hookDepth--; }
         }
 
         private static bool ModifiersClear() => (GetKeyState(0x10) & 0x8000) == 0
             && (GetKeyState(0x11) & 0x8000) == 0 && (GetKeyState(0x12) & 0x8000) == 0
             && (GetKeyState(0x5b) & 0x8000) == 0 && (GetKeyState(0x5c) & 0x8000) == 0;
+        [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+        private delegate nint KeyboardHook(int code, nuint key, nint flags);
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern nint SetWindowsHookExW(int type, KeyboardHook callback, nint module, uint thread);
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool UnhookWindowsHookEx(nint hook);
+        [DllImport("user32.dll")]
+        private static extern nint CallNextHookEx(nint hook, int code, nuint key, nint flags);
         [DllImport("user32.dll")] private static extern short GetKeyState(int key);
 
         internal int Read(uint cookie)
@@ -343,6 +414,18 @@ internal static partial class TsfContextAdmission
             _inCleanup = true;
             try
             {
+                if (_keyboardHook != 0)
+                {
+                    if (!UnhookWindowsHookEx(_keyboardHook))
+                    {
+                        Result.HookRemoveError = Marshal.GetLastWin32Error();
+                        return false;
+                    }
+                    _keyboardHook = 0;
+                }
+                Result.SourceHookRemoved = true;
+                GC.KeepAlive(_keyboard);
+                _keyboard = null;
                 if (_advised)
                 {
                     Result.UnadviseHResult = _source!.UnadviseSink(_cookie);
@@ -445,19 +528,37 @@ internal static partial class TsfContextAdmission
         {
             get; set;
         }
-        public string DecisionMode { get; init; } = "Observe";
-        public int TestOfferCount
+        public bool SourceKeyboardRead
+        {
+            get; init;
+        }
+        public bool SourceHookInstalled
         {
             get; set;
         }
-        public int KeyDownCount
+        public int? HookInstallError
         {
             get; set;
         }
-        public bool KeyDownConsumed
+        public bool SourceHookRemoved
         {
             get; set;
         }
+        public int? HookRemoveError
+        {
+            get; set;
+        }
+        public int ReadHookEntry
+        {
+            get; set;
+        }
+        public int ReadHookExit
+        {
+            get; set;
+        }
+        public bool SourceHookReadObserved => SourceKeyboardRead && SelectionReadSucceeded
+            && ReadHookEntry > 0 && ReadHookEntry < RequestStart && RequestEnd < ReadHookExit;
+        public List<HookObservation> HookEvents { get; } = [];
         public bool RouteObserved
         {
             get; set;
@@ -576,7 +677,9 @@ internal static partial class TsfContextAdmission
         public List<KeyObservation> Events { get; } = [];
     }
 
-    internal sealed record KeyObservation(int Sequence, string Kind, uint Key, bool Repeat, uint Thread, bool Exact, bool Eaten, bool? ModifiersClear);
+    internal sealed record HookObservation(int Entry, int Exit, int Code, uint Key, long Bits,
+        uint Thread, bool Forwarded, long? NextResult);
+    internal sealed record KeyObservation(int Sequence, string Kind, uint Key, bool Repeat, uint Thread, bool Exact, bool Eaten);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct Selection
@@ -619,10 +722,11 @@ public sealed class TsfProbeCallbacks : ITsfProbeKeySink, ITsfProbeEditSession
     private int Key(string kind, nuint key, nint flags, out int eaten)
     {
         eaten = 0;
-        // The owner publishes true only after its final identity/reentrancy
-        // checks. Observe mode and every up callback still return false.
-        eaten = _owner.Key(kind, key, flags) ? 1 : 0;
-        return 0;
+        try
+        {
+            return _owner.Key(kind, key, flags);
+        }
+        finally { eaten = 0; }
     }
     public int DoEditSession(uint cookie) => _owner.Read(cookie);
 }

@@ -41,6 +41,7 @@ from support.translation_quality_capture import (  # noqa: E402
 
 HY = "hy-mt2-1-8b-q4-k-m"
 ARGOS = ["argos-zh-en", "argos-en-zh"]
+ENGLISH = ["zh_en", "en_zh"]
 DIRECTIONS = [
     "zh_ja",
     "ja_zh",
@@ -145,8 +146,27 @@ def prepare_cache(package, cache, *, cache_only=False):
     }
 
 
-def disk_budget(package, data):
-    """Reserve the complete five-transaction lifecycle, including combination capture."""
+def english_preview_available(package):
+    """Classify the actual package, never a worker's optional capability report."""
+    assets = hy_assets(package)
+    fixed = assets.read_json(package / "worker/native/hy/model.lock.json")
+    item = next((item for item in package_catalog(package).packages if item.id == HY), None)
+    if item is None:
+        raise ValueError("missing-hy-preview-catalog")
+    directions = [direction.id for direction in item.directions]
+    if (
+        fixed["package_id"] != HY
+        or fixed["directions"] != DIRECTIONS
+        or item.backend != "hy-mt-llama-cpu"
+        or item.version != fixed["version"]
+        or directions not in (DIRECTIONS, DIRECTIONS + ENGLISH)
+    ):
+        raise ValueError("unexpected-hy-preview-catalog")
+    return directions == DIRECTIONS + ENGLISH
+
+
+def disk_budget(package, data, *, english_preview=True):
+    """Reserve every immutable transaction, including the explicit preview supplement."""
     assets = hy_assets(package)
     fixed = assets.read_json(package / "worker/native/hy/model.lock.json")
     generation = (data / "typelay/components/current").resolve(strict=True)
@@ -155,7 +175,10 @@ def disk_budget(package, data):
     # Install, return, select, return retain four GGUF copies. Remove adds a
     # fifth Argos/runtime generation before cleanup. Reserve runtime fallback
     # and package relocation separately, rather than claiming a fixed peak.
-    desktop = 5 * original + 4 * model + 2 * 1024**3
+    # Ordinary catalog14 acceptance adds one complete supplement generation.
+    available = english_preview_available(package)
+    additional = int(english_preview and available)
+    desktop = (5 + additional) * original + (4 + additional) * model + 2 * 1024**3
     return {
         "currentGenerationBytes": original,
         "modelBytes": model,
@@ -219,8 +242,9 @@ def exercise_model_lifecycle(
     *,
     capture=None,
     combination=False,
+    english_preview=None,
 ):
-    """One existing five-transaction lifecycle; combination replaces all other inference."""
+    """Keep collection budgets separate from the ordinary opt-in acceptance path."""
     if combination and capture is None:
         raise ValueError("combination-only-requires-capture")
     argos = ready(ARGOS, ["zh_en", "en_zh"], "original-argos")
@@ -246,6 +270,8 @@ def exercise_model_lifecycle(
     hy = ready([HY], DIRECTIONS, "select-installed-hy")
     if combination:
         collect(("styled_glossary",), hy)
+    if capture is None and english_preview is not None:
+        english_preview()
     action("Argos · 中文 → English", "使用此模型")
     ready(ARGOS, ["zh_en", "en_zh"], "return-to-argos-before-remove")
     if combination:
@@ -309,7 +335,18 @@ def run(arguments):
     cache_identity = {
         path.name: (path.stat().st_size, path.stat().st_mtime_ns) for path in cache.iterdir()
     }
-    budget = disk_budget(package, Path(environment["XDG_DATA_HOME"]))
+    english = english_preview_available(package)
+    report["englishPreviewAcceptance"] = (
+        "not-run-quality-capture"
+        if capture is not None
+        else "not-run"
+        if english
+        else "not-offered-not-run"
+    )
+    report["advancedScopeAcceptance"] = "not-run-raw-scope-and-source-dispatch-unobserved"
+    budget = disk_budget(
+        package, Path(environment["XDG_DATA_HOME"]), english_preview=capture is None
+    )
     report["diskBudget"] = budget
     if (
         shutil.disk_usage(Path(environment["XDG_DATA_HOME"])).free
@@ -438,9 +475,7 @@ def run(arguments):
             found = []
             for pid in owned:
                 try:
-                    if capture is not None and (Path("/proc") / str(pid) / "exe").samefile(
-                        package / "app/TypeLay.Linux"
-                    ):
+                    if (Path("/proc") / str(pid) / "exe").samefile(package / "app/TypeLay.Linux"):
                         seen_hosts[pid] = process_identity(pid)
                     if worker_generation(pid, package, paths.data / "components") is not None:
                         found.append(pid)
@@ -515,7 +550,7 @@ def run(arguments):
             assert paths.settings.read_bytes() == saved_settings, "package action changed languages"
             if active == [HY]:
                 assert value["modelPackages"] == [
-                    {"id": HY, "version": fixed["version"], "directions": DIRECTIONS}
+                    {"id": HY, "version": fixed["version"], "directions": directions}
                 ]
             report["stages"].append(
                 {
@@ -527,7 +562,7 @@ def run(arguments):
             )
             return value
 
-        def collect_and_restart(names, expected, log):
+        def restart_same_generation(expected, log, *, collections=()):
             nonlocal process, previous_worker
             remaining()
             assert workers() == [previous_worker]
@@ -540,7 +575,7 @@ def run(arguments):
                 for pid, identity in seen_hosts.items()
                 if process_identity(pid) == identity
             }
-            assert len(original) == 1, "expected one precisely owned host before collection"
+            assert len(original) == 1, "expected one precisely owned host before restart"
             original[previous_worker] = seen_workers[previous_worker]
             original[process.pid] = process_identity(process.pid)
             assert all(identity is not None for identity in original.values())
@@ -564,7 +599,8 @@ def run(arguments):
 
             with exclusive_inventory(paths, generation), patch.dict(os.environ, environment):
                 unchanged()
-                for name in names:
+                for name in collections:
+                    assert capture is not None
                     remaining()
                     if name == "ordinary" and capture.comparison:
                         capture.run_comparison(generation, package / "worker/run_worker.py")
@@ -606,12 +642,15 @@ def run(arguments):
             unchanged()
             report["stages"].append(
                 {
-                    "stage": "restart-after-" + "-and-".join(names),
+                    "stage": "restart-after-" + "-and-".join(collections)
+                    if collections
+                    else "cold-start-english-preview",
                     "generation": generation.name,
                     "inventoryUnchanged": True,
                     "settingsUnchanged": True,
                     "originalProcessesExited": True,
                     "socketsRetired": True,
+                    "locksReacquired": True,
                     "workerCount": 1,
                     "activePackages": expected["modelPackages"],
                 }
@@ -853,13 +892,18 @@ def run(arguments):
                     pass  # Diagnostics must not replace the original visibility failure.
                 raise
 
-        def action(title, label):
+        def action(title, label, *, confirm=True):
             select_settings_page(process.pid, "应用支持", timeout=min(15, remaining()))
             activate(title + "：" + label, package_control=True)
             wait(
                 lambda: named(process.pid, label.rstrip("…") + "？"), "confirmation dialog missing"
             )
-            activate(gettext.dgettext("gtk30", "_OK").replace("_", ""))
+            activate(gettext.dgettext("gtk30", "_OK" if confirm else "_Cancel").replace("_", ""))
+            if not confirm:
+                wait(
+                    lambda: named(process.pid, label.rstrip("…") + "？") is None,
+                    "package confirmation was not dismissed",
+                )
 
         def prepare_install():
             assert control(paths, "settings") is True
@@ -872,32 +916,145 @@ def run(arguments):
                 "shipped Hy runtime unavailable",
             )
 
-        def preview():
+        def preview(source="我没有同意删除备份。", *, stage=None):
             request = {
                 "id": 1,
                 "operation": "translateEditorSnapshot",
                 "data": {
                     "documentId": str(uuid.uuid4()),
                     "version": 1,
-                    "selection": {"start": 0, "length": 11},
-                    "text": "我没有同意删除备份。",
+                    "selection": {"start": 0, "length": len(source.encode("utf-16-le")) // 2},
+                    "text": source,
                     "languageId": "plaintext",
                 },
             }
-            request["data"]["selection"]["length"] = (
-                len(request["data"]["text"].encode("utf-16-le")) // 2
-            )
+            attempt = None
+            if stage is not None:
+                attempt = {
+                    "stage": stage,
+                    "status": "incomplete",
+                    "request": request,
+                    "quality": "not-reviewed",
+                }
+                report["stages"].append(attempt)
             response = control(
                 paths, "translateEditorSnapshot", request, timeout=min(70, remaining())
             )
+            if attempt is not None:
+                attempt["response"] = response
             assert (
                 response["id"] == 1
                 and response["data"]["documentId"] == request["data"]["documentId"]
+                and response["data"]["version"] == request["data"]["version"]
+                and response["data"]["selection"] == request["data"]["selection"]
             )
             translated = response["data"]["translation"]
             assert translated.strip() and translated != request["data"]["text"]
             assert workers() == [previous_worker], "explicit preview spawned another worker"
-            report["singleZhFrInference"] = "translated-nonempty-different"
+            if stage is None:
+                report["singleZhFrInference"] = "translated-nonempty-different"
+            else:
+                attempt.update(status="passed", sourceBindingPreserved=True)
+
+        def english_acceptance(log):
+            nonlocal saved_settings
+            report["englishPreviewAcceptance"] = "incomplete"
+            generation = paths.models.parent.resolve(strict=True)
+            inventory = (generation / "models/installed.json").read_bytes()
+            original = json.loads(inventory)
+            assert original["activePackages"] == [HY]
+            assert json.loads(saved_settings)["Source"] == "zh"
+            assert json.loads(saved_settings)["Target"] == "fr"
+            worker = previous_worker
+            worker_identity = seen_workers[worker]
+            action("Hy-MT2 1.8B · 中文多语", "补充中英方向…", confirm=False)
+            assert paths.models.parent.resolve(strict=True) == generation
+            assert (generation / "models/installed.json").read_bytes() == inventory
+            assert paths.settings.read_bytes() == saved_settings
+            assert workers() == [worker] and process_identity(worker) == worker_identity
+            unchanged = state()
+            assert unchanged["modelReady"] and unchanged["modelDirections"] == DIRECTIONS
+            assert unchanged["setup"]["installation"] == "ready"
+            report["stages"].append({"stage": "cancel-english-preview", "unchanged": True})
+
+            action("Hy-MT2 1.8B · 中文多语", "补充中英方向…")
+            expected = ready([HY], DIRECTIONS + ENGLISH, "add-english-preview")
+            report["englishHandshake"] = "strict-host-accepted-14-directions"
+            upgraded = json.loads((paths.models / "installed.json").read_bytes())
+            anticipated = json.loads(inventory)
+            next(item for item in anticipated["packages"] if item["id"] == HY)["directions"] = (
+                DIRECTIONS + ENGLISH
+            )
+            assert upgraded == anticipated, (
+                "supplement changed another package, file identity or selection"
+            )
+            # The actual serving host is closed normally. Reopen this exact
+            # generation; ready() deliberately requires a NEW transaction instead.
+            restart_same_generation(expected, log)
+            select_settings_page(process.pid, "语言", timeout=min(15, remaining()))
+
+            normalized = None
+
+            def languages(source, target):
+                current = json.loads(paths.settings.read_text())
+                if current.get("Source") != source or current.get("Target") != target:
+                    return False
+                assert all(
+                    current.get(key) == value
+                    for key, value in json.loads(saved_settings).items()
+                    if key not in ("Source", "Target", "Direction")
+                ), "language action changed an original preference"
+                if normalized is not None:
+                    assert current == {
+                        **normalized,
+                        "Source": source,
+                        "Target": target,
+                        "Direction": {"Source": source, "Target": target},
+                    }, "language action changed another normalized preference"
+                return True
+
+            def target(index, label, source, destination):
+                node = wait(lambda: named(process.pid, "设置：目标语言"), "target picker missing")
+                node.clear_cache()
+                assert node.get_state_set().contains(Atspi.StateType.SHOWING)
+                assert node.get_state_set().contains(Atspi.StateType.SENSITIVE)
+                assert Atspi.Selection.select_child(node.get_selection_iface(), index)
+                wait(
+                    lambda: languages(source, destination),
+                    "language picker did not persist its choice",
+                )
+                selected = Atspi.Selection.get_selected_child(node.get_selection_iface(), 0)
+                assert selected is not None and selected.get_name() == label
+
+            # Existing target ordering starts with English, 中文, then the six
+            # installed Hy targets. Assert the actual selected label AND saved pair.
+            target(0, "English", "zh", "en")
+            normalized = {
+                key: value
+                for key, value in json.loads(paths.settings.read_text()).items()
+                if key not in ("Source", "Target", "Direction")
+            }
+            # A language choice must not opt into login launch, experimental
+            # writing, a new theme, or advanced translation preferences.
+            assert normalized["Startup"] is False
+            assert normalized["ExperimentalWriteback"] is False
+            assert normalized["Theme"] == "system"
+            assert normalized.get("Styles") is None and normalized.get("Glossary") is None
+            assert languages("zh", "en")
+            preview("请把窗户关上。", stage="preview-zh-en")
+            activate("交换语言")
+            wait(lambda: languages("en", "zh"), "language swap did not persist en/zh")
+            preview("Please send me the address.", stage="preview-en-zh")
+            activate("交换语言")
+            wait(lambda: languages("zh", "en"), "language swap did not restore the source")
+            target(4, "Français", "zh", "fr")
+            assert json.loads((paths.models / "installed.json").read_bytes()) == upgraded
+            assert paths.models.parent.resolve(strict=True).name == previous_generation
+            saved_settings = paths.settings.read_bytes()
+            report["englishPreviewAcceptance"] = "passed"
+            report["stages"].append(
+                {"stage": "restore-preview-languages", "source": "zh", "target": "fr"}
+            )
 
         try:
             with (arguments.output / "desktop.log").open("w") as log:
@@ -910,7 +1067,9 @@ def run(arguments):
                     action,
                     ready,
                     prepare_install,
-                    lambda names, expected: collect_and_restart(names, expected, log),
+                    lambda names, expected: restart_same_generation(
+                        expected, log, collections=names
+                    ),
                     preview,
                     lambda: subprocess.run(
                         ["grim", str(arguments.output / "hy-installed.png")],
@@ -921,6 +1080,7 @@ def run(arguments):
                     fixed["version"],
                     capture=capture,
                     combination=combination,
+                    english_preview=(lambda: english_acceptance(log)) if english else None,
                 )
                 if combination:
                     report["singleZhFrInference"] = "not-run-combination-only-eight-request-budget"
@@ -1017,19 +1177,20 @@ def run(arguments):
                 while surviving_workers() and time.monotonic() < cleanup_deadline:
                     time.sleep(0.05)
             report["workerExitConfirmed"] = not surviving_workers()
-            if capture is not None:
-                try:
-                    report["hostExitConfirmed"] = (
-                        process is not None
-                        and process.poll() is not None
-                        and all(
-                            process_identity(pid) != identity
-                            for pid, identity in seen_hosts.items()
-                        )
+            try:
+                report["hostExitConfirmed"] = (
+                    process is not None
+                    and process.poll() is not None
+                    and all(
+                        process_identity(pid) != identity for pid, identity in seen_hosts.items()
                     )
-                except (OSError, ValueError, IndexError):
-                    report["hostExitConfirmed"] = False
-                if not report["hostExitConfirmed"] or not capture.report["workerExitConfirmed"]:
+                )
+            except (OSError, ValueError, IndexError):
+                report["hostExitConfirmed"] = False
+            if not report["hostExitConfirmed"]:
+                report["status"] = "failed"
+            if capture is not None:
+                if not capture.report["workerExitConfirmed"]:
                     report["status"] = "failed"
                 report["collectionWallSeconds"] = round(capture.elapsed, 3)
                 report["nonCollectionSeconds"] = round(
@@ -1096,7 +1257,11 @@ if __name__ == "__main__":
         if args.data is None or args.remaining_seconds is None:
             parser.error("--check-budget requires --data and --remaining-seconds")
         report = {
-            **disk_budget(args.package.resolve(), args.data.resolve()),
+            **disk_budget(
+                args.package.resolve(),
+                args.data.resolve(),
+                english_preview=not args.collect_translation_quality,
+            ),
             "remainingSeconds": args.remaining_seconds,
             "requiredSeconds": 12 * 60,
             "freeBytes": shutil.disk_usage(args.data).free,

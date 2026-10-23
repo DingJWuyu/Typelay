@@ -727,6 +727,10 @@ internal static partial class HyPackageCheck
         {
             get; set;
         }
+        public string?[]? PublicPackageStatuses
+        {
+            get; set;
+        }
         public int ExpectedReadyRows { get; } = expectedReadyRows;
         public int? WorkerStarts
         {
@@ -823,9 +827,17 @@ internal static partial class HyPackageCheck
             }
             scene.Stage = "await-real-ready-package-rows";
             observation.Gate = "ready-rows";
-            observation.ReadyRowCount = await UiAsync(() => details.FindAll(TreeScope.Descendants, new AndCondition(
-                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text),
-                new PropertyCondition(AutomationElement.NameProperty, "当前 · 已就绪"))).Count, ct);
+            // Check the current public presentation, including installed coverage,
+            // through each package's actual status element. Inventory directions
+            // and worker identity have their own independent assertions below.
+            var language = ReadSettings(data) ?? throw new InvalidOperationException("settings-unreadable");
+            var presentation = ApplicationSupportPresentation.Preparation(new(true, true,
+                Packages: new(state.Generation, true, state.InstalledPackages, state.CurrentPackages,
+                    state.CurrentPackages, true, null, language.Source, language.Target, false)));
+            string[] expectedStatuses = expected.Select(id => presentation.PackageRows.Single(row => row.Id == id).AvailabilityText).ToArray();
+            var statuses = await UiAsync(() => SettingsPackageActions.ReadStatuses(details, expected), ct);
+            observation.PublicPackageStatuses = statuses.Select(text => text is { Length: > 256 } ? text[..256] : text).ToArray();
+            observation.ReadyRowCount = statuses.Where((text, index) => text == expectedStatuses[index]).Count();
             return observation.ReadyRowCount == expected.Length;
         }, ct);
         var store = new ModelInstallationStore(data, worker);

@@ -119,17 +119,17 @@ CI 在 Windows build 成功后、首门之后以独立 `continue-on-error: true`
 
 [CI475](https://github.com/DingJWuyu/Typelay/actions/runs/39961358090) 已实测 Tab/End 的 `selection-read-observed`：各一次同步读取，`RequestStart < EditEntry < EditExit < RequestEnd`，原键默认效果、文本不变、零提交和正常清理/退出均成立。Tab 读完后的默认切焦标记 `FocusInvalidated=true`，不是读取中身份失守。这个入口继续保持所有 `pfEaten=false`；无路由、拒锁或准入失败仍是当前条件下的终态，不修改它制造成功。真实 composition、旧排队键隔离、物理输入、唯一消费、原子写与第三方部署仍未证明，生产 WriteSupported/Practice 许可链保持不变。
 
-### 自有 Tab 的自然 KeyDown 裁决实验
+### 自有源键盘回调与 TSF 同步只读兼容性
 
-下一必要问题是 stock Edit 原泵能否把处理询问转成真正可拒绝或消费的源端回调，而不是继续扩大已成立的只读矩阵。单靠 OnTest 只有询问证据；[微软 TestKeyDown 示例](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfkeystrokemgr-testkeydown)在 Test 与 KeyDown 都返回成功且 true 后才停止普通处理，[Context OnKeyDown](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontextkeyeventsink-onkeydown)的输出也区分处理与未处理。它们给出实验预期，不代替当前 stock 桥的实测。
+当前普通源接受仍缺原键与文本事务的共同裁决点。Context sink 的占位/回退路径已被真实拒绝丢 Tab 否定，限制见[普通源接受问题](open-issues.md#正式-notepad-只有预览没有源接受能力)；这里改用已有源线程 WH_KEYBOARD 的独立原键旁路合同，而非继续诊断已否决的内部消息转换。最小实验只问该实际源回调栈能否同步读取精确 TSF context，同时保留原 Tab。日常频率未知，失败直接淘汰组合，成本限一个自有进程/一个按次，无新平台或控件矩阵。
 
-新增显式研究入口 `TsfKeyRoutingProbe.ObserveNaturalTabRejectionAndConsumption`，仅两个独立自有进程，各一次 Tab down/up，复用上述 manager/context、同步只读与清理代码。精确目标、无修饰键、非 repeat 的 OnTestKeyDown 才返回 true；此处不请求锁，也不把询问次数当事件身份。仅自然 OnKeyDown 申请一次 `SYNC | READ` 与真实 GetSelection。拒绝模式即使读成功仍 false，必须默认 A→B；消费模式仅完整读取且回调退出前身份稳定才 true，必须仍在 A 且选区保持。所有 up 恒 false。两个分支都要求实际 key-up、原文不变、零提交与完整退出。
+`TsfKeyRoutingProbe.ObserveSourceKeyboardSynchronousSelectionRead` 是独立显式入口，只发送一次 Tab down/up。复用首门的真实 manager/context/view、单次 Activate 与同 STA 配平，但不订阅任何 context key sink、不调用键管理器。仅当前自有 GUI 线程的 WH_KEYBOARD、HC_ACTION、非 repeat down、无修饰键且精确身份稳定时，申请一次 `TF_ES_SYNC | TF_ES_READ`，以真实 cookie 做 GetSelection。NOREMOVE、up、未知/重入均零请求；所有分支把原 code/wParam/lParam 交给 CallNextHookEx，并原样返回其值，零消费、零正文写、零提交。
 
-这是单独授权的测试夹具键裁决，不是生产许可：不写正文、不注册服务、不注入第三方、不手动调用 keystroke manager、不改原 IsDialogMessage 泵、不补发 down/重试。结果保存到 `artifacts/tsf-key-decision/<唯一目录>/result.json`，逐分支保留 OnTest/OnKey、只读 HRESULT/顺序、最终焦点与真实默认效果。缺自然 OnKeyDown、拒绝丢键或消费仍导航就是 `mechanism-not-admitted`，记录后停止后续分支；锁拒绝与前置缺失亦保留，不放宽条件。异常、身份失守或清理未证仍是 `probe-failed`。程序退出0只表示研究有完整结果，不表示该机制通过。
+[KeyboardProc](https://learn.microsoft.com/en-us/windows/win32/winmsg/keyboardproc)定义该旁路与消费合同；[RequestEditSession](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontext-requesteditsession)未保证任意 WH_KEYBOARD 栈可同步授锁，因此这是实际栈兼容性试验，不是官方通用写支持。阳性须满足 `hook-entry < request < edit-entry < edit-exit < request-end < hook-exit`、同线程/精确 context/view/焦点版本保持至下游 hook 返回、成功读取与 range 释放，且原 Tab 自然 A→B、原文与 A 选区保持、原 key-up 和正常退出可观察。拒锁、身份未知或原键不保留均停止该组合，不异步补偿、不重试。
 
-CI 在被动路由阶段之后用独立 `continue-on-error: true` 步骤运行此 selector，外限2分钟；逐分支汇总 route/session/read、自然 down、消费、实际焦点及 `mechanismStatus/stoppedAfterMode`，早期白名单与最终全包保留 runner.json/log 和唯一结果。它最多增加2分钟研究开销，原75分钟 job、模型准入、产品许可与各进程期限均不增加。
+回调全栈（含 CallNextHookEx）沿原外层关闭门防重入，先关闭资格、解除自己的 hook，再释放 COM/平衡 Activate；卸载失败保留 callback 与引用，并沿 owned 进程 fail-stop，不宣称清理成功。保留25秒宿主、29秒线程、30秒操作及4秒正常清理/5秒精确回收外限；显式 xUnit 60秒、CI 独立2分钟，原75分钟 job与模型预算不增。`artifacts/tsf-source-key-read/<唯一目录>/result.json` 与 runner.json/log 逐项保存 route/session/read、原键效果和退出，exit0只说明研究结果完整。
 
-本阶段尚未 Windows 执行；Linux 只能静态/托管编译，不声称红绿或 GUI 验证。保留同一每进程/整体截止与 owner 清理，默认产品回归不运行此入口。若两个终态都成立，也仅证明这个自有 profile/控件/原泵下的 Tab 裁决点；旧排队键、repeat/up 全周期、注入来源、真实 IME、原子写与外部部署继续未准入。当前门失败即停止这条具体机制，不追加平台、改泵或扩矩阵。
+尚未 Windows 实跑；Linux Compile/格式不证明 hook/COM 合同。即使阳性，旧排队键、注入身份、真实 IME、RW/原子写和第三方部署仍未证明。跨进程 hook 需要位数匹配且真实位于目标 GUI 线程的原生 DLL及另外授权，不能由当前自有线程实验推导普通 Notepad 支持。
 
 ## 自有双队列消费顺序诊断
 

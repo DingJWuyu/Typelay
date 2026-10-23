@@ -44,9 +44,11 @@ finalize 校验主包原始清单、构建提交、合作组件的固定来源�
 
 发布者显式准备 CPU 资产的入口是 `python eng/linux/hy/prepare_runtime.py --cache artifacts/linux/hy-cpu-download --output artifacts/linux/hy-cpu-runtime`。它只获取固定官方 `llama-b11717-bin-ubuntu-x64.tar.gz`，完整校验下载锁和生产17文件锁后，把实际 ELF 复制为普通文件；不带工具、服务器、其他后端或模型。`--offline` 仅复验已有精确缓存。完整候选包的发行回归设置 `TYPELAY_REQUIRE_HY_RUNTIME=1`，要求搬迁后的 native 可用并拒绝包内 GGUF。
 
-完整 Linux CI 在同一45分钟 job 中、已有 Argos 消费者结束后，仅运行一次 Hy 模型包链。CPU archive 与模型/许可证使用独立精确哈希 cache，无前缀回退；模型不进入源码或上传 artifact。尾段准入要求剩余12分钟，并按当前正式 Argos 代实际大小预算五次事务：当前代字节数 × 5 + 固定 Hy 字节数 × 5 + 2 GiB余量，包含独立下载缓存和移除前保留的恢复代。时间分配为：cache 恢复2分钟、准备3分钟、保存2分钟、GTK及清理5分钟。实际 GTK 工作仍限240秒，随后20秒退出清理；产品请求期限不变。空间和进程采样进入结果 JSON，不以准入预算冒充实测峰值。
+完整 Linux CI 在同一45分钟 job 中、已有 Argos 消费者结束后，仅运行一次 Hy 模型包链。CPU archive 与模型/许可证使用独立精确哈希 cache，无前缀回退；模型不进入源码或上传 artifact。尾段准入要求剩余12分钟，并按当前正式 Argos 代实际大小预算完整事务：旧十二方向/质量采集路径为当前代字节数 × 5 + 固定 Hy 字节数 × 5 + 2 GiB余量；普通十四方向目录增加一次明确补充，两个系数均为6。预算包含独立下载缓存和移除前保留的恢复代，不增加工作期限。时间分配为：cache 恢复2分钟、准备3分钟、保存2分钟、GTK及清理5分钟。实际 GTK 工作仍限240秒，随后20秒退出清理；产品请求期限不变。空间和进程采样进入结果 JSON，不以准入预算冒充实测峰值。
 
-本地执行该链先按现正式安装入口准备 Argos 与 CPython 3.13.16，再显式运行 `python tests/linux/hy_package_e2e.py --prepare-cache --package artifacts/linux/package --cache artifacts/linux/hy-model-cache`。随后在隔离 XDG 数据与缓存、现嵌套桌面环境中运行 `tests/linux/native_e2e.py --desktop --desktop-scope model-packages`。该场景从搬迁后的实际用户安装启动，操作 GTK 确认下载并使用、回切 Argos、选择已安装 Hy、再次回切与移除；观察实际包身份和十二方向 hello、一个中译法请求、退出及清理。固定模型缓存准备独立于 GTK 期限；禁止通过改安装标记或换成旧 Python 跳过正式安装。未实际运行的新场景保持未验收，单句成功也不代表十二方向质量或物理桌面验收。
+本地执行该链先按现正式安装入口准备 Argos 与 CPython 3.13.16，再显式运行 `python tests/linux/hy_package_e2e.py --prepare-cache --package artifacts/linux/package --cache artifacts/linux/hy-model-cache`。随后在隔离 XDG 数据与缓存、现嵌套桌面环境中运行 `tests/linux/native_e2e.py --desktop --desktop-scope model-packages`。该场景从搬迁后的实际用户安装启动，操作 GTK 确认下载并使用、回切 Argos、选择已安装 Hy、再次回切与移除；新装仍核十二方向 Ready，保留原中译法请求、退出及清理。实际包目录只接受完整十二或十四方向，异常/部分中英目录失败；旧十二方向报告中英未提供且未运行。十四方向普通验收在第二次选择 Hy 后追加真实取消（原代、库存、worker和设置不变）、确认补充、正常退出与同代冷启、语言页两向固定普通预览，再恢复原语言并完成原 Argos 回切/移除。冷启复核原 Host/worker 身份退出、socket退休及既有 desktop/install/use 锁可重取，不把重启当成新安装代。质量采集模式不追加中英事务或请求，原8/53等固定采集合同保持。固定模型缓存准备独立于 GTK 期限；禁止通过改安装标记或换成旧 Python 跳过正式安装。
+
+十四方向 Ready 只证明同包实际 worker 经 Host 严格握手获准，结果不声称抓取原始 scope 或验证高级源会话。普通 `translateEditorSnapshot` 本就不消费已存风格/术语；不能借它证明高级请求拒绝或无降级。精确 scope/高级拒绝由现 worker/Runtime 回归覆盖，GTK 已存偏好恢复由无模型托盘/设置回归覆盖，保持分层证据。新增完整包场景须由实际发行包运行；本地无模型回归不算桌面通过，两句译文不算质量或物理桌面验收。
 
 无模型的实际 ELF/搬迁校验可设置 `TYPELAY_HY_CPU_RUNTIME=<已有CPU目录>` 后运行 `python -m unittest discover -s tests/linux -p test_hy_runtime.py -v`；它只核库加载、导出和隔离，不调用 hy_open_v5 或模型推理。
 

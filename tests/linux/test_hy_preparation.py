@@ -150,10 +150,54 @@ class RuntimePreparationTests(unittest.TestCase):
             {
                 "currentGenerationBytes": 5,
                 "modelBytes": 1133092087,
-                "requiredDesktopFreeBytes": 6679852021,
-                "requiredCacheAndDesktopFreeBytes": 7812944108,
+                "requiredDesktopFreeBytes": 7812944113,
+                "requiredCacheAndDesktopFreeBytes": 8946036200,
             },
         )
+
+        self.assertEqual(
+            disk_budget(package, data, english_preview=False)["requiredDesktopFreeBytes"],
+            6679852021,
+        )
+
+    def test_shipped_english_preview_requires_both_directions_and_the_fixed_package(self):
+        import copy
+
+        import hy_package_e2e as lifecycle
+
+        package = self.root / "package"
+        package_worker(package)
+        path = package / "worker/model-catalog.json"
+        original = json.loads(path.read_text())
+        self.assertTrue(lifecycle.english_preview_available(package))
+        old = copy.deepcopy(original)
+        hy = next(item for item in old["packages"] if item["id"] == lifecycle.HY)
+        hy["directions"] = hy["directions"][:-2]
+        path.write_text(json.dumps(old))
+        self.assertFalse(lifecycle.english_preview_available(package))
+        data = self.root / "data"
+        generation = data / "typelay/components/original"
+        generation.mkdir(parents=True)
+        (generation / "runtime").write_bytes(b"abcde")
+        (generation.parent / "current").symlink_to("original")
+        self.assertEqual(disk_budget(package, data)["requiredDesktopFreeBytes"], 6679852021)
+        for defect in ("partial", "duplicate", "unknown", "version", "backend"):
+            with self.subTest(defect=defect):
+                value = copy.deepcopy(original)
+                item = next(item for item in value["packages"] if item["id"] == lifecycle.HY)
+                if defect == "partial":
+                    item["directions"].pop()
+                elif defect == "duplicate":
+                    item["directions"].append(item["directions"][-1])
+                elif defect == "unknown":
+                    item["directions"][0]["id"] = "unexpected"
+                elif defect == "version":
+                    item["version"] = "different"
+                else:
+                    item["backend"] = "argos"
+                path.write_text(json.dumps(value))
+                with self.assertRaises(ValueError):
+                    lifecycle.english_preview_available(package)
 
     def test_explicit_quality_admission_reserves_capture_cleanup_and_workflow_tail(self):
         package = self.root / "package"

@@ -26,6 +26,38 @@ namespace TypeLay.App.Tests;
 public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
 {
     [Fact]
+    public Task PackageReadinessIsReadFromItsExactPublicStatusElement() => desktop.RunAsync(async () =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-package-status-" + Guid.NewGuid().ToString("N"));
+        SettingsWindow? window = null;
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        limit.CancelAfter(TimeSpan.FromSeconds(10));
+        var ct = limit.Token;
+        try
+        {
+            var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
+            using var model = ProtocolModel(directory);
+            window = new SettingsWindow(settings, model, () => { }, installations: Installations(directory));
+            window.ShowPage("apps");
+            window.UpdateLayout();
+            nint handle = new WindowInteropHelper(window).Handle;
+            var root = await Task.Run(() => AutomationElement.FromHandle(handle), ct).WaitAsync(ct);
+            var details = await SettingsPackageActions.OpenDetailsAsync(root, _ => { }, ct);
+            string[] packages = ["argos-zh-en", "argos-en-zh", "hy-mt2-1-8b-q4-k-m", "missing-package"];
+            var before = await Task.Run(() => SettingsPackageActions.ReadStatuses(details, packages), ct).WaitAsync(ct);
+            Assert.Equal<string?>(["当前 · 尚未就绪", "当前 · 尚未就绪", "当前安装包不含可用的 Hy 运行组件", null], before.AsEnumerable());
+
+            await model.StartAsync().WaitAsync(ct);
+            Assert.True(model.Ready);
+            await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ContextIdle);
+            details = await SettingsPackageActions.OpenDetailsAsync(root, _ => { }, ct);
+            var ready = await Task.Run(() => SettingsPackageActions.ReadStatuses(details, packages), ct).WaitAsync(ct);
+            Assert.Equal<string?>(["当前 · 已就绪", "当前 · 已就绪", "当前安装包不含可用的 Hy 运行组件", null], ready.AsEnumerable());
+        }
+        finally { await ClosePreparation(window, directory); }
+    });
+
+    [Fact]
     public Task PackageDetailsReopenAfterSettingsSaveRebuildsApplicationsPage() => desktop.RunAsync(async () =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-package-refresh-" + Guid.NewGuid().ToString("N"));

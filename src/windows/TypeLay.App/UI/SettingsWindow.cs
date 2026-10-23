@@ -1511,7 +1511,9 @@ internal sealed class SettingsWindow : Window
             AutomationProperties.SetAutomationId(body, "ModelPackage_" + row.Id);
             body.Children.Add(UiTheme.Text(row.Title + (row.Preview ? " · 预览" : ""), 13, bold: true));
             body.Children.Add(UiTheme.Text(row.CoverageText + (row.DownloadText.Length > 0 ? " · " + row.DownloadText : ""), 12, true));
-            body.Children.Add(UiTheme.Text(row.AvailabilityText, 12, true));
+            var status = UiTheme.Text(row.AvailabilityText, 12, true);
+            AutomationProperties.SetAutomationId(status, "ModelPackage_" + row.Id + "_Status");
+            body.Children.Add(status);
             var actions = new WrapPanel();
             foreach (var action in row.Actions)
             {

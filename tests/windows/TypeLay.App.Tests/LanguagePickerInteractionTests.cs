@@ -28,7 +28,7 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         limit.CancelAfter(TimeSpan.FromSeconds(10));
         var ct = limit.Token;
-        await fixture.SwitchModelAsync(["zh_ja", "ja_zh", "zh_fr", "fr_zh"]);
+        await fixture.SwitchModelAsync(["hy-mt2-1-8b-q4-k-m"], ["zh_ja", "ja_zh", "zh_fr", "fr_zh"]);
         Assert.Contains("Français", Labels(Language(fixture.Window, source: true)));
         Assert.Contains("Français", Labels(Language(fixture.Window, source: false)));
         Assert.Equal("English（当前不可用）", Language(fixture.Window, source: false).SelectedItem?.ToString());
@@ -88,7 +88,7 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
     {
         using var fixture = new LanguageWindowFixture(quickPanel, protocolModel: true);
         string persisted = File.ReadAllText(fixture.Path);
-        await fixture.SwitchModelAsync(["zh_ja"]);
+        await fixture.SwitchModelAsync(["hy-mt2-1-8b-q4-k-m"], ["zh_ja"]);
         var source = Language(fixture.Window, source: true);
         var target = Language(fixture.Window, source: false);
         Assert.Equal(["Auto", "中文", "日本語"], Labels(source));
@@ -133,7 +133,7 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         {
             Target = "ja"
         });
-        await fixture.SwitchModelAsync(["zh_ja", "ja_zh"]);
+        await fixture.SwitchModelAsync(["hy-mt2-1-8b-q4-k-m"], ["zh_ja", "ja_zh"]);
         var combo = Language(fixture.Window, source: false);
         var choices = combo.ItemsSource;
         var editor = Editor(combo);
@@ -150,7 +150,7 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         AssertSearch(fixture.Window, source: false, editor);
         Assert.Same(choices, combo.ItemsSource);
         string persisted = File.ReadAllText(fixture.Path);
-        await fixture.SwitchModelAsync(["zh_fr"]);
+        await fixture.SwitchModelAsync(["hy-mt2-1-8b-q4-k-m"], ["zh_fr"]);
         Assert.Same(combo, Language(fixture.Window, source: false));
         Assert.Same(editor, Keyboard.FocusedElement);
         Assert.True(combo.IsDropDownOpen);
@@ -160,7 +160,7 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         Assert.False(Assert.IsType<ComboBoxItem>(combo.ItemContainerGenerator.ContainerFromItem(combo.SelectedItem)).IsEnabled);
         Assert.Equal(persisted, File.ReadAllText(fixture.Path));
 
-        await fixture.SwitchModelAsync(["zh_en", "en_zh"]);
+        await fixture.SwitchModelAsync(["argos-zh-en", "argos-en-zh"], ["zh_en", "en_zh"]);
         Assert.Equal(["中文", "English", "日本語（当前不可用）"], Labels(combo));
         Assert.Equal(persisted, File.ReadAllText(fixture.Path));
     });
@@ -518,9 +518,11 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         }
         // A framed process peer drives the real ModelClient and windows. This
         // checks language presentation only, not model loading or inference.
-        public async Task SwitchModelAsync(string[] directions)
+        public async Task SwitchModelAsync(string[] packageIds, string[] directions)
         {
-            var packages = ModelCatalog.Packages.Packages.Where(package => package.Directions.Any(direction => directions.Contains(direction.Id)))
+            // A direction can be offered by both families. Activate only the
+            // scenario's explicit selection, never every catalog match.
+            var packages = ModelCatalog.Packages.Packages.Where(package => packageIds.Contains(package.Id))
                 .Select(package => new
                 {
                     id = package.Id,
@@ -560,6 +562,8 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
                 () => ModelPublicationOutcome.Confirmed, _ => false, timeout.Token));
             await DrainAsync(Window);
             Assert.True(_model.Ready);
+            var identity = Assert.IsType<VerifiedModelIdentity>(_model.VerifiedIdentity);
+            Assert.Equal(packageIds.Order(), identity.Packages.Select(package => package.Id).Order());
             Assert.Equal(directions.Order(), _model.AvailableDirections.Order());
         }
         public async Task FailModelStartAsync()

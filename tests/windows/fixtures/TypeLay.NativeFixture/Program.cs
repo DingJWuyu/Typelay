@@ -45,13 +45,11 @@ internal static class Program
             _tsfProbeKey = args[2] == "Tab" ? 9u : 0x23u;
             return TsfContextAdmission.RunSta(RunTsfAdmissionWindows);
         }
-        if (args.Length == 3 && args[0] == "--stock-controls" && args[1] == "--tsf-key-decision"
-            && args[2] is "Reject" or "Consume")
+        if (args.Length == 2 && args[0] == "--stock-controls" && args[1] == "--tsf-source-key-read")
         {
             _tsfContextAdmission = true;
             _tsfProbeKey = 9;
-            _tsfDecisionMode = args[2] == "Reject"
-                ? TsfContextAdmission.KeyDecisionMode.Reject : TsfContextAdmission.KeyDecisionMode.Consume;
+            _tsfSourceKeyboardRead = true;
             return TsfContextAdmission.RunSta(RunTsfAdmissionWindows);
         }
         bool hookTest = args.Length == 1 && args[0] is "--hook-test" or "--hook-test-automation";
@@ -89,7 +87,7 @@ internal static class Program
     private static bool _tsfContextAdmission;
     private static int _tsfFocusVersion, _tsfObservations;
     private static uint _tsfProbeKey;
-    private static TsfContextAdmission.KeyDecisionMode _tsfDecisionMode;
+    private static bool _tsfSourceKeyboardRead;
     private static TsfContextAdmission.KeyProbe? _tsfKeyProbe;
     private static bool _tsfKeyResultWritten, _tsfCloseRequested;
     private static bool _sourceKeyboardProbeEnabled;
@@ -390,7 +388,7 @@ internal static class Program
         if (_tsfProbeKey != 0 && message == TsfContextAdmission.BeginKeyMessage
             && _tsfKeyProbe is null && StockFields.Contains((nint)wParam) && lParam == 0)
         {
-            _tsfKeyProbe = new(_root, (nint)wParam, _tsfProbeKey, () => _tsfFocusVersion, _tsfDecisionMode);
+            _tsfKeyProbe = new(_root, (nint)wParam, _tsfProbeKey, () => _tsfFocusVersion, _tsfSourceKeyboardRead);
             _tsfKeyProbe.Begin();
             Console.WriteLine(JsonSerializer.Serialize(new
             {

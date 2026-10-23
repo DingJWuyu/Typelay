@@ -8,6 +8,17 @@ namespace TypeLay.Windows.Testing;
 // regression. It only reveals existing details/actions; it never enables or invokes an action.
 internal static class SettingsPackageActions
 {
+    public static string?[] ReadStatuses(AutomationElement details, IEnumerable<string> packages) =>
+        packages.Select(package =>
+        {
+            var matches = details.FindAll(TreeScope.Descendants, new AndCondition(
+                new PropertyCondition(AutomationElement.AutomationIdProperty, "ModelPackage_" + package + "_Status"),
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text)));
+            if (matches.Count > 1)
+                throw new InvalidOperationException("package-status-ambiguous");
+            return matches.Count == 1 ? matches[0].Current.Name : null;
+        }).ToArray();
+
     public static Task<AutomationElement> OpenDetailsAsync(AutomationElement settings,
         Action<string> stage, CancellationToken ct) =>
         Task.Run(() => OpenDetailsCoreAsync(settings, stage, ct), ct).WaitAsync(ct);

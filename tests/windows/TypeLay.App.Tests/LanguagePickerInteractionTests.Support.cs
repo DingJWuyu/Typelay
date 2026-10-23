@@ -19,7 +19,7 @@ public sealed partial class LanguagePickerInteractionTests
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         limit.CancelAfter(TimeSpan.FromSeconds(10));
         var ct = limit.Token;
-        await fixture.SwitchModelAsync(["zh_ja", "ja_zh"]);
+        await fixture.SwitchModelAsync(["hy-mt2-1-8b-q4-k-m"], ["zh_ja", "ja_zh"]);
         var window = Assert.IsType<SettingsWindow>(fixture.Window);
         window.ShowPage("apps");
         await DrainAsync(window);
