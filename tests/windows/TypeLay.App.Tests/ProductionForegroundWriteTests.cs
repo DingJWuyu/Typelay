@@ -868,6 +868,7 @@ public sealed class ProductionForegroundWriteTests
         public Task OwnedControl(string kind) => _fixture.OwnedControl(kind, Token);
         public Task<JsonElement> FinishRetirement() => _fixture.FinishRetirement(Token);
         public nint Field(string name) => _fixture.Field(name);
+        public void RequestForeground(nint field) => _fixture.RequestForeground(field, Token);
         public Task Focus(nint field) => _fixture.Focus(field, Token);
         public async Task Prepare(nint field, string text, TextRange selection)
         {
@@ -1036,6 +1037,11 @@ public sealed class ProductionForegroundWriteTests
             string? line = await process.StandardOutput.ReadLineAsync(token);
             return JsonSerializer.Deserialize<JsonElement>(line ?? "null");
         }
+        // Explicit test-user navigation from the process that owns this child.
+        // A background fixture's own SetForegroundWindow may be refused. This
+        // request is not field-focus evidence; Focus retains its exact check.
+        public void RequestForeground(nint field, CancellationToken token) =>
+            NativeSourceSetup.RequestOwnedForeground(Root, field, process, token);
         public async Task Focus(nint field, CancellationToken token)
         {
             Assert.True(N.PostMessage(Root, N.FixtureFocus, (nuint)field, 0));

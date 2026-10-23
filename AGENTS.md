@@ -45,6 +45,8 @@ TypeLay 是跨平台本地输入框翻译浮层。先保持既有产品行为，
 
 ## Agent skills
 
+派发 Agent、选择模型与思考强度，或遇到待判断的问题、不确定性与取舍时，按[模型分工与 advisor](docs/agents/skills.md#模型分工与-advisor)执行；目标配置与实际配置分别如实记录。
+
 按 `docs/agents/skills.md` 的触发规则使用 `.agents/skills/`。model-invoke 的条件成立时读取对应 SKILL.md 及其要求的参考文件；user-invoke 仅在用户明确调用或明确请求该流程时使用。
 
 ### Issue tracker

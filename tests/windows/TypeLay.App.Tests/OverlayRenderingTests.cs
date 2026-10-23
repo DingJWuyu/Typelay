@@ -1021,8 +1021,25 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             });
             await ToggleExpansion(overlay, expand: true);
             overlay.Render(session, settings, false, context: context);
-            Assert.Equal(expanded, Bounds(overlay));
+            // Compare visible layout, not an earlier animation-frame sample:
+            // Rendering callbacks can invalidate layout before the frame is drawn.
+            overlay.UpdateLayout();
+            var reducedMotionExpanded = Bounds(overlay);
+            Assert.Equal(compact.Left, reducedMotionExpanded.Left);
+            Assert.Equal(compact.Width, reducedMotionExpanded.Width);
+            Assert.Equal(compact.Top + compact.Height, reducedMotionExpanded.Top + reducedMotionExpanded.Height);
+            Assert.True(reducedMotionExpanded.Height > compact.Height);
+            AssertNativeSize(overlay);
+            AssertEditorTextFullyVisible(editor);
+            foreach (var label in Descendants(overlay).OfType<TextBlock>().Where(label => label.IsVisible))
+                AssertTextFullyVisible(label, overlay);
             AssertDraft();
+            await ObserveRenderingFor(TimeSpan.Zero, () =>
+            {
+                overlay.UpdateLayout();
+                Assert.Equal(reducedMotionExpanded, Bounds(overlay));
+                AssertDraft();
+            });
             editor.Undo();
             Assert.Equal(preview, editor.Text);
             Assert.Equal(preview, session.Draft);

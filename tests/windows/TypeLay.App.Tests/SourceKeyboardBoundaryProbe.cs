@@ -205,14 +205,11 @@ public sealed class SourceKeyboardBoundaryProbe
             Assert.Equal(expectedAccept, sync.GetProperty("accepted").GetBoolean());
             Assert.Equal(expectedAccept ? 1 : 2, Number(sync, "status"));
             Assert.Equal(expectedAccept ? 1 : 0, Number(sync, "bodyChanges"));
-            Assert.Equal(expectedAccept ? 0 : 3, Number(snapshot, "before"));
-            Assert.Equal(expectedAccept ? 0 : 3, Number(snapshot, "after"));
+            AssertSynchronousInput(snapshot, expectedAccept);
             Assert.Equal(other, N.ReadText(source.B, Limits.MaxTextUnits));
             if (expectedAccept)
             {
                 Assert.Equal(1, Number(sync, "ime")); // Observed by native; never manufactured.
-                Assert.Equal(1, Number(sync, "repeatConsumed"));
-                Assert.Equal(1, Number(sync, "upConsumed"));
                 Assert.Equal("Synchronous source acceptance.", N.ReadText(source.A, Limits.MaxTextUnits));
                 Assert.Equal(new TextRange(30, 30), N.ReadSelection(source.A));
                 Assert.Equal(source.A, N.Focused().Control);
@@ -364,6 +361,44 @@ public sealed class SourceKeyboardBoundaryProbe
             }, new JsonSerializerOptions { WriteIndented = true }), CancellationToken.None);
         }
         Assert.True(error is null, $"{experiment}: {error}; results: {directory}");
+    }
+
+    private static void AssertSynchronousInput(JsonElement snapshot, bool accepted)
+    {
+        var events = snapshot.GetProperty("events").EnumerateArray().ToArray();
+        // Count each returned message once, not its earlier sync-native-return observation.
+        var keys = events.Where(e => e.GetProperty("Stage").GetString() == "sync-key-return").ToArray();
+        Assert.All(keys, e =>
+        {
+            Assert.Equal(0, Number(e, "Code"));
+            Assert.Equal(9, Number(e, "Key"));
+            Assert.Equal(accepted, e.GetProperty("Consumed").GetBoolean());
+        });
+        var bits = keys.Select(e => e.GetProperty("Bits").GetInt64()).ToArray();
+        var downs = bits.Where(value => (value & 0x80000000) == 0).ToArray();
+        // Windows may combine queued downs. The fixed input is still two down units
+        // and one up, whether delivered as 1+1 or one repeat-count-2 message.
+        // https://learn.microsoft.com/en-us/windows/win32/inputdev/about-keyboard-input#repeat-count
+        Assert.Equal(2L, downs.Sum(value => value & 0xffff));
+        Assert.All(downs, value => Assert.InRange(value & 0xffff, 1L, 2L));
+        long up = Assert.Single(bits, value => (value & 0x80000000) != 0);
+        Assert.Equal(1L, up & 0xffff);
+        Assert.Equal(up, bits[^1]);
+        Assert.Equal(0L, downs[0] & 0x40000000);
+        Assert.All(downs.Skip(1), value => Assert.NotEqual(0L, value & 0x40000000));
+        Assert.Equal(keys.Length, Number(snapshot, "actions"));
+        Assert.Equal(accepted ? 1 : 0, Number(snapshot, "consumed"));
+        var sync = snapshot.GetProperty("synchronous");
+        // These diagnostics count later callbacks, not repeat units in the first down.
+        Assert.Equal(accepted ? downs.Length - 1 : 0, Number(sync, "repeatConsumed"));
+        Assert.Equal(accepted ? 1 : 0, Number(sync, "upConsumed"));
+        long[] dispatched = accepted ? [] : bits;
+        Assert.Equal(dispatched.Length, Number(snapshot, "before"));
+        Assert.Equal(dispatched.Length, Number(snapshot, "after"));
+        Assert.Equal(dispatched, events.Where(e => e.GetProperty("Stage").GetString() == "before-dialog")
+            .Select(e => e.GetProperty("Bits").GetInt64()).ToArray());
+        Assert.Equal(dispatched, events.Where(e => e.GetProperty("Stage").GetString() == "after-dialog-or-dispatch")
+            .Select(e => e.GetProperty("Bits").GetInt64()).ToArray());
     }
 
     private static async Task Arm(ProductionForegroundWriteTests.Desktop source, int mode)

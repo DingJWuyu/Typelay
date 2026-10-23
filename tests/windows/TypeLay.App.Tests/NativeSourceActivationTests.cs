@@ -24,6 +24,7 @@ public sealed class NativeSourceActivationTests
         await using var source = await ProductionForegroundWriteTests.Desktop.Start();
         await using var receiver = await ProductionForegroundWriteTests.Desktop.Start();
         await receiver.Prepare(receiver.A, "Other application", new(0, 0));
+        source.RequestForeground(source.A);
         await source.Prepare(source.A, "pre old post", new(0, 0));
         Assert.NotEqual(source.FixtureProcessId, receiver.FixtureProcessId);
         using var hook = new KeyboardHook(allowInjectedInput: true);
@@ -52,6 +53,7 @@ public sealed class NativeSourceActivationTests
 
             // The user changes apps after acceptance while the same Tab is held.
             // B has no TypeLay source grant and receives ordinary Windows input.
+            receiver.RequestForeground(receiver.A);
             await receiver.Focus(receiver.A);
             SendTab(false);
             SendTab(true);
@@ -69,6 +71,7 @@ public sealed class NativeSourceActivationTests
                 Assert.True(retired.Quiet);
                 Assert.True(retired.Claimed);
                 Assert.Equal(WriteStatus.Verified, retired.Receipt!.Status);
+                source.RequestForeground(source.A);
                 await source.Focus(source.A);
                 N.Send(source.A, 0x00c7); // Explicit native Undo, never automatic recovery.
                 Assert.Equal("pre old post", N.ReadText(source.A, Limits.MaxTextUnits));
