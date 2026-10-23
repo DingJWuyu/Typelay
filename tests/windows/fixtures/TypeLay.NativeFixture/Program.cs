@@ -33,6 +33,11 @@ internal static class Program
         if (args.Length == 2 && args[0] == "--source-consumption-order"
             && args[1] is "completion" or "deadline")
             return SourceKeyboardProbe.RunConsumptionOrder(args[1]);
+        if (args.Length == 2 && args[0] == "--stock-controls" && args[1] == "--tsf-context-admission")
+        {
+            _tsfContextAdmission = true;
+            return TsfContextAdmission.RunSta(RunTsfAdmissionWindows);
+        }
         bool hookTest = args.Length == 1 && args[0] is "--hook-test" or "--hook-test-automation";
         bool ownedControls = (args.Length == 4 || args.Length == 5) && args[0] == "--owned-controls"
             && Path.IsPathFullyQualified(args[1]) && Guid.TryParse(args[2], out _ownedConnection)
@@ -65,6 +70,8 @@ internal static class Program
     }
 
     private static string? _sourceSynchronousPath;
+    private static bool _tsfContextAdmission;
+    private static int _tsfFocusVersion, _tsfObservations;
     private static bool _sourceKeyboardProbeEnabled;
     private static SourceKeyboardProbe? _sourceKeyboardProbe;
     private static string? _ownedPath;
@@ -110,6 +117,26 @@ internal static class Program
     }
 
     [SupportedOSPlatform("windows")]
+    private static int RunTsfAdmissionWindows()
+    {
+        try
+        {
+            return RunWindows(false, false, true);
+        }
+        finally
+        {
+            // Covers startup failures as well as the message loop. The stock
+            // controls must be destroyed before RunSta balances COM ownership.
+            if (_root != 0 && N.IsWindow(_root))
+            {
+                KillTimer(_root, 4);
+                if (!N.DestroyWindow(_root))
+                    throw new InvalidOperationException("TSF fixture window cleanup failed.");
+            }
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
     private static int RunWindows(bool hookTest, bool automation, bool stockControls)
     {
         N.SetProcessDpiAwarenessContext((nint)(-4));
@@ -140,7 +167,7 @@ internal static class Program
         _barrierEntered = barrierEntered;
         _barrierRelease = barrierRelease;
         _barrierDrained = barrierDrained;
-        using var sourceReentry = stockControls && _ownedPath is null
+        using var sourceReentry = stockControls && _ownedPath is null && !_tsfContextAdmission
             ? new SourceInstallationReentry(_root, barrierEntered!, barrierRelease!) : null;
         var fields = new List<FixtureField>();
         Add("A / single line", "a", "你好，我想测试 TypeLay。", 0, FieldAccess.Supported, 50);
@@ -177,6 +204,8 @@ internal static class Program
         N.ShowWindow(_root, 5);
         N.SetForegroundWindow(_root);
         N.SetFocus((nint)fields[0].Hwnd);
+        if (_tsfContextAdmission && SetTimer(_root, 4, 25_000, 0) == 0)
+            throw new InvalidOperationException("TSF admission deadline could not be installed.");
         var descriptor = new FixtureDescriptor(Environment.ProcessId, (long)_root, (long)_submit,
             Guid.NewGuid(), fields.ToArray());
         if (hookTest)
@@ -220,7 +249,11 @@ internal static class Program
                     SourceDispatchProbe.AfterDispatch(_root);
             }
         }
-        finally { _sourceKeyboardProbe?.Dispose(); _hookHarness?.Dispose(); }
+        finally
+        {
+            _sourceKeyboardProbe?.Dispose();
+            _hookHarness?.Dispose();
+        }
 
         void Add(string caption, string name, string text, uint editStyle, FieldAccess classification, int y, int height = 32)
         {
@@ -284,7 +317,25 @@ internal static class Program
         // Stock Edit reports its actual focus through the normal parent
         // notification. Do not subclass it or synthesize IME/lifetime evidence.
         if (message == 0x0111 && ((wParam >> 16) & 0xffff) == 0x0100 && StockFields.Contains(lParam))
+        {
             _lastFocusedField = lParam; // EN_SETFOCUS
+            if (_tsfContextAdmission)
+                _tsfFocusVersion++;
+        }
+        if (_tsfContextAdmission && message == TsfContextAdmission.ObserveMessage
+            && ++_tsfObservations <= 4 && StockFields.Contains((nint)wParam) && lParam == 0)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(TsfContextAdmission.Observe(
+                _root, (nint)wParam, () => _tsfFocusVersion)));
+            Console.Out.Flush();
+            return 1;
+        }
+        if (_tsfContextAdmission && message == 0x0113 && wParam == 4)
+        {
+            KillTimer(_root, 4);
+            N.DestroyWindow(_root);
+            return 0;
+        }
         if (message == 0x0007 && _lastFocusedField != 0 && N.IsWindow(_lastFocusedField))
         {
             // Controlled host policies exercise activation that does not restore

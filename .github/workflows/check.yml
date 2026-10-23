@@ -157,6 +157,64 @@ jobs:
           @{ kind = 'mechanism-experiment'; status = $status; exitCode = $code; expectedRows = 6; observedModes = $modes; productAcceptance = $false; sourceSha = $env:GITHUB_SHA } | ConvertTo-Json | Set-Content "$directory/runner.json"
           if (-not $complete -or $failed.Count -ne 0) { exit 1 }
           exit $code
+      # Research admission only: neither a product gate nor evidence of key/write support.
+      - name: Observe existing TSF context in an owned standard Edit
+        id: windows-tsf-context-admission
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $directory = 'artifacts/tsf-context-admission'
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          $runner = [ordered]@{ kind = 'research-admission'; status = 'running'; sourceSha = $env:GITHUB_SHA; exitCode = $null; productAcceptance = $false; resultCount = 0; resultMissing = $null; resultStatus = $null; processExited = $null; normalShutdown = $null; observationCount = 0; denial = $null; error = $null }
+          $runner | ConvertTo-Json | Set-Content "$directory/runner.json"
+          New-Item -ItemType File -Path "$directory/runner.log" -Force | Out-Null
+          try {
+            & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.TsfContextAdmissionProbe.ObserveExistingContextOfSelfOwnedStockEdit' 2>&1 | Tee-Object -FilePath "$directory/runner.log"
+            $runner.exitCode = $LASTEXITCODE
+            $files = @(Get-ChildItem -LiteralPath $directory -Filter result.json -File -Recurse)
+            $runner.resultCount = $files.Count
+            $runner.resultMissing = $files.Count -eq 0
+            if ($files.Count -eq 0) {
+              $runner.status = 'missing-result'
+            } elseif ($files.Count -ne 1) {
+              $runner.status = 'nonunique-result'
+            } else {
+              $runner.status = 'invalid-result'
+              $row = Get-Content -LiteralPath $files[0].FullName -Raw | ConvertFrom-Json
+              $runner.resultStatus = $row.status
+              $runner.processExited = $row.processExited
+              $runner.normalShutdown = $row.normalShutdown
+              $observations = @($row.observations)
+              $runner.observationCount = $observations.Count
+              $runner.denial = if ($observations.Count -gt 0) { $observations[-1].Denial } else { $null }
+              $unreleased = @($observations | Where-Object { $_.OwnedReferencesReleased -isnot [bool] -or -not $_.OwnedReferencesReleased })
+              $positive = @($observations | Select-Object -Skip 1 | Where-Object { $_.Stage -eq 'exact_existing_context_observed' -and $null -eq $_.Denial -and $_.SameContextOnRecheck -eq $true -and $_.ViewWindow -eq $_.ExpectedField -and $_.FocusVersionBefore -eq $_.FocusVersionAfter })
+              $negativeControl = $observations.Count -ge 2 -and $observations[0].Denial -eq 'native_focus_mismatch' -and $observations[0].ManagerPresent -eq $false
+              if ($row.processExited -isnot [bool] -or -not $row.processExited -or $row.normalShutdown -isnot [bool] -or -not $row.normalShutdown -or $unreleased.Count -ne 0) {
+                $runner.status = 'cleanup-unconfirmed'
+              } elseif ($row.productionReadiness -ne $false -or $row.diagnosticOnly -ne $true -or -not $negativeControl -or $observations.Count -gt 4) {
+                $runner.status = 'invalid-observations'
+              } elseif ($runner.exitCode -eq 0 -and $row.status -eq 'existing_context_observed_not_keyboard_or_write_support' -and $observations.Count -eq 4 -and $positive.Count -eq 3) {
+                $runner.status = 'existing-context-observed-not-keyboard-or-write-support'
+              } elseif ($runner.exitCode -ne 0 -and $row.status -eq 'existing_context_not_admitted' -and -not [string]::IsNullOrEmpty($runner.denial) -and $runner.denial -ne 'observation_exception' -and $positive.Count -eq ($observations.Count - 2)) {
+                $runner.status = 'prerequisite-not-met'
+              } else {
+                $runner.status = 'probe-failed'
+              }
+            }
+          } catch {
+            $runner.error = $_.Exception.GetType().Name
+            if ($runner.status -eq 'running') { $runner.status = 'runner-failed' }
+          } finally {
+            $runner | ConvertTo-Json -Depth 5 | Set-Content "$directory/runner.json"
+          }
+          "TSF research admission: $($runner.status); exitCode=$($runner.exitCode). This is not product acceptance or a model verdict." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          if ($runner.status -ne 'existing-context-observed-not-keyboard-or-write-support') { exit 1 }
+          exit 0
       - name: Verify Windows behavior and contracts
         id: windows-contracts
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
@@ -395,6 +453,7 @@ jobs:
             artifacts/source-ll-timeout/
             artifacts/source-keyboard-boundary/
             artifacts/source-synchronous-acceptance/
+            artifacts/tsf-context-admission/
             artifacts/source-consumption-order/**/result.json
             artifacts/controller-trace.jsonl*
             artifacts/continuous-translation/result.json

@@ -78,6 +78,24 @@ if ($LASTEXITCODE -ne 0) { throw '同步源实验失败，保留结果，不重�
 
 该实验不安装第三方源组件，不涉及 Notepad，不提供物理键、真实中文组合态及完整生产许可关联的验收证据。与旧 LL 写后超时反例比较的是同步源内机制，不代表 hook/TSF 自动解决普通输入框支持；原生产写回门继续关闭。既有只读边界与双队列实验保持原覆盖，不扩展跨应用尾键要求。
 
+## 自有标准 Edit 的既有 TSF context 准入
+
+`ObserveExistingContextOfSelfOwnedStockEdit` 是普通 xUnit 回归默认不运行的第一阶段必要条件检查，不是键盘或写支持。它复用 NativeFixture 的未 subclass stock Edit，但在独立 STA GUI 线程创建和运行；普通 fixture 的 MTA、消息泵和生产路径不改。仅查询该线程的 `TF_GetThreadMgr → GetFocus → GetTop → GetActiveView → GetWnd`，要求 HWND 恰为当前自有字段，并重核 canonical IUnknown 身份、原生焦点和本次焦点通知版本。不给 root、NULL、base 或 parent 作替代映射。
+
+```powershell
+& ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe `
+  -explicit only -method 'TypeLay.App.Tests.TsfContextAdmissionProbe.ObserveExistingContextOfSelfOwnedStockEdit'
+if ($LASTEXITCODE -ne 0) { throw '既有 TSF context 未准入或清理失败，保留结果，不自动重跑。' }
+```
+
+先用错误字段负控验证焦点拒绝，再做 A/B/A 三次真实控件焦点观察；任一必要条件缺失即保留原结果并失败，不继续扩展。没有 Broker、输入 Hook、软件注键、服务注册、profile 修改、TSF Activate、sink、textstore、edit session 或正文写入。只释放本次查询取得的 COM 引用，不 FinalRelease 共享 RCW；STA 上平衡 COM 初始化，正常关闭窗口后确认精确子进程退出，失败仍由原进程 owner 有界回收。宿主25秒定时关闭、线程29秒外限、测试操作30秒及60秒 xUnit 外限；执行器还须设置外层总截止。结果在 `artifacts/tsf-context-admission/<唯一目录>/result.json`，不覆盖失败；未实际执行的键路由、同步只读锁及真实 composition 明列 `not-tested`。
+
+CI 在 Windows build 成功后、既有同步源实验之后，以独立 `continue-on-error: true` 研究步骤显式调用上述唯一方法，外限2分钟，不加入默认产品测试或扩大场景。既有 always artifact 保存该目录的 `runner.log`、`runner.json` 和唯一原始 `result.json`。runner 记录源码 SHA、原退出码、文件数量/缺失状态、原实验状态、退出/清理证据及观察数量；必要条件未满足单列 `prerequisite-not-met`，程序失败、缺失/重复结果和清理未确认分别保留。步骤的非零退出不是产品或模型否决，零退出也只代表既有 context 首门观察，不是键盘或写能力通过；尚在 `running` 或退出码为空的记录属于未完成。
+
+[微软原文](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-tf_getthreadmgr)允许 `S_OK` 但 manager 为 NULL；[GetWnd](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontextview-getwnd)也不保证非 NULL 或精确字段 HWND。早期[微软 TSF 文章](https://learn.microsoft.com/en-us/archive/msdn-magazine/2007/july/speak-up-support-dictation-with-text-services-framework)说明普通 Edit 可以由系统提供 TSF 支持，故值得核验，但不是当前系统配置的成功保证。此入口尚未取得 Windows 实测结果；Linux 托管编译不能证明 COM ABI 或标准控件实际可用。
+
+仅三次精确 context 观察及清理全通过，才进入下一独立阶段：在真实 context 上订阅观察 sink，始终 `pfEaten=false`，分别报告实际 test/key 回调；需要 client id 时明确记录 Activate 前后及同线程配对 Deactivate。同步只读锁、真实 composition/focus 失效、旧排队键、注入拒绝和第三方部署仍须各自证明。首门缺失、错误 view 或不能清理即停止这条具体条件下的后续实现，不用合成 context、改泵或注册服务补成成功；新路线须经 root 重新裁决，不推论 TSF 全部不可行。
+
 ## 自有双队列消费顺序诊断
 
 这是独立于上述三个源键盘探针的入口，仅保留实际检索返回与原期限的局部机制检查，当前边界见 [B-01](architecture.md#b-01非原子写回与按键所有权)；不能把诊断成功解释为接受安全。只有新机制或明确回归目的才重跑。执行须在独占、已解锁的 Windows x64 测试桌面、现有 Release 构建完成后显式进行：
