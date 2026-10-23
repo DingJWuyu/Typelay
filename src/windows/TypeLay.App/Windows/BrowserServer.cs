@@ -199,6 +199,7 @@ internal sealed class BrowserPeer : IDisposable
         get;
     }
     public int BrowserProcessId => _browser.ProcessId;
+    internal long? CommandOwnerQueueAgeMs => _incoming.CommandOwnerQueueAgeMs;
     public bool Alive => Volatile.Read(ref _disposed) == 0 && _host.Alive && _browser.Alive;
     internal BrowserPeer(NamedPipeServerStream pipe, BrowserPeerIdentity host, BrowserPeerIdentity browser,
         string origin, Dispatcher dispatcher, Action<BrowserEvent> message)
@@ -219,7 +220,8 @@ internal sealed class BrowserPeer : IDisposable
                         return;
                 }
                 _message(new(this, name, data, route));
-            }, Dispose);
+            }, Dispose, string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TYPELAY_TRACE"))
+                ? null : () => WindowsInterruptClock.NowMs);
         _dispatcher.ShutdownStarted += Shutdown;
     }
     private void Shutdown(object? sender, EventArgs args)
@@ -312,9 +314,14 @@ internal sealed class BrowserPeerInbox
     private readonly Func<Action, Task> _dispatch;
     private readonly Action<string, JsonElement, BrowserRoute> _message;
     private readonly Action _closeConnection;
+    private readonly Func<long>? _diagnosticNow;
+    internal long? CommandOwnerQueueAgeMs
+    {
+        get; private set;
+    }
     private readonly object _gate = new();
     private readonly Dictionary<string, PendingReply> _pending = new(StringComparer.Ordinal);
-    private readonly Queue<(long Sequence, string Name, JsonElement Data, BrowserRoute Route)> _events = new();
+    private readonly Queue<(long Sequence, string Name, JsonElement Data, BrowserRoute Route, long? ReceivedAtMs)> _events = new();
     private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private long _receivedSequence, _appliedSequence;
     private int _outstandingEvents;
@@ -332,12 +339,13 @@ internal sealed class BrowserPeerInbox
     }
 
     public BrowserPeerInbox(string origin, Func<Action, Task> dispatch,
-        Action<string, JsonElement, BrowserRoute> message, Action closeConnection)
+        Action<string, JsonElement, BrowserRoute> message, Action closeConnection, Func<long>? diagnosticNow = null)
     {
         _origin = origin;
         _dispatch = dispatch;
         _message = message;
         _closeConnection = closeConnection;
+        _diagnosticNow = diagnosticNow;
     }
 
     public async Task<BrowserReply?> RequestAsync(string id, string op, Func<bool> enqueue, int timeoutMs)
@@ -425,7 +433,8 @@ internal sealed class BrowserPeerInbox
             }
             else if (message.TryGetProperty("event", out var kind) && kind.GetString() is { } name)
             {
-                _events.Enqueue((++_receivedSequence, name, data, route));
+                _events.Enqueue((++_receivedSequence, name, data, route,
+                    name == "command-owner" ? _diagnosticNow?.Invoke() : null));
                 // Keep this one overflow frame too: it may already be an
                 // accepted receipt. Seal immediately; storage is at most 65,
                 // including any event currently executing on the UI thread.
@@ -482,7 +491,7 @@ internal sealed class BrowserPeerInbox
         int remaining = EventCapacity;
         while (true)
         {
-            (long Sequence, string Name, JsonElement Data, BrowserRoute Route) message;
+            (long Sequence, string Name, JsonElement Data, BrowserRoute Route, long? ReceivedAtMs) message;
             bool deliver;
             lock (_gate)
             {
@@ -506,7 +515,13 @@ internal sealed class BrowserPeerInbox
             try
             {
                 if (deliver)
+                {
+                    // Diagnostic only: the existing FIFO and preceding-event
+                    // barrier still determine delivery, never this age.
+                    CommandOwnerQueueAgeMs = message.ReceivedAtMs is { } received && _diagnosticNow is { } now
+                        ? Math.Clamp(now() - received, 0, 10000) : null;
                     _message(message.Name, message.Data, message.Route);
+                }
             }
             catch (Exception error)
             {

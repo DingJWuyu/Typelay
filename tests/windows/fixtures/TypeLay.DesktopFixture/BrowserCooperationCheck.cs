@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Windows.Automation;
 using TypeLay.App;
 using TypeLay.Runtime;
+using TypeLay.Windows;
 using TypeLay.Windows.Testing;
 
 // Runs the shipped App and Chrome-owned native host. This process never hosts a
@@ -201,7 +202,8 @@ internal static partial class BrowserCooperationCheck
                     operation,
                     scene = scene.Name,
                     stage = scene.Stage,
-                    atMs = elapsed.ElapsedMilliseconds
+                    atMs = elapsed.ElapsedMilliseconds,
+                    interruptAtMs = WindowsInterruptClock.NowMs
                 }) + Environment.NewLine);
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException)
@@ -377,6 +379,7 @@ internal static partial class BrowserCooperationCheck
                 var sourceBounds = await FocusCommandFieldAsync(cdp!, windows!, commandSettings!, ct);
                 direct.Stage = "prepare-final-selection";
                 await PrepareInputAsync(cdp!, windows!, "Keep [", "] unchanged", selectSource: true, ct);
+                Record("final-selection-complete", direct);
                 // Read the same public current-field readiness after typing and
                 // selection, not before preparation can outlive its observation.
                 direct.Stage = "wait-public-command-ready";
@@ -395,6 +398,7 @@ internal static partial class BrowserCooperationCheck
                 var sourceBounds = await FocusCommandFieldAsync(cdp!, windows!, commandSettings!, ct);
                 background.Stage = "prepare-final-text";
                 await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
+                Record("final-text-complete", background);
                 background.Stage = "wait-public-command-ready";
                 await WaitPublicCommandReadyAsync(commandSettings!, windows!, sourceBounds, ct);
                 background.Stage = "single-f10-full-text";

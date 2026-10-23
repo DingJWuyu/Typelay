@@ -129,6 +129,35 @@ public sealed class BrowserContractTests
             token,
             observedAtMs = observed
         });
+    [Theory(Timeout = 5000)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task BrowserOwnerAckQueueAgeIsDiagnosticOnlyAndPreservesTheReplyBarrier(bool tracing)
+    {
+        long now = 100;
+        BrowserIngress? active = null;
+        var delivered = new List<(string Name, long? Age)>();
+        await using var transport = await BrowserIngress.CreateAsync(name =>
+            delivered.Add((name, active!.Inbox.CommandOwnerQueueAgeMs)),
+            tracing ? () => Interlocked.Read(ref now) : null);
+        active = transport;
+        var reply = transport.Request("describe", "describe-age");
+        await transport.Event("command-owner");
+        await transport.Event("input");
+        await transport.Reply("describe-age", "observed");
+        await transport.WaitUntilReadAsync();
+        Assert.False(reply.IsCompleted);
+        Assert.Empty(delivered);
+        Interlocked.Exchange(ref now, 145);
+        transport.Ui.RunNext();
+        Assert.Equal("observed", (await reply)!.Data.GetString());
+        Assert.Equal(2, delivered.Count);
+        Assert.Equal("command-owner", delivered[0].Name);
+        Assert.Equal(tracing ? (long?)45 : null, delivered[0].Age);
+        Assert.Equal("input", delivered[1].Name);
+        Assert.Null(delivered[1].Age); // An unrelated event cannot reuse an ACK age.
+    }
+
     [Fact(Timeout = 5000)]
     public async Task BrowserReaderCapturesReceiptsWhileUiIsBlockedAndDrainsEarlierEventsFirst()
     {
@@ -360,15 +389,15 @@ public sealed class BrowserContractTests
         {
             get; set;
         }
-        private BrowserIngress(NamedPipeServerStream server, NamedPipeClientStream client, Action<string> receive)
+        private BrowserIngress(NamedPipeServerStream server, NamedPipeClientStream client, Action<string> receive, Func<long>? diagnosticNow)
         {
             _server = server;
             Client = client;
-            Inbox = new("chrome-extension://" + Extension + "/", Ui.Post, (name, _, _) => receive(name), Owner.Cancel);
+            Inbox = new("chrome-extension://" + Extension + "/", Ui.Post, (name, _, _) => receive(name), Owner.Cancel, diagnosticNow);
             _observed = new(server);
             Reader = Inbox.ReadAsync(_observed, () => true, Owner.Token);
         }
-        public static async Task<BrowserIngress> CreateAsync(Action<string> receive)
+        public static async Task<BrowserIngress> CreateAsync(Action<string> receive, Func<long>? diagnosticNow = null)
         {
             string name = "typelay-inbound-" + Guid.NewGuid().ToString("N");
             var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
@@ -384,7 +413,7 @@ public sealed class BrowserContractTests
                 client.Dispose();
                 throw;
             }
-            return new(server, client, receive);
+            return new(server, client, receive, diagnosticNow);
         }
         public Task<BrowserReply?> Request(string op, string id, int timeoutMs = 3000) =>
             Inbox.RequestAsync(id, op, () => true, timeoutMs);
@@ -532,32 +561,50 @@ public sealed class BrowserContractTests
     }
 
     [Fact]
-    public void BrowserTraceNoiseCannotConsumeReservedOwnerCommandAndReceiptBudgets()
+    public void BrowserTraceInputStormPreservesDecisionsAndMarksEveryExhaustedBudget()
     {
         var budget = new BrowserTraceBudget();
-        for (int index = 0; index < 160; index++)
-            Assert.True(budget.TryTake("browser-observation"));
-        Assert.False(budget.GeneralAvailable);
-        Assert.True(budget.CommandsAvailable);
+        int records = 0, markers = 0;
+        void Exhaust(string operation, string category, int limit)
+        {
+            for (int index = 0; index < limit; index++)
+            {
+                Assert.True(budget.TryTake(operation, out var exhausted));
+                records++;
+                if (index == limit - 1)
+                {
+                    Assert.Equal(category, exhausted);
+                    markers++;
+                }
+                else
+                    Assert.Null(exhausted);
+            }
+            for (int index = 0; index < 1000; index++)
+                Assert.False(budget.TryTake(operation, out _));
+        }
+        Exhaust("browser-input", "input", 32);
+        Assert.False(budget.InputsAvailable);
+        Assert.True(budget.GeneralAvailable);
         Assert.True(budget.OwnersAvailable);
-        string[] owners = ["browser-owner", "browser-page-owner", "browser-tray"];
-        for (int index = 0; index < 64; index++)
-            Assert.True(budget.TryTake(owners[index % owners.Length]));
-        Assert.False(budget.OwnersAvailable);
-        foreach (string operation in owners)
-            Assert.False(budget.TryTake(operation));
         Assert.True(budget.CommandsAvailable);
-        Assert.False(budget.TryTake("browser-direct-unrecognized"));
-        string[] commands = ["browser-command-approved", "browser-command-path", "browser-tab", "browser-direct-Verified",
-            "browser-direct-RejectedBeforeMutation", "browser-direct-OutcomeUnknown",
-            "browser-accept-Verified", "browser-accept-RejectedBeforeMutation", "browser-accept-OutcomeUnknown"];
-        for (int index = 0; index < 32; index++)
-            Assert.True(budget.TryTake(commands[index % commands.Length]));
+        Exhaust("browser-observation", "general", 128);
+        Assert.False(budget.GeneralAvailable);
+        Assert.True(budget.OwnersAvailable);
+        Assert.True(budget.CommandsAvailable);
+        Exhaust("browser-owner", "owner", 64);
+        Assert.False(budget.OwnersAvailable);
+        foreach (string operation in new[] { "browser-page-owner", "browser-tray" })
+            Assert.False(budget.TryTake(operation, out _));
+        Exhaust("browser-command-path", "command", 32);
         Assert.False(budget.CommandsAvailable);
-        foreach (string operation in commands)
-            Assert.False(budget.TryTake(operation));
-        Assert.False(budget.TryTake("browser-observation"));
+        foreach (string operation in new[] { "browser-command-approved", "browser-tab", "browser-direct-Verified",
+            "browser-direct-RejectedBeforeMutation", "browser-direct-OutcomeUnknown", "browser-accept-Verified",
+            "browser-accept-RejectedBeforeMutation", "browser-accept-OutcomeUnknown", "browser-direct-unrecognized" })
+            Assert.False(budget.TryTake(operation, out _));
+        Assert.Equal(256, records);
+        Assert.Equal(4, markers);
     }
+
     [Fact]
     public void RouteRequiresAuthenticatedExtensionTopDocumentAndNormalWebScheme()
     {

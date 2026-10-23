@@ -8,19 +8,29 @@ namespace TypeLay.App;
 // while retaining the original process-wide maximum of 256 trace entries.
 internal sealed class BrowserTraceBudget
 {
-    private int _general, _owners, _commands;
-    public bool GeneralAvailable => Volatile.Read(ref _general) < 160;
+    private int _general, _inputs, _owners, _commands;
+    public bool GeneralAvailable => Volatile.Read(ref _general) < 128;
+    public bool InputsAvailable => Volatile.Read(ref _inputs) < 32;
     public bool OwnersAvailable => Volatile.Read(ref _owners) < 64;
     public bool CommandsAvailable => Volatile.Read(ref _commands) < 32;
-    public bool TryTake(string operation)
+    // Each category reserves its last record for an explicit exhaustion marker.
+    // Input storms cannot hide subsequent describe/capture or owner decisions.
+    public bool TryTake(string operation, out string? exhaustedCategory)
     {
         bool command = operation is "browser-command-approved" or "browser-command-path" or "browser-tab"
             or "browser-direct-Verified" or "browser-direct-RejectedBeforeMutation" or "browser-direct-OutcomeUnknown"
             or "browser-accept-Verified" or "browser-accept-RejectedBeforeMutation" or "browser-accept-OutcomeUnknown";
         bool owner = operation is "browser-owner" or "browser-page-owner" or "browser-tray";
-        ref int count = ref (command ? ref _commands : ref (owner ? ref _owners : ref _general));
-        int maximum = command ? 32 : owner ? 64 : 160;
-        return Volatile.Read(ref count) < maximum && Interlocked.Increment(ref count) <= maximum;
+        bool input = operation == "browser-input";
+        ref int count = ref (command ? ref _commands : ref (owner ? ref _owners : ref (input ? ref _inputs : ref _general)));
+        int maximum = command || input ? 32 : owner ? 64 : 128;
+        exhaustedCategory = null;
+        if (Volatile.Read(ref count) >= maximum)
+            return false;
+        int taken = Interlocked.Increment(ref count);
+        if (taken == maximum)
+            exhaustedCategory = command ? "command" : owner ? "owner" : input ? "input" : "general";
+        return taken <= maximum;
     }
 }
 
@@ -172,6 +182,7 @@ internal sealed partial class BrowserInput
     private Dictionary<ObservationStage, ObservationTraceKey>? _lastObservationTrace;
     private bool OwnerTraceEnabled => !string.IsNullOrWhiteSpace(_tracePath) && TraceBudget.OwnersAvailable;
     private bool TraceEnabled => !string.IsNullOrWhiteSpace(_tracePath) && TraceBudget.GeneralAvailable;
+    private bool InputTraceEnabled => !string.IsNullOrWhiteSpace(_tracePath) && TraceBudget.InputsAvailable;
     private InputCapture CaptureRejected(ObservationReason reason, BrowserReply? reply = null,
         bool? editor = null, long? observationAgeMs = null)
     {
@@ -193,7 +204,8 @@ internal sealed partial class BrowserInput
     private void TraceObservation(ObservationStage stage, ObservationReason reason, JsonElement value = default,
         bool? editor = null, bool? textChanged = null, bool? focusChanged = null, long? observationAgeMs = null)
     {
-        if (stage == ObservationStage.None || !(TraceEnabled || OwnerTraceEnabled))
+        bool observationEnabled = stage == ObservationStage.Input ? InputTraceEnabled : TraceEnabled;
+        if (stage == ObservationStage.None || !(observationEnabled || OwnerTraceEnabled))
             return;
         try
         {
@@ -204,7 +216,7 @@ internal sealed partial class BrowserInput
             var capture = DiagnosticReason(String(diagnostics, "lastCaptureReason"));
             var clock = DiagnosticReason(String(diagnostics, "lastClockReason"));
             TracePageOwner(diagnostics);
-            if (!TraceEnabled)
+            if (!observationEnabled)
                 return;
             var key = new ObservationTraceKey(reason, editor, textChanged, focusChanged, capture, clock);
             _lastObservationTrace ??= new();
@@ -221,7 +233,7 @@ internal sealed partial class BrowserInput
             if (duplicate)
                 return;
             _lastObservationTrace[stage] = key;
-            Trace("browser-observation", new
+            Trace(stage == ObservationStage.Input ? "browser-input" : "browser-observation", new
             {
                 stage,
                 reason,
@@ -287,6 +299,33 @@ internal sealed partial class BrowserInput
         bool RefreshRequested, bool RegistrationDeferred, bool RestorationAttempted, bool? PolicyReady, bool? Released,
         string PageStage, string PageReason, PageReason ClockReason);
     private Dictionary<OwnerStage, OwnerTraceKey>? _lastOwnerTrace;
+    private long _inputEvents, _textEvents, _focusEvents, _nonTextNonFocusEvents;
+    private long? _lastInputAtMs, _lastTextAtMs, _lastFocusAtMs, _lastNonTextNonFocusAtMs;
+    private void ObserveInputDiagnostic(bool textChanged, bool focusChanged)
+    {
+        if (string.IsNullOrWhiteSpace(_tracePath))
+            return;
+        long now = WindowsInterruptClock.NowMs;
+        _inputEvents++;
+        _lastInputAtMs = now;
+        if (textChanged)
+        {
+            _textEvents++;
+            _lastTextAtMs = now;
+        }
+        if (focusChanged)
+        {
+            _focusEvents++;
+            _lastFocusAtMs = now;
+        }
+        // This includes selection, beforeinput and IME events. It is not proof
+        // of a selection event and does not inspect a field or change authority.
+        if (!textChanged && !focusChanged)
+        {
+            _nonTextNonFocusEvents++;
+            _lastNonTextNonFocusAtMs = now;
+        }
+    }
     private (string Stage, string Reason, PageReason Clock)? _lastPageOwnerTrace;
     private void TraceOwner(OwnerStage stage, OwnerReason reason, CommandOwner? owner = null, long? now = null,
         bool? released = null, JsonElement page = default)
@@ -322,6 +361,18 @@ internal sealed partial class BrowserInput
                 grantRemainingMs = TraceDelta(owner?.MaxIssuedExpiry, now),
                 policyRemainingMs = TraceDelta(owner?.PendingPolicy?.ExpiresAt, now),
                 ackAgeMs = TraceDelta(now, owner?.LastGrantAt),
+                ackQueueAgeMs = stage is OwnerStage.InitialAck or OwnerStage.RenewAck or OwnerStage.RetireAck
+                    ? owner?.Peer.CommandOwnerQueueAgeMs : null,
+                inputEvents = _inputEvents,
+                textEvents = _textEvents,
+                focusEvents = _focusEvents,
+                nonTextNonFocusEvents = _nonTextNonFocusEvents,
+                lastInputAtMs = _lastInputAtMs,
+                lastTextAtMs = _lastTextAtMs,
+                lastFocusAtMs = _lastFocusAtMs,
+                lastNonTextNonFocusAtMs = _lastNonTextNonFocusAtMs,
+                policyPhase = owner?.PolicyRefresh.DiagnosticPhase,
+                policyCycleAgeMs = TraceDelta(now ?? WindowsInterruptClock.NowMs, owner?.PolicyRefresh.DiagnosticCycleStartedAt),
                 pageStage,
                 pageReason,
                 clockReason
@@ -402,10 +453,18 @@ internal sealed partial class BrowserInput
     }
     private static void TraceCore(string path, string operation, object? detail)
     {
-        if (!TraceBudget.TryTake(operation))
+        if (!TraceBudget.TryTake(operation, out var exhaustedCategory))
             return;
         try
         {
+            if (exhaustedCategory is not null)
+            {
+                operation = "browser-trace-budget-exhausted";
+                detail = new
+                {
+                    category = exhaustedCategory
+                };
+            }
             File.AppendAllText(path, JsonSerializer.Serialize(new
             {
                 atMs = WindowsInterruptClock.NowMs,

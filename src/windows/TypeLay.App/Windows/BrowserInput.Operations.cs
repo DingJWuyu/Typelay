@@ -1062,6 +1062,7 @@ internal sealed partial class BrowserInput
         if (name == "input" || name == "destroy")
         {
             bool focusChanged = Boolean(value, "focusChanged");
+            ObserveInputDiagnostic(Boolean(value, "textChanged"), focusChanged);
             if ((focusChanged || name == "destroy") && _commandOwner is { } owner && owner.Peer == peer && owner.Route == route)
                 InvalidateCommandPolicy(owner);
             if (focusChanged && Boolean(value, "focused") && _commandOwner is not { Active: true }
