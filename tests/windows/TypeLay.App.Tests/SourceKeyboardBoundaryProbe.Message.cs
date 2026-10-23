@@ -77,8 +77,8 @@ public sealed partial class SourceKeyboardBoundaryProbe
             var message = snapshot.GetProperty("sourceMessage");
             // Check the cached actual module path only after the original retrieval
             // and tail barrier. This adds no query to the 100ms admission window.
-            Assert.True(string.Equals(ownerLibrary, message.GetProperty("modulePath").GetString(),
-                StringComparison.OrdinalIgnoreCase));
+            Assert.Equal(ownerLibrary, message.GetProperty("modulePath").GetString(),
+                StringComparer.OrdinalIgnoreCase);
             Assert.NotEqual(0L, message.GetProperty("moduleBase").GetInt64());
             bool accepted = mode == 11;
             Assert.Equal(1, Number(message, "firstDownAttempts"));
