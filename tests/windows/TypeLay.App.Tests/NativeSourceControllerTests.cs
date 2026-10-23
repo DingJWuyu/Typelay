@@ -219,8 +219,25 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             var view = new View();
             using var controller = new SessionController(settings, new Translation(), view, hook, input, loop);
             await controller.StartAsync();
-            await Until(() => { loop.Advance(); return view.CanAccept; }, native.Token);
+            await Until(() =>
+            {
+                // This case needs one isolated Unknown write, not concurrent
+                // observation. Once install starts, only repaint its original
+                // ACK; another Tick can queue a capture behind that install.
+                if (broker.Installs == 0)
+                    loop.Advance();
+                else
+                    controller.RefreshAcceptancePresentation();
+                return view.CanAccept;
+            }, native.Token);
             rpcTrace.Checkpoint("ready-loop-exited");
+            var preparedRpc = rpcTrace.Snapshot();
+            // Do not wait for or drain a capture started by the final Tick.
+            // Pending counts caller lifetimes, not exact native sent messages;
+            // ResponseAtMs distinguishes a post-response hold if this fails.
+            Assert.True(preparedRpc.Pending == 0,
+                preparedRpc.Pending != 0
+                    ? $"Unknown setup still has outstanding RPC work: {JsonSerializer.Serialize(preparedRpc)}." : null);
             var installedPermit = broker.InstallationPermit!;
             var original = installedPermit.Plan.Expected;
             nint cookie = N.GetProp(native.A, "TypeLay.NativeInput.Lifetime.v2");

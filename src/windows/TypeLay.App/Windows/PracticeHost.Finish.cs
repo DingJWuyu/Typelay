@@ -28,6 +28,36 @@ internal sealed partial class PracticeHost
     private sealed record FinishRequest(CompletionEvidence Evidence, long Sequence);
     private CompletionEvidence? _completion;
     private FinishRequest? _finishRequest;
+    private int _finishTraceCount;
+
+    // Existing fixture trace only. Writer callers pass immutable message facts;
+    // they never inspect dispatcher-owned completion state. No I/O here.
+    private void TraceFinish(string stage, long sequence, string? status = null, bool? value = null)
+    {
+        try
+        {
+            if (_monitor is not { OwnedEditorTraceEnabled: true } monitor)
+                return;
+            int order = Interlocked.Increment(ref _finishTraceCount);
+            if (order > 12)
+                return;
+            monitor.QueueOwnedEditorTrace(new
+            {
+                atMs = WindowsInterruptClock.NowMs,
+                operation = "owned-finish-host",
+                order,
+                stage = order == 12 ? "dropped" : stage,
+                sequence,
+                status = order == 12 ? null : status,
+                value = order == 12 ? null : value,
+                droppedAtLeast = order == 12 ? 1 : 0
+            });
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { }
+    }
+
+    private static bool IsFinishReply(PracticeMessage message) =>
+        message.Kind is "finish-saved" or "finish-retry" or "finish-denied" or "completion-clear";
 
     private void BindCompletion(SessionController session)
     {
@@ -131,14 +161,19 @@ internal sealed partial class PracticeHost
         if (message.Kind != "finish")
             return false;
         _dispatcher.VerifyAccess();
+        TraceFinish("received", message.Sequence);
         if (_finishRequest is not null)
+        {
+            TraceFinish("duplicate", message.Sequence);
             return true; // One save is in flight; duplicates cannot perform it again.
+        }
         if (_disposed || _disconnecting || _nativeActive || _pending is not null || _session is null
             || _completion is not { Acknowledged: true, Presented: true } completion
             || !ReferenceEquals(completion.Child, _child) || completion.Marker != message.Completion
             || message.Connection != _connection || message.Run != _runId || message.Sequence != _sequence
             || completion.RetirementSequence != _sequence || !_session.CanRetryAutomaticPracticeSave(_runId))
         {
+            TraceFinish("denied", message.Sequence);
             Enqueue(new("finish-denied", _connection, _runId, _sequence, Completion: message.Completion));
             return true;
         }
@@ -147,10 +182,13 @@ internal sealed partial class PracticeHost
         bool saved = false;
         try
         {
+            TraceFinish("save-start", message.Sequence);
             saved = await _session.FinishAutomaticPracticeAsync(message.Run);
+            TraceFinish("save-returned", message.Sequence, value: saved);
         }
         catch (SettingsPersistenceException)
         {
+            TraceFinish("save-persistence-error", message.Sequence);
             // Runtime keeps the body-free completion, with all write authority
             // already retired. Do not End the run or ask the user to repeat it.
         }

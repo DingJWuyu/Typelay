@@ -409,25 +409,6 @@ internal static class Program
             N.SetFocus((nint)wParam);
             return 0;
         }
-        if (message == N.FixtureSetForegroundField)
-        {
-            nint field = (nint)wParam;
-            uint thread = GetCurrentThreadId();
-            if (hwnd != _root || lParam != 0 || _ownedPath is not null || !StockFields.Contains(field)
-                || N.GetAncestor(_root, 2) != _root || N.GetAncestor(field, 2) != _root
-                || N.GetWindowThreadProcessId(_root, out uint rootProcess) != thread
-                || rootProcess != (uint)Environment.ProcessId
-                || N.GetWindowThreadProcessId(field, out uint fieldProcess) != thread
-                || fieldProcess != (uint)Environment.ProcessId
-                || GetFocus() != field || N.GetForegroundWindow() != _root)
-                return (nint)(uint)N.FixtureForegroundResult.PreconditionRejected;
-            // Run the original single activation on its owning GUI thread.
-            // Returning from this handler witnesses the call, not a lasting
-            // foreground state; the test independently checks raw HWND/focus.
-            return (nint)(uint)(N.SetForegroundWindow(field)
-                ? N.FixtureForegroundResult.SetForegroundAccepted
-                : N.FixtureForegroundResult.SetForegroundRejected);
-        }
         if (message == 0x0111 && (wParam & 0xffff) == 200 && ((wParam >> 16) & 0xffff) == 0)
         {
             _submits++;
@@ -549,6 +530,5 @@ internal static class Program
     [DllImport("user32.dll")] private static extern nuint SetTimer(nint hwnd, nuint id, uint interval, nint callback);
     [DllImport("user32.dll")][return: MarshalAs(UnmanagedType.Bool)] private static extern bool KillTimer(nint hwnd, nuint id);
     [DllImport("user32.dll")] private static extern nint GetFocus();
-    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
     [DllImport("kernel32.dll")] private static extern uint WaitForSingleObject(nint handle, uint milliseconds);
 }

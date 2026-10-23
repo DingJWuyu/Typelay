@@ -11,6 +11,32 @@ internal static partial class Program
     private static long _completionSequence;
     private static bool _completionReady, _finishRetry, _sendFinish, _finishVisible;
     private static string? _finishNotice;
+    private static readonly List<object> FinishTraces = [];
+    private static int _finishTraceCount;
+    private static bool _finishCloseObserved;
+
+    // GUI-owned, bounded, content-free observations. The existing outer-loop
+    // trace flush owns I/O, never the stock button's window procedure.
+    private static void TraceFinish(string stage, string? status = null)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(EditorTracePath) || _finishTraceCount >= 12)
+                return;
+            int order = ++_finishTraceCount;
+            FinishTraces.Add(new
+            {
+                atMs = WindowsInterruptClock.NowMs,
+                operation = "owned-finish-source",
+                order,
+                stage = order == 12 ? "dropped" : stage,
+                sequence = _sequence,
+                status = order == 12 ? null : status,
+                droppedAtLeast = order == 12 ? 1 : 0
+            });
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { }
+    }
 
     private static bool CompletionControlVisible => _completionReady && _completion is not null;
 
@@ -77,6 +103,7 @@ internal static partial class Program
         }
         if (message.Kind is not ("completion-clear" or "finish-saved" or "finish-retry" or "finish-denied"))
             return false;
+        TraceFinish("reply-received", message.Kind);
         if (!_retired || message.Connection != _connection || message.Run != _run || message.Sequence != _sequence
             || _completionSequence != _sequence || message.Completion is null)
             throw new InvalidDataException("practice-completion-order");
@@ -102,6 +129,8 @@ internal static partial class Program
         _finishRequest = null;
         if (message.Kind == "finish-saved")
         {
+            _finishCloseObserved = true;
+            TraceFinish("saved-close");
             ResetCompletion();
             _automaticProgress = null;
             ClosePractice();
@@ -131,7 +160,11 @@ internal static partial class Program
     {
         if (!CompletionControlVisible || !_retired || _finishRequest is not null || !_progressConnected
             || _closePending || _restartPending || _completionSequence != _sequence)
+        {
+            TraceFinish("queue-rejected");
             return;
+        }
+        TraceFinish("queue-accepted");
         _finishRequest = _completion;
         _sendFinish = true;
         _finishNotice = null;
@@ -147,7 +180,12 @@ internal static partial class Program
         if (_finishRequest is not { } requested || requested != _completion || !CompletionControlVisible
             || !_retired || !_progressConnected || _closePending || _restartPending
             || _completionSequence != _sequence)
+        {
+            TraceFinish("flush-rejected");
             return;
+        }
+        TraceFinish("request-write-start");
         WriteReply(new("finish", _connection, _run, _sequence, Completion: requested));
+        TraceFinish("request-write-ended");
     }
 }

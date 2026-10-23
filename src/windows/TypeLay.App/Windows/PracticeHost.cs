@@ -298,6 +298,8 @@ internal sealed partial class PracticeHost : IDisposable
         }
         bool accepted = _updates?.Writer.TryWrite(queued) == true;
         trace?.Published(queued, accepted);
+        if (IsFinishReply(message))
+            TraceFinish("reply-queued", message.Sequence, message.Kind, accepted);
         if (!accepted && _child is not null && _communication is not null)
             CommunicationFailed(_child, _communication.Token);
     }
@@ -320,6 +322,8 @@ internal sealed partial class PracticeHost : IDisposable
                 if (traceFence)
                     NotifyFence(update.Editing!.Intent, OwnedEditorEvent.FenceSendStarted);
                 writerTrace?.Started(queued);
+                if (IsFinishReply(update))
+                    TraceFinish("write-start", update.Sequence, update.Kind);
                 try
                 {
                     await PracticeProgressPipe.WriteAsync(stream, update, deadline.Token).ConfigureAwait(false);
@@ -327,9 +331,13 @@ internal sealed partial class PracticeHost : IDisposable
                 catch
                 {
                     writerTrace?.Finished(queued, false);
+                    if (IsFinishReply(update))
+                        TraceFinish("write-ended", update.Sequence, update.Kind, false);
                     throw;
                 }
                 writerTrace?.Finished(queued, true);
+                if (IsFinishReply(update))
+                    TraceFinish("write-ended", update.Sequence, update.Kind, true);
                 if (traceFence)
                     NotifyFence(update.Editing!.Intent, OwnedEditorEvent.FenceSendCompleted);
             }
@@ -494,6 +502,8 @@ internal sealed partial class PracticeHost : IDisposable
                     continue;
                 if (message.Kind == "closed")
                 {
+                    if (Volatile.Read(ref _finishTraceCount) != 0)
+                        TraceFinish("closed-ack", message.Sequence);
                     _closedConfirmed = true; // Native retirement and view closure precede this ACK.
                     ConfirmNativeRetirement();
                     _session?.StopSession();
@@ -551,6 +561,8 @@ internal sealed partial class PracticeHost : IDisposable
             return;
         if (_editorAttempt is { } editor)
             TraceOwnedEditor(editor.Control.Intent, OwnedEditorEvent.PipeFailure, OwnedEditorReason.Connection);
+        if (Volatile.Read(ref _finishTraceCount) != 0)
+            TraceFinish("communication-ended", _sequence);
         _session?.StopSession();
         Retire();
         // EOF queues native retirement on the child's outer loop. This is not

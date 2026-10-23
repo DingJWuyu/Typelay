@@ -440,9 +440,13 @@ internal static partial class Program
                 _owned.Retire();
                 _retired = true;
                 ReleaseAcceptance();
+                if (_finishTraceCount != 0)
+                    TraceFinish("close-dispatch", _finishCloseObserved ? "saved" : "other");
                 if (_progressConnected && _sequence != 0)
                     Reply("closed");
                 Native.DestroyWindow(_window);
+                if (_finishTraceCount != 0)
+                    TraceFinish("close-returned", _window == 0 ? "destroyed" : "present");
                 return;
             }
             if (Volatile.Read(ref _disconnected) == 1)
@@ -651,6 +655,8 @@ internal static partial class Program
         catch (Exception error) when (error is IOException or InvalidDataException or InvalidOperationException or OperationCanceledException
             or ArgumentException or OverflowException)
         {
+            if (_finishTraceCount != 0)
+                TraceFinish("control-error", error.GetType().Name);
             ResetCompletion();
             _owned.Retire();
             _retired = true;
@@ -1049,7 +1055,7 @@ internal static partial class Program
 
     private static void FlushEditorTrace()
     {
-        if (EditorTraces.Count == 0 && AcceptanceRejectionTraces.Count == 0 && _installTrace is null)
+        if (EditorTraces.Count == 0 && AcceptanceRejectionTraces.Count == 0 && _installTrace is null && FinishTraces.Count == 0)
             return;
         try
         {
@@ -1076,6 +1082,8 @@ internal static partial class Program
                     guiDequeuedAtMs = entry.GuiDequeuedAtMs,
                     guiQueueDelayMs = entry.GuiDequeuedAtMs - entry.ReadCompletedAtMs
                 }));
+            foreach (var entry in FinishTraces)
+                lines.AppendLine(JsonSerializer.Serialize(entry));
             foreach (var entry in AcceptanceRejectionTraces)
                 lines.AppendLine(JsonSerializer.Serialize(entry));
             if (_installTrace is not null)
@@ -1085,6 +1093,7 @@ internal static partial class Program
         catch (Exception error) when (error is not OutOfMemoryException) { }
         finally
         {
+            FinishTraces.Clear();
             EditorTraces.Clear();
             AcceptanceRejectionTraces.Clear();
             _installTrace = null;
@@ -2228,7 +2237,10 @@ internal static partial class Program
                     else if (id == RestartId && notification == 0 && _progressConnected && !_restartPending)
                         RestartPractice();
                     else if (id == FinishId && notification == 0)
+                    {
+                        TraceFinish("button-clicked");
                         QueueFinish();
+                    }
                     else if (id == EditId && notification is 0x0100 or 0x0200
                         && _edit is not null && lParam == _edit.Handle)
                     {

@@ -5,6 +5,49 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class SessionControllerTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void InstallCompletionRepaintDoesNotScheduleAnotherCaptureOrRenewThePermit(bool keepTicking)
+    {
+        using var s = new SessionScenario(experimental: true);
+        bool installed = false;
+        s.Input.AcceptanceReadiness = (_, _, _) => installed;
+        s.ReadyCandidate();
+        Assert.False(s.View.CanAccept);
+        var original = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        int captures = s.Service.Captures;
+        s.Service.PendingCapture = new();
+        // Advance the host clock beyond its capture interval without dispatching
+        // a controller tick. The install acknowledgement is still outstanding.
+        s.Loop.Stop();
+        s.Loop.Advance(40);
+        s.Loop.Start();
+        if (keepTicking)
+            s.Tick(0); // Negative control: the old preparation queues a read.
+        else
+            s.Controller.RefreshAcceptancePresentation();
+        Assert.Equal(captures + (keepTicking ? 1 : 0), s.Service.Captures);
+        Assert.False(s.View.CanAccept);
+        installed = true;
+        s.Controller.RefreshAcceptancePresentation();
+        Assert.True(s.View.CanAccept);
+        Assert.Same(original, s.Input.Permit);
+        Assert.Equal(captures + (keepTicking ? 1 : 0), s.Service.Captures);
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+        // A repaint may expose the original ACK, but never extends its deadline.
+        s.Loop.Stop();
+        s.Loop.Advance(original.ExpiresAtMs - s.Loop.NowMs + 1);
+        s.Controller.RefreshAcceptancePresentation();
+        Assert.False(s.View.CanAccept);
+        Assert.Same(original, s.Input.Permit);
+        if (keepTicking)
+            s.FailCapture(); // Settle the one controlled outstanding operation.
+        else
+            s.Service.PendingCapture = null;
+    }
+
     [Fact]
     public void ProductionAlternativeStateAndCommandStayClosedForAVerifiedArgosModel()
     {

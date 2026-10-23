@@ -16,14 +16,6 @@ public static class NativeMethods
     public const uint FixtureBlockGui = 0x8004, FixtureGuiDrained = 0x8005, FixtureBarrierStatus = 0x8006;
 
     public const uint FixtureArmNullBarrier = 0x8007;
-    public const uint FixtureSetForegroundField = 0x8008;
-
-    public enum FixtureForegroundResult : uint
-    {
-        PreconditionRejected = 0,
-        SetForegroundRejected = 1,
-        SetForegroundAccepted = 2
-    }
 
     public static string FixtureGuiBarrierName(int processId, string state) =>
         $"Local\\TypeLay.Fixture.GuiBarrier.{processId}.{state}";

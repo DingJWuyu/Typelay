@@ -90,6 +90,7 @@ internal static partial class ContinuousTranslationCheck
             // All scenes share one desktop budget. A failed scene
             // does not buy a fresh deadline, model installation or worker restart.
             using var desktop = CancellationTokenSource.CreateLinkedTokenSource(all.Token);
+            _desktopDeadlineAtMs = WindowsInterruptClock.NowMs + 90_000;
             desktop.CancelAfter(TimeSpan.FromSeconds(90));
             (ownedFirstTab, ownedEditorHandoff, ownedTabReturn, ownedMouseReturn, ownedEditedAcceptance, ownedFinish) = await VerifyOwnedFirstTabAsync(directory, model, desktop.Token);
             if (OwnedCleanupFailed())

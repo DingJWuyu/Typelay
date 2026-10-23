@@ -4,14 +4,14 @@
 
 ## 先看结论
 
-**Linux 推荐的 CI462 预览包已通过完整检查与包核验；Windows 普通源接受仍有架构缺口，另有两项 rawfield 测试准备失败待复验；翻译质量没有过关。** 编译、诊断探针和采集完成不能替代产品验收。
+**Linux 推荐的 CI462 预览包已通过完整检查与包核验；Windows 普通源接受仍有架构缺口，不可靠 rawfield 测试构造正在受审退役，另有准备相位及结束保存流程待复验；翻译质量没有过关。** 编译、诊断探针和采集完成不能替代产品验收。
 
-本页于 2026-10-23 核对。最近终态为远端 `6647702e1ff00aa1913bbcec66447a0042f3c707`、本地 `374c9ba` 的 [CI463](https://github.com/DingJWuyu/Typelay/actions/runs/39886848407)：共享检查通过，Windows 失败；Linux 按变更范围跳过，不补作通过，推荐包仍为完整核验的 CI462。Windows App 757/759，两项 rawfield 准备失败；新增三项 RPC 记录回归通过。Unknown 与首次展开本轮未复现，保留有限诊断，不宣称根因已解决。
+本页于 2026-10-23 核对。最近终态为远端 `9ee258834a34a6b02b60e377e63319a598bf6369`、本地 `7a837aa` 的 [CI464](https://github.com/DingJWuyu/Typelay/actions/runs/39889899412)：共享检查通过，Windows 失败；Linux 按变更范围跳过，推荐包仍为完整核验的 CI462。Windows App 754/759：四个强制 child foreground 构造均被 SFW 拒绝，Unknown 场景因当前 sent-work 在 claim 前拒绝；连续练习新增结束点击后等待退出超时。Hy、浏览器与退出清理通过；Notepad 接受门仍失败。
 
 | 对象 | 当前证据 | 结论 |
 | --- | --- | --- |
 | Linux 推荐预览 `e9fe6b9a` | CI462 完整 Linux 检查通过；包身份、gzip/ZIP、293 项清单及本包 README 核验通过 | 已交付[下载入口](https://github.com/DingJWuyu/Typelay/actions/runs/39884297142/artifacts/12472821584)；仍需用户真机、物理键盘和输入法体验，不是所有应用验收 |
-| Windows 当前基准 | CI463 App 757/759；rawfield sibling/other-root 两项准备失败，source 两项通过；八项显式诊断不在默认集合。Hy 全链及正常退出通过；Notepad 接受门仍失败 | 原调用返回后尚未完成激活已得三点证据。本地将单次 SFW 移入自有 fixture GUI 线程，命令后与原 barrier 后严格前提都保留；双审及托管 Compile 通过，真实复验待后继 CI |
+| Windows 当前基准 | CI464 四个 rawchild 构造没有受支持的按需成功合同；原真实 UIA 回源12变体、direct→ordinary两例通过。Unknown 有在途 capture RPC 重叠原件；连续练习完成正文接受后未及时退出 | 本地退役无效构造及专用代码，保留有效真实回归与 native 算法17边界，不把删除当通过；仅修 Unknown 测试准备相位，并补有界 finish 证据，后继真实复验待定 |
 | Windows 接受安全 | LL 暂停泄漏原键；CI459 新探针又实测 B-up 清全局 claim 后 A 的旧 repeat 漏出，未覆盖 B 也有尾键缺口 | 普通生产写支持继续关闭；clear-on-up 简化设计已被反例否定，其他局部探针通过不构成放行 |
 | 翻译质量 | Hy 三种实际配置及 Q6 包对照仍有保义风险；既试 Qwen 配方无质量放行依据；Argos 新完整两臂各24条已完成，但否定和时长约束仍有错误 | 默认不变，开发集不冒充独立验收集 |
 
@@ -22,7 +22,7 @@
 | 责任线 | 当前下一动作 | 关闭条件 |
 | --- | --- | --- |
 | Linux 维护 | 推荐462包；三项桌面准备调整真实通过，继续安装维护，不把一次通过当唯一根因证明 | 后继实际改动再跑相应检查；真机、物理输入与质量验收不与软件检查混同 |
-| Windows 主开发 | rawfield 已有新调用完成边界窄修待真实复验；展开高度与 Unknown 本轮未复现，保留诊断；普通接受结构性缺口仍单列 | 当前候选真实交互与退出证据；完整安全条件成立后才讨论普通写支持 |
+| Windows 主开发 | 退役无合同的 rawfield 构造及专用代码；Unknown 测试相位隔离与连续练习 finish 诊断待真实复验，普通接受结构性缺口单列 | 当前候选真实交互与退出证据；完整安全条件成立后才讨论普通写支持 |
 | Argos 调优 | 新环境两臂完整48条与独立保义复核已完成，23/24对文本相同，不采用rep1.0；后续需要新假设，已用holdout不再作未见验收或据其追调 | 不放宽 AS/CPU/线程/期限，失败原件保留；稳定性前缀成功也不能补作完整 A/B，完整比较须另冻结 |
 | Hy 调优 | 官方 Q6 的实际词表审计、原 4+4 及独立保义复核完成；仍有改义，不采用。后续只按具体保义假设推进，不为增加配置数盲扫 | 原资源门、完整词表/映射与真实输出成立；不宣称纯位宽因果，失败停止 |
 | 替代模型 | Qwen3-1.7B 官方非思考采样八句已完成，独立复核有三句严重改义，不采用；Liquid 官方 LFM2.5-1.2B 准备已审，但许可适用问题待用户答复，不下载 | 固定官方身份、预算与单配方假设后才启动；未下载、未加载不得写成兼容或质量通过 |
@@ -57,14 +57,15 @@ Argos 精确安装合同 → 合法空间准入 → 固定参数采集 ─┐
 | 当前问题 | 已知事实与本地动作 | 下一证据与关闭条件 |
 | --- | --- | --- |
 | 回源后的精确源窗口身份 | canonical-root 窄修在CI461原ConfiguredControl六变体通过；普通回源ACK不作新IME证据，后继fresh capture仍须Clear，普通接受继续关闭 | 保留完整原门及回归，不由一次通过宣称所有rawchild路径支持 |
-| 新 rawfield 测试的准备前提 | CI463 四例 SFW 返回后仍 raw=root；source 两例到原 WM_NULL 后才变 field，而 sibling/other-root 未变。SFW 返回成功不等于跨线程激活完成；单/多行差异不是充分原因 | 本地只在精确自有 stock field/root/PID/TID/焦点前置成立时，由 fixture GUI 线程单次 SFW；同步命令后及原 barrier 后都严格检查 raw(field,field)，无重试/额外等待/生产修改。真实后继 CI 待验 |
+| 无可靠构造合同的 rawfield 新测试 | CI464 自有GUI线程单次SFW(child)四例均返回false。真实CI460曾观察rawchild，但这不证明API保证可以按需制造该状态 | 已按独立需求/覆盖审查退役4case及专用命令和三点诊断。保留真实UIA回源12、direct→ordinary2例和直接包含现役transaction.c的17项native边界；本地native检查通过。managed rawchild逐分支仍未确定覆盖，不新增产品抽象只为测试，不改生产安全门 |
 | 首次展开高度回弹 | CI462 LiveDraft 回归在首次展开严格单调性失败，未走到收起或禁用动画；原 TRX 未含帧高度 | 补原340ms内最多128组 Render 前后公开几何；原中间尺寸数量、单调与草稿/焦点/undo 断言不变，未宣称修复 |
-| Unknown 激活前安全拒绝 | CI462 原因 0x10040 为 SOURCE_PENDING_WORK + QS_SENDMESSAGE，claim前拒绝且未超时；发送者未证，不能移除该门 | 仅该 fixture 启用16条RPC生命周期和8节点快照；Tick可在Ready前启动尚未完成的capture是待证假设。调用InFlight含response后阶段，须结合ResponseAtMs；重叠不等于精确发送者证明 |
+| Unknown 激活前安全拒绝 | CI464 capture RPC #12 在source-install响应后仍未响应，与准备/Tab/activation重叠；0x10040仍是当前QS_SENDMESSAGE，非超时；具体sent发送者未证明 | 仅该故意Unknown测试首install后改为刷新原许可呈现，不再Tick发起新捕获；Ready后立即断言Pending为0，不等待或续租。公开SessionController两分支及全部1216 Runtime测试通过，原生产Tick/queue门不改，Windows后继待验 |
+| 连续练习结束点击后未退出 | 正文接受与退休已验证；点击后WaitForExit超时，三个保存相关false是退出后未读取的默认值，不证明保存失败。已有编辑链仅约3.43秒，finish余量/协议节点不足 | 沿既有fixture trace开关补有限无正文点击/准入/保存/回复/关闭节点及原90秒剩余预算，单次点击和所有断言保持；日志缺席不能推断事件未发生，待真实复验 |
 | 切换与退出的保留诊断 | Hy 本轮完整链通过，normalQuit/exitCode0/allModelWorkersExited 均为真；ChildProcess 本轮通过。前序首因未在本轮复现 | 原单次失败诊断、全部清理异常和回归保留，不单为等待复现重复运行；新失败再按实际首因推进 |
 | 正式 Notepad 的接受能力缺失 | 候选已完成、IME Clear、源焦点有效，但普通生产源持续 WriteSupported=false；90s 正向门因此仍红，不是模型故障或旧测试 | 真正实现且证明源接受安全后，原正向门才能通过；不能用“预览可见”代替接受成功 |
 | 通用源按键边界 | CI459 completion/deadline 为局部机制通过；queue-order 的 clear-on-up 为 observed_counterexample，A 旧 repeat 漏出；retain 分支按预案未运行。focus-tail 未覆盖 B 有真实缺口 | 现有 LL/UIA 缺同一真实输入事件的消费与写事务边界；自有 Practice 的源泵可提供局部见证，但无法覆盖未合作 B 的尾键。未找到现有接入范围内满足完整合同的下一路线；普通写继续关闭，不重复无具体算法的探针。新增源端接入需独立方案与授权，缩小产品目标须用户明确决定；TSF/线程 Hook 不是现成保证 |
 
-CI458 的“仅预览”公开 WPF 回归已通过，Notepad 最后公开观察也是一条 preview-only、零 acceptance cue；UI 误导已修，不等于写能力已修。Unknown 在 CI462 的失败已取得明确 sent-work 类型，已补可区分在途 RPC 的证据，三项记录回归在 CI463 通过，真实 Unknown 本轮未复现，仍不移除原拒绝门。连续翻译和合作浏览器的既有通过不补作其它场景证据。源线程局部探针不是通用输入框支持；不得重定义“认领”来抹掉既有尾键消费契约。
+CI458 的“仅预览”公开 WPF 回归已通过，Notepad 最后公开观察也是一条 preview-only、零 acceptance cue；UI 误导已修，不等于写能力已修。Unknown 在 CI462 的失败已取得明确 sent-work 类型，已补可区分在途 RPC 的证据，三项记录回归在 CI463 通过，CI464重叠证据已推动测试准备相位隔离，仍不移除原拒绝门。连续翻译和合作浏览器的既有通过不补作其它场景证据。源线程局部探针不是通用输入框支持；不得重定义“认领”来抹掉既有尾键消费契约。
 
 ### 翻译质量：有界实验，不盲目扫配置
 

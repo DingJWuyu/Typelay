@@ -773,24 +773,48 @@ internal static partial class ContinuousTranslationCheck
         return result;
     }
 
+    private static long _desktopDeadlineAtMs;
+
     private static async Task<SceneResult> VerifyOwnedFinishAsync(nint root, ChildProcess child, SessionController controller,
         SettingsStore settings, string settingsPath, CancellationToken cancellation)
     {
         var result = new SceneResult { Outcome = "running", Stage = "owned-finish-visible" };
         bool completedBeforeClick = false, saved = false, closed = false, persistedRead = false;
+        var observations = new List<object>(8);
+        object? pointerSnapshot = null;
+        void Observe(string stage)
+        {
+            try
+            {
+                if (observations.Count >= 8)
+                    return;
+                long atMs = WindowsInterruptClock.NowMs;
+                observations.Add(new
+                {
+                    stage,
+                    atMs,
+                    remainingMs = _desktopDeadlineAtMs - atMs
+                });
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+        }
+        Observe("enter");
         try
         {
             nint button = GetDlgItem(root, 106);
             await UntilAsync(() => button != 0 && N.IsWindowVisible(button) && N.IsWindowEnabled(button)
                 && N.GetWindowRect(button, out var bounds) && bounds.Right > bounds.Left && bounds.Bottom > bounds.Top, cancellation);
+            Observe("visible");
             completedBeforeClick = controller.AutomaticPracticeProgress is { Completed: true }
                 && !settings.Value.OnboardingComplete;
             Require(completedBeforeClick, "owned-finish-premature");
             result.Stage = "owned-finish-focus";
             // This ordinary window has no dialog procedure for WM_NEXTDLGCTL.
             // Stock button focus scrolls it through the normal BN_SETFOCUS path.
+            Observe("focus-call");
             AutomationElement.FromHandle(button).SetFocus();
             await UntilAsync(() => N.Focused() == (root, button), cancellation);
+            Observe("focused");
             result.Stage = "owned-finish-click-target";
             Require(N.GetWindowRect(button, out var rect), "owned-finish-button-bounds");
             var origin = new N.Point();
@@ -799,8 +823,27 @@ internal static partial class ContinuousTranslationCheck
             Require(x >= origin.X + client.Left && x < origin.X + client.Right
                 && y >= origin.Y + client.Top && y < origin.Y + client.Bottom, "owned-finish-button-clipped");
             Require(SetOwnedCursorPos(x, y), "owned-finish-pointer");
+            Observe("pointer-set");
+            try
+            {
+                bool cursorRead = GetOwnedCursorPos(out var pointer);
+                pointerSnapshot = new
+                {
+                    cursorRead,
+                    cursorMatched = cursorRead && pointer.X == x && pointer.Y == y,
+                    targetMatched = OwnedWindowFromPoint(new N.Point { X = x, Y = y }) == button
+                };
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                pointerSnapshot = new
+                {
+                    observationError = error.GetType().Name
+                };
+            }
             result.Stage = "owned-finish-click-save";
             SendOwnedClick(result.CleanupErrors);
+            Observe("input-inserted");
             await child.Process.WaitForExitAsync().WaitAsync(cancellation);
             closed = child.Process.ExitCode == 0;
             saved = settings.Value.OnboardingComplete;
@@ -811,13 +854,40 @@ internal static partial class ContinuousTranslationCheck
             result.Stage = "complete";
         }
         catch (Exception error) when (error is not OutOfMemoryException) { RecordFailure(result, error, "owned-finish-deadline"); }
+        Observe("wait-terminal");
+        // Separate observation, never a substitute for the original post-exit
+        // assertions. In particular, unknown/read-failed is not false.
+        bool? memoryComplete = null, diskComplete = null, childExited = null;
+        string? observationError = null;
+        bool diskReadAttempted = false;
+        try
+        {
+            childExited = child.Process.HasExited;
+            memoryComplete = settings.Value.OnboardingComplete;
+            diskReadAttempted = true;
+            using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllText(settingsPath));
+            diskComplete = document.RootElement.GetProperty(nameof(UserSettings.OnboardingComplete)).GetBoolean();
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { observationError = error.GetType().Name; }
+        var terminalSnapshot = new
+        {
+            childExited,
+            memoryComplete,
+            diskReadAttempted,
+            diskComplete,
+            observationError
+        };
+        Observe("observed");
         result.Facts = new
         {
             inputKind = "software-input",
             completedBeforeClick,
             saved,
             closed,
-            persistedRead
+            persistedRead,
+            observations,
+            pointerSnapshot,
+            terminalSnapshot
         };
         CompleteCleanup(result);
         return result;
@@ -840,6 +910,10 @@ internal static partial class ContinuousTranslationCheck
     }
     [DllImport("user32.dll", EntryPoint = "SetCursorPos")]
     private static extern bool SetOwnedCursorPos(int x, int y);
+    [DllImport("user32.dll", EntryPoint = "GetCursorPos")]
+    private static extern bool GetOwnedCursorPos(out N.Point point);
+    [DllImport("user32.dll", EntryPoint = "WindowFromPoint")]
+    private static extern nint OwnedWindowFromPoint(N.Point point);
     [DllImport("user32.dll", EntryPoint = "GetClientRect")]
     private static extern bool GetOwnedClientRect(nint window, out N.Rect bounds);
     [DllImport("user32.dll", EntryPoint = "ClientToScreen")]
