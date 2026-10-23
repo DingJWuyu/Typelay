@@ -2,6 +2,7 @@ extern alias BrokerProduction;
 
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using TypeLay.Core;
 using TypeLay.Protocol;
 using TypeLay.Runtime;
@@ -210,7 +211,8 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             Assert.False(setupDispatched.WaitOne(0));
             using var hook = new KeyboardHook(allowInjectedInput: true);
             await Until(() => hook.Ready, native.Token);
-            using var broker = new FixtureBroker(native) { HoldReceipt = true };
+            var rpcTrace = new SourceRpcTrace(() => WindowsInterruptClock.NowMs);
+            using var broker = new FixtureBroker(native) { HoldReceipt = true, RpcTrace = rpcTrace };
             using var input = new WindowsInputService(broker, 0, monitor: hook, isolatedSourceAcceptance: true);
             var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
             var loop = new Loop();
@@ -218,6 +220,7 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             using var controller = new SessionController(settings, new Translation(), view, hook, input, loop);
             await controller.StartAsync();
             await Until(() => { loop.Advance(); return view.CanAccept; }, native.Token);
+            rpcTrace.Checkpoint("ready-loop-exited");
             var installedPermit = broker.InstallationPermit!;
             var original = installedPermit.Plan.Expected;
             nint cookie = N.GetProp(native.A, "TypeLay.NativeInput.Lifetime.v2");
@@ -225,29 +228,35 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             bool pressed = false;
             try
             {
+                rpcTrace.Checkpoint("before-arm");
                 long armStartedAt = WindowsInterruptClock.NowMs;
                 Assert.Equal((nuint)0, N.Send(native.Root, 0x8065, (nuint)broker.Installation!.Endpoint!.Nonce, 2));
                 long armedAt = WindowsInterruptClock.NowMs;
+                rpcTrace.Checkpoint("after-arm");
                 // A synchronous arm reply alone does not establish that the
                 // source has returned to its normal posted-message pump. Use
                 // its existing one-shot dispatch ACK, not a delay or a new lease.
                 Assert.True(N.PostMessage(native.Root, N.FixtureGuiDrained, 0, 0));
                 await Until(() => setupDispatched.WaitOne(0), native.Token);
                 long setupDispatchedAt = WindowsInterruptClock.NowMs;
+                rpcTrace.Checkpoint("setup-dispatched");
                 Assert.Same(installedPermit, broker.InstallationPermit);
                 Assert.True(setupDispatchedAt <= installedPermit.ExpiresAtMs,
                     "The original permit expired before source setup dispatch completed.");
                 pressed = true;
+                rpcTrace.Checkpoint("before-tab");
                 Tab(false);
                 long tabSentAt = WindowsInterruptClock.NowMs;
+                rpcTrace.Checkpoint("after-tab");
                 await Until(() => hook.StockLastActivation is not null, native.Token);
                 var activation = hook.StockLastActivation!;
+                rpcTrace.Checkpoint("activation-observed");
                 Assert.True(activation.Claimed,
                     $"Source activation did not claim: status={activation.Receipt?.Status}, reason={activation.Receipt?.Reason}, "
                     + $"nativeReason=0x{activation.NativeReason:x}, budgetExceeded={activation.ExceededBudget}, elapsedMs={activation.ElapsedMs:F3}, "
                     + $"observedAtMs={installedPermit.ObservedAtMs}, expiresAtMs={installedPermit.ExpiresAtMs}, "
                     + $"armStartedAtMs={armStartedAt}, armedAtMs={armedAt}, setupDispatchedAtMs={setupDispatchedAt}, tabSentAtMs={tabSentAt}, "
-                    + $"resultObservedAtMs={WindowsInterruptClock.NowMs}.");
+                    + $"resultObservedAtMs={WindowsInterruptClock.NowMs}, rpcTrace={(!activation.Claimed ? JsonSerializer.Serialize(rpcTrace.Snapshot()) : "not-needed")}.");
                 Tab(true);
                 pressed = false;
                 hook.TryRead(out _); // Start the real native terminal receipt RPC.
@@ -396,6 +405,10 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         {
             get; set;
         }
+        internal SourceRpcTrace? RpcTrace
+        {
+            get; init;
+        }
         public bool Available => true;
         public int ProcessId => native.BrokerProcessId;
         public Task StartAsync() => Task.CompletedTask;
@@ -403,9 +416,13 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         {
             if (request.Op == "source-install")
                 Installs++;
-            await _serial.WaitAsync(native.Token);
+            long traceId = RpcTrace?.Queued(request.Op) ?? 0;
+            bool admitted = false, failed = true;
             try
             {
+                await _serial.WaitAsync(native.Token);
+                admitted = true;
+                RpcTrace?.Admitted(traceId);
                 if (request.Op is "write" or "direct-write")
                     Writes++;
                 if (request.Op == "source-install")
@@ -417,7 +434,8 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
                             await Task.Delay((int)Math.Clamp(deadline - WindowsInterruptClock.NowMs + 1, 1, 100), native.Token);
                     }
                 }
-                var result = await native.Call(request);
+                var result = await native.Call(request, RpcTrace is { } trace ? () => trace.Dispatched(traceId) : null);
+                RpcTrace?.Response(traceId);
                 ObserveResponse?.Invoke(request, result);
                 if (request.Op == "capture")
                     Captures++;
@@ -442,9 +460,15 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
                     if (HoldReceipt)
                         await ReleaseReceipt.Task.WaitAsync(native.Token);
                 }
+                failed = false;
                 return result;
             }
-            finally { _serial.Release(); }
+            finally
+            {
+                RpcTrace?.Finished(traceId, failed);
+                if (admitted)
+                    _serial.Release();
+            }
         }
         public void Dispose()
         {

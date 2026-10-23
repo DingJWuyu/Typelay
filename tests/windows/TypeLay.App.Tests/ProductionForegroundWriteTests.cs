@@ -203,11 +203,79 @@ public sealed class ProductionForegroundWriteTests
         Assert.True(hook.Ready);
         N.Send(root, N.FixtureFocus, (nuint)field);
         Assert.Equal((root, field), N.Focused());
-        // Exercise the Win32 state seen after CI460's UIA correction, without
-        // depending on whether a particular provider happens to produce it.
-        Assert.True(N.SetForegroundWindow(field));
-        N.Send(root, 0);
-        Assert.Equal((field, field), N.Focused());
+        // Attempt the raw-foreground state seen after CI460's UIA correction.
+        // The exact state below is a prerequisite, not implied by SFW success.
+        uint requestedThread = N.GetWindowThreadProcessId(field, out uint requestedProcess);
+        uint sourceThread = N.GetWindowThreadProcessId(desktop.A, out uint sourceProcess);
+        int fieldStyle = N.GetStyle(field, -16);
+        bool multiline = (fieldStyle & 4) != 0;
+        var before = ObserveForeground();
+        (nint Foreground, nint Focus, object Facts)? afterSet = null, afterBarrier = null;
+        bool? foregroundAccepted = null, barrierCompleted = null;
+        long setStartedAtMs = WindowsInterruptClock.NowMs;
+        long? setReturnedAtMs = null, barrierStartedAtMs = null, barrierReturnedAtMs = null;
+        int? barrierError = null;
+        Exception? primaryFailure = null;
+        try
+        {
+            foregroundAccepted = N.SetForegroundWindow(field);
+            setReturnedAtMs = WindowsInterruptClock.NowMs;
+            afterSet = ObserveForeground();
+            Assert.True(foregroundAccepted.Value);
+            barrierStartedAtMs = WindowsInterruptClock.NowMs;
+            try
+            {
+                N.Send(root, 0);
+                barrierCompleted = true;
+            }
+            catch (N.NativeMessageException error)
+            {
+                barrierCompleted = false;
+                barrierError = error.Win32Error;
+                throw;
+            }
+            finally
+            {
+                barrierReturnedAtMs = WindowsInterruptClock.NowMs;
+                afterBarrier = ObserveForeground();
+            }
+            Assert.Equal((field, field), (afterBarrier.Value.Foreground, afterBarrier.Value.Focus));
+        }
+        catch (Exception error)
+        {
+            primaryFailure = error;
+            throw;
+        }
+        finally
+        {
+            // Three finite, body-free observations, not a retry or focus repair.
+            // Sampling may affect timing; SFW has no last-error contract.
+            try
+            {
+                TestContext.Current.TestOutputHelper?.WriteLine("Native foreground preparation: " + JsonSerializer.Serialize(new
+                {
+                    foreground,
+                    direct,
+                    fieldStyle,
+                    multiline,
+                    guiThreadScope = "raw-foreground",
+                    foregroundAccepted,
+                    setStartedAtMs,
+                    setReturnedAtMs,
+                    barrierCompleted,
+                    barrierError,
+                    barrierStartedAtMs,
+                    barrierReturnedAtMs,
+                    before = before.Facts,
+                    afterSet = afterSet?.Facts,
+                    afterBarrier = afterBarrier?.Facts
+                }));
+            }
+            catch (Exception error) when (primaryFailure is not null)
+            {
+                primaryFailure.Data["NativeForegroundObservationFailure"] = error.GetType().Name;
+            }
+        }
         Assert.Equal(root, N.GetAncestor(field, 2));
         Assert.Equal(foreground == "source" ? FocusMember.Source : FocusMember.Other, hook.GetFocus(source.Target));
 
@@ -233,6 +301,37 @@ public sealed class ProductionForegroundWriteTests
         Assert.Equal((field, field), N.Focused());
         desktop.AssertZeroSubmits();
         elsewhere?.AssertZeroSubmits();
+
+        (nint Foreground, nint Focus, object Facts) ObserveForeground()
+        {
+            long atMs = WindowsInterruptClock.NowMs;
+            nint raw = N.GetForegroundWindow();
+            uint thread = N.GetWindowThreadProcessId(raw, out uint process);
+            var gui = new N.GuiThreadInfo { Size = (uint)Marshal.SizeOf<N.GuiThreadInfo>() };
+            bool observed = thread != 0 && N.GetGUIThreadInfo(thread, ref gui);
+            nint canonical = N.GetAncestor(raw, 2);
+            return (raw, observed ? gui.Focus : 0, new
+            {
+                atMs,
+                foregroundIsNull = raw == 0,
+                threadLookupSucceeded = thread != 0,
+                guiThreadInfoSucceeded = observed,
+                foregroundIsRequestedRoot = raw == root,
+                foregroundIsRequestedField = raw == field,
+                canonicalIsRequestedRoot = canonical == root,
+                processMatchesRequested = thread != 0 && requestedThread != 0 && process != 0 && process == requestedProcess,
+                threadMatchesRequested = thread != 0 && thread == requestedThread,
+                foregroundIsOriginalRoot = raw == desktop.Root,
+                foregroundIsOriginalField = raw == desktop.A,
+                canonicalIsOriginalRoot = canonical == desktop.Root,
+                processMatchesOriginal = thread != 0 && sourceThread != 0 && process != 0 && process == sourceProcess,
+                threadMatchesOriginal = thread != 0 && thread == sourceThread,
+                activeIsRequestedRoot = observed ? gui.Active == root : (bool?)null,
+                activeIsRequestedField = observed ? gui.Active == field : (bool?)null,
+                focusIsRequestedField = observed ? gui.Focus == field : (bool?)null,
+                focusIsOriginalField = observed ? gui.Focus == desktop.A : (bool?)null
+            });
+        }
     }
 
     [Theory]

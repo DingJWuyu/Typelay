@@ -56,13 +56,13 @@ GTK 非纯文本/非标准控件、Qt QTextEdit/富文本/自绘控件、Electro
 
 ### 当前可验证候选
 
-推荐 [CI460 Linux 预览包](https://github.com/DingJWuyu/Typelay/actions/runs/39866684209/artifacts/12465855276)。[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39866684209)的 Linux 完整检查已通过；Windows 的检查结论独立，不代表两平台都已完成产品验收。
+推荐 [CI462 Linux 预览包](https://github.com/DingJWuyu/Typelay/actions/runs/39884297142/artifacts/12472821584)。[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39884297142)的 Linux 完整检查已通过；同次 Windows 检查未通过，不能据此宣称双端验收完成。
 
-- 源码：`cb2e3302a485f4f6b6f883d4c814a1f7ca2c3ed6`；包内 `build-info.json` 同提交，`sourceDirty=false`。
-- 内层 `TypeLay-Linux-preview-x86_64.tar.gz`：281,112,144 字节。
-- SHA-256：`a8db31eb183ec27aab150ad9e07a4e4f457310836ec8a09b6c6108c61ad467eb`；内层 gzip/tar、293 项清单文件、路径与可执行权限均已核验。此摘要不适用于外层 Actions ZIP。
+- 源码：`e9fe6b9a174d077b6b118f8547e7e6364b212679`；包内 `build-info.json` 同提交，`sourceDirty=false`。
+- 内层 `TypeLay-Linux-preview-x86_64.tar.gz`：281,112,974 字节。
+- SHA-256：`44ebaf0a4ffb119e13fb4f050fd37d0d7a26b79004982f79f3d5687fe3162d14`；内层 gzip/tar、293 项清单文件、路径与可执行权限均已核验。此摘要不适用于外层 Actions ZIP。
 - 检查包含设置/教程、GTK3/GTK4、浏览器 DOM 与 Firefox、Qt 合作探针及真实模型桌面链、GIMP 单次按需唤醒与直接替换/原生撤销对照、VS Code 手动命令和模型生命周期。Qt 重入隔离与 GIMP 首次命令路径仍通过；GIMP 该字段本身不支持原生撤销。
-- 包内 README 已按本包身份生成，不再要求转下载旧候选；包外相对文档链接指向该源码基准，四份配套文档可离线查阅。
+- 包内 README 已按本包身份生成，不再要求转下载旧候选；源码文档链接（含构建说明）均固定到本包提交，另提供构建与检查记录入口；四份配套文档可离线查阅。
 - 这是可体验的预览包，不是模型质量、物理输入法或全桌面产品验收通过。按需唤醒后空捕获仍可能丢失资格，须保持焦点后主动重试，不自动重放按键。
 
 artifact 过期或换用后续提交时，应重新核对其摘要与检查结果。[Windows 验证与下载基线](../windows/README.md#当前可验证候选)独立记录。

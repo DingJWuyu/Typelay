@@ -939,16 +939,70 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 Assert.True(editor.IsKeyboardFocused);
                 Assert.Equal(overlay.Handle, Native.GetForegroundWindow());
             }
-            await ToggleExpansion(overlay, expand: true);
-            overlay.Render(session, settings, false, context: context);
-            var expansion = new List<(int Left, int Top, int Width, int Height)> { compact };
-            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
+            // Keep the original real-frame assertions; capture only public geometry
+            // so a failure distinguishes a Render change from a between-frame resize.
+            var samples = new List<object>();
+            int omittedSamples = 0;
+            object Geometry()
             {
+                var bounds = Bounds(overlay);
+                return new
+                {
+                    ticks = System.Diagnostics.Stopwatch.GetTimestamp(),
+                    bounds.Left,
+                    bounds.Top,
+                    bounds.Width,
+                    bounds.Height,
+                    windowHeight = overlay.Height,
+                    actualWindowHeight = overlay.ActualHeight,
+                    editorHeight = editor.Height,
+                    actualEditorHeight = editor.ActualHeight
+                };
+            }
+            var initial = Geometry();
+            var expansion = new List<(int Left, int Top, int Width, int Height)> { compact };
+            try
+            {
+                await ToggleExpansion(overlay, expand: true);
                 overlay.Render(session, settings, false, context: context);
-                expansion.Add(Bounds(overlay));
-                AssertDraft();
-            });
-            AssertContinuousHeight(expansion, increasing: true);
+                await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
+                {
+                    var before = samples.Count < 128 ? Geometry() : null;
+                    overlay.Render(session, settings, false, context: context);
+                    expansion.Add(Bounds(overlay));
+                    if (samples.Count < 128)
+                        samples.Add(new
+                        {
+                            before,
+                            after = Geometry()
+                        });
+                    else
+                        omittedSamples++;
+                    AssertDraft();
+                });
+                AssertContinuousHeight(expansion, increasing: true);
+            }
+            catch (Exception failure)
+            {
+                // Diagnostics must not replace the original assertion or timeout.
+                try
+                {
+                    TestContext.Current.TestOutputHelper?.WriteLine("live-draft-expansion " +
+                        System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            initial,
+                            compactHeight = compact.Height,
+                            timestampFrequency = System.Diagnostics.Stopwatch.Frequency,
+                            samples,
+                            omittedSamples
+                        }));
+                }
+                catch (Exception diagnosticFailure)
+                {
+                    failure.Data["live-draft-expansion-diagnostic-failure"] = diagnosticFailure.ToString();
+                }
+                throw;
+            }
             var expanded = Bounds(overlay);
             await ToggleExpansion(overlay, expand: false, mouse: true);
             overlay.Render(session, settings, false, context: context);
