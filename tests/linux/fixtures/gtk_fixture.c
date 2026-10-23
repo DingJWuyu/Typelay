@@ -600,6 +600,9 @@ static gboolean report_state(gpointer unused) {
             json_builder_add_boolean_value(builder, gtk_text_view_get_editable(GTK_TEXT_VIEW(candidate)));
             json_builder_set_member_name(builder, "focused");
             json_builder_add_boolean_value(builder, gtk_widget_has_focus(candidate));
+            /* GTK3 renders the current editable-preview cue as a tooltip. */
+            json_builder_set_member_name(builder, "editablePreview");
+            json_builder_add_boolean_value(builder, gtk_widget_get_has_tooltip(candidate));
             GdkRGBA foreground;
             gtk_style_context_get_color(gtk_widget_get_style_context(candidate),
                 gtk_widget_get_state_flags(candidate), &foreground);

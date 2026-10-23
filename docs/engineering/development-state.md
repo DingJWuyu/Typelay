@@ -4,9 +4,11 @@
 
 ## 先看结论
 
-本页于 2026-10-23 20:01 UTC 核对。**CI480 的完整 Linux job、共享检查、Windows 常规行为与双端 Hy 生命周期均已通过。Linux 体验推荐已决定升级为 CI480；Windows 普通源接受仍未完成，正式 Notepad 接受失败，新 TSF RW 研究只证明获得同步锁后零写拒绝。** 模型质量、高级 scope、真实 IME、物理输入和所有应用仍不能由这些结果推出。
+本页于 2026-10-23 20:36 UTC 核对。**CI480 的完整 Linux job、共享检查、Windows 常规行为与双端 Hy 生命周期均已通过。Linux 体验推荐已决定升级为 CI480；Windows 普通源接受仍未完成，正式 Notepad 接受失败，新 TSF RW 研究只证明获得同步锁后零写拒绝。** 模型质量、高级 scope、真实 IME、物理输入和所有应用仍不能由这些结果推出。
 
 ### 当前发布身份与证据
+
+- [CI482](https://github.com/DingJWuyu/Typelay/actions/runs/40016315511) 于20:04:02 UTC由唯一push触发、attempt1，20:32:46 UTC completed/failure。冻结本地`7e00ba5393918332886c05ae0850861af3744578`对应远端`c5308430950e24c4a58f37860a325832eb09a336`、tree`11ead0d731f0ec37ef4c05edc23460a3e2465302`、parent`7bfba411`，11文件含2删除，精确读回已核。原件`artifacts/ci482-current/publication-verified.json`；本轮不含下一批native身份修复。早期共享1721/1721与源码847项身份通过；Windows App768/784，16项均在NativeSourceActivation准备的SourceClickObscured失败、未进入机制，已单独定位；上一轮hover8场景本轮通过不证明间歇根因消失。Linux完整挂接、DOM/协议/GTK isolated、Qt probe、设置/教程/GIMP/GTK4/Qt/VS Code通过；仅GTK3 Ctrl+F7预期匹配失败，实际单次Verified已核。Linux Hy12阶段100.469秒、Host/worker自然退出且无强清理通过，quality未评。Windows Hy前8场景通过，supplement-english发布就绪等待耗尽原940秒操作截止，publicReady=false，后6场景not-run、englishAcceptance=incomplete、cleanupErrors为空，不能套用CI480/481的15全过。连续链owned首Tab的真实GUI dispatch超原票16ms而正确零写拒绝，普通源Ctrl退出后hidden=false且原8条诊断提前耗尽，后段未跑。正式Notepad仍失败，具体结果以本轮原件为准。
 
 - [CI481](https://github.com/DingJWuyu/Typelay/actions/runs/40010604024) 已由6文件唯一push触发，19:20:15 UTC创建、attempt1，19:35:08 UTC completed/failure。冻结本地 `2046d0ad6fdb3102c9133bb349985db338aad97f` 对应远端 `7bfba411f3b54a1190b56051271a0561c0411f18`、tree `5e20d8c9b82b2c2c8a845c58259504c4fe6998ea`、parent `2342a747`；精确读回成功。当前推荐包仍为独立验收的CI480，不随纯诊断/文档运行自动更换。CI481 App782/784，两项root hover失败；Windows Hy15通过、Notepad失败；Linux isolated GTK4 glossary与Qt probe失败，Qt真实模型/GIMP/Hy因依赖门跳过，不能把artifact上传成功或CI480结果套作本轮通过。纠正原件：`../artifacts/ci481-current/linux-terminal-status-corrected.json`。
 
@@ -20,7 +22,7 @@
 | Windows常规 | App784/784全过，8个A/B点击场景与原multiline路径实际通过；另16个显式研究在普通套件NotExecuted。全部共享套件与worker通过 | 普通源生产写入已支持，或物理输入已测 |
 | Windows生产链/Notepad | 连续、浏览器合作、Hy生产链通过；Notepad仅预览，接受提示90.011秒失败、后3场景未跑；消费者自然退出、残留0 | 接受/撤销、后续人工稿回源或按需/直接场景已过 |
 | TSF自有RW研究 | 首个success场景一次同步RW请求/session HR0，完整读取及composition明确none后changed-body拒绝；0 SetText、无副作用，正常清理/退出 | 实际写入、Undo、提交正控、后三例或原Tab默认效果已核。CallNextHookEx/Next0只证明调用旁路；研究status=stopped-not-validated |
-| Windows Hy | 15场景全过，取消/补14、同代冷启、双向普通预览、Argos/移除与App0/worker正常退出 | quality已评、真实键盘/所有方向质量合格 |
+| Windows Hy | 15场景全过；取消/补14、同代冷启、中英双向stock Edit源点击/一次唤醒/真实浮层完整候选，原文/选区保持、submit0；Argos/移除与App0/worker正常退出 | 高级scope已实机验收、quality已评、真实键盘/所有方向质量合格 |
 | Linux | 完整构建/搬迁安装/合作组件/设置/教程/DOM70/协议73/GTK3/GTK4/Qt/GIMP/VS Code等通过，GTK4glossary40场景全过 | 旧间歇投递延迟唯一根因已解决、所有应用均支持 |
 | Linux Hy | 79.677秒完整12阶段，取消/补14、同代冷启、双向translateEditorSnapshot文档/版本/选区绑定、语言恢复、Argos/移除；Host/worker正常退出，无强清理 | advancedScope/source dispatch已验（仍明确not-run）、quality已评、物理桌面或12方向质量已验 |
 
@@ -30,14 +32,19 @@
 
 | 责任线 | 负责人 | 当前动作与完成条件 |
 | --- | --- | --- |
-| 原生输入身份绑定 | bind_native_source_input_identity | 在普通source本地slot固定fresh HIMC/HKL，沿原lifetime/generation/foreground/deadline最终复核，不能直接套owned专属qualifier；WM_IME_SETCONTEXT仅撤销旧grant。最终修订634e668已撤额外owned末次IMM采样，source末IMM后复核无回调资格元数据；portable 14序列通过、Standards GO、Spec增量待审，另批集成。默认生产关闭，不声称全部TSF profile、真实组合或owned末期任意重入已闭合 |
+| 原生输入身份绑定 | bind_native_source_input_identity | 在普通source本地slot固定fresh HIMC/HKL，沿原lifetime/generation/foreground/deadline最终复核，不能直接套owned专属qualifier；WM_IME_SETCONTEXT仅撤销旧grant。最终修订634e668已集成91d697e，撤额外owned末次IMM采样，source末IMM后复核无回调资格元数据；双轴GO，集成后portable GCC通过、真实WinEvent按平台跳过。列入CI482后下一批，真实Windows新例及六行sync待测。默认生产关闭，不声称全部TSF profile、真实组合或owned末期任意重入已闭合 |
+| 普通源原键与事务接线 | bind_native_source_input_identity实现，advisor已窄GO | 当前普通SourceActivate仍跨线程并依赖LL返回吞键；核在既有自有fixture的PM_REMOVE中复用普通grant/claim/原期限并消费同一MSG的最小方案。设计已准：旧owned六行不动，新增普通源正例含NOREMOVE/一次写/返回前暂停/Undo，以及改文拒绝自然旁路两行。复用原slot/claim，在CAS后第一SETSEL前直接改同一MSG；窄native导出默认无人安装，wire不变。保100ms/pending门与原总预算，严格来源、真实IME及生产门不开放 |
+| CI482连续链拒绝 | diagnose_continuous_source_refusals | owned witness在原票内但实际GUI dispatch超16ms，正确零写拒绝；安装deserialize25ms属已见开销、根因未证，不延票。普通source退出诊断8条提前耗尽，准备删2条冗余成功并复用原now/首失败标签，不改门/求值顺序/cap。新片未就绪不拖ready批 |
+| CI482源测试准备遮挡 | fix_source_fixture_click_obscuration | 16例同一ClickAndObserveFocus前置失败，原件未留遮挡者，前序owned进程均退出且旧轮同样首类通过；有界诊断已双轴GO集成9f26dec，原hit与后采身份/几何明确区分，folder/diff过；不改setup、不称已修，8项真实回归待CI，与新源MSG模式协调共享fixture文件 |
+| GTK3接受观察 | root集成04de523 | 本轮真实单次写与Verified已证，旧GTK3双读未冻新鲜candidate且没保存旧expected，不能唯一归因。GTK3真实tooltip报告editablePreview，复用同份fresh快照/原15秒预算，保一次输入/精确相等/单Verified；双轴GO，作者75项/root64项纯回归过，真实GUI待下轮 |
+| Windows Hy就绪失败 | fix_windows_hy_readiness_failure | CI482第9场景卡真实publication-ready，库存/active/旧worker退出已匹配，但publicReady=false且准备行缺失；核本轮trace与CI480/481对照，区分生产准备与UI观察，不延940秒/降低Ready/复用旧成功 |
 | 间歇hover诊断 | root集成60fe2fc | 两项CI481在150ms内被额外source hover撤前缀；保原门/8场景，仅既有16条trace增加原MSG类别/队列来源/当时坐标的当前几何分类与capture，双轴GO/纯folder过，未实跑。当前命中不是历史路由证明，不称已修 |
 | Qt探针首错诊断 | root集成08fb979 | 保原一次describe/capture及Clear/writeSupported，失败才记场景、原DTO/时点/fixture与最近16事件，双轴GO/Ruff/消费者4项过。CI481首错是glossary publish，不是旧renewalTiming落盘false；根因待新原件 |
 | GTK4 glossary正向存活前提 | root集成eda0481 | 原件两次串行call共914ms无续约，生产另有200ms续约，800ms自然到期正确。仅在save/pointer-save/cancel pending render成功后/首次open前复用renew，调用前已过期则失败；双轴GO、geometry47及Ruff通过，真实40GUI待CI。不改通用helper、过期阴性、租期或输入次数；不是完整异步仿真 |
-| 下一批发布/验证 | publish_next_verified_fix_batch，root冻结 | CI481终态与早期原件已齐；同批退役失效实验、同步现役文档并发已审诊断/就绪修复，当前native身份新实现未审好则另批，不阻塞已就绪工作。新CI跟到终态，不拿continue-on-error颜色当研究通过 |
+| 下一批发布/验证 | publish_next_verified_fix_batch，root冻结 | CI482终态与关键原件已齐；下一批冻结身份绑定/点击诊断/GTK3观察修复及状态，均双轴GO。新source MSG研究c6243b仍深审、continuous诊断与Hy根因仍进行，未ready不拖已ready批。只读冻结git对象、同分支非强推，读回及新CI到终态 |
 | Windows输入信任与部署 | root | UIAccess范围待用户明确裁决；保持严格注入拒绝。同步RW局部证据不授予旧键身份/IME/第三方部署/原子产品写入资格 |
 | Linux体验交付 | root；assess_linux_candidate_adoption | 采用CI480已独立核验的包，在线推荐更新；不重打已验包、不发布stable。保留用户真机反馈与模型/高级scope限制 |
-| 模型后继 | root | 保持双端已过生命周期回归及原默认。高级scope/source dispatch与质量证据独立处理；没有新假设不重复扫参或扩预算 |
+| 模型后继 | root | 已核Windows14普通源链通过，Linux14仅editor snapshot；双端高级scope未实机验收。默认质量门全部关闭，受控回归已覆盖scope/英语/Auto拒绝及无普通降级，本轮不为not-run扩CI或推理。实际14源/偏好故障、相关编排改变或高级质量获放行依据时再复用现有fixture补最小验证 |
 
 原Runtime前置、Windows回源/人工稿/多行点击、DOM采样、GTK4菜单准备均已有CI480通过证据，不再挂成在修队列。GTK/Qt投递诊断保持有界：配置F1曾迟178ms而正确拒绝100ms过期票，Qt曾初始StaleObservation拒绝；本轮通过不证明旧原因消失。下次真实失败再用原始跨度/basis定位，不加热身、续期或输入重试。
 
@@ -63,7 +70,7 @@
 - **证据的环境限制**：round02 的 Host 激活 OOM 未被覆盖或补算通过。round03 仅为实验 Host 增设 `DOTNET_GCRegionRange=20000000`（512MiB 预留）；原 `DOTNET_GCHeapHardLimit=10000000`（256MiB 提交）、AS2.5GiB 与 CPU0/1 不变，不证明默认资源行为，也未定位旧 OOM 失败分配点。runner 持续排空，最多 65536 帧/16MiB，产品 10ms 事件行为不变。依赖探针已隔离 UCX stdout 污染与合法 JSON；原 socket 拒绝不变，真实依赖/原生 FD 污染/外来依赖路径拒绝回归及 setup109 已通过，原件 `runtime-import-probe/`。
 - **实现与本地检查已完成**：兼容基础、方向级高级能力、明确升级动作、禁用原因与手动确认已集成并双轴独审。手动预览批 Runtime1287/1287、worker167/167、Linux setup109/109 与两 Windows 消费者 Compile 通过；Linux 最终包准备的 99 项无模型邻近检查通过。原件在 `../Typelay-hy-english-candidate/artifacts/` 及相应作者工作区。本地检查不是 GUI 证据；当前双端生命周期与双向预览的实际结果以上方 CI480 原件为准。
 - **能力与默认**：正式 catalog 可供 14 方向；ABI5、greedy、模型权重锁与默认保持，新装仍 12。中英预览经明确确认的 format2 `Install/addDirections` 事务启用，旧 Repair 不扩方向，既有选择和语言设置不变。选中库存、manifest 与原生导出共同授予能力；事务失败保旧代与 active 选择。候选 14 保留原 12 高级能力的 non-null 作用域，English 风格/术语请求明确拒绝而非降级普通翻译。保留 Argos 休眠偏好，重置/删除不受新增应用资格门阻挡。**跨旧版本恢复未完成，不承诺旧版本自动恢复 14 方向。** 当前版本可改用 Argos，未安装须另行确认下载。
-- **验收边界与预算**：双端已通过的生命周期回归保持 Windows 15 场景 960 秒、Linux 240 秒工作/260 秒外限，quality 请求数不变。普通预览不证明高级 scope、原生源请求、质量或物理输入；本地未发现 niri/Xvfb/weston 或 DISPLAY/WAYLAND 桌面，以实际 CI 原件建立 GUI 结果。
+- **验收边界与预算**：双端已通过的生命周期回归保持 Windows 15 场景 960 秒、Linux 240 秒工作/260 秒外限，quality 请求数不变。Windows普通预览已覆盖受控stock Edit原生源请求，Linux14只覆盖editor snapshot；两者不证明高级scope、质量或物理输入；本地未发现 niri/Xvfb/weston 或 DISPLAY/WAYLAND 桌面，以实际 CI 原件建立 GUI 结果。
 
 ### 仍约束采用的质量事实
 

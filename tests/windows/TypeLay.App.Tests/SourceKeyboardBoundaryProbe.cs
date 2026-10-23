@@ -200,6 +200,7 @@ public sealed class SourceKeyboardBoundaryProbe
                 await Task.Delay(5, source.Token);
             var snapshot = await Snapshot(source, observations, "source-synchronous-transaction");
             var sync = snapshot.GetProperty("synchronous");
+            Assert.True(sync.GetProperty("inputContextProbed").GetBoolean());
             Assert.Equal(1, Number(sync, "nativeCalls"));
             bool expectedAccept = mode is 5 or 6 or 9;
             Assert.Equal(expectedAccept, sync.GetProperty("accepted").GetBoolean());

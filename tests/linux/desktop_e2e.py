@@ -2403,36 +2403,32 @@ def run(arguments):
                         }
                         assert acknowledgement["sourceReady"]
                         assert acknowledgement["editorReady"] is True
-                        if gtk4:
-                            acceptance_deadline = time.monotonic() + 15
-                            # Host readiness can precede the fixture's 25 ms render report.
-                            # Share the original readiness budget and freeze one report.
-                            candidate_boundary = now_ms()
-                            before = wait_for(
-                                lambda: gtk_candidate_observation_current(
-                                    gtk_state(), typed_source, candidate_boundary
-                                ),
-                                "GTK Ctrl acceptance did not expose a fresh current candidate",
-                                timeout=acceptance_deadline - time.monotonic(),
-                            )
-                            candidate = before["candidate"]["text"]
-                        else:
-                            candidate = gtk_state()["candidate"]["text"]
-                            before = gtk_state()
+                        acceptance_deadline = time.monotonic() + 15
+                        # In both GTK generations host readiness can precede the
+                        # fixture's 25 ms render report. Freeze candidate and
+                        # source/counts together within the original ready budget.
+                        candidate_boundary = now_ms()
+                        before = wait_for(
+                            lambda: gtk_candidate_observation_current(
+                                gtk_state(), typed_source, candidate_boundary
+                            ),
+                            "GTK Ctrl acceptance did not expose a fresh current candidate",
+                            timeout=acceptance_deadline - time.monotonic(),
+                        )
+                        candidate = before["candidate"]["text"]
                         offset, dispatch_offset = trace_checkpoint(), key_trace_checkpoint()
-                        if gtk4:
-                            acceptance_evidence = {
-                                "candidateBoundaryMs": candidate_boundary,
-                                "before": before,
-                                "expectedCandidate": candidate,
-                                "traceOffset": offset,
-                            }
-                            acceptance_path = arguments.output / "gtk-control-acceptance.json"
-                            acceptance_path.write_text(json.dumps(acceptance_evidence, indent=2))
+                        acceptance_evidence = {
+                            "candidateBoundaryMs": candidate_boundary,
+                            "before": before,
+                            "expectedCandidate": candidate,
+                            "traceOffset": offset,
+                        }
+                        acceptance_path = arguments.output / "gtk-control-acceptance.json"
+                        acceptance_path.write_text(json.dumps(acceptance_evidence, indent=2))
                         wait_for(
                             ready_to_accept,
                             "GTK Ctrl acceptance was not ready",
-                            timeout=acceptance_deadline - time.monotonic() if gtk4 else 15,
+                            timeout=acceptance_deadline - time.monotonic(),
                         )
                         send_control_key("F7", repeat=True)
                         try:
@@ -2442,23 +2438,20 @@ def run(arguments):
                                 "GTK Ctrl+F7 did not verify the real model candidate exactly once",
                             )
                         finally:
-                            if gtk4:
-                                failed = sys.exc_info()[0] is not None
-                                try:
-                                    acceptance_evidence["after"] = gtk_state()
-                                    acceptance_evidence["writeOutcomes"] = new_write_outcomes(
-                                        offset
-                                    )
-                                    acceptance_path.write_text(
-                                        json.dumps(acceptance_evidence, indent=2)
-                                    )
-                                except (AssertionError, OSError, ValueError) as error:
-                                    if not failed:
-                                        raise
-                                    print(
-                                        f"GTK Ctrl acceptance evidence failed: {error}",
-                                        file=sys.stderr,
-                                    )
+                            failed = sys.exc_info()[0] is not None
+                            try:
+                                acceptance_evidence["after"] = gtk_state()
+                                acceptance_evidence["writeOutcomes"] = new_write_outcomes(offset)
+                                acceptance_path.write_text(
+                                    json.dumps(acceptance_evidence, indent=2)
+                                )
+                            except (AssertionError, OSError, ValueError) as error:
+                                if not failed:
+                                    raise
+                                print(
+                                    f"GTK Ctrl acceptance evidence failed: {error}",
+                                    file=sys.stderr,
+                                )
                         observed_key(dispatch_offset, "function", "release", True)
                         accepted = gtk_state()
                         assert accepted["focus"] == "fixture-first"
@@ -3125,8 +3118,7 @@ def run(arguments):
                                 else None,
                                 "real GTK editor did not retain the typed draft",
                             )
-                            if gtk4:
-                                assert not edited["candidate"]["editablePreview"]
+                            assert not edited["candidate"]["editablePreview"]
                             assert edited["candidate"]["foreground"] == normal_foreground
                             assert edited["first"] == editing_source
                             if exit_editor:

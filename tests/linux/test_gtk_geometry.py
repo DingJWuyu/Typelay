@@ -400,6 +400,7 @@ class GtkPreviewObservationTests(unittest.TestCase):
                 "candidate": {
                     "text": view["text"],
                     "foreground": "rgb(102,103,113)" if muted else "rgb(34,35,39)",
+                    "editablePreview": False,
                 },
             }
 

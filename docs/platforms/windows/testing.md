@@ -77,6 +77,8 @@ raw foreground 与字段 keyboard focus 是不同观察。[Windows 的激活模�
 
 现役 native API 边界回归直接执行生产事务源码，覆盖精确 rawfield 正向及 sibling/owned modal/根身份/PID/TID/焦点/cookie/实际 IME 缺失、错误、composing/期限负控，选区回调改变前台仍零正文写入，owned capture/接受仍拒绝 rawfield。这些 API 替身检查不构成真实 Windows GUI、UIA 重入或物理 IME 证据，也不替代 managed classifier/capture 的 rawchild 逐分支确定性覆盖；该覆盖仍未保证。跨进程回源和原 ConfiguredControl 端到端正向须在 Windows 单独执行。
 
+同一 native API 边界现经导出 source hook 验证每个安装 grant 的源线程 HIMC/HKL 标量绑定：身份换值、最终控件读取/资格回调后换值、SETSEL 回调换值、SETCONTEXT 及组合 END 撤销、poll 已观察失配后恢复均不能复活旧 grant；只有精确退休后的新 grant 可重新取证。绑定只留在 source 本地，不扩共享 wire，也不复用 owned 专属门。真实 `NativeSourceActivationTests` 另覆盖自有 Edit 解除既有 HIMC、poll 撤销、恢复后旧 grant 拒绝及新 grant 接受，须由 Windows 实跑；无新 IME/context 创建、profile 切换或伪造组合态。HIMC/HKL 相等和 GCS_COMPSTR 长度零仍不证明 TSF profile 连续性或真实组合正例，默认生产接受保持关闭。
+
 `OverlayRenderingTests` 同时覆盖默认 Tab/Esc 与无修饰 F1-F24 的编辑返回、退出、IME 事件、修饰键和旧键释放。第一次接受键仅请求返回原输入框；共享控制器仍须重新观察、取得许可并等待第二次接受。浮层动作携带显示时的 target、配置代次和会话 revision，迟到按钮与菜单不能借更新后的视图取得授权。缺少目标确认时可保留只读预览，但不得编辑或授予接受许可。
 
 ```powershell

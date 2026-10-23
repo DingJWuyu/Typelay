@@ -906,7 +906,7 @@ public sealed partial class ProductionForegroundWriteTests
             // Owning the child does not grant foreground activation rights.
             // Click only the visible owned field, then observe exact focus before
             // initializing text/selection or capturing any product authorization.
-            await _fixture.ClickAndObserveFocus(field, Token);
+            await _fixture.ClickAndObserveFocus(field, Token, _broker.Id);
             N.SendString(field, N.WM_SETTEXT, text);
             N.Send(field, N.EM_SETSEL, (nuint)selection.Start, (nint)selection.End);
         }
@@ -1087,11 +1087,11 @@ public sealed partial class ProductionForegroundWriteTests
             Assert.Equal((Root, A), N.Focused());
             Assert.Equal((nuint)1, N.Send(Root, N.FixtureAllowBrokerForeground, (nuint)brokerProcessId));
         }
-        public async Task ClickAndObserveFocus(nint field, CancellationToken token)
+        public async Task ClickAndObserveFocus(nint field, CancellationToken token, int brokerProcessId)
         {
             nint marker = checked((nint)Interlocked.Increment(ref _preparationClickSequence));
             Assert.True(marker > 0);
-            await NativeSourceSetup.ClickAsync(Root, field, process, token, (nuint)marker);
+            await NativeSourceSetup.ClickAsync(Root, field, process, token, (nuint)marker, brokerProcessId);
             // Do not post FixtureFocus here: that would conceal a click which
             // failed to activate/focus the intended field. Focus can already
             // match while input is queued, so also require this mouse-up's receipt.

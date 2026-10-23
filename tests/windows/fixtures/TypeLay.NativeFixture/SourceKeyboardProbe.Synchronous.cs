@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using TypeLay.Core;
 using TypeLay.Windows;
+using TypeLay.Windows.Contracts;
 using N = TypeLay.Platform.Windows.NativeMethods;
 
 internal sealed partial class SourceKeyboardProbe
@@ -12,6 +13,8 @@ internal sealed partial class SourceKeyboardProbe
     private OwnedPracticeField? _synchronousField;
     private byte[]? _transaction;
     private long _expectedRevision;
+    private OwnedInputContext _expectedInput;
+    private bool _inputProbed;
     private bool _attemptedWrite, _acceptedWrite, _insideWrite, _synchronousHeld, _sourceDeparted;
     private int _bodyChanges;
     private int _nativeCalls, _repeatConsumed, _upConsumed, _peekNativeCalls;
@@ -46,6 +49,16 @@ internal sealed partial class SourceKeyboardProbe
         string expectedText = N.ReadText(_field, Limits.MaxTextUnits);
         var selection = N.ReadSelection(_field);
         _expectedRevision = _synchronousField!.FocusRevision;
+        long observedAt = WindowsInterruptClock.NowMs;
+        long expires = observedAt + 100;
+        using var process = System.Diagnostics.Process.GetCurrentProcess();
+        var descriptor = new OwnedCaptureDescriptor(Environment.ProcessId, process.StartTime.ToUniversalTime().Ticks,
+            (long)_root, (long)_field, _thread, _synchronousField.Cookie, _expectedRevision, 1);
+        // A real, released HIMC/HKL sample for this one synthetic grant. This
+        // does not establish TSF profile identity or positive composition coverage.
+        _inputProbed = _synchronousField.TryProbeInputContext(descriptor, expires, out _expectedInput);
+        if (!_inputProbed)
+            _error = "source-input-context-probe-unavailable";
         byte[] bytes = new byte[49264];
         BinaryPrimitives.WriteUInt32LittleEndian(bytes, 2);
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(12), 5);
@@ -61,7 +74,7 @@ internal sealed partial class SourceKeyboardProbe
         BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(68), Replacement.Length);
         BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(88), selection.Start);
         BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(92), selection.End);
-        BinaryPrimitives.WriteInt64LittleEndian(bytes.AsSpan(96), WindowsInterruptClock.NowMs + (mode == 8 ? -1 : 100));
+        BinaryPrimitives.WriteInt64LittleEndian(bytes.AsSpan(96), mode == 8 ? observedAt - 1 : expires);
         Encoding.Unicode.GetBytes(expectedText, bytes.AsSpan(104));
         Encoding.Unicode.GetBytes(Replacement, bytes.AsSpan(104 + 16386));
         _transaction = bytes;
@@ -105,7 +118,7 @@ internal sealed partial class SourceKeyboardProbe
                 else
                 {
                     _nativeCalls++;
-                    consume = _acceptedWrite = _synchronousField!.TryExecute(_transaction!, _expectedRevision);
+                    consume = _acceptedWrite = _synchronousField!.TryExecute(_transaction!, _expectedRevision, _expectedInput);
                     _synchronousHeld = consume && !_sourceDeparted;
                     if (consume)
                         _consumed++;
@@ -140,6 +153,7 @@ internal sealed partial class SourceKeyboardProbe
     private object? SynchronousResult() => _synchronousField is null ? null : new
     {
         nativeCalls = _nativeCalls,
+        inputContextProbed = _inputProbed,
         bodyChanges = _bodyChanges,
         accepted = _acceptedWrite,
         repeatConsumed = _repeatConsumed,

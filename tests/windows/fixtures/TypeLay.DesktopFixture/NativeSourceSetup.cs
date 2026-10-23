@@ -137,7 +137,8 @@ internal static class NativeSourceSetup
         && N.GetWindowThreadProcessId(field, out uint fieldPid) != 0 && fieldPid == process.Id
         && N.GetAncestor(field, 2) == root;
 
-    internal static async Task ClickAsync(nint root, nint field, Process process, CancellationToken ct, nuint marker = 0)
+    internal static async Task ClickAsync(nint root, nint field, Process process, CancellationToken ct, nuint marker = 0,
+        int? brokerProcessId = null)
     {
         ct.ThrowIfCancellationRequested();
         int processId = process.Id;
@@ -173,16 +174,21 @@ internal static class NativeSourceSetup
                 Check(!bounds.IsEmpty && bounds.Width > 8 && bounds.Height > 8
                     && double.IsFinite(bounds.Left) && double.IsFinite(bounds.Top)
                     && double.IsFinite(bounds.Right) && double.IsFinite(bounds.Bottom), FailureReason.SourceClickGeometryUnavailable);
+                var hits = new (N.Point Point, nint? Window)[3];
+                int hitCount = 0;
                 foreach (double x in new[] { bounds.Left + bounds.Width / 2, bounds.Left + 4, bounds.Right - 4 })
                 {
                     double y = bounds.Top + bounds.Height / 2;
                     Check(x >= int.MinValue && x <= int.MaxValue && y >= int.MinValue && y <= int.MaxValue,
                         FailureReason.SourceClickGeometryUnavailable);
                     var point = new N.Point { X = (int)x, Y = (int)y };
-                    if (bounds.Contains(point.X, point.Y) && WindowFromPoint(point) == field)
+                    nint? hit = bounds.Contains(point.X, point.Y) ? WindowFromPoint(point) : null;
+                    hits[hitCount++] = (point, hit);
+                    if (hit == field)
                         return point;
                 }
-                throw new Failure(FailureReason.SourceClickObscured);
+                throw new Failure(FailureReason.SourceClickObscured,
+                    DescribeObscuration(root, field, processId, brokerProcessId, bounds, hits));
             }
             finally { SetThreadDpiAwarenessContext(previousDpi); }
         }, ct).WaitAsync(ct);
@@ -207,6 +213,89 @@ internal static class NativeSourceSetup
                 FailureReason.SourceClickTargetChanged);
         }
         finally { SetThreadDpiAwarenessContext(previousClickDpi); }
+    }
+
+    // Only after all original hit tests refuse. Metadata can change or a handle
+    // can be reused before these reads; it is not the identity at the hit time.
+    // Do not repeat hit tests, enumerate windows, or read titles/document text.
+    private static string DescribeObscuration(nint root, nint field, int processId, int? brokerProcessId,
+        System.Windows.Rect bounds, (N.Point Point, nint? Window)[] hits)
+    {
+        long startedAtMs = WindowsInterruptClock.NowMs;
+        nint foreground = N.GetForegroundWindow();
+        var foregroundDetail = DescribeWindow(foreground);
+        bool nativeBoundsAvailable = N.GetWindowRect(field, out var nativeBounds);
+        var hitDetails = hits.Select(hit => new
+        {
+            hit.Point.X,
+            hit.Point.Y,
+            OriginalHit = new
+            {
+                Sampled = hit.Window.HasValue,
+                IsZero = hit.Window == 0,
+                IsSourceField = hit.Window == field,
+                IsSourceRoot = hit.Window == root
+            },
+            LaterWindowMetadata = DescribeWindow(hit.Window)
+        }).ToArray();
+        return JsonSerializer.Serialize(new
+        {
+            Reason = nameof(FailureReason.SourceClickObscured),
+            MetadataCollectedAfterHitTests = true,
+            MetadataStartedAtMs = startedAtMs,
+            MetadataCompletedAtMs = WindowsInterruptClock.NowMs,
+            BrokerProcessKnown = brokerProcessId.HasValue,
+            Foreground = foregroundDetail,
+            UiaBounds = new
+            {
+                bounds.Left,
+                bounds.Top,
+                bounds.Right,
+                bounds.Bottom
+            },
+            LaterNativeBounds = nativeBoundsAvailable
+                ? new
+                {
+                    nativeBounds.Left,
+                    nativeBounds.Top,
+                    nativeBounds.Right,
+                    nativeBounds.Bottom
+                } : null,
+            GeometryComparison = !nativeBoundsAvailable ? "unavailable"
+                : bounds.Left == nativeBounds.Left && bounds.Top == nativeBounds.Top
+                    && bounds.Right == nativeBounds.Right && bounds.Bottom == nativeBounds.Bottom ? "same" : "different",
+            Hits = hitDetails
+        });
+
+        object DescribeWindow(nint? observed)
+        {
+            nint window = observed ?? 0;
+            nint windowRoot = window == 0 ? 0 : N.GetAncestor(window, 2);
+            return new
+            {
+                Owner = Owner(window),
+                IsSourceRoot = window == root,
+                RootOwner = Owner(windowRoot),
+                RootIsSource = windowRoot == root,
+                RootIsForeground = windowRoot != 0 && windowRoot == foreground,
+                RootTopmostBitSet = windowRoot != 0 && (N.GetStyle(windowRoot, -20) & 0x8) != 0,
+                RootClass = Classify(windowRoot)
+            };
+        }
+
+        string Owner(nint window) => window == 0 || N.GetWindowThreadProcessId(window, out uint pid) == 0 || pid == 0 ? "unknown"
+            : pid == processId ? "fixture" : pid == brokerProcessId ? "broker"
+            : pid == Environment.ProcessId ? "current-process" : "other-process";
+
+        static string Classify(nint window)
+        {
+            var name = new StringBuilder(256);
+            if (window == 0 || N.GetClassName(window, name, name.Capacity) == 0)
+                return "unknown";
+            string value = name.ToString();
+            return value == "ConsoleWindowClass" ? "console" : value.StartsWith("HwndWrapper[", StringComparison.Ordinal) ? "wpf"
+                : value == "TypeLayMvpFixture" ? "fixture" : "other";
+        }
     }
 
     // A synchronization hypothesis for the observed post-click transport timeout,

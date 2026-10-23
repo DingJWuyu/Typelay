@@ -123,6 +123,7 @@ class GtkCandidateObservationTests(unittest.TestCase):
         for candidate in (
             None,
             {},
+            {"text": "preview without an editing cue"},
             {"text": "", "editablePreview": True},
             {"text": "old preview", "editablePreview": False},
         ):

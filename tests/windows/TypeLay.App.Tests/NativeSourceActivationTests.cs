@@ -230,6 +230,7 @@ public sealed class NativeSourceActivationTests
     [InlineData("text")]
     [InlineData("focus")]
     [InlineData("no-context")]
+    [InlineData("restored-context")]
     public async Task SourceChangesBeforeClaimRejectActivationWithoutMutation(string change)
     {
         await using var desktop = await ProductionForegroundWriteTests.Desktop.Start();
@@ -247,6 +248,14 @@ public sealed class NativeSourceActivationTests
         {
             N.Send(desktop.Root, 0x8062, (nuint)desktop.A);
             Assert.Equal((nint)1, N.GetProp(desktop.Root, "TypeLay.Test.SourceContextDetached.v1"));
+            if (change == "restored-context")
+            {
+                var revoked = native.PollSourceAcceptance(generation, permit.Plan.Id);
+                Assert.False(revoked.Installed);
+                Assert.Equal(Denial.ImeUnclear, revoked.Receipt!.Reason);
+                N.Send(desktop.Root, 0x8063);
+                Assert.Equal((nint)1, N.GetProp(desktop.Root, "TypeLay.Test.SourceContextRestored.v1"));
+            }
         }
         string text = N.ReadText(desktop.A, Limits.MaxTextUnits);
         var selection = N.ReadSelection(desktop.A);
@@ -268,6 +277,19 @@ public sealed class NativeSourceActivationTests
         }
         Assert.Equal(text, N.ReadText(desktop.A, Limits.MaxTextUnits));
         Assert.Equal(selection, N.ReadSelection(desktop.A));
+        if (change == "restored-context")
+        {
+            // Restoration is not revival. Only a fresh snapshot and separately
+            // installed grant may execute after exact retirement of the old one.
+            var fresh = NativeSourceAcceptanceTests.CapturePermit(native, observed, new(4, 7));
+            Guid next = Guid.NewGuid();
+            using var replacement = Install(native, next, fresh);
+            var accepted = replacement.Activate();
+            Assert.True(accepted.Claimed);
+            Assert.Equal(WriteStatus.Verified, accepted.Receipt!.Status);
+            Assert.True(native.RetireSourceAcceptance(next, fresh.Plan.Id).Quiet);
+            Assert.Equal("pre Hello post", N.ReadText(desktop.A, Limits.MaxTextUnits));
+        }
         desktop.AssertZeroSubmits();
     }
 

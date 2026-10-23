@@ -232,6 +232,7 @@ class NativeForegroundGuardTests(unittest.TestCase):
                 12: "automatic lifetime cannot use ordinary v2 write routes",
                 13: "owned capture rechecks dynamic qualification before and after reading",
                 17: "exact-field foreground preserves focus, identity, IME and deadline guards",
+                18: "source installation binds input identity and cannot revive a revoked grant",
             }
             self.assertEqual(
                 result.returncode,

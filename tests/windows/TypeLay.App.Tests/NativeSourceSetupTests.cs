@@ -132,7 +132,31 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                     var failure = await Assert.ThrowsAsync<NativeSourceSetup.Failure>(() => NativeSourceSetup.ClickAsync(root, source.Field, source.Process, action.Token));
                     Assert.Equal(scenario == "covered" ? "source-click-obscured" : "source-click-identity-changed", failure.Code);
                     // TRX retains Exception.Message, not the custom Reason/Code.
-                    Assert.Equal(scenario == "covered" ? "SourceClickObscured" : "SourceClickIdentityChanged", failure.Message);
+                    if (scenario == "covered")
+                    {
+                        using var detail = JsonDocument.Parse(failure.Message);
+                        var diagnostic = detail.RootElement;
+                        Assert.Equal("SourceClickObscured", diagnostic.GetProperty("Reason").GetString());
+                        Assert.True(diagnostic.GetProperty("MetadataCollectedAfterHitTests").GetBoolean());
+                        Assert.Equal("current-process", diagnostic.GetProperty("Foreground").GetProperty("Owner").GetString());
+                        var hits = diagnostic.GetProperty("Hits").EnumerateArray().ToArray();
+                        Assert.Equal(3, hits.Length);
+                        Assert.All(hits, hit =>
+                        {
+                            var original = hit.GetProperty("OriginalHit");
+                            Assert.True(original.GetProperty("Sampled").GetBoolean());
+                            Assert.False(original.GetProperty("IsSourceField").GetBoolean());
+                            var window = hit.GetProperty("LaterWindowMetadata");
+                            Assert.Equal("current-process", window.GetProperty("RootOwner").GetString());
+                            Assert.Equal("wpf", window.GetProperty("RootClass").GetString());
+                            Assert.True(window.GetProperty("RootIsForeground").GetBoolean());
+                            Assert.True(window.GetProperty("RootTopmostBitSet").GetBoolean());
+                        });
+                        Assert.DoesNotContain(Source.Text, failure.Message);
+                        Assert.DoesNotContain(cover.Title, failure.Message);
+                    }
+                    else
+                        Assert.Equal("SourceClickIdentityChanged", failure.Message);
                 }
                 else
                 {

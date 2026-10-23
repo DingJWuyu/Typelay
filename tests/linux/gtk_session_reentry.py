@@ -701,6 +701,7 @@ def check_preview_colors(client, source, generation, state, initial, evidence):
             f"{view_state}/{theme}: rendered candidate style/size was not observed",
         )
         assert actual["candidate"]["foreground"] == foreground, (view_state, actual["candidate"])
+        assert actual["candidate"]["editablePreview"] is False
         if text == short_text and theme == "light":
             if short_height is None:
                 short_height = actual["candidate"]["height"]

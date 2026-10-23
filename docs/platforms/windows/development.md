@@ -74,9 +74,9 @@ if ($LASTEXITCODE -ne 0) { throw '源线程诊断前置、观察或清理失败�
 if ($LASTEXITCODE -ne 0) { throw '同步源实验失败，保留结果，不重试或开启生产接受。' }
 ```
 
-六行覆盖正常首键与 repeat/up 一次写入、PM_NOREMOVE 零写、原文冲突/原期限失效/错误 cookie 的零写旁路，以及一次 native accepted 后回调返回前的 1200ms 有界暂停。记录 native 调用次数、实际 EN_CHANGE 次数、回执、GUI dispatch 前后计数、焦点、选区与 Undo；暂停中从另一线程只读属性观察原键尚未进入 dialog/控件路径，不用队列 hook 的先后顺序推导目标收到消息。结果保存在 `artifacts/source-synchronous-acceptance/<唯一目录>/result.json`，固定 `productionReadiness=false`。每行原 30 秒 owner 预算与 60 秒 xUnit 上限不变，清理自有按键和 hook；运行器须有外层总截止并保存失败证据。
+六行在原合成授权期限内实际探测并冻结源线程 HIMC/HKL，调用现有带 input-context 的 native 执行入口；探测失败明确拒绝，不用零值补成 Clear。覆盖正常首键与 repeat/up 一次写入、PM_NOREMOVE 零写、原文冲突/原期限失效/错误 cookie 的零写旁路，以及一次 native accepted 后回调返回前的 1200ms 有界暂停。记录 inputContextProbed、native 调用次数、实际 EN_CHANGE 次数、回执、GUI dispatch 前后计数、焦点、选区与 Undo；暂停中从另一线程只读属性观察原键尚未进入 dialog/控件路径，不用队列 hook 的先后顺序推导目标收到消息。结果保存在 `artifacts/source-synchronous-acceptance/<唯一目录>/result.json`，固定 `productionReadiness=false`。每行原 30 秒 owner 预算与 60 秒 xUnit 上限不变，清理自有按键和 hook；运行器须有外层总截止并保存失败证据。
 
-该实验不安装第三方源组件，不涉及 Notepad，不提供物理键、真实中文组合态及完整生产许可关联的验收证据。与旧 LL 写后超时反例比较的是同步源内机制，不代表 hook/TSF 自动解决普通输入框支持；原生产写回门继续关闭。既有只读边界与双队列实验保持原覆盖，不扩展跨应用尾键要求。
+HIMC/HKL 只提供离散身份样本，既有 owned 执行的任意末期重入安全、TSF profile 连续性及组合权限仍未闭合。该实验不安装第三方源组件，不涉及 Notepad，不提供物理键、真实中文组合态及完整生产许可关联的验收证据。与旧 LL 写后超时反例比较的是同步源内机制，不代表 hook/TSF 自动解决普通输入框支持；原生产写回门继续关闭。既有只读边界与双队列实验保持原覆盖，不扩展跨应用尾键要求。
 
 ## 自有标准 Edit 的既有 TSF context 准入
 

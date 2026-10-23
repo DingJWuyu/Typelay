@@ -151,7 +151,9 @@ static int ime(HANDLE hwnd) {
     ImmReleaseContext(hwnd, context);
     return bytes == 0 ? 1 : bytes > 0 ? 2 : 0;
 }
-static WNDPROC qualify_field(HANDLE hwnd, HANDLE root, uint32_t process, uint32_t thread, int32_t *multiline) {
+// Window/class/style metadata only: no stock-control or IMM callback. Keep this
+// part available after a final reentrant input query without reopening that query.
+static WNDPROC qualify_field_metadata(HANDLE hwnd, HANDLE root, uint32_t process, uint32_t thread, int32_t *multiline) {
     uint32_t pid = 0;
     if (process != GetCurrentProcessId() || thread != GetCurrentThreadId()
         || GetWindowThreadProcessId(hwnd, &pid) != thread || pid != process
@@ -167,9 +169,13 @@ static WNDPROC qualify_field(HANDLE hwnd, HANDLE root, uint32_t process, uint32_
     if (!proc || GetWindowLongPtrW(hwnd, -4) != (intptr_t)proc
         || GetClassLongPtrW(hwnd, -24) != (intptr_t)proc) return 0;
     intptr_t style = GetWindowLongPtrW(hwnd, -16);
-    if ((style & (0x8 | 0x10 | 0x20 | 0x800 | 0x2000)) || CallWindowProcW(proc, hwnd, 0xd2, 0, 0)) return 0;
+    if (style & (0x8 | 0x10 | 0x20 | 0x800 | 0x2000)) return 0;
     if (multiline) *multiline = (style & 4) != 0;
     return proc;
+}
+static WNDPROC qualify_field(HANDLE hwnd, HANDLE root, uint32_t process, uint32_t thread, int32_t *multiline) {
+    WNDPROC proc = qualify_field_metadata(hwnd, root, process, thread, multiline);
+    return proc && !CallWindowProcW(proc, hwnd, 0xd2, 0, 0) ? proc : 0;
 }
 static WNDPROC qualify(Transaction *tx) {
     return qualify_field((HANDLE)(uintptr_t)tx->hwnd, (HANDLE)(uintptr_t)tx->root,
@@ -367,6 +373,9 @@ static int owned_input_preflight(Transaction *tx, WNDPROC proc, uint64_t revisio
     if (GetTickCount64() > tx->deadline) { tx->reason = 14; return 0; }
     return 1;
 }
+// Source-only guard. The source slot is bound by the outer callback and cannot
+// be replaced while it is active; this never uses owned practice qualification.
+static int source_input_current(Transaction *tx);
 typedef struct { uint32_t *claim; const uint32_t *reason; } SourceAdmission;
 static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accepted,
     const OwnedInputContext *expected_input, const SourceAdmission *admission) {
@@ -445,9 +454,7 @@ static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accep
         if (tx->selection_start != tx->expected_selection_start || tx->selection_end != tx->expected_selection_end) {
             tx->reason = 4; return;
         }
-        if (*admission->reason || !qualify(tx) || !foreground_source(tx)
-            || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie) { tx->reason = 2; return; }
-        if (!authorization_current(tx) || GetTickCount64() > tx->deadline) { tx->reason = 14; return; }
+        if (!source_input_current(tx)) return;
         // Keep only the already sampled queue-type hints in the diagnostic.
         // No second queue read, message retrieval, or additional authority.
         uint32_t pending_work = GetQueueStatus(0x1dff) >> 16;
@@ -476,6 +483,7 @@ static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accep
     if (tx->op == 5 && !authorization_current(tx)) { tx->reason = 14; return; }
     if (!owned_focus_current(focus_revision)) { tx->reason = 10; return; }
     if (!owned_input_preflight(tx, proc, focus_revision, expected_input, tx->start, tx->end)) return;
+    if (admission && !source_input_current(tx)) return;
     tx->status = 3; tx->reason = 20; // Unknown once mutation starts; never retry.
     CallWindowProcW(proc, hwnd, 0xc2, 1, (LPARAM)tx->replacement); // EM_REPLACESEL, undo enabled.
     if (!owned_focus_current(focus_revision) || !owned_current(tx) || !qualify(tx) || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie) return;
@@ -563,6 +571,7 @@ typedef struct {
     uint32_t busy, reason, completed_status, completed_reason;
     uint64_t nonce, generation[2], grant[2], hwnd, root, cookie;
     int64_t expires;
+    OwnedInputContext input; // Source-local scalar identity, never sent over the wire.
 } SourceSlot;
 static SourceSlot source;
 // Covers unmatched requests too: a downstream hook cannot retire A, install B,
@@ -581,6 +590,8 @@ static void source_invalidate(const CallMessage *msg) {
         case 0x100: case 0x101: case 0x102: case 0x104: case 0x105:
         case 0x201: case 0x204: case 0x207:
             source.reason = 15; break;
+        case 0x281: // SETCONTEXT activation/deactivation only revoke, never re-arm.
+            source.reason = 9; break;
         }
     }
     if (msg->hwnd == (HANDLE)(uintptr_t)source.root
@@ -593,6 +604,37 @@ static int source_identity(const SourceInstallation *request, const CallMessage 
         && source.cookie == request->tx.cookie && source.expires == request->tx.authorization_deadline_ms
         && source.generation[0] == request->generation[0] && source.generation[1] == request->generation[1]
         && source.grant[0] == request->grant[0] && source.grant[1] == request->grant[1];
+}
+static uint32_t source_current(const Transaction *tx) {
+    HANDLE hwnd = (HANDLE)(uintptr_t)tx->hwnd, root = (HANDLE)(uintptr_t)tx->root;
+    uint32_t pid = 0;
+    if (source.reason) return source.reason;
+    if (__atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) != GetCurrentThreadId()
+        || source.hwnd != tx->hwnd || source.root != tx->root || source.cookie != tx->cookie
+        || source.expires != tx->authorization_deadline_ms || owned.hwnd == hwnd
+        || !qualify_field_metadata(hwnd, root, tx->pid, tx->thread, 0)
+        || GetWindowThreadProcessId(root, &pid) != tx->thread || pid != tx->pid
+        || !foreground_source(tx) || !IsWindowVisible(hwnd) || !IsWindowVisible(root)
+        || !IsWindowEnabled(root) || IsIconic(root)
+        || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie) return 2;
+    return authorization_current(tx) && GetTickCount64() <= tx->deadline ? 0 : 14;
+}
+static int source_input_current(Transaction *tx) {
+    uint32_t reason = source_current(tx);
+    if (!reason && !qualify(tx)) reason = 2;
+    // Qualification contains a stock-control call. Sample after it and every
+    // other body/selection callback, then close only with callback-free identity,
+    // monotonic revocation and original clock checks. This is not a TSF profile
+    // or continuous composition witness; equal samples cannot supply one.
+    OwnedInputContext current;
+    if (!reason && (!source.input.ime_context || !source.input.keyboard_layout
+        || !read_input_context((HANDLE)(uintptr_t)tx->hwnd, &current)
+        || current.ime_context != source.input.ime_context
+        || current.keyboard_layout != source.input.keyboard_layout)) reason = 9;
+    if (!reason) reason = source_current(tx);
+    if (reason && !source.reason) source.reason = reason;
+    if (source.reason) { tx->reason = source.reason; return 0; }
+    return 1;
 }
 static uint32_t source_preflight(SourceInstallation *request) {
     Transaction *tx = &request->tx;
@@ -616,6 +658,14 @@ static uint32_t source_preflight(SourceInstallation *request) {
         || !boundary(tx->expected, tx->length, tx->expected_selection_end)
         || tx->expected_selection_end < tx->expected_selection_start
         || tx->length - (tx->end - tx->start) + tx->replacement_length > MAX_UNITS) return 18;
+    uint32_t current = source_current(tx);
+    if (current) return current;
+    if (!qualify(tx)) return 6;
+    // Freeze once for this grant, before the body/selection reads. Later samples
+    // compare only; neither poll nor restored state may rebind it.
+    if (!read_input_context((HANDLE)(uintptr_t)tx->hwnd, &source.input)) return 9;
+    current = source_current(tx);
+    if (current) return current;
     int length = tx->length;
     // Reuse the production read-only operation, never op5 execution. Its result
     // is installation preflight, not a completed write or a renewed snapshot.
@@ -627,9 +677,7 @@ static uint32_t source_preflight(SourceInstallation *request) {
     if (!reason && (tx->selection_start != tx->expected_selection_start
         || tx->selection_end != tx->expected_selection_end)) reason = 4;
     tx->length = length;
-    if (!reason && (!qualify(tx) || !foreground_source(tx)
-        || (uint64_t)(uintptr_t)GetPropW((HANDLE)(uintptr_t)tx->hwnd, property) != tx->cookie)) reason = 2;
-    if (!reason && !authorization_current(tx)) reason = 14;
+    if (!reason && !source_input_current(tx)) reason = tx->reason;
     return reason;
 }
 static HANDLE source_mapping(const CallMessage *msg) {
@@ -678,6 +726,7 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
                 copy(source.grant, request->grant, sizeof(source.grant));
                 source.hwnd = tx->hwnd; source.root = tx->root; source.cookie = tx->cookie;
                 source.expires = tx->authorization_deadline_ms;
+                source.input.ime_context = source.input.keyboard_layout = 0;
                 source.busy++;
                 uint32_t reason = source_preflight(request);
                 if (reason && !source.reason) source.reason = reason;
@@ -723,7 +772,9 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
     LRESULT result = CallNextHookEx(0, code, wp, lp);
     if (request) {
         if (matched) {
-            if (!source.reason && !authorization_current(&request->tx)) source.reason = 14;
+            // Includes downstream install/poll reentry. An observed mismatch
+            // latches revocation even if the next poll sees the old handles again.
+            if (!source.reason && !source.completed_status) source_input_current(&request->tx);
             request->tx.status = source.completed_status ? source.completed_status : source.reason ? 2 : 0;
             request->tx.reason = source.completed_status ? source.completed_reason : source.reason;
             request->state = quiet ? 3 : source.completed_status || source.reason ? 2 : 1;

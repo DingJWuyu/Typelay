@@ -29,6 +29,12 @@ static const WCHAR initial_text[] = L"pre old post";
 static const WCHAR replacement_text[] = L"fresh";
 static const WCHAR written_text[] = L"pre fresh post";
 static Transaction request;
+// One bounded source wire at the existing OS API seam. Production still owns
+// installation, claim, invalidation and retirement through its exported hook.
+static SourceInstallation source_wire, source_copy;
+static int source_wire_enabled, source_mapped, source_allocated;
+static uint64_t source_command;
+enum { InstallMessage = 0xc101, RevokeMessage, PollMessage, ActivateMessage };
 static struct {
     enum Scenario scenario;
     HANDLE foreground, focus, source_ancestor, root_ancestor;
@@ -40,6 +46,8 @@ static struct {
     HANDLE input_context, keyboard_layout;
     int context_gets, context_releases, layout_reads, change_input_at_limit, change_input_at_release, release_failure;
     int capture_fault, capture_boundary, password, disabled;
+    int change_input_at_password, change_input_at_read;
+    int qualification_fault, qualification_ready, limit_read, selection_read_after_set, instance_changed, class_changed;
     int hidden, root_disabled, minimized, clipped, bad_parent, root_hidden, rectangle_failure;
     intptr_t style;
     WCHAR text[CAPACITY];
@@ -65,56 +73,74 @@ static void change_capture_state(int boundary) {
     }
 }
 
-// The included production hook entry point is not exercised by this executor
-// test. COFF still resolves its references before discarding unused sections;
-// give those APIs fail-if-called substitutes rather than linking real IPC.
+// These are controlled OS responses, not Windows IPC/queue evidence. Every
+// non-source test keeps the original fail-if-called boundary.
 LRESULT CallNextHookEx(HANDLE hook, int code, WPARAM wp, LPARAM lp) {
     (void)hook; (void)code; (void)wp; (void)lp;
-    field.invalid_call = 1;
+    require(source_wire_enabled);
     return 0;
 }
+static int same_name(const WCHAR *a, const WCHAR *b) {
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
 uint32_t RegisterWindowMessageW(const WCHAR *name) {
-    (void)name;
+    require(source_wire_enabled);
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceInstall.v3")) return InstallMessage;
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceRevoke.v3")) return RevokeMessage;
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourcePoll.v3")) return PollMessage;
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceActivate.v3")) return ActivateMessage;
+    if (same_name(name, message_name)) return 0xc105;
+    if (same_name(name, owned_capture_message_name)) return 0xc106;
     field.invalid_call = 1;
     return 0;
 }
 HANDLE OpenFileMappingW(uint32_t access, int inherit, const WCHAR *name) {
-    (void)access; (void)inherit; (void)name;
-    field.invalid_call = 1;
-    return 0;
+    require(source_wire_enabled && access == 6 && !inherit
+        && same_name(name, (const WCHAR *)L"Local\\TypeLay.Source.0000000000000044"));
+    return handle(8);
 }
 void *MapViewOfFile(HANDLE mapping, uint32_t access, uint32_t high, uint32_t low, size_t bytes) {
-    (void)mapping; (void)access; (void)high; (void)low; (void)bytes;
-    field.invalid_call = 1;
-    return 0;
+    require(source_wire_enabled && mapping == handle(8) && access == 6 && !high && !low
+        && bytes == sizeof(source_wire) && !source_mapped);
+    source_mapped = 1;
+    return &source_wire;
 }
 int UnmapViewOfFile(const void *view) {
-    (void)view;
-    field.invalid_call = 1;
-    return 0;
+    require(source_wire_enabled && source_mapped && view == &source_wire);
+    source_mapped = 0;
+    return 1;
 }
-int CloseHandle(HANDLE value) {
-    (void)value;
-    field.invalid_call = 1;
-    return 0;
-}
-HANDLE GetProcessHeap(void) { field.invalid_call = 1; return 0; }
+int CloseHandle(HANDLE value) { require(source_wire_enabled && value == handle(8)); return 1; }
+HANDLE GetProcessHeap(void) { require(source_wire_enabled); return handle(9); }
 void *HeapAlloc(HANDLE heap, uint32_t flags, size_t bytes) {
-    (void)heap; (void)flags; (void)bytes;
-    field.invalid_call = 1;
-    return 0;
+    require(source_wire_enabled && heap == handle(9) && flags == 8
+        && bytes == sizeof(source_copy) && !source_allocated);
+    source_allocated = 1;
+    return &source_copy;
 }
 int HeapFree(HANDLE heap, uint32_t flags, void *value) {
-    (void)heap; (void)flags; (void)value;
-    field.invalid_call = 1;
-    return 0;
+    require(source_wire_enabled && heap == handle(9) && !flags
+        && value == &source_copy && source_allocated);
+    source_allocated = 0;
+    return 1;
 }
 
 static LRESULT stock_edit(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
     require_source(hwnd);
     switch (message) {
-    case GetPasswordChar: return field.password;
+    case GetPasswordChar:
+        if (field.limit_read && field.qualification_fault
+            && (field.qualification_fault != 4 || field.selection_read_after_set)) field.qualification_ready = 1;
+        if (field.change_input_at_password == 2) {
+            field.change_input_at_password = 0;
+            field.input_context = handle(6);
+            field.injected_changes++;
+        }
+        return field.password;
     case GetLimitText:
+        field.limit_read = 1;
+        if (field.change_input_at_password == 1) field.change_input_at_password = 2;
         if (field.change_input_at_limit) {
             field.keyboard_layout = handle(6);
             field.injected_changes++;
@@ -129,12 +155,17 @@ static LRESULT stock_edit(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
         return field.length;
     case GetSelection:
         field.selection_reads++;
+        if (field.set_calls) field.selection_read_after_set = 1;
         require(wp != 0 && lp != 0);
         if (wp && lp) {
             *(int32_t *)wp = field.start;
             *(int32_t *)lp = field.end;
         }
         change_capture_state(2);
+        if (field.selection_reads == field.change_input_at_read) {
+            field.input_context = handle(6);
+            field.injected_changes++;
+        }
         return 0;
     case SetSelection:
         field.set_calls++;
@@ -239,11 +270,10 @@ HANDLE GetAncestor(HANDLE hwnd, uint32_t flags) {
 }
 HANDLE GetForegroundWindow(void) { return field.foreground; }
 HANDLE GetFocus(void) { return field.focus; }
-// Existing v2/owned tests never supply SourceAdmission. COFF still resolves
-// the inactive activation export; fail if this executor-only harness reaches
-// those APIs instead of pretending to prove real Windows queue or IPC behavior.
+// Remote activation is not exercised; the exported source hook receives the
+// controlled request directly. No claim about real Windows queue state follows.
 HANDLE GetActiveWindow(void) { field.invalid_call = 1; return 0; }
-uint32_t GetQueueStatus(uint32_t flags) { (void)flags; field.invalid_call = 1; return 0; }
+uint32_t GetQueueStatus(uint32_t flags) { require(source_wire_enabled && flags == 0x1dff); return 0; }
 LRESULT SendMessageTimeoutW(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp,
     uint32_t flags, uint32_t timeout, uintptr_t *result) {
     (void)hwnd; (void)message; (void)wp; (void)lp; (void)flags; (void)timeout;
@@ -277,12 +307,12 @@ int ClientToScreen(HANDLE hwnd, Point *point) {
 intptr_t GetWindowLongPtrW(HANDLE hwnd, int index) {
     require_source(hwnd);
     require(index == -4 || index == -16);
-    return index == -4 ? (intptr_t)stock_edit : field.style;
+    return index == -4 ? (intptr_t)stock_edit + field.instance_changed : field.style;
 }
 intptr_t GetClassLongPtrW(HANDLE hwnd, int index) {
     require_source(hwnd);
     require(index == -24);
-    return (intptr_t)stock_edit;
+    return (intptr_t)stock_edit + field.class_changed;
 }
 int GetClassInfoW(HANDLE instance, const WCHAR *name, WindowClass *result) {
     require(instance == 0 && equal(name, (const WCHAR *)L"Edit", 5));
@@ -346,6 +376,15 @@ int ImmReleaseContext(HANDLE hwnd, HANDLE context) {
         field.input_context = handle(6);
         field.injected_changes++;
     }
+    if (field.qualification_ready && (field.qualification_fault != 4 || field.set_calls)) {
+        switch (field.qualification_fault) {
+        case 1: case 4: field.style |= 0x800; break;
+        case 2: field.instance_changed = 1; break;
+        case 3: field.class_changed = 1; break;
+        }
+        field.qualification_fault = field.qualification_ready = 0;
+        field.injected_changes++;
+    }
     change_capture_state(1);
     return !field.release_failure;
 }
@@ -361,6 +400,9 @@ static void prepare_transaction(enum Scenario scenario) {
     field.context_gets = field.context_releases = field.layout_reads = 0;
     field.change_input_at_limit = field.change_input_at_release = field.release_failure = 0;
     field.capture_fault = field.capture_boundary = field.password = field.disabled = 0;
+    field.change_input_at_password = field.change_input_at_read = 0;
+    field.qualification_fault = field.qualification_ready = field.limit_read = field.selection_read_after_set = 0;
+    field.instance_changed = field.class_changed = 0;
     field.hidden = field.root_disabled = field.minimized = field.clipped = field.bad_parent = 0;
     field.root_hidden = field.rectangle_failure = 0;
     field.style = 0x50000000; // Current WS_CHILD | WS_VISIBLE, not a configured safety flag.
@@ -733,6 +775,83 @@ static int failed_focus_mirror_permanently_retires_owned_authority(void) {
         && field.start == 12 && field.end == 12 && equal(field.text, initial_text, 13)
         && !field.cookie && !field.focus_revision && !field.invalid_call;
 }
+static void send_source(uint32_t message) {
+    CallMessage call = {(LPARAM)++source_command, 0x44, message, handle(RootWindow)};
+    TypeLayCallWndProc(0, 0, (LPARAM)&call);
+}
+static int source_input_identity_is_bound_until_exact_retirement(void) {
+    source_wire_enabled = 1;
+    for (int fault = 0; fault < 14; fault++) {
+        wipe(&field, sizeof(field));
+        field.cookie = LifetimeCookie;
+        prepare_transaction(Unchanged);
+        wipe(&source_wire, sizeof(source_wire));
+        source_command = 0;
+        source_wire.version = 3; source_wire.bytes = sizeof(source_wire);
+        source_wire.generation[0] = 1; source_wire.grant[0] = (uint64_t)fault + 1;
+        source_wire.observed_at_ms = 900;
+        source_wire.tx = request;
+        if (fault == 9) field.change_input_at_read = 1;
+        send_source(InstallMessage);
+        if (fault == 9) {
+            // The installation's own body/selection read changed HIMC. It must
+            // compare with its earlier sample, not freeze a new identity here.
+            if (source_wire.state != 2 || source_wire.tx.reason != 9 || source_wire.claim
+                || field.set_calls || field.replace_calls || field.invalid_call) return 0;
+            send_source(RevokeMessage);
+            if (source_wire.state != 3 || source_mapped || source_allocated || field.invalid_call) return 0;
+            continue;
+        }
+        if (source_wire.state != 1 || source_wire.claim || source_wire.tx.status
+            || field.set_calls || field.replace_calls || field.invalid_call) return 0;
+        switch (fault) {
+        case 10: case 11: case 12: case 13: field.qualification_fault = fault - 9; break;
+        case 0: case 8: break; // Fresh grants before and after the rejected grants can execute.
+        case 1: field.input_context = handle(6); break;
+        case 2: field.keyboard_layout = handle(6); break;
+        case 3: field.change_input_at_password = 1; break; // Final qualification can reenter.
+        case 4: field.scenario = InputContextChangedAfterSelection; break;
+        case 5: {
+            CallMessage context = {0, 0, 0x281, handle(SourceWindow)};
+            TypeLayCallWndProc(0, 0, (LPARAM)&context);
+            context.wparam = 1; // Same HIMC/HKL is not new authority after deactivate/activate.
+            TypeLayCallWndProc(0, 0, (LPARAM)&context);
+            break;
+        }
+        case 6:
+            field.input_context = handle(6);
+            send_source(PollMessage); // An observed identity mismatch must remain revoked.
+            field.input_context = handle(4);
+            break;
+        case 7: {
+            CallMessage composition = {0, 0, 0x10e, handle(SourceWindow)};
+            TypeLayCallWndProc(0, 0, (LPARAM)&composition); // END never re-arms the grant.
+            break;
+        }
+        }
+        send_source(ActivateMessage);
+        if (fault == 0 || fault == 8) {
+            if (source_wire.claim != 1 || source_wire.tx.status != 1 || source_wire.tx.reason
+                || field.set_calls != 1 || field.replace_calls != 1 || !equal(field.text, written_text, 15)) return 0;
+        } else {
+            int claimed = fault == 4 || fault == 13;
+            if (source_wire.claim != (uint32_t)claimed || source_wire.tx.status != 2
+                || field.set_calls != claimed || field.replace_calls || !equal(field.text, initial_text, 13)
+                || field.start != (claimed ? 4 : 12) || field.end != (claimed ? 7 : 12)) return 0;
+            if (source_wire.tx.reason != (uint32_t)(fault >= 10 ? 2 : fault == 7 ? 15 : 9)
+                || (fault >= 10 && field.injected_changes != 1)) return 0;
+        }
+        uint32_t status = source_wire.tx.status, reason = source_wire.tx.reason;
+        field.input_context = handle(4); field.keyboard_layout = handle(5);
+        send_source(PollMessage); // Equality cannot reopen a terminal grant.
+        if (source_wire.state != 2 || source_wire.tx.status != status || source_wire.tx.reason != reason) return 0;
+        send_source(RevokeMessage);
+        if (source_wire.state != 3 || source_mapped || source_allocated || field.invalid_call
+            || field.context_gets != field.context_releases) return 0;
+    }
+    source_wire_enabled = 0;
+    return 1;
+}
 static int run_checks(void) {
     if (!unchanged_writes_scope_and_verifies()) return 1;
     if (!changed_focus_rejects_without_text_write()) return 2;
@@ -740,6 +859,7 @@ static int run_checks(void) {
     if (!expired_original_authorization_rejects_with_fresh_transaction_budget()) return 4;
     if (!exact_field_foreground_keeps_the_original_transaction_guards()) return 17;
     if (!unknown_wire_operations_cannot_read_the_source()) return 10;
+    if (!source_input_identity_is_bound_until_exact_retirement()) return 18;
     if (!owned_lifetime_cannot_be_restored_by_capture_or_release()) return 5;
     if (!automatic_lifetime_cannot_use_the_ordinary_write_route()) return 12;
     if (!owned_preflight_refuses_without_consuming_or_mutating()) return 6;
