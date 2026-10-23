@@ -12,6 +12,8 @@ internal static class WindowsHyPayload
         ["hy_close", "hy_open_v5", "hy_translate", "hy_translate_glossary_v5", "hy_translate_styled_v5"];
     private static readonly string[] ExtendedExports =
         ["hy_close", "hy_open_v5", "hy_translate", "hy_translate_glossary_v5", "hy_translate_styled_glossary_v5", "hy_translate_styled_v5"];
+    private static readonly string[] EnglishExports =
+        ["hy_close", "hy_open_v5", "hy_translate", "hy_translate_english_v1", "hy_translate_glossary_v5", "hy_translate_styled_glossary_v5", "hy_translate_styled_v5"];
     private static readonly string[] CpuFiles =
         ["libomp.dll", "ggml-base.dll", "ggml.dll", "llama.dll", "LICENSE-LLVM-OpenMP",
         "ggml-cpu-alderlake.dll", "ggml-cpu-cannonlake.dll", "ggml-cpu-cascadelake.dll", "ggml-cpu-cooperlake.dll",
@@ -19,7 +21,7 @@ internal static class WindowsHyPayload
         "ggml-cpu-sandybridge.dll", "ggml-cpu-sapphirerapids.dll", "ggml-cpu-skylakex.dll", "ggml-cpu-sse42.dll",
         "ggml-cpu-x64.dll", "ggml-cpu-zen4.dll"];
 
-    internal static bool CanPrepare(string worker)
+    internal static bool CanPrepare(string worker, bool requireEnglish = false)
     {
         try
         {
@@ -30,10 +32,17 @@ internal static class WindowsHyPayload
                 "model.lock.json", "cpu-runtime.win-x64.lock.json", "cpu-runtime"]);
             var manifest = ReadObject(Path.Combine(root, "production-adapter.json"));
             var exports = manifest.GetProperty("exports").EnumerateArray().Select(item => item.GetString()).ToArray();
+            bool english = exports.SequenceEqual(EnglishExports);
+            bool hasEnglishVersion = manifest.TryGetProperty("english_translation_version", out var englishVersion);
+            if (english ? !hasEnglishVersion || englishVersion.ValueKind != JsonValueKind.Number
+                || !englishVersion.TryGetInt32(out int version) || version != 1 : hasEnglishVersion)
+                return false;
+            if (requireEnglish && !english)
+                return false;
             if (manifest.GetProperty("schema").GetInt32() != 1 || manifest.GetProperty("abi").GetInt32() != 5
                 || manifest.GetProperty("platform").GetString() != "win-x64"
                 || manifest.GetProperty("template_sha256").GetString() != Template
-                || !(exports.SequenceEqual(Exports) || exports.SequenceEqual(ExtendedExports)))
+                || !(exports.SequenceEqual(Exports) || exports.SequenceEqual(ExtendedExports) || english))
                 return false;
             RequireFile(root, "typelay_hy.dll", manifest.GetProperty("adapter"));
             RequireFile(root, "LICENSE.llama.cpp", manifest.GetProperty("license"));

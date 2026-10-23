@@ -138,6 +138,7 @@ class WindowsPreparationTests(unittest.TestCase):
             "hy_close",
             "hy_open_v5",
             "hy_translate",
+            "hy_translate_english_v1",
             "hy_translate_glossary_v5",
             "hy_translate_styled_glossary_v5",
             "hy_translate_styled_v5",

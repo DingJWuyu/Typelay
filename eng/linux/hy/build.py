@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "src/shared/TypeLay.Worker"))
 from typelay_worker.hy_assets import (  # noqa: E402
     ABI,
-    EXTENDED_EXPORTS,
+    ENGLISH_EXPORTS,
     NATIVE_ROOT,
     UPSTREAM,
     digest,
@@ -84,7 +84,7 @@ def build(runtime, output):
         ["nm", "-D", "--defined-only", str(adapter)], text=True, timeout=30
     )
     exports = sorted(line.split()[-1] for line in symbols.splitlines() if line.strip())
-    if exports != EXTENDED_EXPORTS:
+    if exports != ENGLISH_EXPORTS:
         raise ValueError("production adapter must export exactly the extended ABI5 exports")
     dynamic = subprocess.check_output(["readelf", "--dynamic", str(adapter)], text=True, timeout=30)
     runpaths = re.findall(r"\(RUNPATH\).*\[([^]]*)\]", dynamic)
@@ -106,6 +106,7 @@ def build(runtime, output):
         "schema": 1,
         "platform": "linux-x86_64",
         "abi": ABI,
+        "english_translation_version": 1,
         "exports": exports,
         "upstream_revision": UPSTREAM,
         "model_lock_sha256": digest(output / "model.lock.json"),

@@ -873,15 +873,35 @@ def read_package_state(root, catalog):
 
 
 def validate_package_request(request, catalog):
+    fields = {"format", "operation", "packageIds", "activePackages", "expectedCurrent"}
     if (
         not isinstance(request, dict)
-        or set(request)
-        != {"format", "operation", "packageIds", "activePackages", "expectedCurrent"}
-        or type(request["format"]) is not int
-        or request["format"] != 1
+        or type(request.get("format")) is not int
+        or request["format"] not in (1, 2)
+        or set(request) != fields | ({"addDirections"} if request["format"] == 2 else set())
         or request["operation"] not in ("Install", "Repair", "Select", "Remove")
     ):
         raise ValueError("model-package-request")
+    if request["format"] == 2:
+        # A narrow candidate-only supplement, not a new operation or Repair upgrade.
+        if (
+            request["operation"] != "Install"
+            or request["packageIds"] != ["hy-mt2-1-8b-q4-k-m"]
+            or request["addDirections"] != ["zh_en", "en_zh"]
+            or request["expectedCurrent"] is None
+        ):
+            raise ValueError("model-package-request")
+        package = next(
+            (item for item in catalog.packages if item.id == request["packageIds"][0]), None
+        )
+        if (
+            package is None
+            or package.backend != "hy-mt-llama-cpu"
+            or not set(request["addDirections"]).issubset(
+                direction.id for direction in package.directions
+            )
+        ):
+            raise ValueError("model-package-request")
     known = {package.id for package in catalog.packages}
     for key in ("packageIds", "activePackages"):
         ids = request[key]
@@ -1119,8 +1139,20 @@ def install_packages(home, data, cache, request):
             old_inventory, installed, active, _ = read_package_state(components / previous, catalog)
         old = {item.package.id: item for item in installed}
         ids, operation = set(request["packageIds"]), request["operation"]
+        supplement = request["format"] == 2
+        if supplement and (
+            not ids.issubset(old)
+            or old_inventory["schema"] != 3
+            or request["activePackages"] != old_inventory["activePackages"]
+            or any(
+                direction.id in request["addDirections"]
+                for direction in old[next(iter(ids))].directions
+            )
+        ):
+            raise ValueError("model-package-request")
         if (
             operation == "Install"
+            and not supplement
             and ids & set(old)
             or operation in ("Repair", "Remove")
             and not ids.issubset(old)
@@ -1135,16 +1167,21 @@ def install_packages(home, data, cache, request):
         if not set(request["activePackages"]).issubset(result_ids):
             raise ValueError("model-package-request")
         selected = [package for package in catalog.packages if package.id in result_ids]
-        downloading_hy = any(
-            package.backend == "hy-mt-llama-cpu" and package.id in ids for package in selected
-        ) and operation in ("Install", "Repair")
-        if downloading_hy or any(
+        downloading_hy = (
+            any(package.backend == "hy-mt-llama-cpu" and package.id in ids for package in selected)
+            and operation in ("Install", "Repair")
+            and not supplement
+        )
+        if supplement:
+            if hy_assets(home).verify_native().get("english_translation_version") != 1:
+                raise ValueError("hy-english-unavailable")
+        elif downloading_hy or any(
             package.backend == "hy-mt-llama-cpu" and package.id in request["activePackages"]
             for package in selected
         ):
             hy_assets(home).verify_native()
         source_runtime = components / previous / "runtime" if previous is not None else None
-        may_rebuild_runtime = operation in ("Install", "Repair")
+        may_rebuild_runtime = operation in ("Install", "Repair") and not supplement
 
         def rebuildable(error):
             return may_rebuild_runtime and (
@@ -1179,7 +1216,12 @@ def install_packages(home, data, cache, request):
             if (
                 fixed["package_id"] != package.id
                 or fixed["version"] != package.version
-                or fixed["directions"] != [direction.id for direction in package.directions]
+                or fixed["directions"]
+                != [
+                    direction.id
+                    for direction in package.directions
+                    if direction.id not in ("zh_en", "en_zh")
+                ]
             ):
                 raise ValueError("model-fixed-identity")
         copy_limits = {}
@@ -1199,7 +1241,7 @@ def install_packages(home, data, cache, request):
                     path.stat().st_size for path in plain_files(source)
                 )
                 required_data += copy_limits[item.package.id]
-        if operation in ("Install", "Repair"):
+        if operation in ("Install", "Repair") and not supplement:
             for package in selected:
                 if package.id not in ids:
                     continue
@@ -1295,10 +1337,17 @@ def install_packages(home, data, cache, request):
         for package in selected:
             observation = None
             destination = models / "packages" / package.id / package.version
-            replacing = operation in ("Install", "Repair") and package.id in ids
+            replacing = operation in ("Install", "Repair") and package.id in ids and not supplement
             if replacing:
                 directions = (
-                    old[package.id].directions if operation == "Repair" else package.directions
+                    old[package.id].directions
+                    if operation == "Repair"
+                    else tuple(
+                        direction
+                        for direction in package.directions
+                        if package.backend != "hy-mt-llama-cpu"
+                        or direction.id in fixed["directions"]
+                    )
                 )
                 if package.backend == "argos":
                     stage = "model-download"
@@ -1373,6 +1422,8 @@ def install_packages(home, data, cache, request):
                 stage = "model-verify"
                 copy_package(source, destination, files, copy_limits[package.id])
                 identity = package_identity(item)
+                if supplement and package.id in ids:
+                    identity["directions"] += request["addDirections"]
                 if package.backend == "argos" and old_inventory["schema"] == 3:
                     entry = next(
                         entry for entry in old_inventory["packages"] if entry["id"] == package.id

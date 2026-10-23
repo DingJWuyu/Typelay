@@ -57,12 +57,12 @@ class WindowsNativeRuntimeTests(unittest.TestCase):
             timeout=60,
         )
 
-    def test_relocated_dll_closure_loads_with_six_production_exports_and_no_model(self):
+    def test_relocated_dll_closure_loads_with_seven_production_exports_and_no_model(self):
         result = self.run_native(
             "import ctypes,json,_ctypes; loader=WindowsRuntime(verify_native()); "
             "selected=loader.select_cpu_backend(); adapter=loader.load_adapter(); "
             "assert all(hasattr(adapter,n) for n in "
-            "('hy_close','hy_open_v5','hy_translate','hy_translate_styled_v5','hy_translate_glossary_v5','hy_translate_styled_glossary_v5')); "
+            "('hy_close','hy_open_v5','hy_translate','hy_translate_styled_v5','hy_translate_glossary_v5','hy_translate_styled_glossary_v5','hy_translate_english_v1')); "
             "assert not any(hasattr(adapter,n) for n in "
             "('hy_audit','hy_open_v2','hy_open_v3','hy_open_v4','hy_translate_styled_v4')); "
             "cpu=ctypes.CDLL(str(selected),winmode=0x800); "

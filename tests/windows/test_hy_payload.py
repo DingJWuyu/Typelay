@@ -85,6 +85,36 @@ class WindowsPayloadTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 hy_assets.verify_native()
 
+    def test_english_capability_requires_exact_version_and_export_closure_without_changing_model_lock(
+        self,
+    ):
+        original = (self.root / "model.lock.json").read_bytes()
+        self.manifest["exports"] = hy_assets.ENGLISH_EXPORTS
+        self.manifest["english_translation_version"] = 1
+        self.write_manifest()
+        verified = hy_assets.verify_native()
+        self.assertEqual(verified["english_translation_version"], 1)
+        self.assertTrue(verified["styled_glossary"])
+        self.assertEqual((self.root / "model.lock.json").read_bytes(), original)
+        for value in (None, True, 0, 2, "1"):
+            with self.subTest(value=value):
+                self.manifest["english_translation_version"] = value
+                self.write_manifest()
+                with self.assertRaises(ValueError):
+                    hy_assets.verify_native()
+        self.manifest.pop("english_translation_version")
+        self.write_manifest()
+        with self.assertRaises(ValueError):
+            hy_assets.verify_native()
+        self.manifest["exports"] = hy_assets.EXTENDED_EXPORTS
+        self.manifest["english_translation_version"] = 1
+        self.write_manifest()
+        with self.assertRaises(ValueError):
+            hy_assets.verify_native()
+        self.manifest.pop("english_translation_version")
+        self.write_manifest()
+        self.assertIsNone(hy_assets.verify_native()["english_translation_version"])
+
     def test_relocated_manifest_and_cpu_lock_are_sufficient_without_source_or_model(self):
         result = hy_assets.verify_native()
         self.assertEqual(result["adapter_path"], str(self.root / "typelay_hy.dll"))

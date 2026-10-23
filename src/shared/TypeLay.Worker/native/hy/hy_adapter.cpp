@@ -22,7 +22,8 @@ const char *target_language(uint32_t direction) {
   case HY_ZH_ES:return "西班牙语";
   case HY_ZH_DE:return "德语";
   case HY_ZH_PT:return "葡萄牙语";
-  case HY_JA_ZH:case HY_KO_ZH:case HY_FR_ZH:case HY_ES_ZH:case HY_DE_ZH:case HY_PT_ZH:return "中文";
+  case HY_ZH_EN:return "英语";
+  case HY_JA_ZH:case HY_KO_ZH:case HY_FR_ZH:case HY_ES_ZH:case HY_DE_ZH:case HY_PT_ZH:case HY_EN_ZH:return "中文";
   default:return nullptr;
  }
 }
@@ -155,11 +156,14 @@ extern "C" HY_API int32_t hy_open_v5(const char *cpu_backend_path,const char *mo
  }catch(...){if(owned)live=false;return caught(e,cap);}
 }
 namespace {
-int32_t translate(hy_handle *h,uint32_t dir,const uint8_t *p,uint32_t len,uint8_t *out,uint32_t outcap,uint32_t *outlen,hy_metrics *m,hy_cancel_fn cancel,void *data,char *e,uint32_t cap,bool styled,uint32_t style,bool glossary,const hy_term *terms,uint32_t term_count){
+int32_t translate(hy_handle *h,uint32_t dir,const uint8_t *p,uint32_t len,uint8_t *out,uint32_t outcap,uint32_t *outlen,hy_metrics *m,hy_cancel_fn cancel,void *data,char *e,uint32_t cap,bool styled,uint32_t style,bool glossary,const hy_term *terms,uint32_t term_count,bool english=false){
  if(outlen){*outlen=0;}
  error_text(e,cap,"");
  try{
-  init_metrics(m);require(!styled||style==HY_NATURAL||style==HY_FORMAL,HY_INVALID,"unknown translation style");
+  init_metrics(m);
+  require(english ? (dir==HY_ZH_EN||dir==HY_EN_ZH)&&!styled&&!glossary : dir>=HY_ZH_JA&&dir<=HY_PT_ZH,
+   HY_INVALID,"unsupported direction for translation entry point");
+  require(!styled||style==HY_NATURAL||style==HY_FORMAL,HY_INVALID,"unknown translation style");
   if(glossary){
    validate_terms(terms,term_count);
    require(p&&len&&len<=MAX_SOURCE,HY_INVALID,"source must be 1..8192 UTF-8 bytes");
@@ -190,7 +194,18 @@ int32_t translate(hy_handle *h,uint32_t dir,const uint8_t *p,uint32_t len,uint8_
   }
   auto ins=tokenize(h->vocab,instruction,false);prompt.insert(prompt.end(),ins.begin(),ins.end());prompt.insert(prompt.end(),body.begin(),body.end());prompt.insert(prompt.end(),h->suffix_control.begin(),h->suffix_control.end());m->prompt_tokens=static_cast<uint32_t>(prompt.size());
   require(prompt.size()+NEW_TOKENS<=CONTEXT,HY_CONTEXT_LIMIT,"prompt plus reserved generation exceeds context");
-  std::unique_ptr<llama_sampler,decltype(&llama_sampler_free)> sampler(llama_sampler_init_greedy(),llama_sampler_free);require(bool(sampler),HY_RESOURCE,"sampler allocation failed");
+  std::unique_ptr<llama_sampler,decltype(&llama_sampler_free)> sampler(
+   english ? llama_sampler_chain_init(llama_sampler_chain_default_params()) : llama_sampler_init_greedy(),llama_sampler_free);
+  require(bool(sampler),HY_RESOURCE,"sampler allocation failed");
+  if(english){
+   auto add=[&](llama_sampler *part){require(part!=nullptr,HY_RESOURCE,"sampler allocation failed");llama_sampler_chain_add(sampler.get(),part);};
+   add(llama_sampler_init_penalties(llama_vocab_n_tokens(h->vocab),CONTEXT,1.05f,0.0f,0.0f));
+   add(llama_sampler_init_temp(0.7f));
+   add(llama_sampler_init_top_k(20));
+   add(llama_sampler_init_top_p(0.6f,1));
+   add(llama_sampler_init_dist(20261020u));
+   for(auto token:prompt)llama_sampler_accept(sampler.get(),token);
+  }
   decode_control control{cancel,data,m};llama_set_abort_callback(h->ctx,decode_abort,&control);
   auto decode=[&](llama_token *tokens,int32_t count){
    if(cancel&&cancel(data))throw failure(HY_CANCELLED,"cancelled or deadline reached");
@@ -217,6 +232,9 @@ int32_t translate(hy_handle *h,uint32_t dir,const uint8_t *p,uint32_t len,uint8_
 }
 extern "C" HY_API int32_t hy_translate(hy_handle *h,uint32_t dir,const uint8_t *p,uint32_t len,uint8_t *out,uint32_t outcap,uint32_t *outlen,hy_metrics *m,hy_cancel_fn cancel,void *data,char *e,uint32_t cap){
  return translate(h,dir,p,len,out,outcap,outlen,m,cancel,data,e,cap,false,0,false,nullptr,0);
+}
+extern "C" HY_API int32_t hy_translate_english_v1(hy_handle *h,uint32_t dir,const uint8_t *p,uint32_t len,uint8_t *out,uint32_t outcap,uint32_t *outlen,hy_metrics *m,hy_cancel_fn cancel,void *data,char *e,uint32_t cap){
+ return translate(h,dir,p,len,out,outcap,outlen,m,cancel,data,e,cap,false,0,false,nullptr,0,true);
 }
 extern "C" HY_API int32_t hy_translate_styled_v5(hy_handle *h,uint32_t dir,uint32_t style,const uint8_t *p,uint32_t len,uint8_t *out,uint32_t outcap,uint32_t *outlen,hy_metrics *m,hy_cancel_fn cancel,void *data,char *e,uint32_t cap){
  return translate(h,dir,p,len,out,outcap,outlen,m,cancel,data,e,cap,true,style,false,nullptr,0);

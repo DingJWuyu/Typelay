@@ -54,10 +54,10 @@ public sealed class ModelLoadPlan
     }
     public bool UsesHy => ActivePackages.Any(item => item.Package.Backend == "hy-mt-llama-cpu");
 
-    public static ModelLoadPlan Create(ModelRuntimePaths paths, JsonElement inventory)
+    public static ModelLoadPlan Create(ModelRuntimePaths paths, JsonElement inventory, ModelPackageCatalog? catalog = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
-        var active = ModelCatalog.ReadActiveSelection(inventory);
+        var active = (catalog ?? ModelCatalog.Packages).ReadActiveSelection(inventory);
         int schema = inventory.GetProperty("schema").GetInt32();
         return new(paths, schema, active);
     }

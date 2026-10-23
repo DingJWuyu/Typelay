@@ -324,6 +324,157 @@ class PackageInstallationTests(unittest.TestCase):
         )
         return self.old.parent / generation
 
+    def candidate_hy(self, *, active=False):
+        # Candidate-only distribution catalog. Production catalog/lock stay unchanged.
+        path = self.home / "worker/model-catalog.json"
+        value = json.loads(path.read_text())
+        package = value["packages"][2]
+        original = [item["id"] for item in package["directions"]]
+        for legacy in value["packages"][:2]:
+            package["directions"].extend(legacy["directions"])
+        path.write_text(json.dumps(value))
+        folder = self.old / "models/packages" / package["id"] / package["version"]
+        folder.mkdir(parents=True)
+        files = []
+        for name, body in (
+            ("Hy-MT2-1.8B-Q4_K_M.gguf", b"controlled-weight-bytes"),
+            ("model_LICENSE.txt", b"controlled-license"),
+        ):
+            (folder / name).write_bytes(body)
+            files.append({"path": name, "sha256": hashlib.sha256(body).hexdigest()})
+        entry = {
+            "id": package["id"],
+            "version": package["version"],
+            "directions": original,
+            "files": files,
+        }
+        self.inventory["packages"].append(entry)
+        if active:
+            self.inventory["activePackages"] = [package["id"]]
+        self.save_inventory()
+        return entry, folder
+
+    def supplement_request(self, package):
+        return {
+            **self.request("Install", [package["id"]], self.inventory["activePackages"]),
+            "format": 2,
+            "addDirections": ["zh_en", "en_zh"],
+        }
+
+    def test_explicit_candidate_supplement_copies_existing_bytes_without_select_or_network(self):
+        package, source = self.candidate_hy()
+        old_bytes = (self.old / "models/installed.json").read_bytes()
+        with patch.object(
+            setup,
+            "hy_assets",
+            return_value=SimpleNamespace(verify_native=lambda: {"english_translation_version": 1}),
+        ):
+            candidate = self.prepare(self.supplement_request(package))
+        inventory, _, active, activation = setup.read_package_state(
+            candidate, setup.package_catalog(self.home)
+        )
+        upgraded = next(item for item in inventory["packages"] if item["id"] == package["id"])
+        self.assertEqual(upgraded["directions"], package["directions"] + ["zh_en", "en_zh"])
+        self.assertEqual(upgraded["files"], package["files"])
+        self.assertEqual(inventory["activePackages"], self.inventory["activePackages"])
+        self.assertEqual([item.package.id for item in active], self.inventory["activePackages"])
+        self.assertEqual(activation["operation"], "Install")
+        self.assertEqual(activation["recoveryPrevious"], self.old.name)
+        self.assertEqual((self.old / "models/installed.json").read_bytes(), old_bytes)
+        for file in package["files"]:
+            copied = (
+                candidate / "models/packages" / package["id"] / package["version"] / file["path"]
+            )
+            self.assertEqual(copied.read_bytes(), (source / file["path"]).read_bytes())
+            self.assertNotEqual(copied.stat().st_ino, (source / file["path"]).stat().st_ino)
+        self.assertFalse((self.cache / "components" / package["id"]).exists())
+        self.assertFalse((candidate / "self-check.json").exists())
+
+    def test_candidate_supplement_rejects_invalid_shape_selection_and_stale_generation(self):
+        package, _ = self.candidate_hy()
+        good = self.supplement_request(package)
+        malformed = [
+            {**good, "format": 1},
+            {**good, "format": True},
+            {**good, "operation": "Repair"},
+            {**good, "operation": "Select"},
+            {**good, "packageIds": ["argos-zh-en"]},
+            {**good, "packageIds": []},
+            {**good, "packageIds": [package["id"], "argos-zh-en"]},
+            {**good, "addDirections": []},
+            {**good, "addDirections": ["zh_en"]},
+            {**good, "addDirections": ["zh_en", "zh_en"]},
+            {**good, "addDirections": ["zh_en", "en_zh", "zh_ja"]},
+            {**good, "addDirections": "zh_en"},
+            {**good, "additionalDirections": ["zh_en", "en_zh"]},
+            {**good, "expectedCurrent": None},
+            {**good, "activePackages": [package["id"], "argos-zh-en"]},
+        ]
+        for request in malformed:
+            with (
+                self.subTest(request=request),
+                self.assertRaisesRegex(ValueError, "model-package-request"),
+            ):
+                setup.install_packages(self.home, self.data, self.cache, request)
+        for request in (
+            {**good, "expectedCurrent": "b" * 32},
+            {**good, "activePackages": [package["id"]]},
+            {**good, "activePackages": list(reversed(good["activePackages"]))},
+            self.request("Install", [package["id"]], [package["id"]]),
+        ):
+            with self.subTest(request=request):
+                self.prepare(request, success=False)
+        package["directions"].append("zh_en")
+        self.save_inventory()
+        self.prepare(good, success=False)
+        self.inventory["packages"].remove(package)
+        self.save_inventory()
+        self.prepare(good, success=False)
+        self.assertEqual(
+            {p.name for p in self.old.parent.iterdir()}, {self.old.name, "current", "install.lock"}
+        )
+
+    def test_candidate_supplement_requires_native_capability_and_keeps_old_generation_on_copy_failure(
+        self,
+    ):
+        package, folder = self.candidate_hy(active=True)
+        request = self.supplement_request(package)
+        before = (self.old / "models/installed.json").read_bytes()
+        with patch.object(
+            setup, "hy_assets", return_value=SimpleNamespace(verify_native=lambda: {})
+        ):
+            self.prepare(request, success=False)
+        (folder / package["files"][0]["path"]).write_bytes(b"corrupted")
+        with patch.object(
+            setup,
+            "hy_assets",
+            return_value=SimpleNamespace(verify_native=lambda: {"english_translation_version": 1}),
+        ):
+            self.prepare(request, success=False)
+        self.assertEqual((self.old / "models/installed.json").read_bytes(), before)
+        self.assertEqual(
+            {p.name for p in self.old.parent.iterdir()}, {self.old.name, "current", "install.lock"}
+        )
+
+    def test_candidate_supplement_cannot_repair_a_damaged_runtime_or_run_on_production_catalog(
+        self,
+    ):
+        package, _ = self.candidate_hy()
+        request = self.supplement_request(package)
+        (self.old / "runtime/python/bin/python3.13").unlink()
+        with patch.object(
+            setup,
+            "hy_assets",
+            return_value=SimpleNamespace(verify_native=lambda: {"english_translation_version": 1}),
+        ):
+            self.prepare(request, success=False)
+        shutil.copyfile(
+            ROOT / "src/shared/TypeLay.Worker/model-catalog.json",
+            self.home / "worker/model-catalog.json",
+        )
+        with self.assertRaisesRegex(ValueError, "model-package-request"):
+            setup.install_packages(self.home, self.data, self.cache, request)
+
     def test_select_is_offline_and_preserves_exact_inventory_without_self_check(self):
         candidate = self.prepare(self.request())
         prepared = json.loads((candidate / "models/installed.json").read_text())
@@ -347,7 +498,18 @@ class PackageInstallationTests(unittest.TestCase):
         )
         self.assertEqual(activation["previous"], self.old.name)
 
+    def test_candidate_catalog_does_not_expand_format_one_install_repair_or_select(self):
+        path = self.home / "worker/model-catalog.json"
+        value = json.loads(path.read_text())
+        for legacy in value["packages"][:2]:
+            value["packages"][2]["directions"].extend(legacy["directions"])
+        path.write_text(json.dumps(value))
+        self.assert_new_hy_install_and_existing_subset_maintenance()
+
     def test_new_hy_install_records_twelve_but_repair_and_select_preserve_existing_subset(self):
+        self.assert_new_hy_install_and_existing_subset_maintenance()
+
+    def assert_new_hy_install_and_existing_subset_maintenance(self):
         self.assume_space_for_controlled_package_operation()
         identity = "hy-mt2-1-8b-q4-k-m"
         assets = setup.hy_assets(self.home)

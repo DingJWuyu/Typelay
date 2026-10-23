@@ -30,13 +30,13 @@
     },
     {
       "file": "hy_adapter.cpp",
-      "bytes": 17283,
-      "sha256": "e5384a366ad7924c6ca1423ccfc86f1de88cc9049db036701a1cffdd2c5797cc"
+      "bytes": 18417,
+      "sha256": "d87bbe55e28c0b1a2527b9fcc98fb247ab40613512d33d350dfc84f9a0a75401"
     },
     {
       "file": "hy_adapter.h",
-      "bytes": 4871,
-      "sha256": "2c1fc86db93a45a8831a045c44948294feb75b560f74c6f5fd12e9a9df8e2153"
+      "bytes": 5778,
+      "sha256": "339002fa147859781a7754e98bd7610acd34b9f4933ea75516518a1c2cdeef10"
     },
     {
       "file": "include/LICENSE.llama.cpp",
@@ -460,8 +460,8 @@
     },
     {
       "file": "llama.def",
-      "bytes": 756,
-      "sha256": "f76b05bdf1ba837304de4c65ab56fed5850bc275cea0bb89888fe858de7efd8f"
+      "bytes": 1024,
+      "sha256": "8fe0628557e3dcc3baf280e36430f022a0710d680d7159a9b5e677d792b8ba48"
     }
   ]
 }

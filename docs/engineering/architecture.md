@@ -144,11 +144,17 @@ worker 入口在加载模型依赖前保存不可继承的专用二进制输出�
 
 界面动作携带完整、冻结的 format1 请求与 `expectedCurrent`，确认后仍校验视图是否过期，再由同一准备任务传给安装器；暂停、继续及重试不会读取最新控件重建请求。已有包库存不再使用旧方向修复入口；损坏库存不提供任何修改动作。Hy 准备入口根据各平台的只读 native 组件检查呈现；真正准备和模型加载仍独立完整验证，不能把组件存在当作模型就绪。下载大小取嵌入的同一 `model.lock.json`，不将下载大小误作安装峰值空间。
 
+非公开中英候选复用同一个 Hy 包、weight revision 与 SHA，不建立第二份下载包。正式目录及 format1 新装默认仍为十二方向，默认方向来自不变的 `model.lock.json`；format1 安装仍拒绝已安装 ID，Repair 保留原方向子集，Select 不补方向。只有隔离候选目录包含中英时，安装器才接受 format2 的 Install 与唯一新增字段 `addDirections: ["zh_en", "en_zh"]`：恰一个已安装的固定 Hy 包、两方向均尚未安装、`expectedCurrent` 精确且非空、`activePackages` 与旧列表原样相同。它复用现有事务和已验证权重，以普通复制形成不可变新代，不下载、不修复 runtime、不自动切换；损坏或过期即失败。正式 UI 不构造该请求。允许同时安装 Argos/Hy，不允许混合激活。
+
 目录版本与 `installed.json` 版本独立。`ReadInstallationSelection` 只读库存意图；schema3 的 packages 每项含精确 id/version、非空方向子集和包根相对 files 清单，允许库存备选覆盖同一方向。`ReadActiveSelection` 单独要求非空、无重复的 activePackages ID 列表，只接受原 Argos 包的非空子集或恰一个 Hy 包，拒绝混合家族、多 Hy 与方向冲突。schema3 包根是 `models/packages/<id>/<version>/`；原 schema1/2 的默认选择、文件位置与校验要求保持兼容。读取意图不校验磁盘，也不授予 Ready。
 
 worker 先规范校验全部库存元数据，只扫描及完整 SHA 校验 active 包的精确文件集合，全部验证后才导入并加载相应模型；inactive 包不读取模型文件、不导入后端。schema3 Argos 还核对 metadata 的来源/目标/版本及安装器五项必需文件。普通 hello 不做推理，只在全部 active 加载成功后返回方向；schema3 另返回已加载包 identity；schema1/2 仅在同样严格的文件集合、SHA、五项必需文件及 metadata 来源/目标/版本校验后追加 packages，否则保持原普通 hello。身份校验只读，不迁移库存；原完整性失败仍拒绝启动。停止或启动失败释放已加载资源，不以安装标记存在代替验证。Auto、同语和人工追加判断继续先于缺方向反馈，无静默中转。
 
 Hy 的 Linux x86_64 与 Windows x64 路径使用 ABI5 的固定十二方向，实际选择的方向共享一个模型 handle；Windows 开发候选已接通生产 DLL 闭包、加载器与包操作；实际发行链的通过、失败及未运行边界见 [Windows 当前候选](../platforms/windows/README.md#当前可验证候选)。打开模型前必须解析唯一版本化导出 `hy_open_v5`，旧 ABI2/3/4 adapter 不得进入加载或 hello。新安装登记完整十二方向；已有合法方向子集在选择和修复时保持原意图，hello 只报告实际加载子集。可信 native 与 CPU 闭包随 worker 发布，GGUF 和模型许可证属于安装包。生产门只消费随包固定锁和 production-adapter 清单，不依赖源码、header、原下载 ZIP 或测试报告；CPU 选择使用官方 score，并检查实际已映射库的精确路径与字节身份，拒绝异源预加载库。共享 native 源码在 `src/shared/TypeLay.Worker/native/hy/`，构建测试与生产共用，audit 仅 fixture 宏启用。构建入口和 runtime-only 交付见 [Linux 开发](../platforms/linux/development.md#hy-worker-可选构建)及 [Windows 开发](../platforms/windows/development.md#hy-生产载荷候选构建)。
+
+非公开中英 native 基础通过独立 `hy_translate_english_v1` 增量能力接入，不冒充研究 ABI：既有 ABI5 布局、1-12 编号、普通/高级导出及 greedy 不变；新增 13/14 只允许新导出，旧导出仍拒绝它们。随包清单必须同时具有严格 `english_translation_version=1`、精确导出集合与实际 adapter 字节身份，loader 还须解析真实 symbol，且方向必须来自选中的已安装库存。`model.lock.json` 的十二方向身份校验不放松。英语每请求固定 penalties1.05（完整 prompt 与生成 token、window1024）→temperature0.7→top_k20→top_p0.6→dist(seed20261020)，其余 literal、EOG、身份及资源限制共用原路径；这仅迁入已冻结研究配方，不是新的质量采用结论。
+
+当前 hello 的高级能力是全包而非分方向。候选 active 方向含中英时，保守不声明 styled/glossary/combined 三项能力，中英高级请求明确拒绝；只选择旧十二方向子集时保持原能力表达和 API。公开前须解决或披露这一对既有高级能力可用性的影响，不能将候选协商解释成旧十二方向 API 被删除。旧正式目录读取十四方向库存会拒绝而不静默裁剪；当前候选事务失败保留旧 current/active 与完整旧代，但这不保证旧二进制能解析新代并自动回退。现有激活入口不是通用降级恢复命令，尚未提供公开的跨版本整代恢复入口；公开启用前须提供并验证先以兼容版本恢复完整旧代、再降级的路径，不能手改方向字段代替整代恢复。
 
 Hy 保留通用 8192 UTF-16 文本上限，并在结构分段前对整请求加 8 KiB UTF-8 上限；每次 native segment 固定 context 1024、最多192新 token，所有片段共用一个60秒 deadline。超限明确拒绝，无截断、无部分输出；只有真实 EOG 才返回结果。可信模板/控制 token 与原文 literal tokenization 分离，ABI仅对模型输入应用 CRLF→LF，孤立 CR 拒绝；外层保留原文与原换行结构。Hy --self-check 最多运行一个实际样句并独立报告全部已加载方向，不把语言质量矩阵放入启动；原 Argos 自检逐方向行为保持。
 

@@ -586,6 +586,12 @@ public sealed class ModelClient : ITranslationService, IDisposable
     {
         if (hello.Status != "ready")
             throw new IOException("model-hello-status");
+        // The candidate English extension has no advanced operations. Until the
+        // protocol has direction-scoped capabilities, do not accept a package-wide claim.
+        if (plan.UsesHy && plan.Directions.Any(direction => direction is "zh_en" or "en_zh")
+            && (hello.StyledTranslationVersion is not null || hello.GlossaryTranslationVersion is not null
+                || hello.StyledGlossaryTranslationVersion is not null))
+            throw new IOException("model-hello-capabilities");
         if (hello.StyledTranslationVersion is { } styledVersion && (styledVersion != 1 || !plan.UsesHy))
             throw new IOException("model-hello-capabilities");
         if (hello.GlossaryTranslationVersion is { } glossaryVersion && (glossaryVersion != 1 || !plan.UsesHy))

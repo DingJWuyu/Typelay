@@ -1,4 +1,4 @@
-"""The fixed Hy ABI5 CPU model, owned once per worker for twelve directions."""
+"""One fixed Hy ABI5 CPU model; English requires its separate versioned capability."""
 
 from __future__ import annotations
 
@@ -8,13 +8,14 @@ import sys
 import time
 
 from .engine import EngineError
-from .hy_assets import ABI, STYLED_GLOSSARY_EXPORT
+from .hy_assets import ABI, ENGLISH_DIRECTIONS, ENGLISH_EXPORT, STYLED_GLOSSARY_EXPORT
 from .hy_assets import DIRECTIONS as DIRECTION_IDS
 from .hy_cpu import LinuxRuntime
 from .protocol import valid_text
 
 MAX_BYTES = 8192
 DIRECTIONS = {identity: number for number, identity in enumerate(DIRECTION_IDS, 1)}
+ENGLISH_DIRECTION_IDS = {identity: number for number, identity in enumerate(ENGLISH_DIRECTIONS, 13)}
 STYLES = {"natural": 1, "formal": 2}
 CANCEL = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p)
 
@@ -59,6 +60,7 @@ class HyModel:
         self._loader = None
         self._lib = None
         self.styled_glossary_available = False
+        self.english_available = False
         self._handle = ctypes.c_void_p()
         try:
             if sys.platform == "win32":
@@ -119,6 +121,11 @@ class HyModel:
                 ]
                 combined.restype = ctypes.c_int32
                 self.styled_glossary_available = True
+            if verified.get("english_translation_version") == 1:
+                english = getattr(self._lib, ENGLISH_EXPORT)
+                english.argtypes = self._lib.hy_translate.argtypes
+                english.restype = ctypes.c_int32
+                self.english_available = True
             error = ctypes.create_string_buffer(512)
             code = self._lib.hy_open_v5(
                 os.fsencode(selected),
@@ -135,6 +142,10 @@ class HyModel:
             raise
 
     def direction(self, identity: str):
+        if identity in ENGLISH_DIRECTION_IDS:
+            if not self.english_available:
+                raise EngineError("hy-english-unavailable")
+            return HyDirection(self, ENGLISH_DIRECTION_IDS[identity])
         if identity not in DIRECTIONS:
             raise EngineError("language-unavailable")
         return HyDirection(self, DIRECTIONS[identity])
@@ -168,7 +179,12 @@ class HyModel:
             except Exception:
                 return 1
 
+        english = direction in ENGLISH_DIRECTION_IDS.values()
+        if english and (not self.english_available or style is not None or terms):
+            raise EngineError("hy-english-operation-unavailable")
         translate = self._lib.hy_translate if style is None else self._lib.hy_translate_styled_v5
+        if english:
+            translate = getattr(self._lib, ENGLISH_EXPORT)
         prefix = (self._handle, direction) if style is None else (self._handle, direction, style)
         if terms:
             if style is not None and not self.styled_glossary_available:
@@ -227,6 +243,8 @@ class HyDirection:
         self._model, self._direction = model, direction
 
     def request(self, original: str, deadline: float, style: str | None = None):
+        if self._direction in ENGLISH_DIRECTION_IDS.values() and style is not None:
+            raise EngineError("style-unavailable")
         if style is not None and (type(style) is not str or style not in STYLES):
             raise EngineError("invalid-request")
         # Bound the entire input before protected fragments are split. Derive no

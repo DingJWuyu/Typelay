@@ -872,6 +872,9 @@ public sealed class ProductionForegroundWriteTests
         public Task Focus(nint field) => _fixture.Focus(field, Token);
         public async Task Prepare(nint field, string text, TextRange selection)
         {
+            // This setup already requires exact foreground focus before mutation.
+            // Navigate once as the fixture owner, not only from the background child.
+            RequestForeground(field);
             await Focus(field);
             N.SendString(field, N.WM_SETTEXT, text);
             N.Send(field, N.EM_SETSEL, (nuint)selection.Start, (nint)selection.End);

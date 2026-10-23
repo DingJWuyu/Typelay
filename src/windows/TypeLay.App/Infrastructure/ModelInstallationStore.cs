@@ -6,9 +6,10 @@ namespace TypeLay.App;
 // Private Windows installation storage. A lease is always acquired before the
 // model lifecycle/serial gates; Publish never waits for another lock.
 internal sealed class ModelInstallationStore(string data, string worker,
-    Action<string, string>? replaceFile = null)
+    Action<string, string>? replaceFile = null, ModelPackageCatalog? catalog = null)
 {
     private readonly Action<string, string>? _replaceFile = replaceFile;
+    private readonly ModelPackageCatalog _catalog = catalog ?? ModelCatalog.Packages;
     private readonly string _data = Path.GetFullPath(data);
     private readonly string _worker = Path.GetFullPath(worker);
     // This is only a shipped-component preparation hint. Ready still requires
@@ -121,8 +122,8 @@ internal sealed class ModelInstallationStore(string data, string worker,
             return new(null, true, [], []);
         using var inventory = ReadInventory(manifest.Active);
         var root = inventory.RootElement;
-        var installed = ModelCatalog.ReadInstallationSelection(root);
-        var current = ModelCatalog.ReadActiveSelection(root);
+        var installed = _catalog.ReadInstallationSelection(root);
+        var current = _catalog.ReadActiveSelection(root);
         if (root.GetProperty("schema").GetInt32() is 1 or 2)
         {
             // Legacy directions are intent only. Preserve their exact file manifest
@@ -164,8 +165,8 @@ internal sealed class ModelInstallationStore(string data, string worker,
                 }),
                 activePackages = current.Select(item => item.Package.Id)
             }));
-            installed = ModelCatalog.ReadInstallationSelection(migrated.RootElement);
-            current = ModelCatalog.ReadActiveSelection(migrated.RootElement);
+            installed = _catalog.ReadInstallationSelection(migrated.RootElement);
+            current = _catalog.ReadActiveSelection(migrated.RootElement);
         }
         return new(manifest.Active, true, installed, current);
     }
@@ -188,7 +189,7 @@ internal sealed class ModelInstallationStore(string data, string worker,
         if (new FileInfo(marker).Length > 8 * 1024 * 1024)
             throw new InvalidDataException("model-inventory");
         using var inventory = JsonDocument.Parse(File.ReadAllText(marker));
-        return ModelCatalog.ReadActiveSelection(inventory.RootElement).SelectMany(item => item.Directions).Select(item => item.Id).ToArray();
+        return _catalog.ReadActiveSelection(inventory.RootElement).SelectMany(item => item.Directions).Select(item => item.Id).ToArray();
     }
 
     private ModelLoadPlan ReadPlan(string id)
@@ -201,11 +202,11 @@ internal sealed class ModelInstallationStore(string data, string worker,
         using var inventory = JsonDocument.Parse(File.ReadAllText(marker));
         // A missing production closure cannot enter startup or previous-generation
         // repair. Presence alone never bypasses worker verification or hello.
-        if (ModelCatalog.ReadActiveSelection(inventory.RootElement).Any(item => item.Package.Backend == "hy-mt-llama-cpu") && !CanPrepareWindowsHy)
+        if (_catalog.ReadActiveSelection(inventory.RootElement).Any(item => item.Package.Backend == "hy-mt-llama-cpu") && !CanPrepareWindowsHy)
             throw new InvalidDataException("model-platform-unavailable");
         if (!File.Exists(paths.Python) || !File.Exists(paths.Worker))
             throw new InvalidDataException("model-inventory");
-        return ModelLoadPlan.Create(paths, inventory.RootElement);
+        return ModelLoadPlan.Create(paths, inventory.RootElement, _catalog);
     }
 
     public async Task<Lease> AcquireAsync(CancellationToken ct)
@@ -311,7 +312,7 @@ internal sealed class ModelInstallationStore(string data, string worker,
                     using var inventory = store.ReadInventory(id);
                     if (inventory.RootElement.GetProperty("schema").GetInt32() != 3)
                         continue;
-                    ModelCatalog.ReadActiveSelection(inventory.RootElement);
+                    store._catalog.ReadActiveSelection(inventory.RootElement);
                     store._knownPackages.Add(id);
                 }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException
@@ -397,19 +398,46 @@ internal sealed class ModelInstallationStore(string data, string worker,
             var frozen = request with
             {
                 PackageIds = request.PackageIds?.ToArray()!,
-                ActivePackages = request.ActivePackages?.ToArray()!
+                ActivePackages = request.ActivePackages?.ToArray()!,
+                AddDirections = request.AddDirections?.ToArray()
             };
             var state = InstallationState;
             if (frozen.ExpectedCurrent != state.Generation)
                 throw new InvalidDataException("installation-changed");
             bool ValidIds(string[]? ids) => ids is not null && ids.Distinct(StringComparer.Ordinal).Count() == ids.Length
-                && ids.All(id => ModelCatalog.Packages.Packages.Any(package => package.Id == id));
-            if (frozen.Format != 1 || !Enum.IsDefined(frozen.Operation) || !ValidIds(frozen.PackageIds)
+                && ids.All(id => _store._catalog.Packages.Any(package => package.Id == id));
+            bool supplement = frozen.Format == 2;
+            if (frozen.Format is not (1 or 2) || !supplement && frozen.AddDirections is not null
+                || !Enum.IsDefined(frozen.Operation) || !ValidIds(frozen.PackageIds)
                 || !ValidIds(frozen.ActivePackages) || frozen.ActivePackages.Length == 0)
                 throw new InvalidDataException("model-package-request");
+            if (supplement)
+            {
+                if (frozen.Operation != ModelPackageOperation.Install
+                    || !frozen.PackageIds.SequenceEqual(new[] { "hy-mt2-1-8b-q4-k-m" })
+                    || frozen.AddDirections is null || !frozen.AddDirections.SequenceEqual(new[] { "zh_en", "en_zh" })
+                    || state.Generation is null)
+                    throw new InvalidDataException("model-package-request");
+                var target = state.InstalledPackages.SingleOrDefault(item => item.Package.Id == frozen.PackageIds[0]);
+                if (target is null || target.Package.Backend != "hy-mt-llama-cpu"
+                    || frozen.AddDirections.Any(direction => target.Directions.Any(item => item.Id == direction)
+                        || !target.Package.Directions.Any(item => item.Id == direction)))
+                    throw new InvalidDataException("model-package-request");
+                using var inventory = _store.ReadInventory(_manifest.Active);
+                if (inventory.RootElement.GetProperty("schema").GetInt32() != 3
+                    || !inventory.RootElement.GetProperty("activePackages").EnumerateArray().Select(item => item.GetString())
+                        .SequenceEqual(frozen.ActivePackages))
+                    throw new InvalidDataException("model-package-request");
+                if (!WindowsHyPayload.CanPrepare(_store._worker, requireEnglish: true))
+                    throw new InvalidDataException("model-platform-unavailable");
+            }
             var installed = state.InstalledPackages.Select(item => item.Package.Id).ToHashSet(StringComparer.Ordinal);
             var active = state.CurrentPackages.Select(item => item.Package.Id).ToHashSet(StringComparer.Ordinal);
-            if (frozen.Operation == ModelPackageOperation.Select)
+            if (supplement)
+            {
+                // Exact old selection and a disjoint two-direction increment were checked above.
+            }
+            else if (frozen.Operation == ModelPackageOperation.Select)
             {
                 if (frozen.PackageIds.Length != 0 || frozen.ActivePackages.Any(id => !installed.Contains(id))
                     || active.SetEquals(frozen.ActivePackages))
@@ -431,17 +459,23 @@ internal sealed class ModelInstallationStore(string data, string worker,
                     || frozen.Operation == ModelPackageOperation.Remove && active.Contains(target))
                     throw new InvalidDataException("model-package-request");
             }
-            var selected = ModelCatalog.Packages.Packages.Where(package => frozen.ActivePackages.Contains(package.Id, StringComparer.Ordinal)).ToArray();
+            var selected = _store._catalog.Packages.Where(package => frozen.ActivePackages.Contains(package.Id, StringComparer.Ordinal)).ToArray();
             if (!(selected.All(package => package.Backend == "argos")
                 || selected.Length == 1 && selected[0].Backend == "hy-mt-llama-cpu"))
                 throw new InvalidDataException("model-package-request");
             if ((selected.Any(package => package.Backend == "hy-mt-llama-cpu")
                 || frozen.Operation is ModelPackageOperation.Install or ModelPackageOperation.Repair
-                    && frozen.PackageIds.Any(id => ModelCatalog.Packages.Packages.Single(package => package.Id == id).Backend == "hy-mt-llama-cpu"))
+                    && frozen.PackageIds.Any(id => _store._catalog.Packages.Single(package => package.Id == id).Backend == "hy-mt-llama-cpu"))
                 && !_store.CanPrepareWindowsHy)
                 throw new InvalidDataException("model-platform-unavailable");
-            string[] directions = selected.SelectMany(package => state.InstalledPackages.FirstOrDefault(item => item.Package.Id == package.Id)
-                ?.Directions ?? package.Directions).Select(direction => direction.Id).ToArray();
+            string[] directions = selected.SelectMany(package =>
+            {
+                var current = state.InstalledPackages.FirstOrDefault(item => item.Package.Id == package.Id)?.Directions;
+                var directions = current ?? ModelCatalog.DefaultInstallationDirections(package);
+                var ids = directions.Select(direction => direction.Id);
+                return supplement && frozen.PackageIds.Contains(package.Id, StringComparer.Ordinal)
+                    ? ids.Concat(frozen.AddDirections!) : ids;
+            }).ToArray();
             string id = Guid.NewGuid().ToString("N");
             string root = _store.Root(id);
             Directory.CreateDirectory(root);
@@ -716,7 +750,8 @@ internal sealed class ModelInstallationStore(string data, string worker,
         internal ModelPackageRequest? Request => request is null ? null : request with
         {
             PackageIds = request.PackageIds.ToArray(),
-            ActivePackages = request.ActivePackages.ToArray()
+            ActivePackages = request.ActivePackages.ToArray(),
+            AddDirections = request.AddDirections?.ToArray()
         };
         internal InstallationState? Source { get; } = source;
         public string Root { get; } = root;

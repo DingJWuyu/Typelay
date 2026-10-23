@@ -19,6 +19,35 @@ public sealed class ModelClientCapabilityTests
           {"id":"hy-mt2-1-8b-q4-k-m","version":"a0c709d9fac510f2c807aa3af52872340dc37a4a","directions":["zh_ja"]}]}
         """;
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("styledTranslationVersion")]
+    [InlineData("glossaryTranslationVersion")]
+    [InlineData("styledGlossaryTranslationVersion")]
+    public async Task CandidateEnglishHelloGrantsOrdinaryTranslationButCannotClaimPackageWideAdvancedCapabilities(string? capability)
+    {
+        using var source = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.ModelCatalog.json")!;
+        var value = System.Text.Json.Nodes.JsonNode.Parse(source)!;
+        foreach (int index in new[] { 0, 1 })
+            value["packages"]![2]!["directions"]!.AsArray().Add(value["packages"]![index]!["directions"]![0]!.DeepClone());
+        using var document = JsonDocument.Parse(value.ToJsonString());
+        var catalog = ModelPackageCatalog.Parse(document.RootElement);
+        string hello = HyHello.Replace("zh_ja", "zh_en", StringComparison.Ordinal);
+        if (capability is not null)
+            hello = hello.Replace("\"status\":\"ready\"", "\"status\":\"ready\",\"" + capability + "\":1", StringComparison.Ordinal);
+        using var peer = new ProtocolPeer(hello, """{"status":"translated","text":"ordinary English"}""",
+            HyInventory.Replace("zh_ja", "zh_en", StringComparison.Ordinal));
+        var outcome = await peer.Client.ReloadAsync(peer.CreateLoadPlan(catalog),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken);
+        Assert.Equal(capability is null ? ModelPublicationOutcome.Confirmed : ModelPublicationOutcome.Unchanged, outcome);
+        Assert.Null(peer.Client.StyledTranslationCapability);
+        Assert.Null(peer.Client.GlossaryTranslationCapability);
+        Assert.Null(peer.Client.StyledGlossaryTranslationCapability);
+        Assert.Equal(capability is null, peer.Client.Ready);
+        if (capability is null)
+            Assert.Equal("ordinary English", (await peer.Client.TranslateTextAsync("你好", new("zh", "en"))).Text);
+    }
+
     [Fact]
     public async Task LegacyHelloKeepsOrdinaryTranslationWithoutInventingVersionIdentity()
     {
@@ -836,10 +865,10 @@ public sealed class ModelClientCapabilityTests
             await _process.StandardInput.BaseStream.WriteAsync(new byte[] { 1 }, TestContext.Current.CancellationToken);
             await _process.StandardInput.BaseStream.FlushAsync(TestContext.Current.CancellationToken);
         }
-        public ModelLoadPlan CreateLoadPlan()
+        public ModelLoadPlan CreateLoadPlan(ModelPackageCatalog? catalog = null)
         {
             using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(_directory, "installed.json")));
-            return ModelLoadPlan.Create(_paths, document.RootElement);
+            return ModelLoadPlan.Create(_paths, document.RootElement, catalog);
         }
         public ModelClient Client
         {

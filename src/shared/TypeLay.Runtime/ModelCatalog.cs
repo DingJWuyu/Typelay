@@ -113,6 +113,24 @@ public static class ModelCatalog
             + root.GetProperty("model_license").GetProperty("bytes").GetInt64());
     }
 
+    // Catalog availability does not expand installation consent. The fixed Hy
+    // model lock keeps new format-1 installs at twelve even in a candidate build.
+    public static IReadOnlyList<ModelDirection> DefaultInstallationDirections(ModelPackage package)
+    {
+        if (package.Backend == "argos")
+            return package.Directions;
+        using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.HyModelLock.json")
+            ?? throw new InvalidDataException("model-lock-missing");
+        using var document = JsonDocument.Parse(stream);
+        var root = document.RootElement;
+        if (package.Backend != "hy-mt-llama-cpu" || package.Id != root.GetProperty("package_id").GetString()
+            || package.Version != root.GetProperty("version").GetString())
+            throw new InvalidDataException("model-lock-identity");
+        return Array.AsReadOnly(root.GetProperty("directions").EnumerateArray().Select(item =>
+            package.Directions.SingleOrDefault(direction => direction.Id == item.GetString())
+                ?? throw new InvalidDataException("model-lock-directions")).ToArray());
+    }
+
     // Request syntax is separate from loaded pair availability. The worker owns
     // Auto, same-language and manual append ordering before pair lookup.
     public static bool IsSupportedPackageRequest(string source, string target)

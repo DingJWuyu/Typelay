@@ -24,7 +24,6 @@ public sealed class NativeSourceActivationTests
         await using var source = await ProductionForegroundWriteTests.Desktop.Start();
         await using var receiver = await ProductionForegroundWriteTests.Desktop.Start();
         await receiver.Prepare(receiver.A, "Other application", new(0, 0));
-        source.RequestForeground(source.A);
         await source.Prepare(source.A, "pre old post", new(0, 0));
         Assert.NotEqual(source.FixtureProcessId, receiver.FixtureProcessId);
         using var hook = new KeyboardHook(allowInjectedInput: true);

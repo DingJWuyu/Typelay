@@ -83,7 +83,7 @@ internal sealed class ModelInstaller
             if (!ModelCatalog.IsValidDirectionSet(requested))
                 throw new InvalidDataException("model-directions");
             ct.ThrowIfCancellationRequested();
-            lease = await new ModelInstallationStore(_data, _worker).AcquireAsync(ct);
+            lease = await new ModelInstallationStore(_data, _worker, catalog: _catalog).AcquireAsync(ct);
             // The legacy direction workflow must never overwrite a schema3 inventory.
             if (lease.UsesPackageInventory)
                 throw new InvalidDataException("model-package-request-required");
@@ -391,7 +391,7 @@ internal sealed class ModelInstaller
                     sourceCopyBytes = checked(sourceCopyBytes + new FileInfo(file).Length);
         long bytes = checked(64L * 1024 * 1024 + sourceCopyBytes);
         var request = prepared.Request!;
-        if (request.Operation is ModelPackageOperation.Install or ModelPackageOperation.Repair)
+        if (request.Format == 1 && request.Operation is ModelPackageOperation.Install or ModelPackageOperation.Repair)
         {
             // Runtime extraction is bounded at 2 GiB; allow its archive/cache and copy,
             // plus each selected model's bounded extraction or exact locked assets.
@@ -433,14 +433,14 @@ internal sealed class ModelInstaller
         var stage = ModelSetupStage.Prepare;
         try
         {
-            lease = await new ModelInstallationStore(_data, _worker).AcquireAsync(ct);
+            lease = await new ModelInstallationStore(_data, _worker, catalog: _catalog).AcquireAsync(ct);
             prepared = lease.PreparePackages(request);
             request = prepared.Request!;
             var state = prepared.Source!;
             string sourceRoot = Path.GetDirectoryName(lease.ActivePaths.Models)!;
             long remainingSourceCopyBytes = Preflight(sourceRoot, prepared);
             stage = ModelSetupStage.Runtime;
-            if (request.Operation is ModelPackageOperation.Select or ModelPackageOperation.Remove)
+            if (request.Format == 2 || request.Operation is ModelPackageOperation.Select or ModelPackageOperation.Remove)
                 remainingSourceCopyBytes -= await CopyRuntime(sourceRoot, prepared.Root, ct, remainingSourceCopyBytes);
             else
             {
@@ -476,9 +476,12 @@ internal sealed class ModelInstaller
                 var files = item.Files.Select(file => new FileEntry(file.Path, file.Sha256)).ToArray();
                 remainingSourceCopyBytes -= await CopyVerified(source, PackageRoot(prepared.Paths.Models, item.Package),
                     files, ct, remainingSourceCopyBytes);
-                packages.Add(new(item.Package.Id, item.Package.Version, item.Directions.Select(direction => direction.Id).ToArray(), files));
+                var directions = item.Directions.Select(direction => direction.Id);
+                if (request.Format == 2 && request.PackageIds.Contains(item.Package.Id, StringComparer.Ordinal))
+                    directions = directions.Concat(request.AddDirections!);
+                packages.Add(new(item.Package.Id, item.Package.Version, directions.ToArray(), files));
             }
-            if (request.Operation is ModelPackageOperation.Install or ModelPackageOperation.Repair)
+            if (request.Format == 1 && request.Operation is ModelPackageOperation.Install or ModelPackageOperation.Repair)
                 foreach (string id in request.PackageIds)
                 {
                     var package = _catalog.Packages.Single(item => item.Id == id);
@@ -489,7 +492,8 @@ internal sealed class ModelInstaller
                     else
                         await StageArgos(package, destination, prepared.Root, progress, ct);
                     stage = ModelSetupStage.ModelVerify;
-                    var directions = state.InstalledPackages.FirstOrDefault(item => item.Package.Id == id)?.Directions ?? package.Directions;
+                    var directions = state.InstalledPackages.FirstOrDefault(item => item.Package.Id == id)?.Directions
+                        ?? ModelCatalog.DefaultInstallationDirections(package);
                     packages.Add(new(id, package.Version, directions.Select(direction => direction.Id).ToArray(), await InventoryFiles(destination, ct)));
                 }
             Directory.CreateDirectory(prepared.Paths.Models);
@@ -501,8 +505,8 @@ internal sealed class ModelInstaller
             }, InventoryJson);
             using (var validated = JsonDocument.Parse(inventory))
             {
-                ModelCatalog.ReadInstallationSelection(validated.RootElement);
-                ModelCatalog.ReadActiveSelection(validated.RootElement);
+                _catalog.ReadInstallationSelection(validated.RootElement);
+                _catalog.ReadActiveSelection(validated.RootElement);
             }
             await File.WriteAllTextAsync(Path.Combine(prepared.Paths.Models, "installed.json"), inventory, ct);
             await File.WriteAllTextAsync(Path.Combine(prepared.Root, "dependency-lock.json"), JsonSerializer.Serialize(_locks, InventoryJson), ct);

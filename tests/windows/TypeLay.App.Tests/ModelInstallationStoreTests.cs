@@ -1,4 +1,6 @@
 using System.IO;
+using System.Net.Http;
+using System.Security.Cryptography;
 using System.Diagnostics;
 using TypeLay.Runtime;
 using System.Text.Json;
@@ -9,6 +11,183 @@ namespace TypeLay.App.Tests;
 
 public sealed class ModelInstallationStoreTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExplicitCandidateSupplementCopiesVerifiedInventoryWithoutNetworkAndPreservesOldGeneration(bool damage)
+    {
+        using var files = new StoreFiles();
+        files.WriteHyComponents(english: true);
+        string old = await files.SeedHyForCopy();
+        string marker = Path.Combine(old, "models", "installed.json");
+        string original = File.ReadAllText(marker);
+        string source = Path.Combine(old, "models", "packages", HyPackage.Id, HyPackage.Version, "model.gguf");
+        if (damage)
+            File.AppendAllText(source, "corrupted");
+        var catalog = EnglishCandidateCatalog();
+        var request = new ModelPackageRequest(2, ModelPackageOperation.Install, [HyPackage.Id], [HyPackage.Id], Path.GetFileName(old))
+        {
+            AddDirections = ["zh_en", "en_zh"]
+        };
+        using var network = new RejectNetwork();
+        var installer = new ModelInstaller(files.Root, Path.Combine(files.Root, "worker.py"), network,
+            startProcess: _ => throw new InvalidOperationException("must-not-start-worker"), catalog: catalog,
+            availableDiskBytes: _ => 128L * 1024 * 1024);
+        if (damage)
+        {
+            var failure = await Assert.ThrowsAsync<ModelSetupException>(() => installer.PreparePackagesAsync(request,
+                new QuietProgress(), TestContext.Current.CancellationToken));
+            Assert.Equal(ModelSetupStage.ModelVerify, failure.Stage);
+        }
+        else
+        {
+            using var prepared = await installer.PreparePackagesAsync(request, new QuietProgress(), TestContext.Current.CancellationToken);
+            Assert.Equal(HyPackage.Directions.Select(direction => direction.Id).Concat(new[] { "zh_en", "en_zh" }), prepared.Directions);
+            using var inventory = JsonDocument.Parse(File.ReadAllText(Path.Combine(prepared.Paths.Models, "installed.json")));
+            Assert.Equal(14, Assert.Single(catalog.ReadInstallationSelection(inventory.RootElement)).Directions.Count);
+            Assert.Equal(new[] { HyPackage.Id }, inventory.RootElement.GetProperty("activePackages").EnumerateArray().Select(item => item.GetString()));
+            Assert.Equal(File.ReadAllBytes(source), File.ReadAllBytes(Path.Combine(prepared.Paths.Models, "packages", HyPackage.Id, HyPackage.Version, "model.gguf")));
+            Assert.Equal(14, prepared.CreateLoadPlan().Directions.Count);
+            prepared.SelfCheckExited(); // No process was started by this byte-only fixture.
+            request.AddDirections![0] = "zh_fr";
+            Assert.Equal(new[] { "zh_en", "en_zh" }, prepared.Request!.AddDirections);
+        }
+        Assert.Equal(0, network.Attempts);
+        Assert.Equal(original, File.ReadAllText(marker));
+        Assert.Equal(Path.GetFileName(old), files.Store.ReadInstallationState().Generation);
+        Assert.Equal(new[] { old }, Directory.GetDirectories(Path.Combine(files.Root, "components")));
+    }
+
+    [Theory]
+    [InlineData("format1")]
+    [InlineData("repair")]
+    [InlineData("wrong-package")]
+    [InlineData("extra-package")]
+    [InlineData("nonincremental")]
+    [InlineData("partial")]
+    [InlineData("repeated")]
+    [InlineData("changed-active")]
+    [InlineData("mixed-active")]
+    [InlineData("stale")]
+    [InlineData("native-capability")]
+    [InlineData("production-catalog")]
+    public async Task CandidateSupplementRejectsChangedConsentBeforeCreatingGeneration(string defect)
+    {
+        using var files = new StoreFiles();
+        files.WriteHyComponents(english: defect != "native-capability");
+        string old = await files.SeedHyForCopy();
+        var catalog = defect == "production-catalog" ? ModelCatalog.Packages : EnglishCandidateCatalog();
+        var store = new ModelInstallationStore(files.Root, Path.Combine(files.Root, "worker.py"), catalog: catalog);
+        var request = new ModelPackageRequest(2, ModelPackageOperation.Install, [HyPackage.Id], [HyPackage.Id], Path.GetFileName(old))
+        {
+            AddDirections = ["zh_en", "en_zh"]
+        };
+        request = defect switch
+        {
+            "format1" => request with { Format = 1 },
+            "repair" => request with { Operation = ModelPackageOperation.Repair },
+            "wrong-package" => request with { PackageIds = ["argos-zh-en"] },
+            "extra-package" => request with { PackageIds = [HyPackage.Id, "argos-zh-en"] },
+            "partial" => request with { AddDirections = ["zh_en"] },
+            "repeated" => request with { AddDirections = ["zh_en", "zh_en"] },
+            "changed-active" => request with { ActivePackages = ["argos-zh-en"] },
+            "mixed-active" => request with { ActivePackages = [HyPackage.Id, "argos-zh-en"] },
+            "stale" => request with { ExpectedCurrent = new string('b', 32) },
+            _ => request
+        };
+        if (defect == "nonincremental")
+        {
+            string path = Path.Combine(old, "models", "installed.json");
+            var inventory = JsonNode.Parse(File.ReadAllText(path))!;
+            inventory["packages"]![0]!["directions"]!.AsArray().Add(JsonValue.Create("zh_en"));
+            File.WriteAllText(path, inventory.ToJsonString());
+        }
+        using var lease = await store.AcquireAsync(TestContext.Current.CancellationToken);
+        Assert.Throws<InvalidDataException>(() => lease.PreparePackages(request));
+        Assert.Equal(new[] { old }, Directory.GetDirectories(Path.Combine(files.Root, "components")));
+    }
+
+    [Fact]
+    public async Task CandidateCatalogDoesNotUpgradeFormatOneInstallOrRepair()
+    {
+        using var files = new StoreFiles();
+        files.WriteHyComponents(english: true);
+        var store = new ModelInstallationStore(files.Root, Path.Combine(files.Root, "worker.py"), catalog: EnglishCandidateCatalog());
+        using (var lease = await store.AcquireAsync(TestContext.Current.CancellationToken))
+        using (var install = lease.PreparePackages(new(1, ModelPackageOperation.Install, [HyPackage.Id], [HyPackage.Id], null)))
+            Assert.Equal(12, install.Directions.Count);
+        string old = await files.SeedHyForCopy();
+        using var current = await store.AcquireAsync(TestContext.Current.CancellationToken);
+        Assert.Throws<InvalidDataException>(() => current.PreparePackages(new(1, ModelPackageOperation.Install,
+            [HyPackage.Id], [HyPackage.Id], Path.GetFileName(old))));
+        using var repair = current.PreparePackages(new(1, ModelPackageOperation.Repair, [HyPackage.Id], [HyPackage.Id], Path.GetFileName(old)));
+        Assert.Equal(12, repair.Directions.Count);
+    }
+
+    private static ModelPackageCatalog EnglishCandidateCatalog()
+    {
+        using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.ModelCatalog.json")!;
+        var value = JsonNode.Parse(stream)!;
+        foreach (int index in new[] { 0, 1 })
+            value["packages"]![2]!["directions"]!.AsArray().Add(value["packages"]![index]!["directions"]![0]!.DeepClone());
+        using var document = JsonDocument.Parse(value.ToJsonString());
+        return ModelPackageCatalog.Parse(document.RootElement);
+    }
+
+    [Fact]
+    public async Task CandidateSupplementPublicationFailureKeepsTheCompleteOldGenerationAndSelection()
+    {
+        using var files = new StoreFiles();
+        files.WriteHyComponents(english: true);
+        string old = await files.SeedHyForCopy();
+        string pointer = File.ReadAllText(Path.Combine(files.Root, "components.json"));
+        string oldInventory = File.ReadAllText(Path.Combine(old, "models", "installed.json"));
+        var store = new ModelInstallationStore(files.Root, Path.Combine(files.Root, "worker.py"),
+            (_, _) => throw new IOException("before-publication"), EnglishCandidateCatalog());
+        string candidate;
+        using (var lease = await store.AcquireAsync(TestContext.Current.CancellationToken))
+        using (var prepared = lease.PreparePackages(new(2, ModelPackageOperation.Install,
+            [HyPackage.Id], [HyPackage.Id], Path.GetFileName(old))
+        {
+            AddDirections = ["zh_en", "en_zh"]
+        }))
+        {
+            candidate = prepared.Root;
+            files.Mark(prepared);
+            var inventory = JsonNode.Parse(oldInventory)!;
+            foreach (string direction in new[] { "zh_en", "en_zh" })
+                inventory["packages"]![0]!["directions"]!.AsArray().Add(JsonValue.Create(direction));
+            File.WriteAllText(Path.Combine(prepared.Paths.Models, "installed.json"), inventory.ToJsonString());
+            Assert.Equal(14, prepared.CreateLoadPlan().Directions.Count);
+            prepared.SelfCheckExited(); // Store publication boundary only; no process started.
+            Assert.Equal(ModelPublicationOutcome.Unchanged, prepared.PublishConfirmed());
+        }
+        Assert.Equal(pointer, File.ReadAllText(Path.Combine(files.Root, "components.json")));
+        Assert.Equal(oldInventory, File.ReadAllText(Path.Combine(old, "models", "installed.json")));
+        Assert.Equal(12, Assert.Single(files.Store.ReadInstallationState().CurrentPackages).Directions.Count);
+        Assert.False(Directory.Exists(candidate));
+    }
+
+    private sealed class QuietProgress : IProgress<SetupProgress>
+    {
+        public void Report(SetupProgress value)
+        {
+        }
+    }
+
+    private sealed class RejectNetwork : HttpMessageHandler
+    {
+        public int Attempts
+        {
+            get; private set;
+        }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Attempts++;
+            throw new InvalidOperationException("offline-supplement-must-not-download");
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -881,7 +1060,7 @@ public sealed class ModelInstallationStoreTests
             File.WriteAllText(Path.Combine(Root, "worker.py"), "controlled worker port");
             Store = new(Root, Path.Combine(Root, "worker.py"));
         }
-        public void WriteHyComponents()
+        public void WriteHyComponents(bool english = false)
         {
             // Component-presence fixture only. These bytes are never loaded as native code.
             string root = Path.Combine(Root, "native", "hy");
@@ -925,6 +1104,37 @@ public sealed class ModelInstallationStoreTests
                 adapter = Record(root, "typelay_hy.dll"),
                 license = Record(root, "LICENSE.llama.cpp")
             }));
+            if (english)
+            {
+                string path = Path.Combine(root, "production-adapter.json");
+                var manifest = JsonNode.Parse(File.ReadAllText(path))!;
+                manifest["exports"] = new JsonArray("hy_close", "hy_open_v5", "hy_translate", "hy_translate_english_v1",
+                    "hy_translate_glossary_v5", "hy_translate_styled_glossary_v5", "hy_translate_styled_v5");
+                manifest["english_translation_version"] = 1;
+                File.WriteAllText(path, manifest.ToJsonString());
+            }
+        }
+        public async Task<string> SeedHyForCopy()
+        {
+            using var lease = await Store.AcquireAsync(TestContext.Current.CancellationToken);
+            using var prepared = lease.PreparePackages(new(1, ModelPackageOperation.Install, [HyPackage.Id], [HyPackage.Id], null));
+            Mark(prepared);
+            WriteHyInventory(prepared.Paths.Models);
+            string folder = Path.Combine(prepared.Paths.Models, "packages", HyPackage.Id, HyPackage.Version);
+            Directory.CreateDirectory(folder);
+            string model = Path.Combine(folder, "model.gguf");
+            File.WriteAllText(model, "controlled-inventory-not-a-real-model");
+            string Hash(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant();
+            var inventory = JsonNode.Parse(File.ReadAllText(Path.Combine(prepared.Paths.Models, "installed.json")))!;
+            inventory["packages"]![0]!["files"]![0]!["sha256"] = Hash(model);
+            File.WriteAllText(Path.Combine(prepared.Paths.Models, "installed.json"), inventory.ToJsonString());
+            File.WriteAllText(Path.Combine(prepared.Root, "runtime-inventory.json"), JsonSerializer.Serialize(new
+            {
+                schema = 1,
+                files = new[] { new { path = "python/tools/python.exe", sha256 = Hash(prepared.Paths.Python) } }
+            }));
+            Assert.Equal(ModelPublicationOutcome.Confirmed, prepared.PublishConfirmed());
+            return prepared.Root;
         }
         public ModelInstallationStore WithReplace(Action<string, string> replace) => new(Root, Path.Combine(Root, "worker.py"), replace);
         public void Mark(ModelInstallationStore.PreparedInstallation prepared)

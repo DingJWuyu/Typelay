@@ -161,7 +161,16 @@ public enum ModelPackageOperation
 
 // The UI returns this frozen request unchanged. The installer revalidates every field under its lease.
 public sealed record ModelPackageRequest(int Format, ModelPackageOperation Operation,
-    string[] PackageIds, string[] ActivePackages, string? ExpectedCurrent);
+    string[] PackageIds, string[] ActivePackages, string? ExpectedCurrent)
+{
+    // Format2 is only the explicit, offline supplement to an installed Hy package.
+    // Omitting this field preserves the exact format1 wire shape for all existing UI.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string[]? AddDirections
+    {
+        get; init;
+    }
+}
 
 public sealed record ModelPackageActionView(string Label, bool Enabled, bool RequiresConfirmation,
     string ConfirmationText, ModelPackageRequest Request);

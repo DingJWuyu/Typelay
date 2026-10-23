@@ -7,6 +7,7 @@ import json
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -44,7 +45,8 @@ class HyContractTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.package = catalog.load_package_catalog().packages[2]
+        self.catalog = catalog.load_package_catalog()
+        self.package = self.catalog.packages[2]
         directory = self.root / "packages" / self.package.id / self.package.version
         directory.mkdir(parents=True)
         files = []
@@ -189,6 +191,7 @@ class HyContractTests(unittest.TestCase):
             patch.object(hy_cpu_windows, "WindowsRuntime", self.native),
             patch.object(sys, "platform", platform),
             patch("typelay_worker.hy_assets.verify_production", return_value=self.verified),
+            patch("typelay_worker.engine.load_package_catalog", return_value=self.catalog),
             patch.object(sys, "argv", arguments),
             patch.object(sys, "stdin", SimpleNamespace(buffer=incoming)),
             patch("time.monotonic", side_effect=lambda: self.clock),
@@ -201,6 +204,134 @@ class HyContractTests(unittest.TestCase):
         while outgoing.tell() < len(outgoing.getvalue()):
             responses.append(read_frame(outgoing))
         return status, responses
+
+    def candidate_english(self, directions=("zh_en", "en_zh")):
+        self.catalog = replace(
+            self.catalog,
+            packages=(
+                *self.catalog.packages[:2],
+                replace(
+                    self.package,
+                    directions=self.package.directions + self.catalog.legacy_directions,
+                ),
+            ),
+        )
+        self.inventory["packages"][0]["directions"] = list(directions)
+        self.verified["english_translation_version"] = 1
+        self.english_calls = []
+
+        def english(*arguments):
+            self.english_calls.append(arguments[1])
+            return self.library.hy_translate(*arguments)
+
+        self.library.hy_translate_english_v1 = NativeFunction(english)
+
+    def test_candidate_english_uses_versioned_export_and_only_selected_directions(self):
+        self.candidate_english()
+        self.output_text = "Translated"
+        status, replies = self.run_worker(
+            [
+                {"op": "translate", "text": "原文", "source": "zh", "target": "en"},
+                {"op": "translate", "text": "Original", "source": "en", "target": "zh"},
+                {"op": "translate", "text": "原文", "source": "zh", "target": "ja"},
+            ],
+            detected=lambda text: "en" if text == "Original" else "zh",
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(replies[0]["directions"], ["zh_en", "en_zh"])
+        self.assertEqual(replies[0]["packages"][0]["directions"], ["zh_en", "en_zh"])
+        self.assertEqual([reply["status"] for reply in replies[1:3]], ["translated", "translated"])
+        self.assertEqual(replies[3]["code"], "language-unavailable")
+        self.assertEqual(self.english_calls, [13, 14])
+        self.assertEqual((self.opened, self.closed), (1, 1))
+        for key in (
+            "styledTranslationVersion",
+            "glossaryTranslationVersion",
+            "styledGlossaryTranslationVersion",
+        ):
+            self.assertNotIn(key, replies[0])
+
+    def test_candidate_english_requires_verified_capability_and_actual_export(self):
+        for missing in ("manifest", "symbol"):
+            with self.subTest(missing=missing):
+                self.candidate_english()
+                if missing == "manifest":
+                    self.verified.pop("english_translation_version")
+                else:
+                    del self.library.hy_translate_english_v1
+                status, replies = self.run_worker()
+                self.assertEqual(status, 2)
+                self.assertEqual(replies, [])
+                self.assertEqual(self.calls, [])
+
+    def test_candidate_adapter_preserves_twelve_direction_inventory_and_advanced_hello(self):
+        self.candidate_english(EXPECTED_DIRECTIONS)
+        self.verified["styled_glossary"] = True
+        status, replies = self.run_worker(
+            [{"op": "translate", "text": "原文", "source": "zh", "target": "en"}]
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(replies[0]["directions"], EXPECTED_DIRECTIONS)
+        self.assertEqual(replies[0]["packages"][0]["directions"], EXPECTED_DIRECTIONS)
+        for key in (
+            "styledTranslationVersion",
+            "glossaryTranslationVersion",
+            "styledGlossaryTranslationVersion",
+        ):
+            self.assertEqual(replies[0][key], 1)
+        self.assertEqual(replies[1]["code"], "language-unavailable")
+        self.assertEqual(self.english_calls, [])
+        self.assertEqual((self.opened, self.closed), (1, 1))
+
+    def test_candidate_english_refuses_advanced_operations_even_with_no_matching_glossary(self):
+        self.candidate_english([*EXPECTED_DIRECTIONS, "zh_en", "en_zh"])
+        self.verified["styled_glossary"] = True
+        requests = [
+            {
+                "op": "translate-styled-v1",
+                "text": "原文",
+                "source": "zh",
+                "target": "en",
+                "style": "formal",
+            },
+            {
+                "op": "translate-glossary-v1",
+                "text": "原文",
+                "source": "zh",
+                "target": "en",
+                "glossary": {
+                    "version": 1,
+                    "rules": [{"sourceTerm": "不匹配", "targetTerm": "unused"}],
+                },
+            },
+            self.combined_request(target="en"),
+        ]
+        status, replies = self.run_worker(requests)
+        self.assertEqual(status, 0)
+        self.assertEqual([reply["status"] for reply in replies[1:]], ["error"] * 3)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.english_calls, [])
+        for key in (
+            "styledTranslationVersion",
+            "glossaryTranslationVersion",
+            "styledGlossaryTranslationVersion",
+        ):
+            self.assertNotIn(key, replies[0])
+
+    def test_candidate_english_keeps_limits_and_eog_failure_closed(self):
+        self.candidate_english()
+        for status, eog, code in (
+            (4, 120020, "segment-too-long"),
+            (5, 120020, "decoding-limit"),
+            (0, -1, "hy-incomplete-output"),
+        ):
+            with self.subTest(code=code):
+                self.code, self.eog = status, eog
+                _, replies = self.run_worker(
+                    [{"op": "translate", "text": "甲", "source": "zh", "target": "en"}]
+                )
+                self.assertEqual((replies[1]["code"], replies[1]["text"]), (code, ""))
+        self.assertEqual(self.english_calls, [13, 13, 13])
 
     def combined_request(self, **changes):
         return {

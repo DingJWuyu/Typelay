@@ -34,12 +34,14 @@ enum hy_status {
 enum hy_direction {
     HY_ZH_JA=1, HY_JA_ZH=2, HY_ZH_KO=3, HY_KO_ZH=4,
     HY_ZH_FR=5, HY_FR_ZH=6, HY_ZH_ES=7, HY_ES_ZH=8,
-    HY_ZH_DE=9, HY_DE_ZH=10, HY_ZH_PT=11, HY_PT_ZH=12
+    HY_ZH_DE=9, HY_DE_ZH=10, HY_ZH_PT=11, HY_PT_ZH=12,
+    /* Only accepted by the separately versioned English entry point. */
+    HY_ZH_EN=13, HY_EN_ZH=14
 };
 enum hy_style { HY_NATURAL=1, HY_FORMAL=2 };
 HY_API int32_t hy_open_v5(const char *cpu_backend_path, const char *model_path,
     hy_handle **out, char *error, uint32_t error_capacity);
-/* direction: exact hy_direction value. Fixed greedy, 192 new tokens, context 1024.
+/* direction: only the original hy_direction values 1..12. Fixed greedy, 192 new tokens, context 1024.
    ABI5 explicitly derives model canonical text by CRLF->LF only. Original
    source bytes stay caller-owned and are never modified. Bare CR is rejected.
    All other bytes must roundtrip exactly; roundtrip_ok refers to canonical text.
@@ -49,6 +51,17 @@ HY_API int32_t hy_open_v5(const char *cpu_backend_path, const char *model_path,
    cancel callback runs from CPU decode and may be NULL; callback must not throw.
    The owner must not call close or another operation concurrently. */
 HY_API int32_t hy_translate(hy_handle *handle, uint32_t direction,
+    const uint8_t *source, uint32_t source_length,
+    uint8_t *output, uint32_t output_capacity, uint32_t *output_length,
+    hy_metrics *metrics, hy_cancel_fn cancel, void *cancel_data,
+    char *error, uint32_t error_capacity);
+/* Optional English capability v1 on the unchanged ABI5 handle/metrics layout.
+   Only HY_ZH_EN/HY_EN_ZH are accepted; every old translate export still rejects
+   them. Same literal/EOG/limits/cancellation contract as hy_translate.
+   Fixed per-request sampler: prompt+generated repetition penalty 1.05, temp 0.7,
+   top-k 20, top-p 0.6, seed 20261020. No styles or glossary on this entry point.
+   Requires the shipped manifest's english_translation_version=1 capability. */
+HY_API int32_t hy_translate_english_v1(hy_handle *handle, uint32_t direction,
     const uint8_t *source, uint32_t source_length,
     uint8_t *output, uint32_t output_capacity, uint32_t *output_length,
     hy_metrics *metrics, hy_cancel_fn cancel, void *cancel_data,

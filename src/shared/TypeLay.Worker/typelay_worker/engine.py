@@ -266,7 +266,13 @@ class LocalEngine:
         # Successful loading establishes a protocol feature, not language quality.
         return (
             1
-            if len(self._selection) == 1 and self._selection[0].package.backend == "hy-mt-llama-cpu"
+            if len(self._selection) == 1
+            and self._selection[0].package.backend == "hy-mt-llama-cpu"
+            # The current hello is package-wide, not per direction. A candidate
+            # including English must not advertise advanced operations for all pairs.
+            and not any(
+                direction.id in ("zh_en", "en_zh") for direction in self._selection[0].directions
+            )
             else None
         )
 
@@ -406,6 +412,11 @@ class LocalEngine:
             return Result("error", code="language-unavailable")
         try:
             if self._selection[0].package.backend == "hy-mt-llama-cpu":
+                if (actual, target) in (("zh", "en"), ("en", "zh")):
+                    if glossary is not None:
+                        raise EngineError("glossary-unavailable")
+                    if style is not None:
+                        raise EngineError("style-unavailable")
                 pair = pair.request(text, deadline, style)
             value = (
                 preserve_structure(text, pair)

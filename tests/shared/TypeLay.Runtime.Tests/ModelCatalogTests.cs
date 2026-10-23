@@ -7,6 +7,64 @@ namespace TypeLay.Runtime.Tests;
 public sealed class ModelCatalogTests
 {
     [Fact]
+    public void LegacyPackageRequestWireShapeDoesNotAcquireTheCandidateField()
+    {
+        var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+        options.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+        var legacy = new ModelPackageRequest(1, ModelPackageOperation.Install, ["argos-zh-en"], ["argos-zh-en"], null);
+        using var wire = JsonDocument.Parse(JsonSerializer.Serialize(legacy, options));
+        Assert.Equal(new[] { "activePackages", "expectedCurrent", "format", "operation", "packageIds" },
+            wire.RootElement.EnumerateObject().Select(item => item.Name).Order(StringComparer.Ordinal));
+        Assert.Equal("Install", wire.RootElement.GetProperty("operation").GetString());
+        var candidate = legacy with
+        {
+            Format = 2,
+            AddDirections = ["zh_en", "en_zh"]
+        };
+        using var explicitWire = JsonDocument.Parse(JsonSerializer.Serialize(candidate, options));
+        Assert.Equal(new[] { "zh_en", "en_zh" }, explicitWire.RootElement.GetProperty("addDirections")
+            .EnumerateArray().Select(item => item.GetString()));
+    }
+
+    [Fact]
+    public void CandidateCatalogRetainsOldTwelveDirectionIntentAndOldCatalogRejectsFourteenWithoutTrimming()
+    {
+        using var source = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.ModelCatalog.json")!;
+        var value = JsonNode.Parse(source)!;
+        var hy = value["packages"]![2]!;
+        foreach (int index in new[] { 0, 1 })
+            hy["directions"]!.AsArray().Add(value["packages"]![index]!["directions"]![0]!.DeepClone());
+        using var document = JsonDocument.Parse(value.ToJsonString());
+        var catalog = ModelPackageCatalog.Parse(document.RootElement);
+        var package = ModelCatalog.Packages.Packages.Single(item => item.Backend == "hy-mt-llama-cpu");
+        Assert.Equal(package.Directions.Select(item => item.Id),
+            ModelCatalog.DefaultInstallationDirections(catalog.Packages[2]).Select(item => item.Id));
+        Assert.Equal(14, catalog.Packages[2].Directions.Count);
+        var inventory = JsonNode.Parse(JsonSerializer.Serialize(new
+        {
+            schema = 3,
+            packages = new[] { new { id = package.Id, version = package.Version,
+                directions = package.Directions.Select(item => item.Id).ToArray(),
+                files = new[] { new { path = "model.gguf", sha256 = new string('a', 64) } } } },
+            activePackages = new[] { package.Id }
+        }))!;
+        using (var old = JsonDocument.Parse(inventory.ToJsonString()))
+        {
+            Assert.Equal(12, Assert.Single(catalog.ReadActiveSelection(old.RootElement)).Directions.Count);
+            Assert.Equal(12, Assert.Single(ModelCatalog.ReadActiveSelection(old.RootElement)).Directions.Count);
+        }
+        foreach (string direction in new[] { "zh_en", "en_zh" })
+            inventory["packages"]![0]!["directions"]!.AsArray().Add(JsonValue.Create(direction));
+        string frozen = inventory.ToJsonString();
+        using var upgraded = JsonDocument.Parse(frozen);
+        var paths = new ModelRuntimePaths("python", "worker.py", "models");
+        Assert.Equal(14, ModelLoadPlan.Create(paths, upgraded.RootElement, catalog).Directions.Count);
+        Assert.Throws<InvalidDataException>(() => ModelLoadPlan.Create(paths, upgraded.RootElement));
+        Assert.Equal(frozen, inventory.ToJsonString());
+        Assert.Equal(12, package.Directions.Count);
+    }
+
+    [Fact]
     public void MalformedArchivePinCannotSilentlyBecomeAnUnpinnedPackage()
     {
         var value = PreviewCatalog();

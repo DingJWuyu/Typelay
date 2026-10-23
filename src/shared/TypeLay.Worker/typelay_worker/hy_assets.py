@@ -25,6 +25,10 @@ EXPORTS = [
 ]
 STYLED_GLOSSARY_EXPORT = "hy_translate_styled_glossary_v5"
 EXTENDED_EXPORTS = sorted([*EXPORTS, STYLED_GLOSSARY_EXPORT])
+ENGLISH_EXPORT = "hy_translate_english_v1"
+ENGLISH_EXPORTS = sorted([*EXTENDED_EXPORTS, ENGLISH_EXPORT])
+# Capability version and direction IDs are independent of the unchanged ABI5 model lock.
+ENGLISH_DIRECTIONS = ("zh_en", "en_zh")
 DIRECTIONS = (
     "zh_ja",
     "ja_zh",
@@ -207,7 +211,15 @@ def verify_native():
         manifest["schema"] != 1
         or manifest["abi"] != ABI
         or manifest["platform"] != ("win-x64" if windows else "linux-x86_64")
-        or manifest["exports"] not in (EXPORTS, EXTENDED_EXPORTS)
+        or manifest["exports"] not in (EXPORTS, EXTENDED_EXPORTS, ENGLISH_EXPORTS)
+        or (
+            (
+                type(manifest.get("english_translation_version")) is not int
+                or manifest["english_translation_version"] != 1
+            )
+            if manifest["exports"] == ENGLISH_EXPORTS
+            else "english_translation_version" in manifest
+        )
         or manifest["upstream_revision"] != UPSTREAM
         or manifest["model_lock_sha256"] != digest(root / "model.lock.json")
         or manifest["cpu_runtime_lock_sha256"] != digest(root / cpu_lock)
@@ -234,7 +246,8 @@ def verify_native():
     adapter = verify_file(root / manifest["adapter"]["file"], manifest["adapter"])
     verify_file(root / manifest["license"]["file"], manifest["license"])
     return {
-        "styled_glossary": manifest["exports"] == EXTENDED_EXPORTS,
+        "styled_glossary": manifest["exports"] in (EXTENDED_EXPORTS, ENGLISH_EXPORTS),
+        "english_translation_version": 1 if manifest["exports"] == ENGLISH_EXPORTS else None,
         "adapter_path": str(adapter),
         "adapter_sha256": manifest["adapter"]["sha256"],
         "adapter_record": manifest["adapter"],

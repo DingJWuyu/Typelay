@@ -215,6 +215,21 @@ jobs:
           "TSF research admission: $($runner.status); exitCode=$($runner.exitCode). This is not product acceptance or a model verdict." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
           if ($runner.status -ne 'existing-context-observed-not-keyboard-or-write-support') { exit 1 }
           exit 0
+      - name: Preserve early Windows source research evidence
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' && hashFiles('artifacts/source-synchronous-acceptance/runner.*', 'artifacts/tsf-context-admission/runner.*') != '' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: typelay-windows-source-diagnostics-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/source-synchronous-acceptance/runner.json
+            artifacts/source-synchronous-acceptance/runner.log
+            artifacts/source-synchronous-acceptance/**/result.json
+            artifacts/tsf-context-admission/runner.json
+            artifacts/tsf-context-admission/runner.log
+            artifacts/tsf-context-admission/**/result.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Verify Windows behavior and contracts
         id: windows-contracts
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}

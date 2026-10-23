@@ -408,6 +408,7 @@ internal static partial class ContinuousTranslationCheck
         FixtureDescriptor? sourceDescriptor = null;
         long? readyStartedAtMs = null, readyCompletedAtMs = null;
         long? textStartedAtMs = null, textCompletedAtMs = null;
+        long? focusStartedAtMs = null, focusCompletedAtMs = null;
         long? selectionStartedAtMs = null, selectionCompletedAtMs = null;
         bool initializationCompleted = false;
         object? initializationFailure = null;
@@ -431,13 +432,18 @@ internal static partial class ContinuousTranslationCheck
             textStartedAtMs = WindowsInterruptClock.NowMs;
             N.SendString(field, N.WM_SETTEXT, source);
             textCompletedAtMs = WindowsInterruptClock.NowMs;
+            // The descriptor/text response is not foreground-focus evidence.
+            // Complete one owned navigation before the one selection mutation.
+            focusStartedAtMs = WindowsInterruptClock.NowMs;
+            NativeSourceSetup.RequestOwnedForeground(root, field, native.Process, setupDeadline.Token);
+            Require(N.PostMessage(root, N.FixtureFocus, (nuint)field, 0), "ordinary-source-focus-request");
+            await UntilAsync(() => N.Focused() == (root, field), setupDeadline.Token);
+            focusCompletedAtMs = WindowsInterruptClock.NowMs;
             selectionStartedAtMs = WindowsInterruptClock.NowMs;
             N.Send(field, N.EM_SETSEL, (nuint)source.Length, (nint)source.Length);
             selectionCompletedAtMs = WindowsInterruptClock.NowMs;
             TextRange selection = N.ReadSelection(field);
             Require(selection == new TextRange(source.Length, source.Length), "ordinary-source-selection");
-            Require(N.PostMessage(root, N.FixtureFocus, (nuint)field, 0), "ordinary-source-focus-request");
-            await UntilAsync(() => N.Focused() == (root, field), setupDeadline.Token);
             initializationCompleted = true;
             var settings = CreateSettings(Path.Combine(directory, "ordinary-controls", "settings.json"), WorkMode.OnDemand);
             settings.Update(settings.Value with
@@ -727,6 +733,8 @@ internal static partial class ContinuousTranslationCheck
                     readyCompletedAtMs,
                     textStartedAtMs,
                     textCompletedAtMs,
+                    focusStartedAtMs,
+                    focusCompletedAtMs,
                     selectionStartedAtMs,
                     selectionCompletedAtMs,
                     initializationCompleted,

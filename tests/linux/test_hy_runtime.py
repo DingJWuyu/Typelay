@@ -94,6 +94,7 @@ class HyRuntimeBundleTests(unittest.TestCase):
                 "hy_close",
                 "hy_open_v5",
                 "hy_translate",
+                "hy_translate_english_v1",
                 "hy_translate_glossary_v5",
                 "hy_translate_styled_glossary_v5",
                 "hy_translate_styled_v5",
@@ -205,6 +206,46 @@ class HyRuntimeBundleTests(unittest.TestCase):
         finally:
             adapter.write_bytes(original_adapter)
             manifest.write_bytes(original_manifest)
+
+    def test_english_versioned_export_and_old_exports_reject_each_others_directions_without_a_model(
+        self,
+    ):
+        result = self.run_worker(
+            textwrap.dedent(r"""
+            import ctypes
+            from typelay_worker.hy import Metrics, CANCEL, Term
+            verified = verify_native()
+            assert verified['english_translation_version'] == 1
+            loader = LinuxRuntime(verified)
+            loader.select_cpu_backend()
+            adapter = loader.load_adapter()
+            tail = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32,
+                    ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(Metrics), CANCEL,
+                    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32]
+            terms = (Term * 1)(Term(b'a', 1, b'b', 1))
+            for name, extras, types, allowed, forbidden in (
+                ('hy_translate', (), [], range(1, 13), (0, 13, 14, 101, 102)),
+                ('hy_translate_styled_v5', (1,), [ctypes.c_uint32], range(1, 13), (13, 14)),
+                ('hy_translate_glossary_v5', (terms, 1), [ctypes.POINTER(Term), ctypes.c_uint32], range(1, 13), (13, 14)),
+                ('hy_translate_styled_glossary_v5', (1, terms, 1), [ctypes.c_uint32, ctypes.POINTER(Term), ctypes.c_uint32], range(1, 13), (13, 14)),
+                ('hy_translate_english_v1', (), [], (13, 14), (0, *range(1, 13), 15, 101, 102)),
+            ):
+                call = getattr(adapter, name)
+                call.argtypes = [ctypes.c_void_p, ctypes.c_uint32, *types, *tail]
+                call.restype = ctypes.c_int32
+                for direction in (*allowed, *forbidden):
+                    output, error = ctypes.create_string_buffer(8192), ctypes.create_string_buffer(512)
+                    output.value = b'unchanged'
+                    length, metrics = ctypes.c_uint32(99), Metrics()
+                    code = call(None, direction, *extras, b'a', 1, output, len(output),
+                                ctypes.byref(length), ctypes.byref(metrics), CANCEL(), None, error, len(error))
+                    assert (code, length.value, metrics.decode_calls, output.value) == (1, 0, 0, b'unchanged')
+                    expected = b'unsupported direction for translation entry point' if direction in forbidden else b'translate argument mismatch'
+                    assert error.value == expected, (name, direction, error.value)
+            loader.close()
+        """)
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_unknown_styles_fail_before_touching_a_model_handle(self):
         result = self.run_worker(
@@ -340,6 +381,8 @@ class HyRuntimeBundleTests(unittest.TestCase):
             "DE_ZH",
             "ZH_PT",
             "PT_ZH",
+            "ZH_EN",
+            "EN_ZH",
         ]
         source = (
             '#include "hy_adapter.h"\n#include <stddef.h>\n'

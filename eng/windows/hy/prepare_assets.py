@@ -264,11 +264,12 @@ class Preparation:
             b"hy_close",
             b"hy_open_v5",
             b"hy_translate",
+            b"hy_translate_english_v1",
             b"hy_translate_glossary_v5",
             b"hy_translate_styled_glossary_v5",
             b"hy_translate_styled_v5",
         ]:
-            raise ValueError("built adapter must expose exactly seven fixture ABI5 exports")
+            raise ValueError("built adapter must expose exactly eight fixture ABI5 exports")
         self.stage = "write_build_identity"
         report = {
             "abi": 5,

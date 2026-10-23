@@ -7,6 +7,39 @@ namespace TypeLay.Runtime.Tests;
 // These real pipe peers verify process ownership, not model inference.
 public sealed class ModelClientReplacementTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FailedEnglishSupplementRestartsTheExactOldTwelveDirectionPlan(bool invalidHello)
+    {
+        using var source = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.ModelCatalog.json")!;
+        var value = System.Text.Json.Nodes.JsonNode.Parse(source)!;
+        foreach (int index in new[] { 0, 1 })
+            value["packages"]![2]!["directions"]!.AsArray().Add(value["packages"]![index]!["directions"]![0]!.DeepClone());
+        using var document = JsonDocument.Parse(value.ToJsonString());
+        var catalog = ModelPackageCatalog.Parse(document.RootElement);
+        using var peers = new Peers();
+        using var client = peers.Client();
+        var original = peers.Plan("old-hy");
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await client.ReloadAsync(original,
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        var candidate = peers.Plan(invalidHello ? "invalid-english" : "english", catalog: catalog);
+        Assert.Equal(14, candidate.Directions.Count);
+        int publications = 0;
+        Assert.Equal(ModelPublicationOutcome.Unchanged, await client.ReloadAsync(candidate,
+            () => { publications++; return ModelPublicationOutcome.Unchanged; },
+            previous => ReferenceEquals(previous, original), TestContext.Current.CancellationToken));
+        Assert.Equal(invalidHello ? 0 : 1, publications);
+        Assert.Equal(3, peers.FactoryPlans.Count);
+        Assert.Same(original, peers.FactoryPlans[2]);
+        Assert.True(peers.Started[0].Exited);
+        Assert.True(peers.Started[1].Exited);
+        Assert.True(client.Ready);
+        Assert.Equal(original.Directions, client.AvailableDirections);
+        Assert.Equal(12, Assert.Single(client.AvailablePackages).Directions.Count);
+        Assert.Equal("old-hy", (await client.TranslateTextAsync("原文", new("zh", "ja"))).Text);
+    }
+
     [Fact]
     public async Task OwnedStreamsServeWithoutProcessRedirectProperties()
     {
@@ -570,10 +603,10 @@ public sealed class ModelClientReplacementTests
                 ? "{\"schema\":2,\"directions\":[\"zh_en\"]}" : "{\"schema\":1}");
             return new(Path.Combine(folder, "python"), _script, folder);
         }
-        public ModelLoadPlan Plan(string name, bool hy = true)
+        public ModelLoadPlan Plan(string name, bool hy = true, ModelPackageCatalog? catalog = null)
         {
             var paths = Paths(name);
-            var packages = ModelCatalog.Packages.Packages.Select(package => new
+            var packages = (catalog ?? ModelCatalog.Packages).Packages.Select(package => new
             {
                 id = package.Id,
                 version = package.Version,
@@ -588,7 +621,7 @@ public sealed class ModelClientReplacementTests
             });
             File.WriteAllText(Path.Combine(paths.Models, "installed.json"), inventory);
             using var document = JsonDocument.Parse(inventory);
-            return ModelLoadPlan.Create(paths, document.RootElement);
+            return ModelLoadPlan.Create(paths, document.RootElement, catalog);
         }
         public ModelClient Client(string name = "old", bool ownedStreams = false, bool uncancellableReads = false) => new(Paths(name), (info, plan) =>
         {

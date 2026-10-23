@@ -56,7 +56,9 @@ finalize 校验主包原始清单、构建提交、合作组件的固定来源�
 
 新包请求使用固定目录身份，不接受 URL、版本或路径：`format: 1`、`operation: Install|Repair|Select|Remove`、`packageIds`、`activePackages` 和 `expectedCurrent`。安装只增加所选未装包，修复只重建已装包并保留方向子集和当前选择；切换与移除完全离线。移除仅允许一个非当前包，须先切换模型再移除。原默认 Argos 双向及 legacy 方向安装入口保留，但已有 schema 3 库存不能回到旧整库修复路径。
 
-准备期间原代继续服务。请求与 current 比较在同一安装锁内、复制或下载前完成；暂停、继续和重试保留原请求，陈旧请求不能自行改基准重试。普通文件复制形成新代，私有 Python 必须指向新代，复制后离线完成 prefix/import 检查。Install/Repair 发现私有解释器缺失、损坏或依赖检查失败时，可在预留最坏额外空间后重建候选 runtime；权限、空间或超时失败不触发该回退。Select/Remove 的 runtime 失败只报错，不联网修复。新包准备只下载、校验和构建库存，唯一 serving worker 在最后激活时加载模型；用户试译另行验收。
+非公开 Hy 中英候选仅在隔离的十四方向目录下允许 format2 Install 加 `addDirections: ["zh_en", "en_zh"]`。目标必须是已安装固定 Hy 包，两方向均为增量，`expectedCurrent` 精确，`activePackages` 原样不变；准备只复用已验证权重/运行时并复制新代，不能联网补齐或借 Repair 扩方向。正式 UI/catalog 与 format1 新装默认仍十二方向。实际 Host 使用嵌入目录，Python 准备测试不等于十四方向 Host 激活；候选构建必须使用一致目录。旧版本拒绝十四方向库存而不裁剪，现有 `--activate-model` 要求候选原基准匹配当前代，不是任意旧代恢复工具；尚未提供公开跨版本降级恢复入口。公开启用前须验证兼容版本下完整旧代恢复，再允许降级，不能声称旧二进制必能自动恢复。
+
+准备期间原代继续服务。请求与 current 比较在同一安装锁内、复制或下载前完成；暂停、继续和重试保留原请求，陈旧请求不能自行改基准重试。普通文件复制形成新代，私有 Python 必须指向新代，复制后离线完成 prefix/import 检查。format1 Install/Repair 发现私有解释器缺失、损坏或依赖检查失败时，可在预留最坏额外空间后重建候选 runtime；权限、空间或超时失败不触发该回退。Select/Remove 的 runtime 失败只报错，不联网修复。新包准备只下载、校验和构建库存，唯一 serving worker 在最后激活时加载模型；用户试译另行验收。
 
 `installed.json` schema 3 保留完整 `packages` 和 `activePackages`。`activation.json` schema 3 仅有 `schema`、`previous`、`packages`、`operation`、`removedPackages`、`recoveryPrevious` 六字段。前两种旧 schema 迁移时须真实复制旧方向文件并重写清单。普通操作保留恢复前代；Remove 的 `recoveryPrevious` 为 null，不能因启动失败复活已移除包。库存记录不可读时显示未知并禁用包操作，不能猜成空库；恢复需要用户显式安排独立重装，不在包管理中自动覆盖。
 
