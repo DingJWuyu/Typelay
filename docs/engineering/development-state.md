@@ -1,48 +1,42 @@
 # 当前开发状态与安排
 
-这是当前开发的唯一现役入口，不是完成报告。**Windows 与模型线持续推进；Linux 可选扩展暂无派工，保留 CI468 推荐包。** 负责人、证据或下一动作改变时更新对应行；已关闭事项删除，历史查 Git。产品要求以[产品基线](../product/README.md)为准。
+这是当前开发的唯一现役入口，不是完成报告。负责人、证据与下一动作改变时更新；已关闭排程删除，历史查 Git。产品要求以[产品基线](../product/README.md)为准。
 
 ## 先看结论
 
-本页于 2026-10-23 18:50 UTC 核对。**CI479 于 18:40:13 UTC 终态 failure，但 Windows Hy 15 场景与 Linux Hy 生命周期/双向预览均已通过。当前失败是新增 Runtime 回归的前置条件、Windows 多行点击准备及五类 Linux 桌面验证；已准备的修复与 TSF RW 四场景进入下一批，不等待所有 Linux 修复。** 源 hook 同步 READ 与原 Tab 转发通过，明确无 composition 不是真实 IME 正例；事件资格、第三方部署与生产接受仍未闭合。正式 catalog 可供 14 方向，新装仍 12，默认不变；双端链路通过不是质量、高级 scope 或物理输入验收完成。
+本页于 2026-10-23 19:17 UTC 核对。**CI480 的完整 Linux job、共享检查、Windows 常规行为与双端 Hy 生命周期均已通过。Linux 体验推荐已决定升级为 CI480；Windows 普通源接受仍未完成，正式 Notepad 接受失败，新 TSF RW 研究只证明获得同步锁后零写拒绝。** 模型质量、高级 scope、真实 IME、物理输入和所有应用仍不能由这些结果推出。
 
-### 当前身份与最近 CI
+### 当前发布身份与证据
 
-- [CI479](https://github.com/DingJWuyu/Typelay/actions/runs/40002549822) 是本批唯一 push、attempt1，18:20:57 UTC 创建、18:40:13 UTC completed/failure。冻结本地 `afce5af161b0235b00a35c4e00aaa33f7e690bd6` 的 14 文件对应远端 `f9ce8b5a152437f97ff7c1ab129bc4aacc85e51e`、tree `80aac4bb7937940066a47bad01fd1aa1b2a1fa72`、parent `77559f91`，已精确读回。6 份 artifact、冻结源码 archive、Windows 551 文件与 Linux 293 项包清单均已核；原件和终态收据在 `../artifacts/ci479-current/`，入口为 `terminal-evidence-verified.json`、`suite-scope-verified.json`。
-- **当前没有待答的发布授权。** 用户 17:50 授权继续源码、测试、状态文档与结果发布，并要求离开 8 小时期间持续推进。发布仍限已核范围、同分支非强推；UIAccess 产品选择尚未答复，严格生产策略不变，不阻塞已有修复及自有控件验证。
+- [CI480](https://github.com/DingJWuyu/Typelay/actions/runs/40007045279) 为唯一 push、attempt1，18:53:43 UTC 创建，19:15:36 UTC completed/failure。冻结本地 `6e9f5463b5b993064cb0dc3f2d2be105fc7ca38f` 的17文件精确对应远端 `2342a747864b9694e3beebf1ca16c4aa44e078db`、tree `e46dc73d0d5d78c50f7813ed285e1369026f9b1b`、parent `f9ce8b5a`，非强推及读回已核。
+- 原件入口 `../artifacts/ci480-current/terminal-evidence-verified.json`：4份ZIP、源码849项、Windows551文件身份与Linux293项清单均已核。Linux完整成功不是setup-only/Qt-only/quality-only；Windows总体失败不能抹去Linux结果，也不能由常规绿色掩盖研究失败。
+- 发布授权仍覆盖本轮Windows/Hy后续源码、测试与含进度/结果/路径的文档，同分支非强推，无待答发布确认。UIAccess产品选择尚未明确，严格生产输入策略保持；不得借用户离开8小时的持续推进要求改变安全边界。
 
-| CI479 范围 | 已核结果 | 尚未证明或后继动作 |
+| CI480 范围 | 已核结果 | 不能据此宣称 |
 | --- | --- | --- |
-| 共享 job | Core 302/302；Runtime 1288/1289，唯一失败为新增长度反馈回归的错误前置条件 | **仅此 job** 的后续 Protocol、Contracts、worker 因 fail-fast 未运行；测试修正待下一 CI |
-| Windows job | Core 302/302、Protocol 19/19、Contracts 111/111、Python worker 168/168；Runtime 同一项失败；App 已执行 779/780 通过，另 15 项显式 NotExecuted | App 唯一失败是 multiline=true 的 `SourceClickControlDocument` 前置校验。原 6 项 NativeReturn 与 6 项 ConfiguredControl 均过；root-hover 本轮过，不据此声称旧失败根因已证 |
-| 源 hook READ / IME | 同栈一次 TSF READ、原 Tab 转发通过；`none-in-exact-context-at-read`，Query/Find=0、Next=S_FALSE/0；30 项库存仅 en-US 键盘 Active/Enabled，未切换，正常清理 | `realImePositive=positive-not-run`、旧键同一性未证；SendInput 研究不证明物理键、第三方部署或生产写入。原件 `source-diagnostics/tsf-source-key-read/` |
-| 连续/浏览器/Hy 生产链、正式 Notepad | 连续翻译、浏览器合作与 Hy 生产链通过；Notepad 自动预览通过，接受提示等待 90.010 秒失败，0 接受提示/1 preview-only | Notepad 接受/撤销未通过，后续回源、按需/直接及普通退出场景未运行，生产安全门仍关闭 |
-| Windows Hy | 15 场景全部通过，含取消/补 14、同代冷启、双向普通预览、回 Argos、移除及 App/worker 正常退出；`englishAcceptance=passed` | `quality=not-reviewed`；原件 `windows/hy-packages/result.json` |
-| Linux Hy | 91.899 秒，全部生命周期阶段通过：取消/补 14、同代冷启、双向 `translateEditorSnapshot` 文档/版本/选区绑定、语言恢复、回 Argos、移除；Host/worker 正常退出，无强制清理 | `advancedScopeAcceptance=not-run-raw-scope-and-source-dispatch-unobserved`，双向 `quality=not-reviewed`，无物理桌面/12 方向质量声明；原件 `linux/linux/hy-package/hy-package-result.json` |
-| Linux 桌面 | DOM resize 宽度 480≠520；GTK reentry 未到 mutation callback；GTK4 语言弹层重开 `KeyError: typelay-source-language`；Qt F10 未证实 CPU 直接翻译；独立 GTK4 glossary 把 frame0 未绘制误判为永久几何拒绝 | 五类分别处理，不混为 Hy 失败，不以重试或放宽安全门消除；具体负责人和已准备修复如下 |
+| 共享 | Core302、Runtime1289、Protocol19、Contracts111共1721全过；worker168、Python shared21、Linux输入反馈178全过 | 受控端口/worker测试不是模型质量或桌面验收 |
+| Windows常规 | App784/784全过，8个A/B点击场景与原multiline路径实际通过；另16个显式研究在普通套件NotExecuted。全部共享套件与worker通过 | 普通源生产写入已支持，或物理输入已测 |
+| Windows生产链/Notepad | 连续、浏览器合作、Hy生产链通过；Notepad仅预览，接受提示90.011秒失败、后3场景未跑；消费者自然退出、残留0 | 接受/撤销、后续人工稿回源或按需/直接场景已过 |
+| TSF自有RW研究 | 首个success场景一次同步RW请求/session HR0，完整读取及composition明确none后changed-body拒绝；0 SetText、无副作用，正常清理/退出 | 实际写入、Undo、提交正控、后三例或原Tab默认效果已核。CallNextHookEx/Next0只证明调用旁路；研究status=stopped-not-validated |
+| Windows Hy | 15场景全过，取消/补14、同代冷启、双向普通预览、Argos/移除与App0/worker正常退出 | quality已评、真实键盘/所有方向质量合格 |
+| Linux | 完整构建/搬迁安装/合作组件/设置/教程/DOM70/协议73/GTK3/GTK4/Qt/GIMP/VS Code等通过，GTK4glossary40场景全过 | 旧间歇投递延迟唯一根因已解决、所有应用均支持 |
+| Linux Hy | 79.677秒完整12阶段，取消/补14、同代冷启、双向translateEditorSnapshot文档/版本/选区绑定、语言恢复、Argos/移除；Host/worker正常退出，无强清理 | advancedScope/source dispatch已验（仍明确not-run）、quality已评、物理桌面或12方向质量已验 |
 
-## 怎么安排，谁负责
+## 当前编排
 
-**Windows 与模型主线不得因一批结束、发布等待、CI 等待或编译槽等待而停摆。** root 按现役缺口和实际依赖交接下一动作；职责不是实时活跃人数，汇报人数只计工具确认的 `running`。所有任务目标模型/思考强度为用户指定的 **`gpt-6-astra` + `xhigh`**；当前工具没有独立确认实际运行配置，不能把请求值当成已核实值。
+一批结束不是整个项目暂停点。按现役缺口推进、及时处理真实CI首错；没有有价值的新独立动作时跟踪待定结果，不造工作量或无假设扫参。职责不是实时活跃人数。Agent目标配置保持`gpt-6-astra`+`xhigh`，工具未独立确认实际配置时不得冒称已核。
 
-当前已集成下列 READY 变更，冻结身份由本次发布清单核对；下列已准备变更均**不在 CI479**。双轴 GO 不等于编译或 GUI 通过，具体未跑范围保留到下一 CI 验证。
-
-| 责任线 | 当前负责人 | 下一动作与关闭条件 |
+| 责任线 | 负责人 | 当前动作与完成条件 |
 | --- | --- | --- |
-| 下一批发布与精确 CI | `publish_next_verified_fix_batch`；root 核范围 | CI479 终态原件已齐，冻结下一批 READY 变更并核远端后发布，跟精确提交 CI 至终态；本批已就绪修复和定点诊断一起发，后续按新原件继续，不把研究等待当停工 |
-| Windows 源输入设计 | root；`assess_windows_acceptance_contract` 独立核需求/部署边界 | READ 只关闭机械读取门，继续核事件资格、RW、IME 与部署；UIAccess 待用户裁决期间保留严格策略 |
-| Windows TSF RW 四场景 | `finish_tsf_write_validation` | `9a2626a` 五文件已集成、双轴 GO，替换旧两分钟 READ 步骤：仅自有 stock Edit 验完整快照、同 session 复核/一次写、写前拒绝原 Tab 旁路及 Undo。即时撤权、range 所有权、本事件消费绑定、已验证终态后 Undo、零提交递增正控五项审查问题已修；合并仅保留独立 ASFW 分支，其余四文件逐字一致。未编译/Windows执行；root已运行不加载项目的folder whitespace格式检查，修正两文件纯空白后复验通过（非编译替代）；首次副作用后失败为受理失败/未知，不能报零写拒绝 |
-| Runtime 长度反馈回归 | root；`fix_length_feedback_runtime_regression` | `96777bf` 已集成、双轴 GO，仅修测试：先建立“甲”再追加，避免旧默认 hello 整段改写按既有合同清空预览；保严格断言并加可接受正控/错误前只读门，无生产改动。修后 Runtime 未跑。旧本地 MSBuild/socket 与 bwrap 只读路径拒绝不再重试，交下一 CI；worker 已过不代替 Runtime，既有错误归一不扩大 Direct 模式反馈 |
-| Windows 多行源点击 | `fix_multiline_source_click_preparation` | `1ec221e` 两文件已集成、双轴 GO；仅精确 owned Edit + `ES_MULTILINE` 允许合法 Document 映射，其余门保持，原点击 4 场景扩 A/B 8 项。未编译/Windows 执行，待下一 CI |
-| GTK4 glossary 绘制准备 | root；`diagnose_ci479_linux_desktop_failures` 已交付 | `7eeaf27` 两文件已集成、双轴 GO；frame0 是未 ready，不是永久 viewport 错误，在原 deadline 内等待同一实例完成 frame 后用原几何断言。root 几何 43/43 通过，GUI 未跑 |
-| Linux DOM resize | `diagnose_ci479_linux_desktop_failures` | 8e1585a集成fc14efc，双轴GO，复用既有trusted同按钮click启动360ms采样，保520宽/中间帧/截图等全部断言；静态/Ruff过，Chromium启动socket拒绝后未重试，真实DOM未跑，旧记录不足证明唯一根因 |
-| Linux GTK reentry | `fix_gtk_reentry_verification` | 发送时原100ms许可约余99ms，但到GTK实际迟178ms、已过期79ms，安全拒绝正确，非1秒回调等待太短。2a6084c集成8e7b82c，双轴GO，仅既有32跨度按实际配置接受键冻结，TRACE关闭不新增解析；无F8热身/续期，native未编译，延迟根因待新跨度 |
-| Linux GTK4 语言弹层重开 | `fix_gtk4_language_popup_reopen` | 573d6f7集成eb7bea8，双轴GO；只修GTK4菜单mapped但尚无surface/frame时错误旧坐标点击，保同控件/菜单instance、800ms、无renew/单click及disabled Apply断言。root组合55/55通过，C/真实GTK未跑 |
-| Linux Qt 直接翻译 | `fix_qt_direct_translation_verification` | F10在queueShortcut初始StaleObservation拒绝，未进入capture/model，不能归为模型失败或仅过期。4223f3集成db9db15，双轴GO，记录原判断已用observed/current区分missing/future/expired，不新采样/不改150ms；与47bf981同享128行上限，默认关闭、无正文，未编译/GUI，仍是诊断不是功能修复 |
-| Hy 后继验收 | root | 双端生命周期与中英普通预览已闭合，保留回归；高级 scope/源分发与质量仍按现有证据分开判断，不无新假设重跑质量或把普通响应算高级验收 |
-| Linux 可选扩展 | 暂不派工 | 保留 CI468 推荐包；当前修复限已有失败，不扩新应用/控件支持，不把清理 -15 写成正常退出 |
+| TSF拒绝差值证据 | root集成；finish_tsf_write_validation | 作者0c2146a已集成67725ff，四文件双轴GO、folder格式/YAML/diff通过。只从既有合成字符串记录长度/选区/首差码元/固定类别及hook完成后的只读原生效果；不归一化、不改比较/100ms/一次请求，Undo/Submit仍在verified终态后。实际差值待下一CI，根因未知，未编译/Windows实跑 |
+| 下一批发布/验证 | publish_next_verified_fix_batch，root冻结 | CI480原件已齐。发布已审差值证据与当前文档后跟精确CI至终态，首例结果决定下一修复，不拿continue-on-error颜色当研究通过 |
+| Windows输入信任与部署 | root | UIAccess范围待用户明确裁决；保持严格注入拒绝。同步RW局部证据不授予旧键身份/IME/第三方部署/原子产品写入资格 |
+| Linux体验交付 | root；assess_linux_candidate_adoption | 采用CI480已独立核验的包，在线推荐更新；不重打已验包、不发布stable。保留用户真机反馈与模型/高级scope限制 |
+| 模型后继 | root | 保持双端已过生命周期回归及原默认。高级scope/source dispatch与质量证据独立处理；没有新假设不重复扫参或扩预算 |
 
-同机重编译与模型推理错开，模型推理串行。槽位由 root 按实际 owned 进程退出及所有权证据交接，不按代理结束消息释放；远端 CI 不占本地编译槽。代码、输入、身份、权限及资源合同未变时，只复核实质变化与受影响边界。
+原Runtime前置、Windows回源/人工稿/多行点击、DOM采样、GTK4菜单准备均已有CI480通过证据，不再挂成在修队列。GTK/Qt投递诊断保持有界：配置F1曾迟178ms而正确拒绝100ms过期票，Qt曾初始StaleObservation拒绝；本轮通过不证明旧原因消失。下次真实失败再用原始跨度/basis定位，不加热身、续期或输入重试。
+
+本地MSBuild/测试曾被socket权限拒绝，正式审核路径启动失败；未绕过或重试这些动作。独立`dotnet format whitespace --folder`不加载项目，已实际运行并通过，不代表编译恢复。同机重编译/模型推理错开，模型推理串行，按实际owned进程退出交接资源槽。
 
 ## Windows：仍需闭合的普通源能力
 
@@ -60,7 +54,7 @@
 
 - **真实产品链 round03 完整通过**：原件根 `../Typelay-hy-english-candidate/artifacts/hy-candidate14-product-preparation/`，`product-round-03/result.json` SHA-256 `4b9a377fa08755c349ec84cbfd27ec2d64a4c3ef2a558821b8e788e3cda95623`，实际 exit0、47.765 秒。旧 12 激活后故意缺新候选 license，替换失败保旧 current/active 与失败诊断；旧 worker25 退役、恢复 worker35 仍用旧代 12。随后新 14 实际 Ready，两条冻结中英 smoke 非空正确且文档/版本/选区绑定保持。Host 正常退出0、双 EOF、0 外层清理信号、drain 全收尾/0 取消、owned 及组无残留，install 与三 use 锁可重取，原 seed 完整性不变；3147 原帧完整保存。这是生产安装/激活和 editor snapshot 链，不是质量评估或完整 GUI 验收。
 - **证据的环境限制**：round02 的 Host 激活 OOM 未被覆盖或补算通过。round03 仅为实验 Host 增设 `DOTNET_GCRegionRange=20000000`（512MiB 预留）；原 `DOTNET_GCHeapHardLimit=10000000`（256MiB 提交）、AS2.5GiB 与 CPU0/1 不变，不证明默认资源行为，也未定位旧 OOM 失败分配点。runner 持续排空，最多 65536 帧/16MiB，产品 10ms 事件行为不变。依赖探针已隔离 UCX stdout 污染与合法 JSON；原 socket 拒绝不变，真实依赖/原生 FD 污染/外来依赖路径拒绝回归及 setup109 已通过，原件 `runtime-import-probe/`。
-- **实现与本地检查已完成**：兼容基础、方向级高级能力、明确升级动作、禁用原因与手动确认已集成并双轴独审。手动预览批 Runtime1287/1287、worker167/167、Linux setup109/109 与两 Windows 消费者 Compile 通过；Linux 最终包准备的 99 项无模型邻近检查通过。原件在 `../Typelay-hy-english-candidate/artifacts/` 及相应作者工作区。本地检查不是 GUI 证据；当前双端生命周期与双向预览的实际结果以上方 CI479 原件为准。
+- **实现与本地检查已完成**：兼容基础、方向级高级能力、明确升级动作、禁用原因与手动确认已集成并双轴独审。手动预览批 Runtime1287/1287、worker167/167、Linux setup109/109 与两 Windows 消费者 Compile 通过；Linux 最终包准备的 99 项无模型邻近检查通过。原件在 `../Typelay-hy-english-candidate/artifacts/` 及相应作者工作区。本地检查不是 GUI 证据；当前双端生命周期与双向预览的实际结果以上方 CI480 原件为准。
 - **能力与默认**：正式 catalog 可供 14 方向；ABI5、greedy、模型权重锁与默认保持，新装仍 12。中英预览经明确确认的 format2 `Install/addDirections` 事务启用，旧 Repair 不扩方向，既有选择和语言设置不变。选中库存、manifest 与原生导出共同授予能力；事务失败保旧代与 active 选择。候选 14 保留原 12 高级能力的 non-null 作用域，English 风格/术语请求明确拒绝而非降级普通翻译。保留 Argos 休眠偏好，重置/删除不受新增应用资格门阻挡。**跨旧版本恢复未完成，不承诺旧版本自动恢复 14 方向。** 当前版本可改用 Argos，未安装须另行确认下载。
 - **验收边界与预算**：双端已通过的生命周期回归保持 Windows 15 场景 960 秒、Linux 240 秒工作/260 秒外限，quality 请求数不变。普通预览不证明高级 scope、原生源请求、质量或物理输入；本地未发现 niri/Xvfb/weston 或 DISPLAY/WAYLAND 桌面，以实际 CI 原件建立 GUI 结果。
 
@@ -87,7 +81,7 @@
 
 ## Linux 与恢复证据边界
 
-- Linux 仍推荐 CI468 `091fd796` [体验包](https://github.com/DingJWuyu/Typelay/actions/runs/39904552393/artifacts/12480483952)，完整检查、包身份、gzip/ZIP、293项清单及本包说明已核；仍需用户真机、物理键盘和输入法体验，不是所有应用验收。CI479 的既有桌面失败按当前责任表修复，不能用某轮通过反推旧失败根因；可选应用/控件扩展仍不派工。
+- Linux 推荐 CI480 `2342a747` [体验包](https://github.com/DingJWuyu/Typelay/actions/runs/40007045279/artifacts/12525507850)，内tar 281,117,978字节、SHA-256 `9a5415c95b4a0e285baee3cab6c1a4dfbda313f207a61b808097111f99acf4a2`；完整Linux检查、clean提交身份与293项清单独立核验。仍需用户真机/物理键盘/输入法体验，不是stable或所有应用验收；包内“14 GUI未验证”旧保守句不作为当前事实，在线说明已按CI480实际范围更新。可选扩展不派工。
 - 按需唤醒后空捕获仍保守中止：恢复同一目标不证明期间未离开焦点家族；取得有效顺序与屏障证据前不恢复唤醒，见[架构约束](../platforms/linux/architecture.md#按需唤醒与缺失捕获)。可选富文本、非合作控件、Electron/VS Code 自动浮层扩展暂不开展。
 - CI468 源码从 shared artifact `12480153131` 完整恢复，tree `5dbdda82b1d415397db8580ca1878ab6dc7a2d95` 与发布一致；本地恢复基准 `88d8738` 是独立提交，不冒称远端历史恢复，收据 `artifacts/ci468-source-recovery/verification.json`。
 - 旧模型原始输出、资源/退出和独审原件，以及 Mozilla 未发布5文件补丁/33项测试原件仍缺失；新证据不冒称旧证据恢复。未注明的 `artifacts/` 相对本集成工作区；原始日志与模型留在被忽略目录，不提交或另建历史快照。

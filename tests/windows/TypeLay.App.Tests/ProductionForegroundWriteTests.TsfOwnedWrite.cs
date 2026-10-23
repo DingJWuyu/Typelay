@@ -135,16 +135,37 @@ public sealed partial class ProductionForegroundWriteTests
             }
             work.ThrowIfCancellationRequested();
             bool success = run.Scenario == "success";
+            // Read-only facts also survive an unexpected rejection. In CI480,
+            // checking the outcome first hid the actual native state entirely.
+            // These facts do not authorize Undo or turn a failed case green.
+            run.AfterInput = new();
+            var focus = N.Focused();
+            run.AfterInput.Focus = focus == (root, a) ? "a" : focus == (root, b) ? "b" : "other";
+            work.ThrowIfCancellationRequested();
+            string nativeText = N.ReadText(a, Limits.MaxTextUnits);
+            run.AfterInput.TextUnits = nativeText.Length;
+            run.AfterInput.TextMatchesSetup = nativeText == current;
+            run.AfterInput.TextMatchesReplacement = nativeText == replacement;
+            work.ThrowIfCancellationRequested();
+            TextRange nativeSelection = N.ReadSelection(a);
+            run.AfterInput.Selection = nativeSelection;
+            work.ThrowIfCancellationRequested();
+            string nativeOther = N.ReadText(b, Limits.MaxTextUnits);
+            run.AfterInput.OtherFieldUnchanged = nativeOther == other;
+            work.ThrowIfCancellationRequested();
+            nuint submits = N.Send(root, N.FixtureSubmitCount);
+            run.AfterInput.SubmitCount = (ulong)submits;
+            run.AfterInput.Complete = true;
             // Read the actual post-hook outcome before any further mutation.
             // A side-effecting failure must not be "repaired" by native Undo.
             CheckOwnedWriteAttempt(run, run.Completed!.Value);
-            Assert.Equal((root, success ? a : b), N.Focused());
+            Assert.Equal((root, success ? a : b), focus);
             run.KeyEffectVerified = true;
-            Assert.Equal(success ? replacement : current, N.ReadText(a, Limits.MaxTextUnits));
-            Assert.Equal(success ? new TextRange(8, 8) : selection, N.ReadSelection(a));
-            Assert.Equal(other, N.ReadText(b, Limits.MaxTextUnits));
+            Assert.Equal(success ? replacement : current, nativeText);
+            Assert.Equal(success ? new TextRange(8, 8) : selection, nativeSelection);
+            Assert.Equal(other, nativeOther);
             run.TextAndSelectionVerified = run.OtherFieldUnchanged = true;
-            Assert.Equal((nuint)0, N.Send(root, N.FixtureSubmitCount));
+            Assert.Equal((nuint)0, submits);
             run.ZeroSubmits = true;
             if (success)
             {
@@ -267,6 +288,26 @@ public sealed partial class ProductionForegroundWriteTests
             Assert.Equal(1, result.GetProperty("EditEntered").GetInt32());
             Assert.Equal(1, result.GetProperty("EditExited").GetInt32());
             Assert.True(result.GetProperty("ReadComplete").GetBoolean());
+            var comparison = result.GetProperty("BeforeWriteComparison");
+            Assert.Equal(6, comparison.GetProperty("ExpectedTextUnits").GetInt32());
+            Assert.Equal(6, comparison.GetProperty("ActualTextUnits").GetInt32());
+            Assert.Equal("original", comparison.GetProperty("ExpectedFixtureText").GetString());
+            Assert.Equal(run.Scenario == "changed-body" ? "changed-body" : "original",
+                comparison.GetProperty("ActualFixtureText").GetString());
+            Assert.Equal(run.Scenario != "changed-body", comparison.GetProperty("TextEqual").GetBoolean());
+            Assert.Equal(run.Scenario != "changed-selection", comparison.GetProperty("SelectionEqual").GetBoolean());
+            if (run.Scenario == "changed-body")
+            {
+                Assert.Equal(3, comparison.GetProperty("FirstDifferentUnit").GetInt32());
+                Assert.Equal(0x4f60, comparison.GetProperty("ExpectedUnit").GetInt32());
+                Assert.Equal(0x65b0, comparison.GetProperty("ActualUnit").GetInt32());
+                Assert.Equal("code-unit", comparison.GetProperty("DifferenceKind").GetString());
+            }
+            else
+            {
+                Assert.Equal(JsonValueKind.Null, comparison.GetProperty("FirstDifferentUnit").ValueKind);
+                Assert.Equal("equal", comparison.GetProperty("DifferenceKind").GetString());
+            }
             var composition = result.GetProperty("Composition");
             Assert.Equal("none-in-exact-context-at-read", composition.GetProperty("ObservedState").GetString());
             Assert.True(composition.GetProperty("Attempted").GetBoolean());
@@ -291,6 +332,11 @@ public sealed partial class ProductionForegroundWriteTests
             Assert.Equal(0, result.GetProperty("SetSelectionHResult").GetInt32());
             Assert.True(result.GetProperty("WriteVerified").GetBoolean());
             Assert.True(run.UndoRestored);
+            var readback = result.GetProperty("WriteReadbackComparison");
+            Assert.True(readback.GetProperty("TextEqual").GetBoolean());
+            Assert.True(readback.GetProperty("SelectionEqual").GetBoolean());
+            Assert.Equal(9, readback.GetProperty("ActualTextUnits").GetInt32());
+            Assert.Equal("replacement", readback.GetProperty("ActualFixtureText").GetString());
         }
         if (focusChanged)
         {
@@ -300,11 +346,13 @@ public sealed partial class ProductionForegroundWriteTests
             Assert.Equal(JsonValueKind.Null, result.GetProperty("RequestHResult").ValueKind);
             Assert.Equal(JsonValueKind.Null, result.GetProperty("SessionHResult").ValueKind);
             Assert.False(result.GetProperty("ReadComplete").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, result.GetProperty("BeforeWriteComparison").ValueKind);
         }
         if (!success)
         {
             Assert.Equal(JsonValueKind.Null, result.GetProperty("SetTextHResult").ValueKind);
             Assert.Equal(JsonValueKind.Null, result.GetProperty("SetSelectionHResult").ValueKind);
+            Assert.Equal(JsonValueKind.Null, result.GetProperty("WriteReadbackComparison").ValueKind);
         }
     }
 
@@ -324,6 +372,10 @@ public sealed partial class ProductionForegroundWriteTests
             get; set;
         }
         public JsonElement? Completed
+        {
+            get; set;
+        }
+        public TsfNativeReadback? AfterInput
         {
             get; set;
         }
@@ -368,6 +420,42 @@ public sealed partial class ProductionForegroundWriteTests
             get; set;
         }
         public string? Error
+        {
+            get; set;
+        }
+    }
+
+    private sealed class TsfNativeReadback
+    {
+        public bool Complete
+        {
+            get; set;
+        }
+        public string? Focus
+        {
+            get; set;
+        }
+        public int? TextUnits
+        {
+            get; set;
+        }
+        public bool? TextMatchesSetup
+        {
+            get; set;
+        }
+        public bool? TextMatchesReplacement
+        {
+            get; set;
+        }
+        public TextRange? Selection
+        {
+            get; set;
+        }
+        public bool? OtherFieldUnchanged
+        {
+            get; set;
+        }
+        public ulong? SubmitCount
         {
             get; set;
         }

@@ -155,13 +155,17 @@ CI 在 Windows build 成功后、首门之后以独立 `continue-on-error: true`
 
 一次 SendInput Tab down/up 进入源线程 `WH_KEYBOARD` 的初始 `HC_ACTION`。只有精确原身份、原期限、无修饰且无重入时申请一次 `TF_ES_SYNC | TF_ES_READWRITE`；在同一真实 cookie 内由 context 起止范围读取完整正文，以两个前缀范围取得 UTF-16 选区偏移，并重新核对精确 context 的 composition 必须明确为 none。截断、区域短读、未知状态或身份变化均失败；不创建 textstore/context，不订阅 context key sink，不安装 TIP、不修改 profile、权限或输入信任边界。
 
+正文诊断只从上述已读字符串派生预期/实际 UTF-16 长度、选区、首差位置及两侧各一个码元，并识别固定合成正文类别；不记录全文，不增加读取或重试，不 trim/normalize 或放宽 equality。`GetStart`/`GetEnd` 的空端点经 `ShiftEndToRange` 形成全文范围；[GetText](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfrange-gettext) 使用 WCHAR 缓冲及 `TF_TF_MOVESTART`，以移动后的 `IsEmpty` 核完整性。准备阶段原生 WM_SETTEXT 成功不能替代实际 TSF 全文相等证据。
+
 全部比较及最后身份/期限检查成立后，在第一次 [SetText](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfrange-settext) 调用前标记可能已有副作用；仅这一处修改正文，再将 range 折叠到末尾、SetSelection 并在锁内读回全文与 caret。[SDK ABI](https://github.com/microsoft/win32metadata/blob/main/generation/WinSDK/RecompiledIdlHeaders/um/msctf.h) 的 `SYNC=1`、`READWRITE=6`、WCHAR/ULONG/LONG 宽度和 ITfRange 槽位为互操作依据。锁不是回滚保证：副作用前失败把原 Tab 原样交给 CallNextHookEx，已进入 SetText 的任何后续失败记为 `accepted-but-failed-or-unknown` 并仅消费确实发起该唯一尝试的原 down，其它重入或后继键仍走原旁路，不补发 Tab、不以 native 写入回退或补偿。失败结果不会计为验证成功。
 
 成功须独立从原生控件读到 `A🙂HelloZ` 和 UTF-16 caret 8，前后缀、其它字段不变，Tab 不导航、零提交；先清空准备阶段撤销栈，再实际执行 EM_UNDO 恢复原 `A🙂你好Z`，不是反向写回。实际 Undo 前必须先读取已完成的 hook 终态，确认 `verified` 且无 Failure；已标记未知/失败时不做 native Undo 或其它补偿。每例在被测 Tab 的零提交区间（及成功例 Undo）结束后，单独点击自有 Submit 正控，读取对应回执并确认计数由0变1；正控不混入被测按键的零提交结论。两种内容冲突须在同栈 RW 中拒绝并零 SetText；焦点代次失效须在请求前拒绝。三种拒绝均须看到原 Tab 自然 A→B，不能只断言调用了转发函数。
 
 四例共用40秒工作截止及至48秒的清理总外限，46秒前允许正常关闭，剩余最多2秒确认精确 owned 进程强制退出；不为后续例续时。每个宿主仍为25秒正常关闭/29秒 STA 外限，Fact 为60秒。只有 hook 解除、所有自有 range/COM 释放、激活配平、正常退出及效果断言全部成立，才能将该例记为 validated；强制回收仅结束进程，不补作正常清理证明。
 
-CI 用这四例**替换**原 source-key-read 的独立2分钟研究步骤，不新增预算。`artifacts/tsf-owned-write/<唯一目录>/result.json` 与 runner.json/log 保留每例初始/关闭结果、HRESULT、调用顺序、副作用边界、原键效果、Undo 和退出证据；缺失、重复、失败及清理未知分别报告。`productionReadiness=false` 始终不变；软件输入、当次无组合、自有控件和真实 Undo 的局部结果，仍不证明物理/旧排队键身份、真实 IME 安全、第三方部署或普通应用生产接受。新套件尚待 Windows 实跑，不能引用 CI478 的 READ 通过作为本套件结果。
+CI 用这四例**替换**原 source-key-read 的独立2分钟研究步骤，不新增预算。`artifacts/tsf-owned-write/<唯一目录>/result.json` 与 runner.json/log 保留每例初始/完成/关闭结果、正文差值、HRESULT、调用顺序、副作用边界、原键效果、Undo 和退出证据。完成 hook 后先记录只读原生效果事实，未执行的字段为 null，全部读取完成才置 `AfterInput.Complete`；这些事实不替代终态门、效果断言或 Submit 正控。缺失、重复、失败及清理未知分别报告。`productionReadiness=false` 始终不变；软件输入、当次无组合、自有控件和真实 Undo 的局部结果，仍不证明物理/旧排队键身份、真实 IME 安全、第三方部署或普通应用生产接受。
+
+当前 Windows 实跑在第一例取得 RW 后因 `changed-body` 拒绝，零 SetText、未消费且正常清理；原结果未记录实际 TSF 字符串差值，根因尚未确定。`DownForwarded` 只证明调用了 CallNextHookEx，不能证明自然导航；当次未读回原生效果、未执行 Undo/提交正控，后三例也未运行。本次差值证据仍待下一次 Windows 实跑，不能用已有 READ 阳性替代写入结果。
 
 ## 自有双队列消费顺序诊断
 

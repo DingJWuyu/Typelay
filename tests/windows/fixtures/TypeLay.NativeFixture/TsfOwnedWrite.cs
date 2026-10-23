@@ -233,6 +233,9 @@ internal static partial class TsfContextAdmission
                     ContractFailure: false, Error: null
                 }, "composition-not-known-none");
                 Require(Exact() && Fresh() && !Result.Reentered && Result.Failure is null, "pre-write-identity-or-expiry");
+                // Diagnose only this owned synthetic fixture from the strings
+                // already read. No second read, normalization or authority.
+                Result.BeforeWriteComparison = CompareText(_snapshot!.Text, _snapshot.Selection, current.Text, current.Selection);
                 if (current.Text != _snapshot!.Text)
                 {
                     Reject("changed-body");
@@ -266,6 +269,7 @@ internal static partial class TsfContextAdmission
                 try
                 {
                     var actual = ReadCurrent(cookie, out verifiedRange);
+                    Result.WriteReadbackComparison = CompareText(expected, new(caret, caret), actual.Text, actual.Selection);
                     Require(actual.Text == expected && actual.Selection == new TextRange(caret, caret)
                         && Exact() && !Result.Reentered && Result.Failure is null, "write-or-caret-readback-mismatch");
                     Result.WriteVerified = true;
@@ -470,6 +474,37 @@ internal static partial class TsfContextAdmission
 
     private sealed class WriteObservationException(string message) : Exception(message);
 
+    // At most one differing UTF-16 code unit from each side, never full text.
+    // This type has no production consumer; all observations belong to the
+    // explicitly launched, fixed-text stock Edit research fixture.
+    internal sealed record TextComparison(int ExpectedTextUnits, int ActualTextUnits,
+        TextRange ExpectedSelection, TextRange ActualSelection, bool TextEqual, bool SelectionEqual,
+        string ExpectedFixtureText, string ActualFixtureText, int? FirstDifferentUnit,
+        int? ExpectedUnit, int? ActualUnit, string DifferenceKind);
+
+    private static TextComparison CompareText(string expected, TextRange expectedSelection, string actual, TextRange actualSelection)
+    {
+        int common = 0;
+        while (common < expected.Length && common < actual.Length && expected[common] == actual[common])
+            common++;
+        bool equal = common == expected.Length && common == actual.Length;
+        return new(expected.Length, actual.Length, expectedSelection, actualSelection, equal,
+            expectedSelection == actualSelection, FixtureText(expected), FixtureText(actual), equal ? null : common,
+            !equal && common < expected.Length ? (int)expected[common] : null,
+            !equal && common < actual.Length ? (int)actual[common] : null,
+            equal ? "equal" : common == expected.Length ? "expected-end" : common == actual.Length ? "actual-end" : "code-unit");
+    }
+
+    private static string FixtureText(string value) => value switch
+    {
+        "" => "empty",
+        "A🙂你好Z" => "original",
+        "A🙂新稿Z" => "changed-body",
+        "A🙂HelloZ" => "replacement",
+        "你好，我想测试 TypeLay。" => "fixture-initial",
+        _ => "other"
+    };
+
     internal sealed class WriteResult
     {
         public bool ProductionReadiness => false;
@@ -604,6 +639,14 @@ internal static partial class TsfContextAdmission
             get; set;
         }
         public bool ReadComplete
+        {
+            get; set;
+        }
+        public TextComparison? BeforeWriteComparison
+        {
+            get; set;
+        }
+        public TextComparison? WriteReadbackComparison
         {
             get; set;
         }
