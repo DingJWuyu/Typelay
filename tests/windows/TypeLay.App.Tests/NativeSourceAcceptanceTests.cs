@@ -48,12 +48,14 @@ public sealed class NativeSourceAcceptanceTests
 
         Assert.True(installed.Installed);
         Assert.Null(installed.Receipt);
+        Assert.Null(installed.NativeResponse);
         Assert.False(native.InstallSourceAcceptance(Guid.NewGuid(), permit).Installed);
         Assert.False(native.RetireSourceAcceptance(Guid.NewGuid(), plan.Id).Quiet);
         var retired = native.RetireSourceAcceptance(generation, plan.Id);
         Assert.True(retired.Quiet);
         Assert.NotNull(retired.Receipt);
         Assert.Equal(WriteStatus.RejectedBeforeMutation, retired.Receipt.Status);
+        Assert.Equal(new NativeTransactions.SourceNativeResponse(2, (uint)retired.Receipt.Reason, 0), retired.NativeResponse);
         Assert.Equal(source.Text, N.ReadText(desktop.A, Limits.MaxTextUnits));
         Assert.Equal(source.Selection, N.ReadSelection(desktop.A));
         Assert.Equal((desktop.Root, desktop.A), N.Focused());
@@ -162,6 +164,7 @@ public sealed class NativeSourceAcceptanceTests
             Assert.False(uncertain.Installed);
             Assert.False(uncertain.Quiet);
             Assert.Null(uncertain.Receipt);
+            Assert.Null(uncertain.NativeResponse);
             Assert.False(native.InstallSourceAcceptance(Guid.NewGuid(), permit).Installed);
             Assert.False(native.PollSourceAcceptance(generation, permit.Plan.Id).Quiet);
         }

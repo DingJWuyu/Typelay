@@ -947,6 +947,19 @@ static int source_message_noremove_and_nested_remove_do_not_spend_the_grant(void
     return source_wire.state == 3 && !source_mapped && !source_allocated && !field.invalid_call;
 }
 static int source_message_refusal_never_restores_or_replays_the_original(void) {
+    // An entry bypass followed by source invalidation has the same public
+    // EpochChanged denial, but never spent this grant's shared invoked word.
+    if (!prepare_source_message()) return 0;
+    TestQueueMessage bypassed = {handle(OtherField), 0x100, 9, 0x000f0001, 1000, {0, 0}, 0};
+    TypeLaySourceGetMessageProc(0, 1, (LPARAM)&bypassed);
+    if (source_wire.invoked || source_wire.claim || source_wire.tx.status || field.set_calls || field.replace_calls) return 0;
+    CallMessage changed = {0, 0, 0x0c, handle(SourceWindow)};
+    TypeLayCallWndProc(0, 0, (LPARAM)&changed);
+    send_source(RevokeMessage);
+    if (bypassed.message != 0x100 || source_wire.state != 3 || source_wire.tx.status != 2
+        || source_wire.tx.reason != 15 || source_wire.invoked || source_wire.claim
+        || source_mapped || source_allocated || field.invalid_call) return 0;
+    source_wire_enabled = 0;
     for (int fault = 1; fault <= 10; fault++) {
         if (!prepare_source_message()) return 0;
         TestQueueMessage message = {handle(SourceWindow), 0x100, 9, 0x000f0001, 1000, {0, 0}, 0};
@@ -988,7 +1001,8 @@ static int source_message_refusal_never_restores_or_replays_the_original(void) {
         send_source(PollMessage);
         if (source_wire.state != 2 || source_wire.tx.reason != reason) return 0;
         send_source(RevokeMessage);
-        if (source_wire.state != 3 || source_mapped || source_allocated || field.invalid_call) return 0;
+        if (source_wire.state != 3 || source_wire.tx.status != 2 || source_wire.tx.reason != reason
+            || source_wire.invoked != 1 || source_mapped || source_allocated || field.invalid_call) return 0;
         source_wire_enabled = 0;
     }
     return 1;

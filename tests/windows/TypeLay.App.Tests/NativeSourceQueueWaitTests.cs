@@ -142,6 +142,8 @@ public sealed class NativeSourceQueueWaitTests(WpfDesktopFixture ui)
                     Assert.True(retired.Quiet);
                     Assert.False(retired.Claimed);
                     Assert.Equal(Denial.EpochChanged, retired.Receipt?.Reason);
+                    Assert.Equal(new NativeTransactions.SourceNativeResponse(2, hook.StockLastActivation!.NativeReason, 1),
+                        retired.NativeResponse);
                 }
                 else
                     Assert.Null(hook.StockLastActivation);

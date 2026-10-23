@@ -14,7 +14,11 @@ internal sealed partial class NativeEditTransactions
     // Source prototype wired through authenticated Broker operations only when
     // explicitly enabled by the isolated fixture. Shipping defaults remain off.
     // Installation alone is neither acceptance nor a CompletedReceipt.
-    internal sealed record SourceInstallationResult(bool Installed, bool Quiet, WriteReceipt? Receipt, bool Claimed = false);
+    internal sealed record SourceInstallationResult(bool Installed, bool Quiet, WriteReceipt? Receipt, bool Claimed = false,
+        SourceNativeResponse? NativeResponse = null);
+    // Only the acknowledged quiet wire response, not a module-local execution
+    // trace. Invoked is shared by the grant; a native reason may include queue hints.
+    internal sealed record SourceNativeResponse(uint Status, uint Reason, uint Invoked);
     internal sealed record SourceActivationEndpoint(ulong Nonce, ulong Command);
     private sealed class SourceGrant : IDisposable
     {
@@ -250,9 +254,14 @@ internal sealed partial class NativeEditTransactions
         {
             // Only the synchronous source ACK permits releasing the mapping and
             // subsequently changing its consumer or removing the owning hook.
-            _sourceTerminal = (grant.Generation, grant.Permit.Plan.Id, new(installed, quiet, receipt, claimed));
+            // Preserve the already sampled native status/reason alongside the
+            // decoded receipt. Read invoked only here, outside admission.
+            var result = new SourceInstallationResult(installed, quiet, receipt, claimed,
+                new(status, nativeReason, grant.View.ReadUInt32(68)));
+            _sourceTerminal = (grant.Generation, grant.Permit.Plan.Id, result);
             grant.Dispose();
             _sourceGrant = null;
+            return result;
         }
         return new(installed, quiet, receipt, claimed);
     }

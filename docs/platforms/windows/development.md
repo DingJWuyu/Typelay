@@ -93,7 +93,9 @@ if ($LASTEXITCODE -ne 0) { throw '普通 source MSG 研究失败，保留原结�
 1. 同一个首 Tab 两次 `PM_NOREMOVE` 均不消耗 invoked/claim，再由 `PM_REMOVE` 执行一次普通 source 事务。native 返回后、原 GetMessage 返回前，fixture 的 managed hook 有界暂停1200ms；外部只读属性确认原泵尚未返回。原泵在 GetMessage 下一条语句记录实际返回 MSG，随后仍走原 IsDialogMessage/TranslateMessage/DispatchMessage。验证一次真实正文变化、原字段焦点、零导航/提交、随后同字段 repeat/up 消费及 Undo。
 2. 安装后真实修改源文，首 Tab 不被改写、零 claim 和正文替换，实际选区保持，原 dialog 自然转焦 B。portable API 边界另核拒绝不进入 SETSEL；真实 Windows 此行不声称观察到了每一次底层 API 调用。
 
-新两行的 GETMESSAGE delegate 与实际创建 SourceInstallation 的测试内 `NativeTransactions` 一律绑定 `AppContext.BaseDirectory/TypeLay.NativeInput.dll` 的同一绝对路径，不借独立 Broker 观察进程输出目录里的同名副本。fixture 在任何 grant 之前，从实际持有的 HMODULE 采一次完整路径；既有后置结果记录该路径/进程内 module base、安装结果及许可身份/原期限，后置断言路径与 owner 一致，不在许可窗口内查询或枚举模块。独立 Broker 的观察 hook 及原清理顺序保持；不能据路径对齐推称目标进程仅有一个模块/slot，也不能把后置 TargetChanged 唯一归因到 GETMESSAGE 内。该对齐修正已知接线前提，真实正例仍须后继 Windows 原件验证。
+新两行的 GETMESSAGE delegate 与实际创建 SourceInstallation 的测试内 `NativeTransactions` 一律绑定 `AppContext.BaseDirectory/TypeLay.NativeInput.dll` 的同一绝对路径，不借独立 Broker 观察进程输出目录里的同名副本。fixture 在任何 grant 之前，从实际持有的 HMODULE 采一次完整路径；既有后置结果记录该路径/进程内 module base、安装结果及许可身份/原期限，后置断言路径与 owner 一致，不在许可窗口内查询或枚举模块。独立 Broker 的观察 hook 及原清理顺序保持；不能据路径对齐推称目标进程仅有一个模块/slot，也不能把后置 TargetChanged 唯一归因到 GETMESSAGE 内。实际路径已核一致，正例仍为零 claim/写入/消费，不能声称机制通过。
+
+终态结果的 `NativeResponse` 仅在既有命令收到有效 Quiet ACK 后保留已经采样的 native status/raw reason，并在释放映射前读取现有 shared invoked 字；超时、错 ACK、仅进程退出或非 Quiet 结果保持 null。不增加接受过程内查询、消息或轮询，也不改变公开拒绝映射。`0x10000 | queue flags` 区分 pending-work 拒绝与普通 raw 15，queue flags 只是队列类型提示；invoked=1 只说明此 grant 的共享尝试位已消费，不证明 claim、正文执行或特定 module 的完成。多个 module 仍可回链写同一响应，raw 15 也不标识具体撤销事件；这份已确认终态 wire 快照不能当作唯一 GETMESSAGE 拒因的完整轨迹。
 
 native 在调用一次 CallNextHookEx **之前**占住 source callback 寿命门，之后重核原 MSG 与同 grant。claim CAS 赢后立即原地置 `MSG.message=WM_NULL`，两者之间没有 OS 调用、回调、分配或日志，再进入首个 SETSEL；拒绝前不改 MSG，受理后出现拒绝或未知也不恢复/重注入原键。普通 source 的完整回执仍来自实际重验，MSG 路径不伪造 sent command ACK，退休由原 poll/retire 协议确认。NOREMOVE 不耗一次尝试，其他失败不以 repeat 重试。
 

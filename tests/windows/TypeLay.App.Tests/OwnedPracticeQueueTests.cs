@@ -100,12 +100,29 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         Exception? failure = null;
         string phase = "start";
         long? pressedAt = null;
+        Native.Point? originalPointer = null;
         string pointerBeforeLease = "not-observed";
         try
         {
             await scene.Start(true, bindings: SessionShortcutBindings.Restore("Ctrl+F7", "Ctrl+F10"));
-            // Observe setup only; do not move the pointer, drain input, or change
-            // the original ticket/press sequence to make a root replay succeed.
+            // A root-only replay must not inherit a pointer over the source:
+            // CI observed an additional real source WM_MOUSEMOVE invalidating
+            // the prefix before the root replay. Prepare all cases alike before
+            // the lease, without draining input or changing the press sequence.
+            phase = "pointer-setup";
+            Assert.True(Native.GetCursorPos(out var previousPointer));
+            originalPointer = previousPointer;
+            Assert.True(GetClientRect(scene.Root, out var client));
+            var rootPoint = new Native.Point { X = 4, Y = 4 };
+            Assert.InRange(rootPoint.X, client.Left, client.Right - 1);
+            Assert.InRange(rootPoint.Y, client.Top, client.Bottom - 1);
+            Assert.True(ClientToScreen(scene.Root, ref rootPoint));
+            Assert.Equal(scene.Root, WindowFromPoint(rootPoint));
+            Assert.True(SetCursorPos(rootPoint.X, rootPoint.Y));
+            Assert.True(Native.GetCursorPos(out var preparedPointer));
+            Assert.Equal(rootPoint.X, preparedPointer.X);
+            Assert.Equal(rootPoint.Y, preparedPointer.Y);
+            Assert.Equal(scene.Root, WindowFromPoint(preparedPointer));
             pointerBeforeLease = scene.PointerTarget();
             phase = "source-read";
             var selection = N.ReadSelection(scene.Field);
@@ -225,13 +242,29 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         }
         finally
         {
+            List<Exception> cleanupErrors = [];
             try
             {
                 await scene.DisposeAsync();
             }
-            catch (Exception cleanupError) when (failure is not null)
+            catch (Exception cleanupError)
             {
-                throw new AggregateException("prefix-replay failed; cleanup also failed", failure, cleanupError);
+                cleanupErrors.Add(cleanupError);
+            }
+            try
+            {
+                if (originalPointer is { } point)
+                    Assert.True(SetCursorPos(point.X, point.Y));
+            }
+            catch (Exception cleanupError)
+            {
+                cleanupErrors.Add(cleanupError);
+            }
+            if (cleanupErrors.Count != 0)
+            {
+                if (failure is not null)
+                    cleanupErrors.Insert(0, failure);
+                throw new AggregateException("prefix-replay cleanup failed", cleanupErrors);
             }
         }
         if (failure is not null)
@@ -2153,6 +2186,8 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         [FieldOffset(20)] public uint MouseFlags;
     }
     [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] private static extern bool GetClientRect(nint window, out N.Rect rectangle);
+    [DllImport("user32.dll")] private static extern bool ClientToScreen(nint window, ref Native.Point point);
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(Native.Point point);
     [DllImport("user32.dll")] private static extern nint GetDlgItem(nint window, int id);
     [DllImport("user32.dll")] private static extern nint GetWindow(nint window, uint command);
