@@ -210,18 +210,36 @@ public sealed class ProductionForegroundWriteTests
         int fieldStyle = N.GetStyle(field, -16);
         bool multiline = (fieldStyle & 4) != 0;
         var before = ObserveForeground();
-        (nint Foreground, nint Focus, object Facts)? afterSet = null, afterBarrier = null;
+        (nint Foreground, nint Focus, object Facts)? afterCommand = null, afterBarrier = null;
+        N.FixtureForegroundResult? preparationResult = null;
         bool? foregroundAccepted = null, barrierCompleted = null;
-        long setStartedAtMs = WindowsInterruptClock.NowMs;
-        long? setReturnedAtMs = null, barrierStartedAtMs = null, barrierReturnedAtMs = null;
-        int? barrierError = null;
+        long commandStartedAtMs = WindowsInterruptClock.NowMs;
+        long? commandReturnedAtMs = null, barrierStartedAtMs = null, barrierReturnedAtMs = null;
+        int? commandError = null, barrierError = null;
         Exception? primaryFailure = null;
         try
         {
-            foregroundAccepted = N.SetForegroundWindow(field);
-            setReturnedAtMs = WindowsInterruptClock.NowMs;
-            afterSet = ObserveForeground();
-            Assert.True(foregroundAccepted.Value);
+            try
+            {
+                preparationResult = (N.FixtureForegroundResult)checked((uint)N.Send(root, N.FixtureSetForegroundField, (nuint)field));
+            }
+            catch (N.NativeMessageException error)
+            {
+                commandError = error.Win32Error;
+                throw;
+            }
+            finally
+            {
+                commandReturnedAtMs = WindowsInterruptClock.NowMs;
+                afterCommand = ObserveForeground();
+            }
+            foregroundAccepted = preparationResult switch
+            {
+                N.FixtureForegroundResult.SetForegroundAccepted => true,
+                N.FixtureForegroundResult.SetForegroundRejected => false,
+                _ => null
+            };
+            Assert.Equal(N.FixtureForegroundResult.SetForegroundAccepted, preparationResult.Value);
             barrierStartedAtMs = WindowsInterruptClock.NowMs;
             try
             {
@@ -239,7 +257,10 @@ public sealed class ProductionForegroundWriteTests
                 barrierReturnedAtMs = WindowsInterruptClock.NowMs;
                 afterBarrier = ObserveForeground();
             }
-            Assert.Equal((field, field), (afterBarrier.Value.Foreground, afterBarrier.Value.Focus));
+            Assert.True(afterCommand.Value.Foreground == field && afterCommand.Value.Focus == field,
+                "The fixture activation command returned without the exact requested raw foreground and keyboard focus.");
+            Assert.True(afterBarrier.Value.Foreground == field && afterBarrier.Value.Focus == field,
+                "The exact requested raw foreground and keyboard focus were not retained at the original WM_NULL observation.");
         }
         catch (Exception error)
         {
@@ -258,16 +279,19 @@ public sealed class ProductionForegroundWriteTests
                     direct,
                     fieldStyle,
                     multiline,
+                    activationThread = "fixture-gui",
                     guiThreadScope = "raw-foreground",
+                    preparationResult = preparationResult?.ToString(),
                     foregroundAccepted,
-                    setStartedAtMs,
-                    setReturnedAtMs,
+                    commandError,
+                    commandStartedAtMs,
+                    commandReturnedAtMs,
                     barrierCompleted,
                     barrierError,
                     barrierStartedAtMs,
                     barrierReturnedAtMs,
                     before = before.Facts,
-                    afterSet = afterSet?.Facts,
+                    afterCommand = afterCommand?.Facts,
                     afterBarrier = afterBarrier?.Facts
                 }));
             }
