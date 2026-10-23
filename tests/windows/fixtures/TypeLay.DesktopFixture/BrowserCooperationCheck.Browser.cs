@@ -11,6 +11,7 @@ internal static partial class BrowserCooperationCheck
     private sealed record PageState(string A, string B, string Focus, bool PageFocused, int AStart, int AEnd,
         int BStart, int BEnd, int Replacements, int Submits, int DirectKeys, int PreviewMounts);
     private sealed record Preview(bool Visible, string Text, string Hint);
+    private sealed record ExtensionMetadataDiagnostic(int Candidate, string Stage, BrowserExtensionMetadataResponse? Response = null);
     private sealed record ExtensionDiscovery(int Targets, int ServiceWorkers, int Candidates, int MetadataRead, int MatchingManifests);
     private sealed class PageServer : IAsyncDisposable
     {
@@ -127,6 +128,8 @@ internal static partial class BrowserCooperationCheck
         private int _nextId;
         private string? _page;
         public ExtensionDiscovery Discovery { get; private set; } = new(0, 0, 0, 0, 0);
+        private readonly List<ExtensionMetadataDiagnostic> _metadataDiagnostics = new();
+        public IReadOnlyList<ExtensionMetadataDiagnostic> MetadataDiagnostics => _metadataDiagnostics;
         public string NavigationFailure { get; private set; } = "unobserved";
         private static readonly JsonSerializerOptions ReadJson = new() { PropertyNameCaseInsensitive = true };
         public static async Task<Cdp> ConnectAsync(string profile, Action<string> setStage, CancellationToken ct)
@@ -216,12 +219,20 @@ internal static partial class BrowserCooperationCheck
         }
         private async Task<JsonElement> ExtensionMetadataAsync(string targetId, CancellationToken ct)
         {
+            // Candidates were bounded to 32 before this single pass. Preserve one
+            // entry per attempted worker, updating only its original call phase.
+            int diagnosticIndex = _metadataDiagnostics.Count;
+            _metadataDiagnostics.Add(new(diagnosticIndex + 1, "attach"));
             var attach = await CallAsync("Target.attachToTarget", new
             {
                 targetId,
                 flatten = true
             }, null, ct);
             string session = attach.GetProperty("sessionId").GetString() ?? throw new Failure("extension-metadata-session-missing");
+            _metadataDiagnostics[diagnosticIndex] = _metadataDiagnostics[diagnosticIndex] with
+            {
+                Stage = "evaluate"
+            };
             // Read only Chrome's public extension identity/manifest API in this
             // disposable profile. Never inspect ports, state, ACKs or page content.
             var response = await CallAsync("Runtime.evaluate", new
@@ -230,15 +241,27 @@ internal static partial class BrowserCooperationCheck
                 returnByValue = true,
                 awaitPromise = false
             }, session, ct);
+            _metadataDiagnostics[diagnosticIndex] = _metadataDiagnostics[diagnosticIndex] with
+            {
+                Response = BrowserExtensionMetadataResponse.Observe(response)
+            };
             Require(!response.TryGetProperty("exceptionDetails", out _)
                 && response.GetProperty("result").TryGetProperty("value", out _), "extension-metadata-unavailable");
             var metadata = response.GetProperty("result").GetProperty("value").Clone();
             // Successful discovery must not leave a debugger attached during the
             // product scenarios. On failure the caller closes the owned browser/CDP.
+            _metadataDiagnostics[diagnosticIndex] = _metadataDiagnostics[diagnosticIndex] with
+            {
+                Stage = "detach"
+            };
             await CallAsync("Target.detachFromTarget", new
             {
                 sessionId = session
             }, null, ct);
+            _metadataDiagnostics[diagnosticIndex] = _metadataDiagnostics[diagnosticIndex] with
+            {
+                Stage = "complete"
+            };
             return metadata;
         }
         public async Task OpenPageAsync(string url, Action<string> stage, CancellationToken ct)

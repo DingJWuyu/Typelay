@@ -1,0 +1,255 @@
+{
+  "schema": 1,
+  "samples": [
+    {
+      "id": "zh-social-01",
+      "direction": "zh_en",
+      "category": "社交/生活沟通",
+      "text": "这家店的面包挺香的，下次带你来尝尝。",
+      "semantic_anchors": [
+        "说话者觉得这家店的面包香",
+        "说话者表示下次带对方来尝面包"
+      ]
+    },
+    {
+      "id": "zh-social-02",
+      "direction": "zh_en",
+      "category": "社交/生活沟通",
+      "text": "刚才在地铁里没信号，现在才看到你的消息。你到家了吗？",
+      "semantic_anchors": [
+        "刚才说话者在地铁里没有信号",
+        "说话者现在才看到对方的消息",
+        "询问对方是否已经到家"
+      ]
+    },
+    {
+      "id": "zh-work-01",
+      "direction": "zh_en",
+      "category": "工作协作",
+      "text": "表格里的蓝色部分由我来填。",
+      "semantic_anchors": [
+        "说话者负责填写表格中的蓝色部分"
+      ]
+    },
+    {
+      "id": "zh-work-02",
+      "direction": "zh_en",
+      "category": "工作协作",
+      "text": "我把讨论要点整理在共享文档里了。第二部分还需要补一个例子，大家可以直接在下面留言。",
+      "semantic_anchors": [
+        "说话者已把讨论要点整理到共享文档",
+        "文档第二部分还需要增加一个例子",
+        "大家可以直接在下方留言"
+      ]
+    },
+    {
+      "id": "zh-schedule-01",
+      "direction": "zh_en",
+      "category": "时间/出行/安排",
+      "text": "导航显示再走五百米就到入口了。",
+      "semantic_anchors": [
+        "导航显示距离入口还需走五百米"
+      ]
+    },
+    {
+      "id": "zh-schedule-02",
+      "direction": "zh_en",
+      "category": "时间/出行/安排",
+      "text": "展览周一闭馆，我们改成周末去吧。你更想上午去还是下午去？",
+      "semantic_anchors": [
+        "展览周一不开放",
+        "说话者提议把参观改到周末",
+        "询问对方更偏好上午还是下午"
+      ]
+    },
+    {
+      "id": "zh-service-01",
+      "direction": "zh_en",
+      "category": "消费/服务沟通",
+      "text": "这件外套有小一号的吗？",
+      "semantic_anchors": [
+        "询问这件外套是否有小一号的尺码"
+      ]
+    },
+    {
+      "id": "zh-service-02",
+      "direction": "zh_en",
+      "category": "消费/服务沟通",
+      "text": "我收到的杯子杯口有一道裂纹，包装盒是完好的。请问换货需要把盒子一起寄回吗？",
+      "semantic_anchors": [
+        "说话者收到的杯子杯口有一道裂纹",
+        "包装盒完好",
+        "询问换货是否需要把包装盒一起寄回"
+      ]
+    },
+    {
+      "id": "zh-learning-01",
+      "direction": "zh_en",
+      "category": "软件/学习交流",
+      "text": "这个按钮是用来撤销上一步操作的。",
+      "semantic_anchors": [
+        "这个按钮的用途是撤销上一步操作"
+      ]
+    },
+    {
+      "id": "zh-learning-02",
+      "direction": "zh_en",
+      "category": "软件/学习交流",
+      "text": "我把照片拖进文件夹以后，桌面上的快捷方式还在。删掉这个快捷方式会影响文件夹里的照片吗？",
+      "semantic_anchors": [
+        "说话者把照片拖进文件夹后桌面快捷方式仍存在",
+        "询问删除该快捷方式是否影响文件夹里的照片",
+        "快捷方式和照片不是同一个对象"
+      ]
+    },
+    {
+      "id": "zh-structure-01",
+      "direction": "zh_en",
+      "category": "多句输入/结构内容",
+      "text": "客厅那盏台灯有点晃。我把它放到书桌上试了一下，还是一样，可能是底座没放平。",
+      "semantic_anchors": [
+        "客厅那盏台灯有些晃动",
+        "说话者把同一台灯放到书桌上试过后仍然晃动",
+        "底座没有放平只是可能的原因"
+      ]
+    },
+    {
+      "id": "zh-structure-02",
+      "direction": "zh_en",
+      "category": "多句输入/结构内容",
+      "text": "报名步骤：\n打开 https://example.com/join\n在姓名栏填写 {name}，然后点“保存”。",
+      "semantic_anchors": [
+        "内容按步骤说明报名操作",
+        "打开给出的URL https://example.com/join",
+        "在姓名栏填写占位标记 {name}",
+        "填写后点击保存",
+        "保留换行、URL和占位标记"
+      ]
+    },
+    {
+      "id": "en-social-01",
+      "direction": "en_zh",
+      "category": "社交/生活沟通",
+      "text": "That sounds fun! Count me in.",
+      "semantic_anchors": [
+        "说话者觉得所谈事情听起来有趣",
+        "说话者表示愿意参加，而非请求字面计数"
+      ]
+    },
+    {
+      "id": "en-social-02",
+      "direction": "en_zh",
+      "category": "社交/生活沟通",
+      "text": "Sorry, I left my umbrella at your place. Is it still by the shoe rack?",
+      "semantic_anchors": [
+        "说话者为把自己的雨伞落在对方那里表示歉意",
+        "询问雨伞是否仍在鞋架旁"
+      ]
+    },
+    {
+      "id": "en-work-01",
+      "direction": "en_zh",
+      "category": "工作协作",
+      "text": "Feel free to suggest a different title.",
+      "semantic_anchors": [
+        "邀请对方提出不同的标题",
+        "语气是允许或鼓励建议，不是必须更换标题"
+      ]
+    },
+    {
+      "id": "en-work-02",
+      "direction": "en_zh",
+      "category": "工作协作",
+      "text": "The draft is ready for your comments. I marked the new paragraphs in green so you can find them easily.",
+      "semantic_anchors": [
+        "草稿已准备好供对方评论",
+        "说话者用绿色标出了新增段落",
+        "标绿是为了让对方容易找到新增段落"
+      ]
+    },
+    {
+      "id": "en-schedule-01",
+      "direction": "en_zh",
+      "category": "时间/出行/安排",
+      "text": "The bus stop is across from the library.",
+      "semantic_anchors": [
+        "公交车站在图书馆对面"
+      ]
+    },
+    {
+      "id": "en-schedule-02",
+      "direction": "en_zh",
+      "category": "时间/出行/安排",
+      "text": "Our train leaves at 8:10, and the walk to the station takes about fifteen minutes. Let's leave the hotel at 7:30.",
+      "semantic_anchors": [
+        "我们的火车8:10出发",
+        "步行到车站大约需要十五分钟",
+        "说话者提议7:30离开酒店"
+      ]
+    },
+    {
+      "id": "en-service-01",
+      "direction": "en_zh",
+      "category": "消费/服务沟通",
+      "text": "Can I try these headphones before I buy them?",
+      "semantic_anchors": [
+        "询问是否可以在购买前试用这副耳机"
+      ]
+    },
+    {
+      "id": "en-service-02",
+      "direction": "en_zh",
+      "category": "消费/服务沟通",
+      "text": "The receipt lists two coffees, but we ordered one coffee and one tea. Could you check the bill?",
+      "semantic_anchors": [
+        "收据列出两杯咖啡",
+        "我们实际点了一杯咖啡和一杯茶",
+        "礼貌请求对方核对账单"
+      ]
+    },
+    {
+      "id": "en-learning-01",
+      "direction": "en_zh",
+      "category": "软件/学习交流",
+      "text": "How do I turn on subtitles for this video?",
+      "semantic_anchors": [
+        "询问如何开启这个视频的字幕"
+      ]
+    },
+    {
+      "id": "en-learning-02",
+      "direction": "en_zh",
+      "category": "软件/学习交流",
+      "text": "I'm learning to use spreadsheets. When I drag this formula down, the cell references change. Is there a way to keep the reference to A1 fixed?",
+      "semantic_anchors": [
+        "说话者正在学习使用电子表格",
+        "向下拖动这个公式时单元格引用会变化",
+        "询问能否使对A1的引用保持固定"
+      ]
+    },
+    {
+      "id": "en-structure-01",
+      "direction": "en_zh",
+      "category": "多句输入/结构内容",
+      "text": "I found a notebook under the sofa. It has a blue cover and a shopping list on the first page. Does it belong to you?",
+      "semantic_anchors": [
+        "说话者在沙发下面找到一本笔记本",
+        "同一本笔记本有蓝色封面",
+        "该笔记本第一页有购物清单",
+        "询问这本笔记本是否属于对方"
+      ]
+    },
+    {
+      "id": "en-structure-02",
+      "direction": "en_zh",
+      "category": "多句输入/结构内容",
+      "text": "Room details:\nWi-Fi: {network_name}\nThe password is printed on the card beside the kettle.",
+      "semantic_anchors": [
+        "内容为房间相关信息",
+        "Wi-Fi名称为占位标记 {network_name}",
+        "密码印在水壶旁的卡片上",
+        "保留换行和占位标记"
+      ]
+    }
+  ]
+}

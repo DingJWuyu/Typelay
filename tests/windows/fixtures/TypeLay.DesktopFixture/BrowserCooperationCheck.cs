@@ -604,6 +604,7 @@ internal static partial class BrowserCooperationCheck
             extensionDistribution = "unpacked-development-validation-not-store-install",
             extensionId,
             extensionDiscovery = cdp?.Discovery,
+            extensionMetadata = cdp?.MetadataDiagnostics,
             pageNavigationFailure = cdp?.NavigationFailure ?? "unobserved",
             loopbackPage = server is null ? null : new
             {
