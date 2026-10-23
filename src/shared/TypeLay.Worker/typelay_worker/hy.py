@@ -168,7 +168,7 @@ class HyModel:
             raise EngineError("request-timeout")
         source = text.encode("utf-8", "strict")
         if not 1 <= len(source) <= MAX_BYTES:
-            raise EngineError("hy-input-too-long")
+            raise EngineError("segment-too-long")
         metrics, length = Metrics(), ctypes.c_uint32()
         output, error = ctypes.create_string_buffer(MAX_BYTES), ctypes.create_string_buffer(512)
 
@@ -250,7 +250,7 @@ class HyDirection:
         # Bound the entire input before protected fragments are split. Derive no
         # replacement source here: the ABI applies CRLF -> LF only per segment.
         if len(original.encode("utf-8", "strict")) > MAX_BYTES:
-            raise EngineError("hy-input-too-long")
+            raise EngineError("segment-too-long")
         if "\r" in original.replace("\r\n", "\n"):
             raise EngineError("hy-literal-unsafe")
         return HyRequest(

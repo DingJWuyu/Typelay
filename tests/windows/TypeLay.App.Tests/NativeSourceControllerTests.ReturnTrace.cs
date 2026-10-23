@@ -14,8 +14,9 @@ public sealed partial class NativeSourceControllerTests
     // Disposed after the real Broker, including on test failure. Scan its now
     // finite body-free log within fixed byte/line limits, and bound TRX output.
     // Report an incomplete scan rather than implying no capture was rejected.
-    private sealed class BrokerReturnTraceFile : IDisposable
+    internal sealed class BrokerReturnTraceFile : IDisposable
     {
+        private readonly string _scope;
         private readonly string _directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
             "TypeLay.ControlReturn." + Guid.NewGuid().ToString("N"));
         internal string Path
@@ -23,8 +24,9 @@ public sealed partial class NativeSourceControllerTests
             get;
         }
 
-        internal BrokerReturnTraceFile()
+        internal BrokerReturnTraceFile(string scope = "Configured Ctrl")
         {
+            _scope = scope;
             Directory.CreateDirectory(_directory);
             Path = System.IO.Path.Combine(_directory, "return");
         }
@@ -62,7 +64,7 @@ public sealed partial class NativeSourceControllerTests
                     {
                         returnObserved = true;
                         if (outcomes++ < 4)
-                            TestContext.Current.TestOutputHelper?.WriteLine("Configured Ctrl Broker return: " + line);
+                            TestContext.Current.TestOutputHelper?.WriteLine(_scope + " Broker return: " + line);
                         else
                             omitted++;
                     }
@@ -79,8 +81,8 @@ public sealed partial class NativeSourceControllerTests
                             string scope = firstNonNative && firstNonNativeAfterReturn ? "global and after return"
                                 : firstNonNative ? "global" : "after return";
                             TestContext.Current.TestOutputHelper?.WriteLine(firstNonNative || firstNonNativeAfterReturn
-                                ? $"Configured Ctrl Broker first capture not observed-native ({scope}): " + line
-                                : "Configured Ctrl Broker capture: " + line);
+                                ? $"{_scope} Broker first capture not observed-native ({scope}): " + line
+                                : _scope + " Broker capture: " + line);
                         }
                         else
                             omittedCaptures++;
@@ -89,11 +91,11 @@ public sealed partial class NativeSourceControllerTests
                 string captureResult = capturedNonNative ? "observed" : truncated ? "unknown-truncated" : "not-observed";
                 string afterReturnResult = capturedNonNativeAfterReturn ? "observed" : truncated ? "unknown-truncated"
                     : returnObserved ? "not-observed" : "return-not-observed";
-                TestContext.Current.TestOutputHelper?.WriteLine($"Configured Ctrl Broker return trace: observedReturns={outcomes}, omittedReturns={omitted}, observedCaptures={captures}, omittedCaptures={omittedCaptures}, firstCaptureNotObservedNative={captureResult}, firstCaptureNotObservedNativeAfterReturn={afterReturnResult}, readBytes={count}, scannedLines={scannedLines}, truncated={truncated}");
+                TestContext.Current.TestOutputHelper?.WriteLine($"{_scope} Broker return trace: observedReturns={outcomes}, omittedReturns={omitted}, observedCaptures={captures}, omittedCaptures={omittedCaptures}, firstCaptureNotObservedNative={captureResult}, firstCaptureNotObservedNativeAfterReturn={afterReturnResult}, readBytes={count}, scannedLines={scannedLines}, truncated={truncated}");
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
             {
-                TestContext.Current.TestOutputHelper?.WriteLine("Configured Ctrl Broker return trace unavailable: " + error.GetType().Name);
+                TestContext.Current.TestOutputHelper?.WriteLine(_scope + " Broker return trace unavailable: " + error.GetType().Name);
             }
             finally { Directory.Delete(_directory, true); }
         }

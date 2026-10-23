@@ -122,13 +122,14 @@ public sealed partial class NativeSourceControllerTests
             using var controller = new SessionController(settings, new Translation(), view, hook, input, loop);
             await controller.StartAsync();
             await Until(() => { loop.Advance(); return view.CanAccept; }, native.Token);
+            var originalSource = Assert.IsType<SessionViewToken>(view.Token).Target;
             Assert.True(view.BeginEditing!(Assert.IsType<SessionViewToken>(view.Token)));
             editor.Show();
             editor.Activate();
             await Until(() => Native.GetForegroundWindow() == editorHwnd, native.Token);
             view.DraftChanged!("Hand edited");
             var returnTrace = new SourceReturnTrace(native.Root, native.A, editorHwnd, hook, view,
-                broker.InstallationPermit?.Plan.Expected.Target);
+                originalSource);
             broker.ObserveResponse = returnTrace.Response;
             try
             {
@@ -151,6 +152,8 @@ public sealed partial class NativeSourceControllerTests
             }
             finally { broker.ObserveResponse = null; }
             Assert.Equal("Hand edited", view.Candidate);
+            Assert.Equal(originalSource, Assert.IsType<SessionViewToken>(view.Token).Target);
+            Assert.Equal(originalSource, broker.InstallationPermit!.Plan.Expected.Target);
             var oldGrant = broker.Installation!.Grant;
             var oldPermit = broker.InstallationPermit!;
             long previousUser = hook.UserEpoch;

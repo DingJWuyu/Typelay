@@ -375,7 +375,7 @@ internal static class NativeSourceSetup
         SourceResponseTextChanged,
     }
 
-    internal sealed class Failure(FailureReason reason, string? detail = null) : InvalidOperationException(detail)
+    internal sealed class Failure(FailureReason reason, string? detail = null) : InvalidOperationException(detail ?? reason.ToString())
     {
         internal FailureReason Reason { get; } = reason;
         internal string Code => Reason switch

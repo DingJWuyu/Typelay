@@ -807,8 +807,8 @@ class HyContractTests(unittest.TestCase):
 
     def test_whole_request_byte_cap_and_bare_cr_are_rejected_before_any_segment(self):
         for text, code in (
-            ("甲" * 2731, "hy-input-too-long"),
-            ("https://a/" + "甲" * 2731, "hy-input-too-long"),
+            ("甲" * 2731, "segment-too-long"),
+            ("https://a/" + "甲" * 2731, "segment-too-long"),
             ("甲\r乙", "hy-literal-unsafe"),
         ):
             with self.subTest(code=code):
@@ -825,9 +825,18 @@ class HyContractTests(unittest.TestCase):
                     ]
                 )
                 self.assertEqual(
-                    [(reply["code"], reply["text"]) for reply in replies[1:]], [(code, "")] * 2
+                    [(reply["status"], reply["code"], reply["text"]) for reply in replies[1:]],
+                    [("error", code, "")] * 2,
                 )
         self.assertEqual(self.calls, [])
+
+    def test_whole_request_at_byte_cap_reaches_native_without_truncation(self):
+        text = "甲" * 2730 + "ab"  # 8192 UTF-8 bytes, within the unchanged input cap.
+        _, replies = self.run_worker(
+            [{"op": "translate", "text": text, "source": "zh", "target": "ja"}]
+        )
+        self.assertEqual((replies[1]["status"], replies[1]["code"]), ("translated", ""))
+        self.assertEqual(self.calls, [(1, text)])
 
     def test_context_output_failure_or_missing_eog_never_returns_partial_text(self):
         for status, eog, code in (

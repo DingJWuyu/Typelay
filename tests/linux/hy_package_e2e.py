@@ -1026,11 +1026,14 @@ def run(arguments):
                     "language picker did not persist its choice",
                 )
                 selected = Atspi.Selection.get_selected_child(node.get_selection_iface(), 0)
-                assert selected is not None and selected.get_name() == label
+                actual_label = selected.get_name() if selected is not None else None
+                assert actual_label == label, (
+                    f"selected target label {actual_label!r} differs from {label!r}"
+                )
 
-            # Existing target ordering starts with English, 中文, then the six
-            # installed Hy targets. Assert the actual selected label AND saved pair.
-            target(0, "English", "zh", "en")
+            # Linux settings localize en as 英语; the package catalog's English
+            # label is not the picker label. Assert the selected label AND saved pair.
+            target(0, "英语", "zh", "en")
             normalized = {
                 key: value
                 for key, value in json.loads(paths.settings.read_text()).items()

@@ -146,12 +146,17 @@ internal sealed partial class KeyboardHook : IInputMonitor
         if (_ownedSource is { } owned && target == owned.Target)
             return _ownedEditorFocus?.Invoke(target) == true ? FocusMember.Overlay
                 : _ownedReturnFocus?.Invoke(target) == true || OwnedFocus(owned.Descriptor) ? FocusMember.Source : FocusMember.Other;
-        return IsSourceForeground(native) ? FocusMember.Source
-            : Native.GetForegroundWindow() == _editorHwnd && _editorHwnd != 0 ? FocusMember.Overlay : FocusMember.Other;
+        // Classify both members from the same observation. Reading foreground
+        // again after the source check can see editor -> source as neither,
+        // causing Runtime to retire the draft and its original Broker binding.
+        nint foreground = Native.GetForegroundWindow();
+        return IsSourceForeground(native, foreground) ? FocusMember.Source
+            : foreground == _editorHwnd && _editorHwnd != 0 ? FocusMember.Overlay : FocusMember.Other;
     }
-    private bool IsSourceForeground(WindowsTarget target)
+    private bool IsSourceForeground(WindowsTarget target) => IsSourceForeground(target, Native.GetForegroundWindow());
+    private bool IsSourceForeground(WindowsTarget target, nint foreground)
     {
-        nint foreground = Native.GetForegroundWindow(), root = (nint)target.RootHwnd, field = (nint)target.ControlHwnd;
+        nint root = (nint)target.RootHwnd, field = (nint)target.ControlHwnd;
         if (foreground == root)
             return true;
         // Observation/candidate filtering only. The original Broker binding and

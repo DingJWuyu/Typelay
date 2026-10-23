@@ -5,6 +5,31 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class SessionControllerTests
 {
+    [Fact]
+    public void InputLimitFailureExplainsHowToRecoverWithoutAcceptingThePreviousPreview()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        s.Source = s.Source with
+        {
+            Text = new string('甲', 2731),
+            Selection = new(2731, 2731),
+            InputEpoch = 2
+        };
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        Assert.Equal(s.Source.Text, s.Model.Jobs[^1].SourceText);
+        Assert.NotNull(s.Model.Pending);
+        s.Model.Pending.SetResult(new(1, "error", Code: "segment-too-long"));
+        s.Tick();
+        Assert.Equal(SessionState.TranslationFailed, s.View.State);
+        Assert.Equal("translated", s.View.Preview);
+        Assert.Equal("文本较长，请缩短选区", s.View.Status);
+        Assert.False(s.View.CanAccept);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

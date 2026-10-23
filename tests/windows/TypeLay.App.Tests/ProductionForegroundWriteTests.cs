@@ -75,7 +75,8 @@ public sealed partial class ProductionForegroundWriteTests
     [InlineData("cookie-lost", true)]
     public async Task NativeReturnCompletesRootActivationBeforeCorrectingAnotherField(string change, bool activateFromElsewhere)
     {
-        await using var desktop = await Desktop.Start(returnFocus: activateFromElsewhere ? "root" : null);
+        using var trace = new NativeSourceControllerTests.BrokerReturnTraceFile("Native return activation");
+        await using var desktop = await Desktop.Start(returnFocus: activateFromElsewhere ? "root" : null, returnTrace: trace.Path);
         await desktop.Prepare(desktop.A, "A🙂你好Z", new(3, 5));
         var source = await desktop.Capture();
         nint originalCookie = N.GetProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2");
@@ -93,14 +94,17 @@ public sealed partial class ProductionForegroundWriteTests
         using var drained = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(desktop.FixtureProcessId, "drained"));
         Assert.Equal((nuint)1, N.Send(desktop.Root, N.FixtureArmNullBarrier));
         long expiresAt = WindowsInterruptClock.NowMs + 800;
+        elsewhere?.AllowBrokerForeground(desktop.BrokerProcessId, desktop.Token);
         var pending = desktop.Call(new(BrokerProtocol.Version, 0, "return", "", BoundTarget: source.Target,
             OverlayHwnd: (long)(elsewhere?.Root ?? 0),
             ExpiresAtMs: expiresAt));
         BrokerResponse returned;
         try
         {
-            Assert.True(await Task.Run(() => entered.WaitOne(TimeSpan.FromSeconds(2)), desktop.Token),
-                "The original root must receive the real no-op completion message.");
+            bool barrierEntered = await Task.Run(() => entered.WaitOne(TimeSpan.FromSeconds(2)), desktop.Token);
+            Assert.True(barrierEntered, "The original root must receive the real no-op completion message. "
+                + $"Original return task={pending.Status}; outcome="
+                + (pending.IsCompletedSuccessfully ? (await pending).Status : "not-completed-successfully"));
             // Unlike the same-root B-to-A case, this host deliberately leaves
             // keyboard focus on its root after cross-process activation. The
             // original return must correct it once without changing the bound
@@ -121,7 +125,7 @@ public sealed partial class ProductionForegroundWriteTests
                 returned = await pending;
             }
         }
-        finally { release.Set(); }
+        finally { release.Set(); await ObserveReturnCleanup(pending); }
         // A successful explicit release, not the fixture's two-second escape,
         // must have completed the receiver even in the request-timeout case.
         Assert.Equal((nuint)1, N.Send(desktop.Root, N.FixtureBarrierStatus));
@@ -180,7 +184,8 @@ public sealed partial class ProductionForegroundWriteTests
     [InlineData("cookie-lost")]
     public async Task NativeReturnPreservesTheExactFieldRestoredByRootActivation(string change)
     {
-        await using var desktop = await Desktop.Start();
+        using var trace = new NativeSourceControllerTests.BrokerReturnTraceFile("Native return exact field");
+        await using var desktop = await Desktop.Start(returnTrace: trace.Path);
         await desktop.Prepare(desktop.A, "A🙂你好Z", new(3, 5));
         var source = await desktop.Capture();
         string otherFieldText = N.ReadText(desktop.B, Limits.MaxTextUnits);
@@ -190,11 +195,16 @@ public sealed partial class ProductionForegroundWriteTests
         using var entered = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(desktop.FixtureProcessId, "entered"));
         using var release = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(desktop.FixtureProcessId, "release"));
         Assert.Equal((nuint)1, N.Send(desktop.Root, N.FixtureArmNullBarrier));
+        long expiresAt = WindowsInterruptClock.NowMs + 800;
+        elsewhere.AllowBrokerForeground(desktop.BrokerProcessId, desktop.Token);
         var pending = desktop.Call(new(BrokerProtocol.Version, 0, "return", "", BoundTarget: source.Target,
-            OverlayHwnd: (long)elsewhere.Root, ExpiresAtMs: WindowsInterruptClock.NowMs + 800));
+            OverlayHwnd: (long)elsewhere.Root, ExpiresAtMs: expiresAt));
         try
         {
-            Assert.True(await Task.Run(() => entered.WaitOne(TimeSpan.FromSeconds(2)), desktop.Token));
+            bool barrierEntered = await Task.Run(() => entered.WaitOne(TimeSpan.FromSeconds(2)), desktop.Token);
+            Assert.True(barrierEntered, "The original root must receive the real no-op completion message. "
+                + $"Original return task={pending.Status}; outcome="
+                + (pending.IsCompletedSuccessfully ? (await pending).Status : "not-completed-successfully"));
             // The actual host restored A during its one root activation. The
             // completion message must not first refocus A through UIA.
             Assert.Equal((desktop.Root, desktop.A), N.Focused());
@@ -209,7 +219,7 @@ public sealed partial class ProductionForegroundWriteTests
                 Assert.Equal(change == "success" ? "focused" : "denied", (await pending).Status);
             }
         }
-        finally { release.Set(); }
+        finally { release.Set(); await ObserveReturnCleanup(pending); }
         Assert.Equal((nuint)1, N.Send(desktop.Root, N.FixtureBarrierStatus));
         Assert.Equal((desktop.Root, desktop.A), N.Focused());
         Assert.Equal(source.Text, N.ReadText(desktop.A, Limits.MaxTextUnits));
@@ -217,6 +227,20 @@ public sealed partial class ProductionForegroundWriteTests
         Assert.Equal(otherFieldText, N.ReadText(desktop.B, Limits.MaxTextUnits));
         Assert.Equal(elsewhereText, N.ReadText(elsewhere.A, Limits.MaxTextUnits));
         desktop.AssertZeroSubmits();
+    }
+
+    private static async Task ObserveReturnCleanup(Task<BrokerResponse> pending)
+    {
+        // Both normal branches already await the response. If an earlier
+        // assertion failed, join it before disposing the Broker and source.
+        try
+        {
+            await pending;
+        }
+        catch (Exception error)
+        {
+            TestContext.Current.TestOutputHelper?.WriteLine("Original return cleanup also failed: " + error.GetType().Name);
+        }
     }
 
     [Theory]
@@ -807,7 +831,14 @@ public sealed partial class ProductionForegroundWriteTests
         public nint A => _fixture.A;
         public nint B => _fixture.Field("b");
         public int FixtureProcessId => _fixture.ProcessId;
-        internal int BrokerProcessId => _broker.Id;
+        internal int BrokerProcessId
+        {
+            get
+            {
+                Assert.False(_broker.HasExited);
+                return _broker.Id;
+            }
+        }
         private Desktop(StockFixture fixture, Process broker, CancellationTokenSource deadline, string? isolatedDirectory)
         {
             _fixture = fixture;
@@ -1046,6 +1077,16 @@ public sealed partial class ProductionForegroundWriteTests
         // request is not field-focus evidence; Focus retains its exact check.
         public void RequestForeground(nint field, CancellationToken token) =>
             NativeSourceSetup.RequestOwnedForeground(Root, field, process, token);
+        public void AllowBrokerForeground(int brokerProcessId, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            Assert.False(process.HasExited);
+            Assert.True(brokerProcessId > 0);
+            Assert.NotEqual(0u, N.GetWindowThreadProcessId(Root, out uint owner));
+            Assert.Equal((uint)process.Id, owner);
+            Assert.Equal((Root, A), N.Focused());
+            Assert.Equal((nuint)1, N.Send(Root, N.FixtureAllowBrokerForeground, (nuint)brokerProcessId));
+        }
         public async Task ClickAndObserveFocus(nint field, CancellationToken token)
         {
             nint marker = checked((nint)Interlocked.Increment(ref _preparationClickSequence));

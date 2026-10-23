@@ -96,9 +96,10 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
     public Task AProcessedControlPrefixDistinguishesRootHoverFromInterveningInput(string change, bool accepted)
         => desktop.RunAsync(async () =>
     {
-        var scene = new QueueScene(true, observePrefixMessages: true);
+        var scene = new QueueScene(true, traceExitRejections: accepted, observePrefixMessages: true);
         Exception? failure = null;
         string phase = "start";
+        long? pressedAt = null;
         try
         {
             await scene.Start(true, bindings: SessionShortcutBindings.Restore("Ctrl+F7", "Ctrl+F10"));
@@ -132,8 +133,8 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             if (change == "source-selection")
                 selection = new(1, 2); // The requested mutation, never an acceptance write.
             phase = "original-deadline";
-            long pressedAt = WindowsInterruptClock.NowMs;
-            Assert.InRange(pressedAt, scene.ExitLease!.ObservedAtMs, scene.ExitLease.ExpiresAtMs);
+            pressedAt = WindowsInterruptClock.NowMs;
+            Assert.InRange(pressedAt.Value, scene.ExitLease!.ObservedAtMs, scene.ExitLease.ExpiresAtMs);
             phase = "exit-down-dispatch";
             scene.Key(scene.ExitKey, true);
             await scene.WaitExitInput(1);
@@ -212,7 +213,9 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 $"exitInputs=[{edges}] exitCompleted={scene.Messages.Count(reply => reply.Kind == "exit-completed")} " +
                 $"receipts={scene.Receipts} threadKnown={thread != 0} threadError={threadError} " +
                 $"guiKnown={guiKnown} guiError={guiError} menuMode={menuMode} " +
-                $"systemMenuMode={systemMenuMode} popupMenuMode={popupMenuMode}", error);
+                $"systemMenuMode={systemMenuMode} popupMenuMode={popupMenuMode} " +
+                $"leaseObserved={scene.ExitLease?.ObservedAtMs} leaseExpires={scene.ExitLease?.ExpiresAtMs} " +
+                $"pressStarted={pressedAt} rejectionTrace={scene.ReadExitRejectionTrace()}", error);
         }
         finally
         {

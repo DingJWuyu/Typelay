@@ -578,6 +578,14 @@ internal static class Program
             Console.Out.Flush();
             return 1;
         }
+        if (message == N.FixtureAllowBrokerForeground)
+        {
+            // The owned foreground stand-in performs the same targeted handoff
+            // as the real App before its Broker return. Never activate here.
+            return StockFields.Count != 0 && hwnd == _root && N.GetForegroundWindow() == _root
+                && wParam > 0 && wParam < uint.MaxValue && lParam == 0
+                && AllowSetForegroundWindow((uint)wParam) ? 1 : 0;
+        }
         if (message == N.FixtureFocus && (PreviousProcedures.ContainsKey((nint)wParam) || StockFields.Contains((nint)wParam)))
         {
             N.SetForegroundWindow(hwnd);
@@ -706,5 +714,6 @@ internal static class Program
     [DllImport("user32.dll")][return: MarshalAs(UnmanagedType.Bool)] private static extern bool KillTimer(nint hwnd, nuint id);
     [DllImport("user32.dll")] private static extern nint GetFocus();
     [DllImport("user32.dll")] private static extern nint GetMessageExtraInfo();
+    [DllImport("user32.dll")][return: MarshalAs(UnmanagedType.Bool)] private static extern bool AllowSetForegroundWindow(uint processId);
     [DllImport("kernel32.dll")] private static extern uint WaitForSingleObject(nint handle, uint milliseconds);
 }

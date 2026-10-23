@@ -127,6 +127,8 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                 {
                     var failure = await Assert.ThrowsAsync<NativeSourceSetup.Failure>(() => NativeSourceSetup.ClickAsync(root, source.Field, source.Process, action.Token));
                     Assert.Equal(scenario == "covered" ? "source-click-obscured" : "source-click-identity-changed", failure.Code);
+                    // TRX retains Exception.Message, not the custom Reason/Code.
+                    Assert.Equal(scenario == "covered" ? "SourceClickObscured" : "SourceClickIdentityChanged", failure.Message);
                 }
                 else
                 {
