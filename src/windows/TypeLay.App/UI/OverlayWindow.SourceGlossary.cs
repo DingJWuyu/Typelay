@@ -38,6 +38,10 @@ internal sealed partial class OverlayWindow
         _sourceGlossaryOpeningEntry ??= entry;
         return ReferenceEquals(_sourceGlossaryOpeningEntry, entry);
     }
+    public bool IsGlossarySourceReturnPending(SessionGlossaryEntry entry) =>
+        ReferenceEquals(_glossary?.Entry, entry) && _viewContext?.Token == entry.Token
+        && _sourceGlossarySettings is { } settings && settings.Revision == entry.SettingsRevision
+        && !settings.HasChanges(settings.Value) && _sourceGlossaryTransfer?.IsReturnPending(entry) == true;
     public async Task<bool> ReturnGlossaryToSourceAsync(SessionGlossaryEntry entry)
     {
         if (!ReferenceEquals(_glossary?.Entry, entry) || !entry.SourceOrigin
@@ -49,12 +53,16 @@ internal sealed partial class OverlayWindow
             || !monitor.HasSessionConfiguration(new(entry.Token.CommandGeneration, view.Bindings))
             || !transfer.ArmReturn(entry))
             return false;
-        var context = new InputContext(monitor.UserEpoch, monitor.ForegroundEpoch, monitor.SourceUserEpoch,
-            entry.Token.Target, settings.Value.Excluded, true, new(entry.Token.CommandGeneration, view.Bindings));
-        var result = await input.ReturnGlossaryToSourceAsync(context, transfer.ReturnAuthorization!, transfer.ReturnExpiresAtMs);
-        return ReferenceEquals(_glossary?.Entry, entry) && _viewContext?.Token == entry.Token
-            && settings.Revision == entry.SettingsRevision && !settings.HasChanges(settings.Value)
-            && result.Returned && await transfer.ConfirmReturnedAsync();
+        try
+        {
+            var context = new InputContext(monitor.UserEpoch, monitor.ForegroundEpoch, monitor.SourceUserEpoch,
+                entry.Token.Target, settings.Value.Excluded, true, new(entry.Token.CommandGeneration, view.Bindings));
+            var result = await input.ReturnGlossaryToSourceAsync(context, transfer.ReturnAuthorization!, transfer.ReturnExpiresAtMs);
+            return ReferenceEquals(_glossary?.Entry, entry) && _viewContext?.Token == entry.Token
+                && settings.Revision == entry.SettingsRevision && !settings.HasChanges(settings.Value)
+                && result.Returned && await transfer.ConfirmReturnedAsync();
+        }
+        finally { transfer.CompleteReturn(); }
     }
     private async Task CancelGlossaryAsync(InlineGlossaryForm form)
     {

@@ -47,6 +47,58 @@ public sealed class SourceGlossaryForegroundReceiptTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PendingReturnKeepsTheOriginalRequestDeadlineAcrossItsExpectedEdge(bool returned)
+    {
+        var entry = Entry();
+        var receipt = new SourceGlossaryForegroundReceipt(entry, 10, 20, 7, 100, 100);
+        receipt.Observe(20, 8, 101, entry.Token.CommandGeneration, 101);
+        Assert.False(receipt.IsReturnPending(entry, 8, entry.Token.CommandGeneration, 990, 102));
+        int canceled = 0;
+        receipt.NotifyRevocation(() => canceled++);
+        Assert.True(receipt.ArmReturn(entry, 8, entry.Token.CommandGeneration, 200, 200));
+        if (returned)
+            receipt.Observe(10, 9, 201, entry.Token.CommandGeneration, 201);
+        long epoch = returned ? 9 : 8;
+        // The request expires before ArmReturn's own 1000 ms deadline.
+        Assert.True(receipt.IsReturnPending(entry, epoch, entry.Token.CommandGeneration, 990, 990));
+        Assert.Equal(0, canceled);
+        Assert.False(receipt.IsReturnPending(entry, epoch, entry.Token.CommandGeneration, 990, 991));
+        Assert.Equal(1, canceled);
+        Assert.False(receipt.IsCurrent(entry, 7, epoch, entry.Token.CommandGeneration, 992));
+    }
+
+    [Theory]
+    [InlineData("foreign")]
+    [InlineData("duplicate")]
+    [InlineData("old-event")]
+    [InlineData("epoch-gap")]
+    [InlineData("configuration")]
+    [InlineData("close")]
+    public void InvalidatedPendingReturnCannotDeferRetirement(string change)
+    {
+        var entry = Entry();
+        var receipt = new SourceGlossaryForegroundReceipt(entry, 10, 20, 7, 100, 100);
+        receipt.Observe(20, 8, 101, entry.Token.CommandGeneration, 101);
+        Assert.True(receipt.ArmReturn(entry, 8, entry.Token.CommandGeneration, 200, 200));
+        int canceled = 0;
+        receipt.NotifyRevocation(() => canceled++);
+        if (change == "close")
+            receipt.Revoke();
+        else
+            receipt.Observe(change == "foreign" ? 30 : 10, change == "epoch-gap" ? 10 : 9,
+                change == "old-event" ? 199u : 201u,
+                change == "configuration" ? Guid.NewGuid() : entry.Token.CommandGeneration, 201);
+        if (change == "duplicate")
+            receipt.Observe(10, 10, 202, entry.Token.CommandGeneration, 202);
+        Assert.Equal(1, canceled);
+        Assert.False(receipt.IsReturnPending(entry, 9, entry.Token.CommandGeneration, 990, 202));
+        receipt.Observe(10, 9, 203, entry.Token.CommandGeneration, 203);
+        Assert.False(receipt.IsReturnPending(entry, 9, entry.Token.CommandGeneration, 990, 204));
+    }
+
+    [Theory]
     [InlineData("foreign")]
     [InlineData("duplicate")]
     [InlineData("old-event")]

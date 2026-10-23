@@ -148,6 +148,8 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
                     Assert.True(await Task.Run(() => entered.WaitOne(TimeSpan.FromSeconds(2)), native.Token),
                         $"The real original root did not enter its WM_NULL barrier; broker={broker.ReturnStatus}.");
                     Assert.False(saved.Task.IsCompleted);
+                    if (action == "barrier-save")
+                        Assert.True(view.IsGlossarySourceReturnPending(entry!));
                     if (action == "barrier-timeout")
                         Assert.False((await saved.Task.WaitAsync(native.Token)).Saved);
                     else
@@ -175,6 +177,7 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
                     }
                 }
                 finally { release.Set(); }
+                Assert.False(view.IsGlossarySourceReturnPending(entry!));
                 // A rejected/canceled Broker return can finish before the source
                 // GUI resumes its activation. Observe its existing posted marker
                 // before asserting the final focus; never correct or retry it.

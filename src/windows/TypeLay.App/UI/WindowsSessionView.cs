@@ -74,6 +74,8 @@ internal sealed class WindowsSessionView : ISessionView
         _active?.SupportsSourceGlossaryEntry(token) == true;
     public bool IsGlossarySourceWindowCurrent(SessionGlossaryEntry entry, long original, long current) =>
         _active?.IsGlossarySourceWindowCurrent(entry, original, current) == true;
+    public bool IsGlossarySourceReturnPending(SessionGlossaryEntry entry) =>
+        _active?.IsGlossarySourceReturnPending(entry) == true;
     public Task<bool> ReturnGlossaryToSourceAsync(SessionGlossaryEntry entry) =>
         _active?.ReturnGlossaryToSourceAsync(entry) ?? Task.FromResult(false);
     public Action? ExcludeRequested

@@ -75,6 +75,10 @@ public interface ISessionView
     // foreground transfers. This must not alter global input epochs or grant
     // capture/write authority. Other platforms retain strict window identity.
     bool IsGlossarySourceWindowCurrent(SessionGlossaryEntry entry, long original, long current) => original == current;
+    // Only an exact, still in-flight no-write return with its original bounded
+    // platform authority may defer retirement. This is not source focus and
+    // must become false on completion, expiry or any identity/context change.
+    bool IsGlossarySourceReturnPending(SessionGlossaryEntry entry) => false;
     Task<bool> ReturnGlossaryToSourceAsync(SessionGlossaryEntry entry) => Task.FromResult(false);
     Action? ExcludeRequested
     {

@@ -21,6 +21,7 @@ internal sealed class NativeSourceGlossaryTransfer : IDisposable
     private readonly long _sourceEpoch, _initialWindow;
     private readonly SourceGlossaryForegroundReceipt _receipt;
     private bool _disposed;
+    private bool _returnPending;
     private EventWaitHandle? _returnCancellation;
     public SourceGlossaryReturnAuthorization? ReturnAuthorization
     {
@@ -122,6 +123,9 @@ internal sealed class NativeSourceGlossaryTransfer : IDisposable
     public bool IsAuxiliary(SessionGlossaryEntry entry) => IdentityCurrent()
         && Native.GetForegroundWindow() == _overlay
         && _monitor.SourceGlossaryAuxiliary(_receipt, entry);
+    public bool IsReturnPending(SessionGlossaryEntry entry) => _returnPending && IdentityCurrent()
+        && _monitor.SourceGlossaryReturnIsPending(_receipt, entry, ReturnExpiresAtMs);
+    public void CompleteReturn() => _returnPending = false;
     public async Task<bool> ConfirmOpenedAsync()
     {
         try
@@ -157,7 +161,8 @@ internal sealed class NativeSourceGlossaryTransfer : IDisposable
             }
             catch (ObjectDisposedException) { }
         });
-        return _monitor.ArmSourceGlossaryReturn(_receipt, entry);
+        _returnPending = _monitor.ArmSourceGlossaryReturn(_receipt, entry);
+        return _returnPending;
     }
     public async Task<bool> ConfirmReturnedAsync()
     {

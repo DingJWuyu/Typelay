@@ -461,6 +461,16 @@ public sealed partial class SessionController : IDisposable
             FailWakeCapture(freshWake);
         else if (_pendingWakeCapture is { } wake && _hook.GetFocus(wake.Target) == FocusMember.Other)
             _pendingWakeCapture = null;
+        // A platform-proven no-write return can briefly have no foreground
+        // window. Preserve only its form/basis, not focus or input authority.
+        // The platform keeps the original deadline and cancels on foreign
+        // foreground events; equal epochs alone never provide this proof.
+        if (SourceGlossaryReturnIsPending())
+        {
+            RevokeInput("glossary-return-pending");
+            _permitUntil = 0;
+            return;
+        }
         if (_session.Current is { } current)
         {
             if (_hook.GetFocus(current.Target) == FocusMember.Other && !PracticeReturnIsPending(current.Target))

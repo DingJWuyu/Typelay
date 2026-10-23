@@ -77,6 +77,22 @@ internal sealed class SourceGlossaryForegroundReceipt
             return true;
         }
     }
+    public bool IsReturnPending(SessionGlossaryEntry entry, long current, Guid configuration, long expiresAt, long now)
+    {
+        lock (_sync)
+        {
+            if (!Current(entry, configuration, now) || _phase is not (Phase.Returning or Phase.Returned))
+                return false;
+            // The Broker request was bounded before ArmReturn. Neither its
+            // expected foreground edge nor this query may renew that deadline.
+            if (current != _epoch || now > expiresAt || now > _deadline)
+            {
+                Revoke();
+                return false;
+            }
+            return true;
+        }
+    }
     public void Observe(long foreground, long epoch, uint eventClock, Guid configuration, long now)
     {
         lock (_sync)

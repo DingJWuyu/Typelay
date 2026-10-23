@@ -125,7 +125,7 @@ public sealed class WindowsSessionViewTests
     public async Task SourceGlossaryCapabilityAndReturnBelongOnlyToTheActiveBrowserSurface()
     {
         var native = new View();
-        var browser = new View { SourceGlossarySupported = true };
+        var browser = new View { SourceGlossarySupported = true, SourceGlossaryReturnPending = true };
         ISessionView router = new WindowsSessionView(native, browser);
         var session = new Session(new("auto", "en"));
         var source = Source("windows-browser");
@@ -133,17 +133,21 @@ public sealed class WindowsSessionViewTests
         var token = new SessionViewToken(source.Target, Guid.NewGuid(), 7);
         var entry = new SessionGlossaryEntry(Guid.NewGuid(), token, 4, [], SourceOrigin: true);
         Assert.False(router.SupportsSourceGlossaryEntry(token));
+        Assert.False(router.IsGlossarySourceReturnPending(entry));
         Assert.False(await router.ReturnGlossaryToSourceAsync(entry));
         router.Render(session, new(), false);
         Assert.True(router.SupportsSourceGlossaryEntry(token));
+        Assert.True(router.IsGlossarySourceReturnPending(entry));
         Assert.True(await router.ReturnGlossaryToSourceAsync(entry));
         Assert.Same(entry, browser.ReturnedGlossary);
         session.Observe(Source("native"), FocusMember.Source, 2);
         router.Render(session, new(), false);
         Assert.False(router.SupportsSourceGlossaryEntry(token));
+        Assert.False(router.IsGlossarySourceReturnPending(entry));
         Assert.False(await router.ReturnGlossaryToSourceAsync(entry));
         router.HideQuietly();
         Assert.False(router.SupportsSourceGlossaryEntry(token));
+        Assert.False(router.IsGlossarySourceReturnPending(entry));
         Assert.False(await router.ReturnGlossaryToSourceAsync(entry));
     }
 
@@ -153,8 +157,10 @@ public sealed class WindowsSessionViewTests
     {
         public int Hidden, Rendered;
         public bool SourceGlossarySupported;
+        public bool SourceGlossaryReturnPending;
         public SessionGlossaryEntry? ReturnedGlossary;
         public bool SupportsSourceGlossaryEntry(SessionViewToken token) => SourceGlossarySupported;
+        public bool IsGlossarySourceReturnPending(SessionGlossaryEntry entry) => SourceGlossaryReturnPending;
         public Task<bool> ReturnGlossaryToSourceAsync(SessionGlossaryEntry entry)
         {
             ReturnedGlossary = entry;

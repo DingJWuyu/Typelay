@@ -152,6 +152,11 @@ public sealed partial class SessionController
         _overlay.GlossaryEntryFocus is { } focus && focus.FormId == form.Entry.FormId
         && focus.Token == form.Entry.Token && _hook.GetFocus(form.Entry.Token.Target) == FocusMember.Overlay;
 
+    private bool SourceGlossaryReturnIsPending() =>
+        _glossaryEntry is { Entry.SourceOrigin: true, Returning: true } form
+        && !form.Cancellation.IsCancellationRequested && GlossaryEntryTokenCurrent(form.Entry.Token)
+        && SourceGlossaryBasisCurrent(form) && _overlay.IsGlossarySourceReturnPending(form.Entry);
+
     private void RetireInvalidGlossaryEntry()
     {
         if (_glossaryEntry is { } form && (!GlossaryEntryTokenCurrent(form.Entry.Token)

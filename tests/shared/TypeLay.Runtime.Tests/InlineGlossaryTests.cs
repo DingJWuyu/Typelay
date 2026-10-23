@@ -65,6 +65,118 @@ public sealed class InlineGlossaryTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public async Task ProvenPendingSourceReturnPreservesTheFormWithoutCapturingOrGrantingFocus(bool editedPending)
+    {
+        using var s = editedPending ? Editing() : new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        if (editedPending)
+        {
+            s.View.DraftChanged!("keep my manual draft");
+            s.View.ReturnRequested!(s.View.Token);
+            s.Tick();
+            Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+        }
+        else
+            s.ReadyCandidate();
+        s.View.SourceGlossarySupported = true;
+        var entry = Open(s);
+        string preview = s.View.Preview;
+        s.Input.InEditor = true;
+        var pending = new TaskCompletionSource<bool>();
+        bool platformPending = true;
+        s.View.ReturnGlossary = _ => pending.Task;
+        // This explicit platform proof is not supplied by equal window epochs.
+        // Windows owns the real receipt, native events and original deadline.
+        s.View.GlossarySourceReturnPending = form => platformPending && ReferenceEquals(form, entry);
+        var saving = Add(s, entry);
+        int captures = s.Service.Captures;
+        s.Input.InEditor = false;
+        s.Input.FocusedTarget = new("controlled", "unavailable", Guid.NewGuid());
+        s.View.GlossaryEntryFocus = null;
+        s.Tick();
+        Assert.Equal(FocusMember.Other, s.Input.GetFocus(entry.Token.Target));
+        Assert.True(s.View.Visible);
+        Assert.Equal(entry.Token, s.View.Token);
+        Assert.Equal(preview, s.View.Preview);
+        Assert.Equal(captures, s.Service.Captures);
+        Assert.Null(s.Input.Permit);
+        Assert.Null(s.ReloadSettings().Glossary);
+        Assert.Empty(s.Service.Writes);
+
+        platformPending = false;
+        s.Input.FocusedTarget = s.Source.Target;
+        s.Service.PendingCapture = new();
+        pending.SetResult(true);
+        s.Tick(0);
+        Assert.False(saving.IsCompleted);
+        Assert.Equal(captures + 1, s.Service.Captures);
+        Assert.Null(s.ReloadSettings().Glossary);
+        s.CompleteCapture(new(s.Fresh, FocusMember.Source, "org.typelay.ControlledApp",
+            s.Input.UserEpoch, s.Input.ForegroundEpoch,
+            new(s.Source.Target, s.Input.CommandGeneration, s.Input.SessionBindings, false, false)));
+        Assert.True((await saving).Saved);
+        Assert.Equal("fixed", Assert.Single(s.ReloadSettings().Glossary!.Rules).TargetTerm);
+        if (editedPending)
+        {
+            Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+            Assert.Equal(preview, s.View.Preview);
+            Assert.Equal("keep my manual draft", s.View.Draft);
+        }
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData("unproven")]
+    [InlineData("revoked")]
+    [InlineData("window")]
+    [InlineData("configuration")]
+    [InlineData("input-unavailable")]
+    [InlineData("closed")]
+    public async Task PendingSourceReturnCannotPreserveAnInvalidOrUnprovenForm(string change)
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        var entry = Open(s);
+        s.Input.InEditor = true;
+        var pending = new TaskCompletionSource<bool>();
+        bool platformPending = true;
+        s.View.ReturnGlossary = _ => pending.Task;
+        if (change != "unproven")
+            s.View.GlossarySourceReturnPending = form => platformPending && ReferenceEquals(form, entry);
+        var saving = Add(s, entry);
+        s.Input.InEditor = false;
+        s.Input.FocusedTarget = new("controlled", "unavailable", Guid.NewGuid());
+        s.View.GlossaryEntryFocus = null;
+        if (change == "revoked")
+            platformPending = false;
+        if (change == "window")
+            s.Input.WindowEpoch++;
+        if (change == "configuration")
+            s.Settings.Update(s.Settings.Value with
+            {
+                Source = "fr"
+            });
+        if (change == "input-unavailable")
+            s.Input.Ready = false;
+        if (change == "closed")
+            s.View.CloseGlossaryRequested!(entry.FormId);
+        s.Tick();
+        Assert.False(s.View.Visible);
+        Assert.Null(s.Input.Permit);
+        s.Input.FocusedTarget = s.Source.Target;
+        pending.SetResult(true);
+        s.Tick(0);
+        Assert.False((await saving).Saved);
+        Assert.Null(s.ReloadSettings().Glossary);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task ExactFormWindowReceiptDoesNotGrantWritingOrAuthorizeAnotherWindow(bool foreignWindow)
     {
         using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
@@ -153,6 +265,7 @@ public sealed class InlineGlossaryTests
         s.View.SourceGlossarySupported = true;
         s.ReadyCandidate();
         var entry = Open(s);
+        s.View.GlossarySourceReturnPending = form => ReferenceEquals(form, entry);
         s.Input.InEditor = true;
         s.Tick(1000);
         Assert.Equal(SessionState.ValidTranslation, s.View.State);

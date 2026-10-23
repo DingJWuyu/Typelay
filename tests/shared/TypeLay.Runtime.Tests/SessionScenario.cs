@@ -545,8 +545,14 @@ internal sealed class SessionScenario : IDisposable
         {
             get; set;
         }
+        public Func<SessionGlossaryEntry, bool>? GlossarySourceReturnPending
+        {
+            get; set;
+        }
         public bool IsGlossarySourceWindowCurrent(SessionGlossaryEntry entry, long original, long current) =>
             GlossarySourceWindow?.Invoke(entry, original, current) ?? original == current;
+        public bool IsGlossarySourceReturnPending(SessionGlossaryEntry entry) =>
+            GlossarySourceReturnPending?.Invoke(entry) == true;
         public bool SupportsSourceGlossaryEntry(SessionViewToken token) => SourceGlossarySupported && token == Token;
         public Task<bool> ReturnGlossaryToSourceAsync(SessionGlossaryEntry entry) =>
             ReturnGlossary?.Invoke(entry) ?? Task.FromResult(false);

@@ -28,6 +28,13 @@ internal sealed partial class KeyboardHook
                 && receipt.ArmReturn(entry, WindowEpoch, CommandGeneration,
                     unchecked((uint)Environment.TickCount64), WindowsInterruptClock.NowMs);
     }
+    internal bool SourceGlossaryReturnIsPending(SourceGlossaryForegroundReceipt receipt,
+        SessionGlossaryEntry entry, long expiresAt)
+    {
+        lock (_sourceGlossarySync)
+            return ReferenceEquals(_sourceGlossaryReceipt, receipt)
+                && receipt.IsReturnPending(entry, WindowEpoch, CommandGeneration, expiresAt, WindowsInterruptClock.NowMs);
+    }
     internal void SetSourceGlossaryReceipt(SourceGlossaryForegroundReceipt receipt) =>
         Interlocked.Exchange(ref _sourceGlossaryReceipt, receipt)?.Revoke();
     internal void ClearSourceGlossaryReceipt(SourceGlossaryForegroundReceipt receipt) =>
