@@ -1,5 +1,6 @@
 """Controlled GTK runner observations, not native scrolling or GUI evidence."""
 
+import copy
 import sys
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ from gtk_session_reentry import (  # noqa: E402
     clickable_control,
     expand_click_point,
     expand_hover_current,
+    language_menu_point,
     language_trigger_hover_current,
     language_trigger_point,
     parent_geometry_ready,
@@ -24,6 +26,7 @@ from native_e2e import (  # noqa: E402
     glossary_interaction_loss,
     glossary_menu_scroll_advanced,
     glossary_menu_scroll_direction,
+    glossary_menu_scroll_observation,
     glossary_painted_geometry,
     glossary_popup_fits,
     glossary_save_outcome,
@@ -203,6 +206,47 @@ class GlossarySaveOutcomeTests(unittest.TestCase):
 
 
 class GlossaryPopupSizeTests(unittest.TestCase):
+    def test_scroll_decision_waits_for_the_mapped_menu_and_action_to_be_painted(self):
+        # CI479 mapped the menu at frame 2537, before its first layout/paint.
+        # A zero allocation is pending evidence, not an impossible viewport.
+        action = GlossaryPaintGeometryTests().control()
+        menu = GlossaryPaintGeometryTests().control()
+        menu["scrollViewport"] = dict(y=100, height=200)
+        snapshot = {
+            "observedAtMs": 120,
+            "overlayControls": {
+                "typelay-glossary-add": action,
+                "typelay-language-menu": menu,
+            },
+        }
+        action["height"] = action["surfaceGeometry"]["height"] = 0
+        action["paintObservation"]["ready"] = False
+        menu["height"] = menu["surfaceGeometry"]["height"] = 0
+        menu["scrollViewport"]["height"] = 0
+        menu["paintObservation"]["ready"] = False
+        self.assertIsNone(glossary_menu_scroll_observation(snapshot, "typelay-glossary-add", 224))
+        painted_menu = GlossaryPaintGeometryTests().control()
+        painted_menu["scrollViewport"] = dict(y=100, height=200)
+        snapshot["overlayControls"]["typelay-language-menu"] = painted_menu
+        self.assertIsNone(glossary_menu_scroll_observation(snapshot, "typelay-glossary-add", 224))
+        snapshot["overlayControls"]["typelay-language-menu"] = menu
+        snapshot["overlayControls"]["typelay-glossary-add"] = GlossaryPaintGeometryTests().control()
+        self.assertIsNone(glossary_menu_scroll_observation(snapshot, "typelay-glossary-add", 224))
+        menu = painted_menu
+        snapshot["overlayControls"]["typelay-language-menu"] = menu
+        self.assertEqual(
+            glossary_menu_scroll_observation(snapshot, "typelay-glossary-add", 224), (menu, 1)
+        )
+        # Completed frames retain the strict whole-control assertion.
+        menu["scrollViewport"]["height"] = 21
+        with self.assertRaisesRegex(AssertionError, "whole control"):
+            glossary_menu_scroll_observation(snapshot, "typelay-glossary-add", 224)
+        with self.assertRaisesRegex(AssertionError, "replaced before scroll"):
+            glossary_menu_scroll_observation(snapshot, "typelay-glossary-add", 225)
+        menu["visible"] = False
+        with self.assertRaisesRegex(AssertionError, "menu control lost"):
+            glossary_menu_scroll_observation(snapshot, "typelay-glossary-add", 224)
+
     def test_fresh_scroll_snapshot_waits_for_adjustment_without_another_wheel(self):
         def snapshot(at, value, instance=7):
             return {
@@ -415,6 +459,136 @@ class PackageControlScrollTests(unittest.TestCase):
 
 
 class GtkReentryGeometryTests(unittest.TestCase):
+    def test_gtk4_reopened_menu_does_not_click_childs_previous_allocation(self):
+        # CI479 rev27: mapped menu still had zero allocation. The selector
+        # retained its collapsed y=153 and the old runner clicked (988, 167).
+        actual = dict(
+            fullscreen=True,
+            width=1280,
+            height=800,
+            scale=1,
+            observedAtMs=976617,
+            overlayControls={
+                "typelay-language-menu": dict(
+                    instance=3, visible=True, x=728.0, y=113.0, width=0, height=0
+                ),
+                "typelay-source-language": dict(
+                    instance=4, visible=True, x=740.0, y=153.0, width=496, height=28
+                ),
+            },
+        )
+        self.assertIsNone(
+            language_menu_point(
+                actual,
+                "typelay-source-language",
+                dict(renderReturnedAtMonoMs=976472, expiresAtMs=977269),
+                (1280, 800),
+                976659,
+                {"typelay-language-menu": 3, "typelay-source-language": 4},
+            )
+        )
+
+    def language_menu(self, name="typelay-source-language"):
+        # Completed-frame companion to the real pre-layout sample above. This
+        # is controlled observation evidence, not a fabricated desktop result.
+        control, menu = (GlossaryPaintGeometryTests().control() for _ in range(2))
+        for item, identity, x, y, width, height in (
+            (control, 4, 740, 288, 496, 28),
+            (menu, 3, 728, 248, 520, 278),
+        ):
+            item.update(instance=identity, x=x, y=y, width=width, height=height)
+            item["surfaceGeometry"].update(instance=identity, x=x, y=y, width=width, height=height)
+            item["paintObservation"]["geometry"] = dict(item["surfaceGeometry"])
+        menu["scrollViewport"] = {
+            **menu["surfaceGeometry"],
+            "instance": 9,
+            "x": 740,
+            "y": 260,
+            "width": 496,
+            "height": 254,
+        }
+        return dict(
+            fullscreen=True,
+            width=1280,
+            height=800,
+            scale=1,
+            observedAtMs=120,
+            overlayControls={name: control, "typelay-language-menu": menu},
+        )
+
+    def menu_point(self, actual, name="typelay-source-language", now=120):
+        return language_menu_point(
+            actual,
+            name,
+            dict(renderReturnedAtMonoMs=100, expiresAtMs=800),
+            (1280, 800),
+            now,
+            {name: 4, "typelay-language-menu": 3},
+        )
+
+    def test_language_menu_uses_completed_surface_not_old_widget_tree_coordinates(self):
+        actual = self.language_menu()
+        actual["overlayControls"]["typelay-source-language"]["y"] = 153
+        self.assertEqual(self.menu_point(actual), (988, 302))
+        # Testing disabled Apply must remain possible; click readiness does
+        # not imply an enabled action or exempt the eventual no-save assertion.
+        actual = self.language_menu("typelay-apply-languages")
+        actual["overlayControls"]["typelay-apply-languages"]["enabled"] = False
+        self.assertEqual(self.menu_point(actual, "typelay-apply-languages"), (988, 302))
+
+    def test_language_menu_waits_for_both_current_frames_within_original_lease(self):
+        original = self.language_menu()
+        for name in ("typelay-source-language", "typelay-language-menu"):
+            for change in (
+                {"ready": False},
+                {"paintedMapGeneration": 1},
+                {"paintedFrame": 7},
+                {"paintedAtMonoMs": 121},
+                {"geometry": None},
+            ):
+                with self.subTest(name=name, change=change):
+                    actual = copy.deepcopy(original)
+                    actual["overlayControls"][name]["paintObservation"].update(change)
+                    self.assertIsNone(self.menu_point(actual))
+        self.assertIsNone(self.menu_point({**original, "observedAtMs": 100}))
+        self.assertEqual(self.menu_point(original, now=800), (988, 302))
+        with self.assertRaisesRegex(AssertionError, "lease expired"):
+            self.menu_point(original, now=801)
+
+    def test_language_menu_replacement_disappearance_and_clipping_still_fail(self):
+        original = self.language_menu()
+        for name in ("typelay-source-language", "typelay-language-menu"):
+            for change in ({"instance": 99}, {"visible": False}):
+                with self.subTest(name=name, change=change):
+                    actual = copy.deepcopy(original)
+                    actual["overlayControls"][name].update(change)
+                    with self.assertRaises(AssertionError):
+                        self.menu_point(actual)
+            actual = copy.deepcopy(original)
+            del actual["overlayControls"][name]
+            with self.assertRaisesRegex(AssertionError, "replaced"):
+                self.menu_point(actual)
+        for change in (
+            {"surfaceInstance": 999},
+            {"scale": 2},
+            {"y": 289},
+            {"x": 741},
+            {"height": 55},
+            {"width": 495},
+            {"height": 0},
+        ):
+            actual = copy.deepcopy(original)
+            actual["overlayControls"]["typelay-language-menu"]["scrollViewport"].update(change)
+            with (
+                self.subTest(change=change),
+                self.assertRaisesRegex(AssertionError, "not fully visible"),
+            ):
+                self.menu_point(actual)
+        actual = copy.deepcopy(original)
+        del actual["overlayControls"]["typelay-language-menu"]["scrollViewport"]
+        with self.assertRaisesRegex(AssertionError, "viewport geometry missing"):
+            self.menu_point(actual)
+
     def source(self, space):
         return {
             "geometry": {

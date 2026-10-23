@@ -69,14 +69,18 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
         });
 
     [Theory]
-    [InlineData("visible")]
-    [InlineData("covered")]
-    [InlineData("cancelled")]
-    [InlineData("wrong-root")]
-    public Task ClickUsesTheVisibleOwnedStockEditOrRefusesWithoutClickingAnotherWindow(string scenario)
+    [InlineData("visible", false)]
+    [InlineData("visible", true)]
+    [InlineData("covered", false)]
+    [InlineData("covered", true)]
+    [InlineData("cancelled", false)]
+    [InlineData("cancelled", true)]
+    [InlineData("wrong-root", false)]
+    [InlineData("wrong-root", true)]
+    public Task ClickUsesTheVisibleOwnedStockEditOrRefusesWithoutClickingAnotherWindow(string scenario, bool multiline)
         => desktop.RunAsync(async () =>
         {
-            await using var source = await Source.Start();
+            await using var source = await Source.Start(multiline);
             var cover = new Window
             {
                 Title = "TypeLay source setup cover",
@@ -393,7 +397,7 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
             }
         });
 
-    private sealed class Source(Process process, FixtureDescriptor descriptor, CancellationTokenSource deadline, long budgetStartedAtMs) : IAsyncDisposable
+    private sealed class Source(Process process, FixtureDescriptor descriptor, CancellationTokenSource deadline, long budgetStartedAtMs, bool multiline) : IAsyncDisposable
     {
         internal const string Text = "Synthetic stock source 🙂";
         internal Process Process => process;
@@ -404,9 +408,9 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
         }
         internal CancellationToken Token => deadline.Token;
         internal nint Root => (nint)descriptor.RootHwnd;
-        internal nint Field => (nint)descriptor.Fields.Single(item => item.Name == "a").Hwnd;
-        internal nint OtherField => (nint)descriptor.Fields.Single(item => item.Name == "b").Hwnd;
-        internal static async Task<Source> Start()
+        internal nint Field => (nint)descriptor.Fields.Single(item => item.Name == (multiline ? "b" : "a")).Hwnd;
+        internal nint OtherField => (nint)descriptor.Fields.Single(item => item.Name == (multiline ? "a" : "b")).Hwnd;
+        internal static async Task<Source> Start(bool multiline = false)
         {
             string root = AppContext.BaseDirectory;
             while (!File.Exists(Path.Combine(root, "TypeLay.slnx")))
@@ -423,7 +427,7 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                 var descriptor = JsonSerializer.Deserialize<FixtureDescriptor>(await process.StandardOutput.ReadLineAsync(deadline.Token) ?? "null");
                 Assert.NotNull(descriptor);
                 Assert.Equal(process.Id, descriptor.ProcessId);
-                var source = new Source(process, descriptor, deadline, budgetStartedAtMs);
+                var source = new Source(process, descriptor, deadline, budgetStartedAtMs, multiline);
                 N.SendString(source.Field, N.WM_SETTEXT, Text);
                 source.ReadyAtMs = WindowsInterruptClock.NowMs;
                 return source;

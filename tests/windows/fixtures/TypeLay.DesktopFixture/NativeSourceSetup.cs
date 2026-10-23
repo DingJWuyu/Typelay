@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Windows.Automation;
 using TypeLay.Core;
@@ -154,7 +155,17 @@ internal static class NativeSourceSetup
                 Check(current.NativeWindowHandle == field, FailureReason.SourceClickControlHandleMismatch);
                 Check(current.ProcessId == processId, FailureReason.SourceClickControlProcessMismatch);
                 var controlType = current.ControlType;
-                Check(controlType == ControlType.Edit, controlType == ControlType.Document
+                // UIA can expose the fixture's system multiline Edit as Document.
+                // Accept only that native class/style, not arbitrary documents;
+                // owned HWND/PID/root, geometry and hit testing still apply.
+                bool multilineEditDocument = false;
+                if (controlType == ControlType.Document)
+                {
+                    var className = new StringBuilder(32);
+                    multilineEditDocument = N.GetClassName(field, className, className.Capacity) == 4
+                        && className.ToString() == "Edit" && (N.GetStyle(field, -16) & 4) != 0; // ES_MULTILINE.
+                }
+                Check(controlType == ControlType.Edit || multilineEditDocument, controlType == ControlType.Document
                     ? FailureReason.SourceClickControlDocument : FailureReason.SourceClickControlTypeMismatch);
                 Check(current.IsEnabled, FailureReason.SourceClickControlDisabled);
                 Check(!current.IsOffscreen, FailureReason.SourceClickControlOffscreen);

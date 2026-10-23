@@ -2280,6 +2280,7 @@ class BrowserContract(unittest.TestCase):
           window.fixtureMotionFrames = [];
           window.fixtureMotionDone = false;
           window.fixtureMotionStartedMs = null;
+          window.fixtureMotionClick = null;
           function startObservation() {
             const start = performance.now();
             window.fixtureMotionStartedMs = start;
@@ -2300,6 +2301,9 @@ class BrowserContract(unittest.TestCase):
           // Only the resolved expand button's real click starts observation.
           function onExpand(event) {
             if (!event.isTrusted) return;
+            window.fixtureMotionClick = {ms: performance.now(), trusted: event.isTrusted,
+              sameControl: event.currentTarget === expandControl,
+              connected: expandControl.isConnected};
             expandControl.removeEventListener('click', onExpand, true);
             startObservation();
           }
@@ -2777,15 +2781,22 @@ class BrowserContract(unittest.TestCase):
         self.cdp.send("Page.startScreencast", {"format": "png", "everyNthFrame": 2})
         try:
             before = self.page.locator("html > div").bounding_box()
-            self.observe_overlay_frames()
+            self.observe_overlay_frames(start_on_click=True)
             self.click_overlay_control("展开")
             frames = self.motion_frames()
         finally:
             self.cdp.send("Page.stopScreencast")
             self.cdp.remove_listener("Page.screencastFrame", save_frame)
-        (output / "resize.json").write_text(
-            json.dumps({"frames": frames, "screenshots": screenshots}, indent=2)
+        observation = self.page.evaluate(
+            "({sampleStartedMs: fixtureMotionStartedMs, click: fixtureMotionClick})"
         )
+        (output / "resize.json").write_text(
+            json.dumps({**observation, "frames": frames, "screenshots": screenshots}, indent=2)
+        )
+        self.assertIsNotNone(observation["click"])
+        for name in ("trusted", "sameControl", "connected"):
+            self.assertIs(observation["click"][name], True)
+        self.assertLessEqual(observation["click"]["ms"], observation["sampleStartedMs"])
         end = frames[-1]["host"]
         self.assertEqual(end["width"], 520)
         self.assertGreater(end["height"], before["height"])

@@ -178,7 +178,7 @@ gint64 tl_now(void) {
     if (clock_gettime(CLOCK_BOOTTIME, &value) != 0) return G_MAXINT64;
     return (gint64)value.tv_sec * 1000 + value.tv_nsec / 1000000;
 }
-/* Numeric, bounded pre-Tab history only. Elapsed spans are wall time, not
+/* Numeric, bounded pre-acceptance history only. Elapsed spans are wall time, not
  * CPU time; parent sequence/main-loop depth expose nested GTK dispatch. */
 typedef enum {
     ACCEPTANCE_READ_INPUT = 1, ACCEPTANCE_EXPIRED = 2, ACCEPTANCE_OVERLAY = 3,
@@ -1460,9 +1460,10 @@ gboolean tl_dispatch_key(GdkEvent *event) {
     GdkModifierType state = key.state;
     AcceptanceDelivery delivery;
     const AcceptanceDelivery *delivery_at_entry = NULL;
-    if (down && keyval == GDK_KEY_Tab && g_getenv("TYPELAY_TRACE")) {
-        /* Freeze before callbacks, including IME inspection, can reenter GTK.
-           Unfinished spans stay unfinished in this snapshot, not in live state. */
+    if (down && g_getenv("TYPELAY_TRACE") && keyval == tl_session_keyval(TRUE)) {
+        /* Freeze the configured acceptance key before callbacks, including IME
+           inspection, can reenter GTK. Unfinished spans stay unfinished in
+           this snapshot, not in live state. */
         delivery = acceptance_delivery;
         delivery.depth = g_main_depth();
         delivery_at_entry = &delivery;

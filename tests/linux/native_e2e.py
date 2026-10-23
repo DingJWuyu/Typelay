@@ -135,6 +135,19 @@ def glossary_menu_scroll_direction(control, viewport):
     return -1 if y < top else 1 if y + height > top + extent else 0
 
 
+def glossary_menu_scroll_observation(snapshot, name, instance):
+    """Judge clipping only after this mapped action and menu have completed a frame."""
+    controls = snapshot.get("overlayControls", {})
+    control, menu = controls.get(name, {}), controls.get("typelay-language-menu", {})
+    assert control.get("instance") == instance, "menu control replaced before scroll"
+    assert control.get("visible") is True and menu.get("visible") is True, "menu control lost"
+    if not all(
+        glossary_painted_geometry(item, snapshot.get("observedAtMs")) for item in (control, menu)
+    ):
+        return None
+    return menu, glossary_menu_scroll_direction(control, menu.get("scrollViewport"))
+
+
 def glossary_popup_fits(popup):
     """A mapped surface must fit its measured GTK minimum, not just exist."""
     if not isinstance(popup, dict) or any(
@@ -982,10 +995,6 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             )
                             assert control["enabled"]
                             while toolkit == "gtk4":
-                                actual = state()
-                                menu = actual.get("overlayControls", {}).get(
-                                    "typelay-language-menu", {}
-                                )
                                 # Form controls and the menu trigger are outside the menu viewport.
                                 if name not in (
                                     "typelay-source-language",
@@ -994,16 +1003,12 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                     "typelay-glossary-add",
                                 ):
                                     break
-                                current = actual.get("overlayControls", {}).get(name, {})
-                                assert current.get("instance") == control["instance"], (
-                                    "menu control replaced before scroll"
-                                )
-                                if not current.get("surfaceGeometry") or not menu.get(
-                                    "scrollViewport"
-                                ):
-                                    break
-                                direction = glossary_menu_scroll_direction(
-                                    current, menu["scrollViewport"]
+                                menu, direction = observe(
+                                    lambda value: glossary_menu_scroll_observation(
+                                        value, name, control["instance"]
+                                    ),
+                                    "painted menu scroll geometry",
+                                    require_visible=True,
                                 )
                                 if not direction:
                                     break

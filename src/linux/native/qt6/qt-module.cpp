@@ -346,20 +346,34 @@ public:
             || (event->key() != acceptKey && event->key() != exitKey)
             || (event->key() == acceptKey && orderedBinding(shortcutConfiguration_.value("accept")))
             || (event->key() == exitKey && orderedBinding(shortcutConfiguration_.value("exit")))
-            || !sessionCurrent(generation) || !sessionProvider(actualField))) return false;
+            || !sessionCurrent(generation) || !sessionProvider(actualField))) {
+            if (actualField == editor_) traceGate("editor-control-rejected", nullptr, {}, 0, "session-key-provider");
+            return false;
+        }
         QScopedValueRollback<bool> handling(handlingKey_, true);
         if (!shortcut.isEmpty()) return queueShortcut(shortcut, discover(qobject_cast<QWidget *>(actualField)),
             shortcutAuthority_.value("authority").toObject());
         if (actualField == editor_ && editor_ && editor_->hasFocus() && overlayActive()) {
-            if (overlayGeneration_ != generation || (event->key() != acceptKey && event->key() != exitKey)) return false;
+            if (overlayGeneration_ != generation || (event->key() != acceptKey && event->key() != exitKey)) {
+                traceGate("editor-control-rejected", nullptr, {}, 0, "generation-key"); return false;
+            }
             const QPointer<QPlainTextEdit> editor = editor_;
             auto *source = overlayTarget_;
             TypeLayFcitxQtStateV1 state{};
-            if (!sessionBindings(source).value("editorReady").toBool()
-                || !widgetClear(editor, &state) || !editor || editor_ != editor || source != overlayTarget_
+            // Preserve the existing short-circuit checks. Trace only the failed
+            // gate, without another provider probe or dereferencing a retired source.
+            if (!sessionBindings(source).value("editorReady").toBool()) {
+                traceGate("editor-control-rejected", nullptr, {}, 0, "editor-route-not-ready"); return false;
+            }
+            if (!widgetClear(editor, &state)) {
+                traceGate("editor-control-rejected", nullptr, {}, 0, "editor-clear-unconfirmed"); return false;
+            }
+            if (!editor || editor_ != editor || source != overlayTarget_
                 || !overlayActive() || !editor->hasFocus() || composing_ || !sessionCurrent(generation)
                 || overlayGeneration_ != generation || !sessionProvider(editor)
-                || !sessionBindings(source).value("editorReady").toBool()) return false;
+                || !sessionBindings(source).value("editorReady").toBool()) {
+                traceGate("editor-control-rejected", nullptr, {}, 0, "editor-context-changed"); return false;
+            }
             if (event->key() == acceptKey && !editor_->isReadOnly()) {
                 if (!validText(editor->toPlainText())) {
                     if (hint_) hint_->setText(QStringLiteral("译文超过 8192 字符限制，请缩短后再返回"));
@@ -541,12 +555,26 @@ private slots:
 
 private:
     bool onThread() const { return QThread::currentThread() == thread(); }
+    static bool takeTraceLine() {
+        static unsigned traceLines = 0;
+        if (!qEnvironmentVariableIsSet("TYPELAY_TRACE") || traceLines >= 128) return false;
+        ++traceLines;
+        return true;
+    }
+    void traceShortcutRejection(const char *reason, qint64 observed, qint64 checked) const {
+        if (!takeTraceLine()) return;
+        // Initial admission samples only: no later clock, target or provider
+        // inspection. A missing observation is not an expired positive lease.
+        const char *observation = observed < 0 ? "missing" : checked < observed ? "future"
+            : checked - observed >= 150 ? "expired" : "current";
+        std::fprintf(stderr, "TypeLay Qt6 phase=shortcut-rejected reason=%s atMs=%lld observedAtMs=%lld observation=%s ageMs=%lld\n",
+            reason, static_cast<long long>(checked), static_cast<long long>(observed), observation,
+            static_cast<long long>(observed < 0 ? -1 : checked - observed));
+    }
     void traceGate(const char *phase, Target *target, const QJsonObject &basis, qint64 until,
                    const char *reason = "none", qint64 writeStarted = 0,
                    qint64 inspectMs = -1, qint64 prepareMs = -1, qint64 selectionMs = -1) const {
-        static unsigned traceLines = 0;
-        if (!qEnvironmentVariableIsSet("TYPELAY_TRACE") || traceLines >= 128) return;
-        ++traceLines;
+        if (!takeTraceLine()) return;
         const auto expected = basis.value("contextStamp").toObject();
         const auto current = now();
         const bool field = target && target->field;
@@ -1176,7 +1204,9 @@ private:
             || shortcutAuthority_.value("generation") != shortcutConfiguration_.value("generation")
             || shortcutAuthority_.value("authority").toObject() != basis
             || target->field->property(ProviderProperty).value<QObject *>() != target->provider) {
-            rejectShortcut(kind, generation, commandId, shortcutRefusal(target, basis));
+            const auto *reason = shortcutRefusal(target, basis);
+            traceShortcutRejection(reason, observed, current);
+            rejectShortcut(kind, generation, commandId, reason);
             emit shortcutStateChangedV1(QStringLiteral("rejected"), commandId);
             return false; // Feedback does not grant ownership of the key.
         }

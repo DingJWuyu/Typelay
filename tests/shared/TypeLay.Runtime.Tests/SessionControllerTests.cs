@@ -9,7 +9,14 @@ public sealed class SessionControllerTests
     public void InputLimitFailureExplainsHowToRecoverWithoutAcceptingThePreviousPreview()
     {
         using var s = new SessionScenario(experimental: true);
+        s.Source = s.Source with
+        {
+            Text = "甲",
+            Selection = new(1, 1)
+        };
         s.ReadyCandidate();
+        Assert.True(s.View.CanAccept);
+        Assert.NotNull(s.Input.Permit);
         s.Source = s.Source with
         {
             Text = new string('甲', 2731),
@@ -18,6 +25,10 @@ public sealed class SessionControllerTests
         };
         s.Tick();
         s.Tick(Limits.DebounceMs);
+        Assert.Equal(SessionState.Translating, s.View.State);
+        Assert.Equal("translated", s.View.Preview);
+        Assert.False(s.View.CanAccept);
+        Assert.Null(s.Input.Permit);
         Assert.Equal(s.Source.Text, s.Model.Jobs[^1].SourceText);
         Assert.NotNull(s.Model.Pending);
         s.Model.Pending.SetResult(new(1, "error", Code: "segment-too-long"));

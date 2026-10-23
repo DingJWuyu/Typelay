@@ -1092,6 +1092,48 @@ def click_language_trigger(state, nested, dimensions, phase, backend, *, layout=
         phase["clickFinishedAtMonoMs"] = time.monotonic_ns() // 1_000_000
 
 
+def language_menu_point(actual, name, phase, dimensions, now, instances):
+    """GTK4 menu mapping can expose a child's previous, collapsed allocation."""
+    assert now <= phase["expiresAtMs"], "language menu lease expired before click"
+    controls = actual.get("overlayControls", {})
+    for control_name, instance in instances.items():
+        item = controls.get(control_name, {})
+        assert item.get("instance") == instance, "language menu control replaced before click"
+        assert item.get("visible") is True, "language menu control disappeared before click"
+    control, menu = controls[name], controls["typelay-language-menu"]
+    if (
+        actual.get("observedAtMs", 0) <= phase["renderReturnedAtMonoMs"]
+        or not parent_geometry_ready(actual, dimensions)
+        or not all(
+            glossary_painted_geometry(item, actual.get("observedAtMs")) for item in (control, menu)
+        )
+    ):
+        return None
+    bounds, menu_bounds = control["surfaceGeometry"], menu["surfaceGeometry"]
+    viewport = menu.get("scrollViewport")
+    assert isinstance(viewport, dict) and all(
+        type(viewport.get(key)) in (int, float) and math.isfinite(viewport[key])
+        for key in ("x", "y", "width", "height")
+    ), "language menu viewport geometry missing"
+    assert (
+        bounds["surfaceInstance"]
+        == menu_bounds["surfaceInstance"]
+        == viewport.get("surfaceInstance")
+        and bounds["scale"] == menu_bounds["scale"] == viewport.get("scale") == actual["scale"]
+        and viewport["width"] > 0
+        and viewport["height"] > 0
+        and viewport["x"] <= bounds["x"]
+        and bounds["x"] + bounds["width"] <= viewport["x"] + viewport["width"]
+        and viewport["y"] <= bounds["y"]
+        and bounds["y"] + bounds["height"] <= viewport["y"] + viewport["height"]
+    ), "language menu control is not fully visible on the current surface"
+    return click_point(
+        actual,
+        (bounds["x"] + bounds["width"] / 2, bounds["y"] + bounds["height"] / 2),
+        dimensions,
+    )
+
+
 def check_language_options(
     client, source, generation, state, initial, nested, dimensions, evidence
 ):
@@ -1215,15 +1257,51 @@ def check_language_options(
             click_language_trigger(state, nested, dimensions, phases[-1], client.hello["backend"])
             return
         actual = state()
-        control = actual["overlayControls"][name]
-        assert control["visible"] and control["width"] > 0 and control["height"] > 0
-        point = click_point(
-            actual,
-            (control["x"] + control["width"] / 2, control["y"] + control["height"] / 2),
-            dimensions,
-        )
         phase = phases[-1]
+        if client.hello["backend"] == "gtk4":
+            instances = {item: actual["overlayControls"][item]["instance"] for item in (name, menu)}
+
+            def ready():
+                actual = state()
+                phase["menuClickObservation"] = {
+                    "observedAtMonoMs": actual.get("observedAtMs"),
+                    "controls": {
+                        item: {
+                            key: value
+                            for key, value in actual.get("overlayControls", {})
+                            .get(item, {})
+                            .items()
+                            if key
+                            in (
+                                "instance",
+                                "visible",
+                                "width",
+                                "height",
+                                "surfaceGeometry",
+                                "paintObservation",
+                                "scrollViewport",
+                            )
+                        }
+                        for item in instances
+                    },
+                }
+                point = language_menu_point(actual, name, phase, dimensions, now_ms(), instances)
+                return (actual, point) if point else None
+
+            actual, point = wait_for(
+                ready, "language menu geometry unavailable before single click"
+            )
+        else:
+            control = actual["overlayControls"][name]
+            assert control["visible"] and control["width"] > 0 and control["height"] > 0
+            point = click_point(
+                actual,
+                (control["x"] + control["width"] / 2, control["y"] + control["height"] / 2),
+                dimensions,
+            )
         phase.update(control=name, point=point, beforeClick=observe(actual))
+        if client.hello["backend"] == "gtk4":
+            assert now_ms() <= phase["expiresAtMs"], "language menu lease expired before click"
         phase["clickStartedAtMonoMs"] = time.monotonic_ns() // 1_000_000
         click_once(nested, point, phase)
         phase["clickFinishedAtMonoMs"] = time.monotonic_ns() // 1_000_000

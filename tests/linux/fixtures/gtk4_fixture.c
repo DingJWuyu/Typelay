@@ -558,7 +558,8 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         const char *stage = g_getenv("TYPELAY_FIXTURE_REENTRY_STAGE");
         gboolean language_trigger = g_str_equal(name, "typelay-menu-trigger")
             && stage && (g_str_equal(stage, "language-options") || g_str_has_prefix(stage, "language-retention-"));
-        if ((g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND") && language_control(name)) || language_trigger)
+        gboolean language_menu = stage && g_str_equal(stage, "language-options") && language_control(name);
+        if ((g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND") && language_control(name)) || language_trigger || language_menu)
             report_control_surface(builder, widget);
         if (expand) {
             GtkEventControllerMotion *motion = g_object_get_data(G_OBJECT(widget), "fixture-expand-motion");
