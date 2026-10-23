@@ -43,15 +43,7 @@ public sealed class ModelClientCapabilityTests
             Assert.Equal("ordinary English", (await peer.Client.TranslateTextAsync("你好", new("zh", "en"))).Text);
     }
 
-    private static ModelPackageCatalog CandidateCatalog()
-    {
-        using var source = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.ModelCatalog.json")!;
-        var value = System.Text.Json.Nodes.JsonNode.Parse(source)!;
-        foreach (int index in new[] { 0, 1 })
-            value["packages"]![2]!["directions"]!.AsArray().Add(value["packages"]![index]!["directions"]![0]!.DeepClone());
-        using var document = JsonDocument.Parse(value.ToJsonString());
-        return ModelPackageCatalog.Parse(document.RootElement);
-    }
+    private static ModelPackageCatalog CandidateCatalog() => ModelCatalog.Packages;
 
     private const string MixedDirections = "[\"zh_ja\",\"ja_zh\",\"zh_en\",\"en_zh\"]";
     private const string AdvancedVersions = "\"styledTranslationVersion\":1,\"glossaryTranslationVersion\":1,\"styledGlossaryTranslationVersion\":1";

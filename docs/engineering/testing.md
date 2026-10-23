@@ -37,9 +37,9 @@
 
 术语回归使用现公开边界：真实临时settings文件验证损坏新字段不丢隐私排除、原子保存/失败/取消及旧表单拒覆盖；生产SessionController端口验证机器原源重译、迟到结果拒绝、长时间人工编辑保存不毁稿、原人工稿接受、Append冻结新规则与旧prefix、Direct提交前取消/提交中拒存。真实管道peer验证精确hello、专用op、Auto候选方向、无关方向保持普通、非Hy/旧worker拒绝和组合拒绝；worker帧与纯匹配验证冲突/边界/最长命中/保护段/每段缺词及统一deadline。native无模型回归验证结构化ABI边界与旧版本拒绝，不能证明真实tokenization、推理或质量。
 
-## 非公开 Hy 中英接入合同
+## 手动 Hy 中英预览接入合同
 
-正式 catalog、默认安装与产品 UI 不开放中英 Hy。无模型回归仅在临时 Python catalog、显式 .NET catalog 参数中注入十四方向；实际 Linux Host 消费嵌入 catalog，因此只改 Python fixture 不代表已验证 Host 的十四方向激活。候选构建若替换目录，Runtime 嵌入与 worker 文件必须一致，固定模型锁不改。
+正式 catalog 列出 Hy 十四方向，但新装默认仍十二方向，更新、Repair 或 Select 均不补方向。用户须通过已安装行的“补充中英方向…”明确确认；回归直接消费正式目录，同时显式构造旧十二方向目录与库存验证兼容，不以目录可用替代已安装或实际 Ready。Runtime 嵌入与 worker 文件必须一致，固定模型锁不改；Python 准备通过不代表十四方向 Host/GUI 激活。中英预览暂不支持风格和术语表，质量未全面通过；启用后不支持直接降级旧版本，切回 Argos 不构成跨版本恢复证明。Windows 实际验收复用原包生命周期的候选14分支，确认/取消、同代冷启、双向普通预览及切回/移除须分别获得原件，不重复质量评测。
 
 `test_hy.py` 驱动真实 worker 帧入口及 native 边界替身，核所选库存、独立能力/symbol 门、旧十二方向 hello、新可选 `advancedTranslationDirections` 仅覆盖已选原方向、中英高级及不完整 Auto 来源拒绝和 EOG/输出限制；它不证明真实 GGUF 推理。Linux/Windows native 合同分别验证实际 ELF/DLL 的旧/新导出方向边界，不拿研究 ABI 顶替生产 ABI5。payload 测试核严格能力版本、导出集合与字节身份。安装回归使用受控库存和真实文件复制，核 format1 wire 不含 `addDirections:null`、默认/Repair 不扩方向、显式 format2 的精确同意、离线权重复用、损坏及发布失败保旧代；Runtime 真实 pipe peer 核候选失败后重启精确旧十二方向计划。严格 hello 及发送回归核 scope 非空/唯一/已选/原 ABI5 子集、旧 hello 不增加 wire 字段、三版本各自独立、响应不能重授能力、Auto 不借单个来源放行，以及拒绝时不发普通请求降级；不可变 scope 的两份输入均不能在构造后被外部修改。受控文件/peer 不是已安装真实模型或实际平台激活证据；Windows 托管 Compile 也不能代替 Windows 行为执行。旧目录对十四方向必须明确拒绝，不自动删方向或承诺跨版本自动恢复。真实中英产品链、跨版本整代恢复及质量放行仍须分别验证。
 

@@ -130,6 +130,8 @@ public static class ApplicationSupportPresentation
         };
     }
 
+    private const string EnglishPreviewWarning = "中英预览暂不支持风格和术语表；可能出现错译或漏译，请核对译文。";
+
     private static ModelPackageRow PackageRow(ModelPackage package, ModelPackageManagementFact? facts, ModelPackageCatalog catalog)
     {
         var installed = facts?.InstalledPackages.FirstOrDefault(item => SamePackage(item, package));
@@ -142,20 +144,21 @@ public static class ApplicationSupportPresentation
             : unavailable.Length > 0 ? unavailable
             : current is not null ? ready is not null ? "当前 · 已就绪" : "当前 · 尚未就绪"
             : installed is not null ? "已安装" : "尚未安装";
-        bool englishCandidate = HasCandidateEnglishDirections(package);
-        if (englishCandidate && facts is { InventoryKnown: true } && installed is not null)
+        bool englishPreview = HasEnglishPreviewDirections(package);
+        if (englishPreview && facts is { InventoryKnown: true } && installed is not null)
             status += " · 已安装：" + PackageCoverage(package, installed.Directions);
         long? bytes = ModelCatalog.PackageDownloadBytes(package);
         string download = bytes is { } count ? (count / 1_000_000_000d).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) + " GB 下载" : "";
         string license = package.Backend == "hy-mt-llama-cpu" ? new Uri(new Uri(package.Url), "LICENSE.txt").AbsoluteUri : "";
         return new(package.Id, package.Version, PackageTitle(package), package.Preview,
             package.Directions.Select(direction => direction.Id).ToArray(),
-            (englishCandidate ? "目录可用：" : "") + PackageCoverage(package),
+            (englishPreview ? "目录可用：" : "") + PackageCoverage(package),
             installed is not null, current is not null, ready is not null,
             installed?.Directions.Select(direction => direction.Id).ToArray() ?? [],
             current?.Directions.Select(direction => direction.Id).ToArray() ?? [],
             ready?.Directions.Select(direction => direction.Id).ToArray() ?? [], bytes, download, license,
             package.Preview ? "预览版可能出现漏译或表达偏差，请核对译文。仅支持列出的中文双向直译，不会经英语中转。模型许可证随包保留。"
+                + (englishPreview ? EnglishPreviewWarning : "")
                 : "翻译在本机运行，输入内容不会上传。模型许可证随包保留。",
             status, facts is null || !facts.InventoryKnown ? [] : PackageActions(package, facts, installed, current is not null, available, catalog));
     }
@@ -203,7 +206,7 @@ public static class ApplicationSupportPresentation
                 + "缺少的私有运行组件由 " + facts.RuntimeDownloadSources + " 准备。安装还需要运行组件、缓存和切换副本空间，开始前会检查可用空间。现有模型保留；语言设置不变。"
                 + (package.Preview ? "这是预览版，请核对译文。" : "")
                 + "翻译在本机运行，输入内容不会上传。"
-                + (HasCandidateEnglishDirections(package) ? "本次默认安装十二方向，不包含中英方向；之后可单独确认补充。" : "")));
+                + (HasEnglishPreviewDirections(package) ? "本次默认安装十二方向，不包含中英方向；之后可单独确认补充。" : "")));
         else if (installed is not null)
         {
             if (!current && available)
@@ -220,7 +223,9 @@ public static class ApplicationSupportPresentation
                         actions.Add(new("补充中英方向…", enabled, true,
                             "将为已安装的 " + PackageTitle(package) + " 补充中文 → English 和 English → 中文。"
                             + "复用已验证的本地权重，不会下载模型，也不会修复运行组件。"
-                            + "当前模型选择和语言设置保持不变；新增方向仍须模型加载验证后才能使用。取消不会更改已安装方向。",
+                            + "当前模型选择和语言设置保持不变；新增方向仍须模型加载验证后才能使用。取消不会更改已安装方向。"
+                            + EnglishPreviewWarning
+                            + "启用中英预览后不支持直接降级旧版本；可在当前版本切回 Argos 继续使用；若未安装 Argos，需先另行确认下载。",
                             new(2, ModelPackageOperation.Install, [package.Id], active.ToArray(), facts.Generation)
                             {
                                 AddDirections = ["zh_en", "en_zh"]
@@ -236,7 +241,7 @@ public static class ApplicationSupportPresentation
         return actions.ToArray();
     }
 
-    private static bool HasCandidateEnglishDirections(ModelPackage package) =>
+    private static bool HasEnglishPreviewDirections(ModelPackage package) =>
         package is { Id: "hy-mt2-1-8b-q4-k-m", Backend: "hy-mt-llama-cpu" }
         && package.Directions.Any(direction => direction.Id == "zh_en")
         && package.Directions.Any(direction => direction.Id == "en_zh");
@@ -244,9 +249,9 @@ public static class ApplicationSupportPresentation
     private static bool CanSupplementEnglish(ModelPackage package, ModelPackageSelection installed,
         ModelPackageManagementFact facts)
     {
-        // The candidate catalog only makes the pair available. Existing installation
+        // The catalog only makes the preview pair available. Existing installation
         // consent and the current selection must remain separate and exact.
-        return HasCandidateEnglishDirections(package)
+        return HasEnglishPreviewDirections(package)
             && installed.Directions.Count > 0
             && installed.Directions.All(direction => direction.Id is not ("zh_en" or "en_zh")
                 && package.Directions.Any(candidate => candidate.Id == direction.Id))

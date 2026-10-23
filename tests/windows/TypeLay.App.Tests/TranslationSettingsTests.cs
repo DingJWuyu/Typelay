@@ -428,6 +428,9 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
             Styles: new(TranslationStyle.Formal, new Dictionary<string, TranslationStyle> { ["saved.app"] = TranslationStyle.Natural }),
             Glossary: new(1, [new("PR", "pull request", "zh", "en")])), released: true);
         scene.Window.ShowPage("translation");
+        // Windows stores executable names without their extension, unlike the shared test host.
+        Assert.Equal(new("saved", TranslationStyle.Natural), Assert.Single(scene.Reload().Styles!.Applications!));
+        Assert.True(Named<Button>(scene.Window, "移除风格覆盖 saved").IsVisible);
         await scene.StartStyleModelAsync(englishCandidate: true);
         var choice = Named<ComboBox>(scene.Window, "默认翻译风格");
         Assert.True(choice.IsEnabled);
@@ -455,7 +458,9 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         {
             Target = "en"
         });
-        var remove = Named<Button>(scene.Window, "移除风格覆盖 saved.app");
+        Assert.Equal(new("saved", TranslationStyle.Natural), Assert.Single(scene.Reload().Styles!.Applications!));
+        var remove = Named<Button>(scene.Window, "移除风格覆盖 saved");
+        Assert.True(remove.IsVisible);
         Assert.True(remove.IsEnabled);
         remove.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.Empty(scene.Reload().Styles!.Applications!);
@@ -596,12 +601,7 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
             ModelPackageCatalog? catalog = null;
             if (englishCandidate)
             {
-                using var source = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.ModelCatalog.json")!;
-                var value = System.Text.Json.Nodes.JsonNode.Parse(source)!;
-                foreach (int index in new[] { 0, 1 })
-                    value["packages"]![2]!["directions"]!.AsArray().Add(value["packages"]![index]!["directions"]![0]!.DeepClone());
-                using var document = JsonDocument.Parse(value.ToJsonString());
-                catalog = ModelPackageCatalog.Parse(document.RootElement);
+                catalog = ModelCatalog.Packages;
                 var directions = catalog.Packages.Single(package => package.Id == "hy-mt2-1-8b-q4-k-m").Directions;
                 string all = JsonSerializer.Serialize(directions.Select(direction => direction.Id));
                 string advanced = JsonSerializer.Serialize(directions.Where(direction => direction.Source != "en" && direction.Target != "en")

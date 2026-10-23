@@ -147,6 +147,22 @@
           "sourceName": "Português",
           "targetName": "中文",
           "selfCheckText": "Até amanhã."
+        },
+        {
+          "id": "zh_en",
+          "source": "zh",
+          "target": "en",
+          "sourceName": "中文",
+          "targetName": "English",
+          "selfCheckText": "你好，我想确认一下明天下午的会议时间。"
+        },
+        {
+          "id": "en_zh",
+          "source": "en",
+          "target": "zh",
+          "sourceName": "English",
+          "targetName": "中文",
+          "selfCheckText": "Please send me the final version."
         }
       ]
     }

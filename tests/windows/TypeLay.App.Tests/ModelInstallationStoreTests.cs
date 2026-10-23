@@ -24,7 +24,7 @@ public sealed class ModelInstallationStoreTests
         string source = Path.Combine(old, "models", "packages", HyPackage.Id, HyPackage.Version, "model.gguf");
         if (damage)
             File.AppendAllText(source, "corrupted");
-        var catalog = EnglishCandidateCatalog();
+        var catalog = ModelCatalog.Packages;
         var request = new ModelPackageRequest(2, ModelPackageOperation.Install, [HyPackage.Id], [HyPackage.Id], Path.GetFileName(old))
         {
             AddDirections = ["zh_en", "en_zh"]
@@ -42,7 +42,7 @@ public sealed class ModelInstallationStoreTests
         else
         {
             using var prepared = await installer.PreparePackagesAsync(request, new QuietProgress(), TestContext.Current.CancellationToken);
-            Assert.Equal(HyPackage.Directions.Select(direction => direction.Id).Concat(new[] { "zh_en", "en_zh" }), prepared.Directions);
+            Assert.Equal(HyPackage.Directions.Select(direction => direction.Id), prepared.Directions);
             using var inventory = JsonDocument.Parse(File.ReadAllText(Path.Combine(prepared.Paths.Models, "installed.json")));
             Assert.Equal(14, Assert.Single(catalog.ReadInstallationSelection(inventory.RootElement)).Directions.Count);
             Assert.Equal(new[] { HyPackage.Id }, inventory.RootElement.GetProperty("activePackages").EnumerateArray().Select(item => item.GetString()));
@@ -70,13 +70,13 @@ public sealed class ModelInstallationStoreTests
     [InlineData("mixed-active")]
     [InlineData("stale")]
     [InlineData("native-capability")]
-    [InlineData("production-catalog")]
+    [InlineData("old-catalog")]
     public async Task CandidateSupplementRejectsChangedConsentBeforeCreatingGeneration(string defect)
     {
         using var files = new StoreFiles();
         files.WriteHyComponents(english: defect != "native-capability");
         string old = await files.SeedHyForCopy();
-        var catalog = defect == "production-catalog" ? ModelCatalog.Packages : EnglishCandidateCatalog();
+        var catalog = defect == "old-catalog" ? OldTwelveCatalog() : ModelCatalog.Packages;
         var store = new ModelInstallationStore(files.Root, Path.Combine(files.Root, "worker.py"), catalog: catalog);
         var request = new ModelPackageRequest(2, ModelPackageOperation.Install, [HyPackage.Id], [HyPackage.Id], Path.GetFileName(old))
         {
@@ -112,7 +112,7 @@ public sealed class ModelInstallationStoreTests
     {
         using var files = new StoreFiles();
         files.WriteHyComponents(english: true);
-        var store = new ModelInstallationStore(files.Root, Path.Combine(files.Root, "worker.py"), catalog: EnglishCandidateCatalog());
+        var store = new ModelInstallationStore(files.Root, Path.Combine(files.Root, "worker.py"), catalog: ModelCatalog.Packages);
         using (var lease = await store.AcquireAsync(TestContext.Current.CancellationToken))
         using (var install = lease.PreparePackages(new(1, ModelPackageOperation.Install, [HyPackage.Id], [HyPackage.Id], null)))
             Assert.Equal(12, install.Directions.Count);
@@ -124,12 +124,14 @@ public sealed class ModelInstallationStoreTests
         Assert.Equal(12, repair.Directions.Count);
     }
 
-    private static ModelPackageCatalog EnglishCandidateCatalog()
+    private static ModelPackageCatalog OldTwelveCatalog()
     {
         using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.ModelCatalog.json")!;
         var value = JsonNode.Parse(stream)!;
-        foreach (int index in new[] { 0, 1 })
-            value["packages"]![2]!["directions"]!.AsArray().Add(value["packages"]![index]!["directions"]![0]!.DeepClone());
+        var hy = value["packages"]![2]!;
+        hy["directions"] = new JsonArray(hy["directions"]!.AsArray()
+            .Where(item => item!["id"]!.GetValue<string>() is not ("zh_en" or "en_zh"))
+            .Select(item => item!.DeepClone()).ToArray());
         using var document = JsonDocument.Parse(value.ToJsonString());
         return ModelPackageCatalog.Parse(document.RootElement);
     }
@@ -143,7 +145,7 @@ public sealed class ModelInstallationStoreTests
         string pointer = File.ReadAllText(Path.Combine(files.Root, "components.json"));
         string oldInventory = File.ReadAllText(Path.Combine(old, "models", "installed.json"));
         var store = new ModelInstallationStore(files.Root, Path.Combine(files.Root, "worker.py"),
-            (_, _) => throw new IOException("before-publication"), EnglishCandidateCatalog());
+            (_, _) => throw new IOException("before-publication"), ModelCatalog.Packages);
         string candidate;
         using (var lease = await store.AcquireAsync(TestContext.Current.CancellationToken))
         using (var prepared = lease.PreparePackages(new(2, ModelPackageOperation.Install,
@@ -378,7 +380,7 @@ public sealed class ModelInstallationStoreTests
                 {
                     id = package.Id,
                     version = package.Version,
-                    directions = package.Directions.Select(direction => direction.Id),
+                    directions = ModelCatalog.DefaultInstallationDirections(package).Select(direction => direction.Id),
                     files = new[] { new { path = "model/model.bin", sha256 = new string('0', 64) } }
                 }),
             activePackages = new[] { "argos-zh-en" }
@@ -731,7 +733,7 @@ public sealed class ModelInstallationStoreTests
         {
             schema = 3,
             packages = new[] { new { id = package.Id, version = package.Version,
-                directions = package.Directions.Select(item => item.Id).ToArray(),
+                directions = ModelCatalog.DefaultInstallationDirections(package).Select(item => item.Id).ToArray(),
                 files = new[] { new { path = "model.gguf", sha256 = new string('0', 64) } } } },
             activePackages = new[] { package.Id }
         }));

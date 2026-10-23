@@ -117,7 +117,19 @@ CI 在 Windows build 成功后、既有同步源实验之后，以独立 `contin
 
 CI 在 Windows build 成功后、首门之后以独立 `continue-on-error: true`、2分钟外限调用这个唯一 selector；runner 记录 source SHA、退出码、唯一结果及两键各自 status/route/session/read，summary 逐键展示，不据 exit0 宣称准入。早期研究 artifact 白名单保存 runner.json/log 与每次唯一 result.json，末尾原全包亦保留该目录。缺文件、重复结果、清理未证和程序失败分列；超时留下 running/null exit 时属于未完成，不拼成成功。
 
-此新阶段尚未 Windows 实测。无路由、拒锁或准入失败就是本次 profile/控件/键/原泵条件下的终态，不改 `pfEaten` 为 true、不绕过 Tab 导航或扩大控件矩阵制造成功。即使正向成立，真实 composition、旧排队键隔离、物理输入、唯一消费、原子写与第三方部署仍未证明；后继须由 root 按新证据裁决，生产 WriteSupported/Practice 许可链保持不变。
+[CI475](https://github.com/DingJWuyu/Typelay/actions/runs/39961358090) 已实测 Tab/End 的 `selection-read-observed`：各一次同步读取，`RequestStart < EditEntry < EditExit < RequestEnd`，原键默认效果、文本不变、零提交和正常清理/退出均成立。Tab 读完后的默认切焦标记 `FocusInvalidated=true`，不是读取中身份失守。这个入口继续保持所有 `pfEaten=false`；无路由、拒锁或准入失败仍是当前条件下的终态，不修改它制造成功。真实 composition、旧排队键隔离、物理输入、唯一消费、原子写与第三方部署仍未证明，生产 WriteSupported/Practice 许可链保持不变。
+
+### 自有 Tab 的自然 KeyDown 裁决实验
+
+下一必要问题是 stock Edit 原泵能否把处理询问转成真正可拒绝或消费的源端回调，而不是继续扩大已成立的只读矩阵。单靠 OnTest 只有询问证据；[微软 TestKeyDown 示例](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfkeystrokemgr-testkeydown)在 Test 与 KeyDown 都返回成功且 true 后才停止普通处理，[Context OnKeyDown](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontextkeyeventsink-onkeydown)的输出也区分处理与未处理。它们给出实验预期，不代替当前 stock 桥的实测。
+
+新增显式研究入口 `TsfKeyRoutingProbe.ObserveNaturalTabRejectionAndConsumption`，仅两个独立自有进程，各一次 Tab down/up，复用上述 manager/context、同步只读与清理代码。精确目标、无修饰键、非 repeat 的 OnTestKeyDown 才返回 true；此处不请求锁，也不把询问次数当事件身份。仅自然 OnKeyDown 申请一次 `SYNC | READ` 与真实 GetSelection。拒绝模式即使读成功仍 false，必须默认 A→B；消费模式仅完整读取且回调退出前身份稳定才 true，必须仍在 A 且选区保持。所有 up 恒 false。两个分支都要求实际 key-up、原文不变、零提交与完整退出。
+
+这是单独授权的测试夹具键裁决，不是生产许可：不写正文、不注册服务、不注入第三方、不手动调用 keystroke manager、不改原 IsDialogMessage 泵、不补发 down/重试。结果保存到 `artifacts/tsf-key-decision/<唯一目录>/result.json`，逐分支保留 OnTest/OnKey、只读 HRESULT/顺序、最终焦点与真实默认效果。缺自然 OnKeyDown、拒绝丢键或消费仍导航就是 `mechanism-not-admitted`，记录后停止后续分支；锁拒绝与前置缺失亦保留，不放宽条件。异常、身份失守或清理未证仍是 `probe-failed`。程序退出0只表示研究有完整结果，不表示该机制通过。
+
+CI 在被动路由阶段之后用独立 `continue-on-error: true` 步骤运行此 selector，外限2分钟；逐分支汇总 route/session/read、自然 down、消费、实际焦点及 `mechanismStatus/stoppedAfterMode`，早期白名单与最终全包保留 runner.json/log 和唯一结果。它最多增加2分钟研究开销，原75分钟 job、模型准入、产品许可与各进程期限均不增加。
+
+本阶段尚未 Windows 执行；Linux 只能静态/托管编译，不声称红绿或 GUI 验证。保留同一每进程/整体截止与 owner 清理，默认产品回归不运行此入口。若两个终态都成立，也仅证明这个自有 profile/控件/原泵下的 Tab 裁决点；旧排队键、repeat/up 全周期、注入来源、真实 IME、原子写与外部部署继续未准入。当前门失败即停止这条具体机制，不追加平台、改泵或扩矩阵。
 
 ## 自有双队列消费顺序诊断
 

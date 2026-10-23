@@ -290,8 +290,103 @@ jobs:
           }
           if ($runner.status -ne 'research-observation-complete-not-product-acceptance') { exit 1 }
           exit 0
+      - name: Observe natural Tab rejection and consumption in an owned TSF context
+        id: windows-tsf-key-decision
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $directory = 'artifacts/tsf-key-decision'
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          $runner = [ordered]@{ kind = 'research-observation'; status = 'running'; sourceSha = $env:GITHUB_SHA; exitCode = $null; productAcceptance = $false; resultCount = 0; resultMissing = $null; resultStatus = $null; completeDecisionPair = $false; mechanismStatus = 'unobserved'; stoppedAfterMode = $null; cases = @(); error = $null }
+          $runner | ConvertTo-Json -Depth 5 | Set-Content "$directory/runner.json"
+          New-Item -ItemType File -Path "$directory/runner.log" -Force | Out-Null
+          try {
+            & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.TsfKeyRoutingProbe.ObserveNaturalTabRejectionAndConsumption' 2>&1 | Tee-Object -FilePath "$directory/runner.log"
+            $runner.exitCode = $LASTEXITCODE
+            $files = @(Get-ChildItem -LiteralPath $directory -Filter result.json -File -Recurse)
+            $runner.resultCount = $files.Count
+            $runner.resultMissing = $files.Count -eq 0
+            if ($files.Count -eq 0) {
+              $runner.status = 'missing-result'
+            } elseif ($files.Count -ne 1) {
+              $runner.status = 'nonunique-result'
+            } else {
+              $runner.status = 'invalid-result'
+              $row = Get-Content -LiteralPath $files[0].FullName -Raw | ConvertFrom-Json
+              $runner.resultStatus = $row.status
+              $runner.completeDecisionPair = $row.completeDecisionPair
+              $cases = @($row.cases)
+              $valid = $cases.Count -ge 1 -and $cases.Count -le 2 -and $cases[0].DecisionMode -eq 'Reject'
+              if ($cases.Count -eq 2 -and ($cases[0].Status -ne 'rejection-preserved-navigation' -or $cases[1].DecisionMode -ne 'Consume')) { $valid = $false }
+              $clean = $cases.Count -gt 0
+              foreach ($case in $cases) {
+                $closed = $case.Closed
+                $route = $closed.RouteObserved; $session = $closed.SynchronousSessionObserved; $read = $closed.SelectionReadSucceeded
+                $runner.cases += [ordered]@{ mode = $case.DecisionMode; status = $case.Status; readStatus = $case.ReadStatus; mechanismDenial = $case.MechanismDenial; testOfferCount = $closed.TestOfferCount; keyDownCount = $closed.KeyDownCount; keyDownConsumed = $closed.KeyDownConsumed; routeObserved = $route; synchronousSessionObserved = $session; selectionReadSucceeded = $read; requestHResult = $closed.RequestHResult; sessionHResult = $closed.SessionHResult; selectionHResult = $closed.SelectionHResult; focusAfterInput = $case.FocusAfterInput; defaultEffectVerified = $case.DefaultEffectVerified; expectedKeyEffectVerified = $case.ExpectedKeyEffectVerified; selectionUnchanged = $case.SelectionUnchanged; denial = $closed.Denial; processExited = $case.ProcessExited; normalShutdown = $case.NormalShutdown; cleanupComplete = $closed.CleanupComplete; error = $case.Error }
+                foreach ($value in @($case.ProcessExited, $case.NormalShutdown, $closed.CleanupComplete, $closed.Unadvised, $closed.ActivationBalanced, $closed.ReferencesReleased)) {
+                  if ($value -isnot [bool] -or -not $value) { $clean = $false }
+                }
+                foreach ($value in @($route, $session, $read, $closed.KeyDownConsumed)) {
+                  if ($value -isnot [bool]) { $valid = $false }
+                }
+                if ($case.Key -ne 'Tab' -or $closed.DecisionMode -ne $case.DecisionMode -or $closed.ProductionReadiness -ne $false -or $null -ne $case.Error -or $null -ne $closed.Error) { $valid = $false }
+                if ($case.Status -eq 'prerequisite-not-met') {
+                  if ([string]::IsNullOrEmpty($closed.Denial) -or $route -ne $false -or $session -ne $false -or $read -ne $false -or $case.InputsInserted -ne 0 -or $closed.TestOfferCount -ne 0 -or $closed.KeyDownCount -ne 0) { $valid = $false }
+                  $runner.mechanismStatus = 'prerequisite-not-met'
+                  $runner.stoppedAfterMode = $case.DecisionMode
+                } else {
+                  if ($case.InputsInserted -ne 2 -or $case.TextUnchanged -ne $true -or $case.ZeroSubmits -ne $true -or $closed.InputUpObserved -ne $true -or $null -ne $closed.Denial) { $valid = $false }
+                  switch ($case.ReadStatus) {
+                    'test-route-not-observed' { if ($route -ne $false -or $session -ne $false -or $read -ne $false -or $closed.RequestCount -ne 0) { $valid = $false } }
+                    'route-observed-synchronous-lock-refused' { if ($route -ne $true -or $session -ne $false -or $read -ne $false -or $closed.RequestCount -ne 1) { $valid = $false } }
+                    'synchronous-session-selection-unavailable' { if ($route -ne $true -or $session -ne $true -or $read -ne $false -or $closed.RequestCount -ne 1) { $valid = $false } }
+                    'selection-read-observed' { if ($route -ne $true -or $session -ne $true -or $read -ne $true -or $closed.RequestCount -ne 1) { $valid = $false } }
+                    default { $valid = $false }
+                  }
+                  switch ($case.Status) {
+                    'rejection-preserved-navigation' { if ($case.DecisionMode -ne 'Reject' -or $read -ne $true -or $closed.TestOfferCount -lt 1 -or $closed.KeyDownCount -ne 1 -or $closed.KeyDownConsumed -ne $false -or $case.FocusAfterInput -ne 'b' -or $case.DefaultEffectVerified -ne $true -or $case.ExpectedKeyEffectVerified -ne $true -or $null -ne $case.MechanismDenial) { $valid = $false } }
+                    'consumption-suppressed-navigation' { if ($case.DecisionMode -ne 'Consume' -or $read -ne $true -or $closed.TestOfferCount -lt 1 -or $closed.KeyDownCount -ne 1 -or $closed.KeyDownConsumed -ne $true -or $case.FocusAfterInput -ne 'a' -or $case.DefaultEffectVerified -ne $false -or $case.ExpectedKeyEffectVerified -ne $true -or $case.SelectionUnchanged -ne $true -or $null -ne $case.MechanismDenial) { $valid = $false } }
+                    'mechanism-not-admitted' {
+                      if ([string]::IsNullOrEmpty($case.MechanismDenial)) { $valid = $false }
+                      $runner.mechanismStatus = 'not-admitted'
+                      $runner.stoppedAfterMode = $case.DecisionMode
+                    }
+                    default { $valid = $false }
+                  }
+                }
+              }
+              $pair = $cases.Count -eq 2 -and $cases[0].Status -eq 'rejection-preserved-navigation' -and $cases[1].Status -eq 'consumption-suppressed-navigation'
+              if ($row.completeDecisionPair -isnot [bool] -or $row.completeDecisionPair -ne $pair) { $valid = $false }
+              if ($pair) { $runner.mechanismStatus = 'local-decision-pair-observed' }
+              elseif ($null -eq $runner.stoppedAfterMode) { $valid = $false }
+              if (-not $clean) {
+                $runner.status = 'cleanup-unconfirmed'
+              } elseif ($runner.exitCode -ne 0 -or $row.status -eq 'probe-failed') {
+                $runner.status = 'probe-failed'
+              } elseif (-not $valid -or $row.diagnosticOnly -ne $true -or $row.productionReadiness -ne $false -or $row.status -ne 'research-observation-complete-not-product-acceptance') {
+                $runner.status = 'invalid-observations'
+              } else {
+                $runner.status = 'research-observation-complete-not-product-acceptance'
+              }
+            }
+          } catch {
+            $runner.error = $_.Exception.GetType().Name
+            if ($runner.status -eq 'running') { $runner.status = 'runner-failed' }
+          } finally {
+            $runner | ConvertTo-Json -Depth 5 | Set-Content "$directory/runner.json"
+          }
+          "TSF Tab decision research: $($runner.status); mechanism=$($runner.mechanismStatus); stoppedAfter=$($runner.stoppedAfterMode); exitCode=$($runner.exitCode). Neither exit0 nor the local decision pair grants product acceptance, IME, old-key, injected-input, or write authority." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          foreach ($case in $runner.cases) {
+            "$($case.mode): status=$($case.status); denial=$($case.mechanismDenial); offers=$($case.testOfferCount); naturalDown=$($case.keyDownCount); consumed=$($case.keyDownConsumed); route=$($case.routeObserved); synchronousSession=$($case.synchronousSessionObserved); selectionRead=$($case.selectionReadSucceeded); focus=$($case.focusAfterInput); expectedEffect=$($case.expectedKeyEffectVerified); normalShutdown=$($case.normalShutdown)." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
+          if ($runner.status -ne 'research-observation-complete-not-product-acceptance') { exit 1 }
+          exit 0
       - name: Preserve early Windows source research evidence
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' && hashFiles('artifacts/source-synchronous-acceptance/runner.*', 'artifacts/tsf-context-admission/runner.*', 'artifacts/tsf-key-routing/runner.*') != '' }}
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' && hashFiles('artifacts/source-synchronous-acceptance/runner.*', 'artifacts/tsf-context-admission/runner.*', 'artifacts/tsf-key-routing/runner.*', 'artifacts/tsf-key-decision/runner.*') != '' }}
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -306,6 +401,9 @@ jobs:
             artifacts/tsf-key-routing/runner.json
             artifacts/tsf-key-routing/runner.log
             artifacts/tsf-key-routing/*/result.json
+            artifacts/tsf-key-decision/runner.json
+            artifacts/tsf-key-decision/runner.log
+            artifacts/tsf-key-decision/*/result.json
           if-no-files-found: warn
           retention-days: 14
       - name: Verify Windows behavior and contracts
@@ -548,6 +646,7 @@ jobs:
             artifacts/source-synchronous-acceptance/
             artifacts/tsf-context-admission/
             artifacts/tsf-key-routing/
+            artifacts/tsf-key-decision/
             artifacts/source-consumption-order/**/result.json
             artifacts/controller-trace.jsonl*
             artifacts/continuous-translation/result.json

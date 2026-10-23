@@ -8,7 +8,13 @@ internal static partial class TsfContextAdmission
 {
     internal const uint BeginKeyMessage = 0x8091, KeyProgressMessage = 0x8092;
 
-    internal sealed class KeyProbe(nint root, nint field, uint key, Func<int> focusVersion)
+    internal enum KeyDecisionMode
+    {
+        Observe, Reject, Consume
+    }
+
+    internal sealed class KeyProbe(nint root, nint field, uint key, Func<int> focusVersion,
+        KeyDecisionMode mode = KeyDecisionMode.Observe)
     {
         private readonly uint _thread = GetCurrentThreadId();
         private readonly int _focusVersion = focusVersion();
@@ -34,6 +40,7 @@ internal static partial class TsfContextAdmission
             Process = Environment.ProcessId,
             Thread = GetCurrentThreadId(),
             Key = key,
+            DecisionMode = mode.ToString(),
             Field = (long)field,
             Apartment = Thread.CurrentThread.GetApartmentState().ToString()
         };
@@ -151,13 +158,12 @@ internal static partial class TsfContextAdmission
                 Result.InputUpObserved = true;
         }
 
-        internal int Key(string kind, nuint wParam, nint lParam)
+        internal bool Key(string kind, nuint wParam, nint lParam)
         {
-            // Called only by the CCW wrappers which always return pfEaten=false.
             if (GetCurrentThreadId() != _thread)
             {
                 Result.WrongThread = true;
-                return 0;
+                return false;
             }
             if (_inCallback)
             {
@@ -165,40 +171,60 @@ internal static partial class TsfContextAdmission
                 _eligible = false;
                 if (_inRequest)
                     Result.ReadInvalidated = true;
-                return 0;
+                return false;
             }
             _inCallback = true;
-            bool exactAtEntry = false, requestedHere = false;
+            bool exactAtEntry = false, requestedHere = false, handled = false;
+            int observation = -1;
             try
             {
                 if (Result.Events.Count >= 16)
                 {
                     Result.Overflow = true;
                     _eligible = false;
-                    return 0;
+                    return false;
+                }
+                if (kind == "down" && wParam == key)
+                {
+                    Result.KeyDownCount++;
+                    if (mode != KeyDecisionMode.Observe && Result.KeyDownCount > 1)
+                        _eligible = false;
                 }
                 bool exact = !_closed && _eligible && !Result.WrongThread && !Result.Reentered
                     && Exact() && _eligible && !Result.Reentered;
                 exactAtEntry = exact;
                 bool repeat = ((long)lParam & (1L << 30)) != 0;
-                Result.Events.Add(new(++_sequence, kind, (uint)wParam, repeat, _thread, exact, false));
+                bool? modifiersClear = mode == KeyDecisionMode.Observe ? null : ModifiersClear();
+                observation = Result.Events.Count;
+                Result.Events.Add(new(++_sequence, kind, (uint)wParam, repeat, _thread, exact, false, modifiersClear));
                 if (!exact)
                     _eligible = false;
-                if (kind != "test-down" || wParam != key || repeat || !exact || Result.RequestCount != 0)
-                    return 0;
-                Result.RouteObserved = true;
-                requestedHere = true;
-                Result.RequestCount++;
-                Result.RequestStart = ++_sequence;
-                _inRequest = true;
-                try
+                if (wParam != key || repeat || !exact || modifiersClear == false || Result.RequestCount != 0)
+                    return false;
+                if (mode != KeyDecisionMode.Observe && kind == "test-down")
                 {
-                    Result.RequestHResult = _context!.RequestEditSession(_client, _sink!, 0x1 | 0x2, out int session);
-                    Result.SessionHResult = session;
+                    // This is only an offer, not consumption or an event identity.
+                    // Repeated test inquiries may precede the one natural down.
+                    handled = Result.KeyDownCount == 0;
                 }
-                finally { _inRequest = false; Result.RequestEnd = ++_sequence; }
-                if (!Exact())
-                    Result.ReadInvalidated = true;
+                else if (kind == (mode == KeyDecisionMode.Observe ? "test-down" : "down")
+                    && (mode == KeyDecisionMode.Observe || Result.TestOfferCount > 0))
+                {
+                    Result.RouteObserved = true;
+                    requestedHere = true;
+                    Result.RequestCount++;
+                    Result.RequestStart = ++_sequence;
+                    _inRequest = true;
+                    try
+                    {
+                        Result.RequestHResult = _context!.RequestEditSession(_client, _sink!, 0x1 | 0x2, out int session);
+                        Result.SessionHResult = session;
+                    }
+                    finally { _inRequest = false; Result.RequestEnd = ++_sequence; }
+                    if (!Exact())
+                        Result.ReadInvalidated = true;
+                    handled = mode == KeyDecisionMode.Consume && Result.SelectionReadSucceeded;
+                }
             }
             catch (Exception error)
             {
@@ -224,10 +250,29 @@ internal static partial class TsfContextAdmission
                     _eligible = false;
                     Result.ReadInvalidated = true;
                 }
-                finally { _inCallback = false; }
+                finally
+                {
+                    handled &= _eligible && !Result.ReadInvalidated && !Result.Reentered
+                        && !Result.WrongThread && Result.Error is null && Result.ReferencesReleased;
+                    if (observation >= 0)
+                        Result.Events[observation] = Result.Events[observation] with
+                        {
+                            Eaten = handled
+                        };
+                    if (handled && kind == "test-down")
+                        Result.TestOfferCount++;
+                    if (handled && kind == "down")
+                        Result.KeyDownConsumed = true;
+                    _inCallback = false;
+                }
             }
-            return 0;
+            return handled;
         }
+
+        private static bool ModifiersClear() => (GetKeyState(0x10) & 0x8000) == 0
+            && (GetKeyState(0x11) & 0x8000) == 0 && (GetKeyState(0x12) & 0x8000) == 0
+            && (GetKeyState(0x5b) & 0x8000) == 0 && (GetKeyState(0x5c) & 0x8000) == 0;
+        [DllImport("user32.dll")] private static extern short GetKeyState(int key);
 
         internal int Read(uint cookie)
         {
@@ -400,6 +445,19 @@ internal static partial class TsfContextAdmission
         {
             get; set;
         }
+        public string DecisionMode { get; init; } = "Observe";
+        public int TestOfferCount
+        {
+            get; set;
+        }
+        public int KeyDownCount
+        {
+            get; set;
+        }
+        public bool KeyDownConsumed
+        {
+            get; set;
+        }
         public bool RouteObserved
         {
             get; set;
@@ -518,7 +576,7 @@ internal static partial class TsfContextAdmission
         public List<KeyObservation> Events { get; } = [];
     }
 
-    internal sealed record KeyObservation(int Sequence, string Kind, uint Key, bool Repeat, uint Thread, bool Exact, bool Eaten);
+    internal sealed record KeyObservation(int Sequence, string Kind, uint Key, bool Repeat, uint Thread, bool Exact, bool Eaten, bool? ModifiersClear);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct Selection
@@ -561,11 +619,10 @@ public sealed class TsfProbeCallbacks : ITsfProbeKeySink, ITsfProbeEditSession
     private int Key(string kind, nuint key, nint flags, out int eaten)
     {
         eaten = 0;
-        try
-        {
-            return _owner.Key(kind, key, flags);
-        }
-        finally { eaten = 0; }
+        // The owner publishes true only after its final identity/reentrancy
+        // checks. Observe mode and every up callback still return false.
+        eaten = _owner.Key(kind, key, flags) ? 1 : 0;
+        return 0;
     }
     public int DoEditSession(uint cookie) => _owner.Read(cookie);
 }

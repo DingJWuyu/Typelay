@@ -38,7 +38,7 @@ finalize 校验主包原始清单、构建提交、合作组件的固定来源�
 
 ## Hy worker 可选构建
 
-默认模型准备继续使用原 Argos。CI 的正式 Linux 候选包通过固定 b11717 官方 CPU 闭包加入 Hy 运行资产，仍需用户在设置中显式选择下载并使用 Hy。手动开发构建只有传入 `python eng/linux/build.py --hy-runtime <已有CPU目录>` 才包含这些资产；该参数不下载、不编译 llama.cpp、不安装模型。设置始终显示固定 Hy 十二方向预览包；只有发行包的 native 闭包通过只读完整性检查后，才开放下载、使用与修复。该目录必须与 `src/shared/TypeLay.Worker/native/hy/cpu-runtime.lock.json` 的17项文件逐字节匹配。
+默认模型准备继续使用原 Argos。CI 的正式 Linux 候选包通过固定 b11717 官方 CPU 闭包加入 Hy 运行资产，仍需用户在设置中显式选择下载并使用 Hy。手动开发构建只有传入 `python eng/linux/build.py --hy-runtime <已有CPU目录>` 才包含这些资产；该参数不下载、不编译 llama.cpp、不安装模型。设置显示固定 Hy 预览包，新装默认十二方向，中英双向须另行明确补充；只有发行包的 native 闭包通过只读完整性检查后，才开放下载、使用与修复。该目录必须与 `src/shared/TypeLay.Worker/native/hy/cpu-runtime.lock.json` 的17项文件逐字节匹配。
 
 只编生产 adapter 可执行 `python eng/linux/hy/build.py --runtime <已有CPU目录> --output <空输出目录>`。输出包含唯一共享 C++ 源编出的固定 ABI5 导出的 adapter、固定 CPU 库、模型/CPU 锁、production-adapter 清单与许可证；发布包不带 C++、headers 或 fixture 门。Hy 模型数据单独位于 `models/packages/<id>/<version>/`，精确包含锁定 GGUF 与 `model_LICENSE.txt`。缺少运行资产或固定模型数据时，active Hy 明确启动失败。
 
@@ -56,7 +56,7 @@ finalize 校验主包原始清单、构建提交、合作组件的固定来源�
 
 新包请求使用固定目录身份，不接受 URL、版本或路径：`format: 1`、`operation: Install|Repair|Select|Remove`、`packageIds`、`activePackages` 和 `expectedCurrent`。安装只增加所选未装包，修复只重建已装包并保留方向子集和当前选择；切换与移除完全离线。移除仅允许一个非当前包，须先切换模型再移除。原默认 Argos 双向及 legacy 方向安装入口保留，但已有 schema 3 库存不能回到旧整库修复路径。
 
-非公开 Hy 中英候选仅在隔离的十四方向目录下允许 format2 Install 加 `addDirections: ["zh_en", "en_zh"]`。目标必须是已安装固定 Hy 包，两方向均为增量，`expectedCurrent` 精确，`activePackages` 原样不变；准备只复用已验证权重/运行时并复制新代，不能联网补齐或借 Repair 扩方向。正式 UI/catalog 与 format1 新装默认仍十二方向。实际 Host 使用嵌入目录，Python 准备测试不等于十四方向 Host 激活；候选构建必须使用一致目录。旧版本拒绝十四方向库存而不裁剪，现有 `--activate-model` 要求候选原基准匹配当前代，不是任意旧代恢复工具；尚未提供公开跨版本降级恢复入口。公开启用前须验证兼容版本下完整旧代恢复，再允许降级，不能声称旧二进制必能自动恢复。
+Hy 中英预览通过正式目录列出的双向能力与明确设置确认开放，仍仅用 format2 Install 加 `addDirections: ["zh_en", "en_zh"]`。目标必须是已安装固定 Hy 包，两方向均为增量，`expectedCurrent` 精确，`activePackages` 原样不变；准备只复用已验证权重/运行时并复制新代，不能联网补齐或借 Repair 扩方向。format1 新装默认仍十二方向，Argos 默认不变。实际 Host 使用嵌入目录，Python 准备测试不等于十四方向 Host/GUI 激活；发行 Host 与 worker 必须使用一致目录。启用后不支持直接降级旧版本，用户可在当前版本切回 Argos；未安装时需另行确认下载安装，不保证离线可切回。旧版本拒绝十四方向库存而不裁剪，现有 `--activate-model` 不是任意旧代恢复工具；Remove 的 activation 还可能含被移除 Hy14 元数据，不能据新 installed.json 只有 Argos 就承诺旧版本可读。没有公开跨版本恢复入口，不手改库存或承诺“移除即可降级”。
 
 准备期间原代继续服务。请求与 current 比较在同一安装锁内、复制或下载前完成；暂停、继续和重试保留原请求，陈旧请求不能自行改基准重试。普通文件复制形成新代，私有 Python 必须指向新代，复制后离线完成 prefix/import 检查。format1 Install/Repair 发现私有解释器缺失、损坏或依赖检查失败时，可在预留最坏额外空间后重建候选 runtime；权限、空间或超时失败不触发该回退。Select/Remove 的 runtime 失败只报错，不联网修复。新包准备只下载、校验和构建库存，唯一 serving worker 在最后激活时加载模型；用户试译另行验收。
 

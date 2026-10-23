@@ -113,8 +113,9 @@ public sealed class ApplicationSupportPresentationTests
         Assert.True(hy.Ready);
         Assert.Equal(["zh_ja"], hy.ReadyDirectionIds);
         Assert.Equal("Hy-MT2 1.8B · 中文多语", hy.Title);
-        Assert.Equal("中文 ↔ 日本語、한국어、Français、Español、Deutsch、Português", hy.CoverageText);
-        Assert.Equal(12, hy.DirectionIds.Length);
+        Assert.Equal("目录可用：中文 ↔ 日本語、한국어、Français、Español、Deutsch、Português、English", hy.CoverageText);
+        Assert.Equal(14, hy.DirectionIds.Length);
+        Assert.Equal(12, hy.InstalledDirectionIds.Length);
         Assert.DoesNotContain("仅开放中日双向", hy.Details);
         Assert.Contains("当前模型不包含这个方向", view.Guidance);
         Assert.DoesNotContain("日本語 → 中文", view.StatusText);
@@ -281,9 +282,10 @@ public sealed class ApplicationSupportPresentationTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public void CandidateCatalogOffersAnExplicitEnglishSupplementWithoutSelectingAnotherModel(bool hyCurrent)
+    public void ShippedCatalogOffersAnExplicitEnglishPreviewWithoutSelectingAnotherModel(bool hyCurrent)
     {
-        var catalog = EnglishCandidateCatalog();
+        var catalog = ModelCatalog.Packages;
+        Assert.Equal(14, catalog.Packages.Single(package => package.Preview).Directions.Count);
         var installed = PackageSelections("argos-zh-en", "hy-mt2-1-8b-q4-k-m");
         var current = installed.Where(item => (item.Package.Backend == "hy-mt-llama-cpu") == hyCurrent).ToArray();
         var facts = new ModelPackageManagementFact(new string('a', 32), true, installed, current, current,
@@ -303,6 +305,12 @@ public sealed class ApplicationSupportPresentationTests
         Assert.Contains("不会下载模型", supplement.ConfirmationText);
         Assert.Contains("当前模型选择和语言设置保持不变", supplement.ConfirmationText);
         Assert.Contains("取消不会更改", supplement.ConfirmationText);
+        Assert.Contains("中英预览暂不支持风格和术语表", supplement.ConfirmationText);
+        Assert.Contains("可能出现错译或漏译", supplement.ConfirmationText);
+        Assert.Contains("不支持直接降级旧版本", supplement.ConfirmationText);
+        Assert.Contains("可在当前版本切回 Argos 继续使用", supplement.ConfirmationText);
+        Assert.Contains("若未安装 Argos，需先另行确认下载", supplement.ConfirmationText);
+        Assert.Contains("中英预览暂不支持风格和术语表", hy.Details);
         Assert.StartsWith("目录可用：", hy.CoverageText);
         Assert.Contains("English", hy.CoverageText);
         Assert.Contains("已安装：", hy.AvailabilityText);
@@ -317,16 +325,16 @@ public sealed class ApplicationSupportPresentationTests
             Assert.Equal(1, action.Request.Format);
             Assert.Null(action.Request.AddDirections);
         });
-        Assert.Equal(12, ModelCatalog.Packages.Packages.Single(package => package.Backend == "hy-mt-llama-cpu").Directions.Count);
+        Assert.Equal(12, ModelCatalog.DefaultInstallationDirections(catalog.Packages.Single(package => package.Preview)).Count);
     }
 
     [Theory]
     [InlineData("none")]
     [InlineData("zh_en")]
     [InlineData("en_zh")]
-    public void APartialOrPublicCatalogNeverOffersTheEnglishSupplement(string direction)
+    public void APartialOrOldCatalogNeverOffersTheEnglishSupplement(string direction)
     {
-        var catalog = direction == "none" ? ModelCatalog.Packages : EnglishCandidateCatalog([direction]);
+        var catalog = EnglishCandidateCatalog(direction == "none" ? [] : [direction]);
         var installed = PackageSelections("hy-mt2-1-8b-q4-k-m");
         var facts = new ModelPackageManagementFact(new string('b', 32), true, installed, installed, [],
             true, null, "zh", "ja", false);
@@ -482,6 +490,9 @@ public sealed class ApplicationSupportPresentationTests
         var value = JsonNode.Parse(source)!;
         var packages = value["packages"]!.AsArray();
         var hy = packages.Single(package => package!["backend"]!.GetValue<string>() == "hy-mt-llama-cpu")!;
+        hy["directions"] = new JsonArray(hy["directions"]!.AsArray()
+            .Where(item => item!["id"]!.GetValue<string>() is not ("zh_en" or "en_zh"))
+            .Select(item => item!.DeepClone()).ToArray());
         foreach (var package in packages.Where(package => package!["backend"]!.GetValue<string>() == "argos"
             && (englishDirections is null || englishDirections.Contains(package!["directions"]![0]!["id"]!.GetValue<string>()))))
             hy["directions"]!.AsArray().Add(package!["directions"]![0]!.DeepClone());
@@ -529,7 +540,9 @@ public sealed class ApplicationSupportPresentationTests
             {
                 id = package.Id,
                 version = package.Version,
-                directions = package.Directions.Where(direction => (onlyDirection is null || direction.Id == onlyDirection)
+                directions = (onlyDirection is null && directionIds is null
+                    ? ModelCatalog.DefaultInstallationDirections(package) : package.Directions)
+                    .Where(direction => (onlyDirection is null || direction.Id == onlyDirection)
                     && (directionIds is null || directionIds.Contains(direction.Id)))
                     .Select(direction => direction.Id).ToArray(),
                 files = new[] { new { path = "fixture.bin", sha256 = new string('0', 64) } }

@@ -325,14 +325,13 @@ class PackageInstallationTests(unittest.TestCase):
         return self.old.parent / generation
 
     def candidate_hy(self, *, active=False):
-        # Candidate-only distribution catalog. Production catalog/lock stay unchanged.
+        # The shipped catalog offers English; existing installation intent stays twelve.
         path = self.home / "worker/model-catalog.json"
         value = json.loads(path.read_text())
         package = value["packages"][2]
-        original = [item["id"] for item in package["directions"]]
-        for legacy in value["packages"][:2]:
-            package["directions"].extend(legacy["directions"])
-        path.write_text(json.dumps(value))
+        original = [
+            item["id"] for item in package["directions"] if item["id"] not in {"zh_en", "en_zh"}
+        ]
         folder = self.old / "models/packages" / package["id"] / package["version"]
         folder.mkdir(parents=True)
         files = []
@@ -456,7 +455,7 @@ class PackageInstallationTests(unittest.TestCase):
             {p.name for p in self.old.parent.iterdir()}, {self.old.name, "current", "install.lock"}
         )
 
-    def test_candidate_supplement_cannot_repair_a_damaged_runtime_or_run_on_production_catalog(
+    def test_candidate_supplement_cannot_repair_a_damaged_runtime_or_run_on_old_catalog(
         self,
     ):
         package, _ = self.candidate_hy()
@@ -468,10 +467,14 @@ class PackageInstallationTests(unittest.TestCase):
             return_value=SimpleNamespace(verify_native=lambda: {"english_translation_version": 1}),
         ):
             self.prepare(request, success=False)
-        shutil.copyfile(
-            ROOT / "src/shared/TypeLay.Worker/model-catalog.json",
-            self.home / "worker/model-catalog.json",
-        )
+        path = self.home / "worker/model-catalog.json"
+        value = json.loads(path.read_text())
+        value["packages"][2]["directions"] = [
+            item
+            for item in value["packages"][2]["directions"]
+            if item["id"] not in {"zh_en", "en_zh"}
+        ]
+        path.write_text(json.dumps(value))
         with self.assertRaisesRegex(ValueError, "model-package-request"):
             setup.install_packages(self.home, self.data, self.cache, request)
 
@@ -498,11 +501,14 @@ class PackageInstallationTests(unittest.TestCase):
         )
         self.assertEqual(activation["previous"], self.old.name)
 
-    def test_candidate_catalog_does_not_expand_format_one_install_repair_or_select(self):
+    def test_old_catalog_keeps_format_one_install_repair_and_select_compatible(self):
         path = self.home / "worker/model-catalog.json"
         value = json.loads(path.read_text())
-        for legacy in value["packages"][:2]:
-            value["packages"][2]["directions"].extend(legacy["directions"])
+        value["packages"][2]["directions"] = [
+            item
+            for item in value["packages"][2]["directions"]
+            if item["id"] not in {"zh_en", "en_zh"}
+        ]
         path.write_text(json.dumps(value))
         self.assert_new_hy_install_and_existing_subset_maintenance()
 

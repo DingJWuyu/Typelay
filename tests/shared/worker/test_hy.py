@@ -7,7 +7,6 @@ import json
 import sys
 import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -206,16 +205,6 @@ class HyContractTests(unittest.TestCase):
         return status, responses
 
     def candidate_english(self, directions=("zh_en", "en_zh")):
-        self.catalog = replace(
-            self.catalog,
-            packages=(
-                *self.catalog.packages[:2],
-                replace(
-                    self.package,
-                    directions=self.package.directions + self.catalog.legacy_directions,
-                ),
-            ),
-        )
         self.inventory["packages"][0]["directions"] = list(directions)
         self.verified["english_translation_version"] = 1
         self.english_calls = []
@@ -490,8 +479,10 @@ class HyContractTests(unittest.TestCase):
         self.assertEqual(replies[1]["status"], "error")
         self.assertEqual(replies[1]["text"], "")
 
-    def test_production_catalog_lock_and_binding_agree_on_twelve_fixed_directions(self):
-        self.assertEqual([item.id for item in self.package.directions], EXPECTED_DIRECTIONS)
+    def test_preview_catalog_adds_english_without_changing_twelve_fixed_native_directions(self):
+        self.assertEqual(
+            [item.id for item in self.package.directions], [*EXPECTED_DIRECTIONS, "zh_en", "en_zh"]
+        )
         model = json.loads((hy_assets.NATIVE_ROOT / "model.lock.json").read_text())
         self.assertEqual(model["directions"], EXPECTED_DIRECTIONS)
         self.assertEqual((model["abi"], hy_assets.ABI, hy.Metrics().abi_version), (5, 5, 5))

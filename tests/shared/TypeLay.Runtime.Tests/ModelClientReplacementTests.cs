@@ -12,12 +12,7 @@ public sealed class ModelClientReplacementTests
     [InlineData(false)]
     public async Task FailedEnglishSupplementRestartsTheExactOldTwelveDirectionPlan(bool invalidHello)
     {
-        using var source = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.ModelCatalog.json")!;
-        var value = System.Text.Json.Nodes.JsonNode.Parse(source)!;
-        foreach (int index in new[] { 0, 1 })
-            value["packages"]![2]!["directions"]!.AsArray().Add(value["packages"]![index]!["directions"]![0]!.DeepClone());
-        using var document = JsonDocument.Parse(value.ToJsonString());
-        var catalog = ModelPackageCatalog.Parse(document.RootElement);
+        var catalog = ModelCatalog.Packages;
         using var peers = new Peers();
         using var client = peers.Client();
         var original = peers.Plan("old-hy");
@@ -610,7 +605,8 @@ public sealed class ModelClientReplacementTests
             {
                 id = package.Id,
                 version = package.Version,
-                directions = package.Directions.Select(direction => direction.Id).ToArray(),
+                directions = (catalog is null ? ModelCatalog.DefaultInstallationDirections(package) : package.Directions)
+                    .Select(direction => direction.Id).ToArray(),
                 files = new[] { new { path = "model-file", sha256 = new string('0', 64) } }
             }).ToArray();
             string inventory = JsonSerializer.Serialize(new

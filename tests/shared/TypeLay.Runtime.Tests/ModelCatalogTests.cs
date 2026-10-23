@@ -27,16 +27,18 @@ public sealed class ModelCatalogTests
     }
 
     [Fact]
-    public void CandidateCatalogRetainsOldTwelveDirectionIntentAndOldCatalogRejectsFourteenWithoutTrimming()
+    public void ShippedPreviewRetainsOldTwelveDirectionIntentAndOldCatalogRejectsFourteenWithoutTrimming()
     {
         using var source = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.ModelCatalog.json")!;
         var value = JsonNode.Parse(source)!;
         var hy = value["packages"]![2]!;
-        foreach (int index in new[] { 0, 1 })
-            hy["directions"]!.AsArray().Add(value["packages"]![index]!["directions"]![0]!.DeepClone());
+        hy["directions"] = new JsonArray(hy["directions"]!.AsArray()
+            .Where(item => item!["id"]!.GetValue<string>() is not ("zh_en" or "en_zh"))
+            .Select(item => item!.DeepClone()).ToArray());
         using var document = JsonDocument.Parse(value.ToJsonString());
-        var catalog = ModelPackageCatalog.Parse(document.RootElement);
-        var package = ModelCatalog.Packages.Packages.Single(item => item.Backend == "hy-mt-llama-cpu");
+        var oldCatalog = ModelPackageCatalog.Parse(document.RootElement);
+        var catalog = ModelCatalog.Packages;
+        var package = oldCatalog.Packages.Single(item => item.Backend == "hy-mt-llama-cpu");
         Assert.Equal(package.Directions.Select(item => item.Id),
             ModelCatalog.DefaultInstallationDirections(catalog.Packages[2]).Select(item => item.Id));
         Assert.Equal(14, catalog.Packages[2].Directions.Count);
@@ -51,7 +53,7 @@ public sealed class ModelCatalogTests
         using (var old = JsonDocument.Parse(inventory.ToJsonString()))
         {
             Assert.Equal(12, Assert.Single(catalog.ReadActiveSelection(old.RootElement)).Directions.Count);
-            Assert.Equal(12, Assert.Single(ModelCatalog.ReadActiveSelection(old.RootElement)).Directions.Count);
+            Assert.Equal(12, Assert.Single(oldCatalog.ReadActiveSelection(old.RootElement)).Directions.Count);
         }
         foreach (string direction in new[] { "zh_en", "en_zh" })
             inventory["packages"]![0]!["directions"]!.AsArray().Add(JsonValue.Create(direction));
@@ -59,7 +61,7 @@ public sealed class ModelCatalogTests
         using var upgraded = JsonDocument.Parse(frozen);
         var paths = new ModelRuntimePaths("python", "worker.py", "models");
         Assert.Equal(14, ModelLoadPlan.Create(paths, upgraded.RootElement, catalog).Directions.Count);
-        Assert.Throws<InvalidDataException>(() => ModelLoadPlan.Create(paths, upgraded.RootElement));
+        Assert.Throws<InvalidDataException>(() => ModelLoadPlan.Create(paths, upgraded.RootElement, oldCatalog));
         Assert.Equal(frozen, inventory.ToJsonString());
         Assert.Equal(12, package.Directions.Count);
     }
@@ -289,11 +291,13 @@ public sealed class ModelCatalogTests
     }
 
     [Fact]
-    public void PublishedHyCatalogKeepsTwelveDirectionsWithoutPromotingOldInventory()
+    public void PublishedHyCatalogOffersFourteenButDefaultsToTwelveWithoutPromotingOldInventory()
     {
         var package = ModelCatalog.Packages.Packages.Single(item => item.Backend == "hy-mt-llama-cpu");
-        Assert.Equal(["zh_ja", "ja_zh", "zh_ko", "ko_zh", "zh_fr", "fr_zh", "zh_es", "es_zh", "zh_de", "de_zh", "zh_pt", "pt_zh"],
+        Assert.Equal(["zh_ja", "ja_zh", "zh_ko", "ko_zh", "zh_fr", "fr_zh", "zh_es", "es_zh", "zh_de", "de_zh", "zh_pt", "pt_zh", "zh_en", "en_zh"],
             package.Directions.Select(item => item.Id));
+        Assert.Equal(["zh_ja", "ja_zh", "zh_ko", "ko_zh", "zh_fr", "fr_zh", "zh_es", "es_zh", "zh_de", "de_zh", "zh_pt", "pt_zh"],
+            ModelCatalog.DefaultInstallationDirections(package).Select(item => item.Id));
         foreach (string language in new[] { "ja", "ko", "fr", "es", "de", "pt" })
         {
             Assert.True(ModelCatalog.IsSupportedSetting("zh", language));
