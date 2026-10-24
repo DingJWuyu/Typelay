@@ -4,32 +4,33 @@
 
 ## 先看结论
 
-本页于 **2026-10-24 08:44 UTC** 按已公开提交与 CI 证据更新。
+本页于 **2026-10-24 09:38 UTC** 按已公开提交与 CI 证据更新。
 
-- **CI502 已终态失败：Windows App 781 通过、17 失败、16 项显式研究未执行；另有浏览器扩展发现失败。** 17 项都是源点击前被同一 Windows Terminal 窗口遮挡，创建来源未证。浏览器在 setup 的 metadata evaluate 返回 ReferenceError，业务场景未跑；随后 Notepad/Hy 跳过，aggregate 退出证明检查实际执行并拒绝，不能据缺证明称进程泄漏。
-- **NativeFixture 编译补链、普通人工稿回源六分支及新增 foreign/router 集成阴性回归实际通过。** 共享 Runtime 1314 项和新增 7 项回归通过；本轮没有证据保证真实 0 前台间隙恰被触发，不把集成通过扩大为所有间歇根因已消失。
-- **隔离 App 回执正反、late ACK、expiry、Unknown、Owned Ctrl/Tab、5 项 StartupPeers、continuous、格式和包装本轮通过。** 普通正式接受、物理输入法与第三方部署仍未开放；原遮挡和 browser 问题按各自证据处理，不重跑刷绿。
-- **Linux 本轮跳过，体验继续推荐完整核验的 CI498。** 最近完整 Linux 实跑 CI501 的 Qt/GTK/Hy 结果仍有效作基线，未改变推荐或模型采用；生命周期与翻译质量分别判断。
+- **CI503 已终态失败，唯一失败是正式 Notepad 接受提示未出现。** Windows App 798 通过、0 失败、16 项显式研究未执行；Notepad 自动预览通过，但接受提示等待 90.017 秒后超时，后续三场景未跑，不能把预览等同正式接受。
+- **源准备与浏览器诊断已实际验证，本轮两类旧失败未复现。** 原 17 项 NativeSourceActivation、两项 covered 创建时间回归和浏览器 JSON 投影全部通过；真实浏览器两个候选的固定能力布尔值均为 true，setup 与六业务场景通过。这些结果没有证明旧 Terminal 来源或 ReferenceError 根因消失。
+- **回源、隔离 App 回执、Owned Ctrl/Tab、StartupPeers、continuous 与 Hy 生命周期本轮通过。** 回源六分支及 foreign/router 集成阴性回归通过；Windows Hy production 五阶段与 Settings 15 场景通过，正常退出与 worker 清理有实证。实际 0 前台间隙是否命中、物理输入法、第三方部署和翻译质量仍分别判断。
+- **Linux 本轮跳过，体验继续推荐完整核验的 CI498。** 最近完整 Linux 实跑 CI501 的 Qt/GTK/Hy 结果仍有效作基线，未改变推荐、模型采用或产品权限。
 
 ## 最近已核终态与实际结果
 
-[CI502 / run 40078040870](https://github.com/DingJWuyu/Typelay/actions/runs/40078040870) 于 2026-10-24 08:26:24 UTC 由唯一 push 触发，attempt 1，08:38:17 UTC 终态 `failure`。冻结本地 `604776419eb7a5d308220d9152c86d44eb3b6493` 对应远端 `96d3d18cc55c54a256b0ac52c32c5297db5a42a5`、tree `732eeb7dd04a93ecf9ddc819af196228d89cf7c2`；3 文件差异，精确读回、同分支非强推及源码 artifact 身份已核。
+[CI503 / run 40079876227](https://github.com/DingJWuyu/Typelay/actions/runs/40079876227) 于 2026-10-24 08:54:46 UTC 由唯一 push 触发，attempt 1，09:16:23 UTC 终态 `failure`。冻结本地 `5f2ef2e1358c8341f0c413d338743de265d1c864` 对应远端 `d04db65dfe25120a29a890ea5796574247e1b3d6`、tree `fa67aa33b718595cb7011a85da064a90bfe767fc`；6 文件差异，精确读回、同分支非强推及源码 artifact 身份已核。
 
 后继验证以 [Actions 入口](https://github.com/DingJWuyu/Typelay/actions) 中当前分支最新运行及原件为准。实现、实际通过、失败和未运行按下表分别记录；旧轮结果不代表新提交，一次通过不证明旧间歇问题根因已修。
 
 | 范围 | 已核结果 | 剩余边界 |
 | --- | --- | --- |
-| 共享、编译与包装 | Core 302、Runtime 1314、Windows contracts 123、Protocol 28 通过；shared worker 168、Python shared 29、Linux 输入反馈 181 通过。Windows build 与格式通过，worker 运行 168 项为 167 通过、1 跳过，browser profile Python 3 项、Ruff 与 133 文件格式通过；包装 69 项通过，含 native foreground guards 与 WinEvent | NativeFixture 缺失分部链接已通过实际编译，不再保留待编译排程；Windows worker 的 1 项跳过单独保留 |
-| Windows App 与源准备 | 781 通过、17 失败、16 项显式研究未执行。17 项 NativeSourceActivation 均在点击前报告 SourceClickObscured，同一 Terminal PID 4716/HWND 196962，为源/Broker 以外进程，后采几何一致 | 原件不证明终端由谁创建或激活。后继仅在原拒绝分支增加固定进程创建时间元数据与原 covered 回归，已双静态审查，Windows 未跑；这是诊断，不是遮挡修复 |
-| 普通人工稿回源 | 原六分支（含 shift）全部通过；新增已收到 foreign 前台后回原窗仍不得被迟到 ACK 恢复的真实 router 集成回归通过。共享 7 项间隙保稿、默认拒绝、foreign 与三类 cancel/late ACK 回归通过 | CI500 的 0 前台导致退休链已定位；本轮未证明那个真实瞬态再次出现并命中过例外。保留原 800ms、原稿基线、fresh capture 和撤权边界，不授予普通生产写入 |
-| 隔离 App 回执与前置 | SourceMessageReceipt 完整用例及拒绝派发对照、late ACK、expired installation、Unknown fence 通过；Owned Ctrl/Tab 和 5 项 StartupPeers 通过 | 原始 hook 观察与真实派发仍分开；这些受控实跑不证明 Terminal 来源或第三方部署资格 |
-| 原生受控源与研究退役 | owned 六例、source 两例和 dialog / peek / forged 三例通过，hook/进程/输入清理完整；来源分类自动采集保持退役 | 受控合成输入不授予严格物理来源或真实 IME 资格，不恢复旧研究凑运行 |
-| Windows continuous | 整条链通过，消费者自然 exit 0、activeProcesses 0 | 不证明此前 source Ctrl 退出的间歇原因已修 |
-| 浏览器与退出证明 | setup 9095ms 在 discover-loaded-extension 失败；5 targets、2 service workers、1 candidate，metadataRead=0，evaluate 返回 reference-error/valuePresent=false。后六业务场景未跑，快捷键/替换/submit 均为 0；browser 自然 exit 1、activeProcesses 0、cleanupErrors=[] | 同一次 guarded evaluate 的固定能力布尔值及安全异常行列诊断已实现、独立双静态审查通过，C# 与 Windows 未跑，精确原因仍未证；原认证、调用数、等待/重试与期限不变。Notepad 未运行且无退出证明；aggregate 检查实际拒绝，不把缺证明等同实际泄漏 |
-| 正式 Notepad 与 Windows Hy | 两者本轮均 skipped，没有新的场景结果。最近 CI500 Notepad 接受提示 90.005 秒超时、后续三场景未跑；当轮 Windows Hy 五阶段及设置 15 场景通过 | 不把旧 Notepad 失败或 Hy 通过冒充 CI502 结果。Hy UIA 间歇超时、质量与高级 scope 不因旧生命周期通过而关闭 |
+| 共享、编译与包装 | Core 302、Runtime 1314、Windows contracts 143、Protocol 28 通过；shared worker 168、Python shared 29、Linux 输入反馈 181 通过。Windows build 与格式通过，worker 运行 168 项为 167 通过、1 跳过，browser profile Python 3 项、Ruff 与 133 文件格式通过；包装 69 项通过，含 native foreground guards 与 WinEvent | Windows worker 的 1 项跳过单独保留；共享 Runtime 通过不代替真实平台场景 |
+| Windows App 与源准备 | 798 通过、0 失败、16 项显式研究未执行。17 项 NativeSourceActivation 全过；原 covered 单行/多行两回归含新增进程创建时间断言实际通过 | 本轮未再次观察真实 Terminal 遮挡；固定失败元数据已交付，不证明终端由谁创建或激活，不保留已完成诊断排程 |
+| 普通人工稿回源 | 原六分支（含 shift）全部通过；新增已收到 foreign 前台后回原窗仍不得被迟到 ACK 恢复的真实 router 集成回归通过。共享 7 项间隙保稿、默认拒绝、foreign 与三类 cancel/late ACK 回归通过 | 本轮未证明真实 0 前台瞬态再次出现并命中过例外。保留原 800ms、原稿基线、fresh capture 和撤权边界，不授予普通生产写入 |
+| 隔离 App 回执与前置 | SourceMessageReceipt 完整用例及拒绝派发对照、late ACK、expired installation、Unknown fence 通过；Owned Ctrl/Tab 和 5 项 StartupPeers 消费者回归通过 | 原始 hook 观察与真实派发仍分开；受控实跑不证明第三方部署资格 |
+| 原生受控源与研究退役 | owned 六例、source 两例及现役受控 native adapter 通过，hook/进程/输入清理完整；来源分类自动采集保持退役 | 受控合成输入不授予严格物理来源或真实 IME 资格，不恢复旧研究凑运行 |
+| Windows continuous 与退出证明 | continuous 整条链通过；continuous、browser、Notepad 三份同 run/attempt/head、各自 nonce 已核的自然退出证明均确认 activeProcesses=0，aggregate 实际通过 | 三个消费者根进程退出码依次为 0、0、1；Notepad 业务失败后的消费者退出，不等于其未运行的 ordinary-exit 场景通过 |
+| 浏览器合作输入 | setup 与六业务场景通过；两个 candidate 均 chromePresent/runtimePresent/getManifestCallable=true，metadataRead=2、matchingManifests=1，无 exception，异常行列为 null。JSON 投影类 35 项通过，含本批新增 20 项 | 同一次 guarded evaluate 诊断已交付；本轮正常返回不能解释 CI502 ReferenceError。仍为 unpacked 开发扩展、软件合成输入，不扩大部署或物理 IME 资格 |
+| 正式 Notepad | preflight、Settings/model、自动预览通过；automatic-accept-and-undo 在 await-public-acceptance-cue 90.017 秒 deadline，末次 acceptanceCue=0、previewOnlyCue=1，后续三场景未跑 | 普通正式接受仍未完成。后继仅将隔离真实 Notepad 两例迁到既有 source-message Broker/adapter 的 poll/retire 一次正文回执，双静态审查通过，C#/Windows 未跑；正式 Main/capability0 不变，UIAccess 也不是唯一剩余缺口 |
+| Windows Hy | production 五阶段、Settings 15 场景全部通过；英文补充 60.245 秒，14 方向冷启和中英普通源双向预览通过；ordinary-exit 明确 normalQuit=true、exitCode=0、全部 model workers 退出，cleanupErrors=[] | 不把本轮通过当旧 UIA 间歇超时根因已修；质量 not-reviewed，高级 scope 与跨旧版本恢复仍有各自缺口 |
 | Linux 产品链 | 本轮完整 Linux 与可选 Qt job 按未改动的 Windows-only 范围 skipped；最近 CI501 完整桌面链和 Hy 12 阶段通过，Qt 实际编辑回源/独立新键接受与 Undo 通过 | 本轮没有新 Linux 包；CI501 未重做内产品包采用评估，体验推荐仍是 CI498。XTest 不是物理键盘，Hy editor snapshot 不是高级 scope 或质量验收 |
 
-核验入口为工作区 `artifacts/ci502-independent/terminal-evidence-verified.json`。同目录的 `contracts-results.json`、`contracts-failures.json`、`activation-obscuration-verified.json`、`owned-startup-results.json`、`windows-results-verified.json`、`shared-results.json`、`source-results-verified.json`、完整 job 日志与 `publication-verified.json` 给出实际结果和身份。源码 archive 的 853 个成员、704 个文件与冻结树逐字/模式相符；early/final 23 份 TRX/source 原件逐字一致。Windows 内外包 SHA/CRC 与 551 个文件已核；本轮没有 Hy/Notepad 的加载身份回执，计算出的 releaseIdentity 不冒充实际加载核对，内 ZIP 未另留重复副本。最近 Linux 实跑证据在 `artifacts/ci501-independent/linux-results-verified.json`，推荐包证据仍在 `artifacts/ci498-independent/linux-package-verified.json`。公开运行链接供查阅实际 job/artifact，原始日志不复制进本页。
+核验入口为工作区 `artifacts/ci503-independent/terminal-evidence-verified.json`。同目录的 `contracts-results.json`、`owned-startup-results.json`、`windows-results-verified.json`、`shared-results.json`、`source-results-verified.json`、完整 job 日志与 `publication-verified.json` 给出实际结果和身份。源码 archive 的 853 个成员、704 个文件与冻结树逐字/模式相符；early/final 18 份 source 原件逐字一致。Windows 内外包 SHA/CRC 与 551 个文件已核，计算的 releaseIdentity 与 Notepad、Hy production、Hy Settings 三份实际加载回执一致；内 ZIP 未另留重复副本。最近 Linux 实跑证据在 `artifacts/ci501-independent/linux-results-verified.json`，推荐包证据仍在 `artifacts/ci498-independent/linux-package-verified.json`。公开运行链接供查阅实际 job/artifact，原始日志不复制进本页。
 
 ## 当前责任与下一动作
 
@@ -37,9 +38,8 @@ root 对集成、证据核验和采用决定负责；下表是当前公开责任
 
 | 责任线 / 负责人 | 当前动作与依赖 | 完成或停止条件 |
 | --- | --- | --- |
-| 编排与后继集成 / root | CI502 终态与原件已齐；编译补链和回源集成排程关闭，后继准备仅已审遮挡诊断及 browser 调查形成的必要变更，状态随实质批次同行 | 最终差异、独立双审、身份与授权齐备后再发布；不为文档单独触发整轮 CI，不重跑旧轮或放宽期限 |
-| 源点击遮挡 / triage_ci499_activation_failures | 原身份诊断仍只定位 Terminal 遮挡；已有两文件固定创建时间候选和原 covered 回归，双静态审查通过，格式/diff 通过，Windows 未跑，原准备/点击/安全判断不变 | 下一实跑核元数据及原拒绝保持，再区分终端出生时段；创建时间也不能证明谁激活旧窗口，不先改更多启动 flag 或宣称根治 |
-| 浏览器扩展发现 / triage_ci502_browser_discovery | 三文件诊断已实现并经独立双静态审查；folder format、diff/XML 与同表达式 Node 9 场景通过，C#、真实 CDP 与 Windows 未跑，原调用数和期限不变 | 下一实跑用固定能力布尔值/安全异常行列区分原 metadata 失败；原因仍未证，不把诊断称修复，不加等待、重试或预算，不把 setup 失败当业务投递失败 |
+| 编排与后继集成 / root | CI503 终态与原件已齐，两项有界诊断排程关闭；后继准备隔离 Notepad 消费者迁移及现役 Windows 说明，代码/说明已双静态审查，状态随该实质批次同行 | 精确组合、状态独立双审、身份与授权齐备后再发布；不为文档或再次观察旧间歇失败单开整轮 CI，不重跑刷绿或放宽期限 |
+| 隔离真实 Notepad 部署机制 / advance_windows_source_integration | 原两例已迁既有 retrieved-MSG 路线，核真实 poll/retire 一次正文回执而非 LL Activate；作者 folder format/diff 通过，C# 编译与 Windows 未跑，原 28 秒、按键序列及安全门保持 | 精确提交须实际验证：接受例恰一次 Verified 正文回执，撤回例零正文回执且原键旁路；两例按各自原路径核 Undo、焦点、零 LL activation/二次 Write、Quiet 与清理；受控通过也不开放正式 Main/capability0，不代替严格来源、真实 IME 和第三方部署验收 |
 | Linux 体验交付 / root | 保持 CI498 已核完整包推荐；最近完整 CI501 无新增 Linux 失败。保留用户真机、物理键盘/输入法反馈，旧 IME/投递延迟未获唯一根因证据 | 后继包须完整相关结果与身份才能替换推荐；未知 IME 仍保守拒绝，不延票、不重发唤醒、不自动发布 stable |
 | 模型采用 / root | 保持下方既有公开采用结论、默认、兼容和资源合同；只在新增产品故障或有实质新假设时安排最小验证 | 生命周期、质量、高级 scope 和资产许可各凭自己的证据；许可调查本身不授予新采用或公开权限，不扩大候选或推理预算 |
 | 权重许可链 / verify_minisbd_asset_provenance | 只读核查官方权重来源与对应许可链，区分代码许可证与权重许可证；不加载模型或运行推理 | 给出可复核的官方依据、缺口及使用边界；缺失依据保持未确认，不把许可推断写成已获授权 |

@@ -39,7 +39,7 @@ public sealed partial class NativeSourceControllerTests
             await broker.StartAsync();
             using var hook = new KeyboardHook(allowInjectedInput: true);
             await Until(() => hook.Ready, token);
-            using var input = new WindowsInputService(broker, 0, monitor: hook, isolatedSourceAcceptance: true);
+            using var input = new WindowsInputService(broker, 0, monitor: hook, sourceMessageAcceptance: true);
             var settings = new SettingsStore(Path.Combine(source.Directory, "settings.json"));
             var loop = new Loop();
             var view = new View();
@@ -49,10 +49,9 @@ public sealed partial class NativeSourceControllerTests
             stage = "installation-and-acceptance";
             await Until(() =>
             {
-                // The isolated positive case prepares one original install, not
-                // concurrent observation. Once it starts, repaint its ACK without
-                // a fixture Tick queuing another capture. This does not resolve
-                // production polling concurrency or identify a native queue sender.
+                // Keep the original positive-case install and its deadline.
+                // Once it starts, repaint its ACK without a fixture Tick queuing
+                // another capture; do not drain RPC work or replace the permit.
                 if (withdraw || broker.InstallsStarted == 0)
                     loop.Advance();
                 else
@@ -73,6 +72,8 @@ public sealed partial class NativeSourceControllerTests
             var installation = Assert.IsType<SourceAcceptanceResult>(broker.Installation);
             var installedPermit = Assert.IsType<AcceptancePermit>(broker.InstallationPermit);
             Assert.True(installation.Installed);
+            Assert.True(installation.Acknowledged);
+            Assert.Equal(installedPermit.ObservedAtMs + Limits.PermitMaxAgeMs, installedPermit.ExpiresAtMs);
             Assert.Equal(source.ProcessId, installation.Target.AsWindows().ProcessId);
             Assert.Equal((long)source.Field, installation.Target.AsWindows().ControlHwnd);
             rpcTrace?.Checkpoint("before-source-read");
@@ -96,6 +97,8 @@ public sealed partial class NativeSourceControllerTests
                         && terminal.Target == installed.Target && !view.CanAccept;
                 }, token);
                 Assert.False(broker.Claimed);
+                Assert.True(broker.Terminal!.Acknowledged);
+                Assert.Equal(0, broker.Receipts);
                 Assert.Null(hook.StockLastActivation);
                 Assert.Equal("你好", N.ReadText(source.Field, Limits.MaxTextUnits));
                 Assert.Equal(new TextRange(0, 0), N.ReadSelection(source.Field));
@@ -120,22 +123,32 @@ public sealed partial class NativeSourceControllerTests
                     Tab(false);
                     long tabSentAt = WindowsInterruptClock.NowMs;
                     rpcTrace?.Checkpoint("after-tab");
-                    await Until(() => hook.StockLastActivation is not null, token);
-                    var activation = hook.StockLastActivation!;
-                    rpcTrace?.Checkpoint("activation-observed");
-                    Assert.True(activation.Claimed,
-                        $"Notepad source activation did not claim: status={activation.Receipt?.Status}, reason={activation.Receipt?.Reason}, "
-                        + $"nativeReason=0x{activation.NativeReason:x}, budgetExceeded={activation.ExceededBudget}, elapsedMs={activation.ElapsedMs:F3}, "
+                    await Until(() =>
+                    {
+                        loop.Advance();
+                        return broker.Receipt is not null || broker.Terminal is { Installed: false };
+                    }, token);
+                    var accepted = Assert.IsType<SourceAcceptanceResult>(broker.Terminal);
+                    rpcTrace?.Checkpoint("source-receipt-observed");
+                    Assert.True(accepted.Claimed && broker.Receipt?.Status == WriteStatus.Verified,
+                        $"Notepad source message did not verify: claimed={accepted.Claimed}, acknowledged={accepted.Acknowledged}, "
+                        + $"status={accepted.Receipt?.Status}, reason={accepted.Receipt?.Reason}, "
                         + $"observedAtMs={installedPermit.ObservedAtMs}, expiresAtMs={installedPermit.ExpiresAtMs}, "
                         + $"acceptanceReadyAtMs={acceptanceReadyAt}, tabStartedAtMs={tabStartedAt}, tabSentAtMs={tabSentAt}, "
                         + $"resultObservedAtMs={WindowsInterruptClock.NowMs}, "
-                        + $"rpcTrace={(!activation.Claimed ? JsonSerializer.Serialize(rpcTrace!.Snapshot()) : "not-needed")}.");
-                    hook.Revoke(); // A claimed press still owns repeat and release.
+                        + $"rpcTrace={(!accepted.Claimed ? JsonSerializer.Serialize(rpcTrace!.Snapshot()) : "not-needed")}.");
+                    Assert.True(accepted.Acknowledged);
+                    Assert.Equal(installation.Grant, accepted.Grant);
+                    Assert.Equal(installation.Generation, accepted.Generation);
+                    Assert.Equal(installation.SessionRevision, accepted.SessionRevision);
+                    Assert.Equal(installation.Target, accepted.Target);
+                    Assert.Null(hook.StockLastActivation); // The source MSG, not LL Activate, executed the plan.
+                    hook.Revoke(); // Native still owns this claimed press's repeat and release.
                     Tab(false);
                     Tab(true);
                     pressed = false;
                     stage = "verified-receipt";
-                    await Until(() => { loop.Advance(); return broker.Receipt is not null && view.State == SessionState.NoSession; }, token);
+                    await Until(() => { loop.Advance(); return broker.Quiet && view.State == SessionState.NoSession; }, token);
                     Assert.Equal(1, broker.Receipts);
                     Assert.Equal(WriteStatus.Verified, broker.Receipt!.Status);
                     Assert.NotNull(broker.Receipt.VerifiedSnapshot);
@@ -151,9 +164,12 @@ public sealed partial class NativeSourceControllerTests
                 finally { if (pressed) Tab(true); }
             }
             Assert.Equal((source.Root, source.Field), N.Focused());
+            Assert.Null(hook.StockLastActivation);
+            Assert.Equal(withdraw ? 0 : 1, broker.Receipts);
             Assert.Equal(0, broker.Writes); // Source receipt, never a second Broker write.
-                                            // Exercise the actual application's native undo buffer. An unsupported
-                                            // undo is a failure, not a replacement WM_SETTEXT or a silently skipped case.
+            // Actual Notepad text/selection above observe key leakage without a
+            // raw hook counter. Exercise its native undo buffer too; unsupported
+            // undo fails rather than using WM_SETTEXT or silently skipping.
             stage = "native-undo";
             Assert.NotEqual((nuint)0, N.Send(source.Field, 0x00C7)); // EM_UNDO
             await Until(() => N.ReadText(source.Field, Limits.MaxTextUnits) == "你好", token);
@@ -352,7 +368,7 @@ public sealed partial class NativeSourceControllerTests
             };
             info.ArgumentList.Add(Path.Combine(RepositoryDirectory(),
                 "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"));
-            info.ArgumentList.Add(_queueIdentity is null ? "--source-broker" : "--broker-queue-probe");
+            info.ArgumentList.Add(_queueIdentity is null ? "--source-message-broker" : "--broker-queue-probe");
             if (_queueIdentity is not null)
             {
                 info.ArgumentList.Add(_queueIdentity);
@@ -404,15 +420,17 @@ public sealed partial class NativeSourceControllerTests
                     InstallationPermit = request.SourceAcceptance?.Permit;
                     Quiet = false;
                 }
-                if (request.Op is "source-retire" or "source-receipt" && response.SourceAcceptance is { } result)
+                if (request.Op is "source-retire" or "source-poll" && response.SourceAcceptance is { } result)
                 {
                     Terminal = result;
                     Quiet = result.Quiet;
                     Claimed = result.Claimed;
-                    if (request.Op == "source-receipt")
+                    // The real provider transfers one body before or at Quiet.
+                    // Later metadata-only retirement is not another completion.
+                    if (result.Claimed && result.Receipt is not null)
                     {
                         Receipts++;
-                        Receipt = result.Receipt;
+                        Receipt ??= result.Receipt;
                     }
                 }
                 failed = false;

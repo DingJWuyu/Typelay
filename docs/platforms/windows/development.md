@@ -97,7 +97,7 @@ if ($LASTEXITCODE -ne 0) { throw '普通 source MSG 研究失败，保留原结�
 
 测试内的真实 `NativeEditTransactions` 后端以默认关闭的 `sourceMessageRoute` 构造显式选入，在原精确 x64 binding 生命周期中成对安装 CALLWNDPROC 与 GETMESSAGE，两者使用同一个已加载 HMODULE。首次安装失败关闭本实例路线，并回滚已安装 hook；失败回滚仍未知时保留原句柄/精确进程/模块，不回退旧 LL 激活。正式 App/Broker 构造不选入，不发布新能力。
 
-fixture 不再 Load/Free 事务 DLL 或直接调用 native delegate，只在后端只读预备捕获后、原100ms grant之前安装上游观察 hook，以 CallNextHookEx 取得 native 返回的实际 MSG。它只借用已经加载的精确模块并采一次完整路径；后置结果仍核 `AppContext.BaseDirectory/TypeLay.NativeInput.dll` 与实际 module base，不借独立 Broker 观察进程的同名副本。路径不能证明目标只有一个模块，也不补齐来源资格。首键、同字段尾键、Undo/Quiet、成对后端 hook 所有权、早 Dispose 不退役及退出后模块回收已由 [CI497 source 两例](https://github.com/DingJWuyu/Typelay/actions/runs/40066099478)取得实际证据；安装失败回滚仍为静态审查范围。新的 v4 Prepared/Arm 及下述 App 回执接线尚待 Windows 复验。
+fixture 不再 Load/Free 事务 DLL 或直接调用 native delegate，只在后端只读预备捕获后、原100ms grant之前安装上游观察 hook，以 CallNextHookEx 取得 native 返回的实际 MSG。它只借用已经加载的精确模块并采一次完整路径；后置结果仍核 `AppContext.BaseDirectory/TypeLay.NativeInput.dll` 与实际 module base，不借独立 Broker 观察进程的同名副本。路径不能证明目标只有一个模块，也不补齐来源资格。首键、同字段尾键、Undo/Quiet、成对后端 hook 所有权、早 Dispose 不退役及退出后模块回收已由 [CI497 source 两例](https://github.com/DingJWuyu/Typelay/actions/runs/40066099478)取得实际证据；安装失败回滚仍为静态审查范围。v4 Prepared/Arm 与下述 App 回执接线也已由 [CI503](https://github.com/DingJWuyu/Typelay/actions/runs/40079876227) 的原 source 两例及隔离 App 消费者取得实际证据；这不补齐物理来源、真实 IME 或第三方部署资格。
 
 隔离 `NativeSourceControllerTests` 的无修饰 Tab 消费者现在选择 `--source-message-broker`，沿生产 App adapter、认证 Broker 和真实 native 后端取得完成回执，不再由 LL `_stockClaim` 触发执行。安装先发布 Prepared；App 取得原映射后先发布本地撤权 control 和 capture fence，再以一次 CAS Arm。原 generation/grant/目标/计划和100ms期限不变；Prepared/Armed 可撤，Claimed/Withdrawn 不得重置。源回调在进入下游链前实际观察到 Prepared 的输入先撤权并保留拒绝，LL 对尚未 Arm 的输入也只撤候选、原样旁路；这不是严格来源或安装前旧队列键的证明。
 
@@ -113,9 +113,9 @@ native 在调用一次 CallNextHookEx **之前**占住 source callback 寿命门
 
 精确 Quiet 之前后端 Dispose 不拆这两个源 hook；原成功行在尾键尚欠时尝试 Dispose，再用同一 repeat/up 的原断言验证未早拆。Quiet 后先卸 GETMESSAGE，再卸 CALLWNDPROC；任一步失败保留未关闭所有权。[Unhook 返回不代表没有在途回调](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-unhookwindowshookex)，本隔离构造保守持有本地 DLL 引用至精确目标进程句柄 kernel-signaled，零超时查询不等待、不阻挡目标退出，不承诺第三方热卸载。fixture Close 的显式参数仍只声明原 grant Quiet，不能授写权；未知时保留观察 hook，沿既有 owner 结束自有进程。无论此前是否 Quiet，退出后再次 Dispose 并要求 `sourceRouteClosed=true`；进程退出退休与 native Quiet 分开记录，不将 Kill 清理称作自然关闭。
 
-这只接入真实后端类的安装/退休所有权，不是 Broker 跨进程控制器闭环。App 的旧接线仍由 LL `_stockClaim` 触发 `source-receipt`；新的源回调完成通知尚未接入，不能直接开启旧 `sourcePrototype`。UIAccess 信任选择、严格同消息来源、真实 IME 与第三方部署仍独立，不因本片通过开放正式接受。
+隔离 App/Broker/native 完成回执闭环已接通并实跑：原自有源正例核一次完成、零 LL Activate/二次 Write、真实 capture fence、原键实际零派发及 Undo；撤回反例核原 down/up 实际派发。旧 sent-route 的 `_stockClaim`→`source-receipt` 仍供 F7/F24 等现役回归，不能与新路线混称。现有 `RealNotepadAcceptsOnceOrPassesTabAfterWithdrawal` 两例改用同一 `--source-message-broker` 路线，保留原按键序列、28秒截止、精确正文/选区/焦点和原生 Undo；它以真实 Notepad 结果观察派发，不添加 fixture raw hook 计数。新 Notepad 路线尚待精确提交的 Windows 验证，旧路线通过不沿用。UIAccess 信任选择、严格同消息来源、真实 IME 与第三方部署仍独立，正式 Main 与 capability0 不变。
 
-保持原100ms grant；sent-activation 的 pending-work 拒绝门不变，原 MSG 使用上述实际状态与一次消费条件。首 down 仍单独发送，确认后才发尾键和后置屏障，不增加输入、重试或续期。两行沿原30秒 owner/60秒单项上限，独立 CI 步骤复用退役 owned-TSF 的2分钟预算，Windows 总 job 仍75分钟，模型与其它步骤不变。`artifacts/source-message-acceptance/<唯一目录>/result.json`、runner.json/log 进入既有早期 source artifact 与末尾 artifact；runner 按实际退出码、两行完整性和清理区分成功观察、失败、缺失/重复及清理未知，`running`/空退出码仍是未完成。continue-on-error 仅使其它独立验收继续，不把研究失败改为通过。安装所有权迁移后的 Windows 两行尚须实际验收；sent pending 拒绝、MSG hint 不误拒及实际输入撤销/expiry/cookie/revoke 的对照当前仅覆盖 portable API 边界，不冒充 Windows 实测。私有两指针缺一的防御另由局部不变量断言核验，不伪称公开入口可构造该状态。
+保持原100ms grant；sent-activation 的 pending-work 拒绝门不变，原 MSG 使用上述实际状态与一次消费条件。首 down 仍单独发送，确认后才发尾键和后置屏障，不增加输入、重试或续期。两行沿原30秒 owner/60秒单项上限，独立 CI 步骤复用退役 owned-TSF 的2分钟预算，Windows 总 job 仍75分钟，模型与其它步骤不变。`artifacts/source-message-acceptance/<唯一目录>/result.json`、runner.json/log 进入既有早期 source artifact 与末尾 artifact；runner 按实际退出码、两行完整性和清理区分成功观察、失败、缺失/重复及清理未知，`running`/空退出码仍是未完成。continue-on-error 仅使其它独立验收继续，不把研究失败改为通过。安装所有权迁移与 v4 接线后的 Windows 原两行已通过；sent pending 拒绝、MSG hint 不误拒及实际输入撤销/expiry/cookie/revoke 的对照当前仅覆盖 portable API 边界，不冒充 Windows 实测。私有两指针缺一的防御另由局部不变量断言核验，不伪称公开入口可构造该状态。
 
 ## 同一检索处的独立来源分类观察
 
