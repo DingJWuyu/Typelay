@@ -245,6 +245,7 @@ class NativeForegroundGuardTests(unittest.TestCase):
                 28: "strict refusal survives downstream changes, reentry and Prepared Arm",
                 29: "strict tails cannot inherit controlled acceptance or revive uncertain debt",
                 30: "ordered source requires exact attached Prepared grant before LL Arm",
+                49: "ordinary Ctrl/function history rejects missing scans and consumes exact scans without writing",
                 43: "configured F1-F24 claim and consume exactly once at the actual MSG",
                 44: "invalid source keys and old source versions cannot install or read the body",
                 45: "wrong key and held modifiers cannot claim or revive an ordered grant",

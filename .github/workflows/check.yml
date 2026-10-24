@@ -615,6 +615,24 @@ jobs:
           }
           dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-hy-packages artifacts/hy-packages artifacts/package/TypeLay artifacts/hy-download tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll
           exit $LASTEXITCODE
+      # Uses two minutes of the existing seven-minute cache/artifact tail, after
+      # all prior desktop chains. It does not replace their failures or proofs.
+      - name: Package and smoke the isolated physical Tab handoff
+        id: physical-tab-package
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        timeout-minutes: 2
+        shell: pwsh
+        run: python eng/windows/package-physical-tab.py
+      - name: Upload the isolated physical Tab validation package
+        if: ${{ !cancelled() && steps.physical-tab-package.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: typelay-windows-physical-tab-${{ github.sha }}
+          path: |
+            artifacts/TypeLay-Windows-physical-Tab-validation.zip
+            artifacts/TypeLay-Windows-physical-Tab-validation.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -651,6 +669,11 @@ jobs:
             artifacts/hy-packages/trace-cold.jsonl.broker.jsonl
             artifacts/TypeLay-Windows-preview.zip
             artifacts/TypeLay-Windows-preview.zip.sha256
+            artifacts/physical-tab-package/*.json
+            artifacts/physical-tab-package/*.trx
+            artifacts/physical-tab-package/*.log
+            artifacts/physical-tab-package/*.stderr
+            artifacts/physical-tab-package/*.txt
           if-no-files-found: warn
           retention-days: 14
   linux:

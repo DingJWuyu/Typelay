@@ -1531,6 +1531,36 @@ static int ordered_old_witness_or_dormant_records_are_not_repaired(void) {
     return source_wire.state == 3 && !field.invalid_call && !source_mapped && !witness_mapped;
 }
 
+// Replay the passed Ctrl/F23 pairs around a separately consumed F7 command.
+// This is ordinary FIFO history after withdrawal, never an acceptance positive.
+static int ordered_command_history_requires_scan_identity(void) {
+    const uint32_t keys[] = {0xa2, 0xa2, 0x86, 0x86};
+    const uint32_t scans[] = {0x1d, 0x1d, 0x6e, 0x6e};
+    for (unsigned scan_identity = 0; scan_identity < 2; scan_identity++) {
+        if (!prepare_source_message_key(1, 0x76)
+            || !TypeLaySourceArmWitness(&source_wire, sizeof(source_wire), 0x44,
+                &witness_wire, sizeof(witness_wire))
+            || TypeLaySourceWithdraw(&source_wire, sizeof(source_wire)) != 2) return 0;
+        field.coarse_ms = 100;
+        for (unsigned i = 0; i < 4; i++)
+            publish_source_key(0x44, 100, keys[i], scan_identity ? scans[i] : 0,
+                i % 2 ? 0x90 : 0x10, 0, i % 2);
+        for (unsigned i = 0; i < 4; i++) {
+            uint32_t scan = scan_identity ? scans[i] : 0;
+            TestQueueMessage message = {handle(SourceWindow), i % 2 ? 0x101u : 0x100u,
+                i < 2 ? 0x11u : 0x86u, (scan << 16) | (i % 2 ? 0xc0000001u : 1u), 100, {0, 0}, 0};
+            TypeLaySourceOrderedGetMessageProc(0, 1, (LPARAM)&message);
+            if (message.message != (i % 2 ? 0x101u : 0x100u)
+                || witness_wire.poison != (scan_identity ? 0u : 1u)
+                || witness_wire.consumed != (scan_identity ? i + 1 : 0)
+                || source_wire.claim != 2 || source_wire.invoked || field.set_calls || field.replace_calls) return 0;
+        }
+        send_source(RevokeMessage);
+        if (source_wire.state != 3 || source_mapped || witness_mapped || source_allocated || field.invalid_call) return 0;
+    }
+    return 1;
+}
+
 static int ordered_fresh_key_consumes_once_at_the_actual_message(uint32_t key, uint32_t scan, uint32_t injected_flag, int system_messages) {
     if (!prepare_source_message_key(1, key)
         || !TypeLaySourceArmWitness(&source_wire, sizeof(source_wire), 0x44,
@@ -1648,7 +1678,7 @@ static int ordered_old_press_keeps_its_actual_key_scan_and_extended_identity(voi
         if (source_wire.state != 2) return 0;
         // A second configuration cannot retire or replace the held F7 grant.
         // Save the old envelope at this OS mapping seam, not native slot state.
-        SourceInstallation original;
+        static SourceInstallation original;
         copy(&original, &source_wire, sizeof(original));
         source_wire.grant[0]++;
         source_wire.accept_key = 0x87;
@@ -1873,6 +1903,7 @@ static int run_checks(void) {
     if (!ordered_failed_first_arm_keeps_the_started_observation()) return 41;
     if (!ordered_old_witness_or_dormant_records_are_not_repaired()) return 42;
     if (!ordered_source_requires_the_same_attached_prepared_grant()) return 30;
+    if (!ordered_command_history_requires_scan_identity()) return 49;
     // The controlled HARDWARE class may coexist with an injected LL flag;
     // this is a category contract, never a real UIAccess/hardware observation.
     if (!ordered_fresh_key_consumes_once_at_the_actual_message(9, 15, 0, 0)

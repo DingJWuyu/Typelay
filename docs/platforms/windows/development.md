@@ -149,12 +149,20 @@ SourceWitness v2沿用16520字节，原保留位132明确为recording-active，�
 
 本地GCC入口已运行实际native代码的初始化、新首键恰一次Verified/WM_NULL、原尾债Quiet与拒绝回归；包括启动前、pre-Arm、同tick、未来、缺记录/乱序/复用/溢出、旧grant、nested retrieval、焦点/正文/IME拒绝及普通注入。它是受控Win32边界，不是Windows桌面或物理/UIAccess证据。`NativeSourceControllerTests.Ordered`准备了真实App LL/source的SendInput拒绝、原迟到ACK的ordered变体，以及显式人工一次物理Tab阳性；后者不生成Tab、不改每grant100ms或原fixture30秒。另有实际 `SourceInputWitness.Publish` 的休眠/同tick/激活后连续记录测试，以及真实LL迟ACK用例的休眠零记录/零poison断言。旧C边界已复现旧writer发布孤儿，修复后的C红绿仅证明reader/初始化合同。[CI514](https://github.com/DingJWuyu/Typelay/actions/runs/40123888197) 已完成 Windows 编译，并通过真实 managed writer 的休眠/同tick/历史回归、ordered 迟到ACK撤权变体及实际 injected-edge 的完整拒绝链；后者已核真实LL记录、原键派发、正文不变、零写与退休，不是正向接受。物理Tab显式用例仍未执行；上述用例本地未运行的限制不变，真实UIAccess及真实composition仍未验收，不恢复已退休来源分类采集或自动发布。
 
-本次 F 键扩展在同一 C 边界先复现 eligible F7 不认领的红项；审查另发现 F10 的实际 system-key 形态，补独立红绿。新增冻结配置后通过 Tab、F1-F24 的普通消息、F10 的 SYS down/repeat 与两种 up、错误键/修饰键、Alt/context 拒绝、非法主键/旧版本以及原 key/scan/extended/context 尾身份回归。它只证明生产 C 算法在受控 OS 响应下的合同。Windows 普通注入阴性沿用上述真实链并增加 F7，先核 v6 grant 内的配置键与实际 LL eligible 记录，再要求原消息派发、零正文写和退休；[CI516](https://github.com/DingJWuyu/Typelay/actions/runs/40129359917) 的新构建已通过 Tab/F7 两行、SourceBroker 12 项及 SourceAcceptance 11 项，不拿旧 Tab 结果代替新 F7 证据。合法 Ctrl+F7 命令与无修饰 F7 接受共存时，保留已认领命令的 LL 消费和完成语义，不将它放入来源 FIFO。真实 Hook/源映射回归检查 Direct 的既有拒绝与消费；冷首次 Wake 回归检查同主键 Ctrl+F7 经 Hook、Router、生产 Broker 得到精确只读捕获及命令证据，而非只认领按键后丢弃延迟捕获。CI516 的 Direct 回归在 F7 两边未派发、published 增加四条之后，因 witness poison=1 实际失败；后续命令与退休断言未到达。当前失败证据仅补本例四条显式 Ctrl/F23 记录、before/after 头及对应源 MSG time/bits，不改变输入、断言、期限或生产匹配器；scan 与时序原因仍待原件确认，诊断不是修复。首次 Wake 全组在源准备遮挡处失败，尚未执行新 Wake 逻辑。普通注入不作为来源接受正向证明。现役 WinEvent claim 探针同步 v6 元数据及主键校验，旧三条重入/撤权回归保留，宿主对象编译不代表 Windows 回调已验证。人工正向入口仅泛化为显式 Tab/F7/F24 三行，各按提示一次真实按下/释放，不生成输入或延长许可。
+本次 F 键扩展在同一 C 边界先复现 eligible F7 不认领的红项；审查另发现 F10 的实际 system-key 形态，补独立红绿。新增冻结配置后通过 Tab、F1-F24 的普通消息、F10 的 SYS down/repeat 与两种 up、错误键/修饰键、Alt/context 拒绝、非法主键/旧版本以及原 key/scan/extended/context 尾身份回归。它只证明生产 C 算法在受控 OS 响应下的合同。Windows 普通注入阴性沿用上述真实链并增加 F7，先核 v6 grant 内的配置键与实际 LL eligible 记录，再要求原消息派发、零正文写和退休；[CI516](https://github.com/DingJWuyu/Typelay/actions/runs/40129359917) 的新构建已通过 Tab/F7 两行、SourceBroker 12 项及 SourceAcceptance 11 项，不拿旧 Tab 结果代替新 F7 证据。合法 Ctrl+F7 命令与无修饰 F7 接受共存时，保留已认领命令的 LL 消费和完成语义，不将它放入来源 FIFO。真实 Hook/源映射回归检查 Direct 的既有拒绝与消费；冷首次 Wake 回归检查同主键 Ctrl+F7 经 Hook、Router、生产 Broker 得到精确只读捕获及命令证据，而非只认领按键后丢弃延迟捕获。CI517 的有限对账确认 Direct 回归的四条 Ctrl/F23 记录及源 MSG 均为 scan0，首个 Ctrl 已越过初始时间下界但被生产非零 scan 门拒绝，consumed 保持0并 poison；F7 两边未派发，未进入 FIFO。测试修正仅为经过来源的 Ctrl/F23 一次解析并冻结 scan，F7 命令输入不变，保留 poison=0 和全断言，另核四条 consumed 与非授权历史；生产匹配器及期限不改。受控 C 对照已验证 scan0 拒绝、完整 scan 四历史无写，修后的 Windows 命令整链仍未运行；一次性源 MSG 诊断已完成用途并移除。CI517 的首次 Wake 12 项均通过，包括同主键 Ctrl+F7 的延迟只读捕获。普通注入不作为来源接受正向证明。现役 WinEvent claim 探针同步 v6 元数据及主键校验，旧三条重入/撤权回归保留，宿主对象编译不代表 Windows 回调已验证。人工正向入口仅泛化为显式 Tab/F7/F24 三行，各按提示一次真实按下/释放，不生成输入或延长许可。
 
 ## 正向接受的剩余条件
 
 - 隔离有序候选已有受控 C 正反边界、Windows 编译、managed 历史与真实普通注入拒绝证据。下一正向证据入口为现有 `ManualPhysicalAcceptanceKeyUsesOrderedSourceOnceAndSettlesItsOriginalTails`：每行一次指定的无修饰真实物理键须取得一次Verified、零原键派发/LL Activate/二次写、Undo、原尾键退休及清理；使用原100ms grant和30秒fixture，不补按键或续期。真实UIAccess、IME与正式部署仍须各自验收，不能由该物理例或普通注入拒绝替代。
 - 正式 Main/capability0 保持关闭；原输入、期限、身份和清理限制不变，未知零写拒绝，不以重试、等待或延时补成成功。
+
+### 无 SDK 的隔离物理 Tab 验证包
+
+Windows artifact 可另含 `TypeLay-Windows-physical-Tab-validation.zip` 与 SHA256，不是产品 ZIP。它保留现有 App.Tests、NativeFixture、Broker 的三个 framework-dependent Release 输出相对目录和根 `TypeLay.slnx`，附构建身份、实际锁定依赖原始许可及[一次执行说明](../../../packaging/windows/physical-tab/README.md)。使用者需预装 .NET 10 Desktop Runtime x64、PATH 中的同一 x64 `dotnet` 和独占已解锁物理桌面，不需 SDK、Python、模型或管理员；包不安装系统组件。
+
+`eng/windows/package-physical-tab.py` 只在所有既有桌面链之后运行，从原7分钟缓存/上传尾部使用2分钟，不改75分钟job、首组前台准备或三份modelproof。它要求本轮原App TRX中既有ordered普通注入Tab/F7两行已Passed；压缩候选后解至checkout外的新含空格/中文目录，用原exe先发现唯一无Skip的 `ManualPhysicalKey=Tab` 行，再执行同一既有阴性method，要求2 executed/2 Passed/零跳过和原owned清理。失败不输出可供运行的验证ZIP，只保留发现原件、stdout/stderr、TRX与退出码；原其它失败仍红。该搬迁链未由本地静态检查证明，须在实际Windows CI运行。
+
+用户只按包内说明亲手一次Tab；精确method和公开行trait共同选择，不保存CI case ID、不解析显示名称。结果须为1 executed/1 Passed/零跳过，原“你好”→固定“Hello”、自动Undo、30秒fixture/100ms grant、尾键退休与自有退出不变。F7/F24不是普通用户默认项，阴性smoke及物理阳性都不开放UIAccess/真实IME/正式部署或Main/capability0。
 
 
 ## 同一检索处的独立来源分类观察
