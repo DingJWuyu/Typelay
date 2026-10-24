@@ -82,6 +82,8 @@ internal sealed class SourceInstallationReentry : IDisposable
                     N.SetProp(_root, property, N.GetProp(_root, property) + 1);
             }
 
+            ObserveCommandWitness(message);
+
             // A distinct, explicitly selected input key marks an observation
             // boundary in the same source-thread input queue as the tested key.
             nint barrierKey = N.GetProp(_root, "TypeLay.Test.SourceBarrierKey.v1");
@@ -108,6 +110,32 @@ internal sealed class SourceInstallationReentry : IDisposable
             }
         }
         return CallNextHookEx(0, code, wp, lp);
+    }
+
+    // Opted in only by the command/FIFO regression, for its exact own field
+    // and explicit Ctrl/barrier pairs. Retain the first tuple and a count, not
+    // a queue log. This observer never edits input or supplies write authority.
+    private void ObserveCommandWitness(N.MessageStruct message)
+    {
+        nint field = N.GetProp(_root, "TypeLay.Test.SourceCommandWitnessField.v1");
+        if (field == 0 || message.Hwnd != field || !IsOwnEdit(field))
+            return;
+        nint barrier = N.GetProp(_root, "TypeLay.Test.SourceBarrierKey.v1");
+        string? role = message.WParam == 0x11 ? "Control"
+            : barrier != 0 && message.WParam == (nuint)barrier ? "Barrier" : null;
+        string? edge = message.Message is 0x100 or 0x104 ? "Down"
+            : message.Message is 0x101 or 0x105 ? "Up" : null;
+        if (role is null || edge is null)
+            return;
+        string prefix = "TypeLay.Test.SourceCommand" + role + edge;
+        nint count = N.GetProp(_root, prefix + ".Count.v1");
+        if (count == 0)
+        {
+            N.SetProp(_root, prefix + ".Time.v1", (nint)message.Time);
+            N.SetProp(_root, prefix + ".Bits.v1", message.LParam);
+            N.SetProp(_root, prefix + ".Message.v1", (nint)message.Message);
+        }
+        N.SetProp(_root, prefix + ".Count.v1", count + 1);
     }
 
     internal void ObserveDispatchedInput(N.MessageStruct message)

@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Interop;
 using TypeLay.Core;
 using TypeLay.Runtime;
@@ -471,7 +472,14 @@ public sealed class NativeSourceActivationTests(WpfDesktopFixture ui)
         {
             // This group can be the first desktop consumer. Establish the caller's
             // own foreground window instead of relying on a previous WPF test.
-            var navigation = new Window { Title = "TypeLay source setup navigation", Width = 160, Height = 100 };
+            var navigation = new Window
+            {
+                Title = "TypeLay source setup navigation",
+                Width = 160,
+                Height = 100,
+                // An empty Window does not raise ContentRendered.
+                Content = new TextBlock { Text = "Preparing the test source." }
+            };
             var rendered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             navigation.ContentRendered += (_, _) => rendered.TrySetResult();
             try

@@ -4,34 +4,34 @@
 
 ## 先看结论
 
-本页于 **2026-10-24 20:16 UTC** 按 CI515 完整终态、原件及实际包身份更新；通过、真实失败和未运行分别记录。
+本页于 **2026-10-24 20:52 UTC** 按 CI516 完整终态与原件更新；通过、真实失败和未运行分别记录。
 
-- **Notepad按需与普通退出已实际闭环。** 原单次F9、Esc保源、Direct与原生Undo1357ms通过；普通退出814ms通过，源进程、App和模型worker正常退出，原文件未改。真实Notepad丢弃回归明确匹配 `CommandButton_7` 并exit0，不能把此退出修复扩大成正式自动接受已开放。
-- **正式自动Tab仍明确不具备能力。** 102ms在公开preview-only状态保留 `required-capability-unavailable`，不发接受键，编辑依赖未跑；Notepad总exit1与最终三proof成功并存。Main/capability0不变，物理/UIAccess、真实IME与部署资格仍缺。
-- **App17个失败停在新的导航前置。** App859过/17失败/19未执行；Activation17均在RequestOwnedForeground返回SourceForegroundRefused，尚未到WaitVisible、Prepare或业务。前后同为非零外部root197068/PID2248/thread2404，当前原件不识别其进程种类，不能沿用CI514的terminal标签或断定创建者。
-- **Hy有限诊断及生命周期已验证各自范围。** 新存储Unchanged七分支、Unconfirmed两分支及WPF有限投影两分支通过；Settings15场景与production五阶段全过。CI513候选hello后的PublicationUnchanged未复现、真实I/O原因仍未知；不改文件共享、发布/恢复结果或模型质量结论，不为采错另跑。
-- **下一批只推进已审候选。** 源激活测试补真实caller自有WPF前台前置；隔离有序接受补冻结无修饰Tab/F1-F24及F10系统消息形态，两者已双轴静态GO，新增C#/Windows行为未跑。共享、编译、格式、native/包装、continuous与browser本轮通过；Linux按scope skipped，推荐仍CI498。
+- **新前台准备有一个确定的测试构造错误。** Activation17均在无Content窗口的ContentRendered等待耗尽30秒，未到Activate或源导航；空Content不触发该事件。补固定非空TextBlock的最小修正已双轴静态GO，修后前台资格及原17业务仍待Windows实跑，不改预算或把此原因套到其他失败。
+- **其余失败分开处理。** App843过/43失败/21未执行；FirstWake/WakeCapture另24例在注入前被同一Terminal遮挡，Setup正例1例在点击后焦点等待超时，均未定位根因。新F7同键控制例已记录四个事件，但witness poison为1而非0；后续记录身份/控制断言未执行，不能凭前半链放行。
+- **本轮后段因原预算门未运行。** continuous全部通过，随后剩3417秒低于package chain固定要求3600秒，预算准入失败；打包、正式browser/Notepad、aggregate退出门及两Hy链均skipped。没有新产品ZIP，也不是新Notepad/Hy业务失败或已证泄漏，不延长75分钟job或后段预算。
+- **最近正式Notepad与Hy证据仍是CI515。** Notepad按需正文/Esc/Direct/原生Undo及普通退出实际通过，自动Tab公开能力否定仍保留总exit1；Hy Settings15与production五阶段通过。CI516未重验这些正式链，旧Hy I/O、遮挡及焦点间歇原因不称已根治。
+- **编译和受控来源验证有进展但不等于部署。** v6/49384完整编译、Contracts166、原source2/owned6、Tab/F7注入拒绝回归通过；物理Tab/F7/F24均未执行。Main/capability0不变，物理/UIAccess、真实IME与部署资格仍缺。Linux按scope skipped，推荐仍CI498。
 
 ## 最近已核终态与实际结果
 
-[CI515 / run 40127283203](https://github.com/DingJWuyu/Typelay/actions/runs/40127283203) 于 2026-10-24 19:52:44 UTC 由唯一push触发，attempt1，20:12:45 UTC终态 `failure`。冻结本地 `91831cd411c1fb943d1117cb330144e05ce93d1e` 对应远端 `56591b10cbe6e0e9b23f407abe3d6ffc6a7c3f20`、tree `836e63dbd2a85ccddcccc19635703635742bf486`；13文件精确发布、718叶和非强推读回已核。失败步骤为App行为与正式Notepad，不把整体红等同于本批全部目标失败。
+[CI516 / run 40129359917](https://github.com/DingJWuyu/Typelay/actions/runs/40129359917) 于 2026-10-24 20:20:46 UTC 由唯一push触发，attempt1，20:39:06 UTC终态 `failure`。冻结本地 `23ee6389255abda2a6a23d22a3783af537c2b5a1` 对应远端 `4913847573f7913c7ed0da0e7ff4f3c169c7e80c`、tree `7511689df2ac517e1451d20bacc72604a175d645`；22文件精确发布、718叶和非强推读回已核。失败步骤为App行为与后段预算准入，不把整体红等同于每条业务链失败。
 
 后继验证以 [Actions 入口](https://github.com/DingJWuyu/Typelay/actions) 中当前分支最新运行及原件为准。候选静态审查不算实跑，一次通过不证明旧间歇问题根因已修。
 
 | 范围 | 已核结果 | 剩余边界 |
 | --- | --- | --- |
-| 共享、编译与包装 | Core302、Runtime1318、Windows contracts161、Protocol28通过；shared worker168、Python shared29、Linux输入反馈181通过。Windows完整编译、format、worker168运行/1平台跳过、browser Python3、Ruff/format133通过；native adapter与72项包装通过 | 不把受控native/包装结果当物理输入或正式部署资格 |
-| Windows App 与源准备 | App859过/17失败/19显式未执行；Activation17均在RequestOwnedForeground拒绝。18setup、首次Wake11、snapshot8、编排14、53owned通过 | 原caller请求前后均外部PID2248/root197068；失败发生于可见性等待与点击之前，不称点击遮挡复现或业务断言失败。caller前台前置候选尚待实跑 |
-| 隔离有序来源 | OrderedSourceRecordsTheRealInjectedEdgeButDoesNotConsumeOrWrite完整Passed，实际记录/eligible、原键派发、原文/零写/retire断言通过；SourceWitnessWriter初始化/历史回归通过 | 本轮通过不证明CI513唯一原因就是same-tick。手动物理Tab例NotExecuted；现有v5拒绝证据不等于后继v6功能键扩展已跑，不代替物理/UIAccess正向、IME或部署 |
-| 隔离真实 Notepad 与回执 | source-message接受/撤回两例、owned同步六例runner exit0且hooks/process/input清理全真；App真实Notepad两例、receipt/fence、foreign回归通过 | 原28秒与输入不变，旧机械消费者不授新来源资格，Main/capability0关闭 |
+| 共享、编译与native | Core302、Runtime1318、Windows contracts166、Protocol28在shared与Windows均通过；shared worker168、Python shared29、Linux输入反馈181通过。Windows完整编译、format、worker168运行/1平台跳过、browser Python3、Ruff/format133通过；native受控16项通过 | 本轮产品包装跳过，不沿用旧72项包装结果冒称新包通过；受控native不代替物理输入或部署 |
+| Windows App 与准备 | App843过/43失败/21未执行。Activation17在ContentRendered等待失败；FirstWake12与WakeCapture12在SourceClickObscured拒绝；Setup18项中17过、foreground正例点击后焦点等待失败 | 24例遮挡原件同Terminal PID4056/HWND262230，创建时间早于run与testhost；不证明创建者或与Setup同因。修正空窗口只针对17项，不降低命中、身份或焦点门 |
+| 隔离有序来源 | Tab/F7注入边缘拒绝两例与SourceWitnessWriter历史回归通过；Broker12、Acceptance11通过。新同键控制例在四记录计数通过后，poison预期0实际1失败 | 后续逐记录身份和控制断言未跑；当前原因未知，先有限对账，不放宽poison。物理Tab/F7/F24三例NotExecuted，软件注入拒绝不证明物理/UIAccess正向 |
+| 隔离真实 Notepad 与回执 | source-message接受/撤回两例、owned同步六例runner exit0，hooks/process/input清理全真；App真实Notepad接受/撤回两例、receipt/fence及foreign回归通过，53owned与编排14、snapshot8通过 | 原28秒与输入不变；这些隔离消费者不开放正式Main/capability0，也不代替本轮未运行的shipped Notepad链 |
 | 普通人工稿回源 | Windows六回源及foreign/router实际链通过，共享既有间隙保稿、默认拒绝、foreign与cancel/lateACK回归通过 | 不保证本轮命中0前台瞬态；原800ms、稿基线、fresh capture及撤权边界不变 |
-| Windows continuous 与浏览器 | continuous全链通过，含练习按需与Chrome cold/new-tab；browser setup及六业务场景全部通过 | 旧1460、导航aborted、capture-failed根因仍未知；不为重现另跑，不加等待重试或扩大采集 |
-| 退出证明与后继门 | before-notepad精确两proof门、最终三proof门通过；三个各自nonce与run/attempt/head、自然exit0/0/1、active0匹配 | fixture自然退出不自行证明业务成功；本轮App普通Quit另有Notepad原场景证据，自动Tab能力否定仍保红 |
-| 正式 Notepad | 自动Tab102ms公开能力否定、编辑依赖not-run；按需1357ms正文/Esc/Direct/Undo通过。真实丢弃回归414ms匹配CommandButton_7并exit0，四selector与六owner正反回归全过；正式普通退出814ms通过，sourceNormalExit/appNormalExit/modelWorkersExited/originalFileUnchanged全true | 已关闭按钮定位与普通退出修复排程；未知或歧义仍拒绝，首Invoke后只观察退出，原520+20与cleanup未改。此证据不开放正式接受或产品权限 |
-| Windows Hy | production五阶段、Settings15场景全过；select-argos70835ms，ordinary-exit689ms且normalQuit/exit0/全部worker退出。新Unchanged7、Unconfirmed2及WPF有限投影/清除2回归实际通过，实际加载身份相符 | 新诊断真实安装故障分支本轮未命中；旧PublicationUnchanged未复现、I/O原因未证。AccessDenied只分类系统结果，不指认锁/读取者；不推导质量或高级scope放行 |
+| continuous 与浏览器 | continuous全链通过，含练习按需、Chrome cold/new-tab和原控制键；其own consumer原件记录natural exit0、kernel signaled、active0，与本run/attempt/head一致 | 后继正式browser未跑。continuous nonce未在后继门日志取得独立expected值，不能声称最终nonce校验或三proof门通过；旧1460/导航/capture-failed间歇原因仍未知 |
+| 后段准入与产物 | 原75分钟job已耗1083秒、剩3417秒，低于固定3600秒而拒绝。步骤28至36全部skipped，最终仅上传小原件 | 本轮没有产品ZIP、正式Notepad/Hy结果或aggregate退出门执行；不把缺后继proof说成泄漏，不延预算或重跑刷绿 |
+| 正式 Notepad 最近基线 | CI515自动Tab102ms公开能力否定、编辑依赖not-run；按需1357ms正文/Esc/Direct/Undo和普通退出814ms通过，sourceNormalExit/appNormalExit/modelWorkersExited/originalFileUnchanged全true。CI516 App丢弃及4 selector/6 owner回归通过 | 已关闭按钮定位与普通退出修复排程；本轮正式链skipped，不冒新验证。未知/歧义仍拒绝，首Invoke后只观察退出，原520+20及cleanup不变 |
+| Windows Hy 最近基线 | CI515 production五阶段与Settings15场景通过；CI516存储Unchanged7、Unconfirmed2及WPF有限投影/清除2回归通过，正式两Hy链skipped | 新诊断真实安装故障未命中；CI513候选hello后的PublicationUnchanged原因仍未知。AccessDenied只分类系统结果，不指认锁/读取者，不推导质量或高级scope放行 |
 | Linux 产品链 | 本轮full与可选Qt job均按scope skipped。最近CI511完整job success，GTK4/Qt各23项及Hy12阶段通过，新时耗覆盖原GTK4接受链和Qt首wake | 旧拒绝根因仍未知，无新有证据的可执行修复；保持实现及CI498推荐，不另跑或新增可选开发 |
 
-核验入口为 `artifacts/ci515-independent/terminal-evidence-verified.json`，同目录保留完整job日志、共享/Windows TRX、场景原件与发布收据。源码archive867成员、718文件与冻结树逐字/模式一致；18个source原件和5份早TRX与final逐字一致。Windows outer89,295,552字节、112项CRC及SHA已核；内包87,137,989字节、551项CRC、SHA `b1bc6918b93d493f4f98d58af7b130f20eb9f585d39012358548417eaa10e456`，计算release identity `157ebdd234145a41702311bad86b21973f57faad76d0d4258d2b36b80ddb2eec` 与Notepad及两Hy报告实际加载身份相符，未重复解出内包。CI511 Linux原件与CI498推荐证据不变，原始日志不复制进本页。
+核验入口为 `artifacts/ci516-independent/terminal-evidence-verified.json`，同目录保留完整job日志、共享/Windows TRX、场景原件与发布收据。源码archive867成员、718文件与冻结树逐字/模式一致；18个source原件和5份早TRX与final逐字一致。四份artifact均核metadata大小/SHA与完整CRC；最终Windows outer2,285,011字节、87项，SHA `24db9b95aca427e8760678b22ac2b476d77767e643e82328d117c6bfc5042091`，无内产品包。CI515正式Notepad/Hy与包身份、CI511 Linux及CI498推荐原件保持；原始日志不复制进本页。
 
 ## 当前责任与下一动作
 
@@ -39,8 +39,9 @@ root 负责集成、证据核验和采用决定；下表是现役责任线，不
 
 | 责任线 / 负责人 | 当前动作与依赖 | 完成或停止条件 |
 | --- | --- | --- |
-| 源激活测试前置 / triage_source_setup_ci498，root | 候选已双轴静态GO：第一组Desktop测试自行建立真实caller自有WPF前台，再执行原单次自有源导航和Prepare；关闭准备窗口后只观察精确源焦点，不重试或放宽拒绝。新编译/Windows未跑，CI515首因仍待验证 | 原17项在真实Windows完成准备及后续业务断言、既有遮挡/焦点拒绝与清理仍过后关闭本候选排程；失败按实际阶段处理，不把该前置假设当已证终端根因 |
-| 隔离接受功能键 / implement_ordered_function_key_acceptance，root | 完整候选已双轴静态GO：冻结无修饰Tab/F1-F24主键贯穿原Broker及source owner，v6/49384同步全部消费者含WinEvent probe，Witness v2不变；保留认领键尾债和同主键Wake完成语义。作者受控C红绿通过，新C#/Windows、真实物理/UIAccess未跑 | 随正常批次核完整编译、真实managed/Broker/FirstWake及原source2/Notepad消费者；实际F10 SYS与错误键/修饰键负控分别验证。保持100ms/原来源IME拒绝和Main/capability0，受控C不冒物理接受或部署资格 |
+| 源激活测试前置 / triage_source_setup_ci498，root | 固定非空Content窄修已双轴静态GO，保持原事件等待、单次Activate/源导航及关闭后精确焦点观察。新C#/Windows未跑，不等待更大功能片才验证 | 原17项完成准备和业务，既有遮挡/焦点拒绝与清理保持后关闭；失败按新实际阶段处理，不能以渲染通过冒称前台资格成立 |
+| 隔离接受功能键 / implement_ordered_function_key_acceptance，root | v6主键及全部消费者已编译；真实同键控制回归停在poison。现有四记录与Ctrl/F23源MSG的有限对账已实现并获双轴静态GO，新C#/Windows未跑；它不是已证生产根因或已验修复。物理验证包另线准备，不作为本窄修发布前置 | 原poison/事件身份/控制行为整链通过前不称该回归修好。保持原来源、IME、期限与Main/capability0；受控软件证据不冒物理或部署资格 |
+| 其余源准备失败 / root | 分开保留24例注入前遮挡与1例点击后失焦事实；本轮原件不足以把它们归为一个根因，不推广尚未成功的导航前置 | 有实际定位证据再裁定最小修复或复用既有点击回执；不增加激活绕行、点击重试或预算，不为重现单独跑CI |
 | Linux体验维护 / root | 保持当前实现与CI498推荐，接收真机/物理输入法反馈，不增加可选开发 | 新实际故障或用户反馈再判断最小必要动作；未知IME保守拒绝，不自动发布stable |
 | 模型采用 / root | 保持下方既有公开采用结论、默认和资源合同；新增产品故障或实质新假设才安排最小验证，与Windows独立推进 | 生命周期、质量、高级scope与许可各凭自身证据；不扩大候选、推理预算或公开范围 |
 

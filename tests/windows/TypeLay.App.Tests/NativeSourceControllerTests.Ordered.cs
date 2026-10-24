@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using Microsoft.Win32.SafeHandles;
 using TypeLay.Core;
 using TypeLay.Runtime;
@@ -211,6 +212,7 @@ public sealed partial class NativeSourceControllerTests
     {
         await using var native = await ProductionForegroundWriteTests.Desktop.Start(orderedSourceMessageWitness: true);
         await native.Prepare(native.A, "你好", new(0, 2));
+        Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceCommandWitnessField.v1", native.A));
         Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceObservedKey.v1", 0x76));
         Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceBarrierKey.v1", 0x86));
         using var hook = new KeyboardHook(allowInjectedInput: true);
@@ -248,34 +250,44 @@ public sealed partial class NativeSourceControllerTests
                 SessionShortcutBindings.Restore("F7", "Esc"), true);
             Assert.Contains(hook.RegisteredShortcuts, binding => binding.Action == "direct"
                 && binding.Key == 0x76 && binding.Modifiers == ShortcutModifiers.Control);
-            long before = witness.ReadInt64(56);
-            Send(0x11, false);
-            Send(0x76, false);
-            Send(0x76, true);
-            Send(0x11, true);
-            Send(0x86, false);
-            Send(0x86, true);
-            await Until(() => N.GetProp(native.Root, "TypeLay.Test.SourceBarrierUp.v1") == 1, native.Token);
-            Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceObservedDown.v1"));
-            Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceObservedUp.v1"));
-            long after = witness.ReadInt64(56);
-            Assert.Equal(before + 4, after); // Ctrl pair and barrier pair, never the consumed F7 pair.
-            Assert.Equal(0u, witness.ReadUInt32(8));
-            for (long sequence = before + 1; sequence <= after; sequence++)
+            ulong nonce = broker.Installation!.Endpoint!.Nonce;
+            var beforeWitness = ObserveOrderedWitness(witness, nonce);
+            long before = beforeWitness.Published;
+            try
             {
-                int record = 136 + (int)((sequence - 1) % 256) * 64;
-                Assert.Equal(sequence, witness.ReadInt64(record));
-                Assert.NotEqual(0x76u, witness.ReadUInt32(record + 36));
+                Send(0x11, false);
+                Send(0x76, false);
+                Send(0x76, true);
+                Send(0x11, true);
+                Send(0x86, false);
+                Send(0x86, true);
+                await Until(() => N.GetProp(native.Root, "TypeLay.Test.SourceBarrierUp.v1") == 1, native.Token);
+                Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceObservedDown.v1"));
+                Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceObservedUp.v1"));
+                long after = witness.ReadInt64(56);
+                Assert.Equal(before + 4, after); // Ctrl pair and barrier pair, never the consumed F7 pair.
+                Assert.Equal(0u, witness.ReadUInt32(8));
+                for (long sequence = before + 1; sequence <= after; sequence++)
+                {
+                    int record = 136 + (int)((sequence - 1) % 256) * 64;
+                    Assert.Equal(sequence, witness.ReadInt64(record));
+                    Assert.NotEqual(0x76u, witness.ReadUInt32(record + 36));
+                }
+                Assert.True(hook.TryRead(out var command));
+                Assert.Equal("direct", command!.Kind);
+                Assert.Equal(Denial.StaleObservation, command.Rejection); // Configuration removed its old read basis.
+                Assert.Null(command.Permit);
+                await Until(() => { hook.TryRead(out _); return broker.Retired; }, native.Token);
+                Assert.Equal("你好", N.ReadText(native.A, Limits.MaxTextUnits));
+                Assert.Equal(0, broker.Writes);
+                Assert.Equal(0, broker.CompletionTransfers);
+                native.AssertZeroSubmits();
             }
-            Assert.True(hook.TryRead(out var command));
-            Assert.Equal("direct", command!.Kind);
-            Assert.Equal(Denial.StaleObservation, command.Rejection); // Configuration removed its old read basis.
-            Assert.Null(command.Permit);
-            await Until(() => { hook.TryRead(out _); return broker.Retired; }, native.Token);
-            Assert.Equal("你好", N.ReadText(native.A, Limits.MaxTextUnits));
-            Assert.Equal(0, broker.Writes);
-            Assert.Equal(0, broker.CompletionTransfers);
-            native.AssertZeroSubmits();
+            catch
+            {
+                WriteOrderedCommandWitnessFailure(native.Root, native.A, witness, nonce, beforeWitness);
+                throw;
+            }
         }
         finally
         {
@@ -292,6 +304,67 @@ public sealed partial class NativeSourceControllerTests
                 pressed.Remove(key);
         }
     });
+
+    private static void WriteOrderedCommandWitnessFailure(nint root, nint field,
+        MemoryMappedViewAccessor witness, ulong nonce, OrderedWitnessObservation before)
+    {
+        try
+        {
+            // Sequential failure-only samples, not an atomic LL/source view.
+            // Read at most this test's four expected passed edges. Never search
+            // older history or publish diagnostic data into the witness FIFO.
+            var after = ObserveOrderedWitness(witness, nonce);
+            int count = (int)Math.Clamp(after.Published - before.Published, 0, 4);
+            var records = Enumerable.Range(0, count).Select(index =>
+            {
+                long expected = before.Published + index + 1;
+                int offset = SourceInputWitness.HeaderBytes + (int)((expected - 1) % SourceInputWitness.Capacity)
+                    * SourceInputWitness.RecordBytes;
+                uint key = witness.ReadUInt32(offset + 36);
+                bool selected = key is 0x11 or 0xa2 or 0xa3 or 0x86;
+                return new
+                {
+                    ExpectedSequence = expected,
+                    Sequence = witness.ReadInt64(offset),
+                    GrantMatches = witness.ReadUInt64(offset + 8) == nonce,
+                    FieldMatches = witness.ReadInt64(offset + 24) == (long)field,
+                    // Unexpected input is counted, not turned into a key log.
+                    Key = selected ? (uint?)key : null,
+                    Time = selected ? (uint?)witness.ReadUInt32(offset + 32) : null,
+                    Scan = selected ? (uint?)witness.ReadUInt32(offset + 40) : null,
+                    Flags = selected ? (uint?)witness.ReadUInt32(offset + 44) : null,
+                    Eligible = witness.ReadUInt32(offset + 48),
+                    Repeated = witness.ReadUInt32(offset + 52),
+                    Reserved = witness.ReadUInt64(offset + 56)
+                };
+            }).ToArray();
+            var messages = new[] { "ControlDown", "ControlUp", "BarrierDown", "BarrierUp" }.Select(edge =>
+            {
+                string prefix = "TypeLay.Test.SourceCommand" + edge;
+                return new
+                {
+                    Edge = edge,
+                    Count = (long)N.GetProp(root, prefix + ".Count.v1"),
+                    Time = unchecked((uint)(long)N.GetProp(root, prefix + ".Time.v1")),
+                    Bits = unchecked((uint)(long)N.GetProp(root, prefix + ".Bits.v1")),
+                    Message = (long)N.GetProp(root, prefix + ".Message.v1")
+                };
+            }).ToArray();
+            TestContext.Current.TestOutputHelper?.WriteLine("Ordered command witness failure: "
+                + JsonSerializer.Serialize(new
+                {
+                    Before = before,
+                    After = after,
+                    Records = records,
+                    SourceMessages = messages
+                }));
+        }
+        catch (Exception error)
+        {
+            // Diagnostic failure must not replace the original assertion.
+            TestContext.Current.TestOutputHelper?.WriteLine("Ordered command witness evidence unavailable: " + error.GetType().Name);
+        }
+    }
 
     // One bounded before/after sample of the existing public mapping. No body,
     // arbitrary key history, production logging or private hook-state access.
