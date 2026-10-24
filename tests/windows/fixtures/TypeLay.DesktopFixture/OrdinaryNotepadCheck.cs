@@ -332,10 +332,9 @@ internal static partial class HyPackageCheck
                     acceptanceVerified = false
                 };
             });
-            await report.Phase("automatic-accept-and-undo", async scene =>
+            await RunOrdinaryNotepadInteractions(report,
+                async scene => { await OverlayEditor(true, scene); }, async scene =>
             {
-                scene.Stage = "await-public-acceptance-cue";
-                await OverlayEditor(true, scene);
                 scene.Stage = "press-single-acceptance-tab";
                 NotepadChord([0x09]);
                 scene.Stage = "await-exact-source-translation";
@@ -351,8 +350,7 @@ internal static partial class HyPackageCheck
                     tabPresses = 1,
                     nativeUndoRestoredSource = true
                 };
-            });
-            await report.Phase("edit-return-and-undo", async scene =>
+            }, async scene =>
             {
                 var editor = await OverlayEditor(false);
                 await ClickNotepadEditor(editor, app!.Process.Id, ct);
@@ -374,8 +372,7 @@ internal static partial class HyPackageCheck
                     secondTabAcceptsExactDraft = true,
                     nativeUndoRestoredSource = true
                 };
-            });
-            await report.Phase("on-demand-cancel-and-direct", async scene =>
+            }, async scene =>
             {
                 await ShowNotepadSettings(app!.Process, ct);
                 settings = await SettingsAsync(app.Process, ct);
@@ -413,8 +410,7 @@ internal static partial class HyPackageCheck
                     directPresses = 1,
                     nativeUndoRestoredSource = true
                 };
-            });
-            await report.Phase("ordinary-exit", async scene =>
+            }, async scene =>
             {
                 SourceUnchanged(original);
                 Require(N.PostMessage(root, 0x0010, 0, 0), "ordinary-notepad-close-request-failed");
@@ -436,7 +432,8 @@ internal static partial class HyPackageCheck
                 Require(source!.Process.ExitCode == 0, "ordinary-notepad-exit-code");
                 await OrdinaryQuitAsync(app!.Process, scene, ct);
                 scene.Stage = "await-app-exit";
-                using var exit = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                using var exit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                exit.CancelAfter(TimeSpan.FromSeconds(5));
                 await app.Process.WaitForExitAsync(exit.Token);
                 Require(app.Process.ExitCode == 0, "ordinary-app-exit-code");
                 scene.Stage = "await-model-workers-exit";
@@ -449,6 +446,16 @@ internal static partial class HyPackageCheck
                     originalFileUnchanged = await File.ReadAllTextAsync(document, ct) == original
                 };
                 Require(await File.ReadAllTextAsync(document, ct) == original, "ordinary-source-file-changed");
+            }, () =>
+            {
+                ct.ThrowIfCancellationRequested();
+                Require(!app!.Process.HasExited, "ordinary-app-exited");
+                workers!.Check();
+                SourceUnchanged(original);
+                Require(N.GetWindowThreadProcessId(root, out uint pid) != 0 && pid == source!.Process.Id
+                    && NotepadClass(field) == "Edit" && N.IsWindowEnabled(field)
+                    && (N.GetStyle(field, -16) & (0x20 | 0x800)) == 0, "ordinary-source-no-longer-editable");
+                Require(N.Focused() == (root, field), "ordinary-independent-source-not-focused");
             });
         }
         catch (Exception error) when (error is not OutOfMemoryException)

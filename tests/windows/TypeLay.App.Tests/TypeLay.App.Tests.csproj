@@ -29,6 +29,8 @@
     <Compile Include="../support/OverlayPreviewObservation.cs" Link="OverlayPreviewObservation.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/ModelConsumerFixtureOwner.cs" Link="ModelConsumerFixtureOwner.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/HyPackageCheck.Processes.cs" Link="HyPackageCheck.Processes.cs" />
+    <Compile Include="../fixtures/TypeLay.DesktopFixture/HyPackageCheck.Report.cs" Link="HyPackageCheck.Report.cs" />
+    <Compile Include="../fixtures/TypeLay.DesktopFixture/OrdinaryNotepadCheck.Scenarios.cs" Link="OrdinaryNotepadCheck.Scenarios.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/NativeSourceSetup.cs" Link="NativeSourceSetup.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/ShellTrayObservation.cs" Link="ShellTrayObservation.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/ShellTraySelection.cs" Link="ShellTraySelection.cs" />

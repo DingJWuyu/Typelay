@@ -9,7 +9,7 @@ using TypeLay.Windows.Testing;
 
 internal static partial class HyPackageCheck
 {
-    private sealed class Failure(string code) : Exception(code)
+    internal sealed class Failure(string code) : Exception(code)
     {
         public string Code { get; } = code;
     }
