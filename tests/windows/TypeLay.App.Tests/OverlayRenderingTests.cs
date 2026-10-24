@@ -21,21 +21,23 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
 {
-    [Fact]
-    public Task CurrentTranslationWithoutSourceWriteCapabilityIsPubliclyPreviewOnly() => desktop.RunAsync(async () =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task CurrentTranslationDistinguishesPreviewOnlyFromPendingAndGrantedAcceptance(bool automationTest) => desktop.RunAsync(async () =>
     {
         var (window, input, source) = OpenSource();
-        var overlay = new OverlayWindow(clientAreaAnimation: () => false);
+        var overlay = new OverlayWindow(automationTest: automationTest, clientAreaAnimation: () => false);
         try
         {
-            async Task Observe(bool writeSupported)
+            async Task Observe(bool writeSupported, bool permit = false)
             {
                 var session = Ready(source with
                 {
                     WriteSupported = writeSupported,
                     DirectWriteSupported = true
                 }, "当前测试译文");
-                overlay.Render(session, new UserSettings(), false, context: EditableView(source));
+                overlay.Render(session, new UserSettings(), permit, context: EditableView(source));
                 overlay.UpdateLayout();
                 nint handle = overlay.Handle;
                 await Task.Run(() =>
@@ -44,22 +46,62 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                     var status = root.FindAll(System.Windows.Automation.TreeScope.Descendants,
                         new System.Windows.Automation.AndCondition(
                             new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.ControlTypeProperty, System.Windows.Automation.ControlType.Text),
-                            new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.NameProperty, writeSupported ? "译文就绪" : "仅预览"),
+                            new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.NameProperty,
+                                (writeSupported ? "译文就绪" : "仅预览") + (automationTest ? " · 自动化测试" : "")),
                             new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.IsOffscreenProperty, false)));
                     var displayed = Assert.Single(status.Cast<System.Windows.Automation.AutomationElement>());
                     Assert.Equal(writeSupported ? "" : "当前不能通过接受键写回这条译文，接受键会交还原应用。", displayed.Current.HelpText);
                     Assert.NotNull(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, source.Text, false));
-                    Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, source.Text, true));
+                    var ready = TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, source.Text, true, out var observed, observePreviewOnly: true);
+                    Assert.Equal(permit, ready is not null);
+                    Assert.Equal(permit ? "acceptance-cue-present" : writeSupported ? "acceptance-cue-count" : "required-capability-unavailable", observed.Result);
+                    Assert.Equal(permit ? (int?)null : writeSupported ? 0 : 1, observed.PreviewOnlyCueCount);
                 }, TestContext.Current.CancellationToken);
                 Assert.Equal(source.Text, input.Text);
             }
             await Observe(false);
             // Missing or expired acceptance alone is not a permanent capability denial.
             await Observe(true);
+            await Observe(true, permit: true);
             await Observe(false);
         }
         finally { overlay.Close(); window.Close(); }
     });
+
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(2, 0)]
+    [InlineData(1, 1)]
+    [InlineData(1, 2)]
+    public Task OrdinaryObserverDoesNotDenyAcceptanceFromMissingAmbiguousOrConflictingStatus(int previewOnlyCount, int acceptanceCount) =>
+        desktop.RunAsync(async () =>
+        {
+            var panel = new StackPanel();
+            var text = new TextBox { Text = "Current displayed translation", IsReadOnly = true };
+            System.Windows.Automation.AutomationProperties.SetName(text, "编辑译文");
+            System.Windows.Automation.AutomationProperties.SetItemStatus(text, "当前译文");
+            panel.Children.Add(text);
+            for (int index = 0; index < previewOnlyCount; index++)
+                panel.Children.Add(new TextBlock { Text = "仅预览 · 自动化测试" });
+            for (int index = 0; index < acceptanceCount; index++)
+                panel.Children.Add(new TextBlock { Text = "接受译文" });
+            var window = new Window { Content = panel, Width = 400, Height = 200 };
+            try
+            {
+                window.Show();
+                window.UpdateLayout();
+                nint handle = new WindowInteropHelper(window).Handle;
+                await Task.Run(() =>
+                {
+                    var root = System.Windows.Automation.AutomationElement.FromHandle(handle);
+                    var ready = TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, "original", true, out var observed, observePreviewOnly: true);
+                    Assert.Equal(acceptanceCount == 1, ready is not null);
+                    Assert.Equal(acceptanceCount == 1 ? "acceptance-cue-present" : "acceptance-cue-count", observed.Result);
+                    Assert.Equal(acceptanceCount == 0 ? previewOnlyCount : (int?)null, observed.PreviewOnlyCueCount);
+                }, TestContext.Current.CancellationToken);
+            }
+            finally { window.Close(); }
+        });
 
     [Fact]
     public Task OrdinaryObserverRejectsMultipleDisplayedCandidateValues() => desktop.RunAsync(async () =>
@@ -86,7 +128,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                         new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.ControlTypeProperty, System.Windows.Automation.ControlType.Edit),
                         new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.IsOffscreenProperty, false))).Count);
                 Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, "original", false));
-                Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, "original", true, out var observed));
+                Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, "original", true, out var observed, observePreviewOnly: true));
                 Assert.Equal("candidate-count", observed.Result);
                 Assert.Equal(2, observed.CandidateCount);
                 Assert.Null(observed.AcceptanceCueCount);
@@ -151,12 +193,13 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                     Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, value.Current.Value, false));
                     Assert.Equal(editable ? "编辑译文" : "译文预览", preview.Current.Name);
                     Assert.Equal(editable && permit,
-                        TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, source.Text, true, out var observed) is not null);
+                        TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, source.Text, true, out var observed, observePreviewOnly: true) is not null);
                     Assert.Equal(editable ? permit ? "acceptance-cue-present" : "acceptance-cue-count" : "preview-not-editable", observed.Result);
                     Assert.Equal(editable ? "编辑译文" : "译文预览", observed.EditorName);
                     Assert.Equal("当前译文", observed.TextStatus);
                     Assert.True(observed.ValueReadOnly);
                     Assert.Equal(editable ? permit ? 1 : 0 : (int?)null, observed.AcceptanceCueCount);
+                    Assert.Equal(editable && !permit ? 0 : (int?)null, observed.PreviewOnlyCueCount);
                     Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, -1, source.Text, false));
                 }, TestContext.Current.CancellationToken);
                 Assert.Equal(source.Text, input.Text);
@@ -174,7 +217,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             BeginEditing = _ => session.BeginEdit(),
             DraftChanged = text => session.ChangeDraft(text)
         };
-        async Task Observe(string? expected)
+        async Task Observe(string? expected, bool previewOnly = false)
         {
             overlay.UpdateLayout();
             nint handle = overlay.Handle;
@@ -190,7 +233,8 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                     var value = (System.Windows.Automation.ValuePattern)preview.GetCurrentPattern(System.Windows.Automation.ValuePattern.Pattern);
                     Assert.Equal(expected, value.Current.Value);
                 }
-                Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, source.Text, true));
+                Assert.Null(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, source.Text, true, out var observed, observePreviewOnly: true));
+                Assert.Equal(previewOnly, observed.Result == "required-capability-unavailable");
             }, TestContext.Current.CancellationToken);
             Assert.Equal(source.Text, input.Text);
         }
@@ -215,8 +259,8 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             {
                 WriteSupported = false
             }, "正在翻译…");
-            Render();
-            await Observe("正在翻译…");
+            Render(true);
+            await Observe("正在翻译…", previewOnly: true);
             var appended = source with
             {
                 Text = source.Text + " suffix",

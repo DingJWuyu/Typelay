@@ -20,7 +20,7 @@ TypeLay.Windows.Contracts 引用 Core，拥有 App 与 Broker 共用的 DTO、�
 
 两条隔离路线都经现有认证 Broker 通道连接完整控制器：仅隔离构造声明可准备计划的能力，实际安装确认前不发布按键许可或可接受提示。单个在途安装配合一个最新候选，不延长原100ms许可；失效立即撤回未受理状态，受理后的整组按键仍由原操作收束。完成回执来自源端实际核验的正文、选区、输入法与完成时间，不从替换计划猜测，也不再发第二次写入。私有 source wire 为 v4，明确拒绝旧 v3；普通原生事务 v2 保持不变。正式 Broker 入口固定关闭该构造；测试宿主使用同一路由显式启用，不新增用户开关。
 
-新的 retrieved-MSG 路线仅支持无修饰 Tab：源线程在实际 `PM_REMOVE` 的同一 MSG 上 claim 并置 `WM_NULL`，再执行原生事务，不依赖 LL Activate 的返回。安装先 Prepared，App 发布本地撤权 control 与 capture fence 后才 Arm；准备期实际输入单调撤权，Arm 不续签原许可。精确 `source-poll`/`source-retire` 回执只结算一次，正文完成与尾键/资源 Quiet 分开，后续捕获不能越过尚未结算的回执。[已核 Windows 检查](https://github.com/DingJWuyu/Typelay/actions/runs/40079876227)通过自有源的真实派发正反、App 回执/fence、late ACK 与 Undo；真实 Notepad 两例正在迁移到此路线，旧 sent-route 通过不代表新路线已验。正式 Main/capability0、严格来源与 IME 门不变，UIAccess 选择及第三方部署仍独立。
+新的 retrieved-MSG 路线仅支持无修饰 Tab：源线程在实际 `PM_REMOVE` 的同一 MSG 上 claim 并置 `WM_NULL`，再执行原生事务，不依赖 LL Activate 的返回。安装先 Prepared，App 发布本地撤权 control 与 capture fence 后才 Arm；准备期实际输入单调撤权，Arm 不续签原许可。精确 `source-poll`/`source-retire` 回执只结算一次，正文完成与尾键/资源 Quiet 分开，后续捕获不能越过尚未结算的回执。[已核 Windows 检查](https://github.com/DingJWuyu/Typelay/actions/runs/40079876227)通过自有源的真实派发正反、App 回执/fence、late ACK 与 Undo；[CI504](https://github.com/DingJWuyu/Typelay/actions/runs/40083637614) 已在真实 Notepad 接受/撤回两例验证该路线的恰一次 Verified 正文回执/零正文回执旁路、Undo、零 LL Activate/二次 Write、Quiet 与清理；这是隔离构造实跑，不是正式发行接受。正式 Main/capability0、严格来源与 IME 门不变，UIAccess 选择及第三方部署仍独立。
 
 旧 sent-route 接线按当前配置接受默认 Tab、无修饰功能键或 Ctrl+功能键。Ctrl 按下先撤销旧许可；后续接受必须使用 Ctrl 后新捕获、新安装的计划，同一按次的修饰键来源、配置、焦点和输入版本仍须匹配。人工译稿不是写许可：仅能明确归因于该次 Ctrl、且新观察确认原目标、正文、选区和状态未变时，保留人工文字，同时更新会话版本并重建许可。缺失观察、已观察到的原文编辑及未知输入法状态不走这条例外。普通退休清除该归因；只有控制器核对过的同一归因可在撤销全部许可时短暂保留。此实现不开放正式默认构造，也不是完整原生输入历史或物理按键的证明。
 

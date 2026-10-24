@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -8,6 +9,7 @@ using System.Windows.Interop;
 using TypeLay.Core;
 using TypeLay.Platform.Windows;
 using TypeLay.Windows;
+using TypeLay.Windows.Testing;
 using Xunit;
 using N = TypeLay.Platform.Windows.NativeMethods;
 
@@ -307,17 +309,25 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                     await NativeSourceSetup.ClickAsync(source.Root, source.Field, source.Process, source.Token);
                     observation.ClickEndedAtMs = WindowsInterruptClock.NowMs;
                     focusWaitStartedAtMs = WindowsInterruptClock.NowMs;
-                    while (true)
+                    try
                     {
-                        // Focused() already performs this one ReadFocus call. Keep
-                        // its exact comparison, but retain the discarded error facts.
-                        var focus = N.ReadFocus();
-                        lastFocus = (focus, WindowsInterruptClock.NowMs);
-                        firstFocus ??= lastFocus;
-                        focusObservations++;
-                        if ((focus.Root, focus.Control) == (source.Root, source.Field))
-                            break;
-                        await Task.Delay(10, source.Token);
+                        while (true)
+                        {
+                            // Focused() already performs this one ReadFocus call. Keep
+                            // its exact comparison, but retain the discarded error facts.
+                            var focus = N.ReadFocus();
+                            lastFocus = (focus, WindowsInterruptClock.NowMs);
+                            firstFocus ??= lastFocus;
+                            focusObservations++;
+                            if ((focus.Root, focus.Control) == (source.Root, source.Field))
+                                break;
+                            await Task.Delay(10, source.Token);
+                        }
+                    }
+                    catch (OperationCanceledException) when (source.Token.IsCancellationRequested)
+                    {
+                        WriteSourceLifetimeAfterFocusCancellation();
+                        throw;
                     }
                     focusMatchedAtMs = WindowsInterruptClock.NowMs;
                 }
@@ -355,6 +365,50 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                 SetCursorPos(previous.X, previous.Y);
             }
             long? Since(long? atMs) => atMs - source.BudgetStartedAtMs;
+            void WriteSourceLifetimeAfterFocusCancellation()
+            {
+                try
+                {
+                    long startedAtMs = WindowsInterruptClock.NowMs;
+                    bool? kernelExitSignaled = null, rootHandleExists = null, fieldHandleExists = null;
+                    int? exitCode = null, nativeErrorCode = null;
+                    string stage = "kernel-exit";
+                    try
+                    {
+                        // Observe only this retained process, before cleanup kills it.
+                        // A signaled kernel handle, not HasExited, gates the exit code.
+                        kernelExitSignaled = ProcessImage.Exited(source.Process.SafeHandle);
+                        if (kernelExitSignaled == true)
+                        {
+                            stage = "exit-code";
+                            exitCode = source.Process.ExitCode;
+                        }
+                        // These later non-atomic reads do not prove window identity,
+                        // exit before the deadline, or why foreground was absent.
+                        stage = "root-handle-exists";
+                        rootHandleExists = N.IsWindow(source.Root);
+                        stage = "field-handle-exists";
+                        fieldHandleExists = N.IsWindow(source.Field);
+                        stage = "completed";
+                    }
+                    catch (Exception error)
+                    {
+                        nativeErrorCode = (error as Win32Exception)?.NativeErrorCode;
+                    }
+                    TestContext.Current.TestOutputHelper?.WriteLine("Source lifetime after focus cancellation: " + JsonSerializer.Serialize(new
+                    {
+                        startedMs = Since(startedAtMs),
+                        completedMs = Since(WindowsInterruptClock.NowMs),
+                        kernelExitSignaled,
+                        exitCode,
+                        rootHandleExists,
+                        fieldHandleExists,
+                        stage,
+                        nativeErrorCode
+                    }));
+                }
+                catch { /* Diagnostic collection or output must not replace the original cancellation. */ }
+            }
             object? Project((N.FocusObservation Focus, long AtMs)? item)
             {
                 if (item is not { } sample)

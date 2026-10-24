@@ -145,21 +145,27 @@ internal static partial class HyPackageCheck
                         new PropertyCondition(AutomationElement.IsOffscreenProperty, false)));
                     OverlayPreviewObservation.Observation? preview = null;
                     editor = overlays.Count == 1
-                        ? OverlayPreviewObservation.Find(overlays[0], app.Process.Id, original, ready, out preview) : null;
-                    int? previewOnlyCueCount = scene is not null && editor is null && overlays.Count == 1 ? overlays[0].FindAll(TreeScope.Descendants, new AndCondition(
-                        new PropertyCondition(AutomationElement.ProcessIdProperty, app.Process.Id),
-                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text),
-                        new PropertyCondition(AutomationElement.NameProperty, "仅预览 · 自动化测试"),
-                        new PropertyCondition(AutomationElement.IsOffscreenProperty, false))).Count : null;
+                        ? OverlayPreviewObservation.Find(overlays[0], app.Process.Id, original, ready, out preview,
+                            observePreviewOnly: ready && scene is not null) : null;
                     var observation = new
                     {
                         elapsedMs = observed.ElapsedMilliseconds,
                         overlayCount = overlays.Count,
-                        previewOnlyCueCount,
+                        previewOnlyCueCount = preview?.PreviewOnlyCueCount,
                         preview
                     };
                     if (!request.IsCancellationRequested)
                         lastPublicObservation = observation;
+                    if (ready && scene is not null && preview?.Result == "required-capability-unavailable")
+                    {
+                        request.Token.ThrowIfCancellationRequested();
+                        scene.Facts = new
+                        {
+                            requestedAcceptanceCue = true,
+                            lastPublicObservation
+                        };
+                        throw new Failure("required-capability-unavailable");
+                    }
                     return editor is not null;
                 }, request.Token), request.Token);
             }

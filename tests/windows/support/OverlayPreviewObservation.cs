@@ -8,13 +8,13 @@ internal static class OverlayPreviewObservation
 {
     // Only fixed public labels and counts are retained; never the translated/source value.
     public sealed record Observation(string Result, int? CandidateCount = null, string? EditorName = null,
-        string? TextStatus = null, bool? ValueReadOnly = null, int? AcceptanceCueCount = null);
+        string? TextStatus = null, bool? ValueReadOnly = null, int? AcceptanceCueCount = null, int? PreviewOnlyCueCount = null);
 
     public static AutomationElement? Find(AutomationElement overlay, int processId, string original, bool ready) =>
         Find(overlay, processId, original, ready, out _);
 
     public static AutomationElement? Find(AutomationElement overlay, int processId, string original, bool ready,
-        out Observation observation)
+        out Observation observation, bool observePreviewOnly = false)
     {
         observation = new("overlay-unavailable");
         if (overlay.Current.ProcessId != processId || overlay.Current.IsOffscreen)
@@ -81,6 +81,22 @@ internal static class OverlayPreviewObservation
             Result = cue.Count == 1 ? "acceptance-cue-present" : "acceptance-cue-count",
             AcceptanceCueCount = cue.Count
         };
+        // A missing short-lived permit is not a capability denial. Only the
+        // explicit public status beside a current result can end that wait.
+        if (observePreviewOnly && cue.Count == 0 && status == "当前译文")
+        {
+            var previewOnly = overlay.FindAll(TreeScope.Descendants, new AndCondition(
+                new PropertyCondition(AutomationElement.ProcessIdProperty, processId),
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text),
+                new OrCondition(new PropertyCondition(AutomationElement.NameProperty, "仅预览"),
+                    new PropertyCondition(AutomationElement.NameProperty, "仅预览 · 自动化测试")),
+                new PropertyCondition(AutomationElement.IsOffscreenProperty, false)));
+            observation = observation with
+            {
+                Result = previewOnly.Count == 1 ? "required-capability-unavailable" : observation.Result,
+                PreviewOnlyCueCount = previewOnly.Count
+            };
+        }
         return cue.Count == 1 ? editor : null;
     }
 }
