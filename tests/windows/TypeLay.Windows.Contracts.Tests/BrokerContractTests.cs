@@ -57,11 +57,21 @@ public sealed class BrokerContractTests
     [Theory]
     [InlineData(0x10200u)] // Not one of the queried queue flags.
     [InlineData(0x12000u)]
-    [InlineData(0x20000u)] // Unknown diagnostic family.
+    [InlineData(0x20002u)] // Unknown origin/freshness diagnostic.
+    [InlineData(0x30000u)] // Unknown diagnostic family.
     [InlineData(uint.MaxValue)]
     public void UnknownSourceDiagnosticBitsCannotBecomeAReceipt(uint raw)
     {
         Assert.False(SourceNativeReason.TryDecode(raw, out _));
+    }
+
+    [Theory]
+    [InlineData(SourceNativeReason.OriginUntrusted)]
+    [InlineData(SourceNativeReason.QueueFreshnessUnproven)]
+    public void StrictSourceNecessaryConditionsRemainUnsupported(uint raw)
+    {
+        Assert.True(SourceNativeReason.TryDecode(raw, out Denial reason));
+        Assert.Equal(Denial.Unsupported, reason);
     }
 
     [Theory]

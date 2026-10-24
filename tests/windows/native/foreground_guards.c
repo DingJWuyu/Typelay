@@ -46,6 +46,16 @@ static int message_next_calls, message_next_fault, message_nested_calls, message
 static uint32_t message_pending, queue_status_calls;
 static void send_source(uint32_t message);
 LRESULT TypeLaySourceGetMessageProc(int code, WPARAM wp, LPARAM lp);
+LRESULT TypeLaySourceStrictGetMessageProc(int code, WPARAM wp, LPARAM lp);
+// Win32 classification responses only, never a physical/UIAccess witness.
+static uint32_t origin_device = 1, origin_id = 2;
+static int origin_success = 1, origin_calls, origin_must_be_first;
+int GetCurrentInputMessageSource(InputMessageSource *value) {
+    origin_calls++;
+    origin_must_be_first = 0;
+    value->device_type = origin_device; value->origin_id = origin_id;
+    return origin_success;
+}
 enum { InstallMessage = 0xc101, RevokeMessage, PollMessage, ActivateMessage };
 static struct {
     enum Scenario scenario;
@@ -89,7 +99,7 @@ static void change_capture_state(int boundary) {
 // non-source test keeps the original fail-if-called boundary.
 LRESULT CallNextHookEx(HANDLE hook, int code, WPARAM wp, LPARAM lp) {
     (void)hook; (void)code; (void)wp; (void)lp;
-    require(source_wire_enabled);
+    require(source_wire_enabled && !origin_must_be_first);
     if (retrieved_message && lp == (LPARAM)retrieved_message) {
         message_next_calls++;
         int fault = message_next_fault;
@@ -111,6 +121,15 @@ LRESULT CallNextHookEx(HANDLE hook, int code, WPARAM wp, LPARAM lp) {
         }
         if (fault == 4) require(TypeLaySourceWithdraw(&source_wire, sizeof(source_wire)) == 2);
         if (fault == 6) require(!TypeLaySourceArm(&source_wire, sizeof(source_wire)));
+        if (fault == 7) { origin_success = 1; origin_device = origin_id = 1; }
+        if (fault == 8) {
+            TestQueueMessage nested;
+            copy(&nested, retrieved_message, sizeof(nested));
+            origin_id = 2;
+            message_nested_calls++;
+            TypeLaySourceStrictGetMessageProc(0, 1, (LPARAM)&nested);
+            require(nested.message == 0x100 && !source_wire.invoked && source_wire.claim == 2);
+        }
         if (fault == 5) {
             TestQueueMessage nested;
             copy(&nested, retrieved_message, sizeof(nested));
@@ -302,8 +321,8 @@ static LRESULT stock_edit(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
 
 uint64_t GetTickCount64(void) { return field.coarse_ms; }
 void QueryInterruptTimePrecise(uint64_t *value) { *value = field.precise_100ns; }
-uint32_t GetCurrentThreadId(void) { return ThreadId; }
-int16_t GetKeyState(int key) { (void)key; return 0; }
+uint32_t GetCurrentThreadId(void) { require(!origin_must_be_first); return ThreadId; }
+int16_t GetKeyState(int key) { (void)key; require(!origin_must_be_first); return 0; }
 uint32_t GetCurrentProcessId(void) { return ProcessId; }
 uint32_t GetWindowThreadProcessId(HANDLE hwnd, uint32_t *pid) {
     require(hwnd == handle(SourceWindow) || hwnd == handle(RootWindow)
@@ -1043,7 +1062,7 @@ static int source_admission_pointer_pair_is_required(void) {
     }
     return 1;
 }
-static int source_message_noremove_and_nested_remove_do_not_spend_the_grant(void) {
+static int source_message_noremove_preserves_but_nested_remove_revokes_the_grant(void) {
     if (!prepare_source_message()) return 0;
     TestQueueMessage message = {handle(SourceWindow), 0x100, 9, 0x000f0001, 1000, {0, 0}, 0};
     TestQueueMessage prior = {handle(SourceWindow), 0x100, 0x27, 0x004d0001, 1000, {0, 0}, 0};
@@ -1065,12 +1084,13 @@ static int source_message_noremove_and_nested_remove_do_not_spend_the_grant(void
     message_next_fault = 2;
     TypeLaySourceGetMessageProc(0, 1, (LPARAM)&message);
     retrieved_message = 0;
-    if (message.message || source_wire.invoked != 1 || source_wire.claim != 1
-        || message_next_calls != 3 || message_nested_calls != 1 || field.set_calls != 1
-        || field.replace_calls != 1 || field.invalid_call) return 0;
+    if (message.message != 0x100 || source_wire.invoked != 1 || source_wire.claim
+        || source_wire.tx.status != 2 || source_wire.tx.reason != 15
+        || message_next_calls != 3 || message_nested_calls != 1 || field.set_calls
+        || field.replace_calls || field.invalid_call) return 0;
     message.message = 0x101; message.lparam = 0xc00f0001u;
     TypeLaySourceGetMessageProc(0, 1, (LPARAM)&message);
-    if (message.message) return 0;
+    if (message.message != 0x101) return 0;
     send_source(RevokeMessage);
     source_wire_enabled = 0;
     return source_wire.state == 3 && !source_mapped && !source_allocated && !field.invalid_call;
@@ -1246,6 +1266,106 @@ static int source_tail_uncertainty_and_departure_cannot_revive(void) {
     source_wire_enabled = 0;
     return source_wire.state == 3 && up.message == 0x101 && !field.invalid_call;
 }
+
+static int source_strict_origin_is_classified_before_any_other_query(void) {
+    // Every denial is exercised at the exported real hook, with the same
+    // transaction installation used by the controlled mechanical positive.
+    const uint32_t samples[][3] = {
+        {1, 1, 1}, // Hardware class includes allowed UIAccess, but freshness is unproven.
+        {1, 1, 2}, {1, 1, 4}, {1, 1, 0}, {1, 1, 3}, {1, 1, 0xffffffffu},
+        {1, 0, 1}, {1, 2, 1}, {1, 4, 1}, {1, 8, 1}, {1, 16, 1}, {1, 3, 1},
+        {0, 1, 1} // Failure cannot use even apparently valid output values.
+    };
+    for (unsigned i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
+        if (!prepare_source_message()) return 0;
+        origin_success = (int)samples[i][0]; origin_device = samples[i][1]; origin_id = samples[i][2];
+        origin_calls = 0;
+        TestQueueMessage message = {handle(SourceWindow), 0x100, 9, 0x000f0001, 0xffffffffu, {0, 0}, 0};
+        TestQueueMessage original = message;
+        retrieved_message = &message;
+        message_next_calls = 0;
+        // Negative hook codes and peeks do not sample, revoke or consume.
+        TypeLaySourceStrictGetMessageProc(-1, 1, (LPARAM)&message);
+        TypeLaySourceStrictGetMessageProc(0, 0, (LPARAM)&message);
+        if (origin_calls || source_wire.invoked || source_wire.claim || source_wire.tx.status) return 0;
+        origin_must_be_first = 1;
+        TypeLaySourceStrictGetMessageProc(0, 1, (LPARAM)&message);
+        retrieved_message = 0;
+        if (origin_calls != 1 || origin_must_be_first || message_next_calls != 3
+            || !same_queue_message((QueueMessage *)&message, (QueueMessage *)&original)
+            || source_wire.invoked || source_wire.claim == 1 || field.set_calls || field.replace_calls
+            || field.start != 12 || field.end != 12 || !equal(field.text, initial_text, 13)) return 0;
+        // A later apparently trusted repeat cannot retry the rejected first key.
+        origin_success = 1; origin_device = origin_id = 1;
+        message.lparam = 0x400f0001u;
+        TypeLaySourceStrictGetMessageProc(0, 1, (LPARAM)&message);
+        if (message.message != 0x100 || source_wire.invoked || field.replace_calls) return 0;
+        send_source(RevokeMessage);
+        if (source_wire.state != 3 || source_wire.tx.status != 2
+            || source_wire.tx.reason != (i == 0 ? 0x20001u : 0x20000u)
+            || source_mapped || source_allocated || field.invalid_call) return 0;
+    }
+    source_wire_enabled = 0;
+    return 1;
+}
+
+static int strict_origin_refusal_survives_downstream_and_prepared_arm(void) {
+    for (int fault = 0; fault < 4; fault++) {
+        if (!prepare_source_message()) return 0;
+        origin_calls = 0; origin_success = 1; origin_device = 1; origin_id = fault == 3 ? 1 : 2;
+        source_wire.claim = 3;
+        // The original message can already exist before Arm but reach this
+        // hook only afterwards; even a sender-selected future time adds no proof.
+        TestQueueMessage message = {handle(SourceWindow), 0x100, 9, 0x000f0001, 0xffffffffu, {0, 0}, 0};
+        if (fault == 3 && !TypeLaySourceArm(&source_wire, sizeof(source_wire))) return 0;
+        retrieved_message = &message;
+        // No later classification, nested retrieval or Prepared -> Arm may
+        // turn the first source result into permission for a different key.
+        message_next_fault = fault == 0 ? 7 : fault == 1 ? 6 : 8;
+        TypeLaySourceStrictGetMessageProc(0, 1, (LPARAM)&message);
+        retrieved_message = 0;
+        if (message.message != 0x100 || source_wire.claim != 2 || source_wire.invoked
+            || field.set_calls || field.replace_calls || origin_calls != (fault >= 2 ? 2 : 1)
+            || TypeLaySourceArm(&source_wire, sizeof(source_wire))) return 0;
+        send_source(RevokeMessage);
+        if (source_wire.state != 3 || source_wire.tx.reason != (fault == 3 ? 0x20001u : 0x20000u)
+            || source_mapped || source_allocated || field.invalid_call) return 0;
+    }
+    source_wire_enabled = 0;
+    return 1;
+}
+static int strict_tails_cannot_inherit_controlled_acceptance(void) {
+    // Strict cannot currently mint a press. Even if a caller erroneously mixes
+    // callbacks after controlled acceptance, each tail must query independently
+    // and cannot consume/settle that controlled debt or manufacture Quiet.
+    for (int failed_query = 0; failed_query < 2; failed_query++) {
+        if (!prepare_source_message()) return 0;
+        TestQueueMessage message = {handle(SourceWindow), 0x100, 9, 0x000f0001, 1000, {0, 0}, 0};
+        TypeLaySourceGetMessageProc(0, 1, (LPARAM)&message);
+        if (message.message || source_wire.claim != 1 || field.replace_calls != 1) return 0;
+        origin_calls = 0; origin_success = !failed_query; origin_device = 1; origin_id = 2;
+        message.message = 0x100; message.lparam = 0x400f0001u;
+        TypeLaySourceStrictGetMessageProc(0, 1, (LPARAM)&message);
+        if (message.message != 0x100 || origin_calls != 1) return 0;
+        // Even apparently trusted up cannot revive after an uncertain tail.
+        origin_success = 1; origin_id = 1;
+        message.message = 0x101; message.lparam = 0xc00f0001u;
+        TypeLaySourceStrictGetMessageProc(0, 1, (LPARAM)&message);
+        if (message.message != 0x101 || origin_calls != 2) return 0;
+        // Going back to the controlled entry must not hide the uncertainty.
+        TypeLaySourceGetMessageProc(0, 1, (LPARAM)&message);
+        send_source(RevokeMessage);
+        if (message.message != 0x101 || source_wire.state != 2 || field.replace_calls != 1) return 0;
+        CallMessage leave = {0, 0, 0x08, handle(SourceWindow)};
+        TypeLayCallWndProc(0, 0, (LPARAM)&leave);
+        send_source(RevokeMessage);
+        if (source_wire.state != 3 || source_wire.tx.status != 1 || source_wire.tx.reason
+            || field.invalid_call || source_mapped || source_allocated) return 0;
+    }
+    source_wire_enabled = 0;
+    return 1;
+}
+
 static int run_checks(void) {
     if (!unchanged_writes_scope_and_verifies()) return 1;
     if (!changed_focus_rejects_without_text_write()) return 2;
@@ -1255,10 +1375,13 @@ static int run_checks(void) {
     if (!unknown_wire_operations_cannot_read_the_source()) return 10;
     if (!source_input_identity_is_bound_until_exact_retirement()) return 18;
     if (!prepared_input_and_withdrawal_cannot_be_rearmed()) return 26;
+    if (!source_strict_origin_is_classified_before_any_other_query()) return 27;
+    if (!strict_origin_refusal_survives_downstream_and_prepared_arm()) return 28;
+    if (!strict_tails_cannot_inherit_controlled_acceptance()) return 29;
     const uint32_t hints[] = {0, 1, 0x40, 0x41, 0x1dff};
     for (unsigned i = 0; i < sizeof(hints) / sizeof(hints[0]); i++)
         if (!source_removed_message_commits_before_selection(hints[i])) return 19;
-    if (!source_message_noremove_and_nested_remove_do_not_spend_the_grant()) return 20;
+    if (!source_message_noremove_preserves_but_nested_remove_revokes_the_grant()) return 20;
     if (!source_message_refusal_never_restores_or_replays_the_original()) return 21;
     if (!source_sent_activation_still_refuses_pending_work()) return 22;
     if (!source_admission_pointer_pair_is_required()) return 23;

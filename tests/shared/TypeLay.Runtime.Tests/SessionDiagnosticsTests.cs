@@ -372,6 +372,96 @@ public sealed class SessionDiagnosticsTests
         });
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CaptureFailureKeepsRetirementAndOnlyTracesSafeExceptionMetadata(bool tracing)
+    {
+        WithTrace(path =>
+        {
+            using var s = new SessionScenario();
+            s.ReadyCandidate();
+            s.Service.PendingCapture = new();
+            s.Tick();
+            var error = new IOException("private-error-url-and-source", unchecked((int)0x8007006d));
+            error.Data["private-data-key"] = "private-data-value";
+            s.FailCapture(error);
+            Assert.False(s.View.Visible);
+            Assert.Null(s.Input.Permit);
+            Assert.Empty(s.Service.Writes);
+            Assert.Empty(s.Service.DirectWrites);
+            if (!tracing)
+            {
+                Assert.False(File.Exists(path));
+                return;
+            }
+            string trace = File.ReadAllText(path);
+            Assert.DoesNotContain("private-", trace);
+            using var failure = ReadOperation(trace, "capture-error");
+            var detail = failure.RootElement.GetProperty("detail");
+            Assert.Equal("input-capture", detail.GetProperty("phase").GetString());
+            Assert.Equal("io", detail.GetProperty("errorCategory").GetString());
+            Assert.Equal(unchecked((int)0x8007006d), detail.GetProperty("hResult").GetInt32());
+            Assert.Equal(JsonValueKind.Null, detail.GetProperty("cancellationRequested").ValueKind);
+            Assert.Equal(JsonValueKind.Null, failure.RootElement.GetProperty("focus").ValueKind);
+        }, tracing);
+    }
+
+    [Fact]
+    public void CaptureFailureDiagnosticsBoundRepeatedFailuresAndPreserveCancellation()
+    {
+        WithTrace(path =>
+        {
+            using var s = new SessionScenario();
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+            for (int i = 0; i < 20; i++)
+            {
+                s.Service.PendingCapture = new();
+                s.Tick(2000);
+                s.FailCapture(new OperationCanceledException("private-cancellation", cancelled.Token));
+                Assert.False(s.View.Visible);
+                Assert.Null(s.Input.Permit);
+            }
+            var rows = File.ReadAllLines(path).Select(line => JsonDocument.Parse(line)).ToArray();
+            var failures = rows.Where(row => row.RootElement.GetProperty("operation").GetString() == "capture-error").ToArray();
+            try
+            {
+                Assert.Equal(16, failures.Length);
+                Assert.All(failures, row =>
+                {
+                    var detail = row.RootElement.GetProperty("detail");
+                    Assert.Equal("cancelled", detail.GetProperty("errorCategory").GetString());
+                    Assert.True(detail.GetProperty("cancellationRequested").GetBoolean());
+                });
+                Assert.DoesNotContain("private-", File.ReadAllText(path));
+                Assert.Empty(s.Service.Writes);
+            }
+            finally { foreach (var row in rows) row.Dispose(); }
+        });
+    }
+
+    [Fact]
+    public void UnwritableCaptureDiagnosticsCannotKeepTheFailedSessionAlive()
+    {
+        WithTrace(path =>
+        {
+            Directory.CreateDirectory(path);
+            try
+            {
+                using var s = new SessionScenario();
+                s.ReadyCandidate();
+                s.Service.PendingCapture = new();
+                s.Tick();
+                s.FailCapture(new InvalidOperationException("private-failure"));
+                Assert.False(s.View.Visible);
+                Assert.Null(s.Input.Permit);
+                Assert.Empty(s.Service.Writes);
+            }
+            finally { Directory.Delete(path); }
+        });
+    }
+
     private static JsonDocument ReadOperation(string trace, string operation, string? reason = null)
     {
         foreach (string line in trace.Split('\n', StringSplitOptions.RemoveEmptyEntries))

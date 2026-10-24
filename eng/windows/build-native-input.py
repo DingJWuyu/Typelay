@@ -40,6 +40,7 @@ def main() -> None:
             "GetFocus",
             "GetActiveWindow",
             "GetQueueStatus",
+            "GetCurrentInputMessageSource",
             "SendMessageTimeoutW",
             "GetKeyboardLayout",
             "GetKeyState",

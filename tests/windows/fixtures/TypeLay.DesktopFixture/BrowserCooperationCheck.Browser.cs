@@ -127,6 +127,8 @@ internal static partial class BrowserCooperationCheck
         private readonly ClientWebSocket _socket = new();
         private int _nextId;
         private string? _page;
+        private string? _pageTarget;
+        public BrowserCdpDiagnostics Diagnostics { get; } = new();
         public ExtensionDiscovery Discovery { get; private set; } = new(0, 0, 0, 0, 0);
         private readonly List<ExtensionMetadataDiagnostic> _metadataDiagnostics = new();
         public IReadOnlyList<ExtensionMetadataDiagnostic> MetadataDiagnostics => _metadataDiagnostics;
@@ -287,9 +289,10 @@ internal static partial class BrowserCooperationCheck
                 && target.GetProperty("url").GetString() == "about:blank").ToArray();
             Require(pages.Length == 1, "owned-initial-page-ambiguous");
             stage("attach-page");
+            _pageTarget = pages[0].GetProperty("targetId").GetString();
             var attach = await CallAsync("Target.attachToTarget", new
             {
-                targetId = pages[0].GetProperty("targetId").GetString(),
+                targetId = _pageTarget,
                 flatten = true
             }, null, ct);
             _page = attach.GetProperty("sessionId").GetString() ?? throw new Failure("cdp-page-session-missing");
@@ -439,27 +442,44 @@ internal static partial class BrowserCooperationCheck
                 sessionId = session
             },
                 new JsonSerializerOptions { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull });
-            await _socket.SendAsync(request, WebSocketMessageType.Text, true, ct);
-            byte[] buffer = new byte[16 * 1024];
-            while (true)
+            string phase = "send";
+            try
             {
-                using var message = new MemoryStream();
-                WebSocketReceiveResult received;
-                do
+                await _socket.SendAsync(request, WebSocketMessageType.Text, true, ct);
+                phase = "receive";
+                byte[] buffer = new byte[16 * 1024];
+                while (true)
                 {
-                    received = await _socket.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
-                    Require(received.MessageType == WebSocketMessageType.Text, "owned-cdp-disconnected");
-                    await message.WriteAsync(buffer.AsMemory(0, received.Count), ct);
-                    Require(message.Length <= 4 * 1024 * 1024, "owned-cdp-response-limit");
-                } while (!received.EndOfMessage);
-                using var response = JsonDocument.Parse(message.ToArray());
-                var root = response.RootElement;
-                if (!root.TryGetProperty("id", out var responseId) || responseId.GetInt32() != id)
-                    continue;
-                Require(!root.TryGetProperty("error", out _), "cdp-" + method.Replace('.', '-') + "-failed");
-                return root.GetProperty("result").Clone();
+                    phase = "receive";
+                    using var message = new MemoryStream();
+                    WebSocketReceiveResult received;
+                    do
+                    {
+                        received = await _socket.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
+                        Require(received.MessageType == WebSocketMessageType.Text, "owned-cdp-disconnected");
+                        await message.WriteAsync(buffer.AsMemory(0, received.Count), ct);
+                        Require(message.Length <= 4 * 1024 * 1024, "owned-cdp-response-limit");
+                    } while (!received.EndOfMessage);
+                    phase = "decode";
+                    using var response = JsonDocument.Parse(message.ToArray());
+                    var root = response.RootElement;
+                    if (!root.TryGetProperty("id", out var responseId) || responseId.GetInt32() != id)
+                    {
+                        Diagnostics.Observe(root, _page, _pageTarget);
+                        continue;
+                    }
+                    phase = "response";
+                    Require(!root.TryGetProperty("error", out _), "cdp-" + method.Replace('.', '-') + "-failed");
+                    return root.GetProperty("result").Clone();
+                }
+            }
+            catch (Exception error)
+            {
+                Diagnostics.RecordFailure(method, phase, error, ct.CanBeCanceled ? ct.IsCancellationRequested : null);
+                throw;
             }
         }
+
         public void Dispose() => _socket.Dispose();
     }
 }

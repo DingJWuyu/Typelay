@@ -134,11 +134,11 @@ internal sealed class SessionScenario : IDisposable
         pending.SetResult(observation);
         _context.Drain();
     }
-    public void FailCapture()
+    public void FailCapture(Exception? error = null)
     {
         var pending = Service.PendingCapture ?? throw new InvalidOperationException("No pending capture.");
         Service.PendingCapture = null;
-        pending.SetException(new IOException("controlled capture failure"));
+        pending.SetException(error ?? new IOException("controlled capture failure"));
         _context.Drain();
     }
     public InputSnapshot Fresh => Source with { ObservedAtMs = Loop.NowMs };

@@ -89,8 +89,13 @@ internal sealed partial class NativeEditTransactions
 
     private bool InstallSourceMessageRoute(Binding binding)
     {
+        // The existing isolated consumer deliberately retains synthetic-input
+        // mechanics. Strict rejection tests select a separate exact export;
+        // missing symbols fail closed, never fall back to the controlled route.
+        string entry = _strictSourceMessageOrigin
+            ? "TypeLaySourceStrictGetMessageProc" : "TypeLaySourceGetMessageProc";
         if (binding.Owned is not null || !SourceInstallationAvailable()
-            || !NativeLibrary.TryGetExport(_library, "TypeLaySourceGetMessageProc", out nint messageProcedure)
+            || !NativeLibrary.TryGetExport(_library, entry, out nint messageProcedure)
             || SourceProcess(binding) is null)
             return false;
         if (_sourceMessageHooks.ContainsKey(binding.Thread))

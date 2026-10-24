@@ -30,6 +30,9 @@ API HANDLE GetForegroundWindow(void);
 API HANDLE GetFocus(void);
 API HANDLE GetActiveWindow(void);
 API uint32_t GetQueueStatus(uint32_t);
+typedef struct { uint32_t device_type, origin_id; } InputMessageSource;
+_Static_assert(sizeof(InputMessageSource) == 8, "Windows INPUT_MESSAGE_SOURCE layout");
+API int GetCurrentInputMessageSource(InputMessageSource *);
 API LRESULT SendMessageTimeoutW(HANDLE, uint32_t, WPARAM, LPARAM, uint32_t, uint32_t, uintptr_t *);
 API HANDLE GetKeyboardLayout(uint32_t);
 API int16_t GetKeyState(int);
@@ -60,8 +63,10 @@ API int ImmReleaseContext(HANDLE, HANDLE);
 #define MAX_UNITS 8192
 #define CAPACITY (MAX_UNITS + 1)
 #define VERSION 2
-// Source-only diagnostic. Managed source consumers retain EpochChanged semantics.
+// Source-only diagnostics; managed consumers preserve conservative denials.
 #define SOURCE_PENDING_WORK 0x10000u
+#define SOURCE_ORIGIN_UNTRUSTED 0x20000u
+#define SOURCE_FRESHNESS_UNPROVEN 0x20001u
 // Aligned fixed header, followed by three bounded UTF-16 buffers.
 typedef struct {
     uint32_t version, status, reason, op, pid, thread;
@@ -921,7 +926,7 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
     __atomic_store_n(&source_callback, 0, __ATOMIC_RELEASE);
     return result;
 }
-static LRESULT source_press_message(int code, WPARAM wp, LPARAM lp) {
+static LRESULT source_press_message(int code, WPARAM wp, LPARAM lp, const QueueMessage *entry) {
     QueueMessage *message = (QueueMessage *)lp;
     uint32_t thread = GetCurrentThreadId(), empty_callback = 0;
     int up = message->message == 0x101 && ((uintptr_t)message->lparam & 0xc0000000u) == 0xc0000000u;
@@ -938,7 +943,7 @@ static LRESULT source_press_message(int code, WPARAM wp, LPARAM lp) {
         return CallNextHookEx(0, code, wp, lp);
     }
     QueueMessage original;
-    copy(&original, message, sizeof(original));
+    copy(&original, entry, sizeof(original));
     source.busy++;
     LRESULT result = CallNextHookEx(0, code, wp, lp);
     if (!same_queue_message(message, &original)) source.press_disabled = 1;
@@ -954,24 +959,59 @@ static LRESULT source_press_message(int code, WPARAM wp, LPARAM lp) {
     __atomic_store_n(&source_callback, 0, __ATOMIC_RELEASE);
     return result;
 }
-// Research-only ABI addition. No shipping App/Broker installs this callback.
-// The isolated NativeEditTransactions constructor installs it on the owned
-// fixture's exact thread; Windows supplies the real WH_GETMESSAGE arguments.
-// This fixed, unmodified Tab path has no strict origin/old-queued-key or real
-// composition authority. In particular, posted messages are not physical input.
-// CallNext first cannot constrain an upstream hook after we return: evidence is
-// restricted to the controlled fixture chain and its actual outer pump return.
-__declspec(dllexport) LRESULT TypeLaySourceGetMessageProc(int code, WPARAM wp, LPARAM lp) {
-    QueueMessage *message = (QueueMessage *)lp;
-    uint32_t thread = GetCurrentThreadId(), empty_callback = 0;
-    if (code != 0 || wp != 1 || !message
-        || __atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) != thread
-        || source.hwnd != (uint64_t)(uintptr_t)message->hwnd)
+// A strict refusal has no body/selection side effects and never clears an owed
+// press. The complete downstream chain stays inside the original lifetime gate.
+static LRESULT source_refuse_strict_message(int code, WPARAM wp, LPARAM lp, uint32_t thread, uint32_t reason) {
+    if (!source.reason) source.reason = reason;
+    if (source.press_owed) source.press_disabled = 1;
+    uint32_t empty_callback = 0;
+    if (!__atomic_compare_exchange_n(&source_callback, &empty_callback, thread, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
         return CallNextHookEx(0, code, wp, lp);
+    source.busy++;
+    HANDLE mapping = source_mapping(source.nonce);
+    SourceInstallation *shared = mapping ? MapViewOfFile(mapping, 6, 0, 0, sizeof(SourceInstallation)) : 0;
+    if (shared) source_withdraw(shared);
+    LRESULT result = CallNextHookEx(0, code, wp, lp);
+    if (shared) UnmapViewOfFile(shared);
+    if (mapping) CloseHandle(mapping);
+    source.busy--;
+    __atomic_store_n(&source_callback, 0, __ATOMIC_RELEASE);
+    return result;
+}
+// Only the two fixed local exports select the policy. No wire field, App setting
+// or remote skip flag can turn a strict callback into the controlled mechanism.
+static LRESULT source_get_message(int code, WPARAM wp, LPARAM lp, int strict_origin) {
+    QueueMessage *message = (QueueMessage *)lp;
+    if (code != 0 || wp != 1 || !message) return CallNextHookEx(0, code, wp, lp);
+    // Explicit byte copy keeps the original MSG stack-local and this
+    // freestanding ABI independent of CRT helpers.
+    QueueMessage original;
+    copy(&original, message, sizeof(original));
+    const int tab = original.wparam == 9 && (original.message == 0x100 || original.message == 0x101
+        || original.message == 0x104 || original.message == 0x105);
+    uint32_t strict_reason = 0;
+    if (strict_origin && tab) {
+        // First application OS call for this original MSG, including each tail.
+        // Never query after CallNext/IMM or reuse another callback's result.
+        InputMessageSource input = {0, 0};
+        int queried = GetCurrentInputMessageSource(&input);
+        strict_reason = queried && input.device_type == 1 && input.origin_id == 1
+            ? SOURCE_FRESHNESS_UNPROVEN : SOURCE_ORIGIN_UNTRUSTED;
+        // HARDWARE includes UIAccess and passes the product's source-category
+        // requirement. It still cannot prove that this key follows Arm: an
+        // upstream hook can hold an already removed key across nested Arm.
+        // This partial strict entry therefore reports missing freshness before
+        // claim/write; do not replace this with MSG.time or a queue-empty guess.
+    }
+    uint32_t thread = GetCurrentThreadId(), empty_callback = 0;
+    if (__atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) != thread
+        || source.hwnd != (uint64_t)(uintptr_t)original.hwnd)
+        return CallNextHookEx(0, code, wp, lp);
+    if (strict_reason) return source_refuse_strict_message(code, wp, lp, thread, strict_reason);
     if (source.press_owed && message->wparam == 9
         && (message->message == 0x100 || message->message == 0x101
             || message->message == 0x104 || message->message == 0x105))
-        return source_press_message(code, wp, lp);
+        return source_press_message(code, wp, lp, &original);
     if (source.completed_status) return CallNextHookEx(0, code, wp, lp);
     const int first_tab = message->message == 0x100 && message->wparam == 9
         && !((uintptr_t)message->lparam & 0xc0000000u)
@@ -995,14 +1035,15 @@ __declspec(dllexport) LRESULT TypeLaySourceGetMessageProc(int code, WPARAM wp, L
         }
         return CallNextHookEx(0, code, wp, lp);
     }
-    if (!__atomic_compare_exchange_n(&source_callback, &empty_callback, thread, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    if (!__atomic_compare_exchange_n(&source_callback, &empty_callback, thread, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        // A nested real removal invalidates the held outer key as well as the
+        // inner one. An unchanged outer MSG is not proof that no input intervened.
+        if (!source.reason) source.reason = 15;
         return CallNextHookEx(0, code, wp, lp);
+    }
     // Protect the complete downstream chain as well as execution. Nested revoke
     // may latch a reason, but cannot acknowledge quiet, replace this grant or
     // accept an inner retrieved message while this original MSG is still held.
-    // Explicit byte copy keeps this freestanding ABI independent of CRT helpers.
-    QueueMessage original;
-    copy(&original, message, sizeof(original));
     uint64_t nonce = source.nonce;
     source.busy++;
     HANDLE mapping = source_mapping(nonce);
@@ -1047,6 +1088,18 @@ __declspec(dllexport) LRESULT TypeLaySourceGetMessageProc(int code, WPARAM wp, L
     source.busy--;
     __atomic_store_n(&source_callback, 0, __ATOMIC_RELEASE);
     return result;
+}
+// Controlled synthetic-input mechanism only. Existing Notepad/fixture evidence
+// remains about transaction/receipt mechanics, not strict source eligibility.
+__declspec(dllexport) LRESULT TypeLaySourceGetMessageProc(int code, WPARAM wp, LPARAM lp) {
+    return source_get_message(code, wp, lp, 0);
+}
+// Isolated strict-origin rejection entry. Main/capability0 never installs it.
+// Source category is checked; queue freshness is unresolved, so no strict write
+// or tail consumption is advertised. The v4 mapping and original exports stay
+// unchanged. A consumer selects this exact symbol or fails closed on older DLLs.
+__declspec(dllexport) LRESULT TypeLaySourceStrictGetMessageProc(int code, WPARAM wp, LPARAM lp) {
+    return source_get_message(code, wp, lp, 1);
 }
 // Called only by the inactive Windows adapter, with its already-open local view.
 // The view stays owned through source quiet ACK, including all timeout paths.

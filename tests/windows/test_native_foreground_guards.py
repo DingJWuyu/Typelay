@@ -234,12 +234,16 @@ class NativeForegroundGuardTests(unittest.TestCase):
                 17: "exact-field foreground preserves focus, identity, IME and deadline guards",
                 18: "source installation binds input identity and cannot revive a revoked grant",
                 19: "source PM_REMOVE commits the same MSG before selection",
-                20: "NOREMOVE and downstream nested removal cannot spend the grant",
+                20: "NOREMOVE preserves but downstream nested removal revokes the outer grant",
                 21: "source MSG refusal, revocation and withdrawal cannot restore or replay",
                 22: "sent source activation retains every original pending-work refusal",
                 23: "private source admission requires both MSG pointers or neither",
                 24: "claimed refusal and unknown retain native tail debt",
                 25: "native tail uncertainty/departure cannot revive and sent activation owes none",
+                26: "Prepared input and withdrawal cannot be rearmed",
+                27: "strict origin classification precedes other OS queries and grants no freshness",
+                28: "strict refusal survives downstream changes, reentry and Prepared Arm",
+                29: "strict tails cannot inherit controlled acceptance or revive uncertain debt",
             }
             self.assertEqual(
                 result.returncode,

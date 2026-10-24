@@ -67,12 +67,20 @@ public sealed class BrokerQueueDeadlineTests
         finally { peer.Release.Set(); }
         Assert.Equal("observed", (await active.WaitAsync(peer.Token)).Status);
         await peer.Wait(peer.Returned);
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(peer.Token));
+        var failure = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(peer.Token));
         Assert.False(broker.Available); // Acquired-call failure retains original cleanup policy.
+        using var trace = JsonDocument.Parse(Assert.Single(File.ReadAllLines(peer.TracePath!)));
+        Assert.Equal("broker-call-failed", trace.RootElement.GetProperty("operation").GetString());
+        var detail = trace.RootElement.GetProperty("detail");
+        Assert.Contains(detail.GetProperty("phase").GetString(), new[] { "read-response", "validate-response" });
+        Assert.Equal("cancelled", detail.GetProperty("errorCategory").GetString());
+        Assert.Equal(failure.HResult, detail.GetProperty("hResult").GetInt32());
+        Assert.Equal(JsonValueKind.False, detail.GetProperty("heldProcessExited").ValueKind);
+        Assert.Contains(detail.GetProperty("cancellationRequested").ValueKind, new[] { JsonValueKind.True, JsonValueKind.False });
         var request = Assert.Single(peer.Messages(), message => message.Op == operation);
         Assert.Equal(expiresAt, request.ExpiresAtMs);
         Assert.True(request.ReceivedAtMs < expiresAt, "The return must reach the wire with part of its original budget remaining.");
-    });
+    }, trace: true);
 
     [Fact]
     public Task ExpiredQueuedWakeDoesNotSendOrStopAnotherCall() => WithPeer(async peer =>
@@ -164,16 +172,31 @@ public sealed class BrokerQueueDeadlineTests
             WakeOrigin: new(1, 2, 3, 4, 5, triggeredAt));
     }
 
-    private static async Task WithPeer(Func<Peer, Task> test)
+    private static async Task WithPeer(Func<Peer, Task> test, bool trace = false)
     {
-        using var peer = new Peer();
-        Exception? failure = null;
+        string? previous = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
+        string? path = trace ? Path.GetTempFileName() : null;
+        if (trace)
+            Environment.SetEnvironmentVariable("TYPELAY_TRACE", path);
         try
         {
-            await test(peer);
+            using var peer = new Peer { TracePath = path };
+            Exception? failure = null;
+            try
+            {
+                await test(peer);
+            }
+            catch (Exception error) { failure = error; throw; }
+            finally { peer.PrimaryFailure = failure; }
         }
-        catch (Exception error) { failure = error; throw; }
-        finally { peer.PrimaryFailure = failure; }
+        finally
+        {
+            if (trace)
+            {
+                Environment.SetEnvironmentVariable("TYPELAY_TRACE", previous);
+                File.Delete(path!);
+            }
+        }
     }
 
     private sealed record Message(string Op, long Id, long ExpiresAtMs, long ReceivedAtMs);
@@ -200,6 +223,10 @@ public sealed class BrokerQueueDeadlineTests
         public BrokerClient Client
         {
             get;
+        }
+        public string? TracePath
+        {
+            get; init;
         }
         public Exception? PrimaryFailure
         {

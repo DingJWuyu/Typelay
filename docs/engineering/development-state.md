@@ -4,35 +4,35 @@
 
 ## 先看结论
 
-本页于 **2026-10-24 15:44 UTC** 按 CI509 完整终态原件、独立 Notepad 准入候选和已确认的辅助输入产品选择更新；本地候选与实跑结果分开记录。
+本页于 **2026-10-24 16:36 UTC** 按 CI510 完整终态原件与下一批已审组件更新；本地候选与实跑结果分开记录。
 
-- **CI509 整体失败，但 Windows App 849 通过、0 失败、16 项显式研究未执行。** 首次 Wake 11 项、文本快照 8 项、Notepad 编排与 Save 14 项全部实过，末门测试修订与 typed 观察基础回归已交付；这不代替真实 Notepad 尾段验收，也不解释旧 sibling 空 Snapshot 的唯一原因。
-- **新的阻断在两条 Chrome 路径，不是本轮 Notepad 或 Hy 失败。** continuous 新页按需已唤醒并完成翻译，随后 capture-failed 退休会话，最终等待截止；browser 在 Page.navigate 返回 aborted，尚未连接 loopback 页面或开始扩展发现。两者原件已交只读诊断，不延时或重跑求绿。
-- **正式 Notepad 与 Hy 因原依赖未运行。** continuous/browser 均自然 exit1、activeProcesses=0；aggregate 实际运行后因缺少 Notepad 证明拒绝，不是泄漏实证。下一候选以独立的 before-notepad 两份退出证明准入 Notepad，保留前序业务红、最终三份证明、独占数据目录拒覆盖及原预算；本地检查通过，Windows 尚未实跑。
-- **Windows 辅助输入兼容范围已获用户确认，不再等待该产品选择。** 认可 Windows 分类的辅助输入不等于开放普通模拟键、给 TypeLay 提权或开放生产接受。来源门另线只有部分实现准备，旧队列新鲜性与实际安全接线未闭，Main/capability0 不变；真实 IME 与人工稿异常交互选择仍分别处理。
-- **Linux 体验继续推荐完整核验的 CI498。** 本轮 Linux 未运行；模型采用、默认和资源合同不变。
+- **CI510 整体失败，Windows App 849 通过、0 失败、16 项显式研究未执行。** 独立 Notepad 的两份退出证明准入和最终三份证明均实际通过，前序 continuous 业务失败仍保红；原独占数据目录、身份、nonce 和预算未放宽。
+- **真实 Notepad 的首次唤醒、取消、直接替换及原生 Undo 首次完整通过这条部署场景。** 单 F9、Esc 保源、单 Direct 和 Undo 于 1503ms 内完成；typed 等值等待实际遇到一次长度变化后成功。自动 Tab 仍按公开能力否定失败，编辑依赖未跑。随后退出场景耗尽原 operation deadline；旧 stage 未细分后续关闭/对话框等待，具体卡点待证，不能说原文复核卡住或正常 Quit 已通过。
+- **本轮 continuous 首错是练习初始源读取超时。** Send/WM_GETTEXTLENGTH/1460，尚无目标绑定与练习进度；Chrome 冷页、新页自动/按需以及 browser 七场景本轮均通过，不能解释旧 capture-failed 或导航 aborted 的根因。练习候选仅把同一次基线读移到既有 native ready 前置之后，原输入、100ms 单消息与90秒总预算不变，真实 Windows 尚未验证。
+- **后继来源切片只提供拒绝，不是正式自动接受。** 来源分类未知或不可信拒绝，类别合格但旧键新鲜性未证仍拒绝，并收紧实际嵌套 REMOVE 的单调撤权；与 Chrome 有界安全诊断、练习观察顺序、Notepad退出留证及Linux时耗观察一同待组合审查和实跑。UIAccess 产品选择已确认，Main/capability0 不变；正向来源、真实 IME、部署及人工稿异常交互仍各有边界。
+- **Windows Hy 的15场景和 production五阶段通过；Linux Hy12阶段通过，但 Linux GTK4 multiline 与 Qt mode-switch 两场景失败。** Linux 推荐保持完整核验的 CI498；模型采用、默认和资源合同不变。
 
 ## 最近已核终态与实际结果
 
-[CI509 / run 40102218114](https://github.com/DingJWuyu/Typelay/actions/runs/40102218114) 于 2026-10-24 14:22:40 UTC 由唯一 push 触发，attempt 1，14:35:16 UTC 终态 `failure`。冻结本地 `892de7e3771a7ba6cf89dd223a4bb1842ec8690a` 对应远端 `c97002b357d6d38ede4871e81695c5c57fc2e066`、tree `b16f4653000e25d29c7eae540bce54b8ecb6172b`；12 文件精确发布、同分支非强推及源码身份已核。下述独立退出准入与产品选择文档整合尚未发布，不算本轮运行内容。
+[CI510 / run 40109457874](https://github.com/DingJWuyu/Typelay/actions/runs/40109457874) 于 2026-10-24 15:59:20 UTC 由唯一 push 触发，attempt 1，16:28:13 UTC 终态 `failure`。冻结本地 `5ef7723485a6fd7808a8001be4a49f36a66797a8` 对应远端 `57576aa621a4e58f551f96dc9d843076313b5655`、tree `8b358d1a4393e368976f29ca719f65c4d762589d`；8 文件精确发布、同分支非强推及源码身份已核。下述来源拒绝、Chrome 诊断和练习观察顺序组合尚未发布，不算本轮运行内容。
 
 后继验证以 [Actions 入口](https://github.com/DingJWuyu/Typelay/actions) 中当前分支最新运行及原件为准。实现、实际通过、失败和未运行分别记录；一次通过不证明旧间歇问题根因已修。
 
 | 范围 | 已核结果 | 剩余边界 |
 | --- | --- | --- |
-| 共享、编译与包装 | Core 302、Runtime 1314、Windows contracts 144、Protocol 28 通过；shared worker 168、Python shared 29、Linux 输入反馈 181 通过。Windows build、格式通过，worker 167 过、1 跳过，browser profile Python 3 项、Ruff 与 133 文件格式通过；包装 69 项通过，含 native foreground guards 与 WinEvent | 共享或受控回归不代替真实平台业务验收 |
-| Windows App 与源准备 | 849 通过、0 失败、16 项显式研究未执行。首次 Wake 11 项包含冷真实 F9、旧 read 阴性与末门 9 对照；PublicNoticeSnapshot 8 项及 Notepad 编排/Save 14 项通过。NativeSourceActivation 17、source setup 18 项通过，foreground 首次观察 264ms 匹配源 root/field | 修订后的末门与 typed 基础回归排程关闭；取消后寿命诊断失败分支未触发，不据此解释旧焦点或空 Snapshot 根因，不为它单独重跑 |
-| 隔离真实 Notepad 消费者 | source-message Broker/adapter 接受与撤回两例完整通过；一次 Verified/零正文回执旁路、Undo、焦点、零 LL activation/二次 Write、Quiet 与清理依各自原断言核验 | 原 28 秒和按键不变；受控输入不补齐严格来源、真实 IME 或第三方部署资格，不等于正式产品接受开放 |
-| 普通人工稿回源 | 原六分支及已收到 foreign 前台后不得被迟到 ACK 恢复的 router 集成阴性通过；共享 7 项间隙保稿、默认拒绝、foreign 与 cancel/late ACK 回归通过 | 未证明本轮再次命中真实 0 前台瞬态；原 800ms、原稿基线、fresh capture 和撤权边界不变 |
-| 隔离 App 回执与原生源 | SourceMessageReceipt、拒绝派发、late ACK、expired installation、Unknown fence、Owned Ctrl/Tab 和 5 项 StartupPeers 通过；owned 六例、source 两例及现役 native adapter 通过，hook/进程/输入清理完整 | 来源分类自动采集保持退役；局部回执不授予普通生产接受或物理 IME 资格 |
-| Windows continuous | owned 接受/编辑/回源、普通 control、continuousPreview、direct、practice 与 Chrome cold page 通过；Chrome 新页自动模式通过，按需最终 desktop-deadline。原 trace 先 wake-awakened、translate-done，再 capture-failed 与 NoSession | 不再归因为按键没唤醒或没有开始翻译；捕获失败的底层原因尚未证，当前只读诊断，不放宽捕获失败退休规则或期限 |
-| 浏览器合作输入 | setup 中 CDP get-targets、attach、Page.enable、DOM.enable 已到达；Page.navigate 阶段失败，pageNavigationFailure=aborted，loopback 三项连接/请求/响应均 false，扩展发现计数均 0 | 扩展发现及六业务场景未跑，不归成旧 metadata ReferenceError，不把此前正常轮结果当本轮通过 |
-| 退出证明与后继门 | continuous/browser 各自同 run/attempt/head、独立 nonce 的 natural exit1、active0 已核；step34 aggregate 实际失败，Notepad nonce/证明缺失 | 缺证明不是泄漏实证。before-notepad 候选只核前两份精确证明，最终 all 仍须三份；前序失败仍保红，取消/未知/缺失/冲突与共享用户数据目录继续拒绝 |
-| 正式 Notepad | step33 skipped，没有本轮 result、退出证明或新尾段证据。最近 CI508 首 Wake age51ms、译文、Esc、Broker/App Direct Verified 已到达，随后 1229ms InvalidOperationException，具体读点未知、Undo/正常退出未证 | typed Matches 仅处理等值等待中的 LengthChanged，其它 fatal 与严格 SourceUnchanged 保留；基础回归本轮通过，完整译文、焦点、Undo、普通退出仍须部署实跑，原输入与 520+20 秒预算不变 |
-| Windows Hy | production step35 与 Settings step36 skipped，不记为新 Hy 失败；最近 CI508 的 production 五阶段与 Settings 15 场景、normalQuit=true、exitCode=0/全部 worker 退出仍是既有基线 | 本轮无新加载或生命周期证明；旧 UIA 间歇根因、质量与高级 scope 缺口没有因此关闭 |
-| Linux 产品链 | 完整 Linux 与可选 Qt job skipped；最近 CI501 完整桌面与 Hy 12 阶段通过，体验推荐仍为已完整核包的 CI498 | 本轮无新 Linux 包；XTest 不是物理键盘，editor snapshot 不是高级 scope 或质量验收 |
+| 共享、编译与包装 | Core 302、Runtime 1314、Windows contracts 144、Protocol 28 通过；shared worker 168、Python shared 29、Linux 输入反馈 181 通过。Windows build、格式通过，worker 167 过、1 跳过，browser profile Python 3 项、Ruff 与 133 文件格式通过；包装 72 项通过，含退出证明 CLI、native foreground guards 与 WinEvent | 共享或受控回归不代替真实平台业务验收 |
+| Windows App 与源准备 | 849 通过、0 失败、16 项显式研究未执行。首次 Wake 11、PublicNoticeSnapshot 8、Notepad 编排/Save 14、NativeSourceActivation 17、source setup 18 项通过；foreground 首次观察 307ms 匹配源 root/field | 清理前寿命诊断失败分支未触发；不据此解释旧焦点或空 Snapshot 根因，不为它单独重跑 |
+| 隔离真实 Notepad 消费者 | source-message Broker/adapter 接受与撤回两例完整通过；一次 Verified/零正文回执旁路、Undo、焦点、零 LL activation/二次 Write、Quiet 与清理依各自原断言核验 | 原28秒和按键不变；受控输入不补齐严格来源、真实 IME 或第三方部署资格，不等于正式产品接受开放 |
+| 普通人工稿回源 | 原六分支及已收到 foreign 前台后不得被迟到 ACK 恢复的 router 集成阴性通过；共享7项间隙保稿、默认拒绝、foreign 与 cancel/late ACK 回归通过 | 未证明本轮再次命中真实0前台瞬态；原800ms、原稿基线、fresh capture 和撤权边界不变 |
+| 隔离 App 回执与原生源 | SourceMessageReceipt、拒绝派发、late ACK、expired installation、Unknown fence、Owned Ctrl/Tab 和5项 StartupPeers 通过；owned六例、source两例及现役 native adapter 通过，hook/进程/输入清理完整 | 来源分类自动采集保持退役；局部回执不授予普通生产接受或物理 IME 资格 |
+| Windows continuous | owned 接受/编辑/回源、普通 control、continuousPreview、direct、Chrome 冷页和新页自动/按需通过。onDemandPractice 在 practice-current-mode-entry 失败：初始读706263–706367ms，Send/WM_GETTEXTLENGTH(14)/1460；进程与窗口身份仍匹配，progressAvailable/targetBound=false | 这是已观察超时，不证明底层线程为何停顿。候选把完整初始读块移到已有 DirectReplace 与 PracticeProgress.Target 前置之后、可见 F9 ready cue 之前；不加读、sleep、重试或期限，尚未 Windows 实跑 |
+| 浏览器合作输入 | setup 与六业务场景均通过；包含按需替换、原字段后台完成、移除连接无写和提交计数正控 | 本轮未复现旧导航 aborted/metadata 问题，不称根因已修；有界诊断候选不改变 CDP 请求、事件订阅、重试或预算 |
+| 退出证明与后继门 | before-notepad 两证明门实际通过，continuous 失败但已退出仍可进入原 Notepad；最终 all 三证明门通过。continuous/browser/Notepad 同 run/attempt/head、各自 nonce 已核，natural exit1/0/1、active0、kernel-signaled | 两证明只授权独立测试准入，不把前序红洗绿；fixture 自然退出及其清理不等于被测 App 的 ordinary-exit 场景成功。当前准入接线排程关闭 |
+| 正式 Notepad | 公开自动预览通过；自动 Tab 在126ms明确否定，不发接受键，编辑依赖 not-run。独立按需链1503ms passed：一次 F9、Esc 保源、一次 Direct、nativeUndoRestoredSource=true；typed 等值等待记录一次 LengthChanged(9→10→32)后成功。ordinary-exit 506973ms失败并耗尽原520秒 operation deadline，cleanupErrors=[] | 旧 stage verify-original-source-before-exit 同时覆盖后续 WM_CLOSE、进程退出/保存对话框等待，不能据字段定位卡点；正常 Quit 尚无通过证据。原输入、520+20预算和 Main/capability0 不变 |
+| Windows Hy | production五阶段和 Settings15场景均通过，包含中英确认/取消、同代冷启、双向普通预览、切回、移除及 ordinary-exit；加载身份与原包相同，清理无错误 | 不解释旧 UIA 间歇根因；真实模型 smoke 不代替质量或高级 scope 放行 |
+| Linux 产品链 | setup-settings10、tutorial9、浏览器桌面7、GTK3桌面21、GIMP7项及 Hy12阶段通过。step47 GTK4 的 multiline write 缺 verified receipt，step48 Qt mode-switch 丢 configured acceptance route；完整 Linux job失败，可选 Qt job skipped | 两首错由原 trace 分诊，不延150/100ms或重跑求绿；本轮包未作采用评估，推荐保持 CI498。XTest 不是物理输入，editor snapshot 不是高级 scope 或质量验收 |
 
-核验入口为 `artifacts/ci509-independent/terminal-evidence-verified.json`。同目录 `windows-results-verified.json`、`shared-results.json`、`source-results-verified.json`、`foreground-preparation-result.json`、`owned-startup-results.json`、完整 job 日志与 `publication-verified.json` 保存身份与结果。源码 archive 860 成员、711 文件与冻结树逐字/模式相符；early/final source 18 份与 continuous 2 份逐字一致。Windows outer SHA/CRC 与 inner 551 文件 CRC/校验和已核；Notepad/Hy 未运行，没有其 loaded-release 回执，不冒充实际加载验证。内 ZIP 未另留重复副本。最近 Linux 原件与推荐包证据分别在 `artifacts/ci501-independent/linux-results-verified.json`、`artifacts/ci498-independent/linux-package-verified.json`；原始日志不复制进本页。
+核验入口为 `artifacts/ci510-independent/terminal-evidence-verified.json`。同目录保存 `windows-results-verified.json`、`linux-results-verified.json`、`shared-results.json`、`source-results-verified.json`、完整两平台日志及发布收据。源码 archive 860 成员、711 文件与冻结树逐字/模式相符；early/final source18份与 continuous2份逐字一致。Windows outer112项、Linux outer433项 CRC 与metadata SHA/大小已核；Windows inner551文件 CRC及校验和已核，计算 release identity 与 Notepad、Hy Settings与Hy production三份报告的实际加载身份相同，未另留inner重复副本。Linux inner未另解包或采用；推荐包证据仍在 `artifacts/ci498-independent/linux-package-verified.json`。原始日志不复制进本页。
 
 ## 当前责任与下一动作
 
@@ -40,12 +40,13 @@ root 负责集成、证据核验和采用决定；下表是现役责任线，不
 
 | 责任线 / 负责人 | 当前动作与依赖 | 完成或停止条件 |
 | --- | --- | --- |
-| 独立 Notepad 部署验证 / root，publish_next_verified_fix_batch | before-notepad 两证明门原片已双轴 GO；13 项 CLI、admission/profile/YAML 与旧真实 proof 重放本地通过，整合窄审待完成。前序业务失败但退出已证时继续原 Notepad；最终三 proof 与预算不变，独占用户数据仍拒覆盖 | 授权精确提交后，核 Windows 接线及真实 Notepad 预期正文、焦点、Undo、正常退出；公开 Tab 能力否定仍失败，不能以独立尾段通过冒充产品接受开放。若未准入按真实原因停止，不改 proof 或重跑求绿 |
-| Chrome 两处首因 / diagnose_ci509_chrome_failures | 只读 CI509 与既有可比原件：新页已唤醒/译完后 capture-failed，合作浏览器导航 aborted；不重复下载、不修改 native 或 Chrome 源码 | 只对现有证据能区分的原因给下一最小动作；无新证据不加重试、sleep 或扩预算，不阻已就绪的独立 Notepad 验证 |
-| Windows 来源门 / implement_source_origin_gate，root | 用户辅助输入选择已确认；另线部分实现已准备，旧队列新鲜性与实际安全接线尚未闭合，不含本批。既有受控机械消费者仍保留各自边界 | 完成机制审查、原消费者反例及 Windows 实跑后再判断采用；真实 IME 与部署仍须独立证据，Main/capability0 保持关闭，不把技术未决写回等待用户同一选择 |
-| foreground 等待首错 / triage_source_setup_ci498 | 清理前寿命诊断已发布，CI509 编译与原用例通过，失败分支未验 | 后续自然失败时核一次元数据及原取消/清理，核实后关闭排程；不单独重跑，非原子样本不证明前台根因 |
-| Linux 体验交付 / root | 保持 CI498 推荐，接收真机/物理输入法反馈 | 后继包须完整结果与身份才能替换推荐；未知 IME 保守拒绝，不自动发布 stable |
-| 模型采用 / root | 保持下方既有公开采用结论、默认和资源合同；新增产品故障或实质新假设才安排最小验证 | 生命周期、质量、高级 scope 与许可各凭自身证据；不扩大候选、推理预算或公开范围 |
+| 现役候选组合 / root，publish_next_verified_fix_batch | Chrome安全诊断、来源拒绝/嵌套撤权、练习基线读顺序三原片已独立双轴GO；另合入Notepad退出留证与Linux时耗观察，本页一起待完整组合双审。全部代码叶保留作者对象，唯一平台文档冲突按当前实现与剩余条件收束。组合GCC1通过、Windows WinEvent跳过、GTK观察19通过、XML21与diff通过；新增C#/Qt/Windows桌面未跑 | 授权精确树后核全部消费者编译、原source/Notepad事务邻近回归及实际练习场景；受控拒绝不是正向来源接受，诊断不是修复，未复现旧失败只报本轮事实，不为采诊断单独重跑 |
+| Notepad 正常退出 / diagnose_notepad_normal_exit | 已实现准确关闭stage、原查找/Invoke计数及局部冻结快照，防迟到UIA回调改写终态；随当前组合审查，未编译/桌面运行。旧原件未给具体关闭卡点，独立按需正文/Undo已通过 | 原选择器、输入、deadline与清理不变；自然执行时核最后到达阶段及计数再决定是否修复。不能把新增诊断称作退出已修，真实正常退出仍须原场景通过 |
+| Windows 正向来源门 / implement_source_origin_gate，root | UIAccess选择已确认；当前严格入口仅拒绝，正向初始化/有序见证另线实现中，未纳入此候选，旧键与严格构造LL交接仍须完成 | 代码、受控API、Windows阴性、物理/UIAccess和IME证据分别核；未知零写拒绝，Main/capability0不变，不把技术缺口写回等待同一产品选择 |
+| foreground 等待首错 / triage_source_setup_ci498 | 清理前寿命诊断已发布，本轮原用例通过，失败分支未验 | 后续自然失败时核一次元数据及原取消/清理，核实后关闭排程；不单独重跑，非原子样本不证明前台根因 |
+| Linux 实际拒绝分诊 / diagnose_linux_desktop_regressions，instrument_linux_shortcut_delays | GTK既有phases/keytiming及Qt终态聚合时耗已本地实现，纳入当前组合待审和CI；组合GTK观察19项通过，Qt尚未编译或真实桌面运行 | 自然复现时以时耗区分原等待/发送路径，再决定修复；保原150/100ms、25ms timer/原sleep、唯一输入与调度，不从总红推全部桌面失败，不为采证据单独重跑 |
+| Linux 体验交付 / root | 保持CI498推荐，接收真机/物理输入法反馈 | 后继包须完整结果与身份才能替换推荐；未知IME保守拒绝，不自动发布stable |
+| 模型采用 / root | 保持下方既有公开采用结论、默认和资源合同；新增产品故障或实质新假设才安排最小验证 | 生命周期、质量、高级scope与许可各凭自身证据；不扩大候选、推理预算或公开范围 |
 
 ## 仍约束交付的产品边界
 
@@ -53,7 +54,7 @@ root 负责集成、证据核验和采用决定；下表是现役责任线，不
 
 普通输入框接受译文、F10 替换和连续输入仍是核心目标；代表性应用不是支持名单。首键、同目标有效按键消费、原子文本事务、IME 与精确源身份必须同时成立，未知即拒绝。用户主动切换应用后的 repeat/up 正常交给新应用，跨应用尾键抑制不再是要求。
 
-正式 Notepad 的仅预览不能改成接受通过；源事件与事务的受控阳性也不能授予第三方部署资格。既有只读 TSF、原始消息和来源观察各有范围，见 [Windows 开发说明](../platforms/windows/development.md)；已退役机制不恢复凑运行。[UIAccess 辅助输入兼容范围已获用户确认](../product/README.md#windows-接受译文的辅助输入兼容范围)，不再等待产品选择；来源机制尚未就绪，按[下一来源门切片](../platforms/windows/development.md#源接受来源门的下一实现切片)推进。新策略实际验证前保持当前严格边界及 Main/capability0，不变更 OS 权限、注册或部署。
+正式 Notepad 的仅预览不能改成接受通过；源事件与事务的受控阳性也不能授予第三方部署资格。既有只读 TSF、原始消息和来源观察各有范围，见 [Windows 开发说明](../platforms/windows/development.md)；已退役机制不恢复凑运行。[UIAccess 辅助输入兼容范围已获用户确认](../product/README.md#windows-接受译文的辅助输入兼容范围)，不再等待产品选择；来源机制尚未就绪，按[正向接受剩余条件](../platforms/windows/development.md#正向接受的剩余条件)推进。新策略实际验证前保持当前严格边界及 Main/capability0，不变更 OS 权限、注册或部署。
 
 有界诊断只用于定位，不采用户标题/正文，不增加焦点重试或放宽原期限。真实 IME composition 正例仍缺，输入配置库存与明确 none 不能代替它；既有几何、浏览器与回源回归保留，但旧间歇故障未复现不等于根因已消失。
 

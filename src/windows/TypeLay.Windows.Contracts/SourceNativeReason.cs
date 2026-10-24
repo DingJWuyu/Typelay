@@ -8,13 +8,17 @@ public static class SourceNativeReason
 {
     public const uint PendingWork = 0x10000;
     public const uint PendingQueueMask = 0x1dff;
+    public const uint OriginUntrusted = 0x20000;
+    public const uint QueueFreshnessUnproven = 0x20001;
 
     public static bool TryDecode(uint nativeReason, out Denial reason)
     {
         // Also accept older native modules' base-only pending-work diagnostic.
         // Bits outside the originally queried queue flags are not a known code.
-        reason = (nativeReason & ~PendingQueueMask) == PendingWork
-            ? Denial.EpochChanged : (Denial)nativeReason;
+        reason = nativeReason is OriginUntrusted or QueueFreshnessUnproven
+            ? Denial.Unsupported
+            : (nativeReason & ~PendingQueueMask) == PendingWork
+                ? Denial.EpochChanged : (Denial)nativeReason;
         return Enum.IsDefined(reason);
     }
 }

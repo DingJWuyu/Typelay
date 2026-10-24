@@ -1,5 +1,6 @@
 extern alias BrokerProduction;
 
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using TypeLay.Core;
@@ -18,9 +19,19 @@ public sealed partial class SourceKeyboardBoundaryProbe
     [Theory(Explicit = true, Timeout = 60000)]
     [InlineData(11)] // Same down: NOREMOVE twice, REMOVE, commit, held hook, actual outer return.
     [InlineData(12)] // A real post-install edit refuses without changing the original Tab.
-    public async Task ObserveOrdinarySourceMessageAcceptance(int mode)
+    public Task ObserveOrdinarySourceMessageAcceptance(int mode) => RunSourceMessage(mode);
+
+    // Fixed negative cases at the real native hook. These do not run the retired
+    // classification probe or claim hardware/UIAccess/queue-freshness success.
+    [Theory(Explicit = true, Timeout = 60000)]
+    [InlineData(false)] // Ordinary non-UIAccess SendInput.
+    [InlineData(true)]  // Posted Tab at the same native strict entry.
+    public Task StrictSourceOriginLeavesSyntheticTabUnconsumed(bool posted) => RunSourceMessage(14, posted);
+
+    private async Task RunSourceMessage(int mode, bool posted = false)
     {
-        string directory = Path.Combine(Repository(), "artifacts", "source-message-acceptance",
+        bool strict = mode == 14;
+        string directory = Path.Combine(Repository(), "artifacts", strict ? "source-origin-rejection" : "source-message-acceptance",
             $"{DateTime.UtcNow:yyyyMMddTHHmmssfffZ}-{Guid.NewGuid():N}-{mode}");
         Directory.CreateDirectory(directory);
         var observations = new List<object>();
@@ -38,6 +49,17 @@ public sealed partial class SourceKeyboardBoundaryProbe
         bool sourceRouteClosed = false;
         try
         {
+            if (strict)
+            {
+                using var sender = Process.GetCurrentProcess();
+                Assert.True(OpenProcessToken(sender.Handle, 0x0008, out var token));
+                using (token)
+                {
+                    Assert.True(GetTokenInformation(token, 26, out uint uiAccess, sizeof(uint), out uint returned));
+                    Assert.Equal((uint)sizeof(uint), returned);
+                    Assert.Equal(0u, uiAccess);
+                }
+            }
             source = await ProductionForegroundWriteTests.Desktop.Start(sourceMessageProbe: true);
             await source.Prepare(source.A, "pre old post", new(12, 12));
             string other = N.ReadText(source.B, Limits.MaxTextUnits);
@@ -47,7 +69,7 @@ public sealed partial class SourceKeyboardBoundaryProbe
             Assert.True(N.SetProp(source.Root, "TypeLay.Test.SourceBarrierUp.v1", 0));
             Assert.True(N.SetProp(source.Root, "TypeLay.Test.KeyboardProbe.Ready.v1", 0));
             var observed = await source.Capture();
-            native = new NativeTransactions(sourceMessageRoute: true);
+            native = new NativeTransactions(sourceMessageRoute: true, strictSourceMessageOrigin: strict);
             // Load/install the real backend before the observer and before any
             // authorization exists. The observer must be upstream of native.
             Assert.NotNull(native.Observe(observed.Target.AsWindows(), observed.Bounds,
@@ -64,7 +86,11 @@ public sealed partial class SourceKeyboardBoundaryProbe
             Assert.True(N.PostMessage(source.Root, 0x8080, (nuint)mode, 0));
             while (N.GetProp(source.Root, "TypeLay.Test.KeyboardProbe.Ready.v1") != mode)
                 await Task.Delay(1, source.Token);
-            var press = inputs.SendDown(source.Root, 9, 0x0f);
+            ProbeInputs.Press? press = null;
+            if (posted)
+                Assert.True(N.PostMessage(source.A, 0x100, 9, 0x000f0001));
+            else
+                press = inputs.SendDown(source.Root, 9, 0x0f);
             if (mode == 11)
             {
                 while (N.GetProp(source.Root, "TypeLay.Test.SourceMessage.Paused.v1") == 0
@@ -93,7 +119,10 @@ public sealed partial class SourceKeyboardBoundaryProbe
                 Assert.Equal((nuint)0, N.Send(source.Root, 0x8082));
             }
             // One original press, with no renewed authorization or second write.
-            inputs.FinishDown(source.Root, press, repeat: mode == 11);
+            if (posted)
+                Assert.True(N.PostMessage(source.A, 0x101, 9, unchecked((nint)0xc00f0001)));
+            else
+                inputs.FinishDown(source.Root, press!, repeat: mode == 11);
             inputs.SendPair(source.Root, 0x86, 0);
             while (N.GetProp(source.Root, "TypeLay.Test.SourceBarrierUp.v1") != 1)
                 await Task.Delay(1, source.Token);
@@ -143,9 +172,12 @@ public sealed partial class SourceKeyboardBoundaryProbe
             }
             else
             {
-                Assert.Equal(Denial.EpochChanged, terminal.Receipt.Reason);
-                Assert.Equal("pre old post newer edit", N.ReadText(source.A, Limits.MaxTextUnits));
-                Assert.Equal(new TextRange(0, 0), N.ReadSelection(source.A));
+                Assert.Equal(strict ? Denial.Unsupported : Denial.EpochChanged, terminal.Receipt.Reason);
+                if (strict)
+                    Assert.Equal(new NativeTransactions.SourceNativeResponse(2, SourceNativeReason.OriginUntrusted, 0),
+                        terminal.NativeResponse);
+                Assert.Equal(strict ? "pre old post" : "pre old post newer edit", N.ReadText(source.A, Limits.MaxTextUnits));
+                Assert.Equal(strict ? new TextRange(12, 12) : new TextRange(0, 0), N.ReadSelection(source.A));
                 Assert.Equal(message.GetProperty("selectionBefore").ToString(), message.GetProperty("selectionAfter").ToString());
                 Assert.Equal(source.B, N.Focused().Control);
                 Assert.Equal(new[] { 0x100, 0x101 }, returned.Select(item => Number(item, "Code")));
@@ -212,6 +244,8 @@ public sealed partial class SourceKeyboardBoundaryProbe
                 diagnosticOnly = true,
                 productionReadiness = false,
                 mode,
+                strictOrigin = strict,
+                posted,
                 status,
                 error,
                 hooksClosed,
@@ -238,7 +272,9 @@ public sealed partial class SourceKeyboardBoundaryProbe
                 exitRetirement,
                 inputs = inputs.Records,
                 observations,
-                scope = "Controlled hook chain and synthetic input; native tails cover the same field only, not same-application field changes. No cross-app, strict source, real composition or third-party acceptance proof."
+                scope = strict
+                    ? "Strict native origin rejection only. No hardware/UIAccess positive, queue freshness, real composition or production acceptance proof."
+                    : "Controlled hook chain and synthetic input; native tails cover the same field only, not same-application field changes. No cross-app, strict source, real composition or third-party acceptance proof."
             }, new JsonSerializerOptions { WriteIndented = true }), CancellationToken.None);
         }
         Assert.True(status != "precondition_failed", $"{mode}: {error}; results: {directory}");

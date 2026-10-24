@@ -9,6 +9,7 @@
     <Compile Include="../../../src/windows/TypeLay.Broker/Input/CaptureTrace.cs" Link="CaptureTrace.cs" />
     <Compile Include="../../../src/windows/shared/WindowsInterruptClock.cs" Link="WindowsInterruptClock.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/BrowserExtensionMetadataResponse.cs" Link="BrowserExtensionMetadataResponse.cs" />
+    <Compile Include="../fixtures/TypeLay.DesktopFixture/BrowserCdpDiagnostics.cs" Link="BrowserCdpDiagnostics.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/BrowserPageOpenResponse.cs" Link="BrowserPageOpenResponse.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/HyPackageDirections.cs" Link="HyPackageDirections.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/OwnedConfirmationDialog.cs" Link="OwnedConfirmationDialog.cs" />

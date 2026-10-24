@@ -21,11 +21,17 @@ internal sealed partial class NativeEditTransactions : IDisposable
     private readonly Dictionary<uint, nint> _hooks = new();
     private nint _library, _procedure;
     private uint _message, _ownedCaptureMessage;
-    private readonly bool _sourceMessageRoute;
+    private readonly bool _sourceMessageRoute, _strictSourceMessageOrigin;
     private bool _sourceMessageRouteFailed;
     // Only the isolated source2 consumer opts in. Registration does not grant
     // source eligibility, change input-origin policy or enable shipping capture.
-    internal NativeEditTransactions(bool sourceMessageRoute = false) => _sourceMessageRoute = sourceMessageRoute;
+    internal NativeEditTransactions(bool sourceMessageRoute = false, bool strictSourceMessageOrigin = false)
+    {
+        if (strictSourceMessageOrigin && !sourceMessageRoute)
+            throw new ArgumentException("Strict source origin requires the isolated retrieved-message route.");
+        _sourceMessageRoute = sourceMessageRoute;
+        _strictSourceMessageOrigin = strictSourceMessageOrigin;
+    }
     private sealed record Binding(WindowsTarget Original, WindowsTarget Target, ulong Cookie, uint Thread, long TouchedAt,
         bool Initialized = false, OwnedCaptureDescriptor? Owned = null, bool DirectCaptured = false);
     private sealed record Result(uint Status, Denial Reason, string Text, TextRange Selection, bool Multiline, ImeState Ime);

@@ -27,6 +27,19 @@ internal static partial class BrowserCooperationCheck
         public string Stage { get; set; } = "not-started";
         public string Failure { get; set; } = "none";
         public string ErrorType { get; set; } = "none";
+        public string ErrorCategory { get; set; } = "none";
+        public bool? FailureCancellationRequested
+        {
+            get; set;
+        }
+        public bool? HeldBrowserExitedAtFailure
+        {
+            get; set;
+        }
+        public bool? HeldAppExitedAtFailure
+        {
+            get; set;
+        }
         public string? ErrorCode
         {
             get; set;
@@ -223,6 +236,11 @@ internal static partial class BrowserCooperationCheck
             try
             {
                 await work(limit.Token);
+            }
+            catch
+            {
+                scene.FailureCancellationRequested = limit.IsCancellationRequested;
+                throw;
             }
             finally { scene.ElapsedMs = elapsed.ElapsedMilliseconds - start; }
             scene.Outcome = "passed";
@@ -478,6 +496,9 @@ internal static partial class BrowserCooperationCheck
             active.Outcome = "failed";
             active.Failure = error is Failure failure ? failure.Code : error is BrowserWindows.Failure browserFailure ? browserFailure.Code : error is HostedBrowserContainerRejected rejected ? rejected.Code : error is OperationCanceledException ? active.Stage + "-deadline" : "unexpected-error";
             active.ErrorType = error.GetType().Name;
+            active.ErrorCategory = BrowserCdpDiagnostics.ErrorCategory(error);
+            active.HeldBrowserExitedAtFailure = SampleExited(browserLifetime.Child);
+            active.HeldAppExitedAtFailure = SampleExited(appLifetime.Child);
             if (ReferenceEquals(active, setup))
             {
                 // Only ChildProcess's fixed codes may cross this diagnostic boundary.
@@ -606,6 +627,7 @@ internal static partial class BrowserCooperationCheck
             extensionDiscovery = cdp?.Discovery,
             extensionMetadata = cdp?.MetadataDiagnostics,
             pageNavigationFailure = cdp?.NavigationFailure ?? "unobserved",
+            cdpDiagnostics = cdp?.Diagnostics,
             loopbackPage = server is null ? null : new
             {
                 server.ConnectionAccepted,
@@ -625,6 +647,14 @@ internal static partial class BrowserCooperationCheck
         }, Json));
         Console.WriteLine($"Browser cooperation: {(passed ? "passed" : "failed")}; stage={first?.Stage ?? (passed ? "complete" : "cleanup")}; failure={first?.Failure ?? "none"}.");
         return passed ? 0 : 1;
+    }
+    private static bool? SampleExited(IChildProcess? child)
+    {
+        try
+        {
+            return child is null ? null : ProcessImage.Exited(child.Process.SafeHandle);
+        }
+        catch { return null; }
     }
     private static bool AnyChromeProcess()
     {

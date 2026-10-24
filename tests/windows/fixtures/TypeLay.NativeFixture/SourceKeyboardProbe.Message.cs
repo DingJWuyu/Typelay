@@ -79,7 +79,7 @@ internal sealed partial class SourceKeyboardProbe
 
     private nint Message(int code, nint wp, nint lp)
     {
-        if (code < 0 || _mode is not (11 or 12))
+        if (code < 0 || _mode is not (11 or 12 or 14))
             return CallNextHookEx(_messageHook, code, wp, lp);
         var original = Marshal.PtrToStructure<N.MessageStruct>(lp);
         bool key = code == 0 && original.WParam == 9 && original.Message is 0x100 or 0x101;
@@ -144,7 +144,7 @@ internal sealed partial class SourceKeyboardProbe
             OriginRetrievalReturned(status, message);
             return;
         }
-        if (_mode is not (11 or 12) || status <= 0 || message.WParam != 9
+        if (_mode is not (11 or 12 or 14) || status <= 0 || message.WParam != 9
             || message.Message is not (0 or 0x100 or 0x101))
             return;
         if (_messageReturns == 0)

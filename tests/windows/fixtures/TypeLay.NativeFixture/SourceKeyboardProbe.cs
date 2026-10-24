@@ -57,8 +57,8 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
     internal void Configure(int mode)
     {
         // 1: peek+consume F7, 2: observe F7, 3: observe Tab, 4: consume Tab.
-        if (mode is < 1 or > 13 || mode is >= 5 and <= 10 && _synchronousField is null
-            || (mode is 11 or 12) && _messageHook == 0 || mode == 13 && _originHook == 0)
+        if (mode is < 1 or > 14 || mode is >= 5 and <= 10 && _synchronousField is null
+            || (mode is 11 or 12 or 14) && _messageHook == 0 || mode == 13 && _originHook == 0)
             throw new ArgumentOutOfRangeException(nameof(mode));
         _mode = mode;
         _key = mode <= 2 ? 0x76u : mode == 13 ? 0x77u : 9u;
@@ -69,7 +69,7 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
         _peekPending = mode is 1 or 6 or 11;
         if (mode is >= 5 and <= 10)
             PrepareSynchronous(mode);
-        if (mode is 11 or 12)
+        if (mode is 11 or 12 or 14)
             PrepareMessage(mode);
         if (mode == 13)
             PrepareOrigin();

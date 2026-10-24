@@ -49,6 +49,8 @@ CI 在本轮构建成功后独立收集行为、格式、原生适配器和发�
 
 显式真实模型入口 `--verify-continuous` 复用同一模型和原 90 秒桌面总预算，在 stock Edit 与练习场景后验证同一 NTP 字段的自动预览及按需预览。两模式各检查首个真实译文与追加后的更新，按需模式只注入一次经当前设置核对的 `Ctrl+Shift+F9`，不等待发布日志择时或重试。`BrowserWindows` 是两个测试消费者编译链接的共享源，保留相同内部页定位、单次点击和焦点检查；局部 Broker 包装仅观察原返回与写请求，不修改生产请求、权限或调度。报告从已有 snapshot 记录 IME 与写能力，保留 UIA 已预热前置；实验写回关闭且没有练习授权。NTP 没有受控提交计数器，报告 `submitCounterAvailable=false`、零 Enter/提交动作注入、零产品写请求和观察到的源/Document 保持，不能将这些事实写成已测 `zeroSubmits`。浏览器停止或目录清理失败仍单列为失败，不抹去已完成的两个预览阶段事实。
 
+已有 `TYPELAY_TRACE` 的 `capture-error` 仅保留每个控制器最先16次当前捕获失败，区分 `before-capture`、`input-capture` 与 `apply-observation`，在原会话退休前记录固定异常类别、HResult 和可用的取消 token 状态，不再查询焦点。Windows `broker-call-failed` 同样最多16次，区分持有子进程、发送、读取与校验阶段；在原 Stop 前仅对已有进程 handle 做一次零等待退出采样，不按 PID 重开。无 token/进程或读取失败记 null，不把 unknown 记作 false；取消位是采样值，不推定超时唯一根因。诊断写入失败不替换原异常、阻止撤权或改变原重连规则。`SessionDiagnosticsTests`、`BrokerFailureDiagnosticsTests` 与既有 `BrokerQueueDeadlineTests` 分别验证实际控制器退休、离线原异常/有界隐私，以及真实 pipe 取消清理前的存活采样；这些不是 Chrome 故障已修的证明。
+
 同一真实模型入口在 NTP 场景前追加一个隔离普通页冷态自动首译检查：复用 DOM ready、唯一真实点击和 DOM 焦点前置，真实输入后只观察 Runtime 自然捕获与既有 Broker 恢复调度，首个可见参考译文出现后才在 MTA 复核字段和 Document；不增加测试 UIA 预热、手工捕获重试或等待。准备子上限仍为 20 秒，所有模型场景仍共用原 90 秒桌面预算；单列首译事实与清理失败，保留零写请求和无提交计数器边界，结果不外推到 NTP 冷态发现。
 
 模型场景的重复 UIA 身份观察在 MTA 后台执行并逐次完整等待，避免测试祖先遍历占用生产 WPF 捕获调度线程；取消后不发起下一观察或输入，清理不会越过已开始的观察。原身份门、单次按键与产品时效保持不变，结果仅汇总观察次数和耗时，不据此宣称首次 F9 问题已修复。
@@ -95,7 +97,7 @@ raw foreground 与字段 keyboard focus 是不同观察。[Windows 的激活模�
 
 同一 native API 边界现经导出 source hook 验证每个安装 grant 的源线程 HIMC/HKL 标量绑定：身份换值、最终控件读取/资格回调后换值、SETSEL 回调换值、SETCONTEXT 及组合 END 撤销、poll 已观察失配后恢复均不能复活旧 grant；只有精确退休后的新 grant 可重新取证。绑定只留在 source 本地，不扩共享 wire，也不复用 owned 专属门。真实 `NativeSourceActivationTests` 另覆盖自有 Edit 解除既有 HIMC、poll 撤销、恢复后旧 grant 拒绝及新 grant 接受，须由 Windows 实跑；无新 IME/context 创建、profile 切换或伪造组合态。HIMC/HKL 相等和 GCS_COMPSTR 长度零仍不证明 TSF profile 连续性或真实组合正例，默认生产接受保持关闭。
 
-同一 portable 程序另经新增 `TypeLaySourceGetMessageProc` 公开入口检查：在首次 SETSEL 的系统 API 替身处，原调用者 MSG 已为 WM_NULL 且同 grant 已 claim；两次 NOREMOVE 不耗 invoked；下游嵌套检索不能抢同 grant，嵌套 revoke/install 不得提前 Quiet；下游或末次控件调用改变 MSG、withdrawal 赢、过期/寿命/正文/选区失配均不被本实现改写或重试；claim 后输入身份或选区变化拒绝正文仍保留消费承诺。sent-activation 对原 mask 各类 pending 提示仍零 claim/写入；retrieved-MSG 不读 queue hints，提示本身不替代实际状态重验。同一源的非接受键被实际 REMOVE 后撤销旧 grant，NOREMOVE/负 hook code 不撤权、不消费，恢复等值不复活。同一入口的尾键回归另核首 claim 后立即欠债、post-claim Rejected/Unknown 仍欠债、过期不解除同按次、tails 前 Retire 非 Quiet、repeat/up 后 Quiet；NOREMOVE/负 code/别字段不消费，busy/新首键/错 scan/未知输入 context 封旧消费而不猜清债，已知离域后恢复不复活。sent 激活正例不欠尾债。实际两行保留完整首键/暂停/Undo/冲突断言，只把尾键消费由 fixture 移入 native，新增提前 Retire 与无授权 Close 的拒绝对照；这不是跨字段/跨应用实际验收。两 admission 指针缺一的写前拒绝仅是局部不变量断言，不声称公开 hook 可构造该状态。系统 API 替身不证明 Windows 检索或完整 hook 链行为。真实两行入口与证据边界见[普通 source MSG 接线](development.md#普通-source-事务与同一-msg-的受控接线)，旧 owned 六行保持不变。
+同一 portable 程序另经新增 `TypeLaySourceGetMessageProc` 公开入口检查：在首次 SETSEL 的系统 API 替身处，原调用者 MSG 已为 WM_NULL 且同 grant 已 claim；两次 NOREMOVE 不耗 invoked；下游实际嵌套 REMOVE 单调撤销内外层同 grant，外层原 MSG 未变也不得再写，嵌套 revoke/install 不得提前 Quiet；下游或末次控件调用改变 MSG、withdrawal 赢、过期/寿命/正文/选区失配均不被本实现改写或重试；claim 后输入身份或选区变化拒绝正文仍保留消费承诺。sent-activation 对原 mask 各类 pending 提示仍零 claim/写入；retrieved-MSG 不读 queue hints，提示本身不替代实际状态重验。同一源的非接受键被实际 REMOVE 后撤销旧 grant，NOREMOVE/负 hook code 不撤权、不消费，恢复等值不复活。同一入口的尾键回归另核首 claim 后立即欠债、post-claim Rejected/Unknown 仍欠债、过期不解除同按次、tails 前 Retire 非 Quiet、repeat/up 后 Quiet；NOREMOVE/负 code/别字段不消费，busy/新首键/错 scan/未知输入 context 封旧消费而不猜清债，已知离域后恢复不复活。sent 激活正例不欠尾债。实际两行保留完整首键/暂停/Undo/冲突断言，只把尾键消费由 fixture 移入 native，新增提前 Retire 与无授权 Close 的拒绝对照；这不是跨字段/跨应用实际验收。两 admission 指针缺一的写前拒绝仅是局部不变量断言，不声称公开 hook 可构造该状态。系统 API 替身不证明 Windows 检索或完整 hook 链行为。真实两行入口与证据边界见[普通 source MSG 接线](development.md#普通-source-事务与同一-msg-的受控接线)，旧 owned 六行保持不变。
 
 独立来源观察只通过 [显式 F8 手动维护入口](development.md#同一检索处的独立来源分类观察) 运行，不参与日常 CI、原两行接受或默认 suite 的执行选择。已有六消息/三阶段/十二次成功采样，两个来源点各自观察到 INJECTED → UNAVAILABLE → INJECTED 的有限分类变化，自动采集已停止；保留入口用于生产原始 MSG 来源检查的评估，仅在该边界实现、调用时点或平台契约变化时手动验证。必须以实际源 WH_GETMESSAGE 与原 GetMessage 的同次完整 MSG 配对、原 up after-dispatch 和原样正文/选区/焦点为数据完整性判据；两个来源点独立分类，不要求它们返回相同 origin，也不把一处阳性外推另一处。既有结果不证明不可伪造的 MSG 绑定，无物理、UIAccess 或 system 输入正例，不授予 IME、写入/消费/信任资格，三项生产/物理/绑定字段仍为 false；本地无 Windows 环境时明确未执行，不能用合成来源枚举替身证明 API 可绑定。
 
@@ -238,6 +240,8 @@ dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows
 
 `--verify-continuous` 在同一已安装真实模型、共同桌面时限内追加独立练习场景：真实 WPF 默认取消不改模式，明确确认经正式设置持久化，启动发布用 `TypeLay.Practice` 的 stock Edit，由生产会话/Hook/Broker 执行一次 F9 预览与一次 F10 替换。必须比对真实模型参考、预览原文不变、焦点保留、Verified 结果与浮层隐藏；关闭后保留用户后来选的模式，不标记完整教程完成。前场景清理未确认时不启动后场景，任何场景失败仍整体失败。软件键注入不代表物理键盘或真实 IME 验收；未增加实验 Tab 授权。
 
+练习源正文的首次严格核对在既有生产 `DirectReplace` 能力观察和练习 `Target` 绑定成功后执行，不再把 HWND/Edit 已存在当作练习已开始的充分前提。期望值仍是预先确定的 `view.SampleText`，不是从读回正文建立基线；原读取起止时间、当时进度及失败后非原子身份事实保留，移后的读取单独标记为 `practice-initial-source-read`。核对完成后才等待原精确可见就绪提示，避免在提示与唯一 F9 之间插入同步读取；原 F10、预览原文不变、源身份、100ms 消息上限和共同 90 秒截止均不变。该顺序修正不证明源线程没有卡顿或旧超时的唯一根因；仍须同一真实桌面场景复验。现有 `OnDemandPracticeRenderingTests` 保留真实采集前不宣布就绪、过期撤回及源文字不变检查，它不代替此 fixture 的跨进程时序复验。
+
 搬迁发行包回归单独启动实际 `TypeLay.Practice.exe`，确认自有普通 Edit 存在、无正文输出与设置不变，然后正常关闭并确认退出。该测试不替代前述真实翻译场景，也不把新入口尚未运行的 Windows 回归描述为通过。
 
 ## Windows 浏览器合作链
@@ -247,6 +251,8 @@ dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows
 设置发现检查使用标准 Chrome `User Data` 根，不能把任意测试 profile 路径传给生产发现器，也不改发行 `connection.json`。一般运行仍要求根不存在并由 fixture 原子创建。仅当前 workflow 对官方 GitHub-hosted Windows 一次性 VM 显式开启 `TYPELAY_HOSTED_EMPTY_BROWSER_CONTAINER_E2E=1` 时，可使用预存在但完整枚举确认为空的普通目录；四个已知子项不存在不等于空。目录必须没有 reparse 标记、没有既存 Chrome 进程，持真实目录 handle 禁止写目录及删除/重命名，核对卷号和文件 ID；创建本次 nonce 后再次确认目录只有该文件，才启动浏览器。任何未知项目、观察失败或身份变化均拒绝。预存在容器分支永不删除根、nonce 或浏览器产生的内容，即使退出已证也保留给一次性 VM 回收；原自建目录仍遵守既有 nonce 和进程族退出证明后清理。该测试准入不是面向用户的安装能力，也不是允许使用未知非空 profile。[GitHub 官方说明每个标准 hosted job 使用新 VM](https://docs.github.com/en/actions/how-tos/manage-runners/github-hosted-runners/use-github-hosted-runners)，环境判别使用官方 `RUNNER_ENVIRONMENT` 与 workflow 显式开关，不改变生产设置的目录、权限或身份规则。新空容器路径及其实际 Win32 handle 反例尚待 Windows CI 执行，本地交叉编译不计为通过。
 
 接入确认后从设置返回网页，使用一次真实桌面点击，而不是把程序式抢前台成功当作用户点击的前提。仅在本次受管页面中找到唯一 `A message` 字段，且 UIA 运行时身份、当前点命中、完整字段边界、设置窗口不相交、受管进程和 HWND 身份均成立时才注入一次 down/up；遮挡、身份变化或取消直接失败，不选另一个点或重试。发送完成后仍须观察原 DOM trusted 点击、精确目标、原生前台和字段焦点，才进入翻译流程。`BrowserSourceClickTests` 使用真实 WPF 窗口验证后台可见源的一次点击，以及遮挡/取消零输入；这不替代 CfT 完整合作链实跑。
+
+现有 CDP receive loop 只投影自然收到的 Page loading/navigation/detach 与 Target detach/destroy/crash 通知，保留最近16条并标记截断；只含固定事件、已知 owned session/target 的关系布尔和 allowlisted detach reason，不保留 URL、ID、正文或原始响应。关系未知记 null；通知缺席不证明事件没发生，接收顺序也不证明错误发生时刻或共同根因。首个 CallAsync 异常另留固定方法/阶段、异常类别、HResult 与原 token 的取消位；`Page.navigate` 返回 `errorText` 仍由原 `pageNavigationFailure` 分类并立即失败，不把 aborted 响应误写成 transport 异常或转入 readiness 等待。场景失败在原 finally 清理前对已有 App/CfT handle 采一次 nullable 退出状态；它不是截止前退出或根因证明。投影失败不影响原接收/异常/清理，且不增加 CDP RPC、事件订阅、重试、sleep 或预算。`BrowserCdpDiagnosticsTests` 直接消费该测试私有投影验证白名单、隐私、unknown 与16条边界；原 `BrowserPageOpenResponseTests` 继续保护导航失败，不另建替代模型。
 
 验收覆盖标准页的自动接受、真实按需直接替换、已受理后原字段后台写入，以及经正式 UI 主动移除后的无写负控。软件输入和开发扩展不代表物理输入法或品牌 Chrome 扩展安装已经验收；当前结果以本轮 run 的 result.json 为准，未执行的后续阶段不得计作通过。
 

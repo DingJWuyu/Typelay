@@ -3364,19 +3364,40 @@ def run(arguments):
                             and ready_to_accept(),
                             "GTK multiline selected range did not receive a candidate",
                         )
+                        # Sample only the original operations in their original order.
+                        # Readiness and xdotool completion are not native delivery proof.
+                        multiline_phase = {
+                            "stage": "multiline-selected-accept",
+                            "gtk": 4 if gtk4 else 3,
+                            "readinessFinishedAtMs": now_ms(),
+                            "readiness": last_acceptance_observation,
+                            "injectionTransport": "xdotool",
+                            "injection": {},
+                        }
+                        gtk_acceptance_phases.append(multiline_phase)
+                        multiline_phase["checkpointStartedAtMs"] = now_ms()
                         before_write = trace_checkpoint()
+                        multiline_phase["checkpointFinishedAtMs"] = now_ms()
+                        multiline_phase["stateReadStartedAtMs"] = now_ms()
                         before_actions = gtk_state().get("userActionsStarted", 0)
-                        key(accept_key)
+                        multiline_phase["stateReadFinishedAtMs"] = now_ms()
+                        multiline_phase["keySendStartedAtMs"] = now_ms()
+                        try:
+                            key(accept_key, timing=multiline_phase["injection"])
+                        finally:
+                            multiline_phase["keySendFinishedAtMs"] = now_ms()
                         multiline_after = wait_for(
                             lambda: value
                             if (value := gtk_state()["multiline"]["text"]) != multiline_source
                             else None,
                             f"GTK multiline {accept_key} did not replace the selected range",
                         )
+                        multiline_phase["textChangeObservedAtMs"] = now_ms()
                         wait_for(
                             lambda: verified_write(before_write),
                             "GTK multiline write lacked a verified receipt",
                         )
+                        multiline_phase["keyObservationEndedAtMs"] = now_ms()
                         assert multiline_after.startswith(prefix) and multiline_after.endswith(
                             suffix
                         )

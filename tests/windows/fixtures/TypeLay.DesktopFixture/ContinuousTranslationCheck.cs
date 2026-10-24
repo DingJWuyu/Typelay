@@ -1339,6 +1339,17 @@ internal static partial class ContinuousTranslationCheck
             Require(pid == child!.Process.Id, "practice-window-identity");
             nint field = GetDlgItem(root, 101);
             Require(field != 0 && N.GetAncestor(field, 2) == root, "practice-input-window");
+            Require(N.SetForegroundWindow(root), "practice-foreground-request");
+            N.PostMessage(root, 0x0007, 0, 0); // Normal root focus behavior; no fixture message.
+            await UntilAsync(() => N.Focused() == (root, field), cancellation);
+            result.Stage = "practice-native-observation";
+            await UntilAsync(() => support.Read(settings.Value).Rows.Single(row => row.Id == "desktop-text")
+                .Capabilities.DirectReplace && controller.PracticeProgress?.Target is not null, cancellation);
+            Require(controller.PracticeProgress is { PreviewCompleted: false, DirectReplacementCompleted: false },
+                "practice-premature-progress");
+            // HWND existence alone does not establish that practice has begun.
+            // Read the fixed sample after native binding, before the fresh F9 cue.
+            result.Stage = "practice-initial-source-read";
             initialReadProgress = controller.PracticeProgress;
             initialReadStartedAtMs = WindowsInterruptClock.NowMs;
             try
@@ -1365,14 +1376,6 @@ internal static partial class ContinuousTranslationCheck
                 throw;
             }
             finally { initialReadEndedAtMs ??= WindowsInterruptClock.NowMs; }
-            Require(N.SetForegroundWindow(root), "practice-foreground-request");
-            N.PostMessage(root, 0x0007, 0, 0); // Normal root focus behavior; no fixture message.
-            await UntilAsync(() => N.Focused() == (root, field), cancellation);
-            result.Stage = "practice-native-observation";
-            await UntilAsync(() => support.Read(settings.Value).Rows.Single(row => row.Id == "desktop-text")
-                .Capabilities.DirectReplace && controller.PracticeProgress?.Target is not null, cancellation);
-            Require(controller.PracticeProgress is { PreviewCompleted: false, DirectReplacementCompleted: false },
-                "practice-premature-progress");
             controller.OperationFeedback += value => feedbackCode ??= value.Code;
             var editor = ((Grid)((Border)overlay.Content).Child).Children.OfType<TextBox>().Single();
             result.Stage = "practice-preview-ready";

@@ -442,31 +442,77 @@ internal static partial class HyPackageCheck
             {
                 scene.Stage = "verify-original-source-before-exit";
                 SourceUnchanged(original);
+                scene.Stage = "post-notepad-close";
                 Require(N.PostMessage(root, 0x0010, 0, 0), "ordinary-notepad-close-request-failed");
-                await WaitAsync(async () =>
+                var close = new NotepadCloseObservation("await-notepad-exit");
+                try
                 {
-                    if (source!.Process.HasExited)
-                        return true;
-                    await UiAsync(() =>
+                    await WaitAsync(async () =>
                     {
-                        var dialog = AutomationElement.RootElement.FindFirst(TreeScope.Children, new AndCondition(
-                            new PropertyCondition(AutomationElement.ProcessIdProperty, source.Process.Id),
-                            new PropertyCondition(AutomationElement.ClassNameProperty, "#32770")));
-                        var discard = dialog is null ? null : Find(dialog, AutomationElement.AutomationIdProperty, "7", ControlType.Button);
-                        if (discard is not null)
-                            ((InvokePattern)discard.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+                        if (source!.Process.HasExited)
+                            return true;
+                        await UiAsync(() =>
+                        {
+                            Volatile.Write(ref close, close with
+                            {
+                                Stage = "find-notepad-close-dialog"
+                            });
+                            var dialog = AutomationElement.RootElement.FindFirst(TreeScope.Children, new AndCondition(
+                                new PropertyCondition(AutomationElement.ProcessIdProperty, source.Process.Id),
+                                new PropertyCondition(AutomationElement.ClassNameProperty, "#32770")));
+                            Volatile.Write(ref close, close with
+                            {
+                                Stage = dialog is null ? "await-notepad-close-dialog-or-exit" : "find-notepad-discard-button",
+                                LastSameProcessDialogMatched = dialog is not null,
+                                LastButtonId7Matched = null
+                            });
+                            var discard = dialog is null ? null : Find(dialog, AutomationElement.AutomationIdProperty, "7", ControlType.Button);
+                            if (dialog is not null)
+                                Volatile.Write(ref close, close with
+                                {
+                                    Stage = discard is null ? "await-notepad-discard-button-or-exit" : "get-notepad-discard-invoke",
+                                    LastButtonId7Matched = discard is not null
+                                });
+                            if (discard is not null)
+                            {
+                                var invoke = (InvokePattern)discard.GetCurrentPattern(InvokePattern.Pattern);
+                                Volatile.Write(ref close, close with
+                                {
+                                    Stage = "invoke-notepad-discard",
+                                    DiscardInvokeStartedCount = close.DiscardInvokeStartedCount + 1
+                                });
+                                invoke.Invoke();
+                                Volatile.Write(ref close, close with
+                                {
+                                    Stage = "await-notepad-exit-after-discard",
+                                    DiscardInvokeReturnedCount = close.DiscardInvokeReturnedCount + 1
+                                });
+                            }
+                        }, ct);
+                        return source.Process.HasExited;
                     }, ct);
-                    return source.Process.HasExited;
-                }, ct);
+                }
+                finally
+                {
+                    // WaitAsync cancellation does not stop an in-flight UIA call.
+                    // Freeze one immutable sample; late returns only update the
+                    // private reference, never this scene's failure evidence.
+                    var observed = Volatile.Read(ref close);
+                    scene.Stage = observed.Stage;
+                    scene.Facts = observed;
+                }
+                scene.Stage = "verify-notepad-exit-code";
                 Require(source!.Process.ExitCode == 0, "ordinary-notepad-exit-code");
                 await OrdinaryQuitAsync(app!.Process, scene, ct);
                 scene.Stage = "await-app-exit";
                 using var exit = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 exit.CancelAfter(TimeSpan.FromSeconds(5));
                 await app.Process.WaitForExitAsync(exit.Token);
+                scene.Stage = "verify-app-exit-code";
                 Require(app.Process.ExitCode == 0, "ordinary-app-exit-code");
                 scene.Stage = "await-model-workers-exit";
                 await WaitAsync(() => Task.FromResult(workers!.AllExited()), exit.Token);
+                scene.Stage = "verify-original-file-after-exit";
                 scene.Facts = new
                 {
                     sourceNormalExit = true,
@@ -543,6 +589,11 @@ internal static partial class HyPackageCheck
         }
         return await report.Save(directory);
     }
+
+    // Matches describe only the unchanged PID/class and button-ID selectors,
+    // not proof that the matched dialog is a save prompt.
+    private sealed record NotepadCloseObservation(string Stage, bool? LastSameProcessDialogMatched = null,
+        bool? LastButtonId7Matched = null, int DiscardInvokeStartedCount = 0, int DiscardInvokeReturnedCount = 0);
 
     private static async Task ShowNotepadSettings(Process app, CancellationToken ct)
     {

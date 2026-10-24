@@ -143,6 +143,18 @@ struct Target {
     bool observed = false, probing = false, mutating = false, quarantined = false;
 };
 
+// Fixed-size observations for one queued native shortcut. Only the existing
+// terminal trace emits them; no provider inspection or per-tick logging.
+struct ShortcutTiming {
+    qint64 queuedAt = 0, firstAdvanceAt = -1, lastAdvanceEndedAt = 0, advanceStartedAt = -1;
+    qint64 maxDispatchGapMs = 0, advanceMs = 0;
+    unsigned advances = 0, inspectWaits = 0, clearWaits = 0, describeEmpty = 0, captureEmpty = 0;
+    qint64 operationMs[3]{}, operationStartedAt = -1;
+    unsigned operationCalls[3]{};
+    int operation = -1; // Last stage in this advance: inspect, describe, capture.
+    const char *lastWait = "none";
+};
+
 struct ShortcutRequest {
     Target *target = nullptr;
     QPointer<QWidget> field;
@@ -152,6 +164,7 @@ struct ShortcutRequest {
     QJsonValue generation;
     quint64 id = 0, content = 0, selection = 0, focus = 0, context = 0, binding = 0, connection = 0;
     qint64 until = 0;
+    ShortcutTiming timing;
 };
 
 struct OrderedTicket {
@@ -573,18 +586,46 @@ private:
     }
     void traceGate(const char *phase, Target *target, const QJsonObject &basis, qint64 until,
                    const char *reason = "none", qint64 writeStarted = 0,
-                   qint64 inspectMs = -1, qint64 prepareMs = -1, qint64 selectionMs = -1) const {
+                   qint64 inspectMs = -1, qint64 prepareMs = -1, qint64 selectionMs = -1,
+                   const ShortcutTiming *shortcut = nullptr) const {
         if (!takeTraceLine()) return;
         const auto expected = basis.value("contextStamp").toObject();
         const auto current = now();
         const bool field = target && target->field;
         const bool observed = target && target->observed;
+        char shortcutSummary[1536]{};
+        if (shortcut) {
+            const auto &timing = *shortcut;
+            // A provider callback can cancel synchronously inside a measured call.
+            // Include that in-flight interval without retaining a pending reference.
+            const auto work = timing.advanceMs + (timing.advanceStartedAt < 0 ? 0 : current - timing.advanceStartedAt);
+            const auto gap = timing.advanceStartedAt < 0 ? current - timing.lastAdvanceEndedAt : 0;
+            const auto active = timing.operationStartedAt < 0 ? 0 : current - timing.operationStartedAt;
+            const char *stage = timing.operation == 0 ? "inspect" : timing.operation == 1 ? "describe"
+                : timing.operation == 2 ? "capture" : timing.advanceStartedAt < 0 ? "idle" : "guards";
+            std::snprintf(shortcutSummary, sizeof(shortcutSummary),
+                " queuedAtMs=%lld advanceCount=%u firstAdvanceDelayMs=%lld maxDispatchGapMs=%lld advanceWorkMs=%lld"
+                " inspectCalls=%u inspectWorkMs=%lld inspectWaits=%u clearWaits=%u"
+                " describeCalls=%u describeWorkMs=%lld describeEmpty=%u"
+                " captureCalls=%u captureWorkMs=%lld captureEmpty=%u lastWait=%s lastAdvanceStage=%s"
+                " advanceInFlight=%d stageInFlight=%d stageElapsedMs=%lld",
+                static_cast<long long>(timing.queuedAt), timing.advances,
+                static_cast<long long>(timing.firstAdvanceAt < 0 ? -1 : timing.firstAdvanceAt - timing.queuedAt),
+                static_cast<long long>(std::max(timing.maxDispatchGapMs, gap)), static_cast<long long>(work),
+                timing.operationCalls[0], static_cast<long long>(timing.operationMs[0] + (timing.operation == 0 ? active : 0)),
+                timing.inspectWaits, timing.clearWaits,
+                timing.operationCalls[1], static_cast<long long>(timing.operationMs[1] + (timing.operation == 1 ? active : 0)),
+                timing.describeEmpty,
+                timing.operationCalls[2], static_cast<long long>(timing.operationMs[2] + (timing.operation == 2 ? active : 0)),
+                timing.captureEmpty, timing.lastWait, stage,
+                int(timing.advanceStartedAt >= 0), int(timing.operationStartedAt >= 0), static_cast<long long>(active));
+        }
         // Fixed phases/reasons and numeric/boolean guards only. Never print
         // field body, labels, metadata hashes, plan strings or target IDs.
         std::fprintf(stderr, "TypeLay Qt6 phase=%s reason=%s atMs=%lld remainingMs=%lld field=%d provider=%d focused=%d "
             "published=%d mutating=%d probing=%d flags=%u contentSame=%d inputSame=%d focusSame=%d "
             "contextSame=%d fieldSame=%d epochSame=%d imeInputSame=%d serverSame=%d appliedSame=%d "
-            "writeElapsedMs=%lld initialInspectMs=%lld prepareMs=%lld selectionMs=%lld\n",
+            "writeElapsedMs=%lld initialInspectMs=%lld prepareMs=%lld selectionMs=%lld%s\n",
             phase, reason, static_cast<long long>(current), static_cast<long long>(until - current), int(field), int(target && target->provider),
             int(field && QApplication::focusWidget() == target->field && QGuiApplication::focusObject() == target->field),
             int(!publication_.isEmpty()), int(target && target->mutating), int(target && target->probing),
@@ -599,7 +640,8 @@ private:
             int(observed && integer(expected, "server") == qint64(target->state.serverSerial)),
             int(observed && integer(expected, "applied") == qint64(target->state.appliedSerial)),
             static_cast<long long>(writeStarted ? current - writeStarted : -1),
-            static_cast<long long>(inspectMs), static_cast<long long>(prepareMs), static_cast<long long>(selectionMs));
+            static_cast<long long>(inspectMs), static_cast<long long>(prepareMs), static_cast<long long>(selectionMs),
+            shortcutSummary);
     }
     bool insideOverlay(QObject *object) const {
         for (auto *parent = object; parent; parent = parent->parent()) if (parent == card_) return true;
@@ -1187,7 +1229,7 @@ private:
         if (!pendingShortcut_ || (target && pendingShortcut_->target != target)) return;
         const auto request = *pendingShortcut_;
         pendingShortcut_.reset();
-        traceGate("shortcut-cancelled", request.target, request.basis, request.until, reason);
+        traceGate("shortcut-cancelled", request.target, request.basis, request.until, reason, 0, -1, -1, -1, &request.timing);
         if (report) rejectShortcut(request.kind, request.generation, request.id, reason);
         emit shortcutStateChangedV1(QStringLiteral("cancelled"), request.id);
     }
@@ -1213,7 +1255,8 @@ private:
         pendingShortcut_ = ShortcutRequest{target, target->field, target->provider, kind, basis,
             generation, commandId, target->content,
             target->selection, target->focus, target->state.contextGeneration, target->state.fieldGeneration,
-            connectionGeneration_, observed + 150};
+            connectionGeneration_, observed + 150, {}};
+        pendingShortcut_->timing.queuedAt = pendingShortcut_->timing.lastAdvanceEndedAt = now();
         clearPermit();
         shortcutAuthority_ = {};
         traceGate("shortcut-queued", target, basis, observed + 150);
@@ -1241,6 +1284,40 @@ private:
         if (!pendingShortcut_ || advancingShortcut_) return;
         QScopedValueRollback<bool> advancing(advancingShortcut_, true);
         const auto request = *pendingShortcut_;
+        const auto started = now();
+        {
+            auto &initial = pendingShortcut_->timing;
+            ++initial.advances;
+            if (initial.firstAdvanceAt < 0) initial.firstAdvanceAt = started;
+            initial.maxDispatchGapMs = std::max(initial.maxDispatchGapMs, started - initial.lastAdvanceEndedAt);
+            initial.advanceStartedAt = started;
+            initial.operation = -1;
+        }
+        const auto finish = qScopeGuard([&] {
+            if (!pendingShortcut_ || pendingShortcut_->id != request.id) return;
+            auto &timing = pendingShortcut_->timing;
+            const auto ended = now();
+            timing.advanceMs += ended - started;
+            timing.advanceStartedAt = -1;
+            timing.lastAdvanceEndedAt = ended;
+        });
+        auto measured = [&](int operation, auto action) {
+            const auto began = now();
+            {
+                auto &timing = pendingShortcut_->timing;
+                timing.operation = operation;
+                timing.operationStartedAt = began;
+                ++timing.operationCalls[operation];
+            }
+            auto result = action();
+            // Provider callbacks may retire this request or queue a different one.
+            if (pendingShortcut_ && pendingShortcut_->id == request.id) {
+                auto &current = pendingShortcut_->timing;
+                current.operationMs[operation] += now() - began;
+                current.operationStartedAt = -1;
+            }
+            return result;
+        };
         auto unchanged = [&] {
             const auto *reason = shortcutFailure(request);
             if (!reason) return true;
@@ -1250,22 +1327,39 @@ private:
         if (!unchanged()) return;
         // The timer does not grant Clear. Original DBus/output/forward retirement
         // and the exact provider's fresh proof are still mandatory.
-        if (!inspect(request.target)) return;
+        if (!measured(0, [&] { return inspect(request.target); })) {
+            if (pendingShortcut_ && pendingShortcut_->id == request.id) {
+                ++pendingShortcut_->timing.inspectWaits;
+                pendingShortcut_->timing.lastWait = "inspect-failed";
+            }
+            return;
+        }
         if (!unchanged()) return;
         if (!clear(request.target->state)) {
+            ++pendingShortcut_->timing.clearWaits;
+            pendingShortcut_->timing.lastWait = "clear-pending";
             if (request.target->state.flags & TlQtComposing) cancelShortcut(request.target, "ImeUnclear");
             return;
         }
-        const auto description = describe(request.target);
+        const auto description = measured(1, [&] { return describe(request.target); });
+        if (pendingShortcut_ && pendingShortcut_->id == request.id && description.isEmpty())
+            ++pendingShortcut_->timing.describeEmpty;
         if (!unchanged()) return;
-        const auto read = capture(request.target, description.value("authority").toObject(), request.until);
+        const auto read = measured(2, [&] {
+            return capture(request.target, description.value("authority").toObject(), request.until);
+        });
+        if (pendingShortcut_ && pendingShortcut_->id == request.id && read.isEmpty()) {
+            ++pendingShortcut_->timing.captureEmpty;
+            pendingShortcut_->timing.lastWait = "capture-empty";
+        }
         if (!unchanged()) return;
         if (read.isEmpty()) return;
+        const auto completedTiming = pendingShortcut_->timing;
         pendingShortcut_.reset();
         clearPermit();
         sendEvent("shortcut", {{"kind", request.kind}, {"generation", request.generation},
             {"commandId", qint64(request.id)}, {"native", read}, {"acceptedAtMs", now()}});
-        traceGate("shortcut-dispatched", request.target, request.basis, request.until);
+        traceGate("shortcut-dispatched", request.target, request.basis, request.until, "none", 0, -1, -1, -1, &completedTiming);
         emit shortcutStateChangedV1(QStringLiteral("dispatched"), request.id);
     }
     bool triggerShortcut(const QString &kind, Target *target, const QJsonObject &basis, qint64 triggeredAt) {

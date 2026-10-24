@@ -117,17 +117,23 @@ native 在调用一次 CallNextHookEx **之前**占住 source callback 寿命门
 
 保持原100ms grant；sent-activation 的 pending-work 拒绝门不变，原 MSG 使用上述实际状态与一次消费条件。首 down 仍单独发送，确认后才发尾键和后置屏障，不增加输入、重试或续期。两行沿原30秒 owner/60秒单项上限，独立 CI 步骤复用退役 owned-TSF 的2分钟预算，Windows 总 job 仍75分钟，模型与其它步骤不变。`artifacts/source-message-acceptance/<唯一目录>/result.json`、runner.json/log 进入既有早期 source artifact 与末尾 artifact；runner 按实际退出码、两行完整性和清理区分成功观察、失败、缺失/重复及清理未知，`running`/空退出码仍是未完成。continue-on-error 仅使其它独立验收继续，不把研究失败改为通过。安装所有权迁移与 v4 接线后的 Windows 原两行已通过；sent pending 拒绝、MSG hint 不误拒及实际输入撤销/expiry/cookie/revoke 的对照当前仅覆盖 portable API 边界，不冒充 Windows 实测。私有两指针缺一的防御另由局部不变量断言核验，不伪称公开入口可构造该状态。
 
-## 源接受来源门的下一实现切片
+## 隔离严格来源拒绝入口
 
-**产品选择已确认，以下是待实现方案，不是已完成能力。** 场景是用户或获准的辅助工具在有效译文出现后按一次 Tab；受控 Notepad 已证明事务闭环，但当前 native 未检查正式来源，旧队列/重入与来源对应仍有缺口。实际发生率未知，错误接受可修改用户正文；复用现有源入口和回归比再建独立分类探针更有价值。范围只到无修饰 Tab 的隔离严格来源构造，不改正式 Main/capability0、系统权限、TIP 或其它快捷键。
+`TypeLaySourceStrictGetMessageProc` 是实际 `HC_ACTION/PM_REMOVE` 的必要来源门切片，**当前只支持拒绝，不提供严格接受能力**。它先复制本次原 MSG，再以 GCIMS 为本入口内首个应用 OS 查询；结果只在该回调栈内使用。只有查询成功且为 `IMDT_KEYBOARD/IMO_HARDWARE` 的类别合格，包含已获准的 UIAccess 辅助输入；普通注入、system、unknown、未知枚举及查询失败给出 `OriginUntrusted (0x20000)`。类别合格仍给出 `QueueFreshnessUnproven (0x20001)`，因为当前 v4 安装/本地 Arm 没有证明该键在 Arm 后产生。两码均为公开 `Unsupported`，原 MSG、正文和选区不由拒绝入口改写，grant 单调撤销，invoked 不消费。
 
-1. 在 `TypeLaySourceGetMessageProc` 的 `HC_ACTION / PM_REMOVE` 入口先做纯本地 MSG 筛选与复制，在 `GetCurrentThreadId`、`GetKeyState`、IMM、映射、日志及 `CallNextHookEx` 等其它应用 OS 调用之前采一次 GCIMS。按[来源资格](architecture.md#输入来源资格)分类；结果只活在这次回调栈中，不建立跨队列 time/vk 匹配器或通用策略层。只允许来源类别合格且原门全过的首 Tab 进入原 claim/置空/写入路径；普通注入和未知来源保持原键、正文与选区不变。
-2. 原 callback 寿命门须覆盖下游链及全部写前重验。实际嵌套检索、MSG 被改、grant/字段切换或撤销须单调使外层失效；内层不能借外层来源结果或替换 grant。同一原 MSG 的标量比较防止本栈对象变化，不冒充 OS 唯一事件身份。尾键也按其自身实际回调取源，拒绝的注入/未知尾键不能伪造原按次已松开或恢复消费资格。未知后的 Quiet/退休沿原保守所有权处理。
-3. **旧排队首键是独立的实现与验收项。** 保留 Prepared 期已观察输入的撤权；另构造安装前或 Arm 前排队、Arm 后才取出的原 Tab，验证不消费、不写入且后续 repeat 不重试。实现者须给出该切片能实际建立的新鲜性依据及失效路径，未建立时严格入口保持拒绝，不能因类别为 HARDWARE 就放行。`MSG.time` 可辅助拒旧但不是事件 ID；[KEYBDINPUT.time](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-keybdinput) 可由发送者指定，不能仅用它与 Arm 时间比较宣称已解决。队列提示也不能代替原事件历史；不要求杜绝所有同用户恶意进程。
-4. 接线复用现有 App/Broker/native 认证所有权与回执，不把测试专用 `allowInjectedInput` 作为正式策略。原受控注入的事务正例继续证明其原范围；新严格入口的同类输入须成为零写拒绝证据，二者明确区分，不能把全部拒绝称为正向接受通过。必要的私有 ABI 变更须同步所有消费者并拒绝旧版本；sent-route、按需 F9/F10 与正式能力保持原行为。
-5. 验证跨实际 native 入口，不只测枚举函数：受控 API 边界覆盖来源类别、查询失败、首键/尾键、Prepared、旧键、实际嵌套调用和 MSG 改写；Windows 在同一严格入口检查普通 SendInput、PostMessage 的旁路与零写、原回执/Undo/Quiet 的邻近行为。Windows 实际类别可观测性已有 CI495 证据，不恢复其独立自动探针；控制 API 给出的 HARDWARE 只算策略阳性，不算硬件/UIAccess 实测。真实物理键盘、既有合法 UIAccess 工具及真实 IME 阳性须各自现场证据，不能为补测而新授 UIAccess 或改系统配置。
+旧键风险不能仅用 `MSG.time` 或源线程 `GetQueueStatus(QS_KEY)` 消除：旧键可能已 REMOVE、停在尚未调用 native 的上游 hook；该 hook 的嵌套检索处理 Arm 时队列可以为空，然后旧键才进入本实现。这是文档允许、当前协议未排除的交错，不是已实测故障；不单独扩展为抵御任意同用户恶意进程的绝对发布要求。普通安装前或 Arm 前旧键、已观察到的重入仍必须拒绝。[GetMsgProc](https://learn.microsoft.com/en-us/windows/win32/winmsg/getmsgproc)、[Hooks Overview](https://learn.microsoft.com/en-us/windows/win32/winmsg/about-hooks) 与 [PeekMessage](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-peekmessagew) 定义了这些边界；已从 GetMessage 返回、尚未 dispatch 的消息不会因此再次进入 GETMESSAGE。没有新增来源队列探针、Arm 消息或队列查询。
 
-切片以最小来源门、相应回归和明确剩余边界交付；类别、旧键或本回调对应任一条件未知即零写拒绝，不能用延时、重发、宽松来源或较晚采样补成成功。如果实际 callback 不能提供可靠当前来源，或旧键/重入仍能误认，停止该候选的升级并保留具体反例，不开放生产，也不把机制未完成重新写成等待用户选择。独立的 Wake/F10 与其它已授权开发继续。
+严格入口同样独立采每个 repeat/up，未知或尚无新鲜性依据的尾键不消费、不结清旧 debt。即使错误混用旧受控入口产生了 debt，也只能由原有明确离域/退出清理，不能借严格拒绝或后来等值来源伪造 Quiet。原 `TypeLaySourceGetMessageProc` 明确保留为受控合成输入机械入口；其嵌套首 Tab 现在单调撤销内外层 grant，而非仅旁路内层、允许外层继续写。现有 source 两例和真实 Notepad 的回执、Undo、Quiet 断言继续走原路径；这些阳性不转换成严格来源或硬件证明。
+
+私有 ABI 仅新增上述 hook 导出及 user32 GCIMS import；v4、49344 字节映射、Transaction v2 与其它导出不变。`NativeEditTransactions(sourceMessageRoute: true, strictSourceMessageOrigin: true)` 仅由隔离拒绝回归选择精确新导出，缺符号直接失败，不回退旧入口；没有 wire skip 字段、App 开关或全局 `allowInjectedInput` 放行。Main/capability0、sent-route、F9/F10、LL 和真实 IME 门不变。后续要提供正向严格接受，仍须独立解决旧键/重入证据和严格构造的 LL 来源交接，不能把当前拒绝切片称为该能力完成。
+
+`foreground_guards.c` 经现有 GCC harness 验证实际 native 导出的类别、查询失败、首查询位置、Prepared/Arm、下游来源变化/嵌套检索、尾键及旧受控机械链；这是受控 Win32 API 响应，不是 Windows 或物理/UIAccess 实测。`StrictSourceOriginLeavesSyntheticTabUnconsumed` 已准备普通非 UIAccess SendInput/PostMessage 两项显式 Windows 阴性，复用原 source observer/30秒 owner/60秒单事实预算与零正文、原键实际派发、Quiet/退出断言，结果写入 ignored `artifacts/source-origin-rejection/`。本轮未执行该 Windows 用例，不加入自动 CI，也不恢复独立来源分类采集。
+
+## 正向接受的剩余条件
+
+UIAccess 辅助输入的产品选择已确认，正式 Main/capability0 仍关闭。正向严格接受尚缺旧键初始化、有序见证及严格构造的 LL 来源交接；类别合格不能代替这些条件，也不能把当前拒绝入口称为自动接受完成。未建立对应依据时继续零写拒绝，不以延时、重发或较晚采样补成成功。
+
+受控 API 回归、Windows 严格入口阴性、真实物理键盘、合法 UIAccess 工具及真实 IME 的证据不能互换。受控 HARDWARE 响应只算策略阳性；物理/UIAccess 和 IME 阳性仍需各自现场验证，不能为补测新授 UIAccess 或改变系统配置。保留原身份、期限、清理与默认能力边界；独立 Wake/F10 和其它已授权开发继续。
 
 ## 同一检索处的独立来源分类观察
 

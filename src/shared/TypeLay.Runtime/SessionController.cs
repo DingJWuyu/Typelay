@@ -50,6 +50,7 @@ public sealed partial class SessionController : IDisposable
     private string? _statusOverride;
     private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
     private string? _lastTrace;
+    private int _captureFailureTraceCount;
     private string _lastShortcutStatus;
     private Guid _practiceCaptureTraceGeneration;
     private int _practiceCaptureTraceCount;
@@ -757,6 +758,7 @@ public sealed partial class SessionController : IDisposable
         long? resumedAtMs = null, observedAtMs = null;
         FocusMember? resultFocus = null, checkedFocus = null;
         string captureExit = "exception";
+        string capturePhase = "before-capture";
         try
         {
             if (freshWake is not null && !WakeCaptureCurrent(freshWake))
@@ -764,7 +766,9 @@ public sealed partial class SessionController : IDisposable
                 FailWakeCapture(freshWake);
                 return;
             }
+            capturePhase = "input-capture";
             var result = await _broker.CaptureAsync(request);
+            capturePhase = "apply-observation";
             if (traceCapture)
             {
                 resumedAtMs = _loop.NowMs;
@@ -1095,6 +1099,33 @@ public sealed partial class SessionController : IDisposable
             {
                 captureExit = _disposed ? "disposed" : "generation-changed";
                 return;
+            }
+            // Keep the first 16 current capture failures per controller, before
+            // retirement erases the session. No extra focus/system-port probes.
+            if (!string.IsNullOrWhiteSpace(_tracePath) && _captureFailureTraceCount < 16)
+            {
+                _captureFailureTraceCount++;
+                try
+                {
+                    Trace("capture-error", detail: new
+                    {
+                        phase = capturePhase,
+                        errorCategory = ex switch
+                        {
+                            OperationCanceledException => "cancelled",
+                            EndOfStreamException => "end-of-stream",
+                            IOException => "io",
+                            System.Text.Json.JsonException => "json",
+                            ObjectDisposedException => "disposed",
+                            InvalidOperationException => "invalid-operation",
+                            _ => "other"
+                        },
+                        hResult = ex.HResult,
+                        cancellationRequested = ex is OperationCanceledException cancelled && cancelled.CancellationToken.CanBeCanceled
+                            ? (bool?)cancelled.CancellationToken.IsCancellationRequested : null
+                    }, inspectFocus: false);
+                }
+                catch { }
             }
             var pendingWake = _pendingWakeCapture;
             if (freshWake is not null)

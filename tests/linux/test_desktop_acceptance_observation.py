@@ -207,6 +207,44 @@ class BackgroundDirectRefusalTests(unittest.TestCase):
 
 
 class AcceptanceInjectionTests(unittest.TestCase):
+    def test_xdotool_timing_separates_one_send_from_the_existing_post_key_sleep(self):
+        from native_e2e import key
+
+        timing = {}
+        with (
+            patch("native_e2e.subprocess.run") as send,
+            patch("native_e2e.time.sleep") as sleep,
+            patch("native_e2e.now_ms", side_effect=[100, 107, 132]),
+        ):
+            key("Tab", timing=timing)
+        send.assert_called_once_with(
+            ["xdotool", "key", "--clearmodifiers", "--delay", "0", "Tab"], check=True, timeout=2
+        )
+        sleep.assert_called_once_with(0.025)
+        self.assertEqual(
+            timing,
+            {
+                "xdotoolStartedAtMs": 100,
+                "xdotoolReturnedAtMs": 107,
+                "postKeySleepFinishedAtMs": 132,
+            },
+        )
+
+    def test_failed_xdotool_send_keeps_only_start_time_without_replay(self):
+        from native_e2e import key
+
+        timing = {}
+        with (
+            patch("native_e2e.subprocess.run", side_effect=OSError("send failed")) as send,
+            patch("native_e2e.time.sleep") as sleep,
+            patch("native_e2e.now_ms", return_value=100),
+            self.assertRaisesRegex(OSError, "send failed"),
+        ):
+            key("Tab", timing=timing)
+        send.assert_called_once()
+        sleep.assert_not_called()
+        self.assertEqual(timing, {"xdotoolStartedAtMs": 100})
+
     def test_only_default_gtk4_tab_uses_preconnected_single_injection(self):
         from desktop_e2e import send_gtk_acceptance
 
