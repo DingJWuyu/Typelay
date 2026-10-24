@@ -263,6 +263,42 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public Task PublicationDiagnosticsExposeOnlyFiniteCodesAndClearOnTheNextFailure(bool unknown) => desktop.RunAsync(async () =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-publication-ui-" + Guid.NewGuid().ToString("N"));
+        SettingsWindow? window = null;
+        try
+        {
+            var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
+            using var model = Model(directory);
+            window = new SettingsWindow(settings, model, () => { }, installations: Installations(directory));
+            window.ShowPage("apps");
+            var publication = new ModelInstallationStore.PublicationDiagnostic(
+                unknown ? (ModelInstallationStore.PublicationOperation)999 : ModelInstallationStore.PublicationOperation.ReplacePointer,
+                unknown ? (ModelInstallationStore.PublicationError)999 : ModelInstallationStore.PublicationError.AccessDenied);
+            window.ReportSetupFailure(new(SetupFailureCategory.Runtime, ModelSetupStage.Activate), publication);
+            window.UpdateLayout();
+            nint handle = new WindowInteropHelper(window).Handle;
+            string expected = "错误类别：runtime\n安装阶段：Activate\n发布操作："
+                + (unknown ? "unknown\n发布错误：unknown" : "ReplacePointer\n发布错误：AccessDenied");
+            await Task.Run(() =>
+            {
+                var exposed = AutomationElement.FromHandle(handle).FindFirst(TreeScope.Descendants,
+                    new PropertyCondition(AutomationElement.AutomationIdProperty, "PreparationDiagnostics"));
+                Assert.NotNull(exposed);
+                Assert.Equal(expected, exposed.Current.HelpText);
+            }, TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            window.ReportSetupFailure(new(SetupFailureCategory.Integrity, ModelSetupStage.Activate));
+            var diagnostic = Named<Expander>(window, "PreparationDiagnostics");
+            Assert.Equal("错误类别：integrity\n安装阶段：Activate", AutomationProperties.GetHelpText(diagnostic));
+            Assert.False(model.Ready);
+        }
+        finally { await ClosePreparation(window, directory); }
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public Task ExplicitPauseOffersResumeInsteadOfFailure(bool selectSingleDirection) => desktop.RunAsync(async () =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-setup-ui-" + Guid.NewGuid().ToString("N"));

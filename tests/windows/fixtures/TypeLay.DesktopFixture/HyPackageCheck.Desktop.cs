@@ -751,7 +751,7 @@ internal static partial class HyPackageCheck
     }
     private sealed record PreparationDiagnostic(string Observation, string? InstallationStage = null,
         string? RecoveryFailure = null, string? ReplacementPhase = null, string? ReplacementFailureCode = null,
-        string? PublicationOutcome = null);
+        string? PublicationOutcome = null, string? PublicationOperation = null, string? PublicationError = null);
     private sealed record PreparationFailureDiagnostic(string FailureCode, long ObservedAtMs, PreparationDiagnostic Detail);
     private static async Task<int> ObserveActiveAsync(Process app, AutomationElement settings, WorkerObserver workers,
         string data, string worker, string[] expected, int priorPid, HashSet<string> generations, Scene scene, CancellationToken ct,
@@ -952,7 +952,9 @@ internal static partial class HyPackageCheck
                 .Select(SetupFailurePresentation.Create).FirstOrDefault(item => item.Code == recovery)?.Code ?? "unknown",
             KnownEnum<ModelReplacementPhase>(Line("切换阶段：")),
             KnownEnum<ModelReplacementFailureCode>(Line("切换原因：")),
-            KnownEnum<ModelPublicationOutcome>(Line("发布确认：")));
+            KnownEnum<ModelPublicationOutcome>(Line("发布确认：")),
+            KnownEnum<ModelInstallationStore.PublicationOperation>(Line("发布操作：")),
+            KnownEnum<ModelInstallationStore.PublicationError>(Line("发布错误：")));
     }
     private static async Task NavigateAsync(AutomationElement settings, string label, string heading, CancellationToken ct)
     {

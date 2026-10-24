@@ -25,6 +25,42 @@ internal sealed class ModelInstallationStore(string data, string worker,
     }
     internal sealed record InstallationState(string? Generation, bool InventoryKnown,
         IReadOnlyList<ModelPackageSelection> InstalledPackages, IReadOnlyList<ModelPackageSelection> CurrentPackages);
+    internal enum PublicationOperation
+    {
+        Unknown, VerifyCurrent, EncodeManifest, CreateTemporary, WriteTemporary, FlushTemporary,
+        CloseTemporary, ReplacePointer, ConfirmPointer, RetainPrevious
+    }
+    internal enum PublicationError
+    {
+        Unknown, AccessDenied, SharingViolation, LockViolation, DiskFull, Permission, Integrity, Io
+    }
+    internal sealed record PublicationDiagnostic(PublicationOperation Operation, PublicationError Error)
+    {
+        internal static PublicationDiagnostic Capture(PublicationOperation operation, Exception error)
+        {
+            // A low word alone is not a Win32 code. Never retain the original
+            // HRESULT, exception message, path or body in the public diagnostic.
+            int? native = error is System.ComponentModel.Win32Exception windows ? windows.NativeErrorCode
+                : ((uint)error.HResult & 0xffff0000) == 0x80070000 ? error.HResult & 0xffff : null;
+            var code = native switch
+            {
+                5 => PublicationError.AccessDenied,
+                32 => PublicationError.SharingViolation,
+                33 => PublicationError.LockViolation,
+                39 or 112 => PublicationError.DiskFull,
+                _ => error switch
+                {
+                    UnauthorizedAccessException or System.Security.SecurityException => PublicationError.Permission,
+                    InvalidDataException or JsonException => PublicationError.Integrity,
+                    IOException => PublicationError.Io,
+                    _ => PublicationError.Unknown
+                }
+            };
+            // AccessDenied reports the OS result, not a claim about which reader,
+            // permission or filter caused it.
+            return new(operation, code);
+        }
+    }
     private string Pointer => Path.Combine(_data, "components.json");
     private string Components => Path.Combine(_data, "components");
     internal sealed record Manifest(int Format, string Active, string? Previous);
@@ -292,6 +328,10 @@ internal sealed class ModelInstallationStore(string data, string worker,
         private FileStream? _handle;
         private Manifest _manifest;
         private bool _uncertain;
+        internal PublicationDiagnostic? PublicationFailure
+        {
+            get; private set;
+        }
         internal Lease(ModelInstallationStore store, FileStream handle, Manifest manifest)
         {
             _store = store;
@@ -557,26 +597,36 @@ internal sealed class ModelInstallationStore(string data, string worker,
                         _store.CleanupPending = true;
             }
             string temp = Path.Combine(_store._data, "components-" + Guid.NewGuid().ToString("N") + ".tmp");
+            var operation = PublicationOperation.VerifyCurrent;
             try
             {
                 VerifyActive();
+                operation = PublicationOperation.EncodeManifest;
                 byte[] bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(after, JsonOptions));
+                operation = PublicationOperation.CreateTemporary;
                 using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 {
+                    operation = PublicationOperation.WriteTemporary;
                     stream.Write(bytes);
+                    operation = PublicationOperation.FlushTemporary;
                     stream.Flush(flushToDisk: true);
+                    operation = PublicationOperation.CloseTemporary;
                 }
+                operation = PublicationOperation.ReplacePointer;
                 if (_store._replaceFile is { } replace)
                     replace(temp, _store.Pointer);
                 else
                     File.Move(temp, _store.Pointer, overwrite: true);
+                operation = PublicationOperation.ConfirmPointer;
                 if (_store.Read() != after)
                     throw new IOException("installation-publication-unconfirmed");
                 _manifest = after;
+                operation = PublicationOperation.RetainPrevious;
                 RetainedOldCopies();
             }
             catch (Exception error) when (error is not OutOfMemoryException)
             {
+                PublicationFailure ??= PublicationDiagnostic.Capture(operation, error);
                 Manifest? actual = null;
                 try
                 {
@@ -758,6 +808,7 @@ internal sealed class ModelInstallationStore(string data, string worker,
         public ModelRuntimePaths Paths { get; } = paths;
         public IReadOnlyList<string> Directions { get; } = directions;
         public bool CleanupPending => lease.CleanupPending;
+        internal PublicationDiagnostic? PublicationFailure => lease.PublicationFailure;
         internal ModelReplacementFailure? ReplacementFailure
         {
             get; private set;

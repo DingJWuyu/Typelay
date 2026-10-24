@@ -814,19 +814,29 @@ public sealed class ModelInstallationStoreTests
             files.Mark(prepared);
             root = prepared.Root;
             Assert.Equal(ModelPublicationOutcome.Confirmed, prepared.PublishConfirmed());
+            Assert.Equal(new ModelInstallationStore.PublicationDiagnostic(
+                ModelInstallationStore.PublicationOperation.ReplacePointer, ModelInstallationStore.PublicationError.Io),
+                prepared.PublicationFailure);
             prepared.Complete();
         }
         Assert.Equal(Path.Combine(root, "models"), files.Store.InitialPaths().Models);
         Assert.True(Directory.Exists(root));
     }
 
-    [Fact]
-    public async Task KnownUnchangedPublicationDeletesOnlyTheFailedCandidate()
+    [Theory]
+    [InlineData(unchecked((int)0x80070005), "AccessDenied")]
+    [InlineData(unchecked((int)0x80070020), "SharingViolation")]
+    [InlineData(unchecked((int)0x80070021), "LockViolation")]
+    [InlineData(unchecked((int)0x80070027), "DiskFull")]
+    [InlineData(unchecked((int)0x80070070), "DiskFull")]
+    [InlineData(unchecked((int)0x80131620), "Io")]
+    [InlineData(unchecked((int)0x81230020), "Io")]
+    public async Task KnownUnchangedPublicationDeletesOnlyTheFailedCandidate(int hresult, string expectedError)
     {
         using var files = new StoreFiles();
         var first = await files.Publish();
         var second = await files.Publish();
-        var store = files.WithReplace((_, _) => throw new IOException("before"));
+        var store = files.WithReplace((_, _) => throw new IOException("private path or response must not be retained", hresult));
         string candidate;
         using (var lease = await store.AcquireAsync(TestContext.Current.CancellationToken))
         using (var prepared = lease.Prepare())
@@ -834,19 +844,29 @@ public sealed class ModelInstallationStoreTests
             files.Mark(prepared);
             candidate = prepared.Root;
             Assert.Equal(ModelPublicationOutcome.Unchanged, prepared.PublishConfirmed());
+            Assert.NotNull(prepared.PublicationFailure);
+            Assert.Equal(ModelInstallationStore.PublicationOperation.ReplacePointer, prepared.PublicationFailure.Operation);
+            Assert.Equal(expectedError, prepared.PublicationFailure.Error.ToString());
         }
         Assert.False(Directory.Exists(candidate));
         Assert.True(Directory.Exists(first));
         Assert.True(Directory.Exists(second));
     }
 
-    [Fact]
-    public async Task UnknownPublicationRetainsTheUnionOfBothPlausibleManifests()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnknownPublicationRetainsTheUnionOfBothPlausibleManifests(bool failDuringReplace)
     {
         using var files = new StoreFiles();
         var oldPrevious = await files.Publish();
         var oldActive = await files.Publish();
-        var store = files.WithReplace((_, target) => { File.WriteAllText(target, "unreadable"); throw new IOException("unknown"); });
+        var store = files.WithReplace((_, target) =>
+        {
+            File.WriteAllText(target, "unreadable");
+            if (failDuringReplace)
+                throw new IOException("private replacement failure");
+        });
         string candidate;
         using (var lease = await store.AcquireAsync(TestContext.Current.CancellationToken))
         using (var prepared = lease.Prepare())
@@ -854,6 +874,12 @@ public sealed class ModelInstallationStoreTests
             files.Mark(prepared);
             candidate = prepared.Root;
             Assert.Equal(ModelPublicationOutcome.Unconfirmed, prepared.PublishConfirmed());
+            // The failed recovery read must not overwrite the original operation
+            // or replace error with its own JSON parse failure.
+            Assert.Equal(new ModelInstallationStore.PublicationDiagnostic(
+                failDuringReplace ? ModelInstallationStore.PublicationOperation.ReplacePointer : ModelInstallationStore.PublicationOperation.ConfirmPointer,
+                failDuringReplace ? ModelInstallationStore.PublicationError.Io : ModelInstallationStore.PublicationError.Integrity),
+                prepared.PublicationFailure);
         }
         Assert.True(Directory.Exists(oldPrevious));
         Assert.True(Directory.Exists(oldActive));

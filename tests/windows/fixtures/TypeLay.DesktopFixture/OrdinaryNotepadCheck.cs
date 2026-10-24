@@ -451,6 +451,10 @@ internal static partial class HyPackageCheck
                     {
                         if (source!.Process.HasExited)
                             return true;
+                        // Once a choice starts, only observe process exit. A slow
+                        // close must not issue another discard choice.
+                        if (Volatile.Read(ref close).DiscardInvokeStartedCount != 0)
+                            return false;
                         await UiAsync(() =>
                         {
                             Volatile.Write(ref close, close with
@@ -462,7 +466,8 @@ internal static partial class HyPackageCheck
                             {
                                 Stage = dialogWindow == 0 ? "await-notepad-close-dialog-or-exit" : "bind-notepad-close-dialog",
                                 LastSameProcessDialogMatched = dialogWindow != 0,
-                                LastButtonId7Matched = null
+                                LastDiscardButtonMatched = null,
+                                LastDiscardAutomationId = null
                             });
                             AutomationElement? dialog = null;
                             if (dialogWindow != 0)
@@ -476,12 +481,14 @@ internal static partial class HyPackageCheck
                                     Stage = "find-notepad-discard-button"
                                 });
                             }
-                            var discard = dialog is null ? null : Find(dialog, AutomationElement.AutomationIdProperty, "7", ControlType.Button);
+                            (AutomationElement? discard, string? discardId) = dialog is null
+                                ? (null, null) : FindOrdinaryNotepadDiscardButton(dialog);
                             if (dialog is not null)
                                 Volatile.Write(ref close, close with
                                 {
                                     Stage = discard is null ? "await-notepad-discard-button-or-exit" : "get-notepad-discard-invoke",
-                                    LastButtonId7Matched = discard is not null
+                                    LastDiscardButtonMatched = discard is not null,
+                                    LastDiscardAutomationId = discardId
                                 });
                             if (discard is not null)
                             {
@@ -607,7 +614,8 @@ internal static partial class HyPackageCheck
     // Matches describe only the exact native owner/PID/class and button-ID selectors,
     // not proof that the matched dialog is a save prompt.
     private sealed record NotepadCloseObservation(string Stage, bool? LastSameProcessDialogMatched = null,
-        bool? LastButtonId7Matched = null, int DiscardInvokeStartedCount = 0, int DiscardInvokeReturnedCount = 0);
+        bool? LastDiscardButtonMatched = null, string? LastDiscardAutomationId = null,
+        int DiscardInvokeStartedCount = 0, int DiscardInvokeReturnedCount = 0);
 
     private static async Task ShowNotepadSettings(Process app, CancellationToken ct)
     {

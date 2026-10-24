@@ -10,6 +10,71 @@ namespace TypeLay.App.Tests;
 public sealed class OrdinaryNotepadCloseDialogTests(WpfDesktopFixture desktop)
 {
     [Theory]
+    [InlineData("no")]
+    [InlineData("missing")]
+    [InlineData("wrong-id")]
+    [InlineData("ambiguous")]
+    public Task DiscardSelectionRequiresExactlyOneNoButtonAmongRealNativeControls(string scenario) => desktop.RunAsync(async () =>
+    {
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        limit.CancelAfter(TimeSpan.FromSeconds(5));
+        var ct = limit.Token;
+        nint owner = 0, dialog = 0, expected = 0;
+        try
+        {
+            owner = N.CreateWindow(0, "STATIC", "Synthetic source", 0x90000000, 0, 0, 240, 200, 0, 0, N.GetModuleHandle(null), 0);
+            Assert.NotEqual(nint.Zero, owner);
+            dialog = N.CreateWindow(0, "#32770", "Synthetic close prompt", 0x90000000, 0, 0, 200, 180,
+                owner, 0, N.GetModuleHandle(null), 0);
+            Assert.NotEqual(nint.Zero, dialog);
+            int[] ids = scenario switch
+            {
+                "no" => [6, 7, 2],
+                "ambiguous" => [6, 7, 7, 2],
+                "wrong-id" => [6, 17, 2],
+                _ => [6, 2]
+            };
+            for (int index = 0; index < ids.Length; index++)
+            {
+                nint button = N.CreateWindow(0, "BUTTON", "Synthetic choice", 0x50000000, 8, 8 + index * 32, 140, 28,
+                    dialog, ids[index], N.GetModuleHandle(null), 0);
+                Assert.NotEqual(nint.Zero, button);
+                if (ids[index] == 7)
+                    expected = button;
+            }
+            await Task.Run(() =>
+            {
+                var root = AutomationElement.FromHandle(dialog);
+                if (scenario == "ambiguous")
+                {
+                    var error = Assert.Throws<HyPackageCheck.Failure>(() => HyPackageCheck.FindOrdinaryNotepadDiscardButton(root));
+                    Assert.Equal("ordinary-notepad-discard-button-ambiguous", error.Code);
+                    return;
+                }
+                var selected = HyPackageCheck.FindOrdinaryNotepadDiscardButton(root);
+                if (scenario == "no")
+                {
+                    Assert.NotNull(selected.Button);
+                    Assert.Equal(expected, (nint)selected.Button.Current.NativeWindowHandle);
+                    Assert.Equal("7", selected.AutomationId);
+                }
+                else
+                {
+                    Assert.Null(selected.Button);
+                    Assert.Null(selected.AutomationId);
+                }
+            }, ct).WaitAsync(ct);
+        }
+        finally
+        {
+            if (dialog != 0)
+                N.DestroyWindow(dialog);
+            if (owner != 0)
+                N.DestroyWindow(owner);
+        }
+    });
+
+    [Theory]
     [InlineData("owned")]
     [InlineData("other-owner")]
     [InlineData("wrong-process")]

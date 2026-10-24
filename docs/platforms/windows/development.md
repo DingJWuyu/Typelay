@@ -147,11 +147,11 @@ native 在调用一次 CallNextHookEx **之前**占住 source callback 寿命门
 
 SourceWitness v2沿用16520字节，原保留位132明确为recording-active，旧v1拒绝；SourceInstallation仍为v5。映射只含按键/身份元数据，无正文。App现有LL线程是唯一writer，源GUI是唯一consumer，初始化也不跳跃consumed或丢弃队首；record/published与consumed按release/acquire发布，源hook不跨回调保留映射view。App只在旧owner精确Quiet后于LL串行点更换寿命映射；停止writer会封闭资格，不能把Dispose或失联当Quiet。未知owner继续保留原资源，沿既有精确退休/进程退出收束。
 
-本地GCC入口已运行实际native代码的初始化、新首键恰一次Verified/WM_NULL、原尾债Quiet与拒绝回归；包括启动前、pre-Arm、同tick、未来、缺记录/乱序/复用/溢出、旧grant、nested retrieval、焦点/正文/IME拒绝及普通注入。它是受控Win32边界，不是Windows桌面或物理/UIAccess证据。`NativeSourceControllerTests.Ordered`准备了真实App LL/source的SendInput拒绝、原迟到ACK的ordered变体，以及显式人工一次物理Tab阳性；后者不生成Tab、不改每grant100ms或原fixture30秒。另有实际 `SourceInputWitness.Publish` 的休眠/同tick/激活后连续记录测试，以及真实LL迟ACK用例的休眠零记录/零poison断言。旧C边界已复现旧writer发布孤儿，修复后的C红绿仅证明reader/初始化合同，不能替代尚未运行的managed producer及完整链验证。上述新Windows用例本地均未运行，真实UIAccess及真实composition仍未验收，不恢复已退休来源分类采集或自动发布。
+本地GCC入口已运行实际native代码的初始化、新首键恰一次Verified/WM_NULL、原尾债Quiet与拒绝回归；包括启动前、pre-Arm、同tick、未来、缺记录/乱序/复用/溢出、旧grant、nested retrieval、焦点/正文/IME拒绝及普通注入。它是受控Win32边界，不是Windows桌面或物理/UIAccess证据。`NativeSourceControllerTests.Ordered`准备了真实App LL/source的SendInput拒绝、原迟到ACK的ordered变体，以及显式人工一次物理Tab阳性；后者不生成Tab、不改每grant100ms或原fixture30秒。另有实际 `SourceInputWitness.Publish` 的休眠/同tick/激活后连续记录测试，以及真实LL迟ACK用例的休眠零记录/零poison断言。旧C边界已复现旧writer发布孤儿，修复后的C红绿仅证明reader/初始化合同。[CI514](https://github.com/DingJWuyu/Typelay/actions/runs/40123888197) 已完成 Windows 编译，并通过真实 managed writer 的休眠/同tick/历史回归、ordered 迟到ACK撤权变体及实际 injected-edge 的完整拒绝链；后者已核真实LL记录、原键派发、正文不变、零写与退休，不是正向接受。物理Tab显式用例仍未执行；上述用例本地未运行的限制不变，真实UIAccess及真实composition仍未验收，不恢复已退休来源分类采集或自动发布。
 
 ## 正向接受的剩余条件
 
-- 隔离有序候选已实现并有受控 C 边界证据；managed/Windows 编译、真实硬件、合法 UIAccess、IME 与部署仍未验收，彼此证据不能互换。
+- 隔离有序候选已有受控 C 正反边界、Windows 编译、managed 历史与真实普通注入拒绝证据。下一正向证据入口为现有 `ManualPhysicalTabUsesOrderedSourceOnceAndSettlesItsOriginalTails`：一次真实物理Tab须取得一次Verified、零原键派发/LL Activate/二次写、Undo、原尾键退休及清理；使用原100ms grant和30秒fixture，不补按键或续期。真实UIAccess、IME与正式部署仍须各自验收，不能由该物理例或普通注入拒绝替代。
 - 正式 Main/capability0 保持关闭；原输入、期限、身份和清理限制不变，未知零写拒绝，不以重试、等待或延时补成成功。
 
 

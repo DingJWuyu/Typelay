@@ -904,6 +904,13 @@ public sealed partial class ProductionForegroundWriteTests
         public nint Field(string name) => _fixture.Field(name);
         public void RequestForeground(nint field) => _fixture.RequestForeground(field, Token);
         public Task Focus(nint field) => _fixture.Focus(field, Token);
+        public async Task NavigateAndPrepare(nint field, string text, TextRange selection)
+        {
+            // Explicit setup navigation, before snapshot/permit capture. The
+            // ordinary Prepare path remains a single visible-field click only.
+            await _fixture.RequestForegroundAndWaitVisible(field, Token);
+            await Prepare(field, text, selection);
+        }
         public async Task Prepare(nint field, string text, TextRange selection)
         {
             // Owning the child does not grant foreground activation rights.
@@ -1100,6 +1107,11 @@ public sealed partial class ProductionForegroundWriteTests
         // request is not field-focus evidence; Focus retains its exact check.
         public void RequestForeground(nint field, CancellationToken token) =>
             NativeSourceSetup.RequestOwnedForeground(Root, field, process, token);
+        public async Task RequestForegroundAndWaitVisible(nint field, CancellationToken token)
+        {
+            RequestForeground(field, token);
+            await NativeSourceSetup.WaitVisibleAsync(Root, field, process, new NativeSourceSetup.Observation(), token);
+        }
         public void AllowBrokerForeground(int brokerProcessId, CancellationToken token)
         {
             token.ThrowIfCancellationRequested();

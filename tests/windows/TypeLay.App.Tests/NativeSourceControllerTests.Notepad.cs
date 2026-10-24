@@ -18,6 +18,60 @@ namespace TypeLay.App.Tests;
 
 public sealed partial class NativeSourceControllerTests
 {
+    [Fact]
+    public Task RealNotepadDiscardsItsSyntheticEditAndExitsWithoutSaving() => desktop.RunAsync(async () =>
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(28));
+        var token = deadline.Token;
+        var source = await NotepadSource.Start(token);
+        var failures = new List<Exception>();
+        try
+        {
+            using var process = Process.GetProcessById(source.ProcessId);
+            _ = process.SafeHandle;
+            string document = Path.Combine(source.Directory, "synthetic.txt");
+            string original = await File.ReadAllTextAsync(document, token);
+            N.SendString(source.Field, N.EM_REPLACESEL, "Synthetic unsaved edit ", 1);
+            Assert.Equal("Synthetic unsaved edit " + original, N.ReadText(source.Field, Limits.MaxTextUnits));
+            Assert.True(N.PostMessage(source.Root, 0x0010, 0, 0)); // One WM_CLOSE.
+            string? matchedId = null;
+            await Task.Run(async () =>
+            {
+                nint dialog = 0;
+                AutomationElement? discard = null;
+                await Until(() =>
+                {
+                    Assert.False(process.HasExited, "The modified source exited before a discard choice.");
+                    dialog = HyPackageCheck.FindOrdinaryNotepadCloseDialog(source.Root, (uint)source.ProcessId);
+                    if (dialog == 0)
+                        return false;
+                    (discard, matchedId) = HyPackageCheck.FindOrdinaryNotepadDiscardButton(AutomationElement.FromHandle(dialog));
+                    return discard is not null;
+                }, token);
+                var invoke = (InvokePattern)discard!.GetCurrentPattern(InvokePattern.Pattern);
+                Assert.True(HyPackageCheck.OrdinaryNotepadCloseDialogMatches(source.Root, (uint)source.ProcessId, dialog));
+                token.ThrowIfCancellationRequested();
+                invoke.Invoke(); // One choice, never a cleanup action.
+            }, token).WaitAsync(token);
+            await process.WaitForExitAsync(token);
+            Assert.Equal(0, process.ExitCode);
+            Assert.Equal(original, await File.ReadAllTextAsync(document, token));
+            TestContext.Current.TestOutputHelper?.WriteLine("notepad-discard-automation-id=" + matchedId);
+        }
+        catch (Exception error) { failures.Add(error); }
+        finally
+        {
+            try
+            {
+                await source.DisposeAsync();
+            }
+            catch (Exception error) { failures.Add(new InvalidOperationException("Notepad discard regression cleanup failed.", error)); }
+        }
+        if (failures.Count != 0)
+            throw new AggregateException(failures);
+    });
+
     // Real installed Notepad and its message loop, not the stock-control fixture.
     // Only the isolated Broker constructor is enabled. Controlled translation and
     // SendInput are not evidence about model quality or physical keyboard/IME.

@@ -50,6 +50,7 @@ internal sealed class SettingsWindow : Window
     private SetupFailureView? _setupFailure, _setupRecoveryFailure;
     private string? _setupFailureStage;
     private ModelReplacementFailure? _setupReplacementFailure;
+    private ModelInstallationStore.PublicationDiagnostic? _setupPublicationFailure;
     private bool _setupPaused, _startingModel;
     private string? _renderedPage, _draftFeedback;
     private string? _settingsError;
@@ -1642,6 +1643,8 @@ internal sealed class SettingsWindow : Window
             if (_setupReplacementFailure is { } replacement)
                 diagnostic += $"\n切换阶段：{DiagnosticValue(replacement.Phase)}"
                     + $"\n切换原因：{DiagnosticValue(replacement.FailureCode)}\n发布确认：{DiagnosticValue(replacement.Outcome)}";
+            if (_setupPublicationFailure is { } publication)
+                diagnostic += $"\n发布操作：{DiagnosticValue(publication.Operation)}\n发布错误：{DiagnosticValue(publication.Error)}";
             ((TextBlock)details.Content).Text = diagnostic;
             AutomationProperties.SetHelpText(details, diagnostic);
         }
@@ -1722,6 +1725,7 @@ internal sealed class SettingsWindow : Window
         _setupRecoveryFailure = null;
         _setupFailureStage = null;
         _setupReplacementFailure = null;
+        _setupPublicationFailure = null;
         _setupPaused = false;
         _setupStatus = "正在准备本地翻译组件…";
         bool acceptingProgress = true;
@@ -1774,7 +1778,7 @@ internal sealed class SettingsWindow : Window
             else
                 SetupFailed(SetupFailureCategory.Runtime, "ModelStart",
                     outcome == ModelPublicationOutcome.Unconfirmed ? SetupFailureCategory.Unknown : null,
-                    prepared.ReplacementFailure);
+                    prepared.ReplacementFailure, prepared.PublicationFailure);
         }
         catch (OperationCanceledException) when (operation.IsCancellationRequested)
         {
@@ -1815,18 +1819,19 @@ internal sealed class SettingsWindow : Window
         }
     }
     internal void CancelPreparation() => _install?.Cancel();
-    internal void ReportSetupFailure(ModelSetupException failure)
+    internal void ReportSetupFailure(ModelSetupException failure, ModelInstallationStore.PublicationDiagnostic? publication = null)
     {
-        SetupFailed(failure.Category, failure.Stage.ToString(), failure.RecoveryFailureCategory);
+        SetupFailed(failure.Category, failure.Stage.ToString(), failure.RecoveryFailureCategory, publication: publication);
         RefreshPreparation();
     }
     private void SetupFailed(SetupFailureCategory category, string stage, SetupFailureCategory? recovery = null,
-        ModelReplacementFailure? replacement = null)
+        ModelReplacementFailure? replacement = null, ModelInstallationStore.PublicationDiagnostic? publication = null)
     {
         _setupFailure = SetupFailurePresentation.Create(category);
         _setupRecoveryFailure = recovery is { } blocked ? SetupFailurePresentation.Create(blocked) : null;
         _setupFailureStage = stage;
         _setupReplacementFailure = replacement;
+        _setupPublicationFailure = publication;
         _setupStatus = _setupFailure.Message + "\n" + (_setupRecoveryFailure is { } obstruction
             ? obstruction.Message + "\n" + obstruction.NextStep : _setupFailure.NextStep);
     }

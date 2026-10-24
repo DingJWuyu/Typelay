@@ -1,9 +1,28 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Windows.Automation;
 using N = TypeLay.Platform.Windows.NativeMethods;
 
 internal static partial class HyPackageCheck
 {
+    internal static (AutomationElement? Button, string? AutomationId) FindOrdinaryNotepadDiscardButton(AutomationElement dialog)
+    {
+        // Only IDNO's numeric form and the classic Notepad provider form used
+        // by FlaUI's integration tests. The real Notepad regression must verify
+        // the installed provider; there is no caption or OS-version fallback.
+        var matches = dialog.FindAll(TreeScope.Descendants, new AndCondition(
+            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button),
+            new OrCondition(new PropertyCondition(AutomationElement.AutomationIdProperty, "7"),
+                new PropertyCondition(AutomationElement.AutomationIdProperty, "CommandButton_7"))));
+        Require(matches.Count <= 1, "ordinary-notepad-discard-button-ambiguous");
+        if (matches.Count == 0)
+            return (null, null);
+        var button = matches[0];
+        string id = button.Current.AutomationId;
+        Require(id is "7" or "CommandButton_7", "ordinary-notepad-discard-button-identity-changed");
+        return (button, id); // Only the two fixed IDs can enter diagnostic output.
+    }
+
     internal static nint FindOrdinaryNotepadCloseDialog(nint owner, uint processId)
     {
         if (owner == 0 || processId == 0)
