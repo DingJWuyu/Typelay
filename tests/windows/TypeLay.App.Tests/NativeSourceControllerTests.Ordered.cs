@@ -97,7 +97,33 @@ public sealed partial class NativeSourceControllerTests
         await native.Prepare(native.A, "你好", new(0, 2));
         Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchKey.v1", key));
         Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchField.v1", native.A));
-        using var broker = new FixtureBroker(native);
+        var rpcTrace = new SourceRpcTrace(() => WindowsInterruptClock.NowMs);
+        using var broker = new FixtureBroker(native) { RpcTrace = rpcTrace };
+        object? firstInstall = null, latestInstall = null;
+        int installationResponses = 0;
+        broker.ObserveResponse = (request, response) =>
+        {
+            if (request.Op != "source-install" || request.SourceAcceptance is not { } install)
+                return;
+            var result = response.SourceAcceptance;
+            latestInstall = new
+            {
+                responseAtMs = WindowsInterruptClock.NowMs,
+                install.Grant,
+                install.Generation,
+                install.SessionRevision,
+                observedAtMs = install.Permit?.ObservedAtMs,
+                expiresAtMs = install.Permit?.ExpiresAtMs,
+                identityMatches = result is not null && result.Grant == install.Grant
+                    && result.Generation == install.Generation && result.SessionRevision == install.SessionRevision
+                    && result.Target == install.Target,
+                installed = result?.Installed,
+                acknowledged = result?.Acknowledged,
+                claimed = result?.Claimed
+            };
+            firstInstall ??= latestInstall;
+            installationResponses++;
+        };
         var overlay = new OverlayWindow(automationTest: true);
         var support = new WindowsApplicationSupport();
         string directory = Path.Combine(Path.GetTempPath(), "TypeLay.OrderedSource." + Guid.NewGuid().ToString("N"));
@@ -118,14 +144,57 @@ public sealed partial class NativeSourceControllerTests
             await support.CompletePendingAsync().WaitAsync(native.Token);
             Assert.False(support.Browser!.MutationUnavailable);
             Assert.False(support.Read(settings.Value).Rows.Single(row => row.Id == "desktop-text").Capabilities.TabAccept);
+            rpcTrace.Checkpoint("controller-start-before");
             await controller.StartAsync().WaitAsync(native.Token);
-            await Until(() => overlay.IsVisible && RuntimeTranslation(overlay) == "Hello", native.Token);
+            rpcTrace.Checkpoint("controller-start-after");
+            long translationReadStartedAt = 0, translationReadFinishedAt = 0;
+            await Until(() =>
+            {
+                translationReadStartedAt = WindowsInterruptClock.NowMs;
+                bool visible = overlay.IsVisible && RuntimeTranslation(overlay) == "Hello";
+                translationReadFinishedAt = WindowsInterruptClock.NowMs;
+                return visible;
+            }, native.Token);
+            rpcTrace.Checkpoint("translation-visible");
+            rpcTrace.Checkpoint("support-read-before");
             var supported = support.Read(settings.Value);
+            rpcTrace.Checkpoint("support-read-after");
             Assert.True(supported.Rows.Single(row => row.Id == "desktop-text").Capabilities.TabAccept);
             Assert.False(supported.Rows.Single(row => row.Id == "google-chrome").Capabilities.TabAccept);
-            await Until(() => RuntimeShowsAcceptance(overlay), native.Token);
+            long acceptanceReadStartedAt = 0, acceptanceReadFinishedAt = 0;
+            await Until(() =>
+            {
+                acceptanceReadStartedAt = WindowsInterruptClock.NowMs;
+                bool visible = RuntimeShowsAcceptance(overlay);
+                acceptanceReadFinishedAt = WindowsInterruptClock.NowMs;
+                return visible;
+            }, native.Token);
+            rpcTrace.Checkpoint("acceptance-visible");
+            long permitReadStartedAt = WindowsInterruptClock.NowMs;
             var permit = Assert.IsType<AcceptancePermit>(broker.InstallationPermit);
-            Assert.True(WindowsInterruptClock.NowMs <= permit.ExpiresAtMs);
+            rpcTrace.Checkpoint("permit-locked");
+            long expiryCheckedAt = WindowsInterruptClock.NowMs;
+            bool unexpired = expiryCheckedAt <= permit.ExpiresAtMs;
+            // Bounded caller-side samples, not render/paint timestamps. Their
+            // own overhead is included; serialize only after the original gate
+            // fails, never retry or select a newer permit to make it pass.
+            Assert.True(unexpired, !unexpired
+                ? "Original permit expired before input: " + System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    expiryCheckedAt,
+                    permitReadStartedAt,
+                    permit.Plan.Id,
+                    permit.ObservedAtMs,
+                    permit.ExpiresAtMs,
+                    translationReadStartedAt,
+                    translationReadFinishedAt,
+                    acceptanceReadStartedAt,
+                    acceptanceReadFinishedAt,
+                    installationResponses,
+                    firstInstall,
+                    latestInstall,
+                    rpc = rpcTrace.Snapshot()
+                }) : null);
             Assert.False(settings.Value.ExperimentalWriteback);
             Assert.True(broker.Installation!.Installed);
             Assert.True(broker.Installation.Acknowledged);

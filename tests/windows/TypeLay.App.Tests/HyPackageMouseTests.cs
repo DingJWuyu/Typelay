@@ -57,7 +57,28 @@ public sealed class HyPackageMouseTests(WpfDesktopFixture desktop, ITestOutputHe
             var click = HyPackageCheck.SendLeftClick();
             Assert.True(click.ReleaseComplete);
             Assert.True(click.Complete);
-            await released.Task.WaitAsync(deadline.Token);
+            try
+            {
+                await released.Task.WaitAsync(deadline.Token);
+            }
+            catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+            {
+                try
+                {
+                    // This is a cancellation-time sample, before cleanup, not the
+                    // recipient at injection time. The later window reads are non-atomic.
+                    int receivedCount = received.Count;
+                    uint[] receivedFirst = received.Take(8).ToArray();
+                    nint foreground = GetForegroundWindow();
+                    nint hit = WindowFromPoint(pixel);
+                    output.WriteLine($"Receiver wait canceled: receivedCount={receivedCount}; "
+                        + $"receivedFirst8=[{string.Join(",", receivedFirst.Select(message => $"0x{message:X4}"))}]; "
+                        + $"receiver={(long)handle}; foreground={(long)foreground}; hit={(long)hit}; "
+                        + $"foregroundReceiver={foreground == handle}; hitReceiver={hit == handle}");
+                }
+                catch { /* Observation or output failure must not replace the original cancellation. */ }
+                throw;
+            }
             Assert.Equal(new uint[] { 0x0201, 0x0202 }, received);
         }
         finally
