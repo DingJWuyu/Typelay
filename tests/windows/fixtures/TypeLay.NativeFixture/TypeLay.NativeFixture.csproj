@@ -21,8 +21,10 @@
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.SourceReturn.cs" Link="Product/KeyboardHook.SourceReturn.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.StockEdit.cs" Link="Product/KeyboardHook.StockEdit.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.StockEdit.Message.cs" Link="Product/KeyboardHook.StockEdit.Message.cs" />
+    <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.StockEdit.Witness.cs" Link="Product/KeyboardHook.StockEdit.Witness.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.AcceptanceModifier.cs" Link="Product/KeyboardHook.AcceptanceModifier.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/StockEditActivation.cs" Link="Product/StockEditActivation.cs" />
+    <Compile Include="../../../../src/windows/TypeLay.App/Windows/SourceInputWitness.cs" Link="Product/SourceInputWitness.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/SourceGlossaryForegroundReceipt.cs" Link="Product/SourceGlossaryForegroundReceipt.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/OnDemandHotkeys.cs" Link="Product/OnDemandHotkeys.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/Native.cs" Link="Product/Native.cs" />
