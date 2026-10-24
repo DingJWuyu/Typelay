@@ -88,7 +88,11 @@ B-01 的一个具体交错是：源线程已经确认 Claim 并完成写入，�
 
 **该交错已经实际观察到，不再只是待测风险。** 自有源诊断中，Claim 后暂停低级回调时，源已写入译文，原 Tab down 却在回调返回前到达源队列；退休回执与清理均完成。因此，源写成功或回调返回前的耗时检查都不能证明原键已被吞掉。这否定现有“源写完成后由 LL 返回值吞首键”的安全性，不证明系统已经移除 Hook，也不是完整生产链或物理输入法验收。
 
-[自有源线程键盘边界](development.md#自有源线程键盘边界诊断)与[双队列消费顺序诊断](development.md#自有双队列消费顺序诊断)已取得[实际 Windows 软件输入结果](https://github.com/DingJWuyu/Typelay/actions/runs/39856028233)。前者观察到 PM_NOREMOVE 不消费、伪消息阴性对照及 IsDialogMessage 前消费；后者的 completion/deadline 只验证受控泵的实际 native 检索返回和合成 admission 原期限。`PostMessage` 仅唤醒，同步重入可提前派发 posted handler；动作边界必须是包含认领回调的最外层 `GetMessage`/`PeekMessage` 已实际返回，不能用回调末尾或 posted handler 代替。上述局部结果均没有正文事务或生产授权，不保证第三方消息泵。
+[自有源线程键盘边界](development.md#自有源线程键盘边界诊断)已取得 [Windows 软件输入观察](https://github.com/DingJWuyu/Typelay/actions/runs/39856028233)：PM_NOREMOVE 不消费、伪消息阴性对照及 IsDialogMessage 前消费。受控跨线程 sent 重入还曾让 posted handler 在原 Hook 与外层 native 检索尚未返回时执行；这是机制约束，不是生产正文事务证明。`PostMessage` 仅唤醒，posted handler、回调末尾和队列提示都不是消费完成凭据。依赖 `WH_KEYBOARD` 返回值、再于返回后执行动作的候选，必须观察包含认领回调的最外层 `GetMessage`/`PeekMessage` 实际返回；该约束不能写成所有同步源事务都须等外层返回才可写入的禁令。
+
+当前[普通 source 同一 MSG 事务](development.md#普通-source-事务与同一-msg-的受控接线)采用不同边界：在同一 `PM_REMOVE` 回调中重验原资格，claim 后立即将原 MSG 置为 `WM_NULL`，再执行同步事务；claim 与置空之间没有可重入调用。完整 callback 寿命门及尾键义务仍须保持，写完、回调返回或外层检索返回均不等于可退休的 Quiet。原期限不因返回、repeat 或 up 续期；认领前失败原样旁路，认领后拒绝或未知不恢复、重放原键。
+
+旧双线程观察只运行独立合成 admission 和无正文动作，没有生产消费者，其专属运行入口已退役；保留上述机制约束，而不继续为合成状态机设自动门。其 F7 down/up 只进入一个队列，另一线程仅做 sent 重入，没有 repeat 或跨队列尾键证据。现役 native 回归及 mode11/12 的真实 Windows 入口并未替代该独特跨线程交错：前者是生产算法的受控 API 边界，后者仅为自有受控 hook 链、同字段软件输入。真实 native 任意跨线程重入、同应用跨字段尾键、严格输入来源及真实 IME 组合态仍未闭合，不能据局部结果开放生产接受。
 
 [接受后主动切换应用的产品边界](../../product/README.md#接受后主动切换应用时的-tab)规定：新应用正常接收后续 repeat/up，不继续跨应用抑制。Windows Hook 将已认领按次的尾键消费限定于认领时的原源应用；观察到另一应用接收输入后，该按次不再恢复消费资格。原按次仍不能产生第二张许可或第二次写入。源应用内的撤销、配置改变或执行期限耗尽只禁止后续动作，不重放已消费的原键；认领前失败仍完整旁路。
 

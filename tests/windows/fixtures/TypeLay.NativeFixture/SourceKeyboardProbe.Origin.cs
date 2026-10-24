@@ -11,6 +11,7 @@ internal sealed partial class SourceKeyboardProbe
     private int _originRetrieval, _originRemoved, _originDepth, _originEntryDepth, _originMaxDepth;
     private int _originCount, _originDispatched, _originUps, _originPending = -1;
     private string? _originFailure;
+    private object? _originFirstExtraInput;
     private N.MessageStruct _originEntryMessage;
     private OriginSample _originEntry;
     private readonly OriginObservation?[] _originObservations = new OriginObservation?[6];
@@ -37,6 +38,7 @@ internal sealed partial class SourceKeyboardProbe
             get; set;
         }
     }
+    [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetCurrentInputMessageSource(out InputMessageSource source);
@@ -140,7 +142,28 @@ internal sealed partial class SourceKeyboardProbe
         {
             if (message.Message is 0xff or >= 0xa0 and <= 0xad
                 or >= 0x100 and <= 0x109 or >= 0x200 and <= 0x20e)
+            {
+                // Preserve only the first rejected input, using values already
+                // observed at this return. No new query or origin sample.
+                _originFirstExtraInput ??= new
+                {
+                    message = OriginMessage.From(message),
+                    entryMessage = OriginMessage.From(_originEntryMessage),
+                    status,
+                    paired,
+                    retrieval = _originRetrieval,
+                    removedCallbacks = _originRemoved,
+                    depth = _originDepth,
+                    entryDepth = _originEntryDepth,
+                    maximumHookDepth = _originMaxDepth,
+                    count = _originCount,
+                    dispatched = _originDispatched,
+                    completedPhases = _originUps,
+                    focusIsField = focus,
+                    priorFailure = _originFailure
+                };
                 FailOrigin("origin-extra-input");
+            }
             return;
         }
         if (_originCount == _originObservations.Length)
@@ -196,6 +219,7 @@ internal sealed partial class SourceKeyboardProbe
         count = _originCount,
         dispatched = _originDispatched,
         completedPhases = _originUps,
+        firstExtraInput = _originFirstExtraInput,
         observations = _originObservations.Take(_originCount).ToArray(),
         sequenceMeaning = "Fixture outer-retrieval structure only, not an OS event ID.",
         productionReadiness = false,

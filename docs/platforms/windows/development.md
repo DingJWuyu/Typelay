@@ -76,7 +76,7 @@ if ($LASTEXITCODE -ne 0) { throw '同步源实验失败，保留结果，不重�
 
 六行在原合成授权期限内实际探测并冻结源线程 HIMC/HKL，调用现有带 input-context 的 native 执行入口；探测失败明确拒绝，不用零值补成 Clear。覆盖正常首键与 repeat/up 一次写入、PM_NOREMOVE 零写、原文冲突/原期限失效/错误 cookie 的零写旁路，以及一次 native accepted 后回调返回前的 1200ms 有界暂停。记录 inputContextProbed、native 调用次数、实际 EN_CHANGE 次数、回执、GUI dispatch 前后计数、焦点、选区与 Undo；暂停中从另一线程只读属性观察原键尚未进入 dialog/控件路径，不用队列 hook 的先后顺序推导目标收到消息。结果保存在 `artifacts/source-synchronous-acceptance/<唯一目录>/result.json`，固定 `productionReadiness=false`。每行原 30 秒 owner 预算与 60 秒 xUnit 上限不变，清理自有按键和 hook；运行器须有外层总截止并保存失败证据。
 
-HIMC/HKL 只提供离散身份样本，既有 owned 执行的任意末期重入安全、TSF profile 连续性及组合权限仍未闭合。该实验不安装第三方源组件，不涉及 Notepad，不提供物理键、真实中文组合态及完整生产许可关联的验收证据。与旧 LL 写后超时反例比较的是同步源内机制，不代表 hook/TSF 自动解决普通输入框支持；原生产写回门继续关闭。既有只读边界与双队列实验保持原覆盖，不扩展跨应用尾键要求。
+HIMC/HKL 只提供离散身份样本，既有 owned 执行的任意末期重入安全、TSF profile 连续性及组合权限仍未闭合。该实验不安装第三方源组件，不涉及 Notepad，不提供物理键、真实中文组合态及完整生产许可关联的验收证据。与旧 LL 写后超时反例比较的是同步源内机制，不代表 hook/TSF 自动解决普通输入框支持；原生产写回门继续关闭。既有只读边界保持原覆盖；消费完成与原期限的机制约束见 [B-01](architecture.md#b-01非原子写回与按键所有权)，不扩展跨应用尾键要求。
 
 ## 普通 source 事务与同一 MSG 的受控接线
 
@@ -200,25 +200,6 @@ CI 在 Windows build 成功后、首门之后以独立 `continue-on-error: true`
 [CI481](https://github.com/DingJWuyu/Typelay/actions/runs/40010604024) 已取得同栈 RW 与读取成功，但既有 top context 返回空正文、选区 `[0,0]`，原生 stock Edit 快照为6个 UTF-16码元、选区 `[3,5]`。完整正文 equality 因此正确地在修改前拒绝：零 SetText，原生正文/选区保持，原 Tab 后焦点为 B、提交数为0，正常清理与退出已证。成功写入、Undo、提交正控及其余三例未验证，不能把安全拒绝改称写入通过。
 
 该 context 尚未证明是原生控件的完整正文来源，故已删除专属全文写入 fixture、四例测试与自动 CI 步骤，不再为此追加元数据探针，也不恢复已证明的 READ 自动运行来填补预算。相同 view HWND 不能代替正文绑定；这不是所有 stock Edit 或 TSF 都不支持的结论，见[输入后端的安全准入](architecture.md#输入后端的安全准入)。既有六项 native 同步回归及上面的手动 READ/composition 入口各自保留，普通生产接受继续关闭。
-
-## 自有双队列消费顺序诊断
-
-这是独立于上述三个源键盘探针的入口，仅保留实际检索返回与原期限的局部机制检查，当前边界见 [B-01](architecture.md#b-01非原子写回与按键所有权)；不能把诊断成功解释为接受安全。只有新机制或明确回归目的才重跑。执行须在独占、已解锁的 Windows x64 测试桌面、现有 Release 构建完成后显式进行：
-
-```powershell
-& ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe `
-  -explicit only -method 'TypeLay.App.Tests.SourceKeyboardBoundaryProbe.ObserveSelfOwnedConsumptionOrder'
-if ($LASTEXITCODE -ne 0) { throw '消费顺序诊断失败或交错未建立，请保留结果，不自动重跑。' }
-```
-
-两行各启动一个自有 NativeFixture 进程，只有两个无 parent/owner 关系的 GUI root、两个 GUI 线程及最多两个 thread-specific `WH_KEYBOARD`；协调线程没有窗口。不启动 Broker，不安装全局/低级 Hook、TSF 或驱动，不使用 `AttachThreadInput`，不注入第三方、不读写正文。固定合成 F7/F23 输入不是物理输入法或生产授权：
-
-1. `completion` 用真实 `HC_NOREMOVE` 对照、同步跨线程重入及嵌套 `PeekMessage`，让 posted handler 在原 Hook/外层检索尚未退栈时执行；无正文动作只能在包含原回调的最外层 native 检索实际返回后执行。记录检索代次、深度、线程及先后序号，不能用回调末尾 flag 或 posted handler 代替返回证明。
-2. `deadline` 分别观察认领前过期/撤销的整组旁路，与合法认领后原期限耗尽/撤销的零动作、整组仍消费。固定合成 admission 从第一次真实键盘观察起计 100ms；返回、repeat、up 均不续期，生产所需前置检查没有由此实现或后移。
-
-每行沿现有进程 owner 的 30 秒操作截止（子端最多 25 秒观察、独立 4 秒清理）及 60 秒 xUnit 外限；外部执行器为整入口另设 5 分钟进程总寿命。512 条事件、48 条输入和 8 条观察固定容量；溢出、身份错误、注入结果未知、Hook/线程/进程退出未证实均失败。仅为确认成功的 down 配对 up，清理不借用已取消的操作 token。每行结果保存到 `artifacts/source-consumption-order/<UTC时间-唯一标识>/result.json`，保留原事件与独立进程退出结果，不覆盖旧失败。
-
-`mechanism_observed_not_product_acceptance` 只表示取得限定机制观察；前提未建立或入口/身份/观察断言、清理失败均不得转绿。所有结果固定 `productionReadiness=false`。当前 CI 保留原三行的精确 selector 与 4 分钟预算，并以独立显式步骤选择这两行、设置 5 分钟外限。新步骤失败仍使 Windows job 失败；只向既有始终上传的 artifact 增加 `artifacts/source-consumption-order/**/result.json` 白名单，不上传整个 artifacts。75 分钟 job 与后续模型链的原 admission 预算保持不变；本步骤占用前置预算，不绕过 admission 或挤占模型验收保留量。
 
 ## Hy 生产载荷候选构建
 

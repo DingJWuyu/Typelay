@@ -30,9 +30,6 @@ internal static class Program
             return HyAdapterCheck.Run(args[1..]);
         if (args.Length == 2 && args[0] == "--winevent-stack-probe" && Path.IsPathFullyQualified(args[1]))
             return WinEventStackProbe.Run(args[1]);
-        if (args.Length == 2 && args[0] == "--source-consumption-order"
-            && args[1] is "completion" or "deadline")
-            return SourceKeyboardProbe.RunConsumptionOrder(args[1]);
         if (args.Length == 2 && args[0] == "--stock-controls" && args[1] == "--tsf-context-admission")
         {
             _tsfContextAdmission = true;

@@ -139,6 +139,10 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                         Assert.Equal("SourceClickObscured", diagnostic.GetProperty("Reason").GetString());
                         Assert.True(diagnostic.GetProperty("MetadataCollectedAfterHitTests").GetBoolean());
                         Assert.Equal("current-process", diagnostic.GetProperty("Foreground").GetProperty("Owner").GetString());
+                        long coverHandle = (long)new WindowInteropHelper(cover).Handle;
+                        Assert.Equal(coverHandle, diagnostic.GetProperty("Foreground").GetProperty("Window").GetInt64());
+                        Assert.Equal(Environment.ProcessId, diagnostic.GetProperty("Foreground").GetProperty("ProcessId").GetInt32());
+                        Assert.Equal("unknown", diagnostic.GetProperty("ForegroundProcessKind").GetString());
                         var hits = diagnostic.GetProperty("Hits").EnumerateArray().ToArray();
                         Assert.Equal(3, hits.Length);
                         Assert.All(hits, hit =>
@@ -146,7 +150,14 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                             var original = hit.GetProperty("OriginalHit");
                             Assert.True(original.GetProperty("Sampled").GetBoolean());
                             Assert.False(original.GetProperty("IsSourceField").GetBoolean());
+                            Assert.Equal(coverHandle, original.GetProperty("Window").GetInt64());
                             var window = hit.GetProperty("LaterWindowMetadata");
+                            Assert.Equal(coverHandle, window.GetProperty("Window").GetInt64());
+                            Assert.Equal(coverHandle, window.GetProperty("RootWindow").GetInt64());
+                            Assert.Equal(Environment.ProcessId, window.GetProperty("ProcessId").GetInt32());
+                            Assert.Equal(Environment.ProcessId, window.GetProperty("RootProcessId").GetInt32());
+                            Assert.True(window.GetProperty("ThreadId").GetUInt32() > 0);
+                            Assert.True(window.GetProperty("RootThreadId").GetUInt32() > 0);
                             Assert.Equal("current-process", window.GetProperty("RootOwner").GetString());
                             Assert.Equal("wpf", window.GetProperty("RootClass").GetString());
                             Assert.True(window.GetProperty("RootIsForeground").GetBoolean());

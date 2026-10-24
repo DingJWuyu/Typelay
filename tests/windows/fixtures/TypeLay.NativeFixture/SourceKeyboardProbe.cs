@@ -3,7 +3,6 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 
 // Explicit self-owned source-thread experiment, never a production acceptor.
 // Original three modes have no write API, LL hook, witness fabrication or callback pumping.
-// The separate Consumption partial explicitly exercises controlled synchronous reentry.
 internal sealed partial class SourceKeyboardProbe : IDisposable
 {
     internal const uint Arm = 0x8080, Snapshot = 0x8081, Close = 0x8082;

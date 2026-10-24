@@ -464,14 +464,6 @@ jobs:
           "Source keyboard/origin research: $($runner.status); predecessor=$($runner.predecessorExitCode), origin=$($runner.exitCode). Source classes only, not event binding or hardware proof." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
           if ($runner.status -ne 'observation-complete-not-product-acceptance') { exit 1 }
           exit 0
-      - name: Observe consumption return and admission deadline in owned sources
-        id: windows-source-consumption
-        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        timeout-minutes: 5
-        shell: pwsh
-        run: |
-          & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.SourceKeyboardBoundaryProbe.ObserveSelfOwnedConsumptionOrder'
-          exit $LASTEXITCODE
       - name: Observe standard Chrome profile after behavior tests
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: pwsh
@@ -677,7 +669,6 @@ jobs:
             artifacts/source-message-acceptance/
             artifacts/tsf-context-admission/
             artifacts/tsf-key-routing/
-            artifacts/source-consumption-order/**/result.json
             artifacts/controller-trace.jsonl*
             artifacts/continuous-translation/result.json
             artifacts/continuous-translation/consumer-exit.json

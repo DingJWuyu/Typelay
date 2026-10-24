@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Windows.Automation;
+using Microsoft.Win32.SafeHandles;
 using TypeLay.Core;
 using TypeLay.Windows;
 using N = TypeLay.Platform.Windows.NativeMethods;
@@ -187,8 +188,13 @@ internal static class NativeSourceSetup
                     if (hit == field)
                         return point;
                 }
-                throw new Failure(FailureReason.SourceClickObscured,
-                    DescribeObscuration(root, field, processId, brokerProcessId, bounds, hits));
+                string? detail = null;
+                try
+                {
+                    detail = DescribeObscuration(root, field, processId, brokerProcessId, bounds, hits);
+                }
+                catch { /* Diagnostic failure must not replace the original refusal. */ }
+                throw new Failure(FailureReason.SourceClickObscured, detail);
             }
             finally { SetThreadDpiAwarenessContext(previousDpi); }
         }, ct).WaitAsync(ct);
@@ -223,7 +229,7 @@ internal static class NativeSourceSetup
     {
         long startedAtMs = WindowsInterruptClock.NowMs;
         nint foreground = N.GetForegroundWindow();
-        var foregroundDetail = DescribeWindow(foreground);
+        var foregroundDetail = DescribeWindow(foreground, out uint foregroundRootProcessId);
         bool nativeBoundsAvailable = N.GetWindowRect(field, out var nativeBounds);
         var hitDetails = hits.Select(hit => new
         {
@@ -232,12 +238,19 @@ internal static class NativeSourceSetup
             OriginalHit = new
             {
                 Sampled = hit.Window.HasValue,
+                Window = hit.Window.HasValue ? (long?)hit.Window.Value : null,
                 IsZero = hit.Window == 0,
                 IsSourceField = hit.Window == field,
                 IsSourceRoot = hit.Window == root
             },
-            LaterWindowMetadata = DescribeWindow(hit.Window)
+            LaterWindowMetadata = DescribeWindow(hit.Window, out _)
         }).ToArray();
+        string foregroundProcessKind = "unknown";
+        try
+        {
+            foregroundProcessKind = ClassifyForegroundProcess(foregroundRootProcessId);
+        }
+        catch { /* Preserve the window observations even if image inspection fails. */ }
         return JsonSerializer.Serialize(new
         {
             Reason = nameof(FailureReason.SourceClickObscured),
@@ -245,7 +258,10 @@ internal static class NativeSourceSetup
             MetadataStartedAtMs = startedAtMs,
             MetadataCompletedAtMs = WindowsInterruptClock.NowMs,
             BrokerProcessKnown = brokerProcessId.HasValue,
+            SourceProcessId = processId,
+            BrokerProcessId = brokerProcessId,
             Foreground = foregroundDetail,
+            ForegroundProcessKind = foregroundProcessKind,
             UiaBounds = new
             {
                 bounds.Left,
@@ -267,15 +283,29 @@ internal static class NativeSourceSetup
             Hits = hitDetails
         });
 
-        object DescribeWindow(nint? observed)
+        object DescribeWindow(nint? observed, out uint rootProcessId)
         {
             nint window = observed ?? 0;
             nint windowRoot = window == 0 ? 0 : N.GetAncestor(window, 2);
+            uint windowProcessId = 0;
+            uint windowThreadId = window == 0 ? 0 : N.GetWindowThreadProcessId(window, out windowProcessId);
+            if (windowThreadId == 0)
+                windowProcessId = 0;
+            rootProcessId = 0;
+            uint rootThreadId = windowRoot == 0 ? 0 : N.GetWindowThreadProcessId(windowRoot, out rootProcessId);
+            if (rootThreadId == 0)
+                rootProcessId = 0;
             return new
             {
-                Owner = Owner(window),
+                Window = (long)window,
+                ProcessId = windowProcessId,
+                ThreadId = windowThreadId,
+                Owner = Owner(windowProcessId, windowThreadId),
                 IsSourceRoot = window == root,
-                RootOwner = Owner(windowRoot),
+                RootWindow = (long)windowRoot,
+                RootProcessId = rootProcessId,
+                RootThreadId = rootThreadId,
+                RootOwner = Owner(rootProcessId, rootThreadId),
                 RootIsSource = windowRoot == root,
                 RootIsForeground = windowRoot != 0 && windowRoot == foreground,
                 RootTopmostBitSet = windowRoot != 0 && (N.GetStyle(windowRoot, -20) & 0x8) != 0,
@@ -283,7 +313,7 @@ internal static class NativeSourceSetup
             };
         }
 
-        string Owner(nint window) => window == 0 || N.GetWindowThreadProcessId(window, out uint pid) == 0 || pid == 0 ? "unknown"
+        string Owner(uint pid, uint threadId) => threadId == 0 || pid == 0 ? "unknown"
             : pid == processId ? "fixture" : pid == brokerProcessId ? "broker"
             : pid == Environment.ProcessId ? "current-process" : "other-process";
 
@@ -296,6 +326,35 @@ internal static class NativeSourceSetup
             return value == "ConsoleWindowClass" ? "console" : value.StartsWith("HwndWrapper[", StringComparison.Ordinal) ? "wpf"
                 : value == "TypeLayMvpFixture" ? "fixture" : "other";
         }
+    }
+
+    // One post-failure, query-only observation. Neither a PID nor a basename
+    // proves the earlier window's identity; either may have changed/reused.
+    // Keep only fixed name categories, never a full path or arbitrary filename.
+    private static string ClassifyForegroundProcess(uint processId)
+    {
+        if (processId == 0)
+            return "unknown";
+        using var process = OpenProcess(0x1000, false, processId); // PROCESS_QUERY_LIMITED_INFORMATION.
+        if (process.IsInvalid)
+            return "unknown";
+        var image = new StringBuilder(260);
+        uint size = (uint)image.Capacity;
+        if (!QueryFullProcessImageNameW(process, 0, image, ref size) || size == 0 || size >= image.Capacity)
+            return "unknown";
+        string value = image.ToString();
+        string name = value[(value.LastIndexOf('\\') + 1)..];
+        return name.ToLowerInvariant() switch
+        {
+            "explorer.exe" => "windows-shell",
+            "windowsterminal.exe" => "windows-terminal",
+            "conhost.exe" => "console-host",
+            "openconsole.exe" => "open-console",
+            "applicationframehost.exe" => "windows-app-frame",
+            "shellexperiencehost.exe" => "windows-shell-experience",
+            "searchhost.exe" => "windows-search",
+            _ => "unknown"
+        };
     }
 
     // A synchronization hypothesis for the observed post-click transport timeout,
@@ -511,6 +570,11 @@ internal static class NativeSourceSetup
             throw new Failure(reason);
     }
     [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern SafeProcessHandle OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint id);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryFullProcessImageNameW(SafeProcessHandle process, uint flags, StringBuilder name, ref uint size);
     [DllImport("user32.dll")] private static extern nint SetThreadDpiAwarenessContext(nint context);
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(N.Point point);
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);

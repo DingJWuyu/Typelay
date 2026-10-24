@@ -1141,32 +1141,6 @@ public sealed partial class ProductionForegroundWriteTests
         public ValueTask DisposeAsync() => new(Stop(process));
     }
 
-    // Reuse this fixture owner's exact process handle and bounded kill/exit proof.
-    // No Broker, production lease or additional input hook is started for this diagnostic.
-    internal static async Task RunConsumptionOrderProbe(string experiment, Action<JsonElement> observed, Action exited)
-    {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(30));
-        var process = StartProcess(Path.Combine(Repository(),
-            "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"),
-            "--source-consumption-order", experiment);
-        try
-        {
-            string? line = await process.StandardOutput.ReadLineAsync(deadline.Token);
-            using var document = JsonDocument.Parse(line ?? "null");
-            var result = document.RootElement.Clone();
-            observed(result); // Retain raw bounded observations even if exit/assertion fails.
-            Assert.Equal(process.Id, result.GetProperty("process").GetInt32());
-            await process.WaitForExitAsync(deadline.Token);
-            Assert.Equal(0, process.ExitCode);
-        }
-        finally
-        {
-            await Stop(process);
-            exited();
-        }
-    }
-
     // This first-stage TSF probe reuses only the existing self-owned process
     // lifecycle. No Broker, native-input DLL, model or input injection is started.
     internal static async Task RunTsfContextAdmissionProbe(Action<JsonElement> observed, Action<bool> exited)
