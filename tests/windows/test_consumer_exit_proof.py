@@ -1,4 +1,4 @@
-"""Validate the Hy prerequisite through its CLI, not process-name guesses."""
+"""Validate consumer exit prerequisites through their CLI, not process-name guesses."""
 
 import copy
 import json
@@ -55,6 +55,8 @@ class ConsumerExitProofTests(unittest.TestCase):
             self.proofs.append((path, proof))
             path.write_text(json.dumps(proof), encoding="utf-8")
             self.command += ["--" + name + "-proof", str(path), "--" + name + "-nonce", nonce]
+            if name == "browser":
+                self.before_notepad_command = self.command + ["--scope", "before-notepad"]
 
     def run_validator(self, expected, command=None):
         result = subprocess.run(command or self.command, capture_output=True, text=True, timeout=10)
@@ -63,6 +65,17 @@ class ConsumerExitProofTests(unittest.TestCase):
 
     def test_all_three_natural_exits_are_required(self):
         self.run_validator(0)
+        self.run_validator(0, self.command + ["--scope", "all"])
+
+    def test_before_notepad_accepts_failed_but_exited_prior_consumers(self):
+        self.proofs[2][0].unlink()
+        for path, proof in self.proofs[:2]:
+            proof["rootExitCode"] = 1
+            path.write_text(json.dumps(proof), encoding="utf-8")
+        self.run_validator(0, self.before_notepad_command)
+        self.run_validator(1)
+        for path, _ in self.proofs[:2]:
+            self.assertEqual(1, json.loads(path.read_text())["rootExitCode"])
 
     def test_scene_failure_and_confirmed_forced_cleanup_do_not_erase_failure(self):
         path, proof = self.proofs[0]
@@ -103,20 +116,24 @@ class ConsumerExitProofTests(unittest.TestCase):
             failure=["Win32Exception", ""],
             noActiveOwnedConsumers=[False, 1],
         )
-        for path, original in self.proofs:
-            for key, values in changes.items():
-                for value in values:
-                    with self.subTest(path=path.name, key=key, value=value):
-                        proof = {**original, key: value}
+        for proofs, command in (
+            (self.proofs, self.command),
+            (self.proofs[:2], self.before_notepad_command),
+        ):
+            for path, original in proofs:
+                for key, values in changes.items():
+                    for value in values:
+                        with self.subTest(path=path.name, key=key, value=value, command=command):
+                            proof = {**original, key: value}
+                            path.write_text(json.dumps(proof), encoding="utf-8")
+                            self.run_validator(1, command)
+                for key in original:
+                    with self.subTest(path=path.name, missing=key, command=command):
+                        proof = copy.copy(original)
+                        del proof[key]
                         path.write_text(json.dumps(proof), encoding="utf-8")
-                        self.run_validator(1)
-            for key in original:
-                with self.subTest(missing=key):
-                    proof = copy.copy(original)
-                    del proof[key]
-                    path.write_text(json.dumps(proof), encoding="utf-8")
-                    self.run_validator(1)
-            path.write_text(json.dumps(original), encoding="utf-8")
+                        self.run_validator(1, command)
+                path.write_text(json.dumps(original), encoding="utf-8")
 
     def test_missing_partial_oversized_duplicate_and_unknown_documents_fail_closed(self):
         path, proof = self.proofs[0]
@@ -132,27 +149,40 @@ class ConsumerExitProofTests(unittest.TestCase):
             with self.subTest(content=content[:40]):
                 path.write_text(content, encoding="utf-8")
                 self.run_validator(1)
+                self.run_validator(1, self.before_notepad_command)
         path.unlink()
         self.run_validator(1)
+        self.run_validator(1, self.before_notepad_command)
         path.mkdir()
         self.run_validator(1)
+        self.run_validator(1, self.before_notepad_command)
+
+    def test_before_notepad_requires_both_prior_proof_files(self):
+        for path, proof in self.proofs[:2]:
+            with self.subTest(missing=path.name):
+                path.unlink()
+                self.run_validator(1, self.before_notepad_command)
+                path.write_text(json.dumps(proof), encoding="utf-8")
 
     def test_cancelled_or_unknown_invocation_cannot_authorize(self):
-        for value in ("true", "unknown", ""):
-            command = self.command.copy()
-            command[command.index("--workflow-cancelled") + 1] = value
-            self.run_validator(1, command)
-        for flag in (
-            "--run-id",
-            "--run-attempt",
-            "--head",
-            "--continuous-nonce",
-            "--browser-nonce",
-            "--notepad-nonce",
-        ):
-            command = self.command.copy()
-            command[command.index(flag) + 1] = ""
-            self.run_validator(1, command)
+        for invocation in (self.command, self.before_notepad_command):
+            for value in ("true", "unknown", ""):
+                command = invocation.copy()
+                command[command.index("--workflow-cancelled") + 1] = value
+                self.run_validator(1, command)
+            for flag in (
+                "--run-id",
+                "--run-attempt",
+                "--head",
+                "--continuous-nonce",
+                "--browser-nonce",
+                "--notepad-nonce",
+            ):
+                if flag not in invocation:
+                    continue
+                command = invocation.copy()
+                command[command.index(flag) + 1] = ""
+                self.run_validator(1, command)
 
     def test_swapped_reports_and_invalid_utf8_fail_closed(self):
         first, second = (entry[0] for entry in self.proofs[:2])
@@ -160,38 +190,54 @@ class ConsumerExitProofTests(unittest.TestCase):
         first.write_bytes(second_bytes)
         second.write_bytes(first_bytes)
         self.run_validator(1)
+        self.run_validator(1, self.before_notepad_command)
         first.write_bytes(first_bytes)
         second.write_bytes(b"\xff")
         self.run_validator(1)
+        self.run_validator(1, self.before_notepad_command)
 
     def test_missing_required_context_is_not_inferred_from_reports(self):
-        for flag in (
-            "--workflow-cancelled",
-            "--run-id",
-            "--run-attempt",
-            "--head",
-            "--continuous-nonce",
-            "--browser-nonce",
-            "--notepad-nonce",
-            "--continuous-proof",
-            "--browser-proof",
-            "--notepad-proof",
-        ):
-            with self.subTest(flag=flag):
-                command = self.command.copy()
-                index = command.index(flag)
-                del command[index : index + 2]
-                result = subprocess.run(command, capture_output=True, text=True, timeout=10)
-                self.assertNotEqual(0, result.returncode)
-                self.assertEqual("", result.stdout)
+        for invocation in (self.command, self.before_notepad_command):
+            for flag in (
+                "--workflow-cancelled",
+                "--run-id",
+                "--run-attempt",
+                "--head",
+                "--continuous-nonce",
+                "--browser-nonce",
+                "--notepad-nonce",
+                "--continuous-proof",
+                "--browser-proof",
+                "--notepad-proof",
+            ):
+                if flag not in invocation:
+                    continue
+                with self.subTest(flag=flag, invocation=invocation):
+                    command = invocation.copy()
+                    index = command.index(flag)
+                    del command[index : index + 2]
+                    result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertEqual("", result.stdout)
 
     def test_same_nonce_cannot_stand_for_two_invocations(self):
         path, proof = self.proofs[1]
         proof["nonce"] = "b" * 32
         path.write_text(json.dumps(proof), encoding="utf-8")
-        command = self.command.copy()
-        command[command.index("--browser-nonce") + 1] = "b" * 32
-        self.run_validator(1, command)
+        for invocation in (self.command, self.before_notepad_command):
+            command = invocation.copy()
+            command[command.index("--browser-nonce") + 1] = "b" * 32
+            self.run_validator(1, command)
+
+    def test_unknown_scope_cannot_authorize(self):
+        result = subprocess.run(
+            self.command + ["--scope", "browser-only"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("", result.stdout)
 
 
 if __name__ == "__main__":

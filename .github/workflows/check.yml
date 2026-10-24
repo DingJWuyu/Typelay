@@ -559,11 +559,18 @@ jobs:
           exit $LASTEXITCODE
       - name: Verify real classic Notepad through shipped app Settings
         id: windows-ordinary-notepad
-        if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && steps.windows-browser.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && (steps.windows-browser.outcome == 'success' || steps.windows-browser.outcome == 'failure') }}
         timeout-minutes: 10
         shell: pwsh
+        env:
+          CONTINUOUS_NONCE: ${{ steps.windows-continuous.outputs.consumer_exit_nonce }}
+          BROWSER_NONCE: ${{ steps.windows-browser.outputs.consumer_exit_nonce }}
+          WORKFLOW_CANCELLED: ${{ job.status != 'success' && job.status != 'failure' }}
         run: |
           $ErrorActionPreference = 'Stop'
+          # Business failure stays red; neither prior consumer may still be active.
+          python eng/windows/verify-consumer-exit.py --scope before-notepad --continuous-proof artifacts/continuous-translation/consumer-exit.json --browser-proof artifacts/browser-cooperation/consumer-exit.json --continuous-nonce "$env:CONTINUOUS_NONCE" --browser-nonce "$env:BROWSER_NONCE" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT" --head "$env:GITHUB_SHA" --workflow-cancelled "$env:WORKFLOW_CANCELLED"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $fixture = 'tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows'
           foreach ($assembly in @('TypeLay.App', 'TypeLay.Runtime', 'TypeLay.Core', 'TypeLay.Protocol', 'TypeLay.Windows.Contracts')) {
             Copy-Item -LiteralPath "artifacts/package/TypeLay/app/$assembly.dll" -Destination "$fixture/$assembly.dll" -Force

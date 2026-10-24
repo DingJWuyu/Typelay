@@ -1,4 +1,7 @@
-"""Check all three owned fixture exits; never turn a failed scene into a passing scene.
+"""Check owned fixture exits; never turn a failed scene into a passing scene.
+
+The default scope requires all three consumers before Hy. The fixed
+before-notepad scope requires continuous and browser before Notepad starts.
 
 The workflow caller must supply run/attempt/head from the current
 Actions context and each nonce from that invocation's GITHUB_OUTPUT, NOT from
@@ -82,20 +85,26 @@ def valid_report(path, mode, nonce, args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scope", choices=("all", "before-notepad"), default="all")
     for name in (
         "continuous-proof",
         "browser-proof",
-        "notepad-proof",
         "continuous-nonce",
         "browser-nonce",
-        "notepad-nonce",
         "run-id",
         "run-attempt",
         "head",
         "workflow-cancelled",
     ):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--notepad-proof")
+    parser.add_argument("--notepad-nonce")
     args = parser.parse_args()
+    if args.scope == "all" and (args.notepad_proof is None or args.notepad_nonce is None):
+        parser.error("the all scope requires --notepad-proof and --notepad-nonce")
+    nonces = [args.continuous_nonce, args.browser_nonce]
+    if args.scope == "all":
+        nonces.append(args.notepad_nonce)
     try:
         valid = (
             args.workflow_cancelled == "false"
@@ -103,18 +112,19 @@ def main():
             and matches(r"[1-9][0-9]*", args.run_attempt)
             and matches(r"[0-9a-f]{40}", args.head)
             and args.head != "0" * 40
-            and matches(r"[0-9a-f]{32}", args.continuous_nonce)
-            and matches(r"[0-9a-f]{32}", args.browser_nonce)
-            and matches(r"[0-9a-f]{32}", args.notepad_nonce)
-            and len({args.continuous_nonce, args.browser_nonce, args.notepad_nonce}) == 3
+            and all(matches(r"[0-9a-f]{32}", nonce) for nonce in nonces)
+            and len(set(nonces)) == len(nonces)
             and valid_report(
                 args.continuous_proof, "--verify-continuous", args.continuous_nonce, args
             )
             and valid_report(
                 args.browser_proof, "--verify-browser-cooperation", args.browser_nonce, args
             )
-            and valid_report(
-                args.notepad_proof, "--verify-ordinary-notepad", args.notepad_nonce, args
+            and (
+                args.scope == "before-notepad"
+                or valid_report(
+                    args.notepad_proof, "--verify-ordinary-notepad", args.notepad_nonce, args
+                )
             )
         )
     except (OSError, ValueError, RecursionError):

@@ -20,7 +20,7 @@ TypeLay.Windows.Contracts 引用 Core，拥有 App 与 Broker 共用的 DTO、�
 
 两条隔离路线都经现有认证 Broker 通道连接完整控制器：仅隔离构造声明可准备计划的能力，实际安装确认前不发布按键许可或可接受提示。单个在途安装配合一个最新候选，不延长原100ms许可；失效立即撤回未受理状态，受理后的整组按键仍由原操作收束。完成回执来自源端实际核验的正文、选区、输入法与完成时间，不从替换计划猜测，也不再发第二次写入。私有 source wire 为 v4，明确拒绝旧 v3；普通原生事务 v2 保持不变。正式 Broker 入口固定关闭该构造；测试宿主使用同一路由显式启用，不新增用户开关。
 
-新的 retrieved-MSG 路线仅支持无修饰 Tab：源线程在实际 `PM_REMOVE` 的同一 MSG 上 claim 并置 `WM_NULL`，再执行原生事务，不依赖 LL Activate 的返回。安装先 Prepared，App 发布本地撤权 control 与 capture fence 后才 Arm；准备期实际输入单调撤权，Arm 不续签原许可。精确 `source-poll`/`source-retire` 回执只结算一次，正文完成与尾键/资源 Quiet 分开，后续捕获不能越过尚未结算的回执。[已核 Windows 检查](https://github.com/DingJWuyu/Typelay/actions/runs/40079876227)通过自有源的真实派发正反、App 回执/fence、late ACK 与 Undo；[CI504](https://github.com/DingJWuyu/Typelay/actions/runs/40083637614) 已在真实 Notepad 接受/撤回两例验证该路线的恰一次 Verified 正文回执/零正文回执旁路、Undo、零 LL Activate/二次 Write、Quiet 与清理；这是隔离构造实跑，不是正式发行接受。正式 Main/capability0、严格来源与 IME 门不变，UIAccess 选择及第三方部署仍独立。
+新的 retrieved-MSG 路线仅支持无修饰 Tab：源线程在实际 `PM_REMOVE` 的同一 MSG 上 claim 并置 `WM_NULL`，再执行原生事务，不依赖 LL Activate 的返回。安装先 Prepared，App 发布本地撤权 control 与 capture fence 后才 Arm；准备期实际输入单调撤权，Arm 不续签原许可。精确 `source-poll`/`source-retire` 回执只结算一次，正文完成与尾键/资源 Quiet 分开，后续捕获不能越过尚未结算的回执。[已核 Windows 检查](https://github.com/DingJWuyu/Typelay/actions/runs/40079876227)通过自有源的真实派发正反、App 回执/fence、late ACK 与 Undo；[CI504](https://github.com/DingJWuyu/Typelay/actions/runs/40083637614) 已在真实 Notepad 接受/撤回两例验证该路线的恰一次 Verified 正文回执/零正文回执旁路、Undo、零 LL Activate/二次 Write、Quiet 与清理；这是隔离构造实跑，不是正式发行接受。正式 Main/capability0、来源与 IME 门不变；[UIAccess 兼容范围已确认](../../product/README.md#windows-接受译文的辅助输入兼容范围)，来源机制与第三方部署资格仍未补齐。
 
 旧 sent-route 接线按当前配置接受默认 Tab、无修饰功能键或 Ctrl+功能键。Ctrl 按下先撤销旧许可；后续接受必须使用 Ctrl 后新捕获、新安装的计划，同一按次的修饰键来源、配置、焦点和输入版本仍须匹配。人工译稿不是写许可：仅能明确归因于该次 Ctrl、且新观察确认原目标、正文、选区和状态未变时，保留人工文字，同时更新会话版本并重建许可。缺失观察、已观察到的原文编辑及未知输入法状态不走这条例外。普通退休清除该归因；只有控制器核对过的同一归因可在撤销全部许可时短暂保留。此实现不开放正式默认构造，也不是完整原生输入历史或物理按键的证明。
 
@@ -29,6 +29,12 @@ TypeLay.Windows.Contracts 引用 Core，拥有 App 与 Broker 共用的 DTO、�
 同一 view HWND 与 COM 身份仅是绑定条件，不能证明该 context 提供原生控件的完整正文。既有 top context 的空正文与原生非空快照不一致时，完整正文 equality 必须拒绝，不能归一化或改读其它 context 求通过；当前全文 RW 实验已退役，证据与保留的只读入口见[TSF 正文来源约束](development.md#tsf-正文来源约束)。该观察不证明所有 stock Edit 不支持 TSF，普通生产接受继续关闭。
 
 新的 TSF 接入实验须先明确范围和授权；元数据完整不等于正文完整，不能因当前观察不足而擅自扩展到 base、parent 或修改输入法。隔离合成文档结果不外推普通输入框支持，单条有界路径停止也不代表 TSF 所有方案不可行。读取证据不自动授权写入、系统配置变更或运行中卸载。
+
+## 输入来源资格
+
+产品已允许 UIAccess 辅助输入触发接受，机制尚未就绪。拟用于源接受的 [GetCurrentInputMessageSource](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getcurrentinputmessagesource) 只在本次实际消费的键盘 MSG 上取得成功且为 `IMDT_KEYBOARD / IMO_HARDWARE` 时提供来源类别资格；[IMO_HARDWARE](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ne-winuser-input_message_origin_id) 包含硬件和 UIAccess 注入，不是纯物理来源证明。`IMO_INJECTED`、`IMO_SYSTEM`、`IMO_UNAVAILABLE`、其它设备/未知枚举或查询失败均不给资格。来源类别只是必要条件，不能授予旧排队键、错误字段、过期许可或未知 IME 写权。
+
+当前 native retrieved-MSG 路线尚无此正式来源门；既有低级 Hook 的注入标记拒绝不直接改为放行。`LLKHF_INJECTED` 与 `IMO_INJECTED` 含义不同，不能通过打开 `allowInjectedInput` 实现该产品选择。新资格只绑定源端同一实际回调的原 MSG，不能跨回调缓存或从稍后轮询追认；安装、Prepared/Arm、重入失效、claim 与尾键仍沿各自原合同。原严格边界和 Main/capability0 保持到机制验证完成；物理键盘、用户真实输入法与第三方部署证据仍单列。[下一来源门切片](development.md#源接受来源门的下一实现切片)不改变其它快捷键的信任范围。
 
 ## 首次按需唤醒的只读捕获
 
