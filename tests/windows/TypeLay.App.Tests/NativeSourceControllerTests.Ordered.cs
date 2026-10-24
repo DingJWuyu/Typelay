@@ -222,8 +222,21 @@ public sealed partial class NativeSourceControllerTests
                 Enabled = false
             });
             await Until(() => originalRetirement is not null, native.Token);
-            Assert.False(originalRetirement!.Claimed);
-            Assert.Null(originalRetirement.Receipt);
+            Assert.True(originalRetirement!.Acknowledged);
+            Assert.False(originalRetirement.Installed);
+            Assert.False(originalRetirement.Claimed);
+            // An unclaimed source refusal is still a terminal receipt. The
+            // native poll/retire ACK publishes status 2; only Claimed transfers
+            // a CompletedReceipt to the controller. Reject all other outcomes.
+            Assert.Equal(new WriteReceipt(WriteStatus.RejectedBeforeMutation, Denial.Unsupported), originalRetirement.Receipt);
+            // The already-open v6 grant retains these scalar fields after Quiet
+            // clears its text buffers. Distinguish this actual source-origin
+            // refusal from expiry, withdrawal or unproven FIFO freshness.
+            Assert.Equal(3u, sourceGrant.ReadUInt32(8)); // Quiet.
+            Assert.Equal(2u, sourceGrant.ReadUInt32(64)); // Withdrawn, never Claimed.
+            Assert.Equal(0u, sourceGrant.ReadUInt32(68)); // No activation attempt.
+            Assert.Equal(2u, sourceGrant.ReadUInt32(76)); // Rejected before mutation.
+            Assert.Equal(SourceNativeReason.OriginUntrusted, sourceGrant.ReadUInt32(80));
             Assert.False(broker.ReceiptReceived.Task.IsCompleted);
             Assert.False(RuntimeShowsAcceptance(overlay));
             Assert.False(support.Read(settings.Value).Rows.Single(row => row.Id == "desktop-text").Capabilities.TabAccept);
