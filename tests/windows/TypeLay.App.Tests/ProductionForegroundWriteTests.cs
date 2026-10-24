@@ -847,7 +847,7 @@ public sealed partial class ProductionForegroundWriteTests
             _pipeToken = broker.StartInfo.Environment["TYPELAY_PIPE_TOKEN"]!;
             _isolatedDirectory = isolatedDirectory;
         }
-        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? returnTrace = null, string? sourceClaimProbe = null, bool isolatedSourceAcceptance = false, bool sourceKeyboardProbe = false, bool sourceSynchronousProbe = false, bool sourceMessageProbe = false, bool sourceOriginProbe = false)
+        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? returnTrace = null, string? sourceClaimProbe = null, bool isolatedSourceAcceptance = false, bool sourceKeyboardProbe = false, bool sourceSynchronousProbe = false, bool sourceMessageProbe = false, bool sourceOriginProbe = false, bool sourceMessageAcceptance = false)
         {
             var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(30));
@@ -881,9 +881,9 @@ public sealed partial class ProductionForegroundWriteTests
                 }
                 // Both Broker entry points are background stdio peers, matching
                 // AppPaths.Child rather than the visible fixture launch contract.
-                broker = isolatedSourceAcceptance
+                broker = isolatedSourceAcceptance || sourceMessageAcceptance
                     ? StartProcessWithTrace(returnTrace, createNoWindow: true, Path.Combine(Repository(),
-                        "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"), "--source-broker")
+                        "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"), sourceMessageAcceptance ? "--source-message-broker" : "--source-broker")
                     : StartProcessWithTrace(returnTrace, createNoWindow: true, Path.Combine(directory, "TypeLay.Broker.dll"));
                 var desktop = new Desktop(fixture, broker, deadline, isolatedDirectory);
                 Assert.Equal("ready", (await desktop.Call(new(BrokerProtocol.Version, 0, "hello", ""))).Status);

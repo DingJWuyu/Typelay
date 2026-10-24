@@ -12,6 +12,7 @@ internal sealed partial class KeyboardHook
     {
         internal TaskCompletionSource Delivered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal int Claimed;
+        internal bool Retiring, CompletionQueued;
     }
     private sealed record StockClaim(StockCandidate Candidate, long AcceptedAtMs);
     private Func<string, SourceAcceptanceRequest, Task<SourceAcceptanceResult?>>? _stockExchange;
@@ -21,11 +22,13 @@ internal sealed partial class KeyboardHook
     private StockCandidate? _stockDelivery;
     private StockCandidate? _stockOwner;
     private int _stockWorker, _stockClosed, _stockBlocked, _stockHookActive;
+    private bool _stockMessageRoute;
 
     internal void ConfigureIsolatedStockAcceptance(
-        Func<string, SourceAcceptanceRequest, Task<SourceAcceptanceResult?>> exchange)
+        Func<string, SourceAcceptanceRequest, Task<SourceAcceptanceResult?>> exchange, bool sourceMessageRoute = false)
     {
         _stockExchange = exchange;
+        _stockMessageRoute = sourceMessageRoute;
         _stockPrototype = true;
     }
 
@@ -86,7 +89,8 @@ internal sealed partial class KeyboardHook
     // Only the source-local executor supports modified acceptance. Ordinary
     // asynchronous write dispatch remains restricted to unmodified bindings.
     private bool StockSessionKeysReady => CanInterceptOwnedSessionKeys
-        && (UsesUnmodifiedSessionKeys || _stockExchange is not null && ShortcutsReady);
+        && (_stockMessageRoute ? Volatile.Read(ref _sessionKeys) is { Accept: 9, AcceptModifiers: ShortcutModifiers.None }
+            : UsesUnmodifiedSessionKeys || _stockExchange is not null && ShortcutsReady);
 
     private bool StockCandidateCurrent(StockCandidate candidate, long now) =>
         ReferenceEquals(Volatile.Read(ref _stockLatest), candidate)
@@ -131,7 +135,7 @@ internal sealed partial class KeyboardHook
         var delivery = Volatile.Read(ref _stockDelivery);
         if (delivery is not null
             && (notice?.CompletedReceipt is not null && notice.Permit == delivery.Permit
-                || Volatile.Read(ref _stockHookActive) == 0 && Volatile.Read(ref delivery.Claimed) == 0))
+                || !_stockMessageRoute && Volatile.Read(ref _stockHookActive) == 0 && Volatile.Read(ref delivery.Claimed) == 0))
         {
             Interlocked.CompareExchange(ref _stockDelivery, null, delivery);
             delivery.Delivered.TrySetResult();
@@ -151,6 +155,11 @@ internal sealed partial class KeyboardHook
     {
         try
         {
+            if (_stockMessageRoute)
+            {
+                await ExchangeSourceMessageAcceptanceAsync();
+                return;
+            }
             var owner = _stockOwner;
             var claim = Volatile.Read(ref _stockClaim);
             bool ownerQuiet = false;

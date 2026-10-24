@@ -13,7 +13,7 @@ namespace TypeLay.Broker;
 internal sealed class UiaInputProvider : IDisposable
 {
     private readonly NativeUia _native = new();
-    private readonly NativeEditTransactions _edits = new();
+    private readonly NativeEditTransactions _edits;
     private readonly CacheRequest _metadataCache = MetadataCache();
     private AutomationElement? _element;
     private InputSnapshot? _previous;
@@ -27,7 +27,14 @@ internal sealed class UiaInputProvider : IDisposable
     private readonly HashSet<(int, long, string)> _quarantine = new();
     private readonly bool _sourcePrototype;
     private SourceAcceptanceRequest? _sourceOwner;
-    public UiaInputProvider(bool sourcePrototype = false) => _sourcePrototype = sourcePrototype;
+    private readonly bool _sourceMessageRoute;
+    private bool _sourceCompletionTransferred;
+    public UiaInputProvider(bool sourcePrototype = false, bool sourceMessageRoute = false)
+    {
+        _sourcePrototype = sourcePrototype;
+        _sourceMessageRoute = sourcePrototype && sourceMessageRoute;
+        _edits = new(sourceMessageRoute: _sourceMessageRoute);
+    }
     public string? Application => _application;
 
     public SourceAcceptanceResult SourceAcceptance(BrokerRequest request)
@@ -36,9 +43,9 @@ internal sealed class UiaInputProvider : IDisposable
         if (identity is null)
             throw new ArgumentException("Missing source owner.");
         SourceAcceptanceResult Result(bool installed = false, bool quiet = false, bool claimed = false,
-            SourceActivationEndpoint? endpoint = null, WriteReceipt? receipt = null) =>
+            SourceActivationEndpoint? endpoint = null, WriteReceipt? receipt = null, bool acknowledged = false) =>
             new(identity.Generation, identity.SessionRevision, identity.Target, identity.Grant,
-                installed, quiet, claimed, endpoint, receipt);
+                installed, quiet, claimed, endpoint, receipt, acknowledged);
         if (!_sourcePrototype || identity.Generation == Guid.Empty || identity.Grant == Guid.Empty
             || identity.SessionRevision <= 0)
             return Result(receipt: new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported));
@@ -60,28 +67,45 @@ internal sealed class UiaInputProvider : IDisposable
                 } != current
                 || _ownedCapture is not null || _lastFocus != FocusMember.Source)
                 return Result(receipt: new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged));
+            _sourceCompletionTransferred = false;
             var installed = _edits.InstallSourceAcceptance(identity.Generation, permit);
             if (!installed.Quiet)
                 _sourceOwner = identity;
             var endpoint = installed.Installed ? _edits.ReserveSourceActivation(identity.Generation, identity.Grant) : null;
             return Result(installed.Installed && endpoint is not null, installed.Quiet, installed.Claimed,
-                endpoint is null ? null : new(endpoint.Nonce, endpoint.Command), installed.Receipt);
+                endpoint is null ? null : new(endpoint.Nonce, endpoint.Command), installed.Receipt, installed.Acknowledged);
         }
-        if (request.Op is not ("source-retire" or "source-receipt") || identity.Permit is not null
+        if (request.Op is not ("source-retire" or "source-receipt" or "source-poll")
+            || request.Op == "source-poll" && !_sourceMessageRoute || identity.Permit is not null
             || _sourceOwner is not { } owner || owner.Generation != identity.Generation
             || owner.SessionRevision != identity.SessionRevision || owner.Target != identity.Target || owner.Grant != identity.Grant)
             return Result(receipt: new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged));
-        var terminal = _edits.RetireSourceAcceptance(identity.Generation, identity.Grant);
+        var terminal = request.Op == "source-poll"
+            ? _edits.PollSourceAcceptance(identity.Generation, identity.Grant)
+            : _edits.RetireSourceAcceptance(identity.Generation, identity.Grant);
         // Claim plus an uncertain response is already unsafe for every writer,
         // including Direct. Quiet governs lifetime retirement, not quarantine.
-        // Permit is retained until the first terminal transfer, so repeated
-        // metadata-only Unknown after delivered Verified does not quarantine.
-        if (terminal.Claimed && owner.Permit is { } original
+        // A source-message transfer may precede Quiet. Its explicit transfer
+        // flag prevents a later metadata-only Unknown from quarantining Verified;
+        // the old sent route still retains Permit through its terminal transfer.
+        if (terminal.Claimed && !_sourceCompletionTransferred && owner.Permit is { } original
             && terminal.Receipt is null or { Status: WriteStatus.OutcomeUnknown })
             terminal = terminal with
             {
                 Receipt = Unknown(original.Plan)
             };
+        if (_sourceMessageRoute && terminal.Claimed && terminal.Receipt is not null)
+        {
+            // Completion transfer and native tail/resource retirement are
+            // independent. A later metadata-only response cannot undo Verified.
+            if (_sourceCompletionTransferred)
+                terminal = terminal with
+                {
+                    Receipt = null
+                };
+            else
+                _sourceCompletionTransferred = true;
+        }
         // Keep this exact owner for duplicate terminal reads. A new installation
         // may replace it only once resource quiet has actually been confirmed.
         if (terminal.Quiet)
@@ -92,7 +116,8 @@ internal sealed class UiaInputProvider : IDisposable
             };
             _edits.ReleaseSourceCompletionBody(identity.Generation, identity.Grant);
         }
-        return Result(quiet: terminal.Quiet, claimed: terminal.Claimed, receipt: terminal.Receipt);
+        return Result(installed: terminal.Installed, quiet: terminal.Quiet, claimed: terminal.Claimed, receipt: terminal.Receipt,
+            acknowledged: terminal.Acknowledged);
     }
 
     public void ClearDirect() => _edits.Clear();

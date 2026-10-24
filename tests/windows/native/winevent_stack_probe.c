@@ -347,7 +347,7 @@ __declspec(dllexport) uint32_t ArmSourceClaim(HANDLE root, HANDLE edit, uint64_t
     claim_mapping = OpenFileMappingW(4, 0, name);
     if (!claim_mapping) return 3;
     claim_header = MapViewOfFile(claim_mapping, 4, 0, 0, sizeof(SourceClaimHeader));
-    if (!claim_header || claim_header->version != 3 || claim_header->bytes != 49344
+    if (!claim_header || claim_header->version != 4 || claim_header->bytes != 49344
         || claim_header->state != 1 || claim_header->claim || claim_header->tx.version != 2
         || claim_header->tx.pid != process_id || claim_header->tx.thread != thread_id
         || claim_header->tx.hwnd != (uint64_t)(uintptr_t)edit || claim_header->tx.cookie != current_cookie

@@ -787,6 +787,19 @@ internal sealed partial class KeyboardHook : IInputMonitor
             int ordinary = ObserveOrdinaryChord(data, down, repeated, injected, now, binding, fresh, freshnessRefusal, sessionKeys);
             if (ordinary != 0)
                 return ordinary > 0 ? 1 : Native.CallNextHookEx(_hook, code, wParam, lParam);
+            if (_stockMessageRoute && data.Key == 9)
+            {
+                // This route never activates, consumes or turns LL observation
+                // into authority. Input before Arm invalidates that candidate,
+                // including while the source-install ACK is still outstanding.
+                if (Volatile.Read(ref _stockInstalled) is null || !source || Modified
+                    || injected && !_allowInjectedInput)
+                {
+                    RevokeStockCandidate();
+                    _gate.Revoke();
+                }
+                return Native.CallNextHookEx(_hook, code, wParam, lParam);
+            }
             bool sourceBindingReady = UsesUnmodifiedSessionKeys || _stockExchange is not null && StockSessionKeysReady;
             bool modifiersReady = sessionKeys.AcceptModifiers != ShortcutModifiers.Control
                 || SourceAcceptanceControlMatches(data, lease);

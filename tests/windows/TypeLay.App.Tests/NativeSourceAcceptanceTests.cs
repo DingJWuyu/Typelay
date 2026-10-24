@@ -24,7 +24,7 @@ public sealed class NativeSourceAcceptanceTests
         await using var desktop = await ProductionForegroundWriteTests.Desktop.Start();
         await desktop.Prepare(desktop.A, "pre old post", new(4, 7));
         var snapshot = await desktop.Capture();
-        using var wire = new SourceWire(snapshot, version: 2);
+        using var wire = new SourceWire(snapshot, version: 3);
         wire.Send(1);
         Assert.Equal(2u, wire.State);
         Assert.Equal((uint)Denial.Unsupported, wire.Reason);
@@ -47,12 +47,15 @@ public sealed class NativeSourceAcceptanceTests
         var installed = native.InstallSourceAcceptance(generation, permit);
 
         Assert.True(installed.Installed);
+        Assert.True(installed.Acknowledged);
         Assert.Null(installed.Receipt);
         Assert.Null(installed.NativeResponse);
         Assert.False(native.InstallSourceAcceptance(Guid.NewGuid(), permit).Installed);
         Assert.False(native.RetireSourceAcceptance(Guid.NewGuid(), plan.Id).Quiet);
         var retired = native.RetireSourceAcceptance(generation, plan.Id);
         Assert.True(retired.Quiet);
+        Assert.True(retired.Acknowledged);
+        Assert.Equal(retired, native.PollSourceAcceptance(generation, plan.Id));
         Assert.NotNull(retired.Receipt);
         Assert.Equal(WriteStatus.RejectedBeforeMutation, retired.Receipt.Status);
         Assert.Equal(new NativeTransactions.SourceNativeResponse(2, (uint)retired.Receipt.Reason, 0), retired.NativeResponse);
@@ -163,6 +166,7 @@ public sealed class NativeSourceAcceptanceTests
             var uncertain = native.InstallSourceAcceptance(generation, permit);
             Assert.False(uncertain.Installed);
             Assert.False(uncertain.Quiet);
+            Assert.False(uncertain.Acknowledged);
             Assert.Null(uncertain.Receipt);
             Assert.Null(uncertain.NativeResponse);
             Assert.False(native.InstallSourceAcceptance(Guid.NewGuid(), permit).Installed);
@@ -241,7 +245,7 @@ public sealed class NativeSourceAcceptanceTests
         internal uint State => _view.ReadUInt32(8);
         internal uint Reason => _view.ReadUInt32(80);
 
-        internal SourceWire(InputSnapshot source, uint version = 3)
+        internal SourceWire(InputSnapshot source, uint version = 4)
         {
             var target = source.Target.AsWindows();
             _root = (nint)target.RootHwnd;
@@ -278,7 +282,7 @@ public sealed class NativeSourceAcceptanceTests
         {
             string name = operation == 1 ? "SourceInstall" : operation == 2 ? "SourceRevoke" : "SourcePoll";
             ulong command = ReserveCommand();
-            N.Send(_root, RegisterWindowMessageW($"TypeLay.NativeInput.{name}.v3"), (nuint)First, unchecked((nint)command));
+            N.Send(_root, RegisterWindowMessageW($"TypeLay.NativeInput.{name}.v4"), (nuint)First, unchecked((nint)command));
             Assert.Equal(command, _view.ReadUInt64(56));
             Assert.Equal((uint)operation, _view.ReadUInt32(12));
         }

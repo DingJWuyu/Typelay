@@ -80,7 +80,7 @@ HIMC/HKL 只提供离散身份样本，既有 owned 执行的任意末期重入�
 
 ## 普通 source 事务与同一 MSG 的受控接线
 
-`ObserveOrdinarySourceMessageAcceptance` 只验证一个缺失节点：已安装的普通 `SourceInstallation` 能否在源线程实际 `PM_REMOVE` 的同一个 MSG 上承诺消费，然后执行原生正文事务。它不借 `OwnedPracticeField`，也不再从源线程调用明确要求跨线程的 `TypeLaySourceActivate`。正式 App/Broker 不安装新的 `TypeLaySourceGetMessageProc` 导出，`SourceLocalAcceptanceVersion` 与默认关闭门不变。该导出是 native ABI 增量，普通事务 v2 和 source v3 wire 不变。
+`ObserveOrdinarySourceMessageAcceptance` 只验证一个缺失节点：已安装的普通 `SourceInstallation` 能否在源线程实际 `PM_REMOVE` 的同一个 MSG 上承诺消费，然后执行原生正文事务。它不借 `OwnedPracticeField`，也不再从源线程调用明确要求跨线程的 `TypeLaySourceActivate`。正式 App/Broker 不安装新的 `TypeLaySourceGetMessageProc` 导出，`SourceLocalAcceptanceVersion` 与默认关闭门不变。普通事务 v2 不变；私有 source wire 已升为 v4 并明确拒绝旧版本，以区别 Prepared 与 Armed，不给旧消费者隐式授予新语义。
 
 ```powershell
 & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe `
@@ -95,7 +95,11 @@ if ($LASTEXITCODE -ne 0) { throw '普通 source MSG 研究失败，保留原结�
 
 测试内的真实 `NativeEditTransactions` 后端以默认关闭的 `sourceMessageRoute` 构造显式选入，在原精确 x64 binding 生命周期中成对安装 CALLWNDPROC 与 GETMESSAGE，两者使用同一个已加载 HMODULE。首次安装失败关闭本实例路线，并回滚已安装 hook；失败回滚仍未知时保留原句柄/精确进程/模块，不回退旧 LL 激活。正式 App/Broker 构造不选入，不发布新能力。
 
-fixture 不再 Load/Free 事务 DLL 或直接调用 native delegate，只在后端只读预备捕获后、原100ms grant之前安装上游观察 hook，以 CallNextHookEx 取得 native 返回的实际 MSG。它只借用已经加载的精确模块并采一次完整路径；后置结果仍核 `AppContext.BaseDirectory/TypeLay.NativeInput.dll` 与实际 module base，不借独立 Broker 观察进程的同名副本。路径不能证明目标只有一个模块，也不补齐来源资格。既有首键、同字段尾键、Undo/Quiet 已通过 [CI496](https://github.com/DingJWuyu/Typelay/actions/runs/40060215919)；这次安装所有权迁移及下面的模块退出回收仍待 Windows 复验。
+fixture 不再 Load/Free 事务 DLL 或直接调用 native delegate，只在后端只读预备捕获后、原100ms grant之前安装上游观察 hook，以 CallNextHookEx 取得 native 返回的实际 MSG。它只借用已经加载的精确模块并采一次完整路径；后置结果仍核 `AppContext.BaseDirectory/TypeLay.NativeInput.dll` 与实际 module base，不借独立 Broker 观察进程的同名副本。路径不能证明目标只有一个模块，也不补齐来源资格。首键、同字段尾键、Undo/Quiet、成对后端 hook 所有权、早 Dispose 不退役及退出后模块回收已由 [CI497 source 两例](https://github.com/DingJWuyu/Typelay/actions/runs/40066099478)取得实际证据；安装失败回滚仍为静态审查范围。新的 v4 Prepared/Arm 及下述 App 回执接线尚待 Windows 复验。
+
+隔离 `NativeSourceControllerTests` 的无修饰 Tab 消费者现在选择 `--source-message-broker`，沿生产 App adapter、认证 Broker 和真实 native 后端取得完成回执，不再由 LL `_stockClaim` 触发执行。安装先发布 Prepared；App 取得原映射后先发布本地撤权 control 和 capture fence，再以一次 CAS Arm。原 generation/grant/目标/计划和100ms期限不变；Prepared/Armed 可撤，Claimed/Withdrawn 不得重置。源回调在进入下游链前实际观察到 Prepared 的输入先撤权并保留拒绝，LL 对尚未 Arm 的输入也只撤候选、原样旁路；这不是严格来源或安装前旧队列键的证明。
+
+仅精确 owner 的 `source-poll`/`source-retire` 实际完成能排入一次 `CompletedReceipt`，复用 Runtime 直接结算而不再 `WriteAsync`；poll 时间不填写为按键时间。已交付正文回执与尚未 Quiet 的尾键/资源所有权分开记录。`Acknowledged` 只来自真实匹配 command/operation 的 native 响应，默认、超时、错 ACK 及仅进程退出均为 false；它不是新授权。有效非 Quiet ACK 可继续原退休等待，未知 ACK 则隔离 owner，不作为重试理由。post-write capture 在回执交给控制器或精确无写终结前保留原2秒失败 fence。现有两个消费者分别验证一次 Tab、零 LL 激活/二次写与真实 capture response 的结算顺序，以及 ACK 未到且原许可未过期时撤销后的唯一 Tab 旁路。F7/F24 等旧 sent-route 回归保留，不对新的固定 Tab 源路径声明同样能力。正式 Main/default/capability0、来源和 IME 门均未改变。
 
 终态结果的 `NativeResponse` 仅在既有命令收到有效 Quiet ACK 后保留已经采样的 native status/raw reason，并在释放映射前读取现有 shared invoked 字；超时、错 ACK、仅进程退出或非 Quiet 结果保持 null。不增加接受过程内查询、消息或轮询，也不改变公开拒绝映射。`0x10000 | queue flags` 区分 sent-activation 的 pending-work 拒绝与普通 raw 15，queue flags 只是队列类型提示；invoked=1 只说明此 grant 的共享尝试位已消费，不证明 claim、正文执行或特定 module 的完成。多个 module 仍可回链写同一响应，raw 15 也不标识具体撤销事件；这份已确认终态 wire 快照不能当作唯一 GETMESSAGE 拒因的完整轨迹。
 

@@ -10,8 +10,9 @@ namespace TypeLay.App;
 
 // Isolated prototype endpoint. The authenticated opt-in Broker route and the
 // native boundary tests install it; no default route or owned-practice identity
-// uses it. The fixture knows its two queues do not attach; ordinary apps do not give
-// us that guarantee. A timeout parameter is not a hard real-time hook bound.
+// uses it. The sent route requires separate unattached queues and its timeout
+// is not a hard real-time hook bound. The actual-MSG route uses only the local
+// Arm/Withdraw control; Activate is disabled for that construction.
 internal sealed class StockEditActivation : IDisposable
 {
     internal sealed record Result(bool Claimed, WriteReceipt? Receipt, bool ExceededBudget, double ElapsedMs,
@@ -23,6 +24,8 @@ internal sealed class StockEditActivation : IDisposable
     private readonly nint _library;
     private readonly ActivateNative _activate;
     private readonly WithdrawNative _withdraw;
+    private readonly ArmNative _arm;
+    private readonly bool _sourceMessage;
     private readonly ulong _nonce, _command;
     private readonly uint _message;
     private int _references = 1, _disposed, _invoked;
@@ -32,9 +35,10 @@ internal sealed class StockEditActivation : IDisposable
     }
 
     [SupportedOSPlatform("windows")]
-    internal StockEditActivation(ulong nonce, ulong command, Guid generation, AcceptancePermit permit)
+    internal StockEditActivation(ulong nonce, ulong command, Guid generation, AcceptancePermit permit, bool sourceMessage = false)
     {
         Permit = permit;
+        _sourceMessage = sourceMessage;
         _nonce = nonce;
         _command = command;
         _mapping = MemoryMappedFile.OpenExisting($"Local\\TypeLay.Source.{nonce:x16}", MemoryMappedFileRights.ReadWrite);
@@ -43,7 +47,7 @@ internal sealed class StockEditActivation : IDisposable
             _view = _mapping.CreateViewAccessor(0, Bytes, MemoryMappedFileAccess.ReadWrite);
             byte[] identity = new byte[16];
             _view.ReadArray(16, identity, 0, 16);
-            if (_view.ReadUInt32(0) != 3 || _view.ReadUInt32(4) != Bytes || new Guid(identity) != generation)
+            if (_view.ReadUInt32(0) != 4 || _view.ReadUInt32(4) != Bytes || new Guid(identity) != generation)
                 throw new InvalidOperationException("Source activation generation mismatch.");
             _view.ReadArray(32, identity, 0, 16);
             if (new Guid(identity) != permit.Plan.Id || command <= _view.ReadUInt64(56))
@@ -53,7 +57,9 @@ internal sealed class StockEditActivation : IDisposable
                 NativeLibrary.GetExport(_library, "TypeLaySourceActivate"));
             _withdraw = Marshal.GetDelegateForFunctionPointer<WithdrawNative>(
                 NativeLibrary.GetExport(_library, "TypeLaySourceWithdraw"));
-            _message = RegisterWindowMessageW("TypeLay.NativeInput.SourceActivate.v3");
+            _arm = Marshal.GetDelegateForFunctionPointer<ArmNative>(
+                NativeLibrary.GetExport(_library, "TypeLaySourceArm"));
+            _message = RegisterWindowMessageW("TypeLay.NativeInput.SourceActivate.v4");
             if (_message == 0)
                 throw new InvalidOperationException("Source activation message unavailable.");
         }
@@ -78,7 +84,7 @@ internal sealed class StockEditActivation : IDisposable
         } while (Interlocked.CompareExchange(ref _references, references + 1, references) != references);
         try
         {
-            if (Volatile.Read(ref _disposed) != 0 || Interlocked.Exchange(ref _invoked, 1) != 0)
+            if (_sourceMessage || Volatile.Read(ref _disposed) != 0 || Interlocked.Exchange(ref _invoked, 1) != 0)
                 return new(false, null, false, 0);
             long started = Stopwatch.GetTimestamp();
             uint flags = _activate(_view.SafeMemoryMappedViewHandle, Bytes, _nonce, _command, BudgetMs, _message);
@@ -100,6 +106,23 @@ internal sealed class StockEditActivation : IDisposable
                     };
             }
             return new(claimed, receipt, (flags & 4) != 0 || elapsed > BudgetMs, elapsed, nativeReason);
+        }
+        finally { Release(); }
+    }
+
+    internal bool Arm()
+    {
+        int references;
+        do
+        {
+            references = Volatile.Read(ref _references);
+            if (references == 0)
+                return false;
+        } while (Interlocked.CompareExchange(ref _references, references + 1, references) != references);
+        try
+        {
+            return _sourceMessage && Volatile.Read(ref _disposed) == 0
+                && _arm(_view.SafeMemoryMappedViewHandle, Bytes) != 0;
         }
         finally { Release(); }
     }
@@ -146,6 +169,8 @@ internal sealed class StockEditActivation : IDisposable
         ulong command, uint timeout, uint message);
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     private delegate uint WithdrawNative(SafeMemoryMappedViewHandle view, uint bytes);
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate uint ArmNative(SafeMemoryMappedViewHandle view, uint bytes);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern uint RegisterWindowMessageW(string name);
 }

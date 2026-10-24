@@ -21,7 +21,6 @@ namespace TypeLay.App.Tests;
 public sealed partial class NativeSourceControllerTests(WpfDesktopFixture desktop)
 {
     [Theory]
-    [InlineData("Tab", 9, false)]
     [InlineData("F7", 0x76, false)]
     [InlineData("F24", 0x87, true)]
     public Task IsolatedControllerSettlesNativeSnapshotWithoutASecondWrite(string accept, ushort key, bool rebind) => desktop.RunAsync(async () =>
@@ -122,14 +121,86 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
     });
 
     [Fact]
+    public Task SourceMessageReceiptSettlesBeforePostWriteCaptureWithoutAnotherWrite() => desktop.RunAsync(async () =>
+    {
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start(sourceMessageAcceptance: true);
+        await native.Prepare(native.A, "你好", new(0, 2));
+        using var hook = new KeyboardHook(allowInjectedInput: true);
+        await Until(() => hook.Ready, native.Token);
+        using var broker = new FixtureBroker(native) { HoldReceipt = true };
+        using var input = new WindowsInputService(broker, 0, monitor: hook, sourceMessageAcceptance: true);
+        string directory = Path.Combine(Path.GetTempPath(), "TypeLay.SourceMessageController." + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        Task<InputCapture>? capturing = null;
+        bool pressed = false;
+        try
+        {
+            var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
+            var loop = new Loop();
+            var view = new View();
+            using var controller = new SessionController(settings, new Translation(), view, hook, input, loop);
+            await controller.StartAsync();
+            await Until(() => { loop.Advance(); return view.CanAccept; }, native.Token);
+            var permit = broker.InstallationPermit!;
+            Assert.False(settings.Value.ExperimentalWriteback);
+            Assert.Equal(permit.ObservedAtMs + Limits.PermitMaxAgeMs, permit.ExpiresAtMs);
+            Assert.True(WindowsInterruptClock.NowMs <= permit.ExpiresAtMs);
+            pressed = true;
+            Tab(false);
+            Tab(true);
+            pressed = false;
+            await Until(() => { hook.TryRead(out _); return broker.ReceiptReceived.Task.IsCompleted; }, native.Token);
+            Assert.Equal(WriteStatus.Verified, broker.Receipt!.Status);
+            Assert.Null(hook.StockLastActivation);
+            Assert.Equal("Hello", N.ReadText(native.A, Limits.MaxTextUnits));
+            int captures = broker.Captures;
+            capturing = input.CaptureAsync(new(hook.UserEpoch, hook.ForegroundEpoch, hook.SourceUserEpoch,
+                null, [], false, new(hook.CommandGeneration, SessionShortcutBindings.Default)));
+            await Until(() => broker.Captures > captures, native.Token);
+            // The response hold is outside the broker's serial transport. Let
+            // the capture continuation reach the real adapter delivery fence.
+            await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            Assert.False(capturing.IsCompleted);
+            Assert.NotEqual(SessionState.NoSession, view.State);
+            broker.ReleaseReceipt.TrySetResult();
+            await Until(() => { loop.Advance(); return view.State == SessionState.NoSession && broker.Retired; }, native.Token);
+            Assert.Equal("Hello", (await capturing).Snapshot!.Text);
+            Assert.Equal(1, broker.CompletionTransfers);
+            Assert.Equal(0, broker.Writes);
+            Assert.Equal("Hello", broker.Receipt.VerifiedSnapshot!.Text);
+            Assert.Equal(new TextRange(5, 5), N.ReadSelection(native.A));
+            Assert.Equal((native.Root, native.A), N.Focused());
+            Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceTabDown.v1"));
+            Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceTabUp.v1"));
+            Assert.NotEqual((nuint)0, N.Send(native.A, 0x00c6));
+            N.Send(native.A, 0x00c7);
+            Assert.Equal("你好", N.ReadText(native.A, Limits.MaxTextUnits));
+            native.AssertZeroSubmits();
+        }
+        finally
+        {
+            if (pressed)
+                Tab(true);
+            broker.ReleaseReceipt.TrySetResult();
+            input.Dispose();
+            if (capturing is not null)
+            {
+                try { await capturing; }
+                catch { /* Preserve the scenario failure; own the continuation. */ }
+            }
+            Directory.Delete(directory, true);
+        }
+    });
+
+    [Fact]
     public Task LateInstallAcknowledgementCannotRestoreARevokedCandidate() => desktop.RunAsync(async () =>
     {
-        await using var native = await ProductionForegroundWriteTests.Desktop.Start(isolatedSourceAcceptance: true);
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start(sourceMessageAcceptance: true);
         await native.Prepare(native.A, "你好", new(0, 2));
         using var hook = new KeyboardHook(allowInjectedInput: true);
         await Until(() => hook.Ready, native.Token);
         using var broker = new FixtureBroker(native) { HoldInstallAcknowledgement = true };
-        using var input = new WindowsInputService(broker, 0, monitor: hook, isolatedSourceAcceptance: true);
+        using var input = new WindowsInputService(broker, 0, monitor: hook, sourceMessageAcceptance: true);
         var capture = await input.CaptureAsync(new(hook.UserEpoch, hook.ForegroundEpoch, hook.SourceUserEpoch,
             null, [], false, new(hook.CommandGeneration, SessionShortcutBindings.Default)));
         var source = Assert.IsType<InputSnapshot>(capture.Snapshot);
@@ -148,13 +219,18 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             Assert.True(broker.Installation!.Installed);
             Assert.False(hook.AcceptanceReady(token, permit, WindowsInterruptClock.NowMs));
             hook.Revoke();
+            // The source is installed but the App has not received its control.
+            // A real input here must pass, not be revived by the later ACK/Arm.
+            Assert.True(WindowsInterruptClock.NowMs <= permit.ExpiresAtMs);
+            Tab(false);
+            Tab(true);
+            await Until(() => (long)N.GetProp(native.Root, "TypeLay.Test.SourceTabUp.v1") == 1, native.Token);
+            Assert.True(WindowsInterruptClock.NowMs <= permit.ExpiresAtMs,
+                "The Prepared input must actually dispatch before expiry; expiry cannot prove withdrawal.");
         }
         finally { broker.ReleaseInstall.TrySetResult(); }
         await Until(() => { hook.TryRead(out _); return broker.Retired; }, native.Token);
         Assert.False(hook.AcceptanceReady(token, permit, WindowsInterruptClock.NowMs));
-        Tab(false);
-        Tab(true);
-        await Until(() => (long)N.GetProp(native.Root, "TypeLay.Test.SourceTabUp.v1") == 1, native.Token);
         Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceTabDown.v1"));
         Assert.Null(hook.StockLastActivation);
         Assert.Equal("你好", N.ReadText(native.A, Limits.MaxTextUnits));
@@ -409,6 +485,10 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         {
             get; private set;
         }
+        internal int CompletionTransfers
+        {
+            get; private set;
+        }
         internal int Retires
         {
             get; private set;
@@ -434,7 +514,8 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             if (request.Op == "source-install")
                 Installs++;
             long traceId = RpcTrace?.Queued(request.Op) ?? 0;
-            bool admitted = false, failed = true;
+            bool admitted = false, failed = true, holdReceipt = false;
+            BrokerResponse result;
             try
             {
                 await _serial.WaitAsync(native.Token);
@@ -451,7 +532,7 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
                             await Task.Delay((int)Math.Clamp(deadline - WindowsInterruptClock.NowMs + 1, 1, 100), native.Token);
                     }
                 }
-                var result = await native.Call(request, RpcTrace is { } trace ? () => trace.Dispatched(traceId) : null);
+                result = await native.Call(request, RpcTrace is { } trace ? () => trace.Dispatched(traceId) : null);
                 RpcTrace?.Response(traceId);
                 ObserveResponse?.Invoke(request, result);
                 if (request.Op == "capture")
@@ -470,15 +551,18 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
                     Retires++;
                     Retired = result.SourceAcceptance?.Quiet == true;
                 }
-                if (request.Op == "source-receipt")
+                if (request.Op == "source-receipt"
+                    || request.Op is "source-poll" or "source-retire" && result.SourceAcceptance is { Claimed: true, Receipt: not null })
                 {
-                    Receipt = result.SourceAcceptance?.Receipt;
-                    ReceiptReceived.TrySetResult();
-                    if (HoldReceipt)
-                        await ReleaseReceipt.Task.WaitAsync(native.Token);
+                    CompletionTransfers++;
+                    if (Receipt is null)
+                    {
+                        Receipt = result.SourceAcceptance?.Receipt;
+                        ReceiptReceived.TrySetResult();
+                        holdReceipt = HoldReceipt;
+                    }
                 }
                 failed = false;
-                return result;
             }
             finally
             {
@@ -486,6 +570,9 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
                 if (admitted)
                     _serial.Release();
             }
+            if (holdReceipt)
+                await ReleaseReceipt.Task.WaitAsync(native.Token);
+            return result;
         }
         public void Dispose()
         {

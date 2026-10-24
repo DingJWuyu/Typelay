@@ -23,6 +23,8 @@ internal static class Program
         }
         if (args.Length == 1 && args[0] == "--source-broker")
             return BrokerProduction::TypeLay.Broker.Program.Run(sourcePrototype: true);
+        if (args.Length == 1 && args[0] == "--source-message-broker")
+            return BrokerProduction::TypeLay.Broker.Program.Run(sourcePrototype: true, sourceMessageRoute: true);
         if (args.Length == 3 && args[0] == "--broker-queue-probe" && Guid.TryParse(args[1], out _)
             && Path.IsPathFullyQualified(args[2]))
             return BrokerQueueProbe.Run(args[1], args[2]).GetAwaiter().GetResult();

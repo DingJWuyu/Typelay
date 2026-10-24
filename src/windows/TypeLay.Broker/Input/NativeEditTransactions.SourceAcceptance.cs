@@ -16,7 +16,7 @@ internal sealed partial class NativeEditTransactions
     // explicitly enabled by the isolated fixture. Shipping defaults remain off.
     // Installation alone is neither acceptance nor a CompletedReceipt.
     internal sealed record SourceInstallationResult(bool Installed, bool Quiet, WriteReceipt? Receipt, bool Claimed = false,
-        SourceNativeResponse? NativeResponse = null);
+        SourceNativeResponse? NativeResponse = null, bool Acknowledged = false);
     // Only the acknowledged quiet wire response, not a module-local execution
     // trace. Invoked is shared by the grant; a native reason may include queue hints.
     internal sealed record SourceNativeResponse(uint Status, uint Reason, uint Invoked);
@@ -147,7 +147,8 @@ internal sealed partial class NativeEditTransactions
         try
         {
             view = mapping.CreateViewAccessor(0, SourceMappingSize, MemoryMappedFileAccess.ReadWrite);
-            view.Write(0, 3u);
+            view.Write(0, 4u);
+            view.Write(64, _sourceMessageRoute ? 3u : 0u);
             view.Write(4, SourceMappingSize);
             view.WriteArray(16, generation.ToByteArray(), 0, 16);
             view.WriteArray(32, plan.Id.ToByteArray(), 0, 16);
@@ -185,7 +186,12 @@ internal sealed partial class NativeEditTransactions
 
     internal SourceInstallationResult PollSourceAcceptance(Guid generation, Guid grant)
     {
-        if (!MatchesSourceGrant(generation, grant) || _sourceGrant!.Sealed)
+        if (!MatchesSourceGrant(generation, grant))
+            // Observation cleanup may have already obtained exact Quiet. Keep
+            // that actual terminal transfer reachable without a fabricated poll.
+            return _sourceTerminal is { } terminal && terminal.Generation == generation && terminal.Grant == grant
+                ? terminal.Result : new(false, false, null);
+        if (_sourceGrant!.Sealed)
             return new(false, false, null);
         return ExchangeSourceGrant(_sourcePollMessage, retiring: false);
     }
@@ -219,11 +225,11 @@ internal sealed partial class NativeEditTransactions
     private bool SourceInstallationAvailable()
     {
         if (_library == 0 || !NativeLibrary.TryGetExport(_library, "TypeLaySourceInstallationVersion", out nint version)
-            || Marshal.GetDelegateForFunctionPointer<ReadProtocolVersion>(version)() != 3)
+            || Marshal.GetDelegateForFunctionPointer<ReadProtocolVersion>(version)() != 4)
             return false;
-        _sourceInstallMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourceInstall.v3");
-        _sourceRevokeMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourceRevoke.v3");
-        _sourcePollMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourcePoll.v3");
+        _sourceInstallMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourceInstall.v4");
+        _sourceRevokeMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourceRevoke.v4");
+        _sourcePollMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourcePoll.v4");
         return _sourceInstallMessage != 0 && _sourceRevokeMessage != 0 && _sourcePollMessage != 0;
     }
 
@@ -290,13 +296,13 @@ internal sealed partial class NativeEditTransactions
             // Preserve the already sampled native status/reason alongside the
             // decoded receipt. Read invoked only here, outside admission.
             var result = new SourceInstallationResult(installed, quiet, receipt, claimed,
-                new(status, nativeReason, grant.View.ReadUInt32(68)));
+                new(status, nativeReason, grant.View.ReadUInt32(68)), Acknowledged: true);
             _sourceTerminal = (grant.Generation, grant.Permit.Plan.Id, result);
             grant.Dispose();
             _sourceGrant = null;
             return result;
         }
-        return new(installed, quiet, receipt, claimed);
+        return new(installed, quiet, receipt, claimed, Acknowledged: true);
     }
 
     private static WriteReceipt ReadSourceCompletion(SourceGrant grant)

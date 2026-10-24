@@ -110,6 +110,7 @@ LRESULT CallNextHookEx(HANDLE hook, int code, WPARAM wp, LPARAM lp) {
                 && !source_wire.claim && !source_wire.invoked);
         }
         if (fault == 4) require(TypeLaySourceWithdraw(&source_wire, sizeof(source_wire)) == 2);
+        if (fault == 6) require(!TypeLaySourceArm(&source_wire, sizeof(source_wire)));
         if (fault == 5) {
             TestQueueMessage nested;
             copy(&nested, retrieved_message, sizeof(nested));
@@ -125,10 +126,10 @@ static int same_name(const WCHAR *a, const WCHAR *b) {
 }
 uint32_t RegisterWindowMessageW(const WCHAR *name) {
     require(source_wire_enabled);
-    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceInstall.v3")) return InstallMessage;
-    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceRevoke.v3")) return RevokeMessage;
-    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourcePoll.v3")) return PollMessage;
-    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceActivate.v3")) return ActivateMessage;
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceInstall.v4")) return InstallMessage;
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceRevoke.v4")) return RevokeMessage;
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourcePoll.v4")) return PollMessage;
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceActivate.v4")) return ActivateMessage;
     if (same_name(name, message_name)) return 0xc105;
     if (same_name(name, owned_capture_message_name)) return 0xc106;
     field.invalid_call = 1;
@@ -843,7 +844,7 @@ static int source_input_identity_is_bound_until_exact_retirement(void) {
         prepare_transaction(Unchanged);
         wipe(&source_wire, sizeof(source_wire));
         source_command = 0;
-        source_wire.version = 3; source_wire.bytes = sizeof(source_wire);
+        source_wire.version = 4; source_wire.bytes = sizeof(source_wire);
         source_wire.generation[0] = 1; source_wire.grant[0] = (uint64_t)fault + 1;
         source_wire.observed_at_ms = 900;
         copy(&source_wire.tx, &request, sizeof(request));
@@ -917,13 +918,49 @@ static int prepare_source_message(void) {
     prepare_transaction(Unchanged);
     wipe(&source_wire, sizeof(source_wire));
     source_command = 0;
-    source_wire.version = 3; source_wire.bytes = sizeof(source_wire);
+    source_wire.version = 4; source_wire.bytes = sizeof(source_wire);
     source_wire.generation[0] = 1; source_wire.grant[0] = 71;
     source_wire.observed_at_ms = 900;
     copy(&source_wire.tx, &request, sizeof(request));
     send_source(InstallMessage);
     if (source_wire.state != 1 || source_wire.claim || field.invalid_call) return 0;
     return 1;
+}
+static int prepared_input_and_withdrawal_cannot_be_rearmed(void) {
+    if (!prepare_source_message()) return 0;
+    source_wire.claim = 3; // The new backend's immutable initial publication.
+    int64_t expires = source_wire.tx.authorization_deadline_ms;
+    TestQueueMessage message = {handle(SourceWindow), 0x100, 9, 0x000f0001, 1000, {0, 0}, 0};
+    retrieved_message = &message;
+    message_next_fault = 6; // Arm attempted inside the downstream callback.
+    TypeLaySourceGetMessageProc(0, 1, (LPARAM)&message);
+    retrieved_message = 0;
+    if (message.message != 0x100 || source_wire.claim != 2 || field.replace_calls
+        || TypeLaySourceArm(&source_wire, sizeof(source_wire)) || field.invalid_call
+        || source_wire.tx.authorization_deadline_ms != expires) return 0;
+    send_source(RevokeMessage);
+    if (source_wire.state != 3 || !prepare_source_message()) return 0;
+    source_wire.claim = 3;
+    message.message = 0x100; message.wparam = 'A';
+    retrieved_message = &message;
+    message_next_fault = 6;
+    TypeLaySourceGetMessageProc(0, 1, (LPARAM)&message);
+    retrieved_message = 0;
+    if (message.message != 0x100 || message.wparam != 'A' || source_wire.claim != 2
+        || TypeLaySourceArm(&source_wire, sizeof(source_wire)) || field.replace_calls || field.invalid_call) return 0;
+    send_source(RevokeMessage);
+    if (source_wire.state != 3 || !prepare_source_message()) return 0;
+    source_wire.claim = 3;
+    if (TypeLaySourceWithdraw(&source_wire, sizeof(source_wire)) != 2
+        || TypeLaySourceArm(&source_wire, sizeof(source_wire))) return 0;
+    send_source(RevokeMessage);
+    if (source_wire.state != 3 || !prepare_source_message()) return 0;
+    source_wire.claim = 3;
+    if (!TypeLaySourceArm(&source_wire, sizeof(source_wire)) || source_wire.claim != 0
+        || TypeLaySourceArm(&source_wire, sizeof(source_wire))
+        || source_wire.tx.authorization_deadline_ms != expires) return 0;
+    send_source(RevokeMessage);
+    return source_wire.state == 3 && !field.invalid_call && !field.replace_calls;
 }
 static int source_removed_message_commits_before_selection(uint32_t pending) {
     if (!prepare_source_message()) return 0;
@@ -1217,6 +1254,7 @@ static int run_checks(void) {
     if (!exact_field_foreground_keeps_the_original_transaction_guards()) return 17;
     if (!unknown_wire_operations_cannot_read_the_source()) return 10;
     if (!source_input_identity_is_bound_until_exact_retirement()) return 18;
+    if (!prepared_input_and_withdrawal_cannot_be_rearmed()) return 26;
     const uint32_t hints[] = {0, 1, 0x40, 0x41, 0x1dff};
     for (unsigned i = 0; i < sizeof(hints) / sizeof(hints[0]); i++)
         if (!source_removed_message_commits_before_selection(hints[i])) return 19;

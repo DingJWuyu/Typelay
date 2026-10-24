@@ -44,6 +44,9 @@ public sealed record SourceGlossaryReturnAuthorization(Guid Attempt, int Process
 public sealed record SourceAcceptanceRequest(Guid Generation, long SessionRevision, TargetId Target,
     Guid Grant, AcceptancePermit? Permit = null);
 public sealed record SourceActivationEndpoint(ulong Nonce, ulong Command);
+// Acknowledged is a matched native command/operation response, not claim,
+// completion, authority or process-exit proof. A cached terminal retains its
+// original ACK fact, not a new command. Missing/unknown stays false.
 public sealed record SourceAcceptanceResult(Guid Generation, long SessionRevision, TargetId Target,
     Guid Grant, bool Installed, bool Quiet, bool Claimed,
-    SourceActivationEndpoint? Endpoint = null, WriteReceipt? Receipt = null);
+    SourceActivationEndpoint? Endpoint = null, WriteReceipt? Receipt = null, bool Acknowledged = false);

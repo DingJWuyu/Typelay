@@ -40,6 +40,26 @@ public sealed class BrokerContractTests
     }
 
     [Fact]
+    public async Task SourceCommandAcknowledgementIsExplicitAndDoesNotFollowClaimOrQuiet()
+    {
+        TargetId target = new WindowsTarget(1, 2, 3, 4, "win32-edit-transaction-v2", "field", Guid.NewGuid());
+        var owner = new SourceAcceptanceResult(Guid.NewGuid(), 7, target, Guid.NewGuid(), false, true, true);
+        Assert.False(owner.Acknowledged); // Exit/unknown defaults do not fabricate an ACK.
+        using var stream = new MemoryStream();
+        await Wire.WriteAsync(stream, new BrokerResponse(BrokerProtocol.Version, 1, "source-acceptance",
+            SourceAcceptance: owner with
+            {
+                Acknowledged = true
+            }), TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        var received = await Wire.ReadAsync<BrokerResponse>(stream, TestContext.Current.CancellationToken);
+        Assert.Equal(owner with
+        {
+            Acknowledged = true
+        }, received.SourceAcceptance);
+    }
+
+    [Fact]
     public async Task SourceGlossaryReturnCarriesOnlyOneCancelableFocusAttempt()
     {
         var authorization = new SourceGlossaryReturnAuthorization(Guid.NewGuid(), 123, 456);

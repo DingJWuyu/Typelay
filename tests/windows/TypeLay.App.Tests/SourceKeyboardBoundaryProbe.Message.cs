@@ -27,6 +27,7 @@ public sealed partial class SourceKeyboardBoundaryProbe
         var inputs = new ProbeInputs();
         ProductionForegroundWriteTests.Desktop? source = null;
         NativeTransactions? native = null;
+        StockEditActivation? control = null;
         AcceptancePermit? permit = null;
         NativeTransactions.SourceInstallationResult? installed = null, beforeTails = null, terminal = null, exitRetirement = null;
         string ownerLibrary = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "TypeLay.NativeInput.dll"));
@@ -55,7 +56,11 @@ public sealed partial class SourceKeyboardBoundaryProbe
             permit = NativeSourceAcceptanceTests.CapturePermit(native, observed, new(4, 7));
             installed = native.InstallSourceAcceptance(generation, permit);
             Assert.True(installed.Installed);
-            // Arm is a posted fixture command, not a new capture or authorization.
+            var endpoint = Assert.IsType<NativeTransactions.SourceActivationEndpoint>(
+                native.ReserveSourceActivation(generation, permit.Plan.Id));
+            control = new(endpoint.Nonce, endpoint.Command, generation, permit, sourceMessage: true);
+            Assert.True(control.Arm());
+            // Start only the observer; neither this command nor Arm renews the grant.
             Assert.True(N.PostMessage(source.Root, 0x8080, (nuint)mode, 0));
             while (N.GetProp(source.Root, "TypeLay.Test.KeyboardProbe.Ready.v1") != mode)
                 await Task.Delay(1, source.Token);
@@ -161,6 +166,7 @@ public sealed partial class SourceKeyboardBoundaryProbe
                 inputsPaired = true;
             }
             catch (Exception failure) { error += "\nInput cleanup: " + failure; }
+            control?.Dispose();
             if (native is not null)
             {
                 try

@@ -18,6 +18,7 @@
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.cs" Link="Product/KeyboardHook.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.SourceGlossary.cs" Link="Product/KeyboardHook.SourceGlossary.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.StockEdit.cs" Link="Product/KeyboardHook.StockEdit.cs" />
+    <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.StockEdit.Message.cs" Link="Product/KeyboardHook.StockEdit.Message.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.AcceptanceModifier.cs" Link="Product/KeyboardHook.AcceptanceModifier.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/StockEditActivation.cs" Link="Product/StockEditActivation.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/SourceGlossaryForegroundReceipt.cs" Link="Product/SourceGlossaryForegroundReceipt.cs" />

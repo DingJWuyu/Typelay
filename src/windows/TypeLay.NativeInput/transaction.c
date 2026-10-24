@@ -581,7 +581,7 @@ typedef struct {
     uint64_t generation[2], grant[2];
     int64_t observed_at_ms;
     uint64_t acknowledgement;
-    uint32_t claim, invoked; // Claim: Armed=0, Claimed=1, Withdrawn=2; never reused.
+    uint32_t claim, invoked; // Claim: Armed=0, Claimed=1, Withdrawn=2, Prepared=3; never reused.
     Transaction tx;
     uint64_t verified_at_ms; // Actual successful source verification, never poll time.
 } SourceInstallation;
@@ -605,7 +605,7 @@ static SourceSlot source;
 // Covers unmatched requests too: a downstream hook cannot retire A, install B,
 // and let an outer rejected B request publish a false quiet ACK over that slot.
 static uint32_t source_callback;
-__declspec(dllexport) uint32_t TypeLaySourceInstallationVersion(void) { return 3; }
+__declspec(dllexport) uint32_t TypeLaySourceInstallationVersion(void) { return 4; }
 
 static int source_input_message(uint32_t message) {
     switch (message) {
@@ -680,6 +680,14 @@ static void source_invalidate(const CallMessage *msg) {
         && (msg->message == 0x82 || (msg->message == 0x06 && !(msg->wparam & 0xffff))
             || (msg->message == 0x1c && !msg->wparam))) source.reason = 2;
 }
+static uint32_t source_withdraw(SourceInstallation *shared) {
+    uint32_t state = __atomic_load_n(&shared->claim, __ATOMIC_ACQUIRE);
+    while (state == 0 || state == 3) {
+        if (__atomic_compare_exchange_n(&shared->claim, &state, 2, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return 2;
+    }
+    return state;
+}
+
 static int source_identity(const SourceInstallation *request, uint64_t nonce) {
     return source.nonce == nonce
         && source.hwnd == request->tx.hwnd && source.root == request->tx.root
@@ -828,7 +836,7 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
         copy(request, shared, sizeof(SourceInstallation));
         respond = (uint64_t)msg->lparam > request->acknowledgement;
         Transaction *tx = &request->tx;
-        if (request->version == 3 && request->bytes == sizeof(SourceInstallation)
+        if (request->version == 4 && request->bytes == sizeof(SourceInstallation)
             && respond
             && (request->generation[0] || request->generation[1]) && (request->grant[0] || request->grant[1])
             && tx->thread == thread && tx->pid == GetCurrentProcessId()
@@ -973,7 +981,18 @@ __declspec(dllexport) LRESULT TypeLaySourceGetMessageProc(int code, WPARAM wp, L
         // Observe only this grant's actual removed source input, not NOREMOVE,
         // category hints or hypothetical pre-installation dispatch history.
         // Revoke before the next hook can reenter; never consume this message.
-        if (source_input_message(message->message) && !source.reason) source.reason = 15;
+        if (source_input_message(message->message)) {
+            if (!source.reason) source.reason = 15;
+            // The Arm caller cannot see this process-local reason latch. Also
+            // withdraw a Prepared grant before downstream code can Arm it.
+            HANDLE mapping = source_mapping(source.nonce);
+            SourceInstallation *shared = mapping ? MapViewOfFile(mapping, 6, 0, 0, sizeof(SourceInstallation)) : 0;
+            if (shared) {
+                if (__atomic_load_n(&shared->claim, __ATOMIC_ACQUIRE) == 3) source_withdraw(shared);
+                UnmapViewOfFile(shared);
+            }
+            if (mapping) CloseHandle(mapping);
+        }
         return CallNextHookEx(0, code, wp, lp);
     }
     if (!__atomic_compare_exchange_n(&source_callback, &empty_callback, thread, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
@@ -986,13 +1005,19 @@ __declspec(dllexport) LRESULT TypeLaySourceGetMessageProc(int code, WPARAM wp, L
     copy(&original, message, sizeof(original));
     uint64_t nonce = source.nonce;
     source.busy++;
-    LRESULT result = CallNextHookEx(0, code, wp, lp);
     HANDLE mapping = source_mapping(nonce);
     SourceInstallation *shared = mapping ? MapViewOfFile(mapping, 6, 0, 0, sizeof(SourceInstallation)) : 0;
+    // An input observed while Prepared cannot be made eligible by an Arm in a
+    // downstream/reentrant callback. Revoke before entering that chain.
+    if (shared && __atomic_load_n(&shared->claim, __ATOMIC_ACQUIRE) == 3) {
+        if (!source.reason) source.reason = 15;
+        source_withdraw(shared);
+    }
+    LRESULT result = CallNextHookEx(0, code, wp, lp);
     SourceInstallation *request = shared ? HeapAlloc(GetProcessHeap(), 8, sizeof(SourceInstallation)) : 0;
     if (request) {
         copy(request, shared, sizeof(SourceInstallation));
-        if (request->version == 3 && request->bytes == sizeof(SourceInstallation)
+        if (request->version == 4 && request->bytes == sizeof(SourceInstallation)
             && __atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) == thread
             && source_identity(request, nonce) && request->tx.thread == thread
             && request->tx.pid == GetCurrentProcessId()) {
@@ -1029,7 +1054,7 @@ __declspec(dllexport) LRESULT TypeLaySourceGetMessageProc(int code, WPARAM wp, L
 // known not to attach queues. This is NOT an ordinary-process readiness proof.
 __declspec(dllexport) uint32_t TypeLaySourceActivate(SourceInstallation *shared, uint32_t bytes,
     uint64_t nonce, uint64_t command, uint32_t timeout, uint32_t message) {
-    if (!shared || bytes != sizeof(SourceInstallation) || shared->version != 3
+    if (!shared || bytes != sizeof(SourceInstallation) || shared->version != 4
         || shared->bytes != bytes || !command || !message || !timeout || timeout > 10) return 0;
     uint32_t unused = 0;
     // Global per-grant single use, including accidentally duplicated local
@@ -1062,10 +1087,10 @@ __declspec(dllexport) LRESULT TypeLayCallWndProc(int code, WPARAM wp, LPARAM lp)
     if (code >= 0) {
         const CallMessage *msg = (const CallMessage *)lp;
         static uint32_t source_install, source_revoke, source_poll, source_activate;
-        if (!source_install) source_install = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceInstall.v3");
-        if (!source_revoke) source_revoke = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceRevoke.v3");
-        if (!source_poll) source_poll = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourcePoll.v3");
-        if (!source_activate) source_activate = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceActivate.v3");
+        if (!source_install) source_install = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceInstall.v4");
+        if (!source_revoke) source_revoke = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceRevoke.v4");
+        if (!source_poll) source_poll = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourcePoll.v4");
+        if (!source_activate) source_activate = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceActivate.v4");
         if (source_install && msg->message == source_install) return source_message(code, wp, lp, 1);
         if (source_revoke && msg->message == source_revoke) return source_message(code, wp, lp, 2);
         if (source_poll && msg->message == source_poll) return source_message(code, wp, lp, 3);
@@ -1120,8 +1145,16 @@ int DllMain(HANDLE module, uint32_t reason, void *reserved) {
 // A local nonblocking withdrawal is not source Quiet or permission to free the
 // Broker owner. If Claim already won, the caller must preserve that press.
 __declspec(dllexport) uint32_t TypeLaySourceWithdraw(SourceInstallation *shared, uint32_t bytes) {
-    if (!shared || bytes != sizeof(SourceInstallation) || shared->version != 3 || shared->bytes != bytes) return 3;
-    uint32_t armed = 0;
-    __atomic_compare_exchange_n(&shared->claim, &armed, 2, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
-    return __atomic_load_n(&shared->claim, __ATOMIC_ACQUIRE);
+    if (!shared || bytes != sizeof(SourceInstallation) || shared->version != 4 || shared->bytes != bytes) return 4;
+    return source_withdraw(shared);
+}
+
+// Installation is inert until the App owns its local withdrawal control. Arm
+// changes only the one-way claim word, never the original identity or deadline.
+__declspec(dllexport) uint32_t TypeLaySourceArm(SourceInstallation *shared, uint32_t bytes) {
+    if (!shared || bytes != sizeof(SourceInstallation) || shared->version != 4 || shared->bytes != bytes
+        || shared->state != 1 || __atomic_load_n(&shared->invoked, __ATOMIC_ACQUIRE)
+        || !authorization_current(&shared->tx)) return 0;
+    uint32_t prepared = 3;
+    return __atomic_compare_exchange_n(&shared->claim, &prepared, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
 }

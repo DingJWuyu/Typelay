@@ -16,18 +16,18 @@ internal sealed class WindowsInputService : IInputService
 
     internal WindowsInputService(IInputBroker broker, nint overlay,
         WindowsApplicationSupport? support = null, KeyboardHook? monitor = null, PracticeHost? practice = null,
-        bool isolatedSourceAcceptance = false)
+        bool isolatedSourceAcceptance = false, bool sourceMessageAcceptance = false)
     {
         this.broker = broker;
         this.overlay = overlay;
         this.support = support;
         this.monitor = monitor;
         this.practice = practice;
-        this.isolatedSourceAcceptance = isolatedSourceAcceptance;
-        if (isolatedSourceAcceptance && monitor is not null)
+        this.isolatedSourceAcceptance = isolatedSourceAcceptance || sourceMessageAcceptance;
+        if (this.isolatedSourceAcceptance && monitor is not null)
             monitor.ConfigureIsolatedStockAcceptance(async (operation, request) =>
                 (await broker.CallAsync(new(BrokerProtocol.Version, 0, operation, "",
-                    BoundTarget: request.Target, SourceAcceptance: request))).SourceAcceptance);
+                    BoundTarget: request.Target, SourceAcceptance: request))).SourceAcceptance, sourceMessageAcceptance);
     }
 
     public bool Available => broker.Available;

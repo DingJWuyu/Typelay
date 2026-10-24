@@ -56,14 +56,14 @@ GTK 非纯文本/非标准控件、Qt QTextEdit/富文本/自绘控件、Electro
 
 ### 当前可验证候选
 
-推荐 [CI480 Linux 预览包](https://github.com/DingJWuyu/Typelay/actions/runs/40007045279/artifacts/12525507850)。[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/40007045279)的 Linux 完整检查与共享检查已通过；同次 Windows 的正式 Notepad 接受/撤销未通过，TSF 写入实验未闭合，不能据此宣称双端验收完成。
+推荐 [CI498 Linux 预览包](https://github.com/DingJWuyu/Typelay/actions/runs/40067927744/artifacts/12550995369)。[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/40067927744)的 Linux 完整检查与共享检查已通过；同次 Windows 的单一点击后焦点准备测试和正式 Notepad 接受提示未通过，不能据此宣称双端验收完成。
 
-- 源码：`2342a747864b9694e3beebf1ca16c4aa44e078db`；包内 `build-info.json` 同提交，`sourceDirty=false`。
-- 内层 `TypeLay-Linux-preview-x86_64.tar.gz`：281,117,978 字节。
-- SHA-256：`9a5415c95b4a0e285baee3cab6c1a4dfbda313f207a61b808097111f99acf4a2`；内层 gzip/tar、293 项清单文件、路径与可执行权限均已核验。此摘要不适用于外层 Actions ZIP。
-- 检查包含完整包搬迁安装与匹配合作组件、设置/教程、GTK3/GTK4、浏览器 DOM 与 Firefox、Qt 合作探针及真实模型桌面链、GIMP 单次按需唤醒与直接替换/原生撤销对照、VS Code 手动命令。GTK4 语言弹层与术语入口、GTK 重入隔离、Qt 直接翻译本轮通过，不据此断言旧间歇失败已永久消除；GIMP 该字段本身不支持原生撤销。
-- Hy 真实 GTK 生命周期通过：取消/确认补充中英、同代冷启、双向普通预览及文档/版本/选区绑定、切回 Argos、移除和 Host/worker 正常退出，无强制清理。高级能力方向范围与原生源请求分发仍未验，普通预览质量保持 `not-reviewed`，不代表十二方向或中英质量通过。
-- 包内 README 已按本包身份生成，不再要求转下载旧候选；源码文档链接（含构建说明）均固定到本包提交，四份配套文档可离线查阅。包内仍有“Linux 新十四方向 GUI 未验证”的保守旧说明，实际已验范围以上一项为准；本次只更新在线推荐，未重打包或修改已发布包。
+- 源码：`3152a7f74b4022dfd18d34fe9534441a621d992c`；包内 `build-info.json` 同提交，`sourceDirty=false`。
+- 内层 `TypeLay-Linux-preview-x86_64.tar.gz`：281,118,175 字节。
+- SHA-256：`0b9fc84e9d7036f046935e6620dbe6635732ad3b144cb9570281b801b9b11d31`；外层 ZIP CRC、内层 gzip/tar、293 项清单文件、路径与启动入口均已核验。此摘要不适用于外层 Actions ZIP。
+- 检查包含完整包搬迁安装与匹配合作组件、设置/教程、GTK3/GTK4、浏览器 DOM 与 Firefox、Qt 合作探针及真实模型桌面链、GIMP 单次按需唤醒与直接替换/原生撤销对照、VS Code 手动命令。Qt 真实人工稿首次回源零写、第二次独立键精确接受及配置组合键检查通过；这不证明全部已回源异常丢稿或旧间歇 IME/投递延迟根因已修。GIMP 该字段本身不支持原生撤销。
+- Hy 真实 GTK 生命周期 12 阶段通过：取消/确认补充中英、同代冷启、双向 editor snapshot 预览及文档/版本/选区绑定、切回 Argos、移除和 Host/worker 正常退出，无强制清理。高级能力方向范围与原生源请求分发仍未验，普通预览质量保持 `not-reviewed`，不代表十二方向或中英质量通过。
+- 包内 README 按本包身份生成，不要求转下载旧候选；源码文档链接（含构建说明）固定到本包提交，四份配套文档可离线查阅。本次只更新在线推荐，未重打包或修改已发布包。
 - 这是可体验的预览包，不是稳定版本，也不是模型质量、物理键盘/输入法或全桌面产品验收通过。按需唤醒后空捕获仍可能丢失资格，须保持焦点后主动重试，不自动重放按键。
 
 artifact 过期或换用后续提交时，应重新核对其摘要与检查结果。[Windows 验证与下载基线](../windows/README.md#当前可验证候选)独立记录。
