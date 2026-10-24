@@ -74,6 +74,11 @@ internal sealed partial class KeyboardHook
         if (Volatile.Read(ref _stockBlocked) != 0 || Volatile.Read(ref _stockLatest) is not { } candidate
             || !StockCandidateCurrent(candidate, WindowsInterruptClock.NowMs))
             return;
+        if (_orderedSourceMessageWitness && !await PrepareStockWitnessAsync(candidate))
+        {
+            Interlocked.CompareExchange(ref _stockLatest, null, candidate);
+            return;
+        }
         _stockOwner = candidate; // Own an install even if its ACK is lost.
         var installed = await _stockExchange!("source-install", StockRequest(candidate, install: true));
         if (!StockReplyMatches(installed, candidate) || !installed!.Installed || !installed.Acknowledged || installed.Endpoint is null)
@@ -84,12 +89,14 @@ internal sealed partial class KeyboardHook
             return;
         }
         var control = new StockEditActivation(installed.Endpoint.Nonce, installed.Endpoint.Command,
-            candidate.Lease.CommandGeneration, candidate.Permit, sourceMessage: true);
+            candidate.Lease.CommandGeneration, candidate.Permit, sourceMessage: true,
+            orderedSourceMessageWitness: _orderedSourceMessageWitness);
         // The source is still Prepared. Both local withdrawal and capture
         // settlement must be reachable before the one-way Arm transition.
         Interlocked.Exchange(ref _stockActivation, control);
         Volatile.Write(ref _stockDelivery, candidate);
-        if (!StockCandidateCurrent(candidate, WindowsInterruptClock.NowMs) || !control.Arm())
+        if (!StockCandidateCurrent(candidate, WindowsInterruptClock.NowMs)
+            || !(_orderedSourceMessageWitness ? await PrepareStockWitnessAsync(candidate, control) : control.Arm()))
         {
             control.Withdraw();
             candidate.Retiring = true;
@@ -102,7 +109,8 @@ internal sealed partial class KeyboardHook
             }
             return;
         }
-        Volatile.Write(ref _stockInstalled, candidate);
+        if (!_orderedSourceMessageWitness)
+            Volatile.Write(ref _stockInstalled, candidate);
         if (!StockCandidateCurrent(candidate, WindowsInterruptClock.NowMs))
         {
             control.Withdraw();

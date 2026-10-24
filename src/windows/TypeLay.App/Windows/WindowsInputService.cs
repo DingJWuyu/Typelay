@@ -16,8 +16,10 @@ internal sealed class WindowsInputService : IInputService
 
     internal WindowsInputService(IInputBroker broker, nint overlay,
         WindowsApplicationSupport? support = null, KeyboardHook? monitor = null, PracticeHost? practice = null,
-        bool isolatedSourceAcceptance = false, bool sourceMessageAcceptance = false)
+        bool isolatedSourceAcceptance = false, bool sourceMessageAcceptance = false, bool orderedSourceMessageWitness = false)
     {
+        if (orderedSourceMessageWitness && !sourceMessageAcceptance)
+            throw new ArgumentException("Ordered witnesses require the isolated source message route.");
         this.broker = broker;
         this.overlay = overlay;
         this.support = support;
@@ -27,7 +29,7 @@ internal sealed class WindowsInputService : IInputService
         if (this.isolatedSourceAcceptance && monitor is not null)
             monitor.ConfigureIsolatedStockAcceptance(async (operation, request) =>
                 (await broker.CallAsync(new(BrokerProtocol.Version, 0, operation, "",
-                    BoundTarget: request.Target, SourceAcceptance: request))).SourceAcceptance, sourceMessageAcceptance);
+                    BoundTarget: request.Target, SourceAcceptance: request))).SourceAcceptance, sourceMessageAcceptance, orderedSourceMessageWitness);
     }
 
     public bool Available => broker.Available;

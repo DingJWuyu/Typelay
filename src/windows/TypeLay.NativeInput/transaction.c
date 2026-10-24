@@ -589,28 +589,60 @@ typedef struct {
     uint32_t claim, invoked; // Claim: Armed=0, Claimed=1, Withdrawn=2, Prepared=3; never reused.
     Transaction tx;
     uint64_t verified_at_ms; // Actual successful source verification, never poll time.
+    uint64_t witness_lifetime[2], witness_boundary_tick, witness_boundary_sequence;
 } SourceInstallation;
 _Static_assert(offsetof(SourceInstallation, claim) == 64, "Aligned claim word");
 _Static_assert(offsetof(SourceInstallation, tx) == 72, "Source envelope layout");
-_Static_assert(sizeof(SourceInstallation) == 49344, "Source mapping length");
+_Static_assert(sizeof(SourceInstallation) == 49376, "Source mapping length");
 _Static_assert(offsetof(SourceInstallation, verified_at_ms) == 49336, "Source completion time layout");
+#define SOURCE_WITNESS_CAPACITY 256
+// Source-lifetime SPSC metadata, never text. The existing App LL thread is the
+// sole producer; this source GUI thread is the sole consumer. No timestamp search.
+typedef struct {
+    uint64_t sequence, nonce, observed_ms, hwnd;
+    uint32_t time, key, scan, flags, eligible, repeated;
+    uint64_t reserved;
+} SourceKeyWitness;
+typedef struct {
+    uint32_t version, bytes, poison, writer_ready;
+    uint64_t lifetime[2], hwnd, root;
+    uint32_t pid, thread;
+    uint64_t published, consumed;
+    uint64_t attached_nonce, attached_generation[2], attached_grant[2];
+    uint64_t initial_tick, attached_sequence;
+    uint32_t attached, recording_active;
+    SourceKeyWitness records[SOURCE_WITNESS_CAPACITY];
+} SourceWitness;
+_Static_assert(sizeof(SourceKeyWitness) == 64, "Source witness record layout");
+_Static_assert(offsetof(SourceWitness, records) == 136, "Source witness header layout");
+_Static_assert(sizeof(SourceWitness) == 16520, "Source witness mapping length");
+
 // One candidate per target process, owned by one GUI thread. Only owner is
 // atomic; all remaining members are exclusively accessed by that thread.
-// No retained body, mapped view, function pointer, subclass or module pin.
+// No retained body, cross-callback mapped view, subclass or module pin.
 typedef struct {
     uint32_t owner;
     uint32_t busy, reason, completed_status, completed_reason;
-    uint64_t nonce, generation[2], grant[2], hwnd, root, cookie;
+    uint64_t nonce, generation[2], grant[2], hwnd, root, cookie, witness_lifetime[2];
     int64_t expires;
     OwnedInputContext input; // Source-local scalar identity, never sent over the wire.
-    int press_owed, press_disabled;
+    int press_owed, press_disabled, press_ordered;
+    uint64_t press_boundary, witness_sequence;
+    SourceWitness *inflight_witness; // Only the current guarded callback owns this view.
     uint32_t press_bits; // Accepted actual MSG's scan/extended/context identity.
 } SourceSlot;
 static SourceSlot source;
+// Scalar source-lifetime attachment survives grant retirement. Views are opened
+// only for the current callback; a stopped App cannot leave a dangling pointer.
+static struct {
+    uint32_t thread, pid;
+    uint64_t lifetime[2], hwnd, root;
+} source_witness_binding;
+static uint32_t source_witness_binding_busy;
 // Covers unmatched requests too: a downstream hook cannot retire A, install B,
 // and let an outer rejected B request publish a false quiet ACK over that slot.
 static uint32_t source_callback;
-__declspec(dllexport) uint32_t TypeLaySourceInstallationVersion(void) { return 4; }
+__declspec(dllexport) uint32_t TypeLaySourceInstallationVersion(void) { return 5; }
 
 static int source_input_message(uint32_t message) {
     switch (message) {
@@ -698,12 +730,19 @@ static int source_identity(const SourceInstallation *request, uint64_t nonce) {
         && source.hwnd == request->tx.hwnd && source.root == request->tx.root
         && source.cookie == request->tx.cookie && source.expires == request->tx.authorization_deadline_ms
         && source.generation[0] == request->generation[0] && source.generation[1] == request->generation[1]
-        && source.grant[0] == request->grant[0] && source.grant[1] == request->grant[1];
+        && source.grant[0] == request->grant[0] && source.grant[1] == request->grant[1]
+        && source.witness_lifetime[0] == request->witness_lifetime[0]
+        && source.witness_lifetime[1] == request->witness_lifetime[1];
 }
 static uint32_t source_current(const Transaction *tx) {
     HANDLE hwnd = (HANDLE)(uintptr_t)tx->hwnd, root = (HANDLE)(uintptr_t)tx->root;
     uint32_t pid = 0;
     if (source.reason) return source.reason;
+    if (source.inflight_witness
+        && (__atomic_load_n(&source.inflight_witness->poison, __ATOMIC_ACQUIRE)
+            || __atomic_load_n(&source.inflight_witness->writer_ready, __ATOMIC_ACQUIRE) != 1
+            || __atomic_load_n(&source.inflight_witness->consumed, __ATOMIC_ACQUIRE) != source.witness_sequence))
+        return SOURCE_FRESHNESS_UNPROVEN;
     if (__atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) != GetCurrentThreadId()
         || source.hwnd != tx->hwnd || source.root != tx->root || source.cookie != tx->cookie
         || source.expires != tx->authorization_deadline_ms || owned.hwnd == hwnd
@@ -785,11 +824,15 @@ static uint32_t source_preflight(SourceInstallation *request) {
 // Both transports execute the same ordinary-source plan. Only the message
 // callback supplies an actual MSG; the inactive cross-thread route is unchanged.
 static void source_execute_once(SourceInstallation *shared, SourceInstallation *request,
-    QueueMessage *message, const QueueMessage *expected_message) {
+    QueueMessage *message, const QueueMessage *expected_message, int ordered) {
     Transaction *tx = &request->tx;
     if (!source.reason && request->state == 1) {
         SourceAdmission admission = { &shared->claim, &source.reason, message, expected_message };
-        if (message && expected_message) source.press_bits = (uint32_t)expected_message->lparam & 0x21ff0000u;
+        if (message && expected_message) {
+            source.press_bits = (uint32_t)expected_message->lparam & 0x21ff0000u;
+            source.press_ordered = ordered;
+            source.press_boundary = request->witness_boundary_tick;
+        }
         execute_guarded(tx, 0, message ? &source.press_owed : 0, 0, &admission);
     } else { tx->status = 2; tx->reason = source.reason ? source.reason : 6; }
     if (tx->status == 1) {
@@ -821,6 +864,167 @@ static HANDLE source_mapping(uint64_t nonce) {
     name[i] = 0;
     return OpenFileMappingW(6, 0, name);
 }
+static int source_uses_witness(const SourceInstallation *request) {
+    return request->witness_lifetime[0] || request->witness_lifetime[1];
+}
+static HANDLE source_witness_mapping(const uint64_t lifetime[2]) {
+    WCHAR name[80];
+    const WCHAR prefix[] = L"Local\\TypeLay.SourceWitness.";
+    const WCHAR digits[] = L"0123456789abcdef";
+    const unsigned char *bytes = (const unsigned char *)lifetime;
+    int length = 0;
+    for (; prefix[length]; length++) name[length] = prefix[length];
+    for (int i = 0; i < 16; i++) {
+        name[length++] = digits[bytes[i] >> 4];
+        name[length++] = digits[bytes[i] & 15];
+    }
+    name[length] = 0;
+    return OpenFileMappingW(6, 0, name);
+}
+static int source_witness_matches(const SourceWitness *witness, const SourceInstallation *request) {
+    return witness->version == 2 && witness->bytes == sizeof(SourceWitness)
+        && __atomic_load_n(&witness->writer_ready, __ATOMIC_ACQUIRE) == 1
+        && !__atomic_load_n(&witness->poison, __ATOMIC_ACQUIRE)
+        && witness->lifetime[0] == request->witness_lifetime[0]
+        && witness->lifetime[1] == request->witness_lifetime[1]
+        && witness->hwnd == request->tx.hwnd && witness->root == request->tx.root
+        && witness->pid == request->tx.pid && witness->thread == request->tx.thread;
+}
+static int source_attach_witness(const SourceInstallation *request, uint64_t nonce) {
+    HANDLE mapping = source_witness_mapping(request->witness_lifetime);
+    SourceWitness *witness = mapping ? MapViewOfFile(mapping, 6, 0, 0, sizeof(SourceWitness)) : 0;
+    int attached = 0;
+    uint32_t empty = 0;
+    int locked = witness && source_witness_matches(witness, request)
+        && __atomic_compare_exchange_n(&source_witness_binding_busy, &empty, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+    if (locked) {
+        uint64_t published = __atomic_load_n(&witness->published, __ATOMIC_ACQUIRE);
+        uint64_t consumed = __atomic_load_n(&witness->consumed, __ATOMIC_ACQUIRE);
+        if (consumed <= published && published - consumed <= SOURCE_WITNESS_CAPACITY
+            && !source.reason && source_identity(request, nonce)) {
+            // Source hook + this Prepared owner now exist, and the exact App LL
+            // writer already acknowledged its dormant mapping. Preserve any
+            // active history across grants; attachment is not Arm authority.
+            __atomic_store_n(&witness->attached, 0, __ATOMIC_RELEASE);
+            witness->attached_nonce = nonce;
+            copy(witness->attached_generation, request->generation, sizeof(request->generation));
+            copy(witness->attached_grant, request->grant, sizeof(request->grant));
+            witness->attached_sequence = published;
+            source_witness_binding.thread = request->tx.thread;
+            source_witness_binding.pid = request->tx.pid;
+            source_witness_binding.hwnd = request->tx.hwnd;
+            source_witness_binding.root = request->tx.root;
+            copy(source_witness_binding.lifetime, request->witness_lifetime, sizeof(request->witness_lifetime));
+            __atomic_store_n(&witness->attached, 1, __ATOMIC_RELEASE);
+            attached = 1;
+        }
+    }
+    if (locked) __atomic_store_n(&source_witness_binding_busy, 0, __ATOMIC_RELEASE);
+    if (witness) UnmapViewOfFile(witness);
+    if (mapping) CloseHandle(mapping);
+    return attached;
+}
+
+static int source_witness_bound(const SourceWitness *witness) {
+    return witness->version == 2 && witness->bytes == sizeof(SourceWitness)
+        && __atomic_load_n(&witness->writer_ready, __ATOMIC_ACQUIRE) == 1
+        && !__atomic_load_n(&witness->poison, __ATOMIC_ACQUIRE)
+        && witness->lifetime[0] == source_witness_binding.lifetime[0]
+        && witness->lifetime[1] == source_witness_binding.lifetime[1]
+        && witness->hwnd == source_witness_binding.hwnd && witness->root == source_witness_binding.root
+        && witness->pid == source_witness_binding.pid && witness->thread == source_witness_binding.thread;
+}
+static int source_time_after(uint32_t time, uint64_t boundary, uint64_t now) {
+    // Normal Windows message time, not an origin credential or a unique ID.
+    // Same-tick, future and wrap-ambiguous observations conservatively refuse.
+    return boundary && now >= boundary && now - boundary <= 0x7fffffffu
+        && (int32_t)(time - (uint32_t)boundary) > 0 && (int32_t)((uint32_t)now - time) >= 0;
+}
+static int source_witness_tuple(const SourceKeyWitness *edge, const QueueMessage *message) {
+    uint32_t key = edge->key;
+    if (key == 0xa0 || key == 0xa1) key = 0x10;
+    if (key == 0xa2 || key == 0xa3) key = 0x11;
+    if (key == 0xa4 || key == 0xa5) key = 0x12;
+    uint32_t bits = (uint32_t)message->lparam;
+    int down = message->message == 0x100 || message->message == 0x104;
+    return edge->key > 0 && edge->key <= 254 && edge->scan > 0 && edge->scan <= 255
+        && !(edge->flags & ~0xb3u)
+        && edge->hwnd == (uint64_t)(uintptr_t)message->hwnd && key == message->wparam
+        && edge->time == message->time && edge->scan == ((bits >> 16) & 0xff)
+        && ((edge->flags & 1) != 0) == ((bits & 0x1000000u) != 0)
+        && ((edge->flags & 0x20) != 0) == ((bits & 0x20000000u) != 0)
+        && ((edge->flags & 0x80) == 0) == down
+        && (!down || edge->repeated == ((bits & 0x40000000u) != 0))
+        && (bits & 0xffff) == 1 && edge->eligible <= 1 && edge->repeated <= 1 && !edge->reserved;
+}
+static int source_witness_take(const QueueMessage *message, SourceKeyWitness *edge, uint32_t thread) {
+    // A different source GUI thread can finish an old callback while a new
+    // lifetime attaches. Do not race the scalar attachment or wait for it.
+    uint32_t empty = 0;
+    if (!__atomic_compare_exchange_n(&source_witness_binding_busy, &empty, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return 0;
+    if (source_witness_binding.thread != thread || source_witness_binding.hwnd != (uint64_t)(uintptr_t)message->hwnd) {
+        __atomic_store_n(&source_witness_binding_busy, 0, __ATOMIC_RELEASE);
+        return 0;
+    }
+    HANDLE mapping = source_witness_mapping(source_witness_binding.lifetime);
+    SourceWitness *witness = mapping ? MapViewOfFile(mapping, 6, 0, 0, sizeof(SourceWitness)) : 0;
+    int matched = 0;
+    if (witness && source_witness_bound(witness)
+        && __atomic_load_n(&witness->recording_active, __ATOMIC_ACQUIRE) == 1) {
+        uint64_t initial = __atomic_load_n(&witness->initial_tick, __ATOMIC_ACQUIRE);
+        uint64_t now = GetTickCount64();
+        // Dormant or normal pre-observation input cannot borrow even an equal
+        // tuple from the head. The LL writer excludes this same initial prefix.
+        if (!initial || (now >= initial && now - initial <= 0x7fffffffu
+                && (int32_t)(message->time - (uint32_t)initial) <= 0)) goto witness_done;
+        uint64_t published = __atomic_load_n(&witness->published, __ATOMIC_ACQUIRE);
+        uint64_t consumed = __atomic_load_n(&witness->consumed, __ATOMIC_ACQUIRE);
+        if (published < consumed || published - consumed > SOURCE_WITNESS_CAPACITY || consumed == UINT64_MAX) {
+            __atomic_store_n(&witness->poison, 1, __ATOMIC_RELEASE);
+        } else if (published != consumed) {
+            const SourceKeyWitness *head = &witness->records[consumed % SOURCE_WITNESS_CAPACITY];
+            uint64_t sequence = __atomic_load_n(&head->sequence, __ATOMIC_ACQUIRE);
+            copy(edge, head, sizeof(*edge));
+            if (sequence != consumed + 1 || __atomic_load_n(&head->sequence, __ATOMIC_ACQUIRE) != sequence) {
+                __atomic_store_n(&witness->poison, 1, __ATOMIC_RELEASE);
+            } else if (source_witness_tuple(edge, message)) {
+                // Consume only the head, including ineligible pre-Arm history.
+                // Tuple equality rejects mismatches; it never supplies origin.
+                __atomic_store_n(&witness->consumed, sequence, __ATOMIC_RELEASE);
+                matched = 1;
+            } else {
+                __atomic_store_n(&witness->poison, 1, __ATOMIC_RELEASE);
+            }
+        } else {
+            __atomic_store_n(&witness->poison, 1, __ATOMIC_RELEASE);
+        }
+        // No grant refresh clears a record or changes the initial boundary.
+    }
+witness_done:
+    if (witness) UnmapViewOfFile(witness);
+    if (mapping) CloseHandle(mapping);
+    __atomic_store_n(&source_witness_binding_busy, 0, __ATOMIC_RELEASE);
+    return matched;
+}
+static int source_witness_sequence_current(uint64_t sequence) {
+    HANDLE mapping = source_witness_mapping(source_witness_binding.lifetime);
+    SourceWitness *witness = mapping ? MapViewOfFile(mapping, 6, 0, 0, sizeof(SourceWitness)) : 0;
+    int current = witness && source_witness_bound(witness)
+        && __atomic_load_n(&witness->consumed, __ATOMIC_ACQUIRE) == sequence;
+    if (witness) UnmapViewOfFile(witness);
+    if (mapping) CloseHandle(mapping);
+    return current;
+}
+static int source_witness_admits(const SourceKeyWitness *edge, const QueueMessage *message,
+    const SourceInstallation *request) {
+    return source_uses_witness(request) && edge->nonce == source.nonce && edge->eligible == 1
+        && edge->sequence > request->witness_boundary_sequence
+        && edge->observed_ms >= (uint64_t)request->observed_at_ms
+        && edge->observed_ms <= (uint64_t)request->tx.authorization_deadline_ms
+        && source_time_after(message->time, request->witness_boundary_tick, GetTickCount64());
+}
+
 static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation) {
     const CallMessage *msg = (const CallMessage *)lp;
     uint32_t thread = GetCurrentThreadId(), empty_callback = 0;
@@ -841,7 +1045,7 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
         copy(request, shared, sizeof(SourceInstallation));
         respond = (uint64_t)msg->lparam > request->acknowledgement;
         Transaction *tx = &request->tx;
-        if (request->version == 4 && request->bytes == sizeof(SourceInstallation)
+        if (request->version == 5 && request->bytes == sizeof(SourceInstallation)
             && respond
             && (request->generation[0] || request->generation[1]) && (request->grant[0] || request->grant[1])
             && tx->thread == thread && tx->pid == GetCurrentProcessId()
@@ -854,6 +1058,7 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
                 source.nonce = (uint64_t)msg->wparam;
                 copy(source.generation, request->generation, sizeof(source.generation));
                 copy(source.grant, request->grant, sizeof(source.grant));
+                copy(source.witness_lifetime, request->witness_lifetime, sizeof(source.witness_lifetime));
                 source.hwnd = tx->hwnd; source.root = tx->root; source.cookie = tx->cookie;
                 source.expires = tx->authorization_deadline_ms;
                 source.input.ime_context = source.input.keyboard_layout = 0;
@@ -861,6 +1066,10 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
                 source.press_bits = 0;
                 source.busy++;
                 uint32_t reason = source_preflight(request);
+                if (!reason && source_uses_witness(request)
+                    && (__atomic_load_n(&shared->claim, __ATOMIC_ACQUIRE) != 3
+                        || !source_attach_witness(request, (uint64_t)msg->wparam)))
+                    reason = SOURCE_FRESHNESS_UNPROVEN;
                 if (reason && !source.reason) source.reason = reason;
                 source.busy--;
             }
@@ -869,8 +1078,10 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
                 source.busy++;
                 if (operation == 2 && !source.reason) source.reason = 15;
                 if (!source.reason && !authorization_current(tx)) source.reason = 14;
+                if (operation == 4 && source_uses_witness(request) && !source.reason)
+                    source.reason = SOURCE_FRESHNESS_UNPROVEN;
                 if (operation == 4 && !source.completed_status)
-                    source_execute_once(shared, request, 0, 0);
+                    source_execute_once(shared, request, 0, 0, 0);
                 // Only an explicit retirement may relinquish the source slot.
                 // A nested revoke records cancellation but cannot claim quiet.
                 if (operation == 2 && source.press_owed) source_press_scope();
@@ -926,7 +1137,7 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
     __atomic_store_n(&source_callback, 0, __ATOMIC_RELEASE);
     return result;
 }
-static LRESULT source_press_message(int code, WPARAM wp, LPARAM lp, const QueueMessage *entry) {
+static LRESULT source_press_message(int code, WPARAM wp, LPARAM lp, const QueueMessage *entry, uint64_t sequence) {
     QueueMessage *message = (QueueMessage *)lp;
     uint32_t thread = GetCurrentThreadId(), empty_callback = 0;
     int up = message->message == 0x101 && ((uintptr_t)message->lparam & 0xc0000000u) == 0xc0000000u;
@@ -946,11 +1157,13 @@ static LRESULT source_press_message(int code, WPARAM wp, LPARAM lp, const QueueM
     copy(&original, entry, sizeof(original));
     source.busy++;
     LRESULT result = CallNextHookEx(0, code, wp, lp);
-    if (!same_queue_message(message, &original)) source.press_disabled = 1;
+    if (!same_queue_message(message, &original)
+        || (sequence && !source_witness_sequence_current(sequence))) source.press_disabled = 1;
     if (source.press_owed && !source.press_disabled && source_press_current()) {
         // The input query can reenter the hook chain, so compare the actual MSG
         // and monotonic press state again after it, before scalar consumption.
-        if (same_queue_message(message, &original) && source.press_owed && !source.press_disabled) {
+        if (same_queue_message(message, &original) && source.press_owed && !source.press_disabled
+            && (!sequence || source_witness_sequence_current(sequence))) {
             message->message = 0;
             if (up) source.press_owed = 0;
         } else source.press_disabled = 1;
@@ -978,7 +1191,7 @@ static LRESULT source_refuse_strict_message(int code, WPARAM wp, LPARAM lp, uint
     __atomic_store_n(&source_callback, 0, __ATOMIC_RELEASE);
     return result;
 }
-// Only the two fixed local exports select the policy. No wire field, App setting
+// Only the fixed local exports select the policy. No wire field, App setting
 // or remote skip flag can turn a strict callback into the controlled mechanism.
 static LRESULT source_get_message(int code, WPARAM wp, LPARAM lp, int strict_origin) {
     QueueMessage *message = (QueueMessage *)lp;
@@ -987,8 +1200,9 @@ static LRESULT source_get_message(int code, WPARAM wp, LPARAM lp, int strict_ori
     // freestanding ABI independent of CRT helpers.
     QueueMessage original;
     copy(&original, message, sizeof(original));
-    const int tab = original.wparam == 9 && (original.message == 0x100 || original.message == 0x101
-        || original.message == 0x104 || original.message == 0x105);
+    const int key_message = original.message == 0x100 || original.message == 0x101
+        || original.message == 0x104 || original.message == 0x105;
+    const int tab = original.wparam == 9 && key_message;
     uint32_t strict_reason = 0;
     if (strict_origin && tab) {
         // First application OS call for this original MSG, including each tail.
@@ -996,22 +1210,34 @@ static LRESULT source_get_message(int code, WPARAM wp, LPARAM lp, int strict_ori
         InputMessageSource input = {0, 0};
         int queried = GetCurrentInputMessageSource(&input);
         strict_reason = queried && input.device_type == 1 && input.origin_id == 1
-            ? SOURCE_FRESHNESS_UNPROVEN : SOURCE_ORIGIN_UNTRUSTED;
-        // HARDWARE includes UIAccess and passes the product's source-category
-        // requirement. It still cannot prove that this key follows Arm: an
-        // upstream hook can hold an already removed key across nested Arm.
-        // This partial strict entry therefore reports missing freshness before
-        // claim/write; do not replace this with MSG.time or a queue-empty guess.
+            ? (strict_origin == 2 ? 0 : SOURCE_FRESHNESS_UNPROVEN) : SOURCE_ORIGIN_UNTRUSTED;
+        // HARDWARE includes allowed UIAccess. The retained rejection entry
+        // still has no freshness authority. The ordered entry separately needs
+        // its source-lifetime FIFO and LL-serialized boundary below; the source
+        // category or MSG.time alone never authorizes acceptance.
     }
     uint32_t thread = GetCurrentThreadId(), empty_callback = 0;
+    SourceKeyWitness witness_edge = {0};
+    int witness_matched = 0;
+    if (strict_origin == 2 && key_message)
+        witness_matched = source_witness_take(&original, &witness_edge, thread);
     if (__atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) != thread
         || source.hwnd != (uint64_t)(uintptr_t)original.hwnd)
         return CallNextHookEx(0, code, wp, lp);
+    if ((source.witness_lifetime[0] || source.witness_lifetime[1]) && strict_origin != 2)
+        return source_refuse_strict_message(code, wp, lp, thread, SOURCE_FRESHNESS_UNPROVEN);
+    if (strict_origin == 2 && key_message && !witness_matched && !strict_reason)
+        strict_reason = SOURCE_FRESHNESS_UNPROVEN;
     if (strict_reason) return source_refuse_strict_message(code, wp, lp, thread, strict_reason);
     if (source.press_owed && message->wparam == 9
         && (message->message == 0x100 || message->message == 0x101
             || message->message == 0x104 || message->message == 0x105))
-        return source_press_message(code, wp, lp, &original);
+    {
+        if (strict_origin == 2 && (!source.press_ordered || witness_edge.nonce != source.nonce
+            || !source_time_after(original.time, source.press_boundary, GetTickCount64())))
+            return source_refuse_strict_message(code, wp, lp, thread, SOURCE_FRESHNESS_UNPROVEN);
+        return source_press_message(code, wp, lp, &original, strict_origin == 2 ? witness_edge.sequence : 0);
+    }
     if (source.completed_status) return CallNextHookEx(0, code, wp, lp);
     const int first_tab = message->message == 0x100 && message->wparam == 9
         && !((uintptr_t)message->lparam & 0xc0000000u)
@@ -1048,6 +1274,16 @@ static LRESULT source_get_message(int code, WPARAM wp, LPARAM lp, int strict_ori
     source.busy++;
     HANDLE mapping = source_mapping(nonce);
     SourceInstallation *shared = mapping ? MapViewOfFile(mapping, 6, 0, 0, sizeof(SourceInstallation)) : 0;
+    HANDLE witness_mapping = strict_origin == 2 ? source_witness_mapping(source.witness_lifetime) : 0;
+    SourceWitness *witness_view = witness_mapping ? MapViewOfFile(witness_mapping, 6, 0, 0, sizeof(SourceWitness)) : 0;
+    if (strict_origin == 2) {
+        if (!witness_view || !source_witness_bound(witness_view)) {
+            if (!source.reason) source.reason = SOURCE_FRESHNESS_UNPROVEN;
+        } else {
+            source.inflight_witness = witness_view;
+            source.witness_sequence = witness_edge.sequence;
+        }
+    }
     // An input observed while Prepared cannot be made eligible by an Arm in a
     // downstream/reentrant callback. Revoke before entering that chain.
     if (shared && __atomic_load_n(&shared->claim, __ATOMIC_ACQUIRE) == 3) {
@@ -1058,7 +1294,7 @@ static LRESULT source_get_message(int code, WPARAM wp, LPARAM lp, int strict_ori
     SourceInstallation *request = shared ? HeapAlloc(GetProcessHeap(), 8, sizeof(SourceInstallation)) : 0;
     if (request) {
         copy(request, shared, sizeof(SourceInstallation));
-        if (request->version == 4 && request->bytes == sizeof(SourceInstallation)
+        if (request->version == 5 && request->bytes == sizeof(SourceInstallation)
             && __atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) == thread
             && source_identity(request, nonce) && request->tx.thread == thread
             && request->tx.pid == GetCurrentProcessId()) {
@@ -1066,7 +1302,9 @@ static LRESULT source_get_message(int code, WPARAM wp, LPARAM lp, int strict_ori
             if (!__atomic_compare_exchange_n(&shared->invoked, &unused, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)
                 && !source.reason) source.reason = 14;
             if (!same_queue_message(message, &original) && !source.reason) source.reason = 15;
-            source_execute_once(shared, request, message, &original);
+            if (strict_origin == 2 && !source.reason && !source_witness_admits(&witness_edge, &original, request))
+                source.reason = SOURCE_FRESHNESS_UNPROVEN;
+            source_execute_once(shared, request, message, &original, strict_origin == 2);
             source_publish_completion(shared, request);
             shared->tx.status = source.completed_status;
             shared->tx.reason = source.completed_reason;
@@ -1083,6 +1321,9 @@ static LRESULT source_get_message(int code, WPARAM wp, LPARAM lp, int strict_ori
         source.completed_status = 2; source.completed_reason = 6;
         if (!source.reason) source.reason = 6;
     }
+    source.inflight_witness = 0;
+    if (witness_view) UnmapViewOfFile(witness_view);
+    if (witness_mapping) CloseHandle(witness_mapping);
     if (shared) UnmapViewOfFile(shared);
     if (mapping) CloseHandle(mapping);
     source.busy--;
@@ -1096,8 +1337,8 @@ __declspec(dllexport) LRESULT TypeLaySourceGetMessageProc(int code, WPARAM wp, L
 }
 // Isolated strict-origin rejection entry. Main/capability0 never installs it.
 // Source category is checked; queue freshness is unresolved, so no strict write
-// or tail consumption is advertised. The v4 mapping and original exports stay
-// unchanged. A consumer selects this exact symbol or fails closed on older DLLs.
+// or tail consumption is advertised. The v5 envelope rejects old v4 consumers;
+// this export retains its rejection-only policy. A consumer selects this exact symbol or fails closed on older DLLs.
 __declspec(dllexport) LRESULT TypeLaySourceStrictGetMessageProc(int code, WPARAM wp, LPARAM lp) {
     return source_get_message(code, wp, lp, 1);
 }
@@ -1107,8 +1348,9 @@ __declspec(dllexport) LRESULT TypeLaySourceStrictGetMessageProc(int code, WPARAM
 // known not to attach queues. This is NOT an ordinary-process readiness proof.
 __declspec(dllexport) uint32_t TypeLaySourceActivate(SourceInstallation *shared, uint32_t bytes,
     uint64_t nonce, uint64_t command, uint32_t timeout, uint32_t message) {
-    if (!shared || bytes != sizeof(SourceInstallation) || shared->version != 4
-        || shared->bytes != bytes || !command || !message || !timeout || timeout > 10) return 0;
+    if (!shared || bytes != sizeof(SourceInstallation) || shared->version != 5
+        || shared->bytes != bytes || source_uses_witness(shared)
+        || !command || !message || !timeout || timeout > 10) return 0;
     uint32_t unused = 0;
     // Global per-grant single use, including accidentally duplicated local
     // endpoint objects. Retirement never clears either this word or claim.
@@ -1140,10 +1382,10 @@ __declspec(dllexport) LRESULT TypeLayCallWndProc(int code, WPARAM wp, LPARAM lp)
     if (code >= 0) {
         const CallMessage *msg = (const CallMessage *)lp;
         static uint32_t source_install, source_revoke, source_poll, source_activate;
-        if (!source_install) source_install = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceInstall.v4");
-        if (!source_revoke) source_revoke = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceRevoke.v4");
-        if (!source_poll) source_poll = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourcePoll.v4");
-        if (!source_activate) source_activate = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceActivate.v4");
+        if (!source_install) source_install = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceInstall.v5");
+        if (!source_revoke) source_revoke = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceRevoke.v5");
+        if (!source_poll) source_poll = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourcePoll.v5");
+        if (!source_activate) source_activate = RegisterWindowMessageW((const WCHAR *)L"TypeLay.NativeInput.SourceActivate.v5");
         if (source_install && msg->message == source_install) return source_message(code, wp, lp, 1);
         if (source_revoke && msg->message == source_revoke) return source_message(code, wp, lp, 2);
         if (source_poll && msg->message == source_poll) return source_message(code, wp, lp, 3);
@@ -1198,16 +1440,61 @@ int DllMain(HANDLE module, uint32_t reason, void *reserved) {
 // A local nonblocking withdrawal is not source Quiet or permission to free the
 // Broker owner. If Claim already won, the caller must preserve that press.
 __declspec(dllexport) uint32_t TypeLaySourceWithdraw(SourceInstallation *shared, uint32_t bytes) {
-    if (!shared || bytes != sizeof(SourceInstallation) || shared->version != 4 || shared->bytes != bytes) return 4;
+    if (!shared || bytes != sizeof(SourceInstallation) || shared->version != 5 || shared->bytes != bytes) return 4;
     return source_withdraw(shared);
 }
 
 // Installation is inert until the App owns its local withdrawal control. Arm
 // changes only the one-way claim word, never the original identity or deadline.
 __declspec(dllexport) uint32_t TypeLaySourceArm(SourceInstallation *shared, uint32_t bytes) {
-    if (!shared || bytes != sizeof(SourceInstallation) || shared->version != 4 || shared->bytes != bytes
+    if (!shared || bytes != sizeof(SourceInstallation) || shared->version != 5 || shared->bytes != bytes
+        || source_uses_witness(shared)
         || shared->state != 1 || __atomic_load_n(&shared->invoked, __ATOMIC_ACQUIRE)
         || !authorization_current(&shared->tx)) return 0;
+    uint32_t prepared = 3;
+    return __atomic_compare_exchange_n(&shared->claim, &prepared, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+
+// Isolated ordered construction; retained rejection-only entry is unchanged.
+__declspec(dllexport) LRESULT TypeLaySourceOrderedGetMessageProc(int code, WPARAM wp, LPARAM lp) {
+    return source_get_message(code, wp, lp, 2);
+}
+__declspec(dllexport) uint32_t TypeLaySourceArmWitness(SourceInstallation *shared, uint32_t bytes,
+    uint64_t nonce, SourceWitness *witness, uint32_t witness_bytes) {
+    if (!shared || bytes != sizeof(SourceInstallation) || shared->version != 5 || shared->bytes != bytes
+        || !source_uses_witness(shared) || shared->state != 1
+        || __atomic_load_n(&shared->claim, __ATOMIC_ACQUIRE) != 3
+        || __atomic_load_n(&shared->invoked, __ATOMIC_ACQUIRE)
+        || !witness || witness_bytes != sizeof(SourceWitness) || !source_witness_matches(witness, shared)
+        || __atomic_load_n(&witness->attached, __ATOMIC_ACQUIRE) != 1
+        || witness->attached_nonce != nonce
+        || witness->attached_generation[0] != shared->generation[0]
+        || witness->attached_generation[1] != shared->generation[1]
+        || witness->attached_grant[0] != shared->grant[0] || witness->attached_grant[1] != shared->grant[1]
+        || !authorization_current(&shared->tx)) return 0;
+    uint64_t published = __atomic_load_n(&witness->published, __ATOMIC_ACQUIRE);
+    uint64_t consumed = __atomic_load_n(&witness->consumed, __ATOMIC_ACQUIRE);
+    uint64_t boundary = GetTickCount64();
+    uint32_t active = __atomic_load_n(&witness->recording_active, __ATOMIC_ACQUIRE);
+    uint64_t initial = __atomic_load_n(&witness->initial_tick, __ATOMIC_ACQUIRE);
+    if (!boundary || active > 1 || (active ? (!initial || boundary < initial || boundary - initial > 0x7fffffffu)
+            : (initial || published || consumed))
+        || consumed > published || published - consumed > SOURCE_WITNESS_CAPACITY
+        || published < witness->attached_sequence) return 0;
+    // Caller is the existing App LL thread, never the source or a worker. These
+    // scalar writes precede the release Arm CAS. LL recording cannot interleave
+    // this command; source input racing while Prepared can only withdraw it.
+    shared->witness_boundary_sequence = published;
+    shared->witness_boundary_tick = boundary;
+    if (!active) {
+        // First exact attach only. The source reader is already bound, and no
+        // LL callback can interleave this writer command. Release activation
+        // publishes the common lower bound; no FIFO entry is discarded. Even
+        // if withdrawal now wins the Arm CAS, observation stays active forever
+        // for this lifetime and later grants retain all subsequent records.
+        __atomic_store_n(&witness->initial_tick, boundary, __ATOMIC_RELAXED);
+        __atomic_store_n(&witness->recording_active, 1, __ATOMIC_RELEASE);
+    }
     uint32_t prepared = 3;
     return __atomic_compare_exchange_n(&shared->claim, &prepared, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
 }

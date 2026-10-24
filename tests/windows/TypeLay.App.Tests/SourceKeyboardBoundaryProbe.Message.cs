@@ -55,8 +55,8 @@ public sealed partial class SourceKeyboardBoundaryProbe
                 Assert.True(OpenProcessToken(sender.Handle, 0x0008, out var token));
                 using (token)
                 {
-                    Assert.True(GetTokenInformation(token, 26, out uint uiAccess, sizeof(uint), out uint returned));
-                    Assert.Equal((uint)sizeof(uint), returned);
+                    Assert.True(GetTokenInformation(token, 26, out uint uiAccess, sizeof(uint), out uint tokenInfoBytes));
+                    Assert.Equal((uint)sizeof(uint), tokenInfoBytes);
                     Assert.Equal(0u, uiAccess);
                 }
             }

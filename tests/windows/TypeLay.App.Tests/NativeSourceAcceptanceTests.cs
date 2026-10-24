@@ -18,16 +18,18 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class NativeSourceAcceptanceTests
 {
-    [Fact]
-    public async Task PreviousPrivateSourceEnvelopeCannotInstallUnderTheNewProtocol()
+    [Theory]
+    [InlineData(49344)] // Actual v4 mapping length.
+    [InlineData(49376)] // A current-sized section cannot make a v4 header valid.
+    public async Task PreviousPrivateSourceEnvelopeCannotInstallUnderTheNewProtocol(int bytes)
     {
         await using var desktop = await ProductionForegroundWriteTests.Desktop.Start();
         await desktop.Prepare(desktop.A, "pre old post", new(4, 7));
         var snapshot = await desktop.Capture();
-        using var wire = new SourceWire(snapshot, version: 3);
-        wire.Send(1);
-        Assert.Equal(2u, wire.State);
-        Assert.Equal((uint)Denial.Unsupported, wire.Reason);
+        using var wire = new SourceWire(snapshot, version: 4, bytes: bytes);
+        bool acknowledged = wire.Send(1, allowMissingAcknowledgement: bytes == 49344);
+        Assert.Equal(acknowledged ? 2u : 0u, wire.State);
+        Assert.Equal(acknowledged ? (uint)Denial.Unsupported : 0u, wire.Reason);
         Assert.Equal(snapshot.Text, N.ReadText(desktop.A, Limits.MaxTextUnits));
         Assert.Equal(snapshot.Selection, N.ReadSelection(desktop.A));
     }
@@ -236,6 +238,7 @@ public sealed class NativeSourceAcceptanceTests
         private readonly MemoryMappedFile _mapping;
         private readonly MemoryMappedViewAccessor _view;
         private readonly nint _root;
+        private readonly int _bytes;
         internal ulong First
         {
             get;
@@ -245,16 +248,17 @@ public sealed class NativeSourceAcceptanceTests
         internal uint State => _view.ReadUInt32(8);
         internal uint Reason => _view.ReadUInt32(80);
 
-        internal SourceWire(InputSnapshot source, uint version = 4)
+        internal SourceWire(InputSnapshot source, uint version = 5, int bytes = 49376)
         {
+            _bytes = bytes;
             var target = source.Target.AsWindows();
             _root = (nint)target.RootHwnd;
             byte[] nonce = RandomNumberGenerator.GetBytes(8);
             First = BitConverter.ToUInt64(nonce, 0);
-            _mapping = MemoryMappedFile.CreateNew($"Local\\TypeLay.Source.{First:x16}", 49344);
+            _mapping = MemoryMappedFile.CreateNew($"Local\\TypeLay.Source.{First:x16}", bytes);
             _view = _mapping.CreateViewAccessor();
             _view.Write(0, version);
-            _view.Write(4, 49344u);
+            _view.Write(4, (uint)bytes);
             _view.WriteArray(16, Guid.NewGuid().ToByteArray(), 0, 16);
             _view.WriteArray(32, Guid.NewGuid().ToByteArray(), 0, 16);
             _view.Write(48, source.ObservedAtMs);
@@ -278,17 +282,22 @@ public sealed class NativeSourceAcceptanceTests
             _view.WriteArray(176 + 8193 * 2, Encoding.Unicode.GetBytes("Hello"), 0, 10);
         }
 
-        internal void Send(int operation)
+        internal bool Send(int operation, bool allowMissingAcknowledgement = false)
         {
             string name = operation == 1 ? "SourceInstall" : operation == 2 ? "SourceRevoke" : "SourcePoll";
             ulong command = ReserveCommand();
-            N.Send(_root, RegisterWindowMessageW($"TypeLay.NativeInput.{name}.v4"), (nuint)First, unchecked((nint)command));
+            N.Send(_root, RegisterWindowMessageW($"TypeLay.NativeInput.{name}.v5"), (nuint)First, unchecked((nint)command));
+            // A truly shorter old section may fail the native mapping before
+            // any ACK. That is still refusal, never installation or Quiet.
+            if (allowMissingAcknowledgement && _view.ReadUInt64(56) == 0)
+                return false;
             Assert.Equal(command, _view.ReadUInt64(56));
             Assert.Equal((uint)operation, _view.ReadUInt32(12));
+            return true;
         }
         public void Dispose()
         {
-            _view.WriteArray(0, new byte[49344], 0, 49344);
+            _view.WriteArray(0, new byte[_bytes], 0, _bytes);
             _view.Dispose();
             _mapping.Dispose();
         }

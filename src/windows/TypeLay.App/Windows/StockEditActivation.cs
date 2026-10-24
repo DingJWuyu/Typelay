@@ -17,7 +17,7 @@ internal sealed class StockEditActivation : IDisposable
 {
     internal sealed record Result(bool Claimed, WriteReceipt? Receipt, bool ExceededBudget, double ElapsedMs,
         uint NativeReason = 0);
-    private const int Bytes = 49344, Header = 72;
+    private const int Bytes = 49376, Header = 72;
     internal const uint BudgetMs = 5;
     private readonly MemoryMappedFile _mapping;
     private readonly MemoryMappedViewAccessor _view;
@@ -25,18 +25,23 @@ internal sealed class StockEditActivation : IDisposable
     private readonly ActivateNative _activate;
     private readonly WithdrawNative _withdraw;
     private readonly ArmNative _arm;
+    private readonly ArmWitnessNative? _armWitness;
     private readonly bool _sourceMessage;
     private readonly ulong _nonce, _command;
     private readonly uint _message;
     private int _references = 1, _disposed, _invoked;
+    internal ulong Nonce => _nonce;
     internal AcceptancePermit Permit
     {
         get;
     }
 
     [SupportedOSPlatform("windows")]
-    internal StockEditActivation(ulong nonce, ulong command, Guid generation, AcceptancePermit permit, bool sourceMessage = false)
+    internal StockEditActivation(ulong nonce, ulong command, Guid generation, AcceptancePermit permit,
+        bool sourceMessage = false, bool orderedSourceMessageWitness = false)
     {
+        if (orderedSourceMessageWitness && !sourceMessage)
+            throw new ArgumentException("Ordered witnesses require the source message route.");
         Permit = permit;
         _sourceMessage = sourceMessage;
         _nonce = nonce;
@@ -47,11 +52,14 @@ internal sealed class StockEditActivation : IDisposable
             _view = _mapping.CreateViewAccessor(0, Bytes, MemoryMappedFileAccess.ReadWrite);
             byte[] identity = new byte[16];
             _view.ReadArray(16, identity, 0, 16);
-            if (_view.ReadUInt32(0) != 4 || _view.ReadUInt32(4) != Bytes || new Guid(identity) != generation)
+            if (_view.ReadUInt32(0) != 5 || _view.ReadUInt32(4) != Bytes || new Guid(identity) != generation)
                 throw new InvalidOperationException("Source activation generation mismatch.");
             _view.ReadArray(32, identity, 0, 16);
             if (new Guid(identity) != permit.Plan.Id || command <= _view.ReadUInt64(56))
                 throw new InvalidOperationException("Source activation grant mismatch.");
+            _view.ReadArray(49344, identity, 0, 16);
+            if (new Guid(identity) != (orderedSourceMessageWitness ? permit.Plan.Expected.Target.Lifetime : Guid.Empty))
+                throw new InvalidOperationException("Source witness lifetime mismatch.");
             _library = NativeLibrary.Load(Path.Combine(AppContext.BaseDirectory, "TypeLay.NativeInput.dll"));
             _activate = Marshal.GetDelegateForFunctionPointer<ActivateNative>(
                 NativeLibrary.GetExport(_library, "TypeLaySourceActivate"));
@@ -59,7 +67,10 @@ internal sealed class StockEditActivation : IDisposable
                 NativeLibrary.GetExport(_library, "TypeLaySourceWithdraw"));
             _arm = Marshal.GetDelegateForFunctionPointer<ArmNative>(
                 NativeLibrary.GetExport(_library, "TypeLaySourceArm"));
-            _message = RegisterWindowMessageW("TypeLay.NativeInput.SourceActivate.v4");
+            if (orderedSourceMessageWitness)
+                _armWitness = Marshal.GetDelegateForFunctionPointer<ArmWitnessNative>(
+                    NativeLibrary.GetExport(_library, "TypeLaySourceArmWitness"));
+            _message = RegisterWindowMessageW("TypeLay.NativeInput.SourceActivate.v5");
             if (_message == 0)
                 throw new InvalidOperationException("Source activation message unavailable.");
         }
@@ -110,7 +121,10 @@ internal sealed class StockEditActivation : IDisposable
         finally { Release(); }
     }
 
-    internal bool Arm()
+    internal bool Arm() => ArmCore(null);
+    internal bool Arm(SourceInputWitness witness) => ArmCore(witness);
+
+    private bool ArmCore(SourceInputWitness? witness)
     {
         int references;
         do
@@ -121,8 +135,12 @@ internal sealed class StockEditActivation : IDisposable
         } while (Interlocked.CompareExchange(ref _references, references + 1, references) != references);
         try
         {
-            return _sourceMessage && Volatile.Read(ref _disposed) == 0
-                && _arm(_view.SafeMemoryMappedViewHandle, Bytes) != 0;
+            if (!_sourceMessage || Volatile.Read(ref _disposed) != 0)
+                return false;
+            if (witness is null)
+                return _armWitness is null && _arm(_view.SafeMemoryMappedViewHandle, Bytes) != 0;
+            return _armWitness is not null && witness.Ready && witness.Target.Id == Permit.Plan.Expected.Target
+                && _armWitness(_view.SafeMemoryMappedViewHandle, Bytes, _nonce, witness.Handle, SourceInputWitness.Bytes) != 0;
         }
         finally { Release(); }
     }
@@ -171,6 +189,9 @@ internal sealed class StockEditActivation : IDisposable
     private delegate uint WithdrawNative(SafeMemoryMappedViewHandle view, uint bytes);
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     private delegate uint ArmNative(SafeMemoryMappedViewHandle view, uint bytes);
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate uint ArmWitnessNative(SafeMemoryMappedViewHandle view, uint bytes, ulong nonce,
+        SafeMemoryMappedViewHandle witness, uint witnessBytes);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern uint RegisterWindowMessageW(string name);
 }

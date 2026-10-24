@@ -847,7 +847,7 @@ public sealed partial class ProductionForegroundWriteTests
             _pipeToken = broker.StartInfo.Environment["TYPELAY_PIPE_TOKEN"]!;
             _isolatedDirectory = isolatedDirectory;
         }
-        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? returnTrace = null, string? sourceClaimProbe = null, bool isolatedSourceAcceptance = false, bool sourceKeyboardProbe = false, bool sourceSynchronousProbe = false, bool sourceMessageProbe = false, bool sourceOriginProbe = false, bool sourceMessageAcceptance = false)
+        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? returnTrace = null, string? sourceClaimProbe = null, bool isolatedSourceAcceptance = false, bool sourceKeyboardProbe = false, bool sourceSynchronousProbe = false, bool sourceMessageProbe = false, bool sourceOriginProbe = false, bool sourceMessageAcceptance = false, bool orderedSourceMessageWitness = false)
         {
             var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(30));
@@ -881,9 +881,10 @@ public sealed partial class ProductionForegroundWriteTests
                 }
                 // Both Broker entry points use redirected stdio without a
                 // console, matching AppPaths.Child.
-                broker = isolatedSourceAcceptance || sourceMessageAcceptance
+                broker = isolatedSourceAcceptance || sourceMessageAcceptance || orderedSourceMessageWitness
                     ? StartProcessWithTrace(returnTrace, createNoWindow: true, Path.Combine(Repository(),
-                        "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"), sourceMessageAcceptance ? "--source-message-broker" : "--source-broker")
+                        "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"), orderedSourceMessageWitness ? "--source-ordered-broker"
+                        : sourceMessageAcceptance ? "--source-message-broker" : "--source-broker")
                     : StartProcessWithTrace(returnTrace, createNoWindow: true, Path.Combine(directory, "TypeLay.Broker.dll"));
                 var desktop = new Desktop(fixture, broker, deadline, isolatedDirectory);
                 Assert.Equal("ready", (await desktop.Call(new(BrokerProtocol.Version, 0, "hello", ""))).Status);

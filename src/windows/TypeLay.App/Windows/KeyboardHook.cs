@@ -519,6 +519,11 @@ internal sealed partial class KeyboardHook : IInputMonitor
         {
             while (Native.GetMessageW(out var msg, 0, 0, 0) > 0)
             {
+                if (msg.Hwnd == 0 && msg.Message == StockWitnessMessage)
+                {
+                    ProcessStockWitnessCommand();
+                    continue;
+                }
                 Native.TranslateMessage(ref msg);
                 Native.DispatchMessageW(ref msg);
             }
@@ -526,6 +531,14 @@ internal sealed partial class KeyboardHook : IInputMonitor
         finally
         {
             _ready = false;
+            try
+            {
+                StopStockWitnessWriter();
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                Interlocked.Exchange(ref _stockBlocked, 1);
+            }
             if (_hook != 0)
                 Native.UnhookWindowsHookEx(_hook);
             if (_mouseHook != 0)
@@ -787,22 +800,22 @@ internal sealed partial class KeyboardHook : IInputMonitor
             if (PairOrdinaryChord(data, down, repeated))
                 return 1;
             if (ObserveOwnedKey(data, down, repeated, injected, now, sessionKeys.Accept))
-                return Native.CallNextHookEx(_hook, code, wParam, lParam);
+                return PassStockWitness(code, wParam, lParam, data, repeated, now);
             int ordinary = ObserveOrdinaryChord(data, down, repeated, injected, now, binding, fresh, freshnessRefusal, sessionKeys);
             if (ordinary != 0)
-                return ordinary > 0 ? 1 : Native.CallNextHookEx(_hook, code, wParam, lParam);
+                return ordinary > 0 ? 1 : PassStockWitness(code, wParam, lParam, data, repeated, now);
             if (_stockMessageRoute && data.Key == 9)
             {
                 // This route never activates, consumes or turns LL observation
                 // into authority. Input before Arm invalidates that candidate,
                 // including while the source-install ACK is still outstanding.
                 if (Volatile.Read(ref _stockInstalled) is null || !source || Modified
-                    || injected && !_allowInjectedInput)
+                    || injected && !_allowInjectedInput && !_orderedSourceMessageWitness)
                 {
                     RevokeStockCandidate();
                     _gate.Revoke();
                 }
-                return Native.CallNextHookEx(_hook, code, wParam, lParam);
+                return PassStockWitness(code, wParam, lParam, data, repeated, now);
             }
             bool sourceBindingReady = UsesUnmodifiedSessionKeys || _stockExchange is not null && StockSessionKeysReady;
             bool modifiersReady = sessionKeys.AcceptModifiers != ShortcutModifiers.Control
@@ -827,7 +840,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 _acceptancePressKey = null;
             }
             if (StockAcceptance(decision, data, down, injected, lease, now, sourcePress, out bool stockConsume))
-                return stockConsume ? 1 : Native.CallNextHookEx(_hook, code, wParam, lParam);
+                return stockConsume ? 1 : PassStockWitness(code, wParam, lParam, data, repeated, now);
             if (decision.Permit is not null)
                 _notices.Enqueue(new("accept", decision.Permit, now, UserEpoch, ForegroundEpoch,
                     CommandGeneration: lease!.CommandGeneration, SessionRevision: lease.SessionRevision));
@@ -878,7 +891,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 PublishSourceAcceptanceControl(control);
             }
             completed = true;
-            return commandConsumed ? 1 : Native.CallNextHookEx(_hook, code, wParam, lParam);
+            return commandConsumed ? 1 : PassStockWitness(code, wParam, lParam, data, repeated, now);
         }
         finally
         {

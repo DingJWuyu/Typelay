@@ -1,6 +1,7 @@
 extern alias BrokerProduction;
 
 using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using TypeLay.Core;
@@ -203,17 +204,19 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         }
     });
 
-    [Fact]
-    public Task LateInstallAcknowledgementCannotRestoreARevokedCandidate() => desktop.RunAsync(async () =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task LateInstallAcknowledgementCannotRestoreARevokedCandidate(bool orderedWitness) => desktop.RunAsync(async () =>
     {
-        await using var native = await ProductionForegroundWriteTests.Desktop.Start(sourceMessageAcceptance: true);
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start(sourceMessageAcceptance: true, orderedSourceMessageWitness: orderedWitness);
         await native.Prepare(native.A, "你好", new(0, 2));
         Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchKey.v1", 9));
         Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchField.v1", native.A));
-        using var hook = new KeyboardHook(allowInjectedInput: true);
+        using var hook = new KeyboardHook(allowInjectedInput: !orderedWitness);
         await Until(() => hook.Ready, native.Token);
         using var broker = new FixtureBroker(native) { HoldInstallAcknowledgement = true };
-        using var input = new WindowsInputService(broker, 0, monitor: hook, sourceMessageAcceptance: true);
+        using var input = new WindowsInputService(broker, 0, monitor: hook, sourceMessageAcceptance: true, orderedSourceMessageWitness: orderedWitness);
         var capture = await input.CaptureAsync(new(hook.UserEpoch, hook.ForegroundEpoch, hook.SourceUserEpoch,
             null, [], false, new(hook.CommandGeneration, SessionShortcutBindings.Default)));
         var source = Assert.IsType<InputSnapshot>(capture.Snapshot);
@@ -231,6 +234,15 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             await broker.InstallReceived.Task.WaitAsync(native.Token);
             Assert.True(broker.Installation!.Installed);
             Assert.False(hook.AcceptanceReady(token, permit, WindowsInterruptClock.NowMs));
+            using var mapping = orderedWitness ? MemoryMappedFile.OpenExisting("Local\\TypeLay.SourceWitness."
+                + Convert.ToHexString(source.Target.Lifetime.ToByteArray()).ToLowerInvariant(), MemoryMappedFileRights.Read) : null;
+            using var witness = mapping?.CreateViewAccessor(0, SourceInputWitness.Bytes, MemoryMappedFileAccess.Read);
+            if (witness is not null)
+            {
+                Assert.Equal(1u, witness.ReadUInt32(12)); // Mapping prepared on the real LL thread.
+                Assert.Equal(0u, witness.ReadUInt32(132)); // No recording before this ACK reaches Arm.
+                Assert.Equal(0L, witness.ReadInt64(56));
+            }
             hook.Revoke();
             // The source is installed but the App has not received its control.
             // A real input here must pass, not be revived by the later ACK/Arm.
@@ -240,6 +252,13 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             await Until(() => N.GetProp(native.Root, "TypeLay.Test.SourceDispatchCompleted.v1") == 2, native.Token);
             Assert.True(WindowsInterruptClock.NowMs <= permit.ExpiresAtMs,
                 "The Prepared input must actually dispatch before expiry; expiry cannot prove withdrawal.");
+            if (witness is not null)
+            {
+                Assert.Equal(0L, witness.ReadInt64(56));
+                Assert.Equal(0L, witness.ReadInt64(64));
+                Assert.Equal(0u, witness.ReadUInt32(8)); // Dormant removal is not missing-history poison.
+                Assert.Equal(0u, witness.ReadUInt32(132));
+            }
         }
         finally { broker.ReleaseInstall.TrySetResult(); }
         await Until(() => { hook.TryRead(out _); return broker.Retired; }, native.Token);

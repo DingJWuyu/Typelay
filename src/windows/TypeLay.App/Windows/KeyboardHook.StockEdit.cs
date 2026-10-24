@@ -22,13 +22,17 @@ internal sealed partial class KeyboardHook
     private StockCandidate? _stockDelivery;
     private StockCandidate? _stockOwner;
     private int _stockWorker, _stockClosed, _stockBlocked, _stockHookActive;
-    private bool _stockMessageRoute;
+    private bool _stockMessageRoute, _orderedSourceMessageWitness;
 
     internal void ConfigureIsolatedStockAcceptance(
-        Func<string, SourceAcceptanceRequest, Task<SourceAcceptanceResult?>> exchange, bool sourceMessageRoute = false)
+        Func<string, SourceAcceptanceRequest, Task<SourceAcceptanceResult?>> exchange, bool sourceMessageRoute = false,
+        bool orderedSourceMessageWitness = false)
     {
+        if (orderedSourceMessageWitness && !sourceMessageRoute)
+            throw new ArgumentException("Ordered witnesses require the isolated source message route.");
         _stockExchange = exchange;
         _stockMessageRoute = sourceMessageRoute;
+        _orderedSourceMessageWitness = orderedSourceMessageWitness;
         _stockPrototype = true;
     }
 

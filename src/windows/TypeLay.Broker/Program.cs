@@ -13,7 +13,7 @@ internal static class Program
     [MTAThread]
     private static int Main() => Run();
 
-    internal static int Run(bool sourcePrototype = false, bool sourceMessageRoute = false)
+    internal static int Run(bool sourcePrototype = false, bool sourceMessageRoute = false, bool orderedSourceMessageWitness = false)
     {
         string? token = Environment.GetEnvironmentVariable("TYPELAY_PIPE_TOKEN");
         Environment.SetEnvironmentVariable("TYPELAY_PIPE_TOKEN", null);
@@ -21,7 +21,7 @@ internal static class Program
             return 2;
         using var input = Console.OpenStandardInput();
         using var output = Console.OpenStandardOutput();
-        using var provider = new UiaInputProvider(sourcePrototype, sourceMessageRoute);
+        using var provider = new UiaInputProvider(sourcePrototype, sourceMessageRoute, orderedSourceMessageWitness);
         long last = 0;
         try
         {

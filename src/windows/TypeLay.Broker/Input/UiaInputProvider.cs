@@ -29,11 +29,11 @@ internal sealed class UiaInputProvider : IDisposable
     private SourceAcceptanceRequest? _sourceOwner;
     private readonly bool _sourceMessageRoute;
     private bool _sourceCompletionTransferred;
-    public UiaInputProvider(bool sourcePrototype = false, bool sourceMessageRoute = false)
+    public UiaInputProvider(bool sourcePrototype = false, bool sourceMessageRoute = false, bool orderedSourceMessageWitness = false)
     {
         _sourcePrototype = sourcePrototype;
         _sourceMessageRoute = sourcePrototype && sourceMessageRoute;
-        _edits = new(sourceMessageRoute: _sourceMessageRoute);
+        _edits = new(sourceMessageRoute: _sourceMessageRoute, orderedSourceMessageWitness: orderedSourceMessageWitness);
     }
     public string? Application => _application;
 
