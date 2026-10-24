@@ -1276,6 +1276,9 @@ internal static partial class ContinuousTranslationCheck
         bool replaced = false, closePreservedLaterSettings = false;
         bool previewProgress = false, completedProgress = false, resetProgress = false;
         string? feedbackCode = null;
+        long? initialReadStartedAtMs = null, initialReadEndedAtMs = null;
+        OnDemandPracticeProgress? initialReadProgress = null;
+        object? initialReadFailureIdentity = null;
         try
         {
             await UntilAsync(() => { Require(model.Ready, "model-unavailable"); return !model.Busy; }, cancellation);
@@ -1332,11 +1335,36 @@ internal static partial class ContinuousTranslationCheck
                 root = child.Process.MainWindowHandle;
                 return root != 0;
             }, cancellation);
-            N.GetWindowThreadProcessId(root, out uint pid);
+            uint rootThread = N.GetWindowThreadProcessId(root, out uint pid);
             Require(pid == child!.Process.Id, "practice-window-identity");
             nint field = GetDlgItem(root, 101);
             Require(field != 0 && N.GetAncestor(field, 2) == root, "practice-input-window");
-            Require(N.ReadText(field, Limits.MaxTextUnits) == view.SampleText, "practice-sample-not-present");
+            initialReadProgress = controller.PracticeProgress;
+            initialReadStartedAtMs = WindowsInterruptClock.NowMs;
+            try
+            {
+                Require(N.ReadText(field, Limits.MaxTextUnits) == view.SampleText, "practice-sample-not-present");
+            }
+            catch (N.NativeMessageException)
+            {
+                initialReadEndedAtMs = WindowsInterruptClock.NowMs;
+                // Later, non-atomic metadata only; not the identity at the failed send.
+                try
+                {
+                    initialReadFailureIdentity = new
+                    {
+                        observedAtMs = WindowsInterruptClock.NowMs,
+                        processAlive = !child.Process.HasExited,
+                        rootMatched = N.GetWindowThreadProcessId(root, out uint rootPid) == rootThread && rootPid == pid,
+                        fieldMatched = N.GetWindowThreadProcessId(field, out uint fieldPid) == rootThread && fieldPid == pid,
+                        fieldRootMatched = N.GetAncestor(field, 2) == root,
+                        fieldIdMatched = GetDlgItem(root, 101) == field
+                    };
+                }
+                catch (Exception error) when (error is not OutOfMemoryException) { }
+                throw;
+            }
+            finally { initialReadEndedAtMs ??= WindowsInterruptClock.NowMs; }
             Require(N.SetForegroundWindow(root), "practice-foreground-request");
             N.PostMessage(root, 0x0007, 0, 0); // Normal root focus behavior; no fixture message.
             await UntilAsync(() => N.Focused() == (root, field), cancellation);
@@ -1429,7 +1457,17 @@ internal static partial class ContinuousTranslationCheck
                 previewProgress,
                 completedProgress,
                 resetProgress,
-                closePreservedLaterSettings
+                closePreservedLaterSettings,
+                initialSourceRead = initialReadStartedAtMs is null ? null : new
+                {
+                    startedAtMs = initialReadStartedAtMs,
+                    endedAtMs = initialReadEndedAtMs,
+                    progressAvailable = initialReadProgress is not null,
+                    targetBound = initialReadProgress?.Target is not null,
+                    previewReady = initialReadProgress?.PreviewReady,
+                    directReady = initialReadProgress?.DirectReady,
+                    failureIdentity = initialReadFailureIdentity
+                }
             };
         }
         Console.WriteLine($"On-demand practice: {result.Outcome}; stage={result.Stage}; code={result.Failure}.");

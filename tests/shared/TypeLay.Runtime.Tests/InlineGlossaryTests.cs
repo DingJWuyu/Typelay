@@ -67,14 +67,16 @@ public sealed class InlineGlossaryTests
     [InlineData(true)]
     public async Task ProvenPendingSourceReturnPreservesTheFormWithoutCapturingOrGrantingFocus(bool editedPending)
     {
+        const string manualDraft = "keep my manual draft";
         using var s = editedPending ? Editing() : new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
             modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
         if (editedPending)
         {
-            s.View.DraftChanged!("keep my manual draft");
+            s.View.DraftChanged!(manualDraft);
             s.View.ReturnRequested!(s.View.Token);
             s.Tick();
             Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+            Assert.Equal(manualDraft, s.View.Preview);
         }
         else
             s.ReadyCandidate();
@@ -97,7 +99,7 @@ public sealed class InlineGlossaryTests
         Assert.Equal(FocusMember.Other, s.Input.GetFocus(entry.Token.Target));
         Assert.True(s.View.Visible);
         Assert.Equal(entry.Token, s.View.Token);
-        Assert.Equal(preview, s.View.Preview);
+        Assert.Equal(editedPending ? manualDraft : preview, s.View.Preview);
         Assert.Equal(captures, s.Service.Captures);
         Assert.Null(s.Input.Permit);
         Assert.Null(s.ReloadSettings().Glossary);
@@ -116,11 +118,19 @@ public sealed class InlineGlossaryTests
             new(s.Source.Target, s.Input.CommandGeneration, s.Input.SessionBindings, false, false)));
         Assert.True((await saving).Saved);
         Assert.Equal("fixed", Assert.Single(s.ReloadSettings().Glossary!.Rules).TargetTerm);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
         if (editedPending)
         {
             Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
-            Assert.Equal(preview, s.View.Preview);
-            Assert.Equal("keep my manual draft", s.View.Draft);
+            Assert.Equal(manualDraft, s.View.Preview);
+            // Source return promotes the draft to the pending candidate. The
+            // editor exposes it as Draft again only after a new explicit edit.
+            s.View.CloseGlossaryRequested!(entry.FormId);
+            s.Tick(); // Ordinary fresh capture restores the editor shortcut ACK.
+            Assert.True(s.View.BeginEditing!(s.View.Token));
+            Assert.Equal(SessionState.EditingTranslation, s.View.State);
+            Assert.Equal(manualDraft, s.View.Draft);
         }
         Assert.Null(s.Input.Permit);
         Assert.Empty(s.Service.Writes);
@@ -147,6 +157,7 @@ public sealed class InlineGlossaryTests
         if (change != "unproven")
             s.View.GlossarySourceReturnPending = form => platformPending && ReferenceEquals(form, entry);
         var saving = Add(s, entry);
+        Assert.False(saving.IsCompleted);
         s.Input.InEditor = false;
         s.Input.FocusedTarget = new("controlled", "unavailable", Guid.NewGuid());
         s.View.GlossaryEntryFocus = null;
@@ -155,10 +166,15 @@ public sealed class InlineGlossaryTests
         if (change == "window")
             s.Input.WindowEpoch++;
         if (change == "configuration")
+        {
+            var generation = s.Input.CommandGeneration;
             s.Settings.Update(s.Settings.Value with
             {
-                Source = "fr"
+                Mode = WorkMode.OnDemand
             });
+            Assert.Equal(WorkMode.OnDemand, s.Settings.Value.Mode);
+            Assert.NotEqual(generation, s.Input.CommandGeneration);
+        }
         if (change == "input-unavailable")
             s.Input.Ready = false;
         if (change == "closed")
@@ -169,7 +185,9 @@ public sealed class InlineGlossaryTests
         s.Input.FocusedTarget = s.Source.Target;
         pending.SetResult(true);
         s.Tick(0);
-        Assert.False((await saving).Saved);
+        var result = await saving;
+        Assert.False(result.Saved);
+        Assert.Equal("glossary-canceled", result.Code);
         Assert.Null(s.ReloadSettings().Glossary);
         Assert.Empty(s.Service.Writes);
     }

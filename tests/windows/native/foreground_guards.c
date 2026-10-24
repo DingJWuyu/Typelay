@@ -42,7 +42,7 @@ typedef struct {
 } TestQueueMessage;
 static TestQueueMessage *retrieved_message;
 static int message_next_calls, message_next_fault, message_nested_calls, message_change_at_limit;
-static uint32_t message_pending;
+static uint32_t message_pending, queue_status_calls;
 static void send_source(uint32_t message);
 LRESULT TypeLaySourceGetMessageProc(int code, WPARAM wp, LPARAM lp);
 enum { InstallMessage = 0xc101, RevokeMessage, PollMessage, ActivateMessage };
@@ -311,7 +311,11 @@ HANDLE GetFocus(void) { return field.focus; }
 // Remote activation is not exercised; the exported source hook receives the
 // controlled request directly. No claim about real Windows queue state follows.
 HANDLE GetActiveWindow(void) { field.invalid_call = 1; return 0; }
-uint32_t GetQueueStatus(uint32_t flags) { require(source_wire_enabled && flags == 0x1dff); return message_pending << 16; }
+uint32_t GetQueueStatus(uint32_t flags) {
+    require(source_wire_enabled && flags == 0x1dff);
+    queue_status_calls++;
+    return message_pending << 16;
+}
 LRESULT SendMessageTimeoutW(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp,
     uint32_t flags, uint32_t timeout, uintptr_t *result) {
     (void)hwnd; (void)message; (void)wp; (void)lp; (void)flags; (void)timeout;
@@ -893,7 +897,7 @@ static int source_input_identity_is_bound_until_exact_retirement(void) {
 static int prepare_source_message(void) {
     source_wire_enabled = 1;
     message_next_fault = message_nested_calls = message_change_at_limit = 0;
-    message_pending = 0;
+    message_pending = queue_status_calls = 0;
     wipe(&field, sizeof(field));
     field.cookie = LifetimeCookie;
     prepare_transaction(Unchanged);
@@ -907,15 +911,17 @@ static int prepare_source_message(void) {
     if (source_wire.state != 1 || source_wire.claim || field.invalid_call) return 0;
     return 1;
 }
-static int source_removed_message_commits_before_selection(void) {
+static int source_removed_message_commits_before_selection(uint32_t pending) {
     if (!prepare_source_message()) return 0;
+    // A category hint alone is not an observed source-state/input change.
+    message_pending = pending;
     TestQueueMessage message = {handle(SourceWindow), 0x100, 9, 0x000f0001, 1000, {0, 0}, 0};
     retrieved_message = &message;
     message_next_calls = 0;
     TypeLaySourceGetMessageProc(0, 1, (LPARAM)&message);
     retrieved_message = 0;
     if (message.message || message.wparam != 9 || message.lparam != 0x000f0001
-        || message_next_calls != 1 || source_wire.claim != 1 || source_wire.invoked != 1
+        || message_next_calls != 1 || queue_status_calls || source_wire.claim != 1 || source_wire.invoked != 1
         || source_wire.acknowledgement != 1 || source_wire.acknowledged_operation != 1
         || field.set_calls != 1 || field.replace_calls != 1 || !equal(field.text, written_text, 15)
         || field.invalid_call || source_mapped || source_allocated) return 0;
@@ -926,9 +932,56 @@ static int source_removed_message_commits_before_selection(void) {
     source_wire_enabled = 0;
     return source_wire.state == 3 && !source_mapped && !source_allocated && !field.invalid_call;
 }
+static int source_sent_activation_still_refuses_pending_work(void) {
+    for (uint32_t pending = 1; pending <= 0x1000; pending <<= 1) {
+        if (!(pending & 0x1dff)) continue;
+        if (!prepare_source_message()) return 0;
+        message_pending = pending;
+        send_source(ActivateMessage);
+        if (source_wire.claim || source_wire.tx.status != 2
+            || source_wire.tx.reason != (SOURCE_PENDING_WORK | pending)
+            || queue_status_calls != 1 || field.set_calls || field.replace_calls
+            || !equal(field.text, initial_text, 13) || field.invalid_call) return 0;
+        send_source(RevokeMessage);
+        if (source_wire.state != 3 || source_mapped || source_allocated || field.invalid_call) return 0;
+        source_wire_enabled = 0;
+    }
+    if (!prepare_source_message()) return 0;
+    message_pending = 0x41;
+    send_source(ActivateMessage);
+    if (source_wire.claim || source_wire.tx.status != 2 || source_wire.tx.reason != (SOURCE_PENDING_WORK | 0x41)
+        || queue_status_calls != 1 || field.set_calls || field.replace_calls) return 0;
+    send_source(RevokeMessage);
+    source_wire_enabled = 0;
+    return source_wire.state == 3 && !source_mapped && !source_allocated && !field.invalid_call;
+}
+static int source_admission_pointer_pair_is_required(void) {
+    // Local defensive invariant only: both public hook callers construct either
+    // two pointers or neither. No public entry can manufacture this XOR state.
+    QueueMessage message = {handle(SourceWindow), 0x100, 9, 0x000f0001, 1000, {0, 0}, 0};
+    for (int missing = 0; missing < 2; missing++) {
+        prepare_transaction(Unchanged);
+        uint32_t claim = 0, reason = 0;
+        SourceAdmission admission = { &claim, &reason,
+            missing ? 0 : &message, missing ? &message : 0 };
+        execute_guarded(&request, 0, 0, 0, &admission);
+        if (request.status != 2 || request.reason != 6 || claim || reason || message.message != 0x100
+            || field.set_calls || field.replace_calls || field.text_reads || field.invalid_call) return 0;
+    }
+    return 1;
+}
 static int source_message_noremove_and_nested_remove_do_not_spend_the_grant(void) {
     if (!prepare_source_message()) return 0;
     TestQueueMessage message = {handle(SourceWindow), 0x100, 9, 0x000f0001, 1000, {0, 0}, 0};
+    TestQueueMessage prior = {handle(SourceWindow), 0x100, 0x27, 0x004d0001, 1000, {0, 0}, 0};
+    // Observing a non-accept key without removal, or a negative hook code, must
+    // not revoke or spend the later real Tab. Both still pass through once.
+    retrieved_message = &prior;
+    message_next_calls = 0;
+    TypeLaySourceGetMessageProc(0, 0, (LPARAM)&prior);
+    TypeLaySourceGetMessageProc(-1, 1, (LPARAM)&prior);
+    if (prior.message != 0x100 || prior.wparam != 0x27 || source_wire.invoked || source_wire.claim
+        || message_next_calls != 2 || field.set_calls || field.replace_calls) return 0;
     retrieved_message = &message;
     message_next_calls = 0;
     for (int i = 0; i < 2; i++) {
@@ -960,15 +1013,25 @@ static int source_message_refusal_never_restores_or_replays_the_original(void) {
         || source_wire.tx.reason != 15 || source_wire.invoked || source_wire.claim
         || source_mapped || source_allocated || field.invalid_call) return 0;
     source_wire_enabled = 0;
-    for (int fault = 1; fault <= 10; fault++) {
+    for (int fault = 1; fault <= 12; fault++) {
         if (!prepare_source_message()) return 0;
+        message_pending = 0x41; // Hints never excuse a real source/MSG conflict.
         TestQueueMessage message = {handle(SourceWindow), 0x100, 9, 0x000f0001, 1000, {0, 0}, 0};
         retrieved_message = &message;
         message_next_calls = 0;
         switch (fault) {
         case 1: case 3: case 4: message_next_fault = fault; break;
         case 2: field.text[0] = 'X'; break;
-        case 5: message_pending = 1; break;
+        case 5: {
+            TestQueueMessage prior = {handle(SourceWindow), 0x100, 0x27, 0x004d0001, 1000, {0, 0}, 0};
+            retrieved_message = &prior;
+            TypeLaySourceGetMessageProc(0, 1, (LPARAM)&prior);
+            require(prior.message == 0x100 && prior.wparam == 0x27 && message_next_calls == 1
+                && !source_wire.invoked && !source_wire.claim);
+            retrieved_message = &message;
+            message_next_calls = 0;
+            break;
+        }
         case 6: field.precise_100ns = 10010000; break;
         case 7: field.cookie = 0; break;
         case 8: {
@@ -978,22 +1041,25 @@ static int source_message_refusal_never_restores_or_replays_the_original(void) {
         }
         case 9: field.scenario = InputContextChangedAfterSelection; break;
         case 10: message_change_at_limit = 1; break;
+        case 11: field.start = field.end = 0; break;
+        case 12: field.scenario = SelectionChangedAfterSelection; break;
         }
         TypeLaySourceGetMessageProc(0, 1, (LPARAM)&message);
         retrieved_message = 0;
-        int claimed = fault == 9;
-        const uint32_t reasons[] = {0, 15, 3, 15, 14, SOURCE_PENDING_WORK | 1, 14, 2, 15, 9, 15};
+        int claimed = fault == 9 || fault == 12;
+        const uint32_t reasons[] = {0, 15, 3, 15, 14, 15, 14, 2, 15, 9, 15, 4, 3};
         if (message.message != (claimed ? 0u : 0x100u)
             || message.wparam != (fault == 1 ? 0x76u : 9u)
             || message.lparam != (fault == 10 ? 0x000e0001 : 0x000f0001)
             || source_wire.invoked != 1 || source_wire.claim != (fault == 4 ? 2u : (uint32_t)claimed)
             || source_wire.tx.status != 2 || source_wire.tx.reason != reasons[fault]
-            || message_next_calls != 1 || field.set_calls != claimed || field.replace_calls
+            || message_next_calls != 1 || queue_status_calls || field.set_calls != claimed || field.replace_calls
             || field.invalid_call || source_mapped || source_allocated) return 0;
         uint32_t reason = source_wire.tx.reason;
         // Equal state after refusal never gives this grant another attempt.
         field.cookie = LifetimeCookie; field.precise_100ns = 10000000;
         field.input_context = handle(4); field.text[0] = initial_text[0]; message_pending = 0;
+        field.scenario = Unchanged; field.start = field.end = 12;
         message.message = 0x100; message.wparam = 9; message.lparam = 0x000f0001;
         TypeLaySourceGetMessageProc(0, 1, (LPARAM)&message);
         if (message.message != 0x100 || source_wire.tx.reason != reason
@@ -1015,9 +1081,13 @@ static int run_checks(void) {
     if (!exact_field_foreground_keeps_the_original_transaction_guards()) return 17;
     if (!unknown_wire_operations_cannot_read_the_source()) return 10;
     if (!source_input_identity_is_bound_until_exact_retirement()) return 18;
-    if (!source_removed_message_commits_before_selection()) return 19;
+    const uint32_t hints[] = {0, 1, 0x40, 0x41, 0x1dff};
+    for (unsigned i = 0; i < sizeof(hints) / sizeof(hints[0]); i++)
+        if (!source_removed_message_commits_before_selection(hints[i])) return 19;
     if (!source_message_noremove_and_nested_remove_do_not_spend_the_grant()) return 20;
     if (!source_message_refusal_never_restores_or_replays_the_original()) return 21;
+    if (!source_sent_activation_still_refuses_pending_work()) return 22;
+    if (!source_admission_pointer_pair_is_required()) return 23;
     if (!owned_lifetime_cannot_be_restored_by_capture_or_release()) return 5;
     if (!automatic_lifetime_cannot_use_the_ordinary_write_route()) return 12;
     if (!owned_preflight_refuses_without_consuming_or_mutating()) return 6;

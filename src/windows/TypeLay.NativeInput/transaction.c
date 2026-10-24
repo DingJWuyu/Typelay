@@ -394,6 +394,8 @@ typedef struct {
 static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accepted,
     const OwnedInputContext *expected_input, const SourceAdmission *admission) {
     tx->status = 2; tx->reason = 6; // RejectedBeforeMutation / Unsupported.
+    // These private pointers are a pair, never a remotely selected bypass.
+    if (admission && ((admission->message == 0) != (admission->expected_message == 0))) return;
     if (tx->version != VERSION || !tx->cookie || GetTickCount64() > tx->deadline) return;
     HANDLE hwnd = (HANDLE)(uintptr_t)tx->hwnd;
     if (!owned_current(tx)) { tx->reason = 2; return; }
@@ -455,12 +457,8 @@ static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accep
     if (!owned_input_preflight(tx, proc, focus_revision, expected_input,
         tx->expected_selection_start, tx->expected_selection_end)) return;
     if (admission) {
-        // Recheck on this GUI thread, before the first input side effect. Queue
-        // status is deliberately conservative: any pending input, posted work,
-        // timer, paint or sent work refuses. Never pump/remove messages to pass.
-        // GetQueueStatus also clears the queried new-message bits. This is NOT
-        // side-effect-free for filtered PeekMessage/WaitMessage hosts; only the
-        // controlled fixture pump is presently eligible for this prototype.
+        // Both source routes recheck current state before the first input side
+        // effect. Neither route pumps/removes messages to obtain permission.
         if (*admission->reason || ime(hwnd) != 1) { tx->reason = 9; return; }
         if (read_text(tx, proc) - 1 != tx->length || !equal(tx->observed, tx->expected, tx->length)) {
             tx->reason = 3; return;
@@ -469,10 +467,15 @@ static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accep
             tx->reason = 4; return;
         }
         if (!source_input_current(tx)) return;
-        // Keep only the already sampled queue-type hints in the diagnostic.
-        // No second queue read, message retrieval, or additional authority.
-        uint32_t pending_work = GetQueueStatus(0x1dff) >> 16;
-        if (pending_work) { tx->reason = SOURCE_PENDING_WORK | pending_work; return; }
+        if (!admission->message) {
+            // Sent activation can overtake queued work: retain its conservative
+            // full mask and diagnostic. This clears queried new-message bits,
+            // so it remains restricted to the controlled prototype pump.
+            uint32_t pending_work = GetQueueStatus(0x1dff) >> 16;
+            if (pending_work) { tx->reason = SOURCE_PENDING_WORK | pending_work; return; }
+        }
+        // The retrieved route owns this actual PM_REMOVE callback, not a queue
+        // emptiness/completion witness. Unrelated hints cannot revoke it.
         if (admission->message && !same_queue_message(admission->message, admission->expected_message)) {
             tx->reason = 15; return;
         }
@@ -600,16 +603,23 @@ static SourceSlot source;
 static uint32_t source_callback;
 __declspec(dllexport) uint32_t TypeLaySourceInstallationVersion(void) { return 3; }
 
+static int source_input_message(uint32_t message) {
+    switch (message) {
+    case 0x100: case 0x101: case 0x102: case 0x104: case 0x105:
+    case 0x201: case 0x204: case 0x207:
+        return 1;
+    default: return 0;
+    }
+}
 static void source_invalidate(const CallMessage *msg) {
     if (__atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) != GetCurrentThreadId() || source.reason) return;
     if (msg->hwnd == (HANDLE)(uintptr_t)source.hwnd) {
+        if (source_input_message(msg->message)) { source.reason = 15; return; }
         switch (msg->message) {
         case 0x08: case 0x82: // KILLFOCUS / NCDESTROY: a round trip cannot revive it.
             source.reason = 2; break;
         case 0x0c: case 0xb1: case 0xc2: case 0xcc: case 0xcf:
         case 0x51: case 0x10d: case 0x10e: case 0x10f:
-        case 0x100: case 0x101: case 0x102: case 0x104: case 0x105:
-        case 0x201: case 0x204: case 0x207:
             source.reason = 15; break;
         case 0x281: // SETCONTEXT activation/deactivation only revoke, never re-arm.
             source.reason = 9; break;
@@ -850,13 +860,22 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
 __declspec(dllexport) LRESULT TypeLaySourceGetMessageProc(int code, WPARAM wp, LPARAM lp) {
     QueueMessage *message = (QueueMessage *)lp;
     uint32_t thread = GetCurrentThreadId(), empty_callback = 0;
-    if (code != 0 || wp != 1 || !message || message->message != 0x100 || message->wparam != 9
-        || ((uintptr_t)message->lparam & 0xc0000000u)
+    if (code != 0 || wp != 1 || !message
         || __atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) != thread
-        || source.hwnd != (uint64_t)(uintptr_t)message->hwnd || source.completed_status
-        || GetKeyState(0x10) < 0 || GetKeyState(0x11) < 0 || GetKeyState(0x12) < 0
-        || GetKeyState(0x5b) < 0 || GetKeyState(0x5c) < 0
-        || !__atomic_compare_exchange_n(&source_callback, &empty_callback, thread, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        || source.hwnd != (uint64_t)(uintptr_t)message->hwnd || source.completed_status)
+        return CallNextHookEx(0, code, wp, lp);
+    const int first_tab = message->message == 0x100 && message->wparam == 9
+        && !((uintptr_t)message->lparam & 0xc0000000u)
+        && GetKeyState(0x10) >= 0 && GetKeyState(0x11) >= 0 && GetKeyState(0x12) >= 0
+        && GetKeyState(0x5b) >= 0 && GetKeyState(0x5c) >= 0;
+    if (!first_tab) {
+        // Observe only this grant's actual removed source input, not NOREMOVE,
+        // category hints or hypothetical pre-installation dispatch history.
+        // Revoke before the next hook can reenter; never consume this message.
+        if (source_input_message(message->message) && !source.reason) source.reason = 15;
+        return CallNextHookEx(0, code, wp, lp);
+    }
+    if (!__atomic_compare_exchange_n(&source_callback, &empty_callback, thread, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
         return CallNextHookEx(0, code, wp, lp);
     // Protect the complete downstream chain as well as execution. Nested revoke
     // may latch a reason, but cannot acknowledge quiet, replace this grant or

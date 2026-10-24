@@ -244,6 +244,22 @@ public sealed class ChildProcessTests(ITestOutputHelper output)
         List<string> stages = [];
         string stage = "generation.create";
         void Enter(string next) => stages.Add(stage = next);
+        bool ObserveExited(string name, ModelChildProcess owner)
+        {
+            bool exited = owner.Process.HasExited;
+            // Capture an already-exited root before cleanup can terminate it.
+            // This observation is never a substitute for generation exit proof.
+            if (exited)
+                try
+                {
+                    stages.Add($"owner-exited: owner={name}; exitCode=0x{unchecked((uint)owner.Process.ExitCode):x8}");
+                }
+                catch (Exception error)
+                {
+                    stages.Add($"owner-exit-code-unavailable: owner={name}; type={error.GetType().Name}; hresult=0x{error.HResult:x8}");
+                }
+            return exited;
+        }
 
         try
         {
@@ -258,9 +274,9 @@ public sealed class ChildProcessTests(ITestOutputHelper output)
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(10));
             Enter("first.assert-alive");
-            Assert.False(first.Process.HasExited);
+            Assert.False(ObserveExited("first", first));
             Enter("second.assert-alive");
-            Assert.False(second.Process.HasExited);
+            Assert.False(ObserveExited("second", second));
             Enter("both-owned.assert-exclusive-use-blocked");
             Assert.Throws<IOException>(() => { using var exclusive = generation.ExclusiveUse(); });
             Enter("both-owned.assert-delete-blocked");

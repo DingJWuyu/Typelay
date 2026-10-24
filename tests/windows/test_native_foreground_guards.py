@@ -236,6 +236,8 @@ class NativeForegroundGuardTests(unittest.TestCase):
                 19: "source PM_REMOVE commits the same MSG before selection",
                 20: "NOREMOVE and downstream nested removal cannot spend the grant",
                 21: "source MSG refusal, revocation and withdrawal cannot restore or replay",
+                22: "sent source activation retains every original pending-work refusal",
+                23: "private source admission requires both MSG pointers or neither",
             }
             self.assertEqual(
                 result.returncode,
