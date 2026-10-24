@@ -457,15 +457,25 @@ internal static partial class HyPackageCheck
                             {
                                 Stage = "find-notepad-close-dialog"
                             });
-                            var dialog = AutomationElement.RootElement.FindFirst(TreeScope.Children, new AndCondition(
-                                new PropertyCondition(AutomationElement.ProcessIdProperty, source.Process.Id),
-                                new PropertyCondition(AutomationElement.ClassNameProperty, "#32770")));
+                            nint dialogWindow = FindOrdinaryNotepadCloseDialog(root, (uint)source.Process.Id);
                             Volatile.Write(ref close, close with
                             {
-                                Stage = dialog is null ? "await-notepad-close-dialog-or-exit" : "find-notepad-discard-button",
-                                LastSameProcessDialogMatched = dialog is not null,
+                                Stage = dialogWindow == 0 ? "await-notepad-close-dialog-or-exit" : "bind-notepad-close-dialog",
+                                LastSameProcessDialogMatched = dialogWindow != 0,
                                 LastButtonId7Matched = null
                             });
+                            AutomationElement? dialog = null;
+                            if (dialogWindow != 0)
+                            {
+                                dialog = AutomationElement.FromHandle(dialogWindow);
+                                var current = dialog.Current;
+                                Require(current.ProcessId == source.Process.Id && current.NativeWindowHandle == dialogWindow,
+                                    "ordinary-notepad-close-dialog-identity-changed");
+                                Volatile.Write(ref close, close with
+                                {
+                                    Stage = "find-notepad-discard-button"
+                                });
+                            }
                             var discard = dialog is null ? null : Find(dialog, AutomationElement.AutomationIdProperty, "7", ControlType.Button);
                             if (dialog is not null)
                                 Volatile.Write(ref close, close with
@@ -476,6 +486,10 @@ internal static partial class HyPackageCheck
                             if (discard is not null)
                             {
                                 var invoke = (InvokePattern)discard.GetCurrentPattern(InvokePattern.Pattern);
+                                ct.ThrowIfCancellationRequested();
+                                Require(!source.Process.HasExited
+                                    && OrdinaryNotepadCloseDialogMatches(root, (uint)source.Process.Id, dialogWindow),
+                                    "ordinary-notepad-close-dialog-identity-changed");
                                 Volatile.Write(ref close, close with
                                 {
                                     Stage = "invoke-notepad-discard",
@@ -590,7 +604,7 @@ internal static partial class HyPackageCheck
         return await report.Save(directory);
     }
 
-    // Matches describe only the unchanged PID/class and button-ID selectors,
+    // Matches describe only the exact native owner/PID/class and button-ID selectors,
     // not proof that the matched dialog is a save prompt.
     private sealed record NotepadCloseObservation(string Stage, bool? LastSameProcessDialogMatched = null,
         bool? LastButtonId7Matched = null, int DiscardInvokeStartedCount = 0, int DiscardInvokeReturnedCount = 0);

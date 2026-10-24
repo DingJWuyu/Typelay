@@ -59,11 +59,18 @@ internal sealed class SourceInstallationReentry : IDisposable
                 && IsOwnEdit(message.Hwnd))
             {
                 if (message.Hwnd == dispatchField && message.Message is 0x100 or 0x104
-                    && ((long)message.LParam & 0xc0000000L) == 0)
-                    _dispatchDown ??= message;
+                    && ((long)message.LParam & 0xc0000000L) == 0 && _dispatchDown is null)
+                {
+                    _dispatchDown = message;
+                    N.SetProp(_root, "TypeLay.Test.SourceDispatchDownTime.v1", (nint)message.Time);
+                }
                 else if (_dispatchDown is not null && message.Message is 0x101 or 0x105
-                    && ((long)message.LParam & 0xc0000000L) == 0xc0000000L)
-                    _dispatchUp ??= message; // A refused Tab may have navigated to the other owned Edit.
+                    && ((long)message.LParam & 0xc0000000L) == 0xc0000000L && _dispatchUp is null)
+                {
+                    // A refused Tab may have navigated to the other owned Edit.
+                    _dispatchUp = message;
+                    N.SetProp(_root, "TypeLay.Test.SourceDispatchUpTime.v1", (nint)message.Time);
+                }
             }
             // Explicitly selected by this fixture's test, never arbitrary user input.
             nint observedKey = N.GetProp(_root, "TypeLay.Test.SourceObservedKey.v1");

@@ -111,16 +111,57 @@ public sealed partial class NativeSourceControllerTests
                 + Convert.ToHexString(permit.Plan.Expected.Target.Lifetime.ToByteArray()).ToLowerInvariant();
             using var mapping = MemoryMappedFile.OpenExisting(name, MemoryMappedFileRights.Read);
             using var witness = mapping.CreateViewAccessor(0, 16520, MemoryMappedFileAccess.Read);
-            long before = witness.ReadInt64(56);
+            var viewToken = Assert.IsType<SessionViewToken>(view.Token);
+            Assert.Equal(permit.Plan.Expected.Target, viewToken.Target);
+            Assert.Equal(1u, witness.ReadUInt32(132));
+            Thread.MemoryBarrier();
+            ulong initialTick = witness.ReadUInt64(112);
+            Assert.NotEqual(0UL, initialTick);
+            // This case requires a new record, unlike the retained same-tick
+            // refusal case. Await only this permit's original clock boundary;
+            // never advance the controller to acquire a replacement grant.
+            await Until(() =>
+            {
+                long now = WindowsInterruptClock.NowMs;
+                Assert.True(now <= permit.ExpiresAtMs,
+                    $"Original permit expired before ordered-edge preparation: now={now}, expires={permit.ExpiresAtMs}, B={initialTick}.");
+                Assert.Same(permit, broker.InstallationPermit);
+                Assert.Equal(endpoint, broker.Installation?.Endpoint);
+                Assert.Equal(1u, witness.ReadUInt32(132));
+                Thread.MemoryBarrier();
+                Assert.Equal(initialTick, witness.ReadUInt64(112));
+                Assert.True(hook.AcceptanceReady(viewToken, permit, now));
+                Assert.Equal((native.Root, native.A), N.Focused());
+                return SourceWitnessTickCount() > initialTick;
+            }, native.Token);
+            // Sequential metadata samples, not an atomic source/LL observation.
+            // Input still has the original unextended authorization.
+            var before = ObserveOrderedWitness(witness, endpoint.Nonce);
+            double callbackBeforeMs = hook.StockCallbackMs;
+            Assert.True(hook.AcceptanceReady(viewToken, permit, WindowsInterruptClock.NowMs));
             pressed = true;
             Tab(false);
             Tab(true);
             pressed = false;
             await Until(() => N.GetProp(native.Root, "TypeLay.Test.SourceDispatchCompleted.v1") == 2, native.Token);
-            Assert.True(witness.ReadInt64(56) > before);
-            int record = 136 + (int)(before % 256) * 64;
-            Assert.Equal(before + 1, witness.ReadInt64(record));
+            var after = ObserveOrderedWitness(witness, endpoint.Nonce);
+            Assert.True(after.Published > before.Published, after.Published <= before.Published
+                ? $"No ordered LL record for the original dispatched pair. before={before}; after={after}; "
+                    + $"observedAtMs={permit.ObservedAtMs}; expiresAtMs={permit.ExpiresAtMs}; "
+                    + $"sourceDownTime={N.GetProp(native.Root, "TypeLay.Test.SourceDispatchDownTime.v1")}; "
+                    + $"sourceUpTime={N.GetProp(native.Root, "TypeLay.Test.SourceDispatchUpTime.v1")}; "
+                    + $"sourceDownFieldMatches={N.GetProp(native.Root, "TypeLay.Test.SourceTabDownWindow.v1") == native.A}; "
+                    + $"sourceUpFieldMatches={N.GetProp(native.Root, "TypeLay.Test.SourceTabUpWindow.v1") == native.A}; "
+                    + $"hookReady={hook.Ready}; callbackBeforeMs={callbackBeforeMs:F3}; callbackAfterMs={hook.StockCallbackMs:F3}; "
+                    + $"hookBudgetExceeded={hook.StockBudgetExceeded}; grantStillMatches={broker.Installation?.Endpoint?.Nonce == endpoint.Nonce}. "
+                    + "MSG time and later metadata alone do not identify the LL refusal branch."
+                : null);
+            int record = 136 + (int)(before.Published % 256) * 64;
+            Assert.Equal(before.Published + 1, witness.ReadInt64(record));
             Assert.Equal(endpoint.Nonce, witness.ReadUInt64(record + 8));
+            uint recordTime = witness.ReadUInt32(record + 32);
+            Assert.True(unchecked((int)(recordTime - (uint)initialTick)) > 0,
+                $"The actual LL record did not cross its initial boundary: time={recordTime}, B={initialTick}.");
             Assert.Equal(9u, witness.ReadUInt32(record + 36));
             Assert.NotEqual(0u, witness.ReadUInt32(record + 44) & 0x12u);
             Assert.Equal(1u, witness.ReadUInt32(record + 48));
@@ -142,6 +183,17 @@ public sealed partial class NativeSourceControllerTests
             Directory.Delete(directory, true);
         }
     });
+
+    // One bounded before/after sample of the existing public mapping. No body,
+    // arbitrary key history, production logging or private hook-state access.
+    private sealed record OrderedWitnessObservation(long AtMs, uint Version, uint Bytes,
+        uint Poison, uint WriterReady, uint RecordingActive, ulong InitialTick,
+        long Published, long Consumed, bool AttachMatches);
+
+    private static OrderedWitnessObservation ObserveOrderedWitness(MemoryMappedViewAccessor witness, ulong nonce) =>
+        new(WindowsInterruptClock.NowMs, witness.ReadUInt32(0), witness.ReadUInt32(4),
+            witness.ReadUInt32(8), witness.ReadUInt32(12), witness.ReadUInt32(132), witness.ReadUInt64(112),
+            witness.ReadInt64(56), witness.ReadInt64(64), witness.ReadUInt64(72) == nonce);
 
     // Actual managed producer and named mapping. Native initialization/CAS is
     // covered at the C boundary; this test controls only its public ABI output.
@@ -191,6 +243,11 @@ public sealed partial class NativeSourceControllerTests
         Assert.Equal(7UL, wire.ReadUInt64(136 + 64 + 8));
         Assert.Equal(0u, wire.ReadUInt32(8));
     });
+
+    // The same Windows uptime API used by native Arm, not a prior MSG timestamp
+    // or the distinct interrupt-time domain used for the permit deadline.
+    [DllImport("kernel32.dll", EntryPoint = "GetTickCount64", ExactSpelling = true)]
+    private static extern ulong SourceWitnessTickCount();
 
     [DllImport("advapi32.dll", EntryPoint = "OpenProcessToken", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

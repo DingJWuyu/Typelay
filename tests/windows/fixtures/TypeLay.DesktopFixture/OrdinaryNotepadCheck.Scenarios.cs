@@ -1,7 +1,36 @@
+using System.Runtime.InteropServices;
+using System.Text;
 using N = TypeLay.Platform.Windows.NativeMethods;
 
 internal static partial class HyPackageCheck
 {
+    internal static nint FindOrdinaryNotepadCloseDialog(nint owner, uint processId)
+    {
+        if (owner == 0 || processId == 0)
+            return 0;
+        // GW_ENABLEDPOPUP follows the native owner relation, not the popup's
+        // provider-dependent position under the UIA desktop root.
+        // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getwindow
+        nint dialog = GetNotepadWindow(owner, 6);
+        return OrdinaryNotepadCloseDialogMatches(owner, processId, dialog) ? dialog : 0;
+    }
+
+    internal static bool OrdinaryNotepadCloseDialogMatches(nint owner, uint processId, nint dialog)
+    {
+        if (owner == 0 || processId == 0 || dialog == 0 || dialog == owner
+            || N.GetWindowThreadProcessId(owner, out uint ownerPid) == 0 || ownerPid != processId
+            || N.GetAncestor(owner, 2) != owner
+            || GetNotepadWindow(owner, 6) != dialog || GetNotepadWindow(dialog, 4) != owner
+            || N.GetWindowThreadProcessId(dialog, out uint dialogPid) == 0 || dialogPid != processId
+            || !N.IsWindowVisible(dialog) || !N.IsWindowEnabled(dialog))
+            return false;
+        var className = new StringBuilder(16);
+        return N.GetClassName(dialog, className, className.Capacity) != 0 && className.ToString() == "#32770";
+    }
+
+    [DllImport("user32.dll", EntryPoint = "GetWindow")]
+    private static extern nint GetNotepadWindow(nint window, uint command);
+
     internal static bool OrdinaryTextMatches(Scene scene, nint field, int limit, string expected)
     {
         scene.TextLengthChangeCount ??= 0;
