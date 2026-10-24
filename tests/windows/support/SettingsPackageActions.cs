@@ -9,6 +9,10 @@ namespace TypeLay.Windows.Testing;
 internal static class SettingsPackageActions
 {
     internal sealed record PreparationStatus(string State, bool Ready, string? FailureCode);
+    internal sealed class ActionDeadlineException() : TimeoutException("The package action did not become available through the settings controls.")
+    {
+        public string FailureCode => "local-action-deadline";
+    }
 
     public static PreparationStatus ReadPreparationStatus(AutomationElement settings)
     {
@@ -54,19 +58,24 @@ internal static class SettingsPackageActions
     private static async Task<AutomationElement> OpenDetailsCoreAsync(AutomationElement settings,
         Action<string> stage, CancellationToken ct)
     {
-        stage("expand-package-details");
+        stage("find-package-details");
         ct.ThrowIfCancellationRequested();
         var details = settings.FindFirst(TreeScope.Descendants, new AndCondition(
             new PropertyCondition(AutomationElement.NameProperty, "组件与安装说明"),
             new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Group)));
+        stage("check-package-details-enabled");
         if (details is null || !details.Current.IsEnabled)
             throw new InvalidOperationException("package-details-unavailable");
+        stage("get-package-details-expand-pattern");
         var expand = (ExpandCollapsePattern)details.GetCurrentPattern(ExpandCollapsePattern.Pattern);
+        stage("read-package-details-expand-state");
         if (expand.Current.ExpandCollapseState == ExpandCollapseState.Collapsed)
         {
             ct.ThrowIfCancellationRequested();
+            stage("invoke-package-details-expand");
             expand.Expand();
         }
+        stage("await-package-details-expanded");
         while (expand.Current.ExpandCollapseState != ExpandCollapseState.Expanded)
             await Task.Delay(40, ct);
         ct.ThrowIfCancellationRequested();
@@ -132,9 +141,9 @@ internal static class SettingsPackageActions
             token.ThrowIfCancellationRequested();
             return button;
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (limit.IsCancellationRequested && !ct.IsCancellationRequested)
         {
-            throw new TimeoutException("The package action did not become available through the settings controls.");
+            throw new ActionDeadlineException();
         }
     }, ct).WaitAsync(ct);
 

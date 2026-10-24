@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using TypeLay.App;
 using TypeLay.Runtime;
+using TypeLay.Windows.Testing;
 using N = TypeLay.Platform.Windows.NativeMethods;
 
 // Explicit actual-release checks. Neither mode manufactures inventory, supplies
@@ -96,7 +97,9 @@ internal static partial class HyPackageCheck
             {
                 scene.Outcome = "failed";
                 scene.ErrorType = error.GetType().Name;
-                scene.Failure = error is Failure failure ? failure.Code : error is NativeSourceSetup.Failure sourceSetup ? sourceSetup.Code : error is OperationCanceledException ? "deadline" : "operation-failed";
+                scene.Failure = error is Failure failure ? failure.Code : error is NativeSourceSetup.Failure sourceSetup ? sourceSetup.Code
+                    : error is SettingsPackageActions.ActionDeadlineException actionDeadline ? actionDeadline.FailureCode
+                    : error is OperationCanceledException ? "deadline" : "operation-failed";
                 if (error is N.NativeMessageException native)
                 {
                     scene.NativeOperation = native.Operation;

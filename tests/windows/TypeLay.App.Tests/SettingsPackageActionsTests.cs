@@ -11,6 +11,42 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class SettingsPackageActionsTests(WpfDesktopFixture desktop)
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task MissingPackageActionDistinguishesLocalDeadlineFromCallerCancellation(bool cancelCaller) => desktop.RunAsync(async () =>
+    {
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var details = new Expander { Header = "组件与安装说明", Content = new TextBlock { Text = "No package action" } };
+        var window = new Window { Width = 600, Height = 420, Content = details };
+        string? lastStage = null;
+        try
+        {
+            window.Show();
+            window.UpdateLayout();
+            nint handle = new WindowInteropHelper(window).Handle;
+            var root = await Task.Run(() => AutomationElement.FromHandle(handle), caller.Token);
+            if (cancelCaller)
+                caller.Cancel();
+            var finding = SettingsPackageActions.FindAsync(root, "missing", ModelPackageOperation.Install,
+                stage => lastStage = stage, caller.Token);
+            if (cancelCaller)
+            {
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await finding);
+                Assert.Null(lastStage);
+                Assert.False(details.IsExpanded);
+            }
+            else
+            {
+                var failure = await Assert.ThrowsAsync<SettingsPackageActions.ActionDeadlineException>(async () => await finding);
+                Assert.Equal("local-action-deadline", failure.FailureCode);
+                Assert.Equal("find-package-action-missing", lastStage);
+                Assert.True(details.IsExpanded);
+            }
+        }
+        finally { window.Close(); }
+    });
+
     [Fact]
     public Task PackageActionScrollsItsOwnViewportNotAnEarlierSibling() => desktop.RunAsync(async () =>
     {

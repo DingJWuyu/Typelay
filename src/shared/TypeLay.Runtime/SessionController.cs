@@ -877,6 +877,28 @@ public sealed partial class SessionController : IDisposable
                 captureExit = "awaiting-practice";
                 return;
             }
+            // A read can start after BeginEdit, before the editor-focus notice
+            // arrives. Its empty source result does not revoke the editor that
+            // now owns this same session, just as Tick no longer polls that source.
+            // This preserves no source/IME proof: changed identity, unavailable
+            // input and explicit observations still take the ordinary refusal path.
+            if (result is
+                {
+                    Snapshot: null, Focus: FocusMember.Other, ForegroundExpired: false,
+                    SessionShortcuts: null, OwnedSource: null, FencedPracticeRead: null
+                }
+                && _session.State == SessionState.EditingTranslation && _session.Current is { } editingSource
+                && request.BoundTarget == editingSource.Target
+                && configurationRevision == _configurationRevision && connectionId == _hook.ConnectionId
+                && request.SessionShortcuts?.Generation == _hook.CommandGeneration
+                && request.ForegroundEpoch == _hook.ForegroundEpoch && contentEpoch == _hook.ContentEpoch
+                && _hook.Ready && _broker.Available && _hook.GetFocus(editingSource.Target) == FocusMember.Overlay)
+            {
+                captureExit = "editor-owns-focus";
+                RevokeInput("editing-translation");
+                _permitUntil = 0;
+                return;
+            }
             if (result.Snapshot is not { } snapshot || result.Focus == FocusMember.Other)
             {
                 captureExit = "capture-empty";

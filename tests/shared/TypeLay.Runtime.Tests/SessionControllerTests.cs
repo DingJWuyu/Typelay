@@ -2519,6 +2519,98 @@ public sealed class SessionControllerTests
         Assert.Null(s.Input.Permit);
     }
 
+    [Fact]
+    public void EmptySourceReadStartedDuringEditorHandoffCannotEndTheNowFocusedEditor()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        var obsoleteToken = s.View.Token;
+        Assert.True(s.View.BeginEditing!(obsoleteToken));
+        var editingToken = s.View.Token;
+        s.View.DraftChanged!("draft owned by the editor");
+        int captures = s.Service.Captures;
+        int publications = s.Input.PublishedLeases.Count;
+        // This read starts AFTER BeginEdit advanced the session generation,
+        // but before the platform's actual editor-focus acknowledgement arrives.
+        s.Service.PendingCapture = new();
+        s.Tick();
+        Assert.Equal(captures + 1, s.Service.Captures);
+        s.Input.InEditor = true;
+        s.Input.UserEpoch++;
+        s.Input.SourceUserEpoch++;
+        s.CompleteCapture(new(null));
+
+        Assert.True(s.View.Visible);
+        Assert.Equal(SessionState.EditingTranslation, s.View.State);
+        Assert.Equal(editingToken, s.View.Token);
+        Assert.Null(s.Input.Permit);
+        Assert.Equal(publications, s.Input.PublishedLeases.Count);
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+        s.View.ReturnRequested!(obsoleteToken);
+        s.View.EscapeRequested!(obsoleteToken);
+        Assert.Equal(0, s.Service.Returns);
+        Assert.Equal(SessionState.EditingTranslation, s.View.State);
+        s.View.ReturnRequested!(editingToken);
+        s.Tick();
+        Assert.Equal(1, s.Service.Returns);
+        Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+        Assert.Equal("draft owned by the editor", s.View.Preview);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData("source-focus")]
+    [InlineData("other-target")]
+    [InlineData("input-unavailable")]
+    [InlineData("service-unavailable")]
+    [InlineData("connection")]
+    [InlineData("foreground")]
+    [InlineData("source-content")]
+    [InlineData("foreground-expired")]
+    [InlineData("route-unavailable")]
+    public void EditorHandoffDoesNotHideMissingSourceEvidenceWithoutCurrentOwnership(string change)
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.Input.InEditor = true;
+        switch (change)
+        {
+            case "source-focus":
+                s.Input.InEditor = false;
+                break;
+            case "other-target":
+                s.Input.InEditor = false;
+                s.Input.FocusedTarget = new("controlled", "other", Guid.NewGuid());
+                break;
+            case "input-unavailable":
+                s.Input.Ready = false;
+                break;
+            case "service-unavailable":
+                s.Service.Available = false;
+                break;
+            case "connection":
+                s.Input.ConnectionId = Guid.NewGuid();
+                break;
+            case "foreground":
+                s.Input.ForegroundEpoch++;
+                break;
+            case "source-content":
+                s.Input.ContentEpoch++;
+                break;
+        }
+        s.CompleteCapture(new(null, ForegroundExpired: change == "foreground-expired",
+            SessionShortcuts: change == "route-unavailable"
+                ? new(s.Source.Target, s.Input.CommandGeneration, s.Input.SessionBindings, false, false) : null));
+        Assert.False(s.View.Visible);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+    }
+
     [Theory]
     [InlineData(WorkMode.Automatic)]
     [InlineData(WorkMode.OnDemand)]

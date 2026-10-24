@@ -4,32 +4,31 @@
 
 ## 先看结论
 
-本页于 **2026-10-24 05:06 UTC** 按已公开提交与 CI 证据更新。
+本页于 **2026-10-24 05:42 UTC** 按已公开提交与 CI 证据更新。
 
-- **CI496 已终态失败，当前失败为正式 Notepad 接受提示超时和 Linux GTK3 pause 准备时 IME 探测超时。** Windows App 795 项通过，旧点击准备调查排程已关闭；continuous 本轮通过。一次通过不证明旧遮挡、退出或投递延迟的根因已修。
-- **Linux 体验仍推荐 CI480，不升级。** CI496 的 GTK3/GTK4 术语、GTK4/Qt 真实模型链与 Hy 生命周期通过，但 GTK3 pause 未取得可接受候选，不能因大多数通过更换推荐包。
-- **Windows 普通源生产接受仍未完成。** 自有受控源 owned 六例与同字段原生 source 两例通过，不等于正式 Notepad 或所有普通输入框具备接受能力。严格来源、真实 IME、精确身份与原子写入门保持；UIAccess 产品选择仍待用户明确。
-- **模型生命周期和质量分开。** 本轮 Windows Hy 15 场景、Linux Hy 12 阶段通过；默认、质量、高级 scope、物理输入及所有应用支持没有因此放行。
+- **CI497 已终态失败，当前失败为正式 Notepad 接受提示超时和 Hy 设置安装前的组件说明展开超时。** Windows App 795 项通过，continuous 整链通过；旧点击准备调查已关闭，一次通过不证明旧间歇原因已修。
+- **Windows source 两例的真实后端安装/回收生命周期已有本轮实证，但生产接受未完成。** 两例已由 `NativeEditTransactions` 管理成对 hook，尾键、Undo、Quiet 与退出后 `sourceRouteClosed` 实际通过。App 回执/PreparedArm 接线仍未完成，正式 Main、能力位和严格来源门不变，Notepad 不能记为接受通过。
+- **Hy 设置链本轮为 2 通过、1 失败、12 未运行。** 首错发生在 `expand-package-details`，尚未触发安装、没有推理；独立生产 owner/hello 检查通过。此 UIA 阶段失败不是质量失败，也不以旧轮 15 场景通过覆盖本轮缺口。
+- **Linux 本轮按 Windows-only 范围跳过，体验仍推荐 CI480。** 没有新 Linux 产品包或桌面验收；CI496 的 GTK3 pause IME 探测超时及旧投递延迟仍未解决。
 
 ## 最近已核终态与实际结果
 
-[CI496 / run 40060215919](https://github.com/DingJWuyu/Typelay/actions/runs/40060215919) 于 2026-10-24 03:54:33 UTC 由唯一 push 触发，attempt 1，04:16:34 UTC 终态 `failure`。冻结本地 `ba8acff690200b252e503fbf11b2ea2855668acb` 对应远端 `0e24927b0af6decc922d6cec9251dd591d947df5`、tree `afe6966c943c73150a8ea505d3c7d98fb7d1542d`；5 文件差异，精确读回、同分支非强推及源码 artifact 身份已核。
+[CI497 / run 40066099478](https://github.com/DingJWuyu/Typelay/actions/runs/40066099478) 于 2026-10-24 05:24:01 UTC 由唯一 push 触发，attempt 1，05:36:16 UTC 终态 `failure`。冻结本地 `ba4b0fe407bb33c72c6848c80065f7a3ea5415c6` 对应远端 `a215475d6b25f0c48efbe3ad6af11ee8cad359a5`、tree `9b8a651c677c6d59d2f109e4bae2cdeaafe2a9fa`；10 文件差异，精确读回、同分支非强推及源码 artifact 身份已核。
 
-后继验证以 [Actions 入口](https://github.com/DingJWuyu/Typelay/actions) 中当前分支最新运行及原件为准，旧轮结果不代表新提交。实现、实际通过、失败和未运行按下表分别记录，不以整体结果覆盖局部证据，也不把一次通过当作旧间歇问题根因已修。
+后继验证以 [Actions 入口](https://github.com/DingJWuyu/Typelay/actions) 中当前分支最新运行及原件为准。实现、实际通过、失败和未运行按下表分别记录；旧轮结果不代表新提交，一次通过不证明旧间歇问题根因已修。
 
 | 范围 | 已核结果 | 剩余边界 |
 | --- | --- | --- |
-| 共享与包装 | Core 302、Runtime 1297、Windows contracts 122、Protocol 28；worker 168、Python shared 29、Linux 输入反馈 181 通过。原生 foreground guards、实际 WinEvent 与包装 69 项通过 | 编译和受控检查不是桌面产品完成 |
-| Windows App | 795 通过、0 失败、16 项显式研究未执行。17 项 NativeSourceActivation 与 BrowserSourceClick 的 exposed / covered / cancelled 三例全部通过，后台 Broker ready/hello 前置完成 | 两处后台启动已对齐无窗口合同；本轮通过不证明旧 terminal 遮挡由 Broker 唯一造成。点击准备不再列为当前失败排程 |
-| 原生受控源 | owned 六例和 source 两例通过；source 保留首键、同字段尾键、Undo、Quiet 与实际清理证据 | 只覆盖自有受控源；生产接受仍关闭，未证明物理 IME 或跨应用能力 |
-| 来源边界与研究退役 | CI495 独立来源分类观察已达到一次研究停止条件；本轮已移除自动调用及其 artifact 路径。原 dialog / peek / forged 三例仍实际通过，hook 已关闭、进程已退出、输入配对且正文未变 | 保留手动维护入口，实际分类结果仍不授予事件绑定、硬件来源或生产资格；无实质新依据不自动重采 |
-| Windows continuous | 本轮整链通过，消费者自然 exit 0、activeProcesses 0 | 不证明此前 source Ctrl 退出的间歇原因已修；物理 IME 与普通源生产接受仍独立 |
-| 正式 Notepad | 自动预览成功；接受提示在原 90 秒截止失败，实测 90.003 秒，后续三场景未运行 | 接受/Undo、人工稿回源、按需/直接替换不能记为通过 |
-| Linux GTK / Qt | GTK3/GTK4 术语各 40/40；GTK4 与 Qt 真实桌面结果各列 23 项通过 | Qt 本轮通过不解释此前投递过期的深层原因；仅代表本轮实际覆盖，非所有控件或应用验收 |
-| Linux GTK3 pause 准备 | 本轮 Linux 唯一失败步骤未取得可接受候选。原件显示 Fcitx 状态探测 `rpc-timeout` 后 capture 因 `ime-unknown` 被拒，空捕获撤销会话；翻译完成时已为 `NoSession` | 当前首因是 IME 未知，不是旧 Tab 票过期；超时的深层原因未证，模型返回正文/状态未留存，不能称模型空输出。保留原期限与未知即拒绝合同 |
-| 双端 Hy | Windows 15 场景全过；Linux 12 阶段、88.958 秒通过，Host/worker 正常退出且无强制清理 | 生命周期与双向普通预览不证明质量、高级 scope 或物理输入 |
+| 共享与包装 | Core 302、Runtime 1297、Windows contracts 122、Protocol 28；worker 168、Python shared 29、Linux 输入反馈 181 通过。原生 foreground guards、实际 WinEvent 与包装 69 项通过 | 共享的 Linux 输入反馈不是本轮 Linux 产品链；编译和受控检查不是桌面产品完成 |
+| Windows App | 795 通过、0 失败、16 项显式研究未执行。17 项 NativeSourceActivation 与 BrowserSourceClick 的 exposed / covered / cancelled 三例全部通过 | 旧 terminal 遮挡的唯一因果未证；当前不再挂点击准备调查 |
+| 原生受控源 | owned 六例通过；新 source 两例实跑 2/2。早 Dispose 未提前拆除未清尾键，原 repeat/up 仍被消费，Undo/Quiet 断言通过；两例退出后 `sourceRouteClosed=true`，hook/进程/输入清理完整 | 只覆盖隔离构造、自有受控源及合成输入。安装/卸 hook 失败注入、自然 WM_CLOSE、App 完成回执、严格同消息来源及真实 IME 未由本片证明 |
+| 来源边界与研究退役 | 来源分类自动采集保持退役；原 dialog / peek / forged 三例仍实际通过，hook 已关闭、进程已退出、输入配对且正文未变 | 手动维护入口不授予事件绑定、硬件来源或生产资格；无实质新依据不自动重采 |
+| Windows continuous | 本轮整链通过，消费者自然 exit 0、activeProcesses 0 | 不证明此前 source Ctrl 退出的间歇原因已修；普通源生产接受仍独立 |
+| 正式 Notepad | 自动预览成功；接受提示在原 90 秒截止失败，实测 90.001 秒，后续三场景未运行 | 接受/Undo、人工稿回源、按需/直接替换不能记为通过 |
+| Linux 产品链 | 完整 Linux 与可选 Qt job 均按既有 Windows-only scope `skipped`，没有本轮 Linux 桌面结果 | CI496 的 GTK3 pause 因 IME 探测 `rpc-timeout` 后 `ime-unknown` 拒绝，深层原因未证；本轮没有修复或重新验证它 |
+| Windows Hy | 独立生产 owner/hello 五阶段通过并退出；设置链前置与 setup 通过，`install-hy / expand-package-details` 在 5086ms 后 `TimeoutException`，后 12 场景未运行，`cleanupErrors=[]`；故障后由 fixture 终止 app family 并确认清理，不是自然退出 | 安装尚未触发，无推理，整体 960 秒预算未耗尽。现有原件不能区分展开前的具体 UIA 子动作，不称已定位根因或已修；设置链的中英预览与正常退出本轮均未验 |
 
-核验入口为工作区 `artifacts/ci496-independent/terminal-evidence-verified.json`，同目录的 `windows-results-verified.json`、`linux-results-verified.json`、`shared-results.json` 与 `publication-verified.json` 分别给出本轮结果和身份。Windows 包已核 SHA-256 与内外 CRC；Linux artifact 外层完整性已核，内产品包未另行核验采用。公开运行链接供查阅实际 job/artifact，原始日志不复制进本页。
+核验入口为工作区 `artifacts/ci497-independent/terminal-evidence-verified.json`。同目录的 `source-results-verified.json`、`windows-results-verified.json`、`contracts-results.json`、`shared-results.json` 与 `publication-verified.json` 给出实际结果和身份。Windows 包已核 SHA-256、内外 CRC 与 551 个文件的 releaseIdentity，和实际加载包一致；源码 archive 的 851 个成员、702 个文件与冻结树逐字/模式相符。公开运行链接供查阅实际 job/artifact，原始日志不复制进本页。
 
 ## 当前责任与下一动作
 
@@ -37,10 +36,11 @@ root 对集成、证据核验和采用决定负责；下表是当前公开责任
 
 | 责任线 / 负责人 | 当前动作与依赖 | 完成或停止条件 |
 | --- | --- | --- |
-| 编排与后继集成 / root | CI496 终态及所需原件已齐；维护下列独立责任线，候选按精确差异、审查与授权分别核验。本次状态维护仅生成本地可审差异，远端写入另行核准 | 同路径实际证据或关键不确定性改变时更新唯一状态页；失败、未运行与清理结果分别保留，不等待未来 CI 编号或重复已过场景 |
-| Linux GTK3 pause 首因 / root | 已按现有原件收束到 IME 探测超时后的保守拒绝；Fcitx / D-Bus / 调度深层原因仍未区分。保留这项当前失败，与旧投递延迟分别处理 | 有能区分原因的实质新证据时再安排最小定位与回归；现阶段不扩诊断、不重发唤醒、不延票，也不以其它场景通过替代该路径验收 |
-| Windows 生产接入 / advance_windows_source_integration | 基于已公开受控源结果，查明生产接入的最小下一步、缺失证据与前置条件；普通源接受、原子写入、真实 IME 与身份资格分别核验。UIAccess 信任范围仍依赖用户决定，现役缺口见 [Windows 待办](../platforms/windows/open-issues.md) | 交付有源码依据的最小行动与阻塞条件；生产完成仍须同一真实输入的安全消费/写入、拒绝旁路、Undo、清理及正式应用正向验收，受控研究不替代完成门 |
-| Linux 体验交付 / root | 维持 CI480 推荐，保留用户真机/物理键盘/输入法反馈；新包须独立建立完整 Linux 结果和包身份 | 满足采用依据后才更换推荐；不重打已验包、不自动发布 stable |
+| 编排与后继集成 / root | CI497 终态及所需原件已齐；将已审候选与下列有限诊断分别核验，状态维护仅生成本地可审差异，远端写入须另有精确冻结批准 | 新候选审查、身份与授权齐备后再安排自然下一批；不取消、重跑旧轮或等待未来 CI 编号来改当前事实 |
+| Windows App 回执 / advance_windows_source_integration | source 两例后端生命周期已完成本轮验收；独立本地开发 App receipt / PreparedArm 最小接线，保留原信任、期限与资格门。UIAccess 产品选择仍待用户明确，现役缺口见 [Windows 待办](../platforms/windows/open-issues.md) | 同一真实输入的回执归属、拒绝旁路、Undo、清理及相关回归分别取得证据；不得把局部接线或受控结果当作正式 Notepad/第三方生产能力 |
+| Hy 展开阶段诊断 / diagnose_hy_ci497_failure | 已确认失败发生在安装前，helper/model/worker/workflow/runner 相对 CI496 未变；只补原动作的固定 stage 与局部截止原因，不新增 UIA 调用、重试或用户内容采集 | 最小差异独立双审后随自然下一批观察；取得细分首错前不称根因已修，不延时或单独重跑求绿 |
+| Qt 编辑焦点交接 / root | 独立候选仅完成静态双审与格式检查，C#/GUI 尚未运行；按已获准公开范围单独冻结，等待实际回归 | 原编辑焦点交接、拒绝条件与回源路径均需精确提交证据；未运行不冒充通过，其他未就绪改动不搭入 |
+| Linux 体验交付 / root | 保持 CI480 推荐与 CI496 GTK3 pause 未决记录；无新的相关证据时不扩大诊断或重跑。保留用户真机/物理键盘/输入法反馈 | 新包须完整 Linux 结果与身份才可采用；未知 IME 仍保守拒绝，不延票、不重发唤醒、不自动发布 stable |
 | 模型采用 / root | 保持下方既有公开采用结论、默认、兼容和资源合同；只在新增产品故障或有实质新假设时安排最小验证 | 生命周期、质量、高级 scope 和资产许可各凭自己的证据；许可调查本身不授予新采用或公开权限，不扩大候选或推理预算 |
 | 权重许可链 / verify_minisbd_asset_provenance | 只读核查官方权重来源与对应许可链，区分代码许可证与权重许可证；不加载模型或运行推理 | 给出可复核的官方依据、缺口及使用边界；缺失依据保持未确认，不把许可推断写成已获授权 |
 
