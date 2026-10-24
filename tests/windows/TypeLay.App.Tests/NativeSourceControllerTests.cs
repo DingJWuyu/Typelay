@@ -125,6 +125,8 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
     {
         await using var native = await ProductionForegroundWriteTests.Desktop.Start(sourceMessageAcceptance: true);
         await native.Prepare(native.A, "你好", new(0, 2));
+        Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchKey.v1", 9));
+        Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchField.v1", native.A));
         using var hook = new KeyboardHook(allowInjectedInput: true);
         await Until(() => hook.Ready, native.Token);
         using var broker = new FixtureBroker(native) { HoldReceipt = true };
@@ -170,8 +172,14 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             Assert.Equal("Hello", broker.Receipt.VerifiedSnapshot!.Text);
             Assert.Equal(new TextRange(5, 5), N.ReadSelection(native.A));
             Assert.Equal((native.Root, native.A), N.Focused());
-            Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceTabDown.v1"));
-            Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceTabUp.v1"));
+            // The downstream raw hook sees both original messages before the
+            // native caller commits WM_NULL. Only the actual outer pump proves
+            // that neither key reached dialog/control dispatch.
+            await Until(() => N.GetProp(native.Root, "TypeLay.Test.SourceDispatchCompleted.v1") == 2, native.Token);
+            Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceTabDown.v1"));
+            Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceTabUp.v1"));
+            Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceDispatchedDown.v1"));
+            Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceDispatchedUp.v1"));
             Assert.NotEqual((nuint)0, N.Send(native.A, 0x00c6));
             N.Send(native.A, 0x00c7);
             Assert.Equal("你好", N.ReadText(native.A, Limits.MaxTextUnits));
@@ -185,7 +193,10 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             input.Dispose();
             if (capturing is not null)
             {
-                try { await capturing; }
+                try
+                {
+                    await capturing;
+                }
                 catch { /* Preserve the scenario failure; own the continuation. */ }
             }
             Directory.Delete(directory, true);
@@ -197,6 +208,8 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
     {
         await using var native = await ProductionForegroundWriteTests.Desktop.Start(sourceMessageAcceptance: true);
         await native.Prepare(native.A, "你好", new(0, 2));
+        Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchKey.v1", 9));
+        Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchField.v1", native.A));
         using var hook = new KeyboardHook(allowInjectedInput: true);
         await Until(() => hook.Ready, native.Token);
         using var broker = new FixtureBroker(native) { HoldInstallAcknowledgement = true };
@@ -224,7 +237,7 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             Assert.True(WindowsInterruptClock.NowMs <= permit.ExpiresAtMs);
             Tab(false);
             Tab(true);
-            await Until(() => (long)N.GetProp(native.Root, "TypeLay.Test.SourceTabUp.v1") == 1, native.Token);
+            await Until(() => N.GetProp(native.Root, "TypeLay.Test.SourceDispatchCompleted.v1") == 2, native.Token);
             Assert.True(WindowsInterruptClock.NowMs <= permit.ExpiresAtMs,
                 "The Prepared input must actually dispatch before expiry; expiry cannot prove withdrawal.");
         }
@@ -232,6 +245,11 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         await Until(() => { hook.TryRead(out _); return broker.Retired; }, native.Token);
         Assert.False(hook.AcceptanceReady(token, permit, WindowsInterruptClock.NowMs));
         Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceTabDown.v1"));
+        Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceTabUp.v1"));
+        // Positive observation control: a refused original pair really reaches
+        // this same pump, including key-up after normal dialog navigation.
+        Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceDispatchedDown.v1"));
+        Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceDispatchedUp.v1"));
         Assert.Null(hook.StockLastActivation);
         Assert.Equal("你好", N.ReadText(native.A, Limits.MaxTextUnits));
         Assert.Equal(0, broker.Writes);

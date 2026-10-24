@@ -879,8 +879,8 @@ public sealed partial class ProductionForegroundWriteTests
                     }
                     finally { NativeLibrary.Free(library); }
                 }
-                // Both Broker entry points are background stdio peers, matching
-                // AppPaths.Child rather than the visible fixture launch contract.
+                // Both Broker entry points use redirected stdio without a
+                // console, matching AppPaths.Child.
                 broker = isolatedSourceAcceptance || sourceMessageAcceptance
                     ? StartProcessWithTrace(returnTrace, createNoWindow: true, Path.Combine(Repository(),
                         "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"), sourceMessageAcceptance ? "--source-message-broker" : "--source-broker")
@@ -1049,7 +1049,9 @@ public sealed partial class ProductionForegroundWriteTests
                 Assert.Null(sourceClaimProbe);
                 arguments = [.. arguments, "--source-keyboard-probe"];
             }
-            var process = StartProcess(arguments);
+            // The fixture creates its own Win32 windows; its redirected control
+            // streams do not need a separate console window.
+            var process = StartProcessWithTrace(null, createNoWindow: true, arguments);
             try
             {
                 string? line = await process.StandardOutput.ReadLineAsync(token);

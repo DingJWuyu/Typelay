@@ -1001,6 +1001,8 @@ public sealed class ModelInstallationStoreTests
             var info = new ProcessStartInfo(OperatingSystem.IsWindows() ? "python" : "python3")
             {
                 UseShellExecute = false,
+                // Match the model client's pipe-only worker launch contract.
+                CreateNoWindow = true,
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true

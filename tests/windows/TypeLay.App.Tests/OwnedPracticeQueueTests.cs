@@ -891,7 +891,8 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
     public Task OneAcceptedPressExecutesOnceAndItsRepeatCannotReuseThePlan(bool control) => desktop.RunAsync(async () =>
     {
         await using var scene = new QueueScene(true);
-        await scene.Start(true, bindings: control ? SessionShortcutBindings.Restore("Ctrl+F10", "Ctrl+F8") : null);
+        await scene.Start(true, bindings: control ? SessionShortcutBindings.Restore("Ctrl+F10", "Ctrl+F8") : null,
+            prepareKeyOnlyPointer: control);
         // Real Shift input tests LL left/right modifier vs GUI generic-VK pairing.
         scene.Key(0x10, true);
         scene.Key(0x10, false);
@@ -1800,6 +1801,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         private Task? _pump;
         private Exception? _pipeError;
         private readonly HashSet<ushort> _pressed = [];
+        private Native.Point? _pointerBeforeKeyOnlyInput;
         private SessionShortcutBindings _bindings = SessionShortcutBindings.Default;
         private sealed record SourceState(string Text, TextRange Selection, (nint Root, nint Control) Focus);
         private SourceState? _ordinaryDown, _ordinaryPress, _ordinaryRepeat;
@@ -1877,7 +1879,8 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             _hook = new(allowInjectedInput: automation);
             _deadline.CancelAfter(TimeSpan.FromSeconds(25));
         }
-        public async Task Start(bool automation, bool baselineAfterWrite = false, SessionShortcutBindings? bindings = null)
+        public async Task Start(bool automation, bool baselineAfterWrite = false, SessionShortcutBindings? bindings = null,
+            bool prepareKeyOnlyPointer = false)
         {
             _bindings = bindings ?? SessionShortcutBindings.Default;
             _hook.ConfigureSessionShortcuts(_bindings);
@@ -1900,6 +1903,26 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             _pump = Pump();
             await Wait(() => { _child.Process.Refresh(); Root = _child.Process.MainWindowHandle; return Root != 0 && Field != 0 && _hook.Ready; });
             Assert.All(new[] { 9, 0x10, 0x11, 0x12, 0x5B, 0x5C }, key => Assert.False(Native.GetAsyncKeyState(key) < 0));
+            if (prepareKeyOnlyPointer)
+            {
+                // This key-only positive must not inherit a pointer over the
+                // source. Prepare once before the existing ordinary baseline;
+                // its completion observes GUI idle before any permit is made,
+                // not the identity of an individual coalesced mouse message.
+                Assert.True(Native.GetCursorPos(out var previousPointer));
+                _pointerBeforeKeyOnlyInput = previousPointer;
+                Assert.True(GetClientRect(Root, out var client));
+                var rootPoint = new Native.Point { X = 4, Y = 4 };
+                Assert.InRange(rootPoint.X, client.Left, client.Right - 1);
+                Assert.InRange(rootPoint.Y, client.Top, client.Bottom - 1);
+                Assert.True(ClientToScreen(Root, ref rootPoint));
+                Assert.Equal(Root, WindowFromPoint(rootPoint));
+                Assert.True(SetCursorPos(rootPoint.X, rootPoint.Y));
+                Assert.True(Native.GetCursorPos(out var preparedPointer));
+                Assert.Equal(rootPoint.X, preparedPointer.X);
+                Assert.Equal(rootPoint.Y, preparedPointer.Y);
+                Assert.Equal(Root, WindowFromPoint(preparedPointer));
+            }
             await MeasureOrdinaryTab(baselineAfterWrite);
             await Begin(automation);
             await Focus();
@@ -2182,6 +2205,35 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             }
         }
         public async ValueTask DisposeAsync()
+        {
+            Exception? cleanupFailure = null;
+            try
+            {
+                await CloseAsync();
+            }
+            catch (Exception error)
+            {
+                cleanupFailure = error;
+            }
+            finally
+            {
+                if (_pointerBeforeKeyOnlyInput is { } point)
+                {
+                    _pointerBeforeKeyOnlyInput = null;
+                    try
+                    {
+                        Assert.True(SetCursorPos(point.X, point.Y));
+                    }
+                    catch (Exception pointerError) when (cleanupFailure is not null)
+                    {
+                        throw new AggregateException("owned queue cleanup and pointer restoration failed", cleanupFailure, pointerError);
+                    }
+                }
+            }
+            if (cleanupFailure is not null)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(cleanupFailure).Throw();
+        }
+        private async ValueTask CloseAsync()
         {
             try
             {

@@ -28,6 +28,10 @@ internal sealed class SourceInstallationReentry : IDisposable
     private nint _withoutContext, _savedContext;
     private nint _postField;
     private uint _postMessage;
+    // One explicitly selected pair in the receipt consumer. These are original
+    // hook observations, not synthetic input authority or a general queue log.
+    private N.MessageStruct? _dispatchDown, _dispatchUp;
+    private bool _dispatchDownCompleted, _dispatchUpCompleted;
 
     internal SourceInstallationReentry(nint root, EventWaitHandle entered, EventWaitHandle release)
     {
@@ -48,7 +52,19 @@ internal sealed class SourceInstallationReentry : IDisposable
         // Never edits MSG and never supplies evidence of physical-key origin.
         if (code >= 0 && wp == 1)
         {
-            var message = Marshal.PtrToStructure<QueueMessage>(lp);
+            var message = Marshal.PtrToStructure<N.MessageStruct>(lp);
+            nint dispatchField = N.GetProp(_root, "TypeLay.Test.SourceDispatchField.v1");
+            nint dispatchKey = N.GetProp(_root, "TypeLay.Test.SourceDispatchKey.v1");
+            if (dispatchField != 0 && dispatchKey != 0 && message.WParam == (nuint)dispatchKey
+                && IsOwnEdit(message.Hwnd))
+            {
+                if (message.Hwnd == dispatchField && message.Message is 0x100 or 0x104
+                    && ((long)message.LParam & 0xc0000000L) == 0)
+                    _dispatchDown ??= message;
+                else if (_dispatchDown is not null && message.Message is 0x101 or 0x105
+                    && ((long)message.LParam & 0xc0000000L) == 0xc0000000L)
+                    _dispatchUp ??= message; // A refused Tab may have navigated to the other owned Edit.
+            }
             // Explicitly selected by this fixture's test, never arbitrary user input.
             nint observedKey = N.GetProp(_root, "TypeLay.Test.SourceObservedKey.v1");
             if (observedKey != 0 && message.WParam == (nuint)observedKey)
@@ -92,11 +108,31 @@ internal sealed class SourceInstallationReentry : IDisposable
         // Called by the fixture's normal message pump only after dispatch/dialog
         // handling. WH_CALLWNDPROC is not evidence that posted input was handled.
         nint key = N.GetProp(_root, "TypeLay.Test.SourceDispatchKey.v1");
-        if (key != 0 && message.WParam == (nuint)key && IsOwnEdit(message.Hwnd)
-            && message.Message is 0x100 or 0x104)
+        if (key == 0 || message.WParam != (nuint)key || !IsOwnEdit(message.Hwnd))
+            return;
+        if (message.Message is 0x100 or 0x104)
             N.SetProp(_root, "TypeLay.Test.SourceDispatchedDown.v1",
                 N.GetProp(_root, "TypeLay.Test.SourceDispatchedDown.v1") + 1);
+        else if (message.Message is 0x101 or 0x105)
+            N.SetProp(_root, "TypeLay.Test.SourceDispatchedUp.v1",
+                N.GetProp(_root, "TypeLay.Test.SourceDispatchedUp.v1") + 1);
+        // Freeze the original down/up separately: WM_NULL with a coincidental
+        // WParam cannot satisfy this barrier. Each actual input completes once.
+        if (!_dispatchDownCompleted && _dispatchDown is { } down && SameReturnedMessage(down, message))
+            _dispatchDownCompleted = true;
+        if (!_dispatchUpCompleted && _dispatchUp is { } up && SameReturnedMessage(up, message))
+            _dispatchUpCompleted = true;
+        if (_dispatchDownCompleted || _dispatchUpCompleted)
+            N.SetProp(_root, "TypeLay.Test.SourceDispatchCompleted.v1",
+                (_dispatchDownCompleted ? 1 : 0) + (_dispatchUpCompleted ? 1 : 0));
     }
+
+    // Compare public MSG values, not reserved Private data or struct padding.
+    private static bool SameReturnedMessage(N.MessageStruct original, N.MessageStruct returned) =>
+        (returned.Message == original.Message || returned.Message == 0)
+        && returned.Hwnd == original.Hwnd && returned.WParam == original.WParam
+        && returned.LParam == original.LParam && returned.Time == original.Time
+        && returned.Point.X == original.Point.X && returned.Point.Y == original.Point.Y;
 
     private nint Callback(int code, nuint wp, nint lp)
     {
@@ -222,17 +258,6 @@ internal sealed class SourceInstallationReentry : IDisposable
         return GetWindowThreadProcessId(window, out uint pid) == GetCurrentThreadId()
             && pid == (uint)Environment.ProcessId && N.GetAncestor(window, 2) == _root
             && N.GetClassName(window, name, name.Capacity) == 4 && name.ToString() == "Edit";
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct QueueMessage
-    {
-        public nint Hwnd;
-        public uint Message;
-        public nuint WParam;
-        public nint LParam;
-        public uint Time;
-        public int X, Y;
     }
 
     [StructLayout(LayoutKind.Sequential)]
