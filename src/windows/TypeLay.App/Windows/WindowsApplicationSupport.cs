@@ -11,7 +11,7 @@ namespace TypeLay.App;
 internal sealed class WindowsApplicationSupport
 {
     private sealed record Observation(int ProcessId, long StartedAt, ApplicationSupportCapabilities Capabilities,
-        ApplicationSupportReason Reason, DateTimeOffset CheckedAt);
+        ApplicationSupportReason Reason, DateTimeOffset CheckedAt, SessionShortcutAcknowledgement? SourceAcceptance = null);
     private readonly Dictionary<string, Observation> _observations = new(StringComparer.Ordinal);
     private IInputBroker? _broker;
     private IInputMonitor? _monitor;
@@ -98,12 +98,18 @@ internal sealed class WindowsApplicationSupport
             var capabilities = new ApplicationSupportCapabilities(preview,
                 preview && source.WriteSupported && source.Ime == ImeState.Clear && canIntercept,
                 source.DirectWriteSupported && fresh && source.Ime == ImeState.Clear);
+            // Only this capture's exact source ACK can advertise acceptance
+            // without the legacy setting. It is neither a global Broker capability
+            // nor an acknowledgement for a different target/configuration.
+            var sourceAcceptance = capture.SessionShortcuts is { SourceReady: true, SourceLocalAcceptanceVersion: 1 } acknowledgement
+                && acknowledgement.Target == source.Target && acknowledgement.Generation == _monitor?.CommandGeneration
+                ? acknowledgement : null;
             string id = Id(capture.Application, native.ProcessId, native.ProcessStartUtcTicks);
             _observations[id] = new(native.ProcessId, native.ProcessStartUtcTicks, capabilities,
                 !preview ? ApplicationSupportReason.FieldUnobserved
                 : !capabilities.TabAccept && !capabilities.DirectReplace ? ApplicationSupportReason.PreviewOnly
                 : !capabilities.DirectReplace ? ApplicationSupportReason.NoDirectWrite : ApplicationSupportReason.LimitedFields,
-                DateTimeOffset.UtcNow);
+                DateTimeOffset.UtcNow, sourceAcceptance);
             CompleteCheck(id, Math.Min(startedAt, source.ObservedAtMs), checkGeneration);
             return;
         }
@@ -214,7 +220,10 @@ internal sealed class WindowsApplicationSupport
                 {
                     var capabilities = observed.Capabilities with
                     {
-                        TabAccept = observed.Capabilities.TabAccept && _canIntercept && ordinaryKeys && settings.ExperimentalWriteback
+                        TabAccept = observed.Capabilities.TabAccept && _canIntercept && ordinaryKeys
+                            && (settings.ExperimentalWriteback || observed.SourceAcceptance is { } acknowledgement
+                                && acknowledgement.Generation == _monitor?.CommandGeneration
+                                && acknowledgement.Bindings == SessionShortcutBindings.Restore(settings.AcceptShortcut, settings.ExitShortcut))
                     };
                     return new(id, capabilities.Preview ? ApplicationSupportState.Connected : ApplicationSupportState.BuiltInAvailable,
                         observed.Reason, capabilities, [ApplicationSupportAction.Refresh, ApplicationSupportAction.OpenInstructions],

@@ -6,7 +6,7 @@
 
 ## 安装与启动
 
-在本仓库 Actions 中打开 `TypeLay checks` 已核对的运行，下载对应提交的 artifact，取出其中的 `TypeLay-Windows-preview.zip`，完整解压后双击 `TypeLay.exe`。当前候选及仍未通过的项目见下方；不要单独移动可执行文件。`Start-TypeLay.cmd` 是备用入口。
+从下方“当前可验证候选”的产品开发预览入口下载 artifact，取出其中的 `TypeLay-Windows-preview.zip`，完整解压后双击 `TypeLay.exe`。另列的隔离物理 Tab 验证包不是产品体验包，不使用本节启动步骤。不要单独移动可执行文件；`Start-TypeLay.cmd` 是产品预览的备用入口。
 
 升级前先从托盘退出旧 TypeLay，再把完整 ZIP 解压到新目录启动。App 与 Broker 必须来自同一个包；旧版本的输入组件会被连接校验拒绝，不会降级读取或写回。若“应用支持”提示连接检查失败，先退出并从完整安装目录重开；仍失败时重新解压完整包，不要只替换其中一个程序。
 
@@ -85,29 +85,32 @@
 
 ## 当前可验证候选
 
-下方预览下载的验证基线为 [`e1f55ebd`](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654)，该运行已结束，Windows 完整检查失败。
+### 产品开发预览（CI518）
 
-- App.Tests：577/577 通过，包含 Settings 回源与两项清理检查；Runtime.Tests：1091/1091 通过。不代表完整产品验收通过。
-- 连续翻译整链通过，包含自有编辑与接受、普通字段、直接替换、按需练习、冷启动 Chrome 与新标签页；不外推物理输入法或所有应用。
-- 浏览器合作七个场景及整步通过；记事本设置和只读预览观察通过，但等待公开接受提示仍因 Unknown 安全缺口超时，后续编辑/直接替换及 Hy 未运行。Windows 完整验收仍未通过。
-- 本轮未消除普通自动捕获的输入法安全缺口，Unknown 继续拒写；按需 CaptureDirect 既有 owner-thread 桥仍有同步 IMM 消息重入风险，不能据本轮连续链通过消除该限制。后继候选未经对应验证不记作修复。本轮无质量采集，5068 的 40 次诊断与 386 的 69 次响应仍是各自范围的既有证据，三项质量门继续关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
+最近已核对的 Windows 开发预览来自 [CI518](https://github.com/DingJWuyu/Typelay/actions/runs/40134731709)，源码为 `c730092ec23c0eb4ec57b0c69e6ac089b3853b20`。**该运行已结束，Windows 完整检查仍失败；这是有限能力的开发预览，不是稳定版或完整验收通过的成品。** 完整失败项、责任线与后续验证见[当前开发状态与安排](../../engineering/development-state.md)，后继源码改动不等于本下载包已包含或通过验证。
 
-最近已核对的候选为 [`19bc171`](https://github.com/DingJWuyu/Typelay/actions/runs/39805414006)，共享检查通过，Windows 完整检查仍失败：
+- 经典系统记事本的按需唤醒 `Ctrl+Shift+F9`、`Esc` 取消、直接替换、原生 Undo 与普通退出已通过本轮软件输入检查。自动 Tab 在发出接受键前被公开能力判为不可用，编辑回源依赖项未运行；不宣称现代 RichEdit 记事本、真实中文输入法或物理按键已通过。
+- Hy 设置链 15 项与 production 链 5 阶段均通过，包括补充中英、冷启动、预览与退出。Notepad、Hy 设置与 Hy production 三个发行包消费者实际加载的程序集身份均与本 ZIP 匹配；生命周期通过不代表翻译质量放行。
+- App.Tests 为 869 通过、17 失败、21 未执行；17 项在导航激活准备阶段失败，尚未进入后续源导航验证。连续翻译与 Chrome 合作链通过，不能由这些局部结果推断全套通过或旧间歇问题根治。
 
-- App.Tests 694/700通过。真实系统记事本的隔离接受分支、未知结果隔离及消息队列等待回归通过；记事本撤回分支在预检失败，尚未进入撤回主体。另有自有输入框许可、源侧加词和设置连接入口回归失败，不能以部分通过开放普通发行能力。
-- 连续翻译在编辑器退出回源阶段失败；浏览器自动预览与 Tab 接受通过，但按需选区直接替换未取得公开就绪状态。后续发行版 Notepad 和 Hy worker/设置尾段未运行，消费者退出证明步骤也未通过，不能沿用此前结果记作本轮通过。
-- 已核对的 Hy 安装、语言选择、模型切换、预览、移除与普通退出全链通过证据来自 [`4e6dabdd`](https://github.com/DingJWuyu/Typelay/actions/runs/39800213083)，不是本轮执行结果；其进程退出码为0且 worker 已确认退出。生命周期通过不代表模型质量放行。
+普通发行包仍不开放隔离 Controller/Broker/源受理接线的自动接受能力，未知输入法状态继续拒写；本轮不改变默认行为或模型质量门。Linux 下载继续以[Linux 推荐预览](../linux/README.md#当前可验证候选)的独立核对结果为准。
 
-完整 Controller/Broker/源受理接线仍只在隔离构造下启用，普通发行能力不开放；真实应用、物理键盘、中文输入法及消息队列兼容性仍须各自验证。本轮通过范围不开放模型质量门。本轮 Linux 后段 Qt 检查失败，[Linux 推荐预览](../linux/README.md#当前可验证候选)仍为已核对的 `4be188b8`；下面 Windows 下载仍保留单独核对过的旧基线。
+下载 [`typelay-windows-c730092ec23c0eb4ec57b0c69e6ac089b3853b20`](https://github.com/DingJWuyu/Typelay/actions/runs/40134731709/artifacts/12576793958)，取出内层 `TypeLay-Windows-preview.zip` 后，按上方“安装与启动”退出旧 App 并完整解压到新目录：
 
-下方可下载的是 `e1f55ebd` 预览开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654)下载 [`typelay-windows-e1f55ebd4da69c3d77c4a6447eaad2a146b8bfa6`](https://github.com/DingJWuyu/Typelay/actions/runs/39594541654/artifacts/12342794943)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
-
-- 源码提交：`e1f55ebd4da69c3d77c4a6447eaad2a146b8bfa6`。
-- 内层 ZIP：87,038,548 字节。
-- SHA-256：`bbe411262d078a5557703a3a73569ad265e6e89533bec4601b882d69590dcb91`，已实际重算并核对包旁摘要。
+- 内层 ZIP：87,139,085 字节。
+- SHA-256：`c6d3007b15bb978adc3a10c750e4770763ab5e2f152130e953bcea99cb363f42`，已实际重算并核对包旁摘要。
 - 用 `Get-FileHash .\TypeLay-Windows-preview.zip -Algorithm SHA256` 核对；不要将内层摘要用于外层 Actions ZIP。App、Broker、Practice 与 BrowserHost 必须来自同一个完整包。
 
 正式安装器的单向中英准备、Auto 同语无输出、缺方向拒绝与保留旧方向的补装已通过真实模型 API 检查；该检查本身没有操作输入框或触发 F10。安装库存损坏时保留原数据并禁用修改，目前仍缺少用户可执行的库存恢复入口。
+
+### 隔离物理 Tab 验证包（不是产品体验包）
+
+同一次 CI518 另提供 [`typelay-windows-physical-tab-c730092ec23c0eb4ec57b0c69e6ac089b3853b20`](https://github.com/DingJWuyu/Typelay/actions/runs/40134731709/artifacts/12576604148)。它仅运行隔离人工用例，在自有 NativeFixture 输入框使用合成原文“你好”和固定候选“Hello”，不启动正式 App、不调用模型，也不开放正式自动接受。
+
+- 内层 `TypeLay-Windows-physical-Tab-validation.zip`：7,790,003 字节；SHA-256：`ce4164c3ffc27d19196c283740b149759a8616b3aa8ca6621c8c04d6bc21e22c`，已实际重算并核对包旁摘要。用 `Get-FileHash .\TypeLay-Windows-physical-Tab-validation.zip -Algorithm SHA256` 校验内层文件。
+- 与自带运行时的产品预览不同，本包需要预先安装 **.NET 10 Desktop Runtime x64**，且同一 x64 安装的 `dotnet` 在 PATH；不需要 SDK、Python 或模型。
+- 已通过中文与空格路径搬迁后的两项软件注入拒绝检查，并发现唯一、未跳过的人工 Tab 用例；**物理按键尚未执行**。这些结果只证明包的准备与阴性检查，不是物理 Tab 阳性或产品接受通过。
+- 完整解压并保留目录布局，先读包内 `README.md` 和 `BUILD.txt`，按该说明在独占、已解锁的 Windows 桌面与非管理员 64 位 PowerShell 中执行。仅在原生框及提示出现后亲手按下并释放一次 Tab；失败或超时保留原始结果后停止，不补按、不重跑。即使该隔离用例通过，也不代表正式 App、真实 IME、UIAccess 或第三方应用部署完成验收。
 
 ## 工作模式与按需操作
 

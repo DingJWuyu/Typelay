@@ -488,8 +488,13 @@ public sealed class NativeSourceActivationTests(WpfDesktopFixture ui)
                 navigation.Show();
                 await rendered.Task.WaitAsync(source.Token);
                 source.Token.ThrowIfCancellationRequested();
-                Assert.True(navigation.Activate());
-                Assert.Equal(new WindowInteropHelper(navigation).Handle, N.GetForegroundWindow());
+                nint navigationRoot = new WindowInteropHelper(navigation).Handle;
+                Assert.NotEqual(nint.Zero, navigationRoot);
+                // Show may already have activated this window. Require the actual
+                // foreground state, not an activation request's return value.
+                if (N.GetForegroundWindow() != navigationRoot)
+                    _ = navigation.Activate();
+                Assert.Equal(navigationRoot, N.GetForegroundWindow());
                 await source.NavigateAndPrepare(field, text, selection);
             }
             finally { navigation.Close(); }

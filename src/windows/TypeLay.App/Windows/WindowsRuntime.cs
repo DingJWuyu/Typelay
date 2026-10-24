@@ -21,10 +21,15 @@ internal static class WindowsRuntime
     public static Task StartModelAsync(ModelClient model, CancellationToken ct) =>
         new ModelInstallationStore(AppPaths.Data, AppPaths.Worker).StartModelAsync(model, ct);
 
-    public static SessionController CreateSession(SettingsStore settings, ModelClient model, OverlayWindow overlay,
+    public static SessionController CreateSession(SettingsStore settings, ITranslationService model, OverlayWindow overlay,
         bool automationTest = false, IInputBroker? broker = null, WindowsApplicationSupport? support = null,
-        PracticeHost? practice = null, Action<ShortcutRegistrationRecovery>? bindShortcutRecovery = null)
+        PracticeHost? practice = null, Action<ShortcutRegistrationRecovery>? bindShortcutRecovery = null,
+        bool isolatedOrderedSourceAcceptance = false)
     {
+        // This internal composition is only for an explicitly owned isolated
+        // Broker. Neither automation-test nor ordinary production startup opts in.
+        if (isolatedOrderedSourceAcceptance && broker is null)
+            throw new ArgumentException("Ordered source acceptance requires an explicit isolated Broker.", nameof(broker));
         var monitor = new KeyboardHook(automationTest, overlay.Handle);
         overlay.ConfigureOrdinaryInput(monitor);
         practice?.Initialize(settings, monitor, automationTest);
@@ -39,7 +44,8 @@ internal static class WindowsRuntime
         support?.BindBrowser(browser);
         var browserView = new BrowserSessionView(browser, () => overlay.LanguageRequested?.Invoke());
         var view = new WindowsSessionView(overlay, browserView);
-        var nativeInput = new WindowsInputService(broker, overlay.Handle, support, monitor, practice);
+        var nativeInput = new WindowsInputService(broker, overlay.Handle, support, monitor, practice,
+            sourceMessageAcceptance: isolatedOrderedSourceAcceptance, orderedSourceMessageWitness: isolatedOrderedSourceAcceptance);
         overlay.ConfigureSourceGlossary(nativeInput, settings);
         var input = new WindowsInputRouter(nativeInput, monitor, browser, () => settings.Value.Excluded.ToArray());
         loop.Tick += browser.Poll;

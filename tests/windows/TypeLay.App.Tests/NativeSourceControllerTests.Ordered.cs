@@ -97,11 +97,9 @@ public sealed partial class NativeSourceControllerTests
         await native.Prepare(native.A, "你好", new(0, 2));
         Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchKey.v1", key));
         Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchField.v1", native.A));
-        using var hook = new KeyboardHook(); // No global synthetic-input opt-in.
-        await Until(() => hook.Ready, native.Token);
         using var broker = new FixtureBroker(native);
-        using var input = new WindowsInputService(broker, 0, monitor: hook,
-            sourceMessageAcceptance: true, orderedSourceMessageWitness: true);
+        var overlay = new OverlayWindow(automationTest: true);
+        var support = new WindowsApplicationSupport();
         string directory = Path.Combine(Path.GetTempPath(), "TypeLay.OrderedSource." + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         bool pressed = false;
@@ -112,15 +110,43 @@ public sealed partial class NativeSourceControllerTests
             {
                 AcceptShortcut = accept
             });
-            var loop = new Loop();
-            var view = new View();
-            using var controller = new SessionController(settings, new Translation(), view, hook, input, loop);
-            await controller.StartAsync();
-            await Until(() => { loop.Advance(); return view.CanAccept; }, native.Token);
+            // Use the real factory, router, dispatcher loop and WPF view. The
+            // isolated Broker alone is insufficient; this internal opt-in does
+            // not opt ordinary injected input into acceptance.
+            using var controller = WindowsRuntime.CreateSession(settings, new Translation(), overlay,
+                broker: broker, support: support, isolatedOrderedSourceAcceptance: true);
+            await support.CompletePendingAsync().WaitAsync(native.Token);
+            Assert.False(support.Browser!.MutationUnavailable);
+            Assert.False(support.Read(settings.Value).Rows.Single(row => row.Id == "desktop-text").Capabilities.TabAccept);
+            await controller.StartAsync().WaitAsync(native.Token);
+            await Until(() => overlay.IsVisible && RuntimeTranslation(overlay) == "Hello", native.Token);
+            var supported = support.Read(settings.Value);
+            Assert.True(supported.Rows.Single(row => row.Id == "desktop-text").Capabilities.TabAccept);
+            Assert.False(supported.Rows.Single(row => row.Id == "google-chrome").Capabilities.TabAccept);
+            await Until(() => RuntimeShowsAcceptance(overlay), native.Token);
             var permit = Assert.IsType<AcceptancePermit>(broker.InstallationPermit);
             Assert.True(WindowsInterruptClock.NowMs <= permit.ExpiresAtMs);
             Assert.False(settings.Value.ExperimentalWriteback);
-            var endpoint = Assert.IsType<TypeLay.Windows.Contracts.SourceActivationEndpoint>(broker.Installation!.Endpoint);
+            Assert.True(broker.Installation!.Installed);
+            Assert.True(broker.Installation.Acknowledged);
+            Assert.False(broker.Installation.Claimed);
+            Assert.Equal(permit.Plan.Expected.Target, broker.Installation.Target);
+            var target = permit.Plan.Expected.Target.AsWindows();
+            Assert.Equal(native.FixtureProcessId, target.ProcessId);
+            Assert.Equal((long)native.Root, target.RootHwnd);
+            Assert.Equal((long)native.A, target.ControlHwnd);
+            Assert.Equal("win32-edit-transaction-v2", target.Provider);
+            var endpoint = Assert.IsType<TypeLay.Windows.Contracts.SourceActivationEndpoint>(broker.Installation.Endpoint);
+            Guid installedGeneration = broker.Installation.Generation;
+            long installedRevision = broker.Installation.SessionRevision;
+            SourceAcceptanceResult? originalRetirement = null;
+            broker.ObserveResponse = (request, response) =>
+            {
+                if (request.Op is "source-poll" or "source-retire"
+                    && response.SourceAcceptance is { Quiet: true } retired && retired.Grant == permit.Plan.Id
+                    && retired.Target == permit.Plan.Expected.Target && retired.Generation == installedGeneration && retired.SessionRevision == installedRevision)
+                    originalRetirement = retired;
+            };
             using var sourceMapping = MemoryMappedFile.OpenExisting($"Local\\TypeLay.Source.{endpoint.Nonce:x16}", MemoryMappedFileRights.Read);
             using var sourceGrant = sourceMapping.CreateViewAccessor(0, 49384, MemoryMappedFileAccess.Read);
             Assert.Equal(6u, sourceGrant.ReadUInt32(0));
@@ -129,15 +155,13 @@ public sealed partial class NativeSourceControllerTests
                 + Convert.ToHexString(permit.Plan.Expected.Target.Lifetime.ToByteArray()).ToLowerInvariant();
             using var mapping = MemoryMappedFile.OpenExisting(name, MemoryMappedFileRights.Read);
             using var witness = mapping.CreateViewAccessor(0, 16520, MemoryMappedFileAccess.Read);
-            var viewToken = Assert.IsType<SessionViewToken>(view.Token);
-            Assert.Equal(permit.Plan.Expected.Target, viewToken.Target);
             Assert.Equal(1u, witness.ReadUInt32(132));
             Thread.MemoryBarrier();
             ulong initialTick = witness.ReadUInt64(112);
             Assert.NotEqual(0UL, initialTick);
             // This case requires a new record, unlike the retained same-tick
             // refusal case. Await only this permit's original clock boundary;
-            // never advance the controller to acquire a replacement grant.
+            // never select a replacement grant if this original one expires.
             await Until(() =>
             {
                 long now = WindowsInterruptClock.NowMs;
@@ -148,15 +172,16 @@ public sealed partial class NativeSourceControllerTests
                 Assert.Equal(1u, witness.ReadUInt32(132));
                 Thread.MemoryBarrier();
                 Assert.Equal(initialTick, witness.ReadUInt64(112));
-                Assert.True(hook.AcceptanceReady(viewToken, permit, now));
+                Assert.True(RuntimeShowsAcceptance(overlay));
                 Assert.Equal((native.Root, native.A), N.Focused());
                 return SourceWitnessTickCount() > initialTick;
             }, native.Token);
             // Sequential metadata samples, not an atomic source/LL observation.
             // Input still has the original unextended authorization.
             var before = ObserveOrderedWitness(witness, endpoint.Nonce);
-            double callbackBeforeMs = hook.StockCallbackMs;
-            Assert.True(hook.AcceptanceReady(viewToken, permit, WindowsInterruptClock.NowMs));
+            Assert.Same(permit, broker.InstallationPermit);
+            Assert.True(WindowsInterruptClock.NowMs <= permit.ExpiresAtMs);
+            Assert.True(RuntimeShowsAcceptance(overlay));
             pressed = true;
             Key(key, false);
             Key(key, true);
@@ -172,8 +197,7 @@ public sealed partial class NativeSourceControllerTests
                         ? $"sourceDownFieldMatches={N.GetProp(native.Root, "TypeLay.Test.SourceTabDownWindow.v1") == native.A}; "
                             + $"sourceUpFieldMatches={N.GetProp(native.Root, "TypeLay.Test.SourceTabUpWindow.v1") == native.A}; "
                         : "")
-                    + $"hookReady={hook.Ready}; callbackBeforeMs={callbackBeforeMs:F3}; callbackAfterMs={hook.StockCallbackMs:F3}; "
-                    + $"hookBudgetExceeded={hook.StockBudgetExceeded}; grantStillMatches={broker.Installation?.Endpoint?.Nonce == endpoint.Nonce}. "
+                    + $"grantStillMatches={broker.Installation?.Endpoint?.Nonce == endpoint.Nonce}. "
                     + "MSG time and later metadata alone do not identify the LL refusal branch."
                 : null);
             int record = 136 + (int)(before.Published % 256) * 64;
@@ -190,8 +214,19 @@ public sealed partial class NativeSourceControllerTests
             Assert.Equal("你好", N.ReadText(native.A, Limits.MaxTextUnits));
             Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceDispatchedDown.v1"));
             Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceDispatchedUp.v1"));
-            await Until(() => { hook.TryRead(out _); return broker.Retired; }, native.Token);
-            Assert.Null(hook.StockLastActivation);
+            // Only after the original pair finished normal dispatch may the
+            // controller stop producing later candidates. Retirement is matched
+            // to the original owner, not an earlier or later grant's Quiet bit.
+            settings.Update(settings.Value with
+            {
+                Enabled = false
+            });
+            await Until(() => originalRetirement is not null, native.Token);
+            Assert.False(originalRetirement!.Claimed);
+            Assert.Null(originalRetirement.Receipt);
+            Assert.False(broker.ReceiptReceived.Task.IsCompleted);
+            Assert.False(RuntimeShowsAcceptance(overlay));
+            Assert.False(support.Read(settings.Value).Rows.Single(row => row.Id == "desktop-text").Capabilities.TabAccept);
             Assert.Equal(0, broker.Writes);
             Assert.Equal(0, broker.CompletionTransfers);
             native.AssertZeroSubmits();
@@ -200,6 +235,7 @@ public sealed partial class NativeSourceControllerTests
         {
             if (pressed)
                 Key(key, true);
+            overlay.Close();
             Directory.Delete(directory, true);
         }
     });

@@ -540,7 +540,7 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         internal TaskCompletionSource ReleaseReceipt { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TaskCompletionSource InstallReceived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TaskCompletionSource ReleaseInstall { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        // Only the Ctrl return diagnostic opts in; no production consumer.
+        // Bounded protocol observations for controller/return tests; no production consumer.
         internal Action<BrokerRequest, BrokerResponse>? ObserveResponse
         {
             get; set;
