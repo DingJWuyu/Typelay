@@ -13,7 +13,8 @@ namespace TypeLay.App.Tests;
 public sealed partial class SourceKeyboardBoundaryProbe
 {
     // Two bounded ordinary-source cases, not another owned matrix. The native
-    // hook ABI is installed only inside our explicit fixture, never by App/Broker.
+    // real backend owns both native hooks; the fixture only observes the chain.
+    // Shipping construction does not opt into this route.
     [Theory(Explicit = true, Timeout = 60000)]
     [InlineData(11)] // Same down: NOREMOVE twice, REMOVE, commit, held hook, actual outer return.
     [InlineData(12)] // A real post-install edit refuses without changing the original Tab.
@@ -33,6 +34,7 @@ public sealed partial class SourceKeyboardBoundaryProbe
         string status = "precondition_failed";
         string? error = null;
         bool hooksClosed = false, processesExited = false, inputsPaired = false, pausedObserved = false;
+        bool sourceRouteClosed = false;
         try
         {
             source = await ProductionForegroundWriteTests.Desktop.Start(sourceMessageProbe: true);
@@ -44,7 +46,12 @@ public sealed partial class SourceKeyboardBoundaryProbe
             Assert.True(N.SetProp(source.Root, "TypeLay.Test.SourceBarrierUp.v1", 0));
             Assert.True(N.SetProp(source.Root, "TypeLay.Test.KeyboardProbe.Ready.v1", 0));
             var observed = await source.Capture();
-            native = new NativeTransactions();
+            native = new NativeTransactions(sourceMessageRoute: true);
+            // Load/install the real backend before the observer and before any
+            // authorization exists. The observer must be upstream of native.
+            Assert.NotNull(native.Observe(observed.Target.AsWindows(), observed.Bounds,
+                observed.InputEpoch, observed.FocusEpoch));
+            Assert.Equal((nuint)1, N.Send(source.Root, 0x8083));
             permit = NativeSourceAcceptanceTests.CapturePermit(native, observed, new(4, 7));
             installed = native.InstallSourceAcceptance(generation, permit);
             Assert.True(installed.Installed);
@@ -74,6 +81,10 @@ public sealed partial class SourceKeyboardBoundaryProbe
                 beforeTails = native.RetireSourceAcceptance(generation, permit.Plan.Id);
                 Assert.True(beforeTails.Claimed);
                 Assert.False(beforeTails.Quiet);
+                // Closing while native still owes the original tails must not
+                // detach either backend hook. The same repeat/up below prove it.
+                native.Dispose();
+                Assert.False(native.SourceMessageRouteClosed);
                 Assert.Equal((nuint)0, N.Send(source.Root, 0x8082));
             }
             // One original press, with no renewed authorization or second write.
@@ -135,6 +146,10 @@ public sealed partial class SourceKeyboardBoundaryProbe
                 Assert.Equal(new[] { 0x100, 0x101 }, returned.Select(item => Number(item, "Code")));
             }
             source.AssertZeroSubmits();
+            native.Dispose();
+            // Quiet and successful Unhook do not prove a callback join. Exact
+            // fixture exit below, not this still-live source, releases the module.
+            Assert.False(native.SourceMessageRouteClosed);
             status = "mechanism_observed_not_product_acceptance";
         }
         catch (Exception failure) { error = failure.ToString(); }
@@ -171,18 +186,20 @@ public sealed partial class SourceKeyboardBoundaryProbe
                 }
                 catch (Exception failure) { error += "\nProcess cleanup: " + failure; }
             }
-            if (processesExited && native is not null && permit is not null && terminal?.Quiet != true)
+            if (processesExited && native is not null)
             {
                 try
                 {
                     // The existing held process handle, not a fabricated native
                     // ACK, permits cleanup after the owned fixture's exact exit.
-                    exitRetirement = native.RetireSourceAcceptance(generation, permit.Plan.Id);
+                    if (permit is not null && terminal?.Quiet != true)
+                        exitRetirement = native.RetireSourceAcceptance(generation, permit.Plan.Id);
                     native.Dispose();
+                    sourceRouteClosed = native.SourceMessageRouteClosed;
                 }
                 catch (Exception failure) { error += "\nExited source cleanup: " + failure; }
             }
-            if (error is not null || !hooksClosed || !processesExited || !inputsPaired || terminal?.Quiet != true)
+            if (error is not null || !hooksClosed || !sourceRouteClosed || !processesExited || !inputsPaired || terminal?.Quiet != true)
                 status = "precondition_failed";
             await File.WriteAllTextAsync(Path.Combine(directory, "result.json"), JsonSerializer.Serialize(new
             {
@@ -192,6 +209,7 @@ public sealed partial class SourceKeyboardBoundaryProbe
                 status,
                 error,
                 hooksClosed,
+                sourceRouteClosed,
                 processesExited,
                 inputsPaired,
                 pausedObserved,

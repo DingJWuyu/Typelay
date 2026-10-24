@@ -6,13 +6,12 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 
 internal sealed partial class SourceKeyboardProbe
 {
-    // The only installer of the new native research callback. This same-thread
-    // wrapper passes the actual OS MSG pointer, never a reconstructed message.
-    // Native calls Next exactly once and owns same-field tail consumption. This
-    // wrapper only observes returned MSGs and supplies the bounded first pause.
+    // An upstream observer only. NativeEditTransactions installs the native
+    // callback into this thread from its own exact DLL. This wrapper observes
+    // CallNextHookEx's returned MSG and supplies the bounded first pause.
     private nint _messageLibrary, _messageHook;
     private string? _messageModulePath;
-    private HookProc? _messageNative, _messageCallback;
+    private HookProc? _messageCallback;
     private bool _messageAttempted, _messageAccepted, _insideMessageNative, _messageDetachmentAllowed;
     private int _messageFirstDownAttempts, _messageBodyChanges, _messageRepeats, _messageUps;
     private int _messageReturns, _messageNullReturns, _messageNoRemove;
@@ -25,20 +24,27 @@ internal sealed partial class SourceKeyboardProbe
 
     private void InitializeMessageProbe(string library)
     {
-        _messageLibrary = NativeLibrary.Load(library);
-        // Observe the actual loaded handle once, before any source grant exists.
-        // Identical bytes or a matching basename do not identify module-local slots.
+        _messageModulePath = Path.GetFullPath(library);
+        _messageCallback = Message;
+    }
+
+    internal bool PrepareMessageObserver()
+    {
+        if (_messageModulePath is null || _messageHook != 0)
+            return false;
+        // Borrow only the module already loaded by the real backend's hook.
+        // Never load a second consumer or invoke its export from the fixture.
+        _messageLibrary = GetModuleHandleW(_messageModulePath);
+        if (_messageLibrary == 0)
+            return false;
         var path = new StringBuilder(32768);
         uint length = GetModuleFileNameW(_messageLibrary, path, (uint)path.Capacity);
-        if (length == 0 || length >= (uint)path.Capacity)
-            throw new InvalidOperationException("Message callback module path unavailable.");
+        if (length == 0 || length >= (uint)path.Capacity
+            || !string.Equals(_messageModulePath, Path.GetFullPath(path.ToString()), StringComparison.OrdinalIgnoreCase))
+            return false;
         _messageModulePath = Path.GetFullPath(path.ToString());
-        _messageNative = Marshal.GetDelegateForFunctionPointer<HookProc>(
-            NativeLibrary.GetExport(_messageLibrary, "TypeLaySourceGetMessageProc"));
-        _messageCallback = Message;
-        _messageHook = SetWindowsHookExW(3, _messageCallback, 0, _thread);
-        if (_messageHook == 0)
-            throw new InvalidOperationException("Self-owned message research hook unavailable.");
+        _messageHook = SetWindowsHookExW(3, _messageCallback!, 0, _thread);
+        return _messageHook != 0;
     }
 
     private void PrepareMessage(int mode)
@@ -58,7 +64,7 @@ internal sealed partial class SourceKeyboardProbe
     private void ObserveMessageFocus(uint message, nuint wp, nint lp)
     {
         ObserveOriginFocus(message, wp, lp);
-        if (_messageNative is null)
+        if (_messageHook == 0)
             return;
         if (_insideMessageNative && message == 0x0111 && lp == _field && ((wp >> 16) & 0xffff) == 0x300)
             _messageBodyChanges++;
@@ -90,7 +96,7 @@ internal sealed partial class SourceKeyboardProbe
         _insideMessageNative = true;
         try
         {
-            result = _messageNative!(code, wp, lp);
+            result = CallNextHookEx(_messageHook, code, wp, lp);
         }
         finally { _insideMessageNative = false; }
         if (!key)
@@ -158,7 +164,7 @@ internal sealed partial class SourceKeyboardProbe
         && first.WParam == second.WParam && first.LParam == second.LParam && first.Time == second.Time
         && first.Point.X == second.Point.X && first.Point.Y == second.Point.Y && first.Private == second.Private;
 
-    private object? MessageResult() => _messageNative is null ? null : new
+    private object? MessageResult() => _messageLibrary == 0 ? null : new
     {
         moduleRole = "source-getmessage-callback",
         modulePath = _messageModulePath,
@@ -181,17 +187,17 @@ internal sealed partial class SourceKeyboardProbe
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern uint GetModuleFileNameW(nint module, StringBuilder path, uint size);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern nint GetModuleHandleW(string path);
 
     private bool DisposeMessageProbe()
     {
         bool closed = _messageHook == 0 || UnhookWindowsHookEx(_messageHook);
         GC.KeepAlive(_messageCallback);
-        GC.KeepAlive(_messageNative);
         if (!closed)
             return false;
         _messageHook = 0;
-        if (_messageLibrary != 0)
-            NativeLibrary.Free(_messageLibrary);
+        // This is a borrowed handle. The real backend owns module retirement.
         _messageLibrary = 0;
         return true;
     }

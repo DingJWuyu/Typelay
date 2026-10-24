@@ -5,7 +5,7 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 // Original three modes have no write API, LL hook, witness fabrication or callback pumping.
 internal sealed partial class SourceKeyboardProbe : IDisposable
 {
-    internal const uint Arm = 0x8080, Snapshot = 0x8081, Close = 0x8082;
+    internal const uint Arm = 0x8080, Snapshot = 0x8081, Close = 0x8082, PrepareMessageObserverMessage = 0x8083;
     internal const string ReadyProperty = "TypeLay.Test.KeyboardProbe.Ready.v1";
     private readonly nint _root, _field;
     private readonly uint _thread;
@@ -58,7 +58,7 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
     {
         // 1: peek+consume F7, 2: observe F7, 3: observe Tab, 4: consume Tab.
         if (mode is < 1 or > 13 || mode is >= 5 and <= 10 && _synchronousField is null
-            || (mode is 11 or 12) && _messageNative is null || mode == 13 && _originHook == 0)
+            || (mode is 11 or 12) && _messageHook == 0 || mode == 13 && _originHook == 0)
             throw new ArgumentOutOfRangeException(nameof(mode));
         _mode = mode;
         _key = mode <= 2 ? 0x76u : mode == 13 ? 0x77u : 9u;

@@ -1029,9 +1029,9 @@ public sealed partial class ProductionForegroundWriteTests
                 Assert.False(owned || sourceKeyboardProbe || sourceSynchronousProbe);
                 Assert.Null(returnFocus);
                 Assert.Null(sourceClaimProbe);
-                // The direct NativeTransactions owner loads from this test process's
-                // base directory. Bind GETMESSAGE to that exact DLL, not the separate
-                // Broker observer's same-named copy with independent static slots.
+                // The backend owner loads from this test process's base directory.
+                // The fixture only verifies that already-loaded module; it does
+                // not install/call a second copy of the native consumer.
                 arguments = [.. arguments, "--source-message-probe",
                     Path.Combine(AppContext.BaseDirectory, "TypeLay.NativeInput.dll")];
             }

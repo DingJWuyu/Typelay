@@ -21,6 +21,11 @@ internal sealed partial class NativeEditTransactions : IDisposable
     private readonly Dictionary<uint, nint> _hooks = new();
     private nint _library, _procedure;
     private uint _message, _ownedCaptureMessage;
+    private readonly bool _sourceMessageRoute;
+    private bool _sourceMessageRouteFailed;
+    // Only the isolated source2 consumer opts in. Registration does not grant
+    // source eligibility, change input-origin policy or enable shipping capture.
+    internal NativeEditTransactions(bool sourceMessageRoute = false) => _sourceMessageRoute = sourceMessageRoute;
     private sealed record Binding(WindowsTarget Original, WindowsTarget Target, ulong Cookie, uint Thread, long TouchedAt,
         bool Initialized = false, OwnedCaptureDescriptor? Owned = null, bool DirectCaptured = false);
     private sealed record Result(uint Status, Denial Reason, string Text, TextRange Selection, bool Multiline, ImeState Ime);
@@ -236,7 +241,7 @@ internal sealed partial class NativeEditTransactions : IDisposable
 
     private Binding? Bind(WindowsTarget identity, OwnedCaptureDescriptor? owned = null)
     {
-        if (!Environment.Is64BitProcess || identity.ControlHwnd == 0
+        if (_sourceMessageRouteFailed || !Environment.Is64BitProcess || identity.ControlHwnd == 0
             || (owned is not null && (!MatchesOwned(identity, owned) || !IsCurrentOwned(owned))))
             return null;
         if (_bindings.TryGetValue(identity.ControlHwnd, out var existing))
@@ -330,7 +335,7 @@ internal sealed partial class NativeEditTransactions : IDisposable
         }
         else if (cookie == 0)
             cookie = BitConverter.ToUInt64(RandomNumberGenerator.GetBytes(8)) | 1;
-        if (!_hooks.ContainsKey(thread))
+        if (!_sourceMessageRoute && !_hooks.ContainsKey(thread))
         {
             nint hook = SetWindowsHookExW(4, _procedure, _library, thread);
             if (hook == 0)
@@ -347,6 +352,14 @@ internal sealed partial class NativeEditTransactions : IDisposable
         var binding = new Binding(identity, target, cookie, thread, WindowsInterruptClock.NowMs,
             Initialized: owned is not null, Owned: owned);
         _bindings.Add(identity.ControlHwnd, binding);
+        if (_sourceMessageRoute && !InstallSourceMessageRoute(binding))
+        {
+            // Never fall back to the old activation transport after a partial
+            // installation. Release retains any hook whose rollback is unknown.
+            _sourceMessageRouteFailed = true;
+            Release(binding);
+            return null;
+        }
         return binding;
     }
 
@@ -446,12 +459,12 @@ internal sealed partial class NativeEditTransactions : IDisposable
         {
             // Owned lifetime retirement belongs to the host's ordered control
             // channel. Releasing this Broker binding only detaches its hook.
-            if (binding.Owned is null)
+            if (binding.Owned is null && (!_sourceMessageRoute || binding.Initialized))
                 Invoke(binding, 3);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         if (!_bindings.Values.Any(value => value.Thread == binding.Thread && value.Target != binding.Target)
-            && _hooks.TryGetValue(binding.Thread, out nint hook))
+            && (_hooks.TryGetValue(binding.Thread, out nint hook) || _sourceHookProcesses.ContainsKey(binding.Thread)))
         {
             if (_sourceHookProcesses.ContainsKey(binding.Thread))
             {
@@ -482,9 +495,10 @@ internal sealed partial class NativeEditTransactions : IDisposable
     {
         Clear();
         _sourceTerminal = null;
+        ReleaseExitedSourceModules();
         // An unacknowledged source installation still owns this hook/module.
         // Keep the unresolved owner; disposing is not proof of native revocation.
-        if (_sourceGrant is not null || _sourceHookProcesses.Count != 0)
+        if (_sourceGrant is not null || _sourceHookProcesses.Count != 0 || _sourceDetachedProcesses.Count != 0)
             return;
         if (_library != 0)
             NativeLibrary.Free(_library);

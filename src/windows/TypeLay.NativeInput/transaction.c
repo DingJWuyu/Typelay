@@ -947,7 +947,8 @@ static LRESULT source_press_message(int code, WPARAM wp, LPARAM lp) {
     return result;
 }
 // Research-only ABI addition. No shipping App/Broker installs this callback.
-// The opted-in self-owned fixture supplies the real WH_GETMESSAGE arguments.
+// The isolated NativeEditTransactions constructor installs it on the owned
+// fixture's exact thread; Windows supplies the real WH_GETMESSAGE arguments.
 // This fixed, unmodified Tab path has no strict origin/old-queued-key or real
 // composition authority. In particular, posted messages are not physical input.
 // CallNext first cannot constrain an upstream hook after we return: evidence is

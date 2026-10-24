@@ -566,6 +566,8 @@ internal static class Program
             }
             catch (N.NativeMessageException) { return 0; }
         }
+        if (_sourceKeyboardProbe is { } messageObserver && message == SourceKeyboardProbe.PrepareMessageObserverMessage)
+            return messageObserver.PrepareMessageObserver() ? 1 : 0;
         if (_sourceKeyboardProbe is { } keyboardProbe && message == SourceKeyboardProbe.Arm)
         {
             keyboardProbe.Configure((int)wParam);
