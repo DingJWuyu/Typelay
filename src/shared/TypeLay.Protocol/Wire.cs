@@ -12,16 +12,30 @@ public static class Wire
         MaxDepth = 24
     };
 
+    public static void Write<T>(Stream stream, T value)
+    {
+        byte[] payload = SerializePayload(value);
+        byte[] prefix = new byte[4];
+        BinaryPrimitives.WriteInt32LittleEndian(prefix, payload.Length);
+        stream.Write(prefix, 0, prefix.Length);
+        stream.Write(payload, 0, payload.Length);
+        stream.Flush();
+    }
     public static async ValueTask WriteAsync<T>(Stream stream, T value, CancellationToken ct = default)
     {
-        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(value, Json);
-        if (payload.Length is <= 0 or > MaxFrameBytes)
-            throw new InvalidDataException("frame-size");
+        byte[] payload = SerializePayload(value);
         byte[] prefix = new byte[4];
         BinaryPrimitives.WriteInt32LittleEndian(prefix, payload.Length);
         await stream.WriteAsync(prefix, ct).ConfigureAwait(false);
         await stream.WriteAsync(payload, ct).ConfigureAwait(false);
         await stream.FlushAsync(ct).ConfigureAwait(false);
+    }
+    private static byte[] SerializePayload<T>(T value)
+    {
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(value, Json);
+        if (payload.Length is <= 0 or > MaxFrameBytes)
+            throw new InvalidDataException("frame-size");
+        return payload;
     }
     public static async ValueTask<T> ReadAsync<T>(Stream stream, CancellationToken ct = default)
     {

@@ -1188,6 +1188,7 @@ class InputFeedbackTests(unittest.TestCase):
         proof_fault=None,
         awaiting_refusal_gap=False,
         awaiting_fault=None,
+        complete_fault=None,
     ):
         self.clock.return_value = 1000
         self.peer = self.connect_peer("gtk3")
@@ -1454,8 +1455,14 @@ class InputFeedbackTests(unittest.TestCase):
                 # only route back to a newly constructed private authorization.
                 async def complete_read(cross_age_gap=False):
                     nonlocal operation
+                    failures_before = self.input.diagnostics()["captureFailures"]
+                    if complete_fault == "command-not-rotated":
+                        self.input.practice_continuity["commandGeneration"] = self.generation
                     operation = asyncio.create_task(
-                        self.input.request("capture", {"practiceRead": second})
+                        self.input.request(
+                            "capture",
+                            {} if complete_fault == "missing-read" else {"practiceRead": second},
+                        )
                     )
                     current = description()
                     current["sessionBindings"] = {
@@ -1482,29 +1489,66 @@ class InputFeedbackTests(unittest.TestCase):
                             )
                         )
                         self.input.state()
-                    self.peer.link.receive(
-                        {
-                            "id": capture["id"],
-                            "data": {
-                                **current,
-                                "text": "new source",
-                                "selection": {"start": 10, "end": 10},
-                                "ime": "Clear",
-                                "observedAtMs": self.clock.return_value,
-                                "writeSupported": True,
-                            },
-                        }
-                    )
+                    native = {
+                        **current,
+                        "text": "new source",
+                        "selection": {"start": 10, "end": 10},
+                        "ime": "Clear",
+                        "observedAtMs": self.clock.return_value,
+                        "writeSupported": True,
+                    }
+                    if complete_fault == "target-changed":
+                        native["target"] = "another-field"
+                    elif complete_fault == "native-focus-changed":
+                        native["authority"]["focusRevision"] += 1
+                    elif complete_fault == "context-changed":
+                        native["authority"]["contextStamp"]["context"] += 1
+                    elif complete_fault == "owner-replaced":
+                        self.input.practice_continuity = dict(self.input.practice_continuity)
+                    elif complete_fault == "unacknowledged":
+                        self.input.practice_retirement_ack = None
+                    elif complete_fault == "peer-changed":
+                        self.input.practice_continuity["peer"] = next(
+                            peer for peer in self.input.peers if peer is not self.peer
+                        )
+                    self.peer.link.receive({"id": capture["id"], "data": native})
                     complete = await asyncio.wait_for(operation, 1)
+                    if complete_fault:
+                        self.assertIsNone(complete)
+                        self.assertIsNone(self.input.practice_authorization)
+                        self.assertIsNone(self.input.bound_observation)
+                        failure = self.input.diagnostics()["captureFailures"][-1]
+                        self.assertEqual(failure["reason"], "practice-identity-lost")
+                        self.assertEqual(
+                            failure["nativeFailure"],
+                            {
+                                "stage": "practice-continuity",
+                                "reason": {
+                                    "missing-read": "read-owner-mismatch",
+                                    "owner-replaced": "read-owner-mismatch",
+                                    "unacknowledged": "waiting-invalid",
+                                    # The earlier live waiting check already rejects
+                                    # a different peer, before the explicit peer gate.
+                                    "peer-changed": "waiting-invalid",
+                                }.get(complete_fault, complete_fault),
+                                "practicePresent": complete_fault != "missing-read",
+                                "foregroundSuspension": foreground_gap,
+                            },
+                        )
+                        self.assertEqual(self.native_frames(self.peer), [])
+                        return
                     if cross_age_gap:
                         self.assertTrue(complete["foregroundExpired"])
                         self.assertIsNone(self.input.bound_observation)
                         return
                     self.assertFalse(complete["ownedSource"]["contextAdvanced"])
                     self.assertEqual(complete["ownedSource"]["binding"], second)
+                    self.assertEqual(self.input.diagnostics()["captureFailures"], failures_before)
                     return complete
 
                 await complete_read()
+                if complete_fault:
+                    return
                 if retire_during_bind:
                     self.assertTrue(self.input.prepare_practice(second, lambda _: True))
                     # Runtime ends its still-awaiting G1 before it handles Bind G2:
@@ -1567,6 +1611,25 @@ class InputFeedbackTests(unittest.TestCase):
             )
 
         asyncio.run(exercise())
+
+    def test_complete_waiting_capture_reports_only_its_first_identity_refusal(self):
+        for fault in (
+            "missing-read",
+            "owner-replaced",
+            "unacknowledged",
+            "peer-changed",
+            "target-changed",
+            "native-focus-changed",
+            "context-changed",
+            "command-not-rotated",
+        ):
+            with self.subTest(fault=fault):
+                self.owned_context_advance(resume=True, complete_fault=fault)
+
+    def test_complete_waiting_capture_distinguishes_foreground_suspension(self):
+        self.owned_context_advance(
+            foreground_gap=True, resume=True, complete_fault="native-focus-changed"
+        )
 
     def test_awaiting_age_fence_discards_late_refusal_without_retiring_successor(self):
         self.owned_context_advance(awaiting_refusal_gap=True, resume=True)

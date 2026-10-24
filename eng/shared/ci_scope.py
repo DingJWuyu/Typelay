@@ -13,6 +13,9 @@ PRACTICE_PATHS = {
 }
 LINUX_PATHS = ("src/linux/", "tests/linux/", "eng/linux/", "packaging/linux/")
 WINDOWS_PATHS = ("src/windows/", "tests/windows/", "eng/windows/", "packaging/windows/")
+SHARED_TEST_PATHS = re.compile(
+    r"tests/shared/TypeLay\.(Core|Runtime|Protocol)\.Tests/[^/]*Tests\.cs"
+)
 QT_PATHS = re.compile(
     r"^(src/linux/native/qt6/|src/linux/native/fcitx5/typelay-fcitx-qt-v1\.h$|"
     r"eng/linux/cooperative/(qt\.py|qt-runtime-probe\.cpp|patches/fcitx5-qt\.patch)$|"
@@ -224,8 +227,30 @@ def select():
                         practice = paths <= PRACTICE_PATHS
                         qt = not practice and qt_only_branch()
                         linux = not qt
-                elif paths and all(path.startswith(WINDOWS_PATHS) for path in paths):
+                elif paths and all(
+                    path.startswith(WINDOWS_PATHS) or SHARED_TEST_PATHS.fullmatch(path)
+                    for path in paths
+                ):
                     linux = False
+                    shared_tests = {path for path in paths if SHARED_TEST_PATHS.fullmatch(path)}
+                    # Shared checks and the full Windows solution still run these tests.
+                    # Only existing test edits qualify, across every commit and merge parent.
+                    if shared_tests:
+                        non_modified = {
+                            os.fsdecode(path)
+                            for path in git(
+                                "log",
+                                "-m",
+                                "--format=",
+                                "--name-only",
+                                "--no-renames",
+                                "-z",
+                                "--diff-filter=ACDRTUXB",
+                                f"{before}..{after}",
+                            ).split(b"\0")
+                            if path
+                        }
+                        linux = bool(shared_tests & non_modified)
     except (OSError, subprocess.CalledProcessError):
         # Missing Git objects or failed comparisons never authorize skipping jobs.
         return True, True, False, False, False

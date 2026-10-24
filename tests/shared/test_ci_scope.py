@@ -2,11 +2,14 @@
 
 import json
 import os
+import runpy
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import chdir
 from pathlib import Path
+from unittest.mock import patch
 
 SELECTOR = Path(__file__).resolve().parents[2] / "eng/shared/ci_scope.py"
 FULL = {
@@ -231,6 +234,160 @@ class ScopeTests(unittest.TestCase):
                 self.commit({path: "temporary"})
                 self.commit({path: None, "src/linux/desktop/practice.py": "practice"})
                 self.assertEqual(expected, self.select(before))
+
+    def test_existing_shared_test_edits_keep_windows_and_shared_checks(self):
+        for project in ("Core", "Runtime", "Protocol"):
+            path = f"tests/shared/TypeLay.{project}.Tests/BehaviorTests.cs"
+            for windows_files in ({}, {"src/windows/current.cs": "Windows change"}):
+                with self.subTest(project=project, windows_files=windows_files):
+                    self.reset(self.base)
+                    before = self.commit({path: "existing regression"})
+                    self.commit({path: "updated regression", **windows_files})
+                    for branch in ("work/linux-usability", "work/windows-experience"):
+                        self.assertEqual(WINDOWS, self.select(before, branch))
+
+    def test_shared_test_structure_changes_require_both(self):
+        path = "tests/shared/TypeLay.Core.Tests/BehaviorTests.cs"
+        renamed = "tests/shared/TypeLay.Core.Tests/RenamedTests.cs"
+        for name, original, changes in (
+            ("added", {}, [{path: "regression"}]),
+            ("deleted", {path: "regression"}, [{path: None}]),
+            ("renamed", {path: "regression"}, [{path: None, renamed: "regression"}]),
+            ("reverted addition", {}, [{path: "regression"}, {path: None}]),
+            ("reverted deletion", {path: "regression"}, [{path: None}, {path: "regression"}]),
+        ):
+            with self.subTest(change=name):
+                self.reset(self.base)
+                before = self.commit(original)
+                for files in changes:
+                    self.commit(files)
+                for branch in ("work/linux-usability", "work/windows-experience"):
+                    self.assertEqual(FULL, self.select(before, branch))
+
+    def test_shared_test_type_changes_require_both(self):
+        path = "tests/shared/TypeLay.Runtime.Tests/BehaviorTests.cs"
+        before = self.commit({path: "regression"})
+        target = self.git("hash-object", "-w", "--stdin", data=b"other.cs")
+        self.git("update-index", "--cacheinfo", "120000", target, path)
+        self.commit({})
+        self.assertEqual(FULL, self.select(before))
+
+    def test_shared_test_edits_do_not_exempt_other_paths(self):
+        test_path = "tests/shared/TypeLay.Runtime.Tests/BehaviorTests.cs"
+        for path in (
+            "tests/shared/TypeLay.Runtime.Tests/SessionScenario.cs",
+            "tests/shared/TypeLay.Core.Tests/nested/BehaviorTests.cs",
+            "tests/shared/TypeLay.Core.Tests/support/BehaviorTests.cs",
+            "tests/shared/TypeLay.Core.Tests/fixtures/BehaviorTests.cs",
+            "tests/shared/support/BehaviorTests.cs",
+            "tests/shared/TypeLay.Other.Tests/BehaviorTests.cs",
+            "tests/shared/worker/BehaviorTests.cs",
+            "tests/shared/TypeLay.Core.Tests/TypeLay.Core.Tests.csproj",
+            "tests/shared/TypeLay.Core.Tests/packages.lock.json",
+            "src/shared/core.cs",
+            "src/linux/app.py",
+            "tests/linux/test_app.py",
+            "Directory.Build.props",
+            "eng/shared/ci_scope.py",
+            "other/file",
+        ):
+            with self.subTest(path=path):
+                self.reset(self.base)
+                before = self.commit({test_path: "regression", path: "existing"})
+                self.commit({test_path: "updated regression", path: "updated"})
+                for branch in ("work/linux-usability", "work/windows-experience"):
+                    self.assertEqual(FULL, self.select(before, branch))
+                self.commit({path: "existing"})
+                self.assertEqual(FULL, self.select(before))  # Reverting does not hide this path.
+
+    def test_shared_test_history_includes_every_merge_parent(self):
+        path = "tests/shared/TypeLay.Protocol.Tests/ContractTests.cs"
+        branch_point = self.commit({path: "original"})
+        side = self.commit({path: "updated"})
+        self.reset(branch_point)
+        before = self.commit({"docs/before.md": "notes"})
+        self.commit({path: "updated"}, parents=[before, side])
+        self.assertEqual(WINDOWS, self.select(before))
+
+        self.reset(branch_point)
+        target = self.git("hash-object", "-w", "--stdin", data=b"other.cs")
+        self.git("update-index", "--cacheinfo", "120000", target, path)
+        link_base = self.commit({})
+        before = self.commit({path: "regular file"})
+        self.reset(link_base)
+        side = self.commit({"docs/side.md": "notes"})
+        self.reset(before)
+        # The path is unchanged from the first parent, but changes type from the second.
+        self.commit({"docs/side.md": "notes"}, parents=[before, side])
+        self.assertEqual(FULL, self.select(before))
+
+    def test_shared_test_edits_preserve_unusual_names_and_modification_reverts(self):
+        for name in ("Tests.cs", "空 格\t\nContractTests.cs"):
+            with self.subTest(name=name):
+                self.reset(self.base)
+                path = f"tests/shared/TypeLay.Protocol.Tests/{name}"
+                before = self.commit({path: "original"})
+                self.commit({path: "updated"})
+                self.assertEqual(WINDOWS, self.select(before))
+                self.commit({path: "original"})
+                self.assertEqual(WINDOWS, self.select(before))
+
+    def test_shared_test_edits_still_require_valid_push_evidence(self):
+        path = "tests/shared/TypeLay.Core.Tests/BehaviorTests.cs"
+        before = self.commit({path: "original"})
+        self.commit({path: "updated"})
+        for event in (
+            {"CREATED": "true"},
+            {"FORCED": "true"},
+            {"BEFORE": "0" * 40},
+            {"AFTER": before},
+            {"EVENT_NAME": "pull_request"},
+            {"EVENT_NAME": "workflow_dispatch", "CHECK_MODE": "full"},
+            {"BRANCH": "trunk"},
+            {"BRANCH": "work/other"},
+        ):
+            with self.subTest(event=event):
+                self.assertEqual(FULL, self.select(before, **event))
+
+    def test_shared_test_status_query_failure_keeps_both_checks(self):
+        path = "tests/shared/TypeLay.Core.Tests/BehaviorTests.cs"
+        before = self.commit({path: "original"})
+        after = self.commit({path: "updated"})
+        output = self.root / "failed-query-output"
+        selector = runpy.run_path(str(SELECTOR))
+        check_output = subprocess.check_output
+        for failure in (subprocess.CalledProcessError(1, "git log"), OSError("git unavailable")):
+            with self.subTest(failure=type(failure).__name__):
+                output.write_text("")
+
+                def fail_status_query(command, **kwargs):
+                    if "--diff-filter=ACDRTUXB" in command:
+                        raise failure
+                    return check_output(command, **kwargs)
+
+                with (
+                    chdir(self.repo),
+                    patch.dict(
+                        os.environ,
+                        {
+                            **self.env,
+                            "EVENT_NAME": "push",
+                            "BRANCH": "work/linux-usability",
+                            "BEFORE": before,
+                            "AFTER": after,
+                            "CREATED": "false",
+                            "FORCED": "false",
+                            "HY_DECODE_COMPARISON": "false",
+                            "FIXED_MODEL_DIAGNOSTICS": "false",
+                            "GITHUB_OUTPUT": str(output),
+                        },
+                    ),
+                    patch("subprocess.check_output", side_effect=fail_status_query),
+                ):
+                    selector["main"]()
+                self.assertEqual(
+                    FULL, dict(line.split("=", 1) for line in output.read_text().splitlines())
+                )
 
     def test_verified_neutral_only_push_keeps_only_shared_checks(self):
         self.commit(

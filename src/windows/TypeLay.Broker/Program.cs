@@ -66,7 +66,9 @@ internal static class Program
                 }
                 Stream responseOutput = request.Op == "capture" && captureTrace is not null
                     ? captureTrace.ObserveResponse(output) : output;
-                Wire.WriteAsync(responseOutput, response).AsTask().GetAwaiter().GetResult();
+                // This serial MTA already waits for each response. Console stdout
+                // implements async writes by scheduling synchronous work elsewhere.
+                Wire.Write(responseOutput, response);
                 // Complete the original response before diagnostic disk I/O. This
                 // synchronous flush can still delay the next request, not renew it.
                 captureTrace?.Flush(WindowsInterruptClock.NowMs);

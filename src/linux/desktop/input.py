@@ -2157,16 +2157,34 @@ class Input:
             }
         if waiting is not None:
             authority = native.get("authority", {})
-            if (
-                practice is not waiting
-                or not self.practice_waiting(waiting["runId"])
-                or waiting["peer"] is not peer
-                or target_id(peer, native["target"]) != waiting["target"]
-                or authority.get("focusRevision") != waiting["nativeFocusRevision"]
-                or authority.get("contextStamp", {}).get("context") != waiting["contextGeneration"]
-                or command_generation == waiting["commandGeneration"]
-            ):
-                return self.captured("practice-identity-lost")
+            # Keep the original short-circuit order and report only its first
+            # failed gate. Do not re-query a dynamic predicate for diagnostics.
+            if practice is not waiting:
+                reason = "read-owner-mismatch"
+            elif not self.practice_waiting(waiting["runId"]):
+                reason = "waiting-invalid"
+            elif waiting["peer"] is not peer:
+                reason = "peer-changed"
+            elif target_id(peer, native["target"]) != waiting["target"]:
+                reason = "target-changed"
+            elif authority.get("focusRevision") != waiting["nativeFocusRevision"]:
+                reason = "native-focus-changed"
+            elif authority.get("contextStamp", {}).get("context") != waiting["contextGeneration"]:
+                reason = "context-changed"
+            elif command_generation == waiting["commandGeneration"]:
+                reason = "command-not-rotated"
+            else:
+                reason = None
+            if reason is not None:
+                return self.captured(
+                    "practice-identity-lost",
+                    native_failure={
+                        "stage": "practice-continuity",
+                        "reason": reason,
+                        "practicePresent": practice is not None,
+                        "foregroundSuspension": waiting.get("foregroundSuspension") is not None,
+                    },
+                )
             owned_source = {
                 "binding": {
                     key: waiting[key]

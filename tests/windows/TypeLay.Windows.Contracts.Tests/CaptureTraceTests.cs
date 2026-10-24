@@ -236,6 +236,91 @@ public sealed class CaptureTraceTests
         });
     }
 
+    [Fact]
+    public void SynchronousResponseRecordsEveryCallWithoutInventingTaskState()
+    {
+        InDirectory(path =>
+        {
+            long now = 100;
+            using var request = new CaptureTrace.Request(path + ".broker.jsonl");
+            using (var capture = request.Start(90))
+                capture!.Result("observed-clear");
+            using var output = new SynchronousResponseStream(stage =>
+            {
+                Assert.False(File.Exists(path + ".broker.jsonl"));
+                now = stage switch
+                {
+                    "prefix" => 110,
+                    "payload" => 130,
+                    _ => 160
+                };
+            });
+            using var observed = request.ObserveResponse(output, () => now);
+            Wire.Write(observed, new
+            {
+                text = "synthetic-private-body"
+            });
+            Assert.False(File.Exists(path + ".broker.jsonl"));
+            request.Flush(165);
+            using var sample = JsonDocument.Parse(Assert.Single(File.ReadAllLines(path + ".broker.jsonl")));
+            var delivery = sample.RootElement.GetProperty("responseDelivery");
+            Assert.Equal(100, delivery.GetProperty("startedAtMs").GetInt64());
+            foreach (var (stage, called, returned) in new[]
+                { ("prefix", 100, 110), ("payload", 110, 130), ("flush", 130, 160) })
+            {
+                var boundary = delivery.GetProperty(stage);
+                Assert.Equal(["calledAtMs", "returnedAtMs"], boundary.EnumerateObject().Select(property => property.Name));
+                Assert.Equal(called, boundary.GetProperty("calledAtMs").GetInt64());
+                Assert.Equal(returned, boundary.GetProperty("returnedAtMs").GetInt64());
+            }
+            Assert.Equal(165, sample.RootElement.GetProperty("responseCompletedAtMs").GetInt64());
+            Assert.DoesNotContain("synthetic-private-body", sample.RootElement.GetRawText());
+            request.Dispose();
+            observed.Dispose();
+            Assert.True(output.CanWrite);
+        });
+    }
+
+    [Theory]
+    [InlineData("prefix")]
+    [InlineData("payload")]
+    [InlineData("flush")]
+    public void FailedSynchronousResponsePreservesTheExceptionAndDiscardsItsTiming(string failedStage)
+    {
+        InDirectory(path =>
+        {
+            var failure = new IOException("synthetic-response-failure");
+            using (var request = new CaptureTrace.Request(path + ".broker.jsonl"))
+            {
+                using (var capture = request.Start(90))
+                    capture!.Result("observed-clear");
+                using var output = new SynchronousResponseStream(stage =>
+                {
+                    if (stage == failedStage)
+                        throw failure;
+                });
+                Assert.Same(failure, Assert.Throws<IOException>(() =>
+                    Wire.Write(request.ObserveResponse(output, () => 100), 42)));
+            }
+            Assert.False(File.Exists(path + ".broker.jsonl"));
+        });
+    }
+
+    private sealed class SynchronousResponseStream(Action<string> duringCall) : MemoryStream
+    {
+        private int _writes;
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            duringCall(_writes++ == 0 ? "prefix" : "payload");
+            base.Write(buffer, offset, count);
+        }
+        public override void Flush() => duringCall("flush");
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+            => throw new InvalidOperationException("Synchronous response must not dispatch asynchronous writes.");
+        public override Task FlushAsync(CancellationToken cancellationToken)
+            => throw new InvalidOperationException("Synchronous response must not dispatch asynchronous flushes.");
+    }
+
     private sealed class ResponseStream(string pendingStage, Action? duringPrefix = null) : MemoryStream
     {
         private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);

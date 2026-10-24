@@ -121,8 +121,9 @@ internal sealed class CaptureTrace(CaptureTrace.Request owner, long atMs) : IDis
         // Observe the original Wire calls without replacing their tasks or adding
         // an await/continuation. A returned task's state is only that instant's
         // observation, not proof of synchronous execution or an OS I/O timestamp.
-        // Start-to-prefix includes serialization/framing and scheduling. Between
-        // calls, intervals include both waiting and original await scheduling.
+        // Synchronous calls have no task state. Start-to-prefix includes
+        // serialization/framing and scheduling; gaps between asynchronous calls
+        // include both waiting and original await scheduling.
         private sealed class ResponseStream : Stream
         {
             private readonly Stream _output;
@@ -136,7 +137,7 @@ internal sealed class CaptureTrace(CaptureTrace.Request owner, long atMs) : IDis
                 _nowMs = nowMs;
                 _startedAtMs = nowMs();
             }
-            private readonly record struct Boundary(long CalledAtMs, long ReturnedAtMs, bool CompletedAtReturn);
+            private readonly record struct Boundary(long CalledAtMs, long ReturnedAtMs, bool? CompletedAtReturn);
             public object? ReadSlowDelivery(long completedAtMs) => completedAtMs - _startedAtMs < 35 ? null : new
             {
                 startedAtMs = _startedAtMs,
@@ -149,12 +150,15 @@ internal sealed class CaptureTrace(CaptureTrace.Request owner, long atMs) : IDis
                 long calledAtMs = _nowMs();
                 ValueTask pending = _output.WriteAsync(buffer, cancellationToken);
                 long returnedAtMs = _nowMs();
-                var boundary = new Boundary(calledAtMs, returnedAtMs, pending.IsCompleted);
+                RecordWrite(new(calledAtMs, returnedAtMs, pending.IsCompleted));
+                return pending;
+            }
+            private void RecordWrite(Boundary boundary)
+            {
                 if (_writes++ == 0)
                     _prefix = boundary;
                 else
                     _payload = boundary;
-                return pending;
             }
             public override Task FlushAsync(CancellationToken cancellationToken)
             {
@@ -174,11 +178,21 @@ internal sealed class CaptureTrace(CaptureTrace.Request owner, long atMs) : IDis
             {
                 get => _output.Position; set => _output.Position = value;
             }
-            public override void Flush() => _output.Flush();
+            public override void Flush()
+            {
+                long calledAtMs = _nowMs();
+                _output.Flush();
+                _flush = new(calledAtMs, _nowMs(), null);
+            }
             public override int Read(byte[] buffer, int offset, int count) => _output.Read(buffer, offset, count);
             public override long Seek(long offset, SeekOrigin origin) => _output.Seek(offset, origin);
             public override void SetLength(long value) => _output.SetLength(value);
-            public override void Write(byte[] buffer, int offset, int count) => _output.Write(buffer, offset, count);
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                long calledAtMs = _nowMs();
+                _output.Write(buffer, offset, count);
+                RecordWrite(new(calledAtMs, _nowMs(), null));
+            }
         }
     }
 }
