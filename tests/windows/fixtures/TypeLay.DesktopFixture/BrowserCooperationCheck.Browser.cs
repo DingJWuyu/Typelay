@@ -237,7 +237,16 @@ internal static partial class BrowserCooperationCheck
             // disposable profile. Never inspect ports, state, ACKs or page content.
             var response = await CallAsync("Runtime.evaluate", new
             {
-                expression = "({id: chrome.runtime.id, manifest: chrome.runtime.getManifest()})",
+                expression = """
+                    (()=>{
+                        const chromePresent=typeof chrome!=='undefined'&&chrome!==null;
+                        const runtimePresent=chromePresent&&typeof chrome.runtime!=='undefined'&&chrome.runtime!==null;
+                        const getManifestCallable=runtimePresent&&typeof chrome.runtime.getManifest==='function';
+                        const availability={chromePresent,runtimePresent,getManifestCallable};
+                        if(!getManifestCallable) return {availability};
+                        return {availability,id:chrome.runtime.id,manifest:chrome.runtime.getManifest()};
+                    })()
+                    """,
                 returnByValue = true,
                 awaitPromise = false
             }, session, ct);
@@ -248,6 +257,10 @@ internal static partial class BrowserCooperationCheck
             Require(!response.TryGetProperty("exceptionDetails", out _)
                 && response.GetProperty("result").TryGetProperty("value", out _), "extension-metadata-unavailable");
             var metadata = response.GetProperty("result").GetProperty("value").Clone();
+            // Availability is diagnostic only. Missing bindings still fail this
+            // attempt; only the original id and full manifest can identify ours.
+            Require(metadata.ValueKind == JsonValueKind.Object && metadata.TryGetProperty("id", out _)
+                && metadata.TryGetProperty("manifest", out _), "extension-metadata-unavailable");
             // Successful discovery must not leave a debugger attached during the
             // product scenarios. On failure the caller closes the owned browser/CDP.
             _metadataDiagnostics[diagnosticIndex] = _metadataDiagnostics[diagnosticIndex] with

@@ -143,6 +143,16 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                         Assert.Equal(coverHandle, diagnostic.GetProperty("Foreground").GetProperty("Window").GetInt64());
                         Assert.Equal(Environment.ProcessId, diagnostic.GetProperty("Foreground").GetProperty("ProcessId").GetInt32());
                         Assert.Equal("unknown", diagnostic.GetProperty("ForegroundProcessKind").GetString());
+                        using var observer = Process.GetCurrentProcess();
+                        DateTime createdAtUtc = observer.StartTime.ToUniversalTime();
+                        Assert.Equal(Environment.ProcessId, diagnostic.GetProperty("ObserverProcessId").GetInt32());
+                        Assert.Equal(createdAtUtc, diagnostic.GetProperty("ObserverProcessCreatedAtUtc").GetDateTime());
+                        Assert.Equal(createdAtUtc, diagnostic.GetProperty("ForegroundProcessCreatedAtUtc").GetDateTime());
+                        Assert.Equal(JsonValueKind.Null, diagnostic.GetProperty("ObserverProcessCreationError").ValueKind);
+                        Assert.Equal(JsonValueKind.Null, diagnostic.GetProperty("ForegroundProcessCreationError").ValueKind);
+                        DateTime observedAtUtc = diagnostic.GetProperty("MetadataObservedAtUtc").GetDateTime();
+                        Assert.Equal(DateTimeKind.Utc, observedAtUtc.Kind);
+                        Assert.True(createdAtUtc <= observedAtUtc);
                         var hits = diagnostic.GetProperty("Hits").EnumerateArray().ToArray();
                         Assert.Equal(3, hits.Length);
                         Assert.All(hits, hit =>

@@ -228,6 +228,7 @@ internal static class NativeSourceSetup
         System.Windows.Rect bounds, (N.Point Point, nint? Window)[] hits)
     {
         long startedAtMs = WindowsInterruptClock.NowMs;
+        DateTime observedAtUtc = DateTime.UtcNow;
         nint foreground = N.GetForegroundWindow();
         var foregroundDetail = DescribeWindow(foreground, out uint foregroundRootProcessId);
         bool nativeBoundsAvailable = N.GetWindowRect(field, out var nativeBounds);
@@ -246,22 +247,41 @@ internal static class NativeSourceSetup
             LaterWindowMetadata = DescribeWindow(hit.Window, out _)
         }).ToArray();
         string foregroundProcessKind = "unknown";
+        DateTime? foregroundProcessCreatedAtUtc = null;
+        int? foregroundProcessCreationError = null;
         try
         {
-            foregroundProcessKind = ClassifyForegroundProcess(foregroundRootProcessId);
+            foregroundProcessKind = DescribeForegroundProcess(foregroundRootProcessId,
+                out foregroundProcessCreatedAtUtc, out foregroundProcessCreationError);
         }
         catch { /* Preserve the window observations even if image inspection fails. */ }
+        DateTime? observerProcessCreatedAtUtc = null;
+        int? observerProcessCreationError = null;
+        try
+        {
+            if (GetProcessTimes(GetCurrentProcess(), out long created, out _, out _, out _))
+                observerProcessCreatedAtUtc = DateTime.FromFileTimeUtc(created);
+            else
+                observerProcessCreationError = Marshal.GetLastPInvokeError();
+        }
+        catch { /* Failure metadata must not replace the original refusal. */ }
         return JsonSerializer.Serialize(new
         {
             Reason = nameof(FailureReason.SourceClickObscured),
             MetadataCollectedAfterHitTests = true,
             MetadataStartedAtMs = startedAtMs,
             MetadataCompletedAtMs = WindowsInterruptClock.NowMs,
+            MetadataObservedAtUtc = observedAtUtc,
+            ObserverProcessId = Environment.ProcessId,
+            ObserverProcessCreatedAtUtc = observerProcessCreatedAtUtc,
+            ObserverProcessCreationError = observerProcessCreationError,
             BrokerProcessKnown = brokerProcessId.HasValue,
             SourceProcessId = processId,
             BrokerProcessId = brokerProcessId,
             Foreground = foregroundDetail,
             ForegroundProcessKind = foregroundProcessKind,
+            ForegroundProcessCreatedAtUtc = foregroundProcessCreatedAtUtc,
+            ForegroundProcessCreationError = foregroundProcessCreationError,
             UiaBounds = new
             {
                 bounds.Left,
@@ -328,16 +348,26 @@ internal static class NativeSourceSetup
         }
     }
 
-    // One post-failure, query-only observation. Neither a PID nor a basename
-    // proves the earlier window's identity; either may have changed/reused.
+    // One post-failure, query-only observation. Creation time distinguishes a
+    // pre-existing process from a later one, not who activated its window.
+    // Neither a PID nor a basename proves the earlier window's identity.
     // Keep only fixed name categories, never a full path or arbitrary filename.
-    private static string ClassifyForegroundProcess(uint processId)
+    private static string DescribeForegroundProcess(uint processId, out DateTime? createdAtUtc, out int? creationError)
     {
+        createdAtUtc = null;
+        creationError = null;
         if (processId == 0)
             return "unknown";
         using var process = OpenProcess(0x1000, false, processId); // PROCESS_QUERY_LIMITED_INFORMATION.
         if (process.IsInvalid)
+        {
+            creationError = Marshal.GetLastPInvokeError();
             return "unknown";
+        }
+        if (GetProcessTimes(process, out long created, out _, out _, out _))
+            createdAtUtc = DateTime.FromFileTimeUtc(created);
+        else
+            creationError = Marshal.GetLastPInvokeError();
         var image = new StringBuilder(260);
         uint size = (uint)image.Capacity;
         if (!QueryFullProcessImageNameW(process, 0, image, ref size) || size == 0 || size >= image.Capacity)
@@ -570,6 +600,13 @@ internal static class NativeSourceSetup
             throw new Failure(reason);
     }
     [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("kernel32.dll")] private static extern nint GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetProcessTimes(SafeProcessHandle process, out long created, out long exited, out long kernel, out long user);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetProcessTimes(nint process, out long created, out long exited, out long kernel, out long user);
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern SafeProcessHandle OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint id);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
