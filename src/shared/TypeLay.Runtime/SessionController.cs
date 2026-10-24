@@ -39,7 +39,9 @@ public sealed partial class SessionController : IDisposable
     private long _generation, _nextCapture, _permitUntil, _editTransitionUntil, _retryBrokerAt;
     private AcceptancePermit? _presentationPermit;
     private bool _renderedAcceptanceReady;
-    private bool _capturing, _writing, _translationRunning, _startingBroker, _returningToSource, _disposed;
+    private bool _capturing, _writing, _translationRunning, _startingBroker, _disposed;
+    private SessionViewToken? _sourceReturn;
+    private bool _returningToSource => _sourceReturn is not null;
     private bool _inputReadFailed;
     private PauseAnchor? _pauseAnchor;
     private long _pauseViewRevision, _pauseWindowEpoch, _pauseForegroundEpoch;
@@ -473,7 +475,13 @@ public sealed partial class SessionController : IDisposable
         }
         if (_session.Current is { } current)
         {
-            if (_hook.GetFocus(current.Target) == FocusMember.Other && !PracticeReturnIsPending(current.Target))
+            bool ordinaryReturn = _sourceReturn is { } returning && _ownedPractice is null
+                && returning.Target == current.Target && returning.Revision == _generation
+                && returning.CommandGeneration == _hook.CommandGeneration
+                && _session.State == SessionState.ReturningToSource && _hook.Ready && _broker.Available;
+            bool retain = ordinaryReturn ? _hook.CanRetainDraftDuringSourceReturn(current.Target)
+                : _hook.GetFocus(current.Target) != FocusMember.Other;
+            if (!retain && !PracticeReturnIsPending(current.Target))
                 StopSession("focus-left");
         }
         if (!_hook.Ready || !_broker.Available)
@@ -1734,7 +1742,8 @@ public sealed partial class SessionController : IDisposable
         RevokeInput("return-from-editor");
         _permitUntil = 0;
         Render();
-        _returningToSource = true;
+        var operation = new SessionViewToken(source.Target, _hook.CommandGeneration, generation);
+        _sourceReturn = operation;
         var request = _ownedPractice is { } owned
             ? new OwnedPracticeReturnRequest(owned, new(source.Target, _hook.CommandGeneration, generation)) : null;
         _automaticPlans.Clear();
@@ -1747,9 +1756,18 @@ public sealed partial class SessionController : IDisposable
             });
         }
         catch (Exception ex) when (ex is not OutOfMemoryException) { }
-        finally { _returningToSource = false; }
+        finally
+        {
+            if (ReferenceEquals(_sourceReturn, operation))
+                _sourceReturn = null;
+        }
         if (_disposed || generation != _generation)
             return false;
+        if (result.ContextLost)
+        {
+            StopSession("return-context-lost");
+            return false;
+        }
         if (result.Returned)
         {
             if (request is not null && !AwaitPracticeReturn(request, result.Practice))

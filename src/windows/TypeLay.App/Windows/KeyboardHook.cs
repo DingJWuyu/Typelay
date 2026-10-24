@@ -239,7 +239,10 @@ internal sealed partial class KeyboardHook : IInputMonitor
                     ObserveSourceGlossaryForeground(window, eventTime);
             }
             if (ev == 3)
+            {
+                ObserveSourceReturnForeground(window);
                 ObserveEditorForeground(window);
+            }
         };
         _thread = new Thread(Run) { IsBackground = true, Name = "TypeLay.Input" };
         _thread.Start();

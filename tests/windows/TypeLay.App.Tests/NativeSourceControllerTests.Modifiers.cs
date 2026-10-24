@@ -267,6 +267,71 @@ public sealed partial class NativeSourceControllerTests
         }
     });
 
+    [Fact]
+    public Task AReceivedForeignForegroundCannotBeErasedByReturningBeforeTheAcknowledgement() => desktop.RunAsync(async () =>
+    {
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start(isolatedSourceAcceptance: true);
+        await native.Prepare(native.A, "你好", new(0, 2));
+        var editor = new Window { Content = new TextBox(), Width = 350, Height = 120, Title = "TypeLay controlled return editor" };
+        var foreign = new Window { Content = new TextBox(), Width = 350, Height = 120, Title = "TypeLay controlled other window" };
+        nint editorHwnd = new WindowInteropHelper(editor).EnsureHandle();
+        nint foreignHwnd = new WindowInteropHelper(foreign).EnsureHandle();
+        var hook = new KeyboardHook(allowInjectedInput: true, editorHwnd: editorHwnd);
+        using var broker = new FixtureBroker(native) { HoldReturnAcknowledgement = true };
+        var input = new WindowsInputService(broker, editorHwnd, monitor: hook, isolatedSourceAcceptance: true);
+        var browser = new BrowserInput(new BrowserServer(editor.Dispatcher), hook);
+        using var router = new WindowsInputRouter(input, hook, browser);
+        Task<InputReturn>? pending = null;
+        try
+        {
+            await Until(() => hook.ShortcutsReady, native.Token);
+            var configuration = new SessionShortcutConfiguration(hook.CommandGeneration, SessionShortcutBindings.Default);
+            var context = new InputContext(hook.UserEpoch, hook.ForegroundEpoch, hook.SourceUserEpoch, null, [], false, configuration);
+            var source = Assert.IsType<InputSnapshot>((await router.CaptureAsync(context)).Snapshot);
+            editor.Show();
+            editor.Activate();
+            await Until(() => Native.GetForegroundWindow() == editorHwnd, native.Token);
+            pending = router.ReturnToSourceAsync(context with
+            {
+                BoundTarget = source.Target,
+                UserEpoch = hook.UserEpoch,
+                SourceUserEpoch = hook.SourceUserEpoch,
+                ForegroundEpoch = hook.ForegroundEpoch
+            });
+            Assert.Equal("focused", (await broker.ReturnReceived.Task.WaitAsync(native.Token)).Status);
+            // No keys, field writes, retries or new focus budget. The actual
+            // return has completed; only its existing acknowledgement is held.
+            foreign.Show();
+            foreign.Activate();
+            await Until(() => Native.GetForegroundWindow() == foreignHwnd, native.Token);
+            editor.Activate();
+            await Until(() => Native.GetForegroundWindow() == editorHwnd, native.Token);
+            await Until(() => !router.CanRetainDraftDuringSourceReturn(source.Target), native.Token);
+            Assert.Equal(FocusMember.Overlay, hook.GetFocus(source.Target));
+            broker.ReleaseReturn.TrySetResult();
+            var result = await pending;
+            Assert.False(result.Returned);
+            Assert.True(result.ContextLost);
+            Assert.Equal("你好", N.ReadText(native.A, Limits.MaxTextUnits));
+            Assert.Equal(0, broker.Writes);
+            native.AssertZeroSubmits();
+        }
+        finally
+        {
+            broker.ReleaseReturn.TrySetResult();
+            if (pending is not null)
+            {
+                try
+                {
+                    await pending;
+                }
+                catch { /* Own the continuation without replacing the scenario failure. */ }
+            }
+            foreign.Close();
+            editor.Close();
+        }
+    });
+
     // Preserve physical press identity through the production hook. VK-only
     // injection supplies no scan identity; Ctrl provenance requires one.
     private static void SourceScanKey(ushort scan, bool up) => Assert.Equal(1u,

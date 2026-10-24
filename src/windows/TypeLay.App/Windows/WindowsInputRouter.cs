@@ -23,6 +23,8 @@ internal sealed class WindowsInputRouter(WindowsInputService native, KeyboardHoo
     public bool AcceptanceReady(SessionViewToken token, AcceptancePermit issued, long nowMs) => BrowserInput.Owns(token.Target)
         ? browser.AcceptanceReady(token, issued, nowMs) : hook.AcceptanceReady(token, issued, nowMs);
     public FocusMember GetFocus(TargetId target) => BrowserInput.Owns(target) ? browser.GetFocus(target) : hook.GetFocus(target);
+    public bool CanRetainDraftDuringSourceReturn(TargetId target) => BrowserInput.Owns(target)
+        ? browser.GetFocus(target) != FocusMember.Other : hook.CanRetainDraftDuringSourceReturn(target);
     public void ConfigureShortcuts(bool enabled, string wake, string direct, SessionShortcutBindings bindings, bool sessionEnabled)
     {
         browser.BeforeConfigure();

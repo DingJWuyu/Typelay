@@ -281,6 +281,12 @@ internal sealed class SessionScenario : IDisposable
             FocusChecks++;
             return InEditor ? FocusMember.Overlay : target == FocusedTarget ? FocusMember.Source : FocusMember.Other;
         }
+        public Func<TargetId, bool>? SourceReturnRetention
+        {
+            get; set;
+        }
+        public bool CanRetainDraftDuringSourceReturn(TargetId target) =>
+            SourceReturnRetention?.Invoke(target) ?? GetFocus(target) != FocusMember.Other;
         public SessionShortcutBindings SessionBindings { get; private set; } = SessionShortcutBindings.Default;
         public bool SessionEnabled
         {
@@ -332,6 +338,10 @@ internal sealed class SessionScenario : IDisposable
             get; private set;
         }
         public bool ReturnAllowed { get; set; } = true;
+        public bool ReturnContextLost
+        {
+            get; set;
+        }
         public TaskCompletionSource<bool>? PendingReturn
         {
             get; set;
@@ -431,7 +441,7 @@ internal sealed class SessionScenario : IDisposable
             }
             else
                 ReturnedPractice = null;
-            return new(returned, ReturnedPractice);
+            return new(returned, ReturnedPractice, ReturnContextLost);
         }
         public Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs)
         {

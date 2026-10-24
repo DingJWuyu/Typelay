@@ -25,6 +25,7 @@ public sealed class BrowserRoutingTests(WpfDesktopFixture desktop)
         Assert.Equal(WriteStatus.RejectedBeforeMutation, (await router.WriteDirectAsync(plan, [])).Status);
         Assert.Equal(WriteStatus.RejectedBeforeMutation, (await router.WriteAsync(plan, context, 100)).Status);
         Assert.False((await router.ReturnToSourceAsync(context)).Returned);
+        Assert.False(router.CanRetainDraftDuringSourceReturn(source.Target));
         await router.ClearAsync(context);
         Assert.Equal(0, broker.Calls);
         await router.CaptureAsync(context with

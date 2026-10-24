@@ -58,6 +58,8 @@ WindowsTarget 保留 PID/进程启动时间、根/控件 HWND、provider、元�
 
 普通 stock Edit 的 RootHwnd 使用 raw foreground 的 `GA_ROOT`，不把字段 child 造为新根，也不以 `GA_ROOTOWNER` 合并 owned dialog。raw foreground 不等于原 root 时，只有精确原字段、匹配的源 PID、root/field 同 GUI 线程、同一 `GA_ROOT` 和精确 native keyboard focus 才可能通过 App 前置筛选；Broker/native 仍持原 binding/descriptor 核原 PID/TID、cookie、生命周期、IME 与原期限。Capture 复用本次原 native 读取的 Clear；普通回源 ACK 只确认身份/焦点，不新增全文或 IME 读取，后继完整 fresh capture 才核实际 Clear 与 Core 原稿基线、决定新许可，不能把 ACK 当作新的末态 IME 样本。真实 Unknown、另一字段或另一根不能靠祖先关系补证。App 分类器没有原 native cookie，只用于观察、preview/候选筛选，不能代替安装 descriptor 或最终执行授权；非 prototype Core 接受、源 Esc 和普通源 Ctrl 退出等直接认领门仍要求原 raw root，自有练习与术语另守各自原门。这不新增 wire、ABI、焦点操作或重试，不代表所有 rawchild 控制已支持，普通生产接受仍关闭。
 
+普通编辑的显式回源由本次 `ReturningToSource` 操作保留原稿。Windows 仅在同一次前台采样为 0、私有返回调用仍绑定原目标、配置与输入代次且处于原 800ms 期限内时暂缓退休；期间不捕获，不授予 Source、IME 或接受资格。已收到的外部前台事件、同步明确外窗或上下文失效会单调取消本次返回，回到原窗及迟到 ACK 也不恢复原稿；普通拒绝或超时本身不算外部离开，仍按原规则恢复编辑。调用结束释放该状态，成功后仍须完整 fresh capture 与 Core `ConfirmSourceReturn` 验证原基线；浏览器和其它平台默认保留原焦点规则，不借此恢复已回源后失效的人工候选。
+
 App、Hook 与 Broker 的观测、触发、许可和执行期限统一使用 `src/windows/shared/WindowsInterruptClock.cs`。App/Broker 链接同一份平台内部源，Contracts 仍只含协议 DTO。时间值是 `QueryInterruptTimePrecise` 的自启动以来中断时间向下取整为毫秒，包含睡眠时间，不随 .NET 的 `Environment.TickCount64` 行为变化。整数取整误差小于 1ms；这不是浏览器端校准、睡眠恢复或物理按键已经验收的证明。所有 Core 期限保持不变。P/Invoke 使用 Windows SDK 的 `api-ms-win-core-realtime-l1-1-1.dll` 导入合同，要求 Windows 10 / Server 2016 或更新系统，不降级到粗粒度时钟。
 
 系统 Edit 的共享内存事务保留仅覆盖 GUI 线程派发的私有 500ms 预算，C# 生产端与 C 执行端均显式调用 `GetTickCount64`。前台写入另将原 Broker 请求的授权截止时间原样传给目标线程，按同一 `QueryInterruptTimePrecise` 毫秒域校验；两项期限必须同时有效，私有预算不能续签原许可，两个时间域不相减。后台 F10 的 op2 路径仍沿其既有独立事务预算。模型下载进度限频不参与授权，保留普通运行时时钟。

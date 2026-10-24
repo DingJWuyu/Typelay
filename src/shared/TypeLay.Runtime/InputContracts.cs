@@ -64,7 +64,9 @@ public sealed record OwnedSourceEvidence(OwnedPracticeBinding Binding, long Obse
 public sealed record OwnedPracticeReturnRequest(OwnedPracticeBinding Binding, SessionViewToken Token);
 public sealed record OwnedPracticeReturn(OwnedPracticeBinding Binding, SessionViewToken Token,
     long NativeFocusRevision, long ObservedAtMs);
-public sealed record InputReturn(bool Returned, OwnedPracticeReturn? Practice = null);
+// ContextLost reports an observed invalidation of this return operation even
+// when focus has since come back. Ordinary denial/timeout alone is not loss.
+public sealed record InputReturn(bool Returned, OwnedPracticeReturn? Practice = null, bool ContextLost = false);
 
 // The service must authorize metadata before reading it and must not capture
 // field text, selections or native write bindings for this observation.
@@ -147,6 +149,10 @@ public interface IInputMonitor : IDisposable
     // issued operation yet. This read never creates or refreshes write authority.
     bool AcceptanceReady(SessionViewToken token, AcceptancePermit issued, long nowMs) => true;
     FocusMember GetFocus(TargetId target);
+    // Only the controller's current explicit return may use this to retain its
+    // original draft. True grants no Source/IME observation or input authority.
+    // Adapters without a bounded return operation retain ordinary focus rules.
+    bool CanRetainDraftDuringSourceReturn(TargetId target) => GetFocus(target) != FocusMember.Other;
     void ConfigureShortcuts(bool enabled, string wake, string direct, SessionShortcutBindings sessionBindings, bool sessionEnabled);
     bool TryRead(out InputNotice? notice);
     void Publish(InputLease lease, AcceptancePermit? permit);

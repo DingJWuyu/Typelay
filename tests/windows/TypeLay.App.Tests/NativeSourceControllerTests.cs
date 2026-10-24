@@ -495,6 +495,12 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         {
             get; init;
         }
+        internal bool HoldReturnAcknowledgement
+        {
+            get; init;
+        }
+        internal TaskCompletionSource<BrokerResponse> ReturnReceived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource ReleaseReturn { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal int Installs
         {
             get; private set;
@@ -590,6 +596,11 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             }
             if (holdReceipt)
                 await ReleaseReceipt.Task.WaitAsync(native.Token);
+            if (request.Op == "return" && HoldReturnAcknowledgement)
+            {
+                ReturnReceived.TrySetResult(result);
+                await ReleaseReturn.Task.WaitAsync(native.Token);
+            }
             return result;
         }
         public void Dispose()

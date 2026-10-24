@@ -113,21 +113,35 @@ internal sealed class WindowsInputService : IInputService
             return await practice.ReturnOwnedAsync(context);
         if (WindowsInterruptClock.NowMs >= expiresAtMs || !SessionConfigurationCurrent(context) || context.BoundTarget is not { } id || !WindowsTarget.TryDecode(id, out var target))
             return new(false);
-        if (broker.ProcessId != 0)
-            Native.AllowSetForegroundWindow((uint)broker.ProcessId);
-        // Native bindings must be revalidated by their original Broker before
-        // any focus move. A stale HWND/cookie must not receive focus first.
-        if (target.Provider != "win32-edit-transaction-v2")
-            Native.SetForegroundWindow((nint)target.RootHwnd);
-        if (WindowsInterruptClock.NowMs >= expiresAtMs || !SessionConfigurationCurrent(context))
+        var flight = monitor!.BeginSourceReturn(context, expiresAtMs);
+        if (flight is null)
             return new(false);
-        long remaining = expiresAtMs - WindowsInterruptClock.NowMs;
-        if (remaining <= 0)
-            return new(false);
-        return new((await broker.CallAsync(Request("return", context) with
+        bool returned = false, contextLost;
+        try
         {
-            ExpiresAtMs = expiresAtMs
-        }, TimeSpan.FromMilliseconds(remaining))).Status == "focused");
+            if (!monitor.SourceReturnContextLost(flight))
+            {
+                if (broker.ProcessId != 0)
+                    Native.AllowSetForegroundWindow((uint)broker.ProcessId);
+                // Native bindings must be revalidated by their original Broker
+                // before any focus move. The draft guard grants no such proof.
+                if (target.Provider != "win32-edit-transaction-v2")
+                    Native.SetForegroundWindow((nint)target.RootHwnd);
+                long remaining = expiresAtMs - WindowsInterruptClock.NowMs;
+                if (remaining > 0 && SessionConfigurationCurrent(context)
+                    && !monitor.SourceReturnContextLost(flight))
+                {
+                    returned = (await broker.CallAsync(Request("return", context) with
+                    {
+                        ExpiresAtMs = expiresAtMs
+                    }, TimeSpan.FromMilliseconds(remaining))).Status == "focused"
+                        && WindowsInterruptClock.NowMs < expiresAtMs;
+                }
+            }
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { }
+        finally { contextLost = monitor.FinishSourceReturn(flight); }
+        return new(returned && !contextLost, ContextLost: contextLost);
     }
     internal async Task<InputReturn> ReturnGlossaryToSourceAsync(InputContext context,
         SourceGlossaryReturnAuthorization authorization, long expiresAtMs)

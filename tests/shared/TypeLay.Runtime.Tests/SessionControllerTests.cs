@@ -2862,6 +2862,133 @@ public sealed class SessionControllerTests
         Assert.Empty(s.Service.Writes);
     }
 
+    [Fact]
+    public void APlatformOwnedSourceReturnGapRetainsOnlyTheOriginalDraftUntilAFreshRead()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("retained through the focus gap");
+        var original = s.Source;
+        var pending = s.Service.PendingReturn = new();
+        s.View.ReturnRequested!(s.View.Token);
+        s.Input.InEditor = false;
+        s.Input.FocusedTarget = default;
+        s.Input.SourceReturnRetention = target => target == original.Target;
+        int captures = s.Service.Captures;
+        int leases = s.Input.PublishedLeases.Count;
+        s.Tick(200);
+        Assert.Equal(SessionState.ReturningToSource, s.View.State);
+        Assert.Equal("retained through the focus gap", s.View.Draft);
+        Assert.Equal(captures, s.Service.Captures);
+        Assert.Equal(leases, s.Input.PublishedLeases.Count);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+        s.Input.FocusedTarget = original.Target;
+        s.Input.SourceReturnRetention = null;
+        pending.SetResult(true);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.Tick();
+        Assert.Equal(SessionState.ReturningToSource, s.View.State);
+        Assert.Null(s.Input.Permit);
+        s.CompleteCapture(new(s.Fresh, FocusMember.Source, "controlled", s.Input.UserEpoch, s.Input.ForegroundEpoch,
+            new(original.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true)));
+        Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+        Assert.Equal("retained through the focus gap", s.View.Preview);
+        Assert.Equal(original.Target, s.View.Token!.Target);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void LostReturnContextCannotRestoreTheDraftAfterFocusHasComeBack(bool observedWhilePending)
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("must not return after leaving");
+        var pending = s.Service.PendingReturn = new();
+        s.View.ReturnRequested!(s.View.Token);
+        // The platform has observed an external window, then the original
+        // source again. Current Source focus must not erase that refusal.
+        s.Input.InEditor = false;
+        s.Input.SourceReturnRetention = _ => false;
+        if (observedWhilePending)
+        {
+            s.Tick();
+            Assert.False(s.View.Visible);
+            Assert.Null(s.Input.Permit);
+        }
+        s.Service.ReturnContextLost = true;
+        pending.SetResult(true);
+        s.Tick();
+        s.Tick();
+        Assert.NotEqual("must not return after leaving", s.View.Preview);
+        Assert.Empty(s.View.Draft);
+        Assert.Equal(0, s.View.Resumes);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void AnUnprovenReturnGapKeepsTheDefaultLeaveFamilyRule()
+    {
+        using var s = new SessionScenario();
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("no platform exception");
+        var pending = s.Service.PendingReturn = new();
+        s.View.ReturnRequested!(s.View.Token);
+        s.Input.InEditor = false;
+        s.Input.FocusedTarget = default;
+        s.Tick();
+        Assert.False(s.View.Visible);
+        s.Input.FocusedTarget = s.Source.Target;
+        pending.SetResult(true);
+        s.Tick();
+        s.Tick();
+        Assert.NotEqual("no platform exception", s.View.Preview);
+        Assert.Equal(0, s.View.Resumes);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData("pause")]
+    [InlineData("configuration")]
+    [InlineData("escape")]
+    public void CanceledSourceReturnCannotOverlapOrResumeFromALateAcknowledgement(string cancel)
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("canceled draft");
+        var pending = s.Service.PendingReturn = new();
+        s.View.ReturnRequested!(s.View.Token);
+        s.View.ReturnRequested!(s.View.Token);
+        Assert.Equal(1, s.Service.Returns);
+        s.Input.SourceReturnRetention = _ => true;
+        if (cancel == "escape")
+            s.View.EscapeRequested!(s.View.Token);
+        else
+            s.Settings.Update(s.Settings.Value with
+            {
+                Enabled = cancel != "pause",
+                ExperimentalWriteback = false
+            });
+        pending.SetResult(true);
+        s.Tick();
+        s.Tick();
+        Assert.NotEqual("canceled draft", s.View.Preview);
+        Assert.Empty(s.View.Draft);
+        Assert.Equal(0, s.View.Resumes);
+        Assert.Empty(s.Service.Writes);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

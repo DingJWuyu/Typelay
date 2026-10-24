@@ -984,6 +984,7 @@ internal static partial class ContinuousTranslationCheck
         public bool AcceptanceReady(SessionViewToken token, AcceptancePermit issued, long nowMs) =>
             inner.AcceptanceReady(token, issued, nowMs);
         public FocusMember GetFocus(TargetId target) => inner.GetFocus(target);
+        public bool CanRetainDraftDuringSourceReturn(TargetId target) => inner.CanRetainDraftDuringSourceReturn(target);
         public void ConfigureShortcuts(bool enabled, string wake, string direct, SessionShortcutBindings bindings, bool sessionEnabled) =>
             inner.ConfigureShortcuts(enabled, wake, direct, bindings, sessionEnabled);
         public bool TryRead(out InputNotice? notice)
