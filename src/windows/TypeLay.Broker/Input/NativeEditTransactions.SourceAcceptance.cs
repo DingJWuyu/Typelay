@@ -73,7 +73,7 @@ internal sealed partial class NativeEditTransactions
             Mapping.Dispose();
         }
     }
-    private const int SourceHeaderSize = 72, SourceMappingSize = SourceHeaderSize + MappingSize + 40;
+    private const int SourceHeaderSize = 72, SourceMappingSize = SourceHeaderSize + MappingSize + 48;
     private SourceGrant? _sourceGrant;
     private (Guid Generation, Guid Grant, SourceInstallationResult Result)? _sourceTerminal;
     // Exact process handles remain owned until their source hook is detached.
@@ -116,10 +116,12 @@ internal sealed partial class NativeEditTransactions
         return true;
     }
 
-    internal SourceInstallationResult InstallSourceAcceptance(Guid generation, AcceptancePermit permit)
+    internal SourceInstallationResult InstallSourceAcceptance(Guid generation, AcceptancePermit permit, uint acceptKey = 9)
     {
         if (_sourceMessageRouteFailed || _sourceGrant is not null || generation == Guid.Empty || permit.Plan.Id == Guid.Empty)
             return new(false, false, new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported));
+        if (!SourceAcceptanceRequest.IsValidAcceptKey(acceptKey))
+            return new(false, true, new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported));
         var plan = permit.Plan;
         if (!TypeLay.Windows.Contracts.WindowsTarget.TryDecode(plan.Expected.Target, out var target)
             || !_bindings.TryGetValue(target.ControlHwnd, out var binding) || binding.Target != target
@@ -152,7 +154,8 @@ internal sealed partial class NativeEditTransactions
         try
         {
             view = mapping.CreateViewAccessor(0, SourceMappingSize, MemoryMappedFileAccess.ReadWrite);
-            view.Write(0, 5u);
+            view.Write(0, 6u);
+            view.Write(SourceHeaderSize + MappingSize + 40, (ulong)acceptKey);
             view.Write(64, _sourceMessageRoute ? 3u : 0u);
             view.Write(4, SourceMappingSize);
             view.WriteArray(16, generation.ToByteArray(), 0, 16);
@@ -232,11 +235,11 @@ internal sealed partial class NativeEditTransactions
     private bool SourceInstallationAvailable()
     {
         if (_library == 0 || !NativeLibrary.TryGetExport(_library, "TypeLaySourceInstallationVersion", out nint version)
-            || Marshal.GetDelegateForFunctionPointer<ReadProtocolVersion>(version)() != 5)
+            || Marshal.GetDelegateForFunctionPointer<ReadProtocolVersion>(version)() != 6)
             return false;
-        _sourceInstallMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourceInstall.v5");
-        _sourceRevokeMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourceRevoke.v5");
-        _sourcePollMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourcePoll.v5");
+        _sourceInstallMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourceInstall.v6");
+        _sourceRevokeMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourceRevoke.v6");
+        _sourcePollMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourcePoll.v6");
         return _sourceInstallMessage != 0 && _sourceRevokeMessage != 0 && _sourcePollMessage != 0;
     }
 

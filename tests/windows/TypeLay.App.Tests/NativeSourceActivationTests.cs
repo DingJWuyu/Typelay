@@ -3,6 +3,8 @@ extern alias BrokerProduction;
 using System.Runtime.InteropServices;
 using System.IO;
 using System.IO.MemoryMappedFiles;
+using System.Windows;
+using System.Windows.Interop;
 using TypeLay.Core;
 using TypeLay.Runtime;
 using Xunit;
@@ -14,7 +16,7 @@ namespace TypeLay.App.Tests;
 // Actual stock Edit, production DLL and LL callback. SendInput uses only the
 // existing explicit automation constructor opt-in; it is NOT physical-key proof.
 [Collection("Desktop")]
-public sealed class NativeSourceActivationTests
+public sealed class NativeSourceActivationTests(WpfDesktopFixture ui)
 {
     [Theory]
     [InlineData(false)]
@@ -22,11 +24,11 @@ public sealed class NativeSourceActivationTests
     public async Task AcceptedTabPassesRepeatAndReleaseToAnotherApplication(bool nativeActivation)
     {
         await using var receiver = await ProductionForegroundWriteTests.Desktop.Start();
-        await receiver.NavigateAndPrepare(receiver.A, "Other application", new(0, 0));
+        await NavigateAndPrepare(receiver, receiver.A, "Other application", new(0, 0));
         // Navigate and prepare each fixture before the next same-position window
         // can cover its field. Later cross-application navigation stays explicit.
         await using var source = await ProductionForegroundWriteTests.Desktop.Start();
-        await source.NavigateAndPrepare(source.A, "pre old post", new(0, 0));
+        await NavigateAndPrepare(source, source.A, "pre old post", new(0, 0));
         Assert.NotEqual(source.FixtureProcessId, receiver.FixtureProcessId);
         using var hook = new KeyboardHook(allowInjectedInput: true);
         await Until(() => hook.Ready, source.Token);
@@ -87,7 +89,7 @@ public sealed class NativeSourceActivationTests
     public async Task ProductionInjectionPolicyNeverActivatesEvenAnInstalledNativeGrant()
     {
         await using var desktop = await ProductionForegroundWriteTests.Desktop.Start();
-        await desktop.NavigateAndPrepare(desktop.A, "pre old post", new(0, 0));
+        await NavigateAndPrepare(desktop, desktop.A, "pre old post", new(0, 0));
         using var hook = new KeyboardHook(); // No automation opt-in.
         await Until(() => hook.Ready, desktop.Token);
         var observed = await desktop.Capture();
@@ -119,7 +121,7 @@ public sealed class NativeSourceActivationTests
     public async Task WithdrawnActivationPassesTheWholeTabAndCannotChangeSelectionAfterGuiResumes()
     {
         await using var desktop = await ProductionForegroundWriteTests.Desktop.Start();
-        await desktop.NavigateAndPrepare(desktop.A, "pre old post", new(0, 0));
+        await NavigateAndPrepare(desktop, desktop.A, "pre old post", new(0, 0));
         using var hook = new KeyboardHook(allowInjectedInput: true);
         await Until(() => hook.Ready, desktop.Token);
         var observed = await desktop.Capture();
@@ -182,7 +184,7 @@ public sealed class NativeSourceActivationTests
     public async Task ClaimBeforeDelayedReceiptConsumesOneWholePressAndCannotRetireTheRunningCallback()
     {
         await using var desktop = await ProductionForegroundWriteTests.Desktop.Start();
-        await desktop.NavigateAndPrepare(desktop.A, "pre old post", new(0, 0));
+        await NavigateAndPrepare(desktop, desktop.A, "pre old post", new(0, 0));
         using var hook = new KeyboardHook(allowInjectedInput: true);
         await Until(() => hook.Ready, desktop.Token);
         using var entered = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(desktop.FixtureProcessId, "entered"));
@@ -234,7 +236,7 @@ public sealed class NativeSourceActivationTests
     public async Task SourceChangesBeforeClaimRejectActivationWithoutMutation(string change)
     {
         await using var desktop = await ProductionForegroundWriteTests.Desktop.Start();
-        await desktop.NavigateAndPrepare(desktop.A, "pre old post", new(0, 0));
+        await NavigateAndPrepare(desktop, desktop.A, "pre old post", new(0, 0));
         var observed = await desktop.Capture();
         using var native = new NativeTransactions();
         var permit = NativeSourceAcceptanceTests.CapturePermit(native, observed, new(4, 7));
@@ -300,7 +302,7 @@ public sealed class NativeSourceActivationTests
     public async Task SourceQuietDoesNotEraseClaimBeforeAnAlreadyOwningObserverReadsIt()
     {
         await using var desktop = await ProductionForegroundWriteTests.Desktop.Start();
-        await desktop.NavigateAndPrepare(desktop.A, "pre old post", new(0, 0));
+        await NavigateAndPrepare(desktop, desktop.A, "pre old post", new(0, 0));
         var observed = await desktop.Capture();
         using var native = new NativeTransactions();
         var permit = NativeSourceAcceptanceTests.CapturePermit(native, observed, new(4, 7));
@@ -332,7 +334,7 @@ public sealed class NativeSourceActivationTests
     public async Task ExactSourceProcessExitRetiresResourcesWithoutErasingTheClaimFact()
     {
         await using var desktop = await ProductionForegroundWriteTests.Desktop.Start();
-        await desktop.NavigateAndPrepare(desktop.A, "pre old post", new(0, 0));
+        await NavigateAndPrepare(desktop, desktop.A, "pre old post", new(0, 0));
         using var process = System.Diagnostics.Process.GetProcessById(desktop.FixtureProcessId);
         var observed = await desktop.Capture();
         using var native = new NativeTransactions();
@@ -361,7 +363,7 @@ public sealed class NativeSourceActivationTests
             await ProductionForegroundWriteTests.BuildWinEventProbe(directory);
             await using var desktop = await ProductionForegroundWriteTests.Desktop.Start(
                 sourceClaimProbe: Path.Combine(directory, "TypeLay.WinEventProbe.dll"));
-            await desktop.NavigateAndPrepare(desktop.A, "pre old post", new(0, 0));
+            await NavigateAndPrepare(desktop, desktop.A, "pre old post", new(0, 0));
             using var hook = new KeyboardHook(allowInjectedInput: true);
             await Until(() => hook.Ready, desktop.Token);
             var observed = await desktop.Capture();
@@ -412,7 +414,7 @@ public sealed class NativeSourceActivationTests
     public async Task LostQuietReceiptCannotTurnAnAlreadyPerformedWriteIntoRejectedBeforeMutation()
     {
         await using var desktop = await ProductionForegroundWriteTests.Desktop.Start();
-        await desktop.NavigateAndPrepare(desktop.A, "pre old post", new(0, 0));
+        await NavigateAndPrepare(desktop, desktop.A, "pre old post", new(0, 0));
         var observed = await desktop.Capture();
         using var native = new NativeTransactions();
         using var entered = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(desktop.FixtureProcessId, "entered"));
@@ -446,7 +448,7 @@ public sealed class NativeSourceActivationTests
     public async Task PendingInputOrPostedEditRefusesClaimWithoutExecutingItInPreflight(int message, string finalText)
     {
         await using var desktop = await ProductionForegroundWriteTests.Desktop.Start();
-        await desktop.NavigateAndPrepare(desktop.A, "pre old post", new(0, 0));
+        await NavigateAndPrepare(desktop, desktop.A, "pre old post", new(0, 0));
         var observed = await desktop.Capture();
         using var native = new NativeTransactions();
         var permit = NativeSourceAcceptanceTests.CapturePermit(native, observed, new(4, 7));
@@ -464,6 +466,29 @@ public sealed class NativeSourceActivationTests
         Assert.Equal(new TextRange(1, 1), N.ReadSelection(desktop.A));
         desktop.AssertZeroSubmits();
     }
+    private Task NavigateAndPrepare(ProductionForegroundWriteTests.Desktop source, nint field, string text, TextRange selection)
+        => ui.RunAsync(async () =>
+        {
+            // This group can be the first desktop consumer. Establish the caller's
+            // own foreground window instead of relying on a previous WPF test.
+            var navigation = new Window { Title = "TypeLay source setup navigation", Width = 160, Height = 100 };
+            var rendered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            navigation.ContentRendered += (_, _) => rendered.TrySetResult();
+            try
+            {
+                source.Token.ThrowIfCancellationRequested();
+                navigation.Show();
+                await rendered.Task.WaitAsync(source.Token);
+                source.Token.ThrowIfCancellationRequested();
+                Assert.True(navigation.Activate());
+                Assert.Equal(new WindowInteropHelper(navigation).Handle, N.GetForegroundWindow());
+                await source.NavigateAndPrepare(field, text, selection);
+            }
+            finally { navigation.Close(); }
+            // Closing setup UI must not take focus back. Observe only; do not
+            // reactivate or reclick the source before its fresh capture/permit.
+            Assert.Equal((source.Root, field), N.Focused());
+        });
     private static StockEditActivation Install(NativeTransactions native, Guid generation, AcceptancePermit permit)
     {
         Assert.True(native.InstallSourceAcceptance(generation, permit).Installed);

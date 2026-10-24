@@ -8,7 +8,7 @@ namespace TypeLay.App;
 
 internal sealed partial class KeyboardHook
 {
-    private sealed record StockCandidate(InputLease Lease, AcceptancePermit Permit)
+    private sealed record StockCandidate(InputLease Lease, AcceptancePermit Permit, uint AcceptKey)
     {
         internal TaskCompletionSource Delivered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal int Claimed;
@@ -42,8 +42,9 @@ internal sealed partial class KeyboardHook
     {
         if (_stockExchange is null)
             return false;
+        var keys = Volatile.Read(ref _sessionKeys);
         if (permit is not null && Volatile.Read(ref _stockLatest) is { } existing
-            && StockLeaseMatches(existing.Lease, lease) && SameStockOperation(existing.Permit, permit)
+            && existing.AcceptKey == keys.Accept && StockLeaseMatches(existing.Lease, lease) && SameStockOperation(existing.Permit, permit)
             && WindowsInterruptClock.NowMs <= existing.Permit.ExpiresAtMs)
         {
             Volatile.Write(ref _stockCurrentLease, lease);
@@ -54,7 +55,7 @@ internal sealed partial class KeyboardHook
         if (permit is not null && Volatile.Read(ref _stockClosed) == 0)
         {
             Volatile.Write(ref _stockCurrentLease, lease);
-            Volatile.Write(ref _stockLatest, new(lease, permit));
+            Volatile.Write(ref _stockLatest, new(lease, permit, keys.Accept));
         }
         return true;
     }
@@ -93,13 +94,14 @@ internal sealed partial class KeyboardHook
     // Only the source-local executor supports modified acceptance. Ordinary
     // asynchronous write dispatch remains restricted to unmodified bindings.
     private bool StockSessionKeysReady => CanInterceptOwnedSessionKeys
-        && (_stockMessageRoute ? Volatile.Read(ref _sessionKeys) is { Accept: 9, AcceptModifiers: ShortcutModifiers.None }
+        && (_stockMessageRoute ? Volatile.Read(ref _sessionKeys) is { AcceptModifiers: ShortcutModifiers.None } keys
+                && SourceAcceptanceRequest.IsValidAcceptKey(keys.Accept)
             : UsesUnmodifiedSessionKeys || _stockExchange is not null && ShortcutsReady);
 
     private bool StockCandidateCurrent(StockCandidate candidate, long now) =>
         ReferenceEquals(Volatile.Read(ref _stockLatest), candidate)
         && Volatile.Read(ref _stockClosed) == 0 && !StockBudgetExceeded
-        && StockSessionKeysReady
+        && StockSessionKeysReady && candidate.AcceptKey == Volatile.Read(ref _sessionKeys).Accept
         && candidate.Lease.CommandGeneration == CommandGeneration
         && candidate.Lease.UserEpoch == UserEpoch && candidate.Lease.ForegroundEpoch == ForegroundEpoch
         && Volatile.Read(ref _lease) is { } currentLease
@@ -120,7 +122,13 @@ internal sealed partial class KeyboardHook
 
     private static SourceAcceptanceRequest StockRequest(StockCandidate candidate, bool install = false) =>
         new(candidate.Lease.CommandGeneration, candidate.Lease.SessionRevision, candidate.Lease.Source.Target,
-            candidate.Permit.Plan.Id, install ? candidate.Permit : null);
+            candidate.Permit.Plan.Id, install ? candidate.Permit : null, candidate.AcceptKey);
+
+    // Preserve the old owner's bypass through Quiet when configuration changes;
+    // only the installed candidate's frozen key can gain LL eligibility.
+    private bool IsStockMessageKey(uint key, SessionKeys keys) => _stockMessageRoute
+        && (key == keys.Accept || key == Volatile.Read(ref _stockLatest)?.AcceptKey
+            || key == Volatile.Read(ref _stockOwner)?.AcceptKey);
 
     private static bool StockReplyMatches(SourceAcceptanceResult? result, StockCandidate candidate) =>
         result is not null && result.Generation == candidate.Lease.CommandGeneration
@@ -230,7 +238,7 @@ internal sealed partial class KeyboardHook
                 return;
             }
             var activation = new StockEditActivation(installed.Endpoint.Nonce, installed.Endpoint.Command,
-                candidate.Lease.CommandGeneration, candidate.Permit);
+                candidate.Lease.CommandGeneration, candidate.Permit, acceptKey: candidate.AcceptKey);
             Interlocked.Exchange(ref _stockActivation, activation);
             if (!StockCandidateCurrent(candidate, WindowsInterruptClock.NowMs))
             {

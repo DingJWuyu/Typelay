@@ -52,7 +52,12 @@ public sealed record SourceGlossaryReturnAuthorization(Guid Attempt, int Process
 // Authenticated, exact-owner source prototype operations. A prepared endpoint is
 // not acceptance: only the native shared Claim word decides the original press.
 public sealed record SourceAcceptanceRequest(Guid Generation, long SessionRevision, TargetId Target,
-    Guid Grant, AcceptancePermit? Permit = null);
+    Guid Grant, AcceptancePermit? Permit = null, uint AcceptKey = 0)
+{
+    // Zero/missing and modifier-encoded values fail closed; this field is only
+    // the frozen main key. Modified ordered acceptance is not supported.
+    public static bool IsValidAcceptKey(uint key) => key == 9 || key is >= 0x70 and <= 0x87;
+}
 public sealed record SourceActivationEndpoint(ulong Nonce, ulong Command);
 // Acknowledged is a matched native command/operation response, not claim,
 // completion, authority or process-exit proof. A cached terminal retains its

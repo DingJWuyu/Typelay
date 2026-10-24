@@ -797,15 +797,18 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 : now - lease.Source.ObservedAtMs > Limits.ObservationMaxAgeMs ? "source-expired" : null;
             bool fresh = freshnessRefusal is null;
             bool source = fresh && IsSourceForeground(binding!.Target);
-            if (PairOrdinaryChord(data, down, repeated))
-                return 1;
-            if (ObserveOwnedKey(data, down, repeated, injected, now, sessionKeys.Accept))
-                return PassStockWitness(code, wParam, lParam, data, repeated, now);
-            int ordinary = ObserveOrdinaryChord(data, down, repeated, injected, now, binding, fresh, freshnessRefusal, sessionKeys);
-            if (ordinary != 0)
-                return ordinary > 0 ? 1 : PassStockWitness(code, wParam, lParam, data, repeated, now);
-            if (_stockMessageRoute && data.Key == 9)
+            if (IsStockMessageKey(data.Key, sessionKeys))
             {
+                if (commandConsumed)
+                {
+                    // A distinct configured chord (for example Ctrl+F7 with
+                    // plain F7 acceptance) already owns this original event.
+                    // Preserve that command, never publish it into the FIFO.
+                    RevokeStockCandidate();
+                    _gate.Revoke();
+                    completed = true; // Complete a deferred read-only Wake too.
+                    return 1;
+                }
                 // This route never activates, consumes or turns LL observation
                 // into authority. Input before Arm invalidates that candidate,
                 // including while the source-install ACK is still outstanding.
@@ -817,6 +820,13 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 }
                 return PassStockWitness(code, wParam, lParam, data, repeated, now);
             }
+            if (PairOrdinaryChord(data, down, repeated))
+                return 1;
+            if (ObserveOwnedKey(data, down, repeated, injected, now, sessionKeys.Accept))
+                return PassStockWitness(code, wParam, lParam, data, repeated, now);
+            int ordinary = ObserveOrdinaryChord(data, down, repeated, injected, now, binding, fresh, freshnessRefusal, sessionKeys);
+            if (ordinary != 0)
+                return ordinary > 0 ? 1 : PassStockWitness(code, wParam, lParam, data, repeated, now);
             bool sourceBindingReady = UsesUnmodifiedSessionKeys || _stockExchange is not null && StockSessionKeysReady;
             bool modifiersReady = sessionKeys.AcceptModifiers != ShortcutModifiers.Control
                 || SourceAcceptanceControlMatches(data, lease);

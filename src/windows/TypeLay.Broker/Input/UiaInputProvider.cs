@@ -47,7 +47,7 @@ internal sealed class UiaInputProvider : IDisposable
             new(identity.Generation, identity.SessionRevision, identity.Target, identity.Grant,
                 installed, quiet, claimed, endpoint, receipt, acknowledged);
         if (!_sourcePrototype || identity.Generation == Guid.Empty || identity.Grant == Guid.Empty
-            || identity.SessionRevision <= 0)
+            || identity.SessionRevision <= 0 || !SourceAcceptanceRequest.IsValidAcceptKey(identity.AcceptKey))
             return Result(receipt: new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported));
         if (request.Op == "source-install")
         {
@@ -68,7 +68,7 @@ internal sealed class UiaInputProvider : IDisposable
                 || _ownedCapture is not null || _lastFocus != FocusMember.Source)
                 return Result(receipt: new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged));
             _sourceCompletionTransferred = false;
-            var installed = _edits.InstallSourceAcceptance(identity.Generation, permit);
+            var installed = _edits.InstallSourceAcceptance(identity.Generation, permit, identity.AcceptKey);
             if (!installed.Quiet)
                 _sourceOwner = identity;
             var endpoint = installed.Installed ? _edits.ReserveSourceActivation(identity.Generation, identity.Grant) : null;
@@ -78,7 +78,8 @@ internal sealed class UiaInputProvider : IDisposable
         if (request.Op is not ("source-retire" or "source-receipt" or "source-poll")
             || request.Op == "source-poll" && !_sourceMessageRoute || identity.Permit is not null
             || _sourceOwner is not { } owner || owner.Generation != identity.Generation
-            || owner.SessionRevision != identity.SessionRevision || owner.Target != identity.Target || owner.Grant != identity.Grant)
+            || owner.SessionRevision != identity.SessionRevision || owner.Target != identity.Target || owner.Grant != identity.Grant
+            || owner.AcceptKey != identity.AcceptKey)
             return Result(receipt: new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged));
         var terminal = request.Op == "source-poll"
             ? _edits.PollSourceAcceptance(identity.Generation, identity.Grant)

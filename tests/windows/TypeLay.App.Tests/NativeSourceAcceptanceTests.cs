@@ -19,15 +19,17 @@ namespace TypeLay.App.Tests;
 public sealed class NativeSourceAcceptanceTests
 {
     [Theory]
-    [InlineData(49344)] // Actual v4 mapping length.
-    [InlineData(49376)] // A current-sized section cannot make a v4 header valid.
-    public async Task PreviousPrivateSourceEnvelopeCannotInstallUnderTheNewProtocol(int bytes)
+    [InlineData(4, 49344)] // Actual v4 mapping length.
+    [InlineData(5, 49376)] // Actual v5 mapping length.
+    [InlineData(4, 49384)]
+    [InlineData(5, 49384)] // A current-sized section cannot grant old semantics.
+    public async Task PreviousPrivateSourceEnvelopeCannotInstallUnderTheNewProtocol(uint version, int bytes)
     {
         await using var desktop = await ProductionForegroundWriteTests.Desktop.Start();
         await desktop.Prepare(desktop.A, "pre old post", new(4, 7));
         var snapshot = await desktop.Capture();
-        using var wire = new SourceWire(snapshot, version: 4, bytes: bytes);
-        bool acknowledged = wire.Send(1, allowMissingAcknowledgement: bytes == 49344);
+        using var wire = new SourceWire(snapshot, version: version, bytes: bytes);
+        bool acknowledged = wire.Send(1, allowMissingAcknowledgement: bytes < 49384);
         Assert.Equal(acknowledged ? 2u : 0u, wire.State);
         Assert.Equal(acknowledged ? (uint)Denial.Unsupported : 0u, wire.Reason);
         Assert.Equal(snapshot.Text, N.ReadText(desktop.A, Limits.MaxTextUnits));
@@ -248,7 +250,7 @@ public sealed class NativeSourceAcceptanceTests
         internal uint State => _view.ReadUInt32(8);
         internal uint Reason => _view.ReadUInt32(80);
 
-        internal SourceWire(InputSnapshot source, uint version = 5, int bytes = 49376)
+        internal SourceWire(InputSnapshot source, uint version = 6, int bytes = 49384)
         {
             _bytes = bytes;
             var target = source.Target.AsWindows();
@@ -259,6 +261,8 @@ public sealed class NativeSourceAcceptanceTests
             _view = _mapping.CreateViewAccessor();
             _view.Write(0, version);
             _view.Write(4, (uint)bytes);
+            if (bytes >= 49384)
+                _view.Write(49376, 9UL);
             _view.WriteArray(16, Guid.NewGuid().ToByteArray(), 0, 16);
             _view.WriteArray(32, Guid.NewGuid().ToByteArray(), 0, 16);
             _view.Write(48, source.ObservedAtMs);
@@ -286,7 +290,7 @@ public sealed class NativeSourceAcceptanceTests
         {
             string name = operation == 1 ? "SourceInstall" : operation == 2 ? "SourceRevoke" : "SourcePoll";
             ulong command = ReserveCommand();
-            N.Send(_root, RegisterWindowMessageW($"TypeLay.NativeInput.{name}.v5"), (nuint)First, unchecked((nint)command));
+            N.Send(_root, RegisterWindowMessageW($"TypeLay.NativeInput.{name}.v6"), (nuint)First, unchecked((nint)command));
             // A truly shorter old section may fail the native mapping before
             // any ACK. That is still refusal, never installation or Quiet.
             if (allowMissingAcknowledgement && _view.ReadUInt64(56) == 0)

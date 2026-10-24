@@ -84,6 +84,41 @@ public sealed class BrokerContractTests
         Assert.Equal(expected, actual);
     }
 
+    [Theory]
+    [InlineData(9u)]
+    [InlineData(0x70u)]
+    [InlineData(0x76u)]
+    [InlineData(0x87u)]
+    public async Task SourceOwnerCarriesItsExactConfiguredMainKey(uint key)
+    {
+        TargetId target = new WindowsTarget(1, 2, 3, 4, "win32-edit-transaction-v2", "field", Guid.NewGuid());
+        var owner = new SourceAcceptanceRequest(Guid.NewGuid(), 7, target, Guid.NewGuid(), AcceptKey: key);
+        using var stream = new MemoryStream();
+        await Wire.WriteAsync(stream, new BrokerRequest(BrokerProtocol.Version, 1, "source-retire", "",
+            SourceAcceptance: owner), TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        var received = await Wire.ReadAsync<BrokerRequest>(stream, TestContext.Current.CancellationToken);
+        Assert.Equal(owner, received.SourceAcceptance);
+    }
+
+    [Fact]
+    public async Task OlderSourceOwnerWithoutMainKeyCannotDefaultToTab()
+    {
+        TargetId target = new WindowsTarget(1, 2, 3, 4, "win32-edit-transaction-v2", "field", Guid.NewGuid());
+        using var stream = new MemoryStream();
+        await Wire.WriteAsync(stream, new
+        {
+            Generation = Guid.NewGuid(),
+            SessionRevision = 7,
+            Target = target,
+            Grant = Guid.NewGuid()
+        }, TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        var received = await Wire.ReadAsync<SourceAcceptanceRequest>(stream, TestContext.Current.CancellationToken);
+        Assert.Equal(0u, received.AcceptKey);
+        Assert.False(SourceAcceptanceRequest.IsValidAcceptKey(received.AcceptKey));
+    }
+
     [Fact]
     public async Task SourceCommandAcknowledgementIsExplicitAndDoesNotFollowClaimOrQuiet()
     {

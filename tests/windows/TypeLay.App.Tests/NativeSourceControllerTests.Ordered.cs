@@ -14,17 +14,21 @@ namespace TypeLay.App.Tests;
 
 public sealed partial class NativeSourceControllerTests
 {
-    // Manual only: press/release one physical, unmodified Tab in the displayed
+    // Manual only: press/release the selected unmodified physical key in the displayed
     // native source. No test-generated key, resend or renewed permit is used.
     // The existing controller keeps its normal candidate lifecycle running;
     // every grant retains 100ms and the fixture retains its original 30s bound.
-    [Fact(Explicit = true)]
-    public Task ManualPhysicalTabUsesOrderedSourceOnceAndSettlesItsOriginalTails() => desktop.RunAsync(async () =>
+    [Theory(Explicit = true)]
+    [InlineData("Tab", 9)]
+    [InlineData("F7", 0x76)]
+    [InlineData("F24", 0x87)]
+    public Task ManualPhysicalAcceptanceKeyUsesOrderedSourceOnceAndSettlesItsOriginalTails(string accept, ushort key) => desktop.RunAsync(async () =>
     {
         await using var native = await ProductionForegroundWriteTests.Desktop.Start(orderedSourceMessageWitness: true);
         await native.Prepare(native.A, "你好", new(0, 2));
-        Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchKey.v1", 9));
+        Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchKey.v1", key));
         Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchField.v1", native.A));
+        Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceObservedKey.v1", key));
         using var hook = new KeyboardHook();
         await Until(() => hook.Ready, native.Token);
         using var broker = new FixtureBroker(native);
@@ -35,12 +39,16 @@ public sealed partial class NativeSourceControllerTests
         try
         {
             var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
+            settings.Update(settings.Value with
+            {
+                AcceptShortcut = accept
+            });
             var loop = new Loop();
             var view = new View();
             using var controller = new SessionController(settings, new Translation(), view, hook, input, loop);
             await controller.StartAsync();
             await Until(() => { loop.Advance(); return view.CanAccept; }, native.Token);
-            Console.WriteLine("请在当前原生输入框中按下并释放一次无修饰物理 Tab；不要重新按键。");
+            Console.WriteLine($"请在当前原生输入框中按下并释放一次无修饰物理 {accept}；不要重新按键。");
             await Until(() =>
             {
                 loop.Advance();
@@ -57,8 +65,8 @@ public sealed partial class NativeSourceControllerTests
             Assert.False(settings.Value.ExperimentalWriteback);
             await Until(() => N.GetProp(native.Root, "TypeLay.Test.SourceDispatchCompleted.v1") == 2, native.Token);
             Assert.Equal((nint)2, N.GetProp(native.Root, "TypeLay.Test.SourceDispatchCompleted.v1"));
-            Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceTabDown.v1"));
-            Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceTabUp.v1"));
+            Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceObservedDown.v1"));
+            Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceObservedUp.v1"));
             Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceDispatchedDown.v1"));
             Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceDispatchedUp.v1"));
             N.Send(native.A, 0x00c7);
@@ -70,8 +78,10 @@ public sealed partial class NativeSourceControllerTests
 
     // Actual App LL thread, authenticated fixture Broker and native source
     // callback. Ordinary SendInput is deliberately NOT a positive source case.
-    [Fact]
-    public Task OrderedSourceRecordsTheRealInjectedEdgeButDoesNotConsumeOrWrite() => desktop.RunAsync(async () =>
+    [Theory]
+    [InlineData("Tab", 9)]
+    [InlineData("F7", 0x76)]
+    public Task OrderedSourceRecordsTheRealInjectedEdgeButDoesNotConsumeOrWrite(string accept, ushort key) => desktop.RunAsync(async () =>
     {
         using (var sender = Process.GetCurrentProcess())
         {
@@ -85,7 +95,7 @@ public sealed partial class NativeSourceControllerTests
         }
         await using var native = await ProductionForegroundWriteTests.Desktop.Start(orderedSourceMessageWitness: true);
         await native.Prepare(native.A, "你好", new(0, 2));
-        Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchKey.v1", 9));
+        Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchKey.v1", key));
         Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchField.v1", native.A));
         using var hook = new KeyboardHook(); // No global synthetic-input opt-in.
         await Until(() => hook.Ready, native.Token);
@@ -98,6 +108,10 @@ public sealed partial class NativeSourceControllerTests
         try
         {
             var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
+            settings.Update(settings.Value with
+            {
+                AcceptShortcut = accept
+            });
             var loop = new Loop();
             var view = new View();
             using var controller = new SessionController(settings, new Translation(), view, hook, input, loop);
@@ -107,6 +121,10 @@ public sealed partial class NativeSourceControllerTests
             Assert.True(WindowsInterruptClock.NowMs <= permit.ExpiresAtMs);
             Assert.False(settings.Value.ExperimentalWriteback);
             var endpoint = Assert.IsType<TypeLay.Windows.Contracts.SourceActivationEndpoint>(broker.Installation!.Endpoint);
+            using var sourceMapping = MemoryMappedFile.OpenExisting($"Local\\TypeLay.Source.{endpoint.Nonce:x16}", MemoryMappedFileRights.Read);
+            using var sourceGrant = sourceMapping.CreateViewAccessor(0, 49384, MemoryMappedFileAccess.Read);
+            Assert.Equal(6u, sourceGrant.ReadUInt32(0));
+            Assert.Equal((ulong)key, sourceGrant.ReadUInt64(49376));
             string name = "Local\\TypeLay.SourceWitness."
                 + Convert.ToHexString(permit.Plan.Expected.Target.Lifetime.ToByteArray()).ToLowerInvariant();
             using var mapping = MemoryMappedFile.OpenExisting(name, MemoryMappedFileRights.Read);
@@ -140,8 +158,8 @@ public sealed partial class NativeSourceControllerTests
             double callbackBeforeMs = hook.StockCallbackMs;
             Assert.True(hook.AcceptanceReady(viewToken, permit, WindowsInterruptClock.NowMs));
             pressed = true;
-            Tab(false);
-            Tab(true);
+            Key(key, false);
+            Key(key, true);
             pressed = false;
             await Until(() => N.GetProp(native.Root, "TypeLay.Test.SourceDispatchCompleted.v1") == 2, native.Token);
             var after = ObserveOrderedWitness(witness, endpoint.Nonce);
@@ -150,8 +168,10 @@ public sealed partial class NativeSourceControllerTests
                     + $"observedAtMs={permit.ObservedAtMs}; expiresAtMs={permit.ExpiresAtMs}; "
                     + $"sourceDownTime={N.GetProp(native.Root, "TypeLay.Test.SourceDispatchDownTime.v1")}; "
                     + $"sourceUpTime={N.GetProp(native.Root, "TypeLay.Test.SourceDispatchUpTime.v1")}; "
-                    + $"sourceDownFieldMatches={N.GetProp(native.Root, "TypeLay.Test.SourceTabDownWindow.v1") == native.A}; "
-                    + $"sourceUpFieldMatches={N.GetProp(native.Root, "TypeLay.Test.SourceTabUpWindow.v1") == native.A}; "
+                    + (key == 9
+                        ? $"sourceDownFieldMatches={N.GetProp(native.Root, "TypeLay.Test.SourceTabDownWindow.v1") == native.A}; "
+                            + $"sourceUpFieldMatches={N.GetProp(native.Root, "TypeLay.Test.SourceTabUpWindow.v1") == native.A}; "
+                        : "")
                     + $"hookReady={hook.Ready}; callbackBeforeMs={callbackBeforeMs:F3}; callbackAfterMs={hook.StockCallbackMs:F3}; "
                     + $"hookBudgetExceeded={hook.StockBudgetExceeded}; grantStillMatches={broker.Installation?.Endpoint?.Nonce == endpoint.Nonce}. "
                     + "MSG time and later metadata alone do not identify the LL refusal branch."
@@ -162,7 +182,7 @@ public sealed partial class NativeSourceControllerTests
             uint recordTime = witness.ReadUInt32(record + 32);
             Assert.True(unchecked((int)(recordTime - (uint)initialTick)) > 0,
                 $"The actual LL record did not cross its initial boundary: time={recordTime}, B={initialTick}.");
-            Assert.Equal(9u, witness.ReadUInt32(record + 36));
+            Assert.Equal((uint)key, witness.ReadUInt32(record + 36));
             Assert.NotEqual(0u, witness.ReadUInt32(record + 44) & 0x12u);
             Assert.Equal(1u, witness.ReadUInt32(record + 48));
             // LL eligibility was only an ordered observation. The native
@@ -179,8 +199,97 @@ public sealed partial class NativeSourceControllerTests
         finally
         {
             if (pressed)
-                Tab(true);
+                Key(key, true);
             Directory.Delete(directory, true);
+        }
+    });
+
+    // Real LL command dispatch with an attached ordered source history. The
+    // automation opt-in is for the existing command only, never source origin.
+    [Fact]
+    public Task OrderedAcceptanceMainKeyDoesNotStealItsConfiguredControlCommand() => desktop.RunAsync(async () =>
+    {
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start(orderedSourceMessageWitness: true);
+        await native.Prepare(native.A, "你好", new(0, 2));
+        Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceObservedKey.v1", 0x76));
+        Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceBarrierKey.v1", 0x86));
+        using var hook = new KeyboardHook(allowInjectedInput: true);
+        await Until(() => hook.Ready, native.Token);
+        using var broker = new FixtureBroker(native);
+        using var input = new WindowsInputService(broker, 0, monitor: hook,
+            sourceMessageAcceptance: true, orderedSourceMessageWitness: true);
+        string directory = Path.Combine(Path.GetTempPath(), "TypeLay.OrderedSourceCommand." + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var pressed = new HashSet<ushort>();
+        try
+        {
+            var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
+            settings.Update(settings.Value with
+            {
+                AcceptShortcut = "F7"
+            });
+            var loop = new Loop();
+            var view = new View();
+            using var controller = new SessionController(settings, new Translation(), view, hook, input, loop);
+            await controller.StartAsync();
+            await Until(() => { loop.Advance(); return view.CanAccept; }, native.Token);
+            var permit = Assert.IsType<AcceptancePermit>(broker.InstallationPermit);
+            string name = "Local\\TypeLay.SourceWitness."
+                + Convert.ToHexString(permit.Plan.Expected.Target.Lifetime.ToByteArray()).ToLowerInvariant();
+            using var mapping = MemoryMappedFile.OpenExisting(name, MemoryMappedFileRights.Read);
+            using var witness = mapping.CreateViewAccessor(0, SourceInputWitness.Bytes, MemoryMappedFileAccess.Read);
+            Assert.Equal(1u, witness.ReadUInt32(132));
+            Thread.MemoryBarrier();
+            ulong initial = witness.ReadUInt64(112);
+            await Until(() => SourceWitnessTickCount() > initial, native.Token);
+            // A legal new configuration revokes source writing, not the lifetime
+            // FIFO. No controller Tick creates another grant or executes Direct.
+            hook.ConfigureShortcuts(true, "Ctrl+Shift+F9", "Ctrl+F7",
+                SessionShortcutBindings.Restore("F7", "Esc"), true);
+            Assert.Contains(hook.RegisteredShortcuts, binding => binding.Action == "direct"
+                && binding.Key == 0x76 && binding.Modifiers == ShortcutModifiers.Control);
+            long before = witness.ReadInt64(56);
+            Send(0x11, false);
+            Send(0x76, false);
+            Send(0x76, true);
+            Send(0x11, true);
+            Send(0x86, false);
+            Send(0x86, true);
+            await Until(() => N.GetProp(native.Root, "TypeLay.Test.SourceBarrierUp.v1") == 1, native.Token);
+            Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceObservedDown.v1"));
+            Assert.Equal(nint.Zero, N.GetProp(native.Root, "TypeLay.Test.SourceObservedUp.v1"));
+            long after = witness.ReadInt64(56);
+            Assert.Equal(before + 4, after); // Ctrl pair and barrier pair, never the consumed F7 pair.
+            Assert.Equal(0u, witness.ReadUInt32(8));
+            for (long sequence = before + 1; sequence <= after; sequence++)
+            {
+                int record = 136 + (int)((sequence - 1) % 256) * 64;
+                Assert.Equal(sequence, witness.ReadInt64(record));
+                Assert.NotEqual(0x76u, witness.ReadUInt32(record + 36));
+            }
+            Assert.True(hook.TryRead(out var command));
+            Assert.Equal("direct", command!.Kind);
+            Assert.Equal(Denial.StaleObservation, command.Rejection); // Configuration removed its old read basis.
+            Assert.Null(command.Permit);
+            await Until(() => { hook.TryRead(out _); return broker.Retired; }, native.Token);
+            Assert.Equal("你好", N.ReadText(native.A, Limits.MaxTextUnits));
+            Assert.Equal(0, broker.Writes);
+            Assert.Equal(0, broker.CompletionTransfers);
+            native.AssertZeroSubmits();
+        }
+        finally
+        {
+            foreach (ushort key in pressed)
+                Key(key, true);
+            Directory.Delete(directory, true);
+        }
+        void Send(ushort key, bool up)
+        {
+            if (!up)
+                pressed.Add(key);
+            Key(key, up);
+            if (up)
+                pressed.Remove(key);
         }
     });
 

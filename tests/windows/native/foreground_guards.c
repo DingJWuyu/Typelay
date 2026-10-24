@@ -67,7 +67,7 @@ static struct {
     uint64_t coarse_ms, precise_100ns, cookie, focus_revision;
     int start, end, length;
     int set_calls, replace_calls, text_reads, length_reads, selection_reads, injected_changes, boundary_checked, invalid_call;
-    int composition_bytes, fail_focus_property;
+    int composition_bytes, fail_focus_property, held_modifier;
     HANDLE input_context, keyboard_layout;
     int context_gets, context_releases, layout_reads, change_input_at_limit, change_input_at_release, release_failure;
     int capture_fault, capture_boundary, password, disabled;
@@ -158,10 +158,10 @@ static int same_name(const WCHAR *a, const WCHAR *b) {
 }
 uint32_t RegisterWindowMessageW(const WCHAR *name) {
     require(source_wire_enabled);
-    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceInstall.v5")) return InstallMessage;
-    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceRevoke.v5")) return RevokeMessage;
-    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourcePoll.v5")) return PollMessage;
-    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceActivate.v5")) return ActivateMessage;
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceInstall.v6")) return InstallMessage;
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceRevoke.v6")) return RevokeMessage;
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourcePoll.v6")) return PollMessage;
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceActivate.v6")) return ActivateMessage;
     if (same_name(name, message_name)) return 0xc105;
     if (same_name(name, owned_capture_message_name)) return 0xc106;
     field.invalid_call = 1;
@@ -356,7 +356,7 @@ uint64_t GetTickCount64(void) {
 }
 void QueryInterruptTimePrecise(uint64_t *value) { *value = field.precise_100ns; }
 uint32_t GetCurrentThreadId(void) { require(!origin_must_be_first); return ThreadId; }
-int16_t GetKeyState(int key) { (void)key; require(!origin_must_be_first); return 0; }
+int16_t GetKeyState(int key) { require(!origin_must_be_first); return key == field.held_modifier ? (int16_t)0x8000 : 0; }
 uint32_t GetCurrentProcessId(void) { return ProcessId; }
 uint32_t GetWindowThreadProcessId(HANDLE hwnd, uint32_t *pid) {
     require(hwnd == handle(SourceWindow) || hwnd == handle(RootWindow)
@@ -897,7 +897,7 @@ static int source_input_identity_is_bound_until_exact_retirement(void) {
         prepare_transaction(Unchanged);
         wipe(&source_wire, sizeof(source_wire));
         source_command = 0;
-        source_wire.version = 5; source_wire.bytes = sizeof(source_wire);
+        source_wire.version = 6; source_wire.accept_key = 9; source_wire.bytes = sizeof(source_wire);
         source_wire.generation[0] = 1; source_wire.grant[0] = (uint64_t)fault + 1;
         source_wire.observed_at_ms = 900;
         copy(&source_wire.tx, &request, sizeof(request));
@@ -962,7 +962,7 @@ static int source_input_identity_is_bound_until_exact_retirement(void) {
     source_wire_enabled = 0;
     return 1;
 }
-static int prepare_source_message_kind(int ordered) {
+static int prepare_source_message_key(int ordered, uint32_t key) {
     source_wire_enabled = 1;
     message_next_fault = message_nested_calls = message_change_at_limit = 0;
     message_pending = queue_status_calls = 0;
@@ -971,7 +971,7 @@ static int prepare_source_message_kind(int ordered) {
     prepare_transaction(Unchanged);
     wipe(&source_wire, sizeof(source_wire));
     source_command = 0;
-    source_wire.version = 5; source_wire.bytes = sizeof(source_wire);
+    source_wire.version = 6; source_wire.accept_key = key; source_wire.bytes = sizeof(source_wire);
     source_wire.generation[0] = 1; source_wire.grant[0] = 71;
     source_wire.observed_at_ms = 900;
     copy(&source_wire.tx, &request, sizeof(request));
@@ -992,6 +992,7 @@ static int prepare_source_message_kind(int ordered) {
     if (source_wire.state != 1 || source_wire.claim != (ordered ? 3u : 0u) || field.invalid_call) return 0;
     return 1;
 }
+static int prepare_source_message_kind(int ordered) { return prepare_source_message_key(ordered, 9); }
 static int prepare_source_message(void) { return prepare_source_message_kind(0); }
 static int prepared_input_and_withdrawal_cannot_be_rearmed(void) {
     if (!prepare_source_message()) return 0;
@@ -1530,13 +1531,13 @@ static int ordered_old_witness_or_dormant_records_are_not_repaired(void) {
     return source_wire.state == 3 && !field.invalid_call && !source_mapped && !witness_mapped;
 }
 
-static int ordered_fresh_tab_consumes_once_at_the_actual_message(uint32_t injected_flag) {
-    if (!prepare_source_message_kind(1)
+static int ordered_fresh_key_consumes_once_at_the_actual_message(uint32_t key, uint32_t scan, uint32_t injected_flag, int system_messages) {
+    if (!prepare_source_message_key(1, key)
         || !TypeLaySourceArmWitness(&source_wire, sizeof(source_wire), 0x44,
             &witness_wire, sizeof(witness_wire))) return 0;
     field.coarse_ms = 100;
-    publish_source_key(0x44, 100, 9, 15, injected_flag, 1, 0);
-    TestQueueMessage message = {handle(SourceWindow), 0x100, 9, 0x000f0001, 100, {0, 0}, 0};
+    publish_source_key(0x44, 100, key, scan, injected_flag, 1, 0);
+    TestQueueMessage message = {handle(SourceWindow), system_messages ? 0x104u : 0x100u, key, (LPARAM)((scan << 16) | 1), 100, {0, 0}, 0};
     origin_success = 1; origin_device = origin_id = 1; origin_calls = 0;
     origin_must_be_first = 1;
     retrieved_message = &message;
@@ -1555,9 +1556,9 @@ static int ordered_fresh_tab_consumes_once_at_the_actual_message(uint32_t inject
     // Tail debt, not write authority, survives the original grant's deadline.
     field.coarse_ms = 1300; field.precise_100ns = 22000000;
     for (int up = 0; up < 2; up++) {
-        publish_source_key(0x44, 1300, 9, 15, injected_flag | (up ? 0x80 : 0), 0, !up);
-        message.message = up ? 0x101 : 0x100;
-        message.lparam = up ? 0xc00f0001u : 0x400f0001u;
+        publish_source_key(0x44, 1300, key, scan, injected_flag | (up ? 0x80 : 0), 0, !up);
+        message.message = system_messages ? (up ? (system_messages == 1 ? 0x105u : 0x101u) : 0x104u) : (up ? 0x101u : 0x100u);
+        message.lparam = (scan << 16) | 1u | (up ? 0xc0000000u : 0x40000000u);
         message.time = 1300;
         TypeLaySourceOrderedGetMessageProc(0, 1, (LPARAM)&message);
         if (message.message || field.replace_calls != 1) return 0;
@@ -1565,6 +1566,124 @@ static int ordered_fresh_tab_consumes_once_at_the_actual_message(uint32_t inject
     send_source(RevokeMessage);
     return source_wire.state == 3 && source_wire.tx.status == 1 && witness_wire.consumed == 3
         && !source_mapped && !witness_mapped && !source_allocated && !field.invalid_call;
+}
+
+// Raw v6 configuration is checked before source body reads or witness attach.
+// Neither omitted/encoded modifiers nor an old same-sized header gains authority.
+static int source_invalid_key_or_old_version_cannot_install(void) {
+    const uint64_t invalid[] = {0, 27, 0x6f, 0x88, 0x10076, UINT64_MAX};
+    for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]) + 2; i++) {
+        if (!prepare_source_message_kind(2)) return 0;
+        if (i < sizeof(invalid) / sizeof(invalid[0])) source_wire.accept_key = invalid[i];
+        else source_wire.version = i == sizeof(invalid) / sizeof(invalid[0]) ? 4 : 5;
+        send_source(InstallMessage);
+        if (source_wire.state != 2 || source_wire.tx.status != 2 || source_wire.tx.reason != 6
+            || source_wire.claim != 3 || source_wire.invoked || witness_wire.attached
+            || field.text_reads || field.length_reads || field.selection_reads
+            || field.set_calls || field.replace_calls || field.invalid_call
+            || source_mapped || witness_mapped || source_allocated) return 0;
+    }
+    return 1;
+}
+static int ordered_wrong_key_or_modifier_cannot_claim_or_revive(void) {
+    const int modifiers[] = {0, 0x10, 0x11, 0x12, 0x5b, 0x5c};
+    for (unsigned i = 0; i < sizeof(modifiers) / sizeof(modifiers[0]); i++) {
+        if (!prepare_source_message_key(1, 0x76)
+            || !TypeLaySourceArmWitness(&source_wire, sizeof(source_wire), 0x44,
+                &witness_wire, sizeof(witness_wire))) return 0;
+        field.coarse_ms = 100; field.held_modifier = modifiers[i];
+        uint32_t key = i ? 0x76 : 0x77;
+        // Even a claimed LL eligible bit does not override native key/modifiers.
+        publish_source_key(0x44, 100, key, 0x41, 0, 1, 0);
+        TestQueueMessage message = {handle(SourceWindow), 0x100, key, 0x00410001, 100, {0, 0}, 0};
+        origin_success = 1; origin_device = origin_id = 1;
+        TypeLaySourceOrderedGetMessageProc(0, 1, (LPARAM)&message);
+        if (message.message != 0x100 || source_wire.claim == 1 || source_wire.invoked
+            || witness_wire.consumed != 1 || field.set_calls || field.replace_calls) return 0;
+        field.held_modifier = 0;
+        publish_source_key(0x44, 100, 0x76, 0x41, 0, 1, 0);
+        message.wparam = 0x76;
+        TypeLaySourceOrderedGetMessageProc(0, 1, (LPARAM)&message);
+        if (message.message != 0x100 || source_wire.claim == 1 || field.set_calls || field.replace_calls) return 0;
+        send_source(RevokeMessage);
+        if (source_wire.state != 3 || field.invalid_call || source_mapped || witness_mapped || source_allocated) return 0;
+    }
+    return 1;
+}
+static int ordered_system_key_does_not_admit_alt_or_other_functions(void) {
+    for (int fault = 0; fault < 3; fault++) {
+        uint32_t key = fault == 2 ? 0x76 : 0x79;
+        if (!prepare_source_message_key(1, key)
+            || !TypeLaySourceArmWitness(&source_wire, sizeof(source_wire), 0x44,
+                &witness_wire, sizeof(witness_wire))) return 0;
+        field.coarse_ms = 100;
+        if (fault == 0) field.held_modifier = 0x12;
+        uint32_t flags = fault == 1 ? 0x20 : 0;
+        publish_source_key(0x44, 100, key, 0x44, flags, 1, 0);
+        TestQueueMessage message = {handle(SourceWindow), 0x104, key,
+            (LPARAM)(0x00440001u | (fault == 1 ? 0x20000000u : 0)), 100, {0, 0}, 0};
+        origin_success = 1; origin_device = origin_id = 1;
+        TypeLaySourceOrderedGetMessageProc(0, 1, (LPARAM)&message);
+        if (message.message != 0x104 || source_wire.claim == 1 || source_wire.invoked
+            || witness_wire.consumed != 1 || field.set_calls || field.replace_calls) return 0;
+        field.held_modifier = 0;
+        send_source(RevokeMessage);
+        if (source_wire.state != 3 || field.invalid_call || source_mapped || witness_mapped || source_allocated) return 0;
+    }
+    return 1;
+}
+static int ordered_old_press_keeps_its_actual_key_scan_and_extended_identity(void) {
+    for (int fault = 0; fault < 4; fault++) {
+        if (!prepare_source_message_key(1, 0x76)
+            || !TypeLaySourceArmWitness(&source_wire, sizeof(source_wire), 0x44,
+                &witness_wire, sizeof(witness_wire))) return 0;
+        field.coarse_ms = 100;
+        publish_source_key(0x44, 100, 0x76, 0x41, 1, 1, 0);
+        TestQueueMessage message = {handle(SourceWindow), 0x100, 0x76, 0x01410001, 100, {0, 0}, 0};
+        origin_success = 1; origin_device = origin_id = 1;
+        TypeLaySourceOrderedGetMessageProc(0, 1, (LPARAM)&message);
+        if (message.message || source_wire.claim != 1 || field.replace_calls != 1) return 0;
+        TypeLaySourceWithdraw(&source_wire, sizeof(source_wire));
+        send_source(RevokeMessage);
+        if (source_wire.state != 2) return 0;
+        // A second configuration cannot retire or replace the held F7 grant.
+        // Save the old envelope at this OS mapping seam, not native slot state.
+        SourceInstallation original;
+        copy(&original, &source_wire, sizeof(original));
+        source_wire.grant[0]++;
+        source_wire.accept_key = 0x87;
+        source_wire.state = 0;
+        send_source(InstallMessage);
+        if (source_wire.state == 1) return 0;
+        uint64_t acknowledgement = source_wire.acknowledgement;
+        copy(&source_wire, &original, sizeof(original));
+        source_wire.acknowledgement = acknowledgement;
+        field.coarse_ms = 1300; field.precise_100ns = 22000000;
+        uint32_t key = fault ? 0x76 : 0x87;
+        uint32_t scan = fault == 1 ? 0x42 : 0x41;
+        uint32_t extended = fault == 2 ? 0 : 1;
+        publish_source_key(0x44, 1300, key, scan, extended | (fault == 3 ? 0x20u : 0), 0, 1);
+        message.message = 0x100; message.wparam = key;
+        message.lparam = 0x40000001u | (scan << 16) | (extended << 24) | (fault == 3 ? 0x20000000u : 0); message.time = 1300;
+        TypeLaySourceOrderedGetMessageProc(0, 1, (LPARAM)&message);
+        if (message.message != 0x100 || field.replace_calls != 1) return 0;
+        publish_source_key(0x44, 1300, 0x76, 0x41, 0x81, 0, 0);
+        message.message = 0x101; message.wparam = 0x76; message.lparam = 0xc1410001u;
+        TypeLaySourceOrderedGetMessageProc(0, 1, (LPARAM)&message);
+        // A different main key does not pay the old debt. A mismatching scan or
+        // extended bit seals it; later equality cannot fabricate consumption.
+        if (message.message != (fault ? 0x101u : 0u) || field.replace_calls != 1) return 0;
+        send_source(RevokeMessage);
+        if (source_wire.state != (fault ? 2u : 3u)) return 0;
+        if (fault) {
+            CallMessage leave = {0, 0, 0x08, handle(SourceWindow)};
+            TypeLayCallWndProc(0, 0, (LPARAM)&leave);
+            send_source(RevokeMessage);
+        }
+        if (source_wire.state != 3 || source_wire.tx.status != 1 || field.invalid_call
+            || source_mapped || witness_mapped || source_allocated) return 0;
+    }
+    return 1;
 }
 
 static int ordered_arm_cannot_rewrite_an_existing_boundary(void) {
@@ -1756,8 +1875,16 @@ static int run_checks(void) {
     if (!ordered_source_requires_the_same_attached_prepared_grant()) return 30;
     // The controlled HARDWARE class may coexist with an injected LL flag;
     // this is a category contract, never a real UIAccess/hardware observation.
-    if (!ordered_fresh_tab_consumes_once_at_the_actual_message(0)
-        || !ordered_fresh_tab_consumes_once_at_the_actual_message(0x10)) return 31;
+    if (!ordered_fresh_key_consumes_once_at_the_actual_message(9, 15, 0, 0)
+        || !ordered_fresh_key_consumes_once_at_the_actual_message(9, 15, 0x10, 0)) return 31;
+    for (uint32_t key = 0x70; key <= 0x87; key++)
+        if (!ordered_fresh_key_consumes_once_at_the_actual_message(key, 0x41, 0, 0)) return 43;
+    if (!ordered_fresh_key_consumes_once_at_the_actual_message(0x79, 0x44, 0, 1)
+        || !ordered_fresh_key_consumes_once_at_the_actual_message(0x79, 0x44, 0, 2)) return 47;
+    if (!ordered_system_key_does_not_admit_alt_or_other_functions()) return 48;
+    if (!source_invalid_key_or_old_version_cannot_install()) return 44;
+    if (!ordered_wrong_key_or_modifier_cannot_claim_or_revive()) return 45;
+    if (!ordered_old_press_keeps_its_actual_key_scan_and_extended_identity()) return 46;
     if (!ordered_arm_cannot_rewrite_an_existing_boundary()) return 32;
     if (!ordered_grant_cannot_use_a_non_origin_checked_consumer()) return 33;
     if (!ordered_old_or_ambiguous_keys_cannot_borrow_a_fresh_head()) return 34;

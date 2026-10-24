@@ -19,24 +19,42 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class FirstWakeCaptureTests(WpfDesktopFixture desktop)
 {
-    [Fact]
-    public Task OneWakeWithoutALeaseCapturesTheExactStockFieldWithoutWriteAuthority() => desktop.RunAsync(async () =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task OneWakeWithoutALeaseCapturesTheExactStockFieldWithoutWriteAuthority(bool orderedSharedAcceptanceKey) => desktop.RunAsync(async () =>
     {
-        await using var source = await ProductionForegroundWriteTests.Desktop.Start();
+        await using var source = await ProductionForegroundWriteTests.Desktop.Start(
+            orderedSourceMessageWitness: orderedSharedAcceptanceKey);
         await source.Prepare(source.A, "First wake source", new(0, 5));
         using var hook = new KeyboardHook(allowInjectedInput: true);
         await Until(() => hook.ShortcutsReady, source.Token);
         using var broker = new SourceBroker(source);
         using var browser = new BrowserInput(new BrowserServer(Dispatcher.CurrentDispatcher), hook);
-        using var input = new WindowsInputRouter(new WindowsInputService(broker, 0, monitor: hook), hook, browser,
-            () => Array.Empty<string>());
-        hook.SetShortcuts([new("wake", 0x78, ShortcutModifiers.None)]);
+        using var input = new WindowsInputRouter(new WindowsInputService(broker, 0, monitor: hook,
+            sourceMessageAcceptance: orderedSharedAcceptanceKey, orderedSourceMessageWitness: orderedSharedAcceptanceKey),
+            hook, browser, () => Array.Empty<string>());
+        if (orderedSharedAcceptanceKey)
+        {
+            hook.ConfigureShortcuts(true, "Ctrl+F7", "Ctrl+Shift+F10",
+                SessionShortcutBindings.Restore("F7", "Esc"), true);
+            Assert.Contains(hook.RegisteredShortcuts, binding => binding.Action == "wake"
+                && binding.Key == 0x76 && binding.Modifiers == ShortcutModifiers.Control);
+        }
+        else
+            hook.SetShortcuts([new("wake", 0x78, ShortcutModifiers.None)]);
 
         InputNotice? notice = null;
         long? noticeAtMs = null;
         try
         {
-            Keys(0x78); // Exactly one F9, no lease wait or retry.
+            // No shortcut lease is published: both rows must complete the
+            // deferred first-origin capture, not enqueue an earlier snapshot.
+            // The shared F7 main key remains a command, never source acceptance.
+            if (orderedSharedAcceptanceKey)
+                Keys(0x11, 0x76); // Exactly one Ctrl+F7, no lease wait or retry.
+            else
+                Keys(0x78); // Original F9 boundary.
             await Until(() =>
             {
                 if (!input.TryRead(out notice))

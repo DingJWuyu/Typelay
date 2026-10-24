@@ -137,8 +137,10 @@ internal sealed partial class KeyboardHook
                     && IsSourceForeground(witness.Target))
                 {
                     var candidate = Volatile.Read(ref _stockInstalled);
-                    bool eligible = input.Key == 9 && message == 0x100 && !repeated && !Modified
-                        && candidate is not null && candidate.Lease.Source.Target == witness.Target.Id
+                    bool eligible = candidate is not null && input.Key == candidate.AcceptKey
+                        && (message == 0x100 || input.Key == 0x79 && message == 0x104)
+                        && (input.Flags & 0x20) == 0 && !repeated && !Modified
+                        && candidate.Lease.Source.Target == witness.Target.Id
                         && StockCandidateCurrent(candidate, now);
                     if (!witness.Publish(input, repeated, eligible, now))
                         RevokeStockCandidate();

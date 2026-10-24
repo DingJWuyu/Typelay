@@ -30,6 +30,30 @@ public sealed class NativeSourceBrokerTests
     }
 
     [Theory]
+    [InlineData(0u)] // Missing old DTO field.
+    [InlineData(27u)]
+    [InlineData(0x6fu)]
+    [InlineData(0x88u)]
+    [InlineData(0x10076u)] // Modifier-encoded values are not main keys.
+    public async Task BrokerRejectsMissingOrInvalidSourceAcceptanceKey(uint key)
+    {
+        await using var desktop = await ProductionForegroundWriteTests.Desktop.Start(orderedSourceMessageWitness: true);
+        await desktop.Prepare(desktop.A, "pre old post", new(0, 0));
+        var source = await Observe(desktop);
+        var result = await Send(desktop, "source-install", Owner(source) with
+        {
+            AcceptKey = key
+        });
+        Assert.False(result.Installed);
+        Assert.False(result.Claimed);
+        Assert.Null(result.Endpoint);
+        Assert.Equal(Denial.Unsupported, result.Receipt?.Reason);
+        Assert.Equal(source.Text, N.ReadText(desktop.A, Limits.MaxTextUnits));
+        Assert.Equal(source.Selection, N.ReadSelection(desktop.A));
+        desktop.AssertZeroSubmits();
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task BrokerReturnsActualNativeCompletionOnceEvenIfObservationClearsFirst(bool clearFirst)
@@ -216,6 +240,11 @@ public sealed class NativeSourceBrokerTests
             SessionRevision = owner.SessionRevision + 1
         };
         Assert.False((await Send(desktop, "source-retire", wrong)).Quiet);
+        Assert.False((await Send(desktop, "source-retire", owner with
+        {
+            Permit = null,
+            AcceptKey = 0x76
+        })).Quiet);
         var replacement = owner with
         {
             Generation = Guid.NewGuid()
@@ -241,7 +270,7 @@ public sealed class NativeSourceBrokerTests
         var plan = new WritePlan(Guid.NewGuid(), Guid.NewGuid(), 1, snapshot, new(4, 7), "Hello", "pre Hello post", 9);
         var permit = new AcceptancePermit(plan, snapshot.InputEpoch, snapshot.FocusEpoch,
             snapshot.ObservedAtMs, snapshot.ObservedAtMs + Limits.PermitMaxAgeMs);
-        return new(Guid.NewGuid(), 1, snapshot.Target, plan.Id, permit);
+        return new(Guid.NewGuid(), 1, snapshot.Target, plan.Id, permit, AcceptKey: 9);
     }
     private static async Task<SourceAcceptanceResult> Send(ProductionForegroundWriteTests.Desktop desktop,
         string operation, SourceAcceptanceRequest owner)
