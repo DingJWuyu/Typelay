@@ -109,7 +109,7 @@ native 在调用一次 CallNextHookEx **之前**占住 source callback 寿命门
 
 ## 同一检索处的独立来源分类观察
 
-`ObserveInputOriginAtRemovedMessageAndOuterReturn` 是一次显式、只读 F8 观察，不向上述 source 接受路径授予来源能力。源 fixture 只装专用 WH_GETMESSAGE，不加载事务模块、不建 grant、不调用 claim/write、不改 MSG；父测试沿原 Desktop helper 保留版本校验与闲置 Broker，二者清理仍须证实。既有 native 同字段尾键两行、owned 六行与生产默认关闭门不改。
+`ObserveInputOriginAtRemovedMessageAndOuterReturn` 保留为显式、只读 F8 手动维护入口，用于即将评估的生产原始 MSG 来源检查。只有该来源边界实现、GCIMS 调用时点或平台契约变化时才手动验证，不作日常 CI 或默认 suite；既有完整观察已达到一次研究的停止条件。源 fixture 只装专用 WH_GETMESSAGE，不加载事务模块、不建 grant、不调用 claim/write、不改 MSG；父测试沿原 Desktop helper 保留版本校验与闲置 Broker，二者清理仍须证实。该入口不向 source 接受路径授予来源能力，既有 native 同字段尾键两行、owned 六行与生产默认关闭门不改。
 
 ```powershell
 & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe `
@@ -122,7 +122,9 @@ native 在调用一次 CallNextHookEx **之前**占住 source callback 寿命门
 
 入口与外层返回独立解释：两段 SendInput 均为 Keyboard/INJECTED，夹层 posted 为来源不可识别时，记 `origin-class-transition-observed`；六条全为 Keyboard/INJECTED 只记 `sources-not-distinguished`，不能推为 stale；其它原始分类记 `unknown-or-unexpected-source`。观察完成不等于来源绑定成功，`productionReadiness`、`hardwarePositiveObserved`、`bindingProven` 永远 false。官方 [GCIMS](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getcurrentinputmessagesource) 没有保证 hook/return 位置的逐事件身份，且 SendMessage 期间 device 可为不可用；[HARDWARE 类别含 UIAccess 软件](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ne-winuser-input_message_origin_id)，故任何结果都不解决用户尚未选择的 UIAccess 信任边界。Token 查询按 [DWORD 合同](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ne-winnt-token_information_class) 与 [TOKEN_QUERY 权限](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-gettokeninformation) 进行。
 
-沿原 Desktop30秒/单事实60秒期限，默认 suite 不运行这个 Explicit Fact。CI 在既有 `windows-source-keyboard` 四分钟硬上限内，先完整验证原 peek/forged/dialog 三例成功及清理，再显式运行本观察一次；不增加步骤、超时或研究总预算，原普通 source 两例独立入口不变。前序失败/清理不明不启动，缺件、额外结果、API 查询失败或不完整均不记完成；成功但来源未知/不可区分仍是有效诊断，不是产品能力通过。`runner.json`/`runner.log` 与唯一 case 结果由最终 Windows artifact 保存；步骤超时留下未完成状态，不补跑。唯一结果写入 `artifacts/source-message-origin/<唯一目录>/result.json`，分别记录源、发送者、两个采样点、原输入配对、未变正文/选区/焦点及真实 hook/进程清理。此入口尚未 Windows 实跑；本地格式/静审不构成 GCIMS 或来源阳性，未知结果也不触发重复研究。
+CI495 的完整 Windows 原件包含六条消息、三个阶段和十二次成功采样；hook 入口与外层返回分别观察到 `INJECTED (device=1, origin=2) → UNAVAILABLE (0,0) → INJECTED (1,2)`，两处均为 `origin-class-transition-observed`。`firstExtraInput=null`，`unchanged`、`inputsPaired`、`hooksClosed`、`processesExited` 均为 true，三项生产/物理/绑定字段仍为 false。这只证明单个非 UIAccess 发送者与受控源泵中的有限 source class 可观测性，不证明不可伪造的 MSG 绑定、物理正控、UIAccess 信任或 IME 资格。CI494 的额外输入原因仍为 unknown，本次无额外输入不能解释旧失败，也不为追查它重跑。
+
+手动入口沿原 Desktop30秒/单事实60秒期限，唯一结果写入 `artifacts/source-message-origin/<唯一目录>/result.json`，记录源、发送者、两个采样点、原输入配对、未变正文/选区/焦点及实际 hook/进程清理。缺件、额外结果、API 查询失败或不完整均不记完成；成功但来源未知/不可区分仍是有效诊断，不是产品能力通过，未知结果不自动触发重复研究。CI 已移除此入口的自动调用、专属 runner 和 artifact 白名单；`windows-source-keyboard` 只保留原 peek/forged/dialog 三例及独立结果完整性/清理校验，原条件、四分钟硬上限及普通 source 两例独立入口不变。
 
 ## 自有标准 Edit 的既有 TSF context 准入
 

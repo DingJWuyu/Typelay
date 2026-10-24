@@ -4,34 +4,32 @@
 
 ## 先看结论
 
-本页于 **2026-10-24 02:27 UTC** 按已公开提交与 CI 证据更新。
+本页于 **2026-10-24 03:41 UTC** 按已公开提交与 CI 证据更新。
 
-- **CI494 已终态失败，当前先处理真实首错。** Windows App 的源点击准备、独立来源观察、continuous 源 Ctrl 退出和正式 Notepad 接受提示失败；Linux 唯一失败步骤是 Qt 真实模型链的 fresh F24 人工稿接受。
-- **Linux 体验仍推荐 CI480，不升级。** CI494 的 DOM、GTK3/GTK4 术语与真实桌面链、Qt probe 及 Hy 生命周期通过，但 Qt 真实模型失败，整轮 Linux 未通过。
+- **CI495 已终态失败，当前剩余首错集中在 Windows 点击准备、正式 Notepad 接受和 Linux GTK3 普通接受恢复。** 独立来源观察已完成其有限研究目标；continuous 本轮通过，不据此宣布旧间歇原因已修。
+- **Linux 体验仍推荐 CI480，不升级。** CI495 的 GTK3/GTK4 术语、GTK4/Qt 真实模型链与 Hy 生命周期通过，但 GTK3 恢复普通接受失败，不能因大多数通过更换推荐包。
 - **Windows 普通源生产接受仍未完成。** 自有受控源 owned 六例与同字段原生 source 两例通过，不等于正式 Notepad 或所有普通输入框具备接受能力。严格来源、真实 IME、精确身份与原子写入门保持；UIAccess 产品选择仍待用户明确。
 - **模型生命周期和质量分开。** 本轮 Windows Hy 15 场景、Linux Hy 12 阶段通过；默认、质量、高级 scope、物理输入及所有应用支持没有因此放行。
 
-## 最新发布与实际结果
+## 最近已核终态与实际结果
 
-[CI494 / run 40052238858](https://github.com/DingJWuyu/Typelay/actions/runs/40052238858) 于 2026-10-24 01:59:17 UTC 由唯一 push 触发，attempt 1，02:19:47 UTC 终态 `failure`。冻结本地 `38ec94f3e5fcd44e631908629173c2d66525a6b6` 对应远端 `4c5600a600f27f29724acc0410eb8218d4795c38`、tree `0bafdaf3412f58c91fda29e8abe6dde85a4fd7c8`；19 文件精确读回、同分支非强推及源码 artifact 身份已核。
+[CI495 / run 40055613887](https://github.com/DingJWuyu/Typelay/actions/runs/40055613887) 于 2026-10-24 02:47:08 UTC 由唯一 push 触发，attempt 1，03:07:35 UTC 终态 `failure`。冻结本地 `2c0bb7f8986e8217297448a6bc5cb1e68bab253b` 对应远端 `5d81a89173b15a576f139f8446750ae204034f9f`、tree `c0bc8cd886c7a11fcf78d6ed11df4f43be535c51`；12 文件差异含 1 删除，精确读回、同分支非强推及源码 artifact 身份已核。
 
-本批包含 GTK3 drawable 时钟、Windows 退出回归的指针准备、GTK 完整会话身份与只读反馈及真实所有者验收、独立输入来源只读观察的一次 CI 接线，以及 DOM 动画等待失败留证。实现、实际通过、失败和未运行按下表分别记录，不以整体结果覆盖局部证据，也不把一次通过当作旧间歇问题根因已修。
+后继验证以 [Actions 入口](https://github.com/DingJWuyu/Typelay/actions) 中当前分支最新运行及原件为准，旧轮结果不代表新提交。实现、实际通过、失败和未运行按下表分别记录，不以整体结果覆盖局部证据，也不把一次通过当作旧间歇问题根因已修。
 
 | 范围 | 已核结果 | 剩余边界 |
 | --- | --- | --- |
 | 共享与包装 | Core 302、Runtime 1297、Windows contracts 122、Protocol 28；worker 168、Python shared 29、Linux 输入反馈 181 通过。原生 foreground guards、实际 WinEvent 与包装 69 项通过 | 编译和受控检查不是桌面产品完成 |
-| Windows App | 778 通过、17 失败、18 项显式研究未执行；17 项均在 `SourceClickObscured` 源点击准备失败。原指针准备对应的 Ctrl 退出两例实际通过 | 点击准备失败未进入待验机制；两例通过不解释其它准备失败 |
+| Windows App | 777 通过、18 失败、16 项显式研究未执行。17 项 NativeSourceActivation 在 `SourceClickObscured` 准备失败，原 hit 与后采身份均指向本轮 windows-terminal HWND 131388、PID 1904、TID 1900；另有 BrowserSourceClick exposed 场景失败 | 17 项尚未进入待验机制；窗口身份不证明 Broker 导致遮挡。Browser 场景未取得相同身份，不能合并为同一原因 |
 | 原生受控源 | owned 六例和 source 两例通过；source 保留首键、同字段尾键、Undo、Quiet 与实际清理证据 | 只覆盖自有受控源；生产接受仍关闭，未证明物理 IME 或跨应用能力 |
-| 独立来源观察 | 已进入新 case，采到 4 条 F8 消息、2 阶段、两采样点共 8 次原始值，首段为 INJECTED、posted 段为 UNAVAILABLE；`sourceOrigin.error=origin-extra-input` 后第三阶段未发送，hook/进程已清理 | 整体 `inconclusive`，不是完全未采，也不是完整三段通过。`productionReadiness`、`hardwarePositiveObserved`、`bindingProven` 均为 false，不授予输入信任或写入能力 |
-| consumption-order 研究 | 旧受控研究本轮通过 | 不据此宣布先前首消息前提失败的原因已修复，也不扩大为生产验收 |
-| Windows continuous | 在普通 source Ctrl 退出时退出 lease 缺失、浮层未隐藏，整链失败；后续 5 场景未运行。消费者自然 exit 1，owned 残留为 0 | 未运行的持续预览、直接替换、按需练习、Chrome 冷页/新标签页不记通过；清理成功不抹去功能失败 |
-| 正式 Notepad | 自动预览成功；接受提示在原 90 秒截止失败，实测 90.009 秒，后续三场景未运行 | 接受/Undo、人工稿回源、按需/直接替换不能记为通过 |
-| Linux DOM / Qt probe | DOM 本轮通过，受控 Qt probe 通过 | DOM 未复现先前动画超时，不能把新增失败留证称为已修根因；probe 不替代 Qt 真实模型链 |
-| Linux GTK | GTK3/GTK4 术语各 40/40；真实桌面结果分别列 21/23 项通过，含语言菜单保稿、新续约所有者及相应拒绝场景 | 仅代表本轮实际覆盖，非所有控件或应用验收 |
-| Linux Qt 真实模型 | fresh independent F24 未接受回源人工稿；hook 入口时票已过期 80ms，尚未进入写入 | 深层原因未证，整轮 Linux 失败；不延票或重发输入补成功 |
-| 双端 Hy | Windows 15 场景全过；Linux 12 阶段、88.28 秒通过，Host/worker 正常退出且无强制清理 | 生命周期与双向普通预览不证明质量、高级 scope 或物理输入 |
+| 独立来源观察 | 完整 6 条消息、3 阶段、两采样点共 12 次成功查询，均观察到 INJECTED / UNAVAILABLE / INJECTED；`firstExtraInput=null`，原文/选区/焦点保持，hook/进程清理完成 | 已达到一次研究停止条件。仅证明受控来源分类变化；`productionReadiness`、`hardwarePositiveObserved`、`bindingProven` 均为 false，不授予事件绑定、硬件来源或生产资格 |
+| Windows continuous | 本轮整链通过，消费者自然 exit 0、activeProcesses 0 | 不证明此前 source Ctrl 退出的间歇原因已修；物理 IME 与普通源生产接受仍独立 |
+| 正式 Notepad | 自动预览成功；接受提示在原 90 秒截止失败，实测 90.001 秒，后续三场景未运行 | 接受/Undo、人工稿回源、按需/直接替换不能记为通过 |
+| Linux GTK / Qt | GTK3/GTK4 术语各 40/40；GTK4 与 Qt 真实桌面结果各列 23 项通过 | Qt 本轮通过不解释此前投递过期的深层原因；仅代表本轮实际覆盖，非所有控件或应用验收 |
+| Linux GTK3 普通接受 | 恢复 Tab/Esc 后普通接受失败，是本轮 Linux 唯一失败步骤。Tab 发送到 native 入口 194ms，inspect 1ms，原 100ms 票在门检时已过期 127ms，正确拒绝 | 现场不是 Ctrl 配置未恢复；延迟的深层原因未证，不归因具体 OS/IME，也不延票或重发输入补成功 |
+| 双端 Hy | Windows 15 场景全过；Linux 12 阶段、90.156 秒通过，Host/worker 正常退出且无强制清理 | 生命周期与双向普通预览不证明质量、高级 scope 或物理输入 |
 
-核验入口为工作区 `artifacts/ci494-independent/terminal-evidence-verified.json`，同目录的 `windows-results-verified.json`、`linux-results-verified.json`、`shared-results.json` 与 `publication-verified.json` 分别给出本轮结果和身份。Windows 包已核 SHA-256 与内外 CRC；Linux artifact 外层完整性已核，内产品包未另行核验采用。公开运行链接供查阅实际 job/artifact，原始日志不复制进本页。
+核验入口为工作区 `artifacts/ci495-independent/terminal-evidence-verified.json`，同目录的 `windows-results-verified.json`、`linux-results-verified.json`、`shared-results.json` 与 `publication-verified.json` 分别给出本轮结果和身份。Windows 包已核 SHA-256 与内外 CRC；Linux artifact 外层完整性已核，内产品包未另行核验采用。公开运行链接供查阅实际 job/artifact，原始日志不复制进本页。
 
 ## 当前责任与下一动作
 
@@ -39,10 +37,9 @@ root 对集成、证据核验和采用决定负责；下表是当前公开责任
 
 | 责任线 / 负责人 | 当前动作与依赖 | 完成或停止条件 |
 | --- | --- | --- |
-| 当前失败与后继集成 / root | CI494 终态和所需原件已齐；按下列首错推进独立定位，候选变更按精确差异、审查和授权分别核验 | 可交付修复取得同路径实际证据后更新本页；失败、未运行和清理结果保持独立，不重复已过场景凑工作量 |
-| Windows 准备与退出 / root | 分别定位 17 项 `SourceClickObscured` 前置和 continuous source Ctrl 退出 lease 缺失，保留两者不同的现场身份与时序 | 各自建立实际原因与最小回归；前置或期限问题不靠重试、延时、放宽门解决，不混称原指针修正失效 |
-| Windows 来源观察 / root | 核 `origin-extra-input` 的额外输入来源及已有消息配对，保留两阶段原始采样和第三阶段未发事实 | 完整性未成立前结论保持 inconclusive；只有新证据支持具体下一动作才继续，不自动重复同一研究或授予生产资格 |
-| Linux Qt 人工稿接受 / root | 沿本轮 fresh F24 的实际投递、票期限及入口观察定位过期原因；DOM/GTK 本轮通过项退出在修队列 | 根因与同路径实际回归齐备后关闭；不延票、不重发、不把 probe 通过代替真实模型验收 |
+| 当前失败与后继集成 / root | CI495 终态和所需原件已齐；按下列首错推进独立定位，候选变更按精确差异、审查和授权分别核验 | 可交付修复取得同路径实际证据后更新本页；失败、未运行和清理结果保持独立，不重复已过场景凑工作量 |
+| Windows 点击准备 / root | 沿 17 项实际 terminal 遮挡事实定位来源与生命周期；BrowserSourceClick exposed 失败独立核现场，不套相同归因 | 各自建立实际原因与最小回归；不把进程身份当作因果证明，不靠重试、延时或放宽门使前置变绿 |
+| Linux GTK3 接受时序 / root | 沿本轮已恢复 Tab 的实际发送、native 入口和门检跨度定位 194ms 延迟；保留原期限与拒绝证据 | 根因与同路径实际回归齐备后关闭；不延票、不重发、不把其它 GTK/Qt 场景通过代替该路径验收 |
 | Windows 产品闭环 / root | 普通源接受、原子写入、真实 IME 与身份资格保持独立；UIAccess 信任范围依赖用户决定。详细原问题与验收见 [Windows 待办](../platforms/windows/open-issues.md) | 同一真实输入的安全消费/写入、拒绝旁路、Undo、清理及正式应用正向验收齐备；受控研究不能替代这些完成门 |
 | Linux 体验交付 / root | 维持 CI480 推荐，保留用户真机/物理键盘/输入法反馈；新包须独立建立完整 Linux 结果和包身份 | 满足采用依据后才更换推荐；不重打已验包、不自动发布 stable |
 | 模型采用 / root | 保持下方默认、兼容和资源合同；只在新增产品故障或有实质新假设时安排最小验证 | 生命周期、质量和高级 scope 各凭自己的证据；无新依据不重跑已否定配方，不扩大候选或推理预算 |

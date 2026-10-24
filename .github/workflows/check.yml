@@ -401,68 +401,22 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
-          $directory = 'artifacts/source-message-origin'
-          New-Item -ItemType Directory -Path $directory, 'artifacts/source-keyboard-boundary' -Force | Out-Null
-          $runner = [ordered]@{ kind = 'origin-class-observation'; status = 'waiting-for-predecessor'; sourceSha = $env:GITHUB_SHA; predecessorExitCode = $null; predecessorResultCount = 0; expectedPredecessorRows = 3; exitCode = $null; expectedRows = 1; resultCount = 0; observation = $null; productionReadiness = $false; hardwarePositiveObserved = $false; bindingProven = $false; error = $null }
-          $runner | ConvertTo-Json -Depth 6 | Set-Content "$directory/runner.json"
-          New-Item -ItemType File -Path "$directory/runner.log" -Force | Out-Null
-          try {
-            & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.SourceKeyboardBoundaryProbe.ObserveSelfOwnedSourceKeyboardBoundary' 2>&1 | Tee-Object -FilePath 'artifacts/source-keyboard-boundary/runner.log'
-            $runner.predecessorExitCode = $LASTEXITCODE
-            $previous = @(Get-ChildItem -LiteralPath 'artifacts/source-keyboard-boundary' -Filter result.json -File -Recurse | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json })
-            $runner.predecessorResultCount = $previous.Count
-            $ready = $runner.predecessorExitCode -eq 0 -and $previous.Count -eq 3 -and
-              (($previous.experiment | Sort-Object) -join ',') -eq 'dialog,forged,peek'
-            foreach ($row in $previous) {
-              foreach ($value in @($row.diagnosticOnly, $row.hooksClosed, $row.processesExited, $row.inputsPaired, $row.bodiesUnchanged)) {
-                if ($value -isnot [bool] -or -not $value) { $ready = $false }
-              }
-              if ($row.productionReadiness -isnot [bool] -or $row.productionReadiness -or
-                  $row.status -ne 'mechanism_observed_not_product_acceptance' -or $null -ne $row.error) { $ready = $false }
+          $directory = 'artifacts/source-keyboard-boundary'
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.SourceKeyboardBoundaryProbe.ObserveSelfOwnedSourceKeyboardBoundary' 2>&1 | Tee-Object -FilePath "$directory/runner.log"
+          $exitCode = $LASTEXITCODE
+          $results = @(Get-ChildItem -LiteralPath $directory -Filter result.json -File -Recurse | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json })
+          $complete = $exitCode -eq 0 -and $results.Count -eq 3 -and
+            (($results.experiment | Sort-Object) -join ',') -eq 'dialog,forged,peek'
+          foreach ($row in $results) {
+            foreach ($value in @($row.diagnosticOnly, $row.hooksClosed, $row.processesExited, $row.inputsPaired, $row.bodiesUnchanged)) {
+              if ($value -isnot [bool] -or -not $value) { $complete = $false }
             }
-            if (-not $ready) {
-              $runner.status = 'not-run-predecessor-failed-or-incomplete'
-            } else {
-              $runner.status = 'running'
-              $runner | ConvertTo-Json -Depth 6 | Set-Content "$directory/runner.json"
-              & ./tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows/TypeLay.App.Tests.exe -explicit only -method 'TypeLay.App.Tests.SourceKeyboardBoundaryProbe.ObserveInputOriginAtRemovedMessageAndOuterReturn' 2>&1 | Tee-Object -FilePath "$directory/runner.log"
-              $runner.exitCode = $LASTEXITCODE
-              $files = @(Get-ChildItem -LiteralPath $directory -Filter result.json -File -Recurse)
-              $runner.resultCount = $files.Count
-              if ($files.Count -ne 1) {
-                $runner.status = 'missing-or-nonunique-result'
-              } else {
-                $row = Get-Content -LiteralPath $files[0].FullName -Raw | ConvertFrom-Json
-                $origin = if (@($row.observations).Count -eq 1) { $row.observations[0].source.sourceOrigin } else { $null }
-                $runner.observation = [ordered]@{ status = $row.status; entryClass = $row.entryClass; returnClass = $row.returnClass; hooksClosed = $row.hooksClosed; processesExited = $row.processesExited; inputsPaired = $row.inputsPaired; unchanged = $row.unchanged; error = $row.error }
-                $valid = $null -ne $origin -and $null -eq $origin.error -and $null -eq $row.error -and
-                  $row.status -eq 'observation-complete-not-product-acceptance' -and
-                  $origin.count -eq 6 -and $origin.dispatched -eq 6 -and $origin.completedPhases -eq 3
-                foreach ($value in @($row.diagnosticOnly, $row.hooksClosed, $row.processesExited, $row.inputsPaired, $row.unchanged)) {
-                  if ($value -isnot [bool] -or -not $value) { $valid = $false }
-                }
-                foreach ($value in @($row.productionReadiness, $row.hardwarePositiveObserved, $row.bindingProven)) {
-                  if ($value -isnot [bool] -or $value) { $valid = $false }
-                }
-                $samples = @($origin.observations | ForEach-Object { $_.Entry; $_.Returned })
-                if ($samples.Count -ne 12) { $valid = $false }
-                foreach ($sample in $samples) {
-                  if ($sample.Succeeded -isnot [bool] -or -not $sample.Succeeded) { $valid = $false }
-                }
-                # Successful but unavailable/indistinguishable classes are valid data, not a trust failure.
-                if ($runner.exitCode -ne 0) { $runner.status = 'observation-failed-or-inconclusive' }
-                elseif (-not $valid) { $runner.status = 'invalid-or-incomplete-observation' }
-                else { $runner.status = 'observation-complete-not-product-acceptance' }
-              }
-            }
-          } catch {
-            $runner.error = $_.Exception.GetType().Name
-            $runner.status = 'runner-failed'
-          } finally {
-            $runner | ConvertTo-Json -Depth 6 | Set-Content "$directory/runner.json"
+            if ($row.productionReadiness -isnot [bool] -or $row.productionReadiness -or
+                $row.status -ne 'mechanism_observed_not_product_acceptance' -or $null -ne $row.error) { $complete = $false }
           }
-          "Source keyboard/origin research: $($runner.status); predecessor=$($runner.predecessorExitCode), origin=$($runner.exitCode). Source classes only, not event binding or hardware proof." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          if ($runner.status -ne 'observation-complete-not-product-acceptance') { exit 1 }
+          "Source keyboard boundary research: complete=$complete; exitCode=$exitCode; results=$($results.Count)/3. Controlled mechanisms only, not production acceptance." | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          if (-not $complete) { exit 1 }
           exit 0
       - name: Observe standard Chrome profile after behavior tests
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
@@ -662,9 +616,6 @@ jobs:
             artifacts/test-results/
             artifacts/source-ll-timeout/
             artifacts/source-keyboard-boundary/
-            artifacts/source-message-origin/runner.json
-            artifacts/source-message-origin/runner.log
-            artifacts/source-message-origin/*/result.json
             artifacts/source-synchronous-acceptance/
             artifacts/source-message-acceptance/
             artifacts/tsf-context-admission/

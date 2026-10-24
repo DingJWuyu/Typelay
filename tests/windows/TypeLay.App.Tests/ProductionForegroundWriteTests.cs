@@ -879,10 +879,12 @@ public sealed partial class ProductionForegroundWriteTests
                     }
                     finally { NativeLibrary.Free(library); }
                 }
+                // Both Broker entry points are background stdio peers, matching
+                // AppPaths.Child rather than the visible fixture launch contract.
                 broker = isolatedSourceAcceptance
-                    ? StartProcessWithTrace(returnTrace, Path.Combine(Repository(),
+                    ? StartProcessWithTrace(returnTrace, createNoWindow: true, Path.Combine(Repository(),
                         "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"), "--source-broker")
-                    : StartProcessWithTrace(returnTrace, Path.Combine(directory, "TypeLay.Broker.dll"));
+                    : StartProcessWithTrace(returnTrace, createNoWindow: true, Path.Combine(directory, "TypeLay.Broker.dll"));
                 var desktop = new Desktop(fixture, broker, deadline, isolatedDirectory);
                 Assert.Equal("ready", (await desktop.Call(new(BrokerProtocol.Version, 0, "hello", ""))).Status);
                 return desktop;
@@ -1233,12 +1235,13 @@ public sealed partial class ProductionForegroundWriteTests
             throw new AggregateException("TSF context admission or cleanup failed.", errors);
     }
 
-    private static Process StartProcess(params string[] arguments) => StartProcessWithTrace(null, arguments);
-    private static Process StartProcessWithTrace(string? trace, params string[] arguments)
+    private static Process StartProcess(params string[] arguments) => StartProcessWithTrace(null, createNoWindow: false, arguments);
+    private static Process StartProcessWithTrace(string? trace, bool createNoWindow, params string[] arguments)
     {
         var info = new ProcessStartInfo("dotnet")
         {
             UseShellExecute = false,
+            CreateNoWindow = createNoWindow,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true
