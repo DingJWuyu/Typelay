@@ -8,15 +8,15 @@ internal sealed partial class SourceKeyboardProbe
 {
     // The only installer of the new native research callback. This same-thread
     // wrapper passes the actual OS MSG pointer, never a reconstructed message.
-    // Native calls Next exactly once. The wrapper only supplies a bounded pause
-    // and same-field tail handling for this controlled synthetic-input fixture.
+    // Native calls Next exactly once and owns same-field tail consumption. This
+    // wrapper only observes returned MSGs and supplies the bounded first pause.
     private nint _messageLibrary, _messageHook;
     private string? _messageModulePath;
     private HookProc? _messageNative, _messageCallback;
-    private bool _messageAttempted, _messageAccepted, _messageHeld, _insideMessageNative;
+    private bool _messageAttempted, _messageAccepted, _insideMessageNative, _messageDetachmentAllowed;
     private int _messageFirstDownAttempts, _messageBodyChanges, _messageRepeats, _messageUps;
     private int _messageReturns, _messageNullReturns, _messageNoRemove;
-    private long _messagePressBits, _messagePauseStarted, _messagePauseFinished;
+    private long _messagePauseStarted, _messagePauseFinished;
     private TextRange? _messageSelectionBefore;
     private N.MessageStruct _messageOriginal;
     private bool _messageFirstReturnMatches;
@@ -43,7 +43,7 @@ internal sealed partial class SourceKeyboardProbe
 
     private void PrepareMessage(int mode)
     {
-        _messageAttempted = _messageAccepted = _messageHeld = _insideMessageNative = _sourceDeparted = false;
+        _messageAttempted = _messageAccepted = _insideMessageNative = _sourceDeparted = false;
         _messageFirstDownAttempts = _messageBodyChanges = _messageRepeats = _messageUps = 0;
         _messageReturns = _messageNullReturns = _messageNoRemove = 0;
         _messagePauseStarted = _messagePauseFinished = 0;
@@ -67,7 +67,6 @@ internal sealed partial class SourceKeyboardProbe
             || message == 0x0111 && lp == _field && ((wp >> 16) & 0xffff) == 0x200)
         {
             _sourceDeparted = true;
-            _messageHeld = false;
         }
     }
 
@@ -104,27 +103,17 @@ internal sealed partial class SourceKeyboardProbe
                 _error = "noremove-message-changed";
             return result;
         }
-        bool consumed = first && current.Message == 0 && SameMessage(original, current, ignoreMessage: true);
+        bool consumed = current.Message == 0 && SameMessage(original, current, ignoreMessage: true);
         if (consumed)
         {
-            _messageAccepted = true;
-            _messageHeld = !_sourceDeparted;
-            _messagePressBits = (long)original.LParam & 0x21ff0000;
-            _consumed++;
-        }
-        else if (_messageHeld && (up || repeat) && !_sourceDeparted
-            && original.Hwnd == _field && GetFocus() == _field
-            && ((long)original.LParam & 0x21ff0000) == _messagePressBits && SameMessage(original, current))
-        {
-            // This local synthetic press is not a strict keyboard-origin proof.
-            Marshal.WriteInt32(lp, 8, 0); // Only MSG.message, not its other fields.
-            consumed = true;
-            if (up)
+            if (first)
             {
-                _messageUps++;
-                _messageHeld = false;
+                _messageAccepted = true;
+                _consumed++;
             }
-            else
+            else if (up)
+                _messageUps++;
+            else if (repeat)
                 _messageRepeats++;
         }
         Record("message-native-return", code, 9, original.LParam, consumed);

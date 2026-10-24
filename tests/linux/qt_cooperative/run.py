@@ -70,6 +70,38 @@ def counter_exceeds(observation, name, baseline=0):
     return type(value) is int and type(baseline) is int and value > baseline
 
 
+def prepare_source_glossary_capture_basis(describe, settled, expected_field):
+    """Observe the prepared source, without turning a Pending stamp into authority."""
+    target = None
+
+    def observe():
+        nonlocal target
+        if not settled():
+            return None
+        description = describe(target)
+        assert description["metadata"]["automationId"] == expected_field, description
+        if target is None:
+            target = description["target"]
+        assert description["target"] == description["authority"]["target"] == target, description
+        stamp = description["authority"].get("contextStamp", {})
+        if (
+            description["focused"] is True
+            and stamp.get("flags") == 3
+            and all(
+                type(stamp.get(name)) is int and stamp[name] > 0 for name in ("context", "field")
+            )
+            and type(stamp.get("server")) is int
+            and stamp.get("server") == stamp.get("applied")
+        ):
+            # Initial focus/provider preparation may still change revisions.
+            # Freeze only this complete observation; the one capture below
+            # must still validate its exact stamp, revisions and original age.
+            return description
+        return None
+
+    return wait(observe, "genuine source IM Clear before original glossary publication")
+
+
 def build(out, forced_sync_diagnostic=False):
     inputs = hashes(TEST_INPUTS)
     qt_build.build(out)
@@ -666,11 +698,22 @@ def ordered_controls(
                     },
                 )
 
-            def publish(replacement_text="Translated result", *, case=None):
-                wait(settled, "genuine IM retirement before original publication")
-                timing = {"descriptionStartedAtMs": now_ms()}
-                description = native.describe()
-                timing["descriptionReturnedAtMs"] = now_ms()
+            def publish(replacement_text="Translated result", *, case=None, source_field=None):
+                timing = {}
+
+                def describe(target=None):
+                    timing["descriptionStartedAtMs"] = now_ms()
+                    description = native.describe(target)
+                    timing["descriptionReturnedAtMs"] = now_ms()
+                    return description
+
+                if source_field is None:
+                    wait(settled, "genuine IM retirement before original publication")
+                    description = describe()
+                else:
+                    description = prepare_source_glossary_capture_basis(
+                        describe, settled, source_field
+                    )
                 timing["captureStartedAtMs"] = now_ms()
                 captured = native.call(
                     "capture",
@@ -1256,12 +1299,13 @@ def ordered_controls(
                     else:
                         prepare()
                     publication = publish(
+                        source_field=field,
                         case={
                             "scenario": "source-glossary",
                             "state": view_state,
                             "finish": finish,
                             "field": field,
-                        }
+                        },
                     )
                     target = publication["target"]
                     actions = {

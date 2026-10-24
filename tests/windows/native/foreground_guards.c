@@ -16,7 +16,8 @@ enum Scenario {
     AuthorizationExpiredAfterSelection,
     OwnedFocusRoundTripAfterSelection,
     InputContextChangedAfterSelection,
-    ForegroundChangedAfterSelection
+    ForegroundChangedAfterSelection,
+    VerificationChangedAfterReplacement
 };
 enum {
     SourceWindow = 1, RootWindow = 2, OtherField = 3, OtherRoot = 4,
@@ -41,7 +42,7 @@ typedef struct {
     uint32_t time; Point point; uint32_t private_value;
 } TestQueueMessage;
 static TestQueueMessage *retrieved_message;
-static int message_next_calls, message_next_fault, message_nested_calls, message_change_at_limit;
+static int message_next_calls, message_next_fault, message_nested_calls, message_change_at_limit, tail_during_selection;
 static uint32_t message_pending, queue_status_calls;
 static void send_source(uint32_t message);
 LRESULT TypeLaySourceGetMessageProc(int code, WPARAM wp, LPARAM lp);
@@ -109,6 +110,12 @@ LRESULT CallNextHookEx(HANDLE hook, int code, WPARAM wp, LPARAM lp) {
                 && !source_wire.claim && !source_wire.invoked);
         }
         if (fault == 4) require(TypeLaySourceWithdraw(&source_wire, sizeof(source_wire)) == 2);
+        if (fault == 5) {
+            TestQueueMessage nested;
+            copy(&nested, retrieved_message, sizeof(nested));
+            TypeLaySourceGetMessageProc(0, 1, (LPARAM)&nested);
+            require(nested.message == 0x100 && source_wire.claim == 1);
+        }
     }
     return 0;
 }
@@ -218,10 +225,16 @@ static LRESULT stock_edit(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
         require(field.precise_100ns == 10000000 && request.authorization_deadline_ms == 1000);
         require(wp == 4 && lp == 7);
         field.boundary_checked++;
+        if (tail_during_selection) {
+            tail_during_selection = 0;
+            TestQueueMessage tail = {handle(SourceWindow), 0x100, 9, 0x400f0001u, 1001, {0, 0}, 0};
+            TypeLaySourceGetMessageProc(0, 1, (LPARAM)&tail);
+            require(tail.message == 0x100);
+        }
         field.start = (int)wp;
         field.end = (int)lp;
         switch (field.scenario) {
-        case Unchanged: break;
+        case Unchanged: case VerificationChangedAfterReplacement: break;
         case FocusChangedAfterSelection:
             // Same root, different field: checking only the root is insufficient.
             field.focus = handle(OtherField);
@@ -279,6 +292,7 @@ static LRESULT stock_edit(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
         field.length = offset;
         field.start += replacement_length;
         field.end = field.start;
+        if (field.scenario == VerificationChangedAfterReplacement) field.text[0] = 'X';
         return 0;
     }
     default: field.invalid_call = 1; return 0;
@@ -929,6 +943,28 @@ static int source_removed_message_commits_before_selection(uint32_t pending) {
     if (source_wire.tx.status != 1 || source_wire.state != 2 || source_wire.tx.reason
         || source_wire.tx.length != 14 || source_wire.verified_at_ms != 1000) return 0;
     send_source(RevokeMessage);
+    if (source_wire.state != 2 || source_wire.claim != 1) return 0;
+    // Write expiry is not the lifetime of an already accepted physical press.
+    field.precise_100ns += 12000000;
+    field.coarse_ms += 1200;
+    message.message = 0x100; message.lparam = 0x400e0001u;
+    TypeLaySourceGetMessageProc(0, 0, (LPARAM)&message);
+    TypeLaySourceGetMessageProc(-1, 1, (LPARAM)&message);
+    message.hwnd = handle(OtherField);
+    TypeLaySourceGetMessageProc(0, 1, (LPARAM)&message);
+    if (message.message != 0x100) return 0;
+    message.hwnd = handle(SourceWindow);
+    for (int up = 0; up < 2; up++) {
+        message.message = up ? 0x101 : 0x100;
+        message.lparam = up ? 0xc00f0001u : 0x400f0001u;
+        retrieved_message = &message;
+        message_next_calls = 0;
+        TypeLaySourceGetMessageProc(0, 1, (LPARAM)&message);
+        retrieved_message = 0;
+        if (message.message || message_next_calls != 1 || field.set_calls != 1 || field.replace_calls != 1)
+            return 0;
+    }
+    send_source(RevokeMessage);
     source_wire_enabled = 0;
     return source_wire.state == 3 && !source_mapped && !source_allocated && !field.invalid_call;
 }
@@ -995,6 +1031,9 @@ static int source_message_noremove_and_nested_remove_do_not_spend_the_grant(void
     if (message.message || source_wire.invoked != 1 || source_wire.claim != 1
         || message_next_calls != 3 || message_nested_calls != 1 || field.set_calls != 1
         || field.replace_calls != 1 || field.invalid_call) return 0;
+    message.message = 0x101; message.lparam = 0xc00f0001u;
+    TypeLaySourceGetMessageProc(0, 1, (LPARAM)&message);
+    if (message.message) return 0;
     send_source(RevokeMessage);
     source_wire_enabled = 0;
     return source_wire.state == 3 && !source_mapped && !source_allocated && !field.invalid_call;
@@ -1067,11 +1106,108 @@ static int source_message_refusal_never_restores_or_replays_the_original(void) {
         send_source(PollMessage);
         if (source_wire.state != 2 || source_wire.tx.reason != reason) return 0;
         send_source(RevokeMessage);
+        if (fault == 12) {
+            if (source_wire.state != 2) return 0;
+            CallMessage departed = {0, 0, 0x08, handle(SourceWindow)};
+            TypeLayCallWndProc(0, 0, (LPARAM)&departed);
+            send_source(RevokeMessage);
+        }
         if (source_wire.state != 3 || source_wire.tx.status != 2 || source_wire.tx.reason != reason
             || source_wire.invoked != 1 || source_mapped || source_allocated || field.invalid_call) return 0;
         source_wire_enabled = 0;
     }
     return 1;
+}
+static int source_claimed_refusal_and_unknown_keep_the_press(void) {
+    for (int unknown = 0; unknown < 2; unknown++) {
+        if (!prepare_source_message()) return 0;
+        field.scenario = unknown ? VerificationChangedAfterReplacement : SelectionChangedAfterSelection;
+        TestQueueMessage message = {handle(SourceWindow), 0x100, 9, 0x000f0001, 1000, {0, 0}, 0};
+        retrieved_message = &message;
+        TypeLaySourceGetMessageProc(0, 1, (LPARAM)&message);
+        retrieved_message = 0;
+        if (message.message || source_wire.claim != 1 || source_wire.tx.status != (unknown ? 3u : 2u)
+            || field.set_calls != 1 || field.replace_calls != unknown) return 0;
+        uint32_t status = source_wire.tx.status, reason = source_wire.tx.reason;
+        send_source(RevokeMessage);
+        if (source_wire.state != 2) return 0;
+        message.message = 0x101; message.lparam = 0xc00f0001u;
+        TypeLaySourceGetMessageProc(0, 1, (LPARAM)&message);
+        if (message.message || field.set_calls != 1 || field.replace_calls != unknown) return 0;
+        send_source(RevokeMessage);
+        if (source_wire.state != 3 || source_wire.tx.status != status || source_wire.tx.reason != reason
+            || source_mapped || source_allocated || field.invalid_call) return 0;
+        source_wire_enabled = 0;
+    }
+    return 1;
+}
+static int source_tail_uncertainty_and_departure_cannot_revive(void) {
+    for (int fault = 1; fault <= 19; fault++) {
+        if (!prepare_source_message()) return 0;
+        TestQueueMessage message = {handle(SourceWindow), 0x100, 9, 0x000f0001, 1000, {0, 0}, 0};
+        tail_during_selection = fault == 18;
+        retrieved_message = &message;
+        TypeLaySourceGetMessageProc(0, 1, (LPARAM)&message);
+        retrieved_message = 0;
+        if (message.message || source_wire.tx.status != 1 || source_wire.claim != 1) return 0;
+        message.message = 0x100; message.lparam = 0x400f0001u;
+        int departed = (fault >= 8 && fault <= 14) || fault == 17;
+        switch (fault) {
+        case 1: message.lparam = 0x000f0001; break; // A genuinely newer first Tab.
+        case 2: message.lparam = 0x400e0001u; break;
+        case 3: field.input_context = 0; break;
+        case 4: field.keyboard_layout = 0; break;
+        case 5: field.release_failure = 1; break;
+        case 6: message_next_fault = 5; break; // Tail nested inside the active callback.
+        case 7: message_next_fault = 1; break;
+        case 8: field.cookie++; break;
+        case 9: field.focus = handle(OtherField); break;
+        case 10: field.foreground = handle(OtherRoot); break;
+        case 11: field.input_context = handle(6); break;
+        case 12: field.keyboard_layout = handle(7); break;
+        case 13: case 14: case 17: {
+            CallMessage change = {0, 0, fault == 13 ? 0x08u : fault == 14 ? 0x281u : 0x82u, handle(SourceWindow)};
+            TypeLayCallWndProc(0, 0, (LPARAM)&change);
+            break;
+        }
+        case 15: field.change_input_at_release = 1; break;
+        case 16: field.style |= 0x800; break;
+        case 19: message.message = 0x104; message.lparam = 0x200f0001; break;
+        }
+        retrieved_message = &message;
+        message_next_calls = 0;
+        TypeLaySourceGetMessageProc(0, 1, (LPARAM)&message);
+        retrieved_message = 0;
+        if (message.message != (fault == 19 ? 0x104u : 0x100u) || message_next_calls != 1
+            || field.set_calls != 1 || field.replace_calls != 1) return 0;
+        // Restore all visible identity and even supply an equal scan/up. Neither
+        // uncertainty nor a known departure can turn it back into the old press.
+        field.cookie = LifetimeCookie; field.focus = handle(SourceWindow); field.foreground = handle(RootWindow);
+        field.input_context = handle(4); field.keyboard_layout = handle(5); field.release_failure = 0;
+        field.style &= ~0x800;
+        message.message = 0x101; message.wparam = 9; message.lparam = 0xc00f0001u;
+        TypeLaySourceGetMessageProc(0, 1, (LPARAM)&message);
+        if (message.message != 0x101) return 0;
+        send_source(RevokeMessage);
+        if (source_wire.state != (departed ? 3u : 2u)) return 0;
+        if (!departed) {
+            CallMessage leave = {0, 0, 0x08, handle(SourceWindow)};
+            TypeLayCallWndProc(0, 0, (LPARAM)&leave);
+            send_source(RevokeMessage);
+        }
+        if (source_wire.state != 3 || source_wire.tx.status != 1 || source_wire.tx.reason
+            || source_mapped || source_allocated || field.invalid_call) return 0;
+        source_wire_enabled = 0;
+    }
+    // A successful sent activation never owns a retrieved keyboard press.
+    if (!prepare_source_message()) return 0;
+    send_source(ActivateMessage);
+    if (source_wire.claim != 1 || source_wire.tx.status != 1) return 0;
+    send_source(RevokeMessage);
+    TestQueueMessage up = {handle(SourceWindow), 0x101, 9, 0xc00f0001u, 1001, {0, 0}, 0};
+    TypeLaySourceGetMessageProc(0, 1, (LPARAM)&up);
+    source_wire_enabled = 0;
+    return source_wire.state == 3 && up.message == 0x101 && !field.invalid_call;
 }
 static int run_checks(void) {
     if (!unchanged_writes_scope_and_verifies()) return 1;
@@ -1088,6 +1224,8 @@ static int run_checks(void) {
     if (!source_message_refusal_never_restores_or_replays_the_original()) return 21;
     if (!source_sent_activation_still_refuses_pending_work()) return 22;
     if (!source_admission_pointer_pair_is_required()) return 23;
+    if (!source_claimed_refusal_and_unknown_keep_the_press()) return 24;
+    if (!source_tail_uncertainty_and_departure_cannot_revive()) return 25;
     if (!owned_lifetime_cannot_be_restored_by_capture_or_release()) return 5;
     if (!automatic_lifetime_cannot_use_the_ordinary_write_route()) return 12;
     if (!owned_preflight_refuses_without_consuming_or_mutating()) return 6;

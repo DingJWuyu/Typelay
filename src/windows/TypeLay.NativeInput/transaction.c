@@ -98,9 +98,8 @@ static const WCHAR owned_capture_message_name[] = L"TypeLay.NativeInput.OwnedCap
 
 __declspec(dllexport) uint32_t TypeLayNativeProtocolVersion(void) { return VERSION; }
 
-static int foreground_window(const Transaction *tx) {
-    HANDLE foreground = GetForegroundWindow(), root = (HANDLE)(uintptr_t)tx->root;
-    HANDLE hwnd = (HANDLE)(uintptr_t)tx->hwnd;
+static int foreground_identity(HANDLE hwnd, HANDLE root, uint32_t process, uint32_t thread) {
+    HANDLE foreground = GetForegroundWindow();
     if (foreground == root) return 1;
     // UIA may leave the exact ordinary Edit as the raw foreground HWND. It is
     // not a new root or permission for sibling fields/owned dialogs. This shape
@@ -108,8 +107,11 @@ static int foreground_window(const Transaction *tx) {
     uint32_t pid = 0;
     return hwnd && hwnd != root && foreground == hwnd && owned.hwnd != hwnd
         && GetAncestor(root, 2) == root && GetAncestor(hwnd, 2) == root
-        && GetWindowThreadProcessId(hwnd, &pid) == tx->thread && pid == tx->pid
-        && GetWindowThreadProcessId(root, &pid) == tx->thread && pid == tx->pid;
+        && GetWindowThreadProcessId(hwnd, &pid) == thread && pid == process
+        && GetWindowThreadProcessId(root, &pid) == thread && pid == process;
+}
+static int foreground_window(const Transaction *tx) {
+    return foreground_identity((HANDLE)(uintptr_t)tx->hwnd, (HANDLE)(uintptr_t)tx->root, tx->pid, tx->thread);
 }
 static int foreground_source(const Transaction *tx) {
     // This hook executes on the source's GUI thread, so GetFocus identifies the
@@ -490,10 +492,10 @@ static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accep
         // commitment. A later refusal/unknown must not restore or reinject Tab.
         if (admission->message) admission->message->message = 0; // WM_NULL
     }
-    // This is the only owned acceptance point. Everything above is a read-only
-    // preflight. The caller has removed its single-use local plan; only a true
-    // return may consume the original queue message, even if selection callbacks
-    // subsequently reject execution. Never synthesize a replacement Tab.
+    // Record owned acceptance or actual-MSG tail debt before SETSEL can reenter.
+    // Sent activation never supplies this output. The owned caller consumes only
+    // on true; the actual MSG above is already committed, including on a later
+    // refusal/unknown. Neither route may synthesize a replacement Tab.
     if (accepted) *accepted = 1;
     CallWindowProcW(proc, hwnd, 0xb1, (WPARAM)tx->start, (LPARAM)tx->end);
     // Selection changes may cause synchronous accessibility callbacks. Refuse if
@@ -596,6 +598,8 @@ typedef struct {
     uint64_t nonce, generation[2], grant[2], hwnd, root, cookie;
     int64_t expires;
     OwnedInputContext input; // Source-local scalar identity, never sent over the wire.
+    int press_owed, press_disabled;
+    uint32_t press_bits; // Accepted actual MSG's scan/extended/context identity.
 } SourceSlot;
 static SourceSlot source;
 // Covers unmatched requests too: a downstream hook cannot retire A, install B,
@@ -611,8 +615,55 @@ static int source_input_message(uint32_t message) {
     default: return 0;
     }
 }
+// Narrow same-field obligation, independent of the expired write grant. Losing
+// certainty seals consumption; only a known scope departure or consumed original
+// up settles it. No equality, poll, deadline or retirement can re-arm this press.
+static void source_press_departed(void) {
+    source.press_disabled = 1;
+    source.press_owed = 0;
+}
+static int source_press_scope(void) {
+    HANDLE hwnd = (HANDLE)(uintptr_t)source.hwnd, root = (HANDLE)(uintptr_t)source.root;
+    uint32_t thread = GetCurrentThreadId(), process = GetCurrentProcessId(), pid = 0;
+    if (GetFocus() != hwnd || !foreground_identity(hwnd, root, process, thread)
+        || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != source.cookie) {
+        source_press_departed();
+        return 0;
+    }
+    if (!qualify_field_metadata(hwnd, root, process, thread, 0)
+        || GetWindowThreadProcessId(root, &pid) != thread || pid != process
+        || !IsWindowVisible(hwnd) || !IsWindowVisible(root) || !IsWindowEnabled(root) || IsIconic(root)) {
+        source.press_disabled = 1;
+        return 0;
+    }
+    return source.press_owed && !source.press_disabled;
+}
+static int source_press_current(void) {
+    if (!source_press_scope()) return 0;
+    OwnedInputContext current;
+    if (!read_input_context((HANDLE)(uintptr_t)source.hwnd, &current)) {
+        // Unknown is not evidence of a physical up or departure.
+        source.press_disabled = 1;
+        return 0;
+    }
+    if (current.ime_context != source.input.ime_context
+        || current.keyboard_layout != source.input.keyboard_layout) {
+        source_press_departed();
+        return 0;
+    }
+    // IMM may have reentered. Only callback-free metadata closes this check.
+    return source_press_scope();
+}
 static void source_invalidate(const CallMessage *msg) {
-    if (__atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) != GetCurrentThreadId() || source.reason) return;
+    if (__atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) != GetCurrentThreadId()) return;
+    if (source.press_owed
+        && ((msg->hwnd == (HANDLE)(uintptr_t)source.hwnd
+                && (msg->message == 0x08 || msg->message == 0x82 || msg->message == 0x51
+                    || msg->message == 0x10d || msg->message == 0x10e || msg->message == 0x10f || msg->message == 0x281))
+            || (msg->hwnd == (HANDLE)(uintptr_t)source.root
+                && (msg->message == 0x82 || (msg->message == 0x06 && !(msg->wparam & 0xffff))
+                    || (msg->message == 0x1c && !msg->wparam))))) source_press_departed();
+    if (source.reason) return;
     if (msg->hwnd == (HANDLE)(uintptr_t)source.hwnd) {
         if (source_input_message(msg->message)) { source.reason = 15; return; }
         switch (msg->message) {
@@ -658,10 +709,17 @@ static int source_input_current(Transaction *tx) {
     // monotonic revocation and original clock checks. This is not a TSF profile
     // or continuous composition witness; equal samples cannot supply one.
     OwnedInputContext current;
-    if (!reason && (!source.input.ime_context || !source.input.keyboard_layout
-        || !read_input_context((HANDLE)(uintptr_t)tx->hwnd, &current)
-        || current.ime_context != source.input.ime_context
-        || current.keyboard_layout != source.input.keyboard_layout)) reason = 9;
+    if (!reason) {
+        if (!source.input.ime_context || !source.input.keyboard_layout
+            || !read_input_context((HANDLE)(uintptr_t)tx->hwnd, &current)) {
+            reason = 9;
+            if (source.press_owed) source.press_disabled = 1;
+        } else if (current.ime_context != source.input.ime_context
+            || current.keyboard_layout != source.input.keyboard_layout) {
+            reason = 9;
+            if (source.press_owed) source_press_departed();
+        }
+    }
     if (!reason) reason = source_current(tx);
     if (reason && !source.reason) source.reason = reason;
     if (source.reason) { tx->reason = source.reason; return 0; }
@@ -718,7 +776,8 @@ static void source_execute_once(SourceInstallation *shared, SourceInstallation *
     Transaction *tx = &request->tx;
     if (!source.reason && request->state == 1) {
         SourceAdmission admission = { &shared->claim, &source.reason, message, expected_message };
-        execute_guarded(tx, 0, 0, 0, &admission);
+        if (message && expected_message) source.press_bits = (uint32_t)expected_message->lparam & 0x21ff0000u;
+        execute_guarded(tx, 0, message ? &source.press_owed : 0, 0, &admission);
     } else { tx->status = 2; tx->reason = source.reason ? source.reason : 6; }
     if (tx->status == 1) {
         uint64_t verified;
@@ -785,6 +844,8 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
                 source.hwnd = tx->hwnd; source.root = tx->root; source.cookie = tx->cookie;
                 source.expires = tx->authorization_deadline_ms;
                 source.input.ime_context = source.input.keyboard_layout = 0;
+                source.press_owed = source.press_disabled = 0;
+                source.press_bits = 0;
                 source.busy++;
                 uint32_t reason = source_preflight(request);
                 if (reason && !source.reason) source.reason = reason;
@@ -799,7 +860,8 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
                     source_execute_once(shared, request, 0, 0);
                 // Only an explicit retirement may relinquish the source slot.
                 // A nested revoke records cancellation but cannot claim quiet.
-                quiet = operation == 2 && source.busy == 1;
+                if (operation == 2 && source.press_owed) source_press_scope();
+                quiet = operation == 2 && source.busy == 1 && !source.press_owed;
             } else {
                 request->state = 3;
                 // A previous quiet ACK may have been lost after execution.
@@ -851,6 +913,39 @@ static LRESULT source_message(int code, WPARAM wp, LPARAM lp, uint32_t operation
     __atomic_store_n(&source_callback, 0, __ATOMIC_RELEASE);
     return result;
 }
+static LRESULT source_press_message(int code, WPARAM wp, LPARAM lp) {
+    QueueMessage *message = (QueueMessage *)lp;
+    uint32_t thread = GetCurrentThreadId(), empty_callback = 0;
+    int up = message->message == 0x101 && ((uintptr_t)message->lparam & 0xc0000000u) == 0xc0000000u;
+    int repeat = message->message == 0x100 && ((uintptr_t)message->lparam & 0xc0000000u) == 0x40000000u;
+    if ((!up && !repeat) || ((uint32_t)message->lparam & 0x21ff0000u) != source.press_bits) {
+        // A new first Tab or mismatching press must not leave the old press able
+        // to swallow a later repeat/up, even if its fields become equal again.
+        source.press_disabled = 1;
+        return CallNextHookEx(0, code, wp, lp);
+    }
+    if (source.press_disabled) return CallNextHookEx(0, code, wp, lp);
+    if (!__atomic_compare_exchange_n(&source_callback, &empty_callback, thread, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        source.press_disabled = 1;
+        return CallNextHookEx(0, code, wp, lp);
+    }
+    QueueMessage original;
+    copy(&original, message, sizeof(original));
+    source.busy++;
+    LRESULT result = CallNextHookEx(0, code, wp, lp);
+    if (!same_queue_message(message, &original)) source.press_disabled = 1;
+    if (source.press_owed && !source.press_disabled && source_press_current()) {
+        // The input query can reenter the hook chain, so compare the actual MSG
+        // and monotonic press state again after it, before scalar consumption.
+        if (same_queue_message(message, &original) && source.press_owed && !source.press_disabled) {
+            message->message = 0;
+            if (up) source.press_owed = 0;
+        } else source.press_disabled = 1;
+    }
+    source.busy--;
+    __atomic_store_n(&source_callback, 0, __ATOMIC_RELEASE);
+    return result;
+}
 // Research-only ABI addition. No shipping App/Broker installs this callback.
 // The opted-in self-owned fixture supplies the real WH_GETMESSAGE arguments.
 // This fixed, unmodified Tab path has no strict origin/old-queued-key or real
@@ -862,8 +957,13 @@ __declspec(dllexport) LRESULT TypeLaySourceGetMessageProc(int code, WPARAM wp, L
     uint32_t thread = GetCurrentThreadId(), empty_callback = 0;
     if (code != 0 || wp != 1 || !message
         || __atomic_load_n(&source.owner, __ATOMIC_ACQUIRE) != thread
-        || source.hwnd != (uint64_t)(uintptr_t)message->hwnd || source.completed_status)
+        || source.hwnd != (uint64_t)(uintptr_t)message->hwnd)
         return CallNextHookEx(0, code, wp, lp);
+    if (source.press_owed && message->wparam == 9
+        && (message->message == 0x100 || message->message == 0x101
+            || message->message == 0x104 || message->message == 0x105))
+        return source_press_message(code, wp, lp);
+    if (source.completed_status) return CallNextHookEx(0, code, wp, lp);
     const int first_tab = message->message == 0x100 && message->wparam == 9
         && !((uintptr_t)message->lparam & 0xc0000000u)
         && GetKeyState(0x10) >= 0 && GetKeyState(0x11) >= 0 && GetKeyState(0x12) >= 0

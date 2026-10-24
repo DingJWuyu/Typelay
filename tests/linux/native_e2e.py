@@ -44,8 +44,46 @@ def glossary_source_click_ready(snapshot, baseline, clicked_at):
     return snapshot
 
 
-def glossary_painted_geometry(control, observed_at):
+def glossary_gtk3_painted_geometry(control, observed_at):
+    """A natural GTK3 draw must finish in this map/clock at the current allocation."""
+    paint = control.get("paintObservation")
+    if (
+        not isinstance(paint, dict)
+        or control.get("visible") is not True
+        or paint.get("ready") is not True
+    ):
+        return False
+    if not all(
+        type(paint.get(key)) is int and paint[key] > 0
+        for key in ("mapGeneration", "clockInstance", "mappedAtMonoMs", "paintedAtMonoMs")
+    ):
+        return False
+    if (
+        type(observed_at) is not int
+        or not paint["mappedAtMonoMs"] <= paint["paintedAtMonoMs"] <= observed_at
+        or type(paint.get("paintedMapGeneration")) is not int
+        or paint["paintedMapGeneration"] != paint["mapGeneration"]
+        or type(paint.get("paintedClockInstance")) is not int
+        or paint["paintedClockInstance"] != paint["clockInstance"]
+        or type(paint.get("frame")) is not int
+        or type(paint.get("paintedFrame")) is not int
+        or not 0 <= paint["paintedFrame"] <= paint["frame"]
+        or type(paint.get("drawFrame")) is not int
+        or paint["drawFrame"] != paint["paintedFrame"]
+    ):
+        return False
+    keys = ("instance", "x", "y", "width", "height", "scale")
+    return (
+        all(type(control.get(key)) is int for key in keys)
+        and all(control[key] > 0 for key in ("instance", "width", "height", "scale"))
+        and paint.get("geometry") == {key: control[key] for key in keys}
+    )
+
+
+def glossary_painted_geometry(control, observed_at, *, toolkit="gtk4"):
     """Only the current mapped control's completed frame can supply a click point."""
+    if toolkit == "gtk3":
+        return glossary_gtk3_painted_geometry(control, observed_at)
     paint, surface = control.get("paintObservation"), control.get("surfaceGeometry")
     if not isinstance(paint, dict) or not isinstance(surface, dict):
         return False
@@ -623,10 +661,8 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             and not glossary_popup_fits(actual.get("overlayPopup"))
                         ):
                             return None
-                        if (
-                            overlay_control
-                            and toolkit == "gtk4"
-                            and not glossary_painted_geometry(control, actual.get("observedAtMs"))
+                        if overlay_control and not glossary_painted_geometry(
+                            control, actual.get("observedAtMs"), toolkit=toolkit
                         ):
                             return None
                         surface = (
@@ -636,13 +672,8 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                         )
                         if not isinstance(surface, dict):
                             return None
-                        if (
-                            overlay_control
-                            and toolkit == "gtk4"
-                            and (
-                                type(surface.get("scale")) is not int
-                                or surface["scale"] != parent[2]
-                            )
+                        if overlay_control and (
+                            type(surface.get("scale")) is not int or surface["scale"] != parent[2]
                         ):
                             return None
                         rectangle = [surface.get(key) for key in ("x", "y")]

@@ -238,6 +238,8 @@ class NativeForegroundGuardTests(unittest.TestCase):
                 21: "source MSG refusal, revocation and withdrawal cannot restore or replay",
                 22: "sent source activation retains every original pending-work refusal",
                 23: "private source admission requires both MSG pointers or neither",
+                24: "claimed refusal and unknown retain native tail debt",
+                25: "native tail uncertainty/departure cannot revive and sent activation owes none",
             }
             self.assertEqual(
                 result.returncode,

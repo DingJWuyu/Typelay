@@ -89,6 +89,67 @@ class GlossarySourcePreparationTests(unittest.TestCase):
                 )
 
 
+class Gtk3GlossaryPaintGeometryTests(unittest.TestCase):
+    def test_mapped_menu_allocation_without_this_maps_paint_cannot_supply_move(self):
+        # CI491 reported this same pre-layout allocation twice, then the one
+        # move missed when GTK placed the menu at (740, 640). No click followed.
+        control = dict(instance=506, visible=True, enabled=True, x=467, y=352, width=496, height=29)
+        for observed_at in (521897, 521924):
+            self.assertFalse(glossary_painted_geometry(control, observed_at, toolkit="gtk3"))
+
+    def control(self):
+        geometry = dict(instance=506, x=740, y=640, width=496, height=29, scale=1)
+        return {
+            **geometry,
+            "visible": True,
+            "enabled": True,
+            "paintObservation": dict(
+                ready=True,
+                mapGeneration=2,
+                paintedMapGeneration=2,
+                clockInstance=17,
+                paintedClockInstance=17,
+                mappedAtMonoMs=521880,
+                paintedAtMonoMs=521946,
+                frame=75,
+                drawFrame=75,
+                paintedFrame=75,
+                geometry=dict(geometry),
+            ),
+        }
+
+    def test_only_this_maps_completed_draw_supplies_the_new_menu_position(self):
+        control = self.control()
+        control["paintObservation"]["ready"] = False
+        self.assertFalse(glossary_painted_geometry(control, 521948, toolkit="gtk3"))
+        control["paintObservation"]["ready"] = True
+        self.assertTrue(glossary_painted_geometry(control, 521948, toolkit="gtk3"))
+        # A later unrelated frame does not require another draw of this control.
+        control["paintObservation"]["frame"] += 1
+        self.assertTrue(glossary_painted_geometry(control, 521970, toolkit="gtk3"))
+
+    def test_unmapped_replaced_clock_or_unpainted_relayout_cannot_authorize_move(self):
+        mutations = (
+            lambda c: c.update(visible=False),
+            lambda c: c.update(instance=507),
+            lambda c: c.update(x=467, y=352),
+            lambda c: c.update(width=500),
+            lambda c: c.update(scale=2),
+            lambda c: c["paintObservation"].update(mapGeneration=3),
+            lambda c: c["paintObservation"].update(clockInstance=18),
+            lambda c: c["paintObservation"].update(drawFrame=76),
+            lambda c: c["paintObservation"].update(frame=74),
+            lambda c: c["paintObservation"].update(mappedAtMonoMs=521947),
+            lambda c: c["paintObservation"].update(paintedAtMonoMs=521949),
+            lambda c: c["paintObservation"].pop("geometry"),
+        )
+        for mutate in mutations:
+            control = self.control()
+            mutate(control)
+            with self.subTest(control=control):
+                self.assertFalse(glossary_painted_geometry(control, 521948, toolkit="gtk3"))
+
+
 class GlossaryPaintGeometryTests(unittest.TestCase):
     def control(self):
         geometry = dict(

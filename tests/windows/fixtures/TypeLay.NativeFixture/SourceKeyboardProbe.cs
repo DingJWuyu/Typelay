@@ -169,10 +169,20 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
         sourceMessage = MessageResult(),
         events = _events.Take(_count).ToArray()
     };
+    internal bool TryClose(bool sourceQuiet)
+    {
+        // This is a test-owner lifecycle assertion, not native write authority.
+        // No installed source-message hook may detach on a guessed/expired grant.
+        if (_messageHook != 0 && !sourceQuiet)
+            return false;
+        _messageDetachmentAllowed = sourceQuiet;
+        Dispose();
+        return _disposed;
+    }
     public void Dispose()
     {
-        if (_disposed)
-            return;
+        if (_disposed || _messageHook != 0 && !_messageDetachmentAllowed)
+            return; // Program retains this instance/delegates until exact process exit.
         bool keyboard = _keyboardHook == 0 || UnhookWindowsHookEx(_keyboardHook);
         bool sent = _sentHook == 0 || UnhookWindowsHookEx(_sentHook);
         GC.KeepAlive(_keyboard);

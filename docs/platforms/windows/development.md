@@ -90,10 +90,10 @@ if ($LASTEXITCODE -ne 0) { throw '普通 source MSG 研究失败，保留原结�
 
 仅两个自有 stock Edit 场景，保留既有六项 owned 同步实验原覆盖：
 
-1. 同一个首 Tab 两次 `PM_NOREMOVE` 均不消耗 invoked/claim，再由 `PM_REMOVE` 执行一次普通 source 事务。native 返回后、原 GetMessage 返回前，fixture 的 managed hook 有界暂停1200ms；外部只读属性确认原泵尚未返回。原泵在 GetMessage 下一条语句记录实际返回 MSG，随后仍走原 IsDialogMessage/TranslateMessage/DispatchMessage。验证一次真实正文变化、原字段焦点、零导航/提交、随后同字段 repeat/up 消费及 Undo。
+1. 同一个首 Tab 两次 `PM_NOREMOVE` 均不消耗 invoked/claim，再由 `PM_REMOVE` 执行一次普通 source 事务。native 返回后、原 GetMessage 返回前，fixture 的 managed hook 有界暂停1200ms；外部只读属性确认原泵尚未返回。原泵在 GetMessage 下一条语句记录实际返回 MSG，随后仍走原 IsDialogMessage/TranslateMessage/DispatchMessage。验证一次真实正文变化、原字段焦点、零导航/提交。原泵返回后、尾键之前，同一 grant 的精确 Retire 必须仍非 Quiet，无 Quiet 授权的 fixture Close 必须拒绝且保留全部 hooks；随后由 native 消费同字段 repeat/up，原 Retire 才可 Quiet，最后核 Undo。fixture 仅观察原 MSG 与暂停，不代做尾键消费。
 2. 安装后真实修改源文，首 Tab 不被改写、零 claim 和正文替换，实际选区保持，原 dialog 自然转焦 B。portable API 边界另核拒绝不进入 SETSEL；真实 Windows 此行不声称观察到了每一次底层 API 调用。
 
-新两行的 GETMESSAGE delegate 与实际创建 SourceInstallation 的测试内 `NativeTransactions` 一律绑定 `AppContext.BaseDirectory/TypeLay.NativeInput.dll` 的同一绝对路径，不借独立 Broker 观察进程输出目录里的同名副本。fixture 在任何 grant 之前，从实际持有的 HMODULE 采一次完整路径；既有后置结果记录该路径/进程内 module base、安装结果及许可身份/原期限，后置断言路径与 owner 一致，不在许可窗口内查询或枚举模块。独立 Broker 的观察 hook 及原清理顺序保持；不能据路径对齐推称目标进程仅有一个模块/slot，也不能把后置 TargetChanged 唯一归因到 GETMESSAGE 内。实际路径已核一致；分流后的候选尚待真实 Windows 正例，不能声称机制通过。
+新两行的 GETMESSAGE delegate 与实际创建 SourceInstallation 的测试内 `NativeTransactions` 一律绑定 `AppContext.BaseDirectory/TypeLay.NativeInput.dll` 的同一绝对路径，不借独立 Broker 观察进程输出目录里的同名副本。fixture 在任何 grant 之前，从实际持有的 HMODULE 采一次完整路径；既有后置结果记录该路径/进程内 module base、安装结果及许可身份/原期限，后置断言路径与 owner 一致，不在许可窗口内查询或枚举模块。独立 Broker 的观察 hook 及原清理顺序保持；不能据路径对齐推称目标进程仅有一个模块/slot，也不能把后置 TargetChanged 唯一归因到 GETMESSAGE 内。实际路径已核一致；[CI491](https://github.com/DingJWuyu/Typelay/actions/runs/40044019278) 已通过原两行的首键 claim/写入、实际外层返回、Undo 和冲突拒绝，当时尾键仍由 fixture 消费。当前将同字段尾键移入 native 的增量另待 Windows 实跑，不沿用此前阳性冒充新生命周期通过。
 
 终态结果的 `NativeResponse` 仅在既有命令收到有效 Quiet ACK 后保留已经采样的 native status/raw reason，并在释放映射前读取现有 shared invoked 字；超时、错 ACK、仅进程退出或非 Quiet 结果保持 null。不增加接受过程内查询、消息或轮询，也不改变公开拒绝映射。`0x10000 | queue flags` 区分 sent-activation 的 pending-work 拒绝与普通 raw 15，queue flags 只是队列类型提示；invoked=1 只说明此 grant 的共享尝试位已消费，不证明 claim、正文执行或特定 module 的完成。多个 module 仍可回链写同一响应，raw 15 也不标识具体撤销事件；这份已确认终态 wire 快照不能当作唯一 GETMESSAGE 拒因的完整轨迹。
 
@@ -101,9 +101,11 @@ if ($LASTEXITCODE -ne 0) { throw '普通 source MSG 研究失败，保留原结�
 
 native 在调用一次 CallNextHookEx **之前**占住 source callback 寿命门，之后重核原 MSG 与同 grant。claim CAS 赢后立即原地置 `MSG.message=WM_NULL`，两者之间没有 OS 调用、回调、分配或日志，再进入首个 SETSEL；拒绝前不改 MSG，受理后出现拒绝或未知也不恢复/重注入原键。普通 source 的完整回执仍来自实际重验，MSG 路径不伪造 sent command ACK，退休由原 poll/retire 协议确认。NOREMOVE 不耗一次尝试，其他失败不以 repeat 重试。
 
-输入是既有受控 SendInput，不证明物理来源、严格软件注入拒绝、旧排队键历史或真实 composition。先 Next 再执行不能约束上游 hook 在本实现返回后改写或提前分发 MSG，结论仅限自有受控 hook 链。fixture 尾键资格独立锁存离焦，返回同 HWND 不能复活；此片不新增跨应用尾键矩阵。HIMC/HKL 与 exact-context 无组合观察均不授全局 Clear；不安装或切换 IME，不恢复已退役 TSF 全文路径。
+输入是既有受控 SendInput，不证明物理来源、严格软件注入拒绝、旧排队键历史或真实 composition。先 Next 再执行不能约束上游 hook 在本实现返回后改写或提前分发 MSG，结论仅限自有受控 hook 链。native 在 actual MSG claim 后、首 SETSEL 之前记录同按次尾键义务，sent-activation 不产生该义务。它绑定原字段、线程、root/cookie 与 scan/extended/context bits；原100ms期限只管首写，不解除已接受按次。尾键回调在 Next/IMM 后重核同一 MSG 和资格，匹配 repeat/up 才置 WM_NULL，up 结清义务。新首 Tab、错按次、busy 重入或未知 HIMC/HKL 单调封禁旧消费，未知不伪称离域或松键，义务仍保留；明确字段离焦/销毁、原寿命或已知输入 context/lifecycle 失效结束该原 scope 的义务，等值恢复不复活。此阶段只覆盖原 fixture 的同字段范围，不证明同源应用内换字段仍沿原按次的完整产品合同，也无实际跨应用证据。HIMC/HKL 与 exact-context 无组合观察均不授全局 Clear；不安装或切换 IME，不恢复已退役 TSF 全文路径。
 
-保持原100ms grant；sent-activation 的 pending-work 拒绝门不变，原 MSG 使用上述实际状态与一次消费条件。首 down 仍单独发送，确认后才发尾键和后置屏障，不增加输入、重试或续期。两行沿原30秒 owner/60秒单项上限，独立 CI 步骤复用退役 owned-TSF 的2分钟预算，Windows 总 job 仍75分钟，模型与其它步骤不变。`artifacts/source-message-acceptance/<唯一目录>/result.json`、runner.json/log 进入既有早期 source artifact 与末尾 artifact；runner 按实际退出码、两行完整性和清理区分成功观察、失败、缺失/重复及清理未知，`running`/空退出码仍是未完成。continue-on-error 仅使其它独立验收继续，不把研究失败改为通过。分流后的 Windows 两行尚须实际验收；sent pending 拒绝、MSG hint 不误拒及实际输入撤销/expiry/cookie/revoke 的对照当前仅覆盖 portable API 边界，不冒充 Windows 实测。私有两指针缺一的防御另由局部不变量断言核验，不伪称公开入口可构造该状态。
+精确 Quiet 之前不能卸 fixture 的任何必要 hook。Close 的显式参数仅声明研究 owner 已取得该 grant 的有效 Quiet，不是 native 写权限；无此声明时 Close 返回0且保留静态 probe/delegate/module，通用 Dispose/Program finally 也在任何 unhook 前旁路。未获 Quiet 的失败按原 owner 路线终止精确自有进程，再由既有持有进程句柄的退休路径释放映射/模块；结果另记 process-exit retirement，不能伪造 native Quiet 或把未卸 hook 记为 hooksClosed=true。
+
+保持原100ms grant；sent-activation 的 pending-work 拒绝门不变，原 MSG 使用上述实际状态与一次消费条件。首 down 仍单独发送，确认后才发尾键和后置屏障，不增加输入、重试或续期。两行沿原30秒 owner/60秒单项上限，独立 CI 步骤复用退役 owned-TSF 的2分钟预算，Windows 总 job 仍75分钟，模型与其它步骤不变。`artifacts/source-message-acceptance/<唯一目录>/result.json`、runner.json/log 进入既有早期 source artifact 与末尾 artifact；runner 按实际退出码、两行完整性和清理区分成功观察、失败、缺失/重复及清理未知，`running`/空退出码仍是未完成。continue-on-error 仅使其它独立验收继续，不把研究失败改为通过。尾键迁移后的 Windows 两行尚须实际验收；sent pending 拒绝、MSG hint 不误拒及实际输入撤销/expiry/cookie/revoke 的对照当前仅覆盖 portable API 边界，不冒充 Windows 实测。私有两指针缺一的防御另由局部不变量断言核验，不伪称公开入口可构造该状态。
 
 ## 自有标准 Edit 的既有 TSF context 准入
 

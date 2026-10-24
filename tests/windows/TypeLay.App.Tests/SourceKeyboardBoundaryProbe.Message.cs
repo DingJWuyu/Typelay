@@ -27,7 +27,7 @@ public sealed partial class SourceKeyboardBoundaryProbe
         ProductionForegroundWriteTests.Desktop? source = null;
         NativeTransactions? native = null;
         AcceptancePermit? permit = null;
-        NativeTransactions.SourceInstallationResult? installed = null, terminal = null;
+        NativeTransactions.SourceInstallationResult? installed = null, beforeTails = null, terminal = null, exitRetirement = null;
         string ownerLibrary = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "TypeLay.NativeInput.dll"));
         Guid generation = Guid.NewGuid();
         string status = "precondition_failed";
@@ -67,8 +67,16 @@ public sealed partial class SourceKeyboardBoundaryProbe
             }
             while (N.GetProp(source.Root, "TypeLay.Test.SourceMessage.Returned.v1") == 0)
                 await Task.Delay(1, source.Token);
-            // Do not prequeue tails/barrier to evade the ordinary pending-work
-            // refusal. This is one press; completion never renews its write grant.
+            if (mode == 11)
+            {
+                // Completion of the write is not completion of its native press.
+                // Seal the same grant without releasing its hook or mapped view.
+                beforeTails = native.RetireSourceAcceptance(generation, permit.Plan.Id);
+                Assert.True(beforeTails.Claimed);
+                Assert.False(beforeTails.Quiet);
+                Assert.Equal((nuint)0, N.Send(source.Root, 0x8082));
+            }
+            // One original press, with no renewed authorization or second write.
             inputs.FinishDown(source.Root, press, repeat: mode == 11);
             inputs.SendPair(source.Root, 0x86, 0);
             while (N.GetProp(source.Root, "TypeLay.Test.SourceBarrierUp.v1") != 1)
@@ -152,7 +160,8 @@ public sealed partial class SourceKeyboardBoundaryProbe
             {
                 try
                 {
-                    hooksClosed = N.Send(source.Root, 0x8082) == 1;
+                    if (terminal?.Quiet == true)
+                        hooksClosed = N.Send(source.Root, 0x8082, 1) == 1;
                 }
                 catch (Exception failure) { error += "\nHook cleanup: " + failure; }
                 try
@@ -161,6 +170,17 @@ public sealed partial class SourceKeyboardBoundaryProbe
                     processesExited = true;
                 }
                 catch (Exception failure) { error += "\nProcess cleanup: " + failure; }
+            }
+            if (processesExited && native is not null && permit is not null && terminal?.Quiet != true)
+            {
+                try
+                {
+                    // The existing held process handle, not a fabricated native
+                    // ACK, permits cleanup after the owned fixture's exact exit.
+                    exitRetirement = native.RetireSourceAcceptance(generation, permit.Plan.Id);
+                    native.Dispose();
+                }
+                catch (Exception failure) { error += "\nExited source cleanup: " + failure; }
             }
             if (error is not null || !hooksClosed || !processesExited || !inputsPaired || terminal?.Quiet != true)
                 status = "precondition_failed";
@@ -189,10 +209,12 @@ public sealed partial class SourceKeyboardBoundaryProbe
                     permit.InputEpoch,
                     permit.FocusEpoch
                 },
+                beforeTails,
                 terminal,
+                exitRetirement,
                 inputs = inputs.Records,
                 observations,
-                scope = "Controlled hook chain and synthetic input only; no strict source, real composition, old-key history or third-party acceptance proof."
+                scope = "Controlled hook chain and synthetic input; native tails cover the same field only, not same-application field changes. No cross-app, strict source, real composition or third-party acceptance proof."
             }, new JsonSerializerOptions { WriteIndented = true }), CancellationToken.None);
         }
         Assert.True(status != "precondition_failed", $"{mode}: {error}; results: {directory}");

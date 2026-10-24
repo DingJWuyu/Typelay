@@ -311,6 +311,152 @@ static void prepare_trigger_frame(GtkWidget *widget, gpointer data) {
 static void prepare_language_frame(GdkFrameClock *clock, GtkWidget *window) {
     prepare_trigger_frame(window, clock);
 }
+/* Glossary click preparation observes natural GTK3 drawing, not repeated
+ * allocation samples. Keep this independent of the language label contract. */
+typedef struct {
+    GdkFrameClock *clock;
+    gulong handler;
+    guint map_generation, drawn_generation, painted_generation, painted_clock;
+    gint64 mapped_at, drawn_frame, painted_frame, painted_at;
+    JsonNode *drawn_geometry, *painted_geometry;
+} GlossaryPaint;
+static JsonNode *glossary_control_geometry(GtkWidget *widget) {
+    gint x, y;
+    if (!gtk_widget_get_mapped(widget)
+        || !gtk_widget_translate_coordinates(widget, report_window, 0, 0, &x, &y)) return NULL;
+    JsonObject *geometry = json_object_new();
+    json_object_set_int_member(geometry, "instance", language_instance(G_OBJECT(widget)));
+    json_object_set_int_member(geometry, "scale", gtk_widget_get_scale_factor(widget));
+    json_object_set_int_member(geometry, "x", x);
+    json_object_set_int_member(geometry, "y", y);
+    json_object_set_int_member(geometry, "width", gtk_widget_get_allocated_width(widget));
+    json_object_set_int_member(geometry, "height", gtk_widget_get_allocated_height(widget));
+    JsonNode *node = json_node_new(JSON_NODE_OBJECT);
+    json_node_take_object(node, geometry);
+    return node;
+}
+static void glossary_paint_clear(GlossaryPaint *paint) {
+    if (paint->clock && paint->handler && g_signal_handler_is_connected(paint->clock, paint->handler))
+        g_signal_handler_disconnect(paint->clock, paint->handler);
+    paint->handler = 0;
+    g_clear_object(&paint->clock);
+    g_clear_pointer(&paint->drawn_geometry, json_node_unref);
+    g_clear_pointer(&paint->painted_geometry, json_node_unref);
+    paint->drawn_frame = paint->painted_frame = -1;
+    paint->painted_at = 0;
+}
+static void glossary_paint_free(gpointer data) {
+    GlossaryPaint *paint = data;
+    glossary_paint_clear(paint);
+    g_free(paint);
+}
+static gboolean glossary_control_drawn(GtkWidget *widget, cairo_t *cr, gpointer unused) {
+    (void)cr; (void)unused;
+    GlossaryPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-glossary-paint");
+    if (paint->clock && paint->clock == gtk_widget_get_frame_clock(widget)
+        && gtk_widget_get_mapped(widget)) {
+        g_clear_pointer(&paint->drawn_geometry, json_node_unref);
+        paint->drawn_geometry = glossary_control_geometry(widget);
+        paint->drawn_frame = gdk_frame_clock_get_frame_counter(paint->clock);
+        paint->drawn_generation = paint->map_generation;
+    }
+    return FALSE;
+}
+static void glossary_frame_finished(GdkFrameClock *clock, GtkWidget *widget) {
+    GlossaryPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-glossary-paint");
+    if (paint->clock != clock || gtk_widget_get_frame_clock(widget) != clock
+        || paint->drawn_frame != gdk_frame_clock_get_frame_counter(clock)
+        || paint->drawn_generation != paint->map_generation || !paint->drawn_geometry) return;
+    JsonNode *geometry = glossary_control_geometry(widget);
+    if (geometry && json_node_equal(geometry, paint->drawn_geometry)) {
+        g_clear_pointer(&paint->painted_geometry, json_node_unref);
+        paint->painted_geometry = json_node_copy(geometry);
+        paint->painted_generation = paint->map_generation;
+        paint->painted_clock = language_instance(G_OBJECT(clock));
+        paint->painted_frame = paint->drawn_frame;
+        paint->painted_at = g_get_monotonic_time() / 1000;
+    }
+    if (geometry) json_node_unref(geometry);
+}
+static void glossary_paint_bind(GtkWidget *widget) {
+    GlossaryPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-glossary-paint");
+    GdkFrameClock *clock = gtk_widget_get_frame_clock(widget);
+    if (paint->clock == clock) return;
+    glossary_paint_clear(paint);
+    if (clock) {
+        paint->clock = g_object_ref(clock);
+        paint->handler = g_signal_connect_object(clock, "after-paint",
+            G_CALLBACK(glossary_frame_finished), widget, G_CONNECT_AFTER);
+    }
+}
+static void glossary_control_mapped(GtkWidget *widget, gpointer unused) {
+    (void)unused;
+    GlossaryPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-glossary-paint");
+    glossary_paint_clear(paint);
+    paint->map_generation++;
+    paint->mapped_at = g_get_monotonic_time() / 1000;
+    glossary_paint_bind(widget);
+}
+static void glossary_control_unmapped(GtkWidget *widget, gpointer unused) {
+    (void)unused;
+    glossary_paint_clear(g_object_get_data(G_OBJECT(widget), "fixture-glossary-paint"));
+}
+static GlossaryPaint *watch_glossary_paint(GtkWidget *widget) {
+    GlossaryPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-glossary-paint");
+    if (!paint) {
+        paint = g_new0(GlossaryPaint, 1);
+        g_object_set_data_full(G_OBJECT(widget), "fixture-glossary-paint", paint, glossary_paint_free);
+        g_signal_connect(widget, "map", G_CALLBACK(glossary_control_mapped), NULL);
+        g_signal_connect(widget, "unmap", G_CALLBACK(glossary_control_unmapped), NULL);
+        g_signal_connect_after(widget, "draw", G_CALLBACK(glossary_control_drawn), NULL);
+        if (gtk_widget_get_mapped(widget)) glossary_control_mapped(widget, NULL);
+    }
+    if (gtk_widget_get_mapped(widget)) glossary_paint_bind(widget);
+    return paint;
+}
+static void prepare_glossary_control(GtkWidget *widget, gpointer unused) {
+    (void)unused;
+    const char *name = gtk_widget_get_name(widget);
+    if (language_control(name) || g_str_has_prefix(name, "typelay-glossary-"))
+        watch_glossary_paint(widget);
+    if (GTK_IS_CONTAINER(widget))
+        gtk_container_forall(GTK_CONTAINER(widget), prepare_glossary_control, NULL);
+}
+static void prepare_glossary_frame(GdkFrameClock *clock, GtkWidget *window) {
+    (void)clock;
+    prepare_glossary_control(window, NULL);
+}
+static void report_glossary_paint(JsonBuilder *builder, GtkWidget *widget) {
+    GlossaryPaint *paint = watch_glossary_paint(widget);
+    JsonNode *geometry = glossary_control_geometry(widget);
+    GdkFrameClock *clock = gtk_widget_get_frame_clock(widget);
+    gint64 frame = clock ? gdk_frame_clock_get_frame_counter(clock) : -1;
+    gboolean ready = geometry && paint->painted_geometry && paint->clock == clock
+        && paint->painted_generation == paint->map_generation
+        && paint->painted_clock == language_instance(clock ? G_OBJECT(clock) : NULL)
+        && paint->drawn_frame == paint->painted_frame && paint->painted_frame <= frame
+        && paint->painted_at >= paint->mapped_at && paint->painted_at > 0
+        && json_node_equal(geometry, paint->painted_geometry);
+    json_builder_set_member_name(builder, "scale");
+    json_builder_add_int_value(builder, gtk_widget_get_scale_factor(widget));
+    json_builder_set_member_name(builder, "paintObservation");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "ready"); json_builder_add_boolean_value(builder, ready);
+    json_builder_set_member_name(builder, "mapGeneration"); json_builder_add_int_value(builder, paint->map_generation);
+    json_builder_set_member_name(builder, "paintedMapGeneration"); json_builder_add_int_value(builder, paint->painted_generation);
+    json_builder_set_member_name(builder, "clockInstance"); json_builder_add_int_value(builder, language_instance(clock ? G_OBJECT(clock) : NULL));
+    json_builder_set_member_name(builder, "paintedClockInstance"); json_builder_add_int_value(builder, paint->painted_clock);
+    json_builder_set_member_name(builder, "mappedAtMonoMs"); json_builder_add_int_value(builder, paint->mapped_at);
+    json_builder_set_member_name(builder, "paintedAtMonoMs"); json_builder_add_int_value(builder, paint->painted_at);
+    json_builder_set_member_name(builder, "frame"); json_builder_add_int_value(builder, frame);
+    json_builder_set_member_name(builder, "drawFrame"); json_builder_add_int_value(builder, paint->drawn_frame);
+    json_builder_set_member_name(builder, "paintedFrame"); json_builder_add_int_value(builder, paint->painted_frame);
+    json_builder_set_member_name(builder, "geometry");
+    if (paint->painted_geometry) json_builder_add_value(builder, json_node_copy(paint->painted_geometry));
+    else json_builder_add_null_value(builder);
+    json_builder_end_object(builder);
+    if (geometry) json_node_unref(geometry);
+}
 /* GtkEntry only prelights its icons, not its text area. Observe the real
  * registered input window crossing instead of treating a CSS flag as hover.
  * Returning FALSE leaves the production event/focus handling untouched. */
@@ -445,6 +591,9 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
             json_builder_set_member_name(builder, "width"); json_builder_add_int_value(builder, gtk_widget_get_allocated_width(widget));
             json_builder_set_member_name(builder, "height"); json_builder_add_int_value(builder, gtk_widget_get_allocated_height(widget));
         }
+        if (g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND")
+            && (language_control(name) || g_str_has_prefix(name, "typelay-glossary-")))
+            report_glossary_paint(builder, widget);
         if (GTK_IS_MENU_BUTTON(widget)) {
             GtkPopover *popup = gtk_menu_button_get_popover(GTK_MENU_BUTTON(widget));
             GtkWidget *scroll = popup ? gtk_bin_get_child(GTK_BIN(popup)) : NULL;
@@ -769,6 +918,11 @@ int main(int argc, char **argv) {
             GdkFrameClock *clock = gtk_widget_get_frame_clock(window);
             if (clock) g_signal_connect_object(clock, "before-paint",
                 G_CALLBACK(prepare_language_frame), window, 0);
+        }
+        if (g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND")) {
+            GdkFrameClock *clock = gtk_widget_get_frame_clock(window);
+            if (clock) g_signal_connect_object(clock, "before-paint",
+                G_CALLBACK(prepare_glossary_frame), window, 0);
         }
         report_source_id = g_timeout_add(25, report_state, NULL);
     }

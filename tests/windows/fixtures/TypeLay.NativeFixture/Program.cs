@@ -576,7 +576,8 @@ internal static class Program
         {
             try
             {
-                closingProbe.Dispose();
+                if (!closingProbe.TryClose(wParam == 1))
+                    return 0;
                 _sourceKeyboardProbe = null;
                 return 1;
             }
