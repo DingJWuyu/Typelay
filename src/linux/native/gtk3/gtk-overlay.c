@@ -2075,22 +2075,19 @@ static gboolean retained_language_preview(Target *target, JsonObject *data) {
         JsonObject *old_view = tl_copy(previous), *new_view = tl_copy(value);
         JsonObject *old_token = tl_object(tl_object(old_view, "viewContext"), "token");
         JsonObject *new_token = tl_object(tl_object(new_view, "viewContext"), "token");
-        current = old_token && new_token && tl_integer(old_token, "revision", -1) == overlay.revision
-            && tl_integer(new_token, "revision", -1) == tl_integer(data, "revision", -2);
+        JsonNode *old_status = json_object_get_member(old_view, "status");
+        JsonNode *new_status = json_object_get_member(new_view, "status");
+        /* Host session identity is independent of the transport repaint serial.
+         * Keep the complete token, including its revision and unknown fields. */
+        current = old_token && new_token && tl_integer(old_token, "revision", -1) >= 0
+            && tl_integer(new_token, "revision", -1) >= 0 && json_object_equal(old_token, new_token)
+            && (!old_status || JSON_NODE_HOLDS_NULL(old_status) || tl_string(old_view, "status"))
+            && (!new_status || JSON_NODE_HOLDS_NULL(new_status) || tl_string(new_view, "status"));
         if (current) {
-            /* tl_copy retains nested objects. Copy each edited level so neither
-             * stored authority/view tokens nor the incoming request are changed. */
-            JsonObject *old_context = tl_copy(tl_object(old_view, "viewContext"));
-            JsonObject *new_context = tl_copy(tl_object(new_view, "viewContext"));
-            old_token = tl_copy(old_token); new_token = tl_copy(new_token);
-            json_object_remove_member(old_token, "revision");
-            json_object_remove_member(new_token, "revision");
-            json_object_set_object_member(old_context, "token", old_token);
-            json_object_set_object_member(new_context, "token", new_token);
-            json_object_set_object_member(old_view, "viewContext", old_context);
-            json_object_set_object_member(new_view, "viewContext", new_context);
+            /* Only language choices and their read-only feedback may change.
+             * Body, permissions, full context and every other field stay equal. */
             const char *menu_fields[] = {"sourceLanguage", "targetLanguage", "sourceLanguageLabel",
-                "targetLanguageLabel", "languageChoices"};
+                "targetLanguageLabel", "languageChoices", "status"};
             for (guint index = 0; index < G_N_ELEMENTS(menu_fields); index++) {
                 json_object_remove_member(old_view, menu_fields[index]);
                 json_object_remove_member(new_view, menu_fields[index]);

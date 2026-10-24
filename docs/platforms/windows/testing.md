@@ -85,6 +85,8 @@ raw foreground 与字段 keyboard focus 是不同观察。[Windows 的激活模�
 
 同一 portable 程序另经新增 `TypeLaySourceGetMessageProc` 公开入口检查：在首次 SETSEL 的系统 API 替身处，原调用者 MSG 已为 WM_NULL 且同 grant 已 claim；两次 NOREMOVE 不耗 invoked；下游嵌套检索不能抢同 grant，嵌套 revoke/install 不得提前 Quiet；下游或末次控件调用改变 MSG、withdrawal 赢、过期/寿命/正文/选区失配均不被本实现改写或重试；claim 后输入身份或选区变化拒绝正文仍保留消费承诺。sent-activation 对原 mask 各类 pending 提示仍零 claim/写入；retrieved-MSG 不读 queue hints，提示本身不替代实际状态重验。同一源的非接受键被实际 REMOVE 后撤销旧 grant，NOREMOVE/负 hook code 不撤权、不消费，恢复等值不复活。同一入口的尾键回归另核首 claim 后立即欠债、post-claim Rejected/Unknown 仍欠债、过期不解除同按次、tails 前 Retire 非 Quiet、repeat/up 后 Quiet；NOREMOVE/负 code/别字段不消费，busy/新首键/错 scan/未知输入 context 封旧消费而不猜清债，已知离域后恢复不复活。sent 激活正例不欠尾债。实际两行保留完整首键/暂停/Undo/冲突断言，只把尾键消费由 fixture 移入 native，新增提前 Retire 与无授权 Close 的拒绝对照；这不是跨字段/跨应用实际验收。两 admission 指针缺一的写前拒绝仅是局部不变量断言，不声称公开 hook 可构造该状态。系统 API 替身不证明 Windows 检索或完整 hook 链行为。真实两行入口与证据边界见[普通 source MSG 接线](development.md#普通-source-事务与同一-msg-的受控接线)，旧 owned 六行保持不变。
 
+独立来源观察只通过 [显式 F8 入口](development.md#同一检索处的独立来源分类观察) 运行，不参与原两行接受或默认 suite 的执行选择。必须以实际源 WH_GETMESSAGE 与原 GetMessage 的同次完整 MSG 配对、原 up after-dispatch 和原样正文/选区/焦点为数据完整性判据；两个来源点独立分类，不要求它们返回相同 origin，也不把一处阳性外推另一处。无物理、UIAccess 或 system 输入正例，无写入/消费/信任门变更；本地无 Windows 环境时明确未执行，不能用合成来源枚举替身证明 API 可绑定。
+
 `OverlayRenderingTests` 同时覆盖默认 Tab/Esc 与无修饰 F1-F24 的编辑返回、退出、IME 事件、修饰键和旧键释放。第一次接受键仅请求返回原输入框；共享控制器仍须重新观察、取得许可并等待第二次接受。浮层动作携带显示时的 target、配置代次和会话 revision，迟到按钮与菜单不能借更新后的视图取得授权。缺少目标确认时可保留只读预览，但不得编辑或授予接受许可。
 
 ```powershell

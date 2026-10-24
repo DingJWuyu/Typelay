@@ -108,6 +108,7 @@ class Gtk3GlossaryPaintGeometryTests(unittest.TestCase):
                 mapGeneration=2,
                 paintedMapGeneration=2,
                 clockInstance=17,
+                drawClockInstance=17,
                 paintedClockInstance=17,
                 mappedAtMonoMs=521880,
                 paintedAtMonoMs=521946,
@@ -117,6 +118,26 @@ class Gtk3GlossaryPaintGeometryTests(unittest.TestCase):
                 geometry=dict(geometry),
             ),
         }
+
+    def test_draw_on_another_window_clock_cannot_complete_the_widget_toplevel_frame(self):
+        control = self.control()
+        # GTK3 Wayland popovers draw on a subsurface clock, independently of
+        # the GtkWidget toplevel animation clock used by the old observer.
+        control["paintObservation"]["drawClockInstance"] = 23
+        self.assertFalse(glossary_painted_geometry(control, 521948, toolkit="gtk3"))
+
+    def test_completed_subsurface_draw_does_not_need_the_widget_toplevel_clock(self):
+        control = self.control()
+        control["paintObservation"].update(
+            clockInstance=23,
+            drawClockInstance=23,
+            paintedClockInstance=23,
+            widgetClockInstance=17,
+            frame=2,
+            drawFrame=2,
+            paintedFrame=2,
+        )
+        self.assertTrue(glossary_painted_geometry(control, 521948, toolkit="gtk3"))
 
     def test_only_this_maps_completed_draw_supplies_the_new_menu_position(self):
         control = self.control()
@@ -137,6 +158,8 @@ class Gtk3GlossaryPaintGeometryTests(unittest.TestCase):
             lambda c: c.update(scale=2),
             lambda c: c["paintObservation"].update(mapGeneration=3),
             lambda c: c["paintObservation"].update(clockInstance=18),
+            lambda c: c["paintObservation"].update(drawClockInstance=0),
+            lambda c: c["paintObservation"].pop("drawClockInstance"),
             lambda c: c["paintObservation"].update(drawFrame=76),
             lambda c: c["paintObservation"].update(frame=74),
             lambda c: c["paintObservation"].update(mappedAtMonoMs=521947),

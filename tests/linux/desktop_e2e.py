@@ -2119,6 +2119,8 @@ def run(arguments):
                         )
                         refusals = [
                             "body",
+                            "host-token",
+                            "state",
                             "authority",
                             "permissions",
                             "external-focus",

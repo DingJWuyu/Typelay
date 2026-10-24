@@ -316,10 +316,17 @@ static void prepare_language_frame(GdkFrameClock *clock, GtkWidget *window) {
 typedef struct {
     GdkFrameClock *clock;
     gulong handler;
-    guint map_generation, drawn_generation, painted_generation, painted_clock;
+    guint map_generation, drawn_generation, painted_generation, drawn_clock, painted_clock;
     gint64 mapped_at, drawn_frame, painted_frame, painted_at;
     JsonNode *drawn_geometry, *painted_geometry;
 } GlossaryPaint;
+/* gtk_widget_get_frame_clock() is the GtkWidget toplevel animation clock.
+ * A Wayland popover's GdkWindow is a separate subsurface with its own paint
+ * clock. Bind to that drawable; never pair its draw with the main window. */
+static GdkFrameClock *glossary_control_clock(GtkWidget *widget) {
+    GdkWindow *window = gtk_widget_get_window(widget);
+    return window && !gdk_window_is_destroyed(window) ? gdk_window_get_frame_clock(window) : NULL;
+}
 static JsonNode *glossary_control_geometry(GtkWidget *widget) {
     gint x, y;
     if (!gtk_widget_get_mapped(widget)
@@ -344,6 +351,7 @@ static void glossary_paint_clear(GlossaryPaint *paint) {
     g_clear_pointer(&paint->painted_geometry, json_node_unref);
     paint->drawn_frame = paint->painted_frame = -1;
     paint->painted_at = 0;
+    paint->drawn_clock = 0;
 }
 static void glossary_paint_free(gpointer data) {
     GlossaryPaint *paint = data;
@@ -351,11 +359,18 @@ static void glossary_paint_free(gpointer data) {
     g_free(paint);
 }
 static gboolean glossary_control_drawn(GtkWidget *widget, cairo_t *cr, gpointer unused) {
-    (void)cr; (void)unused;
+    (void)unused;
     GlossaryPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-glossary-paint");
-    if (paint->clock && paint->clock == gtk_widget_get_frame_clock(widget)
-        && gtk_widget_get_mapped(widget)) {
-        g_clear_pointer(&paint->drawn_geometry, json_node_unref);
+    GdkDrawingContext *context = gdk_cairo_get_drawing_context(cr);
+    GdkWindow *draw_window = context ? gdk_drawing_context_get_window(context) : NULL;
+    GdkFrameClock *clock = draw_window && !gdk_window_is_destroyed(draw_window)
+        ? gdk_window_get_frame_clock(draw_window) : NULL;
+    g_clear_pointer(&paint->drawn_geometry, json_node_unref);
+    paint->drawn_frame = -1;
+    paint->drawn_clock = language_instance(clock ? G_OBJECT(clock) : NULL);
+    if (clock && paint->clock == clock && clock == glossary_control_clock(widget)
+        && gtk_widget_get_mapped(widget)
+        && gtk_cairo_should_draw_window(cr, gtk_widget_get_window(widget))) {
         paint->drawn_geometry = glossary_control_geometry(widget);
         paint->drawn_frame = gdk_frame_clock_get_frame_counter(paint->clock);
         paint->drawn_generation = paint->map_generation;
@@ -364,9 +379,10 @@ static gboolean glossary_control_drawn(GtkWidget *widget, cairo_t *cr, gpointer 
 }
 static void glossary_frame_finished(GdkFrameClock *clock, GtkWidget *widget) {
     GlossaryPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-glossary-paint");
-    if (paint->clock != clock || gtk_widget_get_frame_clock(widget) != clock
+    if (paint->clock != clock || glossary_control_clock(widget) != clock
         || paint->drawn_frame != gdk_frame_clock_get_frame_counter(clock)
-        || paint->drawn_generation != paint->map_generation || !paint->drawn_geometry) return;
+        || paint->drawn_generation != paint->map_generation
+        || paint->drawn_clock != language_instance(G_OBJECT(clock)) || !paint->drawn_geometry) return;
     JsonNode *geometry = glossary_control_geometry(widget);
     if (geometry && json_node_equal(geometry, paint->drawn_geometry)) {
         g_clear_pointer(&paint->painted_geometry, json_node_unref);
@@ -380,7 +396,7 @@ static void glossary_frame_finished(GdkFrameClock *clock, GtkWidget *widget) {
 }
 static void glossary_paint_bind(GtkWidget *widget) {
     GlossaryPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-glossary-paint");
-    GdkFrameClock *clock = gtk_widget_get_frame_clock(widget);
+    GdkFrameClock *clock = glossary_control_clock(widget);
     if (paint->clock == clock) return;
     glossary_paint_clear(paint);
     if (clock) {
@@ -429,11 +445,12 @@ static void prepare_glossary_frame(GdkFrameClock *clock, GtkWidget *window) {
 static void report_glossary_paint(JsonBuilder *builder, GtkWidget *widget) {
     GlossaryPaint *paint = watch_glossary_paint(widget);
     JsonNode *geometry = glossary_control_geometry(widget);
-    GdkFrameClock *clock = gtk_widget_get_frame_clock(widget);
+    GdkFrameClock *clock = glossary_control_clock(widget);
     gint64 frame = clock ? gdk_frame_clock_get_frame_counter(clock) : -1;
     gboolean ready = geometry && paint->painted_geometry && paint->clock == clock
         && paint->painted_generation == paint->map_generation
         && paint->painted_clock == language_instance(clock ? G_OBJECT(clock) : NULL)
+        && paint->drawn_clock == paint->painted_clock
         && paint->drawn_frame == paint->painted_frame && paint->painted_frame <= frame
         && paint->painted_at >= paint->mapped_at && paint->painted_at > 0
         && json_node_equal(geometry, paint->painted_geometry);
@@ -446,6 +463,10 @@ static void report_glossary_paint(JsonBuilder *builder, GtkWidget *widget) {
     json_builder_set_member_name(builder, "paintedMapGeneration"); json_builder_add_int_value(builder, paint->painted_generation);
     json_builder_set_member_name(builder, "clockInstance"); json_builder_add_int_value(builder, language_instance(clock ? G_OBJECT(clock) : NULL));
     json_builder_set_member_name(builder, "paintedClockInstance"); json_builder_add_int_value(builder, paint->painted_clock);
+    json_builder_set_member_name(builder, "drawClockInstance"); json_builder_add_int_value(builder, paint->drawn_clock);
+    GdkFrameClock *widget_clock = gtk_widget_get_frame_clock(widget);
+    json_builder_set_member_name(builder, "widgetClockInstance");
+    json_builder_add_int_value(builder, language_instance(widget_clock ? G_OBJECT(widget_clock) : NULL));
     json_builder_set_member_name(builder, "mappedAtMonoMs"); json_builder_add_int_value(builder, paint->mapped_at);
     json_builder_set_member_name(builder, "paintedAtMonoMs"); json_builder_add_int_value(builder, paint->painted_at);
     json_builder_set_member_name(builder, "frame"); json_builder_add_int_value(builder, frame);

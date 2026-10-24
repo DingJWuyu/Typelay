@@ -2281,6 +2281,21 @@ class BrowserContract(unittest.TestCase):
           window.fixtureMotionDone = false;
           window.fixtureMotionStartedMs = null;
           window.fixtureMotionClick = null;
+          // Read only after a failed wait, retaining the observed control's
+          // identity even if the live overlay was removed or replaced.
+          window.fixtureMotionInspection = () => {
+            const liveHost = document.querySelector('html > div');
+            return {ms: performance.now(),
+              visibility: document.visibilityState, documentFocused: document.hasFocus(),
+              hostConnected: host.isConnected, editorConnected: editor.isConnected,
+              expandConnected: expandControl?.isConnected ?? null,
+              liveHostPresent: !!liveHost, sameHost: liveHost === host,
+              editorFocused: panel.getRootNode().activeElement === editor,
+              sourceFocused: document.activeElement?.id === 'source',
+              host: host.getBoundingClientRect().toJSON(),
+              editor: editor.getBoundingClientRect().toJSON(),
+              expand: expandControl?.getBoundingClientRect().toJSON() ?? null};
+          };
           function startObservation() {
             const start = performance.now();
             window.fixtureMotionStartedMs = start;
@@ -3145,7 +3160,44 @@ class BrowserContract(unittest.TestCase):
             )
             self.observe_overlay_frames(start_on_click=True)
             self.click_overlay_control("展开")
-            frames = self.motion_frames()
+            try:
+                frames = self.motion_frames()
+            except Exception as error:
+                # A failed wait used to lose the click/start/partial-frame
+                # evidence. Save it without retrying input or hiding the error.
+                try:
+                    diagnostics = self.page.evaluate(
+                        """draft => {
+                          const frames = window.fixtureMotionFrames;
+                          const recorded = Array.isArray(frames) ? frames : [];
+                          const bounded = recorded.length <= 120 ? recorded
+                            : [...recorded.slice(0, 119), recorded.at(-1)];
+                          return {...window.fixtureDraftResize,
+                            failure: 'motion-frames-wait',
+                            done: window.fixtureMotionDone ?? null,
+                            click: window.fixtureMotionClick ?? null,
+                            sampleStartedMs: window.fixtureMotionStartedMs ?? null,
+                            frameCount: Array.isArray(frames) ? frames.length : null,
+                            atFailure: window.fixtureMotionInspection?.() ?? null,
+                            frames: bounded.map(frame => ({ms: frame.ms,
+                              connected: frame.connected, host: frame.host,
+                              editor: frame.editor, exit: frame.exit,
+                              start: frame.start, end: frame.end,
+                              sourceFocused: frame.sourceFocused,
+                              draftPreserved: frame.text === draft}))};
+                        }""",
+                        human_draft,
+                    )
+                    output = ROOT / "artifacts/linux/browser-native/overlay/motion"
+                    output.mkdir(parents=True, exist_ok=True)
+                    (output / "editor-draft-resize.json").write_text(
+                        json.dumps(diagnostics, indent=2), encoding="utf-8"
+                    )
+                except Exception as diagnostic_error:
+                    error.add_note(
+                        "Editor motion diagnostics unavailable: " + type(diagnostic_error).__name__
+                    )
+                raise
             diagnostics = self.page.evaluate("fixtureDraftResize")
             diagnostics["sampleStartedMs"] = self.page.evaluate("fixtureMotionStartedMs")
             diagnostics["frameCount"] = len(frames)

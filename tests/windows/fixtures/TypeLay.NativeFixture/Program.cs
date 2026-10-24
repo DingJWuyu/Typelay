@@ -83,6 +83,8 @@ internal static class Program
             _sourceKeyboardProbeEnabled = true;
             _sourceMessagePath = args[2];
         }
+        _sourceOriginProbeEnabled = args.Length == 2 && args[0] == "--stock-controls" && args[1] == "--source-origin-probe";
+        _sourceKeyboardProbeEnabled |= _sourceOriginProbeEnabled;
         bool stockControls = _sourceKeyboardProbeEnabled || ownedControls || returnFocusCase || sourceClaimCase || (args.Length == 1 && args[0] == "--stock-controls");
         if (args.Length != 0 && !hookTest && !stockControls)
             return 2;
@@ -96,7 +98,7 @@ internal static class Program
     private static bool _tsfSourceKeyboardRead;
     private static TsfContextAdmission.KeyProbe? _tsfKeyProbe;
     private static bool _tsfKeyResultWritten, _tsfCloseRequested;
-    private static bool _sourceKeyboardProbeEnabled;
+    private static bool _sourceKeyboardProbeEnabled, _sourceOriginProbeEnabled;
     private static SourceKeyboardProbe? _sourceKeyboardProbe;
     private static string? _ownedPath;
     private static string? _retirementProbePath;
@@ -232,7 +234,7 @@ internal static class Program
         _replayField = (nint)fields[0].Hwnd;
         _secondField = (nint)fields[1].Hwnd;
         if (_sourceKeyboardProbeEnabled)
-            _sourceKeyboardProbe = new(_root, _replayField, _sourceSynchronousPath, _sourceMessagePath);
+            _sourceKeyboardProbe = new(_root, _replayField, _sourceSynchronousPath, _sourceMessagePath, _sourceOriginProbeEnabled);
         if (_sourceClaimProbe is not null)
             WinEventStackProbe.LoadSourceClaim(_sourceClaimProbe);
         if (!hookTest)

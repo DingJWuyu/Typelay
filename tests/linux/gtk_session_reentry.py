@@ -1,5 +1,6 @@
 """Real GTK callback reentry through the public native socket, without a model."""
 
+import asyncio
 import hashlib
 import json
 import math
@@ -11,6 +12,8 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from geometry import anchor_geometry
 from native_e2e import Native, glossary_painted_geometry, key, plan, snapshot
@@ -174,6 +177,22 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
     session.mkdir(mode=0o700)
     socket_path = session / "native.sock"
     assert len(os.fsencode(socket_path)) < 108
+    if stage == "language-options":
+        with tempfile.TemporaryDirectory(prefix="tl-language-dto-") as directory:
+            run_case(
+                command,
+                environment,
+                output,
+                send_accept,
+                Path(directory),
+                "language-options-dto",
+                False,
+                nested,
+            )
+        run_owned_language_options(
+            command, child_environment, socket_path, state_path, output, nested
+        )
+        return
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(str(socket_path))
         socket_path.chmod(0o600)
@@ -286,21 +305,9 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                     )
                     print(f"GTK read-only language preview: {stage} refused", flush=True)
                     return
-                if stage == "language-options":
-                    check_language_options(
-                        client,
-                        source,
-                        generation,
-                        state,
-                        initial,
-                        nested,
-                        dimensions,
-                        click_evidence,
-                    )
-                    print(
-                        "GTK language options: real menus and Apply checked without a model",
-                        flush=True,
-                    )
+                if stage == "language-options-dto":
+                    check_language_dto(client, source, generation, state, initial, click_evidence)
+                    print("GTK language DTO labels and invalid catalogs checked", flush=True)
                     return
                 if stage == "preview-colors":
                     check_preview_colors(client, source, generation, state, initial, click_evidence)
@@ -561,10 +568,18 @@ def render_preview(
     editor_owns_text=None,
     language_view=None,
     expires_at=None,
+    token_revision=None,
+    status="fixture preview",
 ):
+    token_revision = revision if token_revision is None else token_revision
     expires = now_ms() + 800 if expires_at is None else expires_at
     if evidence is not None:
-        evidence.update(revision=revision, expiresAtMs=expires, renderStartedAtMs=now_ms())
+        evidence.update(
+            revision=revision,
+            tokenRevision=token_revision,
+            expiresAtMs=expires,
+            renderStartedAtMs=now_ms(),
+        )
     result = client.call(
         "overlay-render",
         {
@@ -578,7 +593,7 @@ def render_preview(
                 "state": view_state,
                 "editable": can_edit,
                 "text": text,
-                "status": "fixture preview",
+                "status": status,
                 "sourceLanguage": "en",
                 "targetLanguage": "zh",
                 **(language_view or {}),
@@ -603,7 +618,7 @@ def render_preview(
                             "lifetime": client.hello["lifetime"],
                         },
                         "commandGeneration": generation,
-                        "revision": revision,
+                        "revision": token_revision,
                     },
                     "bindings": {"accept": "F1", "exit": "F24"},
                     "canEdit": can_edit,
@@ -768,7 +783,9 @@ def check_language_retention_refusal(
             and actual
         )
 
-    initial_render = {}
+    # Host token identity belongs to the session, not the transport repaint.
+    token_revision, revision, status = 9, 2, "fixture preview"
+    initial_render = evidence["retentionInitial"] = {}
     assert render_preview(
         client,
         source,
@@ -777,6 +794,7 @@ def check_language_retention_refusal(
         "fixture exit",
         language_view=languages,
         evidence=initial_render,
+        token_revision=token_revision,
     )["visible"]
     # Mapping precedes native allocation. Use the existing waits to require a
     # fresh, in-bounds click target, then click that exact observed snapshot once.
@@ -797,8 +815,8 @@ def check_language_retention_refusal(
     assert now_ms() <= initial_render["expiresAtMs"], "initial language lease expired before click"
     click(control, actual=shown)
     wait_for(detached_menu, "source did not detach under exact language control focus")
-    # The old implementation fails here. This must not alter source IME authority.
-    retained_render = {}
+    # Repaint transport 2 retains host session 9, without changing source IME authority.
+    retained_render = evidence["retentionRenewal"] = {}
     assert render_preview(
         client,
         source,
@@ -807,8 +825,29 @@ def check_language_retention_refusal(
         "fixture exit",
         language_view=languages,
         evidence=retained_render,
+        token_revision=token_revision,
     )["visible"]
     wait_for(detached_menu, "read-only renewal changed source/menu focus")
+    if stage == "language-retention-body":
+        # A known host save failure changes only its read-only feedback label.
+        # The same actual detached menu/source must survive, without capture or input.
+        before = controls()[control]["instance"]
+        status = "语言设置未保存，请在设置中检查语言方向或保存权限。"
+        revision += 1
+        assert render_preview(
+            client,
+            source,
+            generation,
+            revision,
+            "fixture exit",
+            language_view=languages,
+            token_revision=token_revision,
+            status=status,
+            evidence=evidence.setdefault("retentionStatus", {}),
+        )["visible"]
+        observed = wait_for(detached_menu, "save feedback changed source/menu focus")
+        assert observed["overlayControls"][control]["instance"] == before
+        assert observed["first"] == initial["first"] and observed["second"] == initial["second"]
     trigger_case = stage.startswith("language-retention-trigger-")
     if trigger_case:
         key("Escape")
@@ -823,14 +862,16 @@ def check_language_retention_refusal(
             and not controls().get(menu, {}).get("visible"),
             "menu Escape did not hand focus to its trigger",
         )
+        revision += 1
         assert render_preview(
             client,
             source,
             generation,
-            3,
+            revision,
             "fixture exit",
             language_view=languages,
             evidence=retained_render,
+            token_revision=token_revision,
         )["visible"]
         assert not state()["imeClear"], "collapsed menu fabricated source Clear"
         key("F1")  # The configured source acceptance must not be minted by menu focus.
@@ -839,10 +880,14 @@ def check_language_retention_refusal(
         assert state()["first"] == initial["first"]
         stage = stage.replace("language-retention-trigger-", "language-retention-", 1)
     changed_source = json.loads(json.dumps(source))
-    kwargs = {}
+    kwargs = {"token_revision": token_revision}
     expected_first = initial["first"]
     if stage == "language-retention-body":
         kwargs["text"] = "A different candidate cannot borrow the detached preview."
+    elif stage == "language-retention-host-token":
+        kwargs["token_revision"] = 10
+    elif stage == "language-retention-state":
+        kwargs["view_state"] = "Translating"
     elif stage == "language-retention-authority":
         changed_source["authority"]["inputRevision"] += 1
     elif stage == "language-retention-permissions":
@@ -876,13 +921,18 @@ def check_language_retention_refusal(
         wait_for(detached_menu, "language control did not regain focus after source input")
     else:
         raise AssertionError(f"unknown language retention stage: {stage}")
+    if stage != "language-retention-expired-render":
+        lease = evidence.get("retentionStatus", retained_render)
+        assert now_ms() <= lease["expiresAtMs"], "retention refusal was masked by expiry"
     result = render_preview(
         client,
         changed_source,
         generation,
-        4 if trigger_case else 3,
+        revision + 1,
         "fixture exit",
         language_view=languages,
+        status=status,
+        evidence=evidence.setdefault("retentionRefusal", {}),
         **kwargs,
     )
     assert result == {"visible": False, "editing": False}, (stage, result)
@@ -922,8 +972,14 @@ def check_language_retention_refusal(
 
 def language_trigger_point(actual, phase, dimensions, now, backend="gtk3", *, layout=True):
     assert now <= phase["expiresAtMs"], "language trigger lease expired before click"
+    return language_trigger_geometry(
+        actual, phase["renderReturnedAtMonoMs"], dimensions, backend, layout=layout
+    )
+
+
+def language_trigger_geometry(actual, rendered, dimensions, backend, *, layout=True):
     name = "typelay-menu-trigger"
-    if not clickable_control(actual, name, phase["renderReturnedAtMonoMs"], dimensions):
+    if not clickable_control(actual, name, rendered, dimensions):
         return None
     control = actual["overlayControls"][name]
     if not control.get("enabled"):
@@ -975,7 +1031,24 @@ def language_trigger_point(actual, phase, dimensions, now, backend="gtk3", *, la
 def language_trigger_hover_current(
     actual, phase, dimensions, now, backend, instance, surface, point, moved_at, *, layout=True
 ):
-    current_point = language_trigger_point(actual, phase, dimensions, now, backend, layout=layout)
+    assert now <= phase["expiresAtMs"], "language trigger lease expired before click"
+    return language_trigger_hover_geometry(
+        actual,
+        phase["renderReturnedAtMonoMs"],
+        dimensions,
+        backend,
+        instance,
+        surface,
+        point,
+        moved_at,
+        layout=layout,
+    )
+
+
+def language_trigger_hover_geometry(
+    actual, rendered, dimensions, backend, instance, surface, point, moved_at, *, layout=True
+):
+    current_point = language_trigger_geometry(actual, rendered, dimensions, backend, layout=layout)
     if current_point is None or actual.get("observedAtMs", 0) < moved_at:
         return False
     control = actual["overlayControls"]["typelay-menu-trigger"]
@@ -1096,6 +1169,12 @@ def click_language_trigger(state, nested, dimensions, phase, backend, *, layout=
 def language_menu_point(actual, name, phase, dimensions, now, instances):
     """GTK4 menu mapping can expose a child's previous, collapsed allocation."""
     assert now <= phase["expiresAtMs"], "language menu lease expired before click"
+    return language_menu_geometry(
+        actual, name, phase["renderReturnedAtMonoMs"], dimensions, instances
+    )
+
+
+def language_menu_geometry(actual, name, rendered, dimensions, instances):
     controls = actual.get("overlayControls", {})
     for control_name, instance in instances.items():
         item = controls.get(control_name, {})
@@ -1103,7 +1182,7 @@ def language_menu_point(actual, name, phase, dimensions, now, instances):
         assert item.get("visible") is True, "language menu control disappeared before click"
     control, menu = controls[name], controls["typelay-language-menu"]
     if (
-        actual.get("observedAtMs", 0) <= phase["renderReturnedAtMonoMs"]
+        actual.get("observedAtMs", 0) <= rendered
         or not parent_geometry_ready(actual, dimensions)
         or not all(
             glossary_painted_geometry(item, actual.get("observedAtMs")) for item in (control, menu)
@@ -1135,10 +1214,338 @@ def language_menu_point(actual, name, phase, dimensions, now, instances):
     )
 
 
-def check_language_options(
-    client, source, generation, state, initial, nested, dimensions, evidence
+async def language_wait_for(predicate, description, timeout=5):
+    """The existing observation budget, yielding to the real desktop owner."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = predicate()
+        if result:
+            return result
+        await asyncio.sleep(0.01)
+    raise AssertionError(description)
+
+
+async def language_command(*arguments, timeout, environment=None):
+    child = await asyncio.create_subprocess_exec(
+        *arguments, env=environment, stdout=asyncio.subprocess.PIPE
+    )
+    try:
+        output, _ = await asyncio.wait_for(child.communicate(), timeout)
+        if child.returncode:
+            raise subprocess.CalledProcessError(child.returncode, arguments, output)
+        return output.decode()
+    finally:
+        if child.returncode is None:
+            child.terminate()
+            try:
+                await asyncio.wait_for(child.wait(), 3)
+            except TimeoutError:
+                child.kill()
+                await asyncio.wait_for(child.wait(), 3)
+
+
+async def language_key(value):
+    await language_command("xdotool", "key", "--clearmodifiers", "--delay", "0", value, timeout=2)
+    await asyncio.sleep(0.025)  # Preserve key()'s original pacing, not a new retry/wait.
+
+
+def run_owned_language_options(command, environment, socket_path, state_path, output, nested):
+    """Real production renewal/IPC/foreground owner; only the host is controlled."""
+    import gi
+
+    gi.require_version("Gdk", "4.0")
+    from gi.events import GLibEventLoop
+    from gi.repository import Gdk, GLib
+    from input import Input
+    from overlay import Overlay
+
+    async def exercise():
+        jobs, native_events, saves = [], [], []
+        evidence = {
+            "clock": "CLOCK_BOOTTIME",
+            "owner": "production Input/Overlay",
+            "displaySends": [],
+            "renewalSendCount": 0,
+        }
+        observing = True
+
+        class Host:
+            def send(self, operation, data=None):
+                if operation != "state":
+                    evidence["unexpectedOperation"] = f"host notification: {operation}"
+                    raise AssertionError(evidence["unexpectedOperation"])
+
+            async def ask(self, operation, data=None):
+                if operation == "allowField":
+                    assert data.get("aria") == "GtkEntry"
+                    assert data.get("enabled") is True and data.get("password") is False
+                    assert data.get("readOnly") is False and data.get("offscreen") is False
+                    return True  # The one owned, focused fixture source, no model or settings I/O.
+                if operation != "traySettings":
+                    evidence["unexpectedOperation"] = f"host request: {operation}"
+                    raise AssertionError(evidence["unexpectedOperation"])
+                saves.append(data)
+                return False  # Exercise the production save-failure response without persistence.
+
+        def task(coroutine):
+            jobs.append(asyncio.create_task(coroutine))
+
+        host = Host()
+        input_service = Input(GLib, Gdk, SimpleNamespace(native=socket_path), host, task)
+        overlay = Overlay(host, input_service, task, lambda: host.send("settings"))
+        fixture = None
+        try:
+            generation = str(uuid.uuid4())
+            input_service.notification("settings", {"enabled": True})
+            input_service.notification(
+                "shortcuts",
+                {
+                    "enabled": False,
+                    "sessionEnabled": True,
+                    "generation": generation,
+                    "accept": "F1",
+                    "exit": "F24",
+                    "wake": "F9",
+                    "direct": "F10",
+                },
+            )
+            overlay.configure({"source": "en", "target": "ja"})
+            fixture = await asyncio.create_subprocess_exec(*command, env=environment)
+
+            def state():
+                assert fixture.returncode is None, "language fixture exited"
+                assert "retired" not in evidence, evidence.get("retired")
+                assert "unexpectedOperation" not in evidence, evidence.get("unexpectedOperation")
+                for job in jobs:
+                    if job.done():
+                        job.result()
+                try:
+                    return json.loads(state_path.read_text())
+                except FileNotFoundError:
+                    return {}
+
+            peer = await language_wait_for(
+                lambda: next((peer for peer in input_service.peers if peer.lifetime), None),
+                "language fixture handshake missing",
+            )
+            assert fixture.pid in process_lineage(peer.pid), "unexpected native test peer"
+            assert peer.backend in ("gtk3", "gtk4")
+            window = await language_wait_for(
+                lambda: next(
+                    (item for item in input_service.niri.windows if item.get("pid") == peer.pid),
+                    None,
+                ),
+                "language fixture window missing",
+            )
+            focused = asyncio.get_running_loop().create_future()
+            input_service.niri.focus(
+                window["id"], lambda ok: None if focused.done() else focused.set_result(ok)
+            )
+            assert await asyncio.wait_for(focused, 5), "language fixture focus refused"
+            await language_command(
+                "fcitx5-remote", "-s", "keyboard-us", timeout=3, environment=environment
+            )
+            geometry = dict(
+                line.split("=", 1)
+                for line in (
+                    await language_command(
+                        "xdotool", "getwindowgeometry", "--shell", nested, timeout=3
+                    )
+                ).splitlines()
+            )
+            dimensions = int(geometry["WIDTH"]), int(geometry["HEIGHT"])
+            evidence["nestedSize"] = dimensions
+            initial = await language_wait_for(
+                lambda: (value := state())
+                and value.get("focus") == "fixture-first"
+                and value.get("imeClear")
+                and parent_geometry_ready(value, dimensions)
+                and input_service.focused_peer() is peer
+                and value,
+                "language source IME/parent/compositor did not become ready",
+            )
+            captured = await input_service.request("capture", {})
+            assert captured and captured.get("snapshot"), input_service.capture_status
+            source = captured["snapshot"]
+            assert source["text"] == initial["first"]
+            acknowledgement = captured["sessionShortcuts"]
+            assert acknowledgement and acknowledgement["generation"] == generation
+            assert acknowledgement["bindings"] == {"accept": "F1", "exit": "F24"}
+            assert acknowledgement["sourceReady"] is True
+            assert acknowledgement["editorReady"] is False
+
+            # Observe the single production sender without decoding, handling
+            # replies, or changing frames. A send is not a native acknowledgement.
+            send = peer.link.channel.send
+
+            def observed_send(frame):
+                operation = frame.get("op")
+                if operation not in {
+                    "describe",
+                    "overlay-render",
+                    "overlay-renew",
+                    "overlay-hide",
+                    "revoke",
+                }:
+                    evidence["unexpectedOperation"] = f"native operation: {operation}"
+                    raise AssertionError(evidence["unexpectedOperation"])
+                if observing and operation in ("overlay-render", "overlay-renew"):
+                    data = frame["data"]
+                    sent = {
+                        "operation": operation,
+                        "sentAtMs": now_ms(),
+                        "expiresAtMs": data["expiresAtMs"],
+                        "revision": data.get("revision"),
+                        "renderPending": overlay.pending,
+                    }
+                    evidence["displaySends"].append(sent)
+                    if len(evidence["displaySends"]) > 16:
+                        del evidence["displaySends"][2]
+                    if operation == "overlay-renew":
+                        evidence["renewalSendCount"] += 1
+                    elif evidence.get("languagePhases"):
+                        evidence["languagePhases"][-1].update(
+                            expiresAtMs=data["expiresAtMs"], renderSentAtMs=sent["sentAtMs"]
+                        )
+                elif observing and operation == "overlay-hide":
+                    evidence.setdefault("retired", {"reason": "owner-hide", "atMs": now_ms()})
+                return send(frame)
+
+            def ui_event(owner, event):
+                if (
+                    observing
+                    and event.get("operation") == "visible"
+                    and event.get("value") is False
+                ):
+                    evidence.setdefault("retired", {"reason": "native-hidden", "atMs": now_ms()})
+                if event.get("operation") == "languages":
+                    native_events.append(dict(event))
+                overlay.event(owner, event)
+
+            peer.link.channel.send = observed_send
+            input_service.ui_event = ui_event
+            await check_language_options(
+                overlay,
+                source,
+                generation,
+                state,
+                initial,
+                nested,
+                dimensions,
+                evidence,
+                native_events,
+                saves,
+            )
+            assert saves == [{"source": "ko", "target": "en"}]
+            assert evidence["renewalSendCount"] > 0, (
+                "production owner did not renew the live preview"
+            )
+            state()  # A later render cannot hide an intermediate display retirement.
+            print(
+                "GTK language options: real production owner, menus and Apply checked without a model",
+                flush=True,
+            )
+        finally:
+            try:
+                if fixture is not None:
+                    evidence["finalGeometry"] = observe_click_geometry(state())
+            except Exception:
+                pass  # A failed job's diagnostic must not mask the failure or skip cleanup.
+            observing = False
+            overlay.hide()
+            GLib.source_remove(overlay.timer)
+            for job in jobs:
+                job.cancel()
+            await asyncio.gather(*jobs, return_exceptions=True)
+            input_service.close()
+            if fixture is not None and fixture.returncode is None:
+                fixture.terminate()
+                try:
+                    await asyncio.wait_for(fixture.wait(), 3)
+                except TimeoutError:
+                    fixture.kill()
+                    await asyncio.wait_for(fixture.wait(), 3)
+            try:
+                (output / f"{state_path.stem}-click.json").write_text(
+                    json.dumps(evidence, indent=2)
+                )
+            except (OSError, TypeError, ValueError):
+                pass  # Evidence must not replace the original failure or cleanup.
+
+    with patch.dict(os.environ, {"NIRI_SOCKET": environment["NIRI_SOCKET"]}):
+        loop = GLibEventLoop(GLib.MainContext.default())
+        try:
+            with loop:
+                loop.run_until_complete(exercise())
+        finally:
+            loop.close()
+
+
+def check_language_dto(client, source, generation, state, initial, evidence):
+    """Short native DTO rendering cases, not an idle interactive desktop owner."""
+    choices = {
+        "source": [{"code": "ja", "label": "日本語"}],
+        "target": [{"code": "ko", "label": "한국어"}],
+    }
+    view = {
+        "sourceLanguage": "ja",
+        "targetLanguage": "ko",
+        "languageChoices": choices,
+        "sourceLanguageLabel": "Saved Japanese",
+        "targetLanguageLabel": "Saved Korean",
+    }
+    cases = [dict(view), {**view, "languageChoices": {}}]
+    view = {"sourceLanguage": "ja", "targetLanguage": "ko"}
+    cases.extend(
+        [
+            {**view, "languageChoices": None},
+            {**view, "languageChoices": {**choices, "target": choices["target"] * 2}},
+            view,
+        ]
+    )
+    for revision, value in enumerate(cases, 1):
+        assert render_preview(
+            client,
+            source,
+            generation,
+            revision,
+            "fixture exit",
+            language_view=value,
+            evidence=evidence,
+        )["visible"]
+        expected = (
+            "Saved Japanese → Saved Korean"
+            if revision <= 2
+            else "ja（当前不可用） → ko（当前不可用）"
+            if revision == 5
+            else None
+        )
+        controls = wait_for(
+            lambda: (actual := state()).get("observedAtMs", 0) > evidence["renderReturnedAtMonoMs"]
+            and actual.get("overlayControls", {}).get("typelay-menu-trigger", {}).get("visible")
+            and (
+                expected is None
+                or actual["overlayControls"]["typelay-menu-trigger"]["text"] == expected
+            )
+            and actual["overlayControls"],
+            "language DTO title did not render",
+        )
+        if revision > 1:
+            for name in (
+                "typelay-source-language",
+                "typelay-target-language",
+                "typelay-apply-languages",
+            ):
+                assert not controls[name]["enabled"], name
+        assert state()["first"] == initial["first"] and state()["second"] == initial["second"]
+
+
+async def check_language_options(
+    overlay, source, generation, state, initial, nested, dimensions, evidence, native_events, saves
 ):
-    """Real menu widgets and UI events; synthetic view DTO, no installed model claim."""
+    """Real menu interactions under the production owner; no installed model claim."""
+    peer = overlay.input.bound_observation["peer"]
+    backend = peer.backend
     trigger = "typelay-menu-trigger"
     menu = "typelay-language-menu"
     source_control, target_control = "typelay-source-language", "typelay-target-language"
@@ -1157,7 +1564,6 @@ def check_language_options(
         ],
     }
     view = {"sourceLanguage": "en", "targetLanguage": "ja", "languageChoices": choices}
-    revision = 0
     phases = evidence["languagePhases"] = []
 
     def observe(value):
@@ -1188,6 +1594,12 @@ def check_language_options(
                         "y",
                         "width",
                         "height",
+                        "surfaceGeometry",
+                        "paintObservation",
+                        "scrollViewport",
+                        "pointerInside",
+                        "pointerEnteredAtMs",
+                        "pointerEnteredAtMonoMs",
                     )
                     if key in control
                 }
@@ -1196,56 +1608,71 @@ def check_language_options(
             },
         }
 
-    def render(stage=None):
-        nonlocal revision
-        revision += 1
-        phase = {
-            "stage": stage
-            or (
-                (
-                    "initial",
-                    "menu-renew",
-                    "choice-renew",
-                    "draft-renew",
-                    "saved-update",
-                    "second-choice",
-                )[revision - 1]
-                if revision <= 6
-                else "language-renew"
-            )
-        }
+    def current():
+        assert overlay.current_record() is not None, "language owner lost current source binding"
+        assert overlay.visible, "language preview retired during interaction"
+
+    async def render(stage="language-renew"):
+        phase = {"stage": stage, "renderStartedAtMs": now_ms()}
         phases.append(phase)
-        # Keep initial allocation evidence plus the six most recent phases.
-        # Later failures must not lose their actual render/click boundary.
         if len(phases) > 8:
             del phases[2]
-        result = render_preview(
-            client,
-            source,
-            generation,
-            revision,
-            "fixture exit",
-            language_view=view,
-            evidence=phase,
+        overlay.render_guidance({"languageChoices": view.get("languageChoices")})
+        overlay.render(
+            {
+                "state": "ValidTranslation",
+                "source": source,
+                "editable": False,
+                "canAccept": False,
+                "text": "Read-only fixture preview.",
+                "status": "fixture preview",
+                "sourceLanguage": view["sourceLanguage"],
+                "targetLanguage": view["targetLanguage"],
+                "presentation": {
+                    "visible": True,
+                    "editorOwnsText": False,
+                    "tabHint": "fixture read-only preview",
+                    "dot": "Yellow",
+                },
+                "sessionShortcuts": {
+                    "acceptHint": "fixture accept",
+                    "passThroughHint": "fixture application key",
+                    "exitHint": "fixture exit",
+                },
+                "viewContext": {
+                    "token": {
+                        "target": source["target"],
+                        "commandGeneration": generation,
+                        "revision": 1,
+                    },
+                    "bindings": {"accept": "F1", "exit": "F24"},
+                    "canEdit": False,
+                },
+            }
         )
-        if phase is not None:
-            phase["renderVisible"] = result["visible"]
-        assert result["visible"]
-        rendered = time.monotonic_ns() // 1_000_000
+        await language_wait_for(
+            lambda: state() and not overlay.pending, "language render incomplete"
+        )
+        phase.update(
+            revision=overlay.revision,
+            renderVisible=overlay.visible,
+            renderReturnedAtMs=now_ms(),
+            renderReturnedAtMonoMs=time.monotonic_ns() // 1_000_000,
+        )
+        current()
 
         def shown():
             value = state()
             phase["lastObservation"] = observe(value)
-            fresh = value.get("observedAtMs", 0) > rendered
-            if fresh and phase is not None and "firstFreshObservation" not in phase:
-                phase["firstFreshObservation"] = observe(value)
+            fresh = value.get("observedAtMs", 0) > phase["renderReturnedAtMonoMs"]
+            if fresh:
+                phase.setdefault("firstFreshObservation", observe(value))
             if fresh and value.get("overlayControls", {}).get(trigger, {}).get("visible"):
-                if phase is not None:
-                    phase["shownObservation"] = observe(value)
+                phase["shownObservation"] = observe(value)
                 return value["overlayControls"]
             return None
 
-        return wait_for(shown, "language controls did not render")
+        return await language_wait_for(shown, "language controls did not render")
 
     def controls():
         actual = state()
@@ -1253,74 +1680,115 @@ def check_language_options(
             phases[-1]["lastObservation"] = observe(actual)
         return actual.get("overlayControls", {})
 
-    def click(name):
-        if name == trigger:
-            click_language_trigger(state, nested, dimensions, phases[-1], client.hello["backend"])
-            return
-        actual = state()
+    async def click(name):
+        current()
         phase = phases[-1]
-        if client.hello["backend"] == "gtk4":
-            instances = {item: actual["overlayControls"][item]["instance"] for item in (name, menu)}
+        if name == trigger:
 
             def ready():
+                current()
                 actual = state()
-                phase["menuClickObservation"] = {
-                    "observedAtMonoMs": actual.get("observedAtMs"),
-                    "controls": {
-                        item: {
-                            key: value
-                            for key, value in actual.get("overlayControls", {})
-                            .get(item, {})
-                            .items()
-                            if key
-                            in (
-                                "instance",
-                                "visible",
-                                "width",
-                                "height",
-                                "surfaceGeometry",
-                                "paintObservation",
-                                "scrollViewport",
-                            )
-                        }
-                        for item in instances
-                    },
-                }
-                point = language_menu_point(actual, name, phase, dimensions, now_ms(), instances)
+                phase["triggerGeometry"] = observe(actual)
+                point = language_trigger_geometry(
+                    actual, phase["renderReturnedAtMonoMs"], dimensions, backend
+                )
                 return (actual, point) if point else None
 
-            actual, point = wait_for(
-                ready, "language menu geometry unavailable before single click"
+            actual, point = await language_wait_for(
+                ready, "language trigger geometry unavailable before single move"
             )
-        else:
-            control = actual["overlayControls"][name]
-            assert control["visible"] and control["width"] > 0 and control["height"] > 0
-            point = click_point(
-                actual,
-                (control["x"] + control["width"] / 2, control["y"] + control["height"] / 2),
-                dimensions,
+            control = actual["overlayControls"][trigger]
+            instance, surface = (
+                control["instance"],
+                control.get("surfaceGeometry", {}).get("surfaceInstance"),
             )
-        phase.update(control=name, point=point, beforeClick=observe(actual))
-        if client.hello["backend"] == "gtk4":
-            assert now_ms() <= phase["expiresAtMs"], "language menu lease expired before click"
-        phase["clickStartedAtMonoMs"] = time.monotonic_ns() // 1_000_000
-        click_once(nested, point, phase)
-        phase["clickFinishedAtMonoMs"] = time.monotonic_ns() // 1_000_000
+            await language_command(
+                "xdotool", "mousemove", "--window", nested, *map(str, point), timeout=3
+            )
+            moved_at = time.monotonic_ns() // 1_000_000
+            phase["moveFinishedAtMonoMs"] = moved_at
 
-    def toggle(opened, renew=True):
+            def hovered():
+                current()
+                actual = state()
+                phase.setdefault("firstHoverObservation", observe(actual))
+                phase["lastHoverObservation"] = observe(actual)
+                return (
+                    actual
+                    if language_trigger_hover_geometry(
+                        actual,
+                        phase["renderReturnedAtMonoMs"],
+                        dimensions,
+                        backend,
+                        instance,
+                        surface,
+                        point,
+                        moved_at,
+                    )
+                    else None
+                )
+
+            actual = await language_wait_for(
+                hovered, "language trigger did not receive real same-point hover"
+            )
+            arguments = ["xdotool", "click", "1"]
+        else:
+            actual = state()
+            if backend == "gtk4":
+                instances = {
+                    item: actual["overlayControls"][item]["instance"] for item in (name, menu)
+                }
+
+                def ready():
+                    current()
+                    actual = state()
+                    phase["menuClickObservation"] = observe(actual)
+                    point = language_menu_geometry(
+                        actual, name, phase["renderReturnedAtMonoMs"], dimensions, instances
+                    )
+                    return (actual, point) if point else None
+
+                actual, point = await language_wait_for(
+                    ready, "language menu geometry unavailable before single click"
+                )
+            else:
+                control = actual["overlayControls"][name]
+                assert control["visible"] and control["width"] > 0 and control["height"] > 0
+                point = click_point(
+                    actual,
+                    (control["x"] + control["width"] / 2, control["y"] + control["height"] / 2),
+                    dimensions,
+                )
+            arguments = ["xdotool", "mousemove", "--window", nested, *map(str, point), "click", "1"]
+        current()
+        phase.update(
+            control=name,
+            point=point,
+            beforeClick=observe(actual),
+            clickStartedAtMs=now_ms(),
+            clickStartedAtMonoMs=time.monotonic_ns() // 1_000_000,
+        )
+        try:
+            await language_command(*arguments, timeout=3)
+            phase["clickCommandSucceeded"] = True
+        finally:
+            phase["clickFinishedAtMs"] = now_ms()
+            phase["clickFinishedAtMonoMs"] = time.monotonic_ns() // 1_000_000
+
+    async def toggle(opened, renew=True):
         if renew:
-            render()
+            await render()
         phases[-1]["requestedMenuVisible"] = opened
-        click(trigger)
-        wait_for(
+        await click(trigger)
+        await language_wait_for(
             lambda: controls().get(menu, {}).get("visible") is opened,
             "language menu did not open/close",
         )
 
-    def select(name, index):
-        render()
-        click(name)
-        if revision in (3, 6):
+    async def select(name, index):
+        await render()
+        await click(name)
+        if len(phases) in (3, 6):
             # Read the existing report once, without waiting for a fresh frame.
             # Its timestamp distinguishes a stale sample from post-click focus.
             try:
@@ -1328,15 +1796,15 @@ def check_language_options(
             except (OSError, ValueError, AssertionError):
                 phases[-1]["afterClickObservationUnavailable"] = True
             phases[-1]["keysStartedAtMonoMs"] = time.monotonic_ns() // 1_000_000
-        if client.hello["backend"] == "gtk4":
-            wait_for(
+        if backend == "gtk4":
+            await language_wait_for(
                 lambda: controls().get(name, {}).get("popupFocused"),
                 "opened language popup did not acquire real list focus",
             )
-        key("Home")
+        await language_key("Home")
         for _ in range(index):
-            key("Down")
-        key("Return")
+            await language_key("Down")
+        await language_key("Return")
         phases[-1]["keysReturnedAtMs"] = now_ms()
 
         def selected():
@@ -1351,140 +1819,140 @@ def check_language_options(
             # Return selects a row before GTK finishes closing its child popup.
             # Do not start another click on a still-closing surface. This is the
             # same action's existing bounded wait, not another key or a retry.
-            if client.hello["backend"] in ("gtk3", "gtk4") and (
+            if backend in ("gtk3", "gtk4") and (
                 control.get("popupVisible") is not False or control.get("buttonFocused") is not True
             ):
                 return None
-            if client.hello["backend"] == "gtk3" and control.get("popupShown") is not False:
+            if backend == "gtk3" and control.get("popupShown") is not False:
                 return None
             return value
 
-        return wait_for(
+        return await language_wait_for(
             selected,
             "actual dropdown selection did not change",
         )
 
-    def events():
-        client.call("describe")
-        return [
-            event["data"]
-            for event in client.events
-            if event.get("event") == "ui" and event.get("data", {}).get("operation") == "languages"
-        ]
+    async def events():
+        await peer.link.ask("describe")
+        await language_wait_for(
+            lambda: state() and not overlay.pending, "language feedback render incomplete"
+        )
+        return list(native_events)
 
-    actual = render()
+    actual = await render()
     assert actual[trigger]["text"] == "English → 日本語"
-    toggle(True)
+    await toggle(True)
     actual = controls()
     assert actual[source_control]["items"] == ["自动检测", "English", "日本語", "한국어"]
     assert actual[target_control]["items"] == ["English", "日本語", "한국어"]
     assert actual[source_control]["selected"] == 1 and actual[target_control]["selected"] == 1
-    selected = select(source_control, 3)
+    selected = await select(source_control, 3)
     assert selected[source_control]["focused"], "dropdown did not acquire real focus"
-    before_events = events()
-    renewed = render()
+    before_events = await events()
+    renewed = await render()
     for name in (source_control, target_control):
         for field in ("instance", "modelInstance", "selected", "focused"):
             assert renewed[name][field] == selected[name][field], (name, field)
-    assert events() == before_events, "unapplied selection was sent as a save"
+    assert await events() == before_events, "unapplied selection was sent as a save"
     view["sourceLanguage"] = "ja"
-    actual = render()
+    actual = await render()
     assert actual[source_control]["selected"] == 2, "confirmed saved code did not replace draft"
-    select(source_control, 3)
-    toggle(False)
-    if client.hello["backend"] in ("gtk3", "gtk4"):
-        wait_for(lambda: controls()[trigger]["focused"], "closing menu lost real language focus")
-        assert render()[trigger]["focused"], "collapsed renewal lost owned trigger focus"
-    toggle(True, renew=False)
-    if client.hello["backend"] in ("gtk3", "gtk4"):
-        wait_for(
+    await select(source_control, 3)
+    await toggle(False)
+    if backend in ("gtk3", "gtk4"):
+        await language_wait_for(
+            lambda: controls()[trigger]["focused"], "closing menu lost real language focus"
+        )
+        assert (await render())[trigger]["focused"], "collapsed renewal lost owned trigger focus"
+    await toggle(True, renew=False)
+    if backend in ("gtk3", "gtk4"):
+        await language_wait_for(
             lambda: controls()[source_control]["focused"],
             "reopening did not restore language navigation",
         )
     assert controls()[source_control]["selected"] == 2, "reopening retained an unapplied choice"
-    select(source_control, 3)
-    select(target_control, 0)
-    render()
-    click(apply_control)
-    wait_for(lambda: not controls().get(menu, {}).get("visible"), "Apply did not close menu")
-    if client.hello["backend"] in ("gtk3", "gtk4"):
-        wait_for(lambda: controls()[trigger]["focused"], "Apply lost owned language focus")
-    emitted = events()
+    await select(source_control, 3)
+    await select(target_control, 0)
+    await render()
+    apply_revision = overlay.revision
+    await click(apply_control)
+    await language_wait_for(
+        lambda: not controls().get(menu, {}).get("visible"), "Apply did not close menu"
+    )
+    if backend in ("gtk3", "gtk4"):
+        await language_wait_for(
+            lambda: controls()[trigger]["focused"], "Apply lost owned language focus"
+        )
+    emitted = await events()
     assert len(emitted) == len(before_events) + 1
     assert emitted[-1]["value"] == {"source": "ko", "target": "en"}
-    assert emitted[-1]["generation"] == generation and emitted[-1]["revision"] == revision
+    assert emitted[-1]["generation"] == generation and emitted[-1]["revision"] == apply_revision
+    assert saves == [{"source": "ko", "target": "en"}]
+    assert "未保存" in overlay.value["status"]
     # The controlled host has not confirmed the requested save. Reopening must
     # show its last confirmed state, including after a real host save failure.
-    toggle(True, renew=False)
+    await toggle(True, renew=False)
     assert controls()[source_control]["selected"] == 2
     assert controls()[target_control]["selected"] == 1
     view.update(sourceLanguage="ko", targetLanguage="en")
-    actual = render()
+    actual = await render()
     assert actual[source_control]["selected"] == 3 and actual[target_control]["selected"] == 0
 
-    view.update(
-        sourceLanguage="ja",
-        targetLanguage="ko",
-        languageChoices=choices,
-        sourceLanguageLabel="Saved Japanese",
-        targetLanguageLabel="Saved Korean",
-    )
-    assert render()[trigger]["text"] == "Saved Japanese → Saved Korean"
+    view.update(sourceLanguage="ja", targetLanguage="ko", languageChoices=choices)
+    assert (await render())[trigger]["text"] == "日本語 → 한국어"
     view["languageChoices"] = {}
-    unavailable = render()
-    assert unavailable[trigger]["text"] == "Saved Japanese → Saved Korean"
-    if client.hello["backend"] in ("gtk3", "gtk4"):
-        assert unavailable[trigger]["focused"], "disabling choices lost owned language focus"
-        assert not unavailable[menu]["visible"]
-        assert not unavailable[source_control]["enabled"]
-        assert not unavailable[target_control]["enabled"]
+    unavailable = await render()
+    assert unavailable[trigger]["text"] == "ja（当前不可用） → ko（当前不可用）"
+    assert unavailable[trigger]["focused"], "disabling choices lost owned language focus"
+    assert not unavailable[menu]["visible"]
+    assert not unavailable[source_control]["enabled"]
+    assert not unavailable[target_control]["enabled"]
     view["languageChoices"] = choices
-    view.pop("sourceLanguageLabel")
-    view.pop("targetLanguageLabel")
-    restored = render()
+    restored = await render()
     assert restored[trigger]["text"] == "日本語 → 한국어"
-    if client.hello["backend"] in ("gtk3", "gtk4"):
-        assert restored[trigger]["focused"], "restored choices lost owned trigger focus"
-        toggle(True, renew=False)
-        assert controls()[source_control]["focused"]
+    assert restored[trigger]["focused"], "restored choices lost owned trigger focus"
+    await toggle(True, renew=False)
+    assert controls()[source_control]["focused"]
     view["sourceLanguage"] = "zz"
-    actual = render()
+    actual = await render()
     assert actual[trigger]["text"] == "zz（当前不可用） → 한국어"
     assert actual[source_control]["items"][actual[source_control]["selected"]] == "zz（当前不可用）"
     assert not actual[apply_control]["enabled"]
-    assert select(source_control, 2)[apply_control]["enabled"]
-    toggle(False)
-    toggle(True, renew=False)
+    assert (await select(source_control, 2))[apply_control]["enabled"]
+    await toggle(False)
+    await toggle(True, renew=False)
     assert not controls()[apply_control]["enabled"], "unavailable confirmed choice was lost"
 
-    if client.hello["backend"] in ("gtk3", "gtk4"):
-        before_popup_events = events()
-        render()
-        click(source_control)
-        wait_for(lambda: controls()[source_control]["popupVisible"], "language popup did not open")
-        key("Home")
-        key("Escape")
-        wait_for(
+    if backend in ("gtk3", "gtk4"):
+        before_popup_events = await events()
+        await render()
+        await click(source_control)
+        await language_wait_for(
+            lambda: controls()[source_control]["popupVisible"], "language popup did not open"
+        )
+        await language_key("Home")
+        await language_key("Escape")
+        await language_wait_for(
             lambda: (value := controls())[source_control]["focused"]
             and not value[source_control]["popupVisible"],
             "Escape did not close the language popup and return focus",
         )
-        assert events() == before_popup_events, "cancelled popup saved a language"
-        toggle(False)
-        toggle(True, renew=False)
+        assert await events() == before_popup_events, "cancelled popup saved a language"
+        await toggle(False)
+        await toggle(True, renew=False)
         assert not controls()[apply_control]["enabled"], "cancel/reopen lost the saved unknown code"
-        render()
-        click(source_control)
-        wait_for(
+        await render()
+        await click(source_control)
+        await language_wait_for(
             lambda: controls()[source_control]["popupVisible"], "language popup did not reopen"
         )
-        click(trigger)
-        wait_for(
+        await click(trigger)
+        await language_wait_for(
             lambda: not controls()[source_control]["popupVisible"]
             and not controls()[menu]["visible"],
             "outside menu click left the language popup open",
         )
-        toggle(True)
+        await toggle(True)
         # A full 32-choice list must remain scrollable and keyboard reachable.
         view["languageChoices"] = {
             **choices,
@@ -1492,61 +1960,64 @@ def check_language_options(
             + [{"code": f"lang-{index}", "label": f"Language {index}"} for index in range(28)],
         }
         view["sourceLanguage"] = "ja"
-        render()
-        click(source_control)
-        key("End")
-        key("Return")
-        wait_for(
+        await render()
+        await click(source_control)
+        await language_key("End")
+        await language_key("Return")
+        await language_wait_for(
             lambda: (value := controls())[source_control]["selected"] == 31
             and value[source_control]["focused"]
             and not value[source_control]["popupVisible"],
             "last language in a scrolling popup was not keyboard reachable",
         )
-        assert events() == before_popup_events, "unapplied scrolling choice was saved"
+        assert await events() == before_popup_events, "unapplied scrolling choice was saved"
 
-    before_events = events()
+    before_events = await events()
     view.update(sourceLanguage="ja", targetLanguage="ko")
     for invalid in (None, {**choices, "target": choices["target"] * 2}):
         view["languageChoices"] = invalid
-        actual = render()
+        actual = await render()
         for name in (source_control, target_control, apply_control):
             assert not actual[name]["enabled"], name
     view.pop("languageChoices")
-    actual = render()
+    actual = await render()
     assert actual[trigger]["text"] == "ja（当前不可用） → ko（当前不可用）"
     # Invalidating the focused choices safely closes the menu onto its trigger.
     # Reopen it through the public button before testing the disabled action.
     assert not actual[menu]["visible"] and actual[trigger]["focused"]
-    toggle(True, renew=False)
+    await toggle(True, renew=False)
     actual = controls()
     for name in (source_control, target_control, apply_control):
         assert actual[name]["visible"] and not actual[name]["enabled"], name
-    click(apply_control)
-    assert events() == before_events, "invalid choices emitted a language change"
-    if client.hello["backend"] in ("gtk3", "gtk4"):
+    await click(apply_control)
+    assert await events() == before_events, "invalid choices emitted a language change"
+    if backend in ("gtk3", "gtk4"):
         # With both selectors disabled, the trigger still owns focus. Close
         # before renewing; an open-menu trigger is not a retained focus proof.
-        toggle(False, renew=False)
+        await toggle(False, renew=False)
         view["languageChoices"] = choices
-        render("restore-valid-choices")
-        toggle(True, renew=False)
-        click(source_control)
-        wait_for(
+        await render("restore-valid-choices")
+        await toggle(True, renew=False)
+        await click(source_control)
+        await language_wait_for(
             lambda: controls()[source_control]["popupVisible"], "language popup did not reopen"
         )
-        bounds = source["geometry"]["bounds"]
+        bounds = source["bounds"]
         point = click_point(
             state(),
             (bounds["x"] + bounds["width"] / 4, bounds["y"] + bounds["height"] / 2),
             dimensions,
         )
-        click_once(nested, point, {})
-        wait_for(
+        current()
+        await language_command(
+            "xdotool", "mousemove", "--window", nested, *map(str, point), "click", "1", timeout=3
+        )
+        await language_wait_for(
             lambda: state().get("focus") == "fixture-first"
             and not controls().get(source_control, {}).get("popupVisible", False),
             "outside source click did not close the popup without stealing focus",
         )
-        assert events() == before_events, "outside click saved a language"
+        assert await events() == before_events, "outside click saved a language"
     assert state()["first"] == initial["first"] and state()["second"] == initial["second"]
 
 

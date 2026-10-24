@@ -847,7 +847,7 @@ public sealed partial class ProductionForegroundWriteTests
             _pipeToken = broker.StartInfo.Environment["TYPELAY_PIPE_TOKEN"]!;
             _isolatedDirectory = isolatedDirectory;
         }
-        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? returnTrace = null, string? sourceClaimProbe = null, bool isolatedSourceAcceptance = false, bool sourceKeyboardProbe = false, bool sourceSynchronousProbe = false, bool sourceMessageProbe = false)
+        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? returnTrace = null, string? sourceClaimProbe = null, bool isolatedSourceAcceptance = false, bool sourceKeyboardProbe = false, bool sourceSynchronousProbe = false, bool sourceMessageProbe = false, bool sourceOriginProbe = false)
         {
             var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(30));
@@ -856,7 +856,7 @@ public sealed partial class ProductionForegroundWriteTests
             string? isolatedDirectory = null;
             try
             {
-                fixture = await StockFixture.Start(deadline.Token, owned, retirementProbe, returnFocus, sourceClaimProbe, sourceKeyboardProbe, sourceSynchronousProbe, sourceMessageProbe);
+                fixture = await StockFixture.Start(deadline.Token, owned, retirementProbe, returnFocus, sourceClaimProbe, sourceKeyboardProbe, sourceSynchronousProbe, sourceMessageProbe, sourceOriginProbe);
                 string directory = Path.Combine(Repository(), "src/windows/TypeLay.Broker/bin/Release/net10.0-windows");
                 if (withoutNativeDll)
                 {
@@ -989,7 +989,7 @@ public sealed partial class ProductionForegroundWriteTests
         public nint Field(string name) => (nint)host.Fields.Single(value => value.Name == name).Hwnd;
         private Guid _connection, _run;
         private long _sequence = 1;
-        public static async Task<StockFixture> Start(CancellationToken token, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? sourceClaimProbe = null, bool sourceKeyboardProbe = false, bool sourceSynchronousProbe = false, bool sourceMessageProbe = false)
+        public static async Task<StockFixture> Start(CancellationToken token, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? sourceClaimProbe = null, bool sourceKeyboardProbe = false, bool sourceSynchronousProbe = false, bool sourceMessageProbe = false, bool sourceOriginProbe = false)
         {
             Guid connection = Guid.NewGuid(), run = Guid.NewGuid();
             string assembly = Path.Combine(Repository(),
@@ -1032,6 +1032,13 @@ public sealed partial class ProductionForegroundWriteTests
                 // Broker observer's same-named copy with independent static slots.
                 arguments = [.. arguments, "--source-message-probe",
                     Path.Combine(AppContext.BaseDirectory, "TypeLay.NativeInput.dll")];
+            }
+            if (sourceOriginProbe)
+            {
+                Assert.False(owned || sourceKeyboardProbe || sourceSynchronousProbe || sourceMessageProbe);
+                Assert.Null(returnFocus);
+                Assert.Null(sourceClaimProbe);
+                arguments = [.. arguments, "--source-origin-probe"];
             }
             if (sourceKeyboardProbe)
             {

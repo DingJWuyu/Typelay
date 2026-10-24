@@ -28,59 +28,112 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
     [InlineData(true)]
     public Task ExitWithoutAWritePlanPreservesSourceAndPairsItsPressAcrossRetirement(bool control) => desktop.RunAsync(async () =>
     {
-        await using var scene = new QueueScene(true, traceExitRejections: true);
-        await scene.Start(true, bindings: control ? SessionShortcutBindings.Restore("Ctrl+F7", "Ctrl+F10") : null);
-        await scene.InstallExit();
-        long installedAtMs = WindowsInterruptClock.NowMs;
-        var selection = N.ReadSelection(scene.Field);
-        long? prefixReturnedAtMs = null;
-        if (control)
+        var scene = new QueueScene(true, traceExitRejections: true);
+        Exception? failure = null;
+        Native.Point? originalPointer = null;
+        try
         {
-            await scene.PressControlPrefix();
-            prefixReturnedAtMs = WindowsInterruptClock.NowMs;
+            await scene.Start(true, bindings: control ? SessionShortcutBindings.Restore("Ctrl+F7", "Ctrl+F10") : null);
+            // Keep incidental source hover out of this positive key-only scenario.
+            // Establish the pointer before the original lease, as in the hover matrix.
+            Assert.True(Native.GetCursorPos(out var previousPointer));
+            originalPointer = previousPointer;
+            Assert.True(GetClientRect(scene.Root, out var client));
+            var rootPoint = new Native.Point { X = 4, Y = 4 };
+            Assert.InRange(rootPoint.X, client.Left, client.Right - 1);
+            Assert.InRange(rootPoint.Y, client.Top, client.Bottom - 1);
+            Assert.True(ClientToScreen(scene.Root, ref rootPoint));
+            Assert.Equal(scene.Root, WindowFromPoint(rootPoint));
+            Assert.True(SetCursorPos(rootPoint.X, rootPoint.Y));
+            Assert.True(Native.GetCursorPos(out var preparedPointer));
+            Assert.Equal(rootPoint.X, preparedPointer.X);
+            Assert.Equal(rootPoint.Y, preparedPointer.Y);
+            Assert.Equal(scene.Root, WindowFromPoint(preparedPointer));
+            await scene.InstallExit();
+            long installedAtMs = WindowsInterruptClock.NowMs;
+            var selection = N.ReadSelection(scene.Field);
+            long? prefixReturnedAtMs = null;
+            if (control)
+            {
+                await scene.PressControlPrefix();
+                prefixReturnedAtMs = WindowsInterruptClock.NowMs;
+            }
+            long pressStartedAtMs = WindowsInterruptClock.NowMs;
+            scene.Key(scene.ExitKey, true);
+            long pressCompletedAtMs = WindowsInterruptClock.NowMs;
+            // The source sends exit-completed before this original MSG's dispatch
+            // completion. A refused terminal dispatch cannot later become accepted.
+            await scene.WaitExitInput(1);
+            long terminalObservedAtMs = WindowsInterruptClock.NowMs;
+            var completion = Assert.Single(scene.ExitInputs);
+            bool accepted = completion.Down && completion.Consumed
+                && scene.Messages.Count(message => message.Kind == "exit-completed") == 1;
+            if (!accepted)
+            {
+                var edges = scene.Audit().Where(witness => witness.VirtualKey == scene.ExitKey && witness.Down).ToArray();
+                OwnedKeyWitness? last = edges.Length == 0 ? null : edges[^1];
+                Assert.Fail($"Exit dispatch refused: control={control}; down={completion.Down}; consumed={completion.Consumed}; "
+                    + $"completed={scene.Messages.Count(message => message.Kind == "exit-completed")}; "
+                    + $"observed={scene.ExitLease!.ObservedAtMs}; expires={scene.ExitLease.ExpiresAtMs}; installed={installedAtMs}; "
+                    + $"prefixReturned={prefixReturnedAtMs}; pressStarted={pressStartedAtMs}; pressCompleted={pressCompletedAtMs}; "
+                    + $"terminalObserved={terminalObservedAtMs}; edges={edges.Length}; witnessObserved={last?.ObservedAtMs}; "
+                    + $"exitMatches={last?.ExitLeaseSequence == scene.ExitLease.Sequence}; prefixPresent={last?.PrefixSequence > 0}; "
+                    + $"sourceFocused={N.Focused() == (scene.Root, scene.Field)}; rejectionTrace={scene.ReadExitRejectionTrace()}.");
+            }
+            var result = Assert.Single(scene.Messages, message => message.Kind == "exit-completed").ExitResult!;
+            Assert.Equal(scene.ExitLease!.Sequence, result.LeaseSequence);
+            Assert.InRange(result.AcceptedAtMs, scene.ExitLease.ObservedAtMs, scene.ExitLease.ExpiresAtMs);
+            Assert.True(result.WitnessSequence > scene.ExitLease.InstallWitnessSequence);
+            var edge = Assert.Single(scene.Audit(), witness => witness.VirtualKey == scene.ExitKey && witness.Down);
+            Assert.Equal(scene.ExitLease.Sequence, edge.ExitLeaseSequence);
+            Assert.Equal(scene.ExitLease.Modifiers, edge.Modifiers);
+            Assert.False(edge.Eligible); // Exit never overwrites the native write witness.
+            await scene.Retire(release: false);
+            scene.Key(scene.ExitKey, true);
+            scene.Key(scene.ExitKey, false);
+            await scene.WaitExitInput(3);
+            if (control)
+                scene.Key(0x11, false);
+            Assert.All(scene.ExitInputs, completion => Assert.True(completion.Consumed));
+            Assert.Single(scene.Messages, message => message.Kind == "exit-completed");
+            Assert.Equal(0, scene.Receipts);
+            Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+            Assert.Equal(selection, N.ReadSelection(scene.Field));
+            Assert.Equal((scene.Root, scene.Field), N.Focused());
         }
-        long pressStartedAtMs = WindowsInterruptClock.NowMs;
-        scene.Key(scene.ExitKey, true);
-        long pressCompletedAtMs = WindowsInterruptClock.NowMs;
-        // The source sends exit-completed before this original MSG's dispatch
-        // completion. A refused terminal dispatch cannot later become accepted.
-        await scene.WaitExitInput(1);
-        long terminalObservedAtMs = WindowsInterruptClock.NowMs;
-        var completion = Assert.Single(scene.ExitInputs);
-        bool accepted = completion.Down && completion.Consumed
-            && scene.Messages.Count(message => message.Kind == "exit-completed") == 1;
-        if (!accepted)
+        catch (Exception error)
         {
-            var edges = scene.Audit().Where(witness => witness.VirtualKey == scene.ExitKey && witness.Down).ToArray();
-            OwnedKeyWitness? last = edges.Length == 0 ? null : edges[^1];
-            Assert.Fail($"Exit dispatch refused: control={control}; down={completion.Down}; consumed={completion.Consumed}; "
-                + $"completed={scene.Messages.Count(message => message.Kind == "exit-completed")}; "
-                + $"observed={scene.ExitLease!.ObservedAtMs}; expires={scene.ExitLease.ExpiresAtMs}; installed={installedAtMs}; "
-                + $"prefixReturned={prefixReturnedAtMs}; pressStarted={pressStartedAtMs}; pressCompleted={pressCompletedAtMs}; "
-                + $"terminalObserved={terminalObservedAtMs}; edges={edges.Length}; witnessObserved={last?.ObservedAtMs}; "
-                + $"exitMatches={last?.ExitLeaseSequence == scene.ExitLease.Sequence}; prefixPresent={last?.PrefixSequence > 0}; "
-                + $"sourceFocused={N.Focused() == (scene.Root, scene.Field)}; rejectionTrace={scene.ReadExitRejectionTrace()}.");
+            failure = error;
         }
-        var result = Assert.Single(scene.Messages, message => message.Kind == "exit-completed").ExitResult!;
-        Assert.Equal(scene.ExitLease!.Sequence, result.LeaseSequence);
-        Assert.InRange(result.AcceptedAtMs, scene.ExitLease.ObservedAtMs, scene.ExitLease.ExpiresAtMs);
-        Assert.True(result.WitnessSequence > scene.ExitLease.InstallWitnessSequence);
-        var edge = Assert.Single(scene.Audit(), witness => witness.VirtualKey == scene.ExitKey && witness.Down);
-        Assert.Equal(scene.ExitLease.Sequence, edge.ExitLeaseSequence);
-        Assert.Equal(scene.ExitLease.Modifiers, edge.Modifiers);
-        Assert.False(edge.Eligible); // Exit never overwrites the native write witness.
-        await scene.Retire(release: false);
-        scene.Key(scene.ExitKey, true);
-        scene.Key(scene.ExitKey, false);
-        await scene.WaitExitInput(3);
-        if (control)
-            scene.Key(0x11, false);
-        Assert.All(scene.ExitInputs, completion => Assert.True(completion.Consumed));
-        Assert.Single(scene.Messages, message => message.Kind == "exit-completed");
-        Assert.Equal(0, scene.Receipts);
-        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
-        Assert.Equal(selection, N.ReadSelection(scene.Field));
-        Assert.Equal((scene.Root, scene.Field), N.Focused());
+        finally
+        {
+            List<Exception> cleanupErrors = [];
+            try
+            {
+                await scene.DisposeAsync();
+            }
+            catch (Exception cleanupError)
+            {
+                cleanupErrors.Add(cleanupError);
+            }
+            try
+            {
+                if (originalPointer is { } point)
+                    Assert.True(SetCursorPos(point.X, point.Y));
+            }
+            catch (Exception cleanupError)
+            {
+                cleanupErrors.Add(cleanupError);
+            }
+            if (cleanupErrors.Count != 0)
+            {
+                if (failure is not null)
+                    cleanupErrors.Insert(0, failure);
+                throw new AggregateException("exit-pairing cleanup failed", cleanupErrors);
+            }
+        }
+        if (failure is not null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     });
 
 

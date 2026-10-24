@@ -22,8 +22,10 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
     private record struct Event(string Stage, int Code, uint Key, long Bits, uint Thread,
         uint Process, bool FocusIsField, bool Consumed);
     private delegate nint HookProc(int code, nint wp, nint lp);
-    internal SourceKeyboardProbe(nint root, nint field, string? synchronousLibrary = null, string? sourceMessageLibrary = null)
+    internal SourceKeyboardProbe(nint root, nint field, string? synchronousLibrary = null, string? sourceMessageLibrary = null, bool sourceOriginProbe = false)
     {
+        if (sourceOriginProbe && (synchronousLibrary is not null || sourceMessageLibrary is not null))
+            throw new ArgumentException("The origin observer cannot load a transaction consumer.");
         _root = root;
         _field = field;
         _thread = GetCurrentThreadId();
@@ -34,6 +36,11 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
         }
         _keyboard = Keyboard;
         _sent = Sent;
+        if (sourceOriginProbe)
+        {
+            InitializeOriginProbe();
+            return;
+        }
         _keyboardHook = SetWindowsHookExW(2, _keyboard, 0, _thread);
         _sentHook = SetWindowsHookExW(4, _sent, 0, _thread);
         if (_keyboardHook == 0 || _sentHook == 0)
@@ -51,11 +58,11 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
     internal void Configure(int mode)
     {
         // 1: peek+consume F7, 2: observe F7, 3: observe Tab, 4: consume Tab.
-        if (mode is < 1 or > 12 || mode is >= 5 and <= 10 && _synchronousField is null
-            || mode >= 11 && _messageNative is null)
+        if (mode is < 1 or > 13 || mode is >= 5 and <= 10 && _synchronousField is null
+            || (mode is 11 or 12) && _messageNative is null || mode == 13 && _originHook == 0)
             throw new ArgumentOutOfRangeException(nameof(mode));
         _mode = mode;
-        _key = mode <= 2 ? 0x76u : 9u;
+        _key = mode <= 2 ? 0x76u : mode == 13 ? 0x77u : 9u;
         _count = _overflow = _consumed = _noRemove = _actions = _sentCount = _before = _after = 0;
         _firstFound = _secondFound = false;
         _firstConsumed = _secondConsumed = 0;
@@ -63,13 +70,16 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
         _peekPending = mode is 1 or 6 or 11;
         if (mode is >= 5 and <= 10)
             PrepareSynchronous(mode);
-        if (mode >= 11)
+        if (mode is 11 or 12)
             PrepareMessage(mode);
+        if (mode == 13)
+            PrepareOrigin();
         N.SetProp(_root, ReadyProperty, _peekPending ? 0 : mode);
     }
     // This bounded wait is in the opted-in outer pump, never in a callback.
     internal void BeforeRead()
     {
+        OriginBeforeRead();
         if (!_peekPending)
             return;
         _peekPending = false;
@@ -90,6 +100,7 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
     }
     internal void Dispatch(N.MessageStruct message, bool after)
     {
+        OriginDispatch(message, after);
         if (_mode == 0 || message.WParam != _key || message.Message is not (0x100 or 0x101))
             return;
         if (after)
@@ -167,6 +178,7 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
         rawUps = (long)N.GetProp(_root, "TypeLay.Test.SourceObservedUp.v1"),
         synchronous = SynchronousResult(),
         sourceMessage = MessageResult(),
+        sourceOrigin = OriginResult(),
         events = _events.Take(_count).ToArray()
     };
     internal bool TryClose(bool sourceQuiet)
@@ -188,7 +200,8 @@ internal sealed partial class SourceKeyboardProbe : IDisposable
         GC.KeepAlive(_keyboard);
         GC.KeepAlive(_sent);
         bool message = DisposeMessageProbe();
-        if (!keyboard || !sent || !message)
+        bool origin = DisposeOriginProbe();
+        if (!keyboard || !sent || !message || !origin)
             throw new InvalidOperationException("Self-owned source hooks failed to unhook.");
         _synchronousField?.Retire();
         _disposed = true;

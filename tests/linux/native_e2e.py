@@ -63,6 +63,8 @@ def glossary_gtk3_painted_geometry(control, observed_at):
         or not paint["mappedAtMonoMs"] <= paint["paintedAtMonoMs"] <= observed_at
         or type(paint.get("paintedMapGeneration")) is not int
         or paint["paintedMapGeneration"] != paint["mapGeneration"]
+        or type(paint.get("drawClockInstance")) is not int
+        or paint["drawClockInstance"] != paint["clockInstance"]
         or type(paint.get("paintedClockInstance")) is not int
         or paint["paintedClockInstance"] != paint["clockInstance"]
         or type(paint.get("frame")) is not int

@@ -57,6 +57,7 @@ internal sealed partial class SourceKeyboardProbe
 
     private void ObserveMessageFocus(uint message, nuint wp, nint lp)
     {
+        ObserveOriginFocus(message, wp, lp);
         if (_messageNative is null)
             return;
         if (_insideMessageNative && message == 0x0111 && lp == _field && ((wp >> 16) & 0xffff) == 0x300)
@@ -132,6 +133,11 @@ internal sealed partial class SourceKeyboardProbe
     // dialog handling, posted marker or other callback. Never called by the hook.
     internal void MessageRetrievalReturned(int status, N.MessageStruct message)
     {
+        if (_mode == 13)
+        {
+            OriginRetrievalReturned(status, message);
+            return;
+        }
         if (_mode is not (11 or 12) || status <= 0 || message.WParam != 9
             || message.Message is not (0 or 0x100 or 0x101))
             return;

@@ -3953,6 +3953,51 @@ class InputFeedbackTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_language_preview_renewal_runs_during_pending_render_but_rejects_stale_compositor(self):
+        async def exercise():
+            overlay, jobs, _token, view = await self.overlay_scenario()
+            try:
+                with patch("overlay.now_ms", return_value=1200):
+                    self.clock.return_value = 1200
+                    self.input.niri.observed_at = 1200  # Controlled compositor system port.
+                    overlay.render({**view, "sourceLanguage": "en", "targetLanguage": "ja"})
+                    await asyncio.sleep(0)
+                    request = next(
+                        frame
+                        for frame in self.native_frames(self.peer)
+                        if frame["op"] == "overlay-render"
+                    )
+                    self.assertTrue(overlay.pending)
+                    self.assertTrue(overlay.visible)
+                    # The existing 200 ms timer callback does not wait for the
+                    # outstanding render reply or take its async render lock.
+                    self.assertTrue(overlay.renew())
+                    renewal = self.native_frames(self.peer)
+                    self.assertEqual([frame["op"] for frame in renewal], ["overlay-renew"])
+                    self.assertEqual(renewal[0]["id"], 0)
+                    self.assertEqual(renewal[0]["data"]["expiresAtMs"], 2000)
+                    for field in ("target", "authority", "generation"):
+                        self.assertEqual(renewal[0]["data"][field], request["data"][field])
+                    # A live UI is not enough: the real owner's original 150 ms
+                    # compositor gate still conceals it rather than extending it.
+                    self.clock.return_value = 1351
+                    self.assertTrue(overlay.renew())
+                    self.assertEqual(
+                        [frame["op"] for frame in self.native_frames(self.peer)], ["overlay-hide"]
+                    )
+                    self.assertFalse(overlay.visible)
+                    self.peer.link.receive({"id": request["id"], "data": {"visible": True}})
+                    await self.settle_overlay(jobs)
+                    self.assertFalse(overlay.visible)
+            finally:
+                overlay.hide()
+                self.loop.source_remove(overlay.timer)
+                for job in jobs:
+                    job.cancel()
+                await asyncio.gather(*jobs, return_exceptions=True)
+
+        asyncio.run(exercise())
+
     def test_overlay_language_options_refresh_without_changing_saved_direction(self):
         async def exercise():
             overlay, jobs, _token, view = await self.overlay_scenario()
