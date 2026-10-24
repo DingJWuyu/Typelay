@@ -38,23 +38,25 @@ internal static class Program
                 UiaInputProvider.ReturnForegroundFacts? returnForeground = null;
                 try
                 {
-                    response = request.Op switch
-                    {
-                        "hello" => new(BrokerProtocol.Version, request.Id, "ready"),
-                        "source-install" or "source-retire" or "source-receipt" or "source-poll" => new(BrokerProtocol.Version,
-                            request.Id, "source-acceptance", SourceAcceptance: provider.SourceAcceptance(request)),
-                        "clear" => Clear(provider, request),
-                        "direct-clear" => ClearDirect(provider, request),
-                        "write" => new(BrokerProtocol.Version, request.Id, "receipt", Receipt: provider.Write(request)),
-                        "direct-write" => new(BrokerProtocol.Version, request.Id, "receipt", Receipt: provider.WriteDirect(request)),
-                        "return" or "return-glossary" => new(BrokerProtocol.Version, request.Id,
-                            provider.ReturnToSource(request, out returnReason, out returnForeground) ? "focused" : "denied"),
-                        "capture" => Observe(provider, request),
-                        "capture-owned" => ObserveOwned(provider, request),
-                        "observe-pause" => ObservePause(provider, request),
-                        "quit" => new(BrokerProtocol.Version, request.Id, "bye"),
-                        _ => new(BrokerProtocol.Version, request.Id, "unsupported")
-                    };
+                    response = request.WakeOrigin is not null && request.Op != "capture-wake"
+                        ? new(BrokerProtocol.Version, request.Id, "denied") : request.Op switch
+                        {
+                            "hello" => new(BrokerProtocol.Version, request.Id, "ready"),
+                            "source-install" or "source-retire" or "source-receipt" or "source-poll" => new(BrokerProtocol.Version,
+                                request.Id, "source-acceptance", SourceAcceptance: provider.SourceAcceptance(request)),
+                            "clear" => Clear(provider, request),
+                            "direct-clear" => ClearDirect(provider, request),
+                            "write" => new(BrokerProtocol.Version, request.Id, "receipt", Receipt: provider.Write(request)),
+                            "direct-write" => new(BrokerProtocol.Version, request.Id, "receipt", Receipt: provider.WriteDirect(request)),
+                            "return" or "return-glossary" => new(BrokerProtocol.Version, request.Id,
+                                provider.ReturnToSource(request, out returnReason, out returnForeground) ? "focused" : "denied"),
+                            "capture" => Observe(provider, request),
+                            "capture-owned" => ObserveOwned(provider, request),
+                            "capture-wake" => ObserveWake(provider, request),
+                            "observe-pause" => ObservePause(provider, request),
+                            "quit" => new(BrokerProtocol.Version, request.Id, "bye"),
+                            _ => new(BrokerProtocol.Version, request.Id, "unsupported")
+                        };
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
@@ -119,7 +121,7 @@ internal static class Program
                     }
                     catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
                 }
-                if (request.Op == "quit")
+                if (request.Op == "quit" && response.Status == "bye")
                     return 0;
             }
         }
@@ -141,6 +143,12 @@ internal static class Program
     private static BrokerResponse Observe(UiaInputProvider provider, BrokerRequest request)
     {
         var (snapshot, focus) = provider.Capture(request);
+        return new(BrokerProtocol.Version, request.Id, snapshot is null ? "silent" : "observed", snapshot, focus,
+            Application: provider.Application, UserEpoch: request.UserEpoch, ForegroundEpoch: request.ForegroundEpoch);
+    }
+    private static BrokerResponse ObserveWake(UiaInputProvider provider, BrokerRequest request)
+    {
+        var (snapshot, focus) = provider.CaptureWake(request);
         return new(BrokerProtocol.Version, request.Id, snapshot is null ? "silent" : "observed", snapshot, focus,
             Application: provider.Application, UserEpoch: request.UserEpoch, ForegroundEpoch: request.ForegroundEpoch);
     }

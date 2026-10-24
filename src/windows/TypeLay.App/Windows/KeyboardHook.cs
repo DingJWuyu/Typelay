@@ -311,6 +311,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
         InvalidateOrdinaryChord();
         var configuration = new ShortcutConfiguration(Guid.NewGuid(), shortcuts);
         Interlocked.Exchange(ref _shortcuts, configuration);
+        RetireNativeWakeCapture();
         RetireSourceAcceptanceControl();
         var old = Interlocked.Exchange(ref _shortcutLease, null);
         QueueShortcutTrace("configure", "configured", old?.Observation,
@@ -731,8 +732,8 @@ internal sealed partial class KeyboardHook : IInputMonitor
 
     private bool Modified => _keys[0x10] || _keys[0x11] || _keys[0x12] || _keys[0xA0] || _keys[0xA1]
         || _keys[0xA2] || _keys[0xA3] || _keys[0xA4] || _keys[0xA5] || _keys[0x5B] || _keys[0x5C];
-    private sealed record DeferredWake(TargetId Target, WindowsTarget NativeTarget, Guid Generation,
-        long Sequence, long TriggeredAtMs, long ForegroundEpoch, long WindowEpoch);
+    private sealed record DeferredWake(TargetId? Target, WindowsTarget? NativeTarget, Guid Generation,
+        long Sequence, long TriggeredAtMs, long ForegroundEpoch, long WindowEpoch, WakeOriginAnchor? FirstWake = null);
     private nint OnKey(int code, nint wParam, nint lParam)
     {
         long callbackStarted = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -881,15 +882,17 @@ internal sealed partial class KeyboardHook : IInputMonitor
         }
         finally
         {
-            if (wake is not null)
+            if (wake?.FirstWake is not null)
+                PublishNativeWakeCapture(wake, completed);
+            else if (wake is not null)
             {
                 bool current = completed && wake.Generation == CommandGeneration
                     && wake.ForegroundEpoch == ForegroundEpoch && wake.WindowEpoch == WindowEpoch
-                    && IsSourceForeground(wake.NativeTarget);
+                    && IsSourceForeground(wake.NativeTarget!.Value);
                 _notices.Enqueue(new("wake", AcceptedAtMs: wake.TriggeredAtMs,
                     CommandGeneration: wake.Generation, CommandSequence: wake.Sequence,
                     Rejection: current ? Denial.None : Denial.NotSourceFocus,
-                    WakeCapture: current ? new(wake.Target, wake.TriggeredAtMs, UserEpoch,
+                    WakeCapture: current ? new(wake.Target!.Value, wake.TriggeredAtMs, UserEpoch,
                         SourceUserEpoch, ForegroundEpoch, WindowEpoch, ContentEpoch) : null));
                 QueueShortcutTrace("key", current ? "wake-capture-intent-enqueued" : "wake-capture-intent-invalid",
                     action: "wake", evaluatedAtMs: wake.TriggeredAtMs,
@@ -937,7 +940,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
         var nativeLease = Volatile.Read(ref _shortcutLease);
         var lease = nativeLease?.Observation;
         long now = WindowsInterruptClock.NowMs;
-        long contentEpoch = ContentEpoch, foregroundEpoch = ForegroundEpoch;
+        long contentEpoch = ContentEpoch, foregroundEpoch = ForegroundEpoch, windowEpoch = WindowEpoch;
         void Reject(Denial reason, string traceReason)
         {
             // Matching the user's explicit command is enough to report a refusal,
@@ -956,6 +959,11 @@ internal sealed partial class KeyboardHook : IInputMonitor
         }
         if (lease is null)
         {
+            if (command.Action == "wake" && _nativeWakeCaptureEnabled && CaptureWakeOrigin(now) is { } origin)
+            {
+                wake = new(null, null, configuration.Generation, sequence, now, foregroundEpoch, windowEpoch, origin);
+                return true;
+            }
             Reject(Denial.StaleObservation, "no-lease");
             return true;
         }
@@ -1035,6 +1043,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
     }
     public void Dispose()
     {
+        EnableNativeWakeCapture(false);
         DisconnectStockAcceptance();
         Interlocked.Exchange(ref _sourceGlossaryReceipt, null)?.Revoke();
         _hotkeys.Dispose();

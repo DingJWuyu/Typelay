@@ -41,7 +41,7 @@ internal static class WindowsRuntime
         var view = new WindowsSessionView(overlay, browserView);
         var nativeInput = new WindowsInputService(broker, overlay.Handle, support, monitor, practice);
         overlay.ConfigureSourceGlossary(nativeInput, settings);
-        var input = new WindowsInputRouter(nativeInput, monitor, browser);
+        var input = new WindowsInputRouter(nativeInput, monitor, browser, () => settings.Value.Excluded.ToArray());
         loop.Tick += browser.Poll;
         loop.Tick += browserView.Poll;
         var controller = new SessionController(settings, model, view, input, input, loop,

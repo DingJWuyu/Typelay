@@ -30,6 +30,10 @@ internal sealed partial class NativeEditTransactions : IDisposable
         bool Initialized = false, OwnedCaptureDescriptor? Owned = null, bool DirectCaptured = false);
     private sealed record Result(uint Status, Denial Reason, string Text, TextRange Selection, bool Multiline, ImeState Ime);
 
+    // Only an installed source grant is an active owner. DirectCaptured also
+    // describes ordinary OnDemand observations and cannot itself block a Wake.
+    public bool HasSourceAcceptanceOwner => _sourceGrant is not null;
+
     public InputSnapshot? Capture(WindowsTarget identity, RectPx bounds, long inputEpoch, long focusEpoch) =>
         Capture(identity, bounds, inputEpoch, focusEpoch, direct: true);
 
@@ -37,10 +41,15 @@ internal sealed partial class NativeEditTransactions : IDisposable
     public InputSnapshot? Observe(WindowsTarget identity, RectPx bounds, long inputEpoch, long focusEpoch) =>
         Capture(identity, bounds, inputEpoch, focusEpoch, direct: false);
 
-    private InputSnapshot? Capture(WindowsTarget identity, RectPx bounds, long inputEpoch, long focusEpoch, bool direct)
+    public InputSnapshot? ObserveWake(WindowsTarget identity, RectPx bounds, long inputEpoch, long focusEpoch) =>
+        Capture(identity, bounds, inputEpoch, focusEpoch, direct: false, preserveWriteOwners: true);
+
+    private InputSnapshot? Capture(WindowsTarget identity, RectPx bounds, long inputEpoch, long focusEpoch, bool direct,
+        bool preserveWriteOwners = false)
     {
-        Prune();
-        var binding = Bind(identity);
+        if (!preserveWriteOwners)
+            Prune();
+        var binding = Bind(identity, preserveWriteOwners: preserveWriteOwners);
         if (binding is null)
             return null;
         // Only the first capture may install a cookie. Subsequent observations
@@ -52,7 +61,8 @@ internal sealed partial class NativeEditTransactions : IDisposable
         var result = Invoke(binding, binding.Initialized ? 4u : 1u);
         if (result.Reason == Denial.TargetChanged)
         {
-            Release(binding);
+            if (!preserveWriteOwners || !binding.DirectCaptured)
+                Release(binding);
             return null;
         }
         if (result.Status != 1 || result.Ime != ImeState.Clear || !result.Selection.IsValid(result.Text))
@@ -239,7 +249,7 @@ internal sealed partial class NativeEditTransactions : IDisposable
         });
     }
 
-    private Binding? Bind(WindowsTarget identity, OwnedCaptureDescriptor? owned = null)
+    private Binding? Bind(WindowsTarget identity, OwnedCaptureDescriptor? owned = null, bool preserveWriteOwners = false)
     {
         if (_sourceMessageRouteFailed || !Environment.Is64BitProcess || identity.ControlHwnd == 0
             || (owned is not null && (!MatchesOwned(identity, owned) || !IsCurrentOwned(owned))))
@@ -271,6 +281,10 @@ internal sealed partial class NativeEditTransactions : IDisposable
                     _bindings[identity.ControlHwnd] = existing;
                 return existing;
             }
+            // An independent read may not retire a Direct job's original
+            // lifetime, even when this current field no longer matches it.
+            if (preserveWriteOwners && existing.DirectCaptured)
+                return null;
             Release(existing);
             if (_bindings.ContainsKey(identity.ControlHwnd))
                 return null;

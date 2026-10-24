@@ -30,6 +30,32 @@ TypeLay.Windows.Contracts 引用 Core，拥有 App 与 Broker 共用的 DTO、�
 
 新的 TSF 接入实验须先明确范围和授权；元数据完整不等于正文完整，不能因当前观察不足而擅自扩展到 base、parent 或修改输入法。隔离合成文档结果不外推普通输入框支持，单条有界路径停止也不代表 TSF 所有方案不可行。读取证据不自动授权写入、系统配置变更或运行中卸载。
 
+## 首次按需唤醒的只读捕获
+
+仅当配置的 Wake 首次到达且尚无快捷键租约时，已装配 `WindowsInputRouter` 的 Hook 可采样精确原点；裸 Hook、直接替换以及已有但过期/未来版本的租约仍走原拒绝路径。回调只用非阻塞 Win32 元数据取得 raw foreground 所属 root、`GetGUIThreadInfo` 的确切 field HWND、同一 PID/TID、进程开始时间与原 t0，持有该进程的查询/同步句柄，不做 UIA、IPC、正文读取或移焦。在原回调 `finally` 固定命令自身之后的 user/source-user/content/foreground/window 五个版本、配置代与全局命令序号。单个私有 pending 由 Router 领取，不恢复旧 TargetId 或正文。
+
+```mermaid
+sequenceDiagram
+    participant K as Hook 原按键
+    participant R as WindowsInputRouter
+    participant B as Broker 单一 MTA
+    participant C as 共享 Runtime
+    K->>K: 原生原点 + t0，finally 固定 post-key 版本
+    K-->>R: 单 pending，只含身份和版本
+    R->>B: capture-wake，当前排除列表副本，原 t0+150ms
+    B->>B: 正文前核 FieldPolicy，读取前后复核精确原点与字段身份
+    B-->>R: 新真实 Source，无写入能力
+    R->>R: TryRead 交付前重核全部版本、配置、最新命令、浏览器归属和原期限
+    R-->>C: 有效 Source + CommandCaptureEvidence
+    Note over R,C: 任一门失效只拒绝，不重试、不续期、不授接受或 F10
+```
+
+`capture-wake` 固定 `CaptureDirect=false`、无 `BoundTarget`、`OwnedCapture` 或写入计划；混搭请求和旧 Broker 的不支持响应均拒绝。Broker 的实际 UIA 元素 HWND 必须就是按键时的 field，而非同 root 的另一个字段或虚拟子元素；元数据与正文读取前后都核原 PID/开始时间、TID、root、GUI 焦点与原截止时间。FieldPolicy 与排除列表在正文前按原链检查一次，读取前后复核原点与字段身份，不宣称重新执行全部字段策略；真实 IME 与原源身份门保持不变。自动 owned practice 仍仅用 `capture-owned`，浏览器合作输入不转入本路径；无精确 HWND 的控件不据此宣称支持。已有直接任务的 native 绑定不能被本只读读取退休，真实 source grant 尚在途时保守拒绝。
+
+WindowsRuntime 在发请求时从当前 `settings.Value.Excluded` 复制排除列表，而不是复用某次旧 `InputContext`。先前普通 capture 即使在按键后返回，也保留自己的旧上下文，不能重标成这次命令；新读成功仍须在 Router 实际 `TryRead` 交付时校验五个版本、配置、最新命令、原焦点与浏览器归属。离开后返回、同根换字段、新输入、新命令或配置改变不会恢复旧请求。进程句柄在拒绝、替换、配置取消、结束或 Dispose 时释放。
+
+原 150ms 是命令准入/交付截止，不是新的 wire 超时。等待 Broker 串行槽及真正发送前超时，或排队期间配置/输入/命令/浏览器归属已撤销时，由专用本地 current 门拒发，且不停止另一个调用的进程；已经发出的只读帧沿原 1500ms wire 保护排空，超过原命令期限仍拒绝交付，不能把冷 UIA 的响应截断来伪造命令成功。此路径不解决 B-01、不承诺所有同用户恶意进程隔离，也不把极端 HWND 回收无法原子证明的问题新增为不可能的发布门；现实进程/字段身份、权限和 IME 拒绝边界不放松。
+
 ## 浏览器合作输入
 
 Windows 浏览器适配通过 `WindowsInputRouter` 接入同一个 SessionController，页面实现来自 `src/shared/browser/`；平台只拥有 native-messaging 注册、传输、Hook 和视图路由。`TypeLay.BrowserHost` 由 Chrome 启动，双方按命名管道的实际进程核同用户、会话、发行路径和寿命，再核登记的精确扩展 origin。浏览器进程身份只筛选连接，字段授权仍由同一文档端口、目标、元数据、输入法与内容版本证明，不能由 PID 或最终前台窗口推导。标准 HTTP(S) 顶层 input/textarea 以外不开放此适配，失败不转 UIA 写入。

@@ -43,6 +43,22 @@ internal sealed class WindowsInputService : IInputService
         context.UserEpoch, context.ForegroundEpoch, (long)overlay, context.BoundTarget,
         Excluded: context.Excluded, SourceUserEpoch: context.SourceUserEpoch, CaptureDirect: context.CaptureDirect);
 
+    internal async Task<InputCapture> CaptureWakeAsync(NativeWakeCapture capture, string[] excluded, Func<bool> stillCurrent)
+    {
+        // This request is created only after the key callback froze its post-key
+        // epochs. Never relabel a concurrent ordinary capture as this command.
+        if (practice?.CapturesAutomaticForeground == true)
+            return new(null); // Owned practice remains exclusive to capture-owned.
+        var epochs = capture.Epochs;
+        var result = await broker.CaptureWakeAsync(new(BrokerProtocol.Version, 0, "capture-wake", "",
+            UserEpoch: epochs.User, ForegroundEpoch: epochs.Foreground, SourceUserEpoch: epochs.Source,
+            Excluded: excluded, ExpiresAtMs: capture.Origin.TriggeredAtMs + Limits.ObservationMaxAgeMs,
+            WakeOrigin: capture.Origin), stillCurrent);
+        return result.Status == "observed"
+            ? new(result.Snapshot, result.Focus, result.Application, result.UserEpoch, result.ForegroundEpoch)
+            : new(null);
+    }
+
     public async Task<InputCapture> CaptureAsync(InputContext context)
     {
         try

@@ -197,7 +197,7 @@ internal sealed class UiaInputProvider : IDisposable
     public (InputSnapshot?, FocusMember) Capture(BrokerRequest request)
     {
         // Owned observations cannot cross into the ordinary capture/write path.
-        if (request.Op is not ("capture" or "write") || request.OwnedCapture is not null)
+        if (request.Op is not ("capture" or "write") || request.OwnedCapture is not null || request.WakeOrigin is not null)
         {
             Clear();
             return (null, FocusMember.Other);
@@ -205,6 +205,89 @@ internal sealed class UiaInputProvider : IDisposable
         if (_ownedCapture is not null)
             Clear();
         return CaptureCore(request);
+    }
+
+    public (InputSnapshot?, FocusMember) CaptureWake(BrokerRequest request)
+    {
+        // A read cannot steal retirement from an installed source grant.
+        // Direct observations remain reusable only through the read-only path.
+        if (_edits.HasSourceAcceptanceOwner)
+            return (null, FocusMember.Other);
+        // A no-lease Wake never recovers an old body, bound target or owned
+        // descriptor. The supplied identity can authorize only this fresh read.
+        Clear();
+        if (request.Op != "capture-wake" || request.CaptureDirect || request.BoundTarget is not null
+            || request.Plan is not null || request.OwnedCapture is not null
+            || request.SourceGlossaryReturn is not null || request.SourceAcceptance is not null
+            || request.WakeOrigin is not { IsValid: true } origin
+            || origin.RootHwnd == request.OverlayHwnd
+            || !WakeOriginCurrent(request))
+            return (null, FocusMember.Other);
+        try
+        {
+            var (snapshot, focus) = CaptureCore(request);
+            if (snapshot is null || focus != FocusMember.Source || !WakeOriginCurrent(request))
+            {
+                Clear();
+                return (null, FocusMember.Other);
+            }
+            _previous = snapshot with
+            {
+                WriteSupported = false,
+                DirectWriteSupported = false
+            };
+            return (_previous, FocusMember.Source);
+        }
+        catch
+        {
+            Clear();
+            throw;
+        }
+    }
+
+    private static bool WakeOriginCurrent(BrokerRequest request)
+    {
+        if (request.WakeOrigin is not { IsValid: true } origin
+            || origin.TriggeredAtMs > long.MaxValue - Limits.ObservationMaxAgeMs
+            || request.ExpiresAtMs != origin.TriggeredAtMs + Limits.ObservationMaxAgeMs)
+            return false;
+        long now = WindowsInterruptClock.NowMs;
+        if (now < origin.TriggeredAtMs || now >= request.ExpiresAtMs)
+            return false;
+        try
+        {
+            using var process = Process.GetProcessById(origin.ProcessId);
+            if (process.StartTime.ToUniversalTime().Ticks != origin.ProcessStartUtcTicks)
+                return false;
+        }
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException
+            or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+        nint root = (nint)origin.RootHwnd, field = (nint)origin.ControlHwnd;
+        nint foreground = GetForegroundWindow();
+        if ((foreground != root && foreground != field) || GetAncestor(root, 2) != root
+            || GetAncestor(field, 2) != root
+            || GetWindowThreadProcessId(root, out uint rootProcess) != origin.ThreadId || rootProcess != origin.ProcessId
+            || GetWindowThreadProcessId(field, out uint fieldProcess) != origin.ThreadId || fieldProcess != origin.ProcessId)
+            return false;
+        var gui = new GuiThreadInfo { Size = (uint)Marshal.SizeOf<GuiThreadInfo>() };
+        return GetGUIThreadInfo(origin.ThreadId, ref gui) && gui.Focus == field
+            && GetForegroundWindow() == foreground && WindowsInterruptClock.NowMs < request.ExpiresAtMs;
+    }
+
+    private static bool WakeElementCurrent(BrokerRequest request, AutomationElement element)
+    {
+        if (request.WakeOrigin is not { } origin)
+            return true;
+        // A virtual child under the right root is not the field captured by the
+        // key. Never substitute an ancestor HWND or root-only UIA identity.
+        return WakeOriginCurrent(request)
+            && element.GetCurrentPropertyValue(AutomationElement.NativeWindowHandleProperty, true) is int hwnd
+            && hwnd != 0 && hwnd == origin.ControlHwnd
+            && element.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty, true) is int process
+            && process == origin.ProcessId && WakeOriginCurrent(request);
     }
 
     public (InputSnapshot?, FocusMember) CaptureOwned(BrokerRequest request)
@@ -217,7 +300,8 @@ internal sealed class UiaInputProvider : IDisposable
             return (null, FocusMember.Other);
         }
         trace?.Stage("owned-identity");
-        if (request.Op != "capture-owned" || request.CaptureDirect || request.OwnedCapture is not { } owned
+        if (request.Op != "capture-owned" || request.CaptureDirect || request.WakeOrigin is not null
+            || request.OwnedCapture is not { } owned
             || owned.RootHwnd == request.OverlayHwnd || !NativeEditTransactions.IsCurrentOwned(owned))
             return Reject("owned-identity-changed");
 
@@ -330,6 +414,8 @@ internal sealed class UiaInputProvider : IDisposable
             trace?.Result(reason);
             return Unavailable(request);
         }
+        if (request.WakeOrigin is not null && !WakeOriginCurrent(request))
+            return Reject("wake-origin-changed");
         trace?.Stage("foreground");
         nint foreground = GetForegroundWindow();
         nint root = GetAncestor(foreground, 2);
@@ -345,12 +431,20 @@ internal sealed class UiaInputProvider : IDisposable
         if (focused is null || root == 0)
             return Reject("no-focused-element");
         AutomationElement element = focused;
+        if (!WakeElementCurrent(request, element))
+            return Reject("wake-field-changed");
         // Raw and managed providers must refer to the same element, captured in the same MTA.
         trace?.Stage("raw-focus");
         string token = string.Join('.', element.GetRuntimeId());
         if (_native.BindFocused() != token)
             return Reject("focused-identity-changed");
         var info = element.Cached;
+        if (request.WakeOrigin is { } wake
+            && (info.ProcessId != wake.ProcessId || info.NativeWindowHandle != wake.ControlHwnd
+                || element.GetCachedPropertyValue(AutomationElement.IsPasswordProperty, true) is not false
+                || element.GetCachedPropertyValue(AutomationElement.IsEnabledProperty, true) is not true
+                || element.GetCachedPropertyValue(AutomationElement.IsOffscreenProperty, true) is not false))
+            return Reject("wake-field-metadata-missing");
         // RootHwnd is a top-level identity, not the raw foreground handle. The
         // exceptional child must be this exact field, never a sibling or owned
         // dialog. Native lifetime/focus/IME checks remain mandatory below.
@@ -430,6 +524,8 @@ internal sealed class UiaInputProvider : IDisposable
         var idBytes = SHA256.HashData(Encoding.UTF8.GetBytes($"{info.ProcessId}/{start}/{root}/{token}"));
         var id = new WindowsTarget(info.ProcessId, start, (long)root, info.NativeWindowHandle,
             value is null ? "uia-text-preview-v2" : "uia-value-text-v2", token, new Guid(idBytes.AsSpan(0, 16)));
+        if (!WakeElementCurrent(request, element))
+            return Reject("wake-before-body-changed");
         trace?.Stage("native-capture");
         // Cross-thread IMM failure does not establish the source thread's IME
         // state. For an ordinary observation only, the qualified stock Edit
@@ -438,13 +534,15 @@ internal sealed class UiaInputProvider : IDisposable
         // rather than a UIA-only identity, even when cross-thread IMM was Clear.
         InputSnapshot? native = !comboBox && request.CaptureDirect
             ? _edits.Capture(id, bounds, _inputEpoch, _focusEpoch)
-            : !comboBox && request.Op == "capture" && (_sourcePrototype || ime == ImeState.Unknown
+            : !comboBox && request.Op is ("capture" or "capture-wake") && (_sourcePrototype || ime == ImeState.Unknown
                 || foreground != root && ime == ImeState.Clear)
-                ? _edits.Observe(id, bounds, _inputEpoch, _focusEpoch) : null;
+                ? request.WakeOrigin is not null
+                    ? _edits.ObserveWake(id, bounds, _inputEpoch, _focusEpoch)
+                    : _edits.Observe(id, bounds, _inputEpoch, _focusEpoch) : null;
         if (native is { } observed)
         {
             trace?.Stage("focus-recheck");
-            if (!StillFocused(root, token, observed.Target.AsWindows()))
+            if (!StillFocused(root, token, observed.Target.AsWindows()) || !WakeElementCurrent(request, element))
                 return Reject("focus-changed-native");
             if (_previous?.Target != observed.Target || _lastFocus != FocusMember.Source)
                 _focusEpoch++;
@@ -459,7 +557,8 @@ internal sealed class UiaInputProvider : IDisposable
             {
                 InputEpoch = _inputEpoch,
                 FocusEpoch = _focusEpoch,
-                WriteSupported = observed.WriteSupported || _sourcePrototype
+                WriteSupported = request.WakeOrigin is null && (observed.WriteSupported || _sourcePrototype),
+                DirectWriteSupported = request.WakeOrigin is null && observed.DirectWriteSupported
             };
             trace?.Result("observed-native");
             return (_previous, FocusMember.Source);
@@ -499,6 +598,8 @@ internal sealed class UiaInputProvider : IDisposable
             // provider cannot report IME state, its ordinary field value can still
             // be translated for display. It is not proof of committed input and
             // must never become a write candidate.
+            if (!WakeElementCurrent(request, element))
+                return Reject("wake-before-preview-changed");
             trace?.Stage("preview-read");
             string? committedPrefix = ime == ImeState.Composing ? _native.ReadCommittedPrefix(Limits.MaxTextUnits, root) : null;
             string? preview = ime == ImeState.Unknown ? value?.Current.Value ?? _native.ReadText(Limits.MaxTextUnits)?.Document : null;
@@ -507,7 +608,7 @@ internal sealed class UiaInputProvider : IDisposable
                 preview = null;
             multiline |= preview?.Contains('\n') == true || preview?.Contains('\r') == true;
             trace?.Stage("focus-recheck");
-            if (!StillFocused(root, token))
+            if (!StillFocused(root, token) || !WakeElementCurrent(request, element))
                 return Reject("focus-changed-preview");
             if (_previous?.Target != id || _previous.PreviewText != preview || _previous.CommittedPrefix != committedPrefix
                 || _lastSourceUserEpoch != request.SourceUserEpoch)
@@ -522,6 +623,8 @@ internal sealed class UiaInputProvider : IDisposable
             trace?.Result("observed-" + ime.ToString().ToLowerInvariant());
             return (blocked, focus);
         }
+        if (!WakeElementCurrent(request, element))
+            return Reject("wake-before-text-changed");
         trace?.Stage("text-read");
         var read = _native.ReadText(Limits.MaxTextUnits);
         string? content = value?.Current.Value ?? read?.Document;
@@ -534,10 +637,10 @@ internal sealed class UiaInputProvider : IDisposable
         // The provider's value and ranges are separate remote reads. During typing
         // they can describe different revisions; preserve whole-field preview while
         // refusing selection edits and acceptance until a consistent capture arrives.
-        bool writeSupported = !comboBox && value is not null && selection is not null;
+        bool writeSupported = request.WakeOrigin is null && !comboBox && value is not null && selection is not null;
         selection ??= new TextRange(content.Length, content.Length);
         trace?.Stage("focus-recheck");
-        if (!StillFocused(root, token))
+        if (!StillFocused(root, token) || !WakeElementCurrent(request, element))
             return Reject("focus-changed-text");
         if (_previous?.Target != id || _previous.Text != content || _lastSourceUserEpoch != request.SourceUserEpoch)
             _inputEpoch++;
@@ -1064,6 +1167,16 @@ internal sealed class UiaInputProvider : IDisposable
     {
         public int Left, Top, Right, Bottom;
     }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GuiThreadInfo
+    {
+        public uint Size, Flags;
+        public nint Active, Focus, Capture, MenuOwner, MoveSize, Caret;
+        public Rectangle CaretRectangle;
+    }
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetGUIThreadInfo(uint thread, ref GuiThreadInfo info);
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassNameW(nint hwnd, StringBuilder name, int capacity);
     [DllImport("user32.dll")] private static extern nint GetWindow(nint hwnd, uint command);

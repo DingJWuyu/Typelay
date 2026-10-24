@@ -18,7 +18,15 @@ foreach ($assembly in @('TypeLay.App', 'TypeLay.Runtime', 'TypeLay.Core', 'TypeL
 dotnet "$fixture/TypeLay.DesktopFixture.dll" --verify-ordinary-notepad artifacts/ordinary-notepad artifacts/package/TypeLay artifacts/continuous-translation
 ```
 
-必须在前一个模型消费者已确认退出后串行执行。内层总预算 540 秒含 20 秒清理预留；全部业务共用原 520 秒 token，浮层局部 90 秒和正常退出局部 5 秒均受其截断，不续时，外层既有进程 owner 最多 585 秒，CI 步骤预留 10 分钟。`result.json` 记录逐段结果、实际系统应用版本/哈希与控件类别；`consumer-exit.json` 单独证明所有自有子进程退出；失败保留 trace 和结果，未测不得计为通过。只有 source、App 及失败启动时返回的全部 owner 均证明整个进程族退出，且没有创建/观察器未知状态，才删除自有数据；正常 root 退出不授权删除。便携契约回归另验证真实 root 已退出但 family proof 失败时保留临时数据。此入口已接入 `check.yml`；CI505 已实证公开能力否定快失败，本次独立按需链续跑仍待后续精确提交的 Windows 实跑。步骤位于 browser 成功退出后；Hy production 的准入取决于同 run/attempt/head 与 nonce 的三份独立消费者退出证明，不要求 Notepad 业务成功，但任何原业务失败仍保留整轮失败；缺少经典原生 Edit 不跳过、不换成 fixture。原 Windows job 仍为 75 分钟，准备前的 admission 为完整后续链保留 60 分钟（准备 10、browser 10、Notepad 10、Hy production 6、Settings 16、缓存/上传尾部 7、打包 1）；前段超过 15 分钟即写失败 admission 并失败退出，不静默略过真实应用验收。CI 上传 `artifacts/ordinary-notepad/*.json` 与 `trace*.jsonl`，包括消费者退出证明。
+必须在前一个模型消费者已确认退出后串行执行。内层总预算 540 秒含 20 秒清理预留；全部业务共用原 520 秒 token，浮层局部 90 秒和正常退出局部 5 秒均受其截断，不续时，外层既有进程 owner 最多 585 秒，CI 步骤预留 10 分钟。`result.json` 记录逐段结果、实际系统应用版本/哈希与控件类别；`consumer-exit.json` 单独证明所有自有子进程退出；失败保留 trace 和结果，未测不得计为通过。只有 source、App 及失败启动时返回的全部 owner 均证明整个进程族退出，且没有创建/观察器未知状态，才删除自有数据；正常 root 退出不授权删除。便携契约回归另验证真实 root 已退出但 family proof 失败时保留临时数据。此入口已接入 `check.yml`；CI507 已实际进入独立按需链，但唯一 F9 在首租约前被 no-lease 拒绝，未进入预览、Esc 或 F10；首次只读捕获修复仍待后续精确提交的 Windows 实跑。步骤位于 browser 成功退出后；Hy production 的准入取决于同 run/attempt/head 与 nonce 的三份独立消费者退出证明，不要求 Notepad 业务成功，但任何原业务失败仍保留整轮失败；缺少经典原生 Edit 不跳过、不换成 fixture。原 Windows job 仍为 75 分钟，准备前的 admission 为完整后续链保留 60 分钟（准备 10、browser 10、Notepad 10、Hy production 6、Settings 16、缓存/上传尾部 7、打包 1）；前段超过 15 分钟即写失败 admission 并失败退出，不静默略过真实应用验收。CI 上传 `artifacts/ordinary-notepad/*.json` 与 `trace*.jsonl`，包括消费者退出证明。
+
+## 首次无租约 Wake 回归
+
+`FirstWakeCaptureTests` 以真实 stock Edit、生产 Hook/Router/Service 和认证 Broker pipe 验证无任何租约发布时的一次 F9，要求新真实正文、原字段/选区不变、零写能力/许可与零提交。旧普通 read 在按键后才发布时仍须独立发 `capture-wake`，不能借旧 body 或旧 epoch；此例同时核发请求时读取的当前排除列表。完成的真实 Broker 回包在 Router 交付前发生同根换字段、同根或另一顶层窗口往返、源输入、Esc、配置或更新命令时必须拒绝，即使还在原 150ms 内。Esc 单独核仅 content 版本推进；源输入与跨顶层往返各核实际输入/前台变化，且这三例以拒绝后的相邻命令序号排除其它命令先行退休造成的假阳性。测试软件输入需显式 opt-in，不作为物理输入法证据。
+
+`WakeCaptureBrokerTests` 通过真实 Broker/系统 Edit 核 fresh-after-clear、精确原点与混搭拒绝、已有 direct 绑定保留，以及真实 WPF 虚拟 UIA 字段的零正文读取拒绝；虚拟元素不因 root HWND 一致获得新入口。`BrokerQueueDeadlineTests` 使用真实子进程 pipe 核等待槽过期或发送前上下文撤销时不发送、不杀 active owner，以及已发只读响应超过命令期限仍排空、拒绝交付且后续连接可用。保留原 `SessionShortcutHookTests` 裸 Hook no-lease 拒绝与 `ShortcutFeedbackTests` direct-no-lease、stale/future epoch 阴性；不改正式 Notepad 的立即回源、唯一 F9 或原期限，不加内部 lease 等待、sleep 或重试。
+
+以上新增回归目前已实现，尚未取得此提交的 Windows 运行结果；本地受限环境未运行 MSBuild、桌面或 socket 检查，静态/格式检查不代表通过。
 
 ## 自动化层级
 

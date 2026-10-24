@@ -7,6 +7,41 @@ namespace TypeLay.Windows.Contracts.Tests;
 
 public sealed class BrokerContractTests
 {
+    [Fact]
+    public async Task FirstWakeCarriesOnlyItsOriginalNativeFieldAndDeadline()
+    {
+        var origin = new WakeCaptureOrigin(123, 456, 789, 790, 42, 1000);
+        Assert.True(origin.IsValid);
+        var request = new BrokerRequest(BrokerProtocol.Version, 9, "capture-wake", "",
+            ExpiresAtMs: 1150, WakeOrigin: origin);
+        using var stream = new MemoryStream();
+        await Wire.WriteAsync(stream, request, TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        var received = await Wire.ReadAsync<BrokerRequest>(stream, TestContext.Current.CancellationToken);
+        Assert.Equal(origin, received.WakeOrigin);
+        Assert.Equal(1150, received.ExpiresAtMs);
+        Assert.Null(received.BoundTarget);
+        Assert.Null(received.Plan);
+        Assert.Null(received.OwnedCapture);
+        Assert.False(received.CaptureDirect);
+        Assert.False((origin with
+        {
+            ControlHwnd = 0
+        }).IsValid);
+        Assert.False((origin with
+        {
+            ProcessStartUtcTicks = 0
+        }).IsValid);
+        Assert.False((origin with
+        {
+            ThreadId = 0
+        }).IsValid);
+        Assert.False((origin with
+        {
+            TriggeredAtMs = 0
+        }).IsValid);
+    }
+
     [Theory]
     [InlineData(0x10000u)] // Older base-only native diagnostic.
     [InlineData(0x10001u)] // Keyboard hint, not an identified Tab.

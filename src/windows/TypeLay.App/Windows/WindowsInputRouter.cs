@@ -4,9 +4,22 @@ using TypeLay.Runtime;
 namespace TypeLay.App;
 
 // One product controller, one hook epoch domain, two target-owned executors.
-internal sealed class WindowsInputRouter(WindowsInputService native, KeyboardHook hook, BrowserInput browser) : IInputService, IInputMonitor
+internal sealed partial class WindowsInputRouter : IInputService, IInputMonitor
 {
+    private readonly WindowsInputService native;
+    private readonly KeyboardHook hook;
+    private readonly BrowserInput browser;
+    private readonly Func<string[]>? wakeExcluded;
     private bool _disposed;
+    internal WindowsInputRouter(WindowsInputService native, KeyboardHook hook, BrowserInput browser,
+        Func<string[]>? wakeExcluded = null)
+    {
+        this.native = native;
+        this.hook = hook;
+        this.browser = browser;
+        this.wakeExcluded = wakeExcluded;
+        hook.EnableNativeWakeCapture(wakeExcluded is not null);
+    }
     public bool Available => native.Available;
     public bool Ready => hook.Ready;
     public bool ShortcutsReady => hook.ShortcutsReady;
@@ -34,7 +47,7 @@ internal sealed class WindowsInputRouter(WindowsInputService native, KeyboardHoo
     public bool TryRead(out InputNotice? notice)
     {
         browser.Poll();
-        return hook.TryRead(out notice) || browser.TryRead(out notice);
+        return hook.TryRead(out notice) || TryReadNativeWake(out notice) || browser.TryRead(out notice);
     }
     public void Publish(InputLease lease, AcceptancePermit? permit)
     {
@@ -98,6 +111,12 @@ internal sealed class WindowsInputRouter(WindowsInputService native, KeyboardHoo
         if (_disposed)
             return;
         _disposed = true;
+        hook.EnableNativeWakeCapture(false);
+        if (_nativeWakeFlight is { } flight)
+        {
+            _nativeWakeFlight = null;
+            _ = ObserveRetiredWake(flight.Read);
+        }
         browser.Dispose();
         native.Dispose();
         hook.Dispose();

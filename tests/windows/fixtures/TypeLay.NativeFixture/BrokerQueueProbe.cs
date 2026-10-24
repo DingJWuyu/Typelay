@@ -40,11 +40,12 @@ internal static class BrokerQueueProbe
                     if (!await Task.Run(() => release.WaitOne(TimeSpan.FromSeconds(10)), deadline.Token))
                         return 4;
                 }
-                if (request.Op is "return" or "return-glossary")
+                if (request.Op is "return" or "return-glossary" or "capture-wake")
                 {
                     returned.Set();
                     // Deliberately offer a late success. The production client
-                    // must retire it at the original deadline, not a new wire budget.
+                    // must reject it at the original deadline. Read-only Wake must
+                    // also drain this frame without stopping the next caller.
                     while (WindowsInterruptClock.NowMs <= request.ExpiresAtMs)
                         await Task.Delay(1, deadline.Token);
                 }

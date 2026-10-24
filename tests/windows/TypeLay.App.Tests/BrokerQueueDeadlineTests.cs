@@ -2,6 +2,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 using TypeLay.Runtime;
+using TypeLay.Core;
 using System.Text.Json;
 using TypeLay.Windows;
 using TypeLay.Windows.Contracts;
@@ -72,6 +73,96 @@ public sealed class BrokerQueueDeadlineTests
         Assert.Equal(expiresAt, request.ExpiresAtMs);
         Assert.True(request.ReceivedAtMs < expiresAt, "The return must reach the wire with part of its original budget remaining.");
     });
+
+    [Fact]
+    public Task ExpiredQueuedWakeDoesNotSendOrStopAnotherCall() => WithPeer(async peer =>
+    {
+        var broker = peer.Client;
+        await broker.StartAsync();
+        var active = broker.CallAsync(new(BrokerProtocol.Version, 0, "capture", ""), TimeSpan.FromSeconds(10));
+        await peer.Wait(peer.Entered);
+        try
+        {
+            var queued = broker.CallAsync(WakeRequest());
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(peer.Token));
+            Assert.False(active.IsCompleted);
+            Assert.True(broker.Available);
+            Assert.Equal(new[] { "hello", "capture" }, peer.Messages().Select(message => message.Op));
+        }
+        finally { peer.Release.Set(); }
+        Assert.Equal("observed", (await active.WaitAsync(peer.Token)).Status);
+        Assert.Equal("ready", (await broker.CallAsync(new(BrokerProtocol.Version, 0, "hello", "")).WaitAsync(peer.Token)).Status);
+        Assert.Equal(new[] { "hello", "capture", "hello" }, peer.Messages().Select(message => message.Op));
+        Assert.Equal(new long[] { 1, 2, 3 }, peer.Messages().Select(message => message.Id));
+    });
+
+    [Fact]
+    public Task SentWakeDrainsItsLateResponseWithoutStoppingTheNextCall() => WithPeer(async peer =>
+    {
+        var broker = peer.Client;
+        await broker.StartAsync();
+        var request = WakeRequest();
+        int current = 1;
+        var wake = broker.CaptureWakeAsync(request, () => Volatile.Read(ref current) != 0);
+        await peer.Wait(peer.Returned);
+        Volatile.Write(ref current, 0); // Revocation cannot cancel a frame already on the wire.
+        // A second caller is already queued while the expired read-only response
+        // is drained. It must receive its own response, not the late Wake frame.
+        var next = broker.CallAsync(new(BrokerProtocol.Version, 0, "hello", ""));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wake.WaitAsync(peer.Token));
+        Assert.True(broker.Available);
+        Assert.Equal("ready", (await next.WaitAsync(peer.Token)).Status);
+        Assert.Equal(new[] { "hello", "capture-wake", "hello" }, peer.Messages().Select(message => message.Op));
+        var sent = Assert.Single(peer.Messages(), message => message.Op == "capture-wake");
+        Assert.Equal(request.ExpiresAtMs, sent.ExpiresAtMs);
+        Assert.True(sent.ReceivedAtMs < request.ExpiresAtMs);
+        Assert.Equal(new long[] { 1, 2, 3 }, peer.Messages().Select(message => message.Id));
+    });
+
+    [Fact]
+    public Task RevokedQueuedWakeDoesNotSendItsStaleContextOrStopTheHealthyChild() => WithPeer(async peer =>
+    {
+        var broker = peer.Client;
+        await broker.StartAsync();
+        var active = broker.CallAsync(new(BrokerProtocol.Version, 0, "capture", ""), TimeSpan.FromSeconds(10));
+        await peer.Wait(peer.Entered);
+        int current = 1, guardCalls = 0;
+        long checkedAt = 0;
+        var request = WakeRequest();
+        var queued = broker.CaptureWakeAsync(request, () =>
+        {
+            Interlocked.Increment(ref guardCalls);
+            Interlocked.Exchange(ref checkedAt, WindowsInterruptClock.NowMs);
+            return Volatile.Read(ref current) != 0;
+        });
+        try
+        {
+            Assert.False(active.IsCompleted);
+            Assert.False(queued.IsCompleted);
+            Assert.Equal(0, Volatile.Read(ref guardCalls));
+            // Invalidate only after this request is waiting in the real serial
+            // queue. No elapsed-deadline failure may stand in for this guard.
+            Volatile.Write(ref current, 0);
+        }
+        finally { peer.Release.Set(); }
+        Assert.Equal("observed", (await active.WaitAsync(peer.Token)).Status);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(peer.Token));
+        Assert.True(Volatile.Read(ref guardCalls) > 0);
+        Assert.InRange(Interlocked.Read(ref checkedAt), request.WakeOrigin!.TriggeredAtMs, request.ExpiresAtMs - 1);
+        Assert.True(broker.Available);
+        Assert.Equal(new[] { "hello", "capture" }, peer.Messages().Select(message => message.Op));
+        Assert.Equal("ready", (await broker.CallAsync(new(BrokerProtocol.Version, 0, "hello", "")).WaitAsync(peer.Token)).Status);
+        Assert.Equal(new[] { "hello", "capture", "hello" }, peer.Messages().Select(message => message.Op));
+        Assert.Equal(new long[] { 1, 2, 3 }, peer.Messages().Select(message => message.Id));
+    });
+
+    private static BrokerRequest WakeRequest()
+    {
+        long triggeredAt = WindowsInterruptClock.NowMs;
+        return new(BrokerProtocol.Version, 0, "capture-wake", "",
+            ExpiresAtMs: triggeredAt + Limits.ObservationMaxAgeMs,
+            WakeOrigin: new(1, 2, 3, 4, 5, triggeredAt));
+    }
 
     private static async Task WithPeer(Func<Peer, Task> test)
     {

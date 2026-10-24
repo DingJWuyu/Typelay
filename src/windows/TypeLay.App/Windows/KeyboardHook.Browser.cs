@@ -15,7 +15,12 @@ internal sealed partial class KeyboardHook
     internal BrowserInputEpochs BrowserEpochs => new(UserEpoch, SourceUserEpoch, ForegroundEpoch, WindowEpoch, ContentEpoch, CommandGeneration);
     internal bool CommandsReleased => Volatile.Read(ref _commandGroupReleased) != 0;
     internal long CommandsReleasedAt => Interlocked.Read(ref _commandsReleasedAt);
-    internal long NextCommandSequence() => Interlocked.Increment(ref _commandSequence);
+    internal long NextCommandSequence()
+    {
+        long sequence = Interlocked.Increment(ref _commandSequence);
+        RetireNativeWakeCapture();
+        return sequence;
+    }
     internal (string Wake, string Direct)? FailedCommandConfiguration => _hotkeys.FailedConfiguration;
     internal void DeferCommandRegistration()
     {
