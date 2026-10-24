@@ -4,14 +4,19 @@
 
 ## 先看结论
 
-本页于 **2026-10-24 11:50 UTC** 按已公开 CI 证据与当前本地实现更新。
+本页于 **2026-10-24 12:06 UTC** 按 CI506 编译失败原件与当前本地修复更新。
 
-- **CI505 已终态失败：Windows App 803 通过、0 失败、16 项显式研究未执行；唯一失败是正式 Notepad 的公开能力否定。** 当前译文前置通过后，唯一浮层/当前结果明确仅预览，47ms 即报告 `required-capability-unavailable`，未进入接受按键阶段，后三场景未跑；仍 exit1，不是接受通过。
+- **CI506 因新增编排测试的六处 xUnit1051 编译失败，13 项回归及真实 Notepad 均未执行。** DesktopFixture 已编译不代表验收通过；本地只修测试取消 token 传递，保持刻意取消分支，等待独立审查和后继 CI。
+- **最近有实际 Windows 桌面结果的 CI505 仍为失败：App 803 通过、0 失败、16 项显式研究未执行；唯一失败是正式 Notepad 的公开能力否定。** 当前译文前置通过后，唯一浮层/当前结果明确仅预览，47ms 即报告 `required-capability-unavailable`，未进入接受按键阶段，后三场景未跑；仍 exit1，不是接受通过。
 - **新 retrieved-MSG 路线的隔离真实 Notepad 接受/撤回两例完整通过。** 精确提交实际验证了接受恰一次 Verified 正文回执、撤回零正文回执且原键旁路，以及各自原路径的 Undo、焦点、零 LL activation/二次 Write、Quiet 与清理。正式 Main/capability0 不变，不能把隔离通过写成普通发行路径已开放。
-- **回源、隔离 App 回执、Owned Ctrl/Tab、StartupPeers、continuous 与 Hy 生命周期本轮通过。** 回源六分支及 foreign/router 集成阴性回归通过；Windows Hy production 五阶段与 Settings 15 场景通过，正常退出与 worker 清理有实证。实际 0 前台间隙是否命中、物理输入法、第三方部署和翻译质量仍分别判断。
-- **Linux 本轮跳过，体验继续推荐完整核验的 CI498。** 最近完整 Linux 实跑 CI501 的 Qt/GTK/Hy 结果仍有效作基线，未改变推荐、模型采用或产品权限。
+- **CI505 的回源、隔离 App 回执、Owned Ctrl/Tab、StartupPeers、continuous 与 Hy 生命周期通过。** 回源六分支及 foreign/router 集成阴性回归通过；Windows Hy production 五阶段与 Settings 15 场景通过，正常退出与 worker 清理有实证。实际 0 前台间隙是否命中、物理输入法、第三方部署和翻译质量仍分别判断。
+- **Linux 体验继续推荐完整核验的 CI498。** CI505/506 未运行 Linux 产品链。 最近完整 Linux 实跑 CI501 的 Qt/GTK/Hy 结果仍有效作基线，未改变推荐、模型采用或产品权限。
 
 ## 最近已核终态与实际结果
+
+[CI506 / run 40092202993](https://github.com/DingJWuyu/Typelay/actions/runs/40092202993) 于 2026-10-24 12:01:06 UTC 触发，attempt 1，12:02:40 UTC 终态 `failure`；远端 `72dbd843f5476f4cd61e33c1657c0511cea3b07b` 对应本地 `7affc70a690be7716699c45712011b0967e1bab6`。Windows build 在 `OrdinaryNotepadScenarioTests.cs` 六处 `CreateReport()` 省略测试取消 token，触发 xUnit1051；fixture 自身编译完成，App.Tests 行为测试与后续桌面/模型链未执行。原件在 `artifacts/ci506-independent/windows-job-complete.log` 252–267 行。修复显式传入 `TestContext.Current.CancellationToken`，刻意取消用例使用 linked token，去掉 helper 默认参数；不 suppress 分析器、不改 fixture 或断言，本地格式检查不代替编译。
+
+下表保留最近实际完成的 **CI505** 产品结果，不计作 CI506 通过：
 
 [CI505 / run 40088956714](https://github.com/DingJWuyu/Typelay/actions/runs/40088956714) 于 2026-10-24 11:12:19 UTC 由唯一 push 触发，attempt 1，11:26:51 UTC 终态 `failure`。冻结本地 `9d43e71943c7d4372ec241c5b157f577c3693ea6` 对应远端 `5157622cec7abc2a7e61f40ed63f62df2af1b737`、tree `a2705d20bdac44a760550dc4d99ea5539e881049`；8 文件差异，精确读回、同分支非强推及源码 artifact 身份已核。
 
@@ -39,7 +44,7 @@ root 对集成、证据核验和采用决定负责；下表是当前公开责任
 
 | 责任线 / 负责人 | 当前动作与依赖 | 完成或停止条件 |
 | --- | --- | --- |
-| 正式 Notepad 独立按需验收 / root、unblock_notepad_direct_validation | 本地准备最小固定尾段编排：仅发送前唯一公开能力否定保留自动接受 failed、人工稿依赖 not-run，重查同一预算与源/焦点后继续原按需取消、直接替换和 Undo，成功才正常退出；生产能力与整体 exit1 不变。实际配置未核实；两轴独立审查与后续 Windows 实跑待完成 | 原 540 秒含 20 秒清理、同一 520 秒业务 token、输入及清理断言不变。真实结果必须同时保留 Tab 失败与原 facts，独立按需链有明确结果；其成功才要求 ordinary-exit 实证。未知/取消/源变化/发送后失败不续输。本地 MSBuild/socket 已拒绝，不重试或绕过；只做允许的格式/静态检查，不单独刷旧失败 |
+| 正式 Notepad 独立按需验收 / root、unblock_notepad_direct_validation | 最小固定尾段编排已发布，但 CI506 因测试 helper 的六处 xUnit1051 编译失败，13 项新回归及真实 Notepad 均未跑。本地仅修显式测试取消 token 及刻意取消用例的链接，等待该补丁两轴审查与后继 CI；原发送前公开否定、人工稿依赖 not-run、按需链及整体 exit1 不变。实际配置未核实 | 原 540 秒含 20 秒清理、同一 520 秒业务 token、输入及清理断言不变。真实结果必须同时保留 Tab 失败与原 facts，独立按需链有明确结果；其成功才要求 ordinary-exit 实证。未知/取消/源变化/发送后失败不续输。本地 MSBuild/socket 已拒绝，不重试或绕过；只做允许的格式/静态检查，不单独刷旧失败 |
 | foreground 等待首错 / triage_source_setup_ci498 | 取消后的清理前寿命诊断已发布，CI505 编译与原用例通过，失败分支未验；保留已持有进程 kernel 退出信号及窗口存在布尔的单次诊断，异常不替换原取消 | 等后续自然失败时核一次清理前元数据及原取消/清理保留，核实后关闭本诊断排程；不单独重跑。非原子样本不证明截止前退出、窗口身份或前台根因，原输入/循环/10 秒截止不变 |
 | Linux 体验交付 / root | 保持 CI498 已核完整包推荐；最近完整 CI501 无新增 Linux 失败。保留用户真机、物理键盘/输入法反馈，旧 IME/投递延迟未获唯一根因证据 | 后继包须完整相关结果与身份才能替换推荐；未知 IME 仍保守拒绝，不延票、不重发唤醒、不自动发布 stable |
 | 模型采用 / root | 保持下方既有公开采用结论、默认、兼容和资源合同；只在新增产品故障或有实质新假设时安排最小验证 | 生命周期、质量、高级 scope 和资产许可各凭自己的证据；许可调查本身不授予新采用或公开权限，不扩大候选或推理预算 |

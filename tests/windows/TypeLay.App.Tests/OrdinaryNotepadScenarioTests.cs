@@ -12,7 +12,7 @@ public sealed class OrdinaryNotepadScenarioTests
     [Fact]
     public async Task PublicDenialPreservesFailedAcceptanceWhileIndependentDirectAndExitRun()
     {
-        var report = CreateReport();
+        var report = CreateReport(TestContext.Current.CancellationToken);
         var observed = new List<string>();
         var facts = new
         {
@@ -61,7 +61,7 @@ public sealed class OrdinaryNotepadScenarioTests
     [InlineData("canceled")]
     public async Task OtherCueFailuresStopBeforeAnyInput(string kind)
     {
-        var report = CreateReport();
+        var report = CreateReport(TestContext.Current.CancellationToken);
         Exception failure = kind switch
         {
             "unknown" => new InvalidOperationException(),
@@ -88,7 +88,7 @@ public sealed class OrdinaryNotepadScenarioTests
     [Fact]
     public async Task CapabilityFailureAfterAcceptanceInputDoesNotContinue()
     {
-        var report = CreateReport();
+        var report = CreateReport(TestContext.Current.CancellationToken);
         var observed = new List<string>();
         var failure = new HyPackageCheck.Failure("required-capability-unavailable");
         var caught = await Record.ExceptionAsync(() => HyPackageCheck.RunOrdinaryNotepadInteractions(report,
@@ -116,7 +116,7 @@ public sealed class OrdinaryNotepadScenarioTests
     [InlineData(true)]
     public async Task DenialCannotContinueWhenSourceValidationFailsOrCancels(bool cancel)
     {
-        using var deadline = new CancellationTokenSource();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var report = CreateReport(deadline.Token);
         var observed = new List<string>();
         var caught = await Record.ExceptionAsync(() => HyPackageCheck.RunOrdinaryNotepadInteractions(report,
@@ -151,7 +151,7 @@ public sealed class OrdinaryNotepadScenarioTests
     [InlineData(true)]
     public async Task SharedDeadlineExpiredAtCueDoesNotStartAnyInput(bool capabilityDenied)
     {
-        using var deadline = new CancellationTokenSource();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var report = CreateReport(deadline.Token);
         var observed = new List<string>();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => HyPackageCheck.RunOrdinaryNotepadInteractions(report,
@@ -175,7 +175,7 @@ public sealed class OrdinaryNotepadScenarioTests
     [Fact]
     public async Task EditFailureDoesNotStartIndependentDirectOrExit()
     {
-        var report = CreateReport();
+        var report = CreateReport(TestContext.Current.CancellationToken);
         var observed = new List<string>();
         var failure = new HyPackageCheck.Failure("required-capability-unavailable");
         var caught = await Record.ExceptionAsync(() => HyPackageCheck.RunOrdinaryNotepadInteractions(report,
@@ -199,7 +199,7 @@ public sealed class OrdinaryNotepadScenarioTests
     [InlineData(true)]
     public async Task DirectFailureNeverRunsOrdinaryExit(bool capabilityDenied)
     {
-        var report = CreateReport();
+        var report = CreateReport(TestContext.Current.CancellationToken);
         var observed = new List<string>();
         var failure = new InvalidOperationException();
         var caught = await Record.ExceptionAsync(() => HyPackageCheck.RunOrdinaryNotepadInteractions(report,
@@ -216,7 +216,7 @@ public sealed class OrdinaryNotepadScenarioTests
     [Fact]
     public async Task AvailableAcceptanceKeepsOriginalScenarioOrderAndCanPass()
     {
-        var report = CreateReport();
+        var report = CreateReport(TestContext.Current.CancellationToken);
         var observed = new List<string>();
         await HyPackageCheck.RunOrdinaryNotepadInteractions(report,
             _ => Step("cue"), _ => Step("accept"), _ => Step("edit"), _ => Step("direct"), _ => Step("exit"),
@@ -232,7 +232,7 @@ public sealed class OrdinaryNotepadScenarioTests
         }
     }
 
-    private static HyPackageCheck.Report CreateReport(CancellationToken ct = default) =>
+    private static HyPackageCheck.Report CreateReport(CancellationToken ct) =>
         new("ordinary-notepad-shipped-app", 540, "automatic-accept-and-undo", "edit-return-and-undo",
             "on-demand-cancel-and-direct", "ordinary-exit")
         {
