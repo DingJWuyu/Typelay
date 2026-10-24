@@ -144,14 +144,50 @@ public static class NativeMethods
     {
         nuint length = Send(hwnd, WM_GETTEXTLENGTH);
         if (length > (nuint)limit)
-            throw new InvalidOperationException("Text limit.");
+            throw new TextReadException(TextReadFailure.TextLimit, limit, (ulong)length);
         var buffer = new StringBuilder((int)length + 2);
         if (SendRead(hwnd, WM_GETTEXT, (nuint)buffer.Capacity, buffer, 0x22, 100, out nuint count) == 0)
             throw new NativeMessageException(nameof(ReadText), WM_GETTEXT, Marshal.GetLastPInvokeError());
         string result = buffer.ToString();
-        if ((nuint)result.Length != count || Send(hwnd, WM_GETTEXTLENGTH) != (nuint)result.Length)
-            throw new InvalidOperationException("Text changed during read.");
+        if ((nuint)result.Length != count)
+            throw new TextReadException(TextReadFailure.CountMismatch, limit, (ulong)length, (ulong)count, result.Length);
+        nuint finalLength = Send(hwnd, WM_GETTEXTLENGTH);
+        if (finalLength != (nuint)result.Length)
+            throw new TextReadException(TextReadFailure.LengthChangedDuringRead, limit, (ulong)length,
+                (ulong)count, result.Length, (ulong)finalLength);
         return result;
+    }
+    // Only for a caller already waiting for an expected text transition. A changed
+    // length is an incomplete observation, never success or an internal retry.
+    // Stable-source assertions must continue to use strict ReadText.
+    public static bool TextMatches(nint hwnd, int limit, string expected, out TextReadException? changedDuringRead)
+    {
+        changedDuringRead = null;
+        try
+        {
+            return ReadText(hwnd, limit) == expected;
+        }
+        catch (TextReadException error) when (error.Reason == TextReadFailure.LengthChangedDuringRead)
+        {
+            changedDuringRead = error;
+            return false;
+        }
+    }
+    public enum TextReadFailure
+    {
+        TextLimit, CountMismatch, LengthChangedDuringRead
+    }
+    // Numeric metadata only: no source text, HWND, path or arbitrary exception message.
+    public sealed class TextReadException(TextReadFailure reason, int limit, ulong initialLength,
+        ulong? returnedCount = null, int? managedLength = null, ulong? finalLength = null)
+        : InvalidOperationException("Text observation was incomplete or invalid.")
+    {
+        public TextReadFailure Reason { get; } = reason;
+        public int Limit { get; } = limit;
+        public ulong InitialLength { get; } = initialLength;
+        public ulong? ReturnedCount { get; } = returnedCount;
+        public int? ManagedLength { get; } = managedLength;
+        public ulong? FinalLength { get; } = finalLength;
     }
     // Public fixture labels change independently of observation. Read one bounded
     // WM_GETTEXT snapshot; never use this helper for source text or acceptance authority.

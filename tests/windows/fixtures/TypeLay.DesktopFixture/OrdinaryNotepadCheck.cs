@@ -119,11 +119,15 @@ internal static partial class HyPackageCheck
             }, ct);
             await WaitAsync(() => Task.FromResult(N.Focused() == (root, field)), ct);
         }
-        async Task Undo(string expected)
+        async Task Undo(Scene scene, string expected)
         {
+            scene.Stage = "verify-undo-source-focus";
             Require(N.Focused() == (root, field), "ordinary-undo-source-not-focused");
+            scene.Stage = "press-single-native-undo";
             NotepadChord([0x11, 0x5A]);
-            await WaitAsync(() => Task.FromResult(N.ReadText(field, Limits.MaxTextUnits) == expected), ct);
+            scene.Stage = "await-exact-original-source";
+            await WaitAsync(() => Task.FromResult(OrdinaryTextMatches(scene, field, Limits.MaxTextUnits, expected)), ct);
+            scene.Stage = "verify-restored-source-strict";
             SourceUnchanged(expected);
         }
         async Task<AutomationElement> OverlayEditor(bool ready, Scene? scene = null)
@@ -338,10 +342,10 @@ internal static partial class HyPackageCheck
                 scene.Stage = "press-single-acceptance-tab";
                 NotepadChord([0x09]);
                 scene.Stage = "await-exact-source-translation";
-                await WaitAsync(() => Task.FromResult(N.ReadText(field, Limits.MaxTextUnits) == translation), ct);
+                await WaitAsync(() => Task.FromResult(OrdinaryTextMatches(scene, field, Limits.MaxTextUnits, translation)), ct);
+                scene.Stage = "verify-accept-source-focus";
                 Require(N.Focused() == (root, field), "ordinary-accept-stole-focus");
-                scene.Stage = "native-undo-original-source";
-                await Undo(original);
+                await Undo(scene, original);
                 scene.Facts = new
                 {
                     source = original,
@@ -352,19 +356,29 @@ internal static partial class HyPackageCheck
                 };
             }, async scene =>
             {
+                scene.Stage = "await-draft-preview";
                 var editor = await OverlayEditor(false);
+                scene.Stage = "focus-draft-editor";
                 await ClickNotepadEditor(editor, app!.Process.Id, ct);
                 await WaitAsync(async () => await UiAsync(() => editor.Current.HasKeyboardFocus
                     && !((ValuePattern)editor.GetCurrentPattern(ValuePattern.Pattern)).Current.IsReadOnly, ct), ct);
+                scene.Stage = "set-exact-draft";
                 await UiAsync(() => ((ValuePattern)editor.GetCurrentPattern(ValuePattern.Pattern)).SetValue(draft), ct);
+                scene.Stage = "verify-original-source-before-draft-return";
                 SourceUnchanged(original);
+                scene.Stage = "press-single-draft-return-tab";
                 NotepadChord([0x09]);
+                scene.Stage = "await-draft-return-focus";
                 await WaitAsync(() => Task.FromResult(N.Focused() == (root, field)), ct);
+                scene.Stage = "verify-original-source-after-draft-return";
                 SourceUnchanged(original);
+                scene.Stage = "await-draft-acceptance-cue";
                 await OverlayEditor(true);
+                scene.Stage = "press-single-draft-acceptance-tab";
                 NotepadChord([0x09]);
-                await WaitAsync(() => Task.FromResult(N.ReadText(field, Limits.MaxTextUnits) == draft), ct);
-                await Undo(original);
+                scene.Stage = "await-exact-source-draft";
+                await WaitAsync(() => Task.FromResult(OrdinaryTextMatches(scene, field, Limits.MaxTextUnits, draft)), ct);
+                await Undo(scene, original);
                 scene.Facts = new
                 {
                     draft,
@@ -374,6 +388,7 @@ internal static partial class HyPackageCheck
                 };
             }, async scene =>
             {
+                scene.Stage = "set-public-on-demand-mode";
                 await ShowNotepadSettings(app!.Process, ct);
                 settings = await SettingsAsync(app.Process, ct);
                 await NavigateAsync(settings!, "⌂  常规", "常规", ct);
@@ -386,23 +401,36 @@ internal static partial class HyPackageCheck
                     Require(choice is not null, "ordinary-on-demand-choice-missing");
                     ((SelectionItemPattern)choice!.GetCurrentPattern(SelectionItemPattern.Pattern)).Select();
                 }, ct);
+                scene.Stage = "await-on-demand-setting-saved";
                 await WaitAsync(() => Task.FromResult(ReadSettings(data)?.Mode == WorkMode.OnDemand), ct);
+                scene.Stage = "focus-original-source-for-wake";
                 await FocusSource();
+                scene.Stage = "press-single-wake-f9";
                 SendWakeOnce();
+                scene.Stage = "await-on-demand-preview";
                 await OverlayEditor(false);
+                scene.Stage = "verify-original-source-after-wake";
                 SourceUnchanged(original);
+                scene.Stage = "press-single-cancel-escape";
                 NotepadChord([0x1B]);
+                scene.Stage = "verify-original-source-after-escape";
                 SourceUnchanged(original);
+                scene.Stage = "await-canceled-overlay-hidden";
                 await WaitAsync(async () => await UiAsync(() => AutomationElement.RootElement.FindFirst(TreeScope.Children, new AndCondition(
                     new PropertyCondition(AutomationElement.ProcessIdProperty, app!.Process.Id),
                     new PropertyCondition(AutomationElement.NameProperty, "TypeLay · 自动化测试"),
                     new PropertyCondition(AutomationElement.IsOffscreenProperty, false))) is null, ct), ct);
+                scene.Stage = "verify-canceled-source-strict";
                 SourceUnchanged(original);
+                scene.Stage = "verify-cancel-source-focus";
                 Require(N.Focused() == (root, field), "ordinary-cancel-stole-focus");
+                scene.Stage = "press-single-direct-f10";
                 NotepadChord([0x11, 0x10, 0x79]);
-                await WaitAsync(() => Task.FromResult(N.ReadText(field, Limits.MaxTextUnits) == translation), ct);
+                scene.Stage = "await-exact-direct-translation";
+                await WaitAsync(() => Task.FromResult(OrdinaryTextMatches(scene, field, Limits.MaxTextUnits, translation)), ct);
+                scene.Stage = "verify-direct-source-focus";
                 Require(N.Focused() == (root, field), "ordinary-direct-stole-focus");
-                await Undo(original);
+                await Undo(scene, original);
                 scene.Facts = new
                 {
                     wakePresses = 1,
@@ -412,6 +440,7 @@ internal static partial class HyPackageCheck
                 };
             }, async scene =>
             {
+                scene.Stage = "verify-original-source-before-exit";
                 SourceUnchanged(original);
                 Require(N.PostMessage(root, 0x0010, 0, 0), "ordinary-notepad-close-request-failed");
                 await WaitAsync(async () =>

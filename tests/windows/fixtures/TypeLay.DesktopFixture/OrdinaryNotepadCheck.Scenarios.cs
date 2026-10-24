@@ -1,5 +1,19 @@
+using N = TypeLay.Platform.Windows.NativeMethods;
+
 internal static partial class HyPackageCheck
 {
+    internal static bool OrdinaryTextMatches(Scene scene, nint field, int limit, string expected)
+    {
+        scene.TextLengthChangeCount ??= 0;
+        bool matches = N.TextMatches(field, limit, expected, out var changed);
+        if (changed is not null)
+        {
+            scene.TextLengthChangeCount++;
+            scene.RecordTextReadFailure(changed);
+        }
+        return matches;
+    }
+
     // The fixed Notepad tail, not a general continue-on-failure runner. Only the
     // read-only cue wait can establish this denial; input callbacks never can.
     internal static async Task RunOrdinaryNotepadInteractions(Report report,

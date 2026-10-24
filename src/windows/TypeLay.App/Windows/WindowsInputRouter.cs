@@ -10,14 +10,16 @@ internal sealed partial class WindowsInputRouter : IInputService, IInputMonitor
     private readonly KeyboardHook hook;
     private readonly BrowserInput browser;
     private readonly Func<string[]>? wakeExcluded;
+    private readonly Func<long>? wakeDeliveryNow;
     private bool _disposed;
     internal WindowsInputRouter(WindowsInputService native, KeyboardHook hook, BrowserInput browser,
-        Func<string[]>? wakeExcluded = null)
+        Func<string[]>? wakeExcluded = null, Func<long>? wakeDeliveryNow = null)
     {
         this.native = native;
         this.hook = hook;
         this.browser = browser;
         this.wakeExcluded = wakeExcluded;
+        this.wakeDeliveryNow = wakeDeliveryNow;
         hook.EnableNativeWakeCapture(wakeExcluded is not null);
     }
     public bool Available => native.Available;

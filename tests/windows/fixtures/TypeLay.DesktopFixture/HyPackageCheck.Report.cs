@@ -30,6 +30,19 @@ internal static partial class HyPackageCheck
         {
             get; set;
         }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public int? TextLengthChangeCount
+        {
+            get; set;
+        }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public TextReadDiagnostic? LastTextReadFailure
+        {
+            get; set;
+        }
+        internal void RecordTextReadFailure(N.TextReadException error) =>
+            LastTextReadFailure = new(error.Reason.ToString(), error.Limit, error.InitialLength,
+                error.ReturnedCount, error.ManagedLength, error.FinalLength);
         public long ElapsedMs
         {
             get; set;
@@ -39,6 +52,8 @@ internal static partial class HyPackageCheck
             get; set;
         }
     }
+    internal sealed record TextReadDiagnostic(string Reason, int Limit, ulong InitialLength,
+        ulong? ReturnedCount, int? ManagedLength, ulong? FinalLength);
     internal sealed class Report(string suite, int budget, params string[] names)
     {
         public string Suite { get; } = suite;
@@ -96,6 +111,8 @@ internal static partial class HyPackageCheck
                     scene.NativeMessageId = native.MessageId;
                     scene.NativeWin32Error = native.Win32Error; // Zero does not establish a timeout.
                 }
+                if (error is N.TextReadException text)
+                    scene.RecordTextReadFailure(text);
                 throw;
             }
             finally { scene.ElapsedMs = watch.ElapsedMilliseconds; }

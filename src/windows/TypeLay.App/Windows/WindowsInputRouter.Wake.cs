@@ -45,7 +45,10 @@ internal sealed partial class WindowsInputRouter
         {
             var result = flight.Read.GetAwaiter().GetResult();
             var source = result.Snapshot;
-            long now = WindowsInterruptClock.NowMs;
+            // Only the notice-delivery seam accepts a controlled time in tests.
+            // Request admission, queued-current checks and Broker keep their
+            // original real clock and deadline.
+            long now = wakeDeliveryNow?.Invoke() ?? WindowsInterruptClock.NowMs;
             // This is the actual notice-delivery boundary, not an async
             // continuation whose queued result can outlive input/configuration.
             if (browser.OwnsForeground || !hook.NativeWakeCaptureCurrent(capture, now)

@@ -22,11 +22,13 @@ dotnet "$fixture/TypeLay.DesktopFixture.dll" --verify-ordinary-notepad artifacts
 
 ## 首次无租约 Wake 回归
 
-`FirstWakeCaptureTests` 以真实 stock Edit、生产 Hook/Router/Service 和认证 Broker pipe 验证无任何租约发布时的一次 F9，要求新真实正文、原字段/选区不变、零写能力/许可与零提交。旧普通 read 在按键后才发布时仍须独立发 `capture-wake`，不能借旧 body 或旧 epoch；此例同时核发请求时读取的当前排除列表。完成的真实 Broker 回包在 Router 交付前发生同根换字段、同根或另一顶层窗口往返、源输入、Esc、配置或更新命令时必须拒绝，即使还在原 150ms 内。Esc 单独核仅 content 版本推进；源输入与跨顶层往返各核实际输入/前台变化，且这三例以拒绝后的相邻命令序号排除其它命令先行退休造成的假阳性。测试软件输入需显式 opt-in，不作为物理输入法证据。
+`FirstWakeCaptureTests` 的冷整链阳性以真实 stock Edit、生产 Hook/Router/Service 和认证 Broker pipe 验证无任何租约发布时的一次 F9，要求新真实正文、原字段/选区不变、零写能力/许可与零提交。旧普通 read 在按键后才发布时仍须独立发 `capture-wake`，不能借旧 body 或旧 epoch；此例同时核发请求时读取的当前排除列表。这两例已在 CI508 通过，不证明每次冷 UIA 都能在期限内返回。冷整链失败只补录原请求身份/t0/期限、公共 wire 写完与回包时间、notice 时间、status/focus/snapshot 是否存在，不推断 Broker 内部阶段，也不预热或重试。
+
+`ACompletedWakeReplyIsCheckedAtActualDelivery` 独立验证末门：真实 Hook/字段/UI 变化保留，但 `IInputBroker` pending 口按本次原点请求构造明确合成回包，不借旧真实正文冒称新读。完成回包后才执行同根换字段、同根或另一顶层往返、源输入、Esc、配置或更新命令，再调用实际 `router.TryRead`。仅 Router 最后交付的 now 可控为原 t0+1；不变上下文须成功，独立 t0+151 须过期拒绝。发请求前、排队 current、Broker 与原 `ExpiresAt=t0+150` 均不换时钟、不延期限。Esc 核仅 content 版本推进，源输入/跨顶层往返核真实变化，并以拒绝后的相邻命令序号排除其它命令先退休。此层证明异步末门，不证明真实 Broker 读取时效；软件输入需显式 opt-in，不作为物理输入法证据。
 
 `WakeCaptureBrokerTests` 通过真实 Broker/系统 Edit 核 fresh-after-clear、精确原点与混搭拒绝、已有 direct 绑定保留，以及真实 WPF 虚拟 UIA 字段的零正文读取拒绝；虚拟元素不因 root HWND 一致获得新入口。`BrokerQueueDeadlineTests` 使用真实子进程 pipe 核等待槽过期或发送前上下文撤销时不发送、不杀 active owner，以及已发只读响应超过命令期限仍排空、拒绝交付且后续连接可用。保留原 `SessionShortcutHookTests` 裸 Hook no-lease 拒绝与 `ShortcutFeedbackTests` direct-no-lease、stale/future epoch 阴性；不改正式 Notepad 的立即回源、唯一 F9 或原期限，不加内部 lease 等待、sleep 或重试。
 
-以上新增回归目前已实现，尚未取得此提交的 Windows 运行结果；本地受限环境未运行 MSBuild、桌面或 socket 检查，静态/格式检查不代表通过。
+CI508 原26项新增回归为23通过、3失败：旧末门理论的同根/跨顶层往返在全部 TryRead 排空后采样为155/184ms，包含最后空调用，不能据此确定生产末门的采样时刻或拒绝原因；sibling 在失效操作前已收到空 Snapshot，具体原因仍未知。上述确定性末门替换及两个对照尚未实跑，不能据替换测试宣称冷读问题已根治。本地受限环境未运行 MSBuild、桌面或 socket 检查，静态/格式检查不代表通过。
 
 ## 自动化层级
 

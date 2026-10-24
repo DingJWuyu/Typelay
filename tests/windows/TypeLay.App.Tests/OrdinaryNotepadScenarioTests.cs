@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using N = TypeLay.Platform.Windows.NativeMethods;
 using Xunit;
 
 namespace TypeLay.App.Tests;
@@ -211,6 +212,46 @@ public sealed class OrdinaryNotepadScenarioTests
         Assert.Equal("failed", report.Scenes[2].Outcome);
         Assert.Equal("not-run", report.Scenes[3].Outcome);
         using var saved = await Save(report, 1);
+    }
+
+    [Fact]
+    public async Task TextReadFailurePreservesStageFactsAndEarlierChangeCountInSavedResult()
+    {
+        var report = CreateReport(TestContext.Current.CancellationToken);
+        var facts = new
+        {
+            wakePresses = 1,
+            cancelPreservedSource = true
+        };
+        var failure = new N.TextReadException(N.TextReadFailure.CountMismatch, 8192, 32, 8, 9);
+        var caught = await Record.ExceptionAsync(() => HyPackageCheck.RunOrdinaryNotepadInteractions(report,
+            _ => Task.CompletedTask, _ => Task.CompletedTask, _ => Task.CompletedTask,
+            scene =>
+            {
+                scene.Stage = "await-exact-direct-translation";
+                scene.Facts = facts;
+                scene.TextLengthChangeCount = 2;
+                return Task.FromException(failure);
+            }, _ => Task.CompletedTask, () => { }));
+        Assert.Same(failure, caught);
+        Assert.Same(facts, report.Scenes[2].Facts);
+        Assert.Equal("not-run", report.Scenes[3].Outcome);
+        using var saved = await Save(report, 1);
+        var direct = saved.RootElement.GetProperty("scenes")[2];
+        Assert.Equal("failed", direct.GetProperty("outcome").GetString());
+        Assert.Equal("await-exact-direct-translation", direct.GetProperty("stage").GetString());
+        Assert.Equal("operation-failed", direct.GetProperty("failure").GetString());
+        Assert.Equal(nameof(N.TextReadException), direct.GetProperty("errorType").GetString());
+        Assert.Equal(1, direct.GetProperty("facts").GetProperty("wakePresses").GetInt32());
+        Assert.True(direct.GetProperty("facts").GetProperty("cancelPreservedSource").GetBoolean());
+        Assert.Equal(2, direct.GetProperty("textLengthChangeCount").GetInt32());
+        var observation = direct.GetProperty("lastTextReadFailure");
+        Assert.Equal("CountMismatch", observation.GetProperty("reason").GetString());
+        Assert.Equal(8192, observation.GetProperty("limit").GetInt32());
+        Assert.Equal(32UL, observation.GetProperty("initialLength").GetUInt64());
+        Assert.Equal(8UL, observation.GetProperty("returnedCount").GetUInt64());
+        Assert.Equal(9, observation.GetProperty("managedLength").GetInt32());
+        Assert.Equal(JsonValueKind.Null, observation.GetProperty("finalLength").ValueKind);
     }
 
     [Fact]
