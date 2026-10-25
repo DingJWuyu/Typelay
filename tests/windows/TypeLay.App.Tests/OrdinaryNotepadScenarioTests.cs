@@ -122,15 +122,16 @@ public sealed class OrdinaryNotepadScenarioTests
         {
             // Old complete commands, including the same sequence in another
             // generation, do not belong to the new one-press observation.
-            await File.WriteAllTextAsync(path, Key(oldGeneration, 2) + Rejected(oldGeneration, 2, "direct", reason));
+            await File.WriteAllTextAsync(path, Key(oldGeneration, 2) + Rejected(oldGeneration, 2, "direct", reason),
+                TestContext.Current.CancellationToken);
             long offset = new FileInfo(path).Length;
-            await File.AppendAllTextAsync(path, Rejected(oldGeneration, 2, "direct", reason));
+            await File.AppendAllTextAsync(path, Rejected(oldGeneration, 2, "direct", reason), TestContext.Current.CancellationToken);
             HyPackageCheck.ObserveOrdinaryDirectCommand(scene, path, offset, TestContext.Current.CancellationToken);
             Assert.Null(Assert.IsType<HyPackageCheck.OrdinaryDirectObservation>(scene.Facts).Command);
             await File.AppendAllTextAsync(path, Key(generation, 2)
                 + Rejected(oldGeneration, 2, "direct", reason)
                 + Rejected(generation, 3, "direct", reason)
-                + Rejected(generation, 2, "wake", reason));
+                + Rejected(generation, 2, "wake", reason), TestContext.Current.CancellationToken);
             HyPackageCheck.ObserveOrdinaryDirectCommand(scene, path, offset, TestContext.Current.CancellationToken);
             Assert.Equal(new HyPackageCheck.OrdinaryDirectCommand(generation, 2),
                 Assert.IsType<HyPackageCheck.OrdinaryDirectObservation>(scene.Facts).Command);
@@ -139,10 +140,10 @@ public sealed class OrdinaryNotepadScenarioTests
             // never interpreted as an absent rejection or another key press.
             string rejection = Rejected(generation, 2, "direct", reason);
             int split = rejection.Length / 2;
-            await File.AppendAllTextAsync(path, rejection[..split]);
+            await File.AppendAllTextAsync(path, rejection[..split], TestContext.Current.CancellationToken);
             HyPackageCheck.ObserveOrdinaryDirectCommand(scene, path, offset, TestContext.Current.CancellationToken);
             Assert.Null(Assert.IsType<HyPackageCheck.OrdinaryDirectObservation>(scene.Facts).Command!.Rejection);
-            await File.AppendAllTextAsync(path, rejection[split..]);
+            await File.AppendAllTextAsync(path, rejection[split..], TestContext.Current.CancellationToken);
             bool exitStarted = false;
             var error = await Record.ExceptionAsync(() => HyPackageCheck.RunOrdinaryNotepadInteractions(report,
                 _ => Task.CompletedTask, _ => Task.CompletedTask, _ => Task.CompletedTask,
