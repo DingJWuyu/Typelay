@@ -37,6 +37,7 @@ internal static partial class HyPackageCheck
         string data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TypeLay");
         string ownerFile = Path.Combine(data, "ordinary-notepad-fixture-owner"), owner = Guid.NewGuid().ToString("N");
         string document = Path.Combine(directory, "ordinary-notepad-synthetic.txt");
+        string trace = Path.Combine(directory, "trace.jsonl");
         const string original = "Please send me the final version";
         const string draft = "Edited translation for the release";
         bool ownsData = false, creationUnconfirmed = false;
@@ -281,7 +282,7 @@ internal static partial class HyPackageCheck
                 var info = StartInfo(Path.Combine(distribution, "app", "TypeLay.App.exe"));
                 info.ArgumentList.Add("--automation-test");
                 info.Environment["TYPELAY_HOME"] = distribution;
-                info.Environment["TYPELAY_TRACE"] = Path.Combine(directory, "trace.jsonl");
+                info.Environment["TYPELAY_TRACE"] = trace;
                 scene.Stage = "start-shipped-app";
                 app = Start(info);
                 workers = new WorkerObserver(app.Process, data);
@@ -403,6 +404,8 @@ internal static partial class HyPackageCheck
                 }, ct);
                 scene.Stage = "await-on-demand-setting-saved";
                 await WaitAsync(() => Task.FromResult(ReadSettings(data)?.Mode == WorkMode.OnDemand), ct);
+                scene.Stage = "open-public-shortcut-status";
+                await NavigateAsync(settings!, "⌨  快捷键", "快捷键", ct);
                 scene.Stage = "focus-original-source-for-wake";
                 await FocusSource();
                 scene.Stage = "press-single-wake-f9";
@@ -411,6 +414,8 @@ internal static partial class HyPackageCheck
                 await OverlayEditor(false);
                 scene.Stage = "verify-original-source-after-wake";
                 SourceUnchanged(original);
+                Require(File.Exists(trace), "ordinary-direct-trace-unavailable");
+                long escapeTraceOffset = new FileInfo(trace).Length;
                 scene.Stage = "press-single-cancel-escape";
                 NotepadChord([0x1B]);
                 scene.Stage = "verify-original-source-after-escape";
@@ -424,10 +429,41 @@ internal static partial class HyPackageCheck
                 SourceUnchanged(original);
                 scene.Stage = "verify-cancel-source-focus";
                 Require(N.Focused() == (root, field), "ordinary-cancel-stole-focus");
+                // Esc retires the shortcut observation as well as acceptance.
+                // A hidden overlay is not evidence of a new Direct basis. Read
+                // the existing public source-ready cue without another focus
+                // change, key, capture request or extension of the suite deadline.
+                scene.Stage = "await-public-direct-source-ready";
+                await WaitAsync(async () =>
+                {
+                    SourceUnchanged(original);
+                    Require(N.Focused() == (root, field), "ordinary-direct-source-focus-changed");
+                    var publication = ObserveOrdinaryEscapePublication(trace, escapeTraceOffset, ct);
+                    bool ready = publication is not null && await UiAsync(() => settings!.FindAll(TreeScope.Descendants,
+                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text))
+                        .Cast<AutomationElement>().Any(item => item.Current.Name
+                            == "两个快捷键已启用；操作不会切换工作模式。 当前输入框的直接替换快捷键已就绪。"), ct);
+                    scene.Facts = new
+                    {
+                        wakePresses = 1,
+                        cancelPreservedSource = true,
+                        postEscapePublication = publication,
+                        publicDirectReadyMatched = ready
+                    };
+                    return ready;
+                }, ct);
+                SourceUnchanged(original);
+                Require(N.Focused() == (root, field), "ordinary-direct-source-focus-changed");
+                Require(File.Exists(trace), "ordinary-direct-trace-unavailable");
+                long directTraceOffset = new FileInfo(trace).Length;
                 scene.Stage = "press-single-direct-f10";
                 NotepadChord([0x11, 0x10, 0x79]);
                 scene.Stage = "await-exact-direct-translation";
-                await WaitAsync(() => Task.FromResult(OrdinaryTextMatches(scene, field, Limits.MaxTextUnits, translation)), ct);
+                await WaitAsync(() =>
+                {
+                    ObserveOrdinaryDirectCommand(scene, trace, directTraceOffset, ct);
+                    return Task.FromResult(OrdinaryTextMatches(scene, field, Limits.MaxTextUnits, translation));
+                }, ct);
                 scene.Stage = "verify-direct-source-focus";
                 Require(N.Focused() == (root, field), "ordinary-direct-stole-focus");
                 await Undo(scene, original);
@@ -435,6 +471,7 @@ internal static partial class HyPackageCheck
                 {
                     wakePresses = 1,
                     cancelPreservedSource = true,
+                    publicDirectReadyMatched = true,
                     directPresses = 1,
                     nativeUndoRestoredSource = true
                 };

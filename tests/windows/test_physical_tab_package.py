@@ -123,8 +123,21 @@ class PhysicalTabPackageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             package.stage_bundle(root, self.home / "embedded")
 
-    def write_trx(self, outcome="Passed", executed=2, method=None):
+    def write_trx(
+        self,
+        outcome="Passed",
+        executed=2,
+        method=None,
+        cases=(False, True),
+        error=0,
+        ordered=(("Tab", 9), ("F7", 118)),
+    ):
         method = method or package.NEGATIVE
+        arguments = (
+            [f"accept: &quot;{accept}&quot;, key: {key}" for accept, key in ordered]
+            if method == package.NEGATIVE
+            else [f"automationTest: {case}" for case in cases]
+        )
         path = self.home / "result.trx"
         path.write_text(
             '<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">'
@@ -136,19 +149,51 @@ class PhysicalTabPackageTests(unittest.TestCase):
                 for i in (1, 2)
             )
             + "</TestDefinitions><Results>"
-            + "".join(f'<UnitTestResult testId="{i}" outcome="{outcome}"/>' for i in (1, 2))
+            + "".join(
+                f'<UnitTestResult testId="{i}" outcome="{outcome}" '
+                f'testName="{package.CLASS}.{method}({argument})"/>'
+                for i, argument in enumerate(arguments, 1)
+            )
             + '</Results><ResultSummary outcome="Completed"><Counters '
-            f'total="2" executed="{executed}" passed="2" failed="0" error="0" '
+            f'total="2" executed="{executed}" passed="2" failed="0" error="{error}" '
             'notExecuted="0" notRunnable="0"/></ResultSummary></TestRun>',
             encoding="utf-8",
         )
         return path
 
     def test_trx_requires_exact_method_rows_and_execution_not_just_exit_zero(self):
-        package.verify_smoke(self.write_trx())
-        for changes in (dict(outcome="NotExecuted"), dict(executed=0), dict(method="Other")):
+        package.verify_smoke(self.write_trx(method=package.SMOKE))
+        for changes in (
+            dict(outcome="NotExecuted"),
+            dict(outcome="Failed"),
+            dict(executed=0),
+            dict(error=1),
+            dict(method="Other"),
+            dict(method=package.NEGATIVE),
+            dict(cases=(False, False)),
+            dict(cases=(True, True)),
+            dict(cases=(False,)),
+            dict(cases=(False, True, True)),
+        ):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
-                package.verify_smoke(self.write_trx(**changes))
+                package.verify_smoke(self.write_trx(**(dict(method=package.SMOKE) | changes)))
+
+    def test_default_smoke_cannot_replace_original_ordered_negative_admission(self):
+        self.write_trx(method=package.SMOKE)
+        with self.assertRaises(ValueError):
+            package.verify_original_suite(self.home)
+
+    def test_original_suite_requires_tab9_and_f7118_once_each(self):
+        for ordered in (
+            (("Tab", 9), ("Tab", 9)),
+            (("F7", 118), ("F7", 118)),
+            (("Tab", 10), ("F7", 118)),
+            (("Tab", 9), ("F7", 119)),
+            (("F7", 9), ("Tab", 118)),
+        ):
+            self.write_trx(ordered=ordered)
+            with self.subTest(ordered=ordered), self.assertRaises(ValueError):
+                package.verify_original_suite(self.home)
 
     def test_original_suite_admission_does_not_ignore_failed_or_missing_rows(self):
         self.write_trx()

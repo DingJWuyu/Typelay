@@ -1,4 +1,4 @@
-"""Package the existing isolated physical-Tab test after a relocated negative smoke."""
+"""Package physical Tab after original ordered negatives and relocated default-runtime smoke."""
 
 import base64
 import hashlib
@@ -17,6 +17,7 @@ from pathlib import Path
 CLASS = "TypeLay.App.Tests.NativeSourceControllerTests"
 MANUAL = "ManualPhysicalAcceptanceKeyUsesOrderedSourceOnceAndSettlesItsOriginalTails"
 NEGATIVE = "OrderedSourceRecordsTheRealInjectedEdgeButDoesNotConsumeOrWrite"
+SMOKE = "RuntimeDoesNotSelectSourceAcceptanceFromAutomationOrAnInjectedBroker"
 OUTPUTS = {
     "tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows": "TypeLay.App.Tests",
     "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0": "TypeLay.NativeFixture",
@@ -61,7 +62,7 @@ def copy_tree(source, destination):
             raise ValueError(f"Not a regular package input: {path}")
 
 
-def method_results(path):
+def method_results(path, expected_method):
     root = ET.parse(path).getroot()
     definitions = {}
     for test in root.findall("t:TestDefinitions/t:UnitTest", NS):
@@ -69,13 +70,13 @@ def method_results(path):
         if (
             method is not None
             and method.get("className") == CLASS
-            and method.get("name") == NEGATIVE
+            and method.get("name") == expected_method
         ):
             if (
                 Path(method.get("codeBase", "").replace("\\", "/")).name.lower()
                 != "typelay.app.tests.dll"
             ):
-                raise ValueError("Negative test came from a different assembly")
+                raise ValueError("Selected test came from a different assembly")
             identifier = test.get("id")
             if not identifier or identifier in definitions:
                 raise ValueError("Missing or duplicate TRX test definition")
@@ -84,24 +85,36 @@ def method_results(path):
         r for r in root.findall("t:Results/t:UnitTestResult", NS) if r.get("testId") in definitions
     ]
     if len(results) != len(definitions) or len({r.get("testId") for r in results}) != len(results):
-        raise ValueError("Missing or duplicate negative result")
+        raise ValueError("Missing or duplicate selected result")
     return root, results
 
 
 def verify_original_suite(directory):
     results = []
     for path in directory.glob("*.trx"):
-        _, selected = method_results(path)
+        _, selected = method_results(path, NEGATIVE)
         results.extend(selected)
-    if len(results) != 2 or any(r.get("outcome") != "Passed" for r in results):
-        raise ValueError("Original suite must already contain exactly two Passed ordered negatives")
+    if (
+        len(results) != 2
+        or {r.get("testName") for r in results}
+        != {
+            f'{CLASS}.{NEGATIVE}(accept: "{accept}", key: {key})'
+            for accept, key in (("Tab", 9), ("F7", 118))
+        }
+        or any(r.get("outcome") != "Passed" for r in results)
+    ):
+        raise ValueError(
+            "Original suite must already contain Passed ordered Tab/9 and F7/118 once each"
+        )
 
 
 def verify_smoke(path):
-    root, selected = method_results(path)
+    root, selected = method_results(path, SMOKE)
     counters = root.find("t:ResultSummary/t:Counters", NS)
     if (
         len(selected) != 2
+        or {r.get("testName") for r in selected}
+        != {f"{CLASS}.{SMOKE}(automationTest: {case})" for case in (False, True)}
         or len(root.findall("t:Results/t:UnitTestResult", NS)) != 2
         or any(r.get("outcome") != "Passed" for r in selected)
         or counters is None
@@ -113,7 +126,7 @@ def verify_smoke(path):
         or root.find("t:ResultSummary", NS).get("outcome") != "Completed"
     ):
         raise ValueError(
-            "Relocated smoke needs exactly 2 executed/Passed, no skipped or runner errors"
+            "Relocated default-runtime smoke needs False/True each executed/Passed, no skips or errors"
         )
 
 
@@ -317,7 +330,7 @@ def main():
                     "-explicit",
                     "off",
                     "-method",
-                    f"{CLASS}.{NEGATIVE}",
+                    f"{CLASS}.{SMOKE}",
                     "-trx",
                     str(evidence / "smoke.trx"),
                 ],
@@ -366,7 +379,7 @@ def main():
         digest = hashlib.file_digest(package, "sha256").hexdigest()
     checksum.write_text(f"{digest}  {archive.name}\n", encoding="ascii")
     pending.replace(archive)
-    print("Relocated injected-negative smoke passed; physical Tab was discovered, not executed.")
+    print("Relocated default-runtime smoke passed; physical Tab was discovered, not executed.")
 
 
 if __name__ == "__main__":

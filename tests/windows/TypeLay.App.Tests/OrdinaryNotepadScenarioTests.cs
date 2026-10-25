@@ -11,6 +11,203 @@ namespace TypeLay.App.Tests;
 public sealed class OrdinaryNotepadScenarioTests
 {
     [Fact]
+    public void APreviouslyReadyLabelNeedsANewSameGenerationSourcePublicationAfterEscape()
+    {
+        string path = Path.GetTempFileName();
+        Guid generation = Guid.NewGuid(), other = Guid.NewGuid();
+        var ct = TestContext.Current.CancellationToken;
+        try
+        {
+            File.WriteAllText(path, Publication(generation, generation, 90));
+            long offset = new FileInfo(path).Length;
+            Assert.Null(HyPackageCheck.ObserveOrdinaryEscapePublication(path, offset, ct));
+            File.AppendAllText(path, JsonSerializer.Serialize(new
+            {
+                atMs = 100,
+                operation = "input-revoked",
+                detail = new
+                {
+                    reason = "escape",
+                    commandGeneration = generation
+                }
+            }) + "\n");
+            // A delayed flush of the old lease cannot validate the cached UI cue.
+            foreach (string stale in new[]
+            {
+                Publication(generation, generation, 99),
+                Publication(other, other, 101),
+                Publication(generation, other, 101),
+                Publication(generation, generation, 101, content: 7),
+                Publication(generation, generation, 101, foreground: 4)
+            })
+            {
+                File.AppendAllText(path, stale);
+                Assert.Null(HyPackageCheck.ObserveOrdinaryEscapePublication(path, offset, ct));
+            }
+            File.AppendAllText(path, Publication(generation, generation, 101));
+            Assert.Equal(new HyPackageCheck.OrdinaryEscapePublication(generation, 100, 101, 120, 8, 5),
+                HyPackageCheck.ObserveOrdinaryEscapePublication(path, offset, ct));
+            Assert.Throws<OperationCanceledException>(() =>
+                HyPackageCheck.ObserveOrdinaryEscapePublication(path, offset, new CancellationToken(true)));
+        }
+        finally { File.Delete(path); }
+
+        static string Publication(Guid generation, Guid leaseGeneration, long observed, long content = 8, long foreground = 5) =>
+            JsonSerializer.Serialize(new
+            {
+                operation = "shortcut-publish",
+                reason = "published",
+                ime = "Clear",
+                atMs = 120,
+                commandGeneration = generation,
+                leaseCommandGeneration = leaseGeneration,
+                leaseObservedAtMs = observed,
+                leaseContentEpoch = content,
+                contentEpoch = 8,
+                leaseForegroundEpoch = foreground,
+                foregroundEpoch = 5
+            }) + "\n";
+    }
+
+    [Fact]
+    public void AQueuedDirectRefusalCanReachTheTraceBeforeItsMatchingKey()
+    {
+        string path = Path.GetTempFileName();
+        Guid generation = Guid.NewGuid();
+        var scene = new HyPackageCheck.Scene("on-demand-cancel-and-direct");
+        try
+        {
+            File.WriteAllText(path, JsonSerializer.Serialize(new
+            {
+                operation = "shortcut-rejected",
+                detail = new
+                {
+                    action = "direct",
+                    reason = "StaleObservation",
+                    commandGeneration = generation,
+                    commandSequence = 2
+                }
+            }) + "\n");
+            HyPackageCheck.ObserveOrdinaryDirectCommand(scene, path, 0, TestContext.Current.CancellationToken);
+            Assert.Null(Assert.IsType<HyPackageCheck.OrdinaryDirectObservation>(scene.Facts).Command);
+            File.AppendAllText(path, JsonSerializer.Serialize(new
+            {
+                operation = "shortcut-key",
+                action = "direct",
+                commandGeneration = generation,
+                commandSequence = 2
+            }) + "\n");
+            for (int observation = 0; observation < 2; observation++)
+            {
+                var error = Assert.Throws<HyPackageCheck.Failure>(() =>
+                    HyPackageCheck.ObserveOrdinaryDirectCommand(scene, path, 0, TestContext.Current.CancellationToken));
+                Assert.Equal("ordinary-direct-command-rejected-staleobservation", error.Code);
+                Assert.Equal(new HyPackageCheck.OrdinaryDirectCommand(generation, 2, "StaleObservation"),
+                    Assert.IsType<HyPackageCheck.OrdinaryDirectObservation>(scene.Facts).Command);
+            }
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Theory]
+    [InlineData("StaleObservation", "StaleObservation")]
+    [InlineData("unrecognized private detail", "UnknownOutcome")]
+    public async Task TheSingleDirectRejectionFailsItsSceneWithoutWaitingForTheSuiteDeadline(string reason, string category)
+    {
+        string path = Path.GetTempFileName();
+        Guid generation = Guid.NewGuid(), oldGeneration = Guid.NewGuid();
+        var report = CreateReport(TestContext.Current.CancellationToken);
+        var scene = report.Scenes[2];
+        try
+        {
+            // Old complete commands, including the same sequence in another
+            // generation, do not belong to the new one-press observation.
+            await File.WriteAllTextAsync(path, Key(oldGeneration, 2) + Rejected(oldGeneration, 2, "direct", reason));
+            long offset = new FileInfo(path).Length;
+            await File.AppendAllTextAsync(path, Rejected(oldGeneration, 2, "direct", reason));
+            HyPackageCheck.ObserveOrdinaryDirectCommand(scene, path, offset, TestContext.Current.CancellationToken);
+            Assert.Null(Assert.IsType<HyPackageCheck.OrdinaryDirectObservation>(scene.Facts).Command);
+            await File.AppendAllTextAsync(path, Key(generation, 2)
+                + Rejected(oldGeneration, 2, "direct", reason)
+                + Rejected(generation, 3, "direct", reason)
+                + Rejected(generation, 2, "wake", reason));
+            HyPackageCheck.ObserveOrdinaryDirectCommand(scene, path, offset, TestContext.Current.CancellationToken);
+            Assert.Equal(new HyPackageCheck.OrdinaryDirectCommand(generation, 2),
+                Assert.IsType<HyPackageCheck.OrdinaryDirectObservation>(scene.Facts).Command);
+
+            // A partially appended last record is retried as an observation,
+            // never interpreted as an absent rejection or another key press.
+            string rejection = Rejected(generation, 2, "direct", reason);
+            int split = rejection.Length / 2;
+            await File.AppendAllTextAsync(path, rejection[..split]);
+            HyPackageCheck.ObserveOrdinaryDirectCommand(scene, path, offset, TestContext.Current.CancellationToken);
+            Assert.Null(Assert.IsType<HyPackageCheck.OrdinaryDirectObservation>(scene.Facts).Command!.Rejection);
+            await File.AppendAllTextAsync(path, rejection[split..]);
+            bool exitStarted = false;
+            var error = await Record.ExceptionAsync(() => HyPackageCheck.RunOrdinaryNotepadInteractions(report,
+                _ => Task.CompletedTask, _ => Task.CompletedTask, _ => Task.CompletedTask,
+                current =>
+                {
+                    current.Stage = "await-exact-direct-translation";
+                    HyPackageCheck.ObserveOrdinaryDirectCommand(current, path, offset, TestContext.Current.CancellationToken);
+                    return Task.CompletedTask;
+                }, _ => { exitStarted = true; return Task.CompletedTask; }, () => { }));
+            Assert.Equal("ordinary-direct-command-rejected-" + category.ToLowerInvariant(),
+                Assert.IsType<HyPackageCheck.Failure>(error).Code);
+            Assert.False(exitStarted);
+            Assert.False(report.OperationDeadlineReached);
+            Assert.Equal("await-exact-direct-translation", scene.Stage);
+            Assert.Equal(category, Assert.IsType<HyPackageCheck.OrdinaryDirectObservation>(scene.Facts).Command!.Rejection);
+            using var saved = await Save(report, 1);
+            Assert.Equal("failed", saved.RootElement.GetProperty("scenes")[2].GetProperty("outcome").GetString());
+            Assert.Equal(category, saved.RootElement.GetProperty("scenes")[2].GetProperty("facts")
+                .GetProperty("command").GetProperty("rejection").GetString());
+            Assert.Equal(520, saved.RootElement.GetProperty("operationBudgetSeconds").GetInt32());
+        }
+        finally { File.Delete(path); }
+
+        static string Key(Guid generation, long sequence) => JsonSerializer.Serialize(new
+        {
+            operation = "shortcut-key",
+            action = "direct",
+            commandGeneration = generation,
+            commandSequence = sequence
+        }) + "\n";
+        static string Rejected(Guid generation, long sequence, string action, string reason) => JsonSerializer.Serialize(new
+        {
+            operation = "shortcut-rejected",
+            detail = new
+            {
+                action,
+                reason,
+                commandGeneration = generation,
+                commandSequence = sequence
+            }
+        }) + "\n";
+    }
+
+    [Fact]
+    public void TwoDirectCommandIdentitiesCannotBeConfusedWithTheOneRequestedPress()
+    {
+        string path = Path.GetTempFileName();
+        try
+        {
+            Guid generation = Guid.NewGuid();
+            File.WriteAllLines(path, new long[] { 2, 3 }.Select(sequence => JsonSerializer.Serialize(new
+            {
+                operation = "shortcut-key",
+                action = "direct",
+                commandGeneration = generation,
+                commandSequence = sequence
+            })));
+            var error = Assert.Throws<HyPackageCheck.Failure>(() =>
+                HyPackageCheck.ObserveOrdinaryDirectCommand(new("on-demand-cancel-and-direct"), path, 0, TestContext.Current.CancellationToken));
+            Assert.Equal("ordinary-direct-command-ambiguous", error.Code);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
     public async Task PublicDenialPreservesFailedAcceptanceWhileIndependentDirectAndExitRun()
     {
         var report = CreateReport(TestContext.Current.CancellationToken);

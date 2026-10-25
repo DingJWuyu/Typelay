@@ -169,6 +169,8 @@ public sealed class ShortcutFeedbackTests(WpfDesktopFixture desktop)
             ExpectReady(true);
             hook.Revoke();
             ExpectReady(false);
+            PublishStatus(FreshStatus());
+            ExpectReady(true); // Cancel/retirement readiness needs a new publication, not merely registration.
             hook.ConfigureShortcuts(false, "Ctrl+Shift+F22", "Ctrl+Shift+F24",
                 SessionShortcutBindings.Default, false);
             PublishStatus(FreshStatus());

@@ -10,6 +10,8 @@
 
 自动接受仅在发送任何接受键之前，读到同一 App 唯一浮层内唯一当前译文的明确公开 `required-capability-unavailable` 时保留该场景的 failed、原阶段及观察 facts，人工稿接受标为 `not-run / dependency-unavailable` 并记录依赖。随后重新只读确认同一预算未取消、原 App 存活、既有 worker 观察无故障、源身份仍有效、原文不变且精确原字段仍聚焦，才继续原按需唤醒、Esc、一次直接替换和 Undo；不恢复焦点或正文来补成准入。按需链成功后才执行原 `ordinary-exit`。未知/歧义、取消、其它异常和任何接受键调用后的失败均停止后续输入；即使独立场景成功，原接受失败仍使整体 exit1，不把拒绝或未运行算通过。`OrdinaryNotepadScenarioTests` 通过实际固定尾段与 `Report.Save` 验证这项编排和落盘聚合；它不证明 Notepad、模型或物理输入，公开状态分类仍由 WPF/UIA 回归另验。
 
+Esc 后浮层隐藏不表示 Direct 的源观察已恢复。此场景在原设置准备阶段进入现有快捷键页，保持原唯一回源导航；取消后只读确认同一 Notepad 根/字段/正文与焦点；从 Esc 前固定的 trace offset 核该次撤权之后，同代且 lease/current 输入与前台版本一致、源观察时刻不早于撤权的新 publication，再等现有“当前输入框的直接替换快捷键已就绪”公开提示，才发唯一 Direct 组合。该 trace 闸只防设置页短暂缓存旧 ready，不授予生产写权。注册成功不是源就绪，提示也不续期或授予写权，真实快捷键仍独立核原观察。发键前固定现有 trace 的 offset，仅将之后唯一 direct 的 generation/sequence 对应的 `shortcut-rejected` 作为该次失败立即落盘；旧命令、其它代次/动作不串线，拒绝与 key 的写日志先后不作为因果依据。每次只读取入场时固定末尾的有界快照，原32MiB上限和业务取消 token 不变，未完成的 JSON 行留待下一次观察，不冒充终态。此观察只缩短已明确拒绝后的失败等待，不补发按键、不延长520秒、不新增生产诊断或接受无租约的 Direct。新增窄回归与真实包场景仍须由后继 Windows CI 验证。
+
 ```powershell
 $fixture = 'tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows'
 foreach ($assembly in @('TypeLay.App', 'TypeLay.Runtime', 'TypeLay.Core', 'TypeLay.Protocol', 'TypeLay.Windows.Contracts')) {

@@ -89,4 +89,6 @@
 
 测试成功须断言一次 Verified、原按键零派发、零 LL Activate/二次写、原尾键退休，随后自动 Undo 回“你好”。临时设置删除、Hook释放和精确自有源/Broker进程退出沿现有 owner；清理含有界终止，不称自然退出。失败、超时、退出未知或零测试均不是通过，保留结果后停止，不靠再次按键补救。请反馈 ZIP SHA、BUILD.txt、discovery JSON、TRX、stdout/stderr及退出码；其中路径可能包含本机用户名，分享前检查隐私。
 
-CI只在新搬迁目录运行既有 Tab/F7 **普通注入拒绝**两行，通过才输出本ZIP。它不运行物理阳性；本机一次物理阳性也不等于 UIAccess、真实 IME composition、第三方部署或正式 Main/capability0 接受通过。
+CI先要求原App套件中的 Tab/F7 **普通注入拒绝**两行完整通过。搬迁到checkout外的新含空格/中文目录后，仅运行既有factory默认关闭用例的 automation false/true 两行，要求恰好2 executed/2 Passed、零跳过及runner错误，并发现唯一人工Tab行，才输出本ZIP。搬迁smoke用真实WPF、源fixture和显式注入的自有Broker验证加载、默认cap0、不安装/不提示接受及零写；不是正式BrokerClient启动、source-install或注入拒绝的再次验收。
+
+构建身份与复制链来自同一source、同一job的Release输出，三处NativeInput须一致；没有独立的原套件测试时快照，不声称原套件与最终包逐字samebits。CI不运行物理阳性；本机一次物理阳性也不等于 UIAccess、真实 IME composition、第三方部署或正式 Main/capability0 接受通过。
