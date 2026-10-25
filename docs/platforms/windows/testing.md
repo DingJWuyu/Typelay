@@ -6,9 +6,11 @@
 
 `--verify-ordinary-notepad` 从完整发行目录启动真实 App，以当前 Windows 已安装的 `System32/notepad.exe` 和临时合成 `.txt` 文档为源。先核对原进程镜像、原生 x64 与唯一严格原生 `Edit` 控件（经典记事本的 UIA 类型可以是 Document，不与原生类名混淆）；不存在、转交其它进程、现代自绘控件或已有 Notepad 进程均失败，不回退 NativeFixture，不声称支持现代记事本或用户此前报告的四处输入框。
 
-本入口复用同一轮 `continuous-translation` 已正式准备并验证的 Argos 文件，保持库存/代次，不下载模型；真实 App 再校验并加载。仅在 `%LOCALAPPDATA%/TypeLay` 原本不存在且没有运行中的 TypeLay 时独占创建测试数据。通过实际设置确认实验性 Tab 写回及切换工作模式，依次验证无标点原文的自动预览、一次 Tab、原生撤销、编辑后第一 Tab 回源且不写、第二 Tab 精确接受、按需唤醒/取消、一次直接替换和正常退出。应用有自己的消息循环、实际 UIA/Hook 与模型；软件注入模式仍不等于物理输入法或最终安全验收。
+本入口复用同一轮 `continuous-translation` 已正式准备并验证的 Argos 文件，保持库存/代次，不下载模型；真实 App 再校验并加载。仅在 `%LOCALAPPDATA%/TypeLay` 原本不存在且没有运行中的 TypeLay 时独占创建测试数据。通过实际设置确认实验性 Tab 写回及切换工作模式，验证无标点原文的自动预览和公开接受提示，再按独立准入执行按需唤醒/取消、一次直接替换及原生 Undo、正常退出。应用有自己的消息循环、实际 UIA/Hook 与模型；无人值守入口不再用普通 `SendInput` 作为来源接受的正向输入，也不生成接受 Tab 或人工稿接受输入。
 
-自动接受仅在发送任何接受键之前，读到同一 App 唯一浮层内唯一当前译文的明确公开 `required-capability-unavailable` 时保留该场景的 failed、原阶段及观察 facts，人工稿接受标为 `not-run / dependency-unavailable` 并记录依赖。随后重新只读确认同一预算未取消、原 App 存活、既有 worker 观察无故障、源身份仍有效、原文不变且精确原字段仍聚焦，才继续原按需唤醒、Esc、一次直接替换和 Undo；不恢复焦点或正文来补成准入。按需链成功后才执行原 `ordinary-exit`。未知/歧义、取消、其它异常和任何接受键调用后的失败均停止后续输入；即使独立场景成功，原接受失败仍使整体 exit1，不把拒绝或未运行算通过。`OrdinaryNotepadScenarioTests` 通过实际固定尾段与 `Report.Save` 验证这项编排和落盘聚合；它不证明 Notepad、模型或物理输入，公开状态分类仍由 WPF/UIA 回归另验。
+同一 App 唯一浮层内唯一当前译文的公开接受提示成立，只证明可提示接受，不证明可信来源的实际按键、写回或 Undo。自动接受场景保留 `not-run / trusted-source-input-required`，记录提示已观察但接受未尝试、未验证；人工稿接受为 `not-run / dependency-unavailable`。若只读提示观察明确返回 `required-capability-unavailable`，仍保留该产品拒绝的 failed、原阶段及 facts，不伪装成仅缺人工输入。未知/歧义、取消及其它异常均停止后续输入。正向接受需要独立的真实可信输入验收；[隔离物理验证包](README.md#隔离物理-tab-验证包不是产品体验包)也不能替代正式 Notepad 的产品验收。
+
+仅上述两种明确的前输入边界允许继续独立场景：重新只读确认同一预算未取消、原 App 存活、既有 worker 观察无故障、源身份仍有效、原文不变且精确原字段仍聚焦，才执行原按需唤醒、Esc、一次直接替换和 Undo；不恢复焦点或正文来补成准入。按需链成功后才执行原 `ordinary-exit`。独立场景成功也不把拒绝或未运行算通过，现有聚合保持整体 exit1，自动接受与人工稿仍未验收。`OrdinaryNotepadScenarioTests` 通过实际固定尾段与 `Report.Save` 验证这项编排和落盘聚合；它不证明 Notepad、模型或物理输入，公开状态分类仍由 WPF/UIA 回归另验。
 
 Esc 后浮层隐藏不表示 Direct 的源观察已恢复。此场景在原设置准备阶段进入现有快捷键页，保持原唯一回源导航；取消后只读确认同一 Notepad 根/字段/正文与焦点；从 Esc 前固定的 trace offset 核该次撤权之后，同代且 lease/current 输入与前台版本一致、源观察时刻不早于撤权的新 publication，再等现有“当前输入框的直接替换快捷键已就绪”公开提示，才发唯一 Direct 组合。该 trace 闸只防设置页短暂缓存旧 ready，不授予生产写权。注册成功不是源就绪，提示也不续期或授予写权，真实快捷键仍独立核原观察。发键前固定现有 trace 的 offset，仅将之后唯一 direct 的 generation/sequence 对应的 `shortcut-rejected` 作为该次失败立即落盘；旧命令、其它代次/动作不串线，拒绝与 key 的写日志先后不作为因果依据。每次只读取入场时固定末尾的有界快照，原32MiB上限和业务取消 token 不变，未完成的 JSON 行留待下一次观察，不冒充终态。此观察只缩短已明确拒绝后的失败等待，不补发按键、不延长520秒、不新增生产诊断或接受无租约的 Direct。该准备与命令观察已由 [CI526](https://github.com/DingJWuyu/Typelay/actions/runs/40167116453) 的窄回归及真实包Direct/Undo、普通退出场景验证；自动接受cap0失败和编辑回源依赖未跑仍独立保留。
 

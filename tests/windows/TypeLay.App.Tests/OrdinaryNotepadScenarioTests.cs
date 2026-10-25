@@ -146,8 +146,7 @@ public sealed class OrdinaryNotepadScenarioTests
             await File.AppendAllTextAsync(path, rejection[split..], TestContext.Current.CancellationToken);
             bool exitStarted = false;
             var error = await Record.ExceptionAsync(() => HyPackageCheck.RunOrdinaryNotepadInteractions(report,
-                _ => Task.CompletedTask, _ => Task.CompletedTask, _ => Task.CompletedTask,
-                current =>
+                _ => Task.CompletedTask, current =>
                 {
                     current.Stage = "await-exact-direct-translation";
                     HyPackageCheck.ObserveOrdinaryDirectCommand(current, path, offset, TestContext.Current.CancellationToken);
@@ -225,7 +224,7 @@ public sealed class OrdinaryNotepadScenarioTests
         var denial = new HyPackageCheck.Failure("required-capability-unavailable");
         await HyPackageCheck.RunOrdinaryNotepadInteractions(report,
             scene => { scene.Facts = facts; return Task.FromException(denial); },
-            _ => Record("accept"), _ => Record("edit"), _ => Record("direct"), _ => Record("exit"),
+            _ => Record("direct"), _ => Record("exit"),
             () => observed.Add("confirm-original-source"));
 
         Assert.Equal(["confirm-original-source", "direct", "exit"], observed);
@@ -269,7 +268,7 @@ public sealed class OrdinaryNotepadScenarioTests
         };
         var observed = new List<string>();
         var caught = await Record.ExceptionAsync(() => HyPackageCheck.RunOrdinaryNotepadInteractions(report,
-            _ => Task.FromException(failure), _ => Input(), _ => Input(), _ => Input(), _ => Input(),
+            _ => Task.FromException(failure), _ => Input(), _ => Input(),
             () => observed.Add("confirm")));
         Assert.Same(failure, caught);
         Assert.Empty(observed);
@@ -284,43 +283,19 @@ public sealed class OrdinaryNotepadScenarioTests
         }
     }
 
-    [Fact]
-    public async Task CapabilityFailureAfterAcceptanceInputDoesNotContinue()
-    {
-        var report = CreateReport(TestContext.Current.CancellationToken);
-        var observed = new List<string>();
-        var failure = new HyPackageCheck.Failure("required-capability-unavailable");
-        var caught = await Record.ExceptionAsync(() => HyPackageCheck.RunOrdinaryNotepadInteractions(report,
-            _ => Task.CompletedTask,
-            scene =>
-            {
-                scene.Stage = "press-single-acceptance-tab";
-                observed.Add("accept");
-                return Task.FromException(failure);
-            }, _ => Later(), _ => Later(), _ => Later(), () => observed.Add("confirm")));
-        Assert.Same(failure, caught);
-        Assert.Equal(["accept"], observed);
-        Assert.All(report.Scenes.Skip(1), scene => Assert.Equal("not-run", scene.Outcome));
-        using var saved = await Save(report, 1);
-
-        Task Later()
-        {
-            observed.Add("later-input");
-            return Task.CompletedTask;
-        }
-    }
-
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task DenialCannotContinueWhenSourceValidationFailsOrCancels(bool cancel)
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task NeitherKnownPreInputBoundaryContinuesWhenSourceValidationFailsOrCancels(bool capabilityDenied, bool cancel)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var report = CreateReport(deadline.Token);
         var observed = new List<string>();
         var caught = await Record.ExceptionAsync(() => HyPackageCheck.RunOrdinaryNotepadInteractions(report,
-            _ => Task.FromException(new HyPackageCheck.Failure("required-capability-unavailable")),
-            _ => Input(), _ => Input(), _ => Input(), _ => Input(), () =>
+            _ => capabilityDenied ? Task.FromException(new HyPackageCheck.Failure("required-capability-unavailable")) : Task.CompletedTask,
+            _ => Input(), _ => Input(), () =>
             {
                 if (cancel)
                     deadline.Cancel();
@@ -332,7 +307,8 @@ public sealed class OrdinaryNotepadScenarioTests
         else
             Assert.IsType<HyPackageCheck.Failure>(caught);
         Assert.Empty(observed);
-        Assert.Equal("required-capability-unavailable", report.Scenes[0].Failure);
+        Assert.Equal(capabilityDenied ? "failed" : "not-run", report.Scenes[0].Outcome);
+        Assert.Equal(capabilityDenied ? "required-capability-unavailable" : "none", report.Scenes[0].Failure);
         Assert.Equal("not-run", report.Scenes[1].Outcome);
         Assert.Equal("failed", report.Scenes[2].Outcome);
         Assert.Equal("not-run", report.Scenes[3].Outcome);
@@ -359,7 +335,7 @@ public sealed class OrdinaryNotepadScenarioTests
                 deadline.Cancel();
                 return capabilityDenied
                     ? Task.FromException(new HyPackageCheck.Failure("required-capability-unavailable")) : Task.CompletedTask;
-            }, _ => Input(), _ => Input(), _ => Input(), _ => Input(), () => observed.Add("confirm")));
+            }, _ => Input(), _ => Input(), () => observed.Add("confirm")));
         Assert.Empty(observed);
         Assert.All(report.Scenes.Skip(1), scene => Assert.Equal("not-run", scene.Outcome));
         using var saved = await Save(report, 1);
@@ -367,28 +343,6 @@ public sealed class OrdinaryNotepadScenarioTests
         Task Input()
         {
             observed.Add("input");
-            return Task.CompletedTask;
-        }
-    }
-
-    [Fact]
-    public async Task EditFailureDoesNotStartIndependentDirectOrExit()
-    {
-        var report = CreateReport(TestContext.Current.CancellationToken);
-        var observed = new List<string>();
-        var failure = new HyPackageCheck.Failure("required-capability-unavailable");
-        var caught = await Record.ExceptionAsync(() => HyPackageCheck.RunOrdinaryNotepadInteractions(report,
-            _ => Task.CompletedTask, _ => Task.CompletedTask, _ => Task.FromException(failure),
-            _ => Later(), _ => Later(), () => observed.Add("confirm")));
-        Assert.Same(failure, caught);
-        Assert.Empty(observed);
-        Assert.Equal("failed", report.Scenes[1].Outcome);
-        Assert.All(report.Scenes.Skip(2), scene => Assert.Equal("not-run", scene.Outcome));
-        using var saved = await Save(report, 1);
-
-        Task Later()
-        {
-            observed.Add("later-input");
             return Task.CompletedTask;
         }
     }
@@ -403,7 +357,6 @@ public sealed class OrdinaryNotepadScenarioTests
         var failure = new InvalidOperationException();
         var caught = await Record.ExceptionAsync(() => HyPackageCheck.RunOrdinaryNotepadInteractions(report,
             _ => capabilityDenied ? Task.FromException(new HyPackageCheck.Failure("required-capability-unavailable")) : Task.CompletedTask,
-            _ => Task.CompletedTask, _ => Task.CompletedTask,
             _ => Task.FromException(failure), _ => { observed.Add("exit"); return Task.CompletedTask; }, () => { }));
         Assert.Same(failure, caught);
         Assert.Empty(observed);
@@ -423,8 +376,7 @@ public sealed class OrdinaryNotepadScenarioTests
         };
         var failure = new N.TextReadException(N.TextReadFailure.CountMismatch, 8192, 32, 8, 9);
         var caught = await Record.ExceptionAsync(() => HyPackageCheck.RunOrdinaryNotepadInteractions(report,
-            _ => Task.CompletedTask, _ => Task.CompletedTask, _ => Task.CompletedTask,
-            scene =>
+            _ => Task.CompletedTask, scene =>
             {
                 scene.Stage = "await-exact-direct-translation";
                 scene.Facts = facts;
@@ -453,16 +405,33 @@ public sealed class OrdinaryNotepadScenarioTests
     }
 
     [Fact]
-    public async Task AvailableAcceptanceKeepsOriginalScenarioOrderAndCanPass()
+    public async Task AvailableCueDoesNotClaimAcceptanceWhileIndependentDirectAndExitRun()
     {
         var report = CreateReport(TestContext.Current.CancellationToken);
         var observed = new List<string>();
         await HyPackageCheck.RunOrdinaryNotepadInteractions(report,
-            _ => Step("cue"), _ => Step("accept"), _ => Step("edit"), _ => Step("direct"), _ => Step("exit"),
-            () => observed.Add("unexpected-recovery"));
-        Assert.Equal(["cue", "accept", "edit", "direct", "exit"], observed);
-        using var saved = await Save(report, 0);
-        Assert.Equal("passed", saved.RootElement.GetProperty("outcome").GetString());
+            _ => Step("cue"), _ => Step("direct"), _ => Step("exit"),
+            () => observed.Add("confirm-original-source"));
+        Assert.Equal(["cue", "confirm-original-source", "direct", "exit"], observed);
+        var acceptance = report.Scenes[0];
+        Assert.Equal("not-run", acceptance.Outcome);
+        Assert.Equal("trusted-source-input-required", acceptance.Stage);
+        Assert.Equal("none", acceptance.Failure);
+        Assert.Equal("none", acceptance.ErrorType);
+        Assert.Equal("not-run", report.Scenes[1].Outcome);
+        Assert.Equal("dependency-unavailable", report.Scenes[1].Stage);
+        Assert.All(report.Scenes.Skip(2), scene => Assert.Equal("passed", scene.Outcome));
+        Assert.False(report.OperationDeadlineReached);
+        using var saved = await Save(report, 1);
+        Assert.Equal("failed", saved.RootElement.GetProperty("outcome").GetString());
+        Assert.Equal(520, saved.RootElement.GetProperty("operationBudgetSeconds").GetInt32());
+        var scenes = saved.RootElement.GetProperty("scenes");
+        Assert.Equal("not-run", scenes[0].GetProperty("outcome").GetString());
+        Assert.True(scenes[0].GetProperty("facts").GetProperty("acceptanceCueObserved").GetBoolean());
+        Assert.False(scenes[0].GetProperty("facts").GetProperty("acceptanceAttempted").GetBoolean());
+        Assert.False(scenes[0].GetProperty("facts").GetProperty("acceptanceVerified").GetBoolean());
+        Assert.Equal("automatic-accept-and-undo", scenes[1].GetProperty("facts").GetProperty("dependency").GetString());
+        Assert.Equal("trusted-source-input-required", scenes[1].GetProperty("facts").GetProperty("reason").GetString());
 
         Task Step(string name)
         {

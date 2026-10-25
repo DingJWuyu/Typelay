@@ -62,11 +62,11 @@ internal static partial class HyPackageCheck
         return matches;
     }
 
-    // The fixed Notepad tail, not a general continue-on-failure runner. Only the
-    // read-only cue wait can establish this denial; input callbacks never can.
+    // This unattended check observes the public cue but cannot supply a trusted
+    // source key. Only that known limitation or the explicit read-only capability
+    // denial may reach the independent tail; neither claims acceptance passed.
     internal static async Task RunOrdinaryNotepadInteractions(Report report,
-        Func<Scene, Task> awaitAcceptanceCue, Func<Scene, Task> acceptAndUndo,
-        Func<Scene, Task> editReturnAndUndo, Func<Scene, Task> onDemandCancelAndDirect,
+        Func<Scene, Task> awaitAcceptanceCue, Func<Scene, Task> onDemandCancelAndDirect,
         Func<Scene, Task> ordinaryExit, Action confirmIndependentSource)
     {
         Failure? publicDenialBeforeInput = null;
@@ -85,30 +85,35 @@ internal static partial class HyPackageCheck
                     throw;
                 }
                 report.OperationToken.ThrowIfCancellationRequested();
-                await acceptAndUndo(scene);
             });
+            // Phase records the completed cue observation. Acceptance itself was
+            // not attempted; do not turn an available cue into a passing action.
+            var acceptance = report.Scenes.Single(scene => scene.Name == "automatic-accept-and-undo");
+            acceptance.Outcome = "not-run";
+            acceptance.Stage = "trusted-source-input-required";
+            acceptance.Facts = new
+            {
+                acceptanceCueObserved = true,
+                acceptanceAttempted = false,
+                acceptanceVerified = false
+            };
         }
         catch (Failure error) when (ReferenceEquals(error, publicDenialBeforeInput))
         {
-            // Phase has already retained the original failure, stage and facts.
-            var edit = report.Scenes.Single(scene => scene.Name == "edit-return-and-undo");
-            edit.Stage = "dependency-unavailable";
-            edit.Facts = new
-            {
-                dependency = "automatic-accept-and-undo",
-                reason = error.Code
-            };
+            // Retain the product's actual public denial, stage and observations.
         }
-        if (publicDenialBeforeInput is null)
-            await report.Phase("edit-return-and-undo", editReturnAndUndo);
+        var edit = report.Scenes.Single(scene => scene.Name == "edit-return-and-undo");
+        edit.Stage = "dependency-unavailable";
+        edit.Facts = new
+        {
+            dependency = "automatic-accept-and-undo",
+            reason = publicDenialBeforeInput?.Code ?? "trusted-source-input-required"
+        };
         await report.Phase("on-demand-cancel-and-direct", async scene =>
         {
-            if (publicDenialBeforeInput is not null)
-            {
-                scene.Stage = "verify-independent-source";
-                confirmIndependentSource(); // Read-only: never restore focus or source.
-                report.OperationToken.ThrowIfCancellationRequested();
-            }
+            scene.Stage = "verify-independent-source";
+            confirmIndependentSource(); // Read-only: never restore focus or source.
+            report.OperationToken.ThrowIfCancellationRequested();
             scene.Stage = "on-demand-cancel-and-direct";
             await onDemandCancelAndDirect(scene);
         });

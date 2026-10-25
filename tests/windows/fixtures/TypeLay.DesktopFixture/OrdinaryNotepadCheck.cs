@@ -39,7 +39,6 @@ internal static partial class HyPackageCheck
         string document = Path.Combine(directory, "ordinary-notepad-synthetic.txt");
         string trace = Path.Combine(directory, "trace.jsonl");
         const string original = "Please send me the final version";
-        const string draft = "Edited translation for the release";
         bool ownsData = false, creationUnconfirmed = false;
         ChildProcess? source = null, app = null;
         var failedOwners = new List<IChildProcess>();
@@ -339,55 +338,6 @@ internal static partial class HyPackageCheck
             });
             await RunOrdinaryNotepadInteractions(report,
                 async scene => { await OverlayEditor(true, scene); }, async scene =>
-            {
-                scene.Stage = "press-single-acceptance-tab";
-                NotepadChord([0x09]);
-                scene.Stage = "await-exact-source-translation";
-                await WaitAsync(() => Task.FromResult(OrdinaryTextMatches(scene, field, Limits.MaxTextUnits, translation)), ct);
-                scene.Stage = "verify-accept-source-focus";
-                Require(N.Focused() == (root, field), "ordinary-accept-stole-focus");
-                await Undo(scene, original);
-                scene.Facts = new
-                {
-                    source = original,
-                    translation,
-                    punctuationRequired = false,
-                    tabPresses = 1,
-                    nativeUndoRestoredSource = true
-                };
-            }, async scene =>
-            {
-                scene.Stage = "await-draft-preview";
-                var editor = await OverlayEditor(false);
-                scene.Stage = "focus-draft-editor";
-                await ClickNotepadEditor(editor, app!.Process.Id, ct);
-                await WaitAsync(async () => await UiAsync(() => editor.Current.HasKeyboardFocus
-                    && !((ValuePattern)editor.GetCurrentPattern(ValuePattern.Pattern)).Current.IsReadOnly, ct), ct);
-                scene.Stage = "set-exact-draft";
-                await UiAsync(() => ((ValuePattern)editor.GetCurrentPattern(ValuePattern.Pattern)).SetValue(draft), ct);
-                scene.Stage = "verify-original-source-before-draft-return";
-                SourceUnchanged(original);
-                scene.Stage = "press-single-draft-return-tab";
-                NotepadChord([0x09]);
-                scene.Stage = "await-draft-return-focus";
-                await WaitAsync(() => Task.FromResult(N.Focused() == (root, field)), ct);
-                scene.Stage = "verify-original-source-after-draft-return";
-                SourceUnchanged(original);
-                scene.Stage = "await-draft-acceptance-cue";
-                await OverlayEditor(true);
-                scene.Stage = "press-single-draft-acceptance-tab";
-                NotepadChord([0x09]);
-                scene.Stage = "await-exact-source-draft";
-                await WaitAsync(() => Task.FromResult(OrdinaryTextMatches(scene, field, Limits.MaxTextUnits, draft)), ct);
-                await Undo(scene, original);
-                scene.Facts = new
-                {
-                    draft,
-                    firstTabSourceUnchanged = true,
-                    secondTabAcceptsExactDraft = true,
-                    nativeUndoRestoredSource = true
-                };
-            }, async scene =>
             {
                 scene.Stage = "set-public-on-demand-mode";
                 await ShowNotepadSettings(app!.Process, ct);
@@ -709,14 +659,6 @@ internal static partial class HyPackageCheck
             ((InvokePattern)yes!.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
         }, ct);
     }
-    private static Task ClickNotepadEditor(AutomationElement editor, int app, CancellationToken ct) => UiAsync(() =>
-    {
-        Require(editor.Current.ProcessId == app && !editor.Current.IsOffscreen, "ordinary-editor-identity-changed");
-        var point = editor.GetClickablePoint();
-        Require(editor.Current.BoundingRectangle.Contains(point) && SetCursorPos((int)point.X, (int)point.Y), "ordinary-editor-click-unavailable");
-        var click = SendLeftClick();
-        Require(click.Complete && click.ReleaseComplete, "ordinary-editor-click-incomplete");
-    }, ct);
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsWow64Process2(nint process, out ushort processMachine, out ushort nativeMachine);

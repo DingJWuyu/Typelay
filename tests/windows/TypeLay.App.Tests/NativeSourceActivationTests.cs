@@ -3,6 +3,8 @@ extern alias BrokerProduction;
 using System.Runtime.InteropServices;
 using System.IO;
 using System.IO.MemoryMappedFiles;
+using System.Text;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
@@ -524,12 +526,33 @@ public sealed class NativeSourceActivationTests(WpfDesktopFixture ui)
                 {
                     nint foregroundAfterFailure = N.GetForegroundWindow();
                     bool? hitIsSourceRoot = hit is { } observedHit ? observedHit == source.Root : null;
+                    var foregroundIdentity = ObserveWindow(foregroundAfterFailure);
+                    var hitIdentity = hit is { } failedHit
+                        ? failedHit == foregroundAfterFailure ? foregroundIdentity : ObserveWindow(failedHit) : null;
                     TestContext.Current.TestOutputHelper?.WriteLine($"Caller navigation failed: stage={stage}; "
                         + $"own={navigationRoot}; sourceRoot={source.Root}; sourceField={field}; sourceProcessId={source.FixtureProcessId}; "
                         + $"lastPreflightHit={hit?.ToString() ?? "not-sampled"}; hitIsSourceRoot={hitIsSourceRoot?.ToString() ?? "not-sampled"}; "
                         + $"foregroundAfterFailure={foregroundAfterFailure}; foregroundIsSourceRoot={foregroundAfterFailure == source.Root}; "
                         + $"clickComplete={clickComplete?.ToString() ?? "not-sampled"}; releaseComplete={releaseComplete?.ToString() ?? "not-sampled"}; "
-                        + $"mouseUpReceived={mouseUp.Task.IsCompletedSuccessfully}.");
+                        + $"mouseUpReceived={mouseUp.Task.IsCompletedSuccessfully}; "
+                        + $"windowIdentity={JsonSerializer.Serialize(new { hit = hitIdentity, foreground = foregroundIdentity })}.");
+
+                    object ObserveWindow(nint window)
+                    {
+                        uint thread = N.GetWindowThreadProcessId(window, out uint process);
+                        var windowClass = new StringBuilder(256);
+                        int classLength = N.GetClassName(window, windowClass, windowClass.Capacity);
+                        return new
+                        {
+                            hwnd = (long)window,
+                            thread,
+                            process,
+                            root = (long)N.GetAncestor(window, 2),
+                            windowClass = classLength > 0 ? windowClass.ToString() : null,
+                            testProcess = thread == 0 ? (bool?)null : process == (uint)Environment.ProcessId,
+                            sourceProcess = thread == 0 ? (bool?)null : process == (uint)source.FixtureProcessId
+                        };
+                    }
                 }
                 catch { /* Diagnostic output must not replace the preparation failure. */ }
                 throw;

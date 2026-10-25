@@ -550,16 +550,24 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
     [Fact]
     public Task OrderedBrokerKeepsOwnedCaptureSeparateWithoutDisablingTheNextOrdinarySource() => desktop.RunAsync(async () =>
     {
-        await using var ordinary = await ProductionForegroundWriteTests.Desktop.Start();
-        await ordinary.Prepare(ordinary.A, "你好", new(0, 2));
-        var before = await ordinary.Call(new(BrokerProtocol.Version, 0, "capture", ""));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        await using var ordinary = await ProductionForegroundWriteTests.StockFixture.Start(deadline.Token);
+        // Use the App's one production Broker/Main beside Practice. Owned native
+        // registration is module-local, not shared by same-named DLL copies.
+        using var broker = new BrokerClient();
+        await broker.StartAsync().WaitAsync(deadline.Token);
+        await PrepareOrdinary(navigate: false);
+        var before = await broker.CallAsync(new(BrokerProtocol.Version, 0, "capture", "")).WaitAsync(deadline.Token);
         Assert.True(Assert.IsType<SourceAcceptanceEligibility>(before.SourceEligibility)
             .Matches(Assert.IsType<InputSnapshot>(before.Snapshot)));
         await using var scene = new QueueScene(true);
         await scene.Start(true);
         var request = new BrokerRequest(BrokerProtocol.Version, 0, "capture-owned", "", OwnedCapture: scene.Descriptor);
-        var first = await ordinary.Call(request);
-        var second = await ordinary.Call(request);
+        var first = await broker.CallAsync(request).WaitAsync(deadline.Token);
+        var second = await broker.CallAsync(request).WaitAsync(deadline.Token);
+        AssertNativeModule(broker.ProcessId);
+        AssertNativeModule(scene.Descriptor.ProcessId);
         var owned = Assert.IsType<InputSnapshot>(first.Snapshot);
         Assert.Equal(owned.Target, Assert.IsType<InputSnapshot>(second.Snapshot).Target);
         Assert.Equal(scene.Original, owned.Text);
@@ -568,13 +576,33 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         Assert.False(owned.DirectWriteSupported);
         Assert.Null(first.SourceEligibility);
         Assert.Null(second.SourceEligibility);
-        await ordinary.Prepare(ordinary.A, "你好", new(0, 2));
-        var after = await ordinary.Call(new(BrokerProtocol.Version, 0, "capture", ""));
+        // This is the explicit setup transition back from Practice, not a
+        // recovery after a failed click or capture.
+        await PrepareOrdinary(navigate: true);
+        var after = await broker.CallAsync(new(BrokerProtocol.Version, 0, "capture", "")).WaitAsync(deadline.Token);
         Assert.True(Assert.IsType<SourceAcceptanceEligibility>(after.SourceEligibility)
             .Matches(Assert.IsType<InputSnapshot>(after.Snapshot)));
         Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
         Assert.Equal(0, scene.Receipts);
         ordinary.AssertZeroSubmits();
+
+        async Task PrepareOrdinary(bool navigate)
+        {
+            if (navigate)
+                await ordinary.RequestForegroundAndWaitVisible(ordinary.A, deadline.Token);
+            await ordinary.ClickAndObserveFocus(ordinary.A, deadline.Token, broker.ProcessId);
+            N.SendString(ordinary.A, N.WM_SETTEXT, "你好");
+            N.Send(ordinary.A, N.EM_SETSEL, 0, 2);
+        }
+
+        static void AssertNativeModule(int processId)
+        {
+            using var process = Process.GetProcessById(processId);
+            var module = Assert.Single(process.Modules.Cast<ProcessModule>(), module =>
+                string.Equals(module.ModuleName, "TypeLay.NativeInput.dll", StringComparison.OrdinalIgnoreCase));
+            Assert.Equal(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "TypeLay.NativeInput.dll")),
+                Path.GetFullPath(module.FileName), ignoreCase: true);
+        }
     });
 
     [Theory]

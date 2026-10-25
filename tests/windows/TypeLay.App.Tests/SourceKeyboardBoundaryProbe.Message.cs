@@ -13,9 +13,8 @@ namespace TypeLay.App.Tests;
 
 public sealed partial class SourceKeyboardBoundaryProbe
 {
-    // Two bounded ordinary-source cases, not another owned matrix. The native
-    // real backend owns both native hooks; the fixture only observes the chain.
-    // Shipping construction does not opt into this route.
+    // Two bounded ordinary-source cases, not another owned matrix. These
+    // diagnostic installs are separate from the shipping ordered route.
     [Theory(Explicit = true, Timeout = 60000)]
     [InlineData(11)] // Same down: NOREMOVE twice, REMOVE, commit, held hook, actual outer return.
     [InlineData(12)] // A real post-install edit refuses without changing the original Tab.
@@ -60,7 +59,9 @@ public sealed partial class SourceKeyboardBoundaryProbe
                     Assert.Equal(0u, uiAccess);
                 }
             }
-            source = await ProductionForegroundWriteTests.Desktop.Start(sourceMessageProbe: true);
+            // Capture via the sent-only broker so this probe's native install is
+            // not a second GETMESSAGE consumer; sent callbacks/modules remain shared.
+            source = await ProductionForegroundWriteTests.Desktop.Start(isolatedSourceAcceptance: true, sourceMessageProbe: true);
             await source.Prepare(source.A, "pre old post", new(12, 12));
             string other = N.ReadText(source.B, Limits.MaxTextUnits);
             // All setup/focus actions precede the original capture and 100ms grant.

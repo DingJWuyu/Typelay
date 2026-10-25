@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Text.Json;
@@ -248,14 +249,43 @@ public sealed class BrowserContractTests
     public async Task BrowserTimeoutDoesNotRestartAtTheReplyBarrierOrLoseAnOnTimeDirectReceipt()
     {
         await using var transport = await BrowserIngress.CreateAsync(_ => { });
+        long directCallStartedAt = Stopwatch.GetTimestamp();
         var direct = transport.Request("direct", "direct-1", 500);
         var authority = transport.Request("describe", "authority-1", 500);
         await transport.Event("input");
         await transport.Reply("direct-1", "verified");
         await transport.Reply("authority-1", "approved");
+        long framesWrittenAt = Stopwatch.GetTimestamp();
         await transport.WaitUntilReadAsync();
+        long readObservedAt = Stopwatch.GetTimestamp();
         Assert.Null(await authority); // Original overall deadline, with UI still queued.
-        Assert.False(direct.IsCompleted);
+        bool directCompleted = direct.IsCompleted;
+        if (directCompleted)
+        {
+            try
+            {
+                // These are caller phase observations, not the inbox's receipt
+                // timestamp. ReadObserved alone does not prove an on-time reply.
+                string result = "not-successful";
+                if (direct.IsCompletedSuccessfully)
+                    result = (await direct) is null ? "null" : "reply"; // Already completed; cannot wait.
+                TestContext.Current.TestOutputHelper?.WriteLine("Browser reply barrier failed: " + JsonSerializer.Serialize(new
+                {
+                    timeoutMs = 500,
+                    framesWrittenMs = Stopwatch.GetElapsedTime(directCallStartedAt, framesWrittenAt).TotalMilliseconds,
+                    readObservedMs = Stopwatch.GetElapsedTime(directCallStartedAt, readObservedAt).TotalMilliseconds,
+                    checkedMs = Stopwatch.GetElapsedTime(directCallStartedAt).TotalMilliseconds,
+                    directStatus = direct.Status.ToString(),
+                    directResult = result,
+                    authorityStatus = authority.Status.ToString(),
+                    readerStatus = transport.Reader.Status.ToString(),
+                    inboxStatus = transport.Inbox.Completion.Status.ToString(),
+                    ownerCancelled = transport.Owner.IsCancellationRequested
+                }));
+            }
+            catch { /* Diagnostic output must not replace the original assertion. */ }
+        }
+        Assert.False(directCompleted);
         transport.Ui.RunNext();
         Assert.Equal("verified", (await direct)!.Data.GetString());
     }

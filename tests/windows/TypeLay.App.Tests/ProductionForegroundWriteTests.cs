@@ -1022,7 +1022,7 @@ public sealed partial class ProductionForegroundWriteTests
         }
     }
 
-    private sealed class StockFixture(Process process, FixtureDescriptor host) : IAsyncDisposable
+    internal sealed class StockFixture(Process process, FixtureDescriptor host) : IAsyncDisposable
     {
         private static long _preparationClickSequence;
         public nint Root => (nint)host.RootHwnd;
