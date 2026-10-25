@@ -1531,6 +1531,15 @@ internal static partial class ContinuousTranslationCheck
             : error is OperationCanceledException ? deadlineCode : "operation-failed";
         result.ErrorType = error.GetType().Name;
         result.ErrorCode = error.HResult;
+        // Persistence wrappers hide the actionable I/O code. Keep only bounded
+        // exception identities, never messages, paths, stacks or settings values.
+        Exception? inner = error.InnerException;
+        while (inner is not null && result.InnerExceptions.Count < 4)
+        {
+            result.InnerExceptions.Add(new(inner.GetType().Name, inner.HResult));
+            inner = inner.InnerException;
+        }
+        result.InnerExceptionsTruncated = inner is not null;
         if (error is N.NativeMessageException native)
         {
             result.NativeOperation = native.Operation;
@@ -1590,6 +1599,7 @@ internal static partial class ContinuousTranslationCheck
     }
 
     private sealed record CleanupError(string Area, string Code, string ErrorType, int ErrorCode);
+    private sealed record ExceptionIdentity(string ErrorType, int ErrorCode);
 
     // Fixed local report data, never exception messages or source/model text.
     private sealed class SceneResult
@@ -1599,6 +1609,11 @@ internal static partial class ContinuousTranslationCheck
         public string Failure { get; set; } = "none";
         public string ErrorType { get; set; } = "none";
         public int? ErrorCode
+        {
+            get; set;
+        }
+        public List<ExceptionIdentity> InnerExceptions { get; } = [];
+        public bool InnerExceptionsTruncated
         {
             get; set;
         }

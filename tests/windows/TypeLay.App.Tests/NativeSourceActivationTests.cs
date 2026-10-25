@@ -470,6 +470,17 @@ public sealed class NativeSourceActivationTests(WpfDesktopFixture ui)
     private Task NavigateAndPrepare(ProductionForegroundWriteTests.Desktop source, nint field, string text, TextRange selection)
         => ui.RunAsync(async () =>
         {
+            source.Token.ThrowIfCancellationRequested();
+            Assert.NotEqual(nint.Zero, source.Root);
+            if (N.GetForegroundWindow() == source.Root)
+            {
+                // No caller foreground is needed when the source is already there.
+                // Prepare still revalidates the retained process/field identity,
+                // hit target, this click's dispatch receipt and exact source focus.
+                await source.Prepare(field, text, selection);
+                Assert.Equal((source.Root, field), N.Focused());
+                return;
+            }
             // This group can be the first desktop consumer. Establish the caller's
             // own foreground window instead of relying on a previous WPF test.
             var navigationContent = new TextBlock { Text = "Preparing the test source." };
@@ -511,8 +522,12 @@ public sealed class NativeSourceActivationTests(WpfDesktopFixture ui)
             {
                 try
                 {
+                    nint foregroundAfterFailure = N.GetForegroundWindow();
+                    bool? hitIsSourceRoot = hit is { } observedHit ? observedHit == source.Root : null;
                     TestContext.Current.TestOutputHelper?.WriteLine($"Caller navigation failed: stage={stage}; "
-                        + $"own={navigationRoot}; lastPreflightHit={hit?.ToString() ?? "not-sampled"}; foregroundAfterFailure={N.GetForegroundWindow()}; "
+                        + $"own={navigationRoot}; sourceRoot={source.Root}; sourceField={field}; sourceProcessId={source.FixtureProcessId}; "
+                        + $"lastPreflightHit={hit?.ToString() ?? "not-sampled"}; hitIsSourceRoot={hitIsSourceRoot?.ToString() ?? "not-sampled"}; "
+                        + $"foregroundAfterFailure={foregroundAfterFailure}; foregroundIsSourceRoot={foregroundAfterFailure == source.Root}; "
                         + $"clickComplete={clickComplete?.ToString() ?? "not-sampled"}; releaseComplete={releaseComplete?.ToString() ?? "not-sampled"}; "
                         + $"mouseUpReceived={mouseUp.Task.IsCompletedSuccessfully}.");
                 }

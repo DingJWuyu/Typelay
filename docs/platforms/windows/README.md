@@ -87,7 +87,7 @@
 
 ### 产品开发预览（CI518）
 
-最近已核对的 Windows 开发预览来自 [CI518](https://github.com/DingJWuyu/Typelay/actions/runs/40134731709)，源码为 `c730092ec23c0eb4ec57b0c69e6ac089b3853b20`。**该运行已结束，Windows 完整检查仍失败；这是有限能力的开发预览，不是稳定版或完整验收通过的成品。** 完整失败项、责任线与后续验证见[当前开发状态与安排](../../engineering/development-state.md)，后继源码改动不等于本下载包已包含或通过验证。
+当前推荐的 Windows 开发预览来自 [CI518](https://github.com/DingJWuyu/Typelay/actions/runs/40134731709)，源码为 `c730092ec23c0eb4ec57b0c69e6ac089b3853b20`。**该运行已结束，Windows 完整检查仍失败；这是有限能力的开发预览，不是稳定版或完整验收通过的成品。** 完整失败项、责任线与后续验证见[当前开发状态与安排](../../engineering/development-state.md)，后继源码改动不等于本下载包已包含或通过验证。
 
 - 经典系统记事本的按需唤醒 `Ctrl+Shift+F9`、`Esc` 取消、直接替换、原生 Undo 与普通退出已通过本轮软件输入检查。自动 Tab 在发出接受键前被公开能力判为不可用，编辑回源依赖项未运行；不宣称现代 RichEdit 记事本、真实中文输入法或物理按键已通过。
 - Hy 设置链 15 项与 production 链 5 阶段均通过，包括补充中英、冷启动、预览与退出。Notepad、Hy 设置与 Hy production 三个发行包消费者实际加载的程序集身份均与本 ZIP 匹配；生命周期通过不代表翻译质量放行。
@@ -105,9 +105,9 @@
 
 ### 隔离物理 Tab 验证包（不是产品体验包）
 
-同一次 CI518 另提供 [`typelay-windows-physical-tab-c730092ec23c0eb4ec57b0c69e6ac089b3853b20`](https://github.com/DingJWuyu/Typelay/actions/runs/40134731709/artifacts/12576604148)。它仅运行隔离人工用例，在自有 NativeFixture 输入框使用合成原文“你好”和固定候选“Hello”，不启动正式 App、不调用模型，也不开放正式自动接受。
+隔离人工验证入口采用 CI521 的 [`typelay-windows-physical-tab-e66e7fbd8bb7a044b5d4e6cebb130ac4400bb153`](https://github.com/DingJWuyu/Typelay/actions/runs/40143179984/artifacts/12580160695)，源码为 `e66e7fbd8bb7a044b5d4e6cebb130ac4400bb153`；与上方保留的CI518产品开发预览分开。它仅运行隔离人工用例，在自有 NativeFixture 输入框使用合成原文“你好”和固定候选“Hello”，不启动正式 App、不调用模型，也不开放正式自动接受。
 
-- 内层 `TypeLay-Windows-physical-Tab-validation.zip`：7,790,003 字节；SHA-256：`ce4164c3ffc27d19196c283740b149759a8616b3aa8ca6621c8c04d6bc21e22c`，已实际重算并核对包旁摘要。用 `Get-FileHash .\TypeLay-Windows-physical-Tab-validation.zip -Algorithm SHA256` 校验内层文件。
+- 内层 `TypeLay-Windows-physical-Tab-validation.zip`：7,799,147 字节；SHA-256：`381ffe79456fa70611b076680a2fc0bd70523356e227479144873ff2efbceaff`，已实际重算并核对包旁摘要。用 `Get-FileHash .\TypeLay-Windows-physical-Tab-validation.zip -Algorithm SHA256` 校验内层文件。
 - 与自带运行时的产品预览不同，本包需要预先安装 **.NET 10 Desktop Runtime x64**，且同一 x64 安装的 `dotnet` 在 PATH；不需要 SDK、Python 或模型。
 - 已通过中文与空格路径搬迁后的两项软件注入拒绝检查，并发现唯一、未跳过的人工 Tab 用例；**物理按键尚未执行**。这些结果只证明包的准备与阴性检查，不是物理 Tab 阳性或产品接受通过。
 - 完整解压并保留目录布局，先读包内 `README.md` 和 `BUILD.txt`，按该说明在独占、已解锁的 Windows 桌面与非管理员 64 位 PowerShell 中执行。仅在原生框及提示出现后亲手按下并释放一次 Tab；失败或超时保留原始结果后停止，不补按、不重跑。即使该隔离用例通过，也不代表正式 App、真实 IME、UIAccess 或第三方应用部署完成验收。
