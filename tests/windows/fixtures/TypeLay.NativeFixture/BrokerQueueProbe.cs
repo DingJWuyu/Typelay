@@ -49,7 +49,7 @@ internal static class BrokerQueueProbe
                     while (WindowsInterruptClock.NowMs <= request.ExpiresAtMs)
                         await Task.Delay(1, deadline.Token);
                 }
-                await Wire.WriteAsync(output, new BrokerResponse(BrokerProtocol.Version, request.Id,
+                await Wire.WriteAsync(output, new BrokerResponse(request.Op == "old-version-response" ? 4 : BrokerProtocol.Version, request.Id,
                     request.Op == "hello" ? "ready" : request.Op is "return" or "return-glossary" ? "focused" : "observed"), deadline.Token);
             }
         }

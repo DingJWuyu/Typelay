@@ -43,13 +43,14 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
             settings.Update(settings.Value with
             {
-                AcceptShortcut = accept
+                AcceptShortcut = accept,
+                ExperimentalWriteback = true
             });
             var loop = new Loop();
             var view = new View();
             using var controller = new SessionController(settings, new Translation(), view, hook, input, loop);
             await controller.StartAsync();
-            Assert.False(settings.Value.ExperimentalWriteback);
+            Assert.True(settings.Value.ExperimentalWriteback);
             await Until(() => { loop.Advance(); return view.CanAccept; }, native.Token);
             Assert.NotNull(broker.Installation);
             Assert.True(broker.Installation!.Installed);
@@ -139,13 +140,18 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         try
         {
             var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
+            // Controlled legacy transport only; it must not advertise ordered eligibility.
+            settings.Update(settings.Value with
+            {
+                ExperimentalWriteback = true
+            });
             var loop = new Loop();
             var view = new View();
             using var controller = new SessionController(settings, new Translation(), view, hook, input, loop);
             await controller.StartAsync();
             await Until(() => { loop.Advance(); return view.CanAccept; }, native.Token);
             var permit = broker.InstallationPermit!;
-            Assert.False(settings.Value.ExperimentalWriteback);
+            Assert.True(settings.Value.ExperimentalWriteback);
             Assert.Equal(permit.ObservedAtMs + Limits.PermitMaxAgeMs, permit.ExpiresAtMs);
             Assert.True(WindowsInterruptClock.NowMs <= permit.ExpiresAtMs);
             pressed = true;
@@ -220,7 +226,7 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         var capture = await input.CaptureAsync(new(hook.UserEpoch, hook.ForegroundEpoch, hook.SourceUserEpoch,
             null, [], false, new(hook.CommandGeneration, SessionShortcutBindings.Default)));
         var source = Assert.IsType<InputSnapshot>(capture.Snapshot);
-        Assert.Equal(1, capture.SessionShortcuts!.SourceLocalAcceptanceVersion);
+        Assert.Equal(orderedWitness ? 1 : 0, capture.SessionShortcuts!.SourceLocalAcceptanceVersion);
         var plan = new WritePlan(Guid.NewGuid(), Guid.NewGuid(), 1, source, new(0, 2), "Hello", "Hello", 5);
         var permit = new AcceptancePermit(plan, source.InputEpoch, source.FocusEpoch,
             source.ObservedAtMs, source.ObservedAtMs + Limits.PermitMaxAgeMs);
@@ -328,6 +334,11 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             using var broker = new FixtureBroker(native) { HoldReceipt = true, RpcTrace = rpcTrace };
             using var input = new WindowsInputService(broker, 0, monitor: hook, isolatedSourceAcceptance: true);
             var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
+            // Controlled legacy transport only; it must not advertise ordered eligibility.
+            settings.Update(settings.Value with
+            {
+                ExperimentalWriteback = true
+            });
             var loop = new Loop();
             var view = new View();
             using var controller = new SessionController(settings, new Translation(), view, hook, input, loop);
@@ -456,25 +467,6 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         return permit;
     }
 
-    [Fact]
-    public Task ShippingCaptureNeverAdvertisesTheIsolatedSourceCapability() => desktop.RunAsync(async () =>
-    {
-        await using var native = await ProductionForegroundWriteTests.Desktop.Start();
-        await native.Prepare(native.A, "你好", new(0, 2));
-        using var hook = new KeyboardHook(allowInjectedInput: true);
-        await Until(() => hook.Ready, native.Token);
-        using var broker = new FixtureBroker(native);
-        using var input = new WindowsInputService(broker, 0, monitor: hook);
-        var capture = await input.CaptureAsync(new(hook.UserEpoch, hook.ForegroundEpoch, hook.SourceUserEpoch,
-            null, [], false, new(hook.CommandGeneration, SessionShortcutBindings.Default)));
-        Assert.NotNull(capture.Snapshot);
-        Assert.NotNull(capture.SessionShortcuts);
-        Assert.Equal(0, capture.SessionShortcuts!.SourceLocalAcceptanceVersion);
-        Assert.Null(broker.Installation);
-        Assert.Equal(0, broker.Writes);
-        Assert.Equal("你好", N.ReadText(native.A, Limits.MaxTextUnits));
-    });
-
     private sealed class FixtureBroker(ProductionForegroundWriteTests.Desktop native) : IInputBroker
     {
         private readonly SemaphoreSlim _serial = new(1, 1);
@@ -551,6 +543,10 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         {
             get; set;
         }
+        internal Func<SourceAcceptanceEligibility?, SourceAcceptanceEligibility?>? TransformSourceEligibility
+        {
+            get; init;
+        }
         internal SourceRpcTrace? RpcTrace
         {
             get; init;
@@ -587,6 +583,11 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
                 if (request.Op == "capture")
                 {
                     Captures++;
+                    if (TransformSourceEligibility is { } transform)
+                        result = result with
+                        {
+                            SourceEligibility = transform(result.SourceEligibility)
+                        };
                     if (HoldNextCapture)
                     {
                         HoldNextCapture = false;

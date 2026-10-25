@@ -804,18 +804,20 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 : now - lease.Source.ObservedAtMs > Limits.ObservationMaxAgeMs ? "source-expired" : null;
             bool fresh = freshnessRefusal is null;
             bool source = fresh && IsSourceForeground(binding!.Target);
-            if (IsStockMessageKey(data.Key, sessionKeys))
+            // Registered commands keep their original priority independently
+            // of ordinary/owned arbitration. A consumed event has no source MSG
+            // and must enter neither FIFO, including during owned retirement.
+            if (commandConsumed && _stockMessageRoute
+                && (data.Key == sessionKeys.Accept || data.Key == Volatile.Read(ref _stockLatest)?.AcceptKey
+                    || data.Key == Volatile.Read(ref _stockOwner)?.AcceptKey))
             {
-                if (commandConsumed)
-                {
-                    // A distinct configured chord (for example Ctrl+F7 with
-                    // plain F7 acceptance) already owns this original event.
-                    // Preserve that command, never publish it into the FIFO.
-                    RevokeStockCandidate();
-                    _gate.Revoke();
-                    completed = true; // Complete a deferred read-only Wake too.
-                    return 1;
-                }
+                RevokeStockCandidate();
+                _gate.Revoke();
+                completed = true; // Complete a deferred read-only Wake too.
+                return 1;
+            }
+            if (IsStockMessageKey(data.Key, sessionKeys, binding))
+            {
                 // This route never activates, consumes or turns LL observation
                 // into authority. Input before Arm invalidates that candidate,
                 // including while the source-install ACK is still outstanding.

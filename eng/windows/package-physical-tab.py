@@ -1,4 +1,4 @@
-"""Package physical Tab after original ordered negatives and relocated default-runtime smoke."""
+"""Package physical Tab after original ordered negatives and relocated missing-eligibility runtime smoke."""
 
 import base64
 import hashlib
@@ -17,7 +17,7 @@ from pathlib import Path
 CLASS = "TypeLay.App.Tests.NativeSourceControllerTests"
 MANUAL = "ManualPhysicalAcceptanceKeyUsesOrderedSourceOnceAndSettlesItsOriginalTails"
 NEGATIVE = "OrderedSourceRecordsTheRealInjectedEdgeButDoesNotConsumeOrWrite"
-SMOKE = "RuntimeDoesNotSelectSourceAcceptanceFromAutomationOrAnInjectedBroker"
+SMOKE = "RuntimeRejectsMissingSourceEligibilityRegardlessOfAutomationOrBrokerInjection"
 OUTPUTS = {
     "tests/windows/TypeLay.App.Tests/bin/Release/net10.0-windows": "TypeLay.App.Tests",
     "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0": "TypeLay.NativeFixture",
@@ -126,7 +126,7 @@ def verify_smoke(path):
         or root.find("t:ResultSummary", NS).get("outcome") != "Completed"
     ):
         raise ValueError(
-            "Relocated default-runtime smoke needs False/True each executed/Passed, no skips or errors"
+            "Relocated missing-eligibility runtime smoke needs False/True each executed/Passed, no skips or errors"
         )
 
 
@@ -379,7 +379,9 @@ def main():
         digest = hashlib.file_digest(package, "sha256").hexdigest()
     checksum.write_text(f"{digest}  {archive.name}\n", encoding="ascii")
     pending.replace(archive)
-    print("Relocated default-runtime smoke passed; physical Tab was discovered, not executed.")
+    print(
+        "Relocated missing-eligibility runtime smoke passed; physical Tab was discovered, not executed."
+    )
 
 
 if __name__ == "__main__":

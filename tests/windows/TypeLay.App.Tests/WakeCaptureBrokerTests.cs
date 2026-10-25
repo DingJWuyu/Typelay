@@ -40,6 +40,7 @@ public sealed class WakeCaptureBrokerTests(WpfDesktopFixture wpf)
         Assert.InRange(source.ObservedAtMs, request.WakeOrigin!.TriggeredAtMs, request.ExpiresAtMs - 1);
         Assert.False(source.WriteSupported);
         Assert.False(source.DirectWriteSupported);
+        Assert.Null(reply.SourceEligibility);
         Assert.Null(reply.Receipt);
         Assert.Equal("Fresh synthetic source", N.ReadText(desktop.A, Limits.MaxTextUnits));
         desktop.AssertZeroSubmits();
@@ -58,6 +59,7 @@ public sealed class WakeCaptureBrokerTests(WpfDesktopFixture wpf)
         Assert.Equal(original.Text, observed.Text);
         Assert.False(observed.WriteSupported);
         Assert.False(observed.DirectWriteSupported);
+        Assert.Null(wake.SourceEligibility);
         Assert.Equal(original.Target.AsWindows().ControlHwnd, observed.Target.AsWindows().ControlHwnd);
         Assert.Equal(original.Text, N.ReadText(desktop.A, Limits.MaxTextUnits));
         var plan = new WritePlan(Guid.NewGuid(), Guid.NewGuid(), 1, original, null,

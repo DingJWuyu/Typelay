@@ -8,6 +8,46 @@ namespace TypeLay.Windows.Contracts.Tests;
 public sealed class BrokerContractTests
 {
     [Fact]
+    public async Task SourceEligibilityBindsOnlyTheExactCaptureAndDoesNotImplyInstallation()
+    {
+        var target = new WindowsTarget(123, 456, 789, 790, "win32-edit-transaction-v2", "field", Guid.NewGuid()).Id;
+        var source = new InputSnapshot(target, "text", new(0, 4), new(1, 2, 30, 20), false,
+            FieldAccess.Supported, ImeState.Clear, 1000, 7, 9, WriteSupported: true);
+        var eligibility = new SourceAcceptanceEligibility(1, target, 1000, 7, 9);
+        using var stream = new MemoryStream();
+        await Wire.WriteAsync(stream, new BrokerResponse(BrokerProtocol.Version, 1, "observed", source,
+            FocusMember.Source, SourceEligibility: eligibility), TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        var received = await Wire.ReadAsync<BrokerResponse>(stream, TestContext.Current.CancellationToken);
+        Assert.Equal(eligibility, received.SourceEligibility);
+        Assert.True(received.SourceEligibility!.Matches(Assert.IsType<InputSnapshot>(received.Snapshot)));
+        Assert.Null(received.SourceAcceptance);
+        Assert.Null(received.Receipt);
+        foreach (var changed in new[]
+        {
+            eligibility with { Version = 0 },
+            eligibility with { Version = 2 },
+            eligibility with { Target = target with { Lifetime = Guid.NewGuid() } },
+            eligibility with { ObservedAtMs = 999 },
+            eligibility with { InputEpoch = 8 },
+            eligibility with { FocusEpoch = 10 }
+        })
+            Assert.False(changed.Matches(source));
+    }
+
+    [Fact]
+    public async Task MissingSourceEligibilityCannotInheritSnapshotWriteSupport()
+    {
+        using var stream = new MemoryStream();
+        var source = new InputSnapshot(new("windows", "source", Guid.NewGuid()), "text", new(0, 4),
+            new(1, 2, 30, 20), false, FieldAccess.Supported, ImeState.Clear, 1000, 7, 9, WriteSupported: true);
+        await Wire.WriteAsync(stream, new BrokerResponse(BrokerProtocol.Version, 1, "observed", source),
+            TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        Assert.Null((await Wire.ReadAsync<BrokerResponse>(stream, TestContext.Current.CancellationToken)).SourceEligibility);
+    }
+
+    [Fact]
     public async Task FirstWakeCarriesOnlyItsOriginalNativeFieldAndDeadline()
     {
         var origin = new WakeCaptureOrigin(123, 456, 789, 790, 42, 1000);

@@ -12,8 +12,8 @@ namespace TypeLay.Broker;
 
 internal sealed partial class NativeEditTransactions
 {
-    // Source prototype wired through authenticated Broker operations only when
-    // explicitly enabled by the isolated fixture. Shipping defaults remain off.
+    // Authenticated source operations retain exact owner identity. Formal
+    // composition uses ordered execution; controlled regressions retain sent.
     // Installation alone is neither acceptance nor a CompletedReceipt.
     internal sealed record SourceInstallationResult(bool Installed, bool Quiet, WriteReceipt? Receipt, bool Claimed = false,
         SourceNativeResponse? NativeResponse = null, bool Acknowledged = false);
@@ -80,18 +80,25 @@ internal sealed partial class NativeEditTransactions
     // PID/HWND disappearance alone is never used as a quiet acknowledgement.
     private readonly Dictionary<uint, Process> _sourceHookProcesses = new();
     private readonly Dictionary<uint, nint> _sourceMessageHooks = new();
-    private readonly List<Process> _sourceDetachedProcesses = [];
+    private readonly Dictionary<(int ProcessId, long StartedAt), Process> _sourceDetachedProcesses = [];
     private uint _sourceInstallMessage, _sourceRevokeMessage, _sourcePollMessage;
 
     internal bool SourceMessageRouteClosed => _sourceMessageRoute && _library == 0
         && _sourceGrant is null && _hooks.Count == 0 && _sourceMessageHooks.Count == 0
         && _sourceHookProcesses.Count == 0 && _sourceDetachedProcesses.Count == 0;
 
+    internal bool CanPrepareSourceAcceptance(InputSnapshot source) => _orderedSourceMessageWitness
+        && _sourceMessageRoute && !_sourceMessageRouteFailed && source.IsUsable
+        && WindowsTarget.TryDecode(source.Target, out var target)
+        && _bindings.TryGetValue(target.ControlHwnd, out var binding) && binding.Target == target
+        && binding.Initialized && binding.Owned is null && _sourceMessageHooks.ContainsKey(binding.Thread)
+        && SourceInstallationAvailable() && ConfirmsReturnIdentity(target);
+
     private bool InstallSourceMessageRoute(Binding binding)
     {
-        // The existing isolated consumer deliberately retains synthetic-input
-        // mechanics. Strict rejection tests select a separate exact export;
-        // missing symbols fail closed, never fall back to the controlled route.
+        // Formal composition selects the ordered export. Controlled consumers
+        // retain their exact legacy/strict exports for independent regressions;
+        // missing symbols never fall back to another route.
         string entry = _orderedSourceMessageWitness ? "TypeLaySourceOrderedGetMessageProc"
             : _strictSourceMessageOrigin ? "TypeLaySourceStrictGetMessageProc" : "TypeLaySourceGetMessageProc";
         if (binding.Owned is not null || !SourceInstallationAvailable()
@@ -403,12 +410,11 @@ internal sealed partial class NativeEditTransactions
         {
             _hooks.Remove(thread);
             _sourceHookProcesses.Remove(thread);
-            // Unhook is not an in-flight callback join. This isolated route
-            // conservatively retains its module until exact target exit, even
-            // after successful removal; it makes no hot-unload guarantee.
-            if (_sourceMessageRoute && !SourceProcessExited(process))
-                _sourceDetachedProcesses.Add(process);
-            else
+            // Unhook is not an in-flight callback join. Retain one exact live
+            // process fence even across repeated capture/clear cycles. Another
+            // handle for the same PID/start cannot add a stronger exit proof.
+            if (!_sourceMessageRoute || SourceProcessExited(process)
+                || !_sourceDetachedProcesses.TryAdd((process.Id, process.StartTime.ToUniversalTime().Ticks), process))
                 process.Dispose();
             return true;
         }
@@ -420,12 +426,12 @@ internal sealed partial class NativeEditTransactions
 
     private void ReleaseExitedSourceModules()
     {
-        for (int i = _sourceDetachedProcesses.Count - 1; i >= 0; i--)
+        foreach (var pair in _sourceDetachedProcesses.ToArray())
         {
-            if (!SourceProcessExited(_sourceDetachedProcesses[i]))
+            if (!SourceProcessExited(pair.Value))
                 continue;
-            _sourceDetachedProcesses[i].Dispose();
-            _sourceDetachedProcesses.RemoveAt(i);
+            pair.Value.Dispose();
+            _sourceDetachedProcesses.Remove(pair.Key);
         }
     }
 

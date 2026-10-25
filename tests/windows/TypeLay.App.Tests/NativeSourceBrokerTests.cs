@@ -13,20 +13,55 @@ namespace TypeLay.App.Tests;
 public sealed class NativeSourceBrokerTests
 {
     [Fact]
-    public async Task DefaultBrokerNeverExposesTheIsolatedSourceEndpoint()
+    public async Task OldAppProtocolCannotReachTheSourceEndpoint()
     {
         await using var desktop = await ProductionForegroundWriteTests.Desktop.Start();
-        await desktop.Prepare(desktop.A, "pre old post", new(0, 0));
-        var snapshot = await Observe(desktop);
-        Assert.False(snapshot.WriteSupported);
-        Assert.False(snapshot.DirectWriteSupported);
-        var request = Owner(snapshot);
-        var reply = await Send(desktop, "source-install", request);
-        Assert.False(reply.Installed);
-        Assert.Null(reply.Endpoint);
-        Assert.Equal(Denial.Unsupported, reply.Receipt?.Reason);
-        Assert.Equal(snapshot.Text, N.ReadText(desktop.A, Limits.MaxTextUnits));
-        Assert.Equal(snapshot.Selection, N.ReadSelection(desktop.A));
+        await desktop.Prepare(desktop.A, "你好", new(0, 2));
+        await Assert.ThrowsAsync<EndOfStreamException>(() => desktop.Call(new(4, 0, "source-install", "")));
+        Assert.Equal("你好", N.ReadText(desktop.A, Limits.MaxTextUnits));
+        desktop.AssertZeroSubmits();
+    }
+
+    [Fact]
+    public async Task OrderedEligibilityBelongsToOneOrdinaryCaptureNotADirectReadOrAnotherField()
+    {
+        await using var desktop = await ProductionForegroundWriteTests.Desktop.Start();
+        await desktop.Prepare(desktop.A, "你好", new(0, 2));
+        var first = await desktop.Call(new(BrokerProtocol.Version, 0, "capture", ""));
+        var source = Assert.IsType<InputSnapshot>(first.Snapshot);
+        var eligibility = Assert.IsType<SourceAcceptanceEligibility>(first.SourceEligibility);
+        Assert.True(eligibility.Matches(source));
+        Assert.True(source.WriteSupported);
+        Assert.False(source.DirectWriteSupported);
+        Assert.Null(first.SourceAcceptance); // No grant has been installed or armed.
+
+        var direct = await desktop.Call(new(BrokerProtocol.Version, 0, "capture", "", CaptureDirect: true));
+        var directSource = Assert.IsType<InputSnapshot>(direct.Snapshot);
+        Assert.True(directSource.DirectWriteSupported);
+        Assert.Null(direct.SourceEligibility);
+        // Use the current exact Direct capture and a valid plan. Neither a stale
+        // snapshot mismatch nor invalid replacement may explain this rejection.
+        var plan = new WritePlan(Guid.NewGuid(), Guid.NewGuid(), 1, directSource,
+            directSource.TranslationScope, "Hello", "Hello", 5);
+        Assert.Equal(Denial.None, WriteSafety.Validate(plan, directSource, WindowsInterruptClock.NowMs));
+        var permit = new AcceptancePermit(plan, directSource.InputEpoch, directSource.FocusEpoch,
+            directSource.ObservedAtMs, directSource.ObservedAtMs + Limits.PermitMaxAgeMs);
+        var owner = new SourceAcceptanceRequest(Guid.NewGuid(), 1, directSource.Target, plan.Id, permit,
+            AcceptKey: 9, Chord: SourceAcceptanceChord.Unmodified);
+        var rejected = await Send(desktop, "source-install", owner);
+        Assert.False(rejected.Installed);
+        Assert.False(rejected.Claimed);
+        Assert.Null(rejected.Endpoint);
+
+        await desktop.Prepare(desktop.B, "Other source", new(0, 0));
+        var second = await desktop.Call(new(BrokerProtocol.Version, 0, "capture", ""));
+        var other = Assert.IsType<InputSnapshot>(second.Snapshot);
+        Assert.NotEqual(source.Target, other.Target);
+        Assert.True(Assert.IsType<SourceAcceptanceEligibility>(second.SourceEligibility).Matches(other));
+        Assert.False(eligibility.Matches(other));
+        Assert.Equal("你好", N.ReadText(desktop.A, Limits.MaxTextUnits));
+        Assert.Equal("Other source", N.ReadText(desktop.B, Limits.MaxTextUnits));
+        desktop.AssertZeroSubmits();
     }
 
     [Theory]

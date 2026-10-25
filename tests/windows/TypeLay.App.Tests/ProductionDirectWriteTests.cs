@@ -94,12 +94,13 @@ public sealed class ProductionDirectWriteTests(ITestOutputHelper output)
             await Call(new(BrokerProtocol.Version, 0, "hello", ""));
             N.SendString(b, N.WM_SETTEXT, "B must remain unchanged");
             // Automatic observation must reach the existing source-thread IMM
-            // reader without acquiring either write capability. Broker-side IMM
-            // is not a valid observation of another thread's input context.
+            // reader without acquiring Direct authority. Ordered eligibility
+            // may propose a source grant, but is not an installed write owner.
+            // Broker-side IMM cannot observe another thread's input context.
             await Focus(a);
             N.SendString(a, N.WM_SETTEXT, "A🙂你好Z");
             N.Send(a, N.EM_SETSEL, 3, 5);
-            async Task<InputSnapshot> ReadOnlyCapture()
+            async Task<InputSnapshot> AutomaticCapture()
             {
                 var observed = await Call(new(BrokerProtocol.Version, 0, "capture", ""));
                 var snapshot = Assert.IsType<InputSnapshot>(observed.Snapshot);
@@ -108,21 +109,23 @@ public sealed class ProductionDirectWriteTests(ITestOutputHelper output)
                 Assert.Equal(ImeState.Clear, snapshot.Ime);
                 Assert.Equal("A🙂你好Z", snapshot.Text);
                 Assert.Equal(new TextRange(3, 5), snapshot.Selection);
-                Assert.False(snapshot.WriteSupported);
+                Assert.True(snapshot.WriteSupported);
                 Assert.False(snapshot.DirectWriteSupported);
+                Assert.True(Assert.IsType<SourceAcceptanceEligibility>(observed.SourceEligibility).Matches(snapshot));
+                Assert.Null(observed.SourceAcceptance);
                 Assert.Equal("A🙂你好Z", N.ReadText(a, Limits.MaxTextUnits));
                 Assert.Equal(((nint)host.RootHwnd, a), N.Focused());
                 Assert.Equal(0, (long)N.Send((nint)host.RootHwnd, N.FixtureSubmitCount));
                 return snapshot;
             }
-            var readOnly = await ReadOnlyCapture();
+            var readOnly = await AutomaticCapture();
             Assert.Equal(WriteStatus.RejectedBeforeMutation, (await Write(Plan(readOnly, "Hello"))).Status);
             // Clearing an observation retires its native cookie through the same
             // owner; no direct job exists yet that could require the binding.
             Assert.NotEqual(0, N.GetProp(a, "TypeLay.NativeInput.Lifetime.v2"));
             await Call(new(BrokerProtocol.Version, 0, "clear", "", BoundTarget: readOnly.Target));
             Assert.Equal(0, N.GetProp(a, "TypeLay.NativeInput.Lifetime.v2"));
-            var freshReadOnly = await ReadOnlyCapture();
+            var freshReadOnly = await AutomaticCapture();
             Assert.NotEqual(readOnly.Target.Lifetime, freshReadOnly.Target.Lifetime);
             await Call(new(BrokerProtocol.Version, 0, "observe-pause", ""));
             Assert.Equal(0, N.GetProp(a, "TypeLay.NativeInput.Lifetime.v2"));
@@ -143,7 +146,7 @@ public sealed class ProductionDirectWriteTests(ITestOutputHelper output)
             }
             // Switching the request back to automatic cannot inherit direct
             // capability, but must not retire a previously issued direct job.
-            var automaticAgain = await ReadOnlyCapture();
+            var automaticAgain = await AutomaticCapture();
             Assert.Equal(source.Target, automaticAgain.Target);
             await Call(new(BrokerProtocol.Version, 0, "clear", "", BoundTarget: automaticAgain.Target));
             Assert.NotEqual(0, N.GetProp(a, "TypeLay.NativeInput.Lifetime.v2"));

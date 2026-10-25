@@ -27,12 +27,17 @@ internal sealed class UiaInputProvider : IDisposable
     private readonly HashSet<(int, long, string)> _quarantine = new();
     private readonly bool _sourcePrototype;
     private SourceAcceptanceRequest? _sourceOwner;
-    private readonly bool _sourceMessageRoute;
+    private readonly bool _sourceMessageRoute, _orderedSourceMessageWitness;
+    public SourceAcceptanceEligibility? SourceEligibility
+    {
+        get; private set;
+    }
     private bool _sourceCompletionTransferred;
     public UiaInputProvider(bool sourcePrototype = false, bool sourceMessageRoute = false, bool orderedSourceMessageWitness = false)
     {
         _sourcePrototype = sourcePrototype;
         _sourceMessageRoute = sourcePrototype && sourceMessageRoute;
+        _orderedSourceMessageWitness = orderedSourceMessageWitness;
         _edits = new(sourceMessageRoute: _sourceMessageRoute, orderedSourceMessageWitness: orderedSourceMessageWitness);
     }
     public string? Application => _application;
@@ -60,6 +65,7 @@ internal sealed class UiaInputProvider : IDisposable
                 || identity.Permit is not { } permit
                 || permit.Plan.Id != identity.Grant || permit.Plan.Expected.Target != identity.Target
                 || _previous is not { } current
+                || _orderedSourceMessageWitness && SourceEligibility?.Matches(current) != true
                 || permit.Plan.Expected with
                 {
                     ObservedAtMs = current.ObservedAtMs,
@@ -123,7 +129,11 @@ internal sealed class UiaInputProvider : IDisposable
             acknowledged: terminal.Acknowledged);
     }
 
-    public void ClearDirect() => _edits.Clear();
+    public void ClearDirect()
+    {
+        SourceEligibility = null;
+        _edits.Clear();
+    }
 
     public (PauseAnchor?, FocusMember) ObservePause(BrokerRequest request)
     {
@@ -199,6 +209,7 @@ internal sealed class UiaInputProvider : IDisposable
 
     public (InputSnapshot?, FocusMember) Capture(BrokerRequest request)
     {
+        SourceEligibility = null;
         // Owned observations cannot cross into the ordinary capture/write path.
         if (request.Op is not ("capture" or "write") || request.OwnedCapture is not null || request.WakeOrigin is not null)
         {
@@ -212,6 +223,7 @@ internal sealed class UiaInputProvider : IDisposable
 
     public (InputSnapshot?, FocusMember) CaptureWake(BrokerRequest request)
     {
+        SourceEligibility = null;
         // A read cannot steal retirement from an installed source grant.
         // Direct observations remain reusable only through the read-only path.
         if (_edits.HasSourceAcceptanceOwner)
@@ -295,6 +307,7 @@ internal sealed class UiaInputProvider : IDisposable
 
     public (InputSnapshot?, FocusMember) CaptureOwned(BrokerRequest request)
     {
+        SourceEligibility = null;
         using var trace = CaptureTrace.Start();
         (InputSnapshot?, FocusMember) Reject(string reason)
         {
@@ -560,9 +573,19 @@ internal sealed class UiaInputProvider : IDisposable
             {
                 InputEpoch = _inputEpoch,
                 FocusEpoch = _focusEpoch,
-                WriteSupported = request.WakeOrigin is null && (observed.WriteSupported || _sourcePrototype),
+                WriteSupported = request.WakeOrigin is null && (observed.WriteSupported || _sourcePrototype && !_orderedSourceMessageWitness),
                 DirectWriteSupported = request.WakeOrigin is null && observed.DirectWriteSupported
             };
+            if (request.Op == "capture" && !request.CaptureDirect && request.WakeOrigin is null
+                && _edits.CanPrepareSourceAcceptance(_previous))
+            {
+                _previous = _previous with
+                {
+                    WriteSupported = true
+                };
+                SourceEligibility = new(1, _previous.Target, _previous.ObservedAtMs,
+                    _previous.InputEpoch, _previous.FocusEpoch);
+            }
             trace?.Result("observed-native");
             return (_previous, FocusMember.Source);
         }
@@ -664,6 +687,7 @@ internal sealed class UiaInputProvider : IDisposable
 
     public WriteReceipt Write(BrokerRequest request)
     {
+        SourceEligibility = null;
         long writeAt = WindowsInterruptClock.NowMs;
         TraceWrite("start", request, writeAt);
         if (request.Plan is not { } plan || WindowsInterruptClock.NowMs > request.ExpiresAtMs)
@@ -736,6 +760,7 @@ internal sealed class UiaInputProvider : IDisposable
     }
     public WriteReceipt WriteDirect(BrokerRequest request)
     {
+        SourceEligibility = null;
         if (request.Plan is not { } plan || request.BoundTarget != plan.Expected.Target
             || !WindowsTarget.TryDecode(plan.Expected.Target, out var target)
             || target.Provider != NativeEditTransactions.Provider || !plan.Expected.DirectWriteSupported)
@@ -1120,6 +1145,7 @@ internal sealed class UiaInputProvider : IDisposable
     {
         if (expected is { } id && _previous?.Target != id)
             return;
+        SourceEligibility = null;
         _edits.ClearObservations();
         _previous = null;
         _ownedCapture = null;

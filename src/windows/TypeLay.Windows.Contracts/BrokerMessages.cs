@@ -2,12 +2,12 @@ using TypeLay.Core;
 
 namespace TypeLay.Windows.Contracts;
 
-// App and Broker ship together. v4 requires the explicit source chord/mode
-// contract; old peers cannot reinterpret an observation as write authority.
+// App and Broker ship together. v5 binds ordinary source eligibility to one
+// capture. Reject old peers before an old App can consume a key without this proof.
 // The precise, suspend-inclusive interrupt-clock contract from v3 is unchanged.
 public static class BrokerProtocol
 {
-    public const int Version = 4;
+    public const int Version = 5;
 }
 
 public sealed record BrokerRequest(int Version, long Id, string Op, string Token,
@@ -19,7 +19,18 @@ public sealed record BrokerRequest(int Version, long Id, string Op, string Token
 public sealed record BrokerResponse(int Version, long Id, string Status,
     InputSnapshot? Snapshot = null, FocusMember Focus = FocusMember.Other,
     WriteReceipt? Receipt = null, string? Application = null,
-    long UserEpoch = 0, long ForegroundEpoch = 0, PauseAnchor? PauseAnchor = null, SourceAcceptanceResult? SourceAcceptance = null);
+    long UserEpoch = 0, long ForegroundEpoch = 0, PauseAnchor? PauseAnchor = null, SourceAcceptanceResult? SourceAcceptance = null,
+    SourceAcceptanceEligibility? SourceEligibility = null);
+
+// Eligibility belongs to this exact capture, not the Broker process or a prior
+// target. It only permits proposing a grant; source install/ACK and ordered Arm
+// still establish readiness. Missing and unknown versions grant no capability.
+public sealed record SourceAcceptanceEligibility(int Version, TargetId Target, long ObservedAtMs,
+    long InputEpoch, long FocusEpoch)
+{
+    public bool Matches(InputSnapshot source) => Version == 1 && Target == source.Target
+        && ObservedAtMs == source.ObservedAtMs && InputEpoch == source.InputEpoch && FocusEpoch == source.FocusEpoch;
+}
 
 // Read-only identity frozen at the original no-lease Wake key. It is not a
 // TargetId, a body observation, a native lifetime registration or write authority.

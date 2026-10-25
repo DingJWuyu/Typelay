@@ -95,6 +95,11 @@ public sealed partial class NativeSourceControllerTests
             await Until(() => hook.Ready, token);
             using var input = new WindowsInputService(broker, 0, monitor: hook, sourceMessageAcceptance: true);
             var settings = new SettingsStore(Path.Combine(source.Directory, "settings.json"));
+            // Controlled legacy transport regression, not formal ordered eligibility.
+            settings.Update(settings.Value with
+            {
+                ExperimentalWriteback = true
+            });
             var loop = new Loop();
             var view = new View();
             using var controller = new SessionController(settings, new Translation(), view, hook, input, loop);

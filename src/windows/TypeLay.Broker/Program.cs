@@ -11,8 +11,10 @@ internal static class Program
 {
     // All UIA COM objects and calls remain on this one MTA thread, including disposal.
     [MTAThread]
-    private static int Main() => Run();
+    private static int Main() => Run(sourcePrototype: true, sourceMessageRoute: true, orderedSourceMessageWitness: true);
 
+    // Controlled regression hosts retain the old transports. The executable
+    // entry above is fixed to ordered source execution, with no external selector.
     internal static int Run(bool sourcePrototype = false, bool sourceMessageRoute = false, bool orderedSourceMessageWitness = false)
     {
         string? token = Environment.GetEnvironmentVariable("TYPELAY_PIPE_TOKEN");
@@ -144,7 +146,8 @@ internal static class Program
     {
         var (snapshot, focus) = provider.Capture(request);
         return new(BrokerProtocol.Version, request.Id, snapshot is null ? "silent" : "observed", snapshot, focus,
-            Application: provider.Application, UserEpoch: request.UserEpoch, ForegroundEpoch: request.ForegroundEpoch);
+            Application: provider.Application, UserEpoch: request.UserEpoch, ForegroundEpoch: request.ForegroundEpoch,
+            SourceEligibility: provider.SourceEligibility);
     }
     private static BrokerResponse ObserveWake(UiaInputProvider provider, BrokerRequest request)
     {

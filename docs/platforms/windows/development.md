@@ -153,34 +153,36 @@ SourceWitness v2沿用16520字节，原保留位132明确为recording-active，�
 
 ### 隔离 Ctrl+F1–F24 候选
 
-同一 `orderedSourceMessageWitness` 内部构造增加明确的 `ObserveControlPrefix`，先通过既有 source-install/Prepared/Arm 建立休眠 FIFO 的合法观察起点。它不是写许可，不能执行 sent Activate、源首 Fn 或呈现 CanAccept；旧/缺失 mode 不降级为观察。Broker DTO v4 与 source ABI v7 同步拒绝旧消费者，既有受控 sent-route 仍显式使用原无修饰 native 合同，其有效 Ctrl 归因回归保留。
+同一 `orderedSourceMessageWitness` 内部构造增加明确的 `ObserveControlPrefix`，先通过既有 source-install/Prepared/Arm 建立休眠 FIFO 的合法观察起点。它不是写许可，不能执行 sent Activate、源首 Fn 或呈现 CanAccept；旧/缺失 mode 不降级为观察。Broker DTO v5 与 source ABI v7 拒绝各自旧消费者，既有受控 sent-route 仍显式使用原无修饰 native 合同，其有效 Ctrl 归因回归保留。
 
 Ctrl 只正常派发，立即撤旧 grant 并推进 User/Source epoch。App 在已有 LL 线程发布真实 Ctrl record 后冻结其序号；源在该次实际 MSG 上先取独立 GCIMS，再消费同一 FIFO 队首，原消息和序号在下游返回后仍一致才保存前缀。它不声称 WndProc 已处理完；后续仍要求完整 fresh capture、新 InputEpoch、新 plan、新安装与最终 source preflight。前缀标量与源寿命绑定，跨 Quiet 保留，但不跨配置、其它输入、焦点/正文/选区/IME变化或释放复活；Fn 首次尝试消费该组，只认领 Fn 的首键和原 repeat/up，Ctrl 先松也不撤既有 Fn 尾债。F10 保留 SYS/context 特例，不扩 Shift/Alt。
 
 人工稿复用 `ManualAcceptanceModifier` 的既有归因与原稿基线，不重建草稿机制。旧在途读仅暂保文字且不安装 Ctrl 接受；新读只有正文、选区、目标、IME、配置都不变才重建许可，原 snapshot100ms 不续期。LL 的 injected 位不授来源权限；普通 SendInput 的原 Ctrl 或 Fn 在源仍拒绝。
 
-本地 `python -m unittest discover -s tests/windows -p test_native_foreground_guards.py -v` 在新增 F7 场景先红后绿，并覆盖 F1–F24、F10 SYS、两释放顺序、repeat/重按、observer及旧票、缺失/改变/普通注入 Ctrl、旧捕获、配置与 Quiet 间失效、Fn早于Arm和注入Fn的零写。此为受控 Win32 API 边界。[CI524](https://github.com/DingJWuyu/Typelay/actions/runs/40160855034) 已运行当前 v7 的Windows编译、Contracts169与App898个通过项，六个新增ordered Ctrl场景及旧读真实RenderCount保稿回归通过；人工physical Ctrl+F7与UIAccess Ctrl仍未运行，shared行为套件因Ruff格式失败未运行。`NativeSourceControllerTests.Modifiers` 准备普通注入的 fresh/旧在途读/正文/选区/配置/过早Fn回归，以及显式单次物理 Ctrl+F7 人工稿用例；原 Tab/F7 软件阴性、默认 factory、ACK、注册命令优先和 sent-route 回归继续执行，不用新 C 阳性替代它们。正式 Main、cap0、CLI、设置、权限及部署不变。
+本地 `python -m unittest discover -s tests/windows -p test_native_foreground_guards.py -v` 在新增 F7 场景先红后绿，并覆盖 F1–F24、F10 SYS、两释放顺序、repeat/重按、observer及旧票、缺失/改变/普通注入 Ctrl、旧捕获、配置与 Quiet 间失效、Fn早于Arm和注入Fn的零写。此为受控 Win32 API 边界。[CI524](https://github.com/DingJWuyu/Typelay/actions/runs/40160855034) 已运行当前 v7 的Windows编译、Contracts169与App898个通过项，六个新增ordered Ctrl场景及旧读真实RenderCount保稿回归通过；人工physical Ctrl+F7与UIAccess Ctrl仍未运行，shared行为套件因Ruff格式失败未运行。`NativeSourceControllerTests.Modifiers` 准备普通注入的 fresh/旧在途读/正文/选区/配置/过早Fn回归，以及显式单次物理 Ctrl+F7 人工稿用例；原 Tab/F7 软件阴性、默认 factory、ACK、注册命令优先和 sent-route 回归继续执行，不用新 C 阳性替代它们。上述已发布版本的 Main/cap0、CLI、设置、权限及部署结论不变；未发布正式接线见下节。
 
 ### 真实 runtime 的受控组装
 
-`WindowsRuntime.CreateSession` 的内部 `isolatedOrderedSourceAcceptance` 默认关闭；显式选入必须提供由调用者拥有的隔离 `IInputBroker`，才把现有 source-message/ordered 参数传给 `WindowsInputService`。生产 App/Main、Broker/Main、CLI、环境、设置及 `--automation-test` 都不选入，旧实验写回门与默认 cap0 保持。Broker hello 仍只返回 ready，没有新全局能力协商。应用支持只消费本次 capture 中精确目标、SourceReady、版本1的确认，并在读取时继续核当前配置代次/键对；新 capture、配置及断连沿原边界撤销，Chrome 仍用它自己的页面批准投影。
+本分支是**未发布的正式接线候选**，不变更当前推荐包或声称物理接受通过。`WindowsRuntime.CreateSession` 删除内部 opt-in 参数，正式 factory 唯一选择 ordered source-message；Broker/Main 固定相同组合。CLI、环境、用户设置与 `--automation-test` 不能选择旧 sent。旧构造只供 completion-once、未知结果隔离、撤权等现役受控回归，不能由正式入口到达；旧 `ExperimentalWriteback` 不授新资格。
+
+Broker v5 与旧 App/Broker 双向拒绝混用；hello 仍只返回 ready，不协商全局能力。可选 `SourceAcceptanceEligibility` 的版本、完整 Target、ObservedAtMs、InputEpoch、FocusEpoch 只绑定当前 ordinary capture。App 还核 observed、Source、非 owned/Direct/Wake、有效且新鲜 snapshot 和当前配置，才投影 cap1；缺/错证明仍 cap0，不能回落旧勾选。Direct 保留原两写能力但 cap0，Wake/owned 各守原合同。cap1 只允许提出计划，实际 source install/ACK、LL FIFO、Arm、来源、IME、焦点、身份、原100ms与Quiet仍分别成立。安装核当前完整 capture，但继续允许原 permit 的 ObservedAt/Bounds 与同一未变来源刷新归一，不续期。应用支持沿原 capture/配置/断连撤销；Chrome 仍使用独立页面批准。owned Bind 与原 op6 分流，LL普通分支不截走 owned FIFO。反复 capture/clear 的同 PID/start 活进程 fence 去重，只清理已 signaled 的原句柄，不提前卸载模块。候选目前只有静态检查，新增 managed/Windows 回归未执行。
 
 既有 `OrderedSourceRecordsTheRealInjectedEdgeButDoesNotConsumeOrWrite` 的 Tab/F7 两例使用真实 factory、Router、Dispatcher loop 与 WPF，保留唯一 authenticated Broker、原生源和固定 Translation；先核精确目标安装/ACK与可见接受提示，再向同一未续期 grant 发送一次普通非 UIAccess 键对。旧 experimental 为 false，必须核 LL 记录、原键正常派发、来源拒绝、零正文写/零完成和同 owner Quiet。当前实现严格要求无 VerifiedSnapshot 的 `RejectedBeforeMutation/Unsupported`，并由同一个 v7 grant 核 Quiet、Withdrawn、invoked=0、status=2及 `OriginUntrusted`，不接受其它 Unsupported 原因或未知结果。活源拒绝由 native poll/retire ACK 形成终态回执，只有 Claimed 才转交 CompletedReceipt；停用/clear 后回读精确终态不算新写入。
 
-[CI524](https://github.com/DingJWuyu/Typelay/actions/runs/40160855034) 执行当前 source v7/49416。原套件Tab/F7两阴性完整通过，包括零计数、撤权与清理；搬迁Tab在ordered-edge准备之后、唯一键对之前的最终expiry门（Ordered.cs行285）失败，F7通过。原件没有该最终检查的具体超期数值，不能倒推各阶段耗时或称准备压缩已修根因。该轮唯一manual Tab发现通过，但没有新物理ZIP；此旧失败不改判。当前交付已更新至CI526包，见[验证包说明](README.md#隔离物理-tab-验证包不是产品体验包)。默认factory在automation false/true且注入source-capable broker时仍不安装、不提示接受；逐目标ACK呈现对照不制造许可，默认BrokerClient的shipping capture cap0回归独立保留。
+[CI524](https://github.com/DingJWuyu/Typelay/actions/runs/40160855034) 执行当前 source v7/49416。原套件Tab/F7两阴性完整通过，包括零计数、撤权与清理；搬迁Tab在ordered-edge准备之后、唯一键对之前的最终expiry门（Ordered.cs行285）失败，F7通过。原件没有该最终检查的具体超期数值，不能倒推各阶段耗时或称准备压缩已修根因。该轮唯一manual Tab发现通过，但没有新物理ZIP；此旧失败不改判。当前交付已更新至CI526包，见[验证包说明](README.md#隔离物理-tab-验证包不是产品体验包)。未发布候选把原 always-cap0 断言替换为缺/错逐捕获证明的拒绝回归，实际已发布版本的 cap0 证据不改判。
 
 当前测试在controller启动前订阅真实WPF LayoutUpdated，首次实际接受提示时保存permit；异步续行后复核提示与同一permit。输入前仍打开并持有原nonce source MMF handle，仅把diagnostic view创建与不可变version/key断言移到原键对正常派发之后；使用49416字节/version7，Quiet后从同一原对象核终态。witness view、recording-active、初始B、FIFO、同permit、cue、焦点与期限门保持输入前。interrupt-time阶段检查点与uptime witness tick分属不同时间域，不相减；调用者读取不等于实际绘制时刻，观察开销计入原期限。上述实现已在CI524实跑，但搬迁最终输入前仍到期；每grant100ms、每场景30秒与唯一键对不变，不续期或重试。包装现已调整搬迁检查的职责，保留原套件Tab/F7安全门，见下节；它不修改这项原有序测试或证明物理、真实模型、正式Notepad及部署验收。
 
 ## 正向接受的剩余条件
 
 - 隔离有序候选已有受控 C 正反边界、Windows 编译、managed 历史与真实普通注入拒绝证据。下一正向证据入口为现有 `ManualPhysicalAcceptanceKeyUsesOrderedSourceOnceAndSettlesItsOriginalTails`：每行一次指定的无修饰真实物理键须取得一次Verified、零原键派发/LL Activate/二次写、Undo、原尾键退休及清理；使用原100ms grant和30秒fixture，不补按键或续期。真实UIAccess、IME与正式部署仍须各自验收，不能由该物理例或普通注入拒绝替代。
-- 正式 Main/capability0 保持关闭；原输入、期限、身份和清理限制不变，未知零写拒绝，不以重试、等待或延时补成成功。
+- 已发布版本仍保持原 cap0；本分支正式 ordered 接线尚未发布或完成 Windows 验证。原输入、期限、身份和清理限制不变，未知零写拒绝，不以重试、等待或延时补成成功。
 
 ### 无 SDK 的隔离物理 Tab 验证包
 
 Windows artifact 可另含 `TypeLay-Windows-physical-Tab-validation.zip` 与 SHA256，不是产品 ZIP。它保留现有 App.Tests、NativeFixture、Broker 的三个 framework-dependent Release 输出相对目录和根 `TypeLay.slnx`，附构建身份、实际锁定依赖原始许可及[一次执行说明](../../../packaging/windows/physical-tab/README.md)。使用者需预装 .NET 10 Desktop Runtime x64、PATH 中的同一 x64 `dotnet` 和独占已解锁物理桌面，不需 SDK、Python、模型或管理员；包不安装系统组件。
 
-`eng/windows/package-physical-tab.py` 只在所有既有桌面链之后运行，从原7分钟缓存/上传尾部使用2分钟，不改75分钟job、首组前台准备或三份modelproof。它要求本轮原App TRX中既有ordered普通注入Tab/F7两行已Passed，这条安全行为前置不变；压缩候选后解至checkout外的新含空格/中文目录，用原exe先发现唯一无Skip的 `ManualPhysicalKey=Tab` 行，再执行既有 `RuntimeDoesNotSelectSourceAcceptanceFromAutomationOrAnInjectedBroker` 的 false/true 两行，要求恰好2 executed/2 Passed、零跳过/runner错误和原owned清理。搬迁smoke只验证真实WPF/源fixture/显式注入自有Broker的加载与factory默认cap0、不安装/不提示接受、零写，不代替原source-install/普通注入拒绝，更不代表物理接受或正式BrokerClient启动。失败不输出可供运行的验证ZIP，只保留发现原件、stdout/stderr、TRX与退出码；原其它失败仍红。[CI526](https://github.com/DingJWuyu/Typelay/actions/runs/40167116453) 已实际通过原Tab9/F7118两Passed前置、唯一manual发现及搬迁defaultfactory两行，输出已核物理验证包；这不把旧有序搬迁失败改判为通过。
+`eng/windows/package-physical-tab.py` 只在所有既有桌面链之后运行，从原7分钟缓存/上传尾部使用2分钟，不改75分钟job、首组前台准备或三份modelproof。它要求本轮原App TRX中既有ordered普通注入Tab/F7两行已Passed，这条安全行为前置不变；压缩候选后解至checkout外的新含空格/中文目录，用原exe先发现唯一无Skip的 `ManualPhysicalKey=Tab` 行，再执行既有 `RuntimeRejectsMissingSourceEligibilityRegardlessOfAutomationOrBrokerInjection` 的 false/true 两行，要求恰好2 executed/2 Passed、零跳过/runner错误和原owned清理。搬迁smoke只验证真实WPF/源fixture/显式注入自有Broker的加载及 factory 在扣除本次 eligibility 后的 cap0、不安装/不提示接受、零写，不代替原source-install/普通注入拒绝，更不代表物理接受或正式BrokerClient启动。失败不输出可供运行的验证ZIP，只保留发现原件、stdout/stderr、TRX与退出码；原其它失败仍红。[CI526](https://github.com/DingJWuyu/Typelay/actions/runs/40167116453) 已实际通过原Tab9/F7118两Passed前置、唯一manual发现及搬迁defaultfactory两行，输出已核物理验证包；这不把旧有序搬迁失败改判为通过。
 
 BUILD保留同source、同job及Release身份，沿原三输出树复制、三处NativeInput一致和真实ZIP解压检查；没有独立的原套件测试时快照，不声称原suite与最终包逐字samebits。当前隔离交付推荐CI526，包身份集中维护在[验证包说明](README.md#隔离物理-tab-验证包不是产品体验包)；产品开发预览仍为CI518。
 

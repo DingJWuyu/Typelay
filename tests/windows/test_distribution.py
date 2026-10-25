@@ -38,7 +38,7 @@ def responses(data: bytes) -> list[dict]:
 
 
 def request(identifier: int, operation: str, **changes) -> dict:
-    return {"version": 4, "id": identifier, "op": operation, "token": TOKEN, **changes}
+    return {"version": 5, "id": identifier, "op": operation, "token": TOKEN, **changes}
 
 
 class DistributionTests(unittest.TestCase):
@@ -662,7 +662,8 @@ class DistributionTests(unittest.TestCase):
             {"version": 1},
             {"version": 2},
             {"version": 3},
-            {"version": 5},
+            {"version": 4},
+            {"version": 6},
         ):
             with self.subTest(change=change):
                 result = self.broker(frame(request(1, "hello", **change)))

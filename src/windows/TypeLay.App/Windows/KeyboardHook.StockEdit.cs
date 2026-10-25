@@ -10,6 +10,8 @@ internal sealed partial class KeyboardHook
 {
     private sealed record StockCandidate(InputLease Lease, AcceptancePermit Permit, uint AcceptKey, SourceAcceptanceChord Chord)
     {
+        // Decode on publication, never in the low-level callback.
+        internal WindowsTarget Target { get; } = Lease.Source.Target.AsWindows();
         internal TaskCompletionSource Delivered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal int Claimed;
         internal bool Retiring, CompletionQueued;
@@ -24,12 +26,12 @@ internal sealed partial class KeyboardHook
     private int _stockWorker, _stockClosed, _stockBlocked, _stockHookActive;
     private bool _stockMessageRoute, _orderedSourceMessageWitness;
 
-    internal void ConfigureIsolatedStockAcceptance(
+    internal void ConfigureSourceAcceptance(
         Func<string, SourceAcceptanceRequest, Task<SourceAcceptanceResult?>> exchange, bool sourceMessageRoute = false,
         bool orderedSourceMessageWitness = false)
     {
         if (orderedSourceMessageWitness && !sourceMessageRoute)
-            throw new ArgumentException("Ordered witnesses require the isolated source message route.");
+            throw new ArgumentException("Ordered witnesses require the source message route.");
         _stockExchange = exchange;
         _stockMessageRoute = sourceMessageRoute;
         _orderedSourceMessageWitness = orderedSourceMessageWitness;
@@ -137,11 +139,25 @@ internal sealed partial class KeyboardHook
         new(candidate.Lease.CommandGeneration, candidate.Lease.SessionRevision, candidate.Lease.Source.Target,
             candidate.Permit.Plan.Id, install ? candidate.Permit : null, candidate.AcceptKey, candidate.Chord);
 
-    // Preserve the old owner's bypass through Quiet when configuration changes;
-    // only the installed candidate's frozen key can gain LL eligibility.
-    private bool IsStockMessageKey(uint key, SessionKeys keys) => _stockMessageRoute
-        && (key == keys.Accept || key == Volatile.Read(ref _stockLatest)?.AcceptKey
-            || key == Volatile.Read(ref _stockOwner)?.AcceptKey);
+    // The ordinary route must not steal owned practice's FIFO observation.
+    // Retain a previous ordinary owner's exact foreground/key through Quiet,
+    // even after its published lease or configuration has been revoked.
+    private bool IsStockMessageKey(uint key, SessionKeys keys, HookLease? binding)
+    {
+        if (!_stockMessageRoute)
+            return false;
+        nint foreground = Native.GetForegroundWindow();
+        if (Volatile.Read(ref _ownedChannel) is { } owned && foreground == (nint)owned.Descriptor.RootHwnd)
+            return false;
+        if (key == keys.Accept && binding is { NativeStock: true }
+            && binding.Observation.PracticeRunId is null && binding.Observation.PracticeConnectionId is null
+            && IsSourceForeground(binding.Target, foreground))
+            return true;
+        return Volatile.Read(ref _stockLatest) is { } latest && key == latest.AcceptKey
+                && IsSourceForeground(latest.Target, foreground)
+            || Volatile.Read(ref _stockOwner) is { } owner && key == owner.AcceptKey
+                && IsSourceForeground(owner.Target, foreground);
+    }
 
     private static bool StockReplyMatches(SourceAcceptanceResult? result, StockCandidate candidate) =>
         result is not null && result.Generation == candidate.Lease.CommandGeneration
@@ -310,8 +326,8 @@ internal sealed partial class KeyboardHook
     internal bool StockBudgetExceeded => Volatile.Read(ref _stockBudgetExceeded) != 0;
     internal double StockCallbackMs => Volatile.Read(ref _stockCallbackMs);
 
-    // Only the isolated fixture wires this endpoint. The normal publication
-    // route and all SourceLocalAcceptanceVersion values remain unchanged (zero).
+    // Controlled sent-activation regressions only. Formal composition never
+    // calls this seam or infers capture eligibility from installing an endpoint.
     internal bool InstallStockEditActivation(InputLease lease, StockEditActivation activation)
     {
         if (StockBudgetExceeded || !Ready || !UsesUnmodifiedSessionKeys

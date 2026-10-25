@@ -117,7 +117,8 @@ public sealed partial class NativeSourceControllerTests
             var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
             settings.Update(settings.Value with
             {
-                AcceptShortcut = "Ctrl+F7"
+                AcceptShortcut = "Ctrl+F7",
+                ExperimentalWriteback = true
             });
             var loop = new Loop();
             var view = new View();
@@ -285,7 +286,7 @@ public sealed partial class NativeSourceControllerTests
 
     private Task ExerciseOrderedControlDraft(string change, bool physical) => desktop.RunAsync(async () =>
     {
-        await using var native = await ProductionForegroundWriteTests.Desktop.Start(orderedSourceMessageWitness: true);
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start();
         await native.Prepare(native.A, "你好", new(0, 2));
         var editor = new Window { Content = new TextBox(), Width = 350, Height = 120, Title = "TypeLay ordered manual editor" };
         nint editorHwnd = new WindowInteropHelper(editor).EnsureHandle();

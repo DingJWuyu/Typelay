@@ -15,14 +15,21 @@ public sealed partial class NativeSourceControllerTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public Task RuntimeDoesNotSelectSourceAcceptanceFromAutomationOrAnInjectedBroker(bool automationTest) => desktop.RunAsync(async () =>
+    public Task RuntimeRejectsMissingSourceEligibilityRegardlessOfAutomationOrBrokerInjection(bool automationTest) => desktop.RunAsync(async () =>
     {
-        // Even an isolated source-capable Broker must not implicitly connect
-        // the App source exchange. The shipping Broker/capture cap0 contract
-        // remains covered by ShippingCaptureNeverAdvertisesTheIsolatedSourceCapability.
-        await using var native = await ProductionForegroundWriteTests.Desktop.Start(orderedSourceMessageWitness: true);
+        // A real source-capable Broker cannot grant authority without the exact
+        // capture proof. Withhold only that proof at the existing transport seam;
+        // neither automation nor the injected Broker can replace it.
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start();
         await native.Prepare(native.A, "你好", new(0, 2));
-        using var broker = new FixtureBroker(native);
+        using var broker = new FixtureBroker(native)
+        {
+            TransformSourceEligibility = eligibility =>
+            {
+                Assert.NotNull(eligibility);
+                return null;
+            }
+        };
         InputSnapshot? captured = null;
         broker.ObserveResponse = (request, response) =>
         {
@@ -36,9 +43,6 @@ public sealed partial class NativeSourceControllerTests
         try
         {
             var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
-            Assert.Equal("broker", Assert.Throws<ArgumentException>(() =>
-                WindowsRuntime.CreateSession(settings, new Translation(), overlay,
-                    isolatedOrderedSourceAcceptance: true)).ParamName);
             using var controller = WindowsRuntime.CreateSession(settings, new Translation(), overlay,
                 automationTest: automationTest, broker: broker, support: support);
             await support.CompletePendingAsync().WaitAsync(native.Token);
@@ -49,7 +53,7 @@ public sealed partial class NativeSourceControllerTests
             await Until(() => broker.Captures > firstCaptures, native.Token);
             Assert.NotNull(captured);
             Assert.Equal((long)native.A, captured.Target.AsWindows().ControlHwnd);
-            Assert.True(captured.WriteSupported); // Backend availability is not an App opt-in.
+            Assert.True(captured.WriteSupported); // Raw Broker availability is not the missing capture proof.
             Assert.False(settings.Value.ExperimentalWriteback);
             Assert.False(RuntimeShowsAcceptance(overlay));
             Assert.Contains(RuntimeLabels(overlay), label => label.IsVisible && label.Text == "交还应用");
@@ -72,9 +76,85 @@ public sealed partial class NativeSourceControllerTests
     });
 
     [Fact]
+    public Task OrderedAdapterPreservesDirectWriteWithoutGrantingAutomaticEligibility() => desktop.RunAsync(async () =>
+    {
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start();
+        await native.Prepare(native.A, "你好", new(0, 2));
+        using var hook = new KeyboardHook();
+        await Until(() => hook.Ready, native.Token);
+        using var broker = new FixtureBroker(native);
+        using var input = new WindowsInputService(broker, 0, monitor: hook,
+            sourceMessageAcceptance: true, orderedSourceMessageWitness: true);
+        var capture = await input.CaptureAsync(new(hook.UserEpoch, hook.ForegroundEpoch, hook.SourceUserEpoch,
+            null, [], true, new(hook.CommandGeneration, SessionShortcutBindings.Default)));
+        var source = Assert.IsType<InputSnapshot>(capture.Snapshot);
+        Assert.True(source.WriteSupported);
+        Assert.True(source.DirectWriteSupported);
+        Assert.Equal(0, capture.SessionShortcuts!.SourceLocalAcceptanceVersion);
+        var plan = new WritePlan(Guid.NewGuid(), Guid.NewGuid(), 1, source, source.TranslationScope,
+            "Hello", "Hello", 5);
+        var receipt = await input.WriteDirectAsync(plan, []);
+        Assert.Equal(WriteStatus.Verified, receipt.Status);
+        Assert.Equal("Hello", receipt.VerifiedSnapshot!.Text);
+        Assert.Equal("Hello", N.ReadText(native.A, Limits.MaxTextUnits));
+        Assert.Equal(new TextRange(5, 5), N.ReadSelection(native.A));
+        Assert.Equal(0, broker.Installs);
+        Assert.Equal(1, broker.Writes);
+        native.AssertZeroSubmits();
+    });
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    [InlineData(6)]
+    public Task OrderedCaptureRejectsMissingOrMismatchedEligibilityEvenWithTheLegacySetting(int mismatch) => desktop.RunAsync(async () =>
+    {
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start();
+        await native.Prepare(native.A, "你好", new(0, 2));
+        using var hook = new KeyboardHook();
+        await Until(() => hook.Ready, native.Token);
+        using var broker = new FixtureBroker(native)
+        {
+            TransformSourceEligibility = eligibility =>
+            {
+                Assert.NotNull(eligibility); // The real source was eligible before the transport mismatch.
+                return mismatch switch
+                {
+                    0 => null,
+                    1 => eligibility with { Version = 0 },
+                    2 => eligibility with { Version = 2 },
+                    3 => eligibility with { Target = eligibility.Target with { Lifetime = Guid.NewGuid() } },
+                    4 => eligibility with { ObservedAtMs = eligibility.ObservedAtMs - 1 },
+                    5 => eligibility with { InputEpoch = eligibility.InputEpoch + 1 },
+                    _ => eligibility with { FocusEpoch = eligibility.FocusEpoch + 1 }
+                };
+            }
+        };
+        var support = new WindowsApplicationSupport();
+        support.Bind(broker, hook);
+        using var input = new WindowsInputService(broker, 0, support, hook,
+            sourceMessageAcceptance: true, orderedSourceMessageWitness: true);
+        var capture = await input.CaptureAsync(new(hook.UserEpoch, hook.ForegroundEpoch, hook.SourceUserEpoch,
+            null, [], false, new(hook.CommandGeneration, SessionShortcutBindings.Default)));
+        Assert.NotNull(capture.Snapshot);
+        Assert.False(capture.Snapshot.WriteSupported);
+        Assert.Equal(0, capture.SessionShortcuts!.SourceLocalAcceptanceVersion);
+        Assert.False(support.Read(new UserSettings { ExperimentalWriteback = true }).Rows
+            .Single(row => row.Id == "desktop-text").Capabilities.TabAccept);
+        Assert.Equal(0, broker.Installs);
+        Assert.Equal(0, broker.Writes);
+        Assert.Equal("你好", N.ReadText(native.A, Limits.MaxTextUnits));
+        native.AssertZeroSubmits();
+    });
+
+    [Fact]
     public Task SourceCapabilityPresentationRequiresTheCurrentTargetsActualCaptureAcknowledgement() => desktop.RunAsync(async () =>
     {
-        await using var native = await ProductionForegroundWriteTests.Desktop.Start(orderedSourceMessageWitness: true);
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start();
         await native.Prepare(native.A, "你好", new(0, 2));
         using var hook = new KeyboardHook();
         await Until(() => hook.Ready, native.Token);

@@ -24,7 +24,7 @@ public sealed partial class NativeSourceControllerTests
     [InlineData("F24", 0x87)]
     public Task ManualPhysicalAcceptanceKeyUsesOrderedSourceOnceAndSettlesItsOriginalTails(string accept, ushort key) => desktop.RunAsync(async () =>
     {
-        await using var native = await ProductionForegroundWriteTests.Desktop.Start(orderedSourceMessageWitness: true);
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start();
         await native.Prepare(native.A, "你好", new(0, 2));
         Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchKey.v1", key));
         Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchField.v1", native.A));
@@ -93,7 +93,7 @@ public sealed partial class NativeSourceControllerTests
                 Assert.Equal(0u, uiAccess);
             }
         }
-        await using var native = await ProductionForegroundWriteTests.Desktop.Start(orderedSourceMessageWitness: true);
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start();
         await native.Prepare(native.A, "你好", new(0, 2));
         Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchKey.v1", key));
         Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchField.v1", native.A));
@@ -137,11 +137,11 @@ public sealed partial class NativeSourceControllerTests
             {
                 AcceptShortcut = accept
             });
-            // Use the real factory, router, dispatcher loop and WPF view. The
-            // isolated Broker alone is insufficient; this internal opt-in does
-            // not opt ordinary injected input into acceptance.
+            // Use the formal factory, router, dispatcher loop and WPF view,
+            // backed by the real Broker executable. No composition flag grants
+            // eligibility or opts ordinary injected input into acceptance.
             using var controller = WindowsRuntime.CreateSession(settings, new Translation(), overlay,
-                broker: broker, support: support, isolatedOrderedSourceAcceptance: true);
+                broker: broker, support: support);
             await support.CompletePendingAsync().WaitAsync(native.Token);
             Assert.False(support.Browser!.MutationUnavailable);
             Assert.False(support.Read(settings.Value).Rows.Single(row => row.Id == "desktop-text").Capabilities.TabAccept);
@@ -368,7 +368,7 @@ public sealed partial class NativeSourceControllerTests
     [Fact]
     public Task OrderedAcceptanceMainKeyDoesNotStealItsConfiguredControlCommand() => desktop.RunAsync(async () =>
     {
-        await using var native = await ProductionForegroundWriteTests.Desktop.Start(orderedSourceMessageWitness: true);
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start();
         await native.Prepare(native.A, "你好", new(0, 2));
         Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceObservedKey.v1", 0x76));
         Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceBarrierKey.v1", 0x86));

@@ -178,7 +178,7 @@ class PhysicalTabPackageTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 package.verify_smoke(self.write_trx(**(dict(method=package.SMOKE) | changes)))
 
-    def test_default_smoke_cannot_replace_original_ordered_negative_admission(self):
+    def test_missing_eligibility_smoke_cannot_replace_original_ordered_negative_admission(self):
         self.write_trx(method=package.SMOKE)
         with self.assertRaises(ValueError):
             package.verify_original_suite(self.home)

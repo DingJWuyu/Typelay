@@ -23,8 +23,8 @@ internal sealed partial class NativeEditTransactions : IDisposable
     private uint _message, _ownedCaptureMessage;
     private readonly bool _sourceMessageRoute, _strictSourceMessageOrigin, _orderedSourceMessageWitness;
     private bool _sourceMessageRouteFailed;
-    // Only the isolated source2 consumer opts in. Registration does not grant
-    // source eligibility, change input-origin policy or enable shipping capture.
+    // Formal Broker composition fixes the ordered route. Other combinations
+    // remain controlled regressions; registration alone never grants acceptance.
     internal NativeEditTransactions(bool sourceMessageRoute = false, bool strictSourceMessageOrigin = false,
         bool orderedSourceMessageWitness = false)
     {
@@ -358,7 +358,7 @@ internal sealed partial class NativeEditTransactions : IDisposable
         }
         else if (cookie == 0)
             cookie = BitConverter.ToUInt64(RandomNumberGenerator.GetBytes(8)) | 1;
-        if (!_sourceMessageRoute && !_hooks.ContainsKey(thread))
+        if ((!_sourceMessageRoute || owned is not null) && !_hooks.ContainsKey(thread))
         {
             nint hook = SetWindowsHookExW(4, _procedure, _library, thread);
             if (hook == 0)
@@ -375,7 +375,7 @@ internal sealed partial class NativeEditTransactions : IDisposable
         var binding = new Binding(identity, target, cookie, thread, WindowsInterruptClock.NowMs,
             Initialized: owned is not null, Owned: owned);
         _bindings.Add(identity.ControlHwnd, binding);
-        if (_sourceMessageRoute && !InstallSourceMessageRoute(binding))
+        if (_sourceMessageRoute && owned is null && !InstallSourceMessageRoute(binding))
         {
             // Never fall back to the old activation transport after a partial
             // installation. Release retains any hook whose rollback is unknown.
@@ -470,6 +470,7 @@ internal sealed partial class NativeEditTransactions : IDisposable
     }
     private void Prune()
     {
+        ReleaseExitedSourceModules();
         long before = WindowsInterruptClock.NowMs - 240_000;
         foreach (var binding in _bindings.Values.Where(value => value.TouchedAt < before).ToArray())
             Release(binding);
@@ -504,6 +505,7 @@ internal sealed partial class NativeEditTransactions : IDisposable
     }
     public void ClearObservations()
     {
+        ReleaseExitedSourceModules();
         // Direct jobs outlive the current foreground observation. Do not retire
         // their source binding when an automatic observation or session clears.
         foreach (var binding in _bindings.Values.Where(value => value.Owned is null && !value.DirectCaptured).ToArray())
@@ -511,6 +513,7 @@ internal sealed partial class NativeEditTransactions : IDisposable
     }
     public void Clear()
     {
+        ReleaseExitedSourceModules();
         foreach (var binding in _bindings.Values.ToArray())
             Release(binding);
     }

@@ -8,11 +8,10 @@ using TypeLay.Windows.Contracts;
 
 namespace TypeLay.App;
 
-// Isolated prototype endpoint. The authenticated opt-in Broker route and the
-// native boundary tests install it; no default route or owned-practice identity
-// uses it. The sent route requires separate unattached queues and its timeout
-// is not a hard real-time hook bound. The actual-MSG route uses only the local
-// Arm/Withdraw control; Activate is disabled for that construction.
+// Source-local endpoint, never an owned-practice identity. Formal composition
+// uses only ordered Arm/Withdraw; Activate is disabled for that construction.
+// The controlled sent regressions still require separate unattached queues;
+// their timeout is not a hard real-time hook bound.
 internal sealed class StockEditActivation : IDisposable
 {
     internal sealed record Result(bool Claimed, WriteReceipt? Receipt, bool ExceededBudget, double ElapsedMs,

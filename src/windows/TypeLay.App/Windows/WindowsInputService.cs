@@ -12,22 +12,25 @@ internal sealed class WindowsInputService : IInputService
     private readonly WindowsApplicationSupport? support;
     private readonly KeyboardHook? monitor;
     private readonly PracticeHost? practice;
-    private readonly bool isolatedSourceAcceptance;
+    private readonly bool sourceAcceptanceConnected, orderedSourceMessageWitness;
 
+    // Formal WindowsRuntime fixes the ordered transport. The older constructor
+    // choices remain only for controlled sent/completion/quarantine regressions.
     internal WindowsInputService(IInputBroker broker, nint overlay,
         WindowsApplicationSupport? support = null, KeyboardHook? monitor = null, PracticeHost? practice = null,
         bool isolatedSourceAcceptance = false, bool sourceMessageAcceptance = false, bool orderedSourceMessageWitness = false)
     {
         if (orderedSourceMessageWitness && !sourceMessageAcceptance)
-            throw new ArgumentException("Ordered witnesses require the isolated source message route.");
+            throw new ArgumentException("Ordered witnesses require the source message route.");
         this.broker = broker;
         this.overlay = overlay;
         this.support = support;
         this.monitor = monitor;
         this.practice = practice;
-        this.isolatedSourceAcceptance = isolatedSourceAcceptance || sourceMessageAcceptance;
-        if (this.isolatedSourceAcceptance && monitor is not null)
-            monitor.ConfigureIsolatedStockAcceptance(async (operation, request) =>
+        sourceAcceptanceConnected = isolatedSourceAcceptance || sourceMessageAcceptance;
+        this.orderedSourceMessageWitness = orderedSourceMessageWitness;
+        if (sourceAcceptanceConnected && monitor is not null)
+            monitor.ConfigureSourceAcceptance(async (operation, request) =>
                 (await broker.CallAsync(new(BrokerProtocol.Version, 0, operation, "",
                     BoundTarget: request.Target, SourceAcceptance: request))).SourceAcceptance, sourceMessageAcceptance, orderedSourceMessageWitness);
     }
@@ -84,7 +87,7 @@ internal sealed class WindowsInputService : IInputService
             var result = await broker.CallAsync(request);
             // A native claim may complete while this read is in flight. Let the
             // controller settle its exact receipt before observing post-write text.
-            if (isolatedSourceAcceptance && monitor is not null)
+            if (sourceAcceptanceConnected && monitor is not null)
                 await monitor.WaitForStockAcceptanceDeliveryAsync();
             if (practice?.SuppressOwnedCapture(context) == true)
                 return new(null); // An in-flight pre-admission read cannot publish a new basis.
@@ -92,17 +95,33 @@ internal sealed class WindowsInputService : IInputService
                 ? practice!.ObserveReturnCapture(context, result.Snapshot, result.Focus, startedAt)
                 : practice!.ObserveAutomaticTarget(result.Snapshot, result.Focus, startedAt) : null;
             bool ordinaryCanIntercept = monitor is { CanInterceptAcceptance: true }
-                && (monitor.UsesUnmodifiedSessionKeys || isolatedSourceAcceptance);
+                && (monitor.UsesUnmodifiedSessionKeys || sourceAcceptanceConnected);
             // The local hook and WPF editor apply the same process-local configuration.
             // A stale capture cannot acknowledge a replacement configuration.
+            long receivedAt = WindowsInterruptClock.NowMs;
+            bool sourceEligible = !owned && !context.CaptureDirect && result.Status == "observed"
+                && result.Focus == FocusMember.Source && result.Snapshot is { IsUsable: true, WriteSupported: true } basis
+                && result.SourceEligibility?.Matches(basis) == true
+                && WindowsTarget.TryDecode(basis.Target, out var nativeSource)
+                && nativeSource.Provider == "win32-edit-transaction-v2"
+                && basis.ObservedAtMs <= receivedAt && receivedAt - basis.ObservedAtMs <= Limits.ObservationMaxAgeMs;
+            // Missing source proof cannot fall back to the legacy setting and
+            // consume a key before the ordered executor has admitted its owner.
+            if (orderedSourceMessageWitness && !owned && !context.CaptureDirect && !sourceEligible
+                && result.Snapshot is { } unsupported)
+                result = result with
+                {
+                    Snapshot = unsupported with
+                    {
+                        WriteSupported = false
+                    }
+                };
             var acknowledgement = result.Snapshot is { } source && context.SessionShortcuts is { } configuration
                 && monitor?.HasSessionConfiguration(configuration) == true
                 ? new SessionShortcutAcknowledgement(source.Target, configuration.Generation, configuration.Bindings,
                     owned ? returnedDescriptor is not null && evidence is not null || practice!.SourceReady(source.Target) : true,
                     owned ? practice!.EditorReady(source.Target) : true,
-                    SourceLocalAcceptanceVersion: isolatedSourceAcceptance && !owned
-                        && source.WriteSupported && WindowsTarget.TryDecode(source.Target, out var nativeSource)
-                        && nativeSource.Provider == "win32-edit-transaction-v2" ? 1 : 0) : null;
+                    SourceLocalAcceptanceVersion: orderedSourceMessageWitness && sourceEligible ? 1 : 0) : null;
             var capture = new InputCapture(result.Snapshot, result.Focus, result.Application,
                 result.UserEpoch, result.ForegroundEpoch, acknowledgement, evidence);
             support?.Observe(capture, broker.Available && monitor?.Ready == true,

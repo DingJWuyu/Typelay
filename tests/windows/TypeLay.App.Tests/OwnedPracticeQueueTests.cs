@@ -547,6 +547,36 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         }
     }
 
+    [Fact]
+    public Task OrderedBrokerKeepsOwnedCaptureSeparateWithoutDisablingTheNextOrdinarySource() => desktop.RunAsync(async () =>
+    {
+        await using var ordinary = await ProductionForegroundWriteTests.Desktop.Start();
+        await ordinary.Prepare(ordinary.A, "你好", new(0, 2));
+        var before = await ordinary.Call(new(BrokerProtocol.Version, 0, "capture", ""));
+        Assert.True(Assert.IsType<SourceAcceptanceEligibility>(before.SourceEligibility)
+            .Matches(Assert.IsType<InputSnapshot>(before.Snapshot)));
+        await using var scene = new QueueScene(true);
+        await scene.Start(true);
+        var request = new BrokerRequest(BrokerProtocol.Version, 0, "capture-owned", "", OwnedCapture: scene.Descriptor);
+        var first = await ordinary.Call(request);
+        var second = await ordinary.Call(request);
+        var owned = Assert.IsType<InputSnapshot>(first.Snapshot);
+        Assert.Equal(owned.Target, Assert.IsType<InputSnapshot>(second.Snapshot).Target);
+        Assert.Equal(scene.Original, owned.Text);
+        Assert.Equal(FocusMember.Source, first.Focus);
+        Assert.True(owned.WriteSupported);
+        Assert.False(owned.DirectWriteSupported);
+        Assert.Null(first.SourceEligibility);
+        Assert.Null(second.SourceEligibility);
+        await ordinary.Prepare(ordinary.A, "你好", new(0, 2));
+        var after = await ordinary.Call(new(BrokerProtocol.Version, 0, "capture", ""));
+        Assert.True(Assert.IsType<SourceAcceptanceEligibility>(after.SourceEligibility)
+            .Matches(Assert.IsType<InputSnapshot>(after.Snapshot)));
+        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        Assert.Equal(0, scene.Receipts);
+        ordinary.AssertZeroSubmits();
+    });
+
     [Theory]
     [InlineData("process")]
     [InlineData("start")]
@@ -890,7 +920,8 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
     [InlineData(true)]
     public Task OneAcceptedPressExecutesOnceAndItsRepeatCannotReuseThePlan(bool control) => desktop.RunAsync(async () =>
     {
-        await using var scene = new QueueScene(true);
+        // Ordinary source composition coexists with this real owned GUI/FIFO.
+        await using var scene = new QueueScene(true, ordinarySourceRoute: true);
         await scene.Start(true, bindings: control ? SessionShortcutBindings.Restore("Ctrl+F10", "Ctrl+F8") : null,
             prepareKeyOnlyPointer: control);
         // Real Shift input tests LL left/right modifier vs GUI generic-VK pairing.
@@ -931,6 +962,34 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         Assert.DoesNotContain(scene.Messages, message => message.Kind == "witness-failed");
         Assert.NotEqual((nuint)0, N.Send(scene.Field, 0x00C7));
         Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+    });
+
+    [Fact]
+    public Task RegisteredCommandStaysExclusiveWhileTheOwnedChannelHasNotRetired() => desktop.RunAsync(async () =>
+    {
+        await using var scene = new QueueScene(true, ordinarySourceRoute: true);
+        await scene.Start(true, bindings: SessionShortcutBindings.Restore("F7", "Esc"));
+        // The hook applies the new configuration while the existing owned
+        // channel still awaits retirement. No write plan or new capture exists.
+        scene.RegisterDirectOnAcceptanceKey();
+        scene.Key(0x11, true);
+        scene.Key(0x76, true);
+        scene.Key(0x76, false);
+        scene.Key(0x11, false);
+        await scene.WaitConsumed(2); // The passed Ctrl pair reaches the real GUI.
+        var command = scene.ReadCommand();
+        Assert.Equal("direct", command.Kind);
+        Assert.Equal(Denial.StaleObservation, command.Rejection);
+        Assert.Null(command.Permit);
+        var edges = scene.Audit();
+        Assert.Equal(2, edges.Count);
+        Assert.All(edges, edge => Assert.Equal(0xa2u, edge.VirtualKey));
+        Assert.True(edges[0].Down);
+        Assert.False(edges[1].Down);
+        Assert.DoesNotContain(scene.Messages, message => message.Kind == "witness-failed");
+        Assert.Equal(0, scene.Receipts);
+        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        Assert.Equal((scene.Root, scene.Field), N.Focused());
     });
 
     [Fact]
@@ -1846,6 +1905,18 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             await _pump!.WaitAsync(_deadline.Token);
         }
         public void ChangeConfiguration() => _hook.SetShortcuts([]);
+        public void RegisterDirectOnAcceptanceKey()
+        {
+            _hook.ConfigureShortcuts(true, "Ctrl+Shift+F9", "Ctrl+F7",
+                SessionShortcutBindings.Restore("F7", "Esc"), true);
+            Assert.Contains(_hook.RegisteredShortcuts, binding => binding.Action == "direct"
+                && binding.Key == 0x76 && binding.Modifiers == ShortcutModifiers.Control);
+        }
+        public InputNotice ReadCommand()
+        {
+            Assert.True(_hook.TryRead(out var command));
+            return Assert.IsType<InputNotice>(command);
+        }
         public async Task InstallExit(bool oldBinding = false)
         {
             long now = WindowsInterruptClock.NowMs;
@@ -1872,11 +1943,15 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         public void PublishForRenewal() => _hook.Publish(_planLease!, Plan!.Permit);
         public bool CanRenew(long contentEpoch) => _hook.CanRenewOwnedPlan(_planLease!, Plan!.Permit, Plan.PlanSequence, contentEpoch);
         private readonly bool _observePrefixMessages;
-        public QueueScene(bool automation, bool traceExitRejections = false, bool observePrefixMessages = false)
+        public QueueScene(bool automation, bool traceExitRejections = false, bool observePrefixMessages = false,
+            bool ordinarySourceRoute = false)
         {
             _traceExitRejections = traceExitRejections;
             _observePrefixMessages = observePrefixMessages;
             _hook = new(allowInjectedInput: automation);
+            if (ordinarySourceRoute)
+                _hook.ConfigureSourceAcceptance((_, _) => Task.FromResult<SourceAcceptanceResult?>(null),
+                    sourceMessageRoute: true, orderedSourceMessageWitness: true);
             _deadline.CancelAfter(TimeSpan.FromSeconds(25));
         }
         public async Task Start(bool automation, bool baselineAfterWrite = false, SessionShortcutBindings? bindings = null,

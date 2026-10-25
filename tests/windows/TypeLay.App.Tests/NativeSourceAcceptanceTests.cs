@@ -18,6 +18,42 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class NativeSourceAcceptanceTests
 {
+    [Fact]
+    public async Task RepeatedSourceCaptureAndClearRetainsTheModuleUntilTheExactProcessExits()
+    {
+        var desktop = await ProductionForegroundWriteTests.Desktop.Start();
+        using var native = new NativeTransactions(sourceMessageRoute: true, orderedSourceMessageWitness: true);
+        try
+        {
+            await desktop.Prepare(desktop.A, "你好", new(0, 2));
+            var observed = await desktop.Capture();
+            for (int cycle = 0; cycle < 3; cycle++)
+            {
+                var capture = Assert.IsType<InputSnapshot>(native.Observe(observed.Target.AsWindows(),
+                    observed.Bounds, observed.InputEpoch, observed.FocusEpoch));
+                Assert.Equal("你好", capture.Text);
+                Assert.True(native.CanPrepareSourceAcceptance(capture));
+                native.Clear();
+                Assert.False(native.CanPrepareSourceAcceptance(capture));
+                native.Dispose();
+                // Successful detach is not a callback join. Repeated observation
+                // may reuse the module, but it cannot unload before exact exit.
+                Assert.False(native.SourceMessageRouteClosed);
+            }
+            Assert.Equal("你好", N.ReadText(desktop.A, Limits.MaxTextUnits));
+            desktop.AssertZeroSubmits();
+        }
+        finally
+        {
+            try
+            {
+                await desktop.DisposeAsync();
+            }
+            finally { native.Dispose(); }
+        }
+        Assert.True(native.SourceMessageRouteClosed);
+    }
+
     [Theory]
     [InlineData(4, 49344)] // Actual v4 mapping length.
     [InlineData(5, 49376)] // Actual v5 mapping length.

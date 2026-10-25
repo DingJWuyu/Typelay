@@ -13,6 +13,17 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class BrokerQueueDeadlineTests
 {
+    [Fact]
+    public Task OldBrokerResponseCannotAuthorizeTheNewClient() => WithPeer(async peer =>
+    {
+        await peer.Client.StartAsync();
+        var failure = await Assert.ThrowsAsync<IOException>(() => peer.Client.CallAsync(
+            new(BrokerProtocol.Version, 0, "old-version-response", "")).WaitAsync(peer.Token));
+        Assert.Equal("broker-sequence", failure.Message);
+        Assert.False(peer.Client.Available);
+        Assert.Equal(new[] { "hello", "old-version-response" }, peer.Messages().Select(message => message.Op));
+    });
+
     [Theory]
     [InlineData("return", 800)]
     [InlineData("return", null)]
