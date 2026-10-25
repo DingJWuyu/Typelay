@@ -27,6 +27,28 @@ internal sealed class ModelChildProcess : IChildProcess
     public Stream StandardInput => _input ?? throw new InvalidOperationException("child-input-unavailable");
     public Stream StandardOutput => _output ?? throw new InvalidOperationException("child-output-unavailable");
 
+    // Observe the retained root without reopening a PID or changing ownership.
+    // A root exit code is not proof that the job and stderr reader have retired.
+    internal uint? GetRootExitCode()
+    {
+        lock (_state)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_process == 0)
+                throw new InvalidOperationException("child-root-unavailable");
+            uint wait = WaitForSingleObject(_process, 0);
+            if (wait == uint.MaxValue)
+                throw Failure("worker-wait");
+            if (wait == 258)
+                return null;
+            if (wait != 0)
+                throw new IOException("worker-wait-unexpected");
+            if (!GetExitCodeProcess(_process, out uint code))
+                throw Failure("worker-exit-code");
+            return code;
+        }
+    }
+
     internal ModelChildProcess(ProcessStartInfo info, ModelLoadPlan plan)
     {
         ArgumentNullException.ThrowIfNull(info);
@@ -346,5 +368,6 @@ internal sealed class ModelChildProcess : IChildProcess
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateJobObject(nint job, uint exitCode);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateProcess(nint process, uint exitCode);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern uint WaitForSingleObject(nint handle, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetExitCodeProcess(nint process, out uint code);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(nint handle);
 }

@@ -235,6 +235,38 @@ public sealed class ChildProcessTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public async Task ModelRootExitCodeDistinguishesAWaitingChildFromItsNaturalExit()
+    {
+        var start = PythonProbe("""
+            import sys
+            print('ready', flush=True)
+            sys.stdin.buffer.read(1)
+            sys.exit(23)
+            """);
+        using var inventory = JsonDocument.Parse("{\"schema\":1}");
+        var plan = ModelLoadPlan.Create(new(start.FileName, Path.GetFullPath("unused-worker"),
+            Path.GetFullPath("unused-models")), inventory.RootElement);
+        using var owner = new ModelChildProcess(start, plan);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        using var reader = new StreamReader(owner.StandardOutput, Encoding.UTF8, leaveOpen: true);
+        Assert.Equal("ready", await reader.ReadLineAsync(deadline.Token).AsTask().WaitAsync(deadline.Token));
+        Assert.Null(owner.GetRootExitCode());
+        await owner.StandardInput.WriteAsync(new byte[] { 1 }, deadline.Token);
+        await owner.StandardInput.FlushAsync(deadline.Token);
+        uint? code;
+        while ((code = owner.GetRootExitCode()) is null)
+            await Task.Delay(10, deadline.Token);
+        Assert.Equal(23u, code);
+        // No Process.Handle or WaitForExit call has opened a managed handle.
+        Assert.True(owner.Process.HasExited);
+        await owner.TerminateAndWaitAsync(deadline.Token);
+        Assert.Equal(23u, owner.GetRootExitCode());
+        owner.Dispose();
+        Assert.Throws<ObjectDisposedException>(() => owner.GetRootExitCode());
+    }
+
+    [Fact]
     public async Task GenerationStaysProtectedUntilEveryOwnerHasConfirmedExit()
     {
         Generation? generation = null;
@@ -252,11 +284,16 @@ public sealed class ChildProcessTests(ITestOutputHelper output)
             if (exited)
                 try
                 {
-                    stages.Add($"owner-exited: owner={name}; exitCode=0x{unchecked((uint)owner.Process.ExitCode):x8}");
+                    uint? code = owner.GetRootExitCode();
+                    stages.Add(code is { } value
+                        ? $"owner-exited: owner={name}; rootSignaled=True; exitCode=0x{value:x8}"
+                        : $"owner-exit-observation: owner={name}; managedHasExited=True; rootSignaled=False");
                 }
                 catch (Exception error)
                 {
-                    stages.Add($"owner-exit-code-unavailable: owner={name}; type={error.GetType().Name}; hresult=0x{error.HResult:x8}");
+                    int? nativeError = (error as Win32Exception)?.NativeErrorCode;
+                    stages.Add($"owner-exit-code-unavailable: owner={name}; type={error.GetType().Name}; " +
+                        $"hresult=0x{error.HResult:x8}; nativeError={nativeError?.ToString() ?? "none"}");
                 }
             return exited;
         }

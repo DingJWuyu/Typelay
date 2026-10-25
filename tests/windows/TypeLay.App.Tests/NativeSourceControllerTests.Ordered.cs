@@ -129,6 +129,7 @@ public sealed partial class NativeSourceControllerTests
         string directory = Path.Combine(Path.GetTempPath(), "TypeLay.OrderedSource." + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         bool pressed = false;
+        EventHandler? acceptanceObserver = null;
         try
         {
             var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
@@ -144,6 +145,27 @@ public sealed partial class NativeSourceControllerTests
             await support.CompletePendingAsync().WaitAsync(native.Token);
             Assert.False(support.Browser!.MutationUnavailable);
             Assert.False(support.Read(settings.Value).Rows.Single(row => row.Id == "desktop-text").Capabilities.TabAccept);
+            long acceptanceReadStartedAt = 0, acceptanceReadFinishedAt = 0;
+            AcceptancePermit? visiblePermit = null;
+            var acceptanceVisible = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            // Observe the real WPF layout before the controller can publish a
+            // candidate. Text/visibility changes cause layout; no hidden visual
+            // tree or production field needs to be located ahead of time.
+            acceptanceObserver = (_, _) =>
+            {
+                if (acceptanceVisible.Task.IsCompleted)
+                    return;
+                acceptanceReadStartedAt = WindowsInterruptClock.NowMs;
+                bool visible = RuntimeShowsAcceptance(overlay);
+                acceptanceReadFinishedAt = WindowsInterruptClock.NowMs;
+                if (!visible)
+                    return;
+                visiblePermit = broker.InstallationPermit;
+                overlay.LayoutUpdated -= acceptanceObserver;
+                acceptanceVisible.TrySetResult();
+            };
+            overlay.LayoutUpdated += acceptanceObserver;
+            acceptanceObserver(overlay, EventArgs.Empty); // No missed already-visible cue.
             rpcTrace.Checkpoint("controller-start-before");
             await controller.StartAsync().WaitAsync(native.Token);
             rpcTrace.Checkpoint("controller-start-after");
@@ -161,17 +183,14 @@ public sealed partial class NativeSourceControllerTests
             rpcTrace.Checkpoint("support-read-after");
             Assert.True(supported.Rows.Single(row => row.Id == "desktop-text").Capabilities.TabAccept);
             Assert.False(supported.Rows.Single(row => row.Id == "google-chrome").Capabilities.TabAccept);
-            long acceptanceReadStartedAt = 0, acceptanceReadFinishedAt = 0;
-            await Until(() =>
-            {
-                acceptanceReadStartedAt = WindowsInterruptClock.NowMs;
-                bool visible = RuntimeShowsAcceptance(overlay);
-                acceptanceReadFinishedAt = WindowsInterruptClock.NowMs;
-                return visible;
-            }, native.Token);
+            // Resume on this same dispatcher after the actual layout callback,
+            // rather than adding a Task.Delay polling interval to a 100ms grant.
+            await acceptanceVisible.Task.WaitAsync(native.Token);
             rpcTrace.Checkpoint("acceptance-visible");
+            Assert.True(RuntimeShowsAcceptance(overlay));
             long permitReadStartedAt = WindowsInterruptClock.NowMs;
             var permit = Assert.IsType<AcceptancePermit>(broker.InstallationPermit);
+            Assert.Same(visiblePermit, permit); // A later grant cannot replace this cue's owner.
             rpcTrace.Checkpoint("permit-locked");
             long expiryCheckedAt = WindowsInterruptClock.NowMs;
             bool unexpired = expiryCheckedAt <= permit.ExpiresAtMs;
@@ -315,6 +334,8 @@ public sealed partial class NativeSourceControllerTests
         }
         finally
         {
+            if (acceptanceObserver is not null)
+                overlay.LayoutUpdated -= acceptanceObserver;
             if (pressed)
                 Key(key, true);
             overlay.Close();

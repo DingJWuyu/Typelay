@@ -4,33 +4,33 @@
 
 ## 先看结论
 
-本页于 **2026-10-24 23:57 UTC** 按 CI521 完整终态与原件更新；通过、真实失败和未运行分别记录。
+本页于 **2026-10-25 00:26 UTC** 按 CI522 完整终态与原件更新；通过、真实失败和未运行分别记录。
 
-- **源导航准备仍有8例失败。** App881过/8失败/21未执行；Activation17中9过、8例在第一次精确命中检查发现别窗覆盖，尚未移动指针或发送点击。命中窗等于另一次读取的前台，不代表已知它属于本例源进程。候选在源本已前台时直接走既有严格准备，其余路径不变；尚未实跑。
-- **continuous 在练习关闭前保存设置失败。** `practice-close-keeps-current-settings` 报 `SettingsPersistenceException`，发生在发送关闭请求前的 Mode=Automatic 保存，不能称为关闭覆盖了设置。原件未记录内层异常身份，具体原因未知；候选仅补至多4层类型/HResult及截断标记，保留首失败和原异常，不改生产保存逻辑。其它连续预览、Direct、Chrome冷页/新tab局部通过不抹绿此链。
-- **隔离物理 Tab 交付包已更新到 CI521，物理按键仍未执行。** 真实 runtime 的原 Tab/F7 阴性与搬迁后的两例均完整通过，唯一manual Tab发现成功，完整包身份已核。采用[本轮独立包](https://github.com/DingJWuyu/Typelay/actions/runs/40143179984/artifacts/12580160695)作为隔离人工验证入口；其资格不覆盖本轮App或continuous失败，也不开放正式Main/cap0。旧输入前grant过期本轮未复现，原因未证，不为此单独重跑。
-- **正式 Notepad 独立链、浏览器与两 Hy 链本轮通过。** Notepad按需单次wake/Esc/Direct/原生Undo1299ms、普通退出767ms通过；自动Tab仍在输入前公开能力否定，场景68ms失败，编辑依赖not-run，总exit1保留。browser7、Hy Settings15与production五阶段、三个消费者自然退出证明及退出门通过。Linux产品链按范围跳过，推荐仍为CI498。
+- **源导航17例与continuous实际通过。** App888过/1失败/21未执行；采用源已在前台则直接准备的候选后，17例全过；未统计各分支命中，也未倒推出旧覆盖窗身份。练习关闭前保存、关闭保留后续设置与重置进度本轮均过；旧设置保存异常未复现，有限内层错误观察没有命中，不称根因已修。
+- **唯一App失败是模型子进程所有权回归。** `GenerationStaysProtectedUntilEveryOwnerHasConfirmedExit` 在 first.assert-alive 失败；managed HasExited=true，旧 ExitCode 观察因无进程句柄不可用，真实早退原因未知。两个 owner 均未取得退出证明，代次删除另报共享冲突，原失败与清理失败均保留。候选只从已有原生根句柄读取零等待退出码，并补实际进程对照，不改变租约或退出证明。
+- **搬迁Tab再次在输入前到期，CI521物理交付推荐保持。** 原套件Tab/F7两阴性完整过，搬迁F7过、Tab在原100ms许可到期后2ms拒绝，未发送该键。新观察已取得安装/RPC/读取检查点；不能放宽到期门或换grant掩盖。当前仍使用[已核CI521独立包](https://github.com/DingJWuyu/Typelay/actions/runs/40143179984/artifacts/12580160695)，物理按键从未执行，正式Main/cap0不开放。
+- **正式Notepad独立链、浏览器与两Hy链通过。** Notepad按需单次wake/Esc/Direct/原生Undo1427ms、普通退出784ms通过；自动Tab仍在输入前公开能力否定，场景111ms失败，编辑依赖not-run，总exit1保留。browser7、Hy Settings15与production五阶段、三个消费者自然退出证明及退出门通过。Linux产品链按范围跳过，推荐仍为CI498。
 
 ## 最近已核终态与实际结果
 
-[CI521 / run 40143179984](https://github.com/DingJWuyu/Typelay/actions/runs/40143179984) 于 2026-10-24 23:32:50 UTC 由唯一 push 触发，attempt1，23:53:33 UTC终态 `failure`。冻结本地 `9aa5f2f1d6b584e4ce12c90caa67ff562c9c34cd` 对应远端 `e66e7fbd8bb7a044b5d4e6cebb130ac4400bb153`、tree `617ebc8511b7518f57dc881a80904057560d4f0f`；5文件精确发布、732叶与非强推读回已核。失败步骤为App的8个准备回归、continuous练习保存、正式Notepad自动接受；物理包步骤与上传通过，不把整体红等同于每条业务链失败。
+[CI522 / run 40145025247](https://github.com/DingJWuyu/Typelay/actions/runs/40145025247) 于 2026-10-25 00:00:59 UTC 由唯一 push 触发，attempt1，00:21:06 UTC终态 `failure`。冻结本地 `68402c5a49a01d0c924336ddc597577cf9b10fd0` 对应远端 `9682fe2367406b449049666c43079ee40527596b`、tree `454df69693f0721cc723cdd00658eba503d7044e`；5文件精确发布、732叶与非强推读回已核。失败步骤为App子进程所有权、正式Notepad自动接受及物理包搬迁阴性；物理ZIP未发布。
 
 后继验证以 [Actions 入口](https://github.com/DingJWuyu/Typelay/actions) 中当前分支最新运行及原件为准。候选静态审查不算实跑，一次通过不证明旧间歇问题根因已修。
 
 | 范围 | 已核结果 | 剩余边界 |
 | --- | --- | --- |
 | 共享、编译与native | Core302、Runtime1318、Windows contracts166、Protocol28在shared与Windows均通过；shared worker168、Python shared29、Linux输入反馈181通过。Windows完整编译、format、worker168运行/1平台跳过、browser Python3、Ruff通过；native受控16项及包装78项通过 | 受控native、编译和产品包搬迁不代替物理输入或部署 |
-| Windows App 与准备 | App881过/8失败/21未执行；Activation17为9过/8失败，失败均为 `RequireTarget` 行571、第一次调用行546的命中不等于own。FirstWake12、Setup18通过；鼠标接收回归79.7ms通过 | 8例均在指针移动/点击前拒绝，点击/释放未采样；缺同次源root关联，覆盖窗身份未知。鼠标取消观察本轮未触发，旧5秒超时不称根治 |
-| 隔离真实runtime与有序来源 | 默认factory两例、逐目标ACK投影、原同键F7控制、SourceWitnessWriter历史、Broker12、Acceptance11及原Tab/F7两阴性完整通过，包含精确拒绝回执、OriginUntrusted、零完成/零写与清理 | 输入前过期观察本轮未触发；原100ms、30秒和输入次数未变。物理Tab/F7/F24三例仍NotExecuted，不授予物理/UIAccess正向资格 |
+| Windows App 与准备 | App888过/1失败/21未执行；Activation17、FirstWake12、Setup18全过，鼠标接收77.3ms通过。唯一失败是代次所有权的first.assert-alive，随后代次删除报0x80070020 | first/secondExitProven均false；不将managed HasExited当成完整退出证明。旧导航覆盖窗身份与鼠标超时原因仍未知 |
+| 隔离真实runtime与有序来源 | 默认factory两例、逐目标ACK投影、原同键F7控制、SourceWitnessWriter历史、Broker12、Acceptance11及原Tab/F7两阴性完整通过，包含精确拒绝回执、OriginUntrusted、零完成/零写与清理 | 搬迁Tab另有真实输入前到期失败，不能用原套件通过覆盖；物理Tab/F7/F24三例仍NotExecuted |
 | 隔离真实Notepad与回执 | source-message接受/撤回两例、owned同步六例runner0，hooks/process/input清理全真；App真实Notepad接受/撤回两例、receipt/fence及foreign回归通过，53owned与编排14、snapshot8通过 | 原28秒与输入不变；隔离消费者不开放正式Main/capability0 |
 | 普通人工稿回源 | Windows六回源及foreign/router实际链通过，共享既有间隙保稿、默认拒绝、foreign与cancel/lateACK回归通过 | 不保证本轮命中0前台瞬态；原800ms、稿基线、fresh capture及撤权边界不变 |
-| continuous 与浏览器 | continuous的练习关闭前Mode保存报SettingsPersistenceException/-2146232800；resetProgress与closePreservedLaterSettings为false，先前预览/完成进度为true。独立browser7通过；前置两proof与最终三proof门成功，三个消费者run/attempt/head及nonce匹配，natural exit1/0/1、kernel signaled与active0 | continuous业务exit1不抹绿，也不当成退出清理失败；内层异常原件未记录，不能先归因为sharing violation、权限、目录或设置覆盖。新有限错误链观察尚未实跑 |
-| 正式Notepad | 自动Tab场景68ms在接受键前明确preview-only且接受cue为0，编辑依赖not-run；按需1299ms单wake/Esc/单Direct/原生Undo通过，普通退出767ms，sourceNormalExit/appNormalExit/modelWorkersExited/originalFileUnchanged全true | 原自动接受能力仍未开放，不将总exit1抹绿或称所有普通输入框已支持 |
-| Windows Hy | production五阶段与Settings15场景通过，包括真实普通源中英预览与正常退出704ms；存储Unchanged7、Unconfirmed2及WPF有限投影/清除2回归通过 | 有限诊断本轮未命中安装故障；旧候选hello后的PublicationUnchanged原因仍未知。不推导质量或高级scope放行 |
-| 隔离物理Tab包 | 原两阴性准入通过；中文与空格搬迁路径两阴性2/2 Passed、0skip、runner0，唯一manual Tab发现1无Skip、exit0。BUILD、三份framework-dependent输出与同hash NativeInput、说明/许可/锁及内外包已核 | 原grant过期本轮未复现，有限失败时序未输出，不能称根因已修。只取得隔离包交付资格，物理键从未执行，不授予正式产品/IME/UIAccess资格 |
+| continuous 与浏览器 | continuous完整通过，练习resetProgress、closePreservedLaterSettings等八项均true，有限innerExceptions为空且未截断。独立browser7通过；前置两proof与最终三proof门成功，三个消费者run/attempt/head及nonce匹配，natural exit0/0/1、kernel signaled与active0 | 旧关闭前SettingsStore.Update异常未复现，本轮无内层故障身份；保留失败时有限观察，不据此修改生产保存逻辑 |
+| 正式Notepad | 自动Tab场景111ms在接受键前明确preview-only且接受cue为0，编辑依赖not-run；按需1427ms单wake/Esc/单Direct/原生Undo通过，普通退出784ms，sourceNormalExit/appNormalExit/modelWorkersExited/originalFileUnchanged全true | 原自动接受能力仍未开放，不将总exit1抹绿或称所有普通输入框已支持 |
+| Windows Hy | production五阶段与Settings15场景通过，包括真实普通源中英预览与正常退出727ms；存储Unchanged7、Unconfirmed2及WPF有限投影/清除2回归通过 | 有限诊断本轮未命中安装故障；旧候选hello后的PublicationUnchanged原因仍未知。不推导质量或高级scope放行 |
+| 隔离物理Tab包 | 原两阴性准入及唯一manual Tab发现1通过；搬迁Tab先跑失败、F7后跑通过。Tab锁定grant observed=1335592、expires=1335692，安装响应1335659，接受提示及permit读取1335693，到期检查1335694；11个RPC无失败、pending/inflight/dropped均0 | 许可读取已晚于到期1ms，检查晚2ms；这是调用者读取时刻，不是实际绘制时刻。物理ZIP未发布；保持CI521已核包推荐，不放宽100ms、续期、重试或增加输入 |
 | Linux产品链 | 本轮按Windows变更范围skipped；不是本轮通过。最近完整链CI518通过，体验推荐保持CI498 | 无新Linux包验收，不因共享检查绿升级推荐或新增可选开发 |
 
-核验入口为 `artifacts/ci521-independent/terminal-evidence-verified.json`，同目录保留完整Windows与共享job日志、TRX、场景原件及发布收据。源码archive889成员、732文件与冻结树逐字/模式一致；18个source原件、5份早TRX及continuous两原件与final逐字一致。六份已下载artifact均核metadata大小/SHA与完整CRC。Windows外ZIP89,294,826字节、120项，内产品包87,139,737字节、551文件，SHA `a92d0235f199182338cc5f1546678e1bf8b8a9edb64948f589dc5b393ae4aec3`；computed releaseIdentity与Notepad/Hy两链三份正式加载报告一致。物理内ZIP7,799,147字节、239文件，SHA `381ffe79456fa70611b076680a2fc0bd70523356e227479144873ff2efbceaff`，完整核验见 `physical-package-verified.json`。两内包均未另存重复副本。原始日志不复制进本页。
+核验入口为 `artifacts/ci522-independent/terminal-evidence-verified.json`，同目录保留完整Windows与共享job日志、TRX、场景原件及发布收据。源码archive889成员、732文件与冻结树逐字/模式一致；18个source原件及5份早TRX与final逐字一致。四份已下载artifact均核metadata大小/SHA与完整CRC。Windows外ZIP89,283,931字节、120项，内产品包87,139,895字节、551文件，SHA `bc478dbcc3eb6c7d68a3c148caefbc8990eba38da6aeaabfebefda3f13af0c8d`；computed releaseIdentity与Notepad/Hy两链三份正式加载报告一致，未另存重复内包。CI521物理推荐的独立身份与操作仍见[验证包说明](../platforms/windows/README.md#隔离物理-tab-验证包不是产品体验包)。原始日志不复制进本页。
 
 ## 当前责任与下一动作
 
@@ -38,9 +38,10 @@ root负责集成、证据核验和采用决定；下表是现役责任线，不�
 
 | 责任线 / 负责人 | 当前动作与依赖 | 完成或停止条件 |
 | --- | --- | --- |
-| 源导航前置 / triage_source_setup_ci498，root | 候选在保留source.Root非零且已经是实际前台时，直接执行既有Prepare与精确source/field后置条件；未满足仍走原自有导航路径。失败输出只增加已持有源root/field/PID与等值关系；双轴静态GO、Windows未跑 | 原17例完整通过前保持未闭合；不把条件性正确准备冒称8个覆盖窗身份已知，不绕过源身份、命中、派发回执或期限门 |
-| 练习设置保存 / fix_practice_settings_persistence，root | 已定位为关闭请求前Mode=Automatic的SettingsStore.Update失败；候选只记录至多4层内层异常类型/HResult及截断标记，首失败门保留，不采message/path/stack/设置值，不改生产Save。双轴静态GO、Windows未跑 | 等同一边界取得可用内层错误身份后判断最小修复；现有SettingsPersistenceException不证明具体IO原因，不改期限、重试或吞掉保存失败 |
-| 隔离物理Tab交付 / root | 提供CI521已核独立包；产品开发预览仍独立推荐CI518。保留有界输入前过期及鼠标取消观察，以后同边界自然失败再用，不为未复现原因单独重跑 | 用户实际单次Tab取得1Passed才算该例物理接受；其余UIAccess/IME/正式部署各凭自身证据，软件阴性/包交付不代替物理按键 |
+| 子进程所有权 / fix_child_owner_lifetime，root | 候选从ModelChildProcess已持有的原生根句柄零等待读取退出码，保留原HasExited断言；新增等待中的真实子进程、自然退出23及Dispose后拒绝对照。两叶双轴静态GO、Windows未跑 | 获得同一早退边界可用退出码后再判断原因；根退出码不替代job/stderr/代次退出证明，不提前释放使用锁或伪称根因修复 |
+| 搬迁输入前到期 / connect_controlled_windows_runtime，root | 候选在controller启动前订阅真实WPF LayoutUpdated，在首次实际接受提示出现时保存当时permit，异步回到原dispatcher后复核提示与同一permit；替换测试轮询等待，其余顺序与输入不变。双轴静态GO、Windows未跑 | 保留原100ms、同一锁定grant、零额外输入及失败门；消除测试额外轮询不等于证明全部时差原因。CI521物理包推荐保持 |
+| 练习设置与源导航维护 / root | 源导航17与continuous现已实际通过；保留有限失败观察供同边界自然失败时使用，旧覆盖窗身份和保存异常内层原因仍未知 | 不因未复现新增专门CI；新实际故障再分派最小诊断，不以通过冒称旧原因已证 |
+| 隔离物理Tab交付 / root | 提供CI521已核独立包；产品开发预览仍独立推荐CI518 | 用户实际单次Tab取得1Passed才算该例物理接受；其余UIAccess/IME/正式部署各凭自身证据，软件阴性/包交付不代替物理按键 |
 | Linux体验维护 / root | 保持当前实现与CI498推荐，接收真机/物理输入法反馈，不增加可选开发 | 新实际故障或用户反馈再判断最小必要动作；未知IME保守拒绝，不自动发布stable |
 | 模型采用 / root | 保持下方既有公开采用结论、默认和资源合同；新增产品故障或实质新假设才安排最小验证，与Windows独立推进 | 生命周期、质量、高级scope与许可各凭自身证据；不扩大候选、推理预算或公开范围 |
 
