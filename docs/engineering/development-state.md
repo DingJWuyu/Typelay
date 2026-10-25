@@ -4,31 +4,29 @@
 
 ## 先看结论
 
-本页于 **2026-10-25 05:50 UTC** 按 CI525 完整终态更新；本轮结果、上次有效Windows证据与后继未验证修正分开记录。
+本页于 **2026-10-25 06:18 UTC** 按 CI526 完整终态与已核交付更新；失败、未运行与后继诊断候选分别记录。
 
-- **共享检查通过，Windows被编译错误阻断。** shared的Ruff检查及135文件格式通过，Core302、Runtime1318、Windows.Contracts169、Protocol28合计1817项通过。Windows在 `OrdinaryNotepadScenarioTests.cs` 五处异步文件写入报告 `xUnit1051`：调用缺少 `TestContext.Current.CancellationToken`，编译失败。
-- **本轮Windows行为与交付全部未运行。** App、源路径、continuous、浏览器、Notepad、两Hy链、产品包及物理验证包均未进入执行；没有App TRX、桌面结果或新包。不能沿用上一轮结果补绿，也不能从编译失败推导产品行为退化。
-- **下一候选只补五处测试取消参数。** 不改变生产行为、Notepad准备/命令关联、包装职责、输入次数或期限；新的managed编译与Windows执行须由授权CI验证。本地格式检查不替代编译。
-- **推荐保持。** [CI521隔离物理Tab包](https://github.com/DingJWuyu/Typelay/actions/runs/40143179984/artifacts/12580160695)、CI518产品开发预览与CI498 Linux体验推荐不变；物理/UIAccess/真实IME与正式Main/cap0接受未获新证据。
+- **编译阻断已闭合，App仍有一个真实失败。** 五处测试取消token修正已在Windows编译验证；App902过/1失败/22未执行。唯一失败是 `ProductionForegroundWriteTests.NativeReturnPreservesTheExactFieldRestoredByRootActivation(change: "success")` 在completion屏障释放前读取全局焦点为 `(0, 0)`，不等于原root/field；原因仍未知。
+- **Notepad按需Direct与普通退出实际通过，自动接受仍失败。** 新准备与命令关联回归已执行；按需不再空等原业务截止，但正式cap0拒绝及依赖未跑独立保留，不能称整条Notepad或普通输入框自动接受通过。
+- **隔离物理验证包推荐更新为CI526。** 原套件安全门、人工用例发现与搬迁默认关闭检查已通过，包身份已核；**物理按键尚未执行**。产品开发预览保持CI518，Linux体验保持CI498。
+- **下一候选仅补失败诊断，不是根因修复。** 保留原全局精确焦点断言，失败时另读已绑定源线程的局部GUI状态与错误码；不以局部焦点替代全局条件，不改生产行为、屏障、输入次数或期限。
 
 ## 最近已核终态与有效证据
 
-[CI525 / run 40166590275](https://github.com/DingJWuyu/Typelay/actions/runs/40166590275) 于 2026-10-25 05:43:57 UTC 创建，attempt1，05:45:35 UTC终态 `failure`。冻结本地 `df89a4bea9d3ee60f736038d3557759b472629e8`、tree `ff27928601cb1f10fd474fb6519faed4351e5d97` 对应远端 `97d5ca80335c3ebc8dc4c9f3d1906e96835f3aa0`；shared成功、Windows编译失败，Linux产品链按范围跳过。
+[CI526 / run 40167116453](https://github.com/DingJWuyu/Typelay/actions/runs/40167116453) 于 2026-10-25 05:52:48 UTC创建，attempt1，06:13:13 UTC终态 `failure`。冻结本地 `d63418f060a2db78acaaea6c68c04b672243c7ab`、tree `73c0f0c3d9848de1ea8dd9d2a3035641ff900655` 对应远端 `148612977651c5e40937cd719fa4dbe1905dea21`。失败步骤为Windows行为检查与正式Notepad，shared成功；Linux产品链按范围跳过。
 
-| 范围 | CI525实际结果 | 证据边界 |
+| 范围 | CI526实际结果 | 证据边界 |
 | --- | --- | --- |
-| shared | Ruff check与135文件format通过；Core302、Runtime1318、Windows.Contracts169、Protocol28全部通过 | 共1817项.NET测试；不是Windows桌面、模型或物理输入验收 |
-| Windows编译 | `OrdinaryNotepadScenarioTests.cs` 行125、127、130、142、145共五个xUnit1051，零warning，编译失败 | 五处测试异步文件写入遗漏取消token；不降低分析器或警告门，不以本地whitespace称编译通过 |
-| Windows行为与桌面 | App、源接受、native、continuous、browser、Notepad与两Hy链均not-run | 没有App TRX或桌面场景结果；不把CI524通过或失败重新记成本轮结果 |
-| Windows交付 | 产品打包、搬迁、物理包准备与上传均not-run；无新产品或物理ZIP | Windows artifact仅含测试前浏览器进程观察；不能作为可用包或场景验收 |
-| Linux产品链 | skipped | 保持既有实现与推荐，不因shared通过新增Linux验收声明 |
+| shared与Windows编译 | shared的Core302、Runtime1318、Windows.Contracts169、Protocol28合计1817项通过；Windows编译及原五处xUnit1051修正通过 | 编译通过不抹去后续App失败或物理未执行 |
+| Windows App | 上述NativeReturn的success参数行在原中间全局焦点门失败；Notepad场景编排19项通过，源接受及原Tab9/F7118阴性安全门通过 | 未取得源线程局部状态，不能断言实际焦点已恢复、只是全局采样瞬态或产品已正确完成；新诊断尚未实跑 |
+| 正式Notepad | 自动接受130ms公开cap0否定，编辑回源依赖not-run；单wake/Esc/单Direct及原生Undo2043ms通过，ordinary-exit791ms通过。无业务deadline触发或cleanup错误 | ordinary-exit有自身源/App/model退出与原文件不变证据，不借消费者退出代替；原自动接受失败及总exit1保持 |
+| 其它Windows链 | continuous、browser7、Hy production五阶段与Settings15通过；source两行与owned六行清理成功，三个消费者natural exit0/0/1及完整退出门已核 | 不推导语言质量、UIAccess、真实IME或正式部署完成 |
+| 隔离物理Tab包 | 原Tab9/F7118两Passed前置、唯一未跳过manual Tab发现、搬迁defaultfactory false/true两Passed全部通过，CI526包可交付 | 搬迁验证默认cap0/不安装/不提示/零写，不重跑源安装拒绝或物理阳性；没有原suite到最终包逐字samebits证明 |
+| Linux产品链 | skipped | 保持既有实现与CI498推荐，不新增本轮Linux验收声明 |
 
-核验入口为 `artifacts/ci525-independent/terminal-evidence-verified.json`。733叶与冻结源码及12个发布变更字节一致，源码archive890成员逐项核验；shared与Windows两份artifact已核metadata、大小、SHA与CRC。原始日志、模型及测试输出不复制到源码文档。
+核验入口为 `artifacts/ci526-independent/terminal-evidence-verified.json`。五份artifact、冻结源码733叶、23份早期/最终原件、产品包551文件与三份正式加载身份、消费者退出证明均已核。新隔离包的精确下载、内层摘要与环境要求统一见[CI526物理Tab验证包说明](../platforms/windows/README.md#隔离物理-tab-验证包不是产品体验包)。原始日志、模型与测试输出不复制到源码文档。
 
-最近一次实际Windows产品执行仍是 [CI524](https://github.com/DingJWuyu/Typelay/actions/runs/40160855034)，不属于CI525：
-
-- 当时App898过/0失败/22未执行，v7的六个新增ordered Ctrl场景、旧读真实RenderCount保稿、原Tab/F7阴性、源导航17、子进程所有权/退出码对照、continuous、browser及两Hy链通过。物理Ctrl+F7、Tab/F7/F24未跑；旧早退、覆盖窗及保存异常根因未证。
-- 正式Notepad自动cap0在输入前失败；按需Esc后14ms触发Direct，no-lease后StaleObservation拒绝，没有启动该次翻译，fixture仍等待至520秒业务截止，ordinary-exit未跑。搬迁Tab在最终输入前expiry门失败、F7通过，无新物理包。这些失败不因后继测试准备、包装职责调整或本轮编译失败改绿。
+原CI524搬迁Tab到期失败不因改用默认关闭搬迁检查而改判；本轮安全前置仍来自原套件的完整Tab/F7阴性。旧子进程早退、覆盖窗及设置保存异常没有因未复现而获得根因结论。
 
 ## 当前责任与下一动作
 
@@ -36,9 +34,9 @@ root负责集成、证据核验和采用决定；下表是现役责任线，不�
 
 | 责任线 / 负责人 | 当前动作与依赖 | 完成或停止条件 |
 | --- | --- | --- |
-| Windows测试编译 / implement_windows_ctrl_acceptance，integrate_windows_next_candidate，root | 从冻结df89独立集成五处异步文件写入的 `TestContext.Current.CancellationToken`，不改断言、测试输入或生产代码；root静态GO，单文件folder whitespace、全仓Ruff检查与135文件格式、diff检查通过，managed未跑 | 授权CI在精确候选上完成Windows编译后才能确认修正；不重试被拒绝的本地.NET/MSBuild/tests，不屏蔽xUnit1051 |
-| Notepad与物理包验证 / root | 前轮已集成Esc后新源publication与公开Direct-ready、唯一命令身份关联和有界trace读取；包装保留原Tab9/F7118两Passed安全门，搬迁改既有defaultfactory false/true两行。CI525编译阻断，全部新Windows验证仍未跑 | 编译通过后继续原Windows链，核Notepad与窄回归、原安全门、实际搬迁及包证据；保持520秒/100ms、唯一输入与清理，不宣称原suite与最终包逐字samebits，不改旧失败 |
-| 已过回归与交付 / root | 保留CI524有效行为证据及其未闭合失败；提供CI521隔离物理包，产品开发预览保持CI518 | 用户实际单次物理Tab取得1Passed才算该例通过；新实际故障再最小诊断，不将未复现称根因修复，不以包交付代替物理/部署验收 |
+| NativeReturn失败观察 / integrate_windows_next_candidate，root | 集成已审窄诊断：capture后绑定源PID/TID；原全局焦点采样不匹配时，记录该次全局结果与源线程GUI局部状态，再执行原严格等值断言。无生产改动，不等待、重试或释放屏障补成通过；集成后单文件folder whitespace与diff检查通过，新managed/Windows未跑 | 授权CI验证精确候选；若同边界自然失败，凭新观察区分未知状态而非预设根因。局部sourceActive/sourceFocus不能代替原全局门；本地.NET/MSBuild/tests拒绝不重试 |
+| 正式Notepad与已过回归 / root | Direct/Undo、普通退出及新编排回归已实际通过；自动cap0拒绝和编辑依赖未跑保持，原Ctrl、源接受、期限、所有权及清理回归继续保留 | 新实际失败再最小诊断；不把成功Direct提升为自动接受或所有普通输入框支持，不因未复现称旧问题根因修复 |
+| 隔离物理Tab交付 / root | 当前提供已核CI526包；CI518产品开发预览不变。原安全门与搬迁默认关闭职责分开，下载身份以Windows说明为准 | 用户在包内提示后亲手一次Tab取得1Passed才算物理阳性；不补按、不重跑，UIAccess/IME/第三方部署各凭自身证据 |
 | Linux体验维护 / root | 保持当前实现与CI498推荐，接收真机/物理输入法反馈，不增加可选开发 | 新实际故障或用户反馈再判断最小必要动作；未知IME保守拒绝，不自动发布stable |
 | 模型采用 / root | 保持下方既有公开采用结论、默认和资源合同；新增产品故障或实质新假设才安排最小验证，与Windows独立推进 | 生命周期、质量、高级scope与许可各凭自身证据；不扩大候选、推理预算或公开范围 |
 

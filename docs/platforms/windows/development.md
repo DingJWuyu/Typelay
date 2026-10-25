@@ -167,9 +167,9 @@ Ctrl 只正常派发，立即撤旧 grant 并推进 User/Source epoch。App 在�
 
 既有 `OrderedSourceRecordsTheRealInjectedEdgeButDoesNotConsumeOrWrite` 的 Tab/F7 两例使用真实 factory、Router、Dispatcher loop 与 WPF，保留唯一 authenticated Broker、原生源和固定 Translation；先核精确目标安装/ACK与可见接受提示，再向同一未续期 grant 发送一次普通非 UIAccess 键对。旧 experimental 为 false，必须核 LL 记录、原键正常派发、来源拒绝、零正文写/零完成和同 owner Quiet。当前实现严格要求无 VerifiedSnapshot 的 `RejectedBeforeMutation/Unsupported`，并由同一个 v7 grant 核 Quiet、Withdrawn、invoked=0、status=2及 `OriginUntrusted`，不接受其它 Unsupported 原因或未知结果。活源拒绝由 native poll/retire ACK 形成终态回执，只有 Claimed 才转交 CompletedReceipt；停用/clear 后回读精确终态不算新写入。
 
-[CI524](https://github.com/DingJWuyu/Typelay/actions/runs/40160855034) 执行当前 source v7/49416。原套件Tab/F7两阴性完整通过，包括零计数、撤权与清理；搬迁Tab在ordered-edge准备之后、唯一键对之前的最终expiry门（Ordered.cs行285）失败，F7通过。原件没有该最终检查的具体超期数值，不能倒推各阶段耗时或称准备压缩已修根因。唯一manual Tab发现通过，但没有新物理ZIP；当前交付保持已核CI521包，见[验证包说明](README.md#隔离物理-tab-验证包不是产品体验包)。默认factory在automation false/true且注入source-capable broker时仍不安装、不提示接受；逐目标ACK呈现对照不制造许可，默认BrokerClient的shipping capture cap0回归独立保留。
+[CI524](https://github.com/DingJWuyu/Typelay/actions/runs/40160855034) 执行当前 source v7/49416。原套件Tab/F7两阴性完整通过，包括零计数、撤权与清理；搬迁Tab在ordered-edge准备之后、唯一键对之前的最终expiry门（Ordered.cs行285）失败，F7通过。原件没有该最终检查的具体超期数值，不能倒推各阶段耗时或称准备压缩已修根因。该轮唯一manual Tab发现通过，但没有新物理ZIP；此旧失败不改判。当前交付已更新至CI526包，见[验证包说明](README.md#隔离物理-tab-验证包不是产品体验包)。默认factory在automation false/true且注入source-capable broker时仍不安装、不提示接受；逐目标ACK呈现对照不制造许可，默认BrokerClient的shipping capture cap0回归独立保留。
 
-当前测试在controller启动前订阅真实WPF LayoutUpdated，首次实际接受提示时保存permit；异步续行后复核提示与同一permit。输入前仍打开并持有原nonce source MMF handle，仅把diagnostic view创建与不可变version/key断言移到原键对正常派发之后；使用49416字节/version7，Quiet后从同一原对象核终态。witness view、recording-active、初始B、FIFO、同permit、cue、焦点与期限门保持输入前。interrupt-time阶段检查点与uptime witness tick分属不同时间域，不相减；调用者读取不等于实际绘制时刻，观察开销计入原期限。上述实现已在CI524实跑，但搬迁最终输入前仍到期；每grant100ms、每场景30秒与唯一键对不变，不续期或重试。后继包装只调整搬迁检查的职责，保留原套件Tab/F7安全门，见下节；它不修改这项原有序测试或证明物理、真实模型、正式Notepad及部署验收。
+当前测试在controller启动前订阅真实WPF LayoutUpdated，首次实际接受提示时保存permit；异步续行后复核提示与同一permit。输入前仍打开并持有原nonce source MMF handle，仅把diagnostic view创建与不可变version/key断言移到原键对正常派发之后；使用49416字节/version7，Quiet后从同一原对象核终态。witness view、recording-active、初始B、FIFO、同permit、cue、焦点与期限门保持输入前。interrupt-time阶段检查点与uptime witness tick分属不同时间域，不相减；调用者读取不等于实际绘制时刻，观察开销计入原期限。上述实现已在CI524实跑，但搬迁最终输入前仍到期；每grant100ms、每场景30秒与唯一键对不变，不续期或重试。包装现已调整搬迁检查的职责，保留原套件Tab/F7安全门，见下节；它不修改这项原有序测试或证明物理、真实模型、正式Notepad及部署验收。
 
 ## 正向接受的剩余条件
 
@@ -180,9 +180,9 @@ Ctrl 只正常派发，立即撤旧 grant 并推进 User/Source epoch。App 在�
 
 Windows artifact 可另含 `TypeLay-Windows-physical-Tab-validation.zip` 与 SHA256，不是产品 ZIP。它保留现有 App.Tests、NativeFixture、Broker 的三个 framework-dependent Release 输出相对目录和根 `TypeLay.slnx`，附构建身份、实际锁定依赖原始许可及[一次执行说明](../../../packaging/windows/physical-tab/README.md)。使用者需预装 .NET 10 Desktop Runtime x64、PATH 中的同一 x64 `dotnet` 和独占已解锁物理桌面，不需 SDK、Python、模型或管理员；包不安装系统组件。
 
-`eng/windows/package-physical-tab.py` 只在所有既有桌面链之后运行，从原7分钟缓存/上传尾部使用2分钟，不改75分钟job、首组前台准备或三份modelproof。它要求本轮原App TRX中既有ordered普通注入Tab/F7两行已Passed，这条安全行为前置不变；压缩候选后解至checkout外的新含空格/中文目录，用原exe先发现唯一无Skip的 `ManualPhysicalKey=Tab` 行，再执行既有 `RuntimeDoesNotSelectSourceAcceptanceFromAutomationOrAnInjectedBroker` 的 false/true 两行，要求恰好2 executed/2 Passed、零跳过/runner错误和原owned清理。搬迁smoke只验证真实WPF/源fixture/显式注入自有Broker的加载与factory默认cap0、不安装/不提示接受、零写，不代替原source-install/普通注入拒绝，更不代表物理接受或正式BrokerClient启动。失败不输出可供运行的验证ZIP，只保留发现原件、stdout/stderr、TRX与退出码；原其它失败仍红。该职责拆分尚须在实际Windows CI运行，不把旧搬迁失败改判为通过。
+`eng/windows/package-physical-tab.py` 只在所有既有桌面链之后运行，从原7分钟缓存/上传尾部使用2分钟，不改75分钟job、首组前台准备或三份modelproof。它要求本轮原App TRX中既有ordered普通注入Tab/F7两行已Passed，这条安全行为前置不变；压缩候选后解至checkout外的新含空格/中文目录，用原exe先发现唯一无Skip的 `ManualPhysicalKey=Tab` 行，再执行既有 `RuntimeDoesNotSelectSourceAcceptanceFromAutomationOrAnInjectedBroker` 的 false/true 两行，要求恰好2 executed/2 Passed、零跳过/runner错误和原owned清理。搬迁smoke只验证真实WPF/源fixture/显式注入自有Broker的加载与factory默认cap0、不安装/不提示接受、零写，不代替原source-install/普通注入拒绝，更不代表物理接受或正式BrokerClient启动。失败不输出可供运行的验证ZIP，只保留发现原件、stdout/stderr、TRX与退出码；原其它失败仍红。[CI526](https://github.com/DingJWuyu/Typelay/actions/runs/40167116453) 已实际通过原Tab9/F7118两Passed前置、唯一manual发现及搬迁defaultfactory两行，输出已核物理验证包；这不把旧有序搬迁失败改判为通过。
 
-BUILD保留同source、同job及Release身份，沿原三输出树复制、三处NativeInput一致和真实ZIP解压检查；没有独立的原套件测试时快照，不声称原suite与最终包逐字samebits。旧物理包推荐须等新完整证据再决定更新。
+BUILD保留同source、同job及Release身份，沿原三输出树复制、三处NativeInput一致和真实ZIP解压检查；没有独立的原套件测试时快照，不声称原suite与最终包逐字samebits。当前隔离交付推荐CI526，包身份集中维护在[验证包说明](README.md#隔离物理-tab-验证包不是产品体验包)；产品开发预览仍为CI518。
 
 用户只按包内说明亲手一次Tab；精确method和公开行trait共同选择，不保存CI case ID、不解析显示名称。结果须为1 executed/1 Passed/零跳过，原“你好”→固定“Hello”、自动Undo、30秒fixture/100ms grant、尾键退休与自有退出不变。F7/F24不是普通用户默认项，默认关闭smoke及物理阳性都不开放UIAccess/真实IME/正式部署或Main/capability0。
 

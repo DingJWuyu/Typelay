@@ -188,6 +188,12 @@ public sealed partial class ProductionForegroundWriteTests
         await using var desktop = await Desktop.Start(returnTrace: trace.Path);
         await desktop.Prepare(desktop.A, "A🙂你好Z", new(3, 5));
         var source = await desktop.Capture();
+        var sourceTarget = source.Target.AsWindows();
+        Assert.Equal((long)desktop.A, sourceTarget.ControlHwnd);
+        uint sourceThread = N.GetWindowThreadProcessId(desktop.A, out uint sourceProcess);
+        Assert.NotEqual(0u, sourceThread);
+        Assert.NotEqual(0u, sourceProcess);
+        Assert.Equal((uint)sourceTarget.ProcessId, sourceProcess);
         string otherFieldText = N.ReadText(desktop.B, Limits.MaxTextUnits);
         await using var elsewhere = await StockFixture.Start(desktop.Token);
         await elsewhere.Focus(elsewhere.A, desktop.Token);
@@ -207,7 +213,33 @@ public sealed partial class ProductionForegroundWriteTests
                 + (pending.IsCompletedSuccessfully ? (await pending).Status : "not-completed-successfully"));
             // The actual host restored A during its one root activation. The
             // completion message must not first refocus A through UIA.
-            Assert.Equal((desktop.Root, desktop.A), N.Focused());
+            var beforeCompletion = N.ReadFocus();
+            if ((beforeCompletion.Root, beforeCompletion.Control) != (desktop.Root, desktop.A))
+            {
+                // Failure-only local state cannot substitute for the global
+                // assertion or prove that root activation restored this field.
+                var sourceGui = new N.GuiThreadInfo { Size = (uint)Marshal.SizeOf<N.GuiThreadInfo>() };
+                bool sourceGuiKnown = N.GetGUIThreadInfo(sourceThread, ref sourceGui);
+                int? sourceGuiError = sourceGuiKnown ? null : Marshal.GetLastPInvokeError();
+                TestContext.Current.TestOutputHelper?.WriteLine("Native return before completion: "
+                    + JsonSerializer.Serialize(new
+                    {
+                        sourceProcess,
+                        sourceThread,
+                        foreground = (long)beforeCompletion.Root,
+                        focus = (long)beforeCompletion.Control,
+                        beforeCompletion.ProcessId,
+                        beforeCompletion.ThreadId,
+                        beforeCompletion.ThreadLookupError,
+                        beforeCompletion.GuiThreadInfoSucceeded,
+                        beforeCompletion.GuiThreadInfoError,
+                        sourceGuiKnown,
+                        sourceGuiError,
+                        sourceActive = (long)sourceGui.Active,
+                        sourceFocus = (long)sourceGui.Focus
+                    }));
+            }
+            Assert.Equal((desktop.Root, desktop.A), (beforeCompletion.Root, beforeCompletion.Control));
             if (change == "timeout")
                 Assert.Equal("denied", (await pending).Status);
             else
