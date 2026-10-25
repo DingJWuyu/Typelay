@@ -766,7 +766,14 @@ internal sealed partial class KeyboardHook : IInputMonitor
             if (data.Key < 256)
                 _keys[data.Key] = down;
             if (!down && ControlKey(data.Key))
+            {
                 RetireSourceAcceptanceControl();
+                if (_orderedSourceMessageWitness)
+                {
+                    RevokeStockCandidate();
+                    _gate.Revoke();
+                }
+            }
             bool commandConsumed = data.Key < 256 && _commandConsumed[data.Key];
             if (!down && data.Key < 256)
                 _commandConsumed[data.Key] = false;
@@ -812,13 +819,21 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 // This route never activates, consumes or turns LL observation
                 // into authority. Input before Arm invalidates that candidate,
                 // including while the source-install ACK is still outstanding.
-                if (Volatile.Read(ref _stockInstalled) is null || !source || Modified
+                if (Volatile.Read(ref _stockInstalled) is not { } installed || !source
+                    || CurrentModifiers != sessionKeys.AcceptModifiers
+                    || down && !repeated && (installed.Chord.Mode != SourceAcceptanceMode.Accept
+                        || sessionKeys.AcceptModifiers == ShortcutModifiers.Control
+                            && !(Volatile.Read(ref _sourceAcceptanceControl) is { } control
+                                && SourceAcceptanceControlCurrent(control, 1) && Volatile.Read(ref control.Prefix) == installed.Chord.Control))
                     || injected && !_allowInjectedInput && !_orderedSourceMessageWitness)
                 {
                     RevokeStockCandidate();
                     _gate.Revoke();
                 }
-                return PassStockWitness(code, wParam, lParam, data, repeated, now);
+                nint passed = PassStockWitness(code, wParam, lParam, data, repeated, now);
+                if (down && !repeated)
+                    RetireSourceAcceptanceControl(); // One original Ctrl group can propose only one Fn.
+                return passed;
             }
             if (PairOrdinaryChord(data, down, repeated))
                 return 1;

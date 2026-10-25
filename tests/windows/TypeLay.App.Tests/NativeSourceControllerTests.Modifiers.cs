@@ -1,4 +1,5 @@
 using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -6,6 +7,7 @@ using System.Windows.Interop;
 using TypeLay.Core;
 using TypeLay.Runtime;
 using TypeLay.Windows;
+using TypeLay.Windows.Contracts;
 using Xunit;
 using N = TypeLay.Platform.Windows.NativeMethods;
 
@@ -262,6 +264,223 @@ public sealed partial class NativeSourceControllerTests
                 SourceScanKey(0x2a, true);
             if (barrierDown)
                 Key(barrier, true);
+            editor.Close();
+            Directory.Delete(directory, true);
+        }
+    });
+
+    [Theory]
+    [InlineData("fresh")]
+    [InlineData("old-read")]
+    [InlineData("text")]
+    [InlineData("selection")]
+    [InlineData("configuration")]
+    [InlineData("early-function")]
+    public Task OrderedControlPreservesOnlyAnUnchangedManualDraftWithoutTrustingSendInput(string change) =>
+        ExerciseOrderedControlDraft(change, physical: false);
+
+    [Fact(Explicit = true)]
+    public Task ManualPhysicalControlF7UsesFreshManualDraftAndOnlyOwnsItsFunctionPress() =>
+        ExerciseOrderedControlDraft("fresh", physical: true);
+
+    private Task ExerciseOrderedControlDraft(string change, bool physical) => desktop.RunAsync(async () =>
+    {
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start(orderedSourceMessageWitness: true);
+        await native.Prepare(native.A, "你好", new(0, 2));
+        var editor = new Window { Content = new TextBox(), Width = 350, Height = 120, Title = "TypeLay ordered manual editor" };
+        nint editorHwnd = new WindowInteropHelper(editor).EnsureHandle();
+        using var hook = new KeyboardHook(editorHwnd: editorHwnd); // Never opt SendInput into source trust.
+        await Until(() => hook.ShortcutsReady, native.Token);
+        using var broker = new FixtureBroker(native);
+        using var input = new WindowsInputService(broker, editorHwnd, monitor: hook,
+            sourceMessageAcceptance: true, orderedSourceMessageWitness: true);
+        string directory = Path.Combine(Path.GetTempPath(), "TypeLay.OrderedControl." + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        bool controlDown = false, functionDown = false, barrierDown = false;
+        SourceAcceptanceRequest? observer = null, attempted = null;
+        SourceAcceptanceResult? attemptedResult = null, attemptedRetirement = null;
+        broker.ObserveResponse = (request, response) =>
+        {
+            if (request.SourceAcceptance is not { } install)
+                return;
+            if (request.Op == "source-retire" && attempted?.Grant == install.Grant)
+                attemptedRetirement = response.SourceAcceptance;
+            if (request.Op != "source-install")
+                return;
+            if (install.Chord?.Mode == SourceAcceptanceMode.ObserveControlPrefix && response.SourceAcceptance?.Installed == true)
+                observer = install;
+            if (install.Chord is { Mode: SourceAcceptanceMode.Accept, Modifiers: ShortcutModifiers.Control })
+            {
+                attempted ??= install;
+                if (attempted.Grant == install.Grant)
+                    attemptedResult = response.SourceAcceptance;
+            }
+        };
+        try
+        {
+            Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceDispatchKey.v1", 0x11));
+            Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceObservedKey.v1", 0x76));
+            Assert.True(N.SetProp(native.Root, "TypeLay.Test.SourceBarrierKey.v1", 0x86));
+            var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
+            settings.Update(settings.Value with
+            {
+                AcceptShortcut = "Ctrl+F7"
+            });
+            var loop = new Loop();
+            var view = new View();
+            using var controller = new SessionController(settings, new Translation(), view, hook, input, loop);
+            await controller.StartAsync();
+            await Until(() => { loop.Advance(); return view.Candidate == "Hello" && observer is not null; }, native.Token);
+            Assert.False(view.CanAccept); // Bootstrap is observation, not a write-ready cue.
+            Assert.True(view.BeginEditing!(Assert.IsType<SessionViewToken>(view.Token)));
+            editor.Show();
+            editor.Activate();
+            await Until(() => Native.GetForegroundWindow() == editorHwnd, native.Token);
+            view.DraftChanged!("Hand edited");
+            Guid initialObserver = observer!.Grant;
+            view.ReturnRequested!(Assert.IsType<SessionViewToken>(view.Token));
+            await Until(() =>
+            {
+                loop.Advance();
+                return view.State == SessionState.EditedTranslationPending && observer?.Grant != initialObserver;
+            }, native.Token);
+            Assert.False(view.CanAccept);
+            var before = observer!;
+            string witnessName = "Local\\TypeLay.SourceWitness."
+                + Convert.ToHexString(before.Target.Lifetime.ToByteArray()).ToLowerInvariant();
+            using var mapping = MemoryMappedFile.OpenExisting(witnessName, MemoryMappedFileRights.Read);
+            using var witness = mapping.CreateViewAccessor(0, SourceInputWitness.Bytes, MemoryMappedFileAccess.Read);
+            await Until(() => { loop.Advance(); return witness.ReadUInt32(132) == 1; }, native.Token);
+            Assert.NotEqual(0UL, witness.ReadUInt64(112));
+            Assert.Null(attempted);
+            if (change == "old-read")
+            {
+                broker.HoldNextCapture = true;
+                await Until(() => { loop.Advance(); return broker.CaptureReceived.Task.IsCompleted; }, native.Token);
+            }
+            if (physical)
+            {
+                Console.WriteLine("请在原生输入框按住物理 Ctrl；看到下一条就绪提示后，再按下并释放一次 F7，最后松开 Ctrl。");
+                await Until(() => { loop.Advance(); return N.GetProp(native.Root, "TypeLay.Test.SourceDispatchedDown.v1") == 1; }, native.Token);
+            }
+            else
+            {
+                controlDown = true;
+                SourceScanKey(0x1d, false);
+                await Until(() => N.GetProp(native.Root, "TypeLay.Test.SourceDispatchedDown.v1") == 1, native.Token);
+            }
+            Assert.NotNull(hook.AcceptanceModifierTransition);
+            Assert.False(hook.AcceptanceReady(Assert.IsType<SessionViewToken>(view.Token), before.Permit!, WindowsInterruptClock.NowMs));
+            if (change == "text")
+                N.SendString(native.A, N.WM_SETTEXT, "changed source");
+            if (change == "selection")
+                N.Send(native.A, N.EM_SETSEL, 0, 0);
+            if (change == "configuration")
+                settings.Update(settings.Value with
+                {
+                    AcceptShortcut = "Ctrl+F8"
+                });
+            if (change == "early-function")
+            {
+                functionDown = true;
+                SourceScanKey(0x41, false);
+                SourceScanKey(0x41, true);
+                functionDown = false;
+            }
+            if (change == "old-read")
+            {
+                int renders = view.RenderCount, captures = broker.Captures;
+                broker.ReleaseCapture.TrySetResult();
+                await Until(() =>
+                {
+                    // Pump only the existing monitor retirement, not another
+                    // controller Tick/capture. Quiet releases the delivery fence;
+                    // the next Render proves Runtime processed this held response.
+                    Assert.False(hook.TryRead(out var notice));
+                    Assert.Null(notice);
+                    return view.RenderCount > renders;
+                }, native.Token);
+                Assert.Equal(captures, broker.Captures);
+                Assert.Null(attempted); // The processed old response cannot install a Ctrl grant.
+                Assert.Equal("Hand edited", view.Candidate);
+                Assert.False(view.CanAccept);
+            }
+            if (change is "fresh" or "old-read")
+            {
+                await Until(() => { loop.Advance(); return attempted is not null; }, native.Token);
+                Assert.Equal(SessionState.EditedTranslationPending, view.State);
+                Assert.Equal("Hand edited", view.Candidate);
+                Assert.Equal("Hand edited", attempted!.Permit!.Plan.Replacement);
+                Assert.NotEqual(before.Grant, attempted.Grant);
+                Assert.NotEqual(before.Permit!.Plan.Revision, attempted.Permit.Plan.Revision);
+                Assert.Equal(before.Permit.InputEpoch + 1, attempted.Permit.InputEpoch);
+                Assert.Equal(attempted.Permit.ObservedAtMs + Limits.PermitMaxAgeMs, attempted.Permit.ExpiresAtMs);
+                Assert.Equal(attempted.Permit.InputEpoch - 1, attempted.Chord!.Control!.BeforeInputEpoch);
+                if (physical)
+                {
+                    await Until(() => { loop.Advance(); return view.CanAccept; }, native.Token);
+                    Console.WriteLine("接受已就绪。继续按住 Ctrl，按下并释放一次物理 F7，然后松开 Ctrl。");
+                    await Until(() => { loop.Advance(); return broker.Receipt is not null && broker.Retired; }, native.Token);
+                    Assert.Equal(WriteStatus.Verified, broker.Receipt!.Status);
+                    Assert.Equal(1, broker.CompletionTransfers);
+                    Assert.Equal("Hand edited", N.ReadText(native.A, Limits.MaxTextUnits));
+                }
+                else
+                {
+                    // The real source rejects the injected original Ctrl. LL
+                    // attribution may preserve text, but it grants no source authority.
+                    Assert.False(attemptedResult!.Installed);
+                    Assert.False(attemptedResult.Claimed);
+                    Assert.Equal(WriteStatus.RejectedBeforeMutation, attemptedResult.Receipt?.Status);
+                    Assert.Equal(Denial.Unsupported, attemptedResult.Receipt?.Reason);
+                    await Until(() => { loop.Advance(); return attemptedRetirement?.Quiet == true; }, native.Token);
+                    Assert.True(attemptedRetirement!.Acknowledged);
+                    Assert.False(attemptedRetirement.Claimed);
+                    Assert.False(view.CanAccept);
+                }
+            }
+            else if (change != "early-function")
+            {
+                await Until(() => { loop.Advance(); return view.State != SessionState.EditedTranslationPending; }, native.Token);
+                Assert.NotEqual("Hand edited", view.Candidate);
+                Assert.Null(attempted);
+            }
+            if (!physical)
+            {
+                if (change != "early-function")
+                {
+                    functionDown = true;
+                    SourceScanKey(0x41, false);
+                    SourceScanKey(0x41, true);
+                    functionDown = false;
+                }
+                SourceScanKey(0x1d, true);
+                controlDown = false;
+                barrierDown = true;
+                SourceScanKey(0x6e, false);
+                SourceScanKey(0x6e, true);
+                barrierDown = false;
+                await Until(() => { loop.Advance(); return N.GetProp(native.Root, "TypeLay.Test.SourceBarrierUp.v1") == 1; }, native.Token);
+                Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceObservedDown.v1"));
+                Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceObservedUp.v1"));
+                Assert.Equal(change == "text" ? "changed source" : "你好", N.ReadText(native.A, Limits.MaxTextUnits));
+                Assert.Equal(0, broker.CompletionTransfers);
+                Assert.Null(broker.Receipt);
+            }
+            Assert.Null(hook.StockLastActivation);
+            Assert.Equal(0, broker.Writes);
+            Assert.False(settings.Value.ExperimentalWriteback);
+            native.AssertZeroSubmits();
+        }
+        finally
+        {
+            broker.ReleaseCapture.TrySetResult();
+            if (functionDown)
+                SourceScanKey(0x41, true);
+            if (controlDown)
+                SourceScanKey(0x1d, true);
+            if (barrierDown)
+                SourceScanKey(0x6e, true);
             editor.Close();
             Directory.Delete(directory, true);
         }

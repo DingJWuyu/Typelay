@@ -1,12 +1,16 @@
 using TypeLay.Core;
 using TypeLay.Runtime;
+using TypeLay.Windows.Contracts;
 
 namespace TypeLay.App;
 
 internal sealed partial class KeyboardHook
 {
     private sealed record SourceAcceptanceControl(Native.KeyData Control, HookLease Lease,
-        AcceptanceModifierTransition Transition, long Retirement);
+        AcceptanceModifierTransition Transition, long Retirement)
+    {
+        internal SourceControlPrefix? Prefix;
+    }
     private SourceAcceptanceControl? _sourceAcceptanceControl;
     private long _sourceAcceptanceRetirement;
 
@@ -39,8 +43,11 @@ internal sealed partial class KeyboardHook
     {
         if (_stockExchange is null || Volatile.Read(ref _stockClosed) != 0 || !StockSessionKeysReady || !source || lease is not { NativeStock: true }
             || repeated || !ControlKey(data.Key) || CurrentModifiers != ShortcutModifiers.Control || OtherKeyHeld(data.Key)
-            || injected && !_allowInjectedInput || data.Scan is not (> 0 and <= 255)
+            || injected && !_allowInjectedInput && !_orderedSourceMessageWitness || data.Scan is not (> 0 and <= 255)
             || keys.AcceptModifiers != ShortcutModifiers.Control || lease.Observation.Source.Ime != ImeState.Clear)
+            return null;
+        if (_orderedSourceMessageWitness && (_stockWitness is not { Ready: true } witness
+            || witness.Target.Id != lease.Observation.Source.Target || !witness.Recording))
             return null;
         return new(data, lease, new(lease.Observation, SourceUserEpoch, ContentEpoch, WindowEpoch, keys.Bindings, now), retirement);
     }

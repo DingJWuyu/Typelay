@@ -18,11 +18,13 @@ TypeLay.Windows.Contracts 引用 Core，拥有 App 与 Broker 共用的 DTO、�
 
 隔离 Windows 测试保留默认关闭的旧 sent-route 系统 Edit 受理原型：原字段完成只读重验后，与快捷键超时撤回竞争同一个一次性共享状态。撤回先完成则不得修改正文或选区，原键旁路；原字段先受理后，原型依赖低级 Hook 返回值消费原键。此关联已被源写成功而原键泄漏的实际反例否定，见 [B-01](#b-01非原子写回与按键所有权)。已受理后的未知结果不重放按键，退休仅在确证静默或目标进程退出后擦除正文，保留受理事实。此路径目前只由测试接线，生产 `SourceLocalAcceptanceVersion` 仍为 0；跨队列按次归属与真实中文组合输入仍未闭合，不能据隔离原型宣布普通输入框安全接受完成。
 
-两条隔离路线都经现有认证 Broker 通道连接完整控制器：仅隔离构造声明可准备计划的能力，实际安装确认前不发布按键许可或可接受提示。单个在途安装配合一个最新候选，不延长原100ms许可；失效立即撤回未受理状态，受理后的整组按键仍由原操作收束。完成回执来自源端实际核验的正文、选区、输入法与完成时间，不从替换计划猜测，也不再发第二次写入。私有 source wire 为 v6，明确拒绝旧 v4/v5；普通原生事务 v2 保持不变。正式 Broker 入口固定关闭该构造；测试宿主使用同一路由显式启用，不新增用户开关。
+两条隔离路线都经现有认证 Broker 通道连接完整控制器：仅隔离构造声明可准备计划的能力，实际安装确认前不发布按键许可或可接受提示。单个在途安装配合一个最新候选，不延长原100ms许可；失效立即撤回未受理状态，受理后的整组按键仍由原操作收束。完成回执来自源端实际核验的正文、选区、输入法与完成时间，不从替换计划猜测，也不再发第二次写入。私有 source wire 为 v7，明确拒绝旧 v4/v5/v6；普通原生事务 v2 保持不变。正式 Broker 入口固定关闭该构造；测试宿主使用同一路由显式启用，不新增用户开关。
 
 retrieved-MSG 路线支持本次配置的无修饰 Tab 或 F1-F24：源线程在实际 `PM_REMOVE` 的同一 MSG 上 claim 并置 `WM_NULL`，再执行原生事务，不依赖 LL Activate 的返回。安装先 Prepared，App 发布本地撤权 control 与 capture fence 后才 Arm；准备期实际输入单调撤权，Arm 不续签原许可。精确 `source-poll`/`source-retire` 回执只结算一次，正文完成与尾键/资源 Quiet 分开，后续捕获不能越过尚未结算的回执。[已核 Windows 检查](https://github.com/DingJWuyu/Typelay/actions/runs/40079876227)通过自有源的真实派发正反、App 回执/fence、late ACK 与 Undo；[CI504](https://github.com/DingJWuyu/Typelay/actions/runs/40083637614) 已在真实 Notepad 接受/撤回两例验证该路线的恰一次 Verified 正文回执/零正文回执旁路、Undo、零 LL Activate/二次 Write、Quiet 与清理；这是隔离构造实跑，不是正式发行接受。正式 Main/capability0、来源与 IME 门不变；[UIAccess 兼容范围已确认](../../product/README.md#windows-接受译文的辅助输入兼容范围)，来源机制与第三方部署资格仍未补齐。
 
-隔离 `orderedSourceMessageWitness` 候选复用现有 `TypeLay.Input` LL 线程，不在外部 GUI 安装 LL hook。按源 `Target.Lifetime` 维持256条有界 FIFO：先在 LL 线程发布休眠 mapping-ready，再由源安装 Prepared owner 并确认精确寿命/nonce/generation/grant，最后回到同一 LL 线程首次发布初始时界与 recording-active，再按 grant 的时间/序号界限 release-CAS Arm。初始休眠及同tick双方均不入队/不读队首，避免普通初始化输入遗留孤儿；激活后即使 Arm 失败也不断观察、不重设初始时界，初始化不跳跃 consumed。接受主键在候选发布时冻结，沿原 Broker 请求进入 v6 source owner；LL 资格、原消息来源检查与 native 首键均匹配这一键，不读最新设置重绑。认领后另保留实际主键、scan/extended/context；配置变化只撤新写权，旧键旁路与尾债直到 Quiet，不能被新键代替。Ctrl/Shift 组合接受不因此开放。源端在实际 MSG 同步消费队首，只由该 MSG 的 GCIMS 授 Keyboard/HARDWARE 类别；LL 不吞键、不激活、不写正文，普通注入与未知仍拒绝。刷新 grant 不清队列，旧键、同tick、未来或不可比较时间拒绝；原焦点、正文、IME、100ms、尾债与 Quiet 规则不变。有限假设为正常 Windows 时序的硬件及获准辅助输入，不承诺抵御辅助工具刻意填写未来时间碰撞或任意外部 hook 操控历史；时间不认证来源或唯一事件。详情与未实跑范围见[有序候选](development.md#隔离有序ll见证与严格源接受候选)。
+隔离 `orderedSourceMessageWitness` 候选复用现有 `TypeLay.Input` LL 线程，不在外部 GUI 安装 LL hook。按源 `Target.Lifetime` 维持256条有界 FIFO：先在 LL 线程发布休眠 mapping-ready，再由源安装 Prepared owner 并确认精确寿命/nonce/generation/grant，最后回到同一 LL 线程首次发布初始时界与 recording-active，再按 grant 的时间/序号界限 release-CAS Arm。初始休眠及同tick双方均不入队/不读队首，避免普通初始化输入遗留孤儿；激活后即使 Arm 失败也不断观察、不重设初始时界，初始化不跳跃 consumed。接受主键在候选发布时冻结，沿原 Broker v4 请求进入 v7 source owner；LL 资格、原消息来源检查与 native 首键均匹配这一键，不读最新设置重绑。认领后另保留实际主键、scan/extended/context；配置变化只撤新写权，旧键旁路与尾债直到 Quiet，不能被新键代替。隔离候选另以显式非写前缀观察接通 Ctrl+F1–F24，见下段；Shift/Alt 不开放。源端在实际 MSG 同步消费队首，只由该 MSG 的 GCIMS 授 Keyboard/HARDWARE 类别；LL 不吞键、不激活、不写正文，普通注入与未知仍拒绝。刷新 grant 不清队列，旧键、同tick、未来或不可比较时间拒绝；原焦点、正文、IME、100ms、尾债与 Quiet 规则不变。有限假设为正常 Windows 时序的硬件及获准辅助输入，不承诺抵御辅助工具刻意填写未来时间碰撞或任意外部 hook 操控历史；时间不认证来源或唯一事件。详情与未实跑范围见[有序候选](development.md#隔离有序ll见证与严格源接受候选)。
+
+隔离 ordered 的 Ctrl 候选复用同一 owner 与 FIFO，不新增 hook、源泵或 RPC。v7 的显式 `ObserveControlPrefix` 只建立首次 Ctrl 之前的历史，不执行计划、不呈现接受就绪；缺 mode 不等于观察。原 Ctrl 正常派发，源端独立核本次 GCIMS 与 FIFO 队首，并在下游链返回且原 MSG/序号未变后保存一次前缀。此前 grant 随 Ctrl 撤销。新 `Accept/Control` 必须绑定原 Ctrl 序号/观察时刻/前输入版本，App 与 Broker 核 Ctrl 后完整新捕获，源端核同寿命/配置/输入上下文；Fn 自己仍需独立来源、Arm 后记录与原100ms许可。前缀只跨旧 owner 的 Quiet，不跨其它输入、配置、源变化或释放恢复；Fn 首次尝试消耗该组，Ctrl 自身不被吞，已经认领的 Fn 尾债独立结算。人工稿沿原 `ManualAcceptanceModifier` 保留，只允许旧在途读暂保文字，新读核相同正文/选区/IME/目标后才产生新计划。当前仅本地 C 边界通过，managed/runtime 与物理 Ctrl 测试未运行，不开放正式 Main/cap0。
 
 旧 sent-route 接线按当前配置接受默认 Tab、无修饰功能键或 Ctrl+功能键。Ctrl 按下先撤销旧许可；后续接受必须使用 Ctrl 后新捕获、新安装的计划，同一按次的修饰键来源、配置、焦点和输入版本仍须匹配。人工译稿不是写许可：仅能明确归因于该次 Ctrl、且新观察确认原目标、正文、选区和状态未变时，保留人工文字，同时更新会话版本并重建许可。缺失观察、已观察到的原文编辑及未知输入法状态不走这条例外。普通退休清除该归因；只有控制器核对过的同一归因可在撤销全部许可时短暂保留。此实现不开放正式默认构造，也不是完整原生输入历史或物理按键的证明。
 
@@ -90,7 +92,7 @@ UI 经固定同目录 Host 的参数列表串行执行注册维护，输出和�
 
 ## 身份、时序与进程
 
-WindowsTarget 保留 PID/进程启动时间、根/控件 HWND、provider、元素令牌与生命周期。Broker 协议 v3 固定跨进程授权时钟，v1/v2 客户端或服务端不能混用；worker 帧与消息不变。
+WindowsTarget 保留 PID/进程启动时间、根/控件 HWND、provider、元素令牌与生命周期。Broker 协议 v4 要求显式源 chord/mode 并保留 v3 的跨进程授权时钟，旧客户端或服务端不能混用；worker 帧与消息不变。
 
 普通 stock Edit 的 RootHwnd 使用 raw foreground 的 `GA_ROOT`，不把字段 child 造为新根，也不以 `GA_ROOTOWNER` 合并 owned dialog。raw foreground 不等于原 root 时，只有精确原字段、匹配的源 PID、root/field 同 GUI 线程、同一 `GA_ROOT` 和精确 native keyboard focus 才可能通过 App 前置筛选；Broker/native 仍持原 binding/descriptor 核原 PID/TID、cookie、生命周期、IME 与原期限。Capture 复用本次原 native 读取的 Clear；普通回源 ACK 只确认身份/焦点，不新增全文或 IME 读取，后继完整 fresh capture 才核实际 Clear 与 Core 原稿基线、决定新许可，不能把 ACK 当作新的末态 IME 样本。真实 Unknown、另一字段或另一根不能靠祖先关系补证。App 分类器没有原 native cookie，只用于观察、preview/候选筛选，不能代替安装 descriptor 或最终执行授权；非 prototype Core 接受、源 Esc 和普通源 Ctrl 退出等直接认领门仍要求原 raw root，自有练习与术语另守各自原门。这不新增 wire、ABI、焦点操作或重试，不代表所有 rawchild 控制已支持，普通生产接受仍关闭。
 
@@ -138,11 +140,11 @@ B-01 的一个具体交错是：源线程已经确认 Claim 并完成写入，�
 
 按下时的短效接受许可与已消费按键的远程执行期限是两个边界，具体值以 Core 的 Limits 为准。派发前核验 Hook 输入/焦点版本，Broker 写前重读、期限检查与写后核验不能省略。浮层编辑按键与源字段输入版本必须区分，避免把译文编辑误判成原文变化。
 
-共享配置可保留 Ctrl+功能键的阶段性表达。Windows 实现仅在自有 stock Edit 练习支持源接受/退出与编辑回源/退出：原 Ctrl 消息沿自有 GUI 正常分发，以原票、精确修饰键及同次输入上下文裁决功能键，不重建原观察或延长期限。仅当前 GUI 线程的被动消息观察安装成功才报告 `ControlPrefixObserved`；观察只推进失效版本，不授写权。私有见证协议 v4 关联原前缀序号与真实修饰键，旧版本拒绝；owned native v3 现场核对 HIMC/HKL，通用事务与 owned capture 版本不变。四个操作的精确键冲突统一拒绝。该组合链已通过真实 Windows 软件输入的首接受、编辑退出、键与鼠标回源、人工稿接受及完成保存；物理按键和实际输入法仍待验证。设置现提供 Ctrl+F1–F24；普通输入框另以原退出观察和编辑器原 token 支持零写组合退出、编辑回源，源 Ctrl 立即推进输入版本并撤销写许可，后继功能键不能换绑新字段。WPF 仅消费本次实际消息与 Hook 原按次匹配的命令，整组释放后才开始新按次。普通回源仍经原目标、配置与新鲜焦点核验。已注册的普通 stock Edit 在全局 UIA 焦点尚未确认时，可由原 native 生命周期的精确线程焦点前后夹一次新的 UIA 身份与 FieldPolicy 元数据检查来确认零写回源；不创建或更新绑定，后续仍须完整 fresh capture 与 Core 原稿基线确认。该替代分支已在真实模型链执行，后续新捕获保稿、编辑退出和源退出均通过；普通源内组合接受仍关闭，不扩大 B-01 或通用 UIA 写回。公开设置选择、保存与重开已通过实际检查，普通系统 Edit 无写路径已通过本轮软件输入检查，默认键和既有按需组合不变。
+共享配置可保留 Ctrl+功能键的阶段性表达。Windows 实现仅在自有 stock Edit 练习支持源接受/退出与编辑回源/退出：原 Ctrl 消息沿自有 GUI 正常分发，以原票、精确修饰键及同次输入上下文裁决功能键，不重建原观察或延长期限。仅当前 GUI 线程的被动消息观察安装成功才报告 `ControlPrefixObserved`；观察只推进失效版本，不授写权。私有见证协议 v4 关联原前缀序号与真实修饰键，旧版本拒绝；owned native v3 现场核对 HIMC/HKL，通用事务与 owned capture 版本不变。四个操作的精确键冲突统一拒绝。该组合链已通过真实 Windows 软件输入的首接受、编辑退出、键与鼠标回源、人工稿接受及完成保存；物理按键和实际输入法仍待验证。设置现提供 Ctrl+F1–F24；普通输入框另以原退出观察和编辑器原 token 支持零写组合退出、编辑回源，源 Ctrl 立即推进输入版本并撤销写许可，后继功能键不能换绑新字段。WPF 仅消费本次实际消息与 Hook 原按次匹配的命令，整组释放后才开始新按次。普通回源仍经原目标、配置与新鲜焦点核验。已注册的普通 stock Edit 在全局 UIA 焦点尚未确认时，可由原 native 生命周期的精确线程焦点前后夹一次新的 UIA 身份与 FieldPolicy 元数据检查来确认零写回源；不创建或更新绑定，后续仍须完整 fresh capture 与 Core 原稿基线确认。该替代分支已在真实模型链执行，后续新捕获保稿、编辑退出和源退出均通过；正式普通源内组合接受仍关闭；隔离 ordered 候选见前文，不扩大 B-01 或通用 UIA 写回。公开设置选择、保存与重开已通过实际检查，普通系统 Edit 无写路径已通过本轮软件输入检查，默认键和既有按需组合不变。
 
 ## 系统 Edit 前台事务
 
-原生私有协议 v2 使用独立版本导出、注册消息和字段寿命属性；Broker 只接纳同版 DLL，缺少或旧版本不能提供原生能力。Broker DTO 仍为 v3。前台 op5 在源控件 GUI 线程核对准确焦点、前台根窗口、完整原文、当前 `Expected.Selection`、控件资格、寿命 cookie 和明确的 IME Clear；设置替换范围后，再核对这些安全条件与原授权期限。当前选区与替换 `Scope` 分开传递，允许人工编辑返回后的折叠光标与原替换范围不同。
+原生私有协议 v2 使用独立版本导出、注册消息和字段寿命属性；Broker 只接纳同版 DLL，缺少或旧版本不能提供原生能力。Broker DTO 为 v4。前台 op5 在源控件 GUI 线程核对准确焦点、前台根窗口、完整原文、当前 `Expected.Selection`、控件资格、寿命 cookie 和明确的 IME Clear；设置替换范围后，再核对这些安全条件与原授权期限。当前选区与替换 `Scope` 分开传递，允许人工编辑返回后的折叠光标与原替换范围不同。
 
 选中的原生请求失败不回退 UIA。后台 F10 op2 以及既有通用 UIA 实验路径不因此扩大或取消。派发后不能确认的结果继续为未知，隔离目标且不自动重试。这项底层约束没有授予练习 scope、打开自动接受开关或证明物理按键所有权。
 

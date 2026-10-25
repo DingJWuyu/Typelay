@@ -27,6 +27,7 @@ internal sealed class SourceInputWitness : IDisposable
     {
         get; set;
     }
+    internal bool Recording => Ready && _view.ReadUInt32(132) == 1 && _view.ReadUInt64(112) != 0;
     internal SafeMemoryMappedViewHandle Handle => _view.SafeMemoryMappedViewHandle;
     internal bool Ready
     {
@@ -75,7 +76,11 @@ internal sealed class SourceInputWitness : IDisposable
     }
 
     internal bool Publish(Native.KeyData input, bool repeated, bool eligible, long observedAtMs)
+        => Publish(input, repeated, eligible, observedAtMs, out _);
+
+    internal bool Publish(Native.KeyData input, bool repeated, bool eligible, long observedAtMs, out ulong publishedSequence)
     {
+        publishedSequence = 0;
         uint active = _view.ReadUInt32(132);
         Thread.MemoryBarrier();
         // Before the source reader is bound there must be no orphan records.
@@ -118,6 +123,7 @@ internal sealed class SourceInputWitness : IDisposable
         Thread.MemoryBarrier();
         _view.Write(56, sequence);
         _sequence = sequence;
+        publishedSequence = (ulong)sequence;
         return true;
     }
 

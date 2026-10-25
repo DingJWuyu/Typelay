@@ -2,12 +2,12 @@ using TypeLay.Core;
 
 namespace TypeLay.Windows.Contracts;
 
-// App and Broker ship together. v3 fixes all exchanged timestamps to the precise,
-// suspend-inclusive Windows interrupt clock. Reject older peers before any read
-// or write; their coarse expiry checks cannot enforce this clock contract.
+// App and Broker ship together. v4 requires the explicit source chord/mode
+// contract; old peers cannot reinterpret an observation as write authority.
+// The precise, suspend-inclusive interrupt-clock contract from v3 is unchanged.
 public static class BrokerProtocol
 {
-    public const int Version = 3;
+    public const int Version = 4;
 }
 
 public sealed record BrokerRequest(int Version, long Id, string Op, string Token,
@@ -52,11 +52,30 @@ public sealed record SourceGlossaryReturnAuthorization(Guid Attempt, int Process
 // Authenticated, exact-owner source prototype operations. A prepared endpoint is
 // not acceptance: only the native shared Claim word decides the original press.
 public sealed record SourceAcceptanceRequest(Guid Generation, long SessionRevision, TargetId Target,
-    Guid Grant, AcceptancePermit? Permit = null, uint AcceptKey = 0)
+    Guid Grant, AcceptancePermit? Permit = null, uint AcceptKey = 0, SourceAcceptanceChord? Chord = null)
 {
-    // Zero/missing and modifier-encoded values fail closed; this field is only
-    // the frozen main key. Modified ordered acceptance is not supported.
+    // The main key never encodes modifiers. Missing chord/mode fails closed.
     public static bool IsValidAcceptKey(uint key) => key == 9 || key is >= 0x70 and <= 0x87;
+}
+// ObserveControlPrefix starts the existing source-lifetime FIFO, never writing
+// or advertising acceptance. Accept+Control requires a new post-Ctrl snapshot.
+public enum SourceAcceptanceMode
+{
+    Invalid = 0, Accept = 1, ObserveControlPrefix = 2
+}
+public sealed record SourceControlPrefix(ulong Sequence, long ObservedAtMs, long BeforeInputEpoch)
+{
+    public bool IsValid => Sequence > 0 && ObservedAtMs > 0 && BeforeInputEpoch >= 0 && BeforeInputEpoch < long.MaxValue;
+}
+public sealed record SourceAcceptanceChord(SourceAcceptanceMode Mode, ShortcutModifiers Modifiers,
+    SourceControlPrefix? Control = null)
+{
+    public static SourceAcceptanceChord Unmodified { get; } = new(SourceAcceptanceMode.Accept, ShortcutModifiers.None);
+    public bool IsValid(uint key) => SourceAcceptanceRequest.IsValidAcceptKey(key)
+        && (Mode == SourceAcceptanceMode.Accept && Modifiers == ShortcutModifiers.None && Control is null
+            || key is >= 0x70 and <= 0x87 && Modifiers == ShortcutModifiers.Control
+                && (Mode == SourceAcceptanceMode.ObserveControlPrefix && Control is null
+                    || Mode == SourceAcceptanceMode.Accept && Control is { IsValid: true }));
 }
 public sealed record SourceActivationEndpoint(ulong Nonce, ulong Command);
 // Acknowledged is a matched native command/operation response, not claim,

@@ -514,6 +514,12 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         {
             get; init;
         }
+        internal bool HoldNextCapture
+        {
+            get; set;
+        }
+        internal TaskCompletionSource<BrokerResponse> CaptureReceived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource ReleaseCapture { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal bool HoldReturnAcknowledgement
         {
             get; init;
@@ -557,7 +563,7 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             if (request.Op == "source-install")
                 Installs++;
             long traceId = RpcTrace?.Queued(request.Op) ?? 0;
-            bool admitted = false, failed = true, holdReceipt = false;
+            bool admitted = false, failed = true, holdReceipt = false, holdCapture = false;
             BrokerResponse result;
             try
             {
@@ -579,7 +585,15 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
                 RpcTrace?.Response(traceId);
                 ObserveResponse?.Invoke(request, result);
                 if (request.Op == "capture")
+                {
                     Captures++;
+                    if (HoldNextCapture)
+                    {
+                        HoldNextCapture = false;
+                        holdCapture = true;
+                        CaptureReceived.TrySetResult(result);
+                    }
+                }
                 if (request.Op == "source-install")
                 {
                     Installation = result.SourceAcceptance;
@@ -613,6 +627,8 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
                 if (admitted)
                     _serial.Release();
             }
+            if (holdCapture)
+                await ReleaseCapture.Task.WaitAsync(native.Token);
             if (holdReceipt)
                 await ReleaseReceipt.Task.WaitAsync(native.Token);
             if (request.Op == "return" && HoldReturnAcknowledgement)
@@ -710,6 +726,10 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             get; private set;
         }
         internal string Candidate { get; private set; } = "";
+        internal int RenderCount
+        {
+            get; private set;
+        }
         public void Configure(UserSettings settings)
         {
         }
@@ -719,6 +739,7 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
             CanAccept = canAccept;
             Token = context?.Token;
             Candidate = session.Candidate;
+            RenderCount++;
         }
         public void RenderPaused(PauseAnchor anchor, long revision)
         {

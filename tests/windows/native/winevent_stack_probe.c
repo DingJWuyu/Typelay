@@ -346,8 +346,8 @@ __declspec(dllexport) uint32_t ArmSourceClaim(HANDLE root, HANDLE edit, uint64_t
     name[i] = 0;
     claim_mapping = OpenFileMappingW(4, 0, name);
     if (!claim_mapping) return 3;
-    claim_header = MapViewOfFile(claim_mapping, 4, 0, 0, 49384);
-    if (!claim_header || claim_header->version != 6 || claim_header->bytes != 49384
+    claim_header = MapViewOfFile(claim_mapping, 4, 0, 0, 49416);
+    if (!claim_header || claim_header->version != 7 || claim_header->bytes != 49416
         || claim_header->state != 1 || claim_header->claim || claim_header->tx.version != 2
         || claim_header->tx.pid != process_id || claim_header->tx.thread != thread_id
         || claim_header->tx.hwnd != (uint64_t)(uintptr_t)edit || claim_header->tx.cookie != current_cookie
@@ -361,10 +361,13 @@ __declspec(dllexport) uint32_t ArmSourceClaim(HANDLE root, HANDLE edit, uint64_t
         // VALUECHANGE mode instead observes the native write for any valid scope.
         || (mode == 1 && (claim_header->tx.start != 4 || claim_header->tx.end != 7
             || claim_header->tx.expected_selection_start || claim_header->tx.expected_selection_end))) return 4;
-    // The v6 key lives after the body, but this probe reads only metadata.
+    // The v7 key lives after the body, but this probe reads only metadata.
     // A valid configured main key is not evidence of origin or permission.
     uint64_t accept_key = *(volatile const uint64_t *)((volatile const uint8_t *)claim_header + 49376);
     if (accept_key != 9 && (accept_key < 0x70 || accept_key > 0x87)) return 4;
+    volatile const uint32_t *chord = (volatile const uint32_t *)((volatile const uint8_t *)claim_header + 49384);
+    // This sent-route probe is never an observer or a modified ordered grant.
+    if (chord[0] != 1 || chord[1]) return 4;
     claim_mode = mode;
     uint32_t event = mode == 1 ? LocationChange : 0x800e;
     claim_hook = SetWinEventHook(event, event, module, on_source_claim, process_id, thread_id, InContext);

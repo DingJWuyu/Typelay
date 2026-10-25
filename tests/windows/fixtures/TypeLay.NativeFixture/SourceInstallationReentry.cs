@@ -14,9 +14,9 @@ internal sealed class SourceInstallationReentry : IDisposable
     private readonly Hook _callback, _queueCallback;
     private nint _hook;
     private readonly nint _queueHook;
-    private readonly uint _install = RegisterWindowMessageW("TypeLay.NativeInput.SourceInstall.v6");
-    private readonly uint _revoke = RegisterWindowMessageW("TypeLay.NativeInput.SourceRevoke.v6");
-    private readonly uint _activate = RegisterWindowMessageW("TypeLay.NativeInput.SourceActivate.v6");
+    private readonly uint _install = RegisterWindowMessageW("TypeLay.NativeInput.SourceInstall.v7");
+    private readonly uint _revoke = RegisterWindowMessageW("TypeLay.NativeInput.SourceRevoke.v7");
+    private readonly uint _activate = RegisterWindowMessageW("TypeLay.NativeInput.SourceActivate.v7");
     private readonly EventWaitHandle _entered, _release;
     private nuint _first;
     private nint _second;

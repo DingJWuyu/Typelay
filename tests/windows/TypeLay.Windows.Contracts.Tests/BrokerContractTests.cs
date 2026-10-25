@@ -92,7 +92,7 @@ public sealed class BrokerContractTests
     public async Task SourceOwnerCarriesItsExactConfiguredMainKey(uint key)
     {
         TargetId target = new WindowsTarget(1, 2, 3, 4, "win32-edit-transaction-v2", "field", Guid.NewGuid());
-        var owner = new SourceAcceptanceRequest(Guid.NewGuid(), 7, target, Guid.NewGuid(), AcceptKey: key);
+        var owner = new SourceAcceptanceRequest(Guid.NewGuid(), 7, target, Guid.NewGuid(), AcceptKey: key, Chord: SourceAcceptanceChord.Unmodified);
         using var stream = new MemoryStream();
         await Wire.WriteAsync(stream, new BrokerRequest(BrokerProtocol.Version, 1, "source-retire", "",
             SourceAcceptance: owner), TestContext.Current.CancellationToken);
@@ -117,6 +117,64 @@ public sealed class BrokerContractTests
         var received = await Wire.ReadAsync<SourceAcceptanceRequest>(stream, TestContext.Current.CancellationToken);
         Assert.Equal(0u, received.AcceptKey);
         Assert.False(SourceAcceptanceRequest.IsValidAcceptKey(received.AcceptKey));
+    }
+
+    [Theory]
+    [InlineData(SourceAcceptanceMode.ObserveControlPrefix)]
+    [InlineData(SourceAcceptanceMode.Accept)]
+    public async Task ControlChordSeparatesObservationFromTheOriginalPrefix(SourceAcceptanceMode mode)
+    {
+        var prefix = mode == SourceAcceptanceMode.Accept ? new SourceControlPrefix(31, 1000, 8) : null;
+        var chord = new SourceAcceptanceChord(mode, ShortcutModifiers.Control, prefix);
+        Assert.True(chord.IsValid(0x76));
+        Assert.False(chord.IsValid(9));
+        TargetId target = new WindowsTarget(1, 2, 3, 4, "win32-edit-transaction-v2", "field", Guid.NewGuid());
+        var owner = new SourceAcceptanceRequest(Guid.NewGuid(), 7, target, Guid.NewGuid(), AcceptKey: 0x76, Chord: chord);
+        using var stream = new MemoryStream();
+        await Wire.WriteAsync(stream, owner, TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        Assert.Equal(owner, await Wire.ReadAsync<SourceAcceptanceRequest>(stream, TestContext.Current.CancellationToken));
+        Assert.False((chord with
+        {
+            Mode = SourceAcceptanceMode.Invalid
+        }).IsValid(0x76));
+        Assert.False((chord with
+        {
+            Modifiers = ShortcutModifiers.Shift
+        }).IsValid(0x76));
+        Assert.False((chord with
+        {
+            Modifiers = ShortcutModifiers.Control | ShortcutModifiers.Alt
+        }).IsValid(0x76));
+        Assert.False((chord with
+        {
+            Mode = SourceAcceptanceMode.Accept,
+            Control = null
+        }).IsValid(0x76));
+        Assert.False((chord with
+        {
+            Mode = SourceAcceptanceMode.ObserveControlPrefix,
+            Control = new(31, 1000, 8)
+        }).IsValid(0x76));
+    }
+
+    [Fact]
+    public async Task MissingChordNeverDefaultsToAnObservationOrAcceptance()
+    {
+        using var stream = new MemoryStream();
+        await Wire.WriteAsync(stream, new
+        {
+            Generation = Guid.NewGuid(),
+            SessionRevision = 7,
+            Target = new TargetId("controlled", "field", Guid.NewGuid()),
+            Grant = Guid.NewGuid(),
+            AcceptKey = 0x76u
+        },
+            TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        var received = await Wire.ReadAsync<SourceAcceptanceRequest>(stream, TestContext.Current.CancellationToken);
+        Assert.Null(received.Chord);
+        Assert.NotEqual(true, received.Chord?.IsValid(received.AcceptKey));
     }
 
     [Fact]

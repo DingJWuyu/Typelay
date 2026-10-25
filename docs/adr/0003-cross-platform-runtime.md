@@ -29,7 +29,7 @@ Protocol 不反向引用 Core。Windows.Contracts 的 PID/HWND/provider 编码�
 
 ## 身份、能力与失败
 
-TargetId 只暴露 backend、opaque value、lifetime 的相等性；平台独立解释内部身份。Windows 规范编码与 Broker 协议 v3 拒绝旧对端和非规范别名，worker 协议不因此变化。
+TargetId 只暴露 backend、opaque value、lifetime 的相等性；平台独立解释内部身份。Windows 规范编码与 Broker 协议 v4 拒绝旧对端和非规范别名，worker 协议不因此变化。
 
 访问、IME、文本/选区、几何、版本和写能力分别提供证据。WriteSupported、DirectWriteSupported 默认 false，拦截接受另需 CanInterceptAcceptance。能力属于每个字段的当次观察，预览、编辑、Tab、前台写回和后台直接替换不能相互推导。当前产品要求有效锚点；没有锚点不自行改成另一种交互。
 

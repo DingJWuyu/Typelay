@@ -235,14 +235,18 @@ public sealed partial class NativeSourceControllerTests
                     && retired.Target == permit.Plan.Expected.Target && retired.Generation == installedGeneration && retired.SessionRevision == installedRevision)
                     originalRetirement = retired;
             };
+            // Retain this exact grant object before input. Its diagnostic view
+            // is not needed for admission and can be created after dispatch.
+            long sourceMappingStartedAt = WindowsInterruptClock.NowMs;
             using var sourceMapping = MemoryMappedFile.OpenExisting($"Local\\TypeLay.Source.{endpoint.Nonce:x16}", MemoryMappedFileRights.Read);
-            using var sourceGrant = sourceMapping.CreateViewAccessor(0, 49384, MemoryMappedFileAccess.Read);
-            Assert.Equal(6u, sourceGrant.ReadUInt32(0));
-            Assert.Equal((ulong)key, sourceGrant.ReadUInt64(49376));
+            long sourceMappingOpenedAt = WindowsInterruptClock.NowMs;
+            long witnessMappingStartedAt = WindowsInterruptClock.NowMs;
             string name = "Local\\TypeLay.SourceWitness."
                 + Convert.ToHexString(permit.Plan.Expected.Target.Lifetime.ToByteArray()).ToLowerInvariant();
             using var mapping = MemoryMappedFile.OpenExisting(name, MemoryMappedFileRights.Read);
+            long witnessMappingOpenedAt = WindowsInterruptClock.NowMs;
             using var witness = mapping.CreateViewAccessor(0, 16520, MemoryMappedFileAccess.Read);
+            long witnessViewCreatedAt = WindowsInterruptClock.NowMs;
             Assert.Equal(1u, witness.ReadUInt32(132));
             Thread.MemoryBarrier();
             ulong initialTick = witness.ReadUInt64(112);
@@ -250,11 +254,20 @@ public sealed partial class NativeSourceControllerTests
             // This case requires a new record, unlike the retained same-tick
             // refusal case. Await only this permit's original clock boundary;
             // never select a replacement grant if this original one expires.
+            int edgeChecks = 0;
+            ulong? previousWitnessTick = null;
             await Until(() =>
             {
                 long now = WindowsInterruptClock.NowMs;
-                Assert.True(now <= permit.ExpiresAtMs,
-                    $"Original permit expired before ordered-edge preparation: now={now}, expires={permit.ExpiresAtMs}, B={initialTick}.");
+                edgeChecks++;
+                bool current = now <= permit.ExpiresAtMs;
+                Assert.True(current, !current
+                    ? $"Original permit expired before ordered-edge preparation: now={now}, expires={permit.ExpiresAtMs}, B={initialTick}, "
+                        + $"expiryCheckedAt={expiryCheckedAt}, sourceMappingStartedAt={sourceMappingStartedAt}, sourceMappingOpenedAt={sourceMappingOpenedAt}, "
+                        + $"witnessMappingStartedAt={witnessMappingStartedAt}, witnessMappingOpenedAt={witnessMappingOpenedAt}, witnessViewCreatedAt={witnessViewCreatedAt}, "
+                        + $"edgeChecks={edgeChecks}, previousWitnessTick={previousWitnessTick}. "
+                        + "Mapping timestamps use interrupt time; B/previousWitnessTick use GetTickCount64."
+                    : null);
                 Assert.Same(permit, broker.InstallationPermit);
                 Assert.Equal(endpoint, broker.Installation?.Endpoint);
                 Assert.Equal(1u, witness.ReadUInt32(132));
@@ -262,7 +275,8 @@ public sealed partial class NativeSourceControllerTests
                 Assert.Equal(initialTick, witness.ReadUInt64(112));
                 Assert.True(RuntimeShowsAcceptance(overlay));
                 Assert.Equal((native.Root, native.A), N.Focused());
-                return SourceWitnessTickCount() > initialTick;
+                previousWitnessTick = SourceWitnessTickCount();
+                return previousWitnessTick.Value > initialTick;
             }, native.Token);
             // Sequential metadata samples, not an atomic source/LL observation.
             // Input still has the original unextended authorization.
@@ -276,6 +290,12 @@ public sealed partial class NativeSourceControllerTests
             pressed = false;
             await Until(() => N.GetProp(native.Root, "TypeLay.Test.SourceDispatchCompleted.v1") == 2, native.Token);
             var after = ObserveOrderedWitness(witness, endpoint.Nonce);
+            // The held handle still identifies the original nonce even if
+            // Quiet released the Broker's handle. Version/key are immutable;
+            // Quiet clears only text buffers, not these or terminal metadata.
+            using var sourceGrant = sourceMapping.CreateViewAccessor(0, 49416, MemoryMappedFileAccess.Read);
+            Assert.Equal(7u, sourceGrant.ReadUInt32(0));
+            Assert.Equal((ulong)key, sourceGrant.ReadUInt64(49376));
             Assert.True(after.Published > before.Published, after.Published <= before.Published
                 ? $"No ordered LL record for the original dispatched pair. before={before}; after={after}; "
                     + $"observedAtMs={permit.ObservedAtMs}; expiresAtMs={permit.ExpiresAtMs}; "
@@ -317,7 +337,7 @@ public sealed partial class NativeSourceControllerTests
             // native poll/retire ACK publishes status 2; only Claimed transfers
             // a CompletedReceipt to the controller. Reject all other outcomes.
             Assert.Equal(new WriteReceipt(WriteStatus.RejectedBeforeMutation, Denial.Unsupported), originalRetirement.Receipt);
-            // The already-open v6 grant retains these scalar fields after Quiet
+            // The already-open v7 grant retains these scalar fields after Quiet
             // clears its text buffers. Distinguish this actual source-origin
             // refusal from expiry, withdrawal or unproven FIFO freshness.
             Assert.Equal(3u, sourceGrant.ReadUInt32(8)); // Quiet.

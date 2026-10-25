@@ -37,7 +37,7 @@ static SourceWitness witness_wire;
 static int witness_enabled, witness_mapped, withdraw_arm_at_tick;
 static uint64_t witness_lifetime;
 static int source_wire_enabled, source_mapped, source_allocated;
-static uint64_t source_command;
+static uint64_t source_command, source_expected_write_tick = 100;
 // Public x64 MSG layout, not a fabricated keyboard-origin witness. The same
 // caller-owned buffer must be changed before the first control side effect.
 typedef struct {
@@ -158,10 +158,10 @@ static int same_name(const WCHAR *a, const WCHAR *b) {
 }
 uint32_t RegisterWindowMessageW(const WCHAR *name) {
     require(source_wire_enabled);
-    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceInstall.v6")) return InstallMessage;
-    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceRevoke.v6")) return RevokeMessage;
-    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourcePoll.v6")) return PollMessage;
-    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceActivate.v6")) return ActivateMessage;
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceInstall.v7")) return InstallMessage;
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceRevoke.v7")) return RevokeMessage;
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourcePoll.v7")) return PollMessage;
+    if (same_name(name, (const WCHAR *)L"TypeLay.NativeInput.SourceActivate.v7")) return ActivateMessage;
     if (same_name(name, message_name)) return 0xc105;
     if (same_name(name, owned_capture_message_name)) return 0xc106;
     field.invalid_call = 1;
@@ -269,7 +269,7 @@ static LRESULT stock_edit(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
             && field.focus == handle(SourceWindow));
         require(field.start == 12 && field.end == 12 && field.length == 12);
         require(equal(field.text, initial_text, 13));
-        require(field.coarse_ms == 100 && request.deadline == 600);
+        require(field.coarse_ms == source_expected_write_tick && request.deadline == 600);
         require(field.precise_100ns == 10000000 && request.authorization_deadline_ms == 1000);
         require(wp == 4 && lp == 7);
         field.boundary_checked++;
@@ -500,6 +500,7 @@ int ImmReleaseContext(HANDLE hwnd, HANDLE context) {
 }
 
 static void prepare_transaction(enum Scenario scenario) {
+    source_expected_write_tick = 100;
     wipe(&request, sizeof(request));
     field.scenario = scenario;
     field.set_calls = field.replace_calls = field.text_reads = field.injected_changes = field.boundary_checked = 0;
@@ -896,8 +897,8 @@ static int source_input_identity_is_bound_until_exact_retirement(void) {
         field.cookie = LifetimeCookie;
         prepare_transaction(Unchanged);
         wipe(&source_wire, sizeof(source_wire));
-        source_command = 0;
-        source_wire.version = 6; source_wire.accept_key = 9; source_wire.bytes = sizeof(source_wire);
+        source_command = 0; source_expected_write_tick = 100;
+        source_wire.version = 7; source_wire.mode = 1; source_wire.accept_key = 9; source_wire.bytes = sizeof(source_wire);
         source_wire.generation[0] = 1; source_wire.grant[0] = (uint64_t)fault + 1;
         source_wire.observed_at_ms = 900;
         copy(&source_wire.tx, &request, sizeof(request));
@@ -970,8 +971,8 @@ static int prepare_source_message_key(int ordered, uint32_t key) {
     field.cookie = LifetimeCookie;
     prepare_transaction(Unchanged);
     wipe(&source_wire, sizeof(source_wire));
-    source_command = 0;
-    source_wire.version = 6; source_wire.accept_key = key; source_wire.bytes = sizeof(source_wire);
+    source_command = 0; source_expected_write_tick = 100;
+    source_wire.version = 7; source_wire.mode = 1; source_wire.accept_key = key; source_wire.bytes = sizeof(source_wire);
     source_wire.generation[0] = 1; source_wire.grant[0] = 71;
     source_wire.observed_at_ms = 900;
     copy(&source_wire.tx, &request, sizeof(request));
@@ -1598,14 +1599,35 @@ static int ordered_fresh_key_consumes_once_at_the_actual_message(uint32_t key, u
         && !source_mapped && !witness_mapped && !source_allocated && !field.invalid_call;
 }
 
-// Raw v6 configuration is checked before source body reads or witness attach.
+// Raw v7 configuration is checked before source body reads or witness attach.
 // Neither omitted/encoded modifiers nor an old same-sized header gains authority.
 static int source_invalid_key_or_old_version_cannot_install(void) {
     const uint64_t invalid[] = {0, 27, 0x6f, 0x88, 0x10076, UINT64_MAX};
-    for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]) + 2; i++) {
+    unsigned keys = sizeof(invalid) / sizeof(invalid[0]);
+    for (unsigned i = 0; i < keys + 14; i++) {
         if (!prepare_source_message_kind(2)) return 0;
-        if (i < sizeof(invalid) / sizeof(invalid[0])) source_wire.accept_key = invalid[i];
-        else source_wire.version = i == sizeof(invalid) / sizeof(invalid[0]) ? 4 : 5;
+        if (i < keys) source_wire.accept_key = invalid[i];
+        else if (i < keys + 3) source_wire.version = 4 + i - keys;
+        else {
+            source_wire.accept_key = 0x76;
+            switch (i - keys - 3) {
+            case 0: source_wire.mode = 0; break; // Omitted mode is not bootstrap.
+            case 1: source_wire.mode = 3; break;
+            case 2: source_wire.mode = 2; break; // Observer needs explicit Control.
+            case 3: source_wire.modifiers = 2; break; // Shift never supported.
+            case 4: source_wire.modifiers = 4; break; // Alt never supported.
+            case 5: source_wire.modifiers = 1; break; // Accept cannot omit its prefix.
+            case 6: source_wire.control_sequence = 1; break; // None cannot carry a prefix.
+            case 7: source_wire.mode = 2; source_wire.modifiers = 1;
+                source_wire.control_sequence = 1; break;
+            case 8: source_wire.modifiers = 1; source_wire.control_sequence = 1;
+                source_wire.control_observed_ms = -1; break;
+            case 9: source_wire.modifiers = 1; source_wire.control_sequence = 1;
+                source_wire.control_observed_ms = 1000; source_wire.control_input_epoch = -1; break;
+            case 10: source_wire.mode = 2; source_wire.modifiers = 1;
+                source_wire.witness_lifetime[0] = source_wire.witness_lifetime[1] = 0; break;
+            }
+        }
         send_source(InstallMessage);
         if (source_wire.state != 2 || source_wire.tx.status != 2 || source_wire.tx.reason != 6
             || source_wire.claim != 3 || source_wire.invoked || witness_wire.attached
@@ -1886,7 +1908,143 @@ static int ordered_uncertain_tail_cannot_revive_or_fabricate_quiet(void) {
         && !source_mapped && !witness_mapped;
 }
 
+// The original Ctrl is ordinary dispatched input. The observer only establishes
+// the existing FIFO; it cannot accept even an eligible Fn with Ctrl held.
+static int prepare_control_observer(uint32_t key) {
+    if (!prepare_source_message_key(2, key)) return 0;
+    source_wire.mode = 2; source_wire.modifiers = 1;
+    send_source(InstallMessage);
+    return source_wire.state == 1 && TypeLaySourceArmWitness(&source_wire, sizeof(source_wire), 0x44,
+        &witness_wire, sizeof(witness_wire)) && !source_wire.invoked && !field.replace_calls;
+}
+static int deliver_control_prefix(uint32_t origin, uint32_t flags) {
+    field.coarse_ms = 100; field.held_modifier = 0x11;
+    origin_success = 1; origin_device = 1; origin_id = origin;
+    publish_source_key(0x44, 100, 0xa2, 0x1d, flags, 0, 0);
+    TestQueueMessage control = {handle(SourceWindow), 0x100, 0x11, 0x001d0001, 100, {0, 0}, 0};
+    origin_calls = 0; origin_must_be_first = 1;
+    retrieved_message = &control;
+    TypeLaySourceOrderedGetMessageProc(0, 1, (LPARAM)&control);
+    retrieved_message = 0;
+    return control.message == 0x100 && origin_calls == 1 && !origin_must_be_first
+        && witness_wire.consumed == 1 && !field.replace_calls && source_wire.claim == 2;
+}
+static void prepare_fresh_control_grant(void) {
+    source_wire.state = 0; source_wire.claim = 3; source_wire.invoked = 0;
+    source_wire.grant[0] = 72; source_wire.observed_at_ms = 1000;
+    source_wire.mode = 1; source_wire.control_sequence = 1; source_wire.control_observed_ms = 1000;
+    source_wire.control_input_epoch = 4;
+    copy(&source_wire.tx, &request, sizeof(request));
+}
+static int ordered_control_requires_fresh_grant_and_keeps_only_function_tails(uint32_t key, int control_first,
+    int system_messages, uint32_t injected_flag) {
+    if (!prepare_control_observer(key) || !deliver_control_prefix(1, injected_flag)) return 0;
+    send_source(RevokeMessage);
+    if (source_wire.state != 3) return 0;
+    prepare_fresh_control_grant();
+    send_source(InstallMessage);
+    if (source_wire.state != 1 || !TypeLaySourceArmWitness(&source_wire, sizeof(source_wire), 0x44,
+            &witness_wire, sizeof(witness_wire))) return 0;
+    field.coarse_ms = source_expected_write_tick = 101;
+    publish_source_key(0x44, 101, key, 0x41, injected_flag, 1, 0);
+    TestQueueMessage function = {handle(SourceWindow), system_messages ? 0x104u : 0x100u,
+        key, 0x00410001, 101, {0, 0}, 0};
+    TypeLaySourceOrderedGetMessageProc(0, 1, (LPARAM)&function);
+    if (function.message || source_wire.claim != 1 || source_wire.tx.status != 1
+        || field.set_calls != 1 || field.replace_calls != 1) return 0;
+    // Holding Fn repeats the original debt, not another write.
+    publish_source_key(0x44, 101, key, 0x41, injected_flag, 0, 1);
+    function.message = system_messages ? 0x104u : 0x100u; function.lparam = 0x40410001u;
+    TypeLaySourceOrderedGetMessageProc(0, 1, (LPARAM)&function);
+    if (function.message || field.replace_calls != 1) return 0;
+    for (int i = 0; i < 2; i++) {
+        int control = control_first ? !i : i;
+        uint32_t released_key = control ? 0x11u : key, scan = control ? 0x1du : 0x41u;
+        publish_source_key(0x44, 101, control ? 0xa2u : key, scan, injected_flag | 0x80, 0, 0);
+        TestQueueMessage release = {handle(SourceWindow), !control && system_messages ? 0x105u : 0x101u,
+            released_key, (LPARAM)(0xc0000001u | (scan << 16)), 101, {0, 0}, 0};
+        if (control) field.held_modifier = 0;
+        TypeLaySourceOrderedGetMessageProc(0, 1, (LPARAM)&release);
+        if (release.message != (control ? 0x101u : 0u)) return 0;
+        if (!control && !control_first) {
+            // Fn has released while Ctrl is still held: a new Fn cannot borrow
+            // the group or be mistaken for a tail, even before grant retirement.
+            publish_source_key(0x44, 101, key, 0x41, injected_flag, 0, 0);
+            function.message = system_messages ? 0x104u : 0x100u; function.lparam = 0x00410001;
+            TypeLaySourceOrderedGetMessageProc(0, 1, (LPARAM)&function);
+            if (!function.message || field.replace_calls != 1) return 0;
+        }
+    }
+    send_source(RevokeMessage);
+    return source_wire.state == 3 && source_wire.tx.status == 1 && field.replace_calls == 1
+        && witness_wire.consumed == (control_first ? 5u : 6u) && !witness_wire.poison
+        && !field.invalid_call && !source_mapped && !witness_mapped && !source_allocated;
+}
+
+static int ordered_control_refuses_old_or_interrupted_prefixes(void) {
+    for (int fault = 0; fault < 17; fault++) {
+        if (!prepare_control_observer(0x76)) return 0;
+        if (fault == 0) {
+            // Eligible is not enough: an observer never writes, even if Ctrl is held.
+            field.held_modifier = 0x11; field.coarse_ms = 100;
+            origin_success = 1; origin_device = origin_id = 1;
+            publish_source_key(0x44, 100, 0x76, 0x41, 0, 1, 0);
+            TestQueueMessage function = {handle(SourceWindow), 0x100, 0x76, 0x00410001, 100, {0, 0}, 0};
+            TypeLaySourceOrderedGetMessageProc(0, 1, (LPARAM)&function);
+            if (function.message != 0x100 || source_wire.claim == 1 || field.replace_calls) return 0;
+            send_source(RevokeMessage);
+        } else {
+            if (fault == 12) message_next_fault = 1; // Downstream changes the original Ctrl MSG.
+            if (!deliver_control_prefix(fault == 2 ? 2 : 1, fault == 2 ? 0x10 : 0)) return 0;
+            send_source(RevokeMessage);
+            if (source_wire.state != 3) return 0;
+            if ((fault >= 3 && fault <= 6) || fault == 14) {
+                uint32_t key = fault == 3 ? 0x41 : fault == 14 ? 0x76 : 0x11;
+                uint32_t scan = key == 0x11 ? 0x1d : 0x41;
+                int up = fault == 4;
+                publish_source_key(0x44, 100, key == 0x11 ? 0xa2 : key, scan, up ? 0x80 : 0, 0, fault == 6);
+                TestQueueMessage changed = {handle(SourceWindow), up ? 0x101u : 0x100u, key,
+                    (LPARAM)((scan << 16) | 1u | (up ? 0xc0000000u : fault == 6 ? 0x40000000u : 0)), 100, {0, 0}, 0};
+                TypeLaySourceOrderedGetMessageProc(0, 1, (LPARAM)&changed);
+                if (!changed.message) return 0;
+            }
+            if (fault >= 9 && fault <= 11) {
+                CallMessage change = {0, 0, fault == 9 ? 0x08u : fault == 10 ? 0xb1u : 0x51u, handle(SourceWindow)};
+                TypeLayCallWndProc(0, 0, (LPARAM)&change); // No owner remains, but prefix must still retire.
+            }
+            prepare_fresh_control_grant();
+            if (fault == 1) source_wire.observed_at_ms = 999; // Original snapshot, not fresh capture.
+            if (fault == 7) source_wire.generation[0]++;
+            if (fault == 8) source_wire.control_sequence++;
+            if (fault == 16) field.input_context = handle(6);
+            send_source(InstallMessage);
+            if (fault == 13 || fault == 15) {
+                if (source_wire.state != 1) return 0;
+                if (fault == 15 && !TypeLaySourceArmWitness(&source_wire, sizeof(source_wire), 0x44,
+                        &witness_wire, sizeof(witness_wire))) return 0;
+                field.coarse_ms = 101;
+                origin_id = fault == 15 ? 2 : 1;
+                publish_source_key(0x44, 101, 0x76, 0x41, fault == 15 ? 0x10 : 0, fault == 15, 0);
+                TestQueueMessage early = {handle(SourceWindow), 0x100, 0x76, 0x00410001, 101, {0, 0}, 0};
+                TypeLaySourceOrderedGetMessageProc(0, 1, (LPARAM)&early);
+                if (early.message != 0x100 || source_wire.claim == 1
+                    || TypeLaySourceArmWitness(&source_wire, sizeof(source_wire), 0x44, &witness_wire, sizeof(witness_wire))) return 0;
+            } else if (source_wire.state != 2 || source_wire.claim != 3
+                || TypeLaySourceArmWitness(&source_wire, sizeof(source_wire), 0x44, &witness_wire, sizeof(witness_wire))) return 0;
+            send_source(RevokeMessage);
+        }
+        if (source_wire.state != (fault == 1 ? 2u : 3u) || source_wire.claim == 1 || field.set_calls || field.replace_calls
+            || !equal(field.text, initial_text, 13) || field.invalid_call || source_mapped || witness_mapped || source_allocated) return 0;
+    }
+    return 1;
+}
+
 static int run_checks(void) {
+    if (!ordered_control_requires_fresh_grant_and_keeps_only_function_tails(0x76, 1, 0, 0)) return 50;
+    for (uint32_t key = 0x70; key <= 0x87; key++)
+        for (int control_first = 0; control_first < 2; control_first++)
+            if (!ordered_control_requires_fresh_grant_and_keeps_only_function_tails(key, control_first, key == 0x79, 0x10)) return 51;
+    if (!ordered_control_refuses_old_or_interrupted_prefixes()) return 52;
     if (!unchanged_writes_scope_and_verifies()) return 1;
     if (!changed_focus_rejects_without_text_write()) return 2;
     if (!changed_selection_rejects_without_text_write()) return 3;

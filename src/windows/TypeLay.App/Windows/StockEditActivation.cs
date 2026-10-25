@@ -17,7 +17,7 @@ internal sealed class StockEditActivation : IDisposable
 {
     internal sealed record Result(bool Claimed, WriteReceipt? Receipt, bool ExceededBudget, double ElapsedMs,
         uint NativeReason = 0);
-    private const int Bytes = 49384, Header = 72;
+    private const int Bytes = 49416, Header = 72;
     internal const uint BudgetMs = 5;
     private readonly MemoryMappedFile _mapping;
     private readonly MemoryMappedViewAccessor _view;
@@ -38,10 +38,11 @@ internal sealed class StockEditActivation : IDisposable
 
     [SupportedOSPlatform("windows")]
     internal StockEditActivation(ulong nonce, ulong command, Guid generation, AcceptancePermit permit,
-        bool sourceMessage = false, bool orderedSourceMessageWitness = false, uint acceptKey = 9)
+        bool sourceMessage = false, bool orderedSourceMessageWitness = false, uint acceptKey = 9, SourceAcceptanceChord? chord = null)
     {
         if (orderedSourceMessageWitness && !sourceMessage)
             throw new ArgumentException("Ordered witnesses require the source message route.");
+        chord ??= SourceAcceptanceChord.Unmodified;
         Permit = permit;
         _sourceMessage = sourceMessage;
         _nonce = nonce;
@@ -52,12 +53,17 @@ internal sealed class StockEditActivation : IDisposable
             _view = _mapping.CreateViewAccessor(0, Bytes, MemoryMappedFileAccess.ReadWrite);
             byte[] identity = new byte[16];
             _view.ReadArray(16, identity, 0, 16);
-            if (_view.ReadUInt32(0) != 6 || _view.ReadUInt32(4) != Bytes || new Guid(identity) != generation)
+            if (_view.ReadUInt32(0) != 7 || _view.ReadUInt32(4) != Bytes || new Guid(identity) != generation)
                 throw new InvalidOperationException("Source activation generation mismatch.");
             _view.ReadArray(32, identity, 0, 16);
             if (new Guid(identity) != permit.Plan.Id || command <= _view.ReadUInt64(56))
                 throw new InvalidOperationException("Source activation grant mismatch.");
-            if (!SourceAcceptanceRequest.IsValidAcceptKey(acceptKey) || _view.ReadUInt64(49376) != acceptKey)
+            if (!chord.IsValid(acceptKey) || _view.ReadUInt64(49376) != acceptKey
+                || _view.ReadUInt32(49384) != (uint)chord.Mode || _view.ReadUInt32(49388) != (uint)chord.Modifiers
+                || _view.ReadUInt64(49392) != (chord.Control?.Sequence ?? 0)
+                || _view.ReadInt64(49400) != (chord.Control?.ObservedAtMs ?? 0)
+                || _view.ReadInt64(49408) != (chord.Control?.BeforeInputEpoch ?? 0)
+                || chord.Modifiers != ShortcutModifiers.None && !orderedSourceMessageWitness)
                 throw new InvalidOperationException("Source acceptance key mismatch.");
             _view.ReadArray(49344, identity, 0, 16);
             if (new Guid(identity) != (orderedSourceMessageWitness ? permit.Plan.Expected.Target.Lifetime : Guid.Empty))
@@ -72,7 +78,7 @@ internal sealed class StockEditActivation : IDisposable
             if (orderedSourceMessageWitness)
                 _armWitness = Marshal.GetDelegateForFunctionPointer<ArmWitnessNative>(
                     NativeLibrary.GetExport(_library, "TypeLaySourceArmWitness"));
-            _message = RegisterWindowMessageW("TypeLay.NativeInput.SourceActivate.v6");
+            _message = RegisterWindowMessageW("TypeLay.NativeInput.SourceActivate.v7");
             if (_message == 0)
                 throw new InvalidOperationException("Source activation message unavailable.");
         }

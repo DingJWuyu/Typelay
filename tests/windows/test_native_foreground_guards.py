@@ -218,6 +218,9 @@ class NativeForegroundGuardTests(unittest.TestCase):
                 )
             result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=5)
             cases = {
+                50: "original Ctrl + fresh grant accepts F7 once and keeps only Fn tail debt",
+                51: "Ctrl+F1-F24, F10 system messages, repeats and both release orders",
+                52: "observer/old snapshot/interrupted Ctrl/injected source/early Fn never authorize a write",
                 1: "unchanged positive control",
                 2: "focus",
                 3: "selection",

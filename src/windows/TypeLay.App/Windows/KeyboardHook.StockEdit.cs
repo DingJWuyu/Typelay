@@ -8,7 +8,7 @@ namespace TypeLay.App;
 
 internal sealed partial class KeyboardHook
 {
-    private sealed record StockCandidate(InputLease Lease, AcceptancePermit Permit, uint AcceptKey)
+    private sealed record StockCandidate(InputLease Lease, AcceptancePermit Permit, uint AcceptKey, SourceAcceptanceChord Chord)
     {
         internal TaskCompletionSource Delivered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal int Claimed;
@@ -43,8 +43,19 @@ internal sealed partial class KeyboardHook
         if (_stockExchange is null)
             return false;
         var keys = Volatile.Read(ref _sessionKeys);
+        var chord = SourceAcceptanceChord.Unmodified;
+        if (_orderedSourceMessageWitness && keys.AcceptModifiers == ShortcutModifiers.Control)
+        {
+            var control = Volatile.Read(ref _sourceAcceptanceControl);
+            var prefix = control is null ? null : Volatile.Read(ref control.Prefix);
+            bool current = control is not null && SourceAcceptanceControlCurrent(control, 0)
+                && prefix is not null && lease.Source.Target == control.Lease.Observation.Source.Target
+                && lease.Source.InputEpoch == prefix.BeforeInputEpoch + 1 && lease.Source.ObservedAtMs >= prefix.ObservedAtMs;
+            chord = current ? new(SourceAcceptanceMode.Accept, ShortcutModifiers.Control, prefix)
+                : new(SourceAcceptanceMode.ObserveControlPrefix, ShortcutModifiers.Control);
+        }
         if (permit is not null && Volatile.Read(ref _stockLatest) is { } existing
-            && existing.AcceptKey == keys.Accept && StockLeaseMatches(existing.Lease, lease) && SameStockOperation(existing.Permit, permit)
+            && existing.AcceptKey == keys.Accept && existing.Chord == chord && StockLeaseMatches(existing.Lease, lease) && SameStockOperation(existing.Permit, permit)
             && WindowsInterruptClock.NowMs <= existing.Permit.ExpiresAtMs)
         {
             Volatile.Write(ref _stockCurrentLease, lease);
@@ -55,7 +66,7 @@ internal sealed partial class KeyboardHook
         if (permit is not null && Volatile.Read(ref _stockClosed) == 0)
         {
             Volatile.Write(ref _stockCurrentLease, lease);
-            Volatile.Write(ref _stockLatest, new(lease, permit, keys.Accept));
+            Volatile.Write(ref _stockLatest, new(lease, permit, keys.Accept, chord));
         }
         return true;
     }
@@ -94,8 +105,10 @@ internal sealed partial class KeyboardHook
     // Only the source-local executor supports modified acceptance. Ordinary
     // asynchronous write dispatch remains restricted to unmodified bindings.
     private bool StockSessionKeysReady => CanInterceptOwnedSessionKeys
-        && (_stockMessageRoute ? Volatile.Read(ref _sessionKeys) is { AcceptModifiers: ShortcutModifiers.None } keys
+        && (_stockMessageRoute ? Volatile.Read(ref _sessionKeys) is { } keys
                 && SourceAcceptanceRequest.IsValidAcceptKey(keys.Accept)
+                && (keys.AcceptModifiers == ShortcutModifiers.None || _orderedSourceMessageWitness
+                    && keys.AcceptModifiers == ShortcutModifiers.Control && keys.Accept is >= 0x70 and <= 0x87)
             : UsesUnmodifiedSessionKeys || _stockExchange is not null && ShortcutsReady);
 
     private bool StockCandidateCurrent(StockCandidate candidate, long now) =>
@@ -114,7 +127,7 @@ internal sealed partial class KeyboardHook
         if (_stockExchange is null)
             return true;
         var candidate = Volatile.Read(ref _stockInstalled);
-        return candidate is not null && SameStockOperation(candidate.Permit, permit)
+        return candidate is not null && candidate.Chord.Mode == SourceAcceptanceMode.Accept && SameStockOperation(candidate.Permit, permit)
             && candidate.Lease.Source.Target == token.Target
             && candidate.Lease.CommandGeneration == token.CommandGeneration
             && candidate.Lease.SessionRevision == token.Revision && StockCandidateCurrent(candidate, now);
@@ -122,7 +135,7 @@ internal sealed partial class KeyboardHook
 
     private static SourceAcceptanceRequest StockRequest(StockCandidate candidate, bool install = false) =>
         new(candidate.Lease.CommandGeneration, candidate.Lease.SessionRevision, candidate.Lease.Source.Target,
-            candidate.Permit.Plan.Id, install ? candidate.Permit : null, candidate.AcceptKey);
+            candidate.Permit.Plan.Id, install ? candidate.Permit : null, candidate.AcceptKey, candidate.Chord);
 
     // Preserve the old owner's bypass through Quiet when configuration changes;
     // only the installed candidate's frozen key can gain LL eligibility.
@@ -238,7 +251,7 @@ internal sealed partial class KeyboardHook
                 return;
             }
             var activation = new StockEditActivation(installed.Endpoint.Nonce, installed.Endpoint.Command,
-                candidate.Lease.CommandGeneration, candidate.Permit, acceptKey: candidate.AcceptKey);
+                candidate.Lease.CommandGeneration, candidate.Permit, acceptKey: candidate.AcceptKey, chord: candidate.Chord);
             Interlocked.Exchange(ref _stockActivation, activation);
             if (!StockCandidateCurrent(candidate, WindowsInterruptClock.NowMs))
             {

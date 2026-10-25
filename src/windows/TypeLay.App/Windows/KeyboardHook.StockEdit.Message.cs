@@ -90,7 +90,7 @@ internal sealed partial class KeyboardHook
         }
         var control = new StockEditActivation(installed.Endpoint.Nonce, installed.Endpoint.Command,
             candidate.Lease.CommandGeneration, candidate.Permit, sourceMessage: true,
-            orderedSourceMessageWitness: _orderedSourceMessageWitness, acceptKey: candidate.AcceptKey);
+            orderedSourceMessageWitness: _orderedSourceMessageWitness, acceptKey: candidate.AcceptKey, chord: candidate.Chord);
         // The source is still Prepared. Both local withdrawal and capture
         // settlement must be reachable before the one-way Arm transition.
         Interlocked.Exchange(ref _stockActivation, control);

@@ -139,11 +139,20 @@ internal sealed partial class KeyboardHook
                     var candidate = Volatile.Read(ref _stockInstalled);
                     bool eligible = candidate is not null && input.Key == candidate.AcceptKey
                         && (message == 0x100 || input.Key == 0x79 && message == 0x104)
-                        && (input.Flags & 0x20) == 0 && !repeated && !Modified
+                        && (input.Flags & 0x20) == 0 && !repeated
+                        && candidate.Chord.Mode == SourceAcceptanceMode.Accept
+                        && CurrentModifiers == candidate.Chord.Modifiers
+                        && (candidate.Chord.Modifiers == TypeLay.Core.ShortcutModifiers.None
+                            || Volatile.Read(ref _sourceAcceptanceControl) is { } control
+                                && SourceAcceptanceControlCurrent(control, 1) && Volatile.Read(ref control.Prefix) == candidate.Chord.Control)
                         && candidate.Lease.Source.Target == witness.Target.Id
                         && StockCandidateCurrent(candidate, now);
-                    if (!witness.Publish(input, repeated, eligible, now))
+                    if (!witness.Publish(input, repeated, eligible, now, out ulong sequence))
                         RevokeStockCandidate();
+                    else if (Volatile.Read(ref _sourceAcceptanceControl) is { } prefix
+                        && prefix.Control.Key == input.Key && prefix.Control.Scan == input.Scan
+                        && prefix.Control.Flags == input.Flags && prefix.Control.Time == input.Time && prefix.Control.Extra == input.Extra && ControlKey(input.Key) && (input.Flags & 0x80) == 0)
+                        Volatile.Write(ref prefix.Prefix, new(sequence, now, prefix.Lease.Observation.Source.InputEpoch));
                 }
             }
             catch (Exception error) when (error is not OutOfMemoryException)

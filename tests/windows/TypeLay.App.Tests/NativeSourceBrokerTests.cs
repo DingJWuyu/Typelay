@@ -270,7 +270,7 @@ public sealed class NativeSourceBrokerTests
         var plan = new WritePlan(Guid.NewGuid(), Guid.NewGuid(), 1, snapshot, new(4, 7), "Hello", "pre Hello post", 9);
         var permit = new AcceptancePermit(plan, snapshot.InputEpoch, snapshot.FocusEpoch,
             snapshot.ObservedAtMs, snapshot.ObservedAtMs + Limits.PermitMaxAgeMs);
-        return new(Guid.NewGuid(), 1, snapshot.Target, plan.Id, permit, AcceptKey: 9);
+        return new(Guid.NewGuid(), 1, snapshot.Target, plan.Id, permit, AcceptKey: 9, Chord: SourceAcceptanceChord.Unmodified);
     }
     private static async Task<SourceAcceptanceResult> Send(ProductionForegroundWriteTests.Desktop desktop,
         string operation, SourceAcceptanceRequest owner)

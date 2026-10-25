@@ -73,7 +73,7 @@ internal sealed partial class NativeEditTransactions
             Mapping.Dispose();
         }
     }
-    private const int SourceHeaderSize = 72, SourceMappingSize = SourceHeaderSize + MappingSize + 48;
+    private const int SourceHeaderSize = 72, SourceMappingSize = SourceHeaderSize + MappingSize + 80;
     private SourceGrant? _sourceGrant;
     private (Guid Generation, Guid Grant, SourceInstallationResult Result)? _sourceTerminal;
     // Exact process handles remain owned until their source hook is detached.
@@ -116,11 +116,12 @@ internal sealed partial class NativeEditTransactions
         return true;
     }
 
-    internal SourceInstallationResult InstallSourceAcceptance(Guid generation, AcceptancePermit permit, uint acceptKey = 9)
+    internal SourceInstallationResult InstallSourceAcceptance(Guid generation, AcceptancePermit permit, uint acceptKey = 9, SourceAcceptanceChord? chord = null)
     {
         if (_sourceMessageRouteFailed || _sourceGrant is not null || generation == Guid.Empty || permit.Plan.Id == Guid.Empty)
             return new(false, false, new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported));
-        if (!SourceAcceptanceRequest.IsValidAcceptKey(acceptKey))
+        chord ??= SourceAcceptanceChord.Unmodified; // Internal callers only; wire omissions are rejected by the provider.
+        if (!chord.IsValid(acceptKey) || chord.Modifiers != ShortcutModifiers.None && !_orderedSourceMessageWitness)
             return new(false, true, new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported));
         var plan = permit.Plan;
         if (!TypeLay.Windows.Contracts.WindowsTarget.TryDecode(plan.Expected.Target, out var target)
@@ -154,7 +155,12 @@ internal sealed partial class NativeEditTransactions
         try
         {
             view = mapping.CreateViewAccessor(0, SourceMappingSize, MemoryMappedFileAccess.ReadWrite);
-            view.Write(0, 6u);
+            view.Write(0, 7u);
+            view.Write(49384, (uint)chord.Mode);
+            view.Write(49388, (uint)chord.Modifiers);
+            view.Write(49392, chord.Control?.Sequence ?? 0);
+            view.Write(49400, chord.Control?.ObservedAtMs ?? 0);
+            view.Write(49408, chord.Control?.BeforeInputEpoch ?? 0);
             view.Write(SourceHeaderSize + MappingSize + 40, (ulong)acceptKey);
             view.Write(64, _sourceMessageRoute ? 3u : 0u);
             view.Write(4, SourceMappingSize);
@@ -235,11 +241,11 @@ internal sealed partial class NativeEditTransactions
     private bool SourceInstallationAvailable()
     {
         if (_library == 0 || !NativeLibrary.TryGetExport(_library, "TypeLaySourceInstallationVersion", out nint version)
-            || Marshal.GetDelegateForFunctionPointer<ReadProtocolVersion>(version)() != 6)
+            || Marshal.GetDelegateForFunctionPointer<ReadProtocolVersion>(version)() != 7)
             return false;
-        _sourceInstallMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourceInstall.v6");
-        _sourceRevokeMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourceRevoke.v6");
-        _sourcePollMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourcePoll.v6");
+        _sourceInstallMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourceInstall.v7");
+        _sourceRevokeMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourceRevoke.v7");
+        _sourcePollMessage = RegisterWindowMessageW("TypeLay.NativeInput.SourcePoll.v7");
         return _sourceInstallMessage != 0 && _sourceRevokeMessage != 0 && _sourcePollMessage != 0;
     }
 
