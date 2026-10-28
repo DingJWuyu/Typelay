@@ -177,6 +177,38 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                         });
                         Assert.DoesNotContain(Source.Text, failure.Message);
                         Assert.DoesNotContain(cover.Title, failure.Message);
+                        // Reuse this already-owned obstruction. The caller's
+                        // failure diagnostic must not navigate, click, or read
+                        // window text to explain the refused original hit.
+                        var originalHit = hits[0].GetProperty("OriginalHit");
+                        var point = hits[0];
+                        var observation = new NativeSourceActivationTests.CallerHit(
+                            point.GetProperty("X").GetInt32(), point.GetProperty("Y").GetInt32(),
+                            originalHit.GetProperty("Window").GetInt64(), (uint)Environment.ProcessId);
+                        var beforeFocus = N.Focused();
+                        Assert.True(GetCursorPos(out var beforePointer));
+                        string identity = JsonSerializer.Serialize(NativeSourceActivationTests.ObserveCallerFailure(
+                            source.Root, (nint)coverHandle, observation, (pid, created) => pid != source.Process.Id ? "unmatched"
+                                : !source.Process.HasExited && source.Process.StartTime.ToUniversalTime() == created ? "source" : "unknown"));
+                        using var callerDetail = JsonDocument.Parse(identity);
+                        var caller = callerDetail.RootElement;
+                        Assert.True(caller.GetProperty("laterObservation").GetBoolean());
+                        Assert.True(caller.GetProperty("parentLinksAreObservationsOnly").GetBoolean());
+                        Assert.False(caller.GetProperty("hitProcessIdChanged").GetBoolean());
+                        Assert.Equal(coverHandle, caller.GetProperty("originalHit").GetProperty("Window").GetInt64());
+                        var processes = caller.GetProperty("processes").EnumerateArray().ToArray();
+                        Assert.InRange(processes.Length, 2, 12);
+                        var current = Assert.Single(processes, item => item.GetProperty("ProcessId").GetInt32() == Environment.ProcessId);
+                        Assert.Equal("test", current.GetProperty("RetainedOwner").GetString());
+                        Assert.Equal(createdAtUtc, current.GetProperty("CreatedAtUtc").GetDateTime());
+                        Assert.Equal("source", Assert.Single(processes, item => item.GetProperty("ProcessId").GetInt32() == source.Process.Id)
+                            .GetProperty("RetainedOwner").GetString());
+                        Assert.Equal(beforeFocus, N.Focused());
+                        Assert.True(GetCursorPos(out var afterPointer));
+                        Assert.Equal((beforePointer.X, beforePointer.Y), (afterPointer.X, afterPointer.Y));
+                        Assert.Equal(0, coverClicks);
+                        Assert.DoesNotContain(Source.Text, identity);
+                        Assert.DoesNotContain(cover.Title, identity);
                     }
                     else
                         Assert.Equal("SourceClickIdentityChanged", failure.Message);

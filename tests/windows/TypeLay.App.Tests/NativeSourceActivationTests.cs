@@ -3,7 +3,6 @@ extern alias BrokerProduction;
 using System.Runtime.InteropServices;
 using System.IO;
 using System.IO.MemoryMappedFiles;
-using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -19,7 +18,7 @@ namespace TypeLay.App.Tests;
 // Actual stock Edit, production DLL and LL callback. SendInput uses only the
 // existing explicit automation constructor opt-in; it is NOT physical-key proof.
 [Collection("Desktop")]
-public sealed class NativeSourceActivationTests(WpfDesktopFixture ui)
+public sealed partial class NativeSourceActivationTests(WpfDesktopFixture ui)
 {
     [Theory]
     [InlineData(false)]
@@ -499,6 +498,7 @@ public sealed class NativeSourceActivationTests(WpfDesktopFixture ui)
             navigation.ContentRendered += (_, _) => rendered.TrySetResult();
             nint navigationRoot = 0;
             nint? hit = null;
+            CallerHit? refusedHit = null;
             bool? clickComplete = null, releaseComplete = null;
             bool callerPrepared = false;
             string stage = "show";
@@ -526,33 +526,26 @@ public sealed class NativeSourceActivationTests(WpfDesktopFixture ui)
                 {
                     nint foregroundAfterFailure = N.GetForegroundWindow();
                     bool? hitIsSourceRoot = hit is { } observedHit ? observedHit == source.Root : null;
-                    var foregroundIdentity = ObserveWindow(foregroundAfterFailure);
-                    var hitIdentity = hit is { } failedHit
-                        ? failedHit == foregroundAfterFailure ? foregroundIdentity : ObserveWindow(failedHit) : null;
+                    object identity = new
+                    {
+                        status = "already-attempted"
+                    };
+                    if (Interlocked.CompareExchange(ref _callerFailureObserved, 1, 0) == 0)
+                    {
+                        try
+                        {
+                            identity = ObserveCallerFailure(navigationRoot, foregroundAfterFailure, refusedHit,
+                                source.ObserveRetainedProcessOwner);
+                        }
+                        catch { identity = new { status = "observation-failed" }; }
+                    }
                     TestContext.Current.TestOutputHelper?.WriteLine($"Caller navigation failed: stage={stage}; "
                         + $"own={navigationRoot}; sourceRoot={source.Root}; sourceField={field}; sourceProcessId={source.FixtureProcessId}; "
                         + $"lastPreflightHit={hit?.ToString() ?? "not-sampled"}; hitIsSourceRoot={hitIsSourceRoot?.ToString() ?? "not-sampled"}; "
                         + $"foregroundAfterFailure={foregroundAfterFailure}; foregroundIsSourceRoot={foregroundAfterFailure == source.Root}; "
                         + $"clickComplete={clickComplete?.ToString() ?? "not-sampled"}; releaseComplete={releaseComplete?.ToString() ?? "not-sampled"}; "
                         + $"mouseUpReceived={mouseUp.Task.IsCompletedSuccessfully}; "
-                        + $"windowIdentity={JsonSerializer.Serialize(new { hit = hitIdentity, foreground = foregroundIdentity })}.");
-
-                    object ObserveWindow(nint window)
-                    {
-                        uint thread = N.GetWindowThreadProcessId(window, out uint process);
-                        var windowClass = new StringBuilder(256);
-                        int classLength = N.GetClassName(window, windowClass, windowClass.Capacity);
-                        return new
-                        {
-                            hwnd = (long)window,
-                            thread,
-                            process,
-                            root = (long)N.GetAncestor(window, 2),
-                            windowClass = classLength > 0 ? windowClass.ToString() : null,
-                            testProcess = thread == 0 ? (bool?)null : process == (uint)Environment.ProcessId,
-                            sourceProcess = thread == 0 ? (bool?)null : process == (uint)source.FixtureProcessId
-                        };
-                    }
+                        + $"windowIdentity={JsonSerializer.Serialize(identity)}.");
                 }
                 catch { /* Diagnostic output must not replace the preparation failure. */ }
                 throw;
@@ -606,6 +599,13 @@ public sealed class NativeSourceActivationTests(WpfDesktopFixture ui)
                                 .Contains(navigationContent.PointFromScreen(new Point(pixel.X, pixel.Y))));
                             nint currentHit = WindowFromPoint(pixel);
                             hit = currentHit;
+                            if (currentHit != navigationRoot)
+                            {
+                                // The refusal is already determined. This identity is
+                                // diagnostic only and is not reused for another click.
+                                N.GetWindowThreadProcessId(currentHit, out uint process);
+                                refusedHit = new(pixel.X, pixel.Y, (long)currentHit, process);
+                            }
                             Assert.Equal(navigationRoot, currentHit);
                         }
                     }

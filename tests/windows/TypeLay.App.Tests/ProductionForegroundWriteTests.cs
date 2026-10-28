@@ -863,6 +863,15 @@ public sealed partial class ProductionForegroundWriteTests
         public nint A => _fixture.A;
         public nint B => _fixture.Field("b");
         public int FixtureProcessId => _fixture.ProcessId;
+        internal string ObserveRetainedProcessOwner(int processId, DateTime createdAtUtc)
+        {
+            if (processId == _fixture.ProcessId)
+                return _fixture.MatchesRetainedIdentity(createdAtUtc) ? "source" : "unknown";
+            if (processId == _broker.Id)
+                return !ProcessImage.Exited(_broker.SafeHandle) && _broker.StartTime.ToUniversalTime() == createdAtUtc
+                    ? "broker" : "unknown";
+            return "unmatched";
+        }
         internal int BrokerProcessId
         {
             get
@@ -1028,6 +1037,8 @@ public sealed partial class ProductionForegroundWriteTests
         public nint Root => (nint)host.RootHwnd;
         public nint A => Field("a");
         public int ProcessId => process.Id;
+        internal bool MatchesRetainedIdentity(DateTime createdAtUtc) => !ProcessImage.Exited(process.SafeHandle)
+            && process.StartTime.ToUniversalTime() == createdAtUtc;
         public nint Field(string name) => (nint)host.Fields.Single(value => value.Name == name).Hwnd;
         private Guid _connection, _run;
         private long _sequence = 1;
