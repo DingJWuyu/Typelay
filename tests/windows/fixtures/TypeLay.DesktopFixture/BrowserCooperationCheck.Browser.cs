@@ -128,6 +128,7 @@ internal static partial class BrowserCooperationCheck
         private int _nextId;
         private string? _page;
         private string? _pageTarget;
+        private string? _mainFrame, _initialLoader, _navigationUrl;
         public BrowserCdpDiagnostics Diagnostics { get; } = new();
         public ExtensionDiscovery Discovery { get; private set; } = new(0, 0, 0, 0, 0);
         private readonly List<ExtensionMetadataDiagnostic> _metadataDiagnostics = new();
@@ -304,12 +305,44 @@ internal static partial class BrowserCooperationCheck
             await PageCallAsync("DOM.enable", new
             {
             }, ct);
+            _navigationUrl = url;
+            stage("inspect-initial-frame");
+            var initial = await PageCallAsync("Page.getFrameTree", new
+            {
+            }, ct);
+            if (initial.ValueKind == JsonValueKind.Object && initial.TryGetProperty("frameTree", out var tree) && tree.ValueKind == JsonValueKind.Object
+                && tree.TryGetProperty("frame", out var frame) && frame.ValueKind == JsonValueKind.Object)
+            {
+                _mainFrame = frame.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String ? id.GetString() : null;
+                _initialLoader = frame.TryGetProperty("loaderId", out var loader) && loader.ValueKind == JsonValueKind.String ? loader.GetString() : null;
+            }
+            Diagnostics.RecordFrameSnapshot(initial, url, null, null, afterAbort: false);
             stage("navigate");
             var navigation = await PageCallAsync("Page.navigate", new
             {
                 url
             }, ct);
             NavigationFailure = BrowserPageOpenResponse.NavigationFailure(navigation);
+            Diagnostics.RecordNavigationResponse(navigation, _mainFrame, _initialLoader);
+            if (NavigationFailure == "aborted")
+            {
+                // Observe the original target once and drain already queued events.
+                // This cannot retry navigation, recover the scene or replace its error.
+                using var snapshot = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                snapshot.CancelAfter(TimeSpan.FromSeconds(2));
+                try
+                {
+                    snapshot.Token.ThrowIfCancellationRequested();
+                    var after = await PageCallAsync("Page.getFrameTree", new
+                    {
+                    }, snapshot.Token);
+                    Diagnostics.RecordFrameSnapshot(after, url, _mainFrame, _initialLoader, afterAbort: true);
+                }
+                catch (Exception error) when (error is not OutOfMemoryException)
+                {
+                    Diagnostics.RecordAbortSnapshotFailure(error);
+                }
+            }
             Require(BrowserPageOpenResponse.NavigationSucceeded(navigation), "owned-page-navigation-failed");
             string lastReadiness = "unobserved";
             while (true)
@@ -465,7 +498,7 @@ internal static partial class BrowserCooperationCheck
                     var root = response.RootElement;
                     if (!root.TryGetProperty("id", out var responseId) || responseId.GetInt32() != id)
                     {
-                        Diagnostics.Observe(root, _page, _pageTarget);
+                        Diagnostics.Observe(root, _page, _pageTarget, _mainFrame, _navigationUrl);
                         continue;
                     }
                     phase = "response";
