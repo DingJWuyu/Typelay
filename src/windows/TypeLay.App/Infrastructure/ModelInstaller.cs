@@ -8,7 +8,12 @@ using System.Text.Json;
 using TypeLay.Runtime;
 namespace TypeLay.App;
 
-internal sealed record SetupProgress(string Label, long Downloaded = 0, long? Total = null);
+internal enum SetupDownloadPhase
+{
+    Headers, Body, Verify, Complete
+}
+internal sealed record SetupProgress(string Label, long Downloaded = 0, long? Total = null,
+    SetupDownloadPhase? DownloadPhase = null);
 internal sealed record DownloadLock(string Name, string Version, string Url, string Sha256);
 
 /// <summary>Only this explicit setup path has network access. It never receives source or candidate text.</summary>
@@ -274,9 +279,8 @@ internal sealed class ModelInstaller
             foreach (var (name, version) in Wheels)
             {
                 ct.ThrowIfCancellationRequested();
-                using var response = await Get(new Uri($"https://pypi.org/pypi/{name}/{version}/json"), null, ct);
-                response.EnsureSuccessStatusCode();
-                using var metadata = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+                progress.Report(new("读取本地组件元数据 · " + name));
+                using var metadata = await Json(new Uri($"https://pypi.org/pypi/{name}/{version}/json"), ct);
                 var wheel = metadata.RootElement.GetProperty("urls").EnumerateArray().FirstOrDefault(e =>
                     !e.GetProperty("yanked").GetBoolean() && Compatible(e.GetProperty("filename").GetString()!));
                 if (wheel.ValueKind != JsonValueKind.Object)
@@ -708,6 +712,9 @@ internal sealed class ModelInstaller
     }
     private async Task<JsonDocument> Json(Uri uri, CancellationToken ct)
     {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(_http.Timeout);
+        ct = timeout.Token;
         using var response = await Get(uri, null, ct);
         response.EnsureSuccessStatusCode();
         string value = await response.Content.ReadAsStringAsync(ct);
@@ -744,14 +751,29 @@ internal sealed class ModelInstaller
     private async Task<string> Download(string url, string name, string? expectedHash, string label,
         IProgress<SetupProgress> progress, CancellationToken ct, long? exactBytes = null)
     {
+        // ResponseHeadersRead ends HttpClient.Timeout at the headers. One logical
+        // download must retain its original deadline through body reads, redirects
+        // and an invalid partial-file restart, rather than consuming the setup budget.
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(_http.Timeout);
+        return await DownloadCore(url, name, expectedHash, label, progress, timeout.Token, exactBytes);
+    }
+    private async Task<string> DownloadCore(string url, string name, string? expectedHash, string label,
+        IProgress<SetupProgress> progress, CancellationToken ct, long? exactBytes)
+    {
         long limit = exactBytes ?? 1024L * 1024 * 1024;
         string destination = Path.Combine(_cache, Path.GetFileName(name));
         if (File.Exists(destination))
         {
+            progress.Report(new(label, new FileInfo(destination).Length, exactBytes, SetupDownloadPhase.Verify));
             if (new FileInfo(destination).Length <= limit
                 && (exactBytes is null || new FileInfo(destination).Length == exactBytes)
                 && (expectedHash is null || (await Hash(destination, ct)).Equals(expectedHash, StringComparison.OrdinalIgnoreCase)))
+            {
+                long cachedBytes = new FileInfo(destination).Length;
+                progress.Report(new(label, cachedBytes, cachedBytes, SetupDownloadPhase.Complete));
                 return destination;
+            }
             File.Delete(destination);
         }
         string partial = destination + ".part";
@@ -761,11 +783,12 @@ internal sealed class ModelInstaller
             File.Delete(partial);
             offset = 0;
         }
+        progress.Report(new(label, offset, exactBytes, SetupDownloadPhase.Headers));
         using var response = await Get(new Uri(url), offset, ct);
         if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable && offset > 0)
         {
             File.Delete(partial);
-            return await Download(url, name, expectedHash, label, progress, ct, exactBytes);
+            return await DownloadCore(url, name, expectedHash, label, progress, ct, exactBytes);
         }
         response.EnsureSuccessStatusCode();
         bool append = offset > 0 && response.StatusCode == HttpStatusCode.PartialContent
@@ -779,6 +802,7 @@ internal sealed class ModelInstaller
         long? total = response.Content.Headers.ContentLength is { } length ? length + offset : null;
         if (total > limit || exactBytes is not null && total is not null && total != exactBytes)
             throw new InvalidDataException("download-size");
+        progress.Report(new(label, offset, total, SetupDownloadPhase.Body));
         await using (var source = await response.Content.ReadAsStreamAsync(ct))
         await using (var file = new FileStream(partial, append ? FileMode.Append : FileMode.Create, FileAccess.Write,
                          FileShare.None, 65536, true))
@@ -795,22 +819,24 @@ internal sealed class ModelInstaller
                 if (Environment.TickCount64 - lastProgress >= 80)
                 {
                     lastProgress = Environment.TickCount64;
-                    progress.Report(new(label, offset, total));
+                    progress.Report(new(label, offset, total, SetupDownloadPhase.Body));
                 }
             }
             await file.FlushAsync(ct);
-            progress.Report(new(label, offset, total));
+            progress.Report(new(label, offset, total, SetupDownloadPhase.Body));
         }
         if (exactBytes is { } pinnedLength && offset != pinnedLength)
             throw new InvalidDataException("download-size");
         if (total is { } expectedLength && offset != expectedLength)
             throw new HttpRequestException("download-incomplete");
+        progress.Report(new(label, offset, total, SetupDownloadPhase.Verify));
         if (expectedHash is not null && !(await Hash(partial, ct)).Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
         {
             File.Delete(partial);
             throw new InvalidDataException("download-integrity");
         }
         File.Move(partial, destination, true);
+        progress.Report(new(label, offset, total, SetupDownloadPhase.Complete));
         return destination;
     }
     private static void RequireModelFile(string path)

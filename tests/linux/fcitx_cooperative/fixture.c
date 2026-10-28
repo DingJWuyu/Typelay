@@ -6,6 +6,7 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include "../support/fixture_state.h"
 
 typedef gboolean (*Select)(GtkWidget *);
 static GtkWidget *window, *entry, *other;
@@ -227,8 +228,8 @@ static void save_state(void) {
         gtk_entry_buffer_get_length(gtk_entry_get_buffer(GTK_ENTRY(other))),
         gtk_widget_has_focus(other) ? "true" : "false");
     gchar *path = g_build_filename(directory, "state.json", NULL);
-    GError *error = NULL;
-    if (!g_file_set_contents(path, json, -1, &error)) g_error("state write: %s", error->message);
+    int failure = fixture_publish_state(path, json);
+    if (failure) g_error("state write: %s", strerror(failure));
     g_free(path); g_free(json);
 }
 

@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <json-glib/json-glib.h>
 #include "../../../src/linux/native/fcitx5/typelay-fcitx-v1.h"
+#include "../support/fixture_state.h"
 
 /* Only the isolated test executable writes this evidence. Production has no
  * command to dump source text, inject input or change a test model. */
@@ -9,6 +10,7 @@ static GtkWidget *report_window, *report_first, *report_second, *other_window, *
 static GtkWidget *protected_fields[2], *report_multiline, *excluded_views[3];
 static const char *report_path;
 static char *last_report;
+static gint64 previous_report_timing[4];
 typedef struct {
     guint insertions, deletions, focus_in, focus_out;
     gint64 focus_in_at_us;
@@ -694,6 +696,7 @@ static void report_overlay_popup(JsonBuilder *builder) {
 #include "gtk_glossary.inc"
 static gboolean report_state(gpointer unused) {
     (void)unused;
+    gint64 started_at = g_get_monotonic_time(), ime_observed_at = 0;
     glossary_host_command();
     remove_session_controller(report_window, FALSE);
     GtkWidget *active = other_window && gtk_window_is_active(GTK_WINDOW(other_window)) ? other_window : report_window;
@@ -703,6 +706,18 @@ static gboolean report_state(gpointer unused) {
         focus_field = gtk_widget_get_parent(focus_field);
     JsonBuilder *builder = json_builder_new();
     json_builder_begin_object(builder);
+    if (g_getenv("TYPELAY_TRACE") && previous_report_timing[0]) {
+        /* The previous completed callback distinguishes observation/layout
+         * time from publication without adding another file write or probe. */
+        const char *names[] = {"startedAtUs", "imeObservedAtUs", "serializedAtUs", "publishedAtUs"};
+        json_builder_set_member_name(builder, "previousReportTiming");
+        json_builder_begin_object(builder);
+        for (guint i = 0; i < G_N_ELEMENTS(names); i++) {
+            json_builder_set_member_name(builder, names[i]);
+            json_builder_add_int_value(builder, previous_report_timing[i]);
+        }
+        json_builder_end_object(builder);
+    }
     motion_report(builder);
     glossary_report(builder);
     json_builder_set_member_name(builder, "observedAtMs");
@@ -746,6 +761,7 @@ static gboolean report_state(gpointer unused) {
         json_builder_add_boolean_value(builder, valid && ime_clear(&state));
         json_builder_set_member_name(builder, "focusedImeComposing");
         json_builder_add_boolean_value(builder, valid && (state.flags & TL_FCITX_COMPOSING));
+        ime_observed_at = g_get_monotonic_time();
         json_builder_set_member_name(builder, "fullscreen");
         json_builder_add_boolean_value(builder,
             gtk_window_is_fullscreen(GTK_WINDOW(report_window)));
@@ -881,11 +897,17 @@ static gboolean report_state(gpointer unused) {
     JsonGenerator *generator = json_generator_new();
     json_generator_set_root(generator, node);
     char *data = json_generator_to_data(generator, NULL);
+    gint64 serialized_at = g_get_monotonic_time();
     if (g_strcmp0(data, last_report) != 0) {
-        g_file_set_contents(report_path, data, -1, NULL);
+        int failure = fixture_publish_state(report_path, data);
+        if (failure) g_error("state write: %s", strerror(failure));
         g_free(last_report);
         last_report = g_strdup(data);
     }
+    previous_report_timing[0] = started_at;
+    previous_report_timing[1] = ime_observed_at;
+    previous_report_timing[2] = serialized_at;
+    previous_report_timing[3] = g_get_monotonic_time();
     g_free(data);
     g_object_unref(generator);
     json_node_free(node);

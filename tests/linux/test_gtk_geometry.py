@@ -1,7 +1,13 @@
-"""Controlled GTK runner observations, not native scrolling or GUI evidence."""
+"""GTK fixture file/geometry observations, not native scrolling or GUI evidence."""
 
 import copy
+import json
+import resource
+import signal
+import subprocess
 import sys
+import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -32,6 +38,113 @@ from native_e2e import (  # noqa: E402
     glossary_save_outcome,
     glossary_source_click_ready,
 )
+
+
+class GtkFixtureStatePublicationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temporary = tempfile.TemporaryDirectory(prefix="typelay-state-publication-")
+        cls.addClassCleanup(cls.temporary.cleanup)
+        cls.directory = Path(cls.temporary.name)
+        source = cls.directory / "publish.c"
+        source.write_text(
+            '#include "fixture_state.h"\n'
+            "int main(int argc, char **argv) {\n"
+            "    if (argc != 2) return 2;\n"
+            "    char *body = NULL; size_t capacity = 0;\n"
+            "    while (getline(&body, &capacity, stdin) >= 0) {\n"
+            "        int failure = fixture_publish_state(argv[1], body);\n"
+            "        if (failure) { free(body); return 1; }\n"
+            "        putchar('.'); fflush(stdout);\n"
+            "    }\n"
+            "    free(body); return 0;\n"
+            "}\n"
+        )
+        cls.executable = cls.directory / "publish"
+        subprocess.run(
+            [
+                "cc",
+                "-std=c17",
+                "-D_POSIX_C_SOURCE=200809L",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-I" + str(ROOT / "tests/linux/support"),
+                str(source),
+                "-o",
+                str(cls.executable),
+            ],
+            check=True,
+            timeout=30,
+        )
+
+    def test_live_replacements_are_complete_and_keep_open_readers_on_the_old_snapshot(self):
+        path = self.directory / "live.json"
+        initial = json.dumps({"sequence": 0, "body": "original"}) + "\n"
+        path.write_text(initial)
+        bodies = [{"sequence": sequence, "body": str(sequence) * 8192} for sequence in range(1, 33)]
+        observed_sequences, errors = set(), []
+        stopped = threading.Event()
+
+        def observe():
+            while not stopped.is_set():
+                try:
+                    observed = json.loads(path.read_text())
+                    expected = (
+                        {"sequence": 0, "body": "original"}
+                        if observed["sequence"] == 0
+                        else bodies[observed["sequence"] - 1]
+                    )
+                    self.assertEqual(observed, expected)
+                    observed_sequences.add(observed["sequence"])
+                except BaseException as error:
+                    errors.append(error)
+                    return
+
+        with path.open() as original:
+            reader = threading.Thread(target=observe)
+            reader.start()
+            try:
+                published = subprocess.run(
+                    [str(self.executable), str(path)],
+                    input="".join(json.dumps(body) + "\n" for body in bodies),
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            finally:
+                stopped.set()
+                reader.join(timeout=2)
+            self.assertFalse(reader.is_alive())
+            self.assertEqual(published.returncode, 0, published.stderr)
+            self.assertEqual(published.stdout, "." * len(bodies))
+            self.assertEqual(original.read(), initial)
+        self.assertFalse(errors, errors)
+        self.assertTrue(observed_sequences)
+        self.assertEqual(json.loads(path.read_text()), bodies[-1])
+        self.assertEqual(list(self.directory.glob("live.json.*")), [])
+
+    def test_partial_write_failure_keeps_old_evidence_and_fails_without_acknowledgment(self):
+        path = self.directory / "failed.json"
+        original = b'{"sequence":0,"body":"previous complete observation"}\n'
+        path.write_bytes(original)
+
+        def limit_owned_writer():
+            signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (1024, 1024))
+
+        published = subprocess.run(
+            [str(self.executable), str(path)],
+            input=json.dumps({"sequence": 1, "body": "x" * 16384}) + "\n",
+            capture_output=True,
+            text=True,
+            timeout=5,
+            preexec_fn=limit_owned_writer,
+        )
+        self.assertEqual(published.returncode, 1)
+        self.assertEqual(published.stdout, "")
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(list(self.directory.glob("failed.json.*")), [])
 
 
 class GlossarySourcePreparationTests(unittest.TestCase):

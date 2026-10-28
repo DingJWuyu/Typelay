@@ -538,6 +538,144 @@ public sealed class ModelInstallerTests
         Assert.Equal(ModelSetupStage.Runtime, error.Stage);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DownloadTimeoutAlsoBoundsAnArchiveBodyAfterHeadersAndPartialBytes(bool packages)
+    {
+        using var files = new SetupFiles();
+        byte[] archive = ModelArchive("en_zh");
+        var body = new StallingBody(archive[..64]);
+        var network = new BodyHandler(files.Responses(ModelArchive), "/v1/translate-en_zh-1_9.argosmodel", body, archive.Length);
+        using var watchdog = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        watchdog.CancelAfter(TimeSpan.FromSeconds(3));
+        var installer = files.Installer(network, downloadTimeout: TimeSpan.FromMilliseconds(100),
+            startProcess: _ => throw new InvalidOperationException("must-not-start-worker"),
+            availableDiskBytes: _ => long.MaxValue);
+        var updates = new List<SetupProgress>();
+        var progress = new SetupProgressSink(updates.Add);
+        var prepare = packages ? installer.PreparePackagesAsync(new(1, ModelPackageOperation.Install,
+            ["argos-en-zh"], ["argos-en-zh"], null), progress, watchdog.Token)
+            : installer.PrepareAsync(progress, watchdog.Token, ["en_zh"]);
+        var error = await Assert.ThrowsAsync<ModelSetupException>(() => prepare);
+        Assert.False(watchdog.IsCancellationRequested);
+        Assert.Equal(SetupFailureCategory.Network, error.Category);
+        Assert.Equal(ModelSetupStage.ModelDownload, error.Stage);
+        Assert.True(body.ReadStarted.Task.IsCompleted);
+        Assert.True(body.Disposed);
+        Assert.Equal(archive[..64], File.ReadAllBytes(files.CachedModel("en_zh") + ".part"));
+        Assert.False(File.Exists(files.CachedModel("en_zh")));
+        Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
+        Assert.Empty(Directory.GetDirectories(Path.Combine(files.Root, "components")));
+        var last = updates[^1];
+        Assert.Equal(packages ? "下载 English → 中文" : "下载English → 中文 模型", last.Label);
+        Assert.Equal(SetupDownloadPhase.Body, last.DownloadPhase);
+        Assert.Equal(64, last.Downloaded);
+        Assert.Equal(archive.Length, last.Total);
+    }
+
+    [Theory]
+    [InlineData("/v3/index.json", "Runtime")]
+    [InlineData("/pypi/numpy/2.3.5/json", "Dependencies")]
+    public async Task DownloadTimeoutAlsoBoundsMetadataBodies(string path, string stage)
+    {
+        using var files = new SetupFiles();
+        var body = new StallingBody("{"u8.ToArray());
+        var network = new BodyHandler(files.Responses(ModelArchive), path, body);
+        using var watchdog = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        watchdog.CancelAfter(TimeSpan.FromSeconds(3));
+        var error = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(network,
+            downloadTimeout: TimeSpan.FromMilliseconds(100)).PrepareAsync(NoProgress, watchdog.Token, ["en_zh"]));
+        Assert.False(watchdog.IsCancellationRequested);
+        Assert.Equal(SetupFailureCategory.Network, error.Category);
+        Assert.Equal(stage, error.Stage.ToString());
+        Assert.True(body.ReadStarted.Task.IsCompleted);
+        Assert.True(body.Disposed);
+        Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
+    }
+
+    [Fact]
+    public async Task UserCancellationDuringAnArchiveBodyIsNotReportedAsNetworkTimeout()
+    {
+        using var files = new SetupFiles();
+        byte[] archive = ModelArchive("en_zh");
+        var body = new StallingBody(archive[..64]);
+        var network = new BodyHandler(files.Responses(ModelArchive), "/v1/translate-en_zh-1_9.argosmodel", body, archive.Length);
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var prepare = files.Installer(network).PrepareAsync(NoProgress, cancel.Token, ["en_zh"]);
+        try
+        {
+            await body.ReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+            cancel.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => prepare);
+            Assert.True(body.Disposed);
+            Assert.Equal(archive[..64], File.ReadAllBytes(files.CachedModel("en_zh") + ".part"));
+            Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
+        }
+        finally
+        {
+            cancel.Cancel();
+            try
+            {
+                await prepare;
+            }
+            catch (OperationCanceledException) { }
+        }
+    }
+
+    [Fact]
+    public async Task ArchiveBodyTimeoutKeepsTheConfirmedPackageAndSelection()
+    {
+        using var files = new SetupFiles();
+        using (var prior = await files.Installer(files.Responses(ModelArchive), availableDiskBytes: _ => long.MaxValue)
+            .PreparePackagesAsync(new(1, ModelPackageOperation.Install, ["argos-zh-en"], ["argos-zh-en"], null),
+                NoProgress, TestContext.Current.CancellationToken))
+            prior.PublishConfirmed();
+        var store = new ModelInstallationStore(files.Root, Path.Combine(files.Root, "worker.py"));
+        string before = File.ReadAllText(Path.Combine(files.Root, "components.json"));
+        var state = store.ReadInstallationState();
+        byte[] archive = ModelArchive("en_zh");
+        var body = new StallingBody(archive[..64]);
+        var network = new BodyHandler(files.Responses(ModelArchive), "/v1/translate-en_zh-1_9.argosmodel", body, archive.Length);
+        using var watchdog = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        watchdog.CancelAfter(TimeSpan.FromSeconds(3));
+        var error = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(network,
+            downloadTimeout: TimeSpan.FromMilliseconds(100), availableDiskBytes: _ => long.MaxValue)
+            .PreparePackagesAsync(new(1, ModelPackageOperation.Install, ["argos-en-zh"], ["argos-en-zh"], state.Generation),
+                NoProgress, watchdog.Token));
+        Assert.Equal(SetupFailureCategory.Network, error.Category);
+        Assert.Equal(before, File.ReadAllText(Path.Combine(files.Root, "components.json")));
+        Assert.Equal("argos-zh-en", Assert.Single(store.ReadInstallationState().CurrentPackages).Package.Id);
+        Assert.Equal("controlled model", File.ReadAllText(Path.Combine(store.InitialPaths().Models,
+            "packages", "argos-zh-en", "1.9", "model", "model.bin")));
+        Assert.Single(Directory.GetDirectories(Path.Combine(files.Root, "components")));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExplicitRetryCanResumePartialBytesOrRestartARejectedRange(bool rejectedRange)
+    {
+        using var files = new SetupFiles();
+        byte[] archive = ModelArchive("en_zh");
+        Directory.CreateDirectory(Path.Combine(files.Root, "downloads"));
+        File.WriteAllBytes(files.CachedModel("en_zh") + ".part", archive[..64]);
+        var network = new ResumedBodyHandler(files.Responses(ModelArchive), archive, rejectedRange);
+        var updates = new List<SetupProgress>();
+        using var prepared = await files.Installer(network, downloadTimeout: TimeSpan.FromSeconds(3),
+            availableDiskBytes: _ => long.MaxValue).PreparePackagesAsync(new(1, ModelPackageOperation.Install,
+                ["argos-en-zh"], ["argos-en-zh"], null), new SetupProgressSink(updates.Add), TestContext.Current.CancellationToken);
+        Assert.Equal(rejectedRange ? new long?[] { 64, null } : [64], network.RangeStarts);
+        Assert.Equal(archive, File.ReadAllBytes(files.CachedModel("en_zh")));
+        Assert.False(File.Exists(files.CachedModel("en_zh") + ".part"));
+        Assert.Equal("controlled model", File.ReadAllText(Path.Combine(prepared.Paths.Models,
+            "packages", "argos-en-zh", "1.9", "model", "model.bin")));
+        var complete = Assert.Single(updates, value => value.Label == "下载 English → 中文"
+            && value.DownloadPhase == SetupDownloadPhase.Complete);
+        Assert.Equal(archive.Length, complete.Downloaded);
+        Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
+    }
+
     [Fact]
     public async Task UserCancellationStillCancelsTheDownload()
     {
@@ -860,6 +998,83 @@ public sealed class ModelInstallerTests
             Started.TrySetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, ct);
             throw new InvalidOperationException("Unreachable.");
+        }
+    }
+
+    private sealed class BodyHandler(HttpMessageHandler inner, string path, Stream body, long? length = null)
+        : DelegatingHandler(inner)
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            if (request.RequestUri!.AbsolutePath != path)
+                return base.SendAsync(request, ct);
+            var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(body) };
+            response.Content.Headers.ContentLength = length;
+            return Task.FromResult(response);
+        }
+    }
+
+    private sealed class StallingBody(byte[] prefix) : MemoryStream(prefix)
+    {
+        public TaskCompletionSource ReadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool Disposed
+        {
+            get; private set;
+        }
+        public override bool CanSeek => false;
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            if (Position < Length)
+                return await base.ReadAsync(buffer, ct);
+            ReadStarted.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            return 0;
+        }
+        public override async Task CopyToAsync(Stream destination, int bufferSize, CancellationToken ct)
+        {
+            var buffer = new byte[bufferSize];
+            int read;
+            while ((read = await ReadAsync(buffer, ct)) > 0)
+                await destination.WriteAsync(buffer.AsMemory(0, read), ct);
+        }
+        protected override void Dispose(bool disposing)
+        {
+            Disposed = true;
+            base.Dispose(disposing);
+        }
+    }
+
+    private sealed class ResumedBodyHandler(HttpMessageHandler inner, byte[] archive, bool rejectedRange)
+        : DelegatingHandler(inner)
+    {
+        public List<long?> RangeStarts { get; } = [];
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            if (request.RequestUri!.AbsolutePath != "/v1/translate-en_zh-1_9.argosmodel")
+                return base.SendAsync(request, ct);
+            long? from = request.Headers.Range?.Ranges.Single().From;
+            RangeStarts.Add(from);
+            if (rejectedRange && from is not null)
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.RequestedRangeNotSatisfiable));
+            int offset = checked((int)(from ?? 0));
+            var response = new HttpResponseMessage(from is null ? HttpStatusCode.OK : HttpStatusCode.PartialContent)
+            {
+                Content = new StreamContent(new ChunkedBody(archive[offset..]))
+            };
+            response.Content.Headers.ContentLength = archive.Length - offset;
+            if (from is not null)
+                response.Content.Headers.ContentRange = new(offset, archive.Length - 1, archive.Length);
+            return Task.FromResult(response);
+        }
+    }
+
+    private sealed class ChunkedBody(byte[] bytes) : MemoryStream(bytes)
+    {
+        public override bool CanSeek => false;
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            await Task.Yield();
+            return await base.ReadAsync(buffer[..Math.Min(buffer.Length, 37)], ct);
         }
     }
 

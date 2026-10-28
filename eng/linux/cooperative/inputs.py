@@ -121,6 +121,7 @@ FCITX_TEST_INPUTS = (
     "tests/linux/fixtures/gtk_direct_epoch.inc",
     "tests/linux/fixtures/gtk_reentry.inc",
     "tests/linux/fixtures/gtk_motion.inc",
+    "tests/linux/support/fixture_state.h",
 )
 
 

@@ -65,11 +65,12 @@ internal static partial class ContinuousTranslationCheck
         var cleanupErrors = new List<CleanupError>();
         bool ready = false;
         using var all = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+        var setupLog = new SetupLog();
         ModelClient? model = null;
         try
         {
             string data = Path.Combine(directory, "data");
-            using (var prepared = await new ModelInstaller(data, worker).PrepareAsync(new SetupLog(), all.Token, requestedDirections: ["zh_en", "en_zh"]))
+            using (var prepared = await new ModelInstaller(data, worker).PrepareAsync(setupLog, all.Token, requestedDirections: ["zh_en", "en_zh"]))
             {
                 setup.Stage = "start-model";
                 model = new ModelClient(prepared.Paths, info => new ChildProcess(info));
@@ -134,6 +135,13 @@ internal static partial class ContinuousTranslationCheck
         catch (Exception error) when (error is not OutOfMemoryException)
         {
             RecordFailure(setup, error, "setup-deadline");
+            setup.Facts = new
+            {
+                preparation = setupLog.Snapshot(),
+                setupDeadlineExpired = all.IsCancellationRequested,
+                failureCategory = (error as ModelSetupException)?.Category.ToString(),
+                failureStage = (error as ModelSetupException)?.Stage.ToString()
+            };
             if (ownedFirstTab.Outcome == "not-run" && ownedFirstTab.Failure == "none")
                 ownedFirstTab.Failure = "model-setup-failed";
             if (ordinaryControls.Outcome == "not-run" && ordinaryControls.Failure == "none")
@@ -1717,13 +1725,32 @@ internal static partial class ContinuousTranslationCheck
     }
     private sealed class SetupLog : IProgress<SetupProgress>
     {
-        private string? _last;
+        private readonly long _startedAt = Environment.TickCount64;
+        private SetupProgress? _last;
+        private long _phaseStartedAt = Environment.TickCount64;
+        private long _lastProgressAt = Environment.TickCount64;
+        public object Snapshot() => new
+        {
+            label = _last?.Label,
+            downloadPhase = _last?.DownloadPhase?.ToString(),
+            downloaded = _last?.Downloaded,
+            total = _last?.Total,
+            elapsedMs = Environment.TickCount64 - _startedAt,
+            phaseElapsedMs = Environment.TickCount64 - _phaseStartedAt,
+            sinceLastProgressMs = Environment.TickCount64 - _lastProgressAt
+        };
         public void Report(SetupProgress value)
         {
-            if (value.Label == _last)
-                return;
-            _last = value.Label;
-            Console.WriteLine(value.Label); // Installer-owned fixed messages, never source or model output.
+            bool phaseChanged = value.Label != _last?.Label || value.DownloadPhase != _last?.DownloadPhase;
+            _last = value;
+            _lastProgressAt = Environment.TickCount64;
+            if (phaseChanged)
+            {
+                _phaseStartedAt = _lastProgressAt;
+                // Fixed installer messages and bounded counters, never URLs, paths,
+                // server/exception bodies, source text or model output.
+                Console.WriteLine($"{value.Label}; phase={value.DownloadPhase?.ToString() ?? "none"}; downloaded={value.Downloaded}; total={value.Total}");
+            }
         }
     }
 }
