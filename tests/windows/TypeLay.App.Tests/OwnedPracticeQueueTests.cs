@@ -1196,6 +1196,17 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         ChildProcess? child = null;
         var overlay = new OverlayWindow();
         bool tabDown = false;
+        Exception? failure = null;
+        // Keep the owner alive until the outer cleanup has proved its job,
+        // root and stderr reader exited. Dispose alone only requests shutdown.
+        using var host = new PracticeHost(info =>
+        {
+            // Isolate this child's bounded diagnostics from other tests.
+            // On failure the exact matching record is copied into the TRX.
+            if (traceEnabled)
+                info.Environment["TYPELAY_TRACE"] = sourceTracePath;
+            return child = new ChildProcess(info);
+        });
         try
         {
             var settings = WindowsRuntime.CreateSettings(path);
@@ -1205,14 +1216,6 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 ExperimentalWriteback = false
             });
             using var model = WindowsRuntime.CreateModel(); // Controlled plans below do not invoke a model.
-            using var host = new PracticeHost(info =>
-            {
-                // Isolate this child's bounded diagnostics from other tests.
-                // On failure the exact matching record is copied into the TRX.
-                if (traceEnabled)
-                    info.Environment["TYPELAY_TRACE"] = sourceTracePath;
-                return child = new ChildProcess(info);
-            });
             using var hook = new KeyboardHook(allowInjectedInput);
             host.Initialize(settings, hook, allowInjectedInput);
             host.InitializeEditing(overlay);
@@ -1495,15 +1498,135 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 }
             }
         }
+        catch (Exception error)
+        {
+            failure = error;
+        }
         finally
+        {
+            await CleanupHostScenarioAsync(host, child, overlay, directory, tabDown, failure);
+        }
+    });
+
+    [Fact]
+    public Task InterruptedHostScenarioReleasesItsTraceAndPreservesTheOriginalFailure() => desktop.RunAsync(async () =>
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(25));
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-owned-host-cleanup-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string trace = Path.Combine(directory, "install-trace.jsonl.practice.jsonl");
+        ChildProcess? child = null;
+        Task? exited = null;
+        var overlay = new OverlayWindow();
+        using var host = new PracticeHost(_ =>
+        {
+            var info = new ProcessStartInfo("python")
+            {
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            info.ArgumentList.Add("-I");
+            info.ArgumentList.Add("-B");
+            info.ArgumentList.Add("-c");
+            info.ArgumentList.Add("""
+                import ctypes as c, sys
+                create = c.windll.kernel32.CreateFileW
+                create.argtypes = [c.c_wchar_p, c.c_uint32, c.c_uint32, c.c_void_p,
+                    c.c_uint32, c.c_uint32, c.c_void_p]
+                create.restype = c.c_void_p
+                # Match the real trace writer's no-Delete sharing. The handle
+                # stays live until the owned process exits, not a timer delay.
+                handle = create(sys.argv[1], 0x40000000, 1, None, 2, 0x80, None)
+                if handle == c.c_void_p(-1).value:
+                    raise SystemExit(3)
+                print('trace-open', flush=True)
+                sys.stdin.buffer.read(1)
+                """);
+            info.ArgumentList.Add(trace);
+            return child = new ChildProcess(info);
+        });
+        var original = new InvalidOperationException("owned-host-interrupted");
+        var observed = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            Exception? failure = null;
+            try
+            {
+                host.Open(Path.Combine(directory, "settings.json"));
+                Assert.Equal("trace-open", await child!.Process.StandardOutput.ReadLineAsync(deadline.Token));
+                exited = child.Process.WaitForExitAsync(deadline.Token);
+                Assert.False(exited.IsCompleted);
+                Assert.Throws<IOException>(() => Directory.Delete(directory, true));
+                throw original;
+            }
+            catch (Exception error)
+            {
+                failure = error;
+            }
+            finally
+            {
+                await CleanupHostScenarioAsync(host, child, overlay, directory, false, failure);
+            }
+        });
+        Assert.Same(original, observed);
+        Assert.NotNull(exited);
+        await exited.WaitAsync(deadline.Token);
+        Assert.False(Directory.Exists(directory));
+    });
+
+    private static async Task CleanupHostScenarioAsync(PracticeHost host, ChildProcess? child,
+        OverlayWindow overlay, string directory, bool tabDown, Exception? failure)
+    {
+        List<Exception> cleanupErrors = [];
+        bool exited = child is null;
+        try
         {
             if (tabDown)
                 Assert.Equal(1u, SendInput(1, [new KeyInput { Type = 1, Key = 9, Flags = 2 }], Marshal.SizeOf<KeyInput>()));
+        }
+        catch (Exception error) { cleanupErrors.Add(error); }
+        try
+        {
+            if (child is not null)
+            {
+                // Work cancellation must not cancel the separate exit proof.
+                // Reuse this suite's existing five-second cleanup bound.
+                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await child.TerminateAndWaitAsync(cleanup.Token);
+                exited = true;
+            }
+        }
+        catch (Exception error) { cleanupErrors.Add(error); }
+        try
+        {
+            host.Dispose();
+        }
+        catch (Exception error) { cleanupErrors.Add(error); }
+        try
+        {
             overlay.Close();
-            if (Directory.Exists(directory))
+        }
+        catch (Exception error) { cleanupErrors.Add(error); }
+        try
+        {
+            // A failed exit proof leaves evidence intact, even if final Dispose
+            // has requested termination. Neither Kill nor Dispose proves exit.
+            if (exited && Directory.Exists(directory))
                 Directory.Delete(directory, true);
         }
-    });
+        catch (Exception error) { cleanupErrors.Add(error); }
+        if (cleanupErrors.Count != 0)
+        {
+            if (failure is not null)
+                cleanupErrors.Insert(0, failure);
+            throw new AggregateException("owned host scenario cleanup failed", cleanupErrors);
+        }
+        if (failure is not null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+    }
 
     [Fact]
     public Task HostSendsOrderedPracticeControlsWithoutWaitingForUiContinuations() => desktop.RunAsync(async () =>

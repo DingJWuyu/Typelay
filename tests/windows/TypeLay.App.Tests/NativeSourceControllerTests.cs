@@ -211,9 +211,11 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
     });
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public Task LateInstallAcknowledgementCannotRestoreARevokedCandidate(bool orderedWitness) => desktop.RunAsync(async () =>
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public Task PublicationStartsInstallationWithoutRevivingAnInvalidatedCandidate(bool orderedWitness, bool expire) => desktop.RunAsync(async () =>
     {
         await using var native = await ProductionForegroundWriteTests.Desktop.Start(sourceMessageAcceptance: true, orderedSourceMessageWitness: orderedWitness);
         await native.Prepare(native.A, "你好", new(0, 2));
@@ -234,12 +236,17 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
         var token = new SessionViewToken(source.Target, hook.CommandGeneration, 7);
         hook.Publish(lease, permit);
         Assert.False(hook.AcceptanceReady(token, permit, WindowsInterruptClock.NowMs));
-        hook.TryRead(out _);
         try
         {
+            // Publishing a fresh candidate starts its original installation;
+            // a later controller poll must not spend another slice of its lease.
             await broker.InstallReceived.Task.WaitAsync(native.Token);
             Assert.True(broker.Installation!.Installed);
             Assert.False(hook.AcceptanceReady(token, permit, WindowsInterruptClock.NowMs));
+            hook.Publish(lease, permit);
+            hook.TryRead(out _);
+            Assert.Equal(1, broker.Installs); // The held ACK still owns the single exchange.
+            Assert.Same(permit, broker.InstallationPermit);
             using var mapping = orderedWitness ? MemoryMappedFile.OpenExisting("Local\\TypeLay.SourceWitness."
                 + Convert.ToHexString(source.Target.Lifetime.ToByteArray()).ToLowerInvariant(), MemoryMappedFileRights.Read) : null;
             using var witness = mapping?.CreateViewAccessor(0, SourceInputWitness.Bytes, MemoryMappedFileAccess.Read);
@@ -249,15 +256,24 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
                 Assert.Equal(0u, witness.ReadUInt32(132)); // No recording before this ACK reaches Arm.
                 Assert.Equal(0L, witness.ReadInt64(56));
             }
-            hook.Revoke();
-            // The source is installed but the App has not received its control.
-            // A real input here must pass, not be revived by the later ACK/Arm.
-            Assert.True(WindowsInterruptClock.NowMs <= permit.ExpiresAtMs);
-            Tab(false);
-            Tab(true);
-            await Until(() => N.GetProp(native.Root, "TypeLay.Test.SourceDispatchCompleted.v1") == 2, native.Token);
-            Assert.True(WindowsInterruptClock.NowMs <= permit.ExpiresAtMs,
-                "The Prepared input must actually dispatch before expiry; expiry cannot prove withdrawal.");
+            if (expire)
+            {
+                // Release only this original ACK after its unchanged deadline.
+                // No later capture, replacement permit or input proves expiry.
+                await Until(() => WindowsInterruptClock.NowMs > permit.ExpiresAtMs, native.Token);
+            }
+            else
+            {
+                hook.Revoke();
+                // The source is installed but the App has not received its control.
+                // A real input here must pass, not be revived by the later ACK/Arm.
+                Assert.True(WindowsInterruptClock.NowMs <= permit.ExpiresAtMs);
+                Tab(false);
+                Tab(true);
+                await Until(() => N.GetProp(native.Root, "TypeLay.Test.SourceDispatchCompleted.v1") == 2, native.Token);
+                Assert.True(WindowsInterruptClock.NowMs <= permit.ExpiresAtMs,
+                    "The Prepared input must actually dispatch before expiry; expiry cannot prove withdrawal.");
+            }
             if (witness is not null)
             {
                 Assert.Equal(0L, witness.ReadInt64(56));
@@ -265,19 +281,32 @@ public sealed partial class NativeSourceControllerTests(WpfDesktopFixture deskto
                 Assert.Equal(0u, witness.ReadUInt32(8)); // Dormant removal is not missing-history poison.
                 Assert.Equal(0u, witness.ReadUInt32(132));
             }
+            broker.ReleaseInstall.TrySetResult();
+            await Until(() => { hook.TryRead(out _); return broker.Retired; }, native.Token);
+            if (witness is not null)
+            {
+                // The lifetime recording boundary is set before the Arm transition
+                // and is not reset by grant retirement. The late ACK never set it.
+                Assert.Equal(0u, witness.ReadUInt32(132));
+                Thread.MemoryBarrier();
+                Assert.Equal(0UL, witness.ReadUInt64(112));
+            }
         }
         finally { broker.ReleaseInstall.TrySetResult(); }
-        await Until(() => { hook.TryRead(out _); return broker.Retired; }, native.Token);
         Assert.False(hook.AcceptanceReady(token, permit, WindowsInterruptClock.NowMs));
-        Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceTabDown.v1"));
-        Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceTabUp.v1"));
-        // Positive observation control: a refused original pair really reaches
-        // this same pump, including key-up after normal dialog navigation.
-        Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceDispatchedDown.v1"));
-        Assert.Equal((nint)1, N.GetProp(native.Root, "TypeLay.Test.SourceDispatchedUp.v1"));
+        Assert.Equal(1, broker.Installs);
+        Assert.Same(permit, broker.InstallationPermit);
+        nint dispatched = expire ? 0 : 1;
+        Assert.Equal(dispatched, N.GetProp(native.Root, "TypeLay.Test.SourceTabDown.v1"));
+        Assert.Equal(dispatched, N.GetProp(native.Root, "TypeLay.Test.SourceTabUp.v1"));
+        // The withdrawal branch's refused original pair reaches this same
+        // pump, including key-up after normal dialog navigation; expiry sends none.
+        Assert.Equal(dispatched, N.GetProp(native.Root, "TypeLay.Test.SourceDispatchedDown.v1"));
+        Assert.Equal(dispatched, N.GetProp(native.Root, "TypeLay.Test.SourceDispatchedUp.v1"));
         Assert.Null(hook.StockLastActivation);
         Assert.Equal("你好", N.ReadText(native.A, Limits.MaxTextUnits));
         Assert.Equal(0, broker.Writes);
+        Assert.Equal(0, broker.CompletionTransfers);
         native.AssertZeroSubmits();
     });
 

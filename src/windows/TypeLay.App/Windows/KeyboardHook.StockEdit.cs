@@ -69,6 +69,10 @@ internal sealed partial class KeyboardHook
         {
             Volatile.Write(ref _stockCurrentLease, lease);
             Volatile.Write(ref _stockLatest, new(lease, permit, keys.Accept, chord));
+            // Publication already has the full lease. Start the existing
+            // single-flight exchange now, rather than spending this grant's
+            // original deadline waiting for the next controller poll.
+            PumpStockAcceptance();
         }
         return true;
     }
@@ -164,8 +168,8 @@ internal sealed partial class KeyboardHook
         && result.SessionRevision == candidate.Lease.SessionRevision && result.Target == candidate.Lease.Source.Target
         && result.Grant == candidate.Permit.Plan.Id;
 
-    // TryRead runs on the controller loop. Neither RPC nor Task scheduling is
-    // entered by the low-level callback; that callback only records a claim.
+    // Publication and TryRead run on the controller loop. Neither RPC nor Task
+    // scheduling is entered by the low-level callback; it only records a claim.
     internal Task WaitForStockAcceptanceDeliveryAsync() =>
         // Bound a stopped controller loop too. A timeout fails the capture; it
         // never exposes post-write text before settlement or renews the permit.

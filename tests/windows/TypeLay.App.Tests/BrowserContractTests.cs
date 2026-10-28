@@ -677,6 +677,128 @@ public sealed class BrowserContractTests
         Assert.False(BrowserInput.SameAuthority(original, default));
     }
     [Fact(Timeout = 5000)]
+    public async Task BrowserPolicyRefreshCanReadTheNextMetadataWhileThePreviousApprovalIsPending()
+    {
+        var refresh = new BrowserPolicyRefresh();
+        var firstAck = new TaskCompletionSource();
+        var nextDescription = new TaskCompletionSource<BrowserReply?>();
+        int descriptions = 0, approvals = 0;
+        BrowserReply? nextApproval = null;
+        var first = refresh.Poll(100, () =>
+        {
+            descriptions++;
+            return Task.FromResult<BrowserReply?>(new(default, null!));
+        }, _ =>
+        {
+            approvals++;
+            return firstAck.Task;
+        });
+        try
+        {
+            Assert.Same(first, refresh.Poll(134, () => throw new InvalidOperationException("early-description"),
+                _ => throw new InvalidOperationException("early-approval")));
+            var next = refresh.Poll(135, () =>
+            {
+                descriptions++;
+                return nextDescription.Task;
+            }, reply =>
+            {
+                nextApproval = reply;
+                approvals++;
+                return Task.CompletedTask;
+            });
+            Assert.Equal(2, descriptions);
+            Assert.Equal(1, approvals);
+            Assert.False(first.IsCompleted);
+            Assert.Same(next, refresh.Poll(170, () => throw new InvalidOperationException("third-description"),
+                _ => throw new InvalidOperationException("concurrent-approval")));
+            var body = refresh.CaptureAsync();
+            var description = new BrowserReply(default, null!);
+            nextDescription.SetResult(description);
+            Assert.Null(nextApproval);
+            Assert.False(body.IsCompleted);
+            Assert.Same(next, refresh.Poll(200, () => throw new InvalidOperationException("unbounded-prefetch"),
+                _ => throw new InvalidOperationException("concurrent-approval")));
+            firstAck.SetResult();
+            await first;
+            await next;
+            Assert.Same(description, await body);
+            Assert.Equal(2, approvals);
+            Assert.Same(description, nextApproval);
+        }
+        finally { firstAck.TrySetResult(); }
+    }
+
+    [Theory(Timeout = 5000)]
+    [InlineData("null")]
+    [InlineData("throw")]
+    [InlineData("cancel")]
+    [InlineData("invalidate")]
+    public async Task BrowserPolicyRefreshFailedPrefetchCannotBypassThePreviousApproval(string outcome)
+    {
+        var refresh = new BrowserPolicyRefresh();
+        var firstAck = new TaskCompletionSource();
+        var description = new TaskCompletionSource<BrowserReply?>();
+        int approvals = 0;
+        var first = refresh.Poll(100, () => Task.FromResult<BrowserReply?>(new(default, null!)), _ =>
+        {
+            approvals++;
+            return firstAck.Task;
+        });
+        var next = refresh.Poll(135, () => description.Task, _ =>
+        {
+            approvals++;
+            return Task.CompletedTask;
+        });
+        var body = refresh.CaptureAsync();
+        if (outcome == "invalidate")
+            refresh.Invalidate();
+        if (outcome == "throw")
+            description.SetException(new IOException("metadata-read-failed"));
+        else if (outcome == "cancel")
+            description.SetCanceled(new CancellationToken(canceled: true));
+        else
+            description.SetResult(outcome == "null" ? null : new(default, null!));
+        Assert.False(first.IsCompleted);
+        Assert.False(next.IsCompleted);
+        Assert.Equal(BrowserPolicyRenewalPhase.Approve, refresh.DiagnosticPhase);
+        Assert.Same(next, refresh.Poll(300, () => throw new InvalidOperationException("undrained-approval"),
+            _ => throw new InvalidOperationException("concurrent-approval")));
+        Assert.Equal(1, approvals);
+        firstAck.SetResult();
+        await first;
+        await next;
+        Assert.Null(await body);
+        Assert.Equal(1, approvals);
+        bool freshDescription = false;
+        await refresh.Poll(300, () =>
+        {
+            freshDescription = true;
+            return Task.FromResult<BrowserReply?>(null);
+        }, _ => throw new InvalidOperationException("missing-description"));
+        Assert.True(freshDescription);
+    }
+
+    [Fact(Timeout = 5000)]
+    public async Task BrowserPolicyRefreshOldAcknowledgementCannotHideThePendingMetadataRead()
+    {
+        var refresh = new BrowserPolicyRefresh();
+        var firstAck = new TaskCompletionSource();
+        var description = new TaskCompletionSource<BrowserReply?>();
+        var first = refresh.Poll(100, () => Task.FromResult<BrowserReply?>(new(default, null!)), _ => firstAck.Task);
+        var next = refresh.Poll(135, () => description.Task, _ => Task.CompletedTask);
+        firstAck.SetResult();
+        await first;
+        Assert.False(next.IsCompleted);
+        Assert.Equal(BrowserPolicyRenewalPhase.Describe, refresh.DiagnosticPhase);
+        Assert.Equal(135, refresh.DiagnosticCycleStartedAt);
+        Assert.Equal(2, refresh.DiagnosticCycleSequence);
+        description.SetResult(new(default, null!));
+        await next;
+        Assert.Equal(BrowserPolicyRenewalPhase.Idle, refresh.DiagnosticPhase);
+    }
+
+    [Fact(Timeout = 5000)]
     public async Task BrowserPolicyRefreshContinuesWhileThePreviousBodyReplyIsPending()
     {
         // These are transport completion barriers, not page approval or clock
@@ -717,10 +839,10 @@ public sealed class BrowserContractTests
         }
         var reading = ReadBody();
         Assert.False(reading.IsCompleted);
-        Assert.Same(round, refresh.Poll(300, Describe, Approve));
+        Assert.Same(round, refresh.Poll(134, Describe, Approve));
         Assert.Equal(100, refresh.DiagnosticCycleStartedAt);
         Assert.Equal(1, refresh.DiagnosticCycleSequence);
-        Assert.Equal(1, descriptions); // An ACK timeout has not been reported yet.
+        Assert.Equal(1, descriptions); // The original 35ms minimum interval still applies.
         Assert.Equal(1, approvals);
         Assert.Same(first, firstApproval);
         acknowledgement.SetResult();

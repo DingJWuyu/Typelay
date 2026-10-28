@@ -11,16 +11,16 @@ internal enum BrowserPolicyRenewalPhase
     Idle, Describe, Approve
 }
 
-// Coordinates only outstanding RPCs. Field approval, identity, and the original
-// authority deadline remain BrowserInput's responsibility. No completed round
-// is a cache, and a body reply is never a prerequisite for the next round.
+// At most one metadata read may overlap the preceding approval ACK. Approvals
+// stay serial; identity and the original authority deadline remain BrowserInput's
+// responsibility. No completed round is a cache or waits for a body reply.
 internal sealed class BrowserPolicyRefresh
 {
     private sealed class Cycle(TaskCompletionSource<BrowserReply?> description, bool claimed)
     {
         public TaskCompletionSource<BrowserReply?> Description { get; } = description;
         public Task Completion = Task.CompletedTask;
-        public bool Claimed = claimed, Invalid;
+        public bool Claimed = claimed, Invalid, ApprovalStarted;
     }
     private Cycle? _cycle;
     private TaskCompletionSource<BrowserReply?>? _capture;
@@ -41,7 +41,8 @@ internal sealed class BrowserPolicyRefresh
     private static TaskCompletionSource<BrowserReply?> Completion() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     public Task Poll(long now, Func<Task<BrowserReply?>> describe, Func<BrowserReply, Task> approve)
     {
-        if (_cycle is { Completion.IsCompleted: false } || now < _nextStart)
+        if (_cycle is { Completion.IsCompleted: false } running && (!running.ApprovalStarted || running.Invalid)
+            || now < _nextStart)
             return _cycle?.Completion ?? Task.CompletedTask;
         DiagnosticCycleStartedAt = now;
         if (DiagnosticCycleSequence < long.MaxValue)
@@ -49,21 +50,24 @@ internal sealed class BrowserPolicyRefresh
         _nextStart = now + 35; // Same minimum interval as ordinary Runtime observation.
         var cycle = new Cycle(_capture ?? Completion(), _capture is not null);
         _capture = null;
+        Task previousApproval = _cycle?.Completion ?? Task.CompletedTask;
         _cycle = cycle;
-        cycle.Completion = Run(cycle, describe, approve);
+        cycle.Completion = Run(cycle, previousApproval, describe, approve);
         return cycle.Completion;
     }
-    private async Task Run(Cycle cycle, Func<Task<BrowserReply?>> describe, Func<BrowserReply, Task> approve)
+    private async Task Run(Cycle cycle, Task previousApproval, Func<Task<BrowserReply?>> describe, Func<BrowserReply, Task> approve)
     {
         try
         {
             DiagnosticPhase = BrowserPolicyRenewalPhase.Describe;
             var reply = await describe();
+            DiagnosticPhase = BrowserPolicyRenewalPhase.Approve;
+            await previousApproval;
             if (cycle.Invalid || reply is null)
                 return;
             // Enqueue the sole approval before waking the body consumer, but do
             // not make that consumer await the policy ACK.
-            DiagnosticPhase = BrowserPolicyRenewalPhase.Approve;
+            cycle.ApprovalStarted = true;
             Task acknowledgement = approve(reply);
             cycle.Description.TrySetResult(reply);
             await acknowledgement;
@@ -71,7 +75,13 @@ internal sealed class BrowserPolicyRefresh
         catch (Exception error) when (error is not OutOfMemoryException) { }
         finally
         {
-            DiagnosticPhase = BrowserPolicyRenewalPhase.Idle;
+            // Even a failed or invalidated prefetch must drain the old ACK before
+            // the next round can submit an approval. It cannot retire that RPC.
+            if (_cycle == cycle && !previousApproval.IsCompleted)
+                DiagnosticPhase = BrowserPolicyRenewalPhase.Approve;
+            await previousApproval;
+            if (_cycle == cycle)
+                DiagnosticPhase = BrowserPolicyRenewalPhase.Idle;
             cycle.Description.TrySetResult(null);
         }
     }
@@ -673,8 +683,8 @@ internal sealed partial class BrowserInput
     private Task ApproveCommandPolicy(CommandOwner owner, long focusRevision, long foregroundEpoch, BrowserReply description)
     {
         // This is the only renewal submitter. The same context is checked again
-        // immediately before enqueue and after ACK; a late describe cannot send
-        // an old approval after a replacement round has begun.
+        // immediately before enqueue and after ACK; a prefetched description
+        // cannot submit an approval before the preceding ACK has completed.
         if (!PolicyContextCurrent(owner, focusRevision, foregroundEpoch)
             || !Approved(owner.Peer, description, owner.Excluded, out var authority, out _, out var target, out _))
             return Task.CompletedTask;
