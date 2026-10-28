@@ -6,8 +6,12 @@ param(
     [string]$Task = 'help',
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
-    [string]$HyRuntime
+    [string]$HyRuntime,
+    [string]$IndexRuntime
 )
+if ($IndexRuntime -and $Task -notin @('pack', 'run')) {
+    throw '-IndexRuntime is only valid with pack or run.'
+}
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($HyRuntime -and $Task -notin @('pack', 'run')) {
@@ -16,5 +20,5 @@ if ($HyRuntime -and $Task -notin @('pack', 'run')) {
 if ($Task -eq 'shared-check') {
     & (Join-Path $PSScriptRoot 'eng/shared/check.ps1') -Configuration $Configuration
 } else {
-    & (Join-Path $PSScriptRoot 'eng/windows/dev.ps1') -Task $Task -Configuration $Configuration -HyRuntime $HyRuntime
+    & (Join-Path $PSScriptRoot 'eng/windows/dev.ps1') -Task $Task -Configuration $Configuration -HyRuntime $HyRuntime -IndexRuntime $IndexRuntime
 }

@@ -2,6 +2,23 @@
 
 这是当前开发的唯一现役入口。负责人、证据与下一动作改变时更新；已关闭排程删除，历史查 Git。产品要求以[产品基线](../product/README.md)为准。未获准公开的内容不纳入本页。
 
+## Index 默认后端切换 - 当前实施
+
+用户已确认切换 Index。此开发线从 `82f53d6cab539d41443d835674b7148ed5e926ac` 在 `work/linux-usability` 实施，已获准发布到既有开发分支进行 CI，但尚未推送或获得双端验收。新用户明确确认准备时推荐 Index；已有 Argos/Hy 库存、active 选择、方向子集和设置保持，启动不下载、不自动迁代。Index 使用独立包身份、锁与原生适配，不改写 Hy ABI5 或旧模型身份。Repair 保留当前选择与已装方向，失败保旧代。
+
+实际价值：用户在普通输入框使用翻译，希望采用已选定的 Index 配方；修改前生产默认为 Argos，当前实现正接入 Index。实际频率未知，影响每次使用默认模型的翻译结果；需要共享 worker、两端安装与原生分发接线，成本明显高于改文件名，但复用既有代际事务与输入安全路径，不重构平台输入。验证沿现有 catalog/库存、真实管道握手、准备/激活公开边界和真实模型推理开展，替身仅证明合同，不证明质量。
+
+| 责任 / 负责人 | 当前动作与依赖 | 完成或停止条件 |
+| --- | --- | --- |
+| 共享与双端产品接线 / `implement_index_model_switch` | catalog、worker、Runtime 与 Windows/Linux 安装/设置默认；保留输入、焦点、预览、写回与 Undo 安全 | 聚焦回归与共享检查通过；实际 Linux native 推理证据；Windows 原生生命周期由精确 Windows CI 单独验证，未跑不称通过 |
+| 独立 Index native / `index_native_adapter` | 独立模型 ABI、token/template 校验与 b11913 构建；消费官方 pinned 原件 | whole-source / plain 或真实要求的 instTrans、thinking=false、greedy、真实 EOG 与截断拒绝；原硬资源门不放宽 |
+| 官方身份 / `verify_index_runtime_provenance` | 官方模型、许可证、模板与 runtime revision 原件核验，证据仅在 ignored artifacts | 明确实际哈希、许可证及特殊 token；缺证不靠摘要补造 |
+| 独立迁移审视 / `review_index_migration_design`，root | 审核旧库存、默认与资源门，root 保留发布权 | root 单独核精确冻结候选后发布既有开发分支；不合并、不更新 stable，不上传模型或原始日志 |
+
+上述职责目标配置均请求 `gpt-6-astra` + `xhigh`；派发工具未独立确认实际运行配置，实际值未核实。Index 明确采用独立 context4096 / output1024，与所选配方一致；Hy 仍1024/192。保留两核、2.5GiB 地址空间、单次60秒等硬资源限制；实际不适配即报告失败，不缩配置、截断、放宽硬门或回退。质量和耗时仍须实际验证，不由配置相同推定。
+
+当前本地检查：共享 worker 186 项、共享 Python/CI 选择 29 项、实际 Index ELF/资源 3 项、Linux setup 110 项、发行包构成 30 项、desktop session 20 项、startup diagnostics 1 项及全仓 Ruff check/format 已通过。新增 Index 原生安全审计与真实模型协议验证见上方/下方范围；managed 与双端正式宿主 CI 尚未执行，不能据此宣称整个平台通过。构建包始终不含模型，原始证据仅在 ignored artifacts；发布由 root 取冻结提交与远端新鲜状态后统一执行。
+
 ## 先看结论
 
 本页于 **2026-10-25 09:10 UTC** 按 CI528 完整终态与后继候选状态更新。正式 ordered 接线已在开发分支执行，不再是“尚无CI”的候选；它没有获得产品推荐或物理接受资格。
@@ -40,7 +57,7 @@ root负责采用与最终核验，唯一publisher负责获准的远端写入。�
 | Notepad headless范围 / assess_formal_windows_wiring，root | 精确34e03d8四叶已独立静态GO并集成：无人值守观察到真实接受cue后保留not-run / trusted-source-input-required，不再生成接受Tab或人工稿接受输入；明确cap0产品拒绝仍failed。仅经原同token只读准入才继续独立Direct/Undo及退出 | 新managed/Windows未跑；聚合对not-run仍保持failed/exit1，不能称接受通过。原520秒、唯一Direct、source/focus/worker检查与清理不变；可信来源正向须另有实际证据 |
 | 隔离物理Tab与已过回归 / root | CI526包、CI518产品预览推荐不变；原安全门、源身份、Direct独立写权、Ctrl人工稿和清理回归继续保留 | 用户一次物理Tab取得1Passed才算该例阳性；UIAccess/IME/部署各凭自身证据。旧NativeReturn全局0、子进程早退、覆盖窗及保存异常不因未复现称根因修复 |
 | Linux体验维护 / root | 保持当前实现与CI498推荐，接收真机/物理输入法反馈，不增加可选开发 | 新实际故障或用户反馈再判断最小必要动作；未知IME保守拒绝，不自动发布stable |
-| 模型采用 / root | 保持下方既有公开采用结论、默认和资源合同；新增产品故障或实质新假设才安排最小验证，与Windows独立推进 | 生命周期、质量、高级scope与许可各凭自身证据；不扩大候选、推理预算或公开范围 |
+| 模型采用 / root | 执行上方已授权 Index 默认切换，保持旧 Argos/Hy 库存与显式选择；与 Windows 输入任务独立 | 以精确 Index 载荷与两端实际 owner 验证，不以旧 Hy 结果或配置相同代替 |
 
 最终集成候选的8个变更C#已通过获准的folder whitespace；全仓Ruff check/format（135文件）、包装Python单测8项及diff check通过。本地未运行被拒绝的managed build/test；新Windows、物理、UIAccess及真实IME验证均未执行。下一步由root审核精确冻结身份后决定开发分支CI，不由集成作者自行发布。
 
@@ -60,13 +77,13 @@ root负责采用与最终核验，唯一publisher负责获准的远端写入。�
 
 按需唤醒后的空捕获仍保守中止；恢复同一目标不证明期间未离开焦点家族，见 [Linux 架构约束](../platforms/linux/architecture.md#按需唤醒与缺失捕获)。可选富文本、非合作控件及 Electron/VS Code 自动浮层扩展暂不开展。
 
-### 模型：生命周期通过不等于质量放行
+### 模型：采用 Index，生命周期仍不等于质量放行
 
-- **兼容与默认**：正式 catalog 可供 14 方向，新装仍为 12；ABI5、greedy、模型权重锁与默认参数不变。中英预览须明确确认的 format2 `Install/addDirections`，旧 Repair 不扩方向，失败保旧代和 active 选择。库存、manifest 与原生导出共同授予能力；English 风格/术语请求明确拒绝，不降级为普通翻译。Argos 休眠偏好保留；跨旧版本自动恢复 14 方向尚未完成。
-- **实际范围**：Windows Hy 已覆盖受控 stock Edit 双向普通源预览与 15 场景生命周期；Linux 为 editor snapshot 与 12 阶段生命周期。双端高级 scope 尚未实机验收，质量未由这些 smoke 评估。已有独立产品安装/激活链证明失败保旧代与正常清理，但实验 Host 的资源配置不能作为默认资源行为证明。
-- **质量比较**：原独立 16 条合成日常样本中，Hy 为 14 条未见实质问题、1 较小、1 退款动作未决；Argos 为 7 重大、4 较小、5 未见问题，保守至少 5 对明确重大修复。未决不算通过；评审见过旧摘要且非专业译者，不称完全盲评或用户错误率。原件仍在 `artifacts/paired-daily16-run-20261023-01/` 与 `artifacts/paired-daily16-execution-20261023-01/`。
-- **采用结论**：Hy repetition 1.0 无替换默认 1.05 的依据；中英首筛仍有台灯错义和严格时间上界未决。Argos beam1 未证明重大改善，不采用；Mozilla 有界 CLI 能运行但保义不足，不采用。其它旧候选无采用依据；缺失旧原件不以摘要重判，未实测不写成质量失败。没有新假设不扩研究范围。
-- **资源合同**：模型推理串行并与重编译错开；两核 CPU affinity、硬地址空间 2.5GiB、加载/hello 与单请求 60 秒、共享 600 秒、清理最多 7 秒、失败停止且零推理重试。Hy/Qwen context 1024、output 192；Argos 保留生产输入 384 pieces、输出 512 拒绝界；Mozilla 保留整请求 192 token 保护。双端生命周期既有预算为 Windows 15 场景 960 秒、Linux 240 秒工作/260 秒外限，quality 请求数不变。两核 affinity 不等于只有两个线程，点采样不冒充连续资源证明。
+- **默认与迁移**：新且可信的空库存经明确确认默认准备 Index 官方 Q4_K_M；固定 revision、1,312,164,352 bytes、SHA 与 Apache 许可见现役 `native/index/model.lock.json`。已有 schema1/2 Argos 和 schema3 active 不重解释、不自动下载或重选；Repair 保已装方向，失败保旧代。Index 限于已有十四方向；Hy 保留 ABI5/b11717、新装十二方向与显式中英补充接口，中英高级门不变。
+- **Index 配方**：独立 ABI1/b11913、完整原源一次调用、native plain 或真实约束 instTrans、thinking=false、greedy、4096 context / 1024 最大新 token，不重试/回退/截断。经过严格 topology、字面项、内部空白与逐槽术语校验后，仅以原源序列化全请求 SP/TAB 及原 CRLF/CR/LF；不是语义修补或 raw benchmark 输出等价。
+- **当前实际证据**：Linux 正式 setup 已准备私有 CPython3.13.16、完整依赖和真实 Index 候选，未手造 current/active；完整 worker 的十四方向 hello、同 worker 中英双向及 URL/LF 请求通过，最终 native 的控制字面量 roundtrip、禁止 ID、decode 前取消、实际 decode 中取消零输出及下一请求隔离通过。真实风格/术语/组合各有成功响应，但含长重复输入的批次在60秒请求外门失败，不能将整批次记绿。空白+CRLF原始模型曾改变布局，被正确拒绝；一次授权诊断确定是CRLF类型与尾padding丢失，窄源布局适配后的最终 worker 七帧已通过：布局、三种高级请求、9000字节明确拒绝及同 worker 下一普通请求，总9.137秒、自然exit0；记录精确payload/module哈希。原失败证据不被新候选抹去。
+- **未完成的门**：本地 managed build/test 未进入编译，受 MSBuild socket 和执行封装限制；没有换路径绕过。新增 Windows/Linux Index 独立 CI 将分别执行正式宿主与进程 owner 的安装、激活、连续请求、取消/失败保旧代、冷启、切换/移除与退出，目前未运行。旧 CI528 输入失败保留，不因 Index 检查改变推荐或计为新实现通过。质量/GUI/物理输入/IME 各凭实际证据。
+- **资源**：Index Linux 已实际设置并核验最多两核 affinity 与硬地址空间2.5GiB；Windows 新接线设置 affinity 并沿用2.5GiB/单进程 Job，尚待真实 Windows 验证，Job内存不是Linux地址空间计量。载入/hello 与单请求60秒、独立生命周期600秒及退出7秒不放宽。Hy 仍1024/192，不将原研究外层限制倒写为此前产品已有的资源门。
 
 ## 维护与恢复
 

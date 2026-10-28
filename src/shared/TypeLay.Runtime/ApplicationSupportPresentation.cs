@@ -86,6 +86,20 @@ public static class ApplicationSupportPresentation
                 SecondaryActions = []
             };
         }
+        if (idle && packages.InventoryKnown && packages.InstalledPackages.Count == 0
+            && catalog.DefaultPackage is { } recommended)
+        {
+            var action = rows.Single(row => row.Id == recommended.Id).Actions
+                .FirstOrDefault(action => action.Request.Operation == ModelPackageOperation.Install);
+            view = view with
+            {
+                StatusText = "尚未准备本地翻译 · 默认 Index Translate 2B",
+                Guidance = action is null ? "当前安装包缺少可用的 Index 运行组件，请使用完整安装包。旧模型仍可单独选择。"
+                    : "确认后下载并使用 Index；已有用户的模型选择不会自动改变。",
+                PrimaryAction = new(TranslationPreparationAction.Prepare, "准备 Index 本地翻译…", action is not null),
+                DefaultPackageAction = action
+            };
+        }
         if (idle && packages.InventoryKnown && packages.CurrentPackages.Count > 0)
         {
             // Hello may cover only a subset of a package. Never expand it to catalog coverage.
@@ -125,7 +139,7 @@ public static class ApplicationSupportPresentation
             Directions = catalog.LegacyDirections.Select(direction => new TranslationPreparationDirectionView(
                 direction.Id, DirectionLabel(direction), packages.InstalledPackages.Any(item =>
                     item.Directions.Any(installed => installed.Id == direction.Id)))).ToArray(),
-            CanSelectDirections = packages.InventoryKnown && packages.InstalledPackages.Count == 0
+            CanSelectDirections = catalog.DefaultPackage is null && packages.InventoryKnown && packages.InstalledPackages.Count == 0
                 && !packages.OperationInProgress && idle
         };
     }
@@ -137,8 +151,9 @@ public static class ApplicationSupportPresentation
         var installed = facts?.InstalledPackages.FirstOrDefault(item => SamePackage(item, package));
         var current = facts?.CurrentPackages.FirstOrDefault(item => SamePackage(item, package));
         var ready = facts?.ReadyPackages.FirstOrDefault(item => SamePackage(item, package));
-        bool available = package.Backend == "argos" || facts is { HyRuntimeAvailable: true, HyUnavailableReason: null };
-        string unavailable = available ? "" : "当前安装包不含可用的 Hy 运行组件";
+        bool available = RuntimeAvailable(package, facts);
+        string unavailable = available ? "" : "当前安装包不含可用的 "
+            + (package.Backend == "index-translate-llama-cpu" ? "Index" : "Hy") + " 运行组件";
         string status = facts is { InventoryKnown: false }
             ? "安装状态无法确认" + (unavailable.Length > 0 ? " · " + unavailable : "")
             : unavailable.Length > 0 ? unavailable
@@ -149,7 +164,7 @@ public static class ApplicationSupportPresentation
             status += " · 已安装：" + PackageCoverage(package, installed.Directions);
         long? bytes = ModelCatalog.PackageDownloadBytes(package);
         string download = bytes is { } count ? (count / 1_000_000_000d).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) + " GB 下载" : "";
-        string license = package.Backend == "hy-mt-llama-cpu" ? new Uri(new Uri(package.Url), "LICENSE.txt").AbsoluteUri : "";
+        string license = ModelCatalog.PackageLicenseUrl(package);
         return new(package.Id, package.Version, PackageTitle(package), package.Preview,
             package.Directions.Select(direction => direction.Id).ToArray(),
             (englishPreview ? "目录可用：" : "") + PackageCoverage(package),
@@ -159,20 +174,34 @@ public static class ApplicationSupportPresentation
             ready?.Directions.Select(direction => direction.Id).ToArray() ?? [], bytes, download, license,
             package.Preview ? "预览版可能出现漏译或表达偏差，请核对译文。仅支持列出的中文双向直译，不会经英语中转。模型许可证随包保留。"
                 + (englishPreview ? EnglishPreviewWarning : "")
-                : "翻译在本机运行，输入内容不会上传。模型许可证随包保留。",
+                : package.Backend == "index-translate-llama-cpu"
+                    ? "推荐默认的本地翻译模型。仅支持列出的十四个已有方向；译文可能有误，请核对。输入内容不会上传，Apache-2.0 模型许可证随包保留。"
+                    : "翻译在本机运行，输入内容不会上传。模型许可证随包保留。",
             status, facts is null || !facts.InventoryKnown ? [] : PackageActions(package, facts, installed, current is not null, available, catalog));
     }
 
     private static bool SamePackage(ModelPackageSelection selection, ModelPackage package) =>
         selection.Package.Id == package.Id && selection.Package.Version == package.Version;
 
-    private static string PackageTitle(ModelPackage package) => package.Backend == "hy-mt-llama-cpu"
-        ? "Hy-MT2 1.8B · 中文多语" : "Argos · " + string.Join("、", package.Directions.Select(DirectionLabel));
+    private static bool RuntimeAvailable(ModelPackage package, ModelPackageManagementFact? facts) => package.Backend switch
+    {
+        "argos" => true,
+        "hy-mt-llama-cpu" => facts is { HyRuntimeAvailable: true, HyUnavailableReason: null },
+        "index-translate-llama-cpu" => facts is { IndexRuntimeAvailable: true, IndexUnavailableReason: null },
+        _ => false
+    };
+
+    private static string PackageTitle(ModelPackage package) => package.Backend switch
+    {
+        "hy-mt-llama-cpu" => "Hy-MT2 1.8B · 中文多语",
+        "index-translate-llama-cpu" => "Index Translate 2B · 推荐默认",
+        _ => "Argos · " + string.Join("、", package.Directions.Select(DirectionLabel))
+    };
     private static string PackageCoverage(ModelPackage package, IReadOnlyList<ModelDirection>? directions = null)
     {
         directions ??= package.Directions;
         var fromChinese = directions.Where(direction => direction.Source == "zh").ToArray();
-        if (package.Backend == "hy-mt-llama-cpu" && fromChinese.Length * 2 == directions.Count
+        if (package.Backend is "hy-mt-llama-cpu" or "index-translate-llama-cpu" && fromChinese.Length * 2 == directions.Count
             && fromChinese.All(direction => directions.Any(reverse =>
                 reverse.Source == direction.Target && reverse.Target == "zh")))
             return "中文 ↔ " + string.Join("、", fromChinese.Select(direction => direction.TargetName));
@@ -201,7 +230,7 @@ public static class ApplicationSupportPresentation
             ? $"下载约 {(bytes / 1_000_000_000d).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)} GB。" : "";
         if (installed is null && available)
             actions.Add(Action(ModelPackageOperation.Install, "下载并使用…", [package.Id], selected,
-                "将从 " + (package.Backend == "hy-mt-llama-cpu" ? "Hugging Face" : "Argos")
+                "将从 " + (package.Backend == "argos" ? "Argos" : "Hugging Face")
                 + " 下载并使用 " + PackageTitle(package) + "。" + size
                 + "缺少的私有运行组件由 " + facts.RuntimeDownloadSources + " 准备。安装还需要运行组件、缓存和切换副本空间，开始前会检查可用空间。现有模型保留；语言设置不变。"
                 + (package.Preview ? "这是预览版，请核对译文。" : "")
@@ -213,8 +242,7 @@ public static class ApplicationSupportPresentation
                 actions.Add(Action(ModelPackageOperation.Select, "使用此模型", [], selected,
                     "将切换到 " + string.Join("、", catalog.Packages.Where(item => selected.Contains(item.Id)).Select(PackageTitle))
                     + "。切换时翻译会短暂不可用；不会下载模型，语言设置不变。"));
-            bool activeAvailable = facts.CurrentPackages.All(item => item.Package.Backend == "argos")
-                || facts is { HyRuntimeAvailable: true, HyUnavailableReason: null };
+            bool activeAvailable = facts.CurrentPackages.All(item => RuntimeAvailable(item.Package, facts));
             if (activeAvailable && active.Length > 0)
             {
                 if (available)
@@ -260,7 +288,7 @@ public static class ApplicationSupportPresentation
             && facts.CurrentPackages.Select(item => item.Package.Id).Distinct(StringComparer.Ordinal).Count()
                 == facts.CurrentPackages.Count
             && (facts.CurrentPackages.All(item => item.Package.Backend == "argos")
-                || facts.CurrentPackages.Count == 1 && facts.CurrentPackages[0].Package.Backend == "hy-mt-llama-cpu")
+                || facts.CurrentPackages.Count == 1 && facts.CurrentPackages[0].Package.Backend is "hy-mt-llama-cpu" or "index-translate-llama-cpu")
             && facts.CurrentPackages.All(current => facts.InstalledPackages.Any(item => SamePackage(item, current.Package)
                 && item.Directions.Select(direction => direction.Id).SequenceEqual(current.Directions.Select(direction => direction.Id))));
     }

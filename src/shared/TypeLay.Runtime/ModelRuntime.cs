@@ -52,6 +52,8 @@ public sealed class ModelLoadPlan
     {
         get;
     }
+    public bool UsesIndex => ActivePackages.Any(item => item.Package.Backend == "index-translate-llama-cpu");
+    public bool UsesNativeLlm => UsesHy || UsesIndex;
     public bool UsesHy => ActivePackages.Any(item => item.Package.Backend == "hy-mt-llama-cpu");
 
     public static ModelLoadPlan Create(ModelRuntimePaths paths, JsonElement inventory, ModelPackageCatalog? catalog = null)

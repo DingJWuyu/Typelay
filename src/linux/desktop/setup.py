@@ -40,7 +40,15 @@ PREPARED_PREFIX = "TYPELAY_MODEL_PREPARED="
 
 FAILURE_PREFIX = "TYPELAY_SETUP_FAILURE="
 FAILURE_CODES = {"network", "disk-space", "integrity", "permission", "runtime", "unknown"}
-DOWNLOAD_RESOURCES = {"argos-zh-en", "argos-en-zh", "hy-model", "hy-license", "unknown"}
+DOWNLOAD_RESOURCES = {
+    "argos-zh-en",
+    "argos-en-zh",
+    "hy-model",
+    "hy-license",
+    "index-model",
+    "index-license",
+    "unknown",
+}
 NETWORK_REASONS = {"http", "dns", "tls", "timeout", "connection", "incomplete", "unknown"}
 ARGOS_RESOURCES = {"zh_en": "argos-zh-en", "en_zh": "argos-en-zh"}
 PRESENTATION_UNAVAILABLE = "无法读取安装结果说明，请重新启动 TypeLay 后重试。"
@@ -769,6 +777,52 @@ def hy_assets(home):
     return assets
 
 
+def index_assets(home):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "typelay_setup_index_assets", home / "worker/typelay_worker/index_assets.py"
+    )
+    if spec is None or spec.loader is None:
+        raise ValueError("index-native-unavailable")
+    assets = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(assets)
+    return assets
+
+
+def native_assets(home, backend):
+    if backend == "hy-mt-llama-cpu":
+        return hy_assets(home)
+    if backend == "index-translate-llama-cpu":
+        return index_assets(home)
+    raise ValueError("model-backend")
+
+
+def fixed_model(home, package):
+    name = "index" if package.backend == "index-translate-llama-cpu" else "hy"
+    fixed = native_assets(home, package.backend).read_json(
+        home / f"worker/native/{name}/model.lock.json"
+    )
+    if fixed["package_id"] != package.id or fixed["version"] != package.version:
+        raise ValueError("model-fixed-identity")
+    expected = [
+        direction.id
+        for direction in package.directions
+        if package.backend != "hy-mt-llama-cpu" or direction.id not in ("zh_en", "en_zh")
+    ]
+    if fixed["directions"] != expected:
+        raise ValueError("model-fixed-identity")
+    return fixed
+
+
+def check_index_runtime(home):
+    try:
+        index_assets(home).verify_native()
+        return {"available": True, "reason": None}
+    except (OSError, ValueError, KeyError, TypeError, ImportError):
+        return {"available": False, "reason": "native-unavailable"}
+
+
 def check_hy_runtime(home):
     try:
         hy_assets(home).verify_native()
@@ -922,7 +976,7 @@ def validate_package_request(request, catalog):
     if not selected or not (
         all(package.backend == "argos" for package in selected)
         or len(selected) == 1
-        and selected[0].backend == "hy-mt-llama-cpu"
+        and selected[0].backend in ("hy-mt-llama-cpu", "index-translate-llama-cpu")
     ):
         raise ValueError("model-package-request")
     previous = request["expectedCurrent"]
@@ -1178,19 +1232,22 @@ def install_packages(home, data, cache, request):
         if not set(request["activePackages"]).issubset(result_ids):
             raise ValueError("model-package-request")
         selected = [package for package in catalog.packages if package.id in result_ids]
-        downloading_hy = (
-            any(package.backend == "hy-mt-llama-cpu" and package.id in ids for package in selected)
+        downloading_native = [
+            package
+            for package in selected
+            if package.backend != "argos"
+            and package.id in ids
             and operation in ("Install", "Repair")
             and not supplement
-        )
+        ]
         if supplement:
             if hy_assets(home).verify_native().get("english_translation_version") != 1:
                 raise ValueError("hy-english-unavailable")
-        elif downloading_hy or any(
-            package.backend == "hy-mt-llama-cpu" and package.id in request["activePackages"]
-            for package in selected
-        ):
-            hy_assets(home).verify_native()
+        for package in selected:
+            if package.backend != "argos" and (
+                package in downloading_native or package.id in request["activePackages"]
+            ):
+                native_assets(home, package.backend).verify_native()
         source_runtime = components / previous / "runtime" if previous is not None else None
         may_rebuild_runtime = operation in ("Install", "Repair") and not supplement
 
@@ -1220,21 +1277,7 @@ def install_packages(home, data, cache, request):
         runtime_budget = 1024 * 1024 * 1024 if may_rebuild_runtime else 0
         required_data = max(copied_runtime_bytes, runtime_budget)
         required_cache = runtime_budget
-        fixed = None
-        if downloading_hy:
-            fixed = hy_assets(home).read_json(home / "worker/native/hy/model.lock.json")
-            package = next(package for package in selected if package.backend == "hy-mt-llama-cpu")
-            if (
-                fixed["package_id"] != package.id
-                or fixed["version"] != package.version
-                or fixed["directions"]
-                != [
-                    direction.id
-                    for direction in package.directions
-                    if direction.id not in ("zh_en", "en_zh")
-                ]
-            ):
-                raise ValueError("model-fixed-identity")
+        fixed_models = {package.id: fixed_model(home, package) for package in downloading_native}
         copy_limits = {}
         for item in installed:
             if item.package.id in retained and not (
@@ -1258,8 +1301,10 @@ def install_packages(home, data, cache, request):
                     continue
                 pin = package.directions[0].archive_pin
                 size = (
-                    sum(fixed[key]["bytes"] for key in ("model", "model_license"))
-                    if package.backend == "hy-mt-llama-cpu"
+                    sum(
+                        fixed_models[package.id][key]["bytes"] for key in ("model", "model_license")
+                    )
+                    if package.backend != "argos"
                     else pin.bytes
                     if pin is not None
                     else MAX_ARCHIVE
@@ -1267,7 +1312,7 @@ def install_packages(home, data, cache, request):
                 required_cache += size
                 required_data += (
                     size
-                    if package.backend == "hy-mt-llama-cpu"
+                    if package.backend != "argos"
                     else pin.unpacked_bytes
                     if pin is not None
                     else 2 * MAX_ARCHIVE
@@ -1356,8 +1401,8 @@ def install_packages(home, data, cache, request):
                     else tuple(
                         direction
                         for direction in package.directions
-                        if package.backend != "hy-mt-llama-cpu"
-                        or direction.id in fixed["directions"]
+                        if package.backend == "argos"
+                        or direction.id in fixed_models[package.id]["directions"]
                     )
                 )
                 if package.backend == "argos":
@@ -1372,6 +1417,7 @@ def install_packages(home, data, cache, request):
                         archive.unlink(missing_ok=True)
                         raise
                 else:
+                    fixed = fixed_models[package.id]
                     package_cache = private_directory(
                         private_directory(download_cache / package.id) / package.version
                     )
@@ -1381,10 +1427,12 @@ def install_packages(home, data, cache, request):
                         url = (
                             package.url
                             if kind == "model"
-                            else package.url.rsplit("/", 1)[0] + "/LICENSE.txt"
+                            else record.get("url", package.url.rsplit("/", 1)[0] + "/LICENSE.txt")
                         )
                         stage = "model-download"
-                        resource = "hy-model" if kind == "model" else "hy-license"
+                        resource = (
+                            "index" if package.backend == "index-translate-llama-cpu" else "hy"
+                        ) + ("-model" if kind == "model" else "-license")
                         archive, _ = download_resource(
                             package.id,
                             url,
@@ -1393,6 +1441,7 @@ def install_packages(home, data, cache, request):
                             expected=record,
                             hosts=(
                                 "huggingface.co",
+                                "raw.githubusercontent.com",
                                 "cdn-lfs.huggingface.co",
                                 "cdn-lfs.hf.co",
                                 "cdn-lfs-us-1.hf.co",
@@ -1406,7 +1455,9 @@ def install_packages(home, data, cache, request):
                     stage = "model-verify"
                     for kind in ("model", "model_license"):
                         record = fixed[kind]
-                        hy_assets(home).verify_file(destination / record["file"], record)
+                        native_assets(home, package.backend).verify_file(
+                            destination / record["file"], record
+                        )
                 files = tuple(
                     ModelFile(path.relative_to(destination).as_posix(), digest(path))
                     for path in plain_files(destination)
@@ -1544,7 +1595,7 @@ def cleanup_packages(home, data, cache):
                 folder = download_cache / package.id / package.version
                 if folder.is_symlink() or folder.parent.is_symlink():
                     return False
-                fixed = hy_assets(home).read_json(home / "worker/native/hy/model.lock.json")
+                fixed = fixed_model(home, package)
                 if fixed["package_id"] != package.id or fixed["version"] != package.version:
                     return False
                 for kind in ("model", "model_license"):
@@ -1577,6 +1628,21 @@ def install(home, data, cache, requested_directions=None, repair=False):
     for path in (data, cache):
         private_directory(path)
     components = private_directory(data / "components")
+    if requested_directions is None and not repair and current_generation(components) is None:
+        recommended = package_catalog(home).default_package
+        if recommended is not None:
+            return install_packages(
+                home,
+                data,
+                cache,
+                {
+                    "format": 1,
+                    "operation": "Install",
+                    "packageIds": [recommended.id],
+                    "activePackages": [recommended.id],
+                    "expectedCurrent": None,
+                },
+            )
     download_cache = private_directory(cache / "components")
     lock = os.open(components / "install.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
@@ -1816,10 +1882,13 @@ if __name__ == "__main__":
     try:
         if (
             len(sys.argv) == 3
-            and sys.argv[1] == "--check-hy-runtime"
+            and sys.argv[1] in ("--check-hy-runtime", "--check-index-runtime")
             and Path(sys.argv[2]).is_absolute()
         ):
-            print(json.dumps(check_hy_runtime(Path(sys.argv[2])), separators=(",", ":")))
+            check = (
+                check_index_runtime if sys.argv[1] == "--check-index-runtime" else check_hy_runtime
+            )
+            print(json.dumps(check(Path(sys.argv[2])), separators=(",", ":")))
             raise SystemExit(0)
         if (
             len(sys.argv) == 5

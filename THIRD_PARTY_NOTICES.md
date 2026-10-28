@@ -18,6 +18,12 @@ Linux 自包含发行包包含 .NET 运行时和共享 Python worker 源码；�
 
 安装器将解析后的依赖来源与摘要写入用户数据目录中的 `dependency-lock.json`。模型索引未提供摘要时，首次下载得到的 SHA-256 仅记录当次内容，不等于上游预先认证的摘要。不要把版本约束或安装后记录描述成已附带所有依赖的离线供应链锁。
 
+## Index 模型与原生运行时
+
+默认 Index 模型来自官方 [IndexTeam/Index-Translate-2B-GGUF](https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF/tree/3a0eca6ce931d88d00614d427ab3ed8ff0743902)，权重不进入发行 ZIP/tar。安装器只在用户确认后按 `native/index/model.lock.json` 的固定 revision、字节数和 SHA-256 获取 Q4_K_M 权重，连同官方 [Apache-2.0 原文](https://github.com/bilibili/Index-Translate/blob/912e86c8325d6c7c29a6a0b09c5f53482c6602f6/LICENSE) 保存到该模型包。GGUF 官方模型卡与源码许可证均已核验，不沿用 Hy 或 Argos 的许可推断。
+
+发行包的 `worker/native/index` 带独立 Index ABI1 适配器、固定 b11913 (`7aca0d2ea8d92b56911233b822db01f9fbb1ae50`) llama.cpp 官方 CPU 闭包和锁。`LICENSE.llama.cpp` 保留该源码 revision 的 MIT 原文；`LICENSE.Index-Translate` 保留上述 Apache 原文，覆盖适配器内固定的官方模板。CPU 子目录保留官方包实际提供的全部许可证叶文件（Windows 包含 LLVM OpenMP 声明）。构建检查这些文件的字节与 SHA，不以本文替代原文。构建头文件、源码、下载 archive、模型与审计工具不随 runtime payload 分发。
+
 ## 仅用于开发
 
 `.agents/skills/` 保留 Matt Pocock 上游技能及参考文件，原始许可证位于 `.agents/MATT-LICENSE`；来源 revision 和安装约束见 `docs/agents/skills.md`，安装器记录位于 `skills-lock.json`。这些文件不进入 Windows 运行包。

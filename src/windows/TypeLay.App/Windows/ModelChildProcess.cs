@@ -10,9 +10,9 @@ namespace TypeLay.App;
 // Broker and practice processes retain their existing ChildProcess contract.
 internal sealed class ModelChildProcess : IChildProcess
 {
-    private const ulong HyMemoryLimit = 2_684_354_560;
+    private const ulong NativeMemoryLimit = 2_684_354_560;
     private const uint KillOnClose = 0x2000;
-    private const uint HyJobFlags = KillOnClose | 0x100 | 0x200 | 0x8;
+    private const uint NativeJobFlags = KillOnClose | 0x100 | 0x200 | 0x8;
     // Final shutdown without exit proof must not make a generation deletable.
     // This client cannot admit a successor while its owner remains unconfirmed.
     private static readonly List<FileStream> UnconfirmedUses = [];
@@ -68,9 +68,9 @@ internal sealed class ModelChildProcess : IChildProcess
                 throw Failure("job-create");
             var limits = new ExtendedLimits
             {
-                Basic = new BasicLimits { Flags = plan.UsesHy ? HyJobFlags : KillOnClose, ActiveProcessLimit = plan.UsesHy ? 1u : 0u },
-                ProcessMemory = plan.UsesHy ? (nuint)HyMemoryLimit : 0,
-                JobMemory = plan.UsesHy ? (nuint)HyMemoryLimit : 0
+                Basic = new BasicLimits { Flags = plan.UsesNativeLlm ? NativeJobFlags : KillOnClose, ActiveProcessLimit = plan.UsesNativeLlm ? 1u : 0u },
+                ProcessMemory = plan.UsesNativeLlm ? (nuint)NativeMemoryLimit : 0,
+                JobMemory = plan.UsesNativeLlm ? (nuint)NativeMemoryLimit : 0
             };
             if (!SetInformationJobObject(_job, 9, ref limits, (uint)Marshal.SizeOf<ExtendedLimits>()))
                 throw Failure("job-limit");
@@ -113,6 +113,21 @@ internal sealed class ModelChildProcess : IChildProcess
             _process = process.Process;
             thread = process.Thread;
             SuspendedProcess.AssignToJob(_job, _process);
+            if (plan.UsesIndex)
+            {
+                if (!GetProcessAffinityMask(_process, out nuint allowed, out _) || allowed == 0)
+                    throw Failure("worker-affinity-query");
+                nuint selected = 0;
+                for (int bit = 0, count = 0; bit < nint.Size * 8 && count < 2; bit++)
+                    if ((allowed & ((nuint)1 << bit)) != 0)
+                    {
+                        selected |= (nuint)1 << bit;
+                        count++;
+                    }
+                if (!SetProcessAffinityMask(_process, selected)
+                    || !GetProcessAffinityMask(_process, out nuint actualAffinity, out _) || actualAffinity != selected)
+                    throw Failure("worker-affinity-limit");
+            }
             if (!QueryInformationJobObject(_job, 9, out ExtendedLimits actual, (uint)Marshal.SizeOf<ExtendedLimits>(), 0) ||
                 actual.Basic.Flags != limits.Basic.Flags || actual.Basic.ActiveProcessLimit != limits.Basic.ActiveProcessLimit ||
                 actual.ProcessMemory != limits.ProcessMemory || actual.JobMemory != limits.JobMemory)
@@ -370,4 +385,11 @@ internal sealed class ModelChildProcess : IChildProcess
     [DllImport("kernel32.dll", SetLastError = true)] private static extern uint WaitForSingleObject(nint handle, uint milliseconds);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetExitCodeProcess(nint process, out uint code);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(nint handle);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetProcessAffinityMask(nint process, out nuint processMask, out nuint systemMask);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetProcessAffinityMask(nint process, nuint mask);
+
 }

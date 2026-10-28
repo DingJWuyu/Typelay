@@ -48,7 +48,7 @@ internal sealed class ModelInstaller
     }
 
     private static readonly HashSet<string> AllowedHosts = new(StringComparer.OrdinalIgnoreCase)
-    { "api.nuget.org", "globalcdn.nuget.org", "pypi.org", "files.pythonhosted.org", "argos-net.com", "huggingface.co", "cdn-lfs.huggingface.co", "cdn-lfs-us-1.hf.co", "cas-bridge.xethub.hf.co" };
+    { "api.nuget.org", "globalcdn.nuget.org", "pypi.org", "files.pythonhosted.org", "argos-net.com", "huggingface.co", "raw.githubusercontent.com", "cdn-lfs.huggingface.co", "cdn-lfs.hf.co", "cdn-lfs-eu-1.hf.co", "us.aws.cdn.hf.co", "eu.aws.cdn.hf.co", "cdn-lfs-us-1.hf.co", "cas-bridge.xethub.hf.co" };
     private readonly HttpClient _http;
     private readonly Func<ProcessStartInfo, IChildProcess> _startProcess;
     private readonly TimeSpan _selfCheckTimeout;
@@ -73,6 +73,13 @@ internal sealed class ModelInstaller
     public async Task<ModelInstallationStore.PreparedInstallation> PrepareAsync(IProgress<SetupProgress> progress, CancellationToken ct,
         IEnumerable<string>? requestedDirections = null, bool repair = false)
     {
+        if (requestedDirections is null && !repair && _catalog.DefaultPackage is { } recommended)
+        {
+            var state = new ModelInstallationStore(_data, _worker, catalog: _catalog).ReadInstallationState();
+            if (state.InventoryKnown && state.Generation is null && state.InstalledPackages.Count == 0)
+                return await PreparePackagesAsync(new(1, ModelPackageOperation.Install,
+                    [recommended.Id], [recommended.Id], null), progress, ct);
+        }
         ModelInstallationStore.Lease? lease = null;
         ModelInstallationStore.PreparedInstallation? prepared = null;
         bool complete = false;
@@ -487,8 +494,8 @@ internal sealed class ModelInstaller
                     var package = _catalog.Packages.Single(item => item.Id == id);
                     string destination = PackageRoot(prepared.Paths.Models, package);
                     stage = ModelSetupStage.ModelDownload;
-                    if (package.Backend == "hy-mt-llama-cpu")
-                        await StageHy(package, destination, progress, ct);
+                    if (package.Backend is "hy-mt-llama-cpu" or "index-translate-llama-cpu")
+                        await StageNative(package, destination, progress, ct);
                     else
                         await StageArgos(package, destination, prepared.Root, progress, ct);
                     stage = ModelSetupStage.ModelVerify;
@@ -562,9 +569,9 @@ internal sealed class ModelInstaller
         }
         Directory.Delete(extraction, true);
     }
-    private async Task StageHy(ModelPackage package, string destination, IProgress<SetupProgress> progress, CancellationToken ct)
+    private async Task StageNative(ModelPackage package, string destination, IProgress<SetupProgress> progress, CancellationToken ct)
     {
-        using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.HyModelLock.json")
+        using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream(ModelCatalog.ModelLockResource(package))
             ?? throw new InvalidDataException("model-lock-missing");
         using var document = JsonDocument.Parse(stream);
         var fixedModel = document.RootElement;
@@ -576,9 +583,9 @@ internal sealed class ModelInstaller
             var asset = fixedModel.GetProperty(kind);
             string name = asset.GetProperty("file").GetString()!, sha = asset.GetProperty("sha256").GetString()!;
             long size = asset.GetProperty("bytes").GetInt64();
-            string url = kind == "model" ? package.Url : new Uri(new Uri(package.Url), "LICENSE.txt").AbsoluteUri;
+            string url = kind == "model" ? package.Url : ModelCatalog.PackageLicenseUrl(package);
             string archive = await Download(url, package.Id + "-" + package.Version + "-" + name, sha,
-                "下载 Hy 本地模型", progress, ct, size);
+                "下载本地模型及许可证", progress, ct, size);
             string target = FilePath(destination, name);
             await using (var input = File.OpenRead(archive))
             await using (var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, true))

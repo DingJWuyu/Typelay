@@ -4,5 +4,6 @@
     <ProjectReference Include="../TypeLay.Protocol/TypeLay.Protocol.csproj" />
     <EmbeddedResource Include="../TypeLay.Worker/model-catalog.json" LogicalName="TypeLay.ModelCatalog.json" />
     <EmbeddedResource Include="../TypeLay.Worker/native/hy/model.lock.json" LogicalName="TypeLay.HyModelLock.json" />
+    <EmbeddedResource Include="../TypeLay.Worker/native/index/model.lock.json" LogicalName="TypeLay.IndexModelLock.json" />
   </ItemGroup>
 </Project>

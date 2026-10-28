@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "file": "llama-b11913-bin-ubuntu-x64.tar.gz",
+  "bytes": 22474748,
+  "sha256": "c670ad826f59478db859c9d4a0d931ab9eb653f22b7e0adebd70816c4092aab5",
+  "tag": "b11913",
+  "commit": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50",
+  "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11913/llama-b11913-bin-ubuntu-x64.tar.gz"
+}

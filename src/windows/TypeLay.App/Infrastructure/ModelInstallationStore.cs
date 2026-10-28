@@ -15,6 +15,14 @@ internal sealed class ModelInstallationStore(string data, string worker,
     // This is only a shipped-component preparation hint. Ready still requires
     // the worker's full production verification and exact hello.
     internal bool CanPrepareWindowsHy => WindowsHyPayload.CanPrepare(_worker);
+    internal bool CanPrepareWindowsIndex => WindowsIndexPayload.CanPrepare(_worker);
+    private bool CanPreparePackage(ModelPackage package) => package.Backend switch
+    {
+        "argos" => true,
+        "hy-mt-llama-cpu" => CanPrepareWindowsHy,
+        "index-translate-llama-cpu" => CanPrepareWindowsIndex,
+        _ => false
+    };
     internal const string ModelUseLockName = "model-use.lock";
     private readonly HashSet<string> _owned = new(StringComparer.Ordinal);
     private readonly HashSet<string> _started = new(StringComparer.Ordinal);
@@ -238,7 +246,7 @@ internal sealed class ModelInstallationStore(string data, string worker,
         using var inventory = JsonDocument.Parse(File.ReadAllText(marker));
         // A missing production closure cannot enter startup or previous-generation
         // repair. Presence alone never bypasses worker verification or hello.
-        if (_catalog.ReadActiveSelection(inventory.RootElement).Any(item => item.Package.Backend == "hy-mt-llama-cpu") && !CanPrepareWindowsHy)
+        if (_catalog.ReadActiveSelection(inventory.RootElement).Any(item => !CanPreparePackage(item.Package)))
             throw new InvalidDataException("model-platform-unavailable");
         if (!File.Exists(paths.Python) || !File.Exists(paths.Worker))
             throw new InvalidDataException("model-inventory");
@@ -501,12 +509,11 @@ internal sealed class ModelInstallationStore(string data, string worker,
             }
             var selected = _store._catalog.Packages.Where(package => frozen.ActivePackages.Contains(package.Id, StringComparer.Ordinal)).ToArray();
             if (!(selected.All(package => package.Backend == "argos")
-                || selected.Length == 1 && selected[0].Backend == "hy-mt-llama-cpu"))
+                || selected.Length == 1 && selected[0].Backend is "hy-mt-llama-cpu" or "index-translate-llama-cpu"))
                 throw new InvalidDataException("model-package-request");
-            if ((selected.Any(package => package.Backend == "hy-mt-llama-cpu")
+            if (selected.Any(package => !_store.CanPreparePackage(package))
                 || frozen.Operation is ModelPackageOperation.Install or ModelPackageOperation.Repair
-                    && frozen.PackageIds.Any(id => _store._catalog.Packages.Single(package => package.Id == id).Backend == "hy-mt-llama-cpu"))
-                && !_store.CanPrepareWindowsHy)
+                    && frozen.PackageIds.Any(id => !_store.CanPreparePackage(_store._catalog.Packages.Single(package => package.Id == id))))
                 throw new InvalidDataException("model-platform-unavailable");
             string[] directions = selected.SelectMany(package =>
             {
@@ -672,9 +679,9 @@ internal sealed class ModelInstallationStore(string data, string worker,
             VerifyActive();
             // Cache bytes are not generation bytes: an old model's use handle
             // protects its private copy, while this lease excludes cache writers.
-            if (package.Backend != "hy-mt-llama-cpu")
+            if (package.Backend == "argos")
                 return;
-            using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.HyModelLock.json")
+            using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream(ModelCatalog.ModelLockResource(package))
                 ?? throw new InvalidDataException("model-lock-missing");
             using var modelLock = JsonDocument.Parse(stream);
             var fixedModel = modelLock.RootElement;

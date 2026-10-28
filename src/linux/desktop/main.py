@@ -123,7 +123,7 @@ async def setup_observation(paths, command, *arguments):
                 await asyncio.wait_for(process.wait(), 2)
 
 
-def install_models(paths):
+def install_models(paths, package="default"):
     generation = None
     failure = None
     process = subprocess.Popen(
@@ -135,6 +135,11 @@ def install_models(paths):
             str(paths.home),
             str(paths.data),
             str(paths.cache),
+            *(
+                [json.dumps({"directions": ["zh_en", "en_zh"], "repair": False})]
+                if package == "argos"
+                else []
+            ),
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -678,6 +683,13 @@ async def desktop(paths, background, lock, tutorial=False):
                 native = observed
         except (OSError, ValueError, EOFError, TimeoutError):
             pass
+        index_native = {"available": False, "reason": "native-unavailable"}
+        try:
+            observed = await setup_observation(paths, "--check-index-runtime")
+            if observed == {"available": True, "reason": None}:
+                index_native = observed
+        except (OSError, ValueError, EOFError, TimeoutError):
+            pass
         return await host.ask(
             "translationPreparation",
             {
@@ -685,6 +697,8 @@ async def desktop(paths, background, lock, tutorial=False):
                 "failureCode": failure_code,
                 "hyRuntimeAvailable": native["available"],
                 "hyUnavailableReason": native["reason"],
+                "indexRuntimeAvailable": index_native["available"],
+                "indexUnavailableReason": index_native["reason"],
             },
         )
 
@@ -1011,7 +1025,13 @@ def main():
     group.add_argument(
         "--editor-host", action="store_true", help="处理一次明确发起的编辑器翻译快照"
     )
-    group.add_argument("--install-models", action="store_true", help="下载、校验并安装本地翻译组件")
+    group.add_argument(
+        "--install-models",
+        nargs="?",
+        const="default",
+        choices=("default", "argos"),
+        help="明确准备当前组件，首次默认 Index；argos 显式选择原中英组件",
+    )
     group.add_argument("--version", action="store_true")
     group.add_argument("--wake", action="store_true", help="由 niri 快捷键唤醒当前已连接输入框")
     group.add_argument(
@@ -1070,7 +1090,7 @@ def main():
     if args.doctor:
         return doctor(paths)
     if args.install_models:
-        return install_models(paths)
+        return install_models(paths, args.install_models)
     operation = (
         "quit"
         if args.quit

@@ -7,6 +7,20 @@ namespace TypeLay.Runtime.Tests;
 public sealed class ModelCatalogTests
 {
     [Fact]
+    public void IndexIsTheNewDefaultWithoutReinterpretingLegacyInventory()
+    {
+        var catalog = ModelCatalog.Packages;
+        Assert.Equal("index-translate-2b-q4-k-m", catalog.DefaultPackage!.Id);
+        Assert.Equal(14, catalog.DefaultDirections.Count);
+        using var legacy = JsonDocument.Parse("{\"schema\":1}");
+        Assert.Equal(new[] { "zh_en", "en_zh" }, ModelCatalog.ReadInstallationDirections(legacy.RootElement));
+        Assert.Equal(new[] { "argos-zh-en", "argos-en-zh" }, catalog.ReadActiveSelection(legacy.RootElement)
+            .Select(item => item.Package.Id));
+        Assert.Equal("https://raw.githubusercontent.com/bilibili/Index-Translate/912e86c8325d6c7c29a6a0b09c5f53482c6602f6/LICENSE",
+            ModelCatalog.PackageLicenseUrl(catalog.DefaultPackage));
+    }
+
+    [Fact]
     public void LegacyPackageRequestWireShapeDoesNotAcquireTheCandidateField()
     {
         var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
@@ -202,7 +216,7 @@ public sealed class ModelCatalogTests
             Assert.Equal(package.Url, package.Directions[0].Url);
         });
         Assert.Equal(ModelCatalog.Directions, ModelCatalog.Packages.LegacyDirections);
-        Assert.Equal(ModelCatalog.Directions, ModelCatalog.Packages.DefaultDirections);
+        Assert.Equal(ModelCatalog.Packages.DefaultPackage!.Directions, ModelCatalog.Packages.DefaultDirections);
     }
 
     [Theory]

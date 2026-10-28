@@ -104,6 +104,100 @@ def preserve_glossary_structure(text, translator, rules, source, target):
     return result
 
 
+def translate_whole_source(text, direction, deadline, style, rules, source, target):
+    """One Index inference; inspect structure without splitting or repairing inference."""
+    parts = [part for part in PROTECTED.split(text) if part]
+    spans, translatable, position = [], [], 0
+    literals, preserve_whitespace = [], False
+    for part in parts:
+        translate = (
+            not PROTECTED.fullmatch(part) and bool(part.strip()) and any(c.isalpha() for c in part)
+        )
+        translatable.append(bool(translate))
+        spans.append((position, position + len(part), bool(translate)))
+        position += len(part)
+        if translate:
+            leading = part[: len(part) - len(part.lstrip())]
+            trailing = part[len(part.rstrip()) :]
+            preserve_whitespace |= bool(leading or trailing)
+        elif part not in ("\r\n", "\r", "\n"):
+            literals.append(part)
+    terms = []
+    groups = [() for _ in spans]
+    if rules is not None:
+        try:
+            groups = segment_terms(text, rules, source, target, spans)
+            for group in groups:
+                for pair in group:
+                    if pair not in terms:
+                        terms.append(pair)
+        except ValueError as error:
+            raise EngineError(str(error)) from None
+    if not any(translatable):
+        return text
+    linebreaks = tuple(re.findall(r"\r\n|\r|\n", text))
+    request = direction.request(
+        text,
+        deadline,
+        style,
+        preserved_literals=tuple(literals),
+        preserve_linebreaks=bool(linebreaks),
+        preserve_whitespace=preserve_whitespace,
+    )
+    result = request.translate_glossary(text, tuple(terms)) if terms else request.translate(text)
+    if not valid_text(result):
+        raise EngineError("invalid-output")
+
+    # Validate logical topology before source-owned layout serialization. Only
+    # whole-request SP/TAB padding and the spelling of existing line breaks may
+    # differ; internal whitespace, literals and per-slot terminology stay exact.
+    def logical(value):
+        return value.replace("\r\n", "\n").replace("\r", "\n")
+
+    source_parts = []
+    for i, (part, translate, group) in enumerate(zip(parts, translatable, groups)):
+        if i == 0:
+            part = part.lstrip(" \t")
+        if i == len(parts) - 1:
+            part = part.rstrip(" \t")
+        if part:
+            source_parts.append((logical(part), translate, group))
+    body = logical(result.strip(" \t"))
+    output_parts = [part for part in PROTECTED.split(body) if part]
+    if (
+        len(output_parts) != len(source_parts)
+        or tuple(PROTECTED.findall(body)) != tuple(PROTECTED.findall(logical(text)))
+        or body.count("\n") != len(linebreaks)
+    ):
+        raise EngineError("structure-not-preserved")
+    for (original, translate, group), output in zip(source_parts, output_parts):
+        if translate and not output.strip():
+            raise EngineError("structure-not-preserved")
+        if not translate:
+            preserved = original == output
+        else:
+            preserved = (
+                original[: len(original) - len(original.lstrip())]
+                == output[: len(output) - len(output.lstrip())]
+                and original[len(original.rstrip()) :] == output[len(output.rstrip()) :]
+            )
+        if not preserved:
+            raise EngineError("structure-not-preserved")
+        if not required_targets_present(output, group):
+            raise EngineError("glossary-output-missing")
+    separators = iter(linebreaks)
+    rendered = (
+        text[: len(text) - len(text.lstrip(" \t"))]
+        + re.sub("\n", lambda _: next(separators), body)
+        + text[len(text.rstrip(" \t")) :]
+    )
+    # The native 8192-byte output bound also applies after layout serialization,
+    # in addition to the shared UTF-16/frame contract. Never truncate to fit.
+    if not valid_text(rendered) or len(rendered.encode("utf-8", "strict")) > 8192:
+        raise EngineError("output-too-long")
+    return rendered
+
+
 def merge_manual(prefix: str, addition: str) -> str:
     if not valid_text(prefix) or not valid_text(addition):
         raise EngineError("invalid-manual-append")
@@ -222,9 +316,14 @@ class LocalEngine:
                         self._owned.append(pair)
                         self._pairs[(direction.source, direction.target)] = pair
                 else:
-                    from .hy import HyModel
+                    if item.selection.package.backend == "index-translate-llama-cpu":
+                        from .index import IndexModel
 
-                    model = HyModel(item.native)
+                        model = IndexModel(item.native)
+                    else:
+                        from .hy import HyModel
+
+                        model = HyModel(item.native)
                     self._owned.append(model)
                     for direction in item.selection.directions:
                         self._pairs[(direction.source, direction.target)] = model.direction(
@@ -264,7 +363,11 @@ class LocalEngine:
 
     @property
     def advanced_translation_directions(self):
-        if len(self._selection) != 1 or self._selection[0].package.backend != "hy-mt-llama-cpu":
+        if len(self._selection) != 1:
+            return ()
+        if self._selection[0].package.backend == "index-translate-llama-cpu":
+            return tuple(direction.id for direction in self._selection[0].directions)
+        if self._selection[0].package.backend != "hy-mt-llama-cpu":
             return ()
         return tuple(
             direction.id
@@ -286,10 +389,22 @@ class LocalEngine:
     @property
     def styled_translation_version(self):
         # Successful loading establishes a protocol feature, not language quality.
+        if self._selection and self._selection[0].package.backend == "index-translate-llama-cpu":
+            return (
+                1
+                if self.advanced_translation_directions and self._owned[0].styled_available
+                else None
+            )
         return 1 if self.advanced_translation_directions else None
 
     @property
     def glossary_translation_version(self):
+        if self._selection and self._selection[0].package.backend == "index-translate-llama-cpu":
+            return (
+                1
+                if self.advanced_translation_directions and self._owned[0].glossary_available
+                else None
+            )
         return self.styled_translation_version
 
     @property
@@ -306,7 +421,8 @@ class LocalEngine:
         directions = tuple(direction for item in self._selection for direction in item.directions)
         return (
             directions[:1]
-            if self._selection[0].package.backend == "hy-mt-llama-cpu"
+            if self._selection[0].package.backend
+            in ("hy-mt-llama-cpu", "index-translate-llama-cpu")
             else directions
         )
 
@@ -438,11 +554,16 @@ class LocalEngine:
                     if style is not None:
                         raise EngineError("style-unavailable")
                 pair = pair.request(text, deadline, style)
-            value = (
-                preserve_structure(text, pair)
-                if glossary is None
-                else preserve_glossary_structure(text, pair, glossary, actual, target)
-            )
+            if self._selection[0].package.backend == "index-translate-llama-cpu":
+                value = translate_whole_source(
+                    text, pair, deadline, style, glossary, actual, target
+                )
+            else:
+                value = (
+                    preserve_structure(text, pair)
+                    if glossary is None
+                    else preserve_glossary_structure(text, pair, glossary, actual, target)
+                )
             if preserved is not None:
                 value = merge_manual(preserved, value)
             return Result("translated", value)

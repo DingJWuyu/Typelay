@@ -283,3 +283,12 @@ PYTHONPATH=src/shared/TypeLay.Worker python tests/shared/worker/ordinary_quality
 共享 600 秒含构建与两臂，2 线程、单模型、2.5 GiB 地址空间；每请求仍为生产 60 秒/收帧 65 秒，构建及每臂退出各保留原最多 7 秒清理。无需复制模型；运行前另留至少 256 MiB 临时磁盘，实际构建占用仍须检查。身份不符、A 不完整、超时、拒绝或清理未确认即停止，不重跑挑结果。输出不可覆盖，分别为 `ordinary-quality.json`、`ordinary-b-quality.json` 与 `ordinary-hy-decode/` 构建证据；validate-only 只生成两个 not-run 计划并返回 2。
 
 报告保留输入、逐条原始响应/拒绝码/耗时、worker/native/源文件/库存身份及固定参数。`promptIdentity` 记录源码中的指令表达式和完整模板，明确不是运行时 token 轨迹；native 未暴露 token 数和结束原因，截断状态保留未知，不能把非空输出当作未截断。质量保持 not-reviewed，按既有语义锚点人工比较否定、数字、主体、条件、承诺及增漏义；当前句子已参与过诊断，不称为未见测试集。第二阶段若有依据，再固定一个 decoder 对比官方 prompt 与单个保义约束 prompt；本入口不实现 prompt 搜索或多模型评审，也不同时改变 prompt 与 decoder。
+
+
+## Index 默认切换的验证边界
+
+共享 `test_index_integration.py` 通过真实结构函数/库存边界核新默认、旧 schema 语义、whole 单次调用、非翻译片段、逐槽术语与源布局序列化。受控返回值只证明拒绝/保留合同，不证明真实模型质量。`test_index_native.py` 核原生接口/固定锁，Linux `test_index_runtime.py` 在给定实际 CPU closure 时编译并加载真实 ELF、核实际资源门；不把假 GGUF 当模型证据。
+
+两端独立 Index CI 使用各自正式安装器和宿主 owner，见平台开发说明。共享 600 秒、单请求/加载 60 秒和退出 7 秒不放宽；每阶段保留 passed/failed/not-run，旧 Hy 或输入链失败不因此被重判。实际请求需包含同一 worker 的多个不同源、结构要求及失败/取消后的隔离；原始质量结果另行人工评估。对同代码/同输入失败禁止语义重试；修改已定位的实现后才可作新候选验证，保留旧失败证据在 ignored artifacts，不以新通过覆盖旧结果。
+
+Index 采用 4096/1024 与确定性 greedy 配方。产品的结构校验、外层 SP/TAB 与原行结尾序列化是集成约束，不声称 raw 模型与研究基准逐字或质量/延时等价。未经真实 Windows CI 不称双平台已通过。

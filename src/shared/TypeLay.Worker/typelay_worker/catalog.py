@@ -73,8 +73,12 @@ class ModelPackageCatalog:
         return tuple(directions)
 
     @property
+    def default_package(self) -> ModelPackage | None:
+        return next((p for p in self.packages if p.id == "index-translate-2b-q4-k-m"), None)
+
+    @property
     def default_directions(self) -> tuple[ModelDirection, ...]:
-        return self.legacy_directions
+        return self.default_package.directions if self.default_package else self.legacy_directions
 
 
 def _text(value, key):
@@ -123,7 +127,7 @@ def load_package_catalog(path: Path | None = None) -> ModelPackageCatalog:
             if (
                 not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", package_id)
                 or package_id in seen_packages
-                or backend not in ("argos", "hy-mt-llama-cpu")
+                or backend not in ("argos", "hy-mt-llama-cpu", "index-translate-llama-cpu")
                 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", version)
                 or type(entry["preview"]) is not bool
                 or url.scheme != "https"
@@ -340,9 +344,12 @@ def read_active_selection(
             and item.package.version == "1.9"
             for item in result
         )
-        hy = len(result) == 1 and result[0].package.backend == "hy-mt-llama-cpu"
+        native = len(result) == 1 and result[0].package.backend in (
+            "hy-mt-llama-cpu",
+            "index-translate-llama-cpu",
+        )
         directions = [direction.id for item in result for direction in item.directions]
-        if not (argos or hy) or len(set(directions)) != len(directions):
+        if not (argos or native) or len(set(directions)) != len(directions):
             raise ValueError("model-inventory")
         return result
     except (KeyError, TypeError, ValueError):

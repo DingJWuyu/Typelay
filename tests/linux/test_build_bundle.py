@@ -199,7 +199,20 @@ class WorkerBundleTests(unittest.TestCase):
                 {item.name for item in native.iterdir()},
                 {"model.lock.json", "cpu-runtime.lock.json", "LICENSE.llama.cpp"},
             )
-            self.assertEqual([item.name for item in worker.rglob("*.cpp")], ["LICENSE.llama.cpp"])
+            self.assertEqual(
+                {item.relative_to(worker).as_posix() for item in worker.rglob("*.cpp")},
+                {"native/hy/LICENSE.llama.cpp", "native/index/LICENSE.llama.cpp"},
+            )
+            index = worker / "native/index"
+            self.assertEqual(
+                {item.name for item in index.iterdir()},
+                {
+                    "model.lock.json",
+                    "cpu-runtime.lock.json",
+                    "LICENSE.llama.cpp",
+                    "LICENSE.Index-Translate",
+                },
+            )
             self.assertFalse(any(worker.rglob("*.h")))
             self.assertFalse(any(worker.rglob("assets.lock.json")))
             self.assertFalse(any(worker.rglob("headers.lock.json")))

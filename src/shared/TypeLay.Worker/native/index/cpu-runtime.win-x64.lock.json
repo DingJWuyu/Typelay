@@ -1,0 +1,123 @@
+{
+  "schema": 1,
+  "platform": "win-x64",
+  "upstream_tag": "b11913",
+  "upstream_revision": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50",
+  "runtime_archive_sha256": "55b31ccaf398e90457cfe28087297f5f3fdf1e3bfa7a28e1108f13d0af8e4621",
+  "files": [
+    {
+      "file": "LICENSE-LLVM-OpenMP",
+      "bytes": 19741,
+      "sha256": "fdad1758a9e1f9d5a81e18879b3406772115edc92c24bfa36b70c654f325e8e4",
+      "kind": "license"
+    },
+    {
+      "file": "ggml-base.dll",
+      "bytes": 805888,
+      "sha256": "d54b3a0724a9adf2e37cc1cc7da706ea1b03bcd0f9f80ffee314ae913523a62b",
+      "kind": "dependency"
+    },
+    {
+      "file": "ggml-cpu-alderlake.dll",
+      "bytes": 1415168,
+      "sha256": "041af134933adc4e3fff0d64382e715e237689fa6c8b88b3ef7ac7bfef7e8a47",
+      "kind": "cpu_variant"
+    },
+    {
+      "file": "ggml-cpu-cannonlake.dll",
+      "bytes": 1611264,
+      "sha256": "cdc87125fb8cbce12e366d47865eee6ad8315970e39c1f9180e5c5aeb94a85f7",
+      "kind": "cpu_variant"
+    },
+    {
+      "file": "ggml-cpu-cascadelake.dll",
+      "bytes": 1584128,
+      "sha256": "214246dfdc19b5c2ec73b5224f0dcf13585144c21b9e9e47b90887082bd4f242",
+      "kind": "cpu_variant"
+    },
+    {
+      "file": "ggml-cpu-cooperlake.dll",
+      "bytes": 1593856,
+      "sha256": "38d0b8eefa477258f1ef0fdbcd0ad8fdcb6bad028a9be2a9fe3a0c8c66f9f619",
+      "kind": "cpu_variant"
+    },
+    {
+      "file": "ggml-cpu-haswell.dll",
+      "bytes": 1420288,
+      "sha256": "e4eb4b2b5eb979bfc5ad01f394707993dd9e57f31889be0723a816216736a0aa",
+      "kind": "cpu_variant"
+    },
+    {
+      "file": "ggml-cpu-icelake.dll",
+      "bytes": 1591296,
+      "sha256": "dddb89d873d2276cd2cf37faaa09d08cbe4229480d178580a4190c1fe9792818",
+      "kind": "cpu_variant"
+    },
+    {
+      "file": "ggml-cpu-ivybridge.dll",
+      "bytes": 1302016,
+      "sha256": "7469e7f08acd821830c986ec143d35fd19fa6747eca5dc0273f5285e8f036be5",
+      "kind": "cpu_variant"
+    },
+    {
+      "file": "ggml-cpu-piledriver.dll",
+      "bytes": 1294848,
+      "sha256": "fff7d6a3413bb2105d458e1fb01524f2f22227edfaa9dec0a935e17311220037",
+      "kind": "cpu_variant"
+    },
+    {
+      "file": "ggml-cpu-sandybridge.dll",
+      "bytes": 1291776,
+      "sha256": "924ff6c46f7f67e8bcae6469b06c0a245bda3d109d07eec2efcf91d4beb7717c",
+      "kind": "cpu_variant"
+    },
+    {
+      "file": "ggml-cpu-sapphirerapids.dll",
+      "bytes": 1870848,
+      "sha256": "d984760cfc1df22479abf51e81178573537cc15f597883cbd185ef0417d47045",
+      "kind": "cpu_variant"
+    },
+    {
+      "file": "ggml-cpu-skylakex.dll",
+      "bytes": 1605120,
+      "sha256": "8fffe5380562191035e6e7ec8fb39f2687b0b89f6bbb44dc6e19590bb7ec70fb",
+      "kind": "cpu_variant"
+    },
+    {
+      "file": "ggml-cpu-sse42.dll",
+      "bytes": 916992,
+      "sha256": "1d77793da95726a1405e7d7500da71eaefdee1204d4a7a7e70afedfb26515754",
+      "kind": "cpu_variant"
+    },
+    {
+      "file": "ggml-cpu-x64.dll",
+      "bytes": 909824,
+      "sha256": "4d5f10fc971b27bb12b3b31eb2ff1612d8c09a6ab0d8e4276cbaa535175eddf0",
+      "kind": "cpu_variant"
+    },
+    {
+      "file": "ggml-cpu-zen4.dll",
+      "bytes": 1600512,
+      "sha256": "49effad252cec394749323ff7bfe31e69f0f290ae915733b78a734b1cde29805",
+      "kind": "cpu_variant"
+    },
+    {
+      "file": "ggml.dll",
+      "bytes": 78848,
+      "sha256": "bd70e69a96b80f13a0a76f4757276f75e94525aedc2b58a089343b43d9eb8314",
+      "kind": "dependency"
+    },
+    {
+      "file": "libomp.dll",
+      "bytes": 768000,
+      "sha256": "a12116ba72d1d6820407cf30be23da04ce79d6bb8a71a5ee71759c5a1faa6f1c",
+      "kind": "dependency"
+    },
+    {
+      "file": "llama.dll",
+      "bytes": 3685888,
+      "sha256": "67b88e5e31decb264a61bdd530d0d42e6f51801a7ae9e0c97d7dbd25f3161b68",
+      "kind": "dependency"
+    }
+  ]
+}

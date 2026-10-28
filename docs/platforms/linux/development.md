@@ -38,7 +38,7 @@ finalize 校验主包原始清单、构建提交、合作组件的固定来源�
 
 ## Hy worker 可选构建
 
-默认模型准备继续使用原 Argos。CI 的正式 Linux 候选包通过固定 b11717 官方 CPU 闭包加入 Hy 运行资产，仍需用户在设置中显式选择下载并使用 Hy。手动开发构建只有传入 `python eng/linux/build.py --hy-runtime <已有CPU目录>` 才包含这些资产；该参数不下载、不编译 llama.cpp、不安装模型。设置显示固定 Hy 预览包，新装默认十二方向，中英双向须另行明确补充；只有发行包的 native 闭包通过只读完整性检查后，才开放下载、使用与修复。该目录必须与 `src/shared/TypeLay.Worker/native/hy/cpu-runtime.lock.json` 的17项文件逐字节匹配。
+新用户默认明确准备 Index，旧 Argos/Hy 选择保留。CI 的正式 Linux 候选包通过固定 b11717 官方 CPU 闭包加入 Hy 运行资产，仍需用户在设置中显式选择下载并使用 Hy。手动开发构建只有传入 `python eng/linux/build.py --hy-runtime <已有CPU目录>` 才包含这些资产；该参数不下载、不编译 llama.cpp、不安装模型。设置显示固定 Hy 预览包，Hy 新装默认十二方向，中英双向须另行明确补充；只有发行包的 native 闭包通过只读完整性检查后，才开放下载、使用与修复。该目录必须与 `src/shared/TypeLay.Worker/native/hy/cpu-runtime.lock.json` 的17项文件逐字节匹配。
 
 只编生产 adapter 可执行 `python eng/linux/hy/build.py --runtime <已有CPU目录> --output <空输出目录>`。输出包含唯一共享 C++ 源编出的固定 ABI5 导出的 adapter、固定 CPU 库、模型/CPU 锁、production-adapter 清单与许可证；发布包不带 C++、headers 或 fixture 门。Hy 模型数据单独位于 `models/packages/<id>/<version>/`，精确包含锁定 GGUF 与 `model_LICENSE.txt`。缺少运行资产或固定模型数据时，active Hy 明确启动失败。
 
@@ -58,7 +58,7 @@ finalize 校验主包原始清单、构建提交、合作组件的固定来源�
 
 新包请求使用固定目录身份，不接受 URL、版本或路径：`format: 1`、`operation: Install|Repair|Select|Remove`、`packageIds`、`activePackages` 和 `expectedCurrent`。安装只增加所选未装包，修复只重建已装包并保留方向子集和当前选择；切换与移除完全离线。移除仅允许一个非当前包，须先切换模型再移除。原默认 Argos 双向及 legacy 方向安装入口保留，但已有 schema 3 库存不能回到旧整库修复路径。
 
-Hy 中英预览通过正式目录列出的双向能力与明确设置确认开放，仍仅用 format2 Install 加 `addDirections: ["zh_en", "en_zh"]`。目标必须是已安装固定 Hy 包，两方向均为增量，`expectedCurrent` 精确，`activePackages` 原样不变；准备只复用已验证权重/运行时并复制新代，不能联网补齐或借 Repair 扩方向。format1 新装默认仍十二方向，Argos 默认不变。实际 Host 使用嵌入目录，Python 准备测试不等于十四方向 Host/GUI 激活；发行 Host 与 worker 必须使用一致目录。启用后不支持直接降级旧版本，用户可在当前版本切回 Argos；未安装时需另行确认下载安装，不保证离线可切回。旧版本拒绝十四方向库存而不裁剪，现有 `--activate-model` 不是任意旧代恢复工具；Remove 的 activation 还可能含被移除 Hy14 元数据，不能据新 installed.json 只有 Argos 就承诺旧版本可读。没有公开跨版本恢复入口，不手改库存或承诺“移除即可降级”。
+Hy 中英预览通过正式目录列出的双向能力与明确设置确认开放，仍仅用 format2 Install 加 `addDirections: ["zh_en", "en_zh"]`。目标必须是已安装固定 Hy 包，两方向均为增量，`expectedCurrent` 精确，`activePackages` 原样不变；准备只复用已验证权重/运行时并复制新代，不能联网补齐或借 Repair 扩方向。Hy 的 format1 新装仍十二方向，不改变已选模型；Index 默认与其独立。实际 Host 使用嵌入目录，Python 准备测试不等于十四方向 Host/GUI 激活；发行 Host 与 worker 必须使用一致目录。启用后不支持直接降级旧版本，用户可在当前版本切回 Argos；未安装时需另行确认下载安装，不保证离线可切回。旧版本拒绝十四方向库存而不裁剪，现有 `--activate-model` 不是任意旧代恢复工具；Remove 的 activation 还可能含被移除 Hy14 元数据，不能据新 installed.json 只有 Argos 就承诺旧版本可读。没有公开跨版本恢复入口，不手改库存或承诺“移除即可降级”。
 
 准备期间原代继续服务。请求与 current 比较在同一安装锁内、复制或下载前完成；暂停、继续和重试保留原请求，陈旧请求不能自行改基准重试。普通文件复制形成新代，私有 Python 必须指向新代，复制后离线完成 prefix/import 检查。format1 Install/Repair 发现私有解释器缺失、损坏或依赖检查失败时，可在预留最坏额外空间后重建候选 runtime；权限、空间或超时失败不触发该回退。Select/Remove 的 runtime 失败只报错，不联网修复。新包准备只下载、校验和构建库存，唯一 serving worker 在最后激活时加载模型；用户试译另行验收。
 
@@ -156,3 +156,10 @@ trunk、两个保留的 preview 分支、Pull Request 与手动 workflow 使用�
 ### 真实 GIMP 的隔离验收坐标
 
 `ordinary-gimp` scope 仅在自己的嵌套 niri 配置中关闭 compositor 动画，其他 scope 与产品配置不变。锁定 niri 26.04 的 tiled IPC 不提供窗口位置；该验收仅在同一聚焦非浮动窗口、唯一活动输出/工作区、无 overview、窗口和 tile 均精确占满输出且内容偏移为零时证明全屏原点。配置摘要和约束记录在结果 JSON 中。此路径不证明动画过程中的真实用户定位能力，不把任意缺失坐标当成零。
+
+
+## Index 默认载荷
+
+`eng/linux/build.py` 默认包含 Index ABI1/b11913 CPU 载荷；如未指定 `--index-runtime`，只在显式构建时准备并验证固定官方 CPU archive，绝不下载模型。可先运行 `python eng/linux/index/prepare_runtime.py --cache artifacts/linux/index-cpu-download --output artifacts/linux/index-cpu-runtime` 再传入该目录。Hy 仍使用独立 `--hy-runtime` 与 b11717，不混用目录或升级旧锁。
+
+真实模型验证先用 `python eng/shared/prepare_index_model.py --output artifacts/index-model-download` 显式准备固定权重/许可证。`tests/linux/index_package_e2e.py --package <实际包> --cache artifacts/index-model-download --output artifacts/index-production` 通过正式 setup、Linux Host/ModelClient/LinuxModelFactory 与 supervisor 执行默认准备、实际握手/连续请求、冷启、失败/取消激活保旧代、Repair、Argos 安装、离线切换与移除。全程 600 秒，清理另最多 7 秒；输出逐阶段 passed/failed/not-run，不能当 GTK、写回或质量验收。其独立 CI 不改变旧 Hy/桌面链预算；旧链显式 `--install-models argos`，不再误用新默认建立 Argos 基线。Index 权重只保存在临时 runner，既不上传 artifact 也不写入 GitHub cache；只有固定 CPU archive 可缓存。

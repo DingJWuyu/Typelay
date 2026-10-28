@@ -99,9 +99,15 @@ def package_documentation(output, identity):
     (output / "README.md").write_text(text, encoding="utf-8")
 
 
-def build(output, fixture=False, cooperation_package=None, hy_runtime=None):
+def build(output, fixture=False, cooperation_package=None, hy_runtime=None, index_runtime=None):
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise RuntimeError("build-requires-linux-x86_64")
+    if index_runtime is None:
+        from eng.linux.index.prepare_runtime import prepare as prepare_index_runtime
+
+        index_runtime = ROOT / "artifacts/linux/index-cpu-runtime"
+        if not index_runtime.exists():
+            prepare_index_runtime(ROOT / "artifacts/linux/index-cpu-download", index_runtime)
     identity = source_identity(require_clean=cooperation_package is not None)
     if cooperation_package is not None and not cooperation_package.is_file():
         raise ValueError("requested-cooperation-package-is-missing")
@@ -147,7 +153,7 @@ def build(output, fixture=False, cooperation_package=None, hy_runtime=None):
         output / "desktop",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
-    package_worker(output, hy_runtime)
+    package_worker(output, hy_runtime, index_runtime)
     package_browsers(output)
     package_editor(output)
     for name in ("typelay", "typelay-browser-host", "install.py"):
@@ -167,7 +173,7 @@ def build(output, fixture=False, cooperation_package=None, hy_runtime=None):
         print("Setup-only build: desktop cooperation payload is not included")
 
 
-def package_worker(output, hy_runtime=None):
+def package_worker(output, hy_runtime=None, index_runtime=None):
     # Only Python runtime modules and explicitly listed data are distributed.
     # native/hy also owns C++/headers/build locks in source, never copy that tree.
     source = ROOT / "src/shared/TypeLay.Worker"
@@ -183,7 +189,7 @@ def package_worker(output, hy_runtime=None):
 
         build_hy(hy_runtime, native)
     else:
-        # Argos-only builds remain supported. An installed active Hy package
+        # Builds without optional Hy remain supported. An installed active Hy package
         # fails closed until a distribution supplies its verified native closure.
         native.mkdir(parents=True)
         for name in ("model.lock.json", "cpu-runtime.lock.json"):
@@ -191,6 +197,20 @@ def package_worker(output, hy_runtime=None):
         shutil.copyfile(
             source / "native/hy/include/LICENSE.llama.cpp", native / "LICENSE.llama.cpp"
         )
+
+    native = worker / "native/index"
+    if index_runtime is not None:
+        from eng.linux.index.build import build as build_index
+
+        build_index(index_runtime, native)
+    else:
+        # A build without Index explicitly reports it unavailable, never falls
+        # back to another model under the Index default label.
+        native.mkdir(parents=True)
+        for name in ("model.lock.json", "cpu-runtime.lock.json"):
+            shutil.copyfile(source / "native/index" / name, native / name)
+        for name in ("LICENSE.llama.cpp", "LICENSE.Index-Translate"):
+            shutil.copyfile(source / "native/index/include" / name, native / name)
 
 
 def package_browsers(output):
@@ -655,16 +675,28 @@ if __name__ == "__main__":
         type=Path,
         help="Optionally bundle Hy using an already prepared fixed CPU-only runtime; no downloads",
     )
+    parser.add_argument(
+        "--index-runtime",
+        type=Path,
+        help="Use a prepared Index CPU runtime instead of explicit build-time runtime preparation",
+    )
     args = parser.parse_args()
     if args.finalize:
         if (
             args.cooperation_package is None
             or args.with_test_fixture
             or args.hy_runtime is not None
+            or args.index_runtime is not None
         ):
             parser.error(
                 "--finalize requires --cooperation-package and cannot rebuild fixtures or Hy"
             )
         finalize(args.output, args.cooperation_package)
     else:
-        build(args.output, args.with_test_fixture, args.cooperation_package, args.hy_runtime)
+        build(
+            args.output,
+            args.with_test_fixture,
+            args.cooperation_package,
+            args.hy_runtime,
+            args.index_runtime,
+        )

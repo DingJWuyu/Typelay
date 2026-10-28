@@ -30,6 +30,8 @@ internal static class Program
                 _ => 2
             };
         }
+        if (args.Length == 4 && args[0] == "--verify-index-production")
+            return IndexPackageCheck.Run(args[1], args[2], args[3]);
         if (args.Length == 4 && args[0] == "--verify-hy-production")
             return HyPackageCheck.Run(args[1], args[2], args[3]);
         if (args.Length == 5 && args[0] == "--verify-hy-packages")

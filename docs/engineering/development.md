@@ -24,6 +24,8 @@
 
 CI 发布的 artifact 以提交 SHA 命名，包含对应平台的测试结果、当前运行的发行包和校验和。不要上传 artifacts 的整个目录。工作流日志是对应提交的执行记录，不写回源码树。
 
+新增的 `index-windows` / `index-linux` 在对应平台被选择时分别检查正式 Index 安装器与宿主 owner；与既有 Hy、输入及 GUI 链独立，不替换它们或放宽预算。Index 模型只下载到临时 runner，不上传 GitHub cache 或 artifact；仅 CPU archive 可缓存，artifact 只列结构化阶段/身份结果，详见[测试边界](testing.md#index-默认切换的验证边界)。
+
 只有对应输入和平台确实发生变化时才扩展 CI job。真实交互验收使用目标平台的物理桌面，不以 hosted runner 的进程测试或嵌套合成器冒充。
 
 ## 结束条件

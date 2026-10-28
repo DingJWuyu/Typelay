@@ -6,14 +6,19 @@ param(
     [string]$Task = 'help',
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
-    [string]$HyRuntime
+    [string]$HyRuntime,
+    [string]$IndexRuntime
 )
+if ($IndexRuntime -and $Task -notin @('pack', 'run')) {
+    throw '-IndexRuntime is only valid with pack or run.'
+}
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($HyRuntime -and $Task -notin @('pack', 'run')) {
     throw '-HyRuntime is only valid with pack or run.'
 }
 if ($HyRuntime) { $HyRuntime = [IO.Path]::GetFullPath($HyRuntime) }
+if ($IndexRuntime) { $IndexRuntime = [IO.Path]::GetFullPath($IndexRuntime) }
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 . (Join-Path $PSScriptRoot '../shared/commands.ps1')
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
@@ -76,12 +81,23 @@ function Publish-Distribution([bool]$SelfContained) {
     New-Item -ItemType Directory -Force (Join-Path $stage 'worker/typelay_worker') | Out-Null
     Copy-Item 'src/shared/TypeLay.Worker/run_worker.py', 'src/shared/TypeLay.Worker/requirements.txt', 'src/shared/TypeLay.Worker/model-catalog.json' (Join-Path $stage 'worker')
     Copy-Item 'src/shared/TypeLay.Worker/typelay_worker/*.py' (Join-Path $stage 'worker/typelay_worker')
+    $indexCpu = $IndexRuntime
+    if (-not $indexCpu) {
+        $indexCpu = Join-Path $artifacts 'index-runtime'
+        if (-not (Test-Path -LiteralPath $indexCpu)) {
+            Invoke-Checked python @('eng/windows/index/prepare_runtime.py', '--cache',
+                (Join-Path $artifacts 'index-runtime-download'), '--output', $indexCpu)
+        }
+    }
+    Invoke-Checked python @('eng/windows/index/build.py', '--runtime', $indexCpu,
+        '--output', (Join-Path $stage 'worker/native/index'))
+    Write-Output 'Included verified Index native payload. Model preparation still requires user confirmation.'
     if ($HyRuntime) {
         Invoke-Checked python @('eng/windows/hy/build.py', '--runtime', $HyRuntime,
             '--output', (Join-Path $stage 'worker/native/hy'))
         Write-Output 'Included verified production Hy native payload. Models are installed separately with user confirmation.'
     } else {
-        Write-Output 'Argos-only distribution: Hy native payload is not included.'
+        Write-Output 'Hy native payload is not included. Existing Hy selection remains unavailable, not replaced.'
     }
     New-Item -ItemType Directory -Force (Join-Path $stage 'bootstrap') | Out-Null
     Copy-Item 'packaging/windows/start.ps1' (Join-Path $stage 'bootstrap/start.ps1')
@@ -120,7 +136,8 @@ try {
             Write-Output 'Usage: ./dev.ps1 <restore|build|test|check|shared-check|format|pack|run|e2e|native-e2e|hy-adapter-prepare|hy-adapter-e2e|hy-runtime-prepare|hy-product-prepare> [-Configuration Debug|Release] [-HyRuntime <verified CPU directory>]'
             Write-Output 'check: build, behavior/contract tests, Python tests, compiler/analyzer checks and formatting.'
             Write-Output 'shared-check: portable Core/Runtime/Protocol and worker tests; no Windows desktop or model installation.'
-            Write-Output 'pack: self-contained Windows distribution, checksum and relocated-package/process E2E.'
+            Write-Output 'pack: self-contained distribution including fixed Index CPU payload, checksum and relocated-package/process E2E; no model download.'
+            Write-Output 'pack/run -IndexRuntime <directory>: use a prepared Index CPU closure instead of build-time runtime preparation.'
             Write-Output 'native-e2e: controlled Win32 fixture adapter contracts; requires an unlocked Windows desktop.'
             Write-Output 'hy-runtime-prepare: explicitly download/hash only the fixed official Windows CPU ZIP; no model or inference.'
             Write-Output 'pack/run -HyRuntime <directory>: build and include the production ABI5 payload; no model download.'

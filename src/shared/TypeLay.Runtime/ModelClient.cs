@@ -350,7 +350,7 @@ public sealed class ModelClient : ITranslationService, IDisposable
             {
                 RequireOwner(operation);
                 previous = _active;
-                exclusive = plan.UsesHy || previous?.Plan.UsesHy == true;
+                exclusive = plan.UsesNativeLlm || previous?.Plan.UsesNativeLlm == true;
                 if (exclusive)
                 {
                     _switching = true;
@@ -566,7 +566,7 @@ public sealed class ModelClient : ITranslationService, IDisposable
             }
             _candidate = connection;
         }
-        var hello = await ExchangeAsync(connection, new(0, "hello"), TimeSpan.FromSeconds(120), ct);
+        var hello = await ExchangeAsync(connection, new(0, "hello"), TimeSpan.FromSeconds(plan.UsesIndex ? 60 : 120), ct);
         ct.ThrowIfCancellationRequested();
         ValidateHello(plan, hello);
         // Identity requires exact packages from this worker connection. A legacy
@@ -589,12 +589,12 @@ public sealed class ModelClient : ITranslationService, IDisposable
     {
         if (hello.Status != "ready")
             throw new IOException("model-hello-status");
-        if (hello.StyledTranslationVersion is { } styledVersion && (styledVersion != 1 || !plan.UsesHy))
+        if (hello.StyledTranslationVersion is { } styledVersion && (styledVersion != 1 || !plan.UsesNativeLlm))
             throw new IOException("model-hello-capabilities");
-        if (hello.GlossaryTranslationVersion is { } glossaryVersion && (glossaryVersion != 1 || !plan.UsesHy))
+        if (hello.GlossaryTranslationVersion is { } glossaryVersion && (glossaryVersion != 1 || !plan.UsesNativeLlm))
             throw new IOException("model-hello-capabilities");
         if (hello.StyledGlossaryTranslationVersion is { } combinedVersion
-            && (combinedVersion != 1 || !plan.UsesHy || hello.StyledTranslationVersion != 1 || hello.GlossaryTranslationVersion != 1))
+            && (combinedVersion != 1 || !plan.UsesNativeLlm || hello.StyledTranslationVersion != 1 || hello.GlossaryTranslationVersion != 1))
             throw new IOException("model-hello-capabilities");
         if (hello.Directions is not { Length: > 0 } directions || directions.Any(string.IsNullOrEmpty)
             || directions.Distinct(StringComparer.Ordinal).Count() != directions.Length
@@ -604,17 +604,17 @@ public sealed class ModelClient : ITranslationService, IDisposable
             || hello.StyledGlossaryTranslationVersion is not null;
         if (hello.AdvancedTranslationDirections is { } scope)
         {
-            if (!advanced || !plan.UsesHy || scope.Length == 0 || scope.Any(string.IsNullOrEmpty)
+            if (!advanced || !plan.UsesNativeLlm || scope.Length == 0 || scope.Any(string.IsNullOrEmpty)
                 || scope.Distinct(StringComparer.Ordinal).Count() != scope.Length
                 || scope.Any(direction => !plan.Directions.Contains(direction, StringComparer.Ordinal)))
                 throw new IOException("model-hello-capabilities");
             // This optional scope cannot grant new native operations. Only the
-            // unchanged ABI5 twelve-direction lock supplies advanced pairs.
+            // model-specific lock supplies the permitted advanced pairs.
             var native = ModelCatalog.DefaultInstallationDirections(plan.ActivePackages.Single().Package);
             if (scope.Any(direction => !native.Any(item => item.Id == direction)))
                 throw new IOException("model-hello-capabilities");
         }
-        else if (advanced && plan.Directions.Any(direction => direction is "zh_en" or "en_zh"))
+        else if (advanced && plan.UsesHy && plan.Directions.Any(direction => direction is "zh_en" or "en_zh"))
             throw new IOException("model-hello-capabilities");
         if (plan.InventorySchema != 3 && hello.Packages is null)
             return;
@@ -741,16 +741,16 @@ public sealed class ModelClient : ITranslationService, IDisposable
                 || expectedIdentity is not null && !ReferenceEquals(expectedIdentity, _active.VerifiedIdentity))
                 return new(0, "error", Code: "not-ready");
             var direction = new LanguageDirection(request.Source, request.Target);
-            if (request.Op == "translate-styled-glossary-v1" && (!_active.Plan.UsesHy
+            if (request.Op == "translate-styled-glossary-v1" && (!_active.Plan.UsesNativeLlm
                 || _active.StyledGlossaryTranslationCapability?.Supports(direction) != true))
                 return new(0, "error", Code: "glossary-combination-unavailable");
-            if (request.Op == "translate-glossary-v1" && (!_active.Plan.UsesHy
+            if (request.Op == "translate-glossary-v1" && (!_active.Plan.UsesNativeLlm
                 || _active.GlossaryTranslationCapability?.Supports(direction) != true))
                 return new(0, "error", Code: "glossary-unavailable");
-            if (request.Op == "translate-styled-v1" && (!_active.Plan.UsesHy
+            if (request.Op == "translate-styled-v1" && (!_active.Plan.UsesNativeLlm
                 || _active.StyledTranslationCapability?.Supports(direction) != true))
                 return new(0, "error", Code: "style-unavailable");
-            if (request.Op == "translate-alternative" && _active.Plan.UsesHy)
+            if (request.Op == "translate-alternative" && _active.Plan.UsesNativeLlm)
                 return new(0, "error", Code: "alternative-unavailable");
             bool valid = _active.Plan.InventorySchema == 3
                 ? ModelCatalog.IsSupportedPackageRequest(request.Source, request.Target)
@@ -772,7 +772,7 @@ public sealed class ModelClient : ITranslationService, IDisposable
                     return new(0, "error", Code: "not-ready");
             try
             {
-                var response = await ExchangeAsync(connection, request, TimeSpan.FromSeconds(90), CancellationToken.None);
+                var response = await ExchangeAsync(connection, request, TimeSpan.FromSeconds(connection.Plan.UsesIndex ? 60 : 90), CancellationToken.None);
                 if (response.AdvancedTranslationDirections is not null)
                     throw new IOException("model-translation-response");
                 if (request.Op is "translate-alternative" or "translate-styled-v1" or "translate-glossary-v1" or "translate-styled-glossary-v1")

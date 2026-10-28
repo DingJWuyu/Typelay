@@ -1026,7 +1026,13 @@ public sealed class ModelInstallerTests
     {
         using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.ModelCatalog.json")!;
         var value = JsonNode.Parse(stream)!;
-        foreach (var package in value["packages"]!.AsArray())
+        // These existing archive/runtime fixtures explicitly exercise the legacy
+        // Argos installer. The new Index default has its own package-path tests.
+        var entries = value["packages"]!.AsArray();
+        var index = entries.FirstOrDefault(item => item!["backend"]!.GetValue<string>() == "index-translate-llama-cpu");
+        if (index is not null)
+            entries.Remove(index);
+        foreach (var package in entries)
         {
             if (package!["backend"]!.GetValue<string>() != "argos")
                 continue;

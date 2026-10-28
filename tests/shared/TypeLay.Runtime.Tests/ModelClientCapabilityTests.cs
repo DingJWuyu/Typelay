@@ -43,6 +43,24 @@ public sealed class ModelClientCapabilityTests
             Assert.Equal("ordinary English", (await peer.Client.TranslateTextAsync("你好", new("zh", "en"))).Text);
     }
 
+    [Fact]
+    public async Task IndexEnglishCapabilitiesAreBoundToItsOwnExactPackageAndNotHyScopeRules()
+    {
+        string IndexIdentity(string value) => value
+            .Replace("hy-mt2-1-8b-q4-k-m", "index-translate-2b-q4-k-m", StringComparison.Ordinal)
+            .Replace("a0c709d9fac510f2c807aa3af52872340dc37a4a", "3a0eca6ce931d88d00614d427ab3ed8ff0743902", StringComparison.Ordinal)
+            .Replace("zh_ja", "zh_en", StringComparison.Ordinal);
+        string hello = IndexIdentity(HyHello).Replace("\"status\":\"ready\"",
+            "\"status\":\"ready\"," + AdvancedVersions, StringComparison.Ordinal);
+        using var peer = new ProtocolPeer(hello, """{"status":"translated","text":"English result"}""", IndexIdentity(HyInventory));
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(ModelCatalog.Packages),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        Assert.True(peer.Client.StyledTranslationCapability!.Supports(new("zh", "en")));
+        Assert.True(peer.Client.GlossaryTranslationCapability!.Supports(new("zh", "en")));
+        Assert.False(peer.Client.GlossaryTranslationCapability.Supports(new("zh", "ja")));
+        Assert.Equal("English result", (await peer.Client.TranslateTextAsync("你好", new("zh", "en"))).Text);
+    }
+
     private static ModelPackageCatalog CandidateCatalog() => ModelCatalog.Packages;
 
     private const string MixedDirections = "[\"zh_ja\",\"ja_zh\",\"zh_en\",\"en_zh\"]";

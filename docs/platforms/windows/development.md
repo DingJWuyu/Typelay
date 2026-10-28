@@ -289,10 +289,17 @@ CI 在 Windows build 成功后、首门之后以独立 `continue-on-error: true`
 
 `./dev.ps1 hy-runtime-prepare` 显式获取并完整校验固定 b11717 官方 Windows CPU ZIP，不下载 GGUF。已有缓存仍校验全部 SHA；CPU 闭包只包含固定依赖、官方 CPU variants 与许可证。
 
-`./dev.ps1 pack -HyRuntime artifacts/hy-production-runtime`（或 `run`）从已核 CPU 目录构建并打包 ABI5 生产 DLL、五项导出、固定锁和 production-adapter 清单；不启用 fixture 的 audit 宏，不携带源码、原 ZIP 或模型权重。普通 `pack/run` 未传该参数仍生成 Argos-only 包。只准备参数或 CPU 缓存不能证明发行包已含 Hy，正式候选验收须对这个实际打包路径运行搬迁及加载检查。
+`./dev.ps1 pack -HyRuntime artifacts/hy-production-runtime`（或 `run`）从已核 CPU 目录构建并打包 ABI5 生产 DLL、五项导出、固定锁和 production-adapter 清单；不启用 fixture 的 audit 宏，不携带源码、原 ZIP 或模型权重。普通 `pack/run` 默认含 Index CPU 载荷，未传 Hy 参数时不含可选 Hy。只准备参数或 CPU 缓存不能证明发行包已含 Hy，正式候选验收须对这个实际打包路径运行搬迁及加载检查。
 
-Windows 开发候选在包内生产组件齐备时提供 Hy 准备入口；组件存在不代表模型已验证或就绪。模型包事务已接通精确库存、确认时冻结的代次、离线选择/非当前包移除和失败恢复；旧 runtime 缺少可校验清单时，相关新包操作要求先修复，不暗中联网。正常启动旧 schema1/2 不增加这一前置。代使用锁阻止删除仍在另一会话中使用的模型，清理失败会保留副本并提示空间未回收。设置与快捷面板的语言列表取当前已加载方向，切换后保留原语言偏好并标明不可用值。[CI507](https://github.com/DingJWuyu/Typelay/actions/runs/40092766109) 已通过真实 Windows ABI5 生产加载、五阶段生产检查与 15 项 WPF 设置场景，覆盖安装、选择、明确确认的中英方向补充、切换、移除及正常退出；14 方向冷启和中英普通源双向预览亦通过。这些生命周期与普通预览结果不代表质量放行；高级 scope 尚未实机验收，中英风格/术语能力门仍关闭，跨旧版本恢复仍待验证。新装默认十二方向与原产品权限不变。
+Windows 开发候选在包内生产组件齐备时提供 Hy 准备入口；组件存在不代表模型已验证或就绪。模型包事务已接通精确库存、确认时冻结的代次、离线选择/非当前包移除和失败恢复；旧 runtime 缺少可校验清单时，相关新包操作要求先修复，不暗中联网。正常启动旧 schema1/2 不增加这一前置。代使用锁阻止删除仍在另一会话中使用的模型，清理失败会保留副本并提示空间未回收。设置与快捷面板的语言列表取当前已加载方向，切换后保留原语言偏好并标明不可用值。[CI507](https://github.com/DingJWuyu/Typelay/actions/runs/40092766109) 已通过真实 Windows ABI5 生产加载、五阶段生产检查与 15 项 WPF 设置场景，覆盖安装、选择、明确确认的中英方向补充、切换、移除及正常退出；14 方向冷启和中英普通源双向预览亦通过。这些生命周期与普通预览结果不代表质量放行；高级 scope 尚未实机验收，中英风格/术语能力门仍关闭，跨旧版本恢复仍待验证。Hy 新装仍十二方向，原产品输入权限不变。
 
 正式候选 CI 使用 `hy-product-prepare` 在有界准备阶段校验固定 CPU 与 GGUF 缓存，再由唯一一次 `pack -HyRuntime artifacts/hy-runtime` 生成实际发行包。生产前置通过真实模型进程所有者检查加载与退出，随后在真实设置窗口验证下载、切换、中法预览和移除。权重仅进入缓存和临时安装目录，不上传测试 artifact。手动 `hy-adapter-e2e` 的隔离审计仍可检查字面 token，不作为正式发行验收的替代。
 
 完整 Windows 检查会在普通回归之外独立运行上述源线程前三项显式探针，外部总上限为 4 分钟，并将 `artifacts/source-keyboard-boundary/` 纳入既有始终上传的结果。各数据行自身 60 秒上限不变；诊断完成不构成生产写回验收。
+
+
+## Index 默认载荷与独立检查
+
+`./dev.ps1 pack` / `run` 默认包含独立 Index ABI1/b11913 CPU 载荷。未传 `-IndexRuntime` 时只在显式构建准备固定官方 CPU archive；模型仍必须由用户确认安装。也可先运行 `python eng/windows/index/prepare_runtime.py --cache artifacts/index-runtime-download --output artifacts/index-runtime` 再传 `-IndexRuntime artifacts/index-runtime`。保留 `-HyRuntime` 的旧 b11717/ABI5，不共用锁或目录。
+
+独立 CI `index-windows` 先按锁验证模型/许可证缓存并构建正式包，再用 DesktopFixture `--verify-index-production <全新结果目录> <实际发行目录> <固定模型缓存>` 调用正式 ModelInstaller、ModelClient 和 ModelChildProcess。它核实际载荷身份、默认准备/激活、连续推理、冷启、失败及取消候选保旧代、Repair、安装 Argos、离线切换/移除和自有进程退出。生命周期最多 600 秒、清理最多 7 秒；下载与构建各自有界，不重试模型。只上传结构化阶段/身份结果，模型和原始日志不上传；Index 权重也不写入 GitHub cache，每个临时 runner 从官方固定来源获取。未运行阶段明确 not-run，不能用此非 UI 检查替代既有普通源、Settings、IME 或质量验收。

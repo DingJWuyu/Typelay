@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "package_id": "index-translate-2b-q4-k-m",
+  "version": "3a0eca6ce931d88d00614d427ab3ed8ff0743902",
+  "abi": 1,
+  "directions": [
+    "zh_ja",
+    "ja_zh",
+    "zh_ko",
+    "ko_zh",
+    "zh_fr",
+    "fr_zh",
+    "zh_es",
+    "es_zh",
+    "zh_de",
+    "de_zh",
+    "zh_pt",
+    "pt_zh",
+    "zh_en",
+    "en_zh"
+  ],
+  "model": {
+    "file": "Index-Translate-2B.Q4_K_M.gguf",
+    "bytes": 1312164352,
+    "sha256": "044b313d29342bd3b2c77cbb64023ca0d209bd9b3247763f9d162767ef2d746a",
+    "url": "https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF/resolve/3a0eca6ce931d88d00614d427ab3ed8ff0743902/Index-Translate-2B.Q4_K_M.gguf"
+  },
+  "model_license": {
+    "file": "model_LICENSE.txt",
+    "bytes": 11358,
+    "sha256": "c95bae1d1ce0235ecccd3560b772ec1efb97f348a79f0fbe0a634f0c2ccefe2c",
+    "url": "https://raw.githubusercontent.com/bilibili/Index-Translate/912e86c8325d6c7c29a6a0b09c5f53482c6602f6/LICENSE"
+  },
+  "template_sha256": "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80",
+  "architecture": "qwen35",
+  "vocab_size": 248320,
+  "metadata_eos": 248044,
+  "generated_eog": [
+    248044,
+    248046
+  ],
+  "im_start": 248045,
+  "enable_thinking": false,
+  "context": 4096,
+  "max_output_tokens": 1024,
+  "decoding": {
+    "temperature": 0,
+    "top_p": 1,
+    "top_k": 0,
+    "min_p": 0,
+    "repeat_penalty": 1
+  },
+  "prompt_source": "https://github.com/bilibili/Index-Translate/blob/912e86c8325d6c7c29a6a0b09c5f53482c6602f6/inference/llm/translate.py"
+}

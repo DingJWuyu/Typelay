@@ -64,7 +64,10 @@ def verify_inventory(models: Path, catalog=None) -> VerifiedInventory:
 
                 if sys.platform not in ("linux", "win32"):
                     raise ValueError("hy-platform-unavailable")
-                from .hy_assets import verify_production
+                if item.package.backend == "index-translate-llama-cpu":
+                    from .index_assets import verify_production
+                else:
+                    from .hy_assets import verify_production
 
                 native = verify_production(root, verified_files=expected)
             verified.append(VerifiedPackage(item, root, native))

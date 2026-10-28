@@ -602,7 +602,8 @@ class PackageCatalogTests(unittest.TestCase):
         self.assertEqual(
             [direction.id for direction in packages.legacy_directions], ["zh_en", "en_zh"]
         )
-        self.assertEqual(packages.default_directions, packages.legacy_directions)
+        self.assertEqual(packages.default_directions, packages.default_package.directions)
+        self.assertEqual("index-translate-2b-q4-k-m", packages.default_package.id)
         self.assertEqual(catalog.load_catalog(), packages.legacy_directions)
         self.assertEqual(
             packages.legacy_directions[0],

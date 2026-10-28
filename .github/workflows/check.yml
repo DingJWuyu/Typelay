@@ -1062,7 +1062,7 @@ jobs:
           export XDG_RUNTIME_DIR="$PWD/artifacts/linux/model-install-runtime"
           mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
-          artifacts/linux/package/typelay --install-models
+          artifacts/linux/package/typelay --install-models argos
       - name: Preserve bounded model activation failure metadata
         if: ${{ !cancelled() && steps.models.outcome == 'failure' }}
         run: |
@@ -1318,6 +1318,136 @@ jobs:
           retention-days: 14
 # Passing this job does not certify physical Tab, Chinese IME, visual parity or safe universal writeback.
 
+  index-windows:
+    name: Windows Index package lifecycle (not desktop acceptance)
+    needs: scope
+    if: needs.scope.outputs.windows == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Record independent job budget
+        shell: pwsh
+        run: '"TYPELAY_INDEX_CHECK_START=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" >> $env:GITHUB_ENV'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - name: Restore only the pinned CPU runtime archive
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          # Model weights are ephemeral downloads, never persisted to a GitHub cache.
+          path: artifacts/index-runtime-download/
+          key: index-win-${{ hashFiles('eng/windows/index/runtime-archive.lock.json', 'src/shared/TypeLay.Worker/native/index/model.lock.json') }}
+      - name: Prepare and verify official Index model and CPU closure
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          python eng/windows/index/prepare_runtime.py --cache artifacts/index-runtime-download --output artifacts/index-runtime
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python eng/shared/prepare_index_model.py --output artifacts/index-model-download
+          exit $LASTEXITCODE
+      - name: Build the actual distribution and production fixture
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          ./dev.ps1 pack -IndexRuntime artifacts/index-runtime
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build tests/windows/fixtures/TypeLay.DesktopFixture -c Release -warnaserror
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $fixture = 'tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows'
+          foreach ($assembly in @('TypeLay.App', 'TypeLay.Runtime', 'TypeLay.Core', 'TypeLay.Protocol', 'TypeLay.Windows.Contracts')) {
+            Copy-Item -LiteralPath "artifacts/package/TypeLay/app/$assembly.dll" -Destination "$fixture/$assembly.dll" -Force
+          }
+      - name: Verify Index default install, real inference and owned package transitions
+        timeout-minutes: 11
+        shell: pwsh
+        run: |
+          $elapsed = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [long]$env:TYPELAY_INDEX_CHECK_START
+          if ($elapsed -gt 1140) {
+            New-Item -ItemType Directory -Force artifacts/index-production | Out-Null
+            '{"suite":"index-windows-production-package-lifecycle","lifecycle":"not-run","reason":"insufficient-job-budget"}' | Set-Content artifacts/index-production/result.json
+            exit 1
+          }
+          dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-index-production artifacts/index-production artifacts/package/TypeLay artifacts/index-model-download
+          exit $LASTEXITCODE
+      - name: Preserve only structured Index verification
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: typelay-index-windows-${{ github.sha }}
+          path: artifacts/index-production/result.json
+          if-no-files-found: warn
+          retention-days: 14
+  index-linux:
+    name: Linux Index package lifecycle (not desktop acceptance)
+    needs: scope
+    if: needs.scope.outputs.linux == 'true' && needs.scope.outputs.quality_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Record independent job budget
+        run: echo "TYPELAY_INDEX_CHECK_START=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - name: Install explicit setup dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi libglib2.0-bin
+          python -m pip install uv==0.13.4
+      - name: Restore only the pinned CPU runtime archive
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          # Model weights are ephemeral downloads, never persisted to a GitHub cache.
+          path: artifacts/index-runtime-download/
+          key: index-linux-${{ hashFiles('eng/linux/index/runtime-archive.lock.json', 'src/shared/TypeLay.Worker/native/index/model.lock.json') }}
+      - name: Prepare and verify official Index model and CPU closure
+        timeout-minutes: 10
+        run: |
+          python eng/linux/index/prepare_runtime.py --cache artifacts/index-runtime-download --output artifacts/index-runtime
+          python eng/shared/prepare_index_model.py --output artifacts/index-model-download
+      - name: Build the actual Linux host and worker payload
+        timeout-minutes: 10
+        run: |
+          dotnet publish src/linux/TypeLay.Linux -c Release -r linux-x64 --self-contained true -o artifacts/index-package/app -warnaserror
+          python - <<'PY'
+          import shutil, subprocess
+          from pathlib import Path
+          from eng.linux.build import package_worker
+          package = Path('artifacts/index-package').absolute()
+          package_worker(package, index_runtime=Path('artifacts/index-runtime').absolute())
+          shutil.copytree('src/linux/desktop', package / 'desktop', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+          (package / 'native').mkdir()
+          subprocess.run(['gcc', '-O2', '-Wall', '-Wextra', '-Werror', 'src/linux/native/supervise.c', '-o', str(package / 'native/typelay-supervise')], check=True)
+          PY
+      - name: Verify Index default preparation, actual host and package transitions
+        timeout-minutes: 11
+        run: |
+          if [ "$(( $(date +%s) - TYPELAY_INDEX_CHECK_START ))" -gt 1140 ]; then
+            mkdir -p artifacts/index-production
+            printf '%s\n' '{"scope":"linux-index-production-package-lifecycle","lifecycle":"not-run","reason":"insufficient-job-budget"}' > artifacts/index-production/result.json
+            exit 1
+          fi
+          /usr/bin/python3 tests/linux/index_package_e2e.py --package artifacts/index-package --cache artifacts/index-model-download --output artifacts/index-production
+      - name: Preserve only structured Index verification
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: typelay-index-linux-${{ github.sha }}
+          path: artifacts/index-production/result.json
+          if-no-files-found: warn
+          retention-days: 14
   qt-iteration:
     name: Linux Qt iteration (not full product acceptance)
     needs: scope

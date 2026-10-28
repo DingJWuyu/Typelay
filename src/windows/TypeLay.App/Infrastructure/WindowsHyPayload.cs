@@ -71,7 +71,7 @@ internal static class WindowsHyPayload
         }
     }
 
-    private static void RequireNames(string directory, string[] names)
+    internal static void RequireNames(string directory, string[] names)
     {
         // Limit enumeration as well as JSON reads; unexpected contents cannot
         // turn a settings refresh into an unbounded filesystem scan.
@@ -80,7 +80,7 @@ internal static class WindowsHyPayload
             .Order(StringComparer.Ordinal).SequenceEqual(names.Order(StringComparer.Ordinal)))
             throw new InvalidDataException("hy-components");
     }
-    private static void RequirePlainDirectory(string path)
+    internal static void RequirePlainDirectory(string path)
     {
         for (var directory = new DirectoryInfo(path); directory is not null; directory = directory.Parent)
         {
@@ -90,7 +90,7 @@ internal static class WindowsHyPayload
                 throw new InvalidDataException("hy-components");
         }
     }
-    private static FileInfo PlainFile(string path)
+    internal static FileInfo PlainFile(string path)
     {
         var file = new FileInfo(path);
         RequirePlainDirectory(file.DirectoryName!);
@@ -98,7 +98,7 @@ internal static class WindowsHyPayload
             throw new InvalidDataException("hy-components");
         return file;
     }
-    private static void RequireFile(string root, string name, JsonElement record)
+    internal static void RequireFile(string root, string name, JsonElement record)
     {
         long size = record.GetProperty("bytes").GetInt64();
         string? hash = record.GetProperty("sha256").GetString();
@@ -107,7 +107,7 @@ internal static class WindowsHyPayload
             || PlainFile(Path.Combine(root, name)).Length != size)
             throw new InvalidDataException("hy-components");
     }
-    private static JsonElement ReadObject(string path)
+    internal static JsonElement ReadObject(string path)
     {
         PlainFile(path);
         using var stream = File.OpenRead(path);

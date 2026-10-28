@@ -1454,8 +1454,8 @@ internal sealed class SettingsWindow : Window
         if (compact)
             detailsBody.Children.Add(actions);
         var intro = UiTheme.Text(ModelInstaller.HasReusableLocalModels
-            ? "已找到本机中英双向 Argos 模型。准备时会校验并复用权重，运行组件仍需单独准备；输入文字不会上传。"
-            : "准备私有运行组件与中英模型。仅在本机推理；无需自行安装 Python，也不上传输入文字。", 12, true);
+            ? "已找到本机中英双向 Argos 模型。可另行明确选择 Argos 组件；发现本机权重不代表该选择无需下载，默认准备 Index 不使用这些权重；输入文字不会上传。"
+            : "新安装默认准备 Index Translate 2B；旧模型与明确选择保留。仅在本机推理，无需自行安装 Python，也不上传输入文字。", 12, true);
         intro.Margin = new(0, 8, 0, 8);
         detailsBody.Children.Add(intro);
         _preparationPackages = new StackPanel();
@@ -1485,6 +1485,7 @@ internal sealed class SettingsWindow : Window
             : TranslationPreparationPhase.Idle;
         var state = _installations.ReadInstallationState();
         bool canPrepareHy = _installations.CanPrepareWindowsHy;
+        bool canPrepareIndex = _installations.CanPrepareWindowsIndex;
         var installed = state.InstalledPackages.SelectMany(item => item.Directions).Select(direction => direction.Id).ToArray();
         var view = ApplicationSupportPresentation.Preparation(new(_model.Ready, installed.Length > 0, phase,
             _setupFailure is { } failure ? SetupFailurePresentation.CategoryFromCode(failure.Code) : null,
@@ -1493,7 +1494,8 @@ internal sealed class SettingsWindow : Window
             Packages: new(state.Generation, state.InventoryKnown, state.InstalledPackages, state.CurrentPackages,
                 _model.AvailablePackages, canPrepareHy,
                 canPrepareHy ? null : "native-unavailable",
-                _settings.Value.Source, _settings.Value.Target, _install is not null, "NuGet、PyPI")));
+                _settings.Value.Source, _settings.Value.Target, _install is not null, "NuGet、PyPI",
+                canPrepareIndex, canPrepareIndex ? null : "native-unavailable")));
         return _setupFailure is not null && _packageRequest is null && installed.Length > 0
             ? view with
             {
@@ -1571,7 +1573,9 @@ internal sealed class SettingsWindow : Window
         var current = new[] { view.PrimaryAction }.Concat(view.SecondaryActions).SingleOrDefault(item => item.Id == action.Id);
         if (current?.Enabled != true)
             return;
-        if (action.Id == TranslationPreparationAction.NextStep)
+        if (action.Id == TranslationPreparationAction.Prepare && view.DefaultPackageAction is { } recommended)
+            RunPackageAction(recommended);
+        else if (action.Id == TranslationPreparationAction.NextStep)
             StartPractice();
         else if (action.Id == TranslationPreparationAction.Pause)
         {

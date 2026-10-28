@@ -2797,6 +2797,10 @@ class Settings:
         elif self.installation_state == "paused":
             self.install_requested()
         elif self.installation_state not in ("pausing", "starting"):
+            default = view.get("defaultPackageAction")
+            if selected_action["id"] == "Prepare" and default is not None:
+                self.package_clicked(default["request"]["packageIds"][0], "Install")
+                return
             directions = self.application_support.selected_directions()
             if self.installation_state == "failed":
                 if self.package_confirmation is not None:

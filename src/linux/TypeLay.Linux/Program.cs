@@ -15,7 +15,8 @@ internal static class Program
     private sealed record PlacementRequest(RectPx Input, RectPx Work, double Width, double Height, double Gap, double MinimumHeight);
     private sealed record ApplicationSupportRequest(ApplicationSupportFact[] Facts);
     private sealed record TranslationPreparationRequest(TranslationPreparationPhase Phase,
-        string? FailureCode = null, bool HyRuntimeAvailable = false, string? HyUnavailableReason = null);
+        string? FailureCode = null, bool HyRuntimeAvailable = false, string? HyUnavailableReason = null,
+        bool IndexRuntimeAvailable = false, string? IndexUnavailableReason = null);
     private sealed record PracticeBindingRequest(Guid RunId, TargetId Target);
     private static bool TranslationRequestValid(JsonElement value, string? payload)
     {
@@ -215,13 +216,16 @@ internal static class Program
             }
         }
         bool hyRuntimeAvailable = false;
+        bool indexRuntimeAvailable = false;
+        string? indexUnavailableReason = "native-unavailable";
         string? hyUnavailableReason = "native-unavailable";
         ModelPackageManagementFact PackageFacts(bool busy = false)
         {
             var state = installations.ReadInstallationState();
             return new(state.Generation, state.InventoryKnown, state.InstalledPackages, state.CurrentPackages,
                 model.AvailablePackages, hyRuntimeAvailable, hyUnavailableReason,
-                settings.Value.Source, settings.Value.Target, busy || activation is not null);
+                settings.Value.Source, settings.Value.Target, busy || activation is not null,
+                IndexRuntimeAvailable: indexRuntimeAvailable, IndexUnavailableReason: indexUnavailableReason);
         }
         void RefreshPackageChoices() => view.ConfigureModelPackages(PackageFacts(), settings.Value);
 
@@ -610,6 +614,8 @@ internal static class Program
                     var preparation = DesktopLink.Decode<TranslationPreparationRequest>(value);
                     hyRuntimeAvailable = preparation.HyRuntimeAvailable && preparation.HyUnavailableReason is null;
                     hyUnavailableReason = hyRuntimeAvailable ? null : "native-unavailable";
+                    indexRuntimeAvailable = preparation.IndexRuntimeAvailable && preparation.IndexUnavailableReason is null;
+                    indexUnavailableReason = indexRuntimeAvailable ? null : "native-unavailable";
                     var effectivePhase = preparation.Phase == TranslationPreparationPhase.Idle && !modelStart.IsCompleted
                         ? TranslationPreparationPhase.StartingModel : preparation.Phase;
                     var packageFacts = PackageFacts(effectivePhase is TranslationPreparationPhase.Preparing

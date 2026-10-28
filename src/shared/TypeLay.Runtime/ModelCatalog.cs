@@ -68,7 +68,7 @@ public static class ModelCatalog
         {
             if (version != 1)
                 throw new InvalidDataException("model-inventory");
-            return Array.AsReadOnly(DefaultDirections.Select(direction => direction.Id).ToArray());
+            return Array.AsReadOnly(LegacyDirections.Select(direction => direction.Id).ToArray());
         }
         if (value.ValueKind != JsonValueKind.Array
             || value.EnumerateArray().Any(item => item.ValueKind != JsonValueKind.String))
@@ -98,15 +98,37 @@ public static class ModelCatalog
                 || directions.Any(direction => direction.Source == source && direction.Target == target));
     }
 
+    public static string ModelLockResource(ModelPackage package) => package.Backend switch
+    {
+        "hy-mt-llama-cpu" => "TypeLay.HyModelLock.json",
+        "index-translate-llama-cpu" => "TypeLay.IndexModelLock.json",
+        _ => throw new InvalidDataException("model-backend")
+    };
+
+    public static string PackageLicenseUrl(ModelPackage package)
+    {
+        if (package.Backend == "argos")
+            return "";
+        using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream(ModelLockResource(package))
+            ?? throw new InvalidDataException("model-lock-missing");
+        using var document = JsonDocument.Parse(stream);
+        var root = document.RootElement;
+        if (package.Id != root.GetProperty("package_id").GetString()
+            || package.Version != root.GetProperty("version").GetString())
+            throw new InvalidDataException("model-lock-identity");
+        return root.GetProperty("model_license").TryGetProperty("url", out var url)
+            ? url.GetString()! : new Uri(new Uri(package.Url), "LICENSE.txt").AbsoluteUri;
+    }
+
     public static long? PackageDownloadBytes(ModelPackage package)
     {
         if (package.Backend == "argos")
             return package.ArchivePin?.Bytes;
-        using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.HyModelLock.json")
+        using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream(ModelLockResource(package))
             ?? throw new InvalidDataException("model-lock-missing");
         using var document = JsonDocument.Parse(stream);
         var root = document.RootElement;
-        if (package.Backend != "hy-mt-llama-cpu" || package.Id != root.GetProperty("package_id").GetString()
+        if (package.Backend is not ("hy-mt-llama-cpu" or "index-translate-llama-cpu") || package.Id != root.GetProperty("package_id").GetString()
             || package.Version != root.GetProperty("version").GetString())
             return null;
         return checked(root.GetProperty("model").GetProperty("bytes").GetInt64()
@@ -119,11 +141,11 @@ public static class ModelCatalog
     {
         if (package.Backend == "argos")
             return package.Directions;
-        using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream("TypeLay.HyModelLock.json")
+        using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream(ModelLockResource(package))
             ?? throw new InvalidDataException("model-lock-missing");
         using var document = JsonDocument.Parse(stream);
         var root = document.RootElement;
-        if (package.Backend != "hy-mt-llama-cpu" || package.Id != root.GetProperty("package_id").GetString()
+        if (package.Backend is not ("hy-mt-llama-cpu" or "index-translate-llama-cpu") || package.Id != root.GetProperty("package_id").GetString()
             || package.Version != root.GetProperty("version").GetString())
             throw new InvalidDataException("model-lock-identity");
         return Array.AsReadOnly(root.GetProperty("directions").EnumerateArray().Select(item =>
@@ -239,7 +261,8 @@ public sealed class ModelPackageCatalog
     {
         get;
     }
-    public IReadOnlyList<ModelDirection> DefaultDirections => LegacyDirections;
+    public ModelPackage? DefaultPackage => Packages.FirstOrDefault(package => package.Id == "index-translate-2b-q4-k-m");
+    public IReadOnlyList<ModelDirection> DefaultDirections => DefaultPackage?.Directions ?? LegacyDirections;
     public IReadOnlyList<ModelDirection> LegacyDirections => Array.AsReadOnly(LegacyPackages.Select(identity =>
     {
         var package = Packages.FirstOrDefault(package => package.Id == identity.Package);
@@ -265,7 +288,7 @@ public sealed class ModelPackageCatalog
             string id = Text(entry, "id", error), version = Text(entry, "version", error);
             string backend = Text(entry, "backend", error), address = Text(entry, "url", error);
             if (!Regex.IsMatch(id, @"\A[a-z][a-z0-9-]{0,63}\z") || !packageIds.Add(id)
-                || backend is not ("argos" or "hy-mt-llama-cpu")
+                || backend is not ("argos" or "hy-mt-llama-cpu" or "index-translate-llama-cpu")
                 || !Regex.IsMatch(version, @"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z")
                 || !entry.TryGetProperty("preview", out var preview)
                 || preview.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
@@ -389,9 +412,9 @@ public sealed class ModelPackageCatalog
         var active = installed.Where(item => ids.Contains(item.Package.Id, StringComparer.Ordinal)).ToArray();
         bool argos = active.All(item => item.Package is { Backend: "argos", Version: "1.9" }
             && LegacyPackages.Any(identity => identity.Package == item.Package.Id));
-        bool hy = active.Length == 1 && active[0].Package.Backend == "hy-mt-llama-cpu";
+        bool native = active.Length == 1 && active[0].Package.Backend is "hy-mt-llama-cpu" or "index-translate-llama-cpu";
         string[] directions = active.SelectMany(item => item.Directions).Select(direction => direction.Id).ToArray();
-        if (!(argos || hy) || directions.Distinct(StringComparer.Ordinal).Count() != directions.Length)
+        if (!(argos || native) || directions.Distinct(StringComparer.Ordinal).Count() != directions.Length)
             throw new InvalidDataException(error);
         return Array.AsReadOnly(active);
     }

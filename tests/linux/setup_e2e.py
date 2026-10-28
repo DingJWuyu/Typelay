@@ -501,6 +501,59 @@ class PackageInstallationTests(unittest.TestCase):
         )
         self.assertEqual(activation["previous"], self.old.name)
 
+    def test_index_install_preserves_argos_and_uses_its_own_license_then_repair_keeps_subset(self):
+        self.assume_space_for_controlled_package_operation()
+        identity = "index-translate-2b-q4-k-m"
+        assets = setup.index_assets(self.home)
+        fixed = assets.read_json(self.home / "worker/native/index/model.lock.json")
+        bodies = {"model": b"inert-index-boundary-not-model", "model_license": b"inert-license"}
+        for kind, body in bodies.items():
+            fixed[kind].update(bytes=len(body), sha256=hashlib.sha256(body).hexdigest())
+        native = SimpleNamespace(
+            verify_native=lambda: None,
+            read_json=lambda _path: fixed,
+            verify_file=assets.verify_file,
+        )
+        urls = []
+
+        def response(request, timeout):
+            urls.append(request.full_url)
+            body = bodies[
+                "model_license" if request.full_url == fixed["model_license"]["url"] else "model"
+            ]
+            return Response(body, headers={"Content-Length": len(body)})
+
+        with patch.object(setup, "index_assets", return_value=native):
+            candidate = self.prepare(
+                self.request("Install", [identity], [identity]),
+                opener=SimpleNamespace(open=response),
+            )
+            value = json.loads((candidate / "models/installed.json").read_text())
+            self.assertEqual([identity], value["activePackages"])
+            self.assertEqual(
+                {"argos-zh-en", "argos-en-zh", identity}, {item["id"] for item in value["packages"]}
+            )
+            selected = next(item for item in value["packages"] if item["id"] == identity)
+            self.assertEqual(14, len(selected["directions"]))
+            self.assertEqual([fixed["model"]["url"], fixed["model_license"]["url"]], urls)
+            selected["directions"] = ["zh_en"]
+            self.inventory["packages"].append(selected)
+            shutil.copytree(
+                candidate / "models/packages" / identity, self.old / "models/packages" / identity
+            )
+            self.save_inventory()
+            repaired = self.prepare(
+                self.request("Repair", [identity], self.inventory["activePackages"])
+            )
+            value = json.loads((repaired / "models/installed.json").read_text())
+            self.assertEqual(self.inventory["activePackages"], value["activePackages"])
+            self.assertEqual(
+                ["zh_en"],
+                next(item for item in value["packages"] if item["id"] == identity)["directions"],
+            )
+            self.assertEqual(2, len(urls))
+            self.assertFalse((repaired / "self-check.json").exists())
+
     def test_old_catalog_keeps_format_one_install_repair_and_select_compatible(self):
         path = self.home / "worker/model-catalog.json"
         value = json.loads(path.read_text())

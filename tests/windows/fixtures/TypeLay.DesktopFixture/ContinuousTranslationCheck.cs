@@ -69,7 +69,7 @@ internal static partial class ContinuousTranslationCheck
         try
         {
             string data = Path.Combine(directory, "data");
-            using (var prepared = await new ModelInstaller(data, worker).PrepareAsync(new SetupLog(), all.Token))
+            using (var prepared = await new ModelInstaller(data, worker).PrepareAsync(new SetupLog(), all.Token, requestedDirections: ["zh_en", "en_zh"]))
             {
                 setup.Stage = "start-model";
                 model = new ModelClient(prepared.Paths, info => new ChildProcess(info));

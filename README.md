@@ -11,6 +11,8 @@ Windows 原有实验性 Tab 写回默认关闭，通用 UIA 读/校验/写入不
 
 Windows/Linux 同步推进共同产品功能与体验，各平台问题和验收分别记录；一端通过不代表另一端通过。[Windows 待办](docs/platforms/windows/open-issues.md)保留当前问题和复现证据。
 
+源码中新用户明确准备时默认选择 **Index Translate 2B Q4_K_M**，已有 Argos/Hy 安装与选择不自动改变。启动不下载模型；模型更换不改变输入、焦点、预览、写回与 Undo 的安全条件。当前切换的实际验证及未通过项见[开发状态](docs/engineering/development-state.md)，不把新源码默认等同于既有推荐包已升级。
+
 ## 产品验收入口
 
 两端共同按[冻结规格 v1.0](docs/product/TypeLay_产品规格_v1.0.md)及已接受的[自动/按需与一次性直接替换增量](docs/adr/0002-on-demand-and-direct-write.md)验收。重叠处以已接受增量为准，其余冻结要求继续有效。共同模式、交互基线与当前共同开发缺口见[产品说明](docs/product/README.md)。平台实现和现有缺陷不改写产品要求。

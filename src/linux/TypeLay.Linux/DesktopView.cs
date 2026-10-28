@@ -147,7 +147,8 @@ internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessi
         var legacy = source ? ModelCatalog.SourceChoices : ModelCatalog.TargetChoices;
         var installed = _packages is { InventoryKnown: true } facts
             ? facts.InstalledPackages.Where(item => item.Package.Backend == "argos"
-                || facts is { HyRuntimeAvailable: true, HyUnavailableReason: null }).SelectMany(item => item.Directions)
+                || item.Package.Backend == "hy-mt-llama-cpu" && facts is { HyRuntimeAvailable: true, HyUnavailableReason: null }
+                || item.Package.Backend == "index-translate-llama-cpu" && facts is { IndexRuntimeAvailable: true, IndexUnavailableReason: null }).SelectMany(item => item.Directions)
             : [];
         var choices = legacy.Concat(installed.Select(direction => source
                 ? new ModelLanguageChoice(direction.Source, direction.SourceName)
