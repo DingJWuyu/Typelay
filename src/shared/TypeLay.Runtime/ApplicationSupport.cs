@@ -131,7 +131,10 @@ public sealed record TranslationPreparationView(
 {
     public TranslationPreparationDirectionView[] Directions { get; init; } = [];
     public ModelPackageRow[] PackageRows { get; init; } = [];
-    public ModelPackageActionView? DefaultPackageAction { get; init; }
+    public ModelPackageActionView? DefaultPackageAction
+    {
+        get; init;
+    }
     public string CurrentModelText { get; init; } = "";
     public bool CanSelectDirections
     {

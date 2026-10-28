@@ -675,24 +675,21 @@ def verify_direction_installation(arguments, environment):
                         "initial preparation missing",
                     )
                     select_settings_page(process.pid, "应用支持", timeout=min(15, remaining()))
-                    activate("安装方向（可选）")
-                    for label in ("中文 → English", "English → 中文"):
-                        assert (
-                            item("本地翻译方向：" + label)
-                            .get_state_set()
-                            .contains(Atspi.StateType.CHECKED)
-                        )
-                    activate("本地翻译方向：English → 中文")
-                    assert (
-                        not item("本地翻译方向：English → 中文")
-                        .get_state_set()
-                        .contains(Atspi.StateType.CHECKED)
-                    )
+                    preparation = state()["setup"]["preparation"]
+                    assert preparation["primaryAction"]["label"] == "准备 Index 本地翻译…"
+                    assert preparation["defaultPackageAction"]["request"]["packageIds"] == [
+                        "index-translate-2b-q4-k-m"
+                    ]
+                    # This scenario deliberately maintains legacy Argos direction
+                    # installation. Choose that package, never the Index default.
+                    management = item("本地翻译组件管理")
+                    if not management.get_state_set().contains(Atspi.StateType.EXPANDED):
+                        activate("本地翻译组件管理")
                     result["stage"] = "prepare-single"
-                    activate("准备本地翻译…")
-                    item("下载并安装本地翻译组件？")
+                    activate("Argos · 中文 → English：下载并使用…")
+                    item("下载并使用？")
                     activate(gettext.dgettext("gtk30", "_OK").replace("_", ""))
-                    single = installed(["zh_en"], 2)
+                    single = installed(["zh_en"], 3)
                     assert cache_identity(archives["zh_en"]) == cached["zh_en"], (
                         "single-direction preparation changed its referenced archive"
                     )

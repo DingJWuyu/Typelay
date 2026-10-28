@@ -213,8 +213,16 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             AssertPrimary(window, primary);
             AssertWithinViewport(window, primary);
             AssertWithinViewport(window, Named<TextBlock>(window, "PreparationGuidance"));
-            DirectionChoices(window)[0].IsChecked = false;
-            Click(window, ApplicationSupportPresentation.Preparation(new(false, false)).PrimaryAction.Label);
+            // This fixture has no native Index payload. The recommended default
+            // must stay unavailable; the user can explicitly choose legacy Argos.
+            Assert.Equal("准备 Index 本地翻译…", primary.Content);
+            Assert.False(primary.IsEnabled);
+            Assert.All(DirectionChoices(window), choice =>
+            {
+                Assert.False(choice.IsChecked);
+                Assert.False(choice.IsEnabled);
+            });
+            await ConfirmPackageAction(window, PackageAction(window, "argos-en-zh", ModelPackageOperation.Install));
             var failure = SetupFailurePresentation.Create(SetupFailureCategory.Network);
             await Until(() => Buttons(window).Any(button => Equals(button.Content, failure.RetryLabel)));
             window.UpdateLayout();
@@ -250,9 +258,11 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             window.RequestClose();
             window.ShowPage("apps");
             var directions = DirectionChoices(window);
-            Assert.False(directions[0].IsChecked);
-            Assert.True(directions[1].IsChecked);
-            Assert.All(directions, choice => Assert.False(choice.IsEnabled));
+            Assert.All(directions, choice =>
+            {
+                Assert.False(choice.IsChecked);
+                Assert.False(choice.IsEnabled);
+            });
             Click(window, failure.RetryLabel);
             await Until(() => attempts == 2 && Buttons(window).Any(button => Equals(button.Content, failure.RetryLabel)));
             Assert.False(model.Ready);
@@ -297,9 +307,9 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
     });
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public Task ExplicitPauseOffersResumeInsteadOfFailure(bool selectSingleDirection) => desktop.RunAsync(async () =>
+    [InlineData("argos-zh-en")]
+    [InlineData("argos-en-zh")]
+    public Task ExplicitPackagePauseOffersResumeInsteadOfFailure(string packageId) => desktop.RunAsync(async () =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-setup-ui-" + Guid.NewGuid().ToString("N"));
         SettingsWindow? window = null;
@@ -317,23 +327,24 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             window.ShowPage("apps");
             Assert.False(Descendants(window).OfType<Expander>()
                 .Single(expander => Equals(expander.Header, "组件与安装说明")).IsExpanded);
-            if (selectSingleDirection)
+            var choices = DirectionChoices(window);
+            Assert.Equal(new[] { "zh_en", "en_zh" }, choices.Select(choice => (string)choice.Tag));
+            Assert.All(choices, choice =>
             {
-                var choices = DirectionChoices(window);
-                Assert.Equal(new[] { "zh_en", "en_zh" }, choices.Select(choice => (string)choice.Tag));
-                Assert.All(choices, choice => { Assert.True(choice.IsChecked); Assert.True(choice.IsEnabled); });
-                choices[1].IsChecked = false;
-                choices[0].IsChecked = false;
-                Assert.True(choices[0].IsChecked);
-                Assert.False(choices[1].IsChecked);
-            }
-            // The default path starts directly while the direction options are still collapsed.
-            Click(window, ApplicationSupportPresentation.Preparation(new(false, false)).PrimaryAction.Label);
+                Assert.False(choice.IsChecked);
+                Assert.False(choice.IsEnabled);
+            });
+            Assert.Equal("准备 Index 本地翻译…", Named<Button>(window, "PreparationPrimaryAction").Content);
+            Assert.False(Named<Button>(window, "PreparationPrimaryAction").IsEnabled);
+            await ConfirmPackageAction(window, PackageAction(window, packageId, ModelPackageOperation.Install));
             await attempts[0].Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
             var directions = DirectionChoices(window);
-            Assert.True(directions[0].IsChecked);
-            Assert.Equal(!selectSingleDirection, directions[1].IsChecked == true);
-            Assert.All(directions, choice => Assert.False(choice.IsEnabled));
+            // A confirmed, pending package is not an installed direction.
+            Assert.All(directions, choice =>
+            {
+                Assert.False(choice.IsChecked);
+                Assert.False(choice.IsEnabled);
+            });
             var primary = Named<Button>(window, "PreparationPrimaryAction");
             Assert.True(primary.Focus());
             Click(window, "暂停下载");
@@ -352,13 +363,16 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             Assert.True(primary.IsEnabled);
             window.ShowPage("translation");
             directions = DirectionChoices(window);
-            Assert.True(directions[0].IsChecked);
-            Assert.Equal(!selectSingleDirection, directions[1].IsChecked == true);
-            Assert.All(directions, choice => Assert.False(choice.IsEnabled));
+            Assert.All(directions, choice =>
+            {
+                Assert.False(choice.IsChecked);
+                Assert.False(choice.IsEnabled);
+            });
             primary = Named<Button>(window, "PreparationPrimaryAction");
             Click(window, SetupFailurePresentation.ResumeLabel);
             Assert.Equal(2, attempts.Count);
             await attempts[1].Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(attempts[0].RequestedUri, attempts[1].RequestedUri);
             Assert.Same(primary, Named<Button>(window, "PreparationPrimaryAction"));
             Assert.Equal("暂停下载", primary.Content);
         }

@@ -14,7 +14,7 @@
     <Compile Include="../shared/PracticeProgressPipe.cs" Link="Windows/PracticeProgressPipe.cs" />
     <Compile Include="../shared/WindowsInterruptClock.cs" Link="Windows/WindowsInterruptClock.cs" />
     <Compile Include="../shared/BrowserPeerIdentity.cs" Link="Windows/BrowserPeerIdentity.cs" />
-    <ProjectReference Include="../TypeLay.Practice/TypeLay.Practice.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../TypeLay.Practice/TypeLay.Practice.csproj" ReferenceOutputAssembly="false" OutputItemType="_PracticeBuildOutput" />
     <ProjectReference Include="../TypeLay.Windows.Contracts/TypeLay.Windows.Contracts.csproj" />
     <ProjectReference Include="../../shared/TypeLay.Runtime/TypeLay.Runtime.csproj" />
     <ProjectReference Include="../../shared/TypeLay.Protocol/TypeLay.Protocol.csproj" />
@@ -24,9 +24,13 @@
     <InternalsVisibleTo Include="TypeLay.App.Tests" />
   </ItemGroup>
   <Target Name="CopyPracticeHostForDevelopment" AfterTargets="Build">
+    <Error Condition="'@(_PracticeBuildOutput->Count())' != '1'" Text="The Practice project must provide exactly one build output." />
+    <PropertyGroup>
+      <_PracticeOutputDirectory>@(_PracticeBuildOutput->'%(RootDir)%(Directory)')</_PracticeOutputDirectory>
+    </PropertyGroup>
     <ItemGroup>
-      <_PracticeFiles Include="$(MSBuildThisFileDirectory)../TypeLay.Practice/bin/$(Configuration)/net10.0-windows/TypeLay.Practice.*" />
-      <_PracticeFiles Include="$(MSBuildThisFileDirectory)../TypeLay.Practice/bin/$(Configuration)/net10.0-windows/TypeLay.NativeInput.dll" Condition="'$(OS)' == 'Windows_NT'" />
+      <_PracticeFiles Include="$(_PracticeOutputDirectory)TypeLay.Practice.*" />
+      <_PracticeFiles Include="$(_PracticeOutputDirectory)TypeLay.NativeInput.dll" Condition="'$(OS)' == 'Windows_NT'" />
     </ItemGroup>
     <Copy SourceFiles="@(_PracticeFiles)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
   </Target>

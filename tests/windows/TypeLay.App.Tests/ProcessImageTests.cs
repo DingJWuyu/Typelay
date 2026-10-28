@@ -169,13 +169,14 @@ public sealed class ProcessImageTests
             string root = Path.Combine(_data, "components", Guid.NewGuid().ToString("N"));
             string image = wrongLayout ? Path.Combine(root, "unexpected", "python.exe") : Path.Combine(root, "runtime", "python", "tools", "python.exe");
             Directory.CreateDirectory(Path.Combine(root, "models"));
-            var packages = ModelCatalog.Packages.Packages.Where(value => withHy || value.Backend == "argos").Select(value => new
-            {
-                id = value.Id,
-                version = value.Version,
-                directions = value.Directions.Select(direction => direction.Id).ToArray(),
-                files = new[] { new { path = "fixture.bin", sha256 = new string(changed ? '1' : '0', 64) } }
-            }).ToArray();
+            var packages = ModelCatalog.Packages.Packages.Where(value => value.Backend == "argos"
+                || withHy && value.Backend == "hy-mt-llama-cpu").Select(value => new
+                {
+                    id = value.Id,
+                    version = value.Version,
+                    directions = value.Directions.Select(direction => direction.Id).ToArray(),
+                    files = new[] { new { path = "fixture.bin", sha256 = new string(changed ? '1' : '0', 64) } }
+                }).ToArray();
             File.WriteAllText(Path.Combine(root, "models", "installed.json"), JsonSerializer.Serialize(new
             {
                 schema = 3,

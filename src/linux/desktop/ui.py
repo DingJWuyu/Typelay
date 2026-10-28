@@ -192,6 +192,7 @@ class ApplicationSupportPane:
         self.preparation_body.set_border_width(12)
         self.preparation_details.add(self.preparation_body)
         self.preparation_ready = None
+        self.preparation_compact = None
         self.preparation_guidance = self.note("", self.preparation_body)
         self.preparation_guidance.set_no_show_all(True)
         self.preparation_notice = self.note("", self.preparation_body)
@@ -352,9 +353,13 @@ class ApplicationSupportPane:
         current = self.owner.preparation_view_revision == self.owner.preparation_revision
         next_step = primary["id"] == "NextStep"
         ready = self.owner.model_ready and next_step
-        if ready != self.preparation_ready:
-            self.preparation_ready = ready
-            self.preparation_details.set_expanded(not ready)
+        self.preparation_ready = ready
+        # The current preparation snapshot owns both its entry and its layout.
+        # A delayed status event must not bury NextStep under an expanded card;
+        # compact presentation never grants model readiness or write authority.
+        if current and next_step != self.preparation_compact:
+            self.preparation_compact = next_step
+            self.preparation_details.set_expanded(not next_step)
         style = self.preparation_body.get_style_context()
         if ready:
             style.remove_class("settings-notice")

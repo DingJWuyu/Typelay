@@ -15,7 +15,10 @@ internal static class IndexPackageCheck
     {
         public IChildProcess Owner { get; } = owner;
         public ModelLoadPlan Plan { get; } = plan;
-        public bool Exited { get; private set; }
+        public bool Exited
+        {
+            get; private set;
+        }
         public Process Process => Owner.Process;
         public Stream StandardInput => Owner.StandardInput;
         public Stream StandardOutput => Owner.StandardOutput;
@@ -75,13 +78,20 @@ internal static class IndexPackageCheck
                 {
                     using var exit = new CancellationTokenSource(TimeSpan.FromSeconds(7));
                     foreach (var child in snapshot)
-                        try { await child.TerminateAndWaitAsync(exit.Token); }
+                        try
+                        {
+                            await child.TerminateAndWaitAsync(exit.Token);
+                        }
                         catch (Exception) { cleanup.Add("owned-exit-unconfirmed"); }
                 });
             }
         }
         using var registration = ct.Register(() => { _ = Cleanup(); });
-        void Begin(string name) { ct.ThrowIfCancellationRequested(); stage = name; }
+        void Begin(string name)
+        {
+            ct.ThrowIfCancellationRequested();
+            stage = name;
+        }
         void Passed() => outcomes[stage] = "passed";
         try
         {
@@ -160,8 +170,13 @@ internal static class IndexPackageCheck
                         && result.Text.StartsWith("  ", StringComparison.Ordinal) && result.Text.EndsWith("  ", StringComparison.Ordinal)
                         && result.Text.Length - result.Text.TrimStart(' ', '\t').Length == 2
                         && result.Text.Length - result.Text.TrimEnd(' ', '\t').Length == 2, "structure-mismatch");
-                responses.Add(new { input.Source, input.Target, result.Status,
-                    OutputSha256 = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(result.Text!))).ToLowerInvariant() });
+                responses.Add(new
+                {
+                    input.Source,
+                    input.Target,
+                    result.Status,
+                    OutputSha256 = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(result.Text!))).ToLowerInvariant()
+                });
             }
             Passed();
             Begin("cold-start");
@@ -176,7 +191,10 @@ internal static class IndexPackageCheck
             Begin("failed-repair-retains-current");
             var stale = new ModelPackageRequest(1, ModelPackageOperation.Repair, [Id], [Id], new string('0', 32));
             bool refused = false;
-            try { using var invalid = await new ModelInstaller(data, worker, new NoNetwork()).PreparePackagesAsync(stale, new ProgressLog(), ct); }
+            try
+            {
+                using var invalid = await new ModelInstaller(data, worker, new NoNetwork()).PreparePackagesAsync(stale, new ProgressLog(), ct);
+            }
             catch (InvalidDataException error) when (error.Message == "installation-changed") { refused = true; }
             Require(refused && model.Ready && store.ReadInstallationState().Generation == generation, "failed-repair-changed-current");
             Passed();
@@ -187,7 +205,10 @@ internal static class IndexPackageCheck
                 using var cancelled = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cancelled.Cancel();
                 refused = false;
-                try { await prepared.ActivateAsync(model, () => Task.FromResult(true), cancelled.Token); }
+                try
+                {
+                    await prepared.ActivateAsync(model, () => Task.FromResult(true), cancelled.Token);
+                }
                 catch (OperationCanceledException) { refused = true; }
                 Require(refused && model.Ready && store.ReadInstallationState().Generation == generation,
                     "cancelled-candidate-changed-current");
@@ -230,9 +251,16 @@ internal static class IndexPackageCheck
                 model?.Dispose();
             await File.WriteAllTextAsync(Path.Combine(directory, "result.json"), JsonSerializer.Serialize(new
             {
-                suite = "index-windows-production-package-lifecycle", outcomes, failure, responses, payloadHashes,
-                cleanup, allOwnedWorkersExited = !unknownOwner && children.All(child => child.Exited),
-                quality = "not-reviewed", desktop = "not-run", budgetSeconds = 600
+                suite = "index-windows-production-package-lifecycle",
+                outcomes,
+                failure,
+                responses,
+                payloadHashes,
+                cleanup,
+                allOwnedWorkersExited = !unknownOwner && children.All(child => child.Exited),
+                quality = "not-reviewed",
+                desktop = "not-run",
+                budgetSeconds = 600
             }, Json));
         }
         return outcomes.Values.All(value => value == "passed") && cleanup.Count == 0 ? 0 : 1;

@@ -169,7 +169,11 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
                     "files": [{"path": "model-file", "sha256": "0" * 64}],
                 }
                 for item in catalog["packages"]
-                if installed_package_ids is None or item["id"] in installed_package_ids
+                if (
+                    item["backend"] in ("argos", "hy-mt-llama-cpu")
+                    if installed_package_ids is None
+                    else item["id"] in installed_package_ids
+                )
             ]
             inventory.pop("directions")
             inventory.update(schema=3, packages=packages, activePackages=list(active_packages))

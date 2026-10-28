@@ -407,10 +407,16 @@ def main():
             choices = preparation.direction_choices
             assert list(choices) == ["zh_en", "en_zh"]
             assert all(
-                choice.get_active() and choice.get_sensitive() for choice in choices.values()
+                not choice.get_active() and not choice.get_sensitive()
+                for choice in choices.values()
             )
             assert not preparation.complete_directions_button.get_visible()
             assert not preparation.direction_details.get_expanded()
+            # This host-only fixture has no verified native availability fact.
+            # The new default is visible but cannot silently fall back to Argos.
+            assert settings_surface.install_button.get_label() == "准备 Index 本地翻译…"
+            assert not settings_surface.install_button.get_sensitive()
+            assert not preparation.package_widgets["index-translate-2b-q4-k-m"]["buttons"]
 
             def confirmation():
                 dialogs = [
@@ -421,32 +427,25 @@ def main():
                 assert len(dialogs) == 1, "preparation did not show one confirmation"
                 return dialogs[0]
 
-            settings_surface.install_button.clicked()
+            legacy = preparation.package_widgets["argos-zh-en"]["buttons"]["Install"]
+            assert legacy.get_sensitive()
+            legacy.clicked()
             dialog = confirmation()
-            assert "中英双向模型" in dialog.get_property("secondary-text")
-            dialog.response(Gtk.ResponseType.OK)
-            assert installations_requested.pop() == (("zh_en", "en_zh"), False)
-            assert not preparation.direction_details.get_expanded(), (
-                "default preparation required an extra direction-selection step"
-            )
-            preparation.direction_details.set_expanded(True)
-            choices["en_zh"].set_active(False)
-            choices["zh_en"].set_active(False)
-            assert choices["zh_en"].get_active(), "the last selected direction was removed"
-            settings_surface.refresh_preparation()
-            assert not any(choice.get_sensitive() for choice in choices.values())
-            await settled()
-            assert choices["zh_en"].get_active() and not choices["en_zh"].get_active()
-            settings_surface.install_button.clicked()
-            dialog = confirmation()
+            assert "Argos" in dialog.get_property("secondary-text")
             assert "中文 → English" in dialog.get_property("secondary-text")
-            assert "中英双向模型" not in dialog.get_property("secondary-text")
             dialog.response(Gtk.ResponseType.CANCEL)
-            assert not installations_requested, "cancelling installed a direction"
+            assert not packages_requested and not installations_requested
             assert preparation_cancellations.pop() is True
-            settings_surface.install_button.clicked()
+            legacy.clicked()
             confirmation().response(Gtk.ResponseType.OK)
-            assert installations_requested.pop() == (("zh_en",), False)
+            assert packages_requested.pop() == {
+                "format": 1,
+                "operation": "Install",
+                "packageIds": ["argos-zh-en"],
+                "activePackages": ["argos-zh-en"],
+                "expectedCurrent": None,
+            }
+            assert not installations_requested, "explicit package choice used the default path"
             for phase in ("running", "pausing", "paused", "starting", "failed"):
                 settings_surface.installation(
                     phase, failure="network" if phase == "failed" else None
@@ -454,7 +453,9 @@ def main():
                 assert not any(choice.get_sensitive() for choice in choices.values())
                 await settled()
                 assert not any(choice.get_sensitive() for choice in choices.values())
-                assert choices["zh_en"].get_active() and not choices["en_zh"].get_active()
+                assert not any(choice.get_active() for choice in choices.values()), (
+                    "a pending package was shown as installed"
+                )
                 assert not preparation.complete_directions_button.get_visible()
                 if phase in ("running", "paused", "failed"):
                     settings_surface.install_button.clicked()
@@ -462,14 +463,19 @@ def main():
                         assert pauses_requested.pop() is True
                     else:
                         if phase == "failed":
-                            confirmation().response(Gtk.ResponseType.OK)
+                            dialog = confirmation()
+                            assert "Argos" in dialog.get_property("secondary-text")
+                            assert "中文 → English" in dialog.get_property("secondary-text")
+                            dialog.response(Gtk.ResponseType.OK)
                         assert installations_requested.pop() == (None, False), (
                             "resume or retry replaced the existing installation request"
                         )
+                        assert not packages_requested
             settings_surface.installation("idle")
             await settled()
-            assert all(choice.get_sensitive() for choice in choices.values())
-            assert choices["zh_en"].get_active() and not choices["en_zh"].get_active()
+            assert not any(choice.get_sensitive() for choice in choices.values())
+            assert not any(choice.get_active() for choice in choices.values())
+            assert not settings_surface.install_button.get_sensitive()
             # Real marker-only observations are installation intent, never Ready.
             # The host is already running; no executable or model is launched here.
             component = directory / "data/components" / ("c" * 32)
@@ -492,7 +498,55 @@ def main():
             assert "已安装" in choices["zh_en"].get_label()
             assert not preparation.complete_directions_button.get_visible()
             assert not settings_surface.install_button.get_visible()
-            assert not preparation.preparation_ready, "installed intent collapsed an unready model"
+            assert not preparation.preparation_ready, "installed intent falsely reported Ready"
+            # The actual host now exposes NextStep from installed intent while
+            # status still correctly says not Ready. Its entry must not be buried
+            # below the expanded package list while waiting for another status.
+            assert not settings_surface.model_ready
+            assert settings_surface.preparation_view["primaryAction"]["id"] == "NextStep"
+            assert not preparation.preparation_details.get_expanded()
+            assert preparation.next_button.get_visible()
+            assert preparation.next_button.get_sensitive()
+
+            def entry_inside_viewports():
+                entry = preparation.next_button
+                if not entry.get_mapped():
+                    return False
+                allocation = entry.get_allocation()
+                if allocation.width <= 0 or allocation.height <= 0:
+                    return False
+                ancestor = entry.get_parent()
+                viewports = 0
+                for _ in range(16):
+                    if ancestor is None:
+                        return viewports >= 2
+                    if isinstance(ancestor, (Gtk.Viewport, Gtk.ScrolledWindow, Gtk.Window)):
+                        position = entry.translate_coordinates(ancestor, 0, 0)
+                        bounds = ancestor.get_allocation()
+                        if position is None:
+                            return False
+                        x, y = position
+                        if not (
+                            0 <= x <= bounds.width - allocation.width
+                            and 0 <= y <= bounds.height - allocation.height
+                        ):
+                            return False
+                        viewports += 1
+                    ancestor = ancestor.get_parent()
+                return False
+
+            async with asyncio.timeout(3):
+                while not entry_inside_viewports():
+                    await asyncio.sleep(0.01)
+            assert not settings_surface.model_ready
+            assert not preparation.preparation_ready
+            settings_surface.refresh_preparation()
+            assert not preparation.next_button.get_sensitive(), "stale NextStep stayed enabled"
+            assert not preparation.preparation_details.get_expanded()
+            await settled()
+            assert preparation.next_button.get_sensitive()
+            assert not settings_surface.model_ready
+            preparation.preparation_details.set_expanded(True)
             repair = preparation.package_widgets["argos-zh-en"]["buttons"]["Repair"]
             repair.clicked()
             dialog = confirmation()

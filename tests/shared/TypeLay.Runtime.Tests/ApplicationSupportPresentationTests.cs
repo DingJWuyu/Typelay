@@ -14,7 +14,10 @@ public sealed class ApplicationSupportPresentationTests
         Assert.Null(unavailable.DefaultPackageAction);
         Assert.False(unavailable.PrimaryAction.Enabled);
         var available = ApplicationSupportPresentation.Preparation(new(false, false,
-            Packages: facts with { IndexRuntimeAvailable = true }));
+            Packages: facts with
+            {
+                IndexRuntimeAvailable = true
+            }));
         var action = Assert.IsType<ModelPackageActionView>(available.DefaultPackageAction);
         Assert.True(action.RequiresConfirmation);
         Assert.Equal(ModelPackageOperation.Install, action.Request.Operation);
@@ -23,7 +26,11 @@ public sealed class ApplicationSupportPresentationTests
         Assert.False(available.CanSelectDirections);
         Assert.Contains("Index", action.ConfirmationText);
         var unknown = ApplicationSupportPresentation.Preparation(new(false, false,
-            Packages: facts with { IndexRuntimeAvailable = true, InventoryKnown = false }));
+            Packages: facts with
+            {
+                IndexRuntimeAvailable = true,
+                InventoryKnown = false
+            }));
         Assert.Null(unknown.DefaultPackageAction);
         Assert.False(unknown.PrimaryAction.Enabled);
     }

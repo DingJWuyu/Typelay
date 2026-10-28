@@ -747,9 +747,16 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                 Assert.True(window.IsVisible);
                 Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == view.Title);
                 var prepare = Descendants(window).OfType<Button>().Single(button =>
-                    Equals(button.Content, ApplicationSupportPresentation.Preparation(new(false, false)).PrimaryAction.Label));
-                Assert.True(prepare.IsEnabled);
+                    button.Name == "PreparationPrimaryAction");
+                Assert.Equal("准备 Index 本地翻译…", prepare.Content);
+                Assert.False(prepare.IsEnabled); // No Index native payload in this fresh private fixture.
                 Assert.True(prepare.IsVisible);
+                var details = Descendants(window).OfType<Expander>().Single(expander => Equals(expander.Header, "组件与安装说明"));
+                details.IsExpanded = true;
+                window.UpdateLayout();
+                var explicitArgos = Descendants(window).OfType<Button>().Single(button =>
+                    AutomationProperties.GetAutomationId(button) == "ModelPackage_argos-zh-en_Install");
+                Assert.True(explicitArgos.IsEnabled);
                 var checks = Descendants(window).OfType<Button>().Where(button => Equals(button.Content, "检查连接")).ToArray();
                 Assert.NotEmpty(checks);
                 Assert.All(checks, button => Assert.False(button.IsEnabled));

@@ -361,7 +361,15 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
                 Assert.False(settings.Value.OnboardingComplete);
                 Assert.Contains(Descendants(window).OfType<TextBlock>(), text =>
                     text.Text == ApplicationSupportPresentation.Create([]).Title);
-                Assert.Contains(Descendants(window).OfType<Button>(), button => Equals(button.Content, ApplicationSupportPresentation.Preparation(new(false, false)).PrimaryAction.Label));
+                var prepare = Descendants(window).OfType<Button>().Single(button => button.Name == "PreparationPrimaryAction");
+                Assert.Equal("准备 Index 本地翻译…", prepare.Content);
+                Assert.False(prepare.IsEnabled); // No Index native payload; never fall back implicitly.
+                var details = Descendants(window).OfType<Expander>().Single(expander => Equals(expander.Header, "组件与安装说明"));
+                details.IsExpanded = true;
+                window.UpdateLayout();
+                var explicitArgos = Descendants(window).OfType<Button>().Single(button =>
+                    AutomationProperties.GetAutomationId(button) == "ModelPackage_argos-zh-en_Install");
+                Assert.True(explicitArgos.IsEnabled);
             }
             finally
             {
