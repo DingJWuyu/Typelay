@@ -123,6 +123,11 @@ function Publish-Distribution([bool]$SelfContained) {
 }
 function Test-Distribution {
     if (-not (Test-Path -LiteralPath $archive)) { throw 'Run ./dev.ps1 pack first.' }
+    # The Python WinEvent probe launches this Release fixture, including its actual
+    # Broker/native dependencies. A clean pack/e2e must not rely on a prior build.
+    $fixture = 'tests/windows/fixtures/TypeLay.NativeFixture/TypeLay.NativeFixture.csproj'
+    Invoke-Checked dotnet @('restore', $fixture, '--locked-mode')
+    Invoke-Checked dotnet @('build', $fixture, '-c', 'Release', '--no-restore', '-warnaserror')
     $previous = $env:TYPELAY_PACKAGE_ZIP
     try {
         $env:TYPELAY_PACKAGE_ZIP = $archive

@@ -401,9 +401,11 @@ def main():
             settings_surface.render_guidance(tray.guidance)
             settings_surface.report(model_state)
             await settled()
-            settings_surface.window.show_all()
+            settings_surface.show()
+            await settled()
             settings_surface.pages.set_visible_child_name("application-support")
             preparation = settings_surface.application_support
+            assert preparation.value is not None, "application support was not initialized"
             choices = preparation.direction_choices
             assert list(choices) == ["zh_en", "en_zh"]
             assert all(
@@ -612,8 +614,14 @@ def main():
             settings_surface.refresh_preparation()
             await settled()
             assert all(
-                choice.get_active() and choice.get_sensitive() for choice in choices.values()
+                not choice.get_active() and not choice.get_sensitive()
+                for choice in choices.values()
             )
+            assert settings_surface.install_button.get_label() == "准备 Index 本地翻译…"
+            assert not settings_surface.install_button.get_sensitive()
+            assert not preparation.package_widgets["index-translate-2b-q4-k-m"]["buttons"]
+            for identity in ("argos-zh-en", "argos-en-zh"):
+                assert preparation.package_widgets[identity]["buttons"]["Install"].get_sensitive()
             settings_surface.pages.set_visible_child_name("language")
             assert model_state["modelReady"] is False
             assert model_state["modelDirections"] == []
