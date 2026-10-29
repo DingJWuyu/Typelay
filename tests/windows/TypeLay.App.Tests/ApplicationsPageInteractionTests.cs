@@ -284,7 +284,31 @@ public sealed partial class SettingsRenderingTests
         var add = ApplicationButton(scene.Window, "ApplicationAdd");
         Assert.Equal(28, add.ActualWidth);
         Assert.Equal(24, add.ActualHeight);
+        foreach (var iconButton in new[] { add, ApplicationButton(scene.Window, "ApplicationConnectionDetails_desktop"), ApplicationButton(scene.Window, "ApplicationConnectionDetails_browser") })
+        {
+            var icon = Assert.Single(Descendants(iconButton).OfType<System.Windows.Shapes.Path>());
+            Assert.True(icon.IsVisible);
+            Assert.False(icon.Data.Bounds.IsEmpty);
+            Assert.True(icon.StrokeThickness > 0);
+            var stroke = Assert.IsType<System.Windows.Media.SolidColorBrush>(icon.Stroke);
+            Assert.Equal(Assert.IsType<System.Windows.Media.SolidColorBrush>(scene.Window.FindResource("Muted")).Color, stroke.Color);
+            Assert.True(stroke.Color.A > 0);
+        }
+        foreach (string connection in new[] { "desktop", "browser" })
+        {
+            var summary = ApplicationElement(scene.Window, "SettingsRow_apps_" + connection);
+            var dot = Assert.Single(Descendants(summary).OfType<System.Windows.Shapes.Ellipse>());
+            Assert.True(dot.IsVisible);
+            Assert.Equal(Assert.IsType<System.Windows.Media.SolidColorBrush>(scene.Window.FindResource("Tertiary")).Color,
+                Assert.IsType<System.Windows.Media.SolidColorBrush>(dot.Fill).Color);
+        }
         Render(scene.Window, $"settings-applications-{language}-{theme}-{width}.png");
+        ApplicationRemovalDialog(scene.Window, "writer", dialog =>
+        {
+            Render(dialog, $"application-remove-{language}-{theme}-{width}.png");
+            InvokeApplicationButton(ApplicationButton(dialog, "ApplicationRemovalCancel"));
+        });
+        Assert.Equal(before, File.ReadAllText(scene.Path));
         var search = Assert.IsType<TextBox>(ApplicationElement(scene.Window, "ApplicationSearch"));
         search.Text = "not-found";
         scene.Window.UpdateLayout();
@@ -379,7 +403,7 @@ public sealed partial class SettingsRenderingTests
                 var title = Assert.IsType<TextBlock>(ApplicationElement(dialog, "ApplicationDialogTitle"));
                 Assert.Equal(18, title.FontSize);
                 Assert.Equal(FontWeights.Medium, title.FontWeight);
-                Assert.Equal(UiTheme.DisplayFont, title.FontFamily);
+                Assert.Equal(UiTheme.DisplayFontForSize(18), title.FontFamily);
                 interact(dialog);
             }
             catch (Exception error) { failure = error; dialog?.Close(); }

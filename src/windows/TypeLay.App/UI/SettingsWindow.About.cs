@@ -15,7 +15,7 @@ internal sealed partial class SettingsWindow
         var brand = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, Margin = new(0, 8, 0, 24) };
         brand.Children.Add(UiTheme.Mark(76, appIcon: true));
         var name = UiTheme.Text("TypeLay", 26);
-        name.FontFamily = UiTheme.DisplayFont;
+        name.FontFamily = UiTheme.DisplayFontForSize(26);
         name.FontWeight = FontWeights.Medium;
         name.LineHeight = 29.9;
         name.HorizontalAlignment = HorizontalAlignment.Center;

@@ -1071,6 +1071,14 @@ internal static partial class HyPackageCheck
     private sealed class OrdinaryQuitObservation
     {
         public int DiscoveryBudgetSeconds => 30;
+        public QuitConfirmationActions.Observation? FirstConfirmation
+        {
+            get; set;
+        }
+        public QuitConfirmationActions.Observation? LastConfirmation
+        {
+            get; set;
+        }
         public ShellTrayObservation? FirstMissShellTree
         {
             get; set;
@@ -1169,16 +1177,19 @@ internal static partial class HyPackageCheck
         await WaitAsync(async () => await UiAsync(() =>
         {
             Require(!app.HasExited, "quit-before-confirmation");
-            var dialog = AutomationElement.RootElement.FindFirst(TreeScope.Children, new AndCondition(
-                new PropertyCondition(AutomationElement.ProcessIdProperty, app.Id),
-                new PropertyCondition(AutomationElement.AutomationIdProperty, "TypeLayQuitConfirmation")));
-            confirm = dialog is null ? null : Find(dialog, AutomationElement.AutomationIdProperty, "QuitConfirm", ControlType.Button);
-            return confirm is not null && confirm.Current.IsEnabled && !confirm.Current.IsOffscreen;
+            confirm = QuitConfirmationActions.Find(app.Id, ct, out var current);
+            observation.FirstConfirmation ??= current;
+            observation.LastConfirmation = current;
+            return confirm is not null;
         }, ct), ct);
         await UiAsync(() =>
         {
             ct.ThrowIfCancellationRequested();
-            ((InvokePattern)confirm!.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+            var current = QuitConfirmationActions.Find(app.Id, ct, out _);
+            Require(current is not null && Automation.Compare(current, confirm!), "quit-confirmation-changed");
+            var invoke = (InvokePattern)current!.GetCurrentPattern(InvokePattern.Pattern);
+            ct.ThrowIfCancellationRequested();
+            invoke.Invoke();
         }, ct);
     }
     private static async Task OpenQuickPanelAsync(Process app, Scene scene, OrdinaryQuitObservation observation,

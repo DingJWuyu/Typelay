@@ -30,6 +30,10 @@ class Tutorial:
         self.window = Gtk.Window(title="欢迎使用 TypeLay")
         self.window.set_transient_for(owner.window)
         self.window.set_default_size(560, 460)
+        # GTK derives a rectangular WM minimum from height-for-minimum-width.
+        # Keep the prototype's outer width so hidden wrapped steps cannot turn
+        # a 356 px minimum into a 539 px minimum height at the actual 560 px width.
+        self.window.set_size_request(560, -1)
         self.window.set_border_width(16)
         self.style_provider = apply_theme(self.window, {})
         self.window.get_style_context().add_class("tutorial")
@@ -72,7 +76,9 @@ class Tutorial:
         welcome.reorder_child(icon, 0)
         local = Gtk.Box(spacing=7)
         local.set_halign(Gtk.Align.CENTER)
-        local.pack_start(design_icon("shield", 16, symbolic=True), False, False, 0)
+        local.pack_start(
+            style(design_icon("shield", 16, symbolic=True), "tutorial-shield"), False, False, 0
+        )
         self.local_note = style(label(), "tutorial-local")
         local.pack_start(self.local_note, False, False, 0)
         welcome.pack_start(local, False, False, 0)
@@ -110,7 +116,10 @@ class Tutorial:
 
         model_card = style(box(12), "tutorial-model", "settings-group")
         top = Gtk.Box(spacing=12)
-        top.pack_start(design_icon("chip", 26), False, False, 0)
+        model_icon = style(Gtk.Box(), "tutorial-model-icon")
+        model_icon.set_valign(Gtk.Align.CENTER)
+        model_icon.pack_start(design_icon("tutorial-chip", 16), True, True, 0)
+        top.pack_start(model_icon, False, False, 0)
         top.pack_start(style(label("TypeLay Translate"), "headline"), True, True, 0)
         self.prepare = Gtk.Button()
         self.prepare.set_no_show_all(True)
@@ -134,13 +143,20 @@ class Tutorial:
         self.practice_buttons, self.practice_titles, self.practice_keys = {}, {}, {}
         for lesson in ("automatic", "onDemand"):
             button = style(Gtk.Button(), "tutorial-practice")
-            content = box(12)
+            content = box(10)
             title = style(label(), "headline")
             title.set_xalign(0)
-            keys = style(label(), "tutorial-keys")
-            keys.set_xalign(0)
+            key_row = Gtk.Box(spacing=4)
+            keys = tuple(
+                style(label(wrap=False), "tutorial-key")
+                for _ in range(1 if lesson == "automatic" else 2)
+            )
+            for key_label in keys:
+                key_label.set_ellipsize(Pango.EllipsizeMode.END)
+                key_label.set_max_width_chars(12)
+                key_row.pack_start(key_label, False, False, 0)
             content.pack_start(title, False, False, 0)
-            content.pack_start(keys, False, False, 0)
+            content.pack_start(key_row, False, False, 0)
             button.add(content)
             button.connect(
                 "clicked", lambda widget, key=lesson: self.open_practice(key, opening, widget)
@@ -337,12 +353,20 @@ class Tutorial:
                 self.practice_buttons[lesson].set_sensitive(
                     self.owner.model_ready and self.pending is None
                 )
-            self.practice_keys["automatic"].set_text(value.get("acceptShortcut", "Tab"))
-            self.practice_keys["onDemand"].set_text(
-                value.get("wakeShortcut", "Ctrl+Shift+F9")
-                + "  "
-                + value.get("directShortcut", "Ctrl+Shift+F10")
-            )
+            for lesson, shortcuts in (
+                ("automatic", (value.get("acceptShortcut", "Tab"),)),
+                (
+                    "onDemand",
+                    (
+                        value.get("wakeShortcut", "Ctrl+Shift+F9"),
+                        value.get("directShortcut", "Ctrl+Shift+F10"),
+                    ),
+                ),
+            ):
+                for key_label, shortcut in zip(self.practice_keys[lesson], shortcuts):
+                    key_label.set_text(shortcut.replace("Shift", "⇧"))
+                    key_label.set_tooltip_text(shortcut)
+                    key_label.get_accessible().set_name(shortcut)
             self.render_model()
             for index, dot in enumerate(self.dots):
                 context = dot.get_style_context()
@@ -584,6 +608,7 @@ class ApplicationSupportPane:
         self.visible_ids = []
         self.action_signature = None
         self.action_revision = 0
+        self.connection_focus = None
         self.widget = Gtk.ScrolledWindow()
         self.widget.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -741,6 +766,7 @@ class ApplicationSupportPane:
             self.pending = False
 
     def render(self, value):
+        self.cancel_connection_focus()
         self.value = value
         labels = value["labels"]
         self.title.set_text(value["title"])
@@ -951,13 +977,84 @@ class ApplicationSupportPane:
     def choose_connection(self):
         # The existing desktop row owns package preparation and the explicit
         # private-input-method confirmation. Opening this entry starts neither.
+        self.cancel_connection_focus()
+        window, pages, entry = self.owner.window, self.owner.pages, self.next_button
+        if (
+            self.busy
+            or pages.get_visible_child_name() != "application-support"
+            or not window.is_active()
+            or not entry.get_mapped()
+            or not entry.is_sensitive()
+        ):
+            return
         self.selector.set_active_id("desktop-text")
-        if hasattr(self, "connection_details"):
-            self.connection_details.set_expanded(True)
-        self.details.set_expanded(True)
+        row = self.rows.get("desktop-text")
         actions = self.primary.get_children()
-        if actions:
-            actions[0].grab_focus()
+        if row is None or not actions:
+            return
+        already_expanded = self.connection_details.get_expanded() and self.details.get_expanded()
+        target, revision = actions[0], self.action_revision
+        request = self.connection_focus = []
+
+        def cancel(*_):
+            if self.connection_focus is request:
+                self.cancel_connection_focus()
+
+        def focus_changed(_window, focused):
+            # Once the user chooses another control, a later GTK None must not
+            # revive this explicit entry's one-time focus handoff.
+            if focused is not None and focused is not entry:
+                cancel()
+
+        def allocated(*_):
+            if self.connection_focus is not request:
+                return
+            if target.get_allocated_width() <= 1 or target.get_allocated_height() <= 1:
+                return
+            current = (
+                not self.busy
+                and revision == self.action_revision
+                and self.rows.get("desktop-text") is row
+                and self.selector.get_active_id() == "desktop-text"
+                and pages.get_visible_child_name() == "application-support"
+                and window.is_active()
+                and entry.get_mapped()
+                and entry.is_sensitive()
+                and target.get_parent() is self.primary
+                and target.get_mapped()
+                and target.is_sensitive()
+                and self.connection_details.get_expanded()
+                and self.details.get_expanded()
+                and window.get_focus() in (None, entry)
+            )
+            # Consume before GtkWindow::set-focus can synchronously reenter.
+            cancel()
+            if current:
+                target.grab_focus()
+
+        for widget, signal, handler in (
+            (self.connection_details, "size-allocate", allocated),
+            (window, "set-focus", focus_changed),
+            (window, "unmap", cancel),
+            (entry, "unmap", cancel),
+            (target, "destroy", cancel),
+            (self.selector, "changed", cancel),
+            (pages, "notify::visible-child-name", cancel),
+            (window, "notify::is-active", lambda *_: cancel() if not window.is_active() else None),
+        ):
+            request.append((widget, widget.connect_after(signal, handler)))
+        self.connection_details.set_expanded(True)
+        self.details.set_expanded(True)
+        # An already expanded pane may not need a new allocation. Its current
+        # allocated descendants are safe to use; never poll or refocus on render.
+        if already_expanded:
+            allocated()
+
+    def cancel_connection_focus(self):
+        request, self.connection_focus = self.connection_focus, None
+        if request is not None:
+            for widget, signal in request:
+                widget.disconnect(signal)
 
     def render_connection_cards(self):
         if not self.value or not hasattr(self, "connection_cards"):

@@ -48,6 +48,7 @@ internal static partial class UiTheme
       </Style>
       <Style x:Key="SettingsLanguagePicker" TargetType="ComboBox">
         <Setter Property="Height" Value="44"/><Setter Property="MinHeight" Value="44"/>
+        <Setter Property="Padding" Value="14,0,34,0"/>
         <Setter Property="Foreground" Value="{DynamicResource Text}"/>
         <Setter Property="Background" Value="{DynamicResource SettingsLanguageFill}"/>
         <Setter Property="BorderBrush" Value="{DynamicResource SettingsControlLine}"/>
@@ -56,14 +57,15 @@ internal static partial class UiTheme
         <Setter Property="VirtualizingPanel.IsVirtualizing" Value="False"/>
         <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBox">
           <Grid>
-            <ToggleButton x:Name="anchor" Focusable="False" ClickMode="Press" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+            <ToggleButton x:Name="anchor" Tag="{TemplateBinding Tag}" Focusable="False" ClickMode="Press" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
               <ToggleButton.Template><ControlTemplate TargetType="ToggleButton">
                 <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="10">
-                  <Viewbox Width="14" Height="14" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0"><Canvas Width="24" Height="24"><Path Data="M6,9 L12,15 L18,9" Stroke="{DynamicResource Tertiary}" StrokeThickness="1.7"/></Canvas></Viewbox>
+                  <Viewbox x:Name="chevron" Width="14" Height="14" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0"><Canvas Width="24" Height="24"><Path Data="M6,9 L12,15 L18,9" Stroke="{DynamicResource Tertiary}" StrokeThickness="1.7"/></Canvas></Viewbox>
                 </Border>
+                <ControlTemplate.Triggers><Trigger Property="Tag" Value="tray"><Setter TargetName="chevron" Property="Visibility" Value="Collapsed"/></Trigger></ControlTemplate.Triggers>
               </ControlTemplate></ToggleButton.Template>
             </ToggleButton>
-            <TextBlock Text="{Binding SelectedItem.Label, RelativeSource={RelativeSource TemplatedParent}}" Margin="14,0,34,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" IsHitTestVisible="False"/>
+            <TextBlock Text="{Binding SelectedItem.Label, RelativeSource={RelativeSource TemplatedParent}}" Margin="{TemplateBinding Padding}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" IsHitTestVisible="False"/>
             <Popup x:Name="PART_Popup" AllowsTransparency="True" Focusable="False" IsOpen="{TemplateBinding IsDropDownOpen}">
               <Border Width="280" CornerRadius="12" Padding="6" Background="{DynamicResource Panel}" BorderBrush="{DynamicResource SettingsControlLine}" BorderThickness="0.5">
                 <StackPanel>
@@ -87,6 +89,11 @@ internal static partial class UiTheme
             <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/></Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate></Setter.Value></Setter>
+      </Style>
+      <Style x:Key="TrayLanguagePicker" TargetType="ComboBox" BasedOn="{StaticResource SettingsLanguagePicker}">
+        <Setter Property="Tag" Value="tray"/><Setter Property="Height" Value="34"/><Setter Property="MinHeight" Value="34"/>
+        <Setter Property="Padding" Value="10,0"/><Setter Property="Background" Value="{DynamicResource Panel}"/>
+        <Setter Property="FontSize" Value="13.5"/><Setter Property="FontWeight" Value="Medium"/><Setter Property="FontFamily" Value="{DynamicResource DisplayFont13.5}"/>
       </Style>
       <Style x:Key="SettingsLanguageSwap" TargetType="Button">
         <Setter Property="Width" Value="36"/><Setter Property="Height" Value="36"/><Setter Property="Padding" Value="0"/>

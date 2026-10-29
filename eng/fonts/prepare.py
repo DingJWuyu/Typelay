@@ -14,6 +14,44 @@ LOCK_PATH = Path(__file__).with_name("fonts.lock.json")
 MANIFEST = "manifest.json"
 
 
+# Only actual prototype roles, not a weight-by-size Cartesian product. The
+# optical axis values are separately pinned after comparison with Chrome auto.
+SERIF_ROLE_SIZES = {
+    400: (13, 14, 15, 16, 17, 18, 19),
+    500: (11, 13.5, 15, 17, 18, 20, 22, 26, 30),
+}
+
+
+def serif_instance_names(item):
+    weight, size = item["weight"], item["cssSize"]
+    if (
+        weight not in SERIF_ROLE_SIZES
+        or size not in SERIF_ROLE_SIZES[weight]
+        or set(item["instance"]) != {"wght", "opsz"}
+        or item["instance"]["wght"] != weight
+        or item["instance"]["opsz"] != size
+    ):
+        raise ValueError("unsupported-serif-role-instance")
+    family = f"TypeLay Serif {size:g}"
+    style = "Regular" if weight == 400 else "Medium"
+    if item["family"] != family:
+        raise ValueError("unexpected-serif-instance-family")
+    full_name = f"{family} {style}"
+    axes = f"wght={weight};opsz={item['instance']['opsz']:g}"
+    return {
+        1: family if weight == 400 else full_name,
+        2: "Regular",
+        3: f"TypeLay;SourceSerif4.004;{axes};fontTools4.61.1",
+        4: full_name,
+        5: "Version 4.004;TypeLay static optical instance 1",
+        6: f"TypeLaySerif-{size:g}-{style}",
+        10: f"Static {axes} instance of Source Serif 4.004, produced by TypeLay "
+        "using fontTools 4.61.1. Not an upstream original. No subsetting or rehinting.",
+        16: family,
+        17: style,
+    }
+
+
 def load_lock():
     lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     if lock["schemaVersion"] != 1:
@@ -115,7 +153,14 @@ def instantiate(source, output, item, version):
         17: "SemiBold",
     }
     expected_axes = [("wght", 100, 100, 900)]
-    if item["instance"] != {"wght": 600}:
+    if "opsz" in item["instance"]:
+        expected_axes = [("wght", 200, 400, 900), ("opsz", 8, 20, 60)]
+        if font["name"].getDebugName(1) != "Source Serif 4" or not font["name"].getDebugName(
+            5
+        ).startswith("Version 4.004;"):
+            raise ValueError("unexpected-serif-source")
+        names = serif_instance_names(item)
+    elif item["instance"] != {"wght": 600}:
         raise ValueError("unsupported-font-instance")
     if [
         (axis.axisTag, axis.minValue, axis.defaultValue, axis.maxValue)

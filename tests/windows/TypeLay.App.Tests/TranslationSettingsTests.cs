@@ -626,6 +626,7 @@ public sealed partial class TranslationSettingsTests(WpfDesktopFixture desktop)
             get;
         }
         public bool ModelReady => _model.Ready;
+        public ModelClient Model => _model;
         public SettingsScene(UserSettings? initial = null, bool released = false, Func<OwnedPracticeBinding, Task<bool>>? retire = null, TranslationReleasePolicy? releasePolicy = null)
         {
             Directory.CreateDirectory(_directory);

@@ -97,7 +97,16 @@ def glossary(case):
     }
 
 
-async def exchange_case(process, report, identity, payload, *, expected_error=None):
+async def exchange_case(
+    process,
+    report,
+    identity,
+    payload,
+    *,
+    expected_error=None,
+    allowed_errors=(),
+    original_ordinal=None,
+):
     report["stage"] = identity
     payload = {"id": len(report["requests"]) + 1, **payload}
     record = {
@@ -108,6 +117,7 @@ async def exchange_case(process, report, identity, payload, *, expected_error=No
         "status": "pending",
         "code": None,
         "workerElapsedMs": None,
+        "originalInferenceOrdinal": original_ordinal,
     }
     report["requests"].append(record)
     started = time.monotonic()
@@ -129,6 +139,25 @@ async def exchange_case(process, report, identity, payload, *, expected_error=No
                 or response.get("text") != ""
             ):
                 raise styled_quality.CollectionError("unexpected-index-refusal-response")
+        elif (
+            response.get("status") == "error"
+            and response.get("text") == ""
+            and response.get("code") in allowed_errors
+            and (
+                payload["op"] in ("translate", "translate-styled-v1")
+                and response["code"] == "structure-not-preserved"
+                or payload["op"] == "translate-alternative"
+                and response["code"] == "alternative-unavailable"
+            )
+        ):
+            report.setdefault("businessRefusals", []).append(
+                {
+                    "caseId": identity,
+                    "originalInferenceOrdinal": original_ordinal,
+                    "code": response["code"],
+                    "quality": "failed-no-translation",
+                }
+            )
         elif (
             payload["op"] == "translate-alternative" and response.get("status") == "no-alternative"
         ):
@@ -160,19 +189,38 @@ async def exchange_case(process, report, identity, payload, *, expected_error=No
         record["wallElapsedMs"] = round((time.monotonic() - started) * 1000, 2)
 
 
-async def collect_cases(process, report):
+async def collect_cases(
+    process, report, *, variants=VARIANTS, capabilities=CAPABILITIES, allowed_errors=()
+):
+    if (
+        not variants
+        or len(set(variants)) != len(variants)
+        or any(variant not in VARIANTS for variant in variants)
+        or len(set(allowed_errors)) != len(allowed_errors)
+        or any(
+            code not in ("structure-not-preserved", "alternative-unavailable")
+            for code in allowed_errors
+        )
+        or allowed_errors
+        and any(
+            variant not in ("ordinary", "natural", "formal", "alternative") for variant in variants
+        )
+    ):
+        raise styled_quality.CollectionError("invalid-index-capture-plan")
     hello = report["hello"]
     if (
-        any(type(hello.get(key)) is not int or hello[key] != 1 for key in CAPABILITIES)
+        any(type(hello.get(key)) is not int or hello[key] != 1 for key in capabilities)
         or len(hello["packages"]) != 1
         or {key: hello["packages"][0][key] for key in ("id", "version")}
         != report["expectedPackage"]
         or len(report["requests"]) != 1
     ):
         raise styled_quality.CollectionError("exact-index-capabilities-required-no-fallback")
+    ordinal = 0
     for case in report["cases"]:
         source, target = case["direction"].split("_")
-        for variant in VARIANTS:
+        for variant in variants:
+            ordinal += 1
             payload = dict(op="translate", text=case["text"], source=source, target=target)
             if variant in ("natural", "formal", "combined"):
                 payload.update(
@@ -186,6 +234,19 @@ async def collect_cases(process, report):
                     glossary=glossary(case),
                 )
             if variant == "alternative":
+                if (
+                    case["responses"]["ordinary"] is None
+                    or case["responses"]["ordinary"]["status"] != "translated"
+                ):
+                    report.setdefault("dependencyNotRun", []).append(
+                        {
+                            "caseId": case["id"] + ":alternative",
+                            "originalInferenceOrdinal": ordinal,
+                            "reason": "ordinary-has-no-successful-previous",
+                        }
+                    )
+                    case["alternativeComparison"] = "dependency-not-run"
+                    continue
                 payload.update(
                     op="translate-alternative",
                     previousCandidate=case["responses"]["ordinary"]["text"],
@@ -199,6 +260,8 @@ async def collect_cases(process, report):
                 case["id"] + ":" + variant,
                 payload,
                 expected_error="alternative-unavailable" if protected_alternative else None,
+                allowed_errors=allowed_errors,
+                original_ordinal=ordinal,
             )
             case["responses"][variant] = response
             if variant == "alternative":

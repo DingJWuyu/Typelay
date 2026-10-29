@@ -70,16 +70,23 @@ static inline TlOverlayPalette tl_overlay_palette(int dark, const char *accent, 
     return p;
 }
 
-static inline const char *tl_overlay_content_font(const char *font, const char *language) {
+/* Caller-owned storage avoids shared mutable font names across surfaces.
+ * Content is the prototype's 400-weight role at a bounded logical pixel size;
+ * this does not multiply the optical axis by the monitor scale. */
+static inline const char *tl_overlay_content_font(const char *font, const char *language,
+        int text_size, char *storage, size_t capacity) {
     if (font && strcmp(font, "system") == 0) return NULL;
     const int sans = font && strcmp(font, "sans") == 0;
-    if (language && strncmp(language, "ja", 2) == 0)
-        return sans ? "'Inter', 'Noto Sans JP', sans-serif" : "'Source Serif 4', 'Noto Serif JP', serif";
-    if (language && strncmp(language, "ko", 2) == 0)
-        return sans ? "'Inter', 'Noto Sans KR', sans-serif" : "'Source Serif 4', 'Noto Serif KR', serif";
-    if (language && (strcmp(language, "zh-TW") == 0 || strcmp(language, "zh-HK") == 0 || strcmp(language, "zh-Hant") == 0))
-        return sans ? "'Inter', 'Noto Sans TC', sans-serif" : "'Source Serif 4', 'Noto Serif TC', serif";
-    return sans ? "'Inter', 'Noto Sans SC', sans-serif" : "'Source Serif 4', 'Noto Serif SC', serif";
+    const char *region = "SC";
+    if (language && strncmp(language, "ja", 2) == 0) region = "JP";
+    else if (language && strncmp(language, "ko", 2) == 0) region = "KR";
+    else if (language && (strcmp(language, "zh-TW") == 0 || strcmp(language, "zh-HK") == 0 || strcmp(language, "zh-Hant") == 0)) region = "TC";
+    /* Preserve the existing TC fallback without claiming a bundled TC face. */
+    if (text_size < 13 || text_size > 19) text_size = 15;
+    int count = sans
+        ? snprintf(storage, capacity, "'Inter', 'Noto Sans %s', sans-serif", region)
+        : snprintf(storage, capacity, "'TypeLay Serif %d', 'Noto Serif %s', serif", text_size, region);
+    return count >= 0 && (size_t)count < capacity ? storage : NULL;
 }
 
 static inline const char *tl_overlay_ui_font(const char *font) {
@@ -91,7 +98,22 @@ static inline const char *tl_overlay_ui_font(const char *font) {
 static inline const char *const *tl_overlay_font_files(size_t *count) {
     static const char *const files[] = {
         "inter/Inter-Regular.ttf", "inter/Inter-Medium.ttf", "inter/Inter-SemiBold.ttf",
-        "source-serif/SourceSerif4-Regular.ttf", "source-serif/SourceSerif4-Semibold.ttf",
+        "source-serif/TypeLaySerif-13-Regular.ttf",
+        "source-serif/TypeLaySerif-14-Regular.ttf",
+        "source-serif/TypeLaySerif-15-Regular.ttf",
+        "source-serif/TypeLaySerif-16-Regular.ttf",
+        "source-serif/TypeLaySerif-17-Regular.ttf",
+        "source-serif/TypeLaySerif-18-Regular.ttf",
+        "source-serif/TypeLaySerif-19-Regular.ttf",
+        "source-serif/TypeLaySerif-11-Medium.ttf",
+        "source-serif/TypeLaySerif-13.5-Medium.ttf",
+        "source-serif/TypeLaySerif-15-Medium.ttf",
+        "source-serif/TypeLaySerif-17-Medium.ttf",
+        "source-serif/TypeLaySerif-18-Medium.ttf",
+        "source-serif/TypeLaySerif-20-Medium.ttf",
+        "source-serif/TypeLaySerif-22-Medium.ttf",
+        "source-serif/TypeLaySerif-26-Medium.ttf",
+        "source-serif/TypeLaySerif-30-Medium.ttf",
         "noto-sans/NotoSansSC-Regular.otf", "noto-sans/NotoSansSC-Medium.otf",
         "noto-sans/TypeLayNotoSansSC-SemiBold.ttf",
         "noto-sans/NotoSansJP-Regular.otf", "noto-sans/NotoSansJP-Medium.otf",
@@ -159,7 +181,7 @@ static inline int tl_overlay_gtk_css(char *out, size_t capacity, TlOverlayPalett
         "#typelay-overlay #typelay-status { color: %s; font-size: 11px; }"
         "#typelay-overlay #typelay-status.pending { color: %s; }"
         "#typelay-overlay #typelay-candidate, #typelay-overlay #typelay-candidate text { background: transparent;"
-        " color: %s; %s%s%s font-size: %dpx; caret-color: %s; }"
+        " color: %s; %s%s%s font-size: %dpx; font-weight:400; caret-color: %s; }"
         "#typelay-overlay #typelay-candidate { border: 1px solid transparent; border-radius: 10px; outline: none; box-shadow: none; }"
         "#typelay-overlay #typelay-candidate.editable-preview:hover { background: %s; }"
         "#typelay-overlay #typelay-candidate:focus, #typelay-overlay #typelay-candidate:focus > text {"
@@ -219,7 +241,7 @@ static inline int tl_overlay_qt_css(char *out, size_t capacity, TlOverlayPalette
         "QFrame#typelay-overlay QPushButton#typelay-resume { color:%s; font-weight:600; }"
         "QFrame#typelay-overlay QWidget#typelay-menu { border-top:1px solid %s; }"
         "QFrame#typelay-overlay QPlainTextEdit#typelay-editor { background:%s; color:%s; border:1px solid %s;"
-        " border-radius:10px; padding:4px; font-family:%s; font-size:%dpx; selection-background-color:%s; selection-color:%s; }"
+        " border-radius:10px; padding:4px; font-family:%s; font-size:%dpx; font-weight:normal; selection-background-color:%s; selection-color:%s; }"
         "QFrame#typelay-overlay QPlainTextEdit#typelay-editor:hover { background:%s; }"
         "QFrame#typelay-overlay QPlainTextEdit#typelay-editor:focus { border-color:%s; background:%s; }"
         "QFrame#typelay-overlay QWidget#typelay-glossary QLineEdit { background:%s; color:%s; border:1px solid %s;"

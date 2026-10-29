@@ -14,30 +14,6 @@ internal static partial class UiTheme
     private static UserSettings _preferences = new();
     public static bool English => _preferences.UiLanguage == "en" || _preferences.UiLanguage == "system" && !CultureInfo.CurrentUICulture.Name.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
     public static bool ReduceMotion => _preferences.ShouldReduceMotion(!SystemParameters.ClientAreaAnimation);
-    // WPF requires an absolute base URI plus a relative family name. A single
-    // string starting with pack: silently falls back instead of loading a font.
-    public static FontFamily BundledFont(string family, string? fallback = null) =>
-        new(new Uri("pack://application:,,,/TypeLay.App;component/"), "./UI/Fonts/#" + family + (string.IsNullOrWhiteSpace(fallback) ? "" : ", " + fallback));
-    private static string InterfaceLanguage => English ? "en" : "zh-CN";
-    public static FontFamily UiFont => RoleFont(serif: false, InterfaceLanguage);
-    public static FontFamily UiFontForLanguage(string? language) => RoleFont(serif: false, language);
-    public static FontFamily DisplayFont => ContentFontForLanguage(InterfaceLanguage);
-    public static FontFamily ContentFont => ContentFontForLanguage(_preferences.Target);
-    public static FontFamily ContentFontForLanguage(string? language) => RoleFont(_preferences.Font == "claude", language);
-
-    private static FontFamily RoleFont(bool serif, string? language)
-    {
-        string region = language?.StartsWith("ja", StringComparison.OrdinalIgnoreCase) == true ? "JP"
-            : language?.StartsWith("ko", StringComparison.OrdinalIgnoreCase) == true ? "KR" : "SC";
-        if (_preferences.Font == "system")
-            return new("Segoe UI, " + (region == "JP" ? "Yu Gothic UI" : region == "KR" ? "Malgun Gothic" : "Microsoft YaHei UI"));
-        string cjk = serif ? "Noto Serif " : "Noto Sans ";
-        // Every bundled fallback needs its own resource locator. A bare Noto
-        // family name would query installed fonts and silently lose offline CJK.
-        string[] regions = [region, .. new[] { "SC", "JP", "KR" }.Where(value => value != region)];
-        string fallback = string.Join(", ", regions.Select(value => "./UI/Fonts/#" + cjk + value));
-        return BundledFont(serif ? "Source Serif 4" : "Inter", fallback);
-    }
     public static double ContentSize => _preferences.TextSize;
     public static string L(string chinese, string english) => English ? english : chinese;
     private const string StyleXml = """
@@ -298,7 +274,8 @@ internal static partial class UiTheme
         r["ConfigurationScrollThumb"] = Brush(dark ? "#9F9F9F" : "#8B8B8B");
         r["UiFont"] = UiFont;
         r["ContentFont"] = ContentFont;
-        r["DisplayFont"] = DisplayFont;
+        r["DisplayFont15"] = DisplayFontForSize(15);
+        r["DisplayFont13.5"] = DisplayFontForSize(13.5);
         r["ContentSize"] = ContentSize;
     }
     public static FrameworkElement Mark(double size = 26, bool appIcon = false)

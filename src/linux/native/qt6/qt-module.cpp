@@ -1736,8 +1736,10 @@ private:
         const bool editable = editor_ && editor_->isReadOnly() && overlayView_.value("editable").toBool()
             && overlayView_.value("viewContext").toObject().value("canEdit").toBool();
         char css[16384];
+        char contentFont[128];
         const int count = tl_overlay_qt_css(css, sizeof css, tokens,
-            systemFontSelected ? systemFont.constData() : tl_overlay_content_font(family.constData(), language.constData()),
+            systemFontSelected ? systemFont.constData() : tl_overlay_content_font(family.constData(), language.constData(),
+                overlayTextSize(), contentFont, sizeof contentFont),
             systemFontSelected ? systemFont.constData() : tl_overlay_ui_font(family.constData()),
             overlayTextSize(), stale,
             editor_ && !editor_->isReadOnly(), editable);

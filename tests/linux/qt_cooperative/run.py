@@ -1328,13 +1328,26 @@ def ordered_controls(
                 font_observations = []
                 for revision, (font, size, family) in enumerate(
                     (
-                        ("claude", 13, "Source Serif 4"),
+                        ("claude", 13, "TypeLay Serif 13"),
                         ("sans", 19, "Inter"),
                         ("system", 15, "sans"),
                     ),
                     30,
                 ):
-                    observation = {"revision": revision, "font": font, "size": size, "samples": 0}
+                    expected_latin = (
+                        font_table_hashes(
+                            font_root / f"source-serif/TypeLaySerif-{size}-Regular.ttf"
+                        )
+                        if font == "claude"
+                        else None
+                    )
+                    observation = {
+                        "revision": revision,
+                        "font": font,
+                        "size": size,
+                        "samples": 0,
+                        "expectedLatinTables": expected_latin,
+                    }
                     font_observations.append(observation)
 
                     def rendered_font():
@@ -1382,6 +1395,18 @@ def ordered_controls(
                             if value.get("editorVisible")
                             and value.get("editorFontPixels") == size
                             and runs
+                            and (
+                                expected_latin is None
+                                or all(
+                                    run.get("missingGlyphs") == 0
+                                    and run.get("weight") == 400
+                                    and all(
+                                        run.get(tag) == digest
+                                        for tag, digest in expected_latin.items()
+                                    )
+                                    for run in runs
+                                )
+                            )
                             and (
                                 value.get("editorFontFamily") == value.get("applicationFontFamily")
                                 if font == "system"

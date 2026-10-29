@@ -40,6 +40,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--inspect", action="store_true")
     parser.add_argument("--tutorial-only", action="store_true")
+    parser.add_argument("--connection-only", action="store_true")
     options = parser.parse_args()
     assert Gtk.init_check([])[0], "GTK display unavailable"
     options.output.mkdir(parents=True, exist_ok=True)
@@ -178,8 +179,11 @@ def main():
 
         host = ObservedLink(GLib, parent.fileno(), parent.fileno(), notification, None, closed.set)
 
+        connection_support = None
+
         async def support_refresh():
-            return await host.ask("applicationSupport", {"facts": []}, timeout=2)
+            facts = [connection_support.desktop_fact()] if connection_support is not None else []
+            return await host.ask("applicationSupport", {"facts": facts}, timeout=2)
 
         async def support_action(identity, action, *args, **kwargs):
             if action == "ListManagedApplications":
@@ -214,6 +218,113 @@ def main():
                 str(options.output / (name + ".png")), "png", [], []
             )
 
+        async def exercise_connection_focus():
+            from application_support import ApplicationSupport
+
+            nonlocal connection_support
+            connection_support = ApplicationSupport(
+                SimpleNamespace(home=options.host.parent.parent, data=directory / "data")
+            )
+            fact = connection_support.desktop_fact()
+            assert fact["state"] == "NeedsInstall", fact
+            # The ordinary periodic refresh must observe the same actual local
+            # inventory, not replace this scoped fact with the harness's empty one.
+            value = await support_refresh()
+            pane = surface.application_support
+            pane.render(value)
+            surface.sidebar.select_row(surface.nav_rows["application-support"])
+            surface.window.present()
+            await settle(
+                lambda: surface.window.is_active()
+                and pane.next_button.get_mapped()
+                and not surface.pages.get_transition_running()
+            )
+            before = (directory / "config/settings.json").read_bytes()
+            entry = pane.next_button
+            entry.grab_focus()
+            entry.clicked()
+            target = pane.primary.get_children()[0]
+            assert pane.connection_focus is not None, "first opening skipped its allocation wait"
+            await settle(lambda: pane.connection_focus is None and target.is_focus())
+            scroll = surface.page_scrolls["application-support"]
+            viewport = scroll.get_child()
+            for widget in (pane.selector, target):
+                point = widget.translate_coordinates(viewport, 0, 0)
+                assert point is not None
+                assert (
+                    0 <= point[0] <= viewport.get_allocated_width() - widget.get_allocated_width()
+                )
+                assert (
+                    0 <= point[1] <= viewport.get_allocated_height() - widget.get_allocated_height()
+                )
+
+            async def pending_open():
+                pane.connection_details.set_expanded(False)
+                await paint(surface.window)
+                entry.grab_focus()
+                entry.clicked()
+                assert pane.connection_focus is not None, "negative control missed pending handoff"
+
+            await pending_open()
+            surface.search.grab_focus()
+            assert surface.window.get_focus() is surface.search
+            surface.window.set_focus(None)
+            await paint(surface.window)
+            assert pane.connection_focus is None and surface.window.get_focus() is None, (
+                "user other-to-None focus was stolen by a late allocation"
+            )
+
+            await pending_open()
+            surface.sidebar.select_row(surface.nav_rows["general"])
+            await paint(surface.window)
+            assert pane.connection_focus is None
+            entry.clicked()
+            assert pane.connection_focus is None, "hidden old entry reopened its handoff"
+            surface.sidebar.select_row(surface.nav_rows["application-support"])
+            await settle(lambda: not surface.pages.get_transition_running())
+
+            await pending_open()
+            pane.selector.set_active_id("chromium")
+            await paint(surface.window)
+            assert pane.connection_focus is None and pane.selector.get_active_id() == "chromium"
+
+            await pending_open()
+            surface.window.hide()
+            assert pane.connection_focus is None
+            surface.show()
+            await settle(lambda: surface.window.is_active() and not jobs and not pane.pending)
+            assert pane.connection_focus is None, "reopen revived a hidden request"
+
+            # A later current explicit request still works after all retirements.
+            entry.grab_focus()
+            entry.clicked()
+            target = pane.primary.get_children()[0]
+            try:
+                await settle(lambda: pane.connection_focus is None and target.is_focus())
+            except TimeoutError:
+                focused = surface.window.get_focus()
+                print(
+                    "CONNECTION RECOVERY TIMEOUT",
+                    {
+                        "refreshPending": pane.pending,
+                        "jobs": len(jobs),
+                        "handoffPending": pane.connection_focus is not None,
+                        "targetCurrent": target.get_parent() is pane.primary,
+                        "targetMapped": target.get_mapped(),
+                        "targetSize": (target.get_allocated_width(), target.get_allocated_height()),
+                        "focus": focused.get_accessible().get_name() if focused else None,
+                    },
+                    flush=True,
+                )
+                raise
+            assert (directory / "config/settings.json").read_bytes() == before
+            connection_support = None
+            pane.render(await support_refresh())
+            print(
+                "CONNECTION FOCUS PASS: current allocated entry, sticky user intent, page/row/hide retirement",
+                flush=True,
+            )
+
         async def exercise_tutorial():
             tutorial = surface.tutorial
             original_preferences = {
@@ -226,13 +337,20 @@ def main():
             surface.open_tutorial()
             await settle(lambda: tutorial.window.is_active())
             tutorial.window.unmaximize()
-            tutorial.window.resize(560, 460)
             await settle(
                 lambda: not (tutorial.window.get_window().get_state() & Gdk.WindowState.MAXIMIZED)
             )
 
             async def picture(name):
+                await settle(
+                    lambda: not tutorial.steps.get_transition_running()
+                    and all(not picker.popover.get_mapped() for picker in tutorial.pickers.values())
+                )
                 await paint(tutorial.window)
+                assert tuple(tutorial.window.get_size()) == (560, 460), (
+                    "tutorial natural geometry differs from the 560 by 460 shell",
+                    tuple(tutorial.window.get_size()),
+                )
                 area = tutorial.window.get_window()
                 width, height = tutorial.window.get_size()
                 Gdk.pixbuf_get_from_window(area, 0, 0, width, height).savev(
@@ -407,6 +525,9 @@ def main():
             await settle(
                 lambda: not (surface.window.get_window().get_state() & Gdk.WindowState.MAXIMIZED)
             )
+            if options.connection_only:
+                await exercise_connection_focus()
+                return
             if options.tutorial_only:
                 surface.window.present()
                 await settle(lambda: surface.window.is_active())
@@ -668,7 +789,7 @@ def main():
                 .get_style_context()
                 .get_font(Gtk.StateFlags.NORMAL)
                 .get_family()
-                .startswith("Source Serif 4")
+                .startswith("TypeLay Serif 22")
             ), "retired popup style overrode the saved Claude preference"
             # Actual control signals must commit through the host, then round-trip.
             surface.preference_options["accent"]["ocean"].set_active(True)
@@ -1164,6 +1285,7 @@ def main():
             tray.hide_panel()
             surface.preference_options["theme"]["light"].set_active(True)
             await settle(lambda: state.get("theme") == "light")
+            await exercise_connection_focus()
             await exercise_tutorial()
             # Switching product chrome never translates user-provided terms.
             surface.pages.set_visible_child_name("glossary")

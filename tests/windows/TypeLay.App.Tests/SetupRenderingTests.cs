@@ -23,7 +23,7 @@ using Xunit;
 namespace TypeLay.App.Tests;
 
 [Collection("Desktop")]
-public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
+public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
 {
     [Fact]
     public Task PackageReadinessIsReadFromItsExactPublicStatusElement() => desktop.RunAsync(async () =>

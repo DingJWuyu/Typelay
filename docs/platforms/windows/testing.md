@@ -2,6 +2,10 @@
 
 按[共享验证协议](../../engineering/testing.md)表述证据；本页只适用于 Windows，Linux 入口见其[开发与验证](../linux/development.md)。
 
+## 托管合同的计时隔离
+
+标准 `dev.ps1 test/check` 与 CI 共用 `eng/windows/test_contracts.py`。主 solution 套件保留原并行方式，只用精确 FullyQualifiedName 排除 `ModelInstallerTests.DownloadTimeoutAlsoBoundsAnArchiveBodyAfterHeadersAndPartialBytes`；主套终态后，独立 App testhost 执行该方法的两条参数用例各一次，不是失败后重试。两组独立 TRX 和退出码均保留在本次新建结果目录，主套普通失败仍执行后组，取消或中断则停止；任一失败或独立组缺失、重复、跳过均使整体失败。下载 100ms、外层 3s、64 字节前缀与真实取消检查不变；隔离只能排除其它测试进程竞争，不能把未进入流暂停阶段当正控通过。`test_contract_runner.py` 用真实 CLI 入口和受控 dotnet 命令验证分组、失败传播与遗漏拒绝，不证明真实下载时序；实际计时仍由 Windows 上原用例验证。显式单项目或筛选调用仍原样运行，不自动附加这两项。
+
 ## 普通外部桌面应用验收
 
 `--verify-ordinary-notepad` 从完整发行目录启动真实 App，以当前 Windows 已安装的 `System32/notepad.exe` 和临时合成 `.txt` 文档为源。先核对原进程镜像、原生 x64 与唯一严格原生 `Edit` 控件（经典记事本的 UIA 类型可以是 Document，不与原生类名混淆）；不存在、转交其它进程、现代自绘控件或已有 Notepad 进程均失败，不回退 NativeFixture，不声称支持现代记事本或用户此前报告的四处输入框。

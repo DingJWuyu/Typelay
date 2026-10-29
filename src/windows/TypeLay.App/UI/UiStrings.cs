@@ -131,6 +131,34 @@ internal static class UiStrings
         ["本地翻译组件已就绪"] = "Local translation components are ready",
         ["本地翻译组件尚未准备"] = "Local translation components are not prepared",
         ["正在准备本地翻译组件…"] = "Preparing local translation…",
+        ["准备已暂停。已下载的部分会保留，可继续准备。"] = "Preparation paused. Downloaded data is retained for resume.",
+        ["正在暂停，保留已验证的下载进度…"] = "Pausing and retaining verified download progress…",
+        ["暂停完成后可继续准备。"] = "Preparation can resume after pausing completes.",
+        ["可暂停并保留已验证的下载进度。"] = "You can pause and retain verified download progress.",
+        ["启动完成后才能确认本地翻译是否就绪。"] = "Local translation is not confirmed ready until startup completes.",
+        ["继续准备"] = "Resume preparation",
+        ["暂停下载"] = "Pause download",
+        ["安装记录已变化，请刷新后重新确认。"] = "Installation records changed. Refresh and confirm again.",
+        ["下载连接失败，请检查网络。"] = "The download connection failed. Check your network.",
+        ["检查网络或代理后重新准备；已验证的下载进度可继续使用。"] = "Check your network or proxy and retry. Verified download progress can be reused.",
+        ["组件安装空间不足。"] = "There is not enough space to install the components.",
+        ["释放安装位置和下载缓存所在磁盘的空间后重新准备。"] = "Free space on the installation and download-cache disks, then retry.",
+        ["组件校验失败。"] = "Component verification failed.",
+        ["重新准备以重新获取损坏的组件；若仍失败，请检查安装包来源。"] = "Retry to fetch damaged components again. If it fails again, check the installation source.",
+        ["组件文件访问受限。"] = "Access to component files is restricted.",
+        ["检查文件占用和安装位置、下载缓存的访问权限后重新准备。"] = "Check file locks and permissions for the installation and download cache, then retry.",
+        ["翻译运行环境准备或自检失败。"] = "Translation runtime preparation or self-check failed.",
+        ["重新准备本地翻译组件；若仍失败，请查看安装诊断。"] = "Prepare local translation components again. If it still fails, review installation diagnostics.",
+        ["组件准备失败，原因尚未确定。"] = "Component preparation failed; the cause is not confirmed.",
+        ["请重新准备；若仍失败，请查看安装诊断。"] = "Retry preparation. If it still fails, review installation diagnostics.",
+        ["当前模型仍可用；本次准备尚未完成。"] = "The current model remains available; this preparation is not complete.",
+        ["读取 CPython 官方包元数据"] = "Reading official CPython package metadata",
+        ["下载私有 Python 运行组件"] = "Downloading private Python runtime components",
+        ["准备私有运行组件"] = "Preparing private runtime components",
+        ["校验模型并执行真实 CPU 翻译自检"] = "Verifying the model and running a real CPU translation self-check",
+        ["模型已通过本机 CPU 自检，正在等待启动"] = "The model passed its local CPU self-check and is awaiting startup",
+        ["本地组件已校验，正在等待切换"] = "Local components are verified and awaiting activation",
+        ["下载本地模型及许可证"] = "Downloading the local model and licenses",
         ["正在启动本地翻译…"] = "Starting local translation…",
         ["正在暂停…"] = "Pausing…",
         ["当前模型不包含这个方向。请切换模型或调整语言。"] = "This model does not include the selected direction. Change the model or languages.",
@@ -221,9 +249,18 @@ internal static class UiStrings
         foreach (var (prefix, label) in new[] { ("未执行本次唤醒翻译：", "Wake translation was not performed: "), ("未执行本次直接替换：", "Direct replacement was not performed: ") })
             if (value.StartsWith(prefix, StringComparison.Ordinal))
                 return label + Translate(value[prefix.Length..]);
+        foreach (var direction in TypeLay.Runtime.ModelCatalog.LegacyDirections)
+        {
+            string translatedDirection = TypeLay.Runtime.LanguageChoicePresentation.Create(direction.Source).LabelEn + " → "
+                + TypeLay.Runtime.LanguageChoicePresentation.Create(direction.Target).LabelEn;
+            if (value == $"下载 {direction.SourceName} → {direction.TargetName}" || value == $"下载{direction.SourceName} → {direction.TargetName} 模型")
+                return "Downloading " + translatedDirection;
+            if (value == $"复用本机{direction.SourceName} → {direction.TargetName} 模型")
+                return "Reusing the local " + translatedDirection + " model";
+        }
         if (value.Contains('\n'))
             return string.Join('\n', value.Split('\n').Select(Translate));
-        foreach (var (prefix, replacement) in new[] { ("当前选择：", "Current selection: "), ("本地翻译已就绪 · ", "Local translation is ready · "), ("当前模型支持 ", "Available translation directions: ") })
+        foreach (var (prefix, replacement) in new[] { ("当前选择：", "Current selection: "), ("本地翻译已就绪 · ", "Local translation is ready · "), ("当前模型支持 ", "Available translation directions: "), ("读取本地组件元数据 · ", "Reading component metadata · "), ("下载本地组件 · ", "Downloading components · ") })
             if (value.StartsWith(prefix, StringComparison.Ordinal))
                 return replacement + value[prefix.Length..].Replace(" 个翻译方向", "", StringComparison.Ordinal);
         return value;

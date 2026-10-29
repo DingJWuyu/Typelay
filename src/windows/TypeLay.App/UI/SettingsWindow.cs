@@ -335,7 +335,7 @@ internal sealed partial class SettingsWindow : Window
         });
         _headerTitle.FontSize = 22;
         _headerTitle.FontWeight = FontWeights.Medium;
-        _headerTitle.FontFamily = UiTheme.DisplayFont;
+        _headerTitle.FontFamily = UiTheme.DisplayFontForSize(22);
         _headerTitle.Margin = new(28, 8, 28, 0);
         _headerTitle.VerticalAlignment = VerticalAlignment.Center;
         _headerTitle.SetResourceReference(TextBlock.ForegroundProperty, "Text");
@@ -613,7 +613,7 @@ internal sealed partial class SettingsWindow : Window
             _forceShortcutButton.Content = UiTheme.L("仍然使用", "Use Anyway");
             _editShortcutButton.Content = UiTheme.L("取消", "Cancel");
             _toastUndo.Content = UiTheme.L("撤销", "Undo");
-            _headerTitle.FontFamily = UiTheme.DisplayFont;
+            _headerTitle.FontFamily = UiTheme.DisplayFontForSize(22);
             if (_page == "appearance")
                 _renderedPage = null;
         }
@@ -739,7 +739,7 @@ internal sealed partial class SettingsWindow : Window
     private void Heading(string name, string description = "")
     {
         _headerTitle.Text = name;
-        _headerTitle.FontFamily = UiTheme.DisplayFont;
+        _headerTitle.FontFamily = UiTheme.DisplayFontForSize(22);
         if (description.Length == 0)
             return;
         var sub = UiTheme.Text(description, 12, true);
@@ -1221,7 +1221,7 @@ internal sealed partial class SettingsWindow : Window
             picker.Height = 44;
             picker.FontSize = 15;
             picker.FontWeight = FontWeights.Medium;
-            picker.SetResourceReference(Control.FontFamilyProperty, "DisplayFont");
+            picker.SetResourceReference(Control.FontFamilyProperty, "DisplayFont15");
             side.Children.Add(picker);
             Grid.SetColumn(side, column);
             direction.Children.Add(side);
@@ -1374,12 +1374,7 @@ internal sealed partial class SettingsWindow : Window
     }
     private TranslationPreparationView PreparationView()
     {
-        var phase = _startingModel ? TranslationPreparationPhase.StartingModel
-            : _install is { IsCancellationRequested: true } ? TranslationPreparationPhase.Pausing
-            : _install is not null ? TranslationPreparationPhase.Preparing
-            : _setupPaused ? TranslationPreparationPhase.Paused
-            : _setupFailure is not null ? TranslationPreparationPhase.Failed
-            : TranslationPreparationPhase.Idle;
+        var phase = QuickPanelPreparationPhase;
         var state = _installations.ReadInstallationState();
         bool canPrepareHy = _installations.CanPrepareWindowsHy;
         bool canPrepareIndex = _installations.CanPrepareWindowsIndex;
@@ -1475,9 +1470,9 @@ internal sealed partial class SettingsWindow : Window
             _preparationPackages.Children.Add(body);
         }
     }
-    private void RunPackageAction(ModelPackageActionView action)
+    private void RunPackageAction(ModelPackageActionView action, Func<bool>? callerCurrent = null)
     {
-        if (_install is not null || _packageRequest is not null || !action.Enabled)
+        if (callerCurrent?.Invoke() == false || _install is not null || _packageRequest is not null || !action.Enabled)
             return;
         var frozen = action.Request with
         {
@@ -1489,6 +1484,8 @@ internal sealed partial class SettingsWindow : Window
         if (MessageBox.Show(this, confirmation, "本地模型", MessageBoxButton.OKCancel,
                 MessageBoxImage.Question, MessageBoxResult.Cancel) != MessageBoxResult.OK)
             return;
+        if (callerCurrent?.Invoke() == false)
+            return;
         if (_install is not null || _packageRequest is not null || _installations.ReadInstallationState().Generation != frozen.ExpectedCurrent)
         {
             _setupStatus = "安装记录已变化，请刷新后重新确认。";
@@ -1499,14 +1496,14 @@ internal sealed partial class SettingsWindow : Window
         _ = Install(TranslationPreparationAction.Prepare, PreparationView());
     }
 
-    private void RunPreparationAction(TranslationPreparationActionView action)
+    private void RunPreparationAction(TranslationPreparationActionView action, Func<bool>? callerCurrent = null)
     {
         var view = PreparationView();
         var current = new[] { view.PrimaryAction }.Concat(view.SecondaryActions).SingleOrDefault(item => item.Id == action.Id);
-        if (current?.Enabled != true)
+        if (callerCurrent?.Invoke() == false || current?.Enabled != true)
             return;
         if (action.Id == TranslationPreparationAction.Prepare && view.DefaultPackageAction is { } recommended)
-            RunPackageAction(recommended);
+            RunPackageAction(recommended, callerCurrent);
         else if (action.Id == TranslationPreparationAction.NextStep)
             StartPractice();
         else if (action.Id == TranslationPreparationAction.Pause)
@@ -1536,6 +1533,8 @@ internal sealed partial class SettingsWindow : Window
 
     private void RefreshPreparation()
     {
+        _quickPanelPreparationIdentity = new object();
+        QuickPanelPreparationChanged?.Invoke();
         PreparationChanged?.Invoke();
         RefreshSettingsBanners();
         foreach (var check in _connectionChecks)
@@ -1683,6 +1682,8 @@ internal sealed partial class SettingsWindow : Window
         _setupPublicationFailure = null;
         _setupPaused = false;
         _setupStatus = "正在准备本地翻译组件…";
+        _quickPanelProgress = null;
+        _quickPanelProgressGeneration = _installations.ReadInstallationState().Generation;
         bool acceptingProgress = true;
         ModelInstallationStore.PreparedInstallation? prepared = null;
         ModelInstaller? installer = null;
@@ -1693,6 +1694,8 @@ internal sealed partial class SettingsWindow : Window
             {
                 if (!acceptingProgress || !ReferenceEquals(_install, operation) || operation.IsCancellationRequested)
                     return;
+                _quickPanelProgress = update;
+                QuickPanelProgressChanged?.Invoke();
                 _setupStatus = update.Label + (update.Downloaded > 0 ? $" · {update.Downloaded / 1048576.0:F1} MB" : "");
                 if (_progressLabel is not null)
                     _progressLabel.Text = UiStrings.Translate(_setupStatus);

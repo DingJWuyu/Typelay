@@ -50,7 +50,7 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface.settings-dark .search-result-page, .typelay-surface.settings-dark .settings-search-empty { color: #b5b3ab; }
 .typelay-surface .nav-icon { color: white; border-radius: 6px; padding: 4px; min-width: 14px; min-height: 14px; }
 .typelay-surface .settings-page, .typelay-surface .settings-page viewport { background: transparent; }
-.typelay-surface .settings-page-title { font-family: 'Source Serif 4', 'Noto Serif SC', serif; font-size: 22px; font-weight: 500; margin-bottom: 0; }
+.typelay-surface .settings-page-title { font-family: 'TypeLay Serif 22', 'Noto Serif SC', serif; font-size: 22px; font-weight: 500; margin-bottom: 0; }
 .typelay-surface .settings-section-title { font-size: 12px; font-weight: 600; color: #5c5b56; margin: 8px 4px 0; }
 .typelay-surface .settings-group { background: #ffffff; border: 0; border-radius: 12px; box-shadow: inset 0 0 0 1px rgba(20,20,19,.085), 0 1px 2px rgba(20,20,19,.04); }
 .typelay-surface .settings-row { padding: 8px 14px; min-height: 28px; }
@@ -106,7 +106,7 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface .glossary-table row:hover { background: rgba(20,20,19,.045); }
 .typelay-surface .glossary-table row:selected { background: alpha(@accent,.14); color: inherit; }
 .typelay-surface .glossary-cell { padding: 0 14px; min-height: 38px; }
-.typelay-surface .glossary-term { font-family: 'Source Serif 4','Noto Serif SC',serif; font-size: 14px; color: #141413; }
+.typelay-surface .glossary-term { font-family: 'TypeLay Serif 14','Noto Serif SC',serif; font-size: 14px; color: #141413; }
 .typelay-surface .glossary-scope { font-size: 12px; color: #74726c; }
 .typelay-surface .glossary-editor entry { min-height: 24px; margin: 6px 0; padding: 0 10px; font-size: 13px; }
 .typelay-surface .glossary-editor combobox button { min-height: 24px; padding: 0 9px 0 10px; margin: 7px 0; border: 0; font-size: 12.5px; font-weight: 500; }
@@ -127,8 +127,9 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface .tile-system { background: linear-gradient(to right, #f1e3d3 50%, #2a221d 50%); }
 .typelay-surface .tile-light { background: linear-gradient(135deg, #f1e3d3, #dfe5d6); }
 .typelay-surface .tile-dark { background: linear-gradient(135deg, #3b2a22, #1e2620); }
-.typelay-surface .font-art { font-size: 20px; background: #faf9f5; }
-.typelay-surface .serif, .typelay-surface .translation-preview { font-family: 'Source Serif 4', 'Noto Serif SC', serif; }
+.typelay-surface .font-art { font-size: 20px; font-weight: 500; background: #faf9f5; }
+.typelay-surface .serif { font-family: 'TypeLay Serif 20', 'Noto Serif SC', serif; }
+.typelay-surface .translation-preview { font-family: 'TypeLay Serif 15', 'Noto Serif SC', serif; }
 .typelay-surface .swatch { border: 2px solid transparent; border-radius: 50%; min-width: 18px; min-height: 18px; padding: 0; margin: 3px; }
 .typelay-surface .swatch:checked { border-color: #141413; box-shadow: 0 0 0 2px #fff; }
 .typelay-surface .keycap { background: rgba(20,20,19,.08); border: 0; border-bottom: 1px solid rgba(20,20,19,.16); min-width: 110px; font-size: 12px; }
@@ -167,7 +168,13 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface .model-package { border: 1px solid rgba(20,20,19,.085); border-radius: 12px; padding: 12px 14px; background: #fff; }
 .typelay-surface.settings-dark .connection-card, .typelay-surface.settings-dark .model-package { background: #2c2b28; border-color: rgba(255,255,255,.10); }
 /* Native setup uses the prototype's 560px card and finite four-step layout. */
-.typelay-surface.tutorial .tutorial-local { font-size: 14px; }
+.typelay-surface.tutorial .tutorial-local { font-size: 14px; color: #74726c; }
+.typelay-surface.tutorial .tutorial-shield { color: #2f8a57; }
+.typelay-surface.tutorial.settings-dark .tutorial-shield { color: #63c48c; }
+.typelay-surface.tutorial.settings-dark .tutorial-local { color: #b5b3ab; }
+.typelay-surface.tutorial .tutorial-model-icon { min-width: 26px; min-height: 26px; border-radius: 7px; background: linear-gradient(160deg,#4fae77,#2a7a4b); box-shadow: inset 0 1px rgba(255,255,255,.35), 0 2px 6px rgba(150,60,30,.3); }
+.typelay-surface.tutorial .tutorial-foot button { min-height: 32px; padding: 0 18px; border-radius: 9px; font-size: 13.5px; }
+.typelay-surface.tutorial .tutorial-foot button.suggested-action { color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.15), inset 0 .5px rgba(255,255,255,.25); }
 .typelay-surface.tutorial .tutorial-model { padding: 16px; border-radius: 14px; }
 .typelay-surface.tutorial .tutorial-foot { padding: 18px 8px 4px; }
 .typelay-surface.tutorial .tutorial-dot { min-width: 6px; min-height: 6px; border-radius: 3px; background: rgba(20,20,19,.12); }
@@ -176,9 +183,10 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface.tutorial.settings-dark .tutorial-dot.current { background: @accent; }
 .typelay-surface.tutorial button.tutorial-practice { padding: 16px; border-radius: 14px; background: #fff; border: 0; box-shadow: inset 0 0 0 1px rgba(20,20,19,.085), 0 1px 2px rgba(20,20,19,.04); }
 .typelay-surface.tutorial button.tutorial-practice .headline { font-size: 14px; }
-.typelay-surface.tutorial button.tutorial-practice .tutorial-keys { font-size: 11px; }
+.typelay-surface.tutorial button.tutorial-practice .tutorial-key { font-size: 11px; font-weight: 500; min-width: 10px; min-height: 20px; padding: 0 6px; border-radius: 5px; background: rgba(20,20,19,.08); color: #74726c; box-shadow: inset 0 -1px rgba(20,20,19,.16); }
+.typelay-surface.tutorial.settings-dark button.tutorial-practice .tutorial-key { background: rgba(255,255,255,.09); color: #b5b3ab; box-shadow: inset 0 -1px rgba(255,255,255,.16); }
 .typelay-surface.tutorial.settings-dark button.tutorial-practice { background: #2c2b28; box-shadow: inset 0 0 0 1px rgba(255,255,255,.1); }
-.typelay-surface .welcome-title { font-family: 'Source Serif 4','Noto Serif SC',serif; font-size: 30px; font-weight: 500; }
+.typelay-surface .welcome-title { font-family: 'TypeLay Serif 30','Noto Serif SC',serif; font-size: 30px; font-weight: 500; }
 .typelay-surface.settings-dark { background: #262624; color: #f4f3ee; }
 .typelay-surface.settings-dark .settings-sidebar { background: #2c2b28; border-color: rgba(255,255,255,.08); }
 .typelay-surface.settings-dark .settings-navigation row { color: #f4f3ee; }
@@ -321,6 +329,7 @@ def design_icon(name, size=14, *, symbolic=False):
 
 _registered_fonts = None
 _theme_scopes = count(1)
+_reported_serif_roles = set()
 
 
 def register_fonts():
@@ -379,7 +388,7 @@ def register_fonts():
     return _registered_fonts
 
 
-def font_families(preferences, role="display"):
+def font_families(preferences, role="display", *, size=15, weight=400):
     """Select region-specific faces without enabling new translation languages."""
     choice = preferences.get("font", "claude")
     if choice == "system":
@@ -394,8 +403,22 @@ def font_families(preferences, role="display"):
     language = preferences.get("target" if role == "content" else "uiLanguage", "zh-CN")
     region = {"ja": "JP", "ko": "KR"}.get(str(language).split("-")[0].lower(), "SC")
     serif = choice == "claude"
+    if serif and (weight, size) not in {
+        *((400, value) for value in range(13, 20)),
+        *((500, value) for value in (11, 13.5, 15, 17, 18, 20, 22, 26, 30)),
+    }:
+        fallback = 15 if role == "content" else 22
+        identity = (role, str(size), str(weight))
+        if identity not in _reported_serif_roles:
+            _reported_serif_roles.add(identity)
+            print(
+                f"TypeLay serif role {size}px/{weight} is not registered; "
+                f"using the {role} fallback TypeLay Serif {fallback}, not an exact optical match.",
+                file=sys.stderr,
+            )
+        size = fallback
     families = [
-        "Source Serif 4" if serif else "Inter",
+        f"TypeLay Serif {size:g}" if serif else "Inter",
         f"Noto {'Serif' if serif else 'Sans'} {region}",
     ]
     if region != "SC":
@@ -403,12 +426,12 @@ def font_families(preferences, role="display"):
     return (*families, "serif" if serif else "sans-serif")
 
 
-def css_font_family(preferences, role="display"):
+def css_font_family(preferences, role="display", *, size=15, weight=400):
     return ", ".join(
         family
         if family in ("serif", "sans-serif")
         else "'" + family.replace("\\", "\\\\").replace("'", "\\'") + "'"
-        for family in font_families(preferences, role)
+        for family in font_families(preferences, role, size=size, weight=weight)
     )
 
 
@@ -434,6 +457,13 @@ def apply_theme(window, preferences, provider=None):
     ):
         (context.add_class if preferences.get(key) else context.remove_class)(name)
     accent, ink, dark_ink = ACCENTS.get(preferences.get("accent"), ACCENTS["clay"])
+    strong = {
+        "clay": "#b5552f",
+        "ocean": "#1f63bb",
+        "sage": "#3c7650",
+        "iris": "#6a4cbc",
+        "graphite": "#55534e",
+    }.get(preferences.get("accent"), "#b5552f")
     if provider is None:
         provider = Gtk.CssProvider()
         screen = window.get_screen()
@@ -444,9 +474,22 @@ def apply_theme(window, preferences, provider=None):
             "destroy", lambda *_: Gtk.StyleContext.remove_provider_for_screen(screen, provider)
         )
     ui_font = css_font_family(preferences, "ui")
-    display_font = css_font_family(preferences)
-    content_font = css_font_family(preferences, "content")
     content_size = max(13, min(19, preferences.get("textSize", 15)))
+    content_font = css_font_family(preferences, "content", size=content_size)
+    glossary_font = css_font_family(preferences, "content", size=14)
+    display_roles = {
+        "settings-page-title": 22,
+        "welcome-title": 30,
+        "language-name": 15,
+    }
+    display_css = "".join(
+        f"\n.typelay-surface .{name} {{ font-family: "
+        + css_font_family(preferences, size=size, weight=500)
+        + "; }"
+        for name, size in display_roles.items()
+    )
+    # The font chooser previews each advertised family, not the saved choice.
+    font_sample = css_font_family({**preferences, "font": "claude"}, size=20, weight=500)
     endonym_css = "".join(
         f"\n.typelay-surface .language-endonym-{language} {{ font-family: "
         + css_font_family(
@@ -470,8 +513,10 @@ def apply_theme(window, preferences, provider=None):
         )
         + endonym_css
         + f"\n.typelay-surface {{ font-family: {ui_font}; }}"
-        + f"\n.typelay-surface .glossary-term {{ font-family: {content_font}; }}"
-        + f"\n.typelay-surface .settings-page-title, .typelay-surface .welcome-title, .typelay-surface .language-name {{ font-family: {display_font}; }}"
+        + f"\n.typelay-surface.tutorial .tutorial-foot button.suggested-action {{ background: {strong}; }}"
+        + f"\n.typelay-surface .glossary-term {{ font-family: {glossary_font}; }}"
+        + display_css
+        + f"\n.typelay-surface .font-art.serif {{ font-family: {font_sample}; }}"
         + f"\n.typelay-surface .translation-preview, .typelay-surface .translation-content, .typelay-surface .translation-content text {{ font-family: {content_font}; font-size: {content_size}px; font-weight: 400; }}"
     ).replace(".typelay-surface", ".typelay-surface." + scope)
     rules = rules.replace("@accent_ink", "@" + scope + "-ink").replace(

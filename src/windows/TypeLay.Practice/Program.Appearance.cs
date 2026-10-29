@@ -13,6 +13,7 @@ internal static partial class Program
     private static uint _cardColor, _mutedColor, _accentColor;
     private static Bounds _inputCard, _coachCard;
     private static readonly List<nint> PrivateFonts = [];
+    private static readonly HashSet<string> LoadedFontResources = new(StringComparer.Ordinal);
     private static bool English => _preferences.UiLanguage == "en" || _preferences.UiLanguage == "system"
         && !CultureInfo.CurrentUICulture.Name.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
     private static string L(string chinese, string english) => English ? english : chinese;
@@ -34,10 +35,21 @@ internal static partial class Program
                 uint count = 0;
                 nint font = AddFontMemResourceEx(data, (uint)bytes.Length, 0, ref count);
                 if (font != 0)
+                {
                     PrivateFonts.Add(font);
+                    LoadedFontResources.Add(name);
+                }
             }
             finally { Marshal.FreeHGlobal(data); }
         }
+    }
+
+    private static string PrivateFontFace(string file, string family, string fallback)
+    {
+        if (LoadedFontResources.Contains("UI.Fonts." + file))
+            return family;
+        System.Diagnostics.Trace.WriteLine("TypeLay Practice: offline font " + file + " was not loaded; using " + fallback + " (not an exact match).");
+        return fallback;
     }
 
     private static void ReleaseAppearance()
@@ -49,6 +61,7 @@ internal static partial class Program
         foreach (nint font in PrivateFonts)
             RemoveFontMemResourceEx(font);
         PrivateFonts.Clear();
+        LoadedFontResources.Clear();
     }
 
     private static string UiCopy(string value)

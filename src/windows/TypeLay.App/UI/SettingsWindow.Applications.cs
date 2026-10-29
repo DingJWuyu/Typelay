@@ -202,7 +202,7 @@ internal sealed partial class SettingsWindow
                 Toast(UiTheme.L("已添加应用", "Application added"));
             }
         });
-        add.Content = PrototypeGlyph("M12 5v14M5 12h14", "Secondary");
+        add.Content = PrototypeGlyph("M12 5v14M5 12h14", "Muted");
         add.Width = 28;
         add.Height = 24;
         add.Padding = new(0);
@@ -297,7 +297,7 @@ internal sealed partial class SettingsWindow
         var desktopStatus = UiTheme.Text(ordinary?.StatusText ?? UiTheme.L("尚未检查", "Not checked"), 12, true);
         var desktopSummary = ConnectionSummary("desktop", UiTheme.L("桌面应用", "Desktop apps"), "#5F5E5A", Pages.Single(page => page.Id == "shortcuts").Icon,
             desktopStatus, desktopDetails, current, out var desktopDot, desktopCheck);
-        desktopDot.SetResourceReference(Shape.FillProperty, ordinary?.State == ApplicationSupportState.Connected ? "Good" : "Secondary");
+        desktopDot.SetResourceReference(Shape.FillProperty, ordinary?.State == ApplicationSupportState.Connected ? "Good" : "Tertiary");
         RegisterSearchTarget("desktop", desktopSummary);
         group.Children.Add(desktopSummary);
         group.Children.Add(desktopDetails);
@@ -338,7 +338,7 @@ internal sealed partial class SettingsWindow
             browserPrimary.ToolTip = browser is null ? UiTheme.L("此发行版尚未配置 Chrome 连接。", "Chrome connection is not configured in this installation.") : null;
             ToolTipService.SetShowOnDisabled(browserPrimary, true);
             browserDot.SetResourceReference(Shape.FillProperty, browser?.MutationUnavailable == true || actual?.State == ApplicationSupportState.Error ? "Danger"
-                : browser?.Suspended != true && actual?.State == ApplicationSupportState.Connected ? "Good" : "Secondary");
+                : browser?.Suspended != true && actual?.State == ApplicationSupportState.Connected ? "Good" : "Tertiary");
             browserStatus.Text = UiStrings.Translate(browser?.MutationUnavailable == true ? "操作结果未确认" : browser?.Busy == true ? "正在更新连接…"
                 : browser?.Suspended == true ? UiTheme.L("注册仍在，连接已停止", "Registered, connection stopped") : actual?.StatusText ?? UiTheme.L("尚未连接", "Not connected"));
         }
@@ -371,7 +371,7 @@ internal sealed partial class SettingsWindow
             if (current() && _closeDialog is null)
                 details.Visibility = details.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
         });
-        more.Content = PrototypeGlyph("M5 12h.01M12 12h.01M19 12h.01", "Secondary", stroke: 3);
+        more.Content = PrototypeGlyph("M5 12h.01M12 12h.01M19 12h.01", "Muted", stroke: 3);
         AutomationProperties.SetName(more, title + " · " + UiTheme.L("查看详情", "View details"));
         more.Width = more.Height = 26;
         more.Padding = new(0);
@@ -525,7 +525,7 @@ internal sealed partial class SettingsWindow
     {
         var title = UiTheme.Text(value, 18);
         title.FontWeight = FontWeights.Medium;
-        title.FontFamily = UiTheme.DisplayFont;
+        title.FontFamily = UiTheme.DisplayFontForSize(18);
         AutomationProperties.SetAutomationId(title, "ApplicationDialogTitle");
         return title;
     }

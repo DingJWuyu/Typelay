@@ -10,10 +10,17 @@
       ["TypeLay Inter", "inter/Inter-Regular.ttf", "400"],
       ["TypeLay Inter", "inter/Inter-Medium.ttf", "500"],
       ["TypeLay Inter", "inter/Inter-SemiBold.ttf", "600"],
-      ["TypeLay Source Serif", "source-serif/SourceSerif4-Regular.ttf", "400"],
-      ["TypeLay Source Serif", "source-serif/SourceSerif4-Semibold.ttf", "600"],
       ["TypeLay Noto Sans SC", "noto-sans/TypeLayNotoSansSC-SemiBold.ttf", "600"]
     ];
+    // Fixed static optical roles from the offline bundle; registering a
+    // face does not load it until a rendered control actually uses that role.
+    for (const [weight, sizes, style] of [
+      ["400", [13, 14, 15, 16, 17, 18, 19], "Regular"],
+      ["500", [11, 13.5, 15, 17, 18, 20, 22, 26, 30], "Medium"]
+    ]) {
+      for (const size of sizes)
+        faces.push([`TypeLay Serif ${size}`, `source-serif/TypeLaySerif-${size}-${style}.ttf`, weight]);
+    }
     for (const region of ["SC", "JP", "KR"]) {
       for (const [weight, name] of [["400", "Regular"], ["500", "Medium"]]) {
         faces.push([`TypeLay Noto Sans ${region}`, `noto-sans/NotoSans${region}-${name}.otf`, weight]);
@@ -1025,7 +1032,7 @@
       const style = document.createElement("style");
       style.textContent = `
         :host{color-scheme:light dark;--content-size:15px;--accent:#d97757;--accent-strong:#b5552f;
-          --content-font:"TypeLay Source Serif","TypeLay Noto Serif SC",Georgia,"SimSun",serif;
+          --content-font:"TypeLay Serif 15","TypeLay Noto Serif SC",Georgia,"SimSun",serif;
           --ui-font:"TypeLay Inter","TypeLay Noto Sans SC","Segoe UI","Microsoft YaHei UI",sans-serif}
         section{--surface:light-dark(rgba(251,250,247,.9),rgba(44,43,40,.92));
           --ink:light-dark(#141413,#f4f3ee);--ink-2:light-dark(#5c5b56,#b5b3ab);--muted:light-dark(#74726c,#9a988f);
@@ -1456,7 +1463,9 @@
     const strongAccents = {clay: "#b5552f", ocean: "#1f63bb", sage: "#3c7650", iris: "#6a4cbc", graphite: "#55534e"};
     const fontRegion = /^ja(?:-|$)/i.test(view.targetLanguage || "") ? "JP"
       : /^ko(?:-|$)/i.test(view.targetLanguage || "") ? "KR" : "SC";
-    const fonts = {claude: `"TypeLay Source Serif","TypeLay Noto Serif ${fontRegion}",Georgia,"SimSun",serif`,
+    const contentSize = Number.isInteger(appearance.textSize)
+      && appearance.textSize >= 13 && appearance.textSize <= 19 ? appearance.textSize : 15;
+    const fonts = {claude: `"TypeLay Serif ${contentSize}","TypeLay Noto Serif ${fontRegion}",Georgia,"SimSun",serif`,
       sans: `"TypeLay Inter","TypeLay Noto Sans ${fontRegion}","Segoe UI","Microsoft YaHei UI",sans-serif`,
       system: 'system-ui,"Microsoft YaHei UI",sans-serif'};
     overlay.host.style.setProperty("--accent", accents[appearance.accent] || accents.clay);
@@ -1467,8 +1476,7 @@
     overlay.host.style.setProperty("--content-font", fonts[appearance.font] || fonts.claude);
     overlay.host.style.setProperty("--ui-font", appearance.font === "system" ? fonts.system
       : '"TypeLay Inter","TypeLay Noto Sans SC","Segoe UI","Microsoft YaHei UI",sans-serif');
-    overlay.host.style.setProperty("--content-size", `${Number.isInteger(appearance.textSize)
-      && appearance.textSize >= 13 && appearance.textSize <= 19 ? appearance.textSize : 15}px`);
+    overlay.host.style.setProperty("--content-size", `${contentSize}px`);
     overlay.motionPreference = ["system", "full", "reduce"].includes(appearance.motion)
       ? appearance.motion : appearance.reduceMotion === true ? "reduce" : "system";
     overlay.panel.dataset.motion = shouldReduceMotion(overlay) ? "reduce" : "full";

@@ -42,8 +42,9 @@ function Build-Workspace {
 }
 function Test-Workspace {
     Build-Workspace
-    Invoke-Checked dotnet @('test', 'TypeLay.slnx', '-c', $Configuration, '--no-build', '--no-restore',
-        '--logger', 'trx', '--results-directory', (Join-Path $artifacts 'test-results'))
+    Invoke-Checked python @('-m', 'unittest', 'discover', '-s', 'tests/windows', '-p', 'test_contract_runner.py', '-v')
+    Invoke-Checked python @('eng/windows/test_contracts.py', '--configuration', $Configuration,
+        '--results-directory', (Join-Path $artifacts 'test-results'))
     Invoke-Checked python @('-m', 'unittest', 'discover', '-s', 'tests/shared/worker', '-v')
 }
 function Publish-Distribution([bool]$SelfContained) {

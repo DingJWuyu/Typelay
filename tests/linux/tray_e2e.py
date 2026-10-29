@@ -1240,7 +1240,7 @@ def main():
                 "sourceTerm"
             ] == "关闭"
             print(
-                "PASS: GTK dedicated translation recovery, drafts, failure/retry, closed release and revision-bound conflict confirmation",
+                "PASS: GTK dedicated translation recovery, drafts, failure/retry, closed application capability and revision-bound conflict confirmation",
                 flush=True,
             )
 

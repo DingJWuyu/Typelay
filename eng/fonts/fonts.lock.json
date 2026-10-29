@@ -11,17 +11,23 @@
       "tag": "Serif2.003",
       "revision": "9b0f1436e455d902de067a2501422e5dc71ad16b",
       "licenseUrl": "https://raw.githubusercontent.com/notofonts/noto-cjk/9b0f1436e455d902de067a2501422e5dc71ad16b/Serif/LICENSE"
+    },
+    "Source Serif": {
+      "tag": "4.004R",
+      "revision": "7b203a635ebe80801c80f29633d4fc467cd1214e",
+      "repository": "https://github.com/google/fonts",
+      "licenseUrl": "https://raw.githubusercontent.com/adobe-fonts/source-serif/a9eaef81588dddd479f2275d87b3707ed7ae2847/LICENSE.md"
     }
   },
   "files": [
     {
       "path": "README.md",
-      "bytes": 2684,
-      "sha256": "d648ad19674f618d08ec01602d869c97d7a5fde16ae7844267609605acdfc049",
+      "bytes": 4299,
+      "sha256": "3c653a8eb2f37f279153a13ac78e97453b5ee258457f6ed6dc7f4411acf3c9d3",
       "source": {
         "repositoryPath": "eng/fonts/README.md",
-        "bytes": 2684,
-        "sha256": "d648ad19674f618d08ec01602d869c97d7a5fde16ae7844267609605acdfc049"
+        "bytes": 4299,
+        "sha256": "3c653a8eb2f37f279153a13ac78e97453b5ee258457f6ed6dc7f4411acf3c9d3"
       }
     },
     {
@@ -323,45 +329,349 @@
     },
     {
       "path": "source-serif/LICENSE.md",
-      "bytes": 4492,
-      "sha256": "75784a295293a8992f5a8d99210566e0064a012e6dab6731305e3787f15896c7",
+      "bytes": 4578,
+      "sha256": "bb1e7cb76848ee07553f92081428cd5e6eb41a85b65114cb15cc66d22718bf27",
       "source": {
         "repositoryPath": "src/shared/ui/fonts/source-serif/LICENSE.md",
-        "bytes": 4492,
-        "sha256": "75784a295293a8992f5a8d99210566e0064a012e6dab6731305e3787f15896c7"
+        "bytes": 4578,
+        "sha256": "bb1e7cb76848ee07553f92081428cd5e6eb41a85b65114cb15cc66d22718bf27"
       }
     },
     {
-      "path": "source-serif/SourceSerif4-Regular.ttf",
-      "bytes": 261868,
-      "sha256": "e5a4ee6a3d87bb9024796be390c6771e2a0eb1883dae25effaf57ca01668e24b",
-      "source": {
-        "repositoryPath": "src/shared/ui/fonts/source-serif/SourceSerif4-Regular.ttf",
-        "bytes": 261868,
-        "sha256": "e5a4ee6a3d87bb9024796be390c6771e2a0eb1883dae25effaf57ca01668e24b"
-      },
-      "family": "Source Serif 4",
+      "path": "source-serif/TypeLaySerif-13-Regular.ttf",
+      "family": "TypeLay Serif 13",
       "weight": 400,
+      "cssSize": 13,
       "roles": [
         "display",
         "content"
-      ]
+      ],
+      "instance": {
+        "wght": 400,
+        "opsz": 13
+      },
+      "source": {
+        "url": "https://raw.githubusercontent.com/google/fonts/7b203a635ebe80801c80f29633d4fc467cd1214e/ofl/sourceserif4/SourceSerif4%5Bopsz%2Cwght%5D.ttf",
+        "bytes": 1209508,
+        "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
+      },
+      "bytes": 326940,
+      "sha256": "5f56d12ec375dbb30eee48f7a93412643f75a8a4d05e3729cc882de0a4632efd"
     },
     {
-      "path": "source-serif/SourceSerif4-Semibold.ttf",
-      "bytes": 272088,
-      "sha256": "36db62940cb5728b12b1802476dc7fcf4c6c519a7bdd476ba23a4e555fc4655f",
-      "source": {
-        "repositoryPath": "src/shared/ui/fonts/source-serif/SourceSerif4-Semibold.ttf",
-        "bytes": 272088,
-        "sha256": "36db62940cb5728b12b1802476dc7fcf4c6c519a7bdd476ba23a4e555fc4655f"
-      },
-      "family": "Source Serif 4",
-      "weight": 600,
+      "path": "source-serif/TypeLaySerif-14-Regular.ttf",
+      "family": "TypeLay Serif 14",
+      "weight": 400,
+      "cssSize": 14,
       "roles": [
         "display",
         "content"
-      ]
+      ],
+      "instance": {
+        "wght": 400,
+        "opsz": 14
+      },
+      "source": {
+        "url": "https://raw.githubusercontent.com/google/fonts/7b203a635ebe80801c80f29633d4fc467cd1214e/ofl/sourceserif4/SourceSerif4%5Bopsz%2Cwght%5D.ttf",
+        "bytes": 1209508,
+        "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
+      },
+      "bytes": 327068,
+      "sha256": "89061a359c9ebe39d8313fdd2cdc5100faa4a0f6510831da1afd4449ab2e6c82"
+    },
+    {
+      "path": "source-serif/TypeLaySerif-15-Regular.ttf",
+      "family": "TypeLay Serif 15",
+      "weight": 400,
+      "cssSize": 15,
+      "roles": [
+        "display",
+        "content"
+      ],
+      "instance": {
+        "wght": 400,
+        "opsz": 15
+      },
+      "source": {
+        "url": "https://raw.githubusercontent.com/google/fonts/7b203a635ebe80801c80f29633d4fc467cd1214e/ofl/sourceserif4/SourceSerif4%5Bopsz%2Cwght%5D.ttf",
+        "bytes": 1209508,
+        "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
+      },
+      "bytes": 327160,
+      "sha256": "02408b1a37157624c1d6538310a7c5e88f3021fc61d7f20c64b234653c8e9f70"
+    },
+    {
+      "path": "source-serif/TypeLaySerif-16-Regular.ttf",
+      "family": "TypeLay Serif 16",
+      "weight": 400,
+      "cssSize": 16,
+      "roles": [
+        "display",
+        "content"
+      ],
+      "instance": {
+        "wght": 400,
+        "opsz": 16
+      },
+      "source": {
+        "url": "https://raw.githubusercontent.com/google/fonts/7b203a635ebe80801c80f29633d4fc467cd1214e/ofl/sourceserif4/SourceSerif4%5Bopsz%2Cwght%5D.ttf",
+        "bytes": 1209508,
+        "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
+      },
+      "bytes": 327376,
+      "sha256": "55d963dce0b3a8d0cff221489c2432a08f92b03bd754b2dc3a46ae82770f3f5e"
+    },
+    {
+      "path": "source-serif/TypeLaySerif-17-Regular.ttf",
+      "family": "TypeLay Serif 17",
+      "weight": 400,
+      "cssSize": 17,
+      "roles": [
+        "display",
+        "content"
+      ],
+      "instance": {
+        "wght": 400,
+        "opsz": 17
+      },
+      "source": {
+        "url": "https://raw.githubusercontent.com/google/fonts/7b203a635ebe80801c80f29633d4fc467cd1214e/ofl/sourceserif4/SourceSerif4%5Bopsz%2Cwght%5D.ttf",
+        "bytes": 1209508,
+        "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
+      },
+      "bytes": 327580,
+      "sha256": "a547372922d7c1e8907ed817d0d0dc39f3490b87efaded80fef0fd2f8c31aa53"
+    },
+    {
+      "path": "source-serif/TypeLaySerif-18-Regular.ttf",
+      "family": "TypeLay Serif 18",
+      "weight": 400,
+      "cssSize": 18,
+      "roles": [
+        "display",
+        "content"
+      ],
+      "instance": {
+        "wght": 400,
+        "opsz": 18
+      },
+      "source": {
+        "url": "https://raw.githubusercontent.com/google/fonts/7b203a635ebe80801c80f29633d4fc467cd1214e/ofl/sourceserif4/SourceSerif4%5Bopsz%2Cwght%5D.ttf",
+        "bytes": 1209508,
+        "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
+      },
+      "bytes": 327644,
+      "sha256": "5f482362e28c3064edc6df068a3c619da241e856c1752506a2d86be848740a92"
+    },
+    {
+      "path": "source-serif/TypeLaySerif-19-Regular.ttf",
+      "family": "TypeLay Serif 19",
+      "weight": 400,
+      "cssSize": 19,
+      "roles": [
+        "display",
+        "content"
+      ],
+      "instance": {
+        "wght": 400,
+        "opsz": 19
+      },
+      "source": {
+        "url": "https://raw.githubusercontent.com/google/fonts/7b203a635ebe80801c80f29633d4fc467cd1214e/ofl/sourceserif4/SourceSerif4%5Bopsz%2Cwght%5D.ttf",
+        "bytes": 1209508,
+        "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
+      },
+      "bytes": 327628,
+      "sha256": "8889122a4b77acad492fd50a9267d94966134b20af5a020636ccbc6ed0b106c9"
+    },
+    {
+      "path": "source-serif/TypeLaySerif-11-Medium.ttf",
+      "family": "TypeLay Serif 11",
+      "weight": 500,
+      "cssSize": 11,
+      "roles": [
+        "display",
+        "content"
+      ],
+      "instance": {
+        "wght": 500,
+        "opsz": 11
+      },
+      "source": {
+        "url": "https://raw.githubusercontent.com/google/fonts/7b203a635ebe80801c80f29633d4fc467cd1214e/ofl/sourceserif4/SourceSerif4%5Bopsz%2Cwght%5D.ttf",
+        "bytes": 1209508,
+        "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
+      },
+      "bytes": 326316,
+      "sha256": "802c670eaf4966d324dad0c6155efceb63b59d5a706f9a0a0cba8b23efad78d8"
+    },
+    {
+      "path": "source-serif/TypeLaySerif-13.5-Medium.ttf",
+      "family": "TypeLay Serif 13.5",
+      "weight": 500,
+      "cssSize": 13.5,
+      "roles": [
+        "display",
+        "content"
+      ],
+      "instance": {
+        "wght": 500,
+        "opsz": 13.5
+      },
+      "source": {
+        "url": "https://raw.githubusercontent.com/google/fonts/7b203a635ebe80801c80f29633d4fc467cd1214e/ofl/sourceserif4/SourceSerif4%5Bopsz%2Cwght%5D.ttf",
+        "bytes": 1209508,
+        "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
+      },
+      "bytes": 327028,
+      "sha256": "3cf0fdd376407b6793560d7a1b38e30cfbf6d160fd63f6a11a8e95103883fb48"
+    },
+    {
+      "path": "source-serif/TypeLaySerif-15-Medium.ttf",
+      "family": "TypeLay Serif 15",
+      "weight": 500,
+      "cssSize": 15,
+      "roles": [
+        "display",
+        "content"
+      ],
+      "instance": {
+        "wght": 500,
+        "opsz": 15
+      },
+      "source": {
+        "url": "https://raw.githubusercontent.com/google/fonts/7b203a635ebe80801c80f29633d4fc467cd1214e/ofl/sourceserif4/SourceSerif4%5Bopsz%2Cwght%5D.ttf",
+        "bytes": 1209508,
+        "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
+      },
+      "bytes": 327400,
+      "sha256": "a61e4cccd96f6fa20c88aa347f3f13e6d7678fcf51a5f5e6a28c1975d45332a6"
+    },
+    {
+      "path": "source-serif/TypeLaySerif-17-Medium.ttf",
+      "family": "TypeLay Serif 17",
+      "weight": 500,
+      "cssSize": 17,
+      "roles": [
+        "display",
+        "content"
+      ],
+      "instance": {
+        "wght": 500,
+        "opsz": 17
+      },
+      "source": {
+        "url": "https://raw.githubusercontent.com/google/fonts/7b203a635ebe80801c80f29633d4fc467cd1214e/ofl/sourceserif4/SourceSerif4%5Bopsz%2Cwght%5D.ttf",
+        "bytes": 1209508,
+        "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
+      },
+      "bytes": 327596,
+      "sha256": "4079a956e452f539e17ab88cf3e8027cb4b0861adb94a5762aa559716553a812"
+    },
+    {
+      "path": "source-serif/TypeLaySerif-18-Medium.ttf",
+      "family": "TypeLay Serif 18",
+      "weight": 500,
+      "cssSize": 18,
+      "roles": [
+        "display",
+        "content"
+      ],
+      "instance": {
+        "wght": 500,
+        "opsz": 18
+      },
+      "source": {
+        "url": "https://raw.githubusercontent.com/google/fonts/7b203a635ebe80801c80f29633d4fc467cd1214e/ofl/sourceserif4/SourceSerif4%5Bopsz%2Cwght%5D.ttf",
+        "bytes": 1209508,
+        "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
+      },
+      "bytes": 327752,
+      "sha256": "836a05c4e9c1450084f30b30875ac9cbbd7a3a9d26c398415c7c243eea0e8c75"
+    },
+    {
+      "path": "source-serif/TypeLaySerif-20-Medium.ttf",
+      "family": "TypeLay Serif 20",
+      "weight": 500,
+      "cssSize": 20,
+      "roles": [
+        "display",
+        "content"
+      ],
+      "instance": {
+        "wght": 500,
+        "opsz": 20
+      },
+      "source": {
+        "url": "https://raw.githubusercontent.com/google/fonts/7b203a635ebe80801c80f29633d4fc467cd1214e/ofl/sourceserif4/SourceSerif4%5Bopsz%2Cwght%5D.ttf",
+        "bytes": 1209508,
+        "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
+      },
+      "bytes": 327676,
+      "sha256": "8828cf394f6a9f094fccf32ca0857aecd27ff8867a8121db396d3225201d4507"
+    },
+    {
+      "path": "source-serif/TypeLaySerif-22-Medium.ttf",
+      "family": "TypeLay Serif 22",
+      "weight": 500,
+      "cssSize": 22,
+      "roles": [
+        "display",
+        "content"
+      ],
+      "instance": {
+        "wght": 500,
+        "opsz": 22
+      },
+      "source": {
+        "url": "https://raw.githubusercontent.com/google/fonts/7b203a635ebe80801c80f29633d4fc467cd1214e/ofl/sourceserif4/SourceSerif4%5Bopsz%2Cwght%5D.ttf",
+        "bytes": 1209508,
+        "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
+      },
+      "bytes": 327856,
+      "sha256": "3ada9228391fd8e9afbc8ef462987b48e88a8bc4ef4dfbf36bbc4de33d3e6b81"
+    },
+    {
+      "path": "source-serif/TypeLaySerif-26-Medium.ttf",
+      "family": "TypeLay Serif 26",
+      "weight": 500,
+      "cssSize": 26,
+      "roles": [
+        "display",
+        "content"
+      ],
+      "instance": {
+        "wght": 500,
+        "opsz": 26
+      },
+      "source": {
+        "url": "https://raw.githubusercontent.com/google/fonts/7b203a635ebe80801c80f29633d4fc467cd1214e/ofl/sourceserif4/SourceSerif4%5Bopsz%2Cwght%5D.ttf",
+        "bytes": 1209508,
+        "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
+      },
+      "bytes": 327848,
+      "sha256": "3f8913f48373479a981e40f05410ad28deb95211b6381c49dd3f16d44b7fc236"
+    },
+    {
+      "path": "source-serif/TypeLaySerif-30-Medium.ttf",
+      "family": "TypeLay Serif 30",
+      "weight": 500,
+      "cssSize": 30,
+      "roles": [
+        "display",
+        "content"
+      ],
+      "instance": {
+        "wght": 500,
+        "opsz": 30
+      },
+      "source": {
+        "url": "https://raw.githubusercontent.com/google/fonts/7b203a635ebe80801c80f29633d4fc467cd1214e/ofl/sourceserif4/SourceSerif4%5Bopsz%2Cwght%5D.ttf",
+        "bytes": 1209508,
+        "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
+      },
+      "bytes": 327912,
+      "sha256": "461d0722e346d6e080a7efe621a157cd7e6662d1a96c96f819136dc9991fe7c9"
     }
   ]
 }

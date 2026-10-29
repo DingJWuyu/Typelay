@@ -160,9 +160,9 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         await fixture.SwitchModelAsync(["hy-mt2-1-8b-q4-k-m"], ["zh_ja"]);
         var source = Language(fixture.Window, source: true);
         var target = Language(fixture.Window, source: false);
-        Assert.Equal(quickPanel ? ["Auto", "中文", "日本語"] : ["自动检测", "中文", "日语"], Labels(source));
-        Assert.Equal(quickPanel ? ["中文", "日本語", "English（当前不可用）"] : ["中文", "日语", "英语（当前不可用）"], Labels(target));
-        Assert.Equal(quickPanel ? "English（当前不可用）" : "英语（当前不可用）", target.SelectedItem?.ToString());
+        Assert.Equal(["自动检测", "中文", "日语"], Labels(source));
+        Assert.Equal(["中文", "日语", "英语（当前不可用）"], Labels(target));
+        Assert.Equal("英语（当前不可用）", target.SelectedItem?.ToString());
         Assert.Equal(persisted, File.ReadAllText(fixture.Path));
         target.IsDropDownOpen = true;
         await DrainAsync(fixture.Window);
@@ -171,50 +171,38 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
 
         // Japanese to English is not a catalog direct pair. Its rejected save
         // must return to the confirmed Chinese source, without changing target.
-        if (!quickPanel)
-        {
-            source.IsDropDownOpen = true;
-            await DrainAsync(fixture.Window);
-        }
-        source.SelectedItem = source.Items.Cast<object>().Single(item => item.ToString() == (quickPanel ? "日本語" : "日语"));
+        source.IsDropDownOpen = true;
+        await DrainAsync(fixture.Window);
+        source.SelectedItem = source.Items.Cast<object>().Single(item => item.ToString() == "日语");
         await DrainAsync(fixture.Window);
         Assert.Equal("中文", source.SelectedItem?.ToString());
         Assert.Equal(persisted, File.ReadAllText(fixture.Path));
         Assert.Contains(Descendants(fixture.Window).OfType<TextBlock>(), text => text.IsVisible
             && text.Text.Contains("请选择支持的源语言和目标语言。", StringComparison.Ordinal));
 
-        if (!quickPanel)
-        {
-            target.IsDropDownOpen = true;
-            await DrainAsync(fixture.Window);
-        }
-        target.SelectedItem = target.Items.Cast<object>().Single(item => item.ToString() == (quickPanel ? "日本語" : "日语"));
+        target.IsDropDownOpen = true;
+        await DrainAsync(fixture.Window);
+        target.SelectedItem = target.Items.Cast<object>().Single(item => item.ToString() == "日语");
         await DrainAsync(fixture.Window);
         Assert.Equal("ja", new SettingsStore(fixture.Path).Value.Target);
-        if (!quickPanel)
-        {
-            source.IsDropDownOpen = true;
-            await DrainAsync(fixture.Window);
-        }
-        source.SelectedItem = source.Items.Cast<object>().Single(item => item.ToString() == (quickPanel ? "日本語" : "日语"));
+        source.IsDropDownOpen = true;
+        await DrainAsync(fixture.Window);
+        source.SelectedItem = source.Items.Cast<object>().Single(item => item.ToString() == "日语");
         await DrainAsync(fixture.Window);
         Assert.Equal("ja", new SettingsStore(fixture.Path).Value.Source); // Same-language remains valid.
-        if (!quickPanel)
-        {
-            source.IsDropDownOpen = true;
-            await DrainAsync(fixture.Window);
-        }
+        source.IsDropDownOpen = true;
+        await DrainAsync(fixture.Window);
         source.SelectedIndex = 0;
         await DrainAsync(fixture.Window);
         Assert.Equal("auto", new SettingsStore(fixture.Path).Value.Source);
-        Assert.Equal(quickPanel ? ["中文", "日本語"] : ["中文", "日语"], Labels(target));
+        Assert.Equal(["中文", "日语"], Labels(target));
         Assert.Same(source, Language(fixture.Window, source: true));
         Assert.Same(target, Language(fixture.Window, source: false));
     });
 
     [Theory]
     [InlineData(true)]
-    public Task ActiveRefreshPreservesSearchUntilTheAvailableLanguagesChange(bool quickPanel) => desktop.RunAsync(async () =>
+    public Task ActiveRefreshPreservesSearchWhileRebuildingTheAvailableLanguages(bool quickPanel) => desktop.RunAsync(async () =>
     {
         using var fixture = new LanguageWindowFixture(quickPanel, protocolModel: true);
         fixture.Settings.Update(fixture.Settings.Value with
@@ -223,13 +211,14 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         });
         await fixture.SwitchModelAsync(["hy-mt2-1-8b-q4-k-m"], ["zh_ja", "ja_zh"]);
         var combo = Language(fixture.Window, source: false);
-        var choices = combo.ItemsSource;
+        combo.IsDropDownOpen = true;
+        await DrainAsync(fixture.Window);
         var editor = Editor(combo);
-        Assert.True(editor.Focus());
-        await PressKeyAsync(fixture.Window, 0x73);
+        Assert.Same(editor, Keyboard.FocusedElement);
         editor.SelectAll();
         await TypeTextAsync(fixture.Window, editor, "zz");
         editor.Select(1, 1);
+        var choices = combo.ItemsSource;
         fixture.Settings.Update(fixture.Settings.Value with
         {
             Enabled = false
@@ -242,14 +231,14 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         Assert.Same(combo, Language(fixture.Window, source: false));
         Assert.Same(editor, Keyboard.FocusedElement);
         Assert.True(combo.IsDropDownOpen);
-        Assert.Equal(["中文", "Français", "日本語（当前不可用）"], Labels(combo));
-        Assert.Equal("日本語（当前不可用）", combo.SelectedItem?.ToString());
-        Assert.Equal("日本語（当前不可用）", editor.Text);
-        Assert.False(Assert.IsType<ComboBoxItem>(combo.ItemContainerGenerator.ContainerFromItem(combo.SelectedItem)).IsEnabled);
+        Assert.Equal(["中文", "法语", "日语（当前不可用）"], Labels(combo));
+        Assert.Equal("日语（当前不可用）", combo.SelectedItem?.ToString());
+        Assert.Equal("zz", editor.Text);
+        Assert.False(Assert.IsAssignableFrom<ComboBoxItem>(combo.ItemContainerGenerator.ContainerFromItem(combo.SelectedItem)).IsEnabled);
         Assert.Equal(persisted, File.ReadAllText(fixture.Path));
 
         await fixture.SwitchModelAsync(["argos-zh-en", "argos-en-zh"], ["zh_en", "en_zh"]);
-        Assert.Equal(["中文", "English", "日本語（当前不可用）"], Labels(combo));
+        Assert.Equal(["中文", "英语", "日语（当前不可用）"], Labels(combo));
         Assert.Equal(persisted, File.ReadAllText(fixture.Path));
     });
 
@@ -262,9 +251,10 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
     {
         using var fixture = new LanguageWindowFixture(quickPanel);
         var combo = Language(fixture.Window, source);
+        combo.IsDropDownOpen = true;
+        await DrainAsync(fixture.Window);
         var editor = Editor(combo);
-        Assert.True(editor.Focus());
-        await PressKeyAsync(fixture.Window, 0x73); // F4 opens the real ComboBox popup.
+        Assert.Same(editor, Keyboard.FocusedElement);
         Assert.True(combo.IsDropDownOpen);
         editor.SelectAll();
         string search = source ? "English" : "中文";
@@ -291,8 +281,8 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         Assert.Equal(1, changes);
         var saved = new SettingsStore(fixture.Path).Value;
         Assert.False(saved.Enabled);
-        Assert.Equal(source ? "en" : "zh", saved.Source);
-        Assert.Equal(source ? "en" : "zh", saved.Target);
+        Assert.Equal("zh", saved.Source);
+        Assert.Equal("en", saved.Target); // Search alone never commits a language.
         var peer = Assert.IsAssignableFrom<ComboBoxAutomationPeer>(UIElementAutomationPeer.CreatePeerForElement(Language(fixture.Window, source)));
         Assert.Equal(source ? "源语言" : "目标语言", peer.GetName());
         Assert.True(peer.IsKeyboardFocusable());
@@ -301,13 +291,14 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
     [Theory]
     [InlineData(true, true)]
     [InlineData(true, false)]
-    public Task ConfirmedExternalLanguageChangeReplacesSearchWithoutMovingFocus(bool quickPanel, bool source) => desktop.RunAsync(async () =>
+    public Task ConfirmedExternalLanguageChangeUpdatesAnchorAndPreservesSearchFocus(bool quickPanel, bool source) => desktop.RunAsync(async () =>
     {
         using var fixture = new LanguageWindowFixture(quickPanel);
         var combo = Language(fixture.Window, source);
+        combo.IsDropDownOpen = true;
+        await DrainAsync(fixture.Window);
         var editor = Editor(combo);
-        Assert.True(editor.Focus());
-        await PressKeyAsync(fixture.Window, 0x73);
+        Assert.Same(editor, Keyboard.FocusedElement);
         editor.SelectAll();
         await TypeTextAsync(fixture.Window, editor, "zz");
         int changes = 0;
@@ -319,8 +310,8 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         });
         await DrainAsync(fixture.Window);
         var current = Language(fixture.Window, source);
-        Assert.Equal(source ? "English" : "中文", current.SelectedItem?.ToString());
-        Assert.Equal(source ? "English" : "中文", Editor(current).Text);
+        Assert.Equal(source ? "英语" : "中文", current.SelectedItem?.ToString());
+        Assert.Equal("zz", Editor(current).Text);
         Assert.True(current.IsDropDownOpen);
         Assert.Same(editor, Keyboard.FocusedElement);
         Assert.Equal(1, changes);
@@ -344,51 +335,52 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
     public Task ArrowChoicesKeepFocusThroughSaveFailureRetryAndTab(bool quickPanel, bool source) => desktop.RunAsync(async () =>
     {
         using var fixture = new LanguageWindowFixture(quickPanel);
-        var editor = Editor(Language(fixture.Window, source));
-        Assert.True(editor.Focus());
         int changes = 0;
         fixture.Settings.Changed += () => changes++;
-        if (fixture.Window is SettingsWindow settingsWindow)
+        string previous = source ? "auto" : "zh", original = source ? "zh" : "en";
+        async Task Choose(string code)
         {
-            settingsWindow.PrepareSettingsChange = _ => Task.FromResult(false);
+            var picker = Language(fixture.Window, source);
+            picker.IsDropDownOpen = true;
+            await DrainAsync(fixture.Window);
+            var search = Editor(picker);
+            await TypeTextAsync(fixture.Window, search, code);
+            string saved = File.ReadAllText(fixture.Path);
             await PressKeyAsync(fixture.Window, 0x26);
-            AssertChoice(fixture, source, editor, previous: false);
-            Assert.Equal(0, changes);
-            settingsWindow.PrepareSettingsChange = null;
+            await PressKeyAsync(fixture.Window, 0x28);
+            Assert.Equal(saved, File.ReadAllText(fixture.Path)); // Highlight is not a save.
+            await PressKeyAsync(fixture.Window, 0x0D);
+            Assert.False(picker.IsDropDownOpen);
+            Assert.True(picker.IsKeyboardFocused);
         }
-        await PressKeyAsync(fixture.Window, 0x26); // Up selects the preceding language.
-        AssertChoice(fixture, source, editor, previous: true);
+        await Choose(previous);
+        AssertChoice(fixture, source, previous: true);
         Assert.Equal(1, changes);
-        await PressKeyAsync(fixture.Window, 0x28);
-        AssertChoice(fixture, source, editor, previous: false);
+        await Choose(original);
+        AssertChoice(fixture, source, previous: false);
         Assert.Equal(2, changes);
-
         using (var blocked = new FileStream(fixture.Path + ".tmp", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
         {
-            await PressKeyAsync(fixture.Window, 0x26);
-            AssertChoice(fixture, source, editor, previous: false);
+            await Choose(previous);
+            AssertChoice(fixture, source, previous: false);
             Assert.Equal(2, changes);
-            Assert.Contains(Descendants(fixture.Window).OfType<TextBlock>(), text =>
-                IsVisibleSaveFailure(text, quickPanel));
+            Assert.Contains(Descendants(fixture.Window).OfType<TextBlock>(), text => IsVisibleSaveFailure(text, quickPanel));
             await fixture.FailModelStartAsync();
-            AssertChoice(fixture, source, editor, previous: false);
+            AssertChoice(fixture, source, previous: false);
         }
-        await PressKeyAsync(fixture.Window, 0x26);
-        AssertChoice(fixture, source, editor, previous: true);
+        await Choose(previous);
+        AssertChoice(fixture, source, previous: true);
         Assert.Equal(3, changes);
-        Assert.DoesNotContain(Descendants(fixture.Window).OfType<TextBlock>(), text =>
-            IsVisibleSaveFailure(text, quickPanel));
-        await PressKeyAsync(fixture.Window, 0x09); // Tab uses the focus retained after saving.
+        Assert.DoesNotContain(Descendants(fixture.Window).OfType<TextBlock>(), text => IsVisibleSaveFailure(text, quickPanel));
+        await PressKeyAsync(fixture.Window, 0x09);
         Assert.False(Language(fixture.Window, source).IsKeyboardFocusWithin);
         Assert.True(fixture.Window.IsKeyboardFocusWithin);
         if (source)
         {
-            // Auto disables swap, so both windows proceed to the target picker.
             Assert.True(Language(fixture.Window, source: false).IsKeyboardFocusWithin);
-            var nextEditor = Keyboard.FocusedElement;
+            var next = Keyboard.FocusedElement;
             await fixture.FailModelStartAsync();
-            Assert.Same(nextEditor, Keyboard.FocusedElement);
-            Assert.True(Language(fixture.Window, source: false).IsKeyboardFocusWithin);
+            Assert.Same(next, Keyboard.FocusedElement);
         }
         Assert.True(fixture.Window.IsVisible);
     });
@@ -407,18 +399,12 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
             Source = "auto"
         });
         await DrainAsync(fixture.Window);
-        Assert.Equal(quickPanel ? "Auto" : "自动检测", Language(fixture.Window, source: true).SelectedItem?.ToString());
-        if (!quickPanel)
-        {
-            Language(fixture.Window, source: true).IsDropDownOpen = true;
-            await DrainAsync(fixture.Window);
-        }
+        Assert.Equal("自动检测", Language(fixture.Window, source: true).SelectedItem?.ToString());
+        Language(fixture.Window, source: true).IsDropDownOpen = true;
+        await DrainAsync(fixture.Window);
         Language(fixture.Window, source: true).SelectedIndex = 2;
-        if (!quickPanel)
-        {
-            Language(fixture.Window, source: false).IsDropDownOpen = true;
-            await DrainAsync(fixture.Window);
-        }
+        Language(fixture.Window, source: false).IsDropDownOpen = true;
+        await DrainAsync(fixture.Window);
         Language(fixture.Window, source: false).SelectedIndex = 0;
         await DrainAsync(fixture.Window);
         var saved = new SettingsStore(fixture.Path).Value;
@@ -443,17 +429,16 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         Assert.Same(editor, Keyboard.FocusedElement);
     }
 
-    private static void AssertChoice(LanguageWindowFixture fixture, bool source, TextBox editor, bool previous)
+    private static void AssertChoice(LanguageWindowFixture fixture, bool source, bool previous)
     {
         var current = Language(fixture.Window, source);
-        string label = source ? previous ? "Auto" : "中文" : previous ? "中文" : "English";
+        string label = source ? previous ? "自动检测" : "中文" : previous ? "中文" : "英语";
         string code = source ? previous ? "auto" : "zh" : previous ? "zh" : "en";
         Assert.Equal(label, current.SelectedItem?.ToString());
-        Assert.Equal(label, Editor(current).Text);
         var saved = new SettingsStore(fixture.Path).Value;
         Assert.Equal(code, source ? saved.Source : saved.Target);
         Assert.True(current.IsKeyboardFocusWithin);
-        Assert.Same(editor, Keyboard.FocusedElement);
+        Assert.Same(current, Keyboard.FocusedElement);
     }
 
     private static ComboBox Language(Window window, bool source)
@@ -462,7 +447,7 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         return Descendants(window).OfType<LanguagePicker>().ElementAt(source ? 0 : 1);
     }
 
-    private static TextBox Editor(ComboBox combo) => Assert.Single(Descendants(combo).OfType<TextBox>());
+    private static TextBox Editor(ComboBox combo) => PopupSearch(combo);
 
     private static async Task PressKeyAsync(Window window, ushort key)
     {

@@ -32,4 +32,4 @@ Linux 自包含发行包包含 .NET 运行时和共享 Python worker 源码；�
 
 ## 离线界面字体
 
-产品与浏览器扩展包含未修改的 Inter 4.1 和 Source Serif 4 4.005R 静态字体，来源与字重见 [字体资源说明](src/shared/ui/fonts/README.md)。它们采用 SIL Open Font License 1.1，原版权与许可证随各字体目录分发。字体仅用于界面呈现，不建立运行时在线字体依赖。CJK 字形使用平台字体回退，平台字体不复制进产品包。
+产品与浏览器扩展的离线字体包包含 Inter 4.1、Noto Sans/Serif SC/JP/KR，以及由固定 Source Serif 4 4.004 可变字体派生、重命名为 TypeLay Serif 的 16 个静态光学尺寸角色，共 32 个字体文件。来源、派生方法、字重及校验值见 [字体构建说明](eng/fonts/README.md) 与 [字体资源说明](src/shared/ui/fonts/README.md)。这些字体采用 SIL Open Font License 1.1，原版权与许可证随各字体目录分发；派生字体不使用上游保留字体名称。字体仅用于界面呈现，不建立运行时在线字体依赖。未覆盖字形仍可使用平台字体回退，平台字体不复制进产品包。

@@ -32,7 +32,7 @@ internal sealed class QuitConfirmationWindow : Window
         var body = new StackPanel { Margin = new(22) };
         KeyboardNavigation.SetTabNavigation(body, KeyboardNavigationMode.Cycle);
         var title = UiTheme.Text(Title, 18);
-        title.FontFamily = UiTheme.DisplayFont;
+        title.FontFamily = UiTheme.DisplayFontForSize(18);
         title.FontWeight = FontWeights.Medium;
         title.LineHeight = 22.5;
         title.Margin = new(0, 0, 0, 14);

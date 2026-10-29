@@ -206,7 +206,9 @@ internal sealed class OnboardingWindow : Window
     private void Heading(string value)
     {
         var heading = UiTheme.Text(value, 30);
-        heading.FontFamily = UiTheme.DisplayFont;
+        heading.FontFamily = UiTheme.DisplayFontForSize(30);
+        heading.FontWeight = FontWeights.Medium;
+        AutomationProperties.SetAutomationId(heading, "OnboardingHeading");
         heading.TextAlignment = TextAlignment.Center;
         heading.Margin = new(0, 0, 0, 18);
         _body.Children.Add(heading);

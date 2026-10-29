@@ -1,0 +1,189 @@
+{
+  "schema": 1,
+  "samples": [
+    {
+      "id": "S01",
+      "direction": "zh_en",
+      "category": "utility",
+      "text": "培训资料我已经整理好了，麻烦你按章节打印两份，空白页就不用打印了。",
+      "semantic_anchors": [
+        "说话人已完成整理培训资料，不是收件人完成。",
+        "请求收件人按章节打印两份，份数为二。",
+        "不打印空白页，不能扩大为删掉资料内容。"
+      ],
+      "rationale": "工作请求有自然与较正式的礼貌表达空间；可改变句式，不能改变任务、完成状态与排除范围。"
+    },
+    {
+      "id": "S02",
+      "direction": "en_zh",
+      "category": "utility",
+      "text": "Thanks for helping with the exhibition booklet. Could you send me your preferred portrait photo this afternoon so I can finish the layout?",
+      "semantic_anchors": [
+        "感谢对方协助展览手册。",
+        "请求对方今天下午把其本人选定的人像照片发给说话人。",
+        "目的是说话人完成排版，不是要求对方完成排版。"
+      ],
+      "rationale": "合作邮件可以自然亲切或正式礼貌，另述可调整感谢与请求结构，不增添硬性承诺。"
+    },
+    {
+      "id": "S03",
+      "direction": "zh_en",
+      "category": "utility",
+      "text": "房间里的水壶漏水，能麻烦你们换一个吗？我明天上午会在房间里，其他时间请先给我打电话。",
+      "semantic_anchors": [
+        "房间水壶漏水，请求更换水壶。",
+        "说话人明天上午在房间，非其他时间的在场保证。",
+        "其他时间需先给说话人打电话，不可改成随时可进入。"
+      ],
+      "rationale": "住宿服务请求适合口语化和正式客服语域；允许重组两句，保持时间与联系要求。"
+    },
+    {
+      "id": "S04",
+      "direction": "en_zh",
+      "category": "utility",
+      "text": "The new charts are much easier to read. I still find the labels on the last page confusing; could we clarify those before sharing the report?",
+      "semantic_anchors": [
+        "肯定新图表更易读。",
+        "说话人仍觉得最后一页的标签不清楚，不是所有图表都错。",
+        "提议分享报告前澄清这些标签，保留协商请求语气。"
+      ],
+      "rationale": "具体、建设性的工作反馈，正式与自然表达应有空间；可重组称赞和建议，但不能把建议升级为指责。"
+    },
+    {
+      "id": "S05",
+      "direction": "zh_en",
+      "category": "utility",
+      "text": "这周末我不在家，可以请你帮忙给阳台上的花浇水吗？土还是湿的话，就不用再浇了。",
+      "semantic_anchors": [
+        "说话人本周末不在家。",
+        "请求对方给阳台上的花浇水，不是其他地方的植物。",
+        "土仍湿时不需再浇，条件和否定须保留。"
+      ],
+      "rationale": "邻里请求允许亲切或礼貌正式表达；另述可以合并或拆分条件，不应机械替换单个词。"
+    },
+    {
+      "id": "S06",
+      "direction": "en_zh",
+      "category": "utility",
+      "text": "We enjoyed the food, but the music made it difficult to talk. Would you mind turning it down a little next time? We would love to come back.",
+      "semantic_anchors": [
+        "餐食体验为正面，问题是音乐妨碍交谈。",
+        "礼貌请求下次稍微调低音乐音量，不是完全关闭。",
+        "说话人一方愿意再次光顾，不是已经预订或保证会来。"
+      ],
+      "rationale": "温和的餐厅反馈有自然与正式两种得体表达方式；允许组织句序，保留赞许与轻微请求程度。"
+    },
+    {
+      "id": "S07",
+      "direction": "zh_en",
+      "category": "utility",
+      "text": "我的火车晚点了，接站时间能往后推半小时吗？如果你不方便，我也可以自己坐公交过去。",
+      "semantic_anchors": [
+        "说话人的火车晚点。",
+        "请求把接站时间推迟半小时，不是提前或延迟一小时。",
+        "对方不方便时，说话人提出自己坐公交过去的备选；不能变成已确定取消接站，不把原条件强解成当且仅当。"
+      ],
+      "rationale": "日常协调有清楚的请求和备选安排，允许正式或自然措辞，不改变条件与责任人。"
+    },
+    {
+      "id": "S08",
+      "direction": "en_zh",
+      "category": "utility",
+      "text": "I received the wrong edition of the book. Could you let me know how to exchange it? I would prefer a replacement rather than a refund.",
+      "semantic_anchors": [
+        "说话人收到的是书的错误版本，不是完全没收到。",
+        "请求告知换货办法。",
+        "说话人倾向更换而不是退款，是偏好不是绝对拒绝退款。"
+      ],
+      "rationale": "客服联系可以简洁自然或书面正式；有真正改述空间，不能把询问流程变成退款要求。"
+    },
+    {
+      "id": "S09",
+      "direction": "zh_en",
+      "category": "neutral",
+      "text": "会议下午三点开始。",
+      "semantic_anchors": [
+        "会议开始时间为下午三点。"
+      ],
+      "rationale": "已经简短清楚，不强制风格或另述制造变化。"
+    },
+    {
+      "id": "S10",
+      "direction": "en_zh",
+      "category": "neutral",
+      "text": "The file is ready.",
+      "semantic_anchors": [
+        "文件已经准备好，不能改成正在准备或已发送。"
+      ],
+      "rationale": "简短中性状态，可保持相同译文或合理没有另述。"
+    },
+    {
+      "id": "S11",
+      "direction": "zh_en",
+      "category": "neutral",
+      "text": "谢谢你的帮助。",
+      "semantic_anchors": [
+        "说话人感谢对方的帮助。"
+      ],
+      "rationale": "已得体的短感谢，不因模型拒绝无益改述而加罚收益分母。"
+    },
+    {
+      "id": "S12",
+      "direction": "en_zh",
+      "category": "neutral",
+      "text": "Please close the window.",
+      "semantic_anchors": [
+        "礼貌请求关闭窗户或界面窗口（原文无上下文限定），不能变成开启或已经关闭。"
+      ],
+      "rationale": "简短常用请求，不要求强行造语域差异。"
+    },
+    {
+      "id": "S13",
+      "direction": "zh_en",
+      "category": "protected",
+      "text": "  请先阅读 https://example.com/review 再把意见发给 @Mira。  ",
+      "semantic_anchors": [
+        "先阅读文档链接，再把意见发给Mira，次序不反转。",
+        "URL https://example.com/review 和 mention @Mira 必须逐字保留。",
+        "两侧各两个ASCII空格必须保留。"
+      ],
+      "rationale": "真实带链接和收件人的工作消息，检验风格保结构；另述按现役保护结构限制预期拒绝。"
+    },
+    {
+      "id": "S14",
+      "direction": "en_zh",
+      "category": "protected",
+      "text": "Please send @Noah the updated agenda.\r\nDo not change this link: https://example.com/agenda",
+      "semantic_anchors": [
+        "请求把更新后的议程发给Noah。",
+        "禁止更改所列链接，不能改成禁止更新议程。",
+        "mention @Noah、URL https://example.com/agenda 和一个CRLF逐字保留。"
+      ],
+      "rationale": "两行自然工作消息，保护字节与否定范围同时有效，不把结构拒绝计译文成功。"
+    },
+    {
+      "id": "S15",
+      "direction": "zh_en",
+      "category": "protected",
+      "text": "周三上午十点开会。\r\n请带上签好的文件。",
+      "semantic_anchors": [
+        "会议在周三上午十点。",
+        "请求携带已经签好的文件，不是到会后再签。",
+        "一个CRLF必须保留。"
+      ],
+      "rationale": "两行通知检验断行保留及完成状态，另述预期受现役结构能力边界限制。"
+    },
+    {
+      "id": "S16",
+      "direction": "en_zh",
+      "category": "protected",
+      "text": "  The guide is here: https://example.com/guide\nAsk @Lena if you need a printed copy.  ",
+      "semantic_anchors": [
+        "指南位于所列URL。",
+        "如需纸质副本，可联系Lena；不是要求Lena打印全部文件，也不把条件强解成当且仅当。",
+        "URL https://example.com/guide、mention @Lena、一个LF和首尾各两个ASCII空格逐字保留。"
+      ],
+      "rationale": "自然带链接说明及条件请求，覆盖LF和边界空白，不能通过格式修剪获得通过。"
+    }
+  ]
+}

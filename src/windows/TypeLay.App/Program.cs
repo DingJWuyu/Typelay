@@ -112,7 +112,7 @@ internal static class Program
                 }
                 finally { quitting = false; }
             }
-            var quick = new QuickPanel(settings, model, session, () => window.ShowPage(), Quit);
+            var quick = new QuickPanel(settings, model, session, () => window.ShowPage(), Quit, window);
             overlay.SettingsRequested = () => window.ShowPage();
             overlay.NativeLanguageRequested = anchor =>
             {

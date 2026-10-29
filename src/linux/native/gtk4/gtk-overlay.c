@@ -75,6 +75,9 @@ static struct {
     GtkEventController *language_pointer;
     JsonObject *view, *authority;
     GdkFrameClock *layout_clock;
+    GtkWidget *layout_popover;
+    JsonObject *layout_view;
+    gint64 layout_revision;
     gulong focus_handler, active_handler, layout_handler;
     gboolean setting_text, setting_languages, composing, focused, expanded, pending_edit, pending_resume;
     gboolean english, reduce_motion;
@@ -1645,7 +1648,17 @@ static gboolean expired(gpointer data) {
     glossary_sync();
     return G_SOURCE_CONTINUE;
 }
+/* A geometry request belongs only to the opening/view which produced it.
+ * Detach before unref so reentrant GTK callbacks cannot erase a newer request. */
+static void clear_layout_request(void) {
+    GtkWidget *popover = overlay.layout_popover;
+    JsonObject *view = overlay.layout_view;
+    overlay.layout_popover = NULL; overlay.layout_view = NULL; overlay.layout_revision = 0;
+    if (view) json_object_unref(view);
+    if (popover) g_object_unref(popover);
+}
 static void hide_overlay(const char *reason) {
+    clear_layout_request();
     /* Branch-local evidence only: no new focus/IME probe and no user text. */
     static unsigned trace_count;
     if (g_getenv("TYPELAY_TRACE") && overlay.popover && trace_count < 96) {
@@ -2000,8 +2013,10 @@ static gboolean theme(JsonObject *data, gboolean stale_preview, gboolean capsule
     overlay.text_size = (gint)CLAMP(tl_integer(appearance, "textSize", 15), 13, 19);
     TlOverlayPalette palette = tl_overlay_palette(dark, tl_string(appearance, "accent"), boolean(appearance, "reduceTransparency"));
     char css[16384];
+    char content_font[128];
     int count = tl_overlay_gtk_css(css, sizeof css, palette,
-        tl_overlay_content_font(tl_string(appearance, "font"), tl_string(overlay.view, "targetLanguage")),
+        tl_overlay_content_font(tl_string(appearance, "font"), tl_string(overlay.view, "targetLanguage"),
+            overlay.text_size, content_font, sizeof content_font),
         tl_overlay_ui_font(tl_string(appearance, "font")), overlay.text_size, capsule, stale_preview, overlay.reduce_motion, GTK_MAJOR_VERSION == 4);
     if (count < 0 || (gsize)count >= sizeof css) return FALSE;
     JsonObject *view = json_object_ref(overlay.view);
@@ -2026,12 +2041,28 @@ static gboolean theme(JsonObject *data, gboolean stale_preview, gboolean capsule
  * that validation and before layout consumes the old surface dimensions.
  * This listens to existing frames only: no tick loop or frame request, and
  * present reallocates a visible popup rather than reopening a hidden one. */
+static gboolean popup_layout_current(GtkWidget *popover, JsonObject *view, Target *target, gint64 revision) {
+    return overlay.popover == popover && overlay.view == view && overlay.target == target
+        && overlay.revision == revision && active() && gtk_widget_get_mapped(popover)
+        && tl_now() <= overlay.expires && tl_configuration_current(overlay.generation);
+}
 static void update_popup_layout(GdkFrameClock *clock, gpointer unused) {
     (void)unused;
-    if (clock != overlay.layout_clock || !active() || !overlay.popover
+    if (clock != overlay.layout_clock || !active() || !overlay.popover || !overlay.view
         || !gtk_widget_get_mapped(overlay.popover) || tl_now() > overlay.expires
         || !tl_configuration_current(overlay.generation)) return;
     GtkWidget *popover = g_object_ref(overlay.popover);
+    JsonObject *view = json_object_ref(overlay.view);
+    Target *target = overlay.target;
+    gint64 revision = overlay.revision;
+    gboolean dirty = overlay.layout_popover == popover && overlay.layout_view == view
+        && overlay.layout_revision == revision;
+    /* Consume before queue_resize: a callback may render a different view and
+     * place its own pending request. Never clear that newer request below. */
+    clear_layout_request();
+    if (dirty && popup_layout_current(popover, view, target, revision))
+        gtk_widget_queue_resize(popover);
+    if (!popup_layout_current(popover, view, target, revision)) goto done;
     /* A menu can outgrow both sides of a multiline field. Let its viewport
      * shrink instead of forcing GtkPopover to pop down an undersized surface.
      * Keep the existing anchor and placement; only bound scrollable content. */
@@ -2054,9 +2085,10 @@ static void update_popup_layout(GdkFrameClock *clock, gpointer unused) {
         }
         g_object_unref(menu);
     }
-    if (overlay.popover == popover && gtk_widget_get_mapped(popover))
+    if (popup_layout_current(popover, view, target, revision))
         gtk_popover_present(GTK_POPOVER(popover));
-    g_object_unref(popover);
+done:
+    json_object_unref(view); g_object_unref(popover);
 }
 static void create(Target *target) {
     overlay.target = target;
@@ -2370,6 +2402,7 @@ static gboolean render(Target *target, JsonObject *data) {
         json_object_unref(geometry);
         return refreshed;
     }
+    clear_layout_request();
     GtkWidget *old_popover = overlay.popover, *old_editor = overlay.text;
     tl_overlay_control_cancel();
     if (overlay.glossary && (overlay.target != target || overlay.top != top
@@ -2470,6 +2503,13 @@ static gboolean render(Target *target, JsonObject *data) {
     gint width = capsule ? 160 : overlay.expanded ? CLAMP(source_width, 300, 560)
         : editing ? CLAMP(source_width * 72 / 100, 400, 440) : CLAMP(source_width * 66 / 100, 300, 440);
     width = MIN(width, MAX(160, gtk_widget_get_width(top) - 48));
+    /* Freeze before GTK size/visibility callbacks can replace this render. */
+    GtkWidget *rendered_popover = g_object_ref(overlay.popover);
+    JsonObject *rendered_view = json_object_ref(overlay.view);
+    gint64 rendered_revision = overlay.revision;
+    gint previous_width = -1, previous_height = -1;
+    gtk_widget_get_size_request(overlay.card, &previous_width, NULL);
+    gtk_widget_get_size_request(overlay.scroll, NULL, &previous_height);
     gtk_widget_set_size_request(overlay.card, width, -1);
     char *draft = editing && boolean(presentation, "editorOwnsText")
         && overlay.target == target && overlay.popover == old_popover && overlay.text == old_editor
@@ -2479,6 +2519,7 @@ static gboolean render(Target *target, JsonObject *data) {
     g_free(draft);
     gint collapsed_height = (overlay.text_size * 155 * 7 + 99) / 100 + 4;
     /* Use immediate sizing pending investigation of expand-time editor focus loss. */
+    gboolean geometry_changed = previous_width != width || previous_height != height;
     gtk_widget_set_size_request(overlay.scroll, -1, height);
     gboolean busy = g_strcmp0(state, "Translating") == 0 && !boolean(presentation, "editorOwnsText");
     if (busy && !*text_or_empty(value, "text")) height = MAX(54, height);
@@ -2500,6 +2541,7 @@ static gboolean render(Target *target, JsonObject *data) {
     if (is_paused) gtk_widget_set_visible(overlay.menu, FALSE);
     graphene_point_t zero = GRAPHENE_POINT_INIT(0, 0), origin;
     if (!gtk_widget_compute_point(target->widget, top, &zero, &origin)) {
+        json_object_unref(rendered_view); g_object_unref(rendered_popover);
         json_object_unref(geometry);
         return pause_render_result(is_paused, "coordinates", request_revision, FALSE);
     }
@@ -2511,10 +2553,24 @@ static gboolean render(Target *target, JsonObject *data) {
     };
     gtk_popover_set_pointing_to(GTK_POPOVER(overlay.popover), &anchor);
     json_object_unref(geometry);
-    gtk_popover_popup(GTK_POPOVER(overlay.popover));
-    gtk_popover_present(GTK_POPOVER(overlay.popover));
+    if (overlay.popover != rendered_popover || overlay.view != rendered_view
+        || overlay.target != target || overlay.revision != rendered_revision) {
+        json_object_unref(rendered_view); g_object_unref(rendered_popover);
+        return FALSE;
+    }
+    gtk_popover_popup(GTK_POPOVER(rendered_popover));
+    if (popup_layout_current(rendered_popover, rendered_view, target, rendered_revision))
+        gtk_popover_present(GTK_POPOVER(rendered_popover));
     if (!overlay.expiry_timer) overlay.expiry_timer = g_timeout_add(100, expired, NULL);
     tl_overlay_sync();
+    if (geometry_changed && popup_layout_current(rendered_popover, rendered_view, target, rendered_revision)) {
+        /* The initial present can precede the root's CSS validation. Requery
+         * preferred geometry once in its existing next update-after phase. */
+        overlay.layout_popover = g_object_ref(rendered_popover);
+        overlay.layout_view = json_object_ref(rendered_view);
+        overlay.layout_revision = rendered_revision;
+    }
+    json_object_unref(rendered_view); g_object_unref(rendered_popover);
     return pause_render_result(is_paused, "shown", request_revision, TRUE);
 }
 static gboolean resume_current(Target *target, JsonObject *data, JsonObject *view) {

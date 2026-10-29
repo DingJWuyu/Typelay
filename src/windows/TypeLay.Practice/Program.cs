@@ -2120,12 +2120,20 @@ internal static partial class Program
 
     private static void SetFonts()
     {
-        string uiFace = PrivateFonts.Count > 0 ? "Inter" : "Segoe UI";
+        int contentSize = Math.Clamp(_preferences.TextSize, 13, 19);
+        string uiFace = _preferences.Font == "system" ? "Segoe UI" : PrivateFontFace("Inter-Regular.ttf", "Inter", "Segoe UI");
+        // GDI uses the legacy name ID 1 (including Medium); WPF uses the
+        // typographic family ID 16. These names are from the locked font bytes.
+        string titleFace = _preferences.Font == "system" ? "Segoe UI" : _preferences.Font == "sans"
+            ? PrivateFontFace("Inter-Medium.ttf", "Inter Medium", "Segoe UI")
+            : PrivateFontFace("TypeLaySerif-30-Medium.ttf", "TypeLay Serif 30 Medium", "Georgia");
         string contentFace = _preferences.Font == "system" ? "Segoe UI" : _preferences.Font == "sans" ? uiFace
-            : PrivateFonts.Count > 1 ? "Source Serif 4" : "Georgia";
+            : PrivateFontFace($"TypeLaySerif-{contentSize}-Regular.ttf", $"TypeLay Serif {contentSize}", "Georgia");
+        // Optical families use logical DIPs. Only the HFONT height is scaled for
+        // this monitor; multiplying the family size would select a wrong cut.
         nint body = Native.CreateFontW(-Scale(13), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, uiFace);
-        nint title = Native.CreateFontW(-Scale(28), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, contentFace);
-        nint content = Native.CreateFontW(-Scale(Math.Clamp(_preferences.TextSize, 13, 19)), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, contentFace);
+        nint title = Native.CreateFontW(-Scale(30), 0, 0, 0, 500, 0, 0, 0, 1, 0, 0, 5, 0, titleFace);
+        nint content = Native.CreateFontW(-Scale(contentSize), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, contentFace);
         if (body == 0 || title == 0 || content == 0)
         {
             foreach (nint font in new[] { body, title, content })

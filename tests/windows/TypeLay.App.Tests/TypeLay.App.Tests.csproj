@@ -26,6 +26,7 @@
     <Compile Include="../support/SettingsLanguageActions.cs" Link="SettingsLanguageActions.cs" />
     <Compile Include="../support/SettingsPageActions.cs" Link="SettingsPageActions.cs" />
     <Compile Include="../support/SettingsSupportActions.cs" Link="SettingsSupportActions.cs" />
+    <Compile Include="../support/QuitConfirmationActions.cs" Link="QuitConfirmationActions.cs" />
     <Compile Include="../support/ProcessImage.cs" Link="ProcessImage.cs" />
     <Compile Include="../support/OverlayPreviewObservation.cs" Link="OverlayPreviewObservation.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/ModelConsumerFixtureOwner.cs" Link="ModelConsumerFixtureOwner.cs" />

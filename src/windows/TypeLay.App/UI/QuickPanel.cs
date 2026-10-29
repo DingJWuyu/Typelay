@@ -11,7 +11,7 @@ using System.Windows.Media;
 using System.Windows.Media.Effects;
 namespace TypeLay.App;
 
-internal sealed class QuickPanel : Window
+internal sealed partial class QuickPanel : Window
 {
     private readonly SettingsStore _settings;
     private readonly ModelClient _model;
@@ -34,13 +34,15 @@ internal sealed class QuickPanel : Window
     private long _undoApplicationRevision;
     private object _renderIdentity = new();
     private object? _undoApplicationIdentity;
-    public QuickPanel(SettingsStore settings, ModelClient model, SessionController session, Action showSettings, Action quit)
+    private Native.Point? _trayAnchor;
+    public QuickPanel(SettingsStore settings, ModelClient model, SessionController session, Action showSettings, Action quit, SettingsWindow? preparation = null)
     {
         _settings = settings;
         _model = model;
         _session = session;
         _showSettings = showSettings;
         _quit = quit;
+        _preparationHost = preparation;
         Title = UiTheme.L("TypeLay 快速面板", "TypeLay Quick Panel");
         Width = 344;
         SizeToContent = SizeToContent.Height;
@@ -52,6 +54,7 @@ internal sealed class QuickPanel : Window
         ShowInTaskbar = false;
         FontFamily = UiTheme.UiFont;
         Resources.MergedDictionaries.Add(UiTheme.QuickPanelResources());
+        Resources.MergedDictionaries.Add(UiTheme.LanguageResources());
         var outer = UiTheme.Border(_body, 18, "Glass");
         _body.Margin = new(10);
         outer.Margin = new(12);
@@ -59,25 +62,50 @@ internal sealed class QuickPanel : Window
         _body.SizeChanged += (_, _) => _body.Clip = new RectangleGeometry(new Rect(0, 0, _body.ActualWidth, _body.ActualHeight), 17, 17);
         Content = outer;
         _sourceLanguage = new(true, _settings.Value.Source,
-            async code => { if (IsVisible) await SaveAsync(_settings.Value with { Source = code }); }, _model.Ready ? _model.AvailableDirections : null)
+            async code => await SaveTrayLanguageAsync(true, code), _model.Ready ? _model.AvailableDirections : null, searchPopover: true)
         {
             MinWidth = 0
         };
         _targetLanguage = new(false, _settings.Value.Target,
-            async code => { if (IsVisible) await SaveAsync(_settings.Value with { Target = code }); }, _model.Ready ? _model.AvailableDirections : null)
+            async code => await SaveTrayLanguageAsync(false, code), _model.Ready ? _model.AvailableDirections : null, searchPopover: true)
         {
             MinWidth = 0
         };
-        _swapLanguages = UiTheme.Button("⇄", async () => { if (IsVisible) await SaveAsync(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }); });
+        _swapLanguages = UiTheme.Button("", async () => await SwapTrayLanguagesAsync());
+        InitializeTrayLanguages();
         BuildLanguages();
         _controls.Children.Add(_languages);
         _controlCard = UiTheme.Border(_controls, 12, "Panel2", 10);
         _body.Children.Add(_controlCard);
+        SizeChanged += (_, _) => { if (IsVisible) PositionAtTray(); };
         Deactivated += (_, _) => Hide();
         Closing += (_, e) => { e.Cancel = true; Hide(); };
         _settings.Changed += Refresh;
         _model.Changed += Refresh;
         _session.Changed += RefreshStatus;
+        if (_preparationHost is not null)
+        {
+            _preparationHost.QuickPanelPreparationChanged += RefreshModelStatus;
+            _preparationHost.QuickPanelProgressChanged += RefreshModelProgress;
+            System.ComponentModel.PropertyChangedEventHandler systemMotionChanged = (_, args) =>
+            {
+                if (args.PropertyName == nameof(SystemParameters.ClientAreaAnimation))
+                    RefreshModelProgress();
+            };
+            IsVisibleChanged += (_, _) =>
+            {
+                SystemParameters.StaticPropertyChanged -= systemMotionChanged;
+                if (IsVisible)
+                    SystemParameters.StaticPropertyChanged += systemMotionChanged;
+                RefreshModelProgress();
+            };
+            Closed += (_, _) =>
+            {
+                _preparationHost.QuickPanelPreparationChanged -= RefreshModelStatus;
+                _preparationHost.QuickPanelProgressChanged -= RefreshModelProgress;
+                SystemParameters.StaticPropertyChanged -= systemMotionChanged;
+            };
+        }
         Refresh();
     }
     public void OpenAtTray()
@@ -90,10 +118,18 @@ internal sealed class QuickPanel : Window
             Hide();
             return;
         }
+        Native.GetCursorPos(out var cursor);
+        _trayAnchor = cursor;
         Show();
         UpdateLayout();
+        PositionAtTray();
+        Activate();
+    }
+    private void PositionAtTray()
+    {
         var handle = new WindowInteropHelper(this).Handle;
-        Native.GetCursorPos(out var cursor);
+        if (_trayAnchor is not { } cursor || handle == 0 || ActualWidth <= 0 || ActualHeight <= 0)
+            return;
         var near = new Native.Rect { Left = cursor.X, Top = cursor.Y, Right = cursor.X + 1, Bottom = cursor.Y + 1 };
         var monitor = new Native.MonitorInfo { Size = Marshal.SizeOf<Native.MonitorInfo>() };
         Native.GetMonitorInfoW(Native.MonitorFromRect(ref near, 2), ref monitor);
@@ -102,8 +138,7 @@ internal sealed class QuickPanel : Window
         int width = (int)Math.Ceiling(ActualWidth * scale), height = (int)Math.Ceiling(ActualHeight * scale);
         int x = Math.Clamp(cursor.X - width + 24, monitor.Work.Left, Math.Max(monitor.Work.Left, monitor.Work.Right - width));
         int y = Math.Clamp(cursor.Y - height, monitor.Work.Top, Math.Max(monitor.Work.Top, monitor.Work.Bottom - height));
-        Native.SetWindowPos(handle, (nint)(-1), x, y, width, height, 0x0040);
-        Activate();
+        Native.SetWindowPos(handle, (nint)(-1), x, y, width, height, 0x0010); // SWP_NOACTIVATE
     }
     public Task<bool> SetLanguagesAsync(string source, string target) => SetLanguagesAsync(source, target, null);
     public Task<bool> SetLanguagesAsync(string source, string target, Func<bool>? callerCurrent)
@@ -160,7 +195,7 @@ internal sealed class QuickPanel : Window
                 Refresh();
                 return false;
             }
-            // Only the anchored configuration caller supplies this UI-lifetime
+            // Configuration callers can supply their exact UI-lifetime
             // guard. It cannot grant input rights; all ordinary saves keep their
             // existing behavior. Check after preparation, immediately at commit.
             if (callerCurrent?.Invoke() == false)
@@ -205,13 +240,18 @@ internal sealed class QuickPanel : Window
         if (_statusRow is null || _statusDot is null || _statusText is null || _operationFeedback is null)
             return;
         _statusRow.ToolTip = _session.ServiceStatus;
-        _statusDot.SetResourceReference(Border.BackgroundProperty,
-            !_settings.Value.Enabled ? "Tertiary" : !_model.Ready ? "Warn" : _session.InputAvailable ? "Good" : "Muted");
-        _statusText.Text = !_settings.Value.Enabled ? UiTheme.L("TypeLay 已暂停", "TypeLay is paused") : !_model.Ready ? _model.Status
-            : !_session.InputAvailable ? _session.ConnectionStatus
-            : _settings.Value.Mode == WorkMode.OnDemand ? _session.ShortcutStatus
-            : !_settings.Value.ExperimentalWriteback ? UiTheme.L("本地翻译已就绪", "Local translation is ready") : _model.Status;
-        _statusText.Text = UiStrings.Translate(_statusText.Text);
+        if (_preparationHost is not null)
+            RefreshModelStatus();
+        else
+        {
+            _statusDot.SetResourceReference(Border.BackgroundProperty,
+                !_settings.Value.Enabled ? "Tertiary" : !_model.Ready ? "Warn" : _session.InputAvailable ? "Good" : "Muted");
+            _statusText.Text = !_settings.Value.Enabled ? UiTheme.L("TypeLay 已暂停", "TypeLay is paused") : !_model.Ready ? _model.Status
+                : !_session.InputAvailable ? _session.ConnectionStatus
+                : _settings.Value.Mode == WorkMode.OnDemand ? _session.ShortcutStatus
+                : !_settings.Value.ExperimentalWriteback ? UiTheme.L("本地翻译已就绪", "Local translation is ready") : _model.Status;
+            _statusText.Text = UiStrings.Translate(_statusText.Text);
+        }
         _operationFeedback.Text = UiStrings.Translate(_session.OperationStatus ?? "");
         _operationFeedback.Visibility = _session.OperationStatus is null ? Visibility.Collapsed : Visibility.Visible;
     }
@@ -223,11 +263,15 @@ internal sealed class QuickPanel : Window
             return;
         }
         FontFamily = UiTheme.UiFont;
+        // Retire the old template's pulse before detaching its subtree. Hidden
+        // or detached automation peers must not retain an animation clock.
+        if (_modelProgress is not null)
+            _modelProgress.Tag = "static";
         object rendered = _renderIdentity = new object();
         bool CurrentRender() => IsVisible && ReferenceEquals(rendered, _renderIdentity);
         string? focusedMode = Keyboard.FocusedElement is RadioButton focused && _modeChoices.Contains(focused)
             ? AutomationProperties.GetName(focused) : null;
-        // The editable pickers and their parent stay mounted while status and
+        // The search pickers and their parent stay mounted while status and
         // settings notifications update the rest of the panel.
         for (int index = _body.Children.Count - 1; index >= 0; index--)
             if (!ReferenceEquals(_body.Children[index], _controlCard))
@@ -333,34 +377,14 @@ internal sealed class QuickPanel : Window
         _sourceLanguage.Synchronize(_settings.Value.Source, directions);
         _targetLanguage.Synchronize(_settings.Value.Target, directions);
         _swapLanguages.IsEnabled = _settings.Value.Source != "auto";
+        AutomationProperties.SetName(_swapLanguages, UiTheme.L("交换语言", "Swap languages"));
         if (_saveError is { } message)
         {
             var error = UiTheme.Text(message, 11.5);
             error.Margin = new(14, 0, 14, 12);
             _body.Children.Add(error);
         }
-        var status = _statusRow = new Grid { Margin = new(4, 10, 4, 10) };
-        status.ColumnDefinitions.Add(new()
-        {
-            Width = new(15)
-        });
-        status.ColumnDefinitions.Add(new());
-        status.ColumnDefinitions.Add(new()
-        {
-            Width = GridLength.Auto
-        });
-        var dot = _statusDot = new Border { Width = 7, Height = 7, CornerRadius = new(4), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center };
-        AutomationProperties.SetAutomationId(dot, "QuickPanelModelStatusDot");
-        status.Children.Add(dot);
-        var model = _statusText = UiTheme.Text("", 11.5, true);
-        Grid.SetColumn(model, 1);
-        status.Children.Add(model);
-        var local = UiTheme.Text(UiTheme.L("本机", "On-device"), 10.5, true);
-        Grid.SetColumn(local, 2);
-        status.Children.Add(local);
-        var statusBorder = UiTheme.Border(status, 0, "Glass");
-        statusBorder.BorderThickness = new(0, 0, 0, .5);
-        _body.Children.Add(statusBorder);
+        BuildModelStatus();
         _operationFeedback = UiTheme.Text("", 11, true);
         _operationFeedback.Margin = new(14, 10, 14, 10);
         _body.Children.Add(_operationFeedback);

@@ -586,6 +586,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         InitializeLanguageConfiguration();
         InitializeRegenerateKeyboard();
         InitializeBusyMotion();
+        InitializeActionMotion();
     }
     private static Border Keycap(string value)
     {
@@ -1046,8 +1047,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         AutomationProperties.SetName(_expandButton, name);
         _expandButton.IsEnabled = _hasPreview && _editor.Text.Length > 0;
         bool visible = _surface.IsMouseOver || _surface.IsKeyboardFocusWithin || _moreButton.ContextMenu?.IsOpen == true;
-        _expandButton.Opacity = visible ? 1 : 0;
-        _moreButton.Opacity = visible ? 1 : 0;
+        UpdateActionOpacity(visible);
     }
     private void SetNoActivate(bool value)
     {

@@ -2308,6 +2308,36 @@ class BrowserContract(unittest.TestCase):
                         ),
                         fonts,
                     )
+        for size in range(13, 20):
+            with self.subTest(latin_optical_size=size):
+                snapshot = self.capture()
+                data.update(target=snapshot["target"], authority=snapshot["authority"])
+                data["revision"] += 1
+                data["appearance"].update(font="claude", textSize=size)
+                data["view"].update(text="Latin optical sizing 012345", targetLanguage="en")
+                self.assertTrue(self.command("overlay-render", data)["visible"])
+                self.page.evaluate("document.fonts.ready")
+                # A new normal view after loading proves selection of this
+                # packaged role; it does not revive the old display authority.
+                snapshot = self.capture()
+                data.update(target=snapshot["target"], authority=snapshot["authority"])
+                data["revision"] += 1
+                self.assertTrue(self.command("overlay-render", data)["visible"])
+                used = [
+                    font
+                    for font in actual_fonts(self.overlay_control("TypeLay 译文", "textbox"))
+                    if font["glyphCount"] > 0
+                ]
+                self.assertTrue(used)
+                self.assertTrue(
+                    all(
+                        font["isCustomFont"]
+                        and font["familyName"] == f"TypeLay Serif {size}"
+                        and font["postScriptName"] == f"TypeLaySerif-{size}-Regular"
+                        for font in used
+                    ),
+                    used,
+                )
         snapshot = self.capture()
         data.update(target=snapshot["target"], authority=snapshot["authority"])
         data["revision"] += 1

@@ -2188,8 +2188,10 @@ static gboolean theme(JsonObject *data, gboolean stale_preview, gboolean capsule
     overlay.text_size = (gint)CLAMP(tl_integer(appearance, "textSize", 15), 13, 19);
     TlOverlayPalette palette = tl_overlay_palette(dark, tl_string(appearance, "accent"), boolean(appearance, "reduceTransparency"));
     char css[16384];
+    char content_font[128];
     int count = tl_overlay_gtk_css(css, sizeof css, palette,
-        tl_overlay_content_font(tl_string(appearance, "font"), tl_string(overlay.view, "targetLanguage")),
+        tl_overlay_content_font(tl_string(appearance, "font"), tl_string(overlay.view, "targetLanguage"),
+            overlay.text_size, content_font, sizeof content_font),
         tl_overlay_ui_font(tl_string(appearance, "font")), overlay.text_size, capsule, stale_preview, overlay.reduce_motion, GTK_MAJOR_VERSION == 4);
     if (count < 0 || (gsize)count >= sizeof css) return FALSE;
     int menu_count = tl_overlay_gtk_more_css(css + count, sizeof css - (gsize)count, palette,

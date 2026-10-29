@@ -764,11 +764,15 @@ def check_preview_colors(client, source, generation, state, initial, evidence):
 
 def check_preview_appearance(client, source, generation, state, initial, evidence):
     """Persisted appearance is observed on real widgets without gaining edit authority."""
+    font_lock = json.loads(
+        (Path(__file__).resolve().parents[2] / "eng/fonts/fonts.lock.json").read_text()
+    )
+    files = {item["path"]: item for item in font_lock["files"]}
     cases = (
-        ("claude", 13, "clay", "zh-CN", "Source Serif 4", "rgb(217,119,87)", "应用语言方向"),
+        ("claude", 13, "clay", "zh-CN", "TypeLay Serif 13", "rgb(217,119,87)", "应用语言方向"),
         ("sans", 19, "ocean", "en", "Inter", "rgb(47,127,224)", "Apply languages"),
         ("system", 15, "sage", "en", "sans", "rgb(93,154,110)", "Apply languages"),
-        ("claude", 17, "iris", "zh-CN", "Source Serif 4", "rgb(138,108,216)", "应用语言方向"),
+        ("claude", 17, "iris", "zh-CN", "TypeLay Serif 17", "rgb(138,108,216)", "应用语言方向"),
         ("sans", 15, "graphite", "zh-CN", "Inter", "rgb(119,117,111)", "应用语言方向"),
     )
     phases = evidence["appearancePhases"] = []
@@ -817,6 +821,22 @@ def check_preview_appearance(client, source, generation, state, initial, evidenc
                 or controls.get("typelay-apply-languages", {}).get("text") != label
             ):
                 return None
+            if font == "claude":
+                # GTK exposes shaping through the live widget's Pango context,
+                # not GtkTextView's private internal runs or a pixel capture.
+                observation = candidate.get("fontRuns") or {}
+                runs = observation.get("runs") or []
+                expected = files[f"source-serif/TypeLaySerif-{size}-Regular.ttf"]["sha256"]
+                if (
+                    observation.get("observation") != "live-widget-context-shaping"
+                    or not runs
+                    or any(
+                        run.get("missingGlyphs") != 0
+                        or (run.get("font") or {}).get("checksum") != expected
+                        for run in runs
+                    )
+                ):
+                    return None
             if font == "system":
                 runs = (candidate.get("fontRuns") or {}).get("runs") or []
                 host_runs = (candidate.get("hostFontRuns") or {}).get("runs") or []
@@ -842,10 +862,6 @@ def check_preview_appearance(client, source, generation, state, initial, evidenc
 
     # Family strings are requests, not evidence that the offline face shaped
     # the text. Compare Pango's observed font identity with the locked bytes.
-    font_lock = json.loads(
-        (Path(__file__).resolve().parents[2] / "eng/fonts/fonts.lock.json").read_text()
-    )
-    files = {item["path"]: item for item in font_lock["files"]}
     for revision, (font, target, sample, file) in enumerate(
         (
             ("claude", "zh-CN", "汉字翻译", "noto-serif/NotoSerifSC-Regular.otf"),

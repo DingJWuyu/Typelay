@@ -12,7 +12,7 @@ using Xunit;
 namespace TypeLay.App.Tests;
 
 [Collection("Desktop")]
-public sealed class OfflineFontRenderingTests(WpfDesktopFixture desktop)
+public sealed partial class OfflineFontRenderingTests(WpfDesktopFixture desktop)
 {
     [Theory]
     [InlineData("sans", "zh", 400, "翻译设置", "NotoSansSC-Regular.otf")]
@@ -46,9 +46,9 @@ public sealed class OfflineFontRenderingTests(WpfDesktopFixture desktop)
         Assert.All(Shape(UiTheme.UiFont, FontWeights.Normal, "TypeLay"), run => AssertFace(run, "Inter-Regular.ttf", 400));
         Assert.All(Shape(UiTheme.UiFont, FontWeights.Medium, "翻译设置"), run => AssertFace(run, "NotoSansSC-Medium.otf", 500));
         Assert.All(Shape(UiTheme.UiFont, FontWeights.SemiBold, "翻译设置"), run => AssertFace(run, "TypeLayNotoSansSC-SemiBold.ttf", 600));
-        Assert.All(Shape(UiTheme.DisplayFont, FontWeights.Medium, "翻译设置"), run => AssertFace(run, "NotoSerifSC-Medium.otf", 500));
+        Assert.All(Shape(UiTheme.DisplayFontForSize(22), FontWeights.Medium, "翻译设置"), run => AssertFace(run, "NotoSerifSC-Medium.otf", 500));
         Assert.All(Shape(UiTheme.ContentFont, FontWeights.Normal, "漢字かな"), run => AssertFace(run, "NotoSerifJP-Regular.otf", 400));
-        Assert.All(Shape(UiTheme.ContentFontForLanguage("ko"), FontWeights.Normal, "한국어"), run => AssertFace(run, "NotoSerifKR-Regular.otf", 400));
+        Assert.All(Shape(UiTheme.ContentFontForLanguage("ko", 15), FontWeights.Normal, "한국어"), run => AssertFace(run, "NotoSerifKR-Regular.otf", 400));
     });
 
     [Fact]
@@ -75,7 +75,7 @@ public sealed class OfflineFontRenderingTests(WpfDesktopFixture desktop)
             var label = Assert.Single(Descendants(navigation).OfType<TextBlock>(), text => text.Text == "外观");
             Assert.All(RenderedGlyphs(label), run => AssertFace(run, "TypeLayNotoSansSC-SemiBold.ttf", 600));
             foreach (var (choice, latin, chinese) in new[]
-                { ("claude", "SourceSerif4-Regular.ttf", "NotoSerifSC-Regular.otf"), ("sans", "Inter-Regular.ttf", "NotoSansSC-Regular.otf") })
+                { ("claude", "TypeLaySerif-20-Medium.ttf", "NotoSerifSC-Medium.otf"), ("sans", "Inter-Medium.ttf", "NotoSansSC-Medium.otf") })
             {
                 var option = Descendants(window).OfType<Button>().Single(button => AutomationProperties.GetName(button) == "Font_" + choice);
                 var preview = Assert.Single(Descendants(option).OfType<TextBlock>(), text => text.Text == "Aa 文");
@@ -96,7 +96,7 @@ public sealed class OfflineFontRenderingTests(WpfDesktopFixture desktop)
     public Task SystemPreferenceStillUsesThePlatformRatherThanPackagedFaces() => desktop.RunAsync(() =>
     {
         UiTheme.Apply(new UserSettings(Font: "system", Target: "zh", UiLanguage: "zh-CN"));
-        foreach (FontFamily family in new[] { UiTheme.UiFont, UiTheme.DisplayFont, UiTheme.ContentFont })
+        foreach (FontFamily family in new[] { UiTheme.UiFont, UiTheme.DisplayFontForSize(22), UiTheme.ContentFont })
         {
             var runs = Shape(family, FontWeights.Normal, "TypeLay 翻译");
             Assert.NotEmpty(runs);

@@ -70,10 +70,10 @@ public sealed class QuickPanelRenderingTests(WpfDesktopFixture desktop)
             Assert.True(ModeSelection(fixture.Panel, "按需").IsSelected);
             var languages = Descendants(fixture.Panel).OfType<LanguagePicker>().ToArray();
             Assert.Equal(2, languages.Length);
-            Assert.Equal(new[] { "Auto", "中文", "English" }, languages[0].Items.Cast<object>().Select(item => item.ToString()));
-            Assert.Equal(new[] { "中文", "English" }, languages[1].Items.Cast<object>().Select(item => item.ToString()));
+            Assert.Equal(new[] { "自动检测", "中文", "英语" }, languages[0].Items.Cast<object>().Select(item => item.ToString()));
+            Assert.Equal(new[] { "中文", "英语" }, languages[1].Items.Cast<object>().Select(item => item.ToString()));
             Assert.Equal("中文", languages[0].SelectedItem?.ToString());
-            Assert.Equal("English", languages[1].SelectedItem?.ToString());
+            Assert.Equal("英语", languages[1].SelectedItem?.ToString());
             var style = Descendants(fixture.Panel).OfType<ComboBox>().Single(control => AutomationProperties.GetName(control) == "默认翻译风格");
             Assert.True(style.IsVisible);
             Assert.False(style.IsEnabled); // No ready/quality-approved model must not imply a working style control.
@@ -176,7 +176,7 @@ public sealed class QuickPanelRenderingTests(WpfDesktopFixture desktop)
             Assert.Equal(acknowledged, fixture.Settings.Value);
             Assert.Equal(persisted, File.ReadAllText(fixture.Path));
             Assert.Equal(0, changes);
-            AssertAcknowledgedControls(fixture.Panel, enabled: true, source: "中文", target: "English");
+            AssertAcknowledgedControls(fixture.Panel, enabled: true, source: "中文", target: "英语");
             AssertSaveError(fixture.Panel);
         }
         Select(fixture.Panel, setting);
@@ -212,7 +212,7 @@ public sealed class QuickPanelRenderingTests(WpfDesktopFixture desktop)
             await fixture.FailModelStartAsync();
             fixture.Panel.OpenAtTray();
             AssertSaveError(fixture.Panel);
-            AssertAcknowledgedControls(fixture.Panel, enabled: true, source: "中文", target: "English");
+            AssertAcknowledgedControls(fixture.Panel, enabled: true, source: "中文", target: "英语");
             fixture.Panel.Width = 286;
             foreach (string theme in new[] { "light", "dark" })
             {
@@ -270,12 +270,14 @@ public sealed class QuickPanelRenderingTests(WpfDesktopFixture desktop)
         }
         else if (setting == "swap")
         {
-            Descendants(panel).OfType<Button>().Single(button => Equals(button.Content, "⇄"))
+            Descendants(panel).OfType<Button>().Single(button => AutomationProperties.GetAutomationId(button) == "TraySwapLanguages")
                 .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         }
         else
         {
             var combo = Descendants(panel).OfType<LanguagePicker>().ElementAt(setting == "source" ? 0 : 1);
+            combo.IsDropDownOpen = true;
+            panel.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
             combo.SelectedIndex = setting == "source" ? 2 : 0;
         }
     }

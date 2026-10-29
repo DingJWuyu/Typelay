@@ -5201,6 +5201,14 @@ def run(arguments):
                     "control test; explicit language/mode UI choices enter the original lesson. "
                     "Uses the CI-installed model; no default Chinese input/translation claim"
                 )
+
+            def desktop_row():
+                view = (status().get("setup") or {}).get("applicationSupport") or {}
+                return next(
+                    (row for row in view.get("rows", []) if row["id"] == "desktop-text"),
+                    None,
+                )
+
             if settings_scope:
                 settings_page("本地模型")
                 current_package = next(row for row in preparation["packageRows"] if row["current"])
@@ -5529,13 +5537,6 @@ def run(arguments):
                 # Both scopes use the same real managed-component ownership,
                 # explicit recovery acknowledgement and cleanup helpers.
                 from desktop_session import process_identity, receipts
-
-                def desktop_row():
-                    view = (status().get("setup") or {}).get("applicationSupport") or {}
-                    return next(
-                        (row for row in view.get("rows", []) if row["id"] == "desktop-text"),
-                        None,
-                    )
 
                 # Only this isolated HOME is touched. The private daemon must not
                 # read/write even these synthetic "existing user" profile files.

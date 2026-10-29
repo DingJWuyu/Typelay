@@ -88,6 +88,37 @@ class BundledUiFonts(unittest.TestCase):
                 self.assertEqual(selected["path"], item["path"])
                 self.assertEqual(weight, item["weight"])
 
+    def test_prototype_serif_roles_select_real_static_optical_faces(self):
+        # These are the actual display/content roles in the approved HTML,
+        # not every possible size/weight combination supported by the source VF.
+        roles = {
+            400: (13, 14, 15, 16, 17, 18, 19),
+            500: (11, 13.5, 15, 17, 18, 20, 22, 26, 30),
+        }
+        for weight, sizes in roles.items():
+            for size in sizes:
+                with self.subTest(size=size, weight=weight):
+                    family = f"TypeLay Serif {size:g}"
+                    records = [
+                        item
+                        for item in self.records
+                        if item["family"] == family and item["weight"] == weight
+                    ]
+                    self.assertEqual(len(records), 1, (family, weight))
+                    description = Pango.FontDescription()
+                    description.set_family(family)
+                    description.set_weight(weight)
+                    description.set_absolute_size(size * Pango.SCALE)
+                    selected, actual_weight = self.selected(
+                        self.font_map.load_font(self.context, description)
+                    )
+                    self.assertEqual(selected["path"], records[0]["path"])
+                    self.assertEqual(actual_weight, weight)
+                    layout = Pango.Layout.new(self.context)
+                    layout.set_font_description(description)
+                    layout.set_text("TypeLay: Please review the final version.", -1)
+                    self.assertEqual(layout.get_unknown_glyphs_count(), 0)
+
     def test_regional_content_runs_and_wrapping_use_real_packaged_glyphs(self):
         samples = {
             "zh": "语言设置：你好，我们明天下午见。",

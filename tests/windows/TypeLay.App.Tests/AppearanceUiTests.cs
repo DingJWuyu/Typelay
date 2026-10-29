@@ -14,7 +14,7 @@ public sealed class AppearanceUiTests(WpfDesktopFixture desktop)
 {
     [Theory]
     [InlineData("Inter", "Inter-Regular.ttf")]
-    [InlineData("Source Serif 4", "SourceSerif4-Regular.ttf")]
+    [InlineData("TypeLay Serif 15", "TypeLaySerif-15-Regular.ttf")]
     public Task BundledFontsResolveFromTheAppResourcesRatherThanSystemFallback(string family, string file) => desktop.RunAsync(() =>
     {
         var resource = Application.GetResourceStream(new Uri("pack://application:,,,/TypeLay.App;component/UI/Fonts/" + file));

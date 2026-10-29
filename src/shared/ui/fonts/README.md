@@ -1,8 +1,9 @@
 # 离线界面字体
 
-原始静态字体，随应用离线分发，不在运行时访问字体服务。每个子目录包含上游版权与 SIL Open Font License；保留字体名称，不修改字形。
+完整离线字体包由 [eng/fonts](../../../../eng/fonts/README.md) 的固定来源、生成配方与锁构建，随应用分发；运行时不访问字体服务。
 
-- Inter 4.1，Regular / Medium / SemiBold：[官方发行](https://github.com/rsms/inter/releases/tag/v4.1)。
-- Source Serif 4，4.005R，Regular / Semibold：[官方发行](https://github.com/adobe-fonts/source-serif/releases/tag/4.005R)。上游该静态包没有 Medium，不声称提供精确的 500 字重。
+- 本目录保留 Inter 4.1 的 Regular / Medium / SemiBold 原始静态面与上游许可证。
+- Source Serif 4.004R 的固定上游源在构建时生成16个有限字号/字重角色，派生族名为 TypeLay Serif <字号>，保留本目录中的原始4.004 OFL。这里不另存可再生的派生二进制。
+- Noto Sans / Serif 的简体中文、日文、韩文区域面在构建时按锁下载；不再仅依赖平台CJK回退。系统字体选项仍使用平台字体，TC/HK专用面未捆绑。
 
-中文、日文、韩文按界面或译文语言使用平台字体回退。未捆绑全部 Noto CJK 字体，因此这些脚本的字形、换行与原型不保证逐像素相同。
+当前完整包共32面。原型HTML与tokens保留原参考名称；各平台按实际逻辑字号选派生族，并分别验证真实字体身份、字重与呈现，不能以资源存在代替逐像素验收。

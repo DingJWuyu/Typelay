@@ -300,7 +300,7 @@ internal sealed partial class SettingsWindow
                         label.TextTrimming = TextTrimming.CharacterEllipsis;
                         label.ToolTip = values[column];
                         if (column != 2)
-                            label.FontFamily = UiTheme.ContentFontForLanguage(column == 0 ? rule.SourceLanguage ?? _settings.Value.Source : rule.TargetLanguage ?? _settings.Value.Target);
+                            label.FontFamily = UiTheme.ContentFontForLanguage(column == 0 ? rule.SourceLanguage ?? _settings.Value.Source : rule.TargetLanguage ?? _settings.Value.Target, 14);
                         Grid.SetColumn(label, column);
                         content.Children.Add(label);
                     }
