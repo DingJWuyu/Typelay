@@ -2478,6 +2478,66 @@ class InputFeedbackTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_language_picker_retires_only_current_owned_source_session(self):
+        async def exercise():
+            overlay, jobs, token, view = await self.overlay_scenario()
+            opened = []
+            overlay.languages_requested = lambda: opened.append("language-picker")
+            overlay.settings_requested = lambda: opened.append("settings")
+            event = {
+                "target": token["target"]["value"],
+                "generation": self.generation,
+                "revision": overlay.revision,
+                "operation": "languagesPicker",
+                "value": None,
+            }
+            before = list(self.host.events)
+            overlay.event(self.peer, {**event, "revision": overlay.revision - 1})
+            overlay.event(object(), event)
+            self.assertEqual(opened, [])
+            self.assertEqual(self.host.events, before)
+            overlay.event(self.peer, event)
+            self.assertEqual(opened, ["language-picker"])
+            self.assertEqual(self.host.events[-1], ("escape", token))
+            self.assertFalse(
+                any(
+                    operation in ("accept", "write", "beginEdit")
+                    for operation, _ in self.host.events[len(before) :]
+                )
+            )
+            overlay.event(self.peer, {**event, "operation": "settings"})
+            self.assertEqual(opened, ["language-picker", "settings"])
+            await self.settle_overlay(jobs)
+
+        asyncio.run(exercise())
+
+    def test_overlay_appearance_forwarding_keeps_source_token_and_candidate(self):
+        async def exercise():
+            overlay, jobs, token, view = await self.overlay_scenario()
+            preferences = {
+                "theme": "dark",
+                "font": "sans",
+                "textSize": 18,
+                "accent": "iris",
+                "uiLanguage": "en",
+                "reduceMotion": True,
+                "reduceTransparency": True,
+            }
+            requests = list(self.host.requests)
+            overlay.configure(preferences)
+            frames = await self.settle_overlay(jobs)
+            render = next(frame["data"] for frame in frames if frame["op"] == "overlay-render")
+            self.assertEqual(render["theme"], "dark")
+            self.assertEqual(
+                render["appearance"],
+                {key: value for key, value in preferences.items() if key != "theme"},
+            )
+            self.assertEqual(overlay.session_token(), token)
+            self.assertEqual(overlay.value, view)
+            self.assertEqual(self.host.requests, requests)
+
+        asyncio.run(exercise())
+
     async def overlay_scenario(self):
         publication = (await self.publish_acceptance(pause=False))[0]["data"]
         jobs = []

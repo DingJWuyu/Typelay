@@ -160,7 +160,9 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
     replacement = "Replacement body."
     child_environment = {
         **environment,
-        "TYPELAY_HOME": environment.get("TYPELAY_HOME", str(Path(__file__).resolve().parents[2] / "src/shared/ui")),
+        "TYPELAY_HOME": environment.get(
+            "TYPELAY_HOME", str(Path(__file__).resolve().parents[2] / "src/shared/ui")
+        ),
         "XDG_RUNTIME_DIR": str(runtime),
         "WAYLAND_DISPLAY": str(display),
         "TYPELAY_FIXTURE_STATE": str(state_path),
@@ -312,7 +314,9 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                     return
                 if stage == "preview-colors":
                     check_preview_colors(client, source, generation, state, initial, click_evidence)
-                    check_preview_appearance(client, source, generation, state, initial, click_evidence)
+                    check_preview_appearance(
+                        client, source, generation, state, initial, click_evidence
+                    )
                     print(
                         "GTK preview colors: current text and manual drafts retain normal contrast",
                         flush=True,
@@ -745,28 +749,49 @@ def check_preview_appearance(client, source, generation, state, initial, evidenc
     )
     phases = evidence["appearancePhases"] = []
     for revision, (font, size, accent, language, family, color, label) in enumerate(cases, 30):
-        phase = {"font": font, "textSize": size, "accent": accent, "uiLanguage": language,
-                 "reduceMotion": True, "reduceTransparency": True}
-        assert render_preview(client, source, generation, revision, "fixture exit", theme="light",
-                              appearance=phase, text="Appearance stays read-only.")["visible"]
+        phase = {
+            "font": font,
+            "textSize": size,
+            "accent": accent,
+            "uiLanguage": language,
+            "reduceMotion": True,
+            "reduceTransparency": True,
+        }
+        assert render_preview(
+            client,
+            source,
+            generation,
+            revision,
+            "fixture exit",
+            theme="light",
+            appearance=phase,
+            text="Appearance stays read-only.",
+        )["visible"]
         after = time.monotonic_ns() // 1_000_000
 
         def rendered():
             value = state()
             candidate = value.get("candidate") or {}
             controls = value.get("overlayControls", {})
-            if (value.get("observedAtMs", 0) <= after or candidate.get("fontPixels") != size
+            if (
+                value.get("observedAtMs", 0) <= after
+                or candidate.get("fontPixels") != size
                 or family.lower() not in candidate.get("fontFamily", "").lower()
                 or controls.get("typelay-dot", {}).get("foreground") != color
-                or controls.get("typelay-apply-languages", {}).get("text") != label):
+                or controls.get("typelay-apply-languages", {}).get("text") != label
+            ):
                 return None
             return value
 
-        actual = wait_for(rendered, f"{font}/{size}/{accent}/{language}: actual appearance was not painted")
+        actual = wait_for(
+            rendered, f"{font}/{size}/{accent}/{language}: actual appearance was not painted"
+        )
         assert not actual["candidate"]["editable"] and not actual["candidate"]["focused"]
         assert actual["focus"] == "fixture-first"
         assert actual["first"] == initial["first"] and actual["second"] == initial["second"]
-        phases.append({**phase, "fontFamily": actual["candidate"]["fontFamily"], "fontPixels": size})
+        phases.append(
+            {**phase, "fontFamily": actual["candidate"]["fontFamily"], "fontPixels": size}
+        )
 
 
 def check_language_retention_refusal(

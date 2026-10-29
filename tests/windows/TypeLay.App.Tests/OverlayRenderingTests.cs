@@ -21,6 +21,61 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
 {
+    [Fact]
+    public Task AppearanceAndLanguageChangesPreserveTheSingleFocusedDraftAndWithdrawImeHints() => desktop.RunAsync(() =>
+    {
+        var (_, sourceEditor, source) = OpenSource();
+        var session = Ready(source, "Keep source and translated content unchanged.");
+        var context = EditableView(source);
+        var settings = new UserSettings(UiLanguage: "en", Font: "sans", TextSize: 19, Accent: "sage",
+            ReduceMotion: true, ReduceTransparency: true);
+        var overlay = new OverlayWindow(clientAreaAnimation: () => true)
+        {
+            BeginEditing = _ => session.BeginEdit(),
+            DraftChanged = session.ChangeDraft
+        };
+        overlay.Render(session, settings, true, context: context);
+        overlay.UpdateLayout();
+        var editor = Assert.Single(Descendants(overlay).OfType<TextBox>());
+        Assert.Equal("TranslationText", System.Windows.Automation.AutomationProperties.GetAutomationId(editor));
+        Assert.Equal("Edit Translation", new TextBoxAutomationPeer(editor).GetName());
+        Assert.Equal(19, editor.FontSize);
+        Assert.Equal(UiTheme.ContentFont, editor.FontFamily);
+        Assert.Equal(255, Assert.IsType<SolidColorBrush>(Application.Current.FindResource("Glass")).Color.A);
+        Assert.Contains("Accept", VisibleLabels(overlay));
+        Assert.DoesNotContain("接受", VisibleLabels(overlay));
+        editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+        {
+            RoutedEvent = Mouse.PreviewMouseDownEvent
+        });
+        overlay.Render(session, settings, false, context: context);
+        editor.AppendText(" Manual draft.");
+        editor.Select(2, 5);
+        string draft = editor.Text;
+        Assert.True(editor.CanUndo);
+        Assert.True(editor.IsKeyboardFocused);
+        Assert.Contains("Back", VisibleLabels(overlay));
+        EditorComposition(editor, TextCompositionManager.PreviewTextInputStartEvent);
+        Assert.DoesNotContain("Back", VisibleLabels(overlay));
+        overlay.Render(session, settings, false, context: context);
+        Assert.DoesNotContain("Back", VisibleLabels(overlay));
+        EditorComposition(editor, TextCompositionManager.PreviewTextInputEvent);
+        settings = settings with { UiLanguage = "zh-CN", Font = "claude", TextSize = 13 };
+        overlay.Render(session, settings, false, context: context);
+        overlay.UpdateLayout();
+        Assert.Same(editor, Assert.Single(Descendants(overlay).OfType<TextBox>()));
+        Assert.Equal("编辑译文", new TextBoxAutomationPeer(editor).GetName());
+        Assert.Equal(13, editor.FontSize);
+        Assert.Equal(UiTheme.ContentFont, editor.FontFamily);
+        Assert.Equal(draft, editor.Text);
+        Assert.Equal(2, editor.SelectionStart);
+        Assert.Equal(5, editor.SelectionLength);
+        Assert.True(editor.CanUndo);
+        Assert.True(editor.IsKeyboardFocused);
+        Assert.Contains("返回", VisibleLabels(overlay));
+        Assert.Equal(source.Text, sourceEditor.Text);
+    });
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -544,6 +599,45 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             finally { Assert.True(SetCursorPos(original.X, original.Y)); }
         });
     }
+
+    [Fact]
+    public Task AppearanceSpringIsDecorativeDoesNotRestartOnPermitUpdatesAndStopsOnHide() => desktop.RunAsync(async () =>
+    {
+        var (window, input, source) = OpenSource();
+        var session = Ready(source, "A real editable control, not an animated text duplicate.");
+        var overlay = new OverlayWindow(clientAreaAnimation: () => true);
+        var context = EditableView(source);
+        overlay.Render(session, new(), true, context: context);
+        var scale = Assert.IsType<ScaleTransform>(Assert.IsType<Border>(overlay.Content).RenderTransform);
+        Assert.Equal(.9, scale.ScaleX);
+        Assert.Equal(scale.ScaleX, scale.ScaleY);
+        await ObserveRenderingFor(TimeSpan.FromMilliseconds(60));
+        double current = scale.ScaleX;
+        Assert.InRange(current, .900001, 1.04);
+        overlay.Render(session, new(), false, context: context);
+        Assert.Equal(current, scale.ScaleX);
+        Assert.DoesNotContain("接受", VisibleLabels(overlay));
+        Assert.DoesNotContain("Tab", VisibleLabels(overlay));
+        var samples = new List<double>();
+        await ObserveRenderingFor(TimeSpan.FromMilliseconds(1000), () => samples.Add(scale.ScaleX));
+        Assert.True(samples.Distinct().Count() >= 4);
+        Assert.All(samples, value => Assert.InRange(value, .9, 1.04));
+        Assert.Equal(1, scale.ScaleX);
+        Assert.Equal(1, scale.ScaleY);
+        Assert.Single(Descendants(overlay).OfType<TextBox>());
+        Assert.Equal(source.Text, input.Text);
+        Assert.True(input.IsKeyboardFocused);
+        Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+        overlay.HideQuietly();
+        Assert.False(overlay.IsVisible);
+        Assert.Equal(1, scale.ScaleX);
+        overlay.Render(session, new UserSettings(ReduceMotion: true), true, context: context);
+        Assert.Equal(1, scale.ScaleX);
+        Assert.Equal(1, overlay.Opacity);
+        overlay.HideQuietly();
+        await ObserveRenderingFor(TimeSpan.Zero);
+        Assert.False(N.IsWindowVisible(overlay.Handle));
+    });
 
     [Fact]
     public async Task DisabledClientAnimationShowsImmediatelyAndStopsAnExistingFade()

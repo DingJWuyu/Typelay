@@ -639,7 +639,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
     // A controlled worker protocol reply drives the real ModelClient and real WPF
     // controls. Controlled inventoried bytes also exercise package copy/download
     // scope; they do not demonstrate real model loading or inference.
-    private static ModelClient ProtocolModel(string directory, string[]? directions = null)
+    internal static ModelClient ProtocolModel(string directory, string[]? directions = null)
     {
         string[] selected = directions ?? ["zh_en", "en_zh"];
         string python = Path.Combine(directory, "runtime", "python", "tools", "python.exe");

@@ -35,14 +35,20 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         nint handle = new WindowInteropHelper(window).Handle;
         var root = await Task.Run(() => AutomationElement.FromHandle(handle), ct).WaitAsync(ct);
 
-        foreach (var (label, heading) in new[] { ("文  语言", "语言"), ("⌨  快捷键", "快捷键") })
+        foreach (var (page, heading) in new[] { ("language", "语言与风格"), ("shortcuts", "快捷键") })
         {
-            await SettingsPageActions.OpenAsync(root, label, heading, ct);
+            await SettingsPageActions.OpenAsync(root, page, heading, ct);
             await DrainAsync(window);
-            var title = Descendants(window).OfType<TextBlock>().Single(text => text.Text == heading);
-            await SettingsPageActions.OpenAsync(root, label, heading, ct);
+            var title = Descendants(window).OfType<TextBlock>().Single(text =>
+                AutomationProperties.GetAutomationId(text) == "SettingsPageHeading" && text.Text == heading);
+            Control EditorOnPage() => page == "language" ? Language(window, source: true)
+                : Descendants(window).OfType<TextBox>().Single(control => AutomationProperties.GetName(control) == "唤醒翻译 UI 快捷键");
+            var editor = EditorOnPage();
+            await SettingsPageActions.OpenAsync(root, page, heading, ct);
             await DrainAsync(window);
-            Assert.Same(title, Descendants(window).OfType<TextBlock>().Single(text => text.Text == heading));
+            Assert.Same(title, Descendants(window).OfType<TextBlock>().Single(text =>
+                AutomationProperties.GetAutomationId(text) == "SettingsPageHeading" && text.Text == heading));
+            Assert.Same(editor, EditorOnPage());
             Assert.Equal(saved, File.ReadAllBytes(fixture.Path));
         }
     });
@@ -52,7 +58,7 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
     {
         using var fixture = new LanguageWindowFixture(quickPanel: false, protocolModel: true);
         var window = Assert.IsType<SettingsWindow>(fixture.Window);
-        window.ShowPage("translation");
+        window.ShowPage("model");
         await DrainAsync(window);
         var heading = Descendants(window).OfType<TextBlock>().Single(text => text.Text == "本地翻译模型");
         var labels = Assert.IsType<StackPanel>(heading.Parent).Children.OfType<TextBlock>().ToArray();
@@ -78,7 +84,7 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
             Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == longText);
         }
         window.ShowPage("language");
-        window.ShowPage("translation");
+        window.ShowPage("model");
         await DrainAsync(window);
         Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "当前选择：Argos · 中文 → English");
         Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == longText);
@@ -430,7 +436,7 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
     private static ComboBox Language(Window window, bool source)
     {
         window.UpdateLayout();
-        return Descendants(window).OfType<ComboBox>().ElementAt(source ? 0 : 1);
+        return Descendants(window).OfType<LanguagePicker>().ElementAt(source ? 0 : 1);
     }
 
     private static TextBox Editor(ComboBox combo) => Assert.Single(Descendants(combo).OfType<TextBox>());

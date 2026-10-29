@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -466,7 +467,8 @@ internal static partial class ContinuousTranslationCheck
             controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true, broker: broker);
             controller.OperationFeedback += feedback => feedbackCode ??= feedback.Code;
             await controller.StartAsync().WaitAsync(setupDeadline.Token);
-            var editor = ((Grid)((Border)overlay.Content).Child).Children.OfType<TextBox>().Single();
+            var editor = Descendants(overlay).OfType<TextBox>().Single(control =>
+                AutomationProperties.GetAutomationId(control) == "TranslationText");
             TargetId? target = null;
             void RequireUnchanged(bool sourceFocused)
             {
@@ -950,7 +952,8 @@ internal static partial class ContinuousTranslationCheck
             result.Stage = "start-controller";
             await controller.StartAsync().WaitAsync(setupDeadline.Token);
             await UntilAsync(() => controller.InputAvailable && controller.LastApplication is not null, setupDeadline.Token);
-            var editor = ((Grid)((Border)overlay.Content).Child).Children.OfType<TextBox>().Single();
+            var editor = Descendants(overlay).OfType<TextBox>().Single(control =>
+                AutomationProperties.GetAutomationId(control) == "TranslationText");
             var firstPreview = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             int sourceUnits = 0;
             result.Stage = "continuous-input";
@@ -1294,6 +1297,7 @@ internal static partial class ContinuousTranslationCheck
             var settings = CreateSettings(path, WorkMode.OnDemand);
             settings.Update(settings.Value with
             {
+                UiLanguage = "zh-CN",
                 OnboardingComplete = false
             });
             var view = OnDemandPracticePresentation.Create(settings.Value);
@@ -1329,7 +1333,7 @@ internal static partial class ContinuousTranslationCheck
             result.Stage = "practice-current-mode-entry";
             window.ShowPage();
             window.UpdateLayout();
-            var start = Descendants(window).OfType<Button>().Single(button => Equals(button.Content, "开始练习"));
+            var start = Descendants(window).OfType<Button>().Single(button => Equals(button.Content, "打开"));
             start.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             var persisted = WindowsRuntime.CreateSettings(path).Value;
             modePersisted = persisted.Mode == WorkMode.OnDemand && persisted.AcceptShortcut == "Tab";
@@ -1385,7 +1389,8 @@ internal static partial class ContinuousTranslationCheck
             }
             finally { initialReadEndedAtMs ??= WindowsInterruptClock.NowMs; }
             controller.OperationFeedback += value => feedbackCode ??= value.Code;
-            var editor = ((Grid)((Border)overlay.Content).Child).Children.OfType<TextBox>().Single();
+            var editor = Descendants(overlay).OfType<TextBox>().Single(control =>
+                AutomationProperties.GetAutomationId(control) == "TranslationText");
             result.Stage = "practice-preview-ready";
             string readyNotice = OnDemandPracticePresentation.Create(settings.Value,
                 controller.PracticeProgress! with

@@ -23,6 +23,14 @@ public sealed partial class LanguagePickerInteractionTests
         var window = Assert.IsType<SettingsWindow>(fixture.Window);
         window.ShowPage("apps");
         await DrainAsync(window);
+        var section = Descendants(window).OfType<Expander>().Single(expander => Equals(expander.Header, "其他普通输入框"));
+        Assert.False(section.IsExpanded);
+        section.IsExpanded = true;
+        await DrainAsync(window);
+        var desktopAction = Descendants(section).OfType<Button>().Single(button =>
+            AutomationProperties.GetAutomationId(button) == "ApplicationSupport_desktop-text_Refresh");
+        desktopAction.BringIntoView();
+        await DrainAsync(window);
         // Page navigation cancels older checks and advances the generation too.
         // Measure this click, rather than treating generation as a lifetime click count.
         long beforeClick = support.CheckGeneration;

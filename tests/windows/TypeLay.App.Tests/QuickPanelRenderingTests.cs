@@ -38,15 +38,22 @@ public sealed class QuickPanelRenderingTests(WpfDesktopFixture desktop)
         {
             UiTheme.Apply(theme);
             fixture.Panel.UpdateLayout();
-            Assert.Equal(346, fixture.Panel.ActualWidth);
+            Assert.Equal(344, fixture.Panel.ActualWidth);
             Assert.False(ModeSelection(fixture.Panel, "自动").IsSelected);
             Assert.True(ModeSelection(fixture.Panel, "按需").IsSelected);
-            var languages = Descendants(fixture.Panel).OfType<ComboBox>().ToArray();
+            var languages = Descendants(fixture.Panel).OfType<LanguagePicker>().ToArray();
             Assert.Equal(2, languages.Length);
             Assert.Equal(new[] { "Auto", "中文", "English" }, languages[0].Items.Cast<object>().Select(item => item.ToString()));
             Assert.Equal(new[] { "中文", "English" }, languages[1].Items.Cast<object>().Select(item => item.ToString()));
             Assert.Equal("中文", languages[0].SelectedItem?.ToString());
             Assert.Equal("English", languages[1].SelectedItem?.ToString());
+            var style = Descendants(fixture.Panel).OfType<ComboBox>().Single(control => AutomationProperties.GetName(control) == "默认翻译风格");
+            Assert.True(style.IsVisible);
+            Assert.False(style.IsEnabled); // No ready/quality-approved model must not imply a working style control.
+            Assert.NotNull(style.ToolTip);
+            var unavailable = style.Items.OfType<ComboBoxItem>().Where(item => item.Content?.ToString()?.Contains("尚未提供", StringComparison.Ordinal) == true).ToArray();
+            Assert.Equal(2, unavailable.Length);
+            Assert.All(unavailable, item => Assert.False(item.IsEnabled));
             foreach (var choice in Descendants(fixture.Panel).OfType<RadioButton>())
             {
                 Assert.True(choice.IsVisible);
@@ -241,7 +248,7 @@ public sealed class QuickPanelRenderingTests(WpfDesktopFixture desktop)
         }
         else
         {
-            var combo = Descendants(panel).OfType<ComboBox>().ElementAt(setting == "source" ? 0 : 1);
+            var combo = Descendants(panel).OfType<LanguagePicker>().ElementAt(setting == "source" ? 0 : 1);
             combo.SelectedIndex = setting == "source" ? 2 : 0;
         }
     }
@@ -300,7 +307,7 @@ public sealed class QuickPanelRenderingTests(WpfDesktopFixture desktop)
         Assert.Equal(enabled, Descendants(panel).OfType<CheckBox>().Single().IsChecked);
         Assert.True(Descendants(panel).OfType<RadioButton>().Single(control => Equals(control.Content, "自动")).IsChecked);
         Assert.False(Descendants(panel).OfType<RadioButton>().Single(control => Equals(control.Content, "按需")).IsChecked);
-        var languages = Descendants(panel).OfType<ComboBox>().ToArray();
+        var languages = Descendants(panel).OfType<LanguagePicker>().ToArray();
         Assert.Equal(source, languages[0].SelectedItem?.ToString());
         Assert.Equal(target, languages[1].SelectedItem?.ToString());
     }

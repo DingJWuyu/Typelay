@@ -72,6 +72,21 @@ internal sealed partial class OverlayWindow
     private static string LocalizedStatus(string value) => !UiTheme.English ? value : value switch
     {
         "正在翻译" => "Translating",
+        "正在准备翻译" => "Preparing translation",
+        "文本较长，请缩短选区" => "The text is too long. Select a shorter passage.",
+        "尚未准备本次翻译所需方向，请到“准备翻译”补充模型" => "This direction is not installed. Add it in Translation Setup.",
+        "当前模型方向尚未开放术语应用" => "Glossary application is not released for this model direction",
+        "当前模型不支持翻译风格" => "This model does not support translation tone",
+        "当前模型不支持应用术语表" => "This model does not support glossary application",
+        "术语命中受保护内容或跨越分段，无法应用" => "The term overlaps protected content or segment boundaries and cannot be applied",
+        "译文未包含指定译法，未提供可接受候选" => "The required term is missing. No acceptable translation was provided.",
+        "当前模型或语言设置不支持翻译风格。" => "This model or language direction does not support translation tone.",
+        "未找到不同说法，已保留原译文。" => "No different wording was found. Your translation is unchanged.",
+        "暂时无法换种说法，已保留原译文。" => "Couldn’t rephrase. Your translation is unchanged.",
+        "暂时没有不同的译法" => "No different wording is available yet",
+        "当前模型暂不支持风格" => "This model does not support tone",
+        "请先重新翻译" => "Translate again first",
+        "输入法候选中" => "Input method composing",
         "模型准备中" or "准备模型" => "Preparing model",
         "模型加载中" => "Loading model",
         "正在准备翻译模型" => "Preparing model",
@@ -149,7 +164,7 @@ internal sealed partial class OverlayWindow
         bool accepting = permit && !previewOnly && session.State is SessionState.ValidTranslation or SessionState.EditedTranslationPending;
         // Update permission-dependent chrome before starting any visual animation.
         // No animation completion ever changes this value or grants a permit.
-        _acceptHint.Visibility = returning || accepting ? Visibility.Visible : Visibility.Collapsed;
+        _acceptHint.Visibility = !EditingComposition && (returning || accepting) ? Visibility.Visible : Visibility.Collapsed;
         _tabHint.Text = returning ? UiTheme.L("返回", "Back") : UiTheme.L("接受", "Accept");
         AutomationProperties.SetAutomationId(_tabHint, "TranslationAcceptHint");
         AutomationProperties.SetName(_tabHint, returning ? UiTheme.L("返回原输入框", "Return to Source") : UiTheme.L("接受译文", "Accept Translation"));

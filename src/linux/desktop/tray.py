@@ -1,7 +1,7 @@
 """Wayland status-notifier quick panel; settings remain owned by the shared host."""
 
 import gi
-from design import Segments, app_icon, apply_theme, box, label, style
+from design import Segments, Toast, app_icon, apply_theme, box, label, style
 from status_notifier import StatusNotifier
 
 gi.require_version("Gtk", "3.0")
@@ -43,7 +43,11 @@ class Tray:
         self.style_provider = apply_theme(self.window, {})
         self.panel = box(8)
         self.panel.set_border_width(10)
-        self.window.add(self.panel)
+        overlay = Gtk.Overlay()
+        self.window.add(overlay)
+        overlay.add(self.panel)
+        self.toast = Toast()
+        overlay.add_overlay(self.toast)
         heading = Gtk.Box(spacing=10)
         heading.pack_start(app_icon(), False, False, 0)
         names = box(3)
@@ -101,7 +105,13 @@ class Tray:
         )
         application_row.pack_end(self.application_enabled, False, False, 0)
         self.card.pack_start(application_row, False, False, 0)
-        self.application_style_picker = Gtk.ComboBoxText()
+        self.application_style_choices = Gtk.ListStore(str, str, bool)
+        self.application_style_picker = Gtk.ComboBox.new_with_model(self.application_style_choices)
+        self.application_style_picker.set_id_column(0)
+        tone_renderer = Gtk.CellRendererText()
+        self.application_style_picker.pack_start(tone_renderer, True)
+        self.application_style_picker.add_attribute(tone_renderer, "text", 1)
+        self.application_style_picker.add_attribute(tone_renderer, "sensitive", 2)
         self.application_style_picker.set_sensitive(False)
         self.application_style_picker.connect("changed", self.application_style_changed)
         self.card.pack_start(self.application_style_picker, False, False, 0)
@@ -126,6 +136,7 @@ class Tray:
         from localization import Localizer
 
         self.localizer = Localizer(lambda: self.value)
+        self.toast.translate = self.localizer.text
         self.current_application.typelay_user_content = True
         self.localizer.bind(self.window)
         self.indicator = StatusNotifier(paths, self.show_panel, self.connection_changed)
@@ -233,7 +244,13 @@ class Tray:
                 else ("● 本地模型已就绪" if self.model_ready else "○ 本地模型尚未就绪")
             )
             self.current_application.set_text(
-                self.last_application or ("No current app" if english else "尚无当前应用")
+                (
+                    f"Enable in {self.last_application}"
+                    if english
+                    else f"在「{self.last_application}」中启用"
+                )
+                if self.last_application
+                else ("No current app" if english else "尚无当前应用")
             )
             for chinese, translated in (
                 ("设置…", "Settings…"),
@@ -252,6 +269,7 @@ class Tray:
             self.application_style_picker.set_visible(bool(self.last_application))
             self.status.set_label(state)
             self.style_provider = apply_theme(self.window, self.value, self.style_provider)
+            self.toast.set_transition_duration(0 if self.value.get("reduceMotion") else 200)
             self.indicator.update(enabled, "TypeLay · " + state)
             self.model.show()
             self.operation.set_visible(bool(self.operation.get_text()))
@@ -281,16 +299,31 @@ class Tray:
         self.operation.set_label(message or "")
         self.operation.set_visible(bool(message))
 
-    async def change_application_enabled(self, application, enabled):
+    async def change_application_enabled(self, application, enabled, expected_revision=None):
         if not application or self.application_pending or self.closed:
             return
         self.application_pending = True
         self.refresh()
         try:
-            saved = await self.host.ask(
-                "applicationEnabled", {"application": application, "enabled": enabled}, timeout=3
+            result = await self.host.ask(
+                "applicationEnabled",
+                {
+                    "application": application,
+                    "enabled": enabled,
+                    "expectedSettingsRevision": expected_revision,
+                },
+                timeout=3,
             )
-            self.save_problem = None if saved is True else "saveUnconfirmedMessage"
+            saved = isinstance(result, dict) and result.get("saved") is True
+            self.save_problem = None if saved else "saveUnconfirmedMessage"
+            if saved and expected_revision is None and not enabled:
+                revision = result["settingsRevision"]
+                self.toast.show_message(
+                    self.localizer.text("已停用此应用"),
+                    lambda: self.tasks(
+                        self.change_application_enabled(application, True, revision)
+                    ),
+                )
         except (OSError, ValueError, EOFError, TimeoutError):
             self.save_problem = "saveUnconfirmedMessage"
         finally:
@@ -300,17 +333,33 @@ class Tray:
     async def load_application_style(self, application):
         try:
             state = await self.host.ask("getApplicationStyleSettings", application, timeout=2)
+            recovery = await self.host.ask("getStyleSettings", timeout=2)
             if application != self.last_application or not isinstance(state, dict) or self.closed:
                 return
+            state["canRemove"] = bool(
+                isinstance(recovery, dict)
+                and recovery.get("settingsRevision") == state.get("settingsRevision")
+                and any(
+                    item.get("application", "").casefold() == application.casefold()
+                    and item.get("removal", {}).get("canRemove")
+                    for item in recovery.get("applications", [])
+                )
+            )
             self.application_style = state
             self.updating = True
-            self.application_style_picker.remove_all()
+            self.application_style_choices.clear()
             for key, title in (
                 ("inherit", "继承全局风格"),
                 ("Natural", "自然"),
                 ("Formal", "正式"),
             ):
-                self.application_style_picker.append(key, self.localizer.text(title))
+                self.application_style_choices.append(
+                    (
+                        key,
+                        self.localizer.text(title),
+                        bool(state.get("canChange") or key == "inherit" and state["canRemove"]),
+                    )
+                )
             styles = (state.get("savedPreferences") or {}).get("applications") or {}
             saved = next(
                 (
@@ -321,7 +370,9 @@ class Tray:
                 "inherit",
             )
             self.application_style_picker.set_active_id(saved)
-            self.application_style_picker.set_sensitive(bool(state.get("canChange")))
+            self.application_style_picker.set_sensitive(
+                bool(state.get("canChange") or state["canRemove"])
+            )
             self.application_style_picker.set_tooltip_text("当前未开放的风格不可更改")
         except (OSError, ValueError, EOFError, TimeoutError):
             self.application_style_picker.set_sensitive(False)
@@ -332,7 +383,11 @@ class Tray:
         if (
             self.updating
             or not self.application_style
-            or not self.application_style.get("canChange")
+            or not (
+                self.application_style.get("canChange")
+                or control.get_active_id() == "inherit"
+                and self.application_style.get("canRemove")
+            )
         ):
             return
         application, state, style = (

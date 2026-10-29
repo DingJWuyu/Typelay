@@ -59,6 +59,8 @@ internal sealed partial class SettingsWindow
 
     private void Appearance()
     {
+        object identity = _pageIdentity;
+        Task<bool> SaveAppearanceAsync(UserSettings value) => IsVisible && ReferenceEquals(identity, _pageIdentity) ? SaveAsync(value) : Task.FromResult(false);
         Heading(UiTheme.L("外观", "Appearance"));
         var preview = new Grid { Height = 188 };
         preview.Background = new LinearGradientBrush(UiTheme.Brush("#F1E3D3").Color, UiTheme.Brush("#DFE5D6").Color, 25);
@@ -81,7 +83,7 @@ internal sealed partial class SettingsWindow
             var choice = new RadioButton { Content = ThemePreview(value), Tag = UiTheme.L(zh, en), Width = 76, Margin = new(7, 0, 7, 0),
                 GroupName = "OverlayTheme", IsChecked = _settings.Value.Theme == value, IsTabStop = _settings.Value.Theme == value };
             choice.SetResourceReference(StyleProperty, "SettingsThemeChoice"); AutomationProperties.SetName(choice, zh);
-            choice.Checked += async (_, _) => await SaveAsync(_settings.Value with { Theme = value });
+            choice.Checked += async (_, _) => await SaveAppearanceAsync(_settings.Value with { Theme = value });
             choice.PreviewKeyDown += (_, e) =>
             {
                 if (e.Key is not (Key.Left or Key.Right or Key.Up or Key.Down)) return;
@@ -96,34 +98,43 @@ internal sealed partial class SettingsWindow
         var swatches = new StackPanel { Orientation = Orientation.Horizontal };
         foreach (var (value, color) in new[] { ("clay", "#D97757"), ("ocean", "#2F7FE0"), ("sage", "#5D9A6E"), ("iris", "#8A6CD8"), ("graphite", "#77756F") })
         {
-            var swatch = UiTheme.Button(_settings.Value.Accent == value ? "✓" : "", async () => await SaveAsync(_settings.Value with { Accent = value }));
-            swatch.Width = 25; swatch.Height = 25; swatch.Padding = new(0); swatch.Margin = new(4); swatch.Background = UiTheme.Brush(color); swatch.Foreground = Brushes.White;
-            AutomationProperties.SetName(swatch, value); swatches.Children.Add(swatch);
+            bool selected = _settings.Value.Accent == value;
+            var visual = new Grid { Width = 22, Height = 22 };
+            visual.Children.Add(new Ellipse { Width = 20, Height = 20, Fill = UiTheme.Brush(color) });
+            if (selected)
+                visual.Children.Add(new System.Windows.Shapes.Path { Data = Geometry.Parse("M1,5 L4,8 L10,1"), Stroke = Brushes.White, StrokeThickness = 1.7,
+                    StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, StrokeLineJoin = PenLineJoin.Round,
+                    Width = 11, Height = 9, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center });
+            var swatch = UiTheme.Button("", async () => await SaveAppearanceAsync(_settings.Value with { Accent = value })); swatch.Content = visual;
+            swatch.Width = 28; swatch.Height = 28; swatch.Padding = new(1); swatch.Margin = new(3); swatch.Background = Brushes.Transparent; swatch.BorderBrush = Brushes.Transparent;
+            AutomationProperties.SetName(swatch, value); AutomationProperties.SetItemStatus(swatch, selected ? "selected" : ""); swatches.Children.Add(swatch);
         }
         Row(UiTheme.L("强调色", "Accent color"), "", swatches);
         BeginGroup();
         var fonts = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 8, 0, 8) };
-        foreach (var (value, name, family) in new[] { ("claude", "Claude", "pack://application:,,,/TypeLay.App;component/UI/Fonts/#Source Serif 4, Noto Serif SC, Georgia, SimSun"), ("sans", UiTheme.L("无衬线", "Sans serif"), "pack://application:,,,/TypeLay.App;component/UI/Fonts/#Inter, Noto Sans SC, Segoe UI"), ("system", UiTheme.L("系统", "System"), "Segoe UI, Microsoft YaHei UI") })
+        foreach (var (value, name, family) in new[] { ("claude", "Claude", UiTheme.BundledFont("Source Serif 4", "Noto Serif SC, Georgia, SimSun")), ("sans", UiTheme.L("无衬线", "Sans serif"), UiTheme.BundledFont("Inter", "Noto Sans SC, Segoe UI")), ("system", UiTheme.L("系统", "System"), new FontFamily("Segoe UI, Microsoft YaHei UI")) })
         {
-            var body = new StackPanel(); var sampleText = UiTheme.Text("Aa 文", 20); sampleText.FontFamily = new(family); sampleText.HorizontalAlignment = HorizontalAlignment.Center;
+            var body = new StackPanel(); var sampleText = UiTheme.Text("Aa 文", 20); sampleText.FontFamily = family; sampleText.HorizontalAlignment = HorizontalAlignment.Center;
             body.Children.Add(sampleText); var nameText = UiTheme.Text(name, 11, true); nameText.HorizontalAlignment = HorizontalAlignment.Center; nameText.Margin = new(0, 6, 0, 0); body.Children.Add(nameText);
-            var font = UiTheme.Button("", async () => await SaveAsync(_settings.Value with { Font = value })); font.Content = body; font.Width = 76; font.Height = 65; font.Margin = new(7, 0, 7, 0);
+            var font = UiTheme.Button("", async () => await SaveAppearanceAsync(_settings.Value with { Font = value })); font.Content = body; font.Width = 76; font.Height = 65; font.Margin = new(7, 0, 7, 0);
             if (_settings.Value.Font == value) font.SetResourceReference(Control.BorderBrushProperty, "Accent"); AutomationProperties.SetName(font, "Font_" + value); fonts.Children.Add(font);
         }
         Row(UiTheme.L("字体", "Font"), "", fonts);
         var size = new Slider { Minimum = 13, Maximum = 19, TickFrequency = 1, IsSnapToTickEnabled = true, Value = _settings.Value.TextSize, Width = 180, VerticalAlignment = VerticalAlignment.Center };
         AutomationProperties.SetName(size, "译文字号");
-        size.ValueChanged += async (_, _) => { if (!size.IsMouseCaptureWithin) await SaveAsync(_settings.Value with { TextSize = (int)size.Value }); };
-        size.AddHandler(Thumb.DragCompletedEvent, new DragCompletedEventHandler(async (_, _) => await SaveAsync(_settings.Value with { TextSize = (int)size.Value })));
-        Row(UiTheme.L("译文字号", "Text size"), "", size);
+        var sizeControl = new DockPanel(); var sizeValue = UiTheme.Text(_settings.Value.TextSize.ToString(System.Globalization.CultureInfo.InvariantCulture), 12, true);
+        sizeValue.Width = 26; sizeValue.TextAlignment = TextAlignment.Right; DockPanel.SetDock(sizeValue, Dock.Right); sizeControl.Children.Add(sizeValue); sizeControl.Children.Add(size);
+        size.ValueChanged += async (_, _) => { sizeValue.Text = ((int)size.Value).ToString(System.Globalization.CultureInfo.InvariantCulture); if (!size.IsMouseCaptureWithin) await SaveAppearanceAsync(_settings.Value with { TextSize = (int)size.Value }); };
+        size.AddHandler(Thumb.DragCompletedEvent, new DragCompletedEventHandler(async (_, _) => await SaveAppearanceAsync(_settings.Value with { TextSize = (int)size.Value })));
+        Row(UiTheme.L("译文字号", "Text size"), "", sizeControl);
         Row(UiTheme.L("界面语言", "Interface language"), "", PreferenceChoice(
             [("system", UiTheme.L("跟随系统", "System")), ("zh-CN", "简体中文"), ("en", "English")], _settings.Value.UiLanguage,
-            async value => await SaveAsync(_settings.Value with { UiLanguage = value }), "界面语言"));
+            async value => await SaveAppearanceAsync(_settings.Value with { UiLanguage = value }), "界面语言"));
         BeginGroup();
         Row(UiTheme.L("降低透明度", "Reduce transparency"), "", UiTheme.Toggle("降低透明度", () => _settings.Value.ReduceTransparency,
-            async value => await SaveAsync(_settings.Value with { ReduceTransparency = value })));
+            async value => await SaveAppearanceAsync(_settings.Value with { ReduceTransparency = value })));
         Row(UiTheme.L("减少动态效果", "Reduce motion"), "", UiTheme.Toggle("减少动态效果", () => _settings.Value.ReduceMotion,
-            async value => await SaveAsync(_settings.Value with { ReduceMotion = value })));
+            async value => await SaveAppearanceAsync(_settings.Value with { ReduceMotion = value })));
     }
 
     private static ComboBox PreferenceChoice((string Value, string Label)[] choices, string selected, Action<string> save, string name)
@@ -139,6 +150,33 @@ internal sealed partial class SettingsWindow
 
     private void Toast(string text, Func<Task>? undo = null, Func<bool>? stillValid = null)
     {
-        _toastMessage.Text = text; _undo = undo; _undoStillValid = stillValid; _toastUndo.Visibility = undo is null ? Visibility.Collapsed : Visibility.Visible; _toast.Visibility = Visibility.Visible;
+        long revision = _undoRevision = _settings.Revision;
+        object identity = _undoIdentity = new object();
+        var oldButton = _toastUndo;
+        _toastUndo = UiTheme.Button(UiTheme.L("撤销", "Undo"), async () =>
+        {
+            if (undo is null || !ReferenceEquals(identity, _undoIdentity) || _settings.Revision != revision) return;
+            _undo = null; _undoIdentity = null; _undoStillValid = null; _toast.Visibility = Visibility.Collapsed;
+            await undo();
+        });
+        _toastUndo.BorderThickness = new(0); _toastUndo.Margin = new(12, 0, 0, 0); DockPanel.SetDock(_toastUndo, Dock.Right);
+        if (oldButton.Parent is Panel parent)
+        {
+            int index = parent.Children.IndexOf(oldButton); parent.Children.RemoveAt(index); parent.Children.Insert(index, _toastUndo);
+        }
+        var oldDismiss = _toastDismiss;
+        _toastDismiss = UiTheme.Button("×", () =>
+        {
+            if (!ReferenceEquals(identity, _undoIdentity)) return;
+            _toast.Visibility = Visibility.Collapsed; _undo = null; _undoIdentity = null; _undoStillValid = null;
+        });
+        _toastDismiss.Width = 24; _toastDismiss.Height = 24; _toastDismiss.Padding = new(0); _toastDismiss.BorderThickness = new(0);
+        AutomationProperties.SetName(_toastDismiss, UiTheme.L("关闭通知", "Dismiss notification")); DockPanel.SetDock(_toastDismiss, Dock.Right);
+        if (oldDismiss.Parent is Panel dismissParent)
+        {
+            int index = dismissParent.Children.IndexOf(oldDismiss); dismissParent.Children.RemoveAt(index); dismissParent.Children.Insert(index, _toastDismiss);
+        }
+        _toastMessage.Text = text; _undo = undo; _undoStillValid = stillValid;
+        _toastUndo.Visibility = undo is null ? Visibility.Collapsed : Visibility.Visible; _toast.Visibility = Visibility.Visible;
     }
 }

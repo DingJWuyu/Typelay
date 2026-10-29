@@ -84,7 +84,6 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     {
         public double Value = value, Target = value, Velocity;
         public bool Settled => Math.Abs(Value - Target) < .05 && Math.Abs(Velocity) < .02;
-        public void Snap(double target) { Value = Target = target; Velocity = 0; }
         public void Step(double elapsed, double stiffness, double damping)
         {
             int steps = Math.Max(1, (int)Math.Ceiling(elapsed * 240));
@@ -184,6 +183,9 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         AutomationProperties.SetName(_languageButton, (string)_languageButton.ToolTip);
         _moreButton.ToolTip = UiTheme.L("更多翻译操作", "More Translation Actions");
         AutomationProperties.SetName(_moreButton, (string)_moreButton.ToolTip);
+        _retryButton.ToolTip = UiTheme.L("重试", "Retry");
+        AutomationProperties.SetName(_retryButton, (string)_retryButton.ToolTip);
+        AutomationProperties.SetName(_resumeButton, UiTheme.L("恢复翻译", "Resume Translation"));
         UpdateEditorAffordance();
         UpdateExpansionAffordance();
     }
@@ -320,7 +322,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         // hover/focus feedback without the system template's additional chrome.
         _editor.Template = (ControlTemplate)XamlReader.Parse("""
             <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="TextBox">
-              <Border CornerRadius="7" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+              <Border CornerRadius="7" Padding="{TemplateBinding Padding}" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
                 <ScrollViewer x:Name="PART_ContentHost" Focusable="False"/>
               </Border>
             </ControlTemplate>
@@ -525,6 +527,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         _shell.BorderThickness = new(.5);
         _shell.ClipToBounds = true;
         _shell.Margin = new(12);
+        _shell.RenderTransform = _appearanceScale;
         _shell.Effect = new DropShadowEffect { BlurRadius = 24, ShadowDepth = 7, Opacity = .22, Color = Color.FromRgb(20, 20, 19) };
         _surface.SizeChanged += (_, _) => UpdateSurfaceClip();
         Content = _shell;
@@ -540,6 +543,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             _sourceGlossaryTransfer = null;
             InvalidateOwnedEditor(OwnedEditorReason.UiClosed);
             CancelHeightTransition();
+            ResetAppearance();
         };
         new WindowInteropHelper(this).EnsureHandle();
     }
@@ -1253,6 +1257,8 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             Width: (int)position.Width, Height: (int)position.Height);
         var anchor = (target, bounds, work, scale, above);
         bool resize = !showing && animate && _heightAnchor == anchor && _placement is { };
+        if (!showing && _heightAnchor != anchor)
+            ResetFade();
         _heightAnchor = anchor;
         double radius = 18;
         long positionStarted = trace ? Stopwatch.GetTimestamp() : 0;
@@ -1303,7 +1309,10 @@ internal sealed partial class OverlayWindow : Window, ISessionView
                 timing.ShowMs = Stopwatch.GetElapsedTime(showStarted).TotalMilliseconds;
             Opacity = 1;
             if (animate && IsVisible)
+            {
+                BeginAppearance(above);
                 BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140)) { FillBehavior = FillBehavior.Stop }, HandoffBehavior.SnapshotAndReplace);
+            }
         }
         return timing;
     }
@@ -1410,6 +1419,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     }
     private void ResetFade()
     {
+        ResetAppearance();
         BeginAnimation(OpacityProperty, null);
         Opacity = 1;
     }
@@ -1672,7 +1682,6 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         Add("重新翻译", () => RequestRegenerate(viewToken), !_composing);
         if (viewToken is not null && translation is not null)
         {
-            if (translation.StyleReleased)
             {
                 var styleMenu = new MenuItem { Header = UiTheme.L("当前应用风格", "Tone for This App") };
                 void AddStyle(string label, TranslationStyle? style, bool enabled, string? reason)
@@ -1700,9 +1709,18 @@ internal sealed partial class OverlayWindow : Window, ISessionView
                     };
                     styleMenu.Items.Add(item);
                 }
-                AddStyle("跟随全局设置", null, translation.CanInheritStyle, translation.InheritUnavailableReason);
-                AddStyle("自然", TranslationStyle.Natural, translation.CanChangeStyle, translation.StyleUnavailableReason);
-                AddStyle("正式", TranslationStyle.Formal, translation.CanChangeStyle, translation.StyleUnavailableReason);
+                string? styleReason = translation.StyleUnavailableReason
+                    ?? (translation.StyleReleased ? null : UiTheme.L("当前模型方向尚未开放翻译风格", "Tone is not released for this model direction"));
+                AddStyle("跟随全局设置", null, translation.StyleReleased && translation.CanInheritStyle,
+                    translation.StyleReleased ? translation.InheritUnavailableReason : styleReason);
+                AddStyle("自然", TranslationStyle.Natural, translation.StyleReleased && translation.CanChangeStyle, styleReason);
+                AddStyle("正式", TranslationStyle.Formal, translation.StyleReleased && translation.CanChangeStyle, styleReason);
+                foreach (string label in new[] { UiTheme.L("简洁", "Concise"), UiTheme.L("口语", "Casual") })
+                {
+                    var unavailable = new MenuItem { Header = label, IsEnabled = false, ToolTip = UiTheme.L("尚未提供", "Not available") };
+                    ToolTipService.SetShowOnDisabled(unavailable, true);
+                    styleMenu.Items.Add(unavailable);
+                }
                 menu.Items.Add(styleMenu);
             }
             if (translation.AlternativeReleased)
@@ -1756,11 +1774,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             if (viewToken is not null)
                 EscapeRequested?.Invoke(viewToken);
         }, viewToken is not null);
-        menu.PlacementTarget = anchor;
-        menu.SetResourceReference(Control.BackgroundProperty, "Glass");
-        menu.SetResourceReference(Control.ForegroundProperty, "Text");
-        menu.SetResourceReference(Control.BorderBrushProperty, "Line");
-        menu.FontFamily = UiTheme.UiFont;
+        StyleMenu(menu, anchor);
         anchor.ContextMenu = menu;
         menu.Closed += (_, _) => UpdateExpansionAffordance();
         menu.IsOpen = true;

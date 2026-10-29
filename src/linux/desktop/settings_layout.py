@@ -131,6 +131,15 @@ def build(
             nav_row.set_margin_top(10)
         owner.nav_rows[name] = nav_row
         owner.sidebar.add(nav_row)
+    for page, keywords in {
+        "appearance": " theme 主题 字体 font 强调色 accent color 字号 text size language 界面 动效 motion 透明 transparency",
+        "language": " source target 源语言 目标语言 风格 tone style natural formal 简洁 concise 口语 casual 交换 swap",
+        "glossary": " glossary terminology 术语 词条 添加 搜索 search",
+        "application-support": " apps applications 应用 连接 排除 excluded browser 浏览器 enabled 停用",
+        "model": " model 模型 安装 install 修复 repair Index Argos Hy CPU GPU NPU 常驻 resident 更新 update",
+        "about": " privacy 隐私 软件更新 version 版本 历史 history account 账户",
+    }.items():
+        owner.nav_rows[page].search_text += keywords
     owner.sidebar.connect(
         "row-selected",
         lambda _list, selected: owner.pages.set_visible_child_name(selected.page_name)
@@ -440,6 +449,11 @@ def build(
         )
     )
 
+    owner.pause_binding = label(muted=True)
+    owner.pause_binding.set_selectable(True)
+    owner.pause_binding.set_max_width_chars(58)
+    owner.page_boxes["shortcuts"].pack_start(owner.pause_binding, False, False, 0)
+
     owner.footer = style(box(6), "settings-footer")
     owner.footer.set_no_show_all(True)
     owner.draft_notice = label(muted=True)
@@ -456,12 +470,9 @@ def build(
     owner.save_button.connect("clicked", lambda *_: owner.tasks(owner.save()))
     owner.force_shortcuts = Gtk.Button(label="仍然使用")
     owner.force_shortcuts.set_no_show_all(True)
-    owner.force_shortcuts.connect(
-        "clicked", lambda *_: owner.tasks(owner.save(force_shortcuts=True))
-    )
     owner.edit_shortcuts = Gtk.Button(label="继续编辑")
     owner.edit_shortcuts.set_no_show_all(True)
-    owner.edit_shortcuts.connect("clicked", owner.keep_editing_shortcuts)
+    owner.shortcut_buttons = buttons
     for button in (owner.save_button, owner.force_shortcuts, owner.edit_shortcuts):
         buttons.pack_end(button, False, False, 0)
     outer.pack_end(owner.footer, False, False, 0)
@@ -469,14 +480,10 @@ def build(
     owner.install_button.set_no_show_all(True)
     owner.install_button.set_sensitive(False)
     owner.install_button.connect("clicked", owner.install_clicked)
-    owner.excluded = Gtk.TextView()
-    owner.excluded.get_buffer().connect("changed", owner.exclusions_changed)
-    owner.exclusion_rows = Gtk.ListBox()
-    owner.exclusion_rows.set_selection_mode(Gtk.SelectionMode.NONE)
-    owner.add_exclusion = Gtk.Button(label="添加应用…")
-    owner.add_exclusion.set_sensitive(False)
-    owner.add_exclusion.connect(
-        "clicked", lambda *_: owner.application_support.pick_application(for_exclusion=True)
+    owner.add_application = Gtk.Button(label="添加应用…")
+    owner.add_application.set_sensitive(False)
+    owner.add_application.connect(
+        "clicked", lambda *_: owner.application_support.pick_application(for_management=True)
     )
     owner.tutorial = tutorial_type(owner, preview)
     owner.application_support = support_type(owner, support_refresh, support_action, support_folder)
@@ -489,28 +496,61 @@ def build(
     owner.page_boxes["application-support"].pack_start(support.box, False, False, 0)
     support.widget = owner.pages.get_child_by_name("application-support")
     support.preparation_details.get_parent().remove(support.preparation_details)
+    support.preparation_details.set_label_widget(None)
+    support.preparation_details.set_label("模型与其他后端")
+    support.preparation_details.set_expanded(False)
+    owner.install_button.get_parent().remove(owner.install_button)
+    model_hero = card("model")
+    model_line, model_caption = row(
+        "TypeLay Translate", owner.install_button, support.model, hero=True
+    )
+    model_mark = style(
+        Gtk.Image.new_from_icon_name("drive-harddisk-symbolic", Gtk.IconSize.DIALOG), "model-mark"
+    )
+    model_line.pack_start(model_mark, False, False, 0)
+    model_line.reorder_child(model_mark, 0)
+    model_hero.pack_start(model_line, False, False, 0)
+    for note in (support.preparation_guidance, support.preparation_notice):
+        note.get_parent().remove(note)
+        note.set_margin_start(14)
+        note.set_margin_end(14)
+        note.set_margin_bottom(12)
+        model_hero.pack_start(note, False, False, 0)
     owner.page_boxes["model"].pack_start(support.preparation_details, False, False, 0)
-    style(support.preparation_details, "settings-group")
-    support.preparation_details.set_expanded(True)
+    style(support.preparation_details, "model-details")
+    # Connection management keeps its existing authority and detail dialogs,
+    # while the top-level surface is a grouped native card.
+    style(support.box, "connection-card")
     support.more.set_active(True)
     support.more.set_no_show_all(True)
     support.more.hide()
+    connection_heading = support.connect.get_parent()
+    support.box.remove(connection_heading)
+    page = owner.page_boxes["application-support"]
+    page.remove(support.box)
+    page.pack_start(connection_heading, False, False, 0)
+    support.connection_cards = group()
+    support.connection_cards_signature = None
+    page.pack_start(support.connection_cards, False, False, 0)
+    support.connection_details = Gtk.Expander(label="连接详情")
+    support.connection_details.add(support.box)
+    page.pack_start(support.connection_details, False, False, 0)
     owner.applications_box = group()
-    owner.page_boxes["application-support"].reorder_child(support.box, 1)
     owner.page_boxes["application-support"].pack_start(owner.applications_box, False, False, 0)
     owner.applications_search = Gtk.SearchEntry(placeholder_text="搜索应用")
     owner.page_boxes["application-support"].pack_start(owner.applications_search, False, False, 0)
+    owner.page_boxes["application-support"].reorder_child(owner.applications_search, 4)
     owner.applications_search.connect("search-changed", lambda *_: owner.render_applications())
     owner.application_catalog = None
     owner.application_catalog_pending = False
     owner.applications_signature = None
-    owner.page_boxes["application-support"].pack_start(owner.add_exclusion, False, False, 0)
-    advanced = Gtk.Expander(label="高级排除规则")
-    advanced.add(owner.exclusion_rows)
-    owner.page_boxes["application-support"].pack_start(advanced, False, False, 0)
+    owner.page_boxes["application-support"].pack_start(owner.add_application, False, False, 0)
     owner.translation = translation_type(owner, translation_grid, 0)
     owner.translation.glossary_box.get_parent().remove(owner.translation.glossary_box)
     owner.page_boxes["glossary"].pack_start(owner.translation.glossary_box, False, False, 0)
+    owner.translation.box.set_hexpand(True)
+    owner.translation.style_box.set_hexpand(True)
+    owner.translation.style_box.set_border_width(14)
     style(owner.translation.style_box, "settings-group")
     style(owner.translation.glossary_box, "settings-group")
     future_tones = card("language")
@@ -553,18 +593,25 @@ def build(
     widget, caption = row("软件更新", unavailable)
     owner.localized.append((caption.set_text, "软件更新", "Software updates"))
     updates.pack_start(widget, False, False, 0)
-    owner.page_boxes["about"].pack_start(
-        label("本地翻译 · 不保存翻译历史\nTypeLay 不会自动提交或发送源应用中的内容。", muted=True),
-        False,
-        False,
-        0,
-    )
+    privacy = card("about")
+    for chinese, english, value, translated in (
+        ("翻译在哪里运行", "Translation runs", "这台设备", "On this device"),
+        ("翻译历史", "Translation history", "不保存", "Not stored"),
+        ("账户", "Account", "无需账户", "Not required"),
+    ):
+        detail = label(value, muted=True)
+        widget, caption = row(chinese, detail)
+        owner.localized.extend(
+            ((caption.set_text, chinese, english), (detail.set_text, value, translated))
+        )
+        privacy.pack_start(widget, False, False, 0)
     quit_button = style(Gtk.Button(label="退出 TypeLay"), "flat")
     quit_button.connect("clicked", lambda *_: owner.dismiss(quit_requested=quit_requested))
     navigation.pack_end(quit_button, False, False, 0)
     from localization import Localizer
 
     owner.localizer = Localizer(lambda: owner.value)
+    owner.toast.translate = owner.localizer.text
     support.application_name.typelay_user_content = True
     owner.localizer.bind(owner.window)
     owner.localizer.bind(owner.tutorial.window)

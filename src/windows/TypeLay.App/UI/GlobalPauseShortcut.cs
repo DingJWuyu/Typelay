@@ -17,6 +17,7 @@ internal sealed class GlobalPauseShortcut : IDisposable
     private readonly Func<nint, int, bool> _unregister;
     internal nint WindowHandle => _window.Handle;
     private bool _registered, _changing;
+    private uint _virtualKey, _modifiers;
     private string? _configured;
     private string _status = "unset";
     public string Status => _status switch
@@ -27,6 +28,9 @@ internal sealed class GlobalPauseShortcut : IDisposable
         "save-failed" => UiTheme.L("暂停状态未保存，请打开设置重试。", "Pause state was not saved. Open Settings to retry."),
         _ => UiTheme.L("尚未设置全局暂停快捷键", "No global pause shortcut")
     };
+    public bool CanRetry => _registered && _configured != _settings.Value.PauseShortcut
+        || !_registered && _settings.Value.PauseShortcut.Length > 0;
+    public void RetryRegistration() => Configure();
     public event Action? Changed;
 
     public GlobalPauseShortcut(SettingsStore settings, Func<bool, Task<bool>> setEnabled,
@@ -59,6 +63,7 @@ internal sealed class GlobalPauseShortcut : IDisposable
         uint key = chord!.Key.Length == 1 ? chord.Key[0] : 0x6Fu + uint.Parse(chord.Key.AsSpan(1), CultureInfo.InvariantCulture);
         uint modifiers = (chord.Modifiers.HasFlag(ShortcutModifiers.Alt) ? 1u : 0) | (chord.Modifiers.HasFlag(ShortcutModifiers.Control) ? 2u : 0)
             | (chord.Modifiers.HasFlag(ShortcutModifiers.Shift) ? 4u : 0) | 0x4000u;
+        _virtualKey = key; _modifiers = modifiers & 0x0Fu;
         _registered = _register(_window.Handle, Id, modifiers, key);
         _status = _registered ? "active" : "registration-failed";
         Changed?.Invoke();
@@ -76,7 +81,8 @@ internal sealed class GlobalPauseShortcut : IDisposable
     }
     private nint Message(nint hwnd, int message, nint wParam, nint lParam, ref bool handled)
     {
-        if (message == 0x0312 && wParam == Id && _registered && _configured == _settings.Value.PauseShortcut && !_changing && !ShortcutRecorder.IsRecording)
+        if (message == 0x0312 && wParam == Id && _registered && _configured == _settings.Value.PauseShortcut && !_changing && !ShortcutRecorder.IsRecording
+            && ((ulong)lParam >> 16 & 0xFFFF) == _virtualKey && ((ulong)lParam & 0x0F) == _modifiers)
         {
             handled = true; Toggle();
         }

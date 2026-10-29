@@ -17,6 +17,7 @@ internal sealed class LanguageSelectionWindow : Window
     private readonly Button _swap;
     private readonly TextBlock _feedback;
     private bool _saving;
+    private bool _closed;
 
     public LanguageSelectionWindow(SettingsStore settings, ModelClient model, Func<string, string, Task<bool>> save)
     {
@@ -38,7 +39,7 @@ internal sealed class LanguageSelectionWindow : Window
         _feedback = UiTheme.Text(UiTheme.L("选择即保存。原候选已结束；返回输入框后重新翻译。", "Choices save immediately. Return to your input field to start a new translation."), 12, true);
         _feedback.Margin = new(0, 16, 0, 0); content.Children.Add(_feedback); Content = content;
         settings.Changed += Refresh; model.Changed += Refresh;
-        Closed += (_, _) => { settings.Changed -= Refresh; model.Changed -= Refresh; };
+        Closed += (_, _) => { _closed = true; settings.Changed -= Refresh; model.Changed -= Refresh; };
         KeyDown += (_, e) => { if (e.Key == Key.Escape && !_source.IsDropDownOpen && !_target.IsDropDownOpen) { e.Handled = true; Close(); } };
         Loaded += (_, _) => { _source.Focus(); _source.IsDropDownOpen = true; };
         Refresh();
@@ -51,11 +52,13 @@ internal sealed class LanguageSelectionWindow : Window
     }
     private async Task SaveAsync(string source, string target)
     {
+        if (_closed || !IsVisible) return;
         if (_saving) { Refresh(); return; }
         _saving = true;
         try
         {
             bool saved = await _save(source, target);
+            if (_closed || !IsVisible) return;
             _feedback.Text = saved ? UiTheme.L("已保存。返回输入框后重新翻译。", "Saved. Return to your input field to start a new translation.")
                 : UiTheme.L("尚未保存。请重新选择或在设置中检查。", "Not saved. Select again or review Settings.");
         }
@@ -64,6 +67,7 @@ internal sealed class LanguageSelectionWindow : Window
     private void Refresh()
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(new Action(Refresh)); return; }
+        if (_closed) return;
         FontFamily = UiTheme.UiFont;
         _source.Synchronize(_settings.Value.Source, Directions); _target.Synchronize(_settings.Value.Target, Directions);
         _swap.IsEnabled = !_saving && _settings.Value.Source != "auto";

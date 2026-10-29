@@ -93,7 +93,7 @@ internal static partial class Program
         };
     }
 
-    private static bool RefreshPracticeLabels(UserSettings settings)
+    private static bool RefreshPracticeLabels()
     {
         bool automatic = _automatic;
         string first = automatic ? L("① 自动翻译并接受", "① Translate and accept") : L("① 唤醒翻译", "① Wake translation");
@@ -104,7 +104,6 @@ internal static partial class Program
             | SetText(_preview!, (firstDone ? "✓ " : "") + first)
             | SetText(_replace!, (secondDone ? "✓ " : "") + second)
             | SetText(_inputLabel!, "练习输入框")
-            | SetText(_capability!, "")
             | SetText(_restart!, "重新开始练习")
             | SetText(_close!, "关闭练习");
     }

@@ -574,9 +574,8 @@ def run_qt(
                         ):
                             return None
                         control_name = "typelay-resume" if paused else "typelay-menu-trigger"
-                        if (
-                            value["overlayControls"].get(control_name, {}).get("textColor")
-                            != (("#ec9a7c" if theme == "dark" else "#ad4f2d") if paused else secondary)
+                        if value["overlayControls"].get(control_name, {}).get("textColor") != (
+                            ("#ec9a7c" if theme == "dark" else "#ad4f2d") if paused else secondary
                         ):
                             return None
                         if paused:
@@ -592,7 +591,6 @@ def run_qt(
                             value
                             if value["editorVisible"]
                             and value["editorPalette"].get("text") == foreground
-
                             and value["editorAccessibleName"] == "译文"
                             else None
                         )
@@ -606,8 +604,13 @@ def run_qt(
                     background = "#282724" if theme == "dark" else "#fbfaf7"
                     control_name = "typelay-resume" if paused else "typelay-menu-trigger"
                     before = state()
-                    editor_surface = (background if before["editorReadOnly"] else
-                                      "#2f2e2b" if theme == "dark" else "#ffffff")
+                    editor_surface = (
+                        background
+                        if before["editorReadOnly"]
+                        else "#2f2e2b"
+                        if theme == "dark"
+                        else "#ffffff"
+                    )
                     count = before["themeSampleCount"]
                     command("sample-theme")
                     actual = wait_for(
@@ -1068,15 +1071,25 @@ def run_qt(
                 motion_source = state()["first"]["text"]
                 motion_trace = trace_checkpoint()
                 click_rectangle(initial_application, editor_bounds)
-                wait_for(lambda: state()["editorFocused"] and not state()["editorReadOnly"],
-                         "motion setup did not enter the real editor")
-                candidate = ("这是一段用于观察长文浮层弹簧尺寸变化的合成中文文本。保留原生编辑与源文本安全边界。" * 24)
+                wait_for(
+                    lambda: state()["editorFocused"] and not state()["editorReadOnly"],
+                    "motion setup did not enter the real editor",
+                )
+                candidate = (
+                    "这是一段用于观察长文浮层弹簧尺寸变化的合成中文文本。保留原生编辑与源文本安全边界。"
+                    * 24
+                )
                 command("editor-set", text=candidate)
-                wait_for(lambda: state()["editorText"] == candidate and settled(state()),
-                         "motion setup draft did not settle")
+                wait_for(
+                    lambda: state()["editorText"] == candidate and settled(state()),
+                    "motion setup draft did not settle",
+                )
                 key("Tab")
-                wait_for(lambda: ready_to_accept("EditedTranslationPending") and state()["first"]["focused"],
-                         "motion setup did not return to the source")
+                wait_for(
+                    lambda: ready_to_accept("EditedTranslationPending")
+                    and state()["first"]["focused"],
+                    "motion setup did not return to the source",
+                )
                 assert state()["first"]["text"] == motion_source
                 assert not new_write_outcomes(motion_trace)
                 initial_application = state()
@@ -1159,8 +1172,10 @@ def run_qt(
                 candidate = enter_source(original)
                 if state()["overlayControls"]["typelay-expand"]["visible"]:
                     click_overlay("typelay-expand")
-                wait_for(lambda: 36 <= state()["editorGeometry"]["height"] <= 167,
-                         "Qt did not restore its natural compact height")
+                wait_for(
+                    lambda: 36 <= state()["editorGeometry"]["height"] <= 167,
+                    "Qt did not restore its natural compact height",
+                )
                 initial_application = state()
                 evidence.append(
                     "Qt6 finite live-widget resize frames retain anchor, footer and source focus; "
@@ -1346,8 +1361,10 @@ def run_qt(
                 # The new editing view has applied before any later draft
                 # test. Do not require model/IME round trips to fit a frame window.
                 click_overlay("typelay-expand")
-                wait_for(lambda: state()["editorGeometry"]["height"] == 360,
-                         "long draft did not expand to its bounded height")
+                wait_for(
+                    lambda: state()["editorGeometry"]["height"] == 360,
+                    "long draft did not expand to its bounded height",
+                )
                 click_overlay("typelay-expand")
                 wait_for(
                     lambda: state()["editorGeometry"]["height"] == 167,

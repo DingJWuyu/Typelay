@@ -12,6 +12,20 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class AppearanceUiTests(WpfDesktopFixture desktop)
 {
+    [Theory]
+    [InlineData("Inter", "Inter-Regular.ttf")]
+    [InlineData("Source Serif 4", "SourceSerif4-Regular.ttf")]
+    public Task BundledFontsResolveFromTheAppResourcesRatherThanSystemFallback(string family, string file) => desktop.RunAsync(() =>
+    {
+        var resource = Application.GetResourceStream(new Uri("pack://application:,,,/TypeLay.App;component/UI/Fonts/" + file));
+        Assert.NotNull(resource);
+        using (resource.Stream) Assert.True(resource.Stream.Length > 1000);
+        var face = new Typeface(UiTheme.BundledFont(family), FontStyles.Normal, FontWeights.Normal, FontStretches.Normal);
+        Assert.True(face.TryGetGlyphTypeface(out var glyph));
+        Assert.Contains(family, glyph!.FamilyNames.Values);
+        Assert.Contains("/ui/fonts/", glyph.FontUri.AbsoluteUri.ToLowerInvariant());
+    });
+
     [Fact]
     public Task NativeAppearanceChoicesPersistImmediatelyAndLocalizeTheExistingWindow() => desktop.RunAsync(() =>
     {
@@ -51,6 +65,28 @@ public sealed class AppearanceUiTests(WpfDesktopFixture desktop)
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
     });
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task ObserverFailureAfterPersistenceReportsTheKnownCommitNotASaveFailure(bool argumentFailure) => desktop.RunAsync(() =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-observer-ui-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string path = Path.Combine(directory, "settings.json");
+            var settings = WindowsRuntime.CreateSettings(path);
+            using var model = WindowsRuntime.CreateModel();
+            var window = new SettingsWindow(settings, model, () => { }); window.ShowPage(); window.UpdateLayout();
+            settings.Changed += () => { if (argumentFailure) throw new ArgumentException("observer"); throw new IOException("observer"); };
+            Descendants(window).OfType<CheckBox>().Single(box => AutomationProperties.GetName(box) == "启用 TypeLay").IsChecked = false;
+            Assert.False(WindowsRuntime.CreateSettings(path).Value.Enabled);
+            window.UpdateLayout();
+            Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.IsVisible && text.Text == "已保存，请重新打开设置确认当前状态。");
+            Assert.DoesNotContain(Descendants(window).OfType<TextBlock>(), text => text.IsVisible && text.Text.Contains("设置未保存"));
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+    });
+
     [Fact]
     public Task SettingsSearchFiltersNativeNavigationWithoutChangingPreferences() => desktop.RunAsync(() =>
     {
@@ -64,7 +100,7 @@ public sealed class AppearanceUiTests(WpfDesktopFixture desktop)
             var window = new SettingsWindow(settings, model, () => { }); window.ShowPage(); window.UpdateLayout();
             var search = Descendants(window).OfType<TextBox>().Single(box => AutomationProperties.GetName(box) == "搜索设置");
             search.Text = "CPU"; window.UpdateLayout();
-            var result = Assert.Single(Descendants(window).OfType<Button>().Where(button => AutomationProperties.GetAutomationId(button).StartsWith("SettingsNavigation_")));
+            var result = Assert.Single(Descendants(window).OfType<Button>(), button => AutomationProperties.GetAutomationId(button).StartsWith("SettingsNavigation_"));
             Assert.Equal("SettingsNavigation_model", AutomationProperties.GetAutomationId(result));
             result.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); window.UpdateLayout();
             Assert.Equal("", search.Text);

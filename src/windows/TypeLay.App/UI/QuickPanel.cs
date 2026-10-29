@@ -31,6 +31,9 @@ internal sealed class QuickPanel : Window
     private bool _saving;
     private string? _saveError;
     private string? _undoApplication;
+    private long _undoApplicationRevision;
+    private object _renderIdentity = new();
+    private object? _undoApplicationIdentity;
     public QuickPanel(SettingsStore settings, ModelClient model, SessionController session, Action showSettings, Action quit)
     {
         _settings = settings;
@@ -56,16 +59,16 @@ internal sealed class QuickPanel : Window
         _body.SizeChanged += (_, _) => _body.Clip = new RectangleGeometry(new Rect(0, 0, _body.ActualWidth, _body.ActualHeight), 17, 17);
         Content = outer;
         _sourceLanguage = new(true, _settings.Value.Source,
-            async code => await SaveAsync(_settings.Value with { Source = code }), _model.Ready ? _model.AvailableDirections : null)
+            async code => { if (IsVisible) await SaveAsync(_settings.Value with { Source = code }); }, _model.Ready ? _model.AvailableDirections : null)
         {
             MinWidth = 0
         };
         _targetLanguage = new(false, _settings.Value.Target,
-            async code => await SaveAsync(_settings.Value with { Target = code }), _model.Ready ? _model.AvailableDirections : null)
+            async code => { if (IsVisible) await SaveAsync(_settings.Value with { Target = code }); }, _model.Ready ? _model.AvailableDirections : null)
         {
             MinWidth = 0
         };
-        _swapLanguages = UiTheme.Button("⇄", async () => await SaveAsync(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
+        _swapLanguages = UiTheme.Button("⇄", async () => { if (IsVisible) await SaveAsync(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }); });
         BuildLanguages();
         _controls.Children.Add(_languages);
         _controlCard = UiTheme.Border(_controls, 12, "Panel2", 10);
@@ -158,13 +161,21 @@ internal sealed class QuickPanel : Window
             Refresh();
             return true;
         }
-        catch (Exception error) when (error is SettingsPersistenceException or SettingsConflictException or ArgumentException)
+        catch (Exception error) when (_settings.Revision == expectedRevision && error is SettingsPersistenceException or SettingsConflictException or ArgumentException)
         {
             EnableContent();
             _saveError = error is ArgumentException && !ModelCatalog.IsSupportedSetting(value.Source, value.Target)
                 ? "请选择支持的源语言和目标语言。" : SettingsDraftPresentation.SaveUnconfirmedMessage;
             Refresh();
             return false;
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            EnableContent();
+            bool committed = _settings.Revision > expectedRevision && !_settings.HasChanges(value);
+            _saveError = committed ? "已保存，请重新打开设置确认当前状态。" : SettingsDraftPresentation.UnknownSaveMessage;
+            Refresh();
+            return committed;
         }
         finally
         {
@@ -202,6 +213,8 @@ internal sealed class QuickPanel : Window
             return;
         }
         FontFamily = UiTheme.UiFont;
+        object rendered = _renderIdentity = new object();
+        bool CurrentRender() => IsVisible && ReferenceEquals(rendered, _renderIdentity);
         string? focusedMode = Keyboard.FocusedElement is RadioButton focused && _modeChoices.Contains(focused)
             ? AutomationProperties.GetName(focused) : null;
         // The editable pickers and their parent stay mounted while status and
@@ -232,7 +245,7 @@ internal sealed class QuickPanel : Window
         title.Children.Add(sub);
         Grid.SetColumn(title, 1);
         header.Children.Add(title);
-        var toggle = UiTheme.Toggle("启用 TypeLay", () => _settings.Value.Enabled, async enabled => await SetEnabledAsync(enabled));
+        var toggle = UiTheme.Toggle("启用 TypeLay", () => _settings.Value.Enabled, async enabled => { if (CurrentRender()) await SetEnabledAsync(enabled); });
         Grid.SetColumn(toggle, 2);
         header.Children.Add(toggle);
         var headBorder = UiTheme.Border(header, 0, "Glass");
@@ -265,26 +278,29 @@ internal sealed class QuickPanel : Window
             };
             choice.SetResourceReference(StyleProperty, "QuickPanelModeChoice");
             AutomationProperties.SetName(choice, text);
-            choice.Checked += async (_, _) => await SaveAsync(_settings.Value with { Mode = mode });
+            choice.Checked += async (_, _) => { if (CurrentRender()) await SaveAsync(_settings.Value with { Mode = mode }); };
             _modeChoices.Add(choice);
             choices.Children.Add(choice);
         }
         modes.Children.Add(UiTheme.Border(choices, 8, "Panel2", 3));
         _controls.Children.Add(modes);
         BuildTranslationPreferences();
-        if (_undoApplication is { } undoApplication && _settings.Value.Excluded.Contains(undoApplication, StringComparer.OrdinalIgnoreCase))
+        if (_undoApplication is { } undoApplication && _undoApplicationIdentity is { } undoIdentity
+            && _settings.Revision == _undoApplicationRevision && _settings.Value.Excluded.Contains(undoApplication, StringComparer.OrdinalIgnoreCase))
         {
+            long undoRevision = _undoApplicationRevision;
             var notice = new DockPanel { Margin = new(4, 8, 4, 4) };
             var undo = UiTheme.Button(UiTheme.L("撤销", "Undo"), async () =>
             {
-                _undoApplication = null;
+                if (!CurrentRender() || !ReferenceEquals(undoIdentity, _undoApplicationIdentity) || _settings.Revision != undoRevision) return;
+                _undoApplication = null; _undoApplicationIdentity = null;
                 var restored = _settings.Value.Excluded.Where(value => !StringComparer.OrdinalIgnoreCase.Equals(value, undoApplication)).ToArray();
                 await SaveAsync(_settings.Value with { ExcludedApplications = restored });
             });
             DockPanel.SetDock(undo, Dock.Right); notice.Children.Add(undo);
             notice.Children.Add(UiTheme.Text(UiTheme.L("已在该应用停用", "Disabled in this app"), 12)); _body.Children.Add(notice);
         }
-        else _undoApplication = null;
+        else { _undoApplication = null; _undoApplicationIdentity = null; }
         var directions = _model.Ready ? _model.AvailableDirections : null;
         _sourceLanguage.Synchronize(_settings.Value.Source, directions);
         _targetLanguage.Synchronize(_settings.Value.Target, directions);
@@ -337,6 +353,8 @@ internal sealed class QuickPanel : Window
     }
     private void BuildTranslationPreferences()
     {
+        object rendered = _renderIdentity;
+        bool CurrentRender() => IsVisible && ReferenceEquals(rendered, _renderIdentity);
         var state = _session.GetStyleSettingsState();
         var styleRow = new DockPanel { Margin = new(0, 10, 0, 0) };
         var choices = new ComboBox { Width = 112, ItemsSource = new[] { new ComboBoxItem { Content = UiTheme.L("未设置", "Not set"), IsEnabled = false }, new ComboBoxItem { Content = UiTheme.L("自然", "Natural") }, new ComboBoxItem { Content = UiTheme.L("正式", "Formal") }, new ComboBoxItem { Content = UiTheme.L("简洁 · 尚未提供", "Concise · Unavailable"), IsEnabled = false }, new ComboBoxItem { Content = UiTheme.L("口语 · 尚未提供", "Casual · Unavailable"), IsEnabled = false } },
@@ -347,6 +365,7 @@ internal sealed class QuickPanel : Window
         choices.ToolTip = choices.IsEnabled ? null : TranslationMenuPresentation.Reason(state.UnavailableReason) ?? UiTheme.L("当前模型尚未通过风格质量验收", "Style quality validation is pending");
         choices.SelectionChanged += async (_, _) =>
         {
+            if (!CurrentRender()) return;
             if (choices.SelectedIndex is not (1 or 2)) { Refresh(); return; }
             var current = _session.GetStyleSettingsState();
             var result = await _session.ChangeStyleAsync(StyleScope.Global, choices.SelectedIndex == 2 ? TranslationStyle.Formal : TranslationStyle.Natural, current.SettingsRevision);
@@ -359,11 +378,13 @@ internal sealed class QuickPanel : Window
             var appRow = new DockPanel { Margin = new(0, 8, 0, 0) };
             var toggle = UiTheme.Toggle("在应用中启用 TypeLay", () => !_settings.Value.Excluded.Contains(application, StringComparer.OrdinalIgnoreCase), async enabled =>
             {
+                if (!CurrentRender()) return;
                 var excluded = enabled ? _settings.Value.Excluded.Where(value => !StringComparer.OrdinalIgnoreCase.Equals(value, application)).ToArray()
                     : _settings.Value.Excluded.Append(application).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
                 if (await SaveAsync(_settings.Value with { ExcludedApplications = excluded }))
                 {
                     _undoApplication = enabled ? null : application;
+                    _undoApplicationRevision = _settings.Revision; _undoApplicationIdentity = enabled ? null : new object();
                     Refresh();
                 }
             });

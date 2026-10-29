@@ -131,7 +131,13 @@ class IndexRuntimeTests(unittest.TestCase):
         legacy_worker = self.directory / "legacy worker"
         shutil.copytree(self.worker / "typelay_worker", legacy_worker / "typelay_worker")
         shutil.copytree(legacy, legacy_worker / "native/index")
-        result = subprocess.run([sys.executable, "-I", "-B", "-c", textwrap.dedent("""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                textwrap.dedent("""
             import sys
             sys.path.insert(0, sys.argv[1])
             from typelay_worker.index_assets import verify_native
@@ -144,7 +150,13 @@ class IndexRuntimeTests(unittest.TestCase):
             assert hasattr(lib, "index_translate_v1")
             assert not hasattr(lib, "index_translate_alternative_v1")
             loader.close()
-        """), str(legacy_worker)], capture_output=True, text=True, timeout=30)
+        """),
+                str(legacy_worker),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_resource_limits_apply_only_inside_the_owned_process(self):

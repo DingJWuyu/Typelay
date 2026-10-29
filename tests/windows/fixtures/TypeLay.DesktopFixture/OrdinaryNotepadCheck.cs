@@ -276,7 +276,7 @@ internal static partial class HyPackageCheck
                 scene.Stage = "copy-same-run-model";
                 await BrowserCooperationCheck.CopyModelAsync(directory, data, ct);
                 await File.WriteAllTextAsync(Path.Combine(data, "settings.json"), JsonSerializer.Serialize(new UserSettings(
-                    Source: "en", Target: "zh", Theme: "light", Mode: WorkMode.Automatic,
+                    Source: "en", Target: "zh", Theme: "light", UiLanguage: "zh-CN", Mode: WorkMode.Automatic,
                     OnboardingComplete: false, ExperimentalWriteback: false)), ct);
                 var info = StartInfo(Path.Combine(distribution, "app", "TypeLay.App.exe"));
                 info.ArgumentList.Add("--automation-test");
@@ -291,12 +291,18 @@ internal static partial class HyPackageCheck
                 scene.Stage = "await-public-model-ready";
                 await WaitAsync(async () => (await PublicStatusAsync(settings, ct)).StartsWith("本地翻译已就绪", StringComparison.Ordinal), ct);
                 scene.Stage = "navigate-public-general";
-                await NavigateAsync(settings, "⌂  常规", "常规", ct);
+                await NavigateAsync(settings, "general", "常规", ct);
                 await EnableNotepadWriteback(settings, app.Process.Id, stage => scene.Stage = stage, ct);
                 scene.Stage = "await-public-writeback-setting-saved";
                 await WaitAsync(() => Task.FromResult(ReadSettings(data)?.ExperimentalWriteback == true), ct);
                 scene.Stage = "navigate-public-application-support";
-                await NavigateAsync(settings, "▦  " + ApplicationSupportPresentation.Create([]).Title, "应用支持", ct);
+                await NavigateAsync(settings, "apps", "应用", ct);
+                await UiAsync(() =>
+                {
+                    var section = Find(settings, AutomationElement.NameProperty, "其他普通输入框", ControlType.Group);
+                    Require(section is not null && section.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out _), "ordinary-desktop-section-missing");
+                    ((ExpandCollapsePattern)section!.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Expand();
+                }, ct);
                 scene.Stage = "find-public-desktop-connection-check";
                 int settingsHandle = await UiAsync(() => settings.Current.NativeWindowHandle, ct);
                 await UiAsync(() =>
@@ -342,20 +348,17 @@ internal static partial class HyPackageCheck
                 scene.Stage = "set-public-on-demand-mode";
                 await ShowNotepadSettings(app!.Process, ct);
                 settings = await SettingsAsync(app.Process, ct);
-                await NavigateAsync(settings!, "⌂  常规", "常规", ct);
+                await NavigateAsync(settings!, "general", "常规", ct);
                 await UiAsync(() =>
                 {
-                    var combo = Find(settings!, AutomationElement.NameProperty, "工作模式", ControlType.ComboBox);
-                    Require(combo is not null, "ordinary-mode-picker-missing");
-                    ((ExpandCollapsePattern)combo!.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Expand();
-                    var choice = Find(combo, AutomationElement.NameProperty, "按需模式", ControlType.ListItem);
+                    var choice = Find(settings!, AutomationElement.NameProperty, "工作模式 按需", ControlType.RadioButton);
                     Require(choice is not null, "ordinary-on-demand-choice-missing");
                     ((SelectionItemPattern)choice!.GetCurrentPattern(SelectionItemPattern.Pattern)).Select();
                 }, ct);
                 scene.Stage = "await-on-demand-setting-saved";
                 await WaitAsync(() => Task.FromResult(ReadSettings(data)?.Mode == WorkMode.OnDemand), ct);
                 scene.Stage = "open-public-shortcut-status";
-                await NavigateAsync(settings!, "⌨  快捷键", "快捷键", ct);
+                await NavigateAsync(settings!, "shortcuts", "快捷键", ct);
                 scene.Stage = "focus-original-source-for-wake";
                 await FocusSource();
                 scene.Stage = "press-single-wake-f9";

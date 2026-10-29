@@ -14,8 +14,18 @@ internal static class UiTheme
     private static UserSettings _preferences = new();
     public static bool English => _preferences.UiLanguage == "en" || _preferences.UiLanguage == "system" && !CultureInfo.CurrentUICulture.Name.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
     public static bool ReduceMotion => _preferences.ReduceMotion || !SystemParameters.ClientAreaAnimation;
-    public static FontFamily UiFont => new(_preferences.Font == "system" ? "Segoe UI, Microsoft YaHei UI" : "pack://application:,,,/TypeLay.App;component/UI/Fonts/#Inter, Noto Sans SC, Segoe UI, Microsoft YaHei UI");
-    public static FontFamily ContentFont => new(_preferences.Font switch { "sans" => "pack://application:,,,/TypeLay.App;component/UI/Fonts/#Inter, Noto Sans SC, Segoe UI, Microsoft YaHei UI", "system" => "Segoe UI, Microsoft YaHei UI", _ => "pack://application:,,,/TypeLay.App;component/UI/Fonts/#Source Serif 4, Noto Serif SC, Georgia, SimSun" });
+    // WPF requires an absolute base URI plus a relative family name. A single
+    // string starting with pack: silently falls back instead of loading a font.
+    public static FontFamily BundledFont(string family, string? fallback = null) =>
+        new(new Uri("pack://application:,,,/TypeLay.App;component/"), "./UI/Fonts/#" + family + (string.IsNullOrWhiteSpace(fallback) ? "" : ", " + fallback));
+    public static FontFamily UiFont => _preferences.Font == "system" ? new("Segoe UI, Microsoft YaHei UI")
+        : BundledFont("Inter", "Noto Sans SC, Segoe UI, Microsoft YaHei UI");
+    public static FontFamily ContentFont => _preferences.Font switch
+    {
+        "sans" => BundledFont("Inter", "Noto Sans SC, Segoe UI, Microsoft YaHei UI"),
+        "system" => new("Segoe UI, Microsoft YaHei UI"),
+        _ => BundledFont("Source Serif 4", "Noto Serif SC, Georgia, SimSun")
+    };
     public static double ContentSize => _preferences.TextSize;
     public static string L(string chinese, string english) => English ? english : chinese;
     private const string StyleXml = """

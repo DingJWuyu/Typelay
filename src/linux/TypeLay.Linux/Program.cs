@@ -233,9 +233,10 @@ internal static class Program
         async Task<bool> ApplySettings(UserSettings next)
         {
             var expected = settings.Value;
+            long expectedRevision = settings.Revision;
             if (!await controller.PrepareSettingsChangeAsync(next) || !ReferenceEquals(expected, settings.Value))
                 return false;
-            settings.Update(next);
+            settings.Update(expectedRevision, next);
             return true;
         }
         void Status() => link.Send("status", new
@@ -653,28 +654,39 @@ internal static class Program
                     return OverlayPlacement.Place(placement.Input, placement.Work, placement.Width,
                         placement.Height, placement.Gap, placement.MinimumHeight);
                 case "applicationEnabled":
-                    if (!ExactObject(value, "application", "enabled")
+                    object ApplicationPolicyResult(bool saved, string code) => new
+                    {
+                        saved, code, settingsRevision = saved ? (long?)settings.Revision : null
+                    };
+                    if (!ExactObject(value, "application", "enabled", "expectedSettingsRevision")
                         || value.GetProperty("application").ValueKind != JsonValueKind.String
                         || string.IsNullOrWhiteSpace(value.GetProperty("application").GetString())
                         || value.GetProperty("application").GetString()!.Length > 128
                         || value.GetProperty("application").GetString()!.Any(char.IsControl)
-                        || value.GetProperty("enabled").ValueKind is not (JsonValueKind.True or JsonValueKind.False))
-                        return false;
+                        || value.GetProperty("enabled").ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+                        || value.GetProperty("expectedSettingsRevision").ValueKind is not (JsonValueKind.Null or JsonValueKind.Number)
+                        || value.GetProperty("expectedSettingsRevision").ValueKind == JsonValueKind.Number
+                            && (!value.GetProperty("expectedSettingsRevision").TryGetInt64(out long policyRevision) || policyRevision < 0))
+                        return ApplicationPolicyResult(false, "invalid-application-policy");
+                    if (value.GetProperty("expectedSettingsRevision").ValueKind == JsonValueKind.Number
+                        && value.GetProperty("expectedSettingsRevision").GetInt64() != settings.Revision)
+                        return ApplicationPolicyResult(false, "settings-changed");
                     var policyApplication = value.GetProperty("application").GetString()!.Trim();
                     var remainingApplications = settings.Value.Excluded.Where(item => !item.Equals(policyApplication, StringComparison.OrdinalIgnoreCase)).ToArray();
                     if (!value.GetProperty("enabled").GetBoolean() && remainingApplications.Length >= 256)
-                        return false;
+                        return ApplicationPolicyResult(false, "application-capacity");
                     try
                     {
-                        return await ApplySettings(settings.Value with
+                        bool saved = await ApplySettings(settings.Value with
                         {
                             ExcludedApplications = value.GetProperty("enabled").GetBoolean()
                                 ? remainingApplications : [.. remainingApplications, policyApplication]
                         });
+                        return ApplicationPolicyResult(saved, saved ? "application-saved" : "settings-changed");
                     }
                     catch (SettingsPersistenceException)
                     {
-                        return false;
+                        return ApplicationPolicyResult(false, "application-save-failed");
                     }
                 case "manageApplication":
                     if (value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString())

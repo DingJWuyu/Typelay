@@ -808,7 +808,8 @@ def main():
             assert translation.glossary_state["isReleased"] is False
             assert translation.style.get_visible() and not translation.style.get_sensitive()
             assert not translation.editor.get_visible()
-            assert len(translation.applications.get_children()) == 2
+            assert settings_surface.application_controls["editor"][1].get_active_id() == "Natural"
+            assert settings_surface.application_controls["mail"][1].get_active_id() == "Formal"
             assert len(translation.rules.get_children()) == 3
 
             def row_button(listing, index=0, label=None):
@@ -836,8 +837,16 @@ def main():
                             return dialog
                         await asyncio.sleep(0.01)
 
-            # Removing this saved identity is immediate, never inferred from focus.
-            row_button(translation.applications).clicked()
+            # The panel shows the saved value and allows removal while the
+            # model quality gate remains closed; it never enables new styles.
+            tray.report({"lastApplication": "editor", "modelReady": False})
+            await settled()
+            await tray.load_application_style("editor")
+            assert tray.application_style_picker.get_active_id() == "Natural"
+            assert tray.application_style_picker.get_sensitive()
+            assert not tray.application_style["canChange"]
+            assert tray.application_style["canRemove"]
+            tray.application_style_picker.set_active_id("inherit")
             await settled()
             assert not translation.dirty
             assert [
@@ -961,7 +970,7 @@ def main():
                 and not translation.editor.get_visible()
             )
             assert translation.box.get_visible()
-            assert any(item["operation"] == "removeStyleOverride" for item in request_results)
+            assert any(item["operation"] == "changeApplicationStyle" for item in request_results)
             assert any(item["operation"] == "resetTranslationStyle" for item in request_results)
             assert any(item["operation"] == "changeGlossary" for item in request_results)
             print(

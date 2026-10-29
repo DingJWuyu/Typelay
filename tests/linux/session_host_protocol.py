@@ -1431,16 +1431,47 @@ while True:
             ),
             {"saved": False, "code": "style-unavailable"},
         )
-        self.assertTrue(
-            await self.ask("applicationEnabled", {"application": "editor", "enabled": False})
+        disabled = await self.ask(
+            "applicationEnabled",
+            {"application": "editor", "enabled": False, "expectedSettingsRevision": None},
         )
+        self.assertTrue(disabled["saved"])
         self.assertTrue(
-            await self.ask("applicationEnabled", {"application": "mail", "enabled": False})
+            (
+                await self.ask(
+                    "applicationEnabled",
+                    {"application": "mail", "enabled": False, "expectedSettingsRevision": None},
+                )
+            )["saved"]
         )
+        stale_undo = await self.ask(
+            "applicationEnabled",
+            {
+                "application": "EDITOR",
+                "enabled": True,
+                "expectedSettingsRevision": disabled["settingsRevision"],
+            },
+        )
+        self.assertEqual(
+            stale_undo, {"saved": False, "code": "settings-changed", "settingsRevision": None}
+        )
+        self.assertEqual(self.latest("settings")["excludedApplications"], ["editor", "mail"])
         self.assertTrue(
-            await self.ask("applicationEnabled", {"application": "EDITOR", "enabled": True})
+            (
+                await self.ask(
+                    "applicationEnabled",
+                    {"application": "EDITOR", "enabled": True, "expectedSettingsRevision": None},
+                )
+            )["saved"]
         )
         self.assertEqual(self.latest("settings")["excludedApplications"], ["mail"])
+        for revision in (True, "1", -1, 1.5, {}):
+            rejected = await self.ask(
+                "applicationEnabled",
+                {"application": "mail", "enabled": True, "expectedSettingsRevision": revision},
+            )
+            self.assertFalse(rejected["saved"])
+            self.assertEqual(rejected["code"], "invalid-application-policy")
         self.assertFalse(await self.ask("togglePause", {"enabled": False}))
         self.assertFalse(await self.ask("manageApplication", "bad\nidentity"))
 

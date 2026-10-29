@@ -266,7 +266,7 @@ internal static partial class BrowserCooperationCheck
                 await File.WriteAllTextAsync(ownerFile, ownerToken, ct);
                 await CopyModelAsync(directory, data, ct);
                 await File.WriteAllTextAsync(Path.Combine(data, "settings.json"), JsonSerializer.Serialize(new UserSettings(
-                    Source: "zh", Target: "en", Theme: "light", OnboardingComplete: false, ExperimentalWriteback: false)), ct);
+                    Source: "zh", Target: "en", Theme: "light", UiLanguage: "zh-CN", OnboardingComplete: false, ExperimentalWriteback: false)), ct);
                 setup.Stage = "check-shipped-extension";
                 string extension = Path.Combine(distribution, "browser", "chromium");
                 Require(File.Exists(Path.Combine(extension, "manifest.json")), "shipped-extension-missing");

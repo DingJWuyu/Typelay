@@ -159,8 +159,8 @@ ENGLISH = {
     "当前无法保存这项翻译设置。": "This translation preference cannot be saved now.",
     "仍然使用": "Use anyway",
     "正在保存…": "Saving…",
-    "未设置 / Not set": "Not set",
-    "按下快捷键… / Press keys…": "Press keys…",
+    "未设置": "Not set",
+    "按下快捷键…": "Press keys…",
     "撤销": "Undo",
     "已删除术语": "Term deleted",
     "未排除任何应用": "No apps excluded",
@@ -222,6 +222,94 @@ ENGLISH.update(
     }
 )
 
+ENGLISH.update(
+    {
+        "连接应用": "Connect apps",
+        "连接详情": "Connection details",
+        "选择接入方式": "Choose a connection",
+        "尚未检查": "Not checked",
+        "还没有可靠的检查结果。请选择目标应用并检查连接。": "There is no reliable check result yet. Choose an app and check its connection.",
+        "查看详情": "View details",
+        "未安装本地模型": "No local model installed",
+        "安装方向（可选）": "Installation directions (optional)",
+        "模型与其他后端": "Models and other backends",
+        "术语已保存": "Terms saved",
+        "撤销 / Undo": "Undo",
+        "已停用此应用": "App disabled",
+        "已启用此应用": "App enabled",
+        "当前 · 已就绪": "Selected · Ready",
+        "当前 · 尚未就绪": "Selected · Not ready",
+        "安装状态无法确认": "Installation state unconfirmed",
+        "当前安装包不含可用的 Index 运行组件": "This installation has no usable Index runtime components",
+        "查看接入步骤": "Connection instructions",
+        "选择并检查组件…": "Choose and check components…",
+        "安装接入组件…": "Install connection components…",
+        "连接应用…": "Connect app…",
+        "修复连接…": "Repair connection…",
+        "结束本次连接…": "End this connection…",
+        "移除接入…": "Remove connection…",
+        "开始练习…": "Start practice…",
+        "选择应用…": "Choose app…",
+        "通过 TypeLay 打开": "Open with TypeLay",
+        "内置接入可用": "Built-in connection available",
+        "需要安装或连接": "Installation or connection needed",
+        "等待用户授权": "Waiting for approval",
+        "需要重新打开应用": "Reopen the app",
+        "已注册，尚未连接": "Registered, not connected",
+        "当前尚不支持": "Not currently supported",
+        "接入异常": "Connection error",
+        "连接已确认；具体输入框仍需单独检查。": "Connection confirmed; each field still requires its own check.",
+        "缺少所需的接入组件。请先安装或选择完整组件，再检查连接。": "Required connection components are missing. Install or choose complete components, then check again.",
+        "尚未配置此应用的 TypeLay 接入。请按接入步骤完成连接。": "TypeLay is not configured for this app. Follow the connection instructions.",
+        "接入配置不完整或已失效。请修复后重新检查。": "Connection configuration is incomplete or invalid. Repair it and check again.",
+        "检测到不属于 TypeLay 的接入配置，未覆盖或移除。请查看详情处理冲突。": "Another connection configuration was found and was not overwritten or removed. Check details to resolve the conflict.",
+        "请在应用或浏览器中完成扩展及权限批准，然后重新检查。": "Approve the extension and permissions in the app or browser, then check again.",
+        "组件已检查，仍需你按接入步骤确认启用；尚未连接应用。": "Components were checked. You still need to enable them using the instructions; the app is not connected.",
+        "接入配置已更新。请保存工作并重新打开应用，然后检查连接。": "Configuration updated. Save your work, reopen the app, then check its connection.",
+        "接入配置已注册，但尚未收到实际连接。请打开应用或浏览器的普通输入框后重新检查。": "Configuration is registered, but no actual connection was received. Open a regular text field and check again.",
+        "此平台尚未实现这项接入，不能通过安装模型或反复检查启用。": "This connection is not implemented on this platform. Installing models or repeating the check cannot enable it.",
+        "TypeLay 已暂停，请先在常规设置中启用后再检查。": "TypeLay is paused. Enable it in General, then check again.",
+        "尚未检查目标输入框。请切回需要翻译的普通文本框试一试，再查看检查结果。": "The target field has not been checked. Try the intended regular text field, then review the result.",
+        "尚未取得目标输入框的可靠观察结果，不能确认预览或替换能力。": "No reliable field observation is available. Preview and replacement capabilities cannot be confirmed.",
+        "目前仅确认显示译文；Tab 接受和直接替换尚不可用。": "Only translation preview is confirmed. Tab acceptance and direct replacement are unavailable.",
+        "当前输入框未提供直接替换能力，不会改写其他输入框。": "This field does not allow direct replacement. Other fields will not be modified.",
+        "仅已检查的普通文本控件可用；密码、敏感、代码及不兼容字段继续排除。": "Only checked regular text controls are usable. Passwords, sensitive, code and incompatible fields remain excluded.",
+        "接入配置未完成。请查看详情并在处理原因后重试，原有数据会保留。": "Connection setup did not finish. Review details, resolve the cause and retry. Existing data is preserved.",
+        "尚未识别到有效的浏览器扩展。请按接入步骤选择或启用 TypeLay 扩展，再重新检查。": "No valid browser extension was identified. Choose or enable TypeLay using the instructions, then check again.",
+        "未能完成连接检查。请查看详情并重新检查，当前不确认任何能力。": "The connection check did not finish. Review details and check again. No capability is currently confirmed.",
+        "操作未完成。请查看详情，处理原因后再试；未将这次操作标为成功。": "The operation did not complete. Check details, resolve the cause and retry. It is not marked successful.",
+        "检查连接只读取状态，不会自动安装、授权或修改应用配置。": "Checking reads status only. It never installs, grants permissions or changes app configuration.",
+        "按接入步骤安装或启用组件。安装完成不代表已连接，完成后请重新检查。": "Follow the instructions to install or enable components. Installation alone does not mean connected; check again afterwards.",
+        "请自行完成应用或系统要求的批准。取消后可回到这里继续；TypeLay 不会绕过权限提示。": "Complete approval in the app or system. You can return here after canceling; TypeLay never bypasses permission prompts.",
+        "先保存应用中的工作，再由你重新打开应用。TypeLay 不会自动结束应用进程。": "Save your work, then reopen the app yourself. TypeLay never terminates app processes automatically.",
+        "打开目标应用，确认扩展或接入组件已启用，再到普通输入框试一试。": "Open the app, check that its extension or connection is enabled, then try a regular text field.",
+        "到实际输入框检查预览与允许的替换。连接正常不表示应用内所有字段均可使用。": "Check preview and permitted replacement in the actual field. A connection does not mean every field is supported.",
+        "这项接入仍待实现，当前不会提供无效的安装或修复操作。": "This connection is not implemented. No ineffective install or repair action is offered.",
+        "查看原因和详情，再选择可用的恢复操作；修复或移除接入会保留设置、模型及个人数据。": "Review the reason and details, then choose an available recovery action. Repair and removal preserve settings, models and personal data.",
+        "无法确认带启动参数的应用进程，请在高级编辑中填写可执行文件名。": "The launcher has arguments, so its process identity cannot be confirmed. No policy change is allowed.",
+        "无法确认沙箱应用的真实进程，请在高级编辑中填写可执行文件名。": "The sandboxed process identity cannot be confirmed. No policy change is allowed.",
+        "无法确认包装启动器的应用进程，请在高级编辑中填写可执行文件名。": "The wrapper process identity cannot be confirmed. No policy change is allowed.",
+        "无法确认应用进程，请在高级编辑中填写可执行文件名。": "The process identity cannot be confirmed. No policy change is allowed.",
+    }
+)
+
+ENGLISH.update(
+    {
+        "接受默认使用 Tab，退出默认使用 Esc；也可选择 F1-F24 或 Ctrl+F1-F24。接受与退出须使用不同主键；当前输入适配器须确认实际键对。唤醒与直接替换另支持 Shift+功能键（不含 F12），不适用于接受与退出。不能完整检测每个应用内部的快捷键，未发现冲突不代表没有冲突。": "Accept defaults to Tab and dismiss to Esc. F1-F24 or Ctrl+F1-F24 are also available. Accept and dismiss require different base keys and confirmation from the active input adapter. Wake and direct replacement additionally support Shift+function keys except F12; these combinations are not available for accept or dismiss. Conflicts inside other apps cannot all be detected.",
+        "●  Auto → EN                         Tab  接受": "●  Auto → EN                         Tab  Accept",
+        "设置保存结果未确认，请重新打开检查。": "Save was not confirmed. Reopen Settings to check.",
+        "教程选择已保存；可随时重新打开。": "Tutorial preference saved. You can reopen it anytime.",
+        "翻译设置已保存，但状态通知未完成。请重新打开设置检查。": "Translation settings were saved, but status notification failed. Reopen Settings to check.",
+        "无法确认翻译设置。草稿仍保留，请重试保存或重新打开设置检查。": "Translation settings could not be confirmed. Your draft is retained; retry saving or reopen Settings.",
+        "保存结果未确认。草稿仍保留，请重新打开设置检查。": "Save was not confirmed. Your draft is retained; reopen Settings to check.",
+        "原文和指定译法不能为空。": "Source term and preferred translation cannot be empty.",
+        "请检查源词、指定译法与语言方向。": "Check the source term, preferred translation and direction.",
+        "请先选择术语源语言和目标语言。": "Choose source and target languages for the term.",
+        "设置已变化，无法撤销这次删除。": "Settings changed; this deletion could not be undone.",
+        "同名术语已经存在，没有覆盖它。": "A term with this identity already exists and was not overwritten.",
+    }
+)
+
 
 class Localizer:
     def __init__(self, settings):
@@ -245,6 +333,30 @@ class Localizer:
             return ENGLISH[value]
         return "\n".join(ENGLISH.get(line, line) for line in value.split("\n"))
 
+    def model_text(self, value):
+        language = (self.settings() or {}).get("uiLanguage", "system")
+        english = (
+            language == "en"
+            or language == "system"
+            and not any(name.startswith("zh") for name in GLib.get_language_names())
+        )
+        if not english:
+            return value
+        result = self.text(value)
+        for chinese, translated in (
+            ("中文多语", "Chinese multilingual"),
+            ("推荐默认", "Recommended default"),
+            ("目录可用：", "Catalog: "),
+            (" GB 下载", " GB download"),
+            ("当前选择：", "Selected: "),
+            ("本地翻译已就绪 · ", "Local translation ready · "),
+            ("中文", "Chinese"),
+            (" · 预览", " · Preview"),
+            ("（已安装）", " (installed)"),
+        ):
+            result = result.replace(chinese, translated)
+        return result
+
     def bind(self, widget):
         if widget in self.bound or getattr(widget, "typelay_user_content", False):
             return
@@ -258,8 +370,10 @@ class Localizer:
                 lambda: widget.get_placeholder_text() or "",
                 widget.set_placeholder_text,
             )
-        elif isinstance(widget, Gtk.Button) and widget.get_label() is not None:
-            self.bind_property(widget, "label", widget.get_label, widget.set_label)
+        elif isinstance(widget, Gtk.Button) and (
+            widget.get_label() is not None or widget.get_child() is None
+        ):
+            self.bind_property(widget, "label", lambda: widget.get_label() or "", widget.set_label)
         elif isinstance(widget, Gtk.Expander) and widget.get_label() is not None:
             self.bind_property(widget, "label", widget.get_label, widget.set_label)
         if isinstance(widget, Gtk.Container):

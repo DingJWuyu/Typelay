@@ -46,10 +46,6 @@ public sealed class ModelClientCapabilityTests
     [Fact]
     public async Task IndexEnglishCapabilitiesAreBoundToItsOwnExactPackageAndNotHyScopeRules()
     {
-        string IndexIdentity(string value) => value
-            .Replace("hy-mt2-1-8b-q4-k-m", "index-translate-2b-q4-k-m", StringComparison.Ordinal)
-            .Replace("a0c709d9fac510f2c807aa3af52872340dc37a4a", "3a0eca6ce931d88d00614d427ab3ed8ff0743902", StringComparison.Ordinal)
-            .Replace("zh_ja", "zh_en", StringComparison.Ordinal);
         string hello = IndexIdentity(HyHello).Replace("\"status\":\"ready\"",
             "\"status\":\"ready\"," + AdvancedVersions, StringComparison.Ordinal);
         using var peer = new ProtocolPeer(hello, """{"status":"translated","text":"English result"}""", IndexIdentity(HyInventory));
@@ -675,10 +671,6 @@ public sealed class ModelClientCapabilityTests
     [InlineData(true)]
     public async Task IndexAlternativeRequiresItsExplicitVerifiedHelloCapability(bool advertised)
     {
-        string IndexIdentity(string value) => value
-            .Replace("hy-mt2-1-8b-q4-k-m", "index-translate-2b-q4-k-m", StringComparison.Ordinal)
-            .Replace("a0c709d9fac510f2c807aa3af52872340dc37a4a", "3a0eca6ce931d88d00614d427ab3ed8ff0743902", StringComparison.Ordinal)
-            .Replace("zh_ja", "zh_en", StringComparison.Ordinal);
         string hello = IndexIdentity(HyHello);
         if (advertised)
             hello = hello.Replace("\"status\":\"ready\"", "\"status\":\"ready\",\"alternativeTranslationVersion\":1", StringComparison.Ordinal);
@@ -690,6 +682,65 @@ public sealed class ModelClientCapabilityTests
         Assert.Equal(advertised ? "translated" : "error", result.Status);
         Assert.Equal(advertised ? "Good day" : "", result.Text);
         Assert.Equal(advertised ? "" : "alternative-unavailable", result.Code);
+    }
+
+    private static string IndexIdentity(string value) => value
+        .Replace("hy-mt2-1-8b-q4-k-m", "index-translate-2b-q4-k-m", StringComparison.Ordinal)
+        .Replace("a0c709d9fac510f2c807aa3af52872340dc37a4a", "3a0eca6ce931d88d00614d427ab3ed8ff0743902", StringComparison.Ordinal)
+        .Replace("zh_ja", "zh_en", StringComparison.Ordinal);
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("2")]
+    [InlineData("1.5")]
+    [InlineData("true")]
+    [InlineData("\"1\"")]
+    public async Task InvalidIndexAlternativeVersionCannotPublishAWorker(string version)
+    {
+        string hello = IndexIdentity(HyHello).Replace("\"status\":\"ready\"",
+            "\"status\":\"ready\",\"alternativeTranslationVersion\":" + version, StringComparison.Ordinal);
+        using var peer = new ProtocolPeer(hello, inventory: IndexIdentity(HyInventory));
+        Assert.Equal(ModelPublicationOutcome.Unchanged, await peer.Client.ReloadAsync(peer.CreateLoadPlan(ModelCatalog.Packages),
+            () => throw new InvalidOperationException("must-not-publish"), _ => false, TestContext.Current.CancellationToken));
+        Assert.False(peer.Client.Ready);
+        Assert.Null(peer.Client.VerifiedIdentity);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OtherBackendsCannotAdvertiseIndexAlternativeVersion(bool argos)
+    {
+        string hello = (argos ? """{"status":"ready","directions":["zh_en","en_zh"]}""" : HyHello)
+            .Replace("\"status\":\"ready\"", "\"status\":\"ready\",\"alternativeTranslationVersion\":1", StringComparison.Ordinal);
+        using var peer = new ProtocolPeer(hello, inventory: argos ? """{"schema":1}""" : HyInventory);
+        if (argos)
+            await peer.Client.StartAsync();
+        else
+            Assert.Equal(ModelPublicationOutcome.Unchanged, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+                () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        Assert.False(peer.Client.Ready);
+        Assert.Null(peer.Client.VerifiedIdentity);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TranslationResponsesCannotChangeTheNegotiatedAlternativeVersion(bool alternative)
+    {
+        string hello = IndexIdentity(HyHello).Replace("\"status\":\"ready\"",
+            "\"status\":\"ready\",\"alternativeTranslationVersion\":1", StringComparison.Ordinal);
+        using var peer = new ProtocolPeer(hello,
+            """{"status":"translated","text":"untrusted","alternativeTranslationVersion":1}""", IndexIdentity(HyInventory));
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(ModelCatalog.Packages),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        var result = alternative ? await peer.Client.TranslateAsync(AlternativeJob())
+            : await peer.Client.TranslateTextAsync("你好", new("zh", "en"));
+        Assert.Equal("error", result.Status);
+        Assert.Empty(result.Text);
+        Assert.False(peer.Client.Ready);
+        Assert.Null(peer.Client.VerifiedIdentity);
     }
 
     [Theory]

@@ -6,12 +6,12 @@ namespace TypeLay.Windows.Testing;
 // a page may preserve its editors and navigation peers; observe its public content.
 internal static class SettingsPageActions
 {
-    public static Task OpenAsync(AutomationElement settings, string label, string heading,
+    public static Task OpenAsync(AutomationElement settings, string page, string heading,
         CancellationToken ct) => Task.Run(async () =>
     {
         ct.ThrowIfCancellationRequested();
         var button = settings.FindFirst(TreeScope.Descendants, new AndCondition(
-            new PropertyCondition(AutomationElement.NameProperty, label),
+            new PropertyCondition(AutomationElement.AutomationIdProperty, "SettingsNavigation_" + page),
             new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button)));
         if (button is null || !button.Current.IsEnabled)
             throw new InvalidOperationException("settings-navigation-unavailable");

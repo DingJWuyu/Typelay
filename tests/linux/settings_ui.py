@@ -124,6 +124,17 @@ def main():
             await asyncio.sleep(0.1)
             assert not failures, failures
 
+        async def paint(window):
+            drawn = asyncio.Event()
+            clock = window.get_frame_clock()
+            signal = clock.connect("after-paint", lambda *_: drawn.set())
+            try:
+                window.queue_draw()
+                async with asyncio.timeout(3):
+                    await drawn.wait()
+            finally:
+                clock.disconnect(signal)
+
         def capture(name):
             window = surface.window.get_window()
             width, height = surface.window.get_size()
@@ -132,6 +143,7 @@ def main():
             )
 
         try:
+            (options.output / "result.json").unlink(missing_ok=True)
             assert await host.ask("start", timeout=5) is True
             surface = Settings(
                 host,
@@ -158,6 +170,13 @@ def main():
                 flush=True,
             )
             print("WINDOW STATE", int(surface.window.get_window().get_state()), flush=True)
+            # The remote desktop restores maximized app state. Exercise the
+            # normal native restore operation before measuring the reference size.
+            surface.window.unmaximize()
+            surface.window.resize(900, 660)
+            await settle(
+                lambda: not (surface.window.get_window().get_state() & Gdk.WindowState.MAXIMIZED)
+            )
             surface.pages.set_transition_duration(0)
             for name in (
                 "general",
@@ -224,16 +243,111 @@ def main():
             assert (await host.ask("getGlossarySettings"))["savedSnapshot"]["rules"][0][
                 "sourceTerm"
             ] == "TypeLay"
+            # Retired toast peers cannot act on a newer message (including ABA).
+            actions = []
+            surface.toast.show_message("A", lambda: actions.append("A"))
+            retired_undo = surface.toast.undo
+            retired_timer = surface.toast.timer
+            surface.toast.show_message("B", lambda: actions.append("B"))
+            retired_undo.clicked()
+            assert actions == [] and surface.toast.get_reveal_child()
+            current_timer = surface.toast.timer
+            surface.toast.undo.clicked()
+            assert actions == ["B"]
+            assert GLib.MainContext.default().find_source_by_id(retired_timer) is None
+            assert GLib.MainContext.default().find_source_by_id(current_timer) is None
+            # A deleted row peer must not target a new rule occupying its index.
+            old_row = translation.rules.get_children()[0].get_child()
+            old_delete = next(
+                child
+                for child in old_row.get_children()
+                if isinstance(child, Gtk.Button) and child.get_label() == "删除"
+            )
+            old_edit = next(
+                child
+                for child in old_row.get_children()
+                if isinstance(child, Gtk.Button) and child.get_label() == "编辑"
+            )
+            translation.remove_rule(0)
+            await settle(lambda: not translation.dirty and not translation.saving)
+            surface.toast.undo.clicked()
+            await settle()
+            old_delete.clicked()
+            old_edit.clicked()
+            await settle()
+            assert not any(
+                isinstance(window, Gtk.Dialog) and window.get_visible()
+                for window in Gtk.Window.list_toplevels()
+            )
+            assert len((await host.ask("getGlossarySettings"))["savedSnapshot"]["rules"]) == 1
+
+            # Warning A -> B -> A is a new confirmation, even with equal text.
+            async def warn(chord):
+                surface.controls["wakeShortcut"].set_text(chord)
+                surface.draft_changed("wakeShortcut")
+                await settle(
+                    lambda: surface.shortcut_confirmation is not None
+                    and surface.shortcut_confirmation["wake"] == chord
+                    and surface.pending_draft is None
+                )
+
+            await warn("Ctrl+C")
+            old_force, old_keep = surface.force_shortcuts, surface.edit_shortcuts
+            await warn("Ctrl+V")
+            await warn("Ctrl+C")
+            old_force.clicked()
+            old_keep.clicked()
+            await settle()
+            assert state["wakeShortcut"] == "Ctrl+Shift+F9"
+            assert surface.shortcut_confirmation["wake"] == "Ctrl+C"
+            # Revalidate after the serial save lock, not just when clicked.
+            await surface.settings_lock.acquire()
+            try:
+                surface.force_shortcuts.clicked()
+                await asyncio.sleep(0.05)
+                assert await host.ask("settingsPatch", {"accent": "sage"}) is True
+            finally:
+                surface.settings_lock.release()
+            await settle()
+            assert state["wakeShortcut"] == "Ctrl+Shift+F9"
+            surface.force_shortcuts.clicked()
+            await settle(lambda: state["wakeShortcut"] == "Ctrl+C")
+            surface.controls["wakeShortcut"].set_text("Ctrl+Shift+F9")
+            surface.draft_changed("wakeShortcut")
+            await settle(lambda: state["wakeShortcut"] == "Ctrl+Shift+F9")
             # An app exclusion and its toast undo only change that app's policy.
             surface.toggle_application("fixture-editor", False)
             await settle(lambda: "fixture-editor" in (state.get("excludedApplications") or []))
             await settle()
             surface.toast.undo.clicked()
             await settle(lambda: "fixture-editor" not in (state.get("excludedApplications") or []))
-            # Recording a new key saves immediately after its complete combination.
-            surface.controls["pauseShortcut"].set_text("Ctrl+Shift+F11")
-            surface.draft_changed("pauseShortcut")
+            # Exercise the real focused recorder signal, not a global key hook.
+            recorder = surface.controls["pauseShortcut"]
+            surface.pages.set_visible_child_name("shortcuts")
+            recorder.clicked()
+            assert recorder.recording
+            event = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+            event.keyval = Gdk.KEY_F11
+            event.state = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK
+            recorder.emit("key-press-event", event)
             await settle(lambda: state.get("pauseShortcut") == "Ctrl+Shift+F11")
+            assert not recorder.recording
+            recorder.clicked()
+            event.keyval = Gdk.KEY_Escape
+            event.state = Gdk.ModifierType(0)
+            recorder.emit("key-press-event", event)
+            assert recorder.get_text() == "Ctrl+Shift+F11" and not recorder.recording
+            # A stale toast must not overwrite a later explicit settings change.
+            surface.toggle_application("fixture-editor", False)
+            await settle(lambda: "fixture-editor" in (state.get("excludedApplications") or []))
+            await settle()
+            assert await host.ask("settingsPatch", {"font": "sans"}) is True
+            surface.toast.undo.clicked()
+            await settle()
+            assert "fixture-editor" in state["excludedApplications"]
+            assert state["font"] == "sans"
+            surface.toggle_application("fixture-editor", True)
+            await settle(lambda: "fixture-editor" not in (state.get("excludedApplications") or []))
             # A renderer must never silently save fallback values on reopen.
             surface.dismiss()
             surface.show()
@@ -267,6 +381,23 @@ def main():
             tray.enabled.set_active(True)
             await settle(lambda: state.get("enabled") is True)
             tray.hide_panel()
+            # Capture the same native controls in dark mode, including the tray.
+            surface.preference_options["theme"]["dark"].set_active(True)
+            await settle(lambda: state.get("theme") == "dark")
+            assert surface.window.get_style_context().has_class("settings-dark")
+            for page in surface.page_headings:
+                surface.pages.set_visible_child_name(page)
+                await asyncio.sleep(0.1)
+                capture(page + "-dark")
+            tray.show_panel()
+            await paint(tray.window)
+            width, height = tray.window.get_size()
+            Gdk.pixbuf_get_from_window(tray.window.get_window(), 0, 0, width, height).savev(
+                str(options.output / "quick-panel-dark.png"), "png", [], []
+            )
+            tray.hide_panel()
+            surface.preference_options["theme"]["light"].set_active(True)
+            await settle(lambda: state.get("theme") == "light")
             surface.tutorial.show()
             await asyncio.sleep(0.15)
             window = surface.tutorial.window.get_window()
@@ -319,7 +450,11 @@ def main():
                             "invalid-preference-rejected",
                             "reopen-preserves-settings",
                             "glossary-crud-and-undo",
-                            "application-disable-and-undo",
+                            "retired-toast-and-glossary-row-peers-inert",
+                            "shortcut-warning-aba-requires-fresh-peer",
+                            "application-disable-and-revision-bound-undo",
+                            "focused-recorder-save-and-escape-cancel",
+                            "light-dark-native-pages-and-quick-panel",
                             "quick-panel-pause-resume",
                             "tutorial-native-render",
                             "english-chrome-keeps-user-terms",

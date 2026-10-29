@@ -337,8 +337,7 @@ internal static partial class BrowserCooperationCheck
     {
         setStage("find-settings");
         var window = await FindSettingsAsync(app, ct);
-        var presentation = ApplicationSupportPresentation.Create([]);
-        var applications = new PropertyCondition(AutomationElement.NameProperty, "▦  " + presentation.Title);
+        var applications = new PropertyCondition(AutomationElement.AutomationIdProperty, "SettingsNavigation_apps");
         setStage("navigate-applications");
         int[] previousNavigation = await Task.Run(() =>
         {
@@ -358,20 +357,26 @@ internal static partial class BrowserCooperationCheck
                 var apps = window.FindFirst(TreeScope.Descendants, applications);
                 return apps is not null && !apps.GetRuntimeId().SequenceEqual(previousNavigation)
                     && window.FindFirst(TreeScope.Descendants,
-                        new AndCondition(new PropertyCondition(AutomationElement.NameProperty, presentation.Title),
+                        new AndCondition(new PropertyCondition(AutomationElement.AutomationIdProperty, "SettingsPageHeading"),
+                            new PropertyCondition(AutomationElement.NameProperty, "应用"),
                             new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text))) is not null;
             }, ct).WaitAsync(ct);
             if (ready)
                 break;
             await Task.Delay(40, ct);
         }
-        setStage("expand-other-applications");
+        setStage("expand-application-connections");
         await Task.Run(() =>
         {
-            var more = window.FindFirst(TreeScope.Descendants,
-                new PropertyCondition(AutomationElement.NameProperty, presentation.Labels.MoreApplications));
-            if (more is not null && more.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var expansion))
-                ((ExpandCollapsePattern)expansion).Expand();
+            var sections = window.FindAll(TreeScope.Descendants,
+                new PropertyCondition(AutomationElement.NameProperty, "连接状态与详情")).Cast<AutomationElement>().ToArray();
+            Require(sections.Length > 0, "settings-connection-sections-unavailable");
+            foreach (var section in sections)
+            {
+                Require(section.Current.ProcessId == app.Id, "settings-connection-process-mismatch");
+                ct.ThrowIfCancellationRequested();
+                ((ExpandCollapsePattern)section.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Expand();
+            }
         }, ct).WaitAsync(ct);
         setStage("find-primary");
         AutomationElement? primary = null;
@@ -444,7 +449,7 @@ internal static partial class BrowserCooperationCheck
         var window = await FindSettingsAsync(app, ct);
         await Task.Run(() =>
         {
-            var general = window.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.NameProperty, "⌂  常规"));
+            var general = window.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.AutomationIdProperty, "SettingsNavigation_general"));
             Require(general is not null && general.TryGetCurrentPattern(InvokePattern.Pattern, out _), "settings-general-unavailable");
             ct.ThrowIfCancellationRequested();
             ((InvokePattern)general!.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
@@ -452,18 +457,15 @@ internal static partial class BrowserCooperationCheck
         AutomationElement? mode = null;
         while (mode is null)
         {
-            mode = await Task.Run(() => window.FindFirst(TreeScope.Descendants, new AndCondition(new PropertyCondition(AutomationElement.NameProperty, "工作模式"),
-                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ComboBox))), ct).WaitAsync(ct);
+            mode = await Task.Run(() => window.FindFirst(TreeScope.Descendants, new AndCondition(new PropertyCondition(AutomationElement.NameProperty, "工作模式 按需"),
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.RadioButton))), ct).WaitAsync(ct);
             if (mode is null)
                 await Task.Delay(40, ct);
         }
         await Task.Run(() =>
         {
-            ((ExpandCollapsePattern)mode.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Expand();
-            var choice = mode.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.NameProperty, "按需模式"));
-            Require(choice is not null, "on-demand-choice-unavailable");
             ct.ThrowIfCancellationRequested();
-            ((SelectionItemPattern)choice!.GetCurrentPattern(SelectionItemPattern.Pattern)).Select();
+            ((SelectionItemPattern)mode.GetCurrentPattern(SelectionItemPattern.Pattern)).Select();
         }, ct).WaitAsync(ct);
         while (true)
         {
@@ -474,7 +476,7 @@ internal static partial class BrowserCooperationCheck
         }
         await Task.Run(() =>
         {
-            var shortcuts = window.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.NameProperty, "⌨  快捷键"));
+            var shortcuts = window.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.AutomationIdProperty, "SettingsNavigation_shortcuts"));
             Require(shortcuts is not null && shortcuts.TryGetCurrentPattern(InvokePattern.Pattern, out _), "settings-shortcuts-unavailable");
             ct.ThrowIfCancellationRequested();
             ((InvokePattern)shortcuts!.GetCurrentPattern(InvokePattern.Pattern)).Invoke();

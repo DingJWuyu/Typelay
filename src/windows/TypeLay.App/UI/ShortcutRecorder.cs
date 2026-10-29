@@ -31,8 +31,9 @@ internal static class ShortcutRecorder
         input.LostKeyboardFocus += (_, _) => input.SetResourceReference(Control.BorderBrushProperty, "Line");
         input.PreviewKeyDown += (_, e) =>
         {
+            if (!input.IsVisible || !input.IsKeyboardFocusWithin) return;
             Key key = e.Key == Key.System ? e.SystemKey : e.Key;
-            if (key == Key.Tab && Keyboard.Modifiers == ModifierKeys.None) return;
+            if (key == Key.Tab && Keyboard.Modifiers is ModifierKeys.None or ModifierKeys.Shift) return;
             e.Handled = true;
             if (key == Key.Escape) { input.Text = previous; Keyboard.ClearFocus(); return; }
             if (key is Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt or Key.RightAlt or Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin) return;
@@ -58,7 +59,7 @@ internal static class ShortcutRecorder
         input.ToolTip = UiTheme.L("选择或按下快捷键", "Choose or press a shortcut");
         input.PreviewKeyDown += (_, e) =>
         {
-            if (input.IsDropDownOpen) return;
+            if (!input.IsVisible || !input.IsKeyboardFocusWithin || input.IsDropDownOpen) return;
             Key key = e.Key == Key.System ? e.SystemKey : e.Key;
             string? value = key == Key.Tab && defaultKey == "Tab" && Keyboard.Modifiers == ModifierKeys.None ? "Tab"
                 : key == Key.Escape && defaultKey == "Esc" && Keyboard.Modifiers == ModifierKeys.None ? "Esc" : Chord(key, Keyboard.Modifiers);

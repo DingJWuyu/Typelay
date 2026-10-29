@@ -2922,7 +2922,11 @@ def run(arguments):
                                             else not middle
                                         )
                                     for frame in frames:
-                                        assert low <= frame["height"] <= high + (8 if mode == "animate-expand" else 0)
+                                        assert (
+                                            low
+                                            <= frame["height"]
+                                            <= high + (8 if mode == "animate-expand" else 0)
+                                        )
                                         assert frame["textMatches"] and frame["focused"]
                                         assert frame["start"] != frame["end"]
                                         assert frame["header"] and frame["footer"]

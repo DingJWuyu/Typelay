@@ -122,6 +122,8 @@ internal static class Program
             pauseShortcut = new GlobalPauseShortcut(settings, quick.SetEnabledAsync);
             window.PauseShortcutStatus = () => pauseShortcut.Status;
             window.PauseShortcutConflicts = pauseShortcut.InspectConflicts;
+            window.CanRetryPauseShortcut = () => pauseShortcut.CanRetry;
+            window.RetryPauseShortcut = pauseShortcut.RetryRegistration;
             pauseShortcut.Changed += window.RefreshShortcutStatus;
             icon = MakeTrayIcon();
             tray = new Forms.NotifyIcon { Icon = icon, Visible = true, Text = "TypeLay · 正在启动" };

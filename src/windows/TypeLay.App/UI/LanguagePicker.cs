@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Globalization;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using TypeLay.Runtime;
@@ -21,7 +22,7 @@ internal sealed class LanguagePicker : ComboBox
         IsTextSearchEnabled = true;
         StaysOpenOnEdit = true;
         SetResourceReference(StyleProperty, typeof(ComboBox));
-        AutomationProperties.SetName(this, source ? "源语言" : "目标语言");
+        AutomationProperties.SetName(this, source ? UiTheme.L("源语言", "Source language") : UiTheme.L("目标语言", "Target language"));
         SelectedItem = Items.Cast<LanguageChoice>().Single(choice => choice.Code == selectedCode);
         SelectionChanged += (_, _) =>
         {
@@ -37,6 +38,7 @@ internal sealed class LanguagePicker : ComboBox
 
     public void Synchronize(string confirmedCode, IReadOnlyList<string>? availableDirections = null)
     {
+        AutomationProperties.SetName(this, _source ? UiTheme.L("源语言", "Source language") : UiTheme.L("目标语言", "Target language"));
         var choices = Choices(confirmedCode, availableDirections);
         bool sameChoices = Items.Cast<LanguageChoice>().SequenceEqual(choices);
         if (_selectionCode == confirmedCode && sameChoices)
@@ -71,7 +73,7 @@ internal sealed class LanguagePicker : ComboBox
         // Both endpoints allow the existing same-language/manual path. This is
         // not a promise of every pair; the normal settings validation still runs.
         var choices = languages.DistinctBy(choice => choice.Code)
-            .Select(choice => new LanguageChoice(choice.Code, choice.Label)).ToList();
+            .Select(choice => new LanguageChoice(choice.Code, LanguageLabel(choice.Code, choice.Label))).ToList();
         if (choices.All(choice => choice.Code != confirmedCode))
         {
             string label = directions.SelectMany(direction => new[]
@@ -79,9 +81,16 @@ internal sealed class LanguagePicker : ComboBox
                     new ModelLanguageChoice(direction.Source, direction.SourceName),
                     new ModelLanguageChoice(direction.Target, direction.TargetName)
                 }).FirstOrDefault(choice => choice.Code == confirmedCode)?.Label ?? confirmedCode;
-            choices.Add(new(confirmedCode, label + UiTheme.L("（当前不可用）", " (unavailable)"), false));
+            choices.Add(new(confirmedCode, LanguageLabel(confirmedCode, label) + UiTheme.L("（当前不可用）", " (unavailable)"), false));
         }
         return choices.ToArray();
+    }
+
+    private static string LanguageLabel(string code, string fallback)
+    {
+        if (!UiTheme.English || code == "auto") return fallback;
+        try { return CultureInfo.GetCultureInfo(code).EnglishName; }
+        catch (CultureNotFoundException) { return fallback; }
     }
 
     protected override void PrepareContainerForItemOverride(DependencyObject element, object item)

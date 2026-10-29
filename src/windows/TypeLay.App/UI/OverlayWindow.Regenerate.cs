@@ -10,6 +10,7 @@ namespace TypeLay.App;
 internal sealed partial class OverlayWindow
 {
     private Border? _regeneratePrompt;
+    private object? _regenerateConfirmation;
     private SessionViewToken? _regenerateToken;
     private string? _regenerateDraft;
     private SessionState _regenerateState;
@@ -24,23 +25,37 @@ internal sealed partial class OverlayWindow
             return;
         }
         DismissRegenerateConfirmation(reposition: false);
+        object confirmation = new();
+        string draft = _editor.Text;
+        SessionState state = _sessionState;
+        _regenerateConfirmation = confirmation;
         _regenerateToken = token;
-        _regenerateDraft = _editor.Text;
-        _regenerateState = _sessionState;
+        _regenerateDraft = draft;
+        _regenerateState = state;
         var panel = new StackPanel { Margin = new(14, 10, 14, 12) };
         panel.Children.Add(UiTheme.Text(UiTheme.L("替换你修改过的译文？", "Replace your edited translation?"), 12));
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 8, 0, 0) };
-        var keep = UiTheme.Button(UiTheme.L("保留", "Keep"), () => DismissRegenerateConfirmation(reposition: true));
+        var keep = UiTheme.Button(UiTheme.L("保留", "Keep"), () =>
+        {
+            if (ReferenceEquals(_regenerateConfirmation, confirmation))
+                DismissRegenerateConfirmation(reposition: true);
+        });
         var replace = UiTheme.Button(UiTheme.L("替换", "Replace"), () =>
         {
+            // A detached peer must not authorize, or even dismiss, a newer
+            // confirmation that happens to share the same session token.
+            if (!ReferenceEquals(_regenerateConfirmation, confirmation))
+                return;
             bool current = _regenerateToken == token && _viewContext?.Token == token
-                && _regenerateDraft == _editor.Text && _regenerateState == _sessionState && !EditingComposition
+                && draft == _editor.Text && state == _sessionState && !EditingComposition
                 && (_sessionState == SessionState.EditingTranslation ? _editor.IsKeyboardFocused
                     : KeyboardHook.ExactNativeFieldFocused(token.Target.AsWindows()));
             DismissRegenerateConfirmation(reposition: true);
             if (current)
                 RegenerateRequested?.Invoke();
         }, primary: true);
+        AutomationProperties.SetAutomationId(keep, "RegenerateKeep");
+        AutomationProperties.SetAutomationId(replace, "RegenerateReplace");
         foreach (var button in new[] { keep, replace })
         {
             // Keep the editor/source focus and its existing IME observation.
@@ -53,6 +68,7 @@ internal sealed partial class OverlayWindow
         }
         panel.Children.Add(actions);
         _regeneratePrompt = new Border { Child = panel };
+        AutomationProperties.SetAutomationId(_regeneratePrompt, "RegenerateConfirmation");
         AutomationProperties.SetName(_regeneratePrompt, UiTheme.L("确认重新翻译", "Confirm Translation Replacement"));
         Grid.SetRow(_regeneratePrompt, 2);
         _surface.Children.Add(_regeneratePrompt);
@@ -66,6 +82,7 @@ internal sealed partial class OverlayWindow
             return;
         _surface.Children.Remove(_regeneratePrompt);
         _regeneratePrompt = null;
+        _regenerateConfirmation = null;
         _regenerateToken = null;
         _regenerateDraft = null;
         if (reposition && IsVisible && _sourceAnchor is { } source)

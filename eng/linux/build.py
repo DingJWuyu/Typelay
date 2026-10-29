@@ -238,7 +238,11 @@ def package_browsers(output):
     # the exact unsigned payload for temporary loading or an explicit signing step.
     with zipfile.ZipFile(output / "browser/typelay-firefox-unsigned.xpi", "w") as addon:
         extension = output / "browser/firefox"
-        for name in sorted(path.relative_to(extension).as_posix() for path in extension.rglob("*") if path.is_file()):
+        for name in sorted(
+            path.relative_to(extension).as_posix()
+            for path in extension.rglob("*")
+            if path.is_file()
+        ):
             entry = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
             entry.compress_type = zipfile.ZIP_DEFLATED
             entry.external_attr = 0o100644 << 16

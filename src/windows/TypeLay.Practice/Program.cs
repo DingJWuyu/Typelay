@@ -26,7 +26,7 @@ internal static partial class Program
     private static readonly Native.WindowProc Procedure = WindowProc;
     private static readonly List<Control> Controls = [];
     private static nint _window, _instance, _bodyFont, _titleFont, _backgroundBrush;
-    private static Control? _title, _summary, _capability, _notice, _inputLabel, _edit, _preview, _replace, _progressNotice, _restart, _close;
+    private static Control? _title, _summary, _notice, _inputLabel, _edit, _preview, _replace, _progressNotice, _restart, _close;
     private static OnDemandPracticeProgress? _progress;
     private static readonly ConcurrentQueue<(PracticeMessage Message, long? ReadCompletedAtMs)> PendingControls = new();
     private static int _pendingCount, _disconnected;
@@ -157,7 +157,7 @@ internal static partial class Program
                 return Fail();
 
             _title = Add("Static", presentation.Title);
-            _summary = Add("Static", presentation.Summary);
+            _summary = Add("Static", "");
             _notice = Add("Static", presentation.CurrentStateNotice);
             // A stock STATIC immediately precedes its stock Edit in the child
             // order, giving the system accessibility provider a field label.
@@ -171,15 +171,14 @@ internal static partial class Program
                 // Ctrl-prefix proof; the stock Edit and ordinary bindings remain.
                 _inputObservation = Native.SetWindowsHookExW(4, InputObservation, 0, Native.GetCurrentThreadId());
             }
-            _preview = Add("Static", presentation.PreviewStep, id: PreviewId);
-            _replace = Add("Static", presentation.ReplaceStep, id: ReplaceId);
+            _preview = Add("Static", "", id: PreviewId);
+            _replace = Add("Static", "", id: ReplaceId);
             _progressNotice = Add("Static", presentation.ProgressNotice, id: ProgressId);
-            _capability = Add("Static", presentation.CapabilityNote);
             _restart = Add("Button", presentation.RestartLabel, 0x00010000 | 0x4000, RestartId);
             Native.EnableWindow(_restart.Handle, false);
             InitializeCompletionControl();
             _close = Add("Button", presentation.CloseLabel, 0x00010000 | 0x4000, CloseId);
-            RefreshPracticeLabels(settings!);
+            RefreshPracticeLabels();
             RefreshTheme();
             SetFonts();
             SizeInitialWindow();
@@ -385,25 +384,19 @@ internal static partial class Program
             if (_automatic)
             {
                 var view = AutomaticPracticePresentation.Create(settings!, _automaticProgress);
-                changed = SetText(_title!, view.Title) | SetText(_summary!, view.Summary)
-                    | SetText(_notice, view.CurrentStateNotice) | SetText(_preview, view.PreviewStep)
-                    | SetText(_replace, view.ReplaceStep)
-                    | SetText(_capability!, "")
+                changed = SetText(_title!, view.Title) | SetText(_notice, view.CurrentStateNotice)
                     | SetText(_progressNotice, CompletionProgressNotice(view.ProgressNotice));
                 Native.SetWindowTextW(_window, UiCopy(view.Title));
             }
             else
             {
                 var view = OnDemandPracticePresentation.Create(settings!, _progress);
-                changed = SetText(_title!, view.Title) | SetText(_summary!, view.Summary)
-                    | SetText(_capability!, view.CapabilityNote) | SetText(_notice, view.CurrentStateNotice)
-                    | SetText(_preview, view.PreviewStep) | SetText(_replace, view.ReplaceStep)
+                changed = SetText(_title!, view.Title) | SetText(_notice, view.CurrentStateNotice)
                     | SetText(_progressNotice, view.ProgressNotice);
                 Native.SetWindowTextW(_window, UiCopy(view.Title));
             }
+            changed |= fontsChanged | RefreshPracticeLabels();
         }
-        if (settings is not null)
-            changed |= RefreshPracticeLabels(settings);
         RefreshCompletionControl();
         // The source field is intentionally never read or reset by refresh.
         if (changed)
@@ -2202,7 +2195,6 @@ internal static partial class Program
             y += Scale(20);
             Place(_preview!, Measure(_preview!, width), gap: 8);
             Place(_replace!, Measure(_replace!, width), gap: 18);
-            Place(_capability!, Measure(_capability!, width));
             int buttonWidth = Math.Min(Scale(156), (width - Scale(12)) / 2);
             _restart!.Bounds = new(margin, y, buttonWidth, Scale(34));
             _close!.Bounds = new(margin + width - buttonWidth, y, buttonWidth, Scale(34));
@@ -2323,6 +2315,7 @@ internal static partial class Program
                     {
                         InvalidateFocus(); // Before layout or any other reentrant call.
                         ObserveEditorField(notification);
+                        Native.RedrawWindow(window, 0, 0, 0x0001 | 0x0004);
                         if (notification == 0x0100)
                             EnsureVisible(_edit);
                     }

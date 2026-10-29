@@ -4,6 +4,7 @@ using System.Windows.Automation.Peers;
 using System.Windows.Automation.Provider;
 using System.Windows.Controls;
 using System.Windows.Interop;
+using System.Windows.Input;
 using System.Windows.Media;
 using TypeLay.Core;
 using TypeLay.Runtime;
@@ -18,7 +19,7 @@ namespace TypeLay.App.Tests;
 public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
 {
     [Fact]
-    public Task UnreleasedMissingOrMalformedActionsPreserveTheExistingMenu() => desktop.RunAsync(() =>
+    public Task UnreleasedActionsStayDisabledAndMissingOrMalformedActionsStayHidden() => desktop.RunAsync(() =>
     {
         var (overlay, session, context) = OpenPreview();
         foreach (var actions in new TranslationMenuState?[] { null, Actions() with
@@ -39,7 +40,19 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
                 Assert.Contains("重新翻译", labels);
                 Assert.Contains("不要在这个应用中显示", labels);
                 Assert.Contains("隐藏当前翻译", labels);
-                Assert.DoesNotContain("当前应用风格", labels);
+                if (actions is { StyleReleased: false, SettingsRevision: >= 0 })
+                {
+                    var choices = Item(menu, "当前应用风格").Items.OfType<MenuItem>().ToArray();
+                    Assert.Equal(new[] { "跟随全局设置", "自然", "正式", "简洁", "口语" }, choices.Select(item => (string)item.Header));
+                    Assert.All(choices, item => Assert.False(item.IsEnabled));
+                    Assert.All(choices, item => Assert.NotNull(item.ToolTip));
+                    int requests = 0;
+                    overlay.StyleRequested = _ => { requests++; return Task.FromResult(new StyleChangeResult(false, "style-unavailable")); };
+                    foreach (var item in choices) item.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                    Assert.Equal(0, requests);
+                }
+                else
+                    Assert.DoesNotContain("当前应用风格", labels);
                 Assert.DoesNotContain("换种说法", labels);
                 Assert.DoesNotContain("加入术语表", labels);
             }
@@ -80,7 +93,7 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
             submenu.IsSubmenuOpen = true;
             menu.UpdateLayout();
             var choices = submenu.Items.OfType<MenuItem>().ToArray();
-            Assert.Equal(new[] { "跟随全局设置", "自然", "正式" }, choices.Select(item => (string)item.Header));
+            Assert.Equal(new[] { "跟随全局设置", "自然", "正式", "简洁", "口语" }, choices.Select(item => (string)item.Header));
             Assert.Equal(selected, Assert.Single(choices, item => item.IsChecked).Header);
             var next = context with
             {
@@ -145,11 +158,17 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         try
         {
             var choices = Item(menu, "当前应用风格").Items.OfType<MenuItem>().ToArray();
-            foreach (var choice in choices.Where(item => !Equals(item.Header, "跟随全局设置")))
+            foreach (var choice in choices.Where(item => Equals(item.Header, "自然") || Equals(item.Header, "正式")))
             {
                 Assert.False(choice.IsEnabled);
                 Assert.Equal("当前模型暂不支持风格", choice.ToolTip);
                 choice.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            }
+            foreach (var placeholder in choices.Where(item => Equals(item.Header, "简洁") || Equals(item.Header, "口语")))
+            {
+                Assert.False(placeholder.IsEnabled);
+                Assert.Equal("尚未提供", placeholder.ToolTip);
+                placeholder.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             }
             var alternative = Item(menu, "换种说法");
             Assert.False(alternative.IsEnabled);
@@ -198,7 +217,7 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
             });
             Item(menu, "换种说法").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             Assert.Equal(context.Token, Assert.Single(tokens));
-            Assert.Contains(Descendants(overlay).OfType<TextBlock>(), label => label.Text == "译文就绪");
+            Assert.DoesNotContain(Descendants(overlay).OfType<TextBlock>(), label => AutomationProperties.GetAutomationId(label) == "TranslationStage" && label.IsVisible);
             Assert.DoesNotContain(Descendants(overlay).OfType<TextBlock>(), label => label.Text == "暂时没有不同的译法");
         }
         finally { menu.IsOpen = false; }
@@ -206,14 +225,166 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         Assert.Contains(Descendants(overlay).OfType<TextBlock>(), label => label.Text == "暂时没有不同的译法");
     });
 
+    [Theory]
+    [InlineData("draft")]
+    [InlineData("token")]
+    [InlineData("ime")]
+    [InlineData("focus")]
+    public Task RegenerateConfirmationCannotReplaceANewerDraftOrSession(string change) => desktop.RunAsync(() =>
+    {
+        var (overlay, session, context) = OpenPreview(out var source);
+        string original = source.Text;
+        source.Select(2, 3);
+        int sourceStart = source.SelectionStart, sourceLength = source.SelectionLength;
+        overlay.BeginEditing = _ => session.BeginEdit();
+        overlay.DraftChanged = session.ChangeDraft;
+        var editor = Descendants(overlay).OfType<TextBox>().Single();
+        editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+        {
+            RoutedEvent = Mouse.PreviewMouseDownEvent
+        });
+        overlay.Render(session, new(), false, context: context);
+        editor.AppendText(" - edited");
+        editor.Select(1, 2);
+        Assert.True(editor.IsKeyboardFocused);
+        int requests = 0;
+        overlay.RegenerateRequested = () => requests++;
+        RequestRegenerate(overlay);
+        var replace = RegenerateButton(overlay, "RegenerateReplace");
+        Assert.Equal(0, requests);
+        Assert.Single(Descendants(overlay).OfType<TextBox>());
+        Assert.True(editor.IsKeyboardFocused);
+        Assert.True(editor.CanUndo);
+        switch (change)
+        {
+            case "draft": editor.AppendText(" - newer"); break;
+            case "token":
+                overlay.Render(session, new(), false, context: context with
+                {
+                    Token = context.Token with { Revision = context.Token.Revision + 1 }
+                });
+                break;
+            case "ime":
+                editor.RaiseEvent(new TextCompositionEventArgs(Keyboard.PrimaryDevice,
+                    new TextComposition(InputManager.Current, editor, ""))
+                {
+                    RoutedEvent = TextCompositionManager.PreviewTextInputStartEvent
+                });
+                Assert.True(overlay.EditingComposition);
+                break;
+            case "focus":
+                Assert.True(Window.GetWindow(source).Activate());
+                Assert.True(source.Focus());
+                break;
+        }
+        string currentDraft = editor.Text;
+        Assert.DoesNotContain(Descendants(overlay).OfType<Button>(), button => AutomationProperties.GetAutomationId(button) == "RegenerateReplace");
+        // An already queued click on the detached control carries no authority.
+        replace.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Equal(0, requests);
+        Assert.Equal(currentDraft, editor.Text);
+        Assert.Equal(original, source.Text);
+        Assert.Equal(sourceStart, source.SelectionStart);
+        Assert.Equal(sourceLength, source.SelectionLength);
+    });
+
+    [Fact]
+    public Task RegenerateKeepPreservesTheDraftAndExplicitReplacementRunsOnlyOnce() => desktop.RunAsync(() =>
+    {
+        var (overlay, session, context) = OpenPreview(out var source);
+        string original = source.Text;
+        overlay.BeginEditing = _ => session.BeginEdit();
+        overlay.DraftChanged = session.ChangeDraft;
+        var editor = Descendants(overlay).OfType<TextBox>().Single();
+        editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+        {
+            RoutedEvent = Mouse.PreviewMouseDownEvent
+        });
+        overlay.Render(session, new(), false, context: context);
+        editor.AppendText(" - manual");
+        string draft = editor.Text;
+        int requests = 0;
+        overlay.RegenerateRequested = () => requests++;
+        RequestRegenerate(overlay);
+        RegenerateButton(overlay, "RegenerateKeep").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Equal(0, requests);
+        Assert.Equal(draft, editor.Text);
+        Assert.True(editor.IsKeyboardFocused);
+        RequestRegenerate(overlay);
+        var replace = RegenerateButton(overlay, "RegenerateReplace");
+        replace.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        replace.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Equal(1, requests);
+        Assert.Equal(original, source.Text);
+        Assert.Equal(draft, editor.Text); // Only the host may replace a preview.
+    });
+
+    [Theory]
+    [InlineData("RegenerateKeep")]
+    [InlineData("RegenerateReplace")]
+    public Task DetachedConfirmationPeerCannotAuthorizeOrDismissANewerDraftWithTheSameToken(string oldAction) => desktop.RunAsync(async () =>
+    {
+        var (overlay, session, context) = OpenPreview(out var source);
+        string original = source.Text;
+        overlay.BeginEditing = _ => session.BeginEdit();
+        overlay.DraftChanged = session.ChangeDraft;
+        var editor = Descendants(overlay).OfType<TextBox>().Single();
+        editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+        {
+            RoutedEvent = Mouse.PreviewMouseDownEvent
+        });
+        overlay.Render(session, new(), false, context: context);
+        editor.AppendText(" - first draft");
+        int requests = 0;
+        overlay.RegenerateRequested = () => requests++;
+        RequestRegenerate(overlay);
+        var oldPeer = new ButtonAutomationPeer(RegenerateButton(overlay, oldAction));
+        var oldInvoke = Assert.IsAssignableFrom<IInvokeProvider>(oldPeer.GetPattern(PatternInterface.Invoke));
+        RegenerateButton(overlay, "RegenerateKeep").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.DoesNotContain(Descendants(overlay).OfType<Button>(), button => AutomationProperties.GetAutomationId(button) == "RegenerateReplace");
+        editor.AppendText(" - newer draft");
+        string currentDraft = editor.Text;
+        // ChangeDraft does not advance the host token: confirmation identity
+        // must distinguish these two prompts even under that exact ABA shape.
+        overlay.Render(session, new(), false, context: context);
+        RequestRegenerate(overlay);
+        var currentReplace = RegenerateButton(overlay, "RegenerateReplace");
+        oldInvoke.Invoke();
+        await System.Windows.Threading.Dispatcher.Yield();
+        Assert.Equal(0, requests);
+        Assert.Same(currentReplace, RegenerateButton(overlay, "RegenerateReplace"));
+        Assert.Equal(currentDraft, editor.Text);
+        Assert.True(editor.IsKeyboardFocused);
+        currentReplace.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        currentReplace.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Equal(1, requests);
+        Assert.Equal(original, source.Text);
+        Assert.Equal(currentDraft, editor.Text);
+    });
+
+    private static void RequestRegenerate(OverlayWindow overlay)
+    {
+        var menu = OpenMenu(overlay);
+        var regenerate = Item(menu, "重新翻译");
+        Assert.True(regenerate.IsEnabled);
+        menu.IsOpen = false;
+        regenerate.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        overlay.UpdateLayout();
+    }
+
+    private static Button RegenerateButton(OverlayWindow overlay, string id) => Descendants(overlay).OfType<Button>()
+        .Single(button => AutomationProperties.GetAutomationId(button) == id);
+
     private static MenuItem Item(ContextMenu menu, string label) => menu.Items.OfType<MenuItem>()
         .Single(item => Equals(item.Header, label));
 
     private static TranslationMenuState Actions() => new(4, true, true, true, null, null, null, true, true, null, null);
 
-    private static (OverlayWindow Overlay, Session Session, SessionViewContext Context) OpenPreview()
+    private static (OverlayWindow Overlay, Session Session, SessionViewContext Context) OpenPreview() => OpenPreview(out _);
+
+    private static (OverlayWindow Overlay, Session Session, SessionViewContext Context) OpenPreview(out TextBox input)
     {
-        var input = new TextBox { Text = "Synthetic source", Margin = new(20) };
+        input = new TextBox { Text = "Synthetic source", Margin = new(20) };
         var work = SystemParameters.WorkArea;
         var window = new Window { Content = input, Width = 600, Height = 150, Left = work.Left + 40, Top = work.Top + 40 };
         window.Show();

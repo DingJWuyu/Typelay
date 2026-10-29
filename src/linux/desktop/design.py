@@ -87,9 +87,15 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface separator { background: rgba(20,20,19,.085); min-height: 1px; }
 .typelay-surface .quick-card { background: rgba(20,20,19,.045); border: 1px solid rgba(20,20,19,.085); border-radius: 12px; padding: 10px; }
 .typelay-surface .quick-status { color: #5c5b56; font-size: 12px; padding: 2px 6px; }
+.typelay-surface .model-mark { background: linear-gradient(160deg,#4fae77,#2a7a4b); color: white; padding: 10px; border-radius: 11px; min-width: 24px; min-height: 24px; }
+.typelay-surface .connection-card { background: #fff; border: 1px solid rgba(20,20,19,.085); border-radius: 12px; padding: 12px 14px; }
+.typelay-surface .model-details { padding: 10px 0; }
+.typelay-surface .model-package { border: 1px solid rgba(20,20,19,.085); border-radius: 12px; padding: 12px 14px; background: #fff; }
+.typelay-surface.settings-dark .connection-card, .typelay-surface.settings-dark .model-package { background: #2c2b28; border-color: rgba(255,255,255,.10); }
 .typelay-surface .welcome-title { font-family: 'Source Serif 4','Noto Serif CJK SC',serif; font-size: 30px; font-weight: 500; }
 .typelay-surface.settings-dark { background: #262624; color: #f4f3ee; }
 .typelay-surface.settings-dark .settings-sidebar { background: #2c2b28; border-color: rgba(255,255,255,.08); }
+.typelay-surface.settings-dark .settings-navigation row { color: #f4f3ee; }
 .typelay-surface.settings-dark .settings-navigation row:selected { background: rgba(255,255,255,.09); color: #f4f3ee; }
 .typelay-surface.settings-dark .settings-group, .typelay-surface.settings-dark .settings-notice { background: #2f2e2b; border-color: rgba(255,255,255,.08); }
 .typelay-surface.settings-dark .settings-row + .settings-row { border-color: rgba(255,255,255,.08); }
@@ -286,11 +292,11 @@ class ShortcutRecorder(Gtk.Button):
     def set_text(self, value):
         self.value = value or ""
         if not self.recording:
-            self.set_label(self.value or "未设置 / Not set")
+            self.set_label(self.value or "未设置")
 
     def start(self, *_):
         self.recording = True
-        self.set_label("按下快捷键… / Press keys…")
+        self.set_label("按下快捷键…")
         style(self, "recording")
         self.grab_focus()
 
@@ -353,31 +359,44 @@ class Toast(Gtk.Revealer):
         self.set_margin_bottom(18)
         self.timer = None
         self.action = None
-        content = style(Gtk.Box(spacing=10), "toast")
+        self.identity = None
+        self.translate = lambda value: value
+        self.content = style(Gtk.Box(spacing=10), "toast")
         self.text = label()
-        self.undo = Gtk.Button(label="撤销 / Undo")
-        self.undo.connect("clicked", self.perform)
-        content.pack_start(self.text, True, True, 0)
-        content.pack_end(self.undo, False, False, 0)
-        self.add(content)
+        self.undo = Gtk.Button(label="撤销")
+        self.content.pack_start(self.text, True, True, 0)
+        self.content.pack_end(self.undo, False, False, 0)
+        self.add(self.content)
 
     def show_message(self, text, undo=None):
-        if self.timer:
-            GLib.source_remove(self.timer)
+        self.expire()
+        identity = object()
+        self.identity = identity
         self.text.set_text(text)
         self.action = undo
+        self.content.remove(self.undo)
+        self.undo = Gtk.Button(label=self.translate("撤销"))
+        self.undo.connect("clicked", lambda *_: self.perform(identity))
+        self.content.pack_end(self.undo, False, False, 0)
         self.undo.set_visible(undo is not None)
         self.set_reveal_child(True)
-        self.timer = GLib.timeout_add(6000, self.expire)
+        self.timer = GLib.timeout_add(6000, lambda: self.expire(identity, from_timer=True))
 
-    def expire(self):
+    def expire(self, identity=None, *, from_timer=False):
+        if identity is not None and identity is not self.identity:
+            return False
+        if self.timer is not None and not from_timer:
+            GLib.source_remove(self.timer)
         self.timer = None
+        self.identity = None
         self.action = None
         self.set_reveal_child(False)
         return False
 
-    def perform(self, *_):
+    def perform(self, identity):
+        if identity is not self.identity:
+            return
         action = self.action
-        self.expire()
+        self.expire(identity)
         if action:
             action()

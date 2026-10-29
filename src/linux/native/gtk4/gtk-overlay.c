@@ -75,6 +75,8 @@ static struct {
     GdkFrameClock *layout_clock;
     gulong focus_handler, active_handler, layout_handler;
     gboolean setting_text, setting_languages, composing, focused, expanded, pending_edit, pending_resume;
+    gboolean english, reduce_motion;
+    gint text_size;
     char *generation;
     gint edit_offset;
     gint64 revision, expires;

@@ -107,8 +107,10 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
         }
     });
 
-    [Fact]
-    public Task PreviewCompletedCueRendersDirectReadinessAndWithdrawalFromTheProgressPipe() => desktop.RunAsync(async () =>
+    [Theory]
+    [InlineData("zh-CN")]
+    [InlineData("en")]
+    public Task PreviewCompletedCueRendersDirectReadinessAndWithdrawalFromTheProgressPipe(string language) => desktop.RunAsync(async () =>
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(25));
@@ -120,7 +122,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             var settings = WindowsRuntime.CreateSettings(path);
             settings.Update(settings.Value with
             {
-                UiLanguage = "zh-CN",
+                UiLanguage = language,
                 Mode = WorkMode.OnDemand,
                 DirectShortcut = "Alt+F9"
             });
@@ -152,10 +154,10 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
                 Guid.NewGuid(), 1, 1, true, false);
             (bool? Ready, string Notice)[] states =
             [
-                (null, "已生成预览。请回到练习输入框，完成第 2 步直接替换。"),
-                (false, "已生成预览。请回到练习输入框，等待直接替换快捷键就绪。"),
-                (true, "已生成预览。直接替换快捷键已就绪，可按 Alt+F9 完成第 2 步。"),
-                (false, "已生成预览。请回到练习输入框，等待直接替换快捷键就绪。")
+                (null, language == "en" ? "Preview generated. Return to the practice field for direct replacement." : "已生成预览。请回到练习输入框，完成第 2 步直接替换。"),
+                (false, language == "en" ? "Preview generated. Return to the practice field and wait for direct replacement to be ready." : "已生成预览。请回到练习输入框，等待直接替换快捷键就绪。"),
+                (true, language == "en" ? "Preview generated. Direct replacement is ready: press Alt+F9 for step 2." : "已生成预览。直接替换快捷键已就绪，可按 Alt+F9 完成第 2 步。"),
+                (false, language == "en" ? "Preview generated. Return to the practice field and wait for direct replacement to be ready." : "已生成预览。请回到练习输入框，等待直接替换快捷键就绪。")
             ];
             foreach (var state in states)
             {

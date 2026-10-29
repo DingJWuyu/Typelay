@@ -6,6 +6,7 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
+using System.Windows.Markup;
 using TypeLay.Core;
 using TypeLay.Runtime;
 
@@ -21,9 +22,11 @@ internal sealed class OnboardingWindow : Window
     private readonly StackPanel _body = new() { VerticalAlignment = VerticalAlignment.Center };
     private readonly StackPanel _dots = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock _feedback = UiTheme.Text("", 12, true);
-    private readonly Button _next, _back;
+    private readonly Button _next, _back, _close;
     private readonly Grid _root;
     private int _step = 1;
+    private object _pageIdentity = new();
+    private long _navigationVersion;
     private bool _busy, _closed, _rendering;
 
     public OnboardingWindow(SettingsStore settings, ModelClient model, SettingsWindow settingsWindow)
@@ -32,8 +35,8 @@ internal sealed class OnboardingWindow : Window
         _model = model;
         _settingsWindow = settingsWindow;
         Title = "TypeLay";
-        Width = 584;
-        Height = 500;
+        Width = 580;
+        Height = 480;
         MinWidth = 460;
         MinHeight = 440;
         WindowStyle = WindowStyle.None;
@@ -43,24 +46,25 @@ internal sealed class OnboardingWindow : Window
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         FontFamily = UiTheme.UiFont;
         AutomationProperties.SetAutomationId(this, "TypeLayOnboarding");
-        _root = new Grid { Margin = new(24, 16, 24, 22) };
+        _root = new Grid { Margin = new(16, 16, 16, 20) };
         _root.RowDefinitions.Add(new() { Height = new(28) });
         _root.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
         _root.RowDefinitions.Add(new() { Height = GridLength.Auto });
         _root.RowDefinitions.Add(new() { Height = new(58) });
         var caption = new Grid { Background = Brushes.Transparent };
         caption.MouseLeftButtonDown += (_, args) => { if (args.LeftButton == System.Windows.Input.MouseButtonState.Pressed) DragMove(); };
-        var close = UiTheme.Button("×", Hide);
+        var close = _close = UiTheme.Button("×", Hide);
         close.Width = close.Height = 28;
         close.Padding = new(0);
         close.BorderThickness = new(0);
         close.Background = Brushes.Transparent;
         close.HorizontalAlignment = HorizontalAlignment.Right;
         AutomationProperties.SetName(close, UiTheme.L("关闭首次设置", "Close Setup"));
+        AutomationProperties.SetAutomationId(close, "OnboardingClose");
         caption.Children.Add(close);
         _root.Children.Add(caption);
         var scroll = new ScrollViewer { Content = _body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Padding = new(22, 4, 22, 0) };
+            Padding = new(36, 4, 36, 0) };
         Grid.SetRow(scroll, 1);
         _root.Children.Add(scroll);
         _feedback.Margin = new(22, 8, 22, 0);
@@ -71,14 +75,18 @@ internal sealed class OnboardingWindow : Window
         footer.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         footer.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         footer.Children.Add(_dots);
-        _back = UiTheme.Button(UiTheme.L("返回", "Back"), () => { if (!_busy && _step > 1) { _step--; _feedback.Text = ""; Refresh(); } });
+        _back = UiTheme.Button(UiTheme.L("返回", "Back"), () => { if (IsVisible && !_busy && _step > 1) { _step--; _feedback.Text = ""; Refresh(); } });
         _back.Margin = new(0, 0, 10, 0);
-        _back.MinWidth = 72;
+        _back.MinWidth = 64;
+        _back.Height = 34;
+        _back.VerticalAlignment = VerticalAlignment.Center;
         AutomationProperties.SetAutomationId(_back, "OnboardingBack");
         Grid.SetColumn(_back, 1);
         footer.Children.Add(_back);
         _next = UiTheme.Button(UiTheme.L("继续", "Continue"), async () => await NextAsync(), primary: true);
-        _next.MinWidth = 86;
+        _next.MinWidth = 64;
+        _next.Height = 34;
+        _next.VerticalAlignment = VerticalAlignment.Center;
         AutomationProperties.SetAutomationId(_next, "OnboardingNext");
         Grid.SetColumn(_next, 2);
         footer.Children.Add(_next);
@@ -88,6 +96,7 @@ internal sealed class OnboardingWindow : Window
         shell.Margin = new(10);
         shell.BorderThickness = new(.5);
         Content = shell;
+        IsVisibleChanged += (_, _) => _navigationVersion++;
         _settings.Changed += Refresh;
         _model.Changed += Refresh;
         _settingsWindow.PreparationChanged += Refresh;
@@ -107,6 +116,7 @@ internal sealed class OnboardingWindow : Window
             return;
         if (restart)
         {
+            _navigationVersion++;
             _step = 1;
             _feedback.Text = "";
         }
@@ -129,6 +139,8 @@ internal sealed class OnboardingWindow : Window
         try
         {
             UiTheme.Apply(_settings.Value);
+            AutomationProperties.SetName(_close, UiTheme.L("关闭首次设置", "Close Setup"));
+            _pageIdentity = new();
             _body.Children.Clear();
             _dots.Children.Clear();
             for (int step = 1; step <= 4; step++)
@@ -146,9 +158,9 @@ internal sealed class OnboardingWindow : Window
             switch (_step)
             {
                 case 1:
-                    var mark = UiTheme.Mark(68, appIcon: true);
+                    var mark = UiTheme.Mark(76, appIcon: true);
                     mark.HorizontalAlignment = HorizontalAlignment.Center;
-                    mark.Margin = new(0, 0, 0, 24);
+                    mark.Margin = new(0, 0, 0, 14);
                     _body.Children.Add(mark);
                     Heading(UiTheme.L("欢迎使用 TypeLay", "Welcome to TypeLay"));
                     Note(UiTheme.L("翻译全部在这台电脑上完成", "Everything is translated on this computer"));
@@ -169,7 +181,7 @@ internal sealed class OnboardingWindow : Window
 
     private void Heading(string value)
     {
-        var heading = UiTheme.Text(value, 28);
+        var heading = UiTheme.Text(value, 30);
         heading.FontFamily = UiTheme.ContentFont;
         heading.TextAlignment = TextAlignment.Center;
         heading.Margin = new(0, 0, 0, 18);
@@ -178,31 +190,40 @@ internal sealed class OnboardingWindow : Window
 
     private void Note(string value)
     {
-        var note = UiTheme.Text(value, 13, true);
-        note.TextAlignment = TextAlignment.Center;
-        note.Margin = new(0, 0, 0, 16);
-        _body.Children.Add(note);
+        var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
+        var shield = new System.Windows.Shapes.Path
+        {
+            Data = Geometry.Parse("M12 3 L5 6 V11.5 C5 15.8 8 19.1 12 21 C16 19.1 19 15.8 19 11.5 V6 Z M9 12 L11.2 14.2 L15.5 10"),
+            Width = 15, Height = 16, Stretch = Stretch.Uniform, StrokeThickness = 1.6,
+            StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, StrokeLineJoin = PenLineJoin.Round,
+            Margin = new(0, 0, 7, 0), VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false
+        };
+        shield.SetResourceReference(System.Windows.Shapes.Shape.StrokeProperty, "Good");
+        row.Children.Add(shield);
+        row.Children.Add(UiTheme.Text(value, 14, true));
+        _body.Children.Add(row);
     }
 
     private void Languages()
     {
+        object page = _pageIdentity;
         Heading(UiTheme.L("你想译成什么语言？", "What do you want to write in?"));
         var directions = new Grid { Margin = new(0, 5, 0, 20) };
         directions.ColumnDefinitions.Add(new());
-        directions.ColumnDefinitions.Add(new() { Width = new(44) });
+        directions.ColumnDefinitions.Add(new() { Width = new(56) });
         directions.ColumnDefinitions.Add(new());
         foreach (bool source in new[] { true, false })
         {
             var group = new StackPanel();
             group.Children.Add(UiTheme.Text(source ? UiTheme.L("源语言", "From") : UiTheme.L("目标语言", "To"), 12, true));
             var picker = new LanguagePicker(source, source ? _settings.Value.Source : _settings.Value.Target,
-                async code => await SaveAsync(() => source ? _settings.Value with { Source = code } : _settings.Value with { Target = code }),
-                _model.Ready ? _model.AvailableDirections : null) { Margin = new(0, 7, 0, 0), MinWidth = 0 };
+                async code => await SavePageAsync(page, () => source ? _settings.Value with { Source = code } : _settings.Value with { Target = code }),
+                _model.Ready ? _model.AvailableDirections : null) { Margin = new(0, 7, 0, 0), MinWidth = 0, Height = 44, IsEnabled = !_busy };
             group.Children.Add(picker);
             Grid.SetColumn(group, source ? 0 : 2);
             directions.Children.Add(group);
         }
-        var swap = UiTheme.Button("⇄", async () => await SaveAsync(() => _settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
+        var swap = UiTheme.Button("⇄", async () => await SavePageAsync(page, () => _settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
         swap.IsEnabled = !_busy && _settings.Value.Source != "auto";
         swap.Padding = new(0);
         swap.BorderThickness = new(0);
@@ -212,7 +233,7 @@ internal sealed class OnboardingWindow : Window
         Grid.SetColumn(swap, 1);
         directions.Children.Add(swap);
         _body.Children.Add(directions);
-        var styles = new UniformGrid { Columns = 4 };
+        var styles = new UniformGrid { Columns = 4, Width = 228, Height = 28, HorizontalAlignment = HorizontalAlignment.Center };
         var state = _settingsWindow.OnboardingStyle;
         foreach (var (zh, en, style) in new (string, string, TranslationStyle?)[]
         {
@@ -222,20 +243,24 @@ internal sealed class OnboardingWindow : Window
         {
             var button = UiTheme.Button(UiTheme.L(zh, en), async () =>
             {
-                if (style is null || _busy)
+                if (!CurrentPage(page) || style is null || _busy)
                     return;
                 _busy = true;
                 Refresh();
                 try { await _settingsWindow.ChangeOnboardingStyleAsync(style.Value); }
                 finally { _busy = false; Refresh(); }
             });
-            button.Margin = new(2, 0, 2, 0);
-            button.Padding = new(4, 7, 4, 7);
+            button.Margin = new(1);
+            button.BorderThickness = new(0);
+            button.Padding = new(4, 0, 4, 0);
+            button.FontSize = 12;
             button.IsEnabled = !_busy && style is not null && state is { IsReleased: true, CanChange: true, Session: null };
             button.ToolTip = style is null ? UiTheme.L("尚未提供", "Not available")
                 : button.IsEnabled ? null : UiTheme.L("当前模型方向尚未开放翻译风格", "Tone is not released for this model direction");
             ToolTipService.SetShowOnDisabled(button, true);
             button.SetResourceReference(Control.BackgroundProperty, style is not null && style == state?.SavedPreferences?.Default ? "AccentSoft" : "Panel2");
+            AutomationProperties.SetHelpText(button, button.ToolTip as string ?? "");
+            AutomationProperties.SetItemStatus(button, style is not null && style == state?.SavedPreferences?.Default ? "selected" : "");
             styles.Children.Add(button);
         }
         _body.Children.Add(styles);
@@ -243,6 +268,7 @@ internal sealed class OnboardingWindow : Window
 
     private void Model()
     {
+        object page = _pageIdentity;
         Heading(UiTheme.L("下载本地翻译模型", "Download the translation model"));
         var view = _settingsWindow.OnboardingPreparation;
         var card = new StackPanel { Margin = new(16) };
@@ -261,7 +287,7 @@ internal sealed class OnboardingWindow : Window
         var actions = new WrapPanel { Margin = new(0, 14, 0, 0), HorizontalAlignment = HorizontalAlignment.Right };
         foreach (var action in new[] { view.PrimaryAction }.Concat(view.SecondaryActions).Where(action => action.Id != TranslationPreparationAction.NextStep))
         {
-            var button = UiTheme.Button(action.Label, () => _settingsWindow.RunOnboardingPreparation(action), primary: action == view.PrimaryAction);
+            var button = UiTheme.Button(action.Label, () => { if (CurrentPage(page)) _settingsWindow.RunOnboardingPreparation(action); }, primary: action == view.PrimaryAction);
             button.IsEnabled = action.Enabled;
             button.Margin = new(6, 0, 0, 0);
             actions.Children.Add(button);
@@ -272,42 +298,70 @@ internal sealed class OnboardingWindow : Window
 
     private void Practice()
     {
+        object page = _pageIdentity;
         Heading(UiTheme.L("试一试", "Try it"));
         var cards = new UniformGrid { Columns = 2, Margin = new(0, 4, 0, 18) };
         foreach (WorkMode mode in new[] { WorkMode.Automatic, WorkMode.OnDemand })
         {
             var content = new StackPanel { Margin = new(4) };
             content.Children.Add(UiTheme.Text(mode == WorkMode.Automatic ? UiTheme.L("自动翻译", "Automatic") : UiTheme.L("按需翻译", "On demand"), 14, bold: true));
-            var keys = UiTheme.Text(mode == WorkMode.Automatic ? _settings.Value.AcceptShortcut
-                : _settings.Value.WakeShortcut + "\n" + _settings.Value.DirectShortcut, 11, true);
-            keys.Margin = new(0, 12, 0, 0);
+            var keys = new WrapPanel { Margin = new(0, 10, 0, 0) };
+            foreach (string shortcut in mode == WorkMode.Automatic ? new[] { _settings.Value.AcceptShortcut }
+                : new[] { _settings.Value.WakeShortcut, _settings.Value.DirectShortcut })
+            {
+                var cap = UiTheme.Border(UiTheme.Text(shortcut, 11, true), 4, "Panel2");
+                cap.Padding = new(5, 2, 5, 2);
+                cap.BorderThickness = new(0);
+                cap.Margin = new(0, 0, 4, 0);
+                keys.Children.Add(cap);
+            }
             content.Children.Add(keys);
             var card = UiTheme.Button("", async () =>
             {
-                if (!_model.Ready || _busy)
+                if (!CurrentPage(page) || !_model.Ready || _busy)
                     return;
-                if (!await SaveAsync(() => _settings.Value with { Mode = mode }))
+                long navigation = _navigationVersion;
+                if (!await SavePageAsync(page, () => _settings.Value with { Mode = mode })
+                    || !IsVisible || _step != 4 || navigation != _navigationVersion || !_model.Ready)
                     return;
                 Hide();
                 _settingsWindow.StartPractice();
             });
+            AutomationProperties.SetAutomationId(card, "OnboardingPractice_" + mode);
             card.Content = content;
             card.IsEnabled = !_busy && _model.Ready;
             card.HorizontalContentAlignment = HorizontalAlignment.Left;
             card.Margin = new(4, 0, 4, 0);
             card.Padding = new(12);
+            card.Template = (ControlTemplate)XamlReader.Parse("""
+                <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+                  <Border x:Name="card" CornerRadius="14" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="0.5" Padding="{TemplateBinding Padding}">
+                    <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                  </Border>
+                  <ControlTemplate.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="card" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+                    <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="card" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
+                    <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/></Trigger>
+                  </ControlTemplate.Triggers>
+                </ControlTemplate>
+                """);
             cards.Children.Add(card);
         }
         _body.Children.Add(cards);
         var startup = new DockPanel { Margin = new(14, 10, 14, 10) };
         var toggle = UiTheme.Toggle(UiTheme.L("登录 Windows 后自动启动", "Open at Windows login"), () => _settings.Value.Startup,
-            async enabled => await SaveAsync(() => _settings.Value with { Startup = enabled }));
+            async enabled => await SavePageAsync(page, () => _settings.Value with { Startup = enabled }));
         toggle.IsEnabled = !_busy;
         DockPanel.SetDock(toggle, Dock.Right);
         startup.Children.Add(toggle);
         startup.Children.Add(UiTheme.Text(UiTheme.L("登录 Windows 后自动启动", "Open at Windows login"), 13));
         _body.Children.Add(UiTheme.Border(startup, 12));
     }
+
+    private bool CurrentPage(object page) => !_closed && IsVisible && ReferenceEquals(_pageIdentity, page);
+
+    private Task<bool> SavePageAsync(object page, Func<UserSettings> value) => CurrentPage(page)
+        ? SaveAsync(value) : Task.FromResult(false);
 
     private async Task<bool> SaveAsync(Func<UserSettings> value)
     {
@@ -327,7 +381,7 @@ internal sealed class OnboardingWindow : Window
 
     private async Task NextAsync()
     {
-        if (_busy || _step == 3 && !_model.Ready)
+        if (!IsVisible || _busy || _step >= 3 && !_model.Ready)
             return;
         if (_step == 4)
         {

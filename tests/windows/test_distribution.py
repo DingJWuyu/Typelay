@@ -167,8 +167,24 @@ class DistributionTests(unittest.TestCase):
                 "icons/typelay-16.png",
                 "icons/typelay-48.png",
                 "icons/typelay-128.png",
+                "fonts/README.md",
+                "fonts/inter/Inter-Regular.ttf",
+                "fonts/inter/Inter-Medium.ttf",
+                "fonts/inter/Inter-SemiBold.ttf",
+                "fonts/inter/LICENSE.txt",
+                "fonts/source-serif/SourceSerif4-Regular.ttf",
+                "fonts/source-serif/SourceSerif4-Semibold.ttf",
+                "fonts/source-serif/LICENSE.md",
             },
         )
+        fonts = Path(__file__).resolve().parents[2] / "src/shared/ui/fonts"
+        for source in fonts.rglob("*"):
+            if source.is_file():
+                relative = source.relative_to(fonts)
+                with self.subTest(font=str(relative)):
+                    self.assertEqual(
+                        (extension / "fonts" / relative).read_bytes(), source.read_bytes()
+                    )
         manifest = json.loads((extension / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(set(manifest["icons"]), {"16", "48", "128"})
         for size, name in manifest["icons"].items():

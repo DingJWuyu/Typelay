@@ -253,8 +253,11 @@ class BrowserBundleTests(unittest.TestCase):
                 "icons/typelay-48.png",
                 "icons/typelay-128.png",
             }
-            expected |= {"fonts/" + path.relative_to(ROOT / "src/shared/ui/fonts").as_posix()
-                         for path in (ROOT / "src/shared/ui/fonts").rglob("*") if path.is_file()}
+            expected |= {
+                "fonts/" + path.relative_to(ROOT / "src/shared/ui/fonts").as_posix()
+                for path in (ROOT / "src/shared/ui/fonts").rglob("*")
+                if path.is_file()
+            }
             for browser in ("chromium", "firefox"):
                 with self.subTest(browser=browser):
                     extension = package / "browser" / browser

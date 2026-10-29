@@ -75,6 +75,27 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
     });
 
     [Fact]
+    public Task RetiredGlossaryRowsCannotDeleteEditOrCommitTheReplacementRow() => desktop.RunAsync(() =>
+    {
+        var first = new GlossaryRule("A", "alpha");
+        var second = new GlossaryRule("B", "beta");
+        using var scene = new SettingsScene(new(Glossary: new(1, [first, second])));
+        scene.Window.ShowPage("glossary");
+        var oldDelete = Named<Button>(scene.Window, "删除术语 1");
+        var oldSource = Term(scene.Window, "源词 1");
+        var oldTarget = Term(scene.Window, "译词 1");
+        oldDelete.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Equal(second, Assert.Single(scene.Reload().Glossary!.Rules));
+        oldSource.Text = "stale"; oldTarget.Text = "stale";
+        oldTarget.RaiseEvent(new KeyboardFocusChangedEventArgs(Keyboard.PrimaryDevice, 0, oldTarget, null) { RoutedEvent = Keyboard.LostKeyboardFocusEvent });
+        oldDelete.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Equal(second, Assert.Single(scene.Reload().Glossary!.Rules));
+        Assert.Equal("B", Term(scene.Window, "源词 1").Text);
+        Named<Button>(scene.Window, "删除术语 1").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Empty(scene.Reload().Glossary!.Rules);
+    });
+
+    [Fact]
     public Task GlossaryDraftAndFocusSurviveRefreshNavigationAndCloseChoices() => desktop.RunAsync(() =>
     {
         using var scene = new SettingsScene(released: true);

@@ -1211,7 +1211,13 @@ def ordered_controls(
                     timing["assertionsPassed"] = True
 
                 def render_view(
-                    publication, state, text, owns_text, revision, translation_actions=None, appearance=None
+                    publication,
+                    state,
+                    text,
+                    owns_text,
+                    revision,
+                    translation_actions=None,
+                    appearance=None,
                 ):
                     target = publication["target"]
                     identity = publication["permit"]["plan"]["expected"]["target"]
@@ -1280,19 +1286,38 @@ def ordered_controls(
                 native.call("overlay-hide")
                 result["updating_translation_muted_and_manual_states_normal"] = True
                 for revision, (font, size, family) in enumerate(
-                    (("claude", 13, "Source Serif 4"), ("sans", 19, "Inter"), ("system", 15, "sans")), 30
+                    (
+                        ("claude", 13, "Source Serif 4"),
+                        ("sans", 19, "Inter"),
+                        ("system", 15, "sans"),
+                    ),
+                    30,
                 ):
-                    assert render_view(publication, "ValidTranslation", "Appearance stays read-only.", False,
-                                       revision, appearance={"font": font, "textSize": size, "uiLanguage": "en",
-                                                             "reduceMotion": True, "reduceTransparency": True})["visible"]
-                    actual = wait(lambda: value if (value := state()).get("editorFontPixels") == size
-                                  and family.lower() in value.get("editorFontFamily", "").lower() else None,
-                                  "actual Qt font preference did not reach the rendered editor")
+                    assert render_view(
+                        publication,
+                        "ValidTranslation",
+                        "Appearance stays read-only.",
+                        False,
+                        revision,
+                        appearance={
+                            "font": font,
+                            "textSize": size,
+                            "uiLanguage": "en",
+                            "reduceMotion": True,
+                            "reduceTransparency": True,
+                        },
+                    )["visible"]
+                    actual = wait(
+                        lambda: value
+                        if (value := state()).get("editorFontPixels") == size
+                        and family.lower() in value.get("editorFontFamily", "").lower()
+                        else None,
+                        "actual Qt font preference did not reach the rendered editor",
+                    )
                     assert actual["first"] == source_before
                     assert not actual["editorFocused"] and actual["editorReadOnly"]
                 native.call("overlay-hide")
                 result["appearance_does_not_acquire_editor_or_source_authority"] = True
-
 
                 # Controlled view data exercises the real QLineEdit/QPlainTextEdit/Fcitx/JSON
                 # adapter. It never enables a production gate or claims model quality.

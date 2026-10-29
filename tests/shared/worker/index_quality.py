@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 import styled_quality
-from typelay_worker.engine import alternative_key
+from typelay_worker.engine import PROTECTED, alternative_key
 from typelay_worker.glossary import parse_glossary
 from typelay_worker.index_assets import PACKAGE_ID, VERSION
 from typelay_worker.protocol import valid_text
@@ -32,12 +32,16 @@ CAPABILITIES = (
 
 
 def prepare_report():
-    raw = INPUTS.read_bytes()
-    if hashlib.sha256(raw).hexdigest() != INPUT_SHA256:
+    return prepare_fixed_inputs(INPUTS, INPUT_SHA256, 8, include_refusal_checks=True)
+
+
+def prepare_fixed_inputs(path, expected_sha256, count, *, include_refusal_checks):
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
         raise styled_quality.CollectionError("fixed-input-sha256")
     document = json.loads(raw)
     samples = document.get("samples", [])
-    if set(document) != {"schema", "samples"} or document["schema"] != 1 or len(samples) != 8:
+    if set(document) != {"schema", "samples"} or document["schema"] != 1 or len(samples) != count:
         raise styled_quality.CollectionError("fixed-input-schema-count")
     for index, sample in enumerate(samples):
         if (
@@ -53,11 +57,16 @@ def prepare_report():
             raise styled_quality.CollectionError("fixed-input-case-schema")
         parse_glossary(glossary(sample), {("zh", "en"), ("en", "zh")})
     return {
-        **styled_quality.collection_report(INPUT_SHA256, 51, native="index"),
+        **styled_quality.collection_report(
+            expected_sha256,
+            count * len(VARIANTS) + (3 if include_refusal_checks else 0),
+            native="index",
+        ),
         "method": "production-index-six-operations-fixed-zh-en-capture",
+        "includeRefusalChecks": include_refusal_checks,
         "expectedPackage": {"id": PACKAGE_ID, "version": VERSION},
         "requiredCapabilities": dict.fromkeys(CAPABILITIES, 1),
-        "reviewScope": "Eight frozen sources, not a broad language-quality or speed benchmark.",
+        "reviewScope": f"{count} frozen sources, not a broad language-quality or speed benchmark.",
         "cases": [
             {
                 **sample,
@@ -181,17 +190,30 @@ async def collect_cases(process, report):
                     op="translate-alternative",
                     previousCandidate=case["responses"]["ordinary"]["text"],
                 )
-            response = await exchange_case(process, report, case["id"] + ":" + variant, payload)
+            protected_alternative = variant == "alternative" and (
+                PROTECTED.search(case["text"]) or PROTECTED.search(payload["previousCandidate"])
+            )
+            response = await exchange_case(
+                process,
+                report,
+                case["id"] + ":" + variant,
+                payload,
+                expected_error="alternative-unavailable" if protected_alternative else None,
+            )
             case["responses"][variant] = response
             if variant == "alternative":
                 case["alternativeComparison"] = (
-                    "no-alternative"
+                    "protected-source-or-candidate-unavailable"
+                    if protected_alternative
+                    else "no-alternative"
                     if response["status"] == "no-alternative"
                     else "same-normalized-text"
                     if alternative_key(response["text"])
                     == alternative_key(payload["previousCandidate"])
                     else "different-text-not-a-meaning-verdict"
                 )
+    if not report["includeRefusalChecks"]:
+        return
     base = dict(
         op="translate-alternative",
         text="请稍后回复。",
