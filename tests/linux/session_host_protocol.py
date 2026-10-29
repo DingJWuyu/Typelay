@@ -1360,7 +1360,7 @@ while True:
         with (root.parent / "install.lock").open("r+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-    async def test_glossary_management_is_available_without_quality_release_and_ordinary_dto_is_separate(
+    async def test_glossary_management_is_available_without_a_model_and_ordinary_dto_is_separate(
         self,
     ):
         style = await self.ask("getStyleSettings")
@@ -1368,9 +1368,9 @@ while True:
         self.assertFalse(style["isReleased"])
         self.assertFalse(style["canChange"])
         glossary = await self.ask("getGlossarySettings")
-        self.assertFalse(glossary["isReleased"])
-        self.assertTrue(glossary["canSave"])
+        self.assertTrue(glossary["isReleased"])
         self.assertFalse(glossary["canApply"])
+        self.assertTrue(glossary["canSave"])
         directions = {(item["source"], item["target"]) for item in glossary["directions"]}
         self.assertIn(("fr", "zh"), directions)
         self.assertNotIn(("fr", "en"), directions)
@@ -1700,7 +1700,8 @@ while True:
         self.assertIsNone((await self.ask("getStyleSettings"))["savedPreferences"])
         glossary = await self.ask("getGlossarySettings", [rules[1]])
         self.assertTrue(glossary["canSave"])
-        self.assertFalse(glossary["isReleased"])
+        self.assertTrue(glossary["isReleased"])
+        self.assertFalse(glossary["canApply"])
         result = await self.ask(
             "changeGlossary",
             self.translation_request(glossary["settingsRevision"], rules=[rules[1]]),
@@ -1742,8 +1743,8 @@ while True:
         management = await self.ask("getGlossarySettings", altered)
         self.assertTrue(management["canSave"])
         self.assertFalse(management["canApply"])
-        self.assertFalse(management["isReleased"])
-        # Management is available without model quality release. Invalid syntax,
+        self.assertTrue(management["isReleased"])
+        # The current glossary release does not supply a model. Invalid syntax,
         # stale revisions and failed persistence still leave the current rules.
         obstruction = settings_file.with_suffix(".json.tmp")
         obstruction.mkdir()
@@ -1768,7 +1769,7 @@ while True:
         self.assertEqual(current["savedSnapshot"]["rules"], altered)
         self.assertTrue(current["canSave"])
         self.assertFalse(current["canApply"])
-        self.assertFalse(current["isReleased"])
+        self.assertTrue(current["isReleased"])
 
     async def test_translation_cancel_during_retirement_is_exact_and_prevents_late_commit(self):
         settings_file = await self.seed_translation_preferences()
@@ -2388,7 +2389,9 @@ while True:
         self.assertEqual(len(pending), 1)
         await self.send(pending.pop())
         self.assertIsInstance(await self.ask("translationPreparation", {"phase": "Idle"}), dict)
-        self.assertFalse((await self.ask("getGlossarySettings"))["isReleased"])
+        glossary = await self.ask("getGlossarySettings")
+        self.assertTrue(glossary["isReleased"])
+        self.assertFalse(glossary["canApply"])
         self.assertIsNone(self.process.returncode)
 
     async def test_language_choices_remain_available_without_claiming_a_ready_model(self):

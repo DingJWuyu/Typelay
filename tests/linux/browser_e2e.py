@@ -1824,16 +1824,16 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(second.locator("#source").input_value(), "Second tab")
 
-    def render_paused(self, revision=7):
+    def render_paused(self, revision=7, *, theme=None, appearance=None):
         # The real paused flow only describes metadata. It must establish its
         # own clock proof without obtaining a source text/selection capture.
         self.sequence += 2
         return self.page.evaluate(
-            """({id, revision}) => {
+            """({id, revision, theme, appearance}) => {
               const source = fixtureCommand({id, op: 'describe'});
               if (!source) return {source, rendered: {visible: false}};
               const rendered = fixtureCommand({id: id + 1, op: 'overlay-render', data: {
-                target: source.target, authority: source.authority, revision,
+                target: source.target, authority: source.authority, revision, theme, appearance,
                 view: {state: 'Paused', canAccept: false, pauseRevision: 3,
                   source: {target: {backend: 'linux-browser', value: source.target,
                     lifetime: 'fixture'}, bounds: source.geometry.bounds},
@@ -1842,7 +1842,12 @@ class BrowserContract(unittest.TestCase):
                     showEscape: false}}}});
               return {source, rendered};
             }""",
-            {"id": self.sequence - 1, "revision": revision},
+            {
+                "id": self.sequence - 1,
+                "revision": revision,
+                "theme": theme,
+                "appearance": appearance,
+            },
         )
 
     def paused_button(self):
@@ -3024,6 +3029,216 @@ class BrowserContract(unittest.TestCase):
                         self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
                         self.assertEqual(self.accepted(), [])
 
+    def test_overlay_footer_compact_direction_and_icon_controls_preserve_source(self):
+        output = ROOT / "artifacts/linux/browser-native/overlay" / f"footer-{uuid.uuid4().hex}"
+        output.mkdir(parents=True)
+        print(f"Footer screenshots: {output}", flush=True)
+        scenarios = (
+            ("light", "zh-CN", "en", "zh", "英语", "简体中文", "EN → 中", False, "preview"),
+            (
+                "dark",
+                "en",
+                "zh-Hant",
+                "en",
+                "Traditional Chinese",
+                "English",
+                "繁 → EN",
+                True,
+                "preview",
+            ),
+            ("light", "zh-CN", "auto", "ja", "自动检测", "日语", "Auto → JA", False, "preview"),
+            (
+                "dark",
+                "en",
+                "ko",
+                "zh-CN",
+                "Korean",
+                "Simplified Chinese",
+                "KO → 中",
+                True,
+                "preview",
+            ),
+        ) + tuple(
+            (theme, language, "auto", "en", "Auto", "English", "Auto → EN", False, phase)
+            for theme, language in (("light", "zh-CN"), ("dark", "en"))
+            for phase in ("idle", "paused")
+        )
+        for (
+            theme,
+            language,
+            source,
+            target,
+            source_name,
+            target_name,
+            compact,
+            long,
+            phase,
+        ) in scenarios:
+            with self.subTest(theme=theme, source=source, target=target, phase=phase):
+                # Each independent direction starts a normal capture, or the
+                # existing metadata-only paused path. No old deadline is extended.
+                self.page.reload()
+                self.command(
+                    "configure-shortcuts",
+                    {
+                        "generation": "browser-default",
+                        "sessionEnabled": True,
+                        "enabled": False,
+                        "accept": "Tab",
+                        "exit": "Esc",
+                    },
+                )
+                self.page.locator("#source").focus()
+                appearance = {"uiLanguage": language, "motion": "reduce"}
+                if phase == "paused":
+                    self.page.keyboard.insert_text("Hello")
+                    self.assertTrue(
+                        self.render_paused(theme=theme, appearance=appearance)["rendered"][
+                            "visible"
+                        ]
+                    )
+                    control = self.overlay_control("Resume" if language == "en" else "恢复")
+                else:
+                    data = self.motion_view()
+                    data.update(theme=theme, appearance=appearance)
+                    data["view"].update(
+                        sourceLanguage=source,
+                        targetLanguage=target,
+                        sourceLanguageLabel=source_name,
+                        targetLanguageLabel=target_name,
+                        text="" if phase == "idle" else "Current candidate. " * (80 if long else 1),
+                        state="IdleCapsule" if phase == "idle" else "ValidTranslation",
+                    )
+                    self.assertTrue(self.command("overlay-render", data)["visible"])
+                    control = self.overlay_control(f"{source_name} → {target_name}")
+                actual = self.overlay_dom(
+                    control,
+                    """function() {
+                  const panel=this.getRootNode().querySelector('section'), bar=panel.querySelector('header');
+                  const editor=panel.querySelector('textarea');
+                  const direction=bar.querySelector('.language'), controls=[...bar.querySelectorAll('.disclosure')];
+                  return {label:direction.textContent.trim(), aria:direction.getAttribute('aria-label'),
+                    editorConnected:editor.isConnected, readonly:editor.readOnly, editorHidden:editor.hidden,
+                    controls:controls.map(button=>({hidden:button.hidden, name:button.getAttribute('aria-label'),
+                      display:getComputedStyle(button).display, svg:button.querySelector('svg')?.getAttribute('aria-hidden') ?? null,
+                      width:button.getBoundingClientRect().width, height:button.getBoundingClientRect().height})),
+                    rect:panel.getRootNode().host.getBoundingClientRect().toJSON()};
+                }""",
+                )
+                if phase != "paused":
+                    with self.subTest(part="compact-direction-and-full-accessible-name"):
+                        self.assertEqual(actual["label"], compact)
+                        self.assertEqual(actual["aria"], f"{source_name} → {target_name}")
+                with self.subTest(part="short-content-keeps-expand-hidden"):
+                    self.assertEqual(
+                        [c["hidden"] for c in actual["controls"]], [not long, phase != "preview"]
+                    )
+                with self.subTest(part="native-icon-button-size-and-names"):
+                    self.assertEqual(
+                        [c["name"] for c in actual["controls"]],
+                        ["Expand", "More"] if language == "en" else ["展开", "更多"],
+                    )
+                    self.assertEqual([c["svg"] for c in actual["controls"]], ["true", "true"])
+                    for control in actual["controls"]:
+                        if control["hidden"]:
+                            self.assertEqual(control["display"], "none")
+                            self.assertEqual([control["width"], control["height"]], [0, 0])
+                        else:
+                            self.assertEqual(control["display"], "grid")
+                            self.assertEqual([control["width"], control["height"]], [26, 26])
+                self.assertTrue(actual["editorConnected"] and actual["readonly"])
+                self.assertEqual(actual["editorHidden"], phase != "preview")
+                self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.accepted(), [])
+                # Hover only, not a click, for the normal footer screenshot.
+                rect = actual["rect"]
+                self.page.mouse.move(rect["x"] + 12, rect["y"] + 12)
+                self.page.screenshot(
+                    path=output / f"{theme}-{source}-{target}-{phase}.png", clip=rect
+                )
+
+    def test_overlay_footer_reveals_on_hover_focus_and_pins_open_more(self):
+        output = (
+            ROOT
+            / "artifacts/linux/browser-native/overlay"
+            / f"footer-interaction-{uuid.uuid4().hex}"
+        )
+        output.mkdir(parents=True)
+        print(f"Footer interaction screenshots: {output}", flush=True)
+        for mode in ("pointer", "editor-focus"):
+            with self.subTest(mode=mode):
+                self.page.reload()
+                self.command(
+                    "configure-shortcuts",
+                    {
+                        "generation": "browser-default",
+                        "sessionEnabled": True,
+                        "enabled": False,
+                        "accept": "Tab",
+                        "exit": "Esc",
+                    },
+                )
+                self.page.locator("#source").focus()
+                if mode == "editor-focus":
+                    _, data = self.open_editor("Tab", "Esc")
+                else:
+                    data = self.motion_view()
+                data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce"}
+                self.assertTrue(self.command("overlay-render", data)["visible"])
+                editor = self.overlay_control("TypeLay 译文", "textbox")
+                self.page.mouse.move(10, 10)
+
+                def actual():
+                    return self.overlay_dom(
+                        editor,
+                        """function() {
+                      const panel=this.parentElement, more=panel.querySelector('header button[aria-controls]');
+                      return {connected:this.isConnected, focused:this.matches(':focus'),
+                        opacity:getComputedStyle(more).opacity, open:more.getAttribute('aria-expanded'),
+                        menuHidden:panel.querySelector('#more-actions').hidden};
+                    }""",
+                    )
+
+                self.assertEqual(actual()["opacity"], "1" if mode == "editor-focus" else "0")
+                if mode == "pointer":
+                    rect = self.overlay_dom(
+                        editor, "function() {return this.getBoundingClientRect().toJSON();}"
+                    )
+                    self.page.mouse.move(rect["x"] + 10, rect["y"] + 10)
+                    self.assertEqual(actual()["opacity"], "1")
+                self.page.screenshot(path=output / f"{mode}-revealed.png")
+                self.click_overlay_control("更多")
+                self.page.mouse.move(10, 10)
+                self.assertEqual(
+                    actual(),
+                    {
+                        "connected": True,
+                        "focused": mode == "editor-focus",
+                        "opacity": "1",
+                        "open": "true",
+                        "menuHidden": False,
+                    },
+                )
+                self.page.screenshot(path=output / f"{mode}-pinned.png")
+                self.page.keyboard.press("Escape")
+                self.assertEqual(
+                    actual(),
+                    {
+                        "connected": True,
+                        "focused": mode == "editor-focus",
+                        "opacity": "1" if mode == "editor-focus" else "0",
+                        "open": "false",
+                        "menuHidden": True,
+                    },
+                )
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.accepted(), [])
+                self.assertFalse(
+                    self.page.evaluate("""fixtureMessages.some(m =>
+                    m.event === 'ui' && ['escape','return'].includes(m.data.operation))""")
+                )
+
     def test_more_menu_hide_hint_and_outside_pointer_dismissal(self):
         for language, exit_key in (("zh-CN", "Esc"), ("en", "F7")):
             with self.subTest(language=language):
@@ -3371,18 +3586,23 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 
-    def test_more_popup_opened_during_resize_anchors_to_settled_header(self):
-        # Observe the existing display clock without renewing it. A detached
-        # shell is not a settled animation and must retain its timing evidence.
+    def test_more_popup_host_renewal_during_resize_anchors_to_settled_header(self):
+        # The normal host keeps this positive layout scene displayed. Renew once
+        # after CDP preparation, only while the original view is still alive.
+        # This is not a capture, key-ticket renewal, or revival of an expired view.
         self.page.evaluate("""() => {
           window.fixtureMenuRenewals = [];
+          window.fixtureMenuDisplay = null;
           const original = window.fixtureRawCommand;
           window.fixtureRawCommand = message => {
             const result = original(message);
             if (['overlay-render', 'overlay-renew'].includes(message.op)
-                && fixtureMenuRenewals.length < 8)
+                && fixtureMenuRenewals.length < 8) {
               fixtureMenuRenewals.push({ms: performance.now(), operation: message.op,
                 expiresAtPerformanceMs: message.data.expiresAtMs - 1000000});
+              fixtureMenuDisplay = JSON.stringify({target: message.data.target,
+                authority: message.data.authority, revision: message.data.revision});
+            }
             return result;
           };
         }""")
@@ -3399,6 +3619,7 @@ class BrowserContract(unittest.TestCase):
             animation_count = self.overlay_dom(
                 editor,
                 """function() {
+                  window.fixtureMenuEditor = this;
                   const animations = this.getRootNode().host.getAnimations();
                   for (const animation of animations)
                     animation.currentTime = 140;
@@ -3414,6 +3635,44 @@ class BrowserContract(unittest.TestCase):
             self.click_overlay_control("更多")
             menu = self.overlay_control("更多操作", "group")
             self.assertFalse(self.overlay_dom(menu, "function() { return this.hidden; }"))
+            self.sequence += 1
+            renewal = {
+                "id": self.sequence,
+                "op": "overlay-renew",
+                "data": {
+                    "target": data["target"],
+                    "authority": data["authority"],
+                    "revision": data["revision"],
+                },
+            }
+            renewed = self.overlay_dom(
+                menu,
+                """function() {
+              const request = %s, host = this.getRootNode().host;
+              const before = fixtureMenuRenewals.at(-1), now = performance.now();
+              const sameProof = fixtureMenuDisplay === JSON.stringify(request.data);
+              if (!before || !(now < before.expiresAtPerformanceMs) || !sameProof
+                  || !this.isConnected || this.hidden || !host?.isConnected
+                  || fixtureMenuEditor.getRootNode().host !== host
+                  || !document.hasFocus() || document.activeElement.id !== 'source')
+                return {eligible: false};
+              const animations = host.getAnimations(), times = animations.map(a => a.currentTime);
+              const count = fixtureMenuRenewals.length;
+              fixtureCommand(request);
+              const after = host.getAnimations();
+              return {eligible: true, singleRenewal: fixtureMenuRenewals.length === count + 1
+                && fixtureMenuRenewals.at(-1).operation === 'overlay-renew',
+                sameView: this.isConnected && !this.hidden && host.isConnected
+                  && fixtureMenuEditor.isConnected && fixtureMenuEditor.getRootNode().host === host,
+                sameMotion: animations.length > 0 && animations.length === after.length
+                  && animations.every((a, i) => a === after[i] && a.currentTime === times[i])};
+            }"""
+                % json.dumps(renewal),
+            )
+            self.assertEqual(
+                renewed,
+                {"eligible": True, "singleRenewal": True, "sameView": True, "sameMotion": True},
+            )
         finally:
             self.cdp.send("Animation.setPlaybackRate", {"playbackRate": 1})
         self.observe_overlay_frames()
@@ -4332,6 +4591,88 @@ class BrowserContract(unittest.TestCase):
                 self.assertEqual(result["after"], {"text": "Tab 交还应用", "changes": 1})
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
+
+    def test_retranslation_confirmation_escape_keeps_the_live_editor_draft(self):
+        for phase in ("clear", "unknown-editor", "new-view", "changed-draft"):
+            with self.subTest(phase=phase):
+                self.page.reload()
+                self.page.locator("#source").focus()
+                _, data = self.open_editor("Tab", "Esc")
+                data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce"}
+                self.assertTrue(self.command("overlay-render", data)["visible"])
+                self.page.keyboard.press("Control+A")
+                self.page.keyboard.insert_text("My keyboard-confirmed draft")
+                self.assertTrue(self.command("overlay-render", data)["visible"])
+                editor = self.overlay_control("TypeLay 译文", "textbox")
+                self.click_overlay_control("更多")
+                self.click_overlay_control("重新翻译")
+                question = self.overlay_control("替换你修改过的译文？", "group")
+                self.assertTrue(
+                    self.overlay_dom(question, "function() { return this.isConnected; }")
+                )
+                self.overlay_dom(
+                    editor,
+                    """function() {
+                  window.confirmationKeys=[];
+                  this.addEventListener('keydown', event=>{
+                    if(event.key==='Escape') confirmationKeys.push({trusted:event.isTrusted,prevented:event.defaultPrevented});
+                  });
+                }""",
+                )
+                if phase == "unknown-editor":
+                    # Synthetic IME observation revokes Clear; it cannot prove
+                    # a real input-method session or manufacture a trusted end.
+                    self.overlay_dom(
+                        editor,
+                        """function() {
+                      this.dispatchEvent(new CompositionEvent('compositionstart'));
+                    }""",
+                    )
+                elif phase == "new-view":
+                    data["revision"] += 1
+                    self.assertTrue(self.command("overlay-render", data)["visible"])
+                    self.assertFalse(
+                        self.overlay_dom(question, "function() {return this.isConnected;}")
+                    )
+                elif phase == "changed-draft":
+                    self.page.keyboard.insert_text("!")
+                    self.assertFalse(
+                        self.overlay_dom(question, "function() {return this.isConnected;}")
+                    )
+                before = self.overlay_dom(
+                    editor,
+                    """function() {
+                  return [this.value,this.selectionStart,this.selectionEnd];
+                }""",
+                )
+                self.page.keyboard.press("Escape")
+                self.assertEqual(
+                    self.overlay_dom(question, "function() { return this.isConnected; }"),
+                    phase == "unknown-editor",
+                )
+                self.assertEqual(
+                    self.page.evaluate("""fixtureMessages.filter(m =>
+                    m.event === 'ui' && ['escape','return','regenerate'].includes(m.data.operation))
+                    .map(m=>m.data.operation)"""),
+                    ["escape"] if phase in ("new-view", "changed-draft") else [],
+                )
+                # A new Escape after retirement belongs to the ordinary editor;
+                # the old confirmation must not permanently swallow that key.
+                self.assertEqual(
+                    self.page.evaluate("confirmationKeys"),
+                    [{"trusted": True, "prevented": False}] if phase == "unknown-editor" else [],
+                )
+                self.assertEqual(
+                    self.overlay_dom(
+                        editor,
+                        """function() {
+                  return [this.isConnected,this.value,this.selectionStart,this.selectionEnd,this.readOnly,this.matches(':focus')];
+                }""",
+                    ),
+                    [True, *before, False, True],
+                )
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.accepted(), [])
 
     def test_retranslation_confirms_human_draft_and_rejects_superseded_confirmation(self):
         snapshot, data = self.open_editor("Tab", "Esc")

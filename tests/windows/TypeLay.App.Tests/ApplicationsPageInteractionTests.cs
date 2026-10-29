@@ -1,0 +1,381 @@
+using System.IO;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
+using System.Windows.Controls;
+using System.Windows.Threading;
+using TypeLay.App;
+using TypeLay.Core;
+using TypeLay.Runtime;
+using Xunit;
+
+namespace TypeLay.App.Tests;
+
+public sealed partial class SettingsRenderingTests
+{
+    [Fact]
+    public Task ApplicationRemovalOnlyChangesMembershipAndLastEmptyListSurvivesReopen() => desktop.RunAsync(async () =>
+    {
+        using var scene = new ApplicationPageScene(new(ApplicationListCustomized: true, ManagedApplications: ["writer"], ExcludedApplications: ["writer"],
+            Styles: new(TranslationStyle.Natural, new Dictionary<string, TranslationStyle> { ["writer"] = TranslationStyle.Formal })));
+        string before = File.ReadAllText(scene.Path);
+        RemoveApplication(scene.Window, "writer", confirm: false);
+        Assert.Equal(before, File.ReadAllText(scene.Path));
+        RemoveApplication(scene.Window, "writer", confirm: true);
+        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+        Assert.Empty(scene.Reload().VisibleApplications(["newly-discovered"]));
+        Assert.True(scene.Reload().ApplicationListCustomized);
+        Assert.Equal(["writer"], scene.Reload().Excluded);
+        Assert.Equal(TranslationStyle.Formal, scene.Reload().Styles!.Applications!["writer"]);
+        Assert.False(scene.Reload().ExperimentalWriteback);
+        Assert.True(ApplicationElement(scene.Window, "ApplicationEmpty").IsVisible);
+        var undo = Descendants(scene.Window).OfType<Button>().Single(button => button.IsVisible && Equals(button.Content, "撤销"));
+        InvokeApplicationButton(undo);
+        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+        Assert.Equal(["writer"], scene.Reload().VisibleApplications([]));
+        Assert.Equal(ToggleState.Off, ToggleProvider(SettingToggle(scene.Window, "在 writer 中启用")).ToggleState);
+        RemoveApplication(scene.Window, "writer", confirm: true);
+        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+        var staleUndo = Descendants(scene.Window).OfType<Button>().Single(button => button.IsVisible && Equals(button.Content, "撤销"));
+        scene.Settings.Update(scene.Settings.Value with
+        {
+            Target = "zh"
+        });
+        before = File.ReadAllText(scene.Path);
+        InvokeApplicationButton(staleUndo);
+        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+        Assert.Equal(before, File.ReadAllText(scene.Path));
+        scene.Window.Hide();
+        scene.Window.ShowPage("apps");
+        Assert.Empty(scene.Reload().VisibleApplications(["chrome"]));
+        ApplicationDialogAction(scene.Window, () => ApplicationButton(scene.Window, "ApplicationAdd").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)), "ApplicationPicker",
+            dialog => InvokeApplicationButton(ApplicationButton(dialog, "ApplicationPickerChoice_writer")));
+        Assert.Equal(["writer"], scene.Reload().VisibleApplications([]));
+        Assert.Equal(["writer"], scene.Reload().Excluded);
+        Assert.Equal(TranslationStyle.Formal, scene.Reload().Styles!.Applications!["writer"]);
+    });
+
+    [Fact]
+    public Task FirstApplicationCustomizationKeepsTheFullLegacyProjectionAndFailedSaveKeepsItUnchanged() => desktop.RunAsync(async () =>
+    {
+        using var scene = new ApplicationPageScene(new(ManagedApplications: ["added"], ExcludedApplications: ["private"],
+            Styles: new(TranslationStyle.Natural, new Dictionary<string, TranslationStyle> { ["styled"] = TranslationStyle.Formal })));
+        var before = scene.Reload();
+        Assert.False(before.ApplicationListCustomized);
+        Directory.CreateDirectory(scene.Path + ".tmp");
+        RemoveApplication(scene.Window, "private", confirm: true);
+        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+        Assert.False(scene.Reload().ApplicationListCustomized);
+        Assert.Equal(before.VisibleApplications(["chrome", "code", "firefox", "msedge"]), ApplicationMembers(scene.Window));
+        Assert.True(ApplicationElement(scene.Window, "SettingsSaveBanner").IsVisible);
+        Directory.Delete(scene.Path + ".tmp");
+        var retry = Descendants(ApplicationElement(scene.Window, "SettingsSaveBanner")).OfType<Button>().Single();
+        InvokeApplicationButton(retry);
+        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+        Assert.True(scene.Reload().ApplicationListCustomized);
+        Assert.Equal(["added", "chrome", "code", "firefox", "msedge", "styled"], scene.Reload().VisibleApplications([]));
+        Assert.Equal(["private"], scene.Reload().Excluded);
+        Assert.Equal(TranslationStyle.Formal, scene.Reload().Styles!.Applications!["styled"]);
+        Assert.False(scene.Reload().ExperimentalWriteback);
+    });
+
+    [Fact]
+    public Task ApplicationPickerQueryAndClosedInstanceCannotReviveOldChoicePeers() => desktop.RunAsync(() =>
+    {
+        using var scene = new ApplicationPageScene(new(ApplicationListCustomized: true, ManagedApplications: []));
+        IInvokeProvider? retired = null;
+        string before = File.ReadAllText(scene.Path);
+        ApplicationDialogAction(scene.Window, () => ApplicationButton(scene.Window, "ApplicationAdd").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)), "ApplicationPicker", dialog =>
+        {
+            retired = ApplicationInvokeProvider(ApplicationButton(dialog, "ApplicationPickerChoice_firefox"));
+            var search = Descendants(dialog).OfType<TextBox>().Single(box => AutomationProperties.GetAutomationId(box) == "ApplicationPickerSearch");
+            search.Text = "no-such-application";
+            Assert.DoesNotContain(Descendants(dialog).OfType<Button>(), button => AutomationProperties.GetAutomationId(button).StartsWith("ApplicationPickerChoice_", StringComparison.Ordinal));
+            search.Clear();
+            try
+            {
+                retired.Invoke();
+            }
+            catch (ElementNotAvailableException) { }
+            catch (ElementNotEnabledException) { }
+            dialog.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
+            Assert.True(dialog.IsVisible);
+            Assert.Equal(before, File.ReadAllText(scene.Path));
+            InvokeApplicationButton(ApplicationButton(dialog, "ApplicationPickerCancel"));
+        });
+        Assert.Equal(before, File.ReadAllText(scene.Path));
+        ApplicationDialogAction(scene.Window, () => ApplicationButton(scene.Window, "ApplicationAdd").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)), "ApplicationPicker", dialog =>
+        {
+            try
+            {
+                retired!.Invoke();
+            }
+            catch (ElementNotAvailableException) { }
+            catch (ElementNotEnabledException) { }
+            dialog.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
+            Assert.True(dialog.IsVisible);
+            Assert.Equal(before, File.ReadAllText(scene.Path));
+            InvokeApplicationButton(ApplicationButton(dialog, "ApplicationPickerChoice_firefox"));
+        });
+        Assert.Equal(["firefox"], scene.Reload().VisibleApplications([]));
+    });
+
+    [Fact]
+    public Task ApplicationRemovalConfirmationRejectsExternalRevisionAndRetiredMenuPeers() => desktop.RunAsync(() =>
+    {
+        using var scene = new ApplicationPageScene(new(ApplicationListCustomized: true, ManagedApplications: ["writer"]));
+        var row = ApplicationElement(scene.Window, "ApplicationRow_writer");
+        var menu = Assert.IsType<ContextMenu>(row.ContextMenu);
+        menu.PlacementTarget = row;
+        menu.IsOpen = true;
+        scene.Window.UpdateLayout();
+        var old = Assert.IsAssignableFrom<MenuItem>(Assert.Single(menu.Items));
+        var peer = UIElementAutomationPeer.CreatePeerForElement(old);
+        var previous = Assert.IsAssignableFrom<IInvokeProvider>(peer.GetPattern(PatternInterface.Invoke));
+        menu.IsOpen = false;
+        menu.IsOpen = true;
+        string before = File.ReadAllText(scene.Path);
+        previous.Invoke();
+        scene.Window.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
+        Assert.True(menu.IsOpen);
+        Assert.Empty(scene.Window.OwnedWindows.Cast<Window>());
+        Assert.Equal(before, File.ReadAllText(scene.Path));
+        var current = Assert.IsAssignableFrom<MenuItem>(Assert.Single(menu.Items));
+        Assert.NotSame(old, current);
+        ApplicationDialogAction(scene.Window, () => Assert.IsAssignableFrom<IInvokeProvider>(UIElementAutomationPeer.CreatePeerForElement(current).GetPattern(PatternInterface.Invoke)).Invoke(), "ApplicationRemovalConfirmation", dialog =>
+        {
+            scene.Settings.Update(scene.Settings.Value with
+            {
+                Target = "zh"
+            });
+            InvokeApplicationButton(ApplicationButton(dialog, "ApplicationRemovalConfirm"));
+        });
+        Assert.Equal("zh", scene.Reload().Target);
+        Assert.Equal(["writer"], scene.Reload().VisibleApplications([]));
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task PendingApplicationRemovalCannotSaveAfterNavigationOrClose(bool close) => desktop.RunAsync(async () =>
+    {
+        using var scene = new ApplicationPageScene(new(ApplicationListCustomized: true, ManagedApplications: ["writer"]));
+        var ack = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        scene.Window.PrepareSettingsChange = _ => ack.Task;
+        string before = File.ReadAllText(scene.Path);
+        RemoveApplication(scene.Window, "writer", confirm: true);
+        Assert.False(ack.Task.IsCompleted);
+        if (close)
+            scene.Window.Hide();
+        else
+            scene.Window.ShowPage("appearance");
+        ack.SetResult(true);
+        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+        Assert.Equal(before, File.ReadAllText(scene.Path));
+        if (close)
+            Assert.False(scene.Window.IsVisible);
+        else
+            Assert.Contains(Descendants(scene.Window).OfType<TextBlock>(), block => AutomationProperties.GetAutomationId(block) == "SettingsPageHeading" && block.Text == "外观");
+    });
+
+    [Theory]
+    [InlineData("current")]
+    [InlineData("hide")]
+    [InlineData("navigation")]
+    [InlineData("new-toast")]
+    public Task PendingApplicationUndoBelongsToItsStartingPageAndToast(string interruption) => desktop.RunAsync(async () =>
+    {
+        using var scene = new ApplicationPageScene(new(ApplicationListCustomized: true, ManagedApplications: ["selected", "writer"]));
+        RemoveApplication(scene.Window, "writer", confirm: true);
+        var undo = Descendants(scene.Window).OfType<Button>().Single(button => button.IsVisible && Equals(button.Content, "撤销"));
+        var oldAdd = ApplicationButton(scene.Window, "ApplicationAdd");
+        var ack = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        scene.Window.PrepareSettingsChange = _ => ack.Task;
+        string before = File.ReadAllText(scene.Path);
+        InvokeApplicationButton(undo);
+        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+        Assert.False(ack.Task.IsCompleted);
+        if (interruption == "hide")
+            scene.Window.Hide();
+        else if (interruption == "navigation")
+            scene.Window.ShowPage("appearance");
+        else if (interruption == "new-toast")
+        {
+            // A previously queued UI click completes a no-op add of an existing
+            // member; it may show a newer toast but cannot authorize the old Undo.
+            ApplicationDialogAction(scene.Window, () => oldAdd.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)), "ApplicationPicker",
+                dialog => InvokeApplicationButton(ApplicationButton(dialog, "ApplicationPickerBrowse")));
+            Assert.Contains(Descendants(scene.Window).OfType<TextBlock>(), block => block.IsVisible && block.Text == "已添加应用");
+        }
+        ack.SetResult(true);
+        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+        if (interruption == "current")
+            Assert.Equal(["selected", "writer"], scene.Reload().VisibleApplications([]));
+        else
+        {
+            Assert.Equal(before, File.ReadAllText(scene.Path));
+            Assert.Equal(["selected"], scene.Reload().VisibleApplications([]));
+        }
+    });
+
+    [Theory]
+    [InlineData("zh-CN", "light", 920)]
+    [InlineData("zh-CN", "dark", 920)]
+    [InlineData("en", "light", 800)]
+    [InlineData("en", "dark", 800)]
+    public Task ApplicationPageShowsTwoActualConnectionsAndOneManagedTable(string language, string theme, int width) => desktop.RunAsync(() =>
+    {
+        using var scene = new ApplicationPageScene(new(UiLanguage: language, Theme: theme, ApplicationListCustomized: true,
+            ManagedApplications: ["chrome", "writer"], ExcludedApplications: ["writer"], Styles: new(TranslationStyle.Natural, new Dictionary<string, TranslationStyle> { ["writer"] = TranslationStyle.Formal })));
+        scene.Window.Width = width;
+        scene.Window.Height = width == 920 ? 700 : 560;
+        scene.Window.UpdateLayout();
+        Assert.Equal(2, Descendants(scene.Window).OfType<FrameworkElement>().Count(element => AutomationProperties.GetAutomationId(element) is "SettingsRow_apps_desktop" or "SettingsRow_apps_browser"));
+        Assert.Equal(["chrome", "writer"], ApplicationMembers(scene.Window));
+        Assert.Equal(44, ApplicationElement(scene.Window, "ApplicationRow_writer").ActualHeight);
+        var style = Assert.IsType<ComboBox>(ApplicationElement(scene.Window, "ApplicationStyle_writer"));
+        Assert.Equal(5, style.Items.Count);
+        Assert.Equal(language == "en" ? "App tone writer" : "应用风格 writer", AutomationProperties.GetName(style));
+        Assert.Equal(language == "en" ? "Enable in writer" : "在 writer 中启用", AutomationProperties.GetName(ApplicationElement(scene.Window, "ApplicationEnabled_writer")));
+        Assert.False(style.IsEnabled);
+        Assert.Equal(language == "en" ? "Formal" : "正式", Assert.IsType<ComboBoxItem>(style.SelectedItem).Content);
+        Assert.All(style.Items.Cast<ComboBoxItem>().Skip(3), item => Assert.False(item.IsEnabled));
+        string before = File.ReadAllText(scene.Path);
+        style.SelectedIndex = 1; // Even an already queued selection cannot bypass the disabled app gate.
+        Assert.Equal(before, File.ReadAllText(scene.Path));
+        scene.Window.ShowPage("apps");
+        scene.Window.UpdateLayout();
+        Assert.Equal(2, Assert.IsType<ComboBox>(ApplicationElement(scene.Window, "ApplicationStyle_writer")).SelectedIndex);
+        var add = ApplicationButton(scene.Window, "ApplicationAdd");
+        Assert.Equal(28, add.ActualWidth);
+        Assert.Equal(24, add.ActualHeight);
+        Render(scene.Window, $"settings-applications-{language}-{theme}-{width}.png");
+        var search = Assert.IsType<TextBox>(ApplicationElement(scene.Window, "ApplicationSearch"));
+        search.Text = "not-found";
+        scene.Window.UpdateLayout();
+        Assert.Empty(ApplicationMembers(scene.Window));
+        Assert.True(ApplicationElement(scene.Window, "ApplicationEmpty").IsVisible);
+        Assert.Equal(before, File.ReadAllText(scene.Path));
+        Render(scene.Window, $"settings-applications-empty-{language}-{theme}-{width}.png");
+    });
+
+    [Fact]
+    public Task UnconfiguredBrowserInstallEntryCannotInventAnInstallation() => desktop.RunAsync(async () =>
+    {
+        using var scene = new ApplicationPageScene(new(ApplicationListCustomized: true, ManagedApplications: []));
+        string before = File.ReadAllText(scene.Path);
+        var install = ApplicationButton(scene.Window, "ApplicationConnectionPrimary_browser");
+        Assert.True(install.IsVisible);
+        Assert.Equal("安装…", install.Content);
+        Assert.False(install.IsEnabled);
+        Assert.Throws<ElementNotEnabledException>(() => InvokeApplicationButton(install));
+        InvokeApplicationButton(ApplicationButton(scene.Window, "ApplicationConnectionDetails_browser"));
+        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+        InvokeApplicationButton(ApplicationButton(scene.Window, "ChromeConnectionPrimary"));
+        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+        Assert.True(ApplicationElement(scene.Window, "ApplicationConnectionBody_browser").IsVisible);
+        Assert.True(ApplicationButton(scene.Window, "ChromeConnectionCopyManagement").IsVisible);
+        Assert.True(ApplicationButton(scene.Window, "ChromeConnectionCopyDirectory").IsVisible);
+        Assert.Equal(before, File.ReadAllText(scene.Path));
+        Assert.DoesNotContain(Descendants(scene.Window).OfType<TextBlock>(), block => block.IsVisible && block.Text == "已安装");
+    });
+
+    private static FrameworkElement ApplicationElement(DependencyObject root, string id)
+    {
+        if (root is Window window)
+            window.UpdateLayout();
+        return Descendants(root).OfType<FrameworkElement>().Single(element => AutomationProperties.GetAutomationId(element) == id);
+    }
+    private static Button ApplicationButton(DependencyObject root, string id) => Assert.IsType<Button>(ApplicationElement(root, id));
+    private static string[] ApplicationMembers(Window window)
+    {
+        window.UpdateLayout();
+        return Descendants(window).OfType<FrameworkElement>().Select(AutomationProperties.GetAutomationId)
+            .Where(id => id.StartsWith("ApplicationRow_", StringComparison.Ordinal)).Select(id => id["ApplicationRow_".Length..]).Order(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+    private static IInvokeProvider ApplicationInvokeProvider(Button button) => Assert.IsAssignableFrom<IInvokeProvider>(UIElementAutomationPeer.CreatePeerForElement(button).GetPattern(PatternInterface.Invoke));
+    private static void InvokeApplicationButton(Button button) => ApplicationInvokeProvider(button).Invoke();
+    private static void RemoveApplication(SettingsWindow window, string application, bool confirm)
+    {
+        var row = ApplicationElement(window, "ApplicationRow_" + application);
+        var menu = Assert.IsType<ContextMenu>(row.ContextMenu);
+        menu.PlacementTarget = row;
+        menu.IsOpen = true;
+        window.UpdateLayout();
+        var remove = Assert.IsAssignableFrom<MenuItem>(Assert.Single(menu.Items));
+        ApplicationDialogAction(window, () => Assert.IsAssignableFrom<IInvokeProvider>(UIElementAutomationPeer.CreatePeerForElement(remove).GetPattern(PatternInterface.Invoke)).Invoke(), "ApplicationRemovalConfirmation",
+            dialog => InvokeApplicationButton(ApplicationButton(dialog, confirm ? "ApplicationRemovalConfirm" : "ApplicationRemovalCancel")));
+    }
+    private static void ApplicationDialogAction(SettingsWindow owner, Action open, string id, Action<Window> interact)
+    {
+        Exception? failure = null;
+        bool observed = false;
+        var action = owner.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            Window? dialog = null;
+            try
+            {
+                dialog = owner.OwnedWindows.Cast<Window>().Single(window => window.IsVisible && AutomationProperties.GetAutomationId(window) == id);
+                observed = true;
+                dialog.UpdateLayout();
+                var title = Assert.IsType<TextBlock>(ApplicationElement(dialog, "ApplicationDialogTitle"));
+                Assert.Equal(18, title.FontSize);
+                Assert.Equal(FontWeights.Medium, title.FontWeight);
+                Assert.Equal(UiTheme.DisplayFont, title.FontFamily);
+                interact(dialog);
+            }
+            catch (Exception error) { failure = error; dialog?.Close(); }
+        }), DispatcherPriority.ApplicationIdle);
+        var timeout = new DispatcherTimer(DispatcherPriority.Send, owner.Dispatcher) { Interval = TimeSpan.FromSeconds(3) };
+        timeout.Tick += (_, _) =>
+        {
+            failure ??= new TimeoutException("application-dialog-did-not-close");
+            foreach (var dialog in owner.OwnedWindows.Cast<Window>().ToArray())
+                dialog.Close();
+        };
+        timeout.Start();
+        try
+        {
+            open();
+            owner.Dispatcher.Invoke(() => { }, DispatcherPriority.SystemIdle);
+        }
+        finally { timeout.Stop(); }
+        if (action.Status == DispatcherOperationStatus.Pending)
+            action.Abort();
+        Assert.Null(failure);
+        Assert.True(observed);
+    }
+
+    private sealed class ApplicationPageScene : IDisposable
+    {
+        private readonly string _directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "typelay-applications-page-" + Guid.NewGuid().ToString("N"));
+        public string Path => System.IO.Path.Combine(_directory, "settings.json");
+        public SettingsStore Settings
+        {
+            get;
+        }
+        public ModelClient Model { get; } = WindowsRuntime.CreateModel();
+        public SettingsWindow Window
+        {
+            get;
+        }
+        public ApplicationPageScene(UserSettings initial)
+        {
+            Settings = WindowsRuntime.CreateSettings(Path);
+            Settings.Update(initial);
+            Window = new(Settings, Model, () => { }, new WindowsApplicationSupport(), selectApplication: _ => @"C:\Applications\Selected.exe");
+            Window.ShowPage("apps");
+            Window.UpdateLayout();
+        }
+        public UserSettings Reload() => WindowsRuntime.CreateSettings(Path).Value;
+        public void Dispose()
+        {
+            Window.PrepareForEmergencyShutdown();
+            Window.Close();
+            Model.Dispose();
+            if (Directory.Exists(_directory))
+                Directory.Delete(_directory, true);
+        }
+    }
+}

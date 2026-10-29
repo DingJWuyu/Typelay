@@ -151,11 +151,17 @@ def build(
         caption = label(chinese, wrap=False)
         owner.localized.append((caption.set_text, chinese, english))
         line.pack_start(caption, True, True, 0)
+        if name == "model":
+            owner.model_nav_warning = style(Gtk.Label(label="●"), "status-dot", "warn")
+            owner.model_nav_warning.set_no_show_all(True)
+            owner.model_nav_warning.get_accessible().set_name("本地模型未就绪")
+            line.pack_end(owner.model_nav_warning, False, False, 0)
         nav_row.add(line)
         if name in ("application-support", "about"):
             nav_row.set_margin_top(12)
         owner.nav_rows[name] = nav_row
         owner.sidebar.add(nav_row)
+        nav_row.show_all()
     owner.sidebar.connect(
         "row-selected",
         lambda _list, selected: owner.pages.set_visible_child_name(selected.page_name)
@@ -392,19 +398,27 @@ def build(
     )
     setting(accessibility, "reduceMotion", "减少动效", "Reduce motion", switch("reduceMotion"))
 
-    owner.language_model_notice = card("language")
-    owner.language_model_notice.set_no_show_all(True)
-    warning = design_icon("warning", 16)
-    warning.set_margin_end(2)
-    view_model = Gtk.Button(label="查看")
-    owner.localized.append((view_model.set_label, "查看", "View"))
-    view_model.connect("clicked", lambda *_: owner.pages.set_visible_child_name("model"))
-    model_notice, owner.language_model_label = row("正在确认本地模型状态…", view_model)
-    model_notice.pack_start(warning, False, False, 0)
-    model_notice.reorder_child(warning, 0)
-    style(model_notice, "model-warning-row")
-    owner.language_model_notice.pack_start(model_notice, False, False, 0)
-    model_notice.show_all()
+    owner.model_notices = {}
+    for page_name in owner.page_boxes:
+        if page_name == "model":
+            continue
+        notice = card(page_name)
+        owner.page_boxes[page_name].reorder_child(notice, 0)
+        notice.set_no_show_all(True)
+        warning = design_icon("warning", 18)
+        view_model = Gtk.Button(label="查看")
+        owner.localized.append((view_model.set_label, "查看", "View"))
+        view_model.connect(
+            "clicked", lambda button, page=page_name: owner.view_model_notice(page, button)
+        )
+        model_row, message = row("正在确认本地模型状态…", view_model)
+        model_row.pack_start(warning, False, False, 0)
+        model_row.reorder_child(warning, 0)
+        style(model_row, "model-warning-row")
+        notice.pack_start(model_row, False, False, 0)
+        model_row.show_all()
+        owner.model_notices[page_name] = (notice, message, view_model, warning)
+    owner.language_model_notice, owner.language_model_label, _, _ = owner.model_notices["language"]
     direction = card("language")
     direction_row = Gtk.Box(spacing=10)
     direction_row.set_margin_top(16)

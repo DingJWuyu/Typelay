@@ -35,6 +35,8 @@ public sealed partial class SettingsRenderingTests
         Assert.NotEqual("按下按键…", input.Text);
         Assert.Equal("按下按键…", AutomationProperties.GetItemStatus(input));
         Assert.True(Assert.IsType<TextBlock>(input.Template.FindName("prompt", input)).IsVisible);
+        Assert.Equal("按下按键…", Assert.IsType<TextBlock>(input.Template.FindName("prompt", input)).Text);
+        Assert.Equal(Visibility.Hidden, Assert.IsType<ScrollViewer>(input.Template.FindName("PART_ContentHost", input)).Visibility);
         await SendShortcutChordAsync(scene.Window, input, chord);
         Assert.Equal(chord, ShortcutValue(scene.Reload(), key));
         Assert.Equal(chord, input.Text);
@@ -277,6 +279,10 @@ public sealed partial class SettingsRenderingTests
         scene.Window.UpdateLayout();
         Render(scene.Window, $"settings-shortcuts-recording-{language}-{theme}.png");
         Assert.Equal(language == "en" ? "Press keys…" : "按下按键…", AutomationProperties.GetItemStatus(input));
+        var prompt = Assert.IsType<TextBlock>(input.Template.FindName("prompt", input));
+        Assert.True(prompt.IsVisible);
+        Assert.Equal(language == "en" ? "Press keys…" : "按下按键…", prompt.Text);
+        Assert.Equal(Visibility.Hidden, Assert.IsType<ScrollViewer>(input.Template.FindName("PART_ContentHost", input)).Visibility);
         BeginShortcutRecording(scene.Window, input); // Clicking the same keycap cancels without a save.
         input.Text = "Ctrl+C";
         scene.Window.UpdateLayout();

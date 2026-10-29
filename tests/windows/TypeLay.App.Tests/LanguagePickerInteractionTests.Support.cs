@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Automation;
 using System.Windows.Interop;
 using TypeLay.Windows.Testing;
+using TypeLay.Runtime;
 using Xunit;
 
 namespace TypeLay.App.Tests;
@@ -11,8 +12,10 @@ public sealed partial class LanguagePickerInteractionTests
 {
     // Reuse the model-protocol fixture, not a forced IsEnabled/Ready value.
     // This covers public settings UI behavior, not translation quality.
-    [Fact]
-    public Task PublicDesktopConnectionActionSelectsItsOwnRowAndHidesSettings() => desktop.RunAsync(async () =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task PublicDesktopConnectionActionSelectsItsOwnRowAndHidesSettings(bool disconnected) => desktop.RunAsync(async () =>
     {
         var support = new WindowsApplicationSupport();
         using var fixture = new LanguageWindowFixture(quickPanel: false, protocolModel: true, support: support);
@@ -21,14 +24,19 @@ public sealed partial class LanguagePickerInteractionTests
         var ct = limit.Token;
         await fixture.SwitchModelAsync(["hy-mt2-1-8b-q4-k-m"], ["zh_ja", "ja_zh"]);
         var window = Assert.IsType<SettingsWindow>(fixture.Window);
+        if (disconnected)
+            support.Disconnected();
+        if (disconnected)
+            Assert.Equal(ApplicationSupportState.Error, support.Read(new()).Rows.Single(row => row.Id == "desktop-text").State);
         window.ShowPage("apps");
         await DrainAsync(window);
-        var section = Descendants(window).OfType<Expander>().Single(expander => Equals(expander.Header, "其他普通输入框"));
-        Assert.False(section.IsExpanded);
-        section.IsExpanded = true;
-        await DrainAsync(window);
-        var desktopAction = Descendants(section).OfType<Button>().Single(button =>
+        // The real check is now the first-level desktop summary action, not a hidden details action.
+        var desktopAction = Descendants(window).OfType<Button>().Single(button =>
             AutomationProperties.GetAutomationId(button) == "ApplicationSupport_desktop-text_Refresh");
+        Assert.True(desktopAction.IsVisible);
+        Assert.Single(Descendants(window).OfType<Button>(), button => AutomationProperties.GetAutomationId(button) == "ApplicationSupport_desktop-text_Refresh");
+        Assert.Single(Descendants(window).OfType<Button>(), button => AutomationProperties.GetAutomationId(button) == "ApplicationSupport_desktop-text_OpenInstructions");
+        Assert.False(Descendants(window).OfType<FrameworkElement>().Single(element => AutomationProperties.GetAutomationId(element) == "ApplicationConnectionBody_desktop").IsVisible);
         desktopAction.BringIntoView();
         await DrainAsync(window);
         // Page navigation cancels older checks and advances the generation too.
@@ -43,7 +51,7 @@ public sealed partial class LanguagePickerInteractionTests
             Assert.Equal("ordinary-settings-process-mismatch", Assert.Throws<InvalidOperationException>(() =>
                 SettingsSupportActions.DesktopConnectionCheck(root, -1)).Message);
             var button = SettingsSupportActions.DesktopConnectionCheck(root, Environment.ProcessId);
-            Assert.Equal("检查连接", button.Current.Name);
+            Assert.Equal("重新检查", button.Current.Name);
             ((InvokePattern)button.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
         }, ct).WaitAsync(ct);
         while (window.IsVisible)
@@ -60,10 +68,10 @@ public sealed partial class LanguagePickerInteractionTests
     {
         var body = new StackPanel();
         // Another row's same label must not count as the desktop action.
-        body.Children.Add(new Button { Content = "检查连接" });
+        body.Children.Add(new Button { Content = "重新检查" });
         for (int i = 0; i < count; i++)
         {
-            var button = new Button { Content = "检查连接", IsEnabled = count > 1 && i == 0 };
+            var button = new Button { Content = "重新检查", IsEnabled = count > 1 && i == 0 };
             AutomationProperties.SetAutomationId(button, "ApplicationSupport_desktop-text_Refresh");
             body.Children.Add(button);
         }

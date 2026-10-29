@@ -70,8 +70,11 @@ static QJsonArray renderedFontRuns(QPlainTextEdit *editor, FontIdentities &ident
     // layout or change the source/editor to obtain a font match.
     int blocks = 0;
     for (auto block = editor->document()->begin(); block.isValid() && blocks < 8; block = block.next(), blocks++) {
-        if (!block.layout()) continue;
-        for (const auto &run : block.layout()->glyphRuns()) {
+        if (!block.layout() || block.length() <= 1) continue;
+        // A document-backed layout need not populate QTextLayout::text(). Use
+        // this real block's character range, excluding its paragraph separator.
+        // Do not create lines or substitute a separate layout for the editor.
+        for (const auto &run : block.layout()->glyphRuns(0, block.length() - 1)) {
             if (result.size() >= 16) return result;
             auto identity = fontIdentity(run.rawFont(), identities);
             int missing = 0;

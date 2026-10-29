@@ -303,6 +303,13 @@ internal static partial class HyPackageCheck
                 await NavigateAsync(settings, "apps", "应用", ct);
                 await UiAsync(() =>
                 {
+                    var details = Find(settings, AutomationElement.AutomationIdProperty, "ApplicationConnectionDetails_desktop", ControlType.Button);
+                    Require(details is not null && details.Current.ProcessId == app.Process.Id && details.Current.IsEnabled, "ordinary-desktop-details-missing");
+                    ((InvokePattern)details!.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+                }, ct);
+                await WaitAsync(() => UiAsync(() => Find(settings, AutomationElement.NameProperty, "其他普通输入框", ControlType.Group) is { Current.IsOffscreen: false }, ct), ct);
+                await UiAsync(() =>
+                {
                     var section = Find(settings, AutomationElement.NameProperty, "其他普通输入框", ControlType.Group);
                     Require(section is not null && section.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out _), "ordinary-desktop-section-missing");
                     ((ExpandCollapsePattern)section!.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Expand();

@@ -93,11 +93,15 @@ internal static class Program
             bool quitting = false;
             async void Quit()
             {
-                if (quitting || !window.RequestClose())
+                if (quitting)
                     return;
                 quitting = true;
                 try
                 {
+                    // Confirmation has no teardown effects. Draft handling,
+                    // practice retirement and cleanup remain on the old path.
+                    if (new QuitConfirmationWindow(window).ShowDialog() != true || !window.RequestClose())
+                        return;
                     if (await session.RetireAutomaticPracticeAsync())
                     {
                         await support.CompletePendingAsync();

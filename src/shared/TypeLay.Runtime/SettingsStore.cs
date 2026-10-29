@@ -23,7 +23,8 @@ public sealed record UserSettings(int Schema = 1, bool Enabled = true, string So
     [property: JsonConverter(typeof(ApplicationListPreferenceConverter))]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string[]? ManagedApplications = null,
     [property: JsonConverter(typeof(SessionShortcutPreferenceConverter))]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Motion = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Motion = null,
+    [property: JsonConverter(typeof(BooleanPreferenceConverter))] bool ApplicationListCustomized = false)
 {
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? ExtensionData
@@ -33,6 +34,15 @@ public sealed record UserSettings(int Schema = 1, bool Enabled = true, string So
     public string[] Excluded => ExcludedApplications ?? [];
     [JsonIgnore]
     public string[] Managed => ManagedApplications ?? [];
+    // The original Managed array was additive. Only an explicit customization
+    // marker makes it the complete visible list; membership grants no capability
+    // and never removes an exclusion or stored per-application style.
+    public string[] VisibleApplications(IEnumerable<string> known)
+    {
+        IEnumerable<string> visible = ApplicationListCustomized ? Managed
+            : known.Concat(Managed).Concat(Excluded).Concat(Styles?.Applications?.Keys ?? []);
+        return visible.Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
     public LanguageDirection Direction => new(Source, Target);
     // Motion is authoritative when present. ReduceMotion is the legacy input
     // and persisted compatibility mirror, not an additional system override.

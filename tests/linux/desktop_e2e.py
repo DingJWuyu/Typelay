@@ -6287,7 +6287,28 @@ def run(arguments):
                 # This does not load an extension or complete browser approval.
                 choices = [row for row in support["rows"] if not row["showInMore"]]
                 chromium = next(row for row in choices if row["id"] == "chromium")
-                selector = settings_control(desktop_support["title"], role=Atspi.Role.COMBO_BOX)
+                selection_deadline = time.monotonic() + 15
+                # The connection selector is inside the initially collapsed
+                # details. Activate its real visible entry, not a hidden child.
+                entry = focus_settings_control(
+                    process.pid,
+                    settings_control(
+                        next_step_label,
+                        timeout=selection_deadline - time.monotonic(),
+                        role=Atspi.Role.PUSH_BUTTON,
+                    ),
+                    timeout=selection_deadline - time.monotonic(),
+                )
+                assert Atspi.Action.do_action(entry.get_action_iface(), 0)
+                selector = focus_settings_control(
+                    process.pid,
+                    settings_control(
+                        desktop_support["title"],
+                        timeout=selection_deadline - time.monotonic(),
+                        role=Atspi.Role.COMBO_BOX,
+                    ),
+                    timeout=selection_deadline - time.monotonic(),
+                )
                 assert selector.get_role() == Atspi.Role.COMBO_BOX
                 states = selector.get_state_set()
                 assert all(

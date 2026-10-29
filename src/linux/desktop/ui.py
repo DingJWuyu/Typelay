@@ -9,6 +9,7 @@ import gi
 from application_support import BROWSER_MANAGEMENT_URIS
 from design import Segments, ShortcutRecorder, apply_theme
 from design import row as design_row
+from model_status import activity_status, model_notice, set_status_tone
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
@@ -2984,13 +2985,6 @@ class Settings:
         )
         self.search.get_accessible().set_name(self.tr("搜索设置", "Search settings"))
         self.filter_settings()
-        self.enabled_status.set_text(
-            ("Running" if english else "运行中")
-            if (self.value or {}).get("enabled")
-            else ("Paused" if english else "已暂停")
-        )
-        dot = self.enabled_dot.get_style_context()
-        (dot.remove_class if (self.value or {}).get("enabled") else dot.add_class)("paused")
 
     def schedule_autosave(self):
         if self.auto_save_source:
@@ -3431,23 +3425,31 @@ class Settings:
         if direction_changed:
             self.refresh_preparation()
 
+    def view_model_notice(self, page, button):
+        notice = self.model_notices.get(page)
+        if (
+            notice is not None
+            and notice[2] is button
+            and self.pages.get_visible_child_name() == page
+            and button.get_mapped()
+            and button.is_sensitive()
+            and self.window.is_active()
+        ):
+            self.pages.set_visible_child_name("model")
+
     def render_language_status(self):
-        self.language_model_notice.set_visible(
-            not self.model_readiness_known or not self.model_ready
-        )
-        if not self.model_readiness_known:
-            message = self.tr("正在确认本地模型状态…", "Checking local model status…")
-        elif self.installation_state == "failed":
-            message = self.tr("本地模型准备失败", "Local model setup failed")
-        elif self.installation_state == "paused":
-            message = self.tr("本地模型下载已暂停", "Model download paused")
-        elif self.installation_state in ("running", "starting", "pausing"):
-            message = self.tr("正在准备本地翻译模型…", "Preparing the local translation model…")
-        elif self.model_installed is False:
-            message = self.tr("需要下载本地翻译模型", "Download the local translation model")
-        else:
-            message = self.tr("本地翻译模型尚未就绪", "Local translation model is not ready")
-        self.language_model_label.set_text(message)
+        ready = self.model_ready if self.model_readiness_known else None
+        tone, chinese, english = activity_status((self.value or {}).get("enabled"), ready)
+        self.enabled_status.set_text(self.tr(chinese, english))
+        set_status_tone(self.enabled_dot, tone)
+        tone, chinese, english = model_notice(ready, self.model_installed, self.installation_state)
+        self.model_nav_warning.get_accessible().set_name(self.tr(chinese, english))
+        self.model_nav_warning.set_visible(tone not in ("ready", "checking"))
+        for notice, message, _button, warning in self.model_notices.values():
+            notice.set_visible(tone != "ready")
+            message.set_text(self.tr(chinese, english))
+            message.set_tooltip_text(self.installation_message or self.model_status or None)
+            set_status_tone(warning, tone)
 
     def render_language_swap(self):
         ready = self.value is not None and self.language_choices is not None
@@ -3777,8 +3779,8 @@ class Settings:
         self.model_ready = value.get("modelReady") is True
         installed = value.get("modelInstalled")
         self.model_installed = installed if type(installed) is bool else None
-        self.render_language_status()
         self.model_status = value.get("model") or ""
+        self.render_language_status()
         self.render_preparation_notice()
         self.tutorial.generate.set_sensitive(
             self.model_ready
@@ -3940,6 +3942,7 @@ class Settings:
     def installation_progress(self, message):
         self.installation_message = message
         self.render_preparation_notice()
+        self.render_language_status()
 
     def render_preparation_notice(self):
         notice = self.application_support.preparation_notice

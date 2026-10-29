@@ -38,6 +38,18 @@ public sealed partial class TranslationSettingsTests(WpfDesktopFixture desktop)
     });
 
     [Fact]
+    public Task CurrentGlossaryReleaseDoesNotGrantTechnicalAvailabilityWithoutAModel() => desktop.RunAsync(() =>
+    {
+        using var scene = new SettingsScene(releasePolicy: TranslationReleasePolicy.Current);
+        var glossary = scene.Controller.GetGlossarySettingsState();
+        Assert.True(glossary.IsReleased);
+        Assert.False(glossary.TechnicalAvailable);
+        Assert.False(glossary.CanApply);
+        Assert.False(scene.Controller.GetStyleSettingsState().IsReleased);
+        Assert.False(scene.ModelReady);
+    });
+
+    [Fact]
     public Task ReleasedGlossarySavesExplicitGlobalAndDirectedTermsWithoutAModel() => desktop.RunAsync(() =>
     {
         using var scene = new SettingsScene(released: true);
@@ -613,7 +625,8 @@ public sealed partial class TranslationSettingsTests(WpfDesktopFixture desktop)
         {
             get;
         }
-        public SettingsScene(UserSettings? initial = null, bool released = false, Func<OwnedPracticeBinding, Task<bool>>? retire = null)
+        public bool ModelReady => _model.Ready;
+        public SettingsScene(UserSettings? initial = null, bool released = false, Func<OwnedPracticeBinding, Task<bool>>? retire = null, TranslationReleasePolicy? releasePolicy = null)
         {
             Directory.CreateDirectory(_directory);
             if (initial is not null)
@@ -636,9 +649,9 @@ public sealed partial class TranslationSettingsTests(WpfDesktopFixture desktop)
                 return new ChildProcess(start);
             });
             Input = new SettingsInput { Owned = retire is not null };
-            var release = released ? new TranslationReleasePolicy([
+            var release = releasePolicy ?? (released ? new TranslationReleasePolicy([
                 new(TranslationOperation.Style, "hy-mt2-1-8b-q4-k-m", "a0c709d9fac510f2c807aa3af52872340dc37a4a", "zh_ja"),
-                new(TranslationOperation.Glossary, "hy-mt2-1-8b-q4-k-m", "a0c709d9fac510f2c807aa3af52872340dc37a4a", "zh_ja")]) : null;
+                new(TranslationOperation.Glossary, "hy-mt2-1-8b-q4-k-m", "a0c709d9fac510f2c807aa3af52872340dc37a4a", "zh_ja")]) : new TranslationReleasePolicy([]));
             Controller = new(Settings, _model, _overlay, Input, Input, new SettingsLoop(), retireOwnedPractice: retire, translationRelease: release);
             Window = new(Settings, _model, () => { }, controller: Controller)
             {

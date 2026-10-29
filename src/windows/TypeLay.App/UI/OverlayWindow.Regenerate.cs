@@ -37,7 +37,11 @@ internal sealed partial class OverlayWindow
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 8, 0, 0) };
         var keep = UiTheme.Button(UiTheme.L("保留", "Keep"), () =>
         {
-            if (ReferenceEquals(_regenerateConfirmation, confirmation))
+            if (!ReferenceEquals(_regenerateConfirmation, confirmation))
+                return;
+            if (_regenerateKeyboard)
+                CompleteKeyboardRegenerate(confirmation, replace: false);
+            else
                 DismissRegenerateConfirmation(reposition: true);
         });
         var replace = UiTheme.Button(UiTheme.L("替换", "Replace"), () =>
@@ -46,6 +50,11 @@ internal sealed partial class OverlayWindow
             // confirmation that happens to share the same session token.
             if (!ReferenceEquals(_regenerateConfirmation, confirmation))
                 return;
+            if (_regenerateKeyboard)
+            {
+                CompleteKeyboardRegenerate(confirmation, replace: true);
+                return;
+            }
             bool current = _regenerateToken == token && _viewContext?.Token == token
                 && draft == _editor.Text && state == _sessionState && !EditingComposition
                 && (_sessionState == SessionState.EditingTranslation ? _editor.IsKeyboardFocused
@@ -58,8 +67,8 @@ internal sealed partial class OverlayWindow
         AutomationProperties.SetAutomationId(replace, "RegenerateReplace");
         foreach (var button in new[] { keep, replace })
         {
-            // Keep the editor/source focus and its existing IME observation.
-            // The buttons never acquire or synthesize input authority.
+            // Source-focused and owned paths keep their existing focus fence.
+            // Only the ordinary-editor configuration below enables local button focus.
             button.Focusable = false;
             button.IsTabStop = false;
             button.Padding = new(12, 5, 12, 5);
@@ -74,17 +83,21 @@ internal sealed partial class OverlayWindow
         _surface.Children.Add(_regeneratePrompt);
         if (_sourceAnchor is { } source)
             Position(source.Target, source.Bounds, false, false);
+        ConfigureRegenerateKeyboard(confirmation, keep, replace);
     }
 
     private void DismissRegenerateConfirmation(bool reposition)
     {
         if (_regeneratePrompt is null)
             return;
-        _surface.Children.Remove(_regeneratePrompt);
+        var previous = _regeneratePrompt;
         _regeneratePrompt = null;
+        _regenerateKeyboard = _regenerateInitialFocusPending = _regenerateInitialFocusQueued = false;
+        _regenerateKeep = _regenerateReplace = null;
         _regenerateConfirmation = null;
         _regenerateToken = null;
         _regenerateDraft = null;
+        _surface.Children.Remove(previous);
         if (reposition && IsVisible && _sourceAnchor is { } source)
             Position(source.Target, source.Bounds, false, false);
     }

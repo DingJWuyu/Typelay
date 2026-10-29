@@ -83,7 +83,6 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface .language-chevron { color: #74726c; }
 .typelay-surface.settings-dark .language-chevron { color: #9a988f; }
 .typelay-surface .language-name { font-size: 15px; font-weight: 500; }
-.typelay-surface .model-warning-row { min-height: 34px; }
 .typelay-surface .language-popover { background: transparent; border: 0; box-shadow: none; padding: 0; }
 /* GTK3 has no backdrop-filter. This native popover uses the matching opaque
    material instead of exposing unblurred text; the saved preference is unchanged. */
@@ -142,7 +141,14 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface .toast { background: #262624; color: #f4f3ee; border-radius: 18px; padding: 8px 14px; }
 .typelay-surface .toast button { background: transparent; color: #ec9a7c; border: 0; box-shadow: none; }
 .typelay-surface .status-dot { color: #3a8e62; font-size: 8px; min-width: 7px; }
-.typelay-surface .status-dot.paused { color: #74726c; }
+.typelay-surface .status-dot.paused, .typelay-surface .status-dot.checking, .typelay-surface .model-warning-row image.checking { color: #74726c; }
+.typelay-surface .status-dot.warn, .typelay-surface .model-warning-row image { color: #a5670e; }
+.typelay-surface .status-dot.bad, .typelay-surface .model-warning-row image.bad { color: #c2412d; }
+.typelay-surface .model-warning-row { padding: 12px 14px; min-height: 24px; }
+.typelay-surface .model-warning-row label { font-weight: 500; }
+.typelay-surface.settings-dark .status-dot.paused, .typelay-surface.settings-dark .status-dot.checking, .typelay-surface.settings-dark .model-warning-row image.checking { color: #b5b3ab; }
+.typelay-surface.settings-dark .status-dot.warn, .typelay-surface.settings-dark .model-warning-row image { color: #e5ad55; }
+.typelay-surface.settings-dark .status-dot.bad, .typelay-surface.settings-dark .model-warning-row image.bad { color: #f0806c; }
 .typelay-surface .beta-badge { background: rgba(217,119,87,.14); color: #ad4f2d; border-radius: 9px; font-size: 10.5px; font-weight: 600; padding: 1px 7px; }
 .typelay-surface.settings-dark .beta-badge { color: #ec9a7c; }
 .typelay-surface .typelay-app-icon { border-radius: 11px; box-shadow: 0 2px 6px rgba(150,60,30,.3); }

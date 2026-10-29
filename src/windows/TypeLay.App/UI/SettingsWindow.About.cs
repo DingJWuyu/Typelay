@@ -61,6 +61,7 @@ internal sealed partial class SettingsWindow
         AutomationProperties.SetAutomationId(automatic, "AboutAutomaticUpdates");
         Row(UiTheme.L("自动检查更新", "Check for updates automatically"), "", automatic);
         var update = UiTheme.Button(UiTheme.L("检查更新", "Check now"), () => { });
+        AboutActionSize(update);
         update.IsEnabled = false;
         update.ToolTip = unavailable;
         ToolTipService.SetShowOnDisabled(update, true);
@@ -76,6 +77,7 @@ internal sealed partial class SettingsWindow
             if (IsVisible && _page == "about" && ReferenceEquals(identity, _pageIdentity))
                 Process.Start(new ProcessStartInfo(AppPaths.Data) { UseShellExecute = true });
         });
+        AboutActionSize(open);
         AutomationProperties.SetAutomationId(open, "AboutOpenDataFolder");
         Row(UiTheme.L("本地数据", "Local data"), UiTheme.L("设置、模型与下载缓存", "Settings, models and download cache"), open);
         var details = new StackPanel { Margin = new(0, 8, 0, 0) };
@@ -106,5 +108,14 @@ internal sealed partial class SettingsWindow
         value.VerticalAlignment = VerticalAlignment.Center;
         AutomationProperties.SetAutomationId(value, id);
         return value;
+    }
+
+    private static void AboutActionSize(Button button)
+    {
+        button.Height = button.MinHeight = 26;
+        button.VerticalAlignment = VerticalAlignment.Center;
+        button.Padding = new(12, 0, 12, 0);
+        button.FontSize = 12.5;
+        button.FontWeight = FontWeights.Medium;
     }
 }

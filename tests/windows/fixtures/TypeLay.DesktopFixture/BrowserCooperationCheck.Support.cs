@@ -382,24 +382,19 @@ internal static partial class BrowserCooperationCheck
         setStage("expand-application-connections");
         await Task.Run(() =>
         {
-            var sections = window.FindAll(TreeScope.Descendants,
-                new AndCondition(new PropertyCondition(AutomationElement.NameProperty, "连接状态与详情"),
-                    new PropertyCondition(AutomationElement.IsExpandCollapsePatternAvailableProperty, true)))
-                .Cast<AutomationElement>().ToArray();
-            Require(sections.Length > 0, "settings-connection-sections-unavailable");
-            foreach (var section in sections)
-            {
-                Require(section.Current.ProcessId == app.Id, "settings-connection-process-mismatch");
-                ct.ThrowIfCancellationRequested();
-                ((ExpandCollapsePattern)section.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Expand();
-            }
+            var details = window.FindFirst(TreeScope.Descendants,
+                new AndCondition(new PropertyCondition(AutomationElement.AutomationIdProperty, "ApplicationConnectionDetails_browser"),
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button)));
+            Require(details is not null && details.Current.ProcessId == app.Id && details.Current.IsEnabled, "settings-browser-details-unavailable");
+            ct.ThrowIfCancellationRequested();
+            ((InvokePattern)details!.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
         }, ct).WaitAsync(ct);
         setStage("find-primary");
         AutomationElement? primary = null;
         while (primary is null)
         {
             primary = await Task.Run(() => window.FindFirst(TreeScope.Descendants,
-                new AndCondition(new PropertyCondition(AutomationElement.AutomationIdProperty, "ChromeConnectionPrimary"),
+                new AndCondition(new PropertyCondition(AutomationElement.AutomationIdProperty, action == "接入" ? "ApplicationConnectionPrimary_browser" : "ChromeConnectionPrimary"),
                     new PropertyCondition(AutomationElement.NameProperty, action),
                     new PropertyCondition(AutomationElement.IsEnabledProperty, true))), ct).WaitAsync(ct);
             if (primary is null)

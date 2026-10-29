@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import traceback
+from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -152,6 +153,7 @@ def main():
             model_state = {}
             enabled_notifications = []
             request_results = []
+            received_frames = deque(maxlen=64)
             settled_jobs = []
 
             def notification(operation, value):
@@ -193,21 +195,38 @@ def main():
                 following_save = None
 
                 def receive(self, frame):
-                    if self.held_tray_id is not None and frame.get("reply") == self.held_tray_id:
-                        assert frame["data"] is True, "the queued tray save did not really succeed"
-                        self.held_tray_reply = frame
-                        self.held_tray_id = None
-                        self.following_save = tasks(
-                            self.ask("settings", self.settings_after_tray_reply)
+                    started = asyncio.get_running_loop().time()
+                    record = {
+                        "at": started,
+                        "reply": frame.get("reply"),
+                        "event": frame.get("event"),
+                    }
+                    received_frames.append(record)
+                    try:
+                        if (
+                            self.held_tray_id is not None
+                            and frame.get("reply") == self.held_tray_id
+                        ):
+                            assert frame["data"] is True, (
+                                "the queued tray save did not really succeed"
+                            )
+                            self.held_tray_reply = frame
+                            self.held_tray_id = None
+                            self.following_save = tasks(
+                                self.ask("settings", self.settings_after_tray_reply)
+                            )
+                            self.settings_after_tray_reply = None
+                            return
+                        if self.held_tray_reply is not None and frame.get("event") == "settings":
+                            # Model one GLib dispatch draining A's real receipt before
+                            # B's newer settings, before the awaiting save can resume.
+                            super().receive(self.held_tray_reply)
+                            self.held_tray_reply = None
+                        super().receive(frame)
+                    finally:
+                        record["dispatchMs"] = round(
+                            (asyncio.get_running_loop().time() - started) * 1000, 3
                         )
-                        self.settings_after_tray_reply = None
-                        return
-                    if self.held_tray_reply is not None and frame.get("event") == "settings":
-                        # Model one GLib dispatch draining A's real receipt before
-                        # B's newer settings, before the awaiting save can resume.
-                        super().receive(self.held_tray_reply)
-                        self.held_tray_reply = None
-                    super().receive(frame)
 
                 async def ask(self, operation, data=None, **options):
                     if (
@@ -220,7 +239,12 @@ def main():
                     if operation == "traySettings" and self.settings_after_tray_reply is not None:
                         self.held_tray_id = self.sequence + 1
                     started = asyncio.get_running_loop().time()
-                    record = {"operation": operation, "acknowledged": False}
+                    record = {
+                        "operation": operation,
+                        "acknowledged": False,
+                        "started": started,
+                        "expectedId": self.sequence + 1,
+                    }
                     request_results.append(record)
                     try:
                         result = await super().ask(operation, data, **options)
@@ -230,6 +254,28 @@ def main():
                         record["failure"] = (
                             "timeout" if isinstance(error, TimeoutError) else "request-failed"
                         )
+                        if isinstance(error, TimeoutError):
+                            print(
+                                "TRAY REQUEST TIMEOUT",
+                                json.dumps(
+                                    {
+                                        "at": asyncio.get_running_loop().time(),
+                                        "hostExit": process.poll(),
+                                        "channelAlive": self.channel.alive,
+                                        "pendingIds": sorted(self.pending),
+                                        "enabled": state.get("enabled"),
+                                        "modelReady": model_state.get("modelReady"),
+                                        "page": settings_surface.pages.get_visible_child_name()
+                                        if settings_surface
+                                        else None,
+                                        "heldTrayId": self.held_tray_id,
+                                        "heldReply": (self.held_tray_reply or {}).get("reply"),
+                                        "requests": request_results[-16:],
+                                        "received": list(received_frames),
+                                    }
+                                ),
+                                flush=True,
+                            )
                         raise
                     finally:
                         record["elapsedMs"] = int(
@@ -291,7 +337,10 @@ def main():
             ]
             assert tray.parents["source"].get_active_id() == "auto"
             assert tray.parents["target"].get_active_id() == "en"
-            assert tray.model.get_label() == "○ 本地模型尚未就绪"
+            assert tray.model.get_label() == "需要下载本地翻译模型"
+            assert tray.status.get_label() == "模型未就绪"
+            assert tray.style_title.get_text() == "风格"
+            assert tray.status_dot.get_style_context().has_class("warn")
             saved_language_choices = (directory / "config/settings.json").read_bytes()
             assert (
                 await host.ask("activateModel", {"identity": "a" * 32, "generation": "b" * 32})
@@ -330,7 +379,28 @@ def main():
             failure_message = tray.save_notice.get_label()
             assert failure_message == tray.guidance["saveUnconfirmedMessage"]
             tray.report({"modelReady": True})
-            assert tray.model.get_label() == "● 本地模型已就绪"
+            assert tray.model.get_label() == "本地模型就绪"
+            assert tray.status.get_label() == "运行中"
+            assert not tray.status_dot.get_style_context().has_class("warn")
+            for phase, message in (
+                ("failed", "新模型准备失败；当前模型仍可用"),
+                ("paused", "模型下载已暂停；当前模型仍可用"),
+                ("running", "正在准备新模型；当前模型仍可用"),
+            ):
+                tray.installation(phase)
+                assert tray.status.get_label() == "运行中"
+                assert tray.model.get_label() == message
+                assert tray.save_notice.get_visible()
+            tray.installation("idle")
+            # These are renderer inputs, not evidence of actual model readiness.
+            for report in ({}, {"modelReady": "true"}, {"modelReady": 1}):
+                tray.report(report)
+                assert tray.status.get_label() == "正在确认…"
+                assert tray.model.get_label() == "正在确认本地模型状态…"
+                assert tray.status_dot.get_style_context().has_class("checking")
+                assert tray.save_notice.get_visible()
+            tray.report(model_state)
+            assert tray.status.get_label() == "模型未就绪"
             assert (
                 tray.save_notice.get_visible() and tray.save_notice.get_label() == failure_message
             )
@@ -407,6 +477,20 @@ def main():
             settings_surface.configure(state)
             settings_surface.render_guidance(tray.guidance)
             settings_surface.report(model_state)
+            # Public renderer facts only: the real host inventory remains empty.
+            settings_surface.report({**model_state, "modelReady": True})
+            for phase, message in (
+                ("failed", "新模型准备失败；当前模型仍可用"),
+                ("paused", "模型下载已暂停；当前模型仍可用"),
+                ("running", "正在准备新模型；当前模型仍可用"),
+            ):
+                settings_surface.installation(phase)
+                assert settings_surface.enabled_status.get_text() == "运行中"
+                assert settings_surface.language_model_notice.get_visible()
+                assert settings_surface.language_model_label.get_text() == message
+            settings_surface.installation("idle")
+            assert not settings_surface.language_model_notice.get_visible()
+            settings_surface.report(model_state)
             await settled()
             settings_surface.show()
             await settled()
@@ -459,6 +543,16 @@ def main():
                 settings_surface.installation(
                     phase, failure="network" if phase == "failed" else None
                 )
+                tray.installation(phase, failure="network" if phase == "failed" else None)
+                expected_notice = {
+                    "running": "正在准备本地翻译模型…",
+                    "pausing": "正在暂停模型准备…",
+                    "paused": "模型下载已暂停",
+                    "starting": "正在启动本地翻译模型…",
+                    "failed": "本地模型准备失败",
+                }[phase]
+                assert tray.model.get_label() == expected_notice
+                assert settings_surface.language_model_label.get_text() == expected_notice
                 assert not any(choice.get_sensitive() for choice in choices.values())
                 await settled()
                 assert not any(choice.get_sensitive() for choice in choices.values())
@@ -481,6 +575,7 @@ def main():
                         )
                         assert not packages_requested
             settings_surface.installation("idle")
+            tray.installation("idle")
             await settled()
             assert not any(choice.get_sensitive() for choice in choices.values())
             assert not any(choice.get_active() for choice in choices.values())
@@ -592,6 +687,7 @@ def main():
             dialog.response(Gtk.ResponseType.OK)
             assert installations_requested.pop() == (None, False)
             settings_surface.installation("idle")
+            tray.installation("idle")
             await settled()
             complete.clicked()
             dialog = confirmation()
@@ -867,14 +963,21 @@ def main():
             saved = json.loads((directory / "config/settings.json").read_text())
             assert saved["Mode"] == 1 and saved["Source"] == "en" and saved["Target"] == "zh"
             # Dedicated recovery is exercised through real GTK controls and the
-            # published host. Production release remains closed throughout.
+            # staged production host. Style/apply remain closed in this empty inventory.
             settings_surface.show()
             await settled()
             translation = settings_surface.translation
             await translation.load(translation.load_revision)
             settings_surface.pages.set_visible_child_name("language")
             assert translation.style_state["isReleased"] is False
-            assert translation.glossary_state["isReleased"] is False
+            # Current includes the audited Index zh/en profile, but this empty
+            # inventory has neither its technical capability nor apply authority.
+            assert translation.glossary_state["isReleased"] is True
+            assert translation.glossary_state["canApply"] is False
+            assert (
+                translation.glossary_state["applyUnavailableReason"]
+                == "glossary-combination-unavailable"
+            )
             assert translation.style.get_visible() and not translation.style.get_sensitive()
             assert not translation.editor.get_visible()
             assert settings_surface.application_controls["editor"][1].get_active_id() == "Natural"

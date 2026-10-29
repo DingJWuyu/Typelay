@@ -21,7 +21,7 @@ internal static class SettingsSupportActions
             throw new InvalidOperationException("ordinary-desktop-connection-check-ambiguous");
         var button = matches[0];
         var bounds = button.Current.BoundingRectangle;
-        if (button.Current.Name != "检查连接" || !button.Current.IsEnabled || button.Current.IsOffscreen
+        if (button.Current.Name != "重新检查" || !button.Current.IsEnabled || button.Current.IsOffscreen
             || bounds.IsEmpty || bounds.Width <= 0 || bounds.Height <= 0)
             throw new InvalidOperationException("ordinary-desktop-connection-check-unavailable");
         return button;

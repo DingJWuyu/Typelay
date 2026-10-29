@@ -1100,6 +1100,22 @@ internal static partial class HyPackageCheck
             quitInvoke.Invoke();
         }, ct);
         observation.QuitInvokeReturned = true;
+        scene.Stage = "confirm-quit";
+        AutomationElement? confirm = null;
+        await WaitAsync(async () => await UiAsync(() =>
+        {
+            Require(!app.HasExited, "quit-before-confirmation");
+            var dialog = AutomationElement.RootElement.FindFirst(TreeScope.Children, new AndCondition(
+                new PropertyCondition(AutomationElement.ProcessIdProperty, app.Id),
+                new PropertyCondition(AutomationElement.AutomationIdProperty, "TypeLayQuitConfirmation")));
+            confirm = dialog is null ? null : Find(dialog, AutomationElement.AutomationIdProperty, "QuitConfirm", ControlType.Button);
+            return confirm is not null && confirm.Current.IsEnabled && !confirm.Current.IsOffscreen;
+        }, ct), ct);
+        await UiAsync(() =>
+        {
+            ct.ThrowIfCancellationRequested();
+            ((InvokePattern)confirm!.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+        }, ct);
     }
     private static async Task OpenQuickPanelAsync(Process app, Scene scene, OrdinaryQuitObservation observation,
         CancellationToken ct, string? directory)

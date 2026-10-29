@@ -259,7 +259,8 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
         var replace = RegenerateButton(overlay, "RegenerateReplace");
         Assert.Equal(0, requests);
         Assert.Single(Descendants(overlay).OfType<TextBox>());
-        Assert.True(editor.IsKeyboardFocused);
+        Assert.True(RegenerateButton(overlay, "RegenerateKeep").IsKeyboardFocused);
+        Assert.Equal(overlay.Handle, Native.GetForegroundWindow());
         Assert.True(editor.CanUndo);
         switch (change)
         {
@@ -386,7 +387,8 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
         Assert.Equal(0, requests);
         Assert.Same(currentReplace, RegenerateButton(overlay, "RegenerateReplace"));
         Assert.Equal(currentDraft, editor.Text);
-        Assert.True(editor.IsKeyboardFocused);
+        Assert.True(RegenerateButton(overlay, "RegenerateKeep").IsKeyboardFocused);
+        Assert.Equal(overlay.Handle, Native.GetForegroundWindow());
         currentReplace.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         currentReplace.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.Equal(1, requests);
@@ -400,6 +402,14 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
         deadline.CancelAfter(TimeSpan.FromSeconds(3));
         var editor = Assert.IsType<TextBox>(Keyboard.FocusedElement);
         var restored = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var promptFocused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        KeyboardFocusChangedEventHandler onPromptFocus = (_, e) =>
+        {
+            if (e.NewFocus is Button button && button.IsVisible
+                && AutomationProperties.GetAutomationId(button) == "RegenerateKeep")
+                promptFocused.TrySetResult();
+        };
+        overlay.AddHandler(Keyboard.GotKeyboardFocusEvent, onPromptFocus, true);
         KeyboardFocusChangedEventHandler onFocus = (_, _) =>
         {
             if (editor.IsKeyboardFocused)
@@ -448,13 +458,19 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
             await closed.Task.WaitAsync(deadline.Token);
             if (!editor.IsKeyboardFocused)
                 await restored.Task.WaitAsync(deadline.Token);
-            Assert.Same(editor, Keyboard.FocusedElement);
+            // The ordinary editor genuinely regains focus from WPF menu mode
+            // first; only then may the current modal prompt focus its safe action.
+            var keep = RegenerateButton(overlay, "RegenerateKeep");
+            if (!keep.IsKeyboardFocused)
+                await promptFocused.Task.WaitAsync(deadline.Token);
+            Assert.Same(keep, Keyboard.FocusedElement);
             Assert.Equal(overlay.Handle, Native.GetForegroundWindow());
             overlay.UpdateLayout();
         }
         finally
         {
             editor.GotKeyboardFocus -= onFocus;
+            overlay.RemoveHandler(Keyboard.GotKeyboardFocusEvent, onPromptFocus);
             menu.Closed -= onClosed;
             regenerate.Click -= onClick;
             if (menu.IsOpen)

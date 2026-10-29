@@ -19,7 +19,7 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 namespace TypeLay.App.Tests;
 
 [Collection("Desktop")]
-public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
+public sealed partial class OverlayRenderingTests(WpfDesktopFixture desktop)
 {
     [Fact]
     public Task AppearanceAndLanguageChangesPreserveTheSingleFocusedDraftAndWithdrawImeHints() => desktop.RunAsync(() =>

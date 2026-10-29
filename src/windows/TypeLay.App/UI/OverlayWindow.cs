@@ -179,6 +179,8 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         _measurementKey = null;
         _settings = settings;
         UiTheme.Apply(settings);
+        RefreshBusyPalette();
+        RefreshBusyMotion();
         _editor.FontFamily = UiTheme.ContentFont;
         _editor.FontSize = UiTheme.ContentSize;
         _editor.SetValue(TextBlock.LineHeightProperty, UiTheme.ContentSize * 1.55);
@@ -263,7 +265,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         _dot.SetResourceReference(Border.BackgroundProperty, "Accent");
         _language = UiTheme.Text("Auto → EN", 12, muted: true);
         _language.TextWrapping = TextWrapping.NoWrap;
-        direction.Children.Add(_dot);
+        direction.Children.Add(CreateBusyDot());
         direction.Children.Add(_language);
         _languageButton = new Button
         {
@@ -403,10 +405,11 @@ internal sealed partial class OverlayWindow : Window, ISessionView
                 UpdateExpansionAffordance();
             }
         };
-        _editor.LostKeyboardFocus += (_, _) =>
+        _editor.LostKeyboardFocus += (_, e) =>
         {
             _ordinaryInput?.SetOrdinaryEditor(null);
-            DismissRegenerateConfirmation(reposition: true);
+            if (!PreserveRegenerateButtonFocus(e.NewFocus))
+                DismissRegenerateConfirmation(reposition: true);
         };
         _editor.GotKeyboardFocus += (_, _) =>
         {
@@ -421,7 +424,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         };
         _editor.PreviewKeyDown += (_, e) =>
         {
-            if (_glossary is not null)
+            if (_glossary is not null || _regenerateKeyboard)
                 return;
             Key key = ShortcutEventKey(e);
             if (key is not (Key.Tab or Key.Escape) && (key < Key.F1 || key > Key.F24))
@@ -581,6 +584,8 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         };
         new WindowInteropHelper(this).EnsureHandle();
         InitializeLanguageConfiguration();
+        InitializeRegenerateKeyboard();
+        InitializeBusyMotion();
     }
     private static Border Keycap(string value)
     {
@@ -600,7 +605,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     internal void ConfigureOwnedEditing(PracticeHost practice) => _ownedEditorHost = practice;
     internal void ConfigureOrdinaryInput(KeyboardHook input) => _ordinaryInput = input;
     private void PublishOrdinaryEditor() => _ordinaryInput?.SetOrdinaryEditor(
-        _ownedEditor is null && _glossary is null && _editing && !_composing && _editor.IsKeyboardFocused
+        _ownedEditor is null && _glossary is null && _regeneratePrompt is null && _editing && !_composing && _editor.IsKeyboardFocused
             && _viewContext is { CanEdit: true } context ? context.Token : null);
 
     private bool ClaimOrdinaryEditorKey(KeyEventArgs input, Key key, out string? refusal, out int messageFlags)
@@ -1198,6 +1203,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         {
             _rendering = false;
             PublishOrdinaryEditor();
+            RefreshBusyMotion();
         }
         if (trace)
             TraceRender(atMs, Stopwatch.GetElapsedTime(started).TotalMilliseconds, uiMs, textMs, positionTiming);
@@ -1504,6 +1510,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     }
     private void ClearSessionContent()
     {
+        StopBusyMotion();
         DismissRegenerateConfirmation(reposition: false);
         if (_glossary is { } form)
             CloseGlossary(form, restoreEditor: false);

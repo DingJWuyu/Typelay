@@ -283,9 +283,9 @@ public sealed partial class SettingsRenderingTests(WpfDesktopFixture desktop, IT
                             window.ShowPage("apps");
                             window.UpdateLayout();
                             Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "应用");
-                            var supportDetails = Descendants(window).OfType<Expander>().Where(expander => Equals(expander.Header, "连接状态与详情")).ToArray();
-                            Assert.NotEmpty(supportDetails);
-                            Assert.All(supportDetails, expander => Assert.False(expander.IsExpanded));
+                            var supportDetails = Descendants(window).OfType<FrameworkElement>().Where(element => AutomationProperties.GetAutomationId(element).StartsWith("ApplicationConnectionBody_", StringComparison.Ordinal)).ToArray();
+                            Assert.Equal(2, supportDetails.Length);
+                            Assert.All(supportDetails, element => Assert.False(element.IsVisible));
                             Assert.All(Descendants(window).OfType<Expander>(), expander => Assert.Equal(
                                 Assert.IsType<SolidColorBrush>(window.FindResource("Text")).Color, Assert.IsType<SolidColorBrush>(expander.Foreground).Color));
                             AssertReadableSettingsText(window);
@@ -372,8 +372,10 @@ public sealed partial class SettingsRenderingTests(WpfDesktopFixture desktop, IT
     }
     private static void ExpandApplicationConnections(Window window)
     {
-        foreach (var expander in Descendants(window).OfType<Expander>().Where(expander =>
-            Equals(expander.Header, "连接状态与详情") || Equals(expander.Header, "其他普通输入框")).ToArray())
+        foreach (var button in Descendants(window).OfType<Button>().Where(button =>
+            AutomationProperties.GetAutomationId(button).StartsWith("ApplicationConnectionDetails_", StringComparison.Ordinal)).ToArray())
+            button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        foreach (var expander in Descendants(window).OfType<Expander>().Where(expander => Equals(expander.Header, "其他普通输入框")).ToArray())
             expander.IsExpanded = true;
         window.UpdateLayout();
     }
@@ -1034,7 +1036,8 @@ public sealed partial class SettingsRenderingTests(WpfDesktopFixture desktop, IT
             Add();
             Add(); // Adding manages an application; it does not silently deny it access or add duplicates.
             window.UpdateLayout();
-            Assert.Equal(new[] { "added" }, WindowsRuntime.CreateSettings(path).Value.Managed);
+            Assert.Equal(new[] { "added", "chrome", "code", "firefox", "msedge", "retained" }, WindowsRuntime.CreateSettings(path).Value.VisibleApplications([]));
+            Assert.True(WindowsRuntime.CreateSettings(path).Value.ApplicationListCustomized);
             Assert.Equal(new[] { "retained" }, WindowsRuntime.CreateSettings(path).Value.Excluded);
             Assert.Single(Descendants(window).OfType<TextBlock>(), text => text.Text == "added.exe");
             Assert.Equal(ToggleState.On, ToggleProvider(SettingToggle(window, "在 added 中启用")).ToggleState);
@@ -1065,7 +1068,8 @@ public sealed partial class SettingsRenderingTests(WpfDesktopFixture desktop, IT
             Assert.True(currentUndo.IsVisible);
             currentUndo.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Assert.Equal(new[] { "retained" }, WindowsRuntime.CreateSettings(path).Value.Excluded);
-            Assert.Equal(new[] { "added" }, WindowsRuntime.CreateSettings(path).Value.Managed);
+            Assert.Equal(new[] { "added", "chrome", "code", "firefox", "msedge", "retained" }, WindowsRuntime.CreateSettings(path).Value.VisibleApplications([]));
+            Assert.True(WindowsRuntime.CreateSettings(path).Value.ApplicationListCustomized);
 
             ToggleProvider(SettingToggle(window, "在 added 中启用")).Toggle();
             Assert.Equal(new[] { "retained", "added" }, WindowsRuntime.CreateSettings(path).Value.Excluded);
@@ -1088,7 +1092,8 @@ public sealed partial class SettingsRenderingTests(WpfDesktopFixture desktop, IT
             var saved = WindowsRuntime.CreateSettings(path).Value;
             Assert.Equal(new[] { "retained", "added", "external" }, saved.Excluded);
             Assert.Equal("zh", saved.Target);
-            Assert.Equal(new[] { "added" }, saved.Managed);
+            Assert.Equal(new[] { "added", "chrome", "code", "firefox", "msedge", "retained" }, saved.VisibleApplications([]));
+            Assert.True(saved.ApplicationListCustomized);
             window.ShowPage("shortcuts");
             Assert.Equal("Ctrl+Shift+", ShortcutEditor(window).Text);
             Assert.NotEqual("Ctrl+Shift+", saved.WakeShortcut);
@@ -1101,8 +1106,9 @@ public sealed partial class SettingsRenderingTests(WpfDesktopFixture desktop, IT
             Assert.Equal(saved.Managed, reopened.Managed);
             Assert.Equal(saved.Target, reopened.Target);
             Assert.Equal(saved.WakeShortcut, reopened.WakeShortcut);
-            void Add() => Descendants(window).OfType<Button>().Single(button => Equals(button.Content, "添加应用…"))
-                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            void Add() => ApplicationDialogAction(window,
+                () => ApplicationButton(window, "ApplicationAdd").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)), "ApplicationPicker",
+                dialog => InvokeApplicationButton(ApplicationButton(dialog, "ApplicationPickerBrowse")));
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
     });

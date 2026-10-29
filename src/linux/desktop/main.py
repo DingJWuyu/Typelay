@@ -553,9 +553,18 @@ async def desktop(paths, background, lock, tutorial=False):
         stopping.set,
     )
 
+    def publish_installation(state, message="", failure=None):
+        # Both surfaces consume the same installer facts. This does not start,
+        # resume or activate any model and never invents download progress.
+        components["settings"].installation(state, message, failure)
+        components["tray"].installation(state, message, failure)
+
+    def publish_installation_progress(message):
+        components["settings"].installation_progress(message)
+        components["tray"].installation_progress(message)
+
     def installation_result(state, failure=None, activated=False):
-        settings = components["settings"]
-        settings.installation(
+        publish_installation(
             state,
             "新组件启用结果尚未确认。已保留本地组件，可重新启动 TypeLay 检查。"
             if activated
@@ -565,8 +574,7 @@ async def desktop(paths, background, lock, tutorial=False):
 
     async def install(request):
         nonlocal installer, installation_request
-        settings = components["settings"]
-        settings.installation(
+        publish_installation(
             "running", "正在准备组件，文件校验并成功加载后才会启用；可暂停并保留已验证的下载进度。"
         )
         failure = None
@@ -598,7 +606,7 @@ async def desktop(paths, background, lock, tutorial=False):
                 if message.startswith(FAILURE_PREFIX):
                     failure = failure_code(message, failure)
                 else:
-                    settings.installation_progress(message)
+                    publish_installation_progress(message)
             code = await installer.wait()
             if failure is None and (code == 75 or pause_installation):
                 installation_result("paused")
@@ -606,14 +614,14 @@ async def desktop(paths, background, lock, tutorial=False):
                 installation_result("failed", failure)
             else:
                 reload_started = True
-                settings.installation("starting")
+                publish_installation("starting")
                 result = await activate_model(
                     host, {"identity": uuid.uuid4().hex, "generation": generation}
                 )
                 if result == "confirmed":
                     committed = True
                     installation_request = None
-                    settings.installation("ready")
+                    publish_installation("ready")
                     cleaned = False
                     # The host enqueues its final status before the reply on
                     # this same ordered link. Publication alone is not exit proof.
@@ -626,21 +634,21 @@ async def desktop(paths, background, lock, tutorial=False):
                         except (OSError, ValueError, EOFError, TimeoutError):
                             pass
                     if not cleaned or status.get("modelCleanupPending"):
-                        settings.installation_progress(
+                        publish_installation_progress(
                             "当前模型已启用，但部分旧组件或下载缓存尚未释放空间。"
                         )
                 else:
                     installation_result("failed", "runtime", activated=result == "unconfirmed")
         except asyncio.CancelledError:
             if committed:
-                settings.installation_progress("当前模型已启用，空间清理尚未完成。")
+                publish_installation_progress("当前模型已启用，空间清理尚未完成。")
             elif reload_started:
                 installation_result("failed", "runtime", activated=True)
             else:
                 installation_result("paused")
         except (OSError, ValueError, EOFError, TimeoutError):
             if committed:
-                settings.installation_progress("当前模型已启用，空间清理尚未完成。")
+                publish_installation_progress("当前模型已启用，空间清理尚未完成。")
             else:
                 installation_result(
                     "failed", "runtime" if reload_started else failure, activated=reload_started
@@ -667,7 +675,7 @@ async def desktop(paths, background, lock, tutorial=False):
             return
         if request is None:
             installation_request = None
-            components["settings"].installation("idle")
+            publish_installation("idle")
             return
         # Serialize now; later UI navigation or selection changes cannot mutate
         # the request replayed by Resume/Retry, including expectedCurrent.
@@ -706,7 +714,7 @@ async def desktop(paths, background, lock, tutorial=False):
         nonlocal pause_installation
         if install_task and not install_task.done() and not pause_installation:
             pause_installation = True
-            components["settings"].installation("pausing", "正在暂停，保留已验证的下载进度…")
+            publish_installation("pausing", "正在暂停，保留已验证的下载进度…")
             if installer and installer.returncode is None:
                 installer.terminate()
             else:

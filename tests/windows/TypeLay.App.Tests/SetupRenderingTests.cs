@@ -528,6 +528,8 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             }
             window.ShowPage("apps");
             window.UpdateLayout();
+            Descendants(window).OfType<Button>().Single(button => AutomationProperties.GetAutomationId(button) == "ApplicationConnectionDetails_desktop")
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             var ordinary = Descendants(window).OfType<Expander>().Single(expander => Equals(expander.Header, "其他普通输入框"));
             ordinary.IsExpanded = true;
             window.UpdateLayout();

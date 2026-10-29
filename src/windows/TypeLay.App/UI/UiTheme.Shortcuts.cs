@@ -29,7 +29,7 @@ internal static partial class UiTheme
             <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="surface" Property="Background" Value="{DynamicResource SettingsControlHover}"/></Trigger>
             <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="outline" Property="BorderThickness" Value="1"/><Setter TargetName="outline" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
             <Trigger Property="Text" Value=""><Setter TargetName="empty" Property="Visibility" Value="Visible"/></Trigger>
-            <DataTrigger Binding="{Binding Recording, RelativeSource={RelativeSource TemplatedParent}}" Value="True">
+            <DataTrigger Binding="{Binding Recording, RelativeSource={RelativeSource Self}}" Value="True">
               <Setter TargetName="surface" Property="Background" Value="{DynamicResource AccentSoft}"/>
               <Setter TargetName="outline" Property="BorderBrush" Value="{DynamicResource Accent}"/>
               <Setter TargetName="outline" Property="BorderThickness" Value="1.5"/>

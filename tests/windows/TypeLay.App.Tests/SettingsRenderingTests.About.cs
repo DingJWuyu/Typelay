@@ -53,6 +53,8 @@ public sealed partial class SettingsRenderingTests
             Assert.False(automatic.IsEnabled);
             Assert.False(automatic.IsChecked);
             Assert.False(check.IsEnabled);
+            Assert.Equal(26, check.ActualHeight);
+            Assert.Equal(26, Find<Button>("AboutOpenDataFolder").ActualHeight);
             Assert.NotNull(automatic.ToolTip);
             Assert.NotNull(check.ToolTip);
             Assert.True(account.TranslatePoint(new Point(), window).Y < automatic.TranslatePoint(new Point(), window).Y);

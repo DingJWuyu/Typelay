@@ -2,6 +2,7 @@
 
 import gi
 from design import Segments, Toast, app_icon, apply_theme, box, label, style
+from model_status import activity_status, model_notice, set_status_tone
 from status_notifier import StatusNotifier
 
 gi.require_version("Gtk", "3.0")
@@ -13,7 +14,9 @@ class Tray:
         self.host, self.tasks = host, tasks
         self.value = self.guidance = None
         self.last_application = None
-        self.model_ready = False
+        self.model_ready = self.model_installed = None
+        self.model_status = self.installation_message = ""
+        self.installation_state = "idle"
         self.application_pending = False
         self.application_style = None
         self.style_load_revision = 0
@@ -122,7 +125,8 @@ class Tray:
         self.application_style_picker.set_sensitive(False)
         self.application_style_picker.connect("changed", self.application_style_changed)
         self.style_row = Gtk.Box(spacing=8)
-        self.style_row.pack_start(label("风格"), True, True, 0)
+        self.style_title = label("风格")
+        self.style_row.pack_start(self.style_title, True, True, 0)
         self.style_row.pack_end(self.application_style_picker, False, False, 0)
         self.card.pack_start(self.style_row, False, False, 0)
         self.card.reorder_child(self.style_row, 2)
@@ -244,16 +248,14 @@ class Tray:
                 or self.value.get("uiLanguage", "system") == "system"
                 and not any(name.startswith("zh") for name in GLib.get_language_names())
             )
-            state = (
-                ("Running" if enabled else "Paused")
-                if english
-                else ("运行中" if enabled else "已暂停")
+            tone, chinese, translated = activity_status(enabled, self.model_ready)
+            state = translated if english else chinese
+            set_status_tone(self.status_dot, tone)
+            _tone, chinese, translated = model_notice(
+                self.model_ready, self.model_installed, self.installation_state
             )
-            self.model.set_text(
-                ("● Local model ready" if self.model_ready else "○ Local model not ready")
-                if english
-                else ("● 本地模型已就绪" if self.model_ready else "○ 本地模型尚未就绪")
-            )
+            self.model.set_text(translated if english else chinese)
+            self.model.set_tooltip_text(self.installation_message or self.model_status or None)
             self.current_application.set_text(
                 (
                     f"Enable in {self.last_application}"
@@ -277,8 +279,7 @@ class Tray:
                 bool(self.last_application) and not self.application_pending
             )
             self.application_style_picker.set_visible(True)
-            dot = self.status_dot.get_style_context()
-            (dot.remove_class if enabled else dot.add_class)("paused")
+            self.style_title.set_text("Tone" if english else "风格")
             self.status.set_label(state)
             self.style_provider = apply_theme(self.window, self.value, self.style_provider)
             self.toast.set_transition_duration(0 if self.value.get("reduceMotion") else 200)
@@ -291,7 +292,10 @@ class Tray:
     def report(self, value):
         if self.closed:
             return
-        self.model_ready = bool(value.get("modelReady"))
+        ready, installed = value.get("modelReady"), value.get("modelInstalled")
+        self.model_ready = ready if type(ready) is bool else None
+        self.model_installed = installed if type(installed) is bool else None
+        self.model_status = value.get("model") or ""
         application = value.get("lastApplication")
         changed = application != self.last_application
         self.last_application = application
@@ -310,6 +314,17 @@ class Tray:
         message = value.get("operationStatus")
         self.operation.set_label(message or "")
         self.operation.set_visible(bool(message))
+
+    def installation(self, state, message="", failure=None):
+        if self.closed:
+            return
+        self.installation_state = state
+        self.installation_progress(message)
+
+    def installation_progress(self, message):
+        if not self.closed:
+            self.installation_message = message
+            self.refresh()
 
     async def change_application_enabled(self, application, enabled, expected_revision=None):
         if not application or self.application_pending or self.closed:

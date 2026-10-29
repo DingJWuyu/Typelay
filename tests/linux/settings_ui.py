@@ -282,6 +282,66 @@ def main():
             )
             surface.pages.set_visible_child_name("general")
             assert not status.get("modelReady"), "No model may be simulated as ready"
+            assert surface.enabled_status.get_text() == "模型未就绪"
+            assert surface.enabled_dot.get_style_context().has_class("warn")
+            assert surface.model_nav_warning.get_visible()
+            assert all(item.get_mapped() for item in surface.nav_rows.values()), (
+                "empty-query navigation rows are hidden"
+            )
+
+            def visible_navigation():
+                for page, title in {
+                    "general": "通用",
+                    "appearance": "外观",
+                    "language": "语言与风格",
+                    "glossary": "术语表",
+                    "shortcuts": "快捷键",
+                    "application-support": "应用",
+                    "model": "本地模型",
+                    "about": "关于",
+                }.items():
+                    row = surface.nav_rows[page]
+                    captions = [
+                        child
+                        for child in row.get_child().get_children()
+                        if isinstance(child, Gtk.Label) and child.get_text() == title
+                    ]
+                    assert row.get_mapped() and len(captions) == 1 and captions[0].get_mapped(), (
+                        page
+                    )
+
+            visible_navigation()
+            surface.search.set_text("字号")
+            assert not surface.sidebar.get_mapped()
+            assert all(not item.get_mapped() for item in surface.nav_rows.values())
+            surface.search.set_text("")
+            await settle(lambda: surface.sidebar.get_mapped())
+            visible_navigation()
+            for page in surface.page_boxes:
+                surface.sidebar.select_row(surface.nav_rows[page])
+                await settle(lambda: not surface.pages.get_transition_running())
+                if page == "model":
+                    assert not any(card.get_mapped() for card, *_ in surface.model_notices.values())
+                else:
+                    card, message, view, _warning = surface.model_notices[page]
+                    assert card.get_mapped() and view.get_mapped(), page
+                    assert message.get_text() == "需要下载本地翻译模型"
+            surface.sidebar.select_row(surface.nav_rows["general"])
+            await settle(lambda: not surface.pages.get_transition_running())
+            surface.model_notices["language"][2].clicked()
+            assert surface.pages.get_visible_child_name() == "general"
+            surface.model_notices["general"][2].clicked()
+            assert surface.pages.get_visible_child_name() == "model"
+            surface.sidebar.select_row(surface.nav_rows["general"])
+            await settle(lambda: not surface.pages.get_transition_running())
+            surface.controls["enabled"].set_active(False)
+            await settle(lambda: state.get("enabled") is False and not jobs)
+            assert surface.enabled_status.get_text() == "已暂停"
+            assert surface.enabled_dot.get_style_context().has_class("paused")
+            assert surface.model_notices["general"][0].get_mapped()
+            surface.controls["enabled"].set_active(True)
+            await settle(lambda: state.get("enabled") is True and not jobs)
+            assert surface.enabled_status.get_text() == "模型未就绪"
             # Searching lists matching settings without navigating until the user
             # activates one. Use the real SearchEntry signal and native buttons.
             searched = asyncio.Event()
@@ -580,7 +640,10 @@ def main():
                 translation.rules.select_row(translation.rules.get_children()[index])
                 translation.remove_button.clicked()
 
-            assert translation.glossary_state["isReleased"] is False
+            assert translation.glossary_state["isReleased"] is True
+            assert translation.glossary_state["canApply"] is False
+            assert translation.glossary_state["canSave"] is True
+            assert status.get("modelReady") is False
             translation.new_button.clicked()
             translation.source_term.set_text("TypeLay")
             translation.target_term.set_text("TypeLay")
