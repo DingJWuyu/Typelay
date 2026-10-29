@@ -508,9 +508,16 @@ internal static partial class BrowserCooperationCheck
         Require(settingsProcess == app.Id, "settings-window-ownership-changed");
         var monitor = new Native.MonitorInfo { Size = Marshal.SizeOf<Native.MonitorInfo>() };
         Require(Native.GetMonitorInfoW(Native.MonitorFromWindow(settingsHandle, 2), ref monitor), "settings-monitor-unavailable");
-        int width = (int)Math.Ceiling(WindowBounds(settingsHandle).Width);
+        double scale = Native.GetDpiForWindow(settingsHandle) / 96.0;
+        Require(scale > 0, "settings-screen-scale-unavailable");
+        // Settings supports 800 DIP (its actual MinWidth and rendering contract).
+        // Retaining the default 920 DIP leaves only 62 CSS pixels beside Chrome
+        // on the 1024-pixel runner. Size only our Settings window; do not move or
+        // resize Chrome, and still verify its actual exposed field below.
+        int width = (int)Math.Ceiling(800 * scale);
         int height = monitor.Work.Bottom - monitor.Work.Top;
-        Require(width <= monitor.Work.Right - monitor.Work.Left && height > 0, "settings-command-layout-unavailable");
+        Require(width + Math.Ceiling(100 * scale) + 32 <= monitor.Work.Right - monitor.Work.Left
+            && height > 0, "settings-command-layout-unavailable");
         ct.ThrowIfCancellationRequested();
         // Only this fixture-owned settings window is kept above Chrome,
         // without activating it. The real source receives focus next.

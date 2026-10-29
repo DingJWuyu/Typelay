@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Automation.Peers;
@@ -11,6 +13,7 @@ using TypeLay.Core;
 using TypeLay.Runtime;
 using TypeLay.Windows.Contracts;
 using Xunit;
+using N = TypeLay.Platform.Windows.NativeMethods;
 
 namespace TypeLay.App.Tests;
 
@@ -338,7 +341,7 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(3));
-            await ClickMouse(replace, Button.ClickEvent, deadline.Token);
+            await ClickMouse(replace, Button.ClickEvent, "regenerate-replace", deadline.Token);
         }
         else
             replace.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -416,7 +419,7 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
             var more = Descendants(overlay).OfType<Button>().Single(button => AutomationProperties.GetName(button) == "更多翻译操作");
             Assert.True(more.Focusable);
             Assert.True(more.IsTabStop);
-            await ClickMouse(more, Button.ClickEvent, deadline.Token);
+            await ClickMouse(more, Button.ClickEvent, "more", deadline.Token);
             Assert.True(more.Focusable);
             Assert.True(more.IsTabStop);
             menu = Assert.IsType<ContextMenu>(more.ContextMenu);
@@ -436,7 +439,7 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         {
             Assert.True(regenerate.IsEnabled);
             if (mouse)
-                await ClickMouse(regenerate, MenuItem.ClickEvent, deadline.Token);
+                await ClickMouse(regenerate, MenuItem.ClickEvent, "regenerate-menu-item", deadline.Token);
             else
             {
                 var invoke = Assert.IsAssignableFrom<IInvokeProvider>(
@@ -463,7 +466,7 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         }
     }
 
-    private static async Task ClickMouse(FrameworkElement target, RoutedEvent clickEvent, CancellationToken cancellation)
+    private static async Task ClickMouse(FrameworkElement target, RoutedEvent clickEvent, string role, CancellationToken cancellation)
     {
         // Let WPF mount a just-opened Popup and process pending layout/input
         // before observing its real HWND; this does not repair focus or retry a click.
@@ -474,7 +477,7 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         var host = Assert.IsType<HwndSource>(PresentationSource.FromVisual(target));
         var point = target.PointToScreen(new(target.ActualWidth / 2, target.ActualHeight / 2));
         var pixel = new Native.Point { X = (int)point.X, Y = (int)point.Y };
-        Assert.Equal(host.Handle, WindowFromPoint(pixel));
+        RequireHit("before-pointer-move");
         Assert.True(Native.GetCursorPos(out var original));
         Assert.False(Native.GetAsyncKeyState(1) < 0);
         var clicked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -483,7 +486,7 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         try
         {
             Assert.True(SetCursorPos(pixel.X, pixel.Y));
-            Assert.Equal(host.Handle, WindowFromPoint(pixel));
+            RequireHit("after-pointer-move");
             // Actual software pointer input exercises ButtonBase focus/capture
             // and MenuItem closing. It is not physical-input evidence.
             MouseInput[] input = [new() { Flags = 2 }, new() { Flags = 4 }];
@@ -497,6 +500,71 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         {
             target.RemoveHandler(clickEvent, onClick);
             Assert.True(SetCursorPos(original.X, original.Y));
+        }
+
+        void RequireHit(string stage)
+        {
+            nint hit = WindowFromPoint(pixel);
+            if (hit != host.Handle)
+            {
+                // The original hit already refused this input. Read geometry
+                // once, afterwards; never re-hit-test, wait, repair or reinject.
+                // No titles, document text or arbitrary class strings are kept.
+                try
+                {
+                    var first = target.PointToScreen(new(0, 0));
+                    var last = target.PointToScreen(new(target.ActualWidth, target.ActualHeight));
+                    bool boundsRead = N.GetWindowRect(host.Handle, out var bounds);
+                    var name = new StringBuilder(256);
+                    string hitKind = N.GetClassName(hit, name, name.Capacity) == 0 ? "unknown"
+                        : name.ToString() switch
+                        {
+                            "CASCADIA_HOSTING_WINDOW_CLASS" => "terminal",
+                            "ConsoleWindowClass" => "console",
+                            var value when value.StartsWith("HwndWrapper[", StringComparison.Ordinal) => "wpf",
+                            _ => "other"
+                        };
+                    object? nativeBounds = boundsRead ? new
+                    {
+                        bounds.Left,
+                        bounds.Top,
+                        bounds.Right,
+                        bounds.Bottom
+                    } : null;
+                    TestContext.Current.TestOutputHelper?.WriteLine("Mouse preflight refused: " + JsonSerializer.Serialize(new
+                    {
+                        role,
+                        stage,
+                        laterObservation = true,
+                        point = new
+                        {
+                            pixel.X,
+                            pixel.Y
+                        },
+                        expected = (long)host.Handle,
+                        originalHit = (long)hit,
+                        hitKind,
+                        foreground = (long)Native.GetForegroundWindow(),
+                        target.IsVisible,
+                        target.IsHitTestVisible,
+                        target.Opacity,
+                        rootOpacity = (host.RootVisual as UIElement)?.Opacity,
+                        targetBounds = new
+                        {
+                            left = first.X,
+                            top = first.Y,
+                            right = last.X,
+                            bottom = last.Y
+                        },
+                        nativeBounds,
+                        nativeVisible = N.IsWindowVisible(host.Handle),
+                        nativeTopmost = (N.GetStyle(host.Handle, -20) & 0x8) != 0,
+                        cancellationRequested = cancellation.IsCancellationRequested
+                    }));
+                }
+                catch { /* Preserve the original hit refusal, even if observation failed. */ }
+            }
+            Assert.Equal(host.Handle, hit);
         }
     }
 

@@ -482,157 +482,181 @@ public sealed partial class NativeSourceActivationTests(WpfDesktopFixture ui)
                 Assert.Equal((source.Root, field), N.Focused());
                 return;
             }
-            // This group can be the first desktop consumer. Establish the caller's
-            // own foreground window instead of relying on a previous WPF test.
-            var navigationContent = new TextBlock { Text = "Preparing the test source." };
-            var navigation = new Window
-            {
-                Title = "TypeLay source setup navigation",
-                Width = 160,
-                Height = 100,
-                // An empty Window does not raise ContentRendered.
-                Content = navigationContent
-            };
-            var rendered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var mouseUp = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            navigation.ContentRendered += (_, _) => rendered.TrySetResult();
-            nint navigationRoot = 0;
-            nint? hit = null;
-            CallerHit? refusedHit = null;
-            bool? clickComplete = null, releaseComplete = null;
-            bool? activationReturned = null;
-            nint? foregroundAfterActivation = null;
-            bool callerPrepared = false;
-            string stage = "show";
-            try
-            {
-                source.Token.ThrowIfCancellationRequested();
-                navigation.Show();
-                stage = "render";
-                await rendered.Task.WaitAsync(source.Token);
-                source.Token.ThrowIfCancellationRequested();
-                navigationRoot = new WindowInteropHelper(navigation).Handle;
-                Assert.NotEqual(nint.Zero, navigationRoot);
-                stage = "activate-caller";
-                activationReturned = navigation.Activate();
-                foregroundAfterActivation = N.GetForegroundWindow();
-                // A visible caller need not have permission to activate itself.
-                // The return value is not permission: only the actual foreground
-                // decides whether the original one verified click is still needed.
-                if (N.GetForegroundWindow() != navigationRoot)
-                    await ClickNavigation();
-                stage = "foreground";
-                Assert.Equal(navigationRoot, N.GetForegroundWindow());
-                callerPrepared = true;
-                await source.NavigateAndPrepare(field, text, selection);
-            }
-            catch when (!callerPrepared)
-            {
-                try
-                {
-                    nint foregroundAfterFailure = N.GetForegroundWindow();
-                    bool? hitIsSourceRoot = hit is { } observedHit ? observedHit == source.Root : null;
-                    object identity = new
-                    {
-                        status = "already-attempted"
-                    };
-                    if (Interlocked.CompareExchange(ref _callerFailureObserved, 1, 0) == 0)
-                    {
-                        try
-                        {
-                            identity = ObserveCallerFailure(navigationRoot, foregroundAfterFailure, refusedHit,
-                                source.ObserveRetainedProcessOwner);
-                        }
-                        catch { identity = new { status = "observation-failed" }; }
-                    }
-                    TestContext.Current.TestOutputHelper?.WriteLine($"Caller navigation failed: stage={stage}; "
-                        + $"own={navigationRoot}; sourceRoot={source.Root}; sourceField={field}; sourceProcessId={source.FixtureProcessId}; "
-                        + $"lastPreflightHit={hit?.ToString() ?? "not-sampled"}; hitIsSourceRoot={hitIsSourceRoot?.ToString() ?? "not-sampled"}; "
-                        + $"foregroundAfterFailure={foregroundAfterFailure}; foregroundIsSourceRoot={foregroundAfterFailure == source.Root}; "
-                        + $"activationReturned={activationReturned?.ToString() ?? "not-sampled"}; foregroundAfterActivation={foregroundAfterActivation?.ToString() ?? "not-sampled"}; "
-                        + $"clickComplete={clickComplete?.ToString() ?? "not-sampled"}; releaseComplete={releaseComplete?.ToString() ?? "not-sampled"}; "
-                        + $"mouseUpReceived={mouseUp.Task.IsCompletedSuccessfully}; "
-                        + $"windowIdentity={JsonSerializer.Serialize(identity)}.");
-                }
-                catch { /* Diagnostic output must not replace the preparation failure. */ }
-                throw;
-            }
-            finally { navigation.Close(); }
+            await WithNavigationCaller(source, field,
+                () => source.NavigateAndPrepare(field, text, selection), source.Token);
             // Closing setup UI must not take focus back. Observe only; do not
             // reactivate or reclick the source before its fresh capture/permit.
             Assert.Equal((source.Root, field), N.Focused());
+        });
 
-            async Task ClickNavigation()
+    private static async Task WithNavigationCaller(ProductionForegroundWriteTests.Desktop source, nint field,
+        Func<Task> prepareSource, CancellationToken token, Action<Window>? observeCaller = null)
+    {
+        // Establish only the caller's foreground. Its temporary topmost band
+        // exposes the original verified click when activation is refused; it
+        // must be removed before any source preparation or product grant.
+        var navigationContent = new TextBlock { Text = "Preparing the test source." };
+        var navigation = new Window
+        {
+            Title = "TypeLay source setup navigation",
+            Width = 160,
+            Height = 100,
+            Topmost = true,
+            // An empty Window does not raise ContentRendered.
+            Content = navigationContent
+        };
+        var rendered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var mouseUp = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        navigation.ContentRendered += (_, _) => rendered.TrySetResult();
+        nint navigationRoot = 0;
+        nint? hit = null;
+        CallerHit? refusedHit = null;
+        bool? clickComplete = null, releaseComplete = null;
+        bool? activationReturned = null;
+        nint? foregroundAfterActivation = null;
+        bool callerPrepared = false;
+        string stage = "show";
+        try
+        {
+            observeCaller?.Invoke(navigation);
+            token.ThrowIfCancellationRequested();
+            navigation.Show();
+            stage = "render";
+            await rendered.Task.WaitAsync(token);
+            token.ThrowIfCancellationRequested();
+            navigationRoot = new WindowInteropHelper(navigation).Handle;
+            Assert.NotEqual(nint.Zero, navigationRoot);
+            stage = "activate-caller";
+            activationReturned = navigation.Activate();
+            foregroundAfterActivation = N.GetForegroundWindow();
+            // A visible caller need not have permission to activate itself.
+            // The return value is not permission: only the actual foreground
+            // decides whether the original one verified click is still needed.
+            if (N.GetForegroundWindow() != navigationRoot)
+                await ClickNavigation();
+            stage = "foreground";
+            Assert.Equal(navigationRoot, N.GetForegroundWindow());
+            stage = "remove-caller-topmost";
+            navigation.Topmost = false;
+            Assert.False(navigation.Topmost);
+            Assert.True(N.IsWindowVisible(navigationRoot));
+            Assert.Equal(0, N.GetStyle(navigationRoot, -20) & 0x8);
+            Assert.Equal(navigationRoot, N.GetForegroundWindow());
+            token.ThrowIfCancellationRequested();
+            callerPrepared = true;
+            await prepareSource();
+        }
+        catch when (!callerPrepared && !token.IsCancellationRequested)
+        {
+            try
             {
-                stage = "click-preflight";
-                Assert.True(GetCursorPos(out var previous));
-                bool pointerMoved = false;
-                navigation.PreviewMouseLeftButtonUp += ReceivedMouseUp;
-                try
+                nint foregroundAfterFailure = N.GetForegroundWindow();
+                bool? hitIsSourceRoot = hit is { } observedHit ? observedHit == source.Root : null;
+                object identity = new
                 {
-                    source.Token.ThrowIfCancellationRequested();
-                    nint previousDpi = SetThreadDpiAwarenessContext(-4);
-                    Assert.NotEqual(nint.Zero, previousDpi);
+                    status = "already-attempted"
+                };
+                if (Interlocked.CompareExchange(ref _callerFailureObserved, 1, 0) == 0)
+                {
                     try
                     {
-                        Assert.True(navigationContent.ActualWidth > 0 && navigationContent.ActualHeight > 0);
-                        var point = navigationContent.PointToScreen(new Point(navigationContent.ActualWidth / 2, navigationContent.ActualHeight / 2));
-                        Assert.True(double.IsFinite(point.X) && double.IsFinite(point.Y)
-                            && point.X >= int.MinValue && point.X <= int.MaxValue
-                            && point.Y >= int.MinValue && point.Y <= int.MaxValue);
-                        var pixel = new N.Point { X = (int)point.X, Y = (int)point.Y };
-                        RequireTarget();
-                        Assert.All(new[] { 0x01, 0x02, 0x04, 0x10, 0x11, 0x12, 0x5B, 0x5C },
-                            key => Assert.True(GetAsyncKeyState(key) >= 0));
-                        source.Token.ThrowIfCancellationRequested();
-                        Assert.True(SetCursorPos(pixel.X, pixel.Y));
-                        pointerMoved = true;
-                        RequireTarget();
-                        source.Token.ThrowIfCancellationRequested();
-                        stage = "click-input";
-                        var click = HyPackageCheck.SendLeftClick();
-                        clickComplete = click.Complete;
-                        releaseComplete = click.ReleaseComplete;
-                        Assert.True(click.ReleaseComplete);
-                        Assert.True(click.Complete);
-
-                        void RequireTarget()
-                        {
-                            Assert.Equal(navigationRoot, new WindowInteropHelper(navigation).Handle);
-                            Assert.NotEqual(0u, N.GetWindowThreadProcessId(navigationRoot, out uint owner));
-                            Assert.Equal((uint)Environment.ProcessId, owner);
-                            Assert.True(N.IsWindowVisible(navigationRoot) && N.IsWindowEnabled(navigationRoot));
-                            Assert.True(new Rect(0, 0, navigationContent.ActualWidth, navigationContent.ActualHeight)
-                                .Contains(navigationContent.PointFromScreen(new Point(pixel.X, pixel.Y))));
-                            nint currentHit = WindowFromPoint(pixel);
-                            hit = currentHit;
-                            if (currentHit != navigationRoot)
-                            {
-                                // The refusal is already determined. This identity is
-                                // diagnostic only and is not reused for another click.
-                                N.GetWindowThreadProcessId(currentHit, out uint process);
-                                refusedHit = new(pixel.X, pixel.Y, (long)currentHit, process);
-                            }
-                            Assert.Equal(navigationRoot, currentHit);
-                        }
+                        identity = ObserveCallerFailure(navigationRoot, foregroundAfterFailure, refusedHit,
+                            source.ObserveRetainedProcessOwner);
                     }
-                    finally { SetThreadDpiAwarenessContext(previousDpi); }
-                    stage = "mouse-up";
-                    await mouseUp.Task.WaitAsync(source.Token);
+                    catch { identity = new { status = "observation-failed" }; }
                 }
-                finally
-                {
-                    navigation.PreviewMouseLeftButtonUp -= ReceivedMouseUp;
-                    if (pointerMoved)
-                        SetCursorPos(previous.X, previous.Y);
-                }
+                TestContext.Current.TestOutputHelper?.WriteLine($"Caller navigation failed: stage={stage}; "
+                    + $"own={navigationRoot}; sourceRoot={source.Root}; sourceField={field}; sourceProcessId={source.FixtureProcessId}; "
+                    + $"lastPreflightHit={hit?.ToString() ?? "not-sampled"}; hitIsSourceRoot={hitIsSourceRoot?.ToString() ?? "not-sampled"}; "
+                    + $"foregroundAfterFailure={foregroundAfterFailure}; foregroundIsSourceRoot={foregroundAfterFailure == source.Root}; "
+                    + $"activationReturned={activationReturned?.ToString() ?? "not-sampled"}; foregroundAfterActivation={foregroundAfterActivation?.ToString() ?? "not-sampled"}; "
+                    + $"clickComplete={clickComplete?.ToString() ?? "not-sampled"}; releaseComplete={releaseComplete?.ToString() ?? "not-sampled"}; "
+                    + $"mouseUpReceived={mouseUp.Task.IsCompletedSuccessfully}; "
+                    + $"windowIdentity={JsonSerializer.Serialize(identity)}.");
             }
-            void ReceivedMouseUp(object sender, System.Windows.Input.MouseButtonEventArgs args)
+            catch { /* Diagnostic output must not replace the preparation failure. */ }
+            throw;
+        }
+        finally
+        {
+            try
             {
-                if (clickComplete == true)
-                    mouseUp.TrySetResult();
+                navigation.Topmost = false;
             }
-        });
+            finally { navigation.Close(); }
+        }
+
+        async Task ClickNavigation()
+        {
+            stage = "click-preflight";
+            Assert.True(GetCursorPos(out var previous));
+            bool pointerMoved = false;
+            navigation.PreviewMouseLeftButtonUp += ReceivedMouseUp;
+            try
+            {
+                token.ThrowIfCancellationRequested();
+                nint previousDpi = SetThreadDpiAwarenessContext(-4);
+                Assert.NotEqual(nint.Zero, previousDpi);
+                try
+                {
+                    Assert.True(navigationContent.ActualWidth > 0 && navigationContent.ActualHeight > 0);
+                    var point = navigationContent.PointToScreen(new Point(navigationContent.ActualWidth / 2, navigationContent.ActualHeight / 2));
+                    Assert.True(double.IsFinite(point.X) && double.IsFinite(point.Y)
+                        && point.X >= int.MinValue && point.X <= int.MaxValue
+                        && point.Y >= int.MinValue && point.Y <= int.MaxValue);
+                    var pixel = new N.Point { X = (int)point.X, Y = (int)point.Y };
+                    RequireTarget();
+                    Assert.All(new[] { 0x01, 0x02, 0x04, 0x10, 0x11, 0x12, 0x5B, 0x5C },
+                        key => Assert.True(GetAsyncKeyState(key) >= 0));
+                    token.ThrowIfCancellationRequested();
+                    Assert.True(SetCursorPos(pixel.X, pixel.Y));
+                    pointerMoved = true;
+                    RequireTarget();
+                    token.ThrowIfCancellationRequested();
+                    stage = "click-input";
+                    var click = HyPackageCheck.SendLeftClick();
+                    clickComplete = click.Complete;
+                    releaseComplete = click.ReleaseComplete;
+                    Assert.True(click.ReleaseComplete);
+                    Assert.True(click.Complete);
+
+                    void RequireTarget()
+                    {
+                        Assert.Equal(navigationRoot, new WindowInteropHelper(navigation).Handle);
+                        Assert.NotEqual(0u, N.GetWindowThreadProcessId(navigationRoot, out uint owner));
+                        Assert.Equal((uint)Environment.ProcessId, owner);
+                        Assert.True(N.IsWindowVisible(navigationRoot) && N.IsWindowEnabled(navigationRoot));
+                        Assert.True(new Rect(0, 0, navigationContent.ActualWidth, navigationContent.ActualHeight)
+                            .Contains(navigationContent.PointFromScreen(new Point(pixel.X, pixel.Y))));
+                        nint currentHit = WindowFromPoint(pixel);
+                        hit = currentHit;
+                        if (currentHit != navigationRoot)
+                        {
+                            // The refusal is already determined. This identity is
+                            // diagnostic only and is not reused for another click.
+                            N.GetWindowThreadProcessId(currentHit, out uint process);
+                            refusedHit = new(pixel.X, pixel.Y, (long)currentHit, process);
+                        }
+                        Assert.Equal(navigationRoot, currentHit);
+                    }
+                }
+                finally { SetThreadDpiAwarenessContext(previousDpi); }
+                stage = "mouse-up";
+                await mouseUp.Task.WaitAsync(token);
+            }
+            finally
+            {
+                navigation.PreviewMouseLeftButtonUp -= ReceivedMouseUp;
+                if (pointerMoved)
+                    SetCursorPos(previous.X, previous.Y);
+            }
+        }
+        void ReceivedMouseUp(object sender, System.Windows.Input.MouseButtonEventArgs args)
+        {
+            if (clickComplete == true)
+                mouseUp.TrySetResult();
+        }
+    }
     private static StockEditActivation Install(NativeTransactions native, Guid generation, AcceptancePermit permit)
     {
         Assert.True(native.InstallSourceAcceptance(generation, permit).Installed);
