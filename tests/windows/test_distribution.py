@@ -80,6 +80,7 @@ class DistributionTests(unittest.TestCase):
             "worker",
             "bootstrap",
             "browser",
+            "fonts",
         }
         self.assertEqual({p.name for p in self.home.iterdir()}, expected)
         forbidden = {

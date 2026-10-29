@@ -18,6 +18,23 @@ namespace TypeLay.App.Tests;
 
 public sealed partial class LanguagePickerInteractionTests
 {
+    [Fact]
+    public Task SettingsLanguageOptionTemplateTargetsTheGlyphAndItsViewportSeparately() => desktop.RunAsync(() =>
+    {
+        var resources = UiTheme.LanguageResources();
+        var item = new ComboBoxItem
+        {
+            Style = Assert.IsType<Style>(resources["SettingsLanguageOption"]),
+            IsSelected = true,
+            Tag = "selected"
+        };
+        Assert.True(item.ApplyTemplate());
+        var viewport = Assert.IsType<Viewbox>(item.Template.FindName("tick", item));
+        var glyph = Assert.IsType<System.Windows.Shapes.Path>(item.Template.FindName("tickStroke", item));
+        Assert.Equal(Visibility.Visible, viewport.Visibility);
+        Assert.Equal(Colors.White, Assert.IsType<SolidColorBrush>(glyph.Stroke).Color);
+    });
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

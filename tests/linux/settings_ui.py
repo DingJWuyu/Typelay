@@ -387,6 +387,57 @@ def main():
             assert surface.language_model_notice.get_visible() and not surface.model_ready
             assert status["modelInstalled"] is False
             assert surface.language_model_label.get_text() == "需要下载本地翻译模型"
+            source_picker.clicked()
+            # Move focus before the opening's idle completion can run. Its
+            # initial-focus handoff must not override a newer user choice.
+            user_focus = source_picker.options[1]
+            user_focus.grab_focus()
+            await host.ask("sessionShortcutSettings")
+            await paint(surface.window)
+            assert user_focus.has_focus() and not source_picker.search.has_focus()
+            source_picker.popdown()
+            await settle(lambda: not source_picker.popover.get_visible())
+            surface.pages.set_visible_child_name("about")
+            await settle(lambda: not source_picker.get_mapped())
+            await paint(surface.window)
+            surface.pages.set_visible_child_name("language")
+            source_picker.clicked()
+            print(
+                "USER FOCUS BEFORE INITIAL MAP",
+                not source_picker.popover.get_mapped(),
+                "page transition",
+                surface.pages.get_transition_running(),
+                flush=True,
+            )
+            user_focus = source_picker.options[1]
+            user_focus.grab_focus()
+            assert user_focus.has_focus()
+            # A newer user focus choice remains authoritative even if GTK
+            # subsequently clears it during the native mapping handoff.
+            surface.window.set_focus(None)
+            await host.ask("sessionShortcutSettings")
+            await paint(surface.window)
+            assert not source_picker.search.has_focus()
+            source_picker.popdown()
+            await settle(lambda: not source_picker.popover.get_visible())
+            source_picker.clicked()
+            other_window = Gtk.Window(title="TypeLay focus regression")
+            other_button = Gtk.Button(label="Keep this focus")
+            other_window.add(other_button)
+            other_window.show_all()
+            other_window.present()
+            other_button.grab_focus()
+            try:
+                await settle(lambda: other_window.is_active())
+                await paint(other_window)
+                assert other_button.has_focus() and not source_picker.search.has_focus()
+                assert not surface.window.is_active()
+            finally:
+                other_window.destroy()
+            source_picker.popdown()
+            await settle(lambda: not source_picker.popover.get_visible())
+            surface.window.present()
+            await settle(lambda: surface.window.is_active())
             surface.controls["reduceMotion"].set_active(True)
             await settle(lambda: state.get("reduceMotion") is True)
             surface.controls["textSize"].set_value(18)

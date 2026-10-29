@@ -15,8 +15,12 @@ sudo pacman -Syu --needed git base-devel cmake ninja pkgconf dotnet-sdk gtk3 gtk
 ```fish
 git clone --branch trunk git@github.com:DingJWuyu/Typelay.git
 cd Typelay
-python eng/linux/build.py
+uv venv artifacts/build-tools
+uv pip install --python artifacts/build-tools/bin/python -r eng/requirements.txt
+artifacts/build-tools/bin/python eng/linux/build.py
 ```
+
+上述私有构建环境提供锁定的 fontTools，用于构建时生成离线字体，不安装到系统 Python，也不是翻译 worker 环境。已有完整字体包只做标准库校验；新构建仍应先准备这些固定工具。
 
 输出：`artifacts/TypeLay-Linux-preview-x86_64.tar.gz` 及对应 `.sha256`。包内包括自包含 .NET 宿主、GTK3/GTK4 原生模块、浏览器扩展及本地主机、可选 VS Code VSIX、子进程监督程序、桌面代码、共享 worker、安装脚本和文件校验清单。模型不在包内，也不会在首次启动时无提示下载。
 

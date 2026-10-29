@@ -1109,6 +1109,8 @@ class LanguagePicker(Gtk.Button):
         self.keyboard_used = False
         self.generation = None
         self.opened = False
+        self.opening = None
+        self.cancel_initial_focus = None
         style(self, "language-button")
         body = Gtk.Box(spacing=8)
         self.caption = style(Gtk.Label(xalign=0), "language-name")
@@ -1152,21 +1154,83 @@ class LanguagePicker(Gtk.Button):
     def popup(self):
         if not self.is_sensitive() or not self.get_mapped():
             return
+        self.retire()
         self.opened = True
+        opening = self.opening = object()
         self.keyboard_index = 0
         self.keyboard_used = False
         self.search.set_text("")
         self.render_choices()
-        self.popover.show_all()
+        window = self.get_toplevel()
+        guard = {"eligible": True}
+        if isinstance(window, Gtk.Window):
+
+            def moved(_window, focused):
+                if focused is not None and focused is not self.search:
+                    guard["eligible"] = False
+
+            watch = window.connect("set-focus", moved)
+
+            def cancel():
+                if window.handler_is_connected(watch):
+                    window.disconnect(watch)
+                if self.popover.handler_is_connected(mapped_watch):
+                    self.popover.disconnect(mapped_watch)
+                if self.cancel_initial_focus is cancel:
+                    self.cancel_initial_focus = None
+
+            def mapped(_popover):
+                # During a page transition GTK may emit map after temporarily
+                # hiding this child outside its viewport. Only a real mapping
+                # completes this opening's single initial focus handoff.
+                if (
+                    self.cancel_initial_focus is not cancel
+                    or not self.popover.get_mapped()
+                    or not self.popover.get_child_visible()
+                ):
+                    return
+                cancel()
+                if (
+                    guard["eligible"]
+                    and opening is self.opening
+                    and self.opened
+                    and self.get_mapped()
+                    and self.is_sensitive()
+                    and self.popover.get_visible()
+                    and window.is_active()
+                    and window.get_focus() in (None, self.search)
+                ):
+                    self.search.grab_focus_without_selecting()
+
+            mapped_watch = self.popover.connect_after("map", mapped)
+            self.cancel_initial_focus = cancel
+        # popup() owns showing/mapping the popover and its transition. Prepare
+        # only the content here; showing the popover first starts two paths.
+        self.popover.get_child().show_all()
         self.popover.popup()
-        self.search.grab_focus()
+        if isinstance(window, Gtk.Window):
+            # Reopening an already-mapped popover need not emit another map.
+            mapped(self.popover)
+        if (
+            guard["eligible"]
+            and opening is self.opening
+            and self.opened
+            and isinstance(window, Gtk.Window)
+            and window.is_active()
+            and window.get_focus() in (None, self, self.search)
+            and not self.search.has_focus()
+        ):
+            self.search.grab_focus_without_selecting()
 
     def popdown(self):
         self.retire()
         self.popover.popdown()
 
     def retire(self):
+        if self.cancel_initial_focus:
+            self.cancel_initial_focus()
         self.opened = False
+        self.opening = None
         self.generation = None
 
     def search_changed(self, *_):

@@ -7,6 +7,7 @@ verify selected font bytes and regional glyph coverage, not desktop geometry.
 import hashlib
 import json
 import os
+import struct
 import sys
 import unittest
 from pathlib import Path
@@ -41,6 +42,36 @@ class BundledUiFonts(unittest.TestCase):
         path = self.root / matches[0]["path"]
         self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), selected["checksum"])
         return matches[0], face.describe().get_weight()
+
+    def test_semibold_preferred_family_is_complete_for_each_windows_language(self):
+        # Read the actual generated SFNT name table without adding fontTools to
+        # the desktop runtime. Windows locale-specific family resolution must
+        # not fall back to a separate legacy SemiBold family.
+        data = (self.root / "noto-sans/TypeLayNotoSansSC-SemiBold.ttf").read_bytes()
+        tables = struct.unpack_from(">H", data, 4)[0]
+        offsets = {
+            tag: offset
+            for tag, _, offset, _ in (
+                struct.unpack_from(">4sIII", data, 12 + index * 16) for index in range(tables)
+            )
+        }
+        offset = offsets[b"name"]
+        _, count, strings = struct.unpack_from(">HHH", data, offset)
+        records = {}
+        for index in range(count):
+            platform, encoding, language, name, length, start = struct.unpack_from(
+                ">HHHHHH", data, offset + 6 + index * 12
+            )
+            if platform == 3:
+                begin = offset + strings + start
+                records[encoding, language, name] = data[begin : begin + length].decode("utf-16-be")
+        languages = {(encoding, language) for encoding, language, name in records if name == 1}
+        self.assertTrue(languages)
+        self.assertIn((1, 0x804), languages)
+        for encoding, language in languages:
+            with self.subTest(encoding=encoding, language=language):
+                self.assertEqual(records.get((encoding, language, 16)), "Noto Sans SC")
+                self.assertEqual(records.get((encoding, language, 17)), "SemiBold")
 
     def test_registered_cjk_roles_resolve_exact_locked_face_bytes_and_weight(self):
         for item in self.records:

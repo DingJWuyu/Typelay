@@ -26,6 +26,8 @@ GTK3、GTK4 自有译文编辑器的组合键流程已通过[实际主机与本�
 
 ## 构建与打包
 
+打包会准备与主客户端相同的离线字体。先按[Linux 构建](development.md#构建)创建私有构建环境并安装 `eng/requirements.txt`；以下打包命令使用该环境的 Python（或已安装同一固定依赖的开发环境），不向系统 Python 安装依赖。
+
 仅在匹配的 Arch/CachyOS x86_64 开发环境构建。官方系统依赖仍由包管理器提供；本包不替换它们。生产配方与补丁在 `eng/linux/cooperative/`，单独构建不编译 fixture、不运行桌面测试：
 
 ```sh
@@ -36,7 +38,7 @@ python eng/linux/cooperative/fcitx.py --output artifacts/linux/fcitx-build
 
 ```sh
 python tests/linux/fcitx_cooperative/run.py --core-version 5.1.22
-python packaging/linux/fcitx-cooperative/pack.py \
+artifacts/build-tools/bin/python packaging/linux/fcitx-cooperative/pack.py \
   --build-output artifacts/linux/fcitx-cooperative-5.1.22 \
   --output artifacts/TypeLay-Fcitx-cooperative.tar.gz
 ```
@@ -147,7 +149,7 @@ Qt 的生产构建和原生实现见 [Qt 路径](qt.md#构建与验证)。可选
 ```sh
 python tests/linux/qt_cooperative/run.py \
   --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22
-python packaging/linux/fcitx-cooperative/pack.py \
+artifacts/build-tools/bin/python packaging/linux/fcitx-cooperative/pack.py \
   --build-output artifacts/linux/fcitx-cooperative-5.1.22 \
   --qt-output artifacts/linux/qt-cooperative \
   --output artifacts/TypeLay-Fcitx-cooperative-qt6.tar.gz

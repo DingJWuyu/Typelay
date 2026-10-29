@@ -2443,6 +2443,80 @@ class BrowserContract(unittest.TestCase):
         self.assertTrue(self.command("overlay-render", data)["visible"])
         return data
 
+    def observe_overlay_lifetime(self):
+        # Observe public transport and actual DOM only. No heartbeat, capture,
+        # mutation of product state, or production deadline is introduced here.
+        self.page.evaluate("""() => {
+          let editor = null, menu = null, host = null, expiry = null, omitted = 0;
+          const rows = [];
+          const state = () => ({
+            documentFocused: document.hasFocus(), visibility: document.visibilityState,
+            hostConnected: !!(host || document.querySelector('html > div[role=region][aria-label=TypeLay]'))?.isConnected,
+            editorConnected: editor?.isConnected ?? null, editorFocused: editor?.matches(':focus') ?? null,
+            menuHidden: menu?.hidden ?? null,
+            hostExpiryAtPerformanceMs: expiry
+          });
+          const log = (kind, detail = {}) => {
+            if (rows.length < 96) rows.push({kind, ms: performance.now(), wall: Date.now(), ...state(), ...detail});
+            else omitted++;
+          };
+          let previous = '';
+          const changed = () => {
+            const current = JSON.stringify(state());
+            if (current !== previous) { previous = current; log('dom-change'); }
+          };
+          const observer = new MutationObserver(changed);
+          observer.observe(document.documentElement, {childList: true, subtree: true});
+          for (const type of ['keydown', 'keyup']) window.addEventListener(type, event => {
+            if (['Escape', 'Control', 'F7'].includes(event.key))
+              log('key-capture', {type, key: event.key, trusted: event.isTrusted,
+                repeat: event.repeat, composing: event.isComposing});
+          }, true);
+          window.addEventListener('keydown', event => {
+            if (event.key === 'Escape') log('key-bubble', {key: event.key,
+              trusted: event.isTrusted, prevented: event.defaultPrevented});
+          });
+          const raw = window.fixtureRawCommand;
+          window.fixtureRawCommand = message => {
+            log('command-before', {operation: message.op});
+            const result = raw(message);
+            if (['overlay-render', 'overlay-renew'].includes(message.op))
+              expiry = message.data.expiresAtMs - 1000000; // Exact fixture clock offset.
+            log('command-after', {operation: message.op,
+              visibleReply: result?.visible ?? null, described: message.op === 'describe' ? !!result : null,
+              clockReason: result?.diagnostics?.lastClockReason ?? null,
+              clockAgeMs: result?.diagnostics?.clockAgeMs ?? null});
+            return result;
+          };
+          window.fixtureOverlayLifetime = {
+            watch(value) {
+              editor = value; host = value.getRootNode().host;
+              menu = value.getRootNode().querySelector('#more-actions');
+              observer.observe(host, {childList: true, attributes: true});
+              if (menu) observer.observe(menu, {attributes: true, attributeFilter: ['hidden']});
+              editor.addEventListener('compositionstart', event => log('compositionstart', {trusted: event.isTrusted}));
+              log('watch-editor');
+            },
+            finish() { log('final'); observer.disconnect(); return {rows, omitted}; }
+          };
+          log('observer-ready');
+        }""")
+
+        def save():
+            value = self.page.evaluate("fixtureOverlayLifetime.finish()")
+            output = Path(
+                os.environ.get(
+                    "TYPELAY_BROWSER_LIFETIME_OUTPUT",
+                    ROOT / "artifacts/linux/browser-native/overlay/lifetime",
+                )
+            )
+            output.mkdir(parents=True, exist_ok=True)
+            (output / (self._testMethodName + ".json")).write_text(
+                json.dumps(value, indent=2), encoding="utf-8"
+            )
+
+        self.addCleanup(save)
+
     def overlay_control(self, name, role="button"):
         nodes = self.cdp.send("Accessibility.getFullAXTree")["nodes"]
         node = next(
@@ -2784,10 +2858,12 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.accepted(), [])
 
     def test_more_popup_escape_does_not_consume_unknown_editor_composition(self):
+        self.observe_overlay_lifetime()
         _snapshot, data = self.open_editor("Tab", "Esc")
         self.page.emulate_media(reduced_motion="reduce")
         self.set_translation_menu(data, self.translation_menu_state(), "Tab", "Esc")
         editor = self.overlay_control("TypeLay 译文", "textbox")
+        self.overlay_dom(editor, "function() { fixtureOverlayLifetime.watch(this); }")
         self.click_overlay_control("更多")
         menu = self.overlay_control("更多操作", "group")
         before = self.overlay_dom(editor, "function() { return this.value; }")
@@ -2803,6 +2879,9 @@ class BrowserContract(unittest.TestCase):
             if (event.key === 'Escape') popupEscapes.push(event.isTrusted);
           });
         }""")
+        # An unfinished composition remains across the normal 100ms layout
+        # tick. This does not renew the original 800ms display/key deadlines.
+        self.page.wait_for_timeout(150)
         self.page.keyboard.press("Escape")
         self.assertEqual(self.page.evaluate("popupEscapes"), [True])
         self.assertFalse(self.overlay_dom(menu, "function() { return this.hidden; }"))
@@ -2813,6 +2892,23 @@ class BrowserContract(unittest.TestCase):
                 "fixtureMessages.some(m => m.event === 'ui' && ['escape', 'return'].includes(m.data.operation))"
             )
         )
+        # Keeping a menu visible does not give an unfinished editor action
+        # authority. Each real pointer click must preserve this same opening.
+        for name in ("自然", "换种说法", "复制译文", "Esc 退出当前翻译"):
+            self.click_overlay_control(name)
+            self.assertFalse(self.overlay_dom(menu, "function() { return this.hidden; }"))
+            self.assertTrue(
+                self.overlay_dom(
+                    editor, "function() { return this.isConnected && this.matches(':focus'); }"
+                )
+            )
+        self.assertFalse(
+            self.page.evaluate(
+                "fixtureMessages.some(m => m.event === 'ui' && ['escape', 'return', 'style', 'alternative'].includes(m.data.operation))"
+            )
+        )
+        self.assertEqual(self.overlay_dom(editor, "function() { return this.value; }"), before)
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 
     def test_closed_quality_menu_keeps_future_styles_disabled_but_allows_removing_override(self):
@@ -3892,8 +3988,10 @@ class BrowserContract(unittest.TestCase):
             )
 
     def test_native_editor_metadata_renewal_preserves_draft_without_renewing_key_ticket(self):
+        self.observe_overlay_lifetime()
         snapshot, data = self.open_editor("Ctrl+F7", "Ctrl+F8", dispatch="native")
         editor = self.overlay_control("TypeLay 译文", "textbox")
+        self.overlay_dom(editor, "function() { fixtureOverlayLifetime.watch(this); }")
         self.page.keyboard.press("Control+A")
         self.page.keyboard.insert_text("Working draft")
         self.page.keyboard.down("Control")

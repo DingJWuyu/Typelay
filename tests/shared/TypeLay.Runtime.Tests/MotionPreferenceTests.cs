@@ -25,7 +25,10 @@ public sealed class MotionPreferenceTests : IDisposable
         Assert.Equal(expected, store.Value.MotionPreference);
         Assert.False(store.Value.Enabled);
         Assert.Equal(["private-app"], store.Value.Excluded);
-        store.Update(store.Value with { Theme = "dark" });
+        store.Update(store.Value with
+        {
+            Theme = "dark"
+        });
         using var saved = JsonDocument.Parse(File.ReadAllText(SettingsPath));
         Assert.Equal(expected, saved.RootElement.GetProperty("Motion").GetString());
         Assert.Equal(reduced, saved.RootElement.GetProperty("ReduceMotion").GetBoolean());
@@ -78,7 +81,10 @@ public sealed class MotionPreferenceTests : IDisposable
     {
         var startup = new List<bool>();
         var store = new SettingsStore(SettingsPath, startup.Add);
-        store.Update(store.Value with { Motion = "full" });
+        store.Update(store.Value with
+        {
+            Motion = "full"
+        });
         string before = File.ReadAllText(SettingsPath);
         long revision = store.Revision;
         Assert.Throws<ArgumentException>(() => store.Update(revision, store.Value with { Motion = invalid, Startup = true }));
@@ -95,8 +101,15 @@ public sealed class MotionPreferenceTests : IDisposable
         store.Update(new UserSettings(Motion: "full", ReduceMotion: true));
         Assert.Equal("full", store.Value.MotionPreference);
         Assert.False(store.Value.ReduceMotion);
-        Assert.False(store.HasChanges(store.Value with { ReduceMotion = true }));
-        store.Update(store.Value with { ReduceMotion = true, Accent = "ocean" });
+        Assert.False(store.HasChanges(store.Value with
+        {
+            ReduceMotion = true
+        }));
+        store.Update(store.Value with
+        {
+            ReduceMotion = true,
+            Accent = "ocean"
+        });
         Assert.Equal("full", store.Value.MotionPreference);
         Assert.False(store.Value.ReduceMotion);
         store.Update(store.Value.WithLegacyReduceMotion(true));
@@ -111,7 +124,10 @@ public sealed class MotionPreferenceTests : IDisposable
     {
         var store = new SettingsStore(SettingsPath);
         long original = store.Revision;
-        store.Update(original, store.Value with { Motion = "reduce" });
+        store.Update(original, store.Value with
+        {
+            Motion = "reduce"
+        });
         Assert.Throws<SettingsConflictException>(() => store.Update(original, new UserSettings(ReduceMotion: false)));
         Assert.Equal("reduce", store.Value.MotionPreference);
         store.Update(store.Revision, new UserSettings(ReduceMotion: false));

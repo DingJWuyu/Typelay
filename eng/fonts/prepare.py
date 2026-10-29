@@ -124,11 +124,20 @@ def instantiate(source, output, item, version):
         raise ValueError("unexpected-font-axes")
     cmap = font.getBestCmap()
     font = instantiateVariableFont(font, item["instance"], inplace=True, optimize=True)
+    # WPF can select a localized legacy family when the preferred family is
+    # missing for that language. Keep every existing Windows language's family
+    # and subfamily records complete, not just the English records.
+    windows_languages = {
+        (record.platformID, record.platEncID, record.langID)
+        for record in font["name"].names
+        if record.platformID == 3
+    } | {(3, 1, 0x409)}
     for name_id, value in names.items():
         for name in font["name"].names:
             if name.nameID == name_id:
                 name.string = value.encode(name.getEncoding())
-        font["name"].setName(value, name_id, 3, 1, 0x409)
+        for platform, encoding, language in sorted(windows_languages):
+            font["name"].setName(value, name_id, platform, encoding, language)
     font["name"].removeNames(nameID=25)
     font["name"].removeUnusedNames(font)
     if font.getBestCmap() != cmap or font["OS/2"].usWeightClass != item["instance"]["wght"]:

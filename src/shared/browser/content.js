@@ -935,7 +935,7 @@
   }
   function positionMore(current) {
     if (current.menu.hidden) return;
-    if (!current.menuContext || !menuActionCurrent(current, current.menuContext)) {
+    if (!current.menuContext || !menuOpeningCurrent(current, current.menuContext)) {
       closeMore(current); return;
     }
     const panel = current.panel.getBoundingClientRect(), button = current.more.getBoundingClientRect();
@@ -1163,7 +1163,11 @@
       const collapse = document.createElement("button");
       collapse.textContent = "收起";
       collapse.addEventListener("pointerdown", event => event.preventDefault());
-      collapse.addEventListener("click", () => ui("escape"));
+      collapse.addEventListener("click", event => {
+        const current = overlay, opened = current?.menuContext;
+        if (!event.isTrusted || current?.menu !== menu || !opened || !menuActionCurrent(current, opened)) return;
+        ui("escape");
+      });
       const more = document.createElement("button"), menu = document.createElement("div");
       more.textContent = "更多";
       more.className = "disclosure";
@@ -1193,8 +1197,8 @@
       copy.textContent = "复制译文";
       copy.addEventListener("pointerdown", event => event.preventDefault());
       copy.addEventListener("click", async event => {
-        if (!event.isTrusted || !overlay) return;
-        const current = overlay;
+        const current = overlay, opened = current?.menuContext;
+        if (!event.isTrusted || current?.menu !== menu || !opened || !menuActionCurrent(current, opened)) return;
         setMoreOpen(false);
         try {
           if (!navigator.clipboard?.writeText) throw new Error("clipboard-unavailable");
@@ -1227,9 +1231,8 @@
       const styleButtons = new Map();
       const translationAction = (event, operation, selectedStyle = null) => {
         const current = overlay, opened = current?.menuContext, actions = current?.translationActions;
-        if (!event.isTrusted || event.currentTarget.disabled || !opened || !liveDeadline(current)
-          || current.field !== opened.field || current.revision !== opened.revision
-          || current.generation !== opened.generation || JSON.stringify(current.viewToken) !== opened.token
+        if (!event.isTrusted || event.currentTarget.disabled || current?.menu !== menu
+          || !opened || !menuActionCurrent(current, opened)
           || !opened.actions || !actions || (operation === "alternative"
             ? !actions.alternativeReleased || !actions.canRequestAlternative
             : !(selectedStyle === null ? actions.canInheritStyle
@@ -1405,10 +1408,15 @@
     sizeEditor(); position();
     return {visible: !!overlay, editing: !!overlay?.editing};
   }
-  function menuActionCurrent(current, opened) {
-    return !!current && overlay === current && liveDeadline(current) && !current.paused && !current.composing
-      && current.field.ime === "Clear" && current.field === opened.field && current.revision === opened.revision
+  function menuOpeningCurrent(current, opened) {
+    // Layout may keep an unchanged opening visible during composition. This
+    // proves no action eligibility and never extends its original display lease.
+    return !!current && overlay === current && liveDeadline(current) && !current.paused
+      && current.field === opened.field && current.revision === opened.revision
       && current.generation === opened.generation && JSON.stringify(current.viewToken) === opened.token;
+  }
+  function menuActionCurrent(current, opened) {
+    return menuOpeningCurrent(current, opened) && !current.composing && current.field.ime === "Clear";
   }
   function closeRegenerate(current) {
     current?.regenerateConfirmation?.box.remove();

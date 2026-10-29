@@ -19,15 +19,15 @@ internal static partial class UiTheme
           <Border x:Name="surface" CornerRadius="7" Background="Transparent" Padding="{TemplateBinding Padding}">
             <Grid VerticalAlignment="Center">
               <Grid.ColumnDefinitions><ColumnDefinition Width="22"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-              <Viewbox x:Name="tick" Width="14" Height="14" Visibility="Hidden" HorizontalAlignment="Left"><Canvas Width="24" Height="24"><Path Data="M4,12 L9,17 L20,6" Stroke="{DynamicResource SettingsLink}" StrokeThickness="1.7" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/></Canvas></Viewbox>
+              <Viewbox x:Name="tick" Width="14" Height="14" Visibility="Hidden" HorizontalAlignment="Left"><Canvas Width="24" Height="24"><Path x:Name="tickStroke" Data="M4,12 L9,17 L20,6" Stroke="{DynamicResource SettingsLink}" StrokeThickness="1.7" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/></Canvas></Viewbox>
               <TextBlock Grid.Column="1" Text="{Binding Label}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
               <TextBlock Grid.Column="2" Text="{Binding NativeName}" FontSize="12" Opacity="0.55" Margin="8,0,0,0" VerticalAlignment="Center"/>
             </Grid>
           </Border>
           <ControlTemplate.Triggers>
             <Trigger Property="IsSelected" Value="True"><Setter TargetName="tick" Property="Visibility" Value="Visible"/></Trigger>
-            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="surface" Property="Background" Value="{DynamicResource AccentStrong}"/><Setter Property="Foreground" Value="White"/><Setter TargetName="tick" Property="Stroke" Value="White"/></Trigger>
-            <Trigger Property="Tag" Value="selected"><Setter TargetName="surface" Property="Background" Value="{DynamicResource AccentStrong}"/><Setter Property="Foreground" Value="White"/><Setter TargetName="tick" Property="Stroke" Value="White"/></Trigger>
+            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="surface" Property="Background" Value="{DynamicResource AccentStrong}"/><Setter Property="Foreground" Value="White"/><Setter TargetName="tickStroke" Property="Stroke" Value="White"/></Trigger>
+            <Trigger Property="Tag" Value="selected"><Setter TargetName="surface" Property="Background" Value="{DynamicResource AccentStrong}"/><Setter Property="Foreground" Value="White"/><Setter TargetName="tickStroke" Property="Stroke" Value="White"/></Trigger>
             <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate></Setter.Value></Setter>

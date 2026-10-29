@@ -783,9 +783,9 @@ def run_qt(
                         json.dumps(frames, indent=2) + "\n"
                     )
                     inputs = actual["motionInputs"]
-                    assert len(planned) == clicks and all(
-                        instance > 0 for instance in planned
-                    ), planned
+                    assert len(planned) == clicks and all(instance > 0 for instance in planned), (
+                        planned
+                    )
                     assert [event["event"] for event in inputs] == [
                         "mouse-press",
                         "mouse-release",
