@@ -200,7 +200,8 @@ class DesktopSessionTests(unittest.TestCase):
         if close_fds:
             code += "os.closerange(3,256); "
         code += (
-            f"Path({str(marker)!r}).write_text(json.dumps({{'pid':os.getpid()}})); "
+            f"marker=Path({str(marker)!r}); pending=marker.with_suffix('.tmp'); "
+            "pending.write_text(json.dumps({'pid':os.getpid()})); pending.replace(marker); "
             f"gate=Path({str(gate)!r}); "
             "exec('while not gate.exists():\\n time.sleep(0.01)'); "
             f"raise SystemExit({exit_code})"
