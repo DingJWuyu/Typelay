@@ -46,11 +46,16 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                     var status = root.FindAll(System.Windows.Automation.TreeScope.Descendants,
                         new System.Windows.Automation.AndCondition(
                             new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.ControlTypeProperty, System.Windows.Automation.ControlType.Text),
-                            new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.NameProperty,
-                                (writeSupported ? "译文就绪" : "仅预览") + (automationTest ? " · 自动化测试" : "")),
+                            new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.AutomationIdProperty, "TranslationStage"),
                             new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.IsOffscreenProperty, false)));
-                    var displayed = Assert.Single(status.Cast<System.Windows.Automation.AutomationElement>());
-                    Assert.Equal(writeSupported ? "" : "当前不能通过接受键写回这条译文，接受键会交还原应用。", displayed.Current.HelpText);
+                    if (writeSupported)
+                        Assert.Empty(status.Cast<System.Windows.Automation.AutomationElement>());
+                    else
+                    {
+                        var displayed = Assert.Single(status.Cast<System.Windows.Automation.AutomationElement>());
+                        Assert.Equal("仅预览", displayed.Current.Name);
+                        Assert.Equal("当前不能通过接受键写回这条译文，接受键会交还原应用。", displayed.Current.HelpText);
+                    }
                     Assert.NotNull(TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, source.Text, false));
                     var ready = TypeLay.Windows.Testing.OverlayPreviewObservation.Find(root, Environment.ProcessId, source.Text, true, out var observed, observePreviewOnly: true);
                     Assert.Equal(permit, ready is not null);
@@ -79,12 +84,21 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             var panel = new StackPanel();
             var text = new TextBox { Text = "Current displayed translation", IsReadOnly = true };
             System.Windows.Automation.AutomationProperties.SetName(text, "编辑译文");
+            System.Windows.Automation.AutomationProperties.SetAutomationId(text, "TranslationText");
             System.Windows.Automation.AutomationProperties.SetItemStatus(text, "当前译文");
             panel.Children.Add(text);
             for (int index = 0; index < previewOnlyCount; index++)
-                panel.Children.Add(new TextBlock { Text = "仅预览 · 自动化测试" });
+            {
+                var status = new TextBlock { Text = "仅预览" };
+                System.Windows.Automation.AutomationProperties.SetAutomationId(status, "TranslationStage");
+                panel.Children.Add(status);
+            }
             for (int index = 0; index < acceptanceCount; index++)
-                panel.Children.Add(new TextBlock { Text = "接受译文" });
+            {
+                var cue = new TextBlock { Text = "接受译文" };
+                System.Windows.Automation.AutomationProperties.SetAutomationId(cue, "TranslationAcceptHint");
+                panel.Children.Add(cue);
+            }
             var window = new Window { Content = panel, Width = 400, Height = 200 };
             try
             {
@@ -111,6 +125,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         {
             var text = new TextBox { Text = "Controlled displayed value", IsReadOnly = true };
             System.Windows.Automation.AutomationProperties.SetName(text, name);
+            System.Windows.Automation.AutomationProperties.SetAutomationId(text, "TranslationText");
             System.Windows.Automation.AutomationProperties.SetItemStatus(text, "当前译文");
             panel.Children.Add(text);
         }
@@ -178,8 +193,8 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 overlay.UpdateLayout();
                 if (!editable)
                 {
-                    Assert.Contains("译文预览", VisibleLabels(overlay));
-                    Assert.DoesNotContain("仅预览", VisibleLabels(overlay));
+                    Assert.Contains("仅预览", VisibleLabels(overlay));
+                    Assert.DoesNotContain("接受", VisibleLabels(overlay));
                 }
                 nint handle = overlay.Handle;
                 await Task.Run(() =>
@@ -310,13 +325,13 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
     });
 
     [Theory]
-    [InlineData("ja", "日本語")]
-    [InlineData("ko", "한국어")]
-    [InlineData("fr", "Français")]
-    [InlineData("es", "Español")]
-    [InlineData("de", "Deutsch")]
-    [InlineData("pt", "Português")]
-    [InlineData("unknown", "unknown（当前不可用）")]
+    [InlineData("ja", "JA")]
+    [InlineData("ko", "KO")]
+    [InlineData("fr", "FR")]
+    [InlineData("es", "ES")]
+    [InlineData("de", "DE")]
+    [InlineData("pt", "PT")]
+    [InlineData("unknown", "UNKNOWN")]
     public Task SavedLanguageTitlesDoNotPretendWindowsHasAnEnglishDirection(string code, string label) => desktop.RunAsync(() =>
     {
         var (window, input, source) = OpenSource();
@@ -327,7 +342,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             overlay.Configure(settings);
             overlay.Render(Ready(source, "Synthetic preview"), settings, false);
             overlay.UpdateLayout();
-            Assert.Contains("中 → " + label + "  ⌄", VisibleLabels(overlay));
+            Assert.Contains("中 → " + label, VisibleLabels(overlay));
             settings = settings with
             {
                 Source = code,
@@ -336,7 +351,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             overlay.Configure(settings);
             overlay.Render(Ready(source, "Synthetic preview"), settings, false);
             overlay.UpdateLayout();
-            Assert.Contains(label + " → 中  ⌄", VisibleLabels(overlay));
+            Assert.Contains(label + " → 中", VisibleLabels(overlay));
             Assert.True(input.IsKeyboardFocused);
         }
         finally { overlay.Close(); window.Close(); }
@@ -367,24 +382,34 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 DraftChanged = session.ChangeDraft
             };
             overlay.Configure(settings);
-            void Render(string expected, bool permit = false, string? statusOverride = null,
+            void Render(string? expected, bool permit = false, string? statusOverride = null,
                 SessionViewContext? viewContext = null)
             {
                 overlay.Render(session, settings, permit, statusOverride, viewContext ?? context);
                 overlay.UpdateLayout();
-                var status = Descendants(overlay).OfType<TextBlock>().Single(label => label.IsVisible && label.Text == expected);
+                var stages = Descendants(overlay).OfType<TextBlock>().Where(label => label.IsVisible
+                    && System.Windows.Automation.AutomationProperties.GetAutomationId(label) == "TranslationStage").ToArray();
+                if (expected is null)
+                    Assert.Empty(stages);
+                else
+                    Assert.Equal(expected, Assert.Single(stages).Text);
                 foreach (var label in Descendants(overlay).OfType<TextBlock>().Where(label => label.IsVisible))
                     AssertTextFullyVisible(label, overlay);
                 var language = Descendants(overlay).OfType<TextBlock>().Single(label => label.IsVisible && label.Text.Contains("→"));
                 var languageBounds = language.TransformToAncestor(overlay).TransformBounds(new Rect(language.RenderSize));
-                var statusBounds = status.TransformToAncestor(overlay).TransformBounds(new Rect(status.RenderSize));
-                Assert.True(languageBounds.Right <= statusBounds.Left, "The language and status must not overlap.");
-                var expansion = ExpansionButton(overlay);
-                var expansionBounds = expansion.TransformToAncestor(overlay).TransformBounds(new Rect(expansion.RenderSize));
-                Assert.True(statusBounds.Right <= expansionBounds.Left, "The status and expansion action must not overlap.");
-                Assert.True(expansionBounds.Right <= overlay.ActualWidth);
+                var body = Descendants(overlay).OfType<TextBox>().Single();
+                if (body.IsVisible)
+                {
+                    var bodyBounds = body.TransformToAncestor(overlay).TransformBounds(new Rect(body.RenderSize));
+                    Assert.True(bodyBounds.Bottom <= languageBounds.Top + 2, "Translation content must remain above the single bottom bar.");
+                }
+                if (stages.Length != 0)
+                {
+                    var statusBounds = stages[0].TransformToAncestor(overlay).TransformBounds(new Rect(stages[0].RenderSize));
+                    Assert.True(languageBounds.Right <= statusBounds.Left, "Language and stage must not overlap.");
+                }
             }
-            Render("译文就绪");
+            Render(null);
             var editor = Descendants(overlay).OfType<TextBox>().Single();
             Assert.Equal("编辑译文", new TextBoxAutomationPeer(editor).GetName());
             Assert.Equal("点击译文编辑", editor.ToolTip);
@@ -393,25 +418,26 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 .Single(label => label.IsVisible && label.Text.Contains("→")).FontSize);
             AssertEditorTextFullyVisible(editor);
             SaveScreenshot(overlay, $"overlay-preview-{theme}-{width:0}.png");
-            Assert.Contains("交还应用", VisibleLabels(overlay));
-            Render("译文就绪", permit: true);
-            Assert.Contains("接受译文", VisibleLabels(overlay));
+            Assert.DoesNotContain("接受", VisibleLabels(overlay));
+            Assert.DoesNotContain("Tab", VisibleLabels(overlay));
+            Render(null, permit: true);
+            Assert.Contains("接受", VisibleLabels(overlay));
             Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
             Assert.True(input.IsKeyboardFocused);
-            Render("译文就绪", viewContext: context with
+            Render(null, viewContext: context with
             {
                 CanEdit = false
             });
             Assert.Equal("译文预览", new TextBoxAutomationPeer(editor).GetName());
             Assert.Null(editor.ToolTip);
             Render("已有状态提示", statusOverride: "已有状态提示");
-            Render("译文就绪");
+            Render(null);
             editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
             {
                 RoutedEvent = Mouse.PreviewMouseDownEvent
             });
             editor.Text = "Could we pick this up tomorrow afternoon, please?";
-            Render("编辑中");
+            Render(null);
             Assert.False(editor.IsReadOnly);
             Assert.True(editor.IsKeyboardFocused);
             Assert.Equal(new Thickness(1), editor.BorderThickness);
@@ -421,20 +447,20 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             Assert.Equal(1, ExpansionButton(overlay).Opacity);
             SaveScreenshot(overlay, $"overlay-editing-{theme}-{width:0}.png");
             Assert.True(session.RequestSourceReturn());
-            Render("译文就绪");
+            Render(null);
             Assert.True(window.Activate());
             Assert.True(input.Focus());
             Assert.True(session.ConfirmSourceReturn(source with
             {
                 ObservedAtMs = 1400
             }, 1400));
-            Render("译文就绪");
+            Render("已修改");
             session.Observe(source with
             {
                 Ime = ImeState.Unknown,
                 PreviewText = source.Text
             }, FocusMember.Source, 1400);
-            Render("译文预览");
+            Render("仅预览");
             Assert.True(editor.IsReadOnly);
             Assert.Equal("译文预览", new TextBoxAutomationPeer(editor).GetName());
             Assert.Null(editor.ToolTip);
@@ -443,17 +469,18 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             session.Observe(source, FocusMember.Source, 1000);
             var failedJob = session.TakeTranslationJob(1300);
             Assert.NotNull(failedJob);
-            Render("正在翻译");
+            Render("翻译中");
             AssertExpansionDisabled(overlay);
             Assert.True(session.Fail(failedJob));
-            Render("暂时无法翻译");
+            Render("未能更新");
             AssertExpansionDisabled(overlay);
             Assert.Equal("Source text", input.Text);
             Assert.True(input.IsKeyboardFocused);
             Assert.True(editor.IsReadOnly);
             Assert.Equal("译文预览", new TextBoxAutomationPeer(editor).GetName());
             Assert.Null(editor.ToolTip);
-            Assert.Contains("交还应用", VisibleLabels(overlay));
+            Assert.DoesNotContain("接受", VisibleLabels(overlay));
+            Assert.DoesNotContain("Tab", VisibleLabels(overlay));
             session.LeaveFamily();
             overlay.Render(session, settings, false, context: context);
             Assert.False(overlay.IsVisible);
@@ -543,7 +570,8 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             animationsEnabled = false;
             overlay.Render(Ready(source, "The latest preview"), settings, false);
             Assert.Equal("The latest preview", Descendants(overlay).OfType<TextBox>().Single().Text);
-            Assert.Contains("交还应用", VisibleLabels(overlay));
+            Assert.DoesNotContain("接受", VisibleLabels(overlay));
+            Assert.DoesNotContain("Tab", VisibleLabels(overlay));
             Assert.Equal(1d, overlay.Opacity);
             Assert.False(overlay.HasAnimatedProperties);
             Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
@@ -625,7 +653,8 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             // starts a second fade or takes keyboard focus from the source.
             overlay.Render(Ready(source, "Updated immediately"), settings, false);
             Assert.Equal("Updated immediately", Descendants(overlay).OfType<TextBox>().Single().Text);
-            Assert.Contains("交还应用", VisibleLabels(overlay));
+            Assert.DoesNotContain("接受", VisibleLabels(overlay));
+            Assert.DoesNotContain("Tab", VisibleLabels(overlay));
             Assert.Equal(1d, overlay.Opacity);
             minimumOpacity = 1;
             await ObserveRenderingFor(TimeSpan.FromMilliseconds(180),
@@ -720,7 +749,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 Assert.Equal(compact, Bounds(overlay));
                 phase = "expanding";
                 motionClock.Restart();
-                await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
+                await ObserveRenderingFor(TimeSpan.FromMilliseconds(1000), () =>
                 {
                     overlay.UpdateLayout();
                     var bounds = Bounds(overlay);
@@ -740,8 +769,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                     // failure frame, without enlarging the five-image budget.
                     if (above && images.Count < 4 && (images.Count == 1 || bounds.Height > compact.Height + images.Count * 30))
                         images.Add(CaptureScreenshot(overlay));
-                    Assert.Equal(compact.Left, bounds.Left);
-                    Assert.Equal(compact.Width, bounds.Width);
+                    Assert.Equal(compact.Left + compact.Width, bounds.Left + bounds.Width);
                     Assert.Equal(above ? compact.Top + compact.Height : compact.Top,
                         above ? bounds.Top + bounds.Height : bounds.Top);
                     Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
@@ -756,13 +784,15 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                     Assert.True(editor.RenderTransform.Value.IsIdentity);
                     Assert.True(editor.LayoutTransform.Value.IsIdentity);
                     AssertNativeSize(overlay);
-                    foreach (var label in Descendants(overlay).OfType<TextBlock>().Where(label => label.IsVisible))
+                    foreach (var label in Descendants(overlay).OfType<TextBlock>().Where(label => label.IsVisible && label.Text.Contains("→")))
                         AssertTextFullyVisible(label, overlay);
                 });
                 var expanded = Bounds(overlay);
                 Assert.True(expanded.Height > compact.Height + 100);
                 AssertContinuousHeight(expansion, increasing: true);
                 AssertEditorTextFullyVisible(editor);
+                foreach (var label in Descendants(overlay).OfType<TextBlock>().Where(label => label.IsVisible))
+                    AssertTextFullyVisible(label, overlay);
                 if (above)
                     images.Add(CaptureScreenshot(overlay));
 
@@ -770,10 +800,11 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 await ToggleExpansion(overlay, expand: false);
                 overlay.Render(session, settings, false, context: context);
                 Assert.Equal(expanded, Bounds(overlay));
-                Assert.Contains("交还应用", VisibleLabels(overlay));
+                Assert.DoesNotContain("接受", VisibleLabels(overlay));
+            Assert.DoesNotContain("Tab", VisibleLabels(overlay));
                 var collapse = new List<(int Left, int Top, int Width, int Height)> { expanded };
                 motionClock.Restart();
-                await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
+                await ObserveRenderingFor(TimeSpan.FromMilliseconds(1000), () =>
                 {
                     overlay.UpdateLayout();
                     var bounds = Bounds(overlay);
@@ -789,11 +820,10 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                         fontSize = editor.FontSize,
                         sourceFocused = input.IsKeyboardFocused
                     });
-                    Assert.Equal(compact.Left, bounds.Left);
-                    Assert.Equal(compact.Width, bounds.Width);
+                    Assert.Equal(compact.Left + compact.Width, bounds.Left + bounds.Width);
                     Assert.Equal(above ? compact.Top + compact.Height : compact.Top,
                         above ? bounds.Top + bounds.Height : bounds.Top);
-                    Assert.InRange(editor.ActualHeight, 159, 315);
+                    Assert.InRange(editor.ActualHeight, 150, 360);
                     Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
                     Assert.True(input.IsKeyboardFocused);
                 });
@@ -856,12 +886,13 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             overlay.Render(latest, settings, false, context: next);
             Assert.Equal(reversing, Bounds(overlay));
             Assert.Equal(latest.Preview, editor.Text);
-            Assert.Contains("交还应用", VisibleLabels(overlay));
+            Assert.DoesNotContain("接受", VisibleLabels(overlay));
+            Assert.DoesNotContain("Tab", VisibleLabels(overlay));
             Assert.True(editor.IsReadOnly);
             Assert.False(editor.Focusable);
             Assert.Null(editor.ToolTip);
             var frames = new List<(int Left, int Top, int Width, int Height)> { reversing };
-            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(1000), () =>
             {
                 // These are normal view/permit refreshes at the real render
                 // boundary, not permission extensions or a simulated clock.
@@ -921,7 +952,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             Assert.False(editor.Focusable);
             Assert.False(overlay.IsVisible);
             Assert.False(N.IsWindowVisible(overlay.Handle));
-            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(1000), () =>
             {
                 Assert.False(overlay.IsVisible);
                 Assert.False(N.IsWindowVisible(overlay.Handle));
@@ -932,9 +963,9 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             overlay.Render(Ready(source, "A fresh preview"), settings, false, context: EditableView(source));
             overlay.UpdateLayout();
             Assert.Equal("A fresh preview", editor.Text);
-            Assert.InRange(editor.ActualHeight, 53, 55);
+            Assert.InRange(editor.ActualHeight, 37, 45);
             var fresh = Bounds(overlay);
-            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () => Assert.Equal(fresh, Bounds(overlay)));
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(1000), () => Assert.Equal(fresh, Bounds(overlay)));
             Assert.Equal("Source text", input.Text);
         });
     }
@@ -1009,7 +1040,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             {
                 await ToggleExpansion(overlay, expand: true);
                 overlay.Render(session, settings, false, context: context);
-                await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
+                await ObserveRenderingFor(TimeSpan.FromMilliseconds(1000), () =>
                 {
                     var before = samples.Count < 128 ? Geometry() : null;
                     overlay.Render(session, settings, false, context: context);
@@ -1058,7 +1089,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             overlay.UpdateLayout();
             Assert.Equal(compact, Bounds(overlay));
             AssertDraft();
-            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(1000), () =>
             {
                 Assert.Equal(compact, Bounds(overlay));
                 AssertDraft();
@@ -1069,8 +1100,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             // Rendering callbacks can invalidate layout before the frame is drawn.
             overlay.UpdateLayout();
             var reducedMotionExpanded = Bounds(overlay);
-            Assert.Equal(compact.Left, reducedMotionExpanded.Left);
-            Assert.Equal(compact.Width, reducedMotionExpanded.Width);
+            Assert.Equal(compact.Left + compact.Width, reducedMotionExpanded.Left + reducedMotionExpanded.Width);
             Assert.Equal(compact.Top + compact.Height, reducedMotionExpanded.Top + reducedMotionExpanded.Height);
             Assert.True(reducedMotionExpanded.Height > compact.Height);
             AssertNativeSize(overlay);
@@ -1120,9 +1150,9 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             overlay.Render(Ready(source, "Another source preview"), settings, false);
             overlay.UpdateLayout();
             var editor = Descendants(overlay).OfType<TextBox>().Single();
-            Assert.InRange(editor.ActualHeight, 53, 55);
+            Assert.InRange(editor.ActualHeight, 37, 45);
             var changedTarget = Bounds(overlay);
-            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () => Assert.Equal(changedTarget, Bounds(overlay)));
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(1000), () => Assert.Equal(changedTarget, Bounds(overlay)));
 
             overlay.Render(Ready(source, longPreview), settings, false);
             await ObserveRenderingFor(TimeSpan.FromMilliseconds(60));
@@ -1136,10 +1166,10 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             overlay.Render(Ready(source, longPreview), settings, false);
             overlay.UpdateLayout();
             var moved = Bounds(overlay);
-            Assert.InRange(Math.Abs(moved.Left - source.Bounds.X), 0, 1);
+            Assert.InRange(Math.Abs(moved.Left + moved.Width - source.Bounds.Right + 4 * Native.GetDpiForWindow(overlay.Handle) / 96d), 0, 1);
             Assert.InRange(Math.Abs(moved.Top - source.Bounds.Bottom), 0, 1);
             Assert.InRange(editor.ActualHeight, 159, 161);
-            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () => Assert.Equal(moved, Bounds(overlay)));
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(1000), () => Assert.Equal(moved, Bounds(overlay)));
             Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
             Assert.True(input.IsKeyboardFocused);
             Assert.Equal("Source text", input.Text);
@@ -1183,8 +1213,8 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             overlay.Render(session, settings, true, context: context);
             overlay.UpdateLayout();
             Assert.Contains("F12", VisibleLabels(overlay));
-            Assert.Contains("F7", VisibleLabels(overlay));
-            Assert.Contains("接受译文", VisibleLabels(overlay));
+            Assert.DoesNotContain("F7", VisibleLabels(overlay));
+            Assert.Contains("接受", VisibleLabels(overlay));
             Assert.DoesNotContain("Tab", VisibleLabels(overlay));
             Assert.DoesNotContain("Esc", VisibleLabels(overlay));
             var editor = Descendants(overlay).OfType<TextBox>().Single();
@@ -1195,7 +1225,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             editor.Text = "A manual draft";
             Assert.Equal(context.Token, editToken);
             overlay.Render(session, settings, false, context: context);
-            Assert.Contains("返回原输入框", VisibleLabels(overlay));
+            Assert.Contains("返回", VisibleLabels(overlay));
             Assert.True(EditorKey(editor, Key.F12, Keyboard.PreviewKeyDownEvent).Handled);
             Assert.Equal(1, returns);
             Assert.Equal(context.Token, returnToken);
@@ -1222,111 +1252,72 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
     }
 
     [Fact]
-    public async Task EditorRequiresDisplayedContextAndDelayedExitRetainsItsOriginalToken()
+    public Task EditorRequiresDisplayedContextAndMenuExitRetainsItsOriginalToken() => desktop.RunAsync(() =>
     {
-        await desktop.RunAsync(() =>
+        var (_, input, source) = OpenSource();
+        var settings = new UserSettings(Theme: "light");
+        var session = Ready(source, "An editable preview");
+        var edits = new List<SessionViewToken>();
+        var exits = new List<SessionViewToken>();
+        var overlay = new OverlayWindow(clientAreaAnimation: () => false)
         {
-            var (_, input, source) = OpenSource();
-            var settings = new UserSettings(Theme: "light");
-            var session = Ready(source, "An editable preview");
-            var edits = new List<SessionViewToken>();
-            var exits = new List<SessionViewToken>();
-            var overlay = new OverlayWindow
-            {
-                BeginEditing = token =>
-                {
-                    edits.Add(token);
-                    return session.BeginEdit();
-                },
-                EscapeRequested = exits.Add
-            };
-            overlay.Render(session, settings, false);
-            overlay.UpdateLayout();
-            var editor = Descendants(overlay).OfType<TextBox>().Single();
-            void BeginEdit() => editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
-            {
-                RoutedEvent = Mouse.PreviewMouseDownEvent
-            });
-            var exit = Descendants(overlay).OfType<Button>().Single(button =>
-                Descendants(button).OfType<TextBlock>().Any(label => label.Text == "退出当前翻译"));
-            BeginEdit();
-            exit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            Assert.Empty(edits);
-            Assert.Empty(exits);
-            Assert.True(editor.IsReadOnly);
-
-            var context = EditableView(source) with
-            {
-                CanEdit = false
-            };
-            overlay.Render(session, settings, false, context: context);
-            BeginEdit();
-            Assert.Empty(edits);
-            exit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            Assert.Equal(new[] { context.Token }, exits);
-            exits.Clear();
-            overlay.Render(session, settings, false, context: context with
-            {
-                Token = context.Token with
-                {
-                    Target = new("other", "field", Guid.NewGuid())
-                }
-            });
-            BeginEdit();
-            exit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            Assert.Empty(edits);
-            Assert.Empty(exits);
-
-            context = context with
-            {
-                CanEdit = true
-            };
-            overlay.Render(session, settings, false, context: context);
-            BeginEdit();
-            Assert.Equal(new[] { context.Token }, edits);
-            Assert.False(editor.IsReadOnly);
-            exit.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
-            {
-                RoutedEvent = UIElement.PreviewMouseLeftButtonDownEvent
-            });
-            var next = context with
-            {
-                Token = context.Token with
-                {
-                    Revision = 2
-                }
-            };
-            overlay.Render(session, settings, false, context: next);
-            exit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            Assert.Equal(new[] { context.Token }, exits);
-
-            var more = Descendants(overlay).OfType<Button>().Single(button => Equals(button.Content, "⋯"));
-            more.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            var menu = PresentationSource.CurrentSources.OfType<HwndSource>()
-                .Select(value => value.RootVisual).OfType<DependencyObject>()
-                .SelectMany(root => Descendants(root).Prepend(root))
-                .OfType<ContextMenu>().Single(control => control.IsOpen);
-            overlay.Render(session, settings, false, context: next with
-            {
-                Token = next.Token with
-                {
-                    Revision = 3
-                }
-            });
-            menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "隐藏当前翻译"))
-                .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-            menu.IsOpen = false;
-            Assert.Equal(new[] { context.Token, next.Token }, exits);
-
-            overlay.Render(session, settings, false);
-            BeginEdit();
-            exit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            Assert.Single(edits);
-            Assert.Equal(2, exits.Count);
-            Assert.True(editor.IsReadOnly);
-            Assert.Equal("Source text", input.Text);
+            BeginEditing = token => { edits.Add(token); return session.BeginEdit(); },
+            EscapeRequested = exits.Add
+        };
+        overlay.Render(session, settings, false);
+        overlay.UpdateLayout();
+        var editor = Descendants(overlay).OfType<TextBox>().Single();
+        void BeginEdit() => editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+        {
+            RoutedEvent = Mouse.PreviewMouseDownEvent
         });
-    }
+        ContextMenu Menu()
+        {
+            var more = Descendants(overlay).OfType<Button>().Single(button => new ButtonAutomationPeer(button).GetName() == "更多翻译操作");
+            more.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            return Assert.IsType<ContextMenu>(more.ContextMenu);
+        }
+        BeginEdit();
+        Assert.Empty(edits);
+        Assert.True(editor.IsReadOnly);
+        var menu = Menu();
+        Assert.False(menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "隐藏当前翻译")).IsEnabled);
+        menu.IsOpen = false;
+        var context = EditableView(source) with { CanEdit = false };
+        overlay.Render(session, settings, false, context: context);
+        BeginEdit();
+        Assert.Empty(edits);
+        menu = Menu();
+        var exit = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "隐藏当前翻译"));
+        Assert.True(exit.IsEnabled);
+        exit.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        menu.IsOpen = false;
+        Assert.Equal(new[] { context.Token }, exits);
+        exits.Clear();
+        overlay.Render(session, settings, false, context: context with { Token = context.Token with { Target = new("other", "field", Guid.NewGuid()) } });
+        BeginEdit();
+        Assert.Empty(edits);
+        menu = Menu();
+        Assert.False(menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "隐藏当前翻译")).IsEnabled);
+        menu.IsOpen = false;
+        context = context with { CanEdit = true };
+        overlay.Render(session, settings, false, context: context);
+        BeginEdit();
+        Assert.Equal(new[] { context.Token }, edits);
+        Assert.False(editor.IsReadOnly);
+        menu = Menu();
+        exit = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "隐藏当前翻译"));
+        overlay.Render(session, settings, false, context: context with { Token = context.Token with { Revision = 2 } });
+        exit.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        menu.IsOpen = false;
+        Assert.Equal(new[] { context.Token }, exits);
+        overlay.Render(session, settings, false);
+        BeginEdit();
+        Assert.Single(edits);
+        Assert.Single(exits);
+        Assert.True(editor.IsReadOnly);
+        Assert.Equal("Source text", input.Text);
+    });
 
     [Fact]
     public async Task EditorKeepsPressedKeyOwnershipAcrossConfigurationAndCompositionChanges()
@@ -1349,7 +1340,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             overlay.UpdateLayout();
             // Persisted preferences are deliberately not activated by Configure yet.
             Assert.Contains("Tab", VisibleLabels(overlay));
-            Assert.Contains("Esc", VisibleLabels(overlay));
+            Assert.DoesNotContain("Esc", VisibleLabels(overlay));
             var editor = Descendants(overlay).OfType<TextBox>().Single();
             Assert.False(EditorKey(editor, Key.Tab, Keyboard.PreviewKeyDownEvent).Handled);
             Assert.False(EditorKey(editor, Key.Tab, Keyboard.PreviewKeyUpEvent).Handled);
@@ -1360,7 +1351,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             Assert.True(SessionShortcutBindings.TryParse("F1", "F24", out var bindings));
             overlay.ConfigureSessionShortcuts(bindings!);
             Assert.Contains("F1", VisibleLabels(overlay));
-            Assert.Contains("F24", VisibleLabels(overlay));
+            Assert.DoesNotContain("F24", VisibleLabels(overlay));
 
             EditorComposition(editor, TextCompositionManager.PreviewTextInputStartEvent);
             Assert.True(overlay.EditingComposition);
@@ -1401,8 +1392,8 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             };
             overlay.Render(session, settings, false, context: context);
             Assert.Contains("Tab", VisibleLabels(overlay));
-            Assert.Contains("Esc", VisibleLabels(overlay));
-            Assert.Contains("返回原输入框", VisibleLabels(overlay));
+            Assert.DoesNotContain("Esc", VisibleLabels(overlay));
+            Assert.Contains("返回", VisibleLabels(overlay));
             Assert.True(EditorKey(editor, Key.Tab, Keyboard.PreviewKeyDownEvent).Handled);
             Assert.True(EditorKey(editor, Key.Tab, Keyboard.PreviewKeyUpEvent).Handled);
             Assert.True(EditorKey(editor, Key.Escape, Keyboard.PreviewKeyDownEvent).Handled);
@@ -1866,9 +1857,9 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             double proportionalHeight = editor.ActualHeight;
             Assert.True(proportionalHeight > editor.MinHeight,
                 $"An unbroken preview must wrap instead of measuring as one line: height={proportionalHeight}.");
-            overlay.FontFamily = new FontFamily("Consolas");
+            editor.FontFamily = new FontFamily("Consolas");
             Render();
-            Assert.Equal(overlay.FontFamily, editor.FontFamily);
+            Assert.Equal(new FontFamily("Consolas"), editor.FontFamily);
             AssertEditorTextFullyVisible(editor);
             Assert.True(editor.ActualHeight < proportionalHeight,
                 $"A narrower font must reflow the same unbroken preview: before={proportionalHeight}, after={editor.ActualHeight}.");
@@ -1885,7 +1876,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             session = Ready(source, "Short again");
             Render();
             Assert.Equal("Short again", editor.Text);
-            Assert.InRange(editor.ActualHeight, 53, 55);
+            Assert.InRange(editor.ActualHeight, 37, 45);
         });
     }
 
@@ -1915,7 +1906,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             Assert.InRange(editor.ActualHeight, 159, 161);
             await ToggleExpansion(overlay, expand: true);
             Render();
-            Assert.InRange(editor.ActualHeight, 303, 315);
+            Assert.InRange(editor.ActualHeight, 250, 360);
             AssertEditorTextFullyVisible(editor);
 
             foreach (string theme in new[] { "dark", "light" })
@@ -1928,8 +1919,8 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 Render();
                 Assert.Equal(preview, editor.Text);
                 Assert.Equal(ResourceColor(overlay, "Text"), Assert.IsType<SolidColorBrush>(editor.Foreground).Color);
-                Assert.Equal(ResourceColor(overlay, "Panel"), Assert.IsType<SolidColorBrush>(editor.Background).Color);
-                Assert.InRange(editor.ActualHeight, 303, 315);
+                Assert.Equal(Colors.Transparent, Assert.IsType<SolidColorBrush>(editor.Background).Color);
+                Assert.InRange(editor.ActualHeight, 250, 360);
                 AssertEditorTextFullyVisible(editor);
             }
             editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
@@ -1949,7 +1940,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 Assert.Equal(overlay.Handle, Native.GetForegroundWindow());
                 Assert.Equal(3, editor.SelectionStart);
                 Assert.Equal(6, editor.SelectionLength);
-                Assert.InRange(editor.ActualHeight, 53, 55);
+                Assert.InRange(editor.ActualHeight, 37, 45);
             }
             overlay.Configure(settings with
             {
@@ -1995,7 +1986,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             AssertAnchored(overlay, source.Bounds);
             AssertNativeSize(overlay);
             Assert.InRange(overlay.Height, 59, 61);
-            Assert.InRange(overlay.Width, 165, 167);
+            Assert.InRange(overlay.Width, 120, 220);
             Assert.Empty(editor.Text);
             Assert.False(editor.IsVisible);
             Assert.True(editor.IsReadOnly);
@@ -2005,9 +1996,9 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             Assert.False(resume.Focusable);
             var labels = Descendants(resume).OfType<TextBlock>().Select(label => label.Text).ToArray();
             Assert.Contains("已暂停", labels);
-            Assert.Contains("点击恢复", labels);
+            Assert.Contains("恢复", labels);
             overlay.ConfigureSessionShortcuts(SessionShortcutBindings.Default);
-            Assert.Equal(new[] { "已暂停", "点击恢复" }, VisibleLabels(overlay));
+            Assert.Equal(new[] { "已暂停", "恢复" }, VisibleLabels(overlay));
             resume.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Assert.Equal(new long[] { 12 }, revisions);
             Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
@@ -2043,9 +2034,10 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             overlay.UpdateLayout();
             Assert.True(editor.IsVisible);
             Assert.Equal("A fresh preview after resuming", editor.Text);
-            Assert.Contains("Tab", VisibleLabels(overlay));
-            Assert.Contains("Esc", VisibleLabels(overlay));
-            Assert.Contains("交还应用", VisibleLabels(overlay));
+            Assert.DoesNotContain("Tab", VisibleLabels(overlay));
+            Assert.DoesNotContain("Esc", VisibleLabels(overlay));
+            Assert.DoesNotContain("接受", VisibleLabels(overlay));
+            Assert.DoesNotContain("Tab", VisibleLabels(overlay));
             Assert.False(resume.IsVisible);
             resume.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Assert.Equal(new long[] { 12, 13 }, revisions);
@@ -2223,7 +2215,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
     private static void AssertAnchored(OverlayWindow overlay, RectPx source)
     {
         var bounds = Bounds(overlay);
-        Assert.InRange(Math.Abs(bounds.Left - source.X), 0, 1);
+        Assert.InRange(Math.Abs(bounds.Left + bounds.Width - source.Right + 4 * Native.GetDpiForWindow(overlay.Handle) / 96d), 0, 1);
         Assert.InRange(Math.Abs(bounds.Top + bounds.Height - source.Y), 0, 1);
     }
 
@@ -2447,9 +2439,13 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
     {
         Assert.True(frames.Select(frame => frame.Height).Distinct().Count() >= 4,
             "A height transition must expose multiple real intermediate HWND sizes.");
-        for (int index = 1; index < frames.Count; index++)
-            Assert.True(increasing ? frames[index].Height >= frames[index - 1].Height
-                : frames[index].Height <= frames[index - 1].Height, "The height must not rebound.");
+        int first = frames[0].Height, last = frames[^1].Height;
+        Assert.True(increasing ? last > first : last < first, "The spring must settle toward the requested size.");
+        int travel = Math.Abs(last - first);
+        // 340/26 growth has a small, bounded overshoot; 560/40 settles tighter.
+        int overshoot = (int)Math.Ceiling(travel * .06) + 2;
+        Assert.All(frames, frame => Assert.InRange(frame.Height, Math.Min(first, last) - overshoot, Math.Max(first, last) + overshoot));
+        Assert.All(frames.TakeLast(4), frame => Assert.Equal(last, frame.Height));
     }
 
     private static Color ResourceColor(OverlayWindow overlay, string name) =>

@@ -14,6 +14,7 @@ public static class GlossaryEntryPresentation
     {
         null => null,
         "glossary-saved" or "glossary-saved-notification-failed" => "已加入术语表，下次翻译生效",
+        "glossary-saved-inactive" or "glossary-saved-inactive-notification-failed" => "已保存到术语表，当前模型方向尚未开放术语应用",
         "glossary-unchanged" => "术语表中已有相同规则",
         "glossary-not-released" => "术语功能尚未开放",
         "glossary-combination-unavailable" => "当前模型不支持同时应用风格与术语表",
@@ -110,8 +111,6 @@ public sealed partial class SessionController
 
     private string? QualifyGlossaryEntry(SessionViewToken? token, bool existing = false)
     {
-        if (!_translationRelease.IsReleased(TranslationOperation.Glossary))
-            return "glossary-not-released";
         if (_disposed || token is null || !GlossaryEntryTokenCurrent(token))
             return "glossary-stale";
         bool sourceOrigin = _session.State is SessionState.ValidTranslation or SessionState.EditedTranslationPending;

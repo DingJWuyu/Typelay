@@ -1,4 +1,6 @@
 using System.ComponentModel;
+using System.Globalization;
+using TypeLay.Runtime;
 using System.Windows;
 using System.Windows.Threading;
 using TypeLay.App;
@@ -20,10 +22,11 @@ public sealed class WpfDesktopFixture : IAsyncLifetime
         {
             try
             {
+                CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo("zh-CN");
                 var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
                 try
                 {
-                    UiTheme.Initialize("light");
+                    UiTheme.Initialize(new UserSettings(Theme: "light", UiLanguage: "zh-CN"));
                     _ready.SetResult(application.Dispatcher);
                     application.Run();
                 }
@@ -57,7 +60,8 @@ public sealed class WpfDesktopFixture : IAsyncLifetime
         var dispatcher = await _ready.Task;
         Task run = dispatcher.InvokeAsync(async () =>
         {
-            UiTheme.Apply("light");
+            CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo("zh-CN");
+            UiTheme.Apply(new UserSettings(Theme: "light", UiLanguage: "zh-CN"));
             try
             {
                 await scenario();

@@ -1,0 +1,49 @@
+{
+  "v": 3,
+  "layout": "files",
+  "createdOnFiles": {
+    "v": 1,
+    "at": "2026-10-29T04:12:39Z"
+  },
+  "title": "TypeLay",
+  "namespace": "TypeLay",
+  "libraries": [],
+  "sections": {},
+  "groups": [
+    "Logos"
+  ],
+  "assetGroups": {
+    "Logos": {
+      "name": "Logos",
+      "tile": "m",
+      "order": [
+        "typelay-app-icon.svg",
+        "typelay-mark.svg"
+      ],
+      "files": {
+        "typelay-app-icon.svg": {
+          "name": "typelay-app-icon.svg",
+          "blob": "6c1b36ac6d94f8c9bb8846fb73415e84",
+          "size": 548,
+          "type": "image/svg+xml"
+        },
+        "typelay-mark.svg": {
+          "name": "typelay-mark.svg",
+          "blob": "0994723a80caf3dbe259e7a5889d783f",
+          "size": 263,
+          "type": "image/svg+xml"
+        }
+      }
+    }
+  },
+  "blobs": {},
+  "docs": {
+    "sections": []
+  },
+  "lastChange": {
+    "by": "Claude",
+    "at": "2026-10-29T04:20:00Z",
+    "via": "Claude",
+    "note": "First version: tokens, typography roles, overlay and settings components, cover, logos."
+  }
+}

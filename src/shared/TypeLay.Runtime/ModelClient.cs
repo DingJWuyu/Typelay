@@ -572,7 +572,7 @@ public sealed class ModelClient : ITranslationService, IDisposable
         // Identity requires exact packages from this worker connection. A legacy
         // worker may omit attestation and retain ordinary Ready only.
         if (hello.Packages is not null)
-            connection.VerifiedIdentity = new(plan);
+            connection.VerifiedIdentity = new(plan, hello.AlternativeTranslationVersion == 1);
         connection.Directions = Array.AsReadOnly(hello.Directions!.ToArray());
         AdvancedTranslationScope? scope = hello.StyledTranslationVersion is not null || hello.GlossaryTranslationVersion is not null
             ? new(plan.ActivePackages.SelectMany(item => item.Directions), hello.AdvancedTranslationDirections ?? plan.Directions)
@@ -589,6 +589,8 @@ public sealed class ModelClient : ITranslationService, IDisposable
     {
         if (hello.Status != "ready")
             throw new IOException("model-hello-status");
+        if (hello.AlternativeTranslationVersion is { } alternativeVersion && (alternativeVersion != 1 || !plan.UsesIndex))
+            throw new IOException("model-hello-capabilities");
         if (hello.StyledTranslationVersion is { } styledVersion && (styledVersion != 1 || !plan.UsesNativeLlm))
             throw new IOException("model-hello-capabilities");
         if (hello.GlossaryTranslationVersion is { } glossaryVersion && (glossaryVersion != 1 || !plan.UsesNativeLlm))
@@ -750,7 +752,8 @@ public sealed class ModelClient : ITranslationService, IDisposable
             if (request.Op == "translate-styled-v1" && (!_active.Plan.UsesNativeLlm
                 || _active.StyledTranslationCapability?.Supports(direction) != true))
                 return new(0, "error", Code: "style-unavailable");
-            if (request.Op == "translate-alternative" && _active.Plan.UsesNativeLlm)
+            if (request.Op == "translate-alternative" && _active.Plan.UsesNativeLlm
+                && _active.VerifiedIdentity?.AlternativeTranslationAvailable != true)
                 return new(0, "error", Code: "alternative-unavailable");
             bool valid = _active.Plan.InventorySchema == 3
                 ? ModelCatalog.IsSupportedPackageRequest(request.Source, request.Target)
@@ -773,7 +776,7 @@ public sealed class ModelClient : ITranslationService, IDisposable
             try
             {
                 var response = await ExchangeAsync(connection, request, TimeSpan.FromSeconds(connection.Plan.UsesIndex ? 60 : 90), CancellationToken.None);
-                if (response.AdvancedTranslationDirections is not null)
+                if (response.AdvancedTranslationDirections is not null || response.AlternativeTranslationVersion is not null)
                     throw new IOException("model-translation-response");
                 if (request.Op is "translate-alternative" or "translate-styled-v1" or "translate-glossary-v1" or "translate-styled-glossary-v1")
                 {

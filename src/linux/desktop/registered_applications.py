@@ -193,3 +193,15 @@ def resolve_exclusion(identity):
         return name
     except (OSError, GLib.Error) as error:
         raise ValueError("无法确认应用进程，请在高级编辑中填写可执行文件名。") from error
+
+
+def list_managed_applications():
+    """One visible app catalogue, with process policy only when identity is proven."""
+    entries = list_applications(for_exclusion=True)
+    for entry in entries:
+        try:
+            entry["application"] = resolve_exclusion(entry["id"])
+        except (OSError, ValueError) as error:
+            entry["application"] = ""
+            entry["unavailableReason"] = str(error)
+    return entries

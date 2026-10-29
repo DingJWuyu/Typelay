@@ -94,14 +94,23 @@ public sealed class SessionAdvancedDirectionTests
     [Theory]
     [InlineData("style", "当前模型方向尚未开放翻译风格")]
     [InlineData("glossary", "当前模型方向尚未开放术语应用")]
-    [InlineData("combined", "当前模型方向尚未开放风格与术语同时应用")]
+    [InlineData("combined", "当前模型方向尚未开放翻译风格")]
     public void ScopedTechnicalSupportDoesNotOpenProductionQualityGate(string operation, string status)
     {
         using var s = Create("zh", "ja", operation, released: false);
         s.Tick();
         s.Tick(Limits.DebounceMs);
-        Assert.Empty(s.Model.Jobs);
-        Assert.Equal(status, s.View.Status);
+        if (operation == "glossary")
+        {
+            Assert.Null(Assert.Single(s.Model.Jobs).Glossary);
+            Assert.False(s.Controller.GetGlossarySettingsState().CanApply);
+            Assert.Equal("glossary-not-released", s.Controller.GetGlossarySettingsState().ApplyUnavailableReason);
+        }
+        else
+        {
+            Assert.Empty(s.Model.Jobs);
+            Assert.Equal(status, s.View.Status);
+        }
         if (operation == "style")
             Assert.Equal(status, s.View.Context!.TranslationActions!.StyleUnavailableReason);
     }

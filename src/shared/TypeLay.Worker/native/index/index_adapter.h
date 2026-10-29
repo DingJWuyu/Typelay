@@ -54,6 +54,15 @@ INDEX_API int32_t index_translate_v1(index_handle *handle, uint32_t direction,
     uint8_t *output, uint32_t output_capacity, uint32_t *output_length,
     index_metrics *metrics, index_cancel_fn cancel, void *cancel_data,
     char *error, uint32_t error_capacity);
+/* Optional ABI1 extension. Both source and previous are separately checked
+   literal UTF-8 data, never trusted prompt fragments. One greedy inference,
+   original source meaning remains authoritative; no style/glossary combination. */
+INDEX_API int32_t index_translate_alternative_v1(index_handle *handle, uint32_t direction,
+    const uint8_t *source, uint32_t source_length,
+    const uint8_t *previous, uint32_t previous_length,
+    uint8_t *output, uint32_t output_capacity, uint32_t *output_length,
+    index_metrics *metrics, index_cancel_fn cancel, void *cancel_data,
+    char *error, uint32_t error_capacity);
 INDEX_API void index_close(index_handle *handle);
 #ifdef __cplusplus
 }

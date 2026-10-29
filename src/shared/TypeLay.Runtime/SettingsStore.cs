@@ -12,9 +12,22 @@ public sealed record UserSettings(int Schema = 1, bool Enabled = true, string So
     [property: JsonConverter(typeof(TranslationStylesConverter))]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] TranslationStyles? Styles = null,
     [property: JsonConverter(typeof(TranslationGlossaryConverter))]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] GlossarySnapshot? Glossary = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] GlossarySnapshot? Glossary = null,
+    [property: JsonConverter(typeof(SessionShortcutPreferenceConverter))] string Font = "claude",
+    [property: JsonConverter(typeof(TextSizePreferenceConverter))] int TextSize = 15,
+    [property: JsonConverter(typeof(SessionShortcutPreferenceConverter))] string Accent = "clay",
+    [property: JsonConverter(typeof(SessionShortcutPreferenceConverter))] string UiLanguage = "system",
+    [property: JsonConverter(typeof(BooleanPreferenceConverter))] bool ReduceMotion = false,
+    [property: JsonConverter(typeof(BooleanPreferenceConverter))] bool ReduceTransparency = false,
+    [property: JsonConverter(typeof(SessionShortcutPreferenceConverter))] string PauseShortcut = "",
+    [property: JsonConverter(typeof(ApplicationListPreferenceConverter))]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string[]? ManagedApplications = null)
 {
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; init; }
     public string[] Excluded => ExcludedApplications ?? [];
+    [JsonIgnore]
+    public string[] Managed => ManagedApplications ?? [];
     public LanguageDirection Direction => new(Source, Target);
 }
 
@@ -24,6 +37,11 @@ public sealed class SettingsPersistenceException : IOException
 {
     public SettingsPersistenceException(Exception innerException)
         : base("settings-persistence-failed", innerException) { }
+}
+
+public sealed class SettingsConflictException : InvalidOperationException
+{
+    public SettingsConflictException() : base("settings-changed") { }
 }
 
 public sealed class SettingsStore
@@ -75,7 +93,25 @@ public sealed class SettingsStore
         Value = Value with
         {
             AcceptShortcut = sessionKeys.Accept,
-            ExitShortcut = sessionKeys.Exit
+            ExitShortcut = sessionKeys.Exit,
+            Font = ValidFont(Value.Font) ? Value.Font : "claude",
+            TextSize = ValidTextSize(Value.TextSize) ? Value.TextSize : 15,
+            Accent = ValidAccent(Value.Accent) ? Value.Accent : "clay",
+            UiLanguage = ValidUiLanguage(Value.UiLanguage) ? Value.UiLanguage : "system"
+        };
+        var loadedChords = new HashSet<string>(StringComparer.Ordinal);
+        TranslationShortcut.TryParse(Value.WakeShortcut, out wake);
+        TranslationShortcut.TryParse(Value.DirectShortcut, out direct);
+        loadedChords.Add(wake!.ToString());
+        loadedChords.Add(direct!.ToString());
+        if (!loadedChords.Add(Value.AcceptShortcut))
+            Value = Value with { AcceptShortcut = "Tab" };
+        if (!loadedChords.Add(Value.ExitShortcut))
+            Value = Value with { ExitShortcut = "Esc" };
+        Value = Value with
+        {
+            PauseShortcut = TranslationShortcut.TryParse(Value.PauseShortcut, out var pause)
+                && loadedChords.Add(pause!.ToString()) ? pause.ToString() : ""
         };
         // Loaded shortcuts may be valid but not canonically spelled yet.
         ShortcutSettingsDraft.From(Value).TryApply(Value, out var canonical, out _);
@@ -90,6 +126,11 @@ public sealed class SettingsStore
             Styles = loadedStyles,
             Glossary = ValidLoadedGlossary(canonical!.Glossary)
         };
+        try
+        {
+            Value = Value with { ManagedApplications = CanonicalManagedApplications(Value.ManagedApplications) };
+        }
+        catch (ArgumentException) { Value = Value with { ManagedApplications = null }; }
         _committedValue = Snapshot(Value);
     }
     public void Update(UserSettings settings)
@@ -98,6 +139,14 @@ public sealed class SettingsStore
         if (!CanUpdateOrdinary(settings))
             throw new ArgumentException("style-change-requires-session-controller");
         Save(settings, feature: null);
+    }
+    // Immediate saves and toast undo use the revision observed with their draft.
+    // A stale request must fail before startup or any persistent state changes.
+    public void Update(long expectedRevision, UserSettings settings)
+    {
+        if (expectedRevision != Revision || ChangesFromCommitted(Value))
+            throw new SettingsConflictException();
+        Update(settings);
     }
     public bool CanUpdateOrdinary(UserSettings settings) => StylesEqual(CanonicalStyles(settings.Styles), _committedValue.Styles)
         && GlossaryEqual(settings.Glossary, _committedValue.Glossary);
@@ -164,7 +213,9 @@ public sealed class SettingsStore
     private static UserSettings Snapshot(UserSettings settings) => settings with
     {
         ExcludedApplications = settings.ExcludedApplications?.ToArray(),
-        Styles = CopyStyles(settings.Styles)
+        ManagedApplications = settings.ManagedApplications?.ToArray(),
+        Styles = CopyStyles(settings.Styles),
+        ExtensionData = settings.ExtensionData?.ToDictionary(pair => pair.Key, pair => pair.Value.Clone())
     };
 
     // Uses the same canonical values and committed array snapshot as Update.
@@ -175,17 +226,26 @@ public sealed class SettingsStore
         (settings with
         {
             ExcludedApplications = null,
+            ManagedApplications = null,
             Styles = null,
-            Glossary = null
+            Glossary = null,
+            ExtensionData = null
         }) != (_committedValue with
         {
             ExcludedApplications = null,
+            ManagedApplications = null,
             Styles = null,
-            Glossary = null
+            Glossary = null,
+            ExtensionData = null
         })
         || !settings.Excluded.SequenceEqual(_committedValue.Excluded)
+        || !settings.Managed.SequenceEqual(_committedValue.Managed)
         || !StylesEqual(settings.Styles, _committedValue.Styles)
-        || !GlossaryEqual(settings.Glossary, _committedValue.Glossary);
+        || !GlossaryEqual(settings.Glossary, _committedValue.Glossary)
+        || !ExtensionDataEqual(settings.ExtensionData, _committedValue.ExtensionData);
+    private static bool ExtensionDataEqual(Dictionary<string, JsonElement>? left, Dictionary<string, JsonElement>? right) =>
+        (left?.Count ?? 0) == (right?.Count ?? 0) && (left ?? []).All(pair =>
+            right?.TryGetValue(pair.Key, out var value) == true && JsonElement.DeepEquals(pair.Value, value));
     private UserSettings Canonical(UserSettings settings)
     {
         settings.Direction.Validate();
@@ -193,13 +253,39 @@ public sealed class SettingsStore
             throw new ArgumentException("请选择支持的源语言和目标语言。");
         if (!Enum.IsDefined(settings.Mode))
             throw new ArgumentException("请选择有效的工作模式。");
+        if (settings.Theme is not ("system" or "light" or "dark") || !ValidFont(settings.Font)
+            || !ValidTextSize(settings.TextSize) || !ValidAccent(settings.Accent) || !ValidUiLanguage(settings.UiLanguage))
+            throw new ArgumentException("请选择有效的外观设置。");
         if (!ShortcutSettingsDraft.From(settings).TryApply(settings, out var canonical, out var error))
             throw new ArgumentException(SettingsDraftPresentation.ShortcutErrorMessage(error));
         return canonical! with
         {
-            Styles = CanonicalStyles(canonical!.Styles)
+            Styles = CanonicalStyles(canonical!.Styles),
+            ManagedApplications = CanonicalManagedApplications(canonical.ManagedApplications)
         };
     }
+    private string[]? CanonicalManagedApplications(string[]? applications)
+    {
+        if (applications is null)
+            return null;
+        if (applications.Length > 256)
+            throw new ArgumentException("invalid-managed-applications");
+        var result = new List<string>();
+        var identities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string application in applications)
+        {
+            string? normalized = NormalizeStyleApplication(application);
+            if (normalized is null)
+                throw new ArgumentException("invalid-managed-applications");
+            if (identities.Add(normalized))
+                result.Add(normalized);
+        }
+        return result.ToArray();
+    }
+    private static bool ValidFont(string? value) => value is "claude" or "sans" or "system";
+    private static bool ValidTextSize(int value) => value is >= 13 and <= 19;
+    private static bool ValidAccent(string? value) => value is "clay" or "ocean" or "sage" or "iris" or "graphite";
+    private static bool ValidUiLanguage(string? value) => value is "system" or "zh-CN" or "en";
     public string? NormalizeStyleApplication(string? application)
     {
         if (string.IsNullOrWhiteSpace(application))
@@ -269,6 +355,45 @@ public sealed class SettingsStore
 
 // These newly introduced preferences must not make an older settings file lose
 // unrelated preferences when their JSON value has an invalid type.
+internal sealed class ApplicationListPreferenceConverter : JsonConverter<string[]>
+{
+    public override string[]? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        using var document = JsonDocument.ParseValue(ref reader);
+        var value = document.RootElement;
+        if (value.ValueKind != JsonValueKind.Array || value.GetArrayLength() > 256
+            || value.EnumerateArray().Any(item => item.ValueKind != JsonValueKind.String))
+            return null;
+        return value.EnumerateArray().Select(item => item.GetString()!).ToArray();
+    }
+    public override void Write(Utf8JsonWriter writer, string[] value, JsonSerializerOptions options) =>
+        JsonSerializer.Serialize(writer, value, options);
+}
+
+internal sealed class TextSizePreferenceConverter : JsonConverter<int>
+{
+    public override int Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Number && reader.TryGetInt32(out int value))
+            return value;
+        reader.Skip();
+        return 15;
+    }
+    public override void Write(Utf8JsonWriter writer, int value, JsonSerializerOptions options) => writer.WriteNumberValue(value);
+}
+
+internal sealed class BooleanPreferenceConverter : JsonConverter<bool>
+{
+    public override bool Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType is JsonTokenType.True or JsonTokenType.False)
+            return reader.GetBoolean();
+        reader.Skip();
+        return false;
+    }
+    public override void Write(Utf8JsonWriter writer, bool value, JsonSerializerOptions options) => writer.WriteBooleanValue(value);
+}
+
 internal sealed class SessionShortcutPreferenceConverter : JsonConverter<string>
 {
     public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)

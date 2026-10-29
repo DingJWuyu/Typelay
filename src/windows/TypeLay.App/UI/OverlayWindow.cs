@@ -20,9 +20,12 @@ internal sealed partial class OverlayWindow : Window, ISessionView
 {
     private readonly TextBox _editor;
     private readonly TextBlock _language, _status, _tabHint;
-    private readonly Border _dot, _headerBorder, _footerBorder;
-    private readonly Border _acceptKeycap, _escapeKeycap;
-    private readonly TextBlock _escapeLabel;
+    private readonly Border _dot, _barBorder, _shell;
+    private readonly Border _acceptKeycap;
+    private readonly Grid _body;
+    private readonly StackPanel _actions, _acceptHint, _skeleton;
+    private readonly Button _languageButton, _moreButton, _retryButton;
+    private UserSettings _settings = new();
     private readonly HashSet<Key> _pressedShortcutKeys = [];
     private readonly HashSet<Key> _consumedShortcutKeys = [];
     private Key _acceptKey = Key.Tab, _exitKey = Key.Escape;
@@ -30,7 +33,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     private SessionShortcutMessages _shortcutMessages = SettingsDraftPresentation.SessionShortcuts(SessionShortcutBindings.Default);
     private SessionViewContext? _viewContext;
     private SessionState _sessionState;
-    private string _previewStatus = "无当前译文";
+    private string _previewStatus = UiTheme.L("无当前译文", "No current translation");
     private (TargetId Target, RectPx Bounds)? _sourceAnchor;
     private InlineGlossaryForm? _glossary;
     private SessionViewToken? _glossaryEditorToken;
@@ -43,8 +46,8 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         public TextBox Source { get; } = new() { MinHeight = 28, Padding = new(6, 3, 6, 3) };
         public TextBox Target { get; } = new() { MinHeight = 28, Padding = new(6, 3, 6, 3) };
         public ComboBox Scope { get; } = new() { MinHeight = 30, IsEditable = false };
-        public Button Save { get; } = new() { Content = "保存", Padding = new(10, 4, 10, 4) };
-        public Button Cancel { get; } = new() { Content = "取消", Margin = new(8, 0, 0, 0), Padding = new(10, 4, 10, 4) };
+        public Button Save { get; } = new() { Content = UiTheme.L("保存", "Save"), Padding = new(10, 4, 10, 4) };
+        public Button Cancel { get; } = new() { Content = UiTheme.L("取消", "Cancel"), Margin = new(8, 0, 0, 0), Padding = new(10, 4, 10, 4) };
         public TextBlock Feedback { get; } = UiTheme.Text("", 10.5, muted: true);
         public bool Composing, Saving, OutcomeUnknown, Saved;
         public bool OwnsFocus(IInputElement? focus) => ReferenceEquals(focus, Source) || ReferenceEquals(focus, Target)
@@ -59,8 +62,6 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     private SessionViewToken? _ownedReturningToken;
     private bool _ownedExitInvoking;
     private TargetId? _returnedDraftTarget;
-    private SessionViewToken? _pressedExitToken;
-    private bool _exitPressPending;
     private readonly Grid _surface;
     private readonly Button _resumeButton, _expandButton;
     private readonly TextBlock _pausedStatus, _resumeHint;
@@ -79,10 +80,31 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     private (TargetId Target, RectPx Bounds, RectPx Work, double Scale, bool Above)? _heightAnchor;
     private HeightTransition? _heightTransition;
     private TimeSpan? _heightFrameTime;
-    private sealed record HeightTransition(
-        (int X, int Y, int Width, int Height) From,
-        (int X, int Y, int Width, int Height) To,
-        double FromBodyHeight, double ToBodyHeight, double MaximumBodyHeight, bool Above, long Started);
+    private sealed class SpringAxis(double value)
+    {
+        public double Value = value, Target = value, Velocity;
+        public bool Settled => Math.Abs(Value - Target) < .05 && Math.Abs(Velocity) < .02;
+        public void Snap(double target) { Value = Target = target; Velocity = 0; }
+        public void Step(double elapsed, double stiffness, double damping)
+        {
+            int steps = Math.Max(1, (int)Math.Ceiling(elapsed * 240));
+            double dt = elapsed / steps;
+            for (int index = 0; index < steps; index++)
+            {
+                Velocity += (-stiffness * (Value - Target) - damping * Velocity) * dt;
+                Value += Velocity * dt;
+            }
+        }
+    }
+    private sealed class HeightTransition
+    {
+        public required (int X, int Y, int Width, int Height) To;
+        public required SpringAxis Width, Height, Body, Radius;
+        public required double MaximumBodyHeight;
+        public required bool Above, Growing;
+        public required RectPx Work;
+        public long LastFrame = Stopwatch.GetTimestamp();
+    }
     public nint Handle => _hwnd;
     public Func<SessionViewToken, bool>? BeginEditing
     {
@@ -138,6 +160,10 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     {
         get; set;
     }
+    public Action? SettingsRequested
+    {
+        get; set;
+    }
     public Action<long>? ResumeRequested
     {
         get; set;
@@ -149,7 +175,17 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     public void Configure(UserSettings settings)
     {
         _measurementKey = null;
-        UiTheme.Apply(settings.Theme);
+        _settings = settings;
+        UiTheme.Apply(settings);
+        _editor.FontFamily = UiTheme.ContentFont;
+        _editor.FontSize = UiTheme.ContentSize;
+        _editor.SetValue(TextBlock.LineHeightProperty, UiTheme.ContentSize * 1.55);
+        _languageButton.ToolTip = UiTheme.L("翻译语言", "Translation Languages");
+        AutomationProperties.SetName(_languageButton, (string)_languageButton.ToolTip);
+        _moreButton.ToolTip = UiTheme.L("更多翻译操作", "More Translation Actions");
+        AutomationProperties.SetName(_moreButton, (string)_moreButton.ToolTip);
+        UpdateEditorAffordance();
+        UpdateExpansionAffordance();
     }
     internal void ConfigureSessionShortcuts(SessionShortcutBindings bindings)
     {
@@ -169,7 +205,6 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             _acceptKey = _exitKey = Key.None;
         _shortcutMessages = SettingsDraftPresentation.SessionShortcuts(bindings);
         ((TextBlock)_acceptKeycap.Child).Text = _shortcutMessages.AcceptKey;
-        ((TextBlock)_escapeKeycap.Child).Text = _shortcutMessages.ExitKey;
         // A configuration change must not transfer an outstanding press to a
         // new action or release a key whose down event the editor consumed.
     }
@@ -187,98 +222,97 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         Topmost = true;
         Width = 414;
         Height = 158;
-        FontFamily = new("Segoe UI");
-        _surface = new Grid();
-        _surface.RowDefinitions.Add(new()
-        {
-            Height = new(34)
-        });
-        _surface.RowDefinitions.Add(new()
-        {
-            Height = GridLength.Auto
-        });
-        _surface.RowDefinitions.Add(new()
-        {
-            Height = new(34)
-        });
-        _surface.RowDefinitions.Add(new()
-        {
-            Height = GridLength.Auto
-        });
-        var header = new Grid { Margin = new(14, 0, 14, 0) };
-        header.ColumnDefinitions.Add(new()
-        {
-            Width = GridLength.Auto
-        });
-        header.ColumnDefinitions.Add(new());
-        _language = UiTheme.Text("Auto → EN  ⌄", 11, muted: true);
-        var languageButton = new Button { Content = _language, BorderThickness = new(0), Background = Brushes.Transparent, Padding = new(0) };
-        languageButton.ToolTip = "翻译语言";
-        AutomationProperties.SetName(languageButton, "翻译语言");
-        languageButton.Click += (_, _) => LanguageRequested?.Invoke();
-        header.Children.Add(languageButton);
-        var tag = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
-        _dot = new Border { Width = 6, Height = 6, CornerRadius = new(3), Margin = new(0, 0, 6, 0) };
-        _status = UiTheme.Text("", 10.5, muted: true);
-        tag.Children.Add(_dot);
-        tag.Children.Add(_status);
-        _expandButton = new Button
-        {
-            Width = 27,
-            Height = 27,
-            Margin = new(6, 0, 0, 0),
-            Padding = new(0),
-            Background = Brushes.Transparent,
-            BorderThickness = new(0),
-            Focusable = false,
-            IsTabStop = false,
-            IsEnabled = false,
-            Opacity = 0
-        };
-        _expandButton.Template = (ControlTemplate)XamlReader.Parse("""
-            <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
-              <Border x:Name="button" CornerRadius="6" Background="{TemplateBinding Background}">
-                <Viewbox Width="15" Height="15">
-                  <Canvas Width="24" Height="24">
-                    <Path x:Name="icon" Data="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" Stroke="{DynamicResource Muted}" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
-                  </Canvas>
-                </Viewbox>
-              </Border>
-              <ControlTemplate.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                  <Setter TargetName="button" Property="Background" Value="{DynamicResource Panel2}"/>
-                  <Setter TargetName="icon" Property="Stroke" Value="{DynamicResource Text}"/>
-                </Trigger>
-                <Trigger Property="IsEnabled" Value="False"><Setter TargetName="button" Property="Opacity" Value="0.4"/></Trigger>
-              </ControlTemplate.Triggers>
-            </ControlTemplate>
-            """);
+        FontFamily = UiTheme.UiFont;
+        _surface = new Grid { VerticalAlignment = VerticalAlignment.Bottom, HorizontalAlignment = HorizontalAlignment.Left };
+        _surface.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        _surface.RowDefinitions.Add(new() { Height = new(36) });
+        _surface.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        var bar = new Grid { Margin = new(5, 0, 10, 5) };
+        bar.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        bar.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
+        bar.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        bar.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        var direction = new StackPanel { Orientation = Orientation.Horizontal };
+        _dot = new Border { Width = 7, Height = 7, CornerRadius = new(3.5), Margin = new(0, 0, 7, 0), VerticalAlignment = VerticalAlignment.Center };
+        _dot.SetResourceReference(Border.BackgroundProperty, "Accent");
+        _language = UiTheme.Text("Auto → EN", 12, muted: true);
+        _language.TextWrapping = TextWrapping.NoWrap;
+        direction.Children.Add(_dot);
+        direction.Children.Add(_language);
+        _languageButton = new Button { Content = direction, BorderThickness = new(0), Background = Brushes.Transparent,
+            Padding = new(9, 0, 9, 0), Height = 26, VerticalAlignment = VerticalAlignment.Center };
+        _languageButton.ToolTip = UiTheme.L("翻译语言", "Translation Languages");
+        AutomationProperties.SetName(_languageButton, (string)_languageButton.ToolTip);
+        _languageButton.Click += (_, _) => LanguageRequested?.Invoke();
+        bar.Children.Add(_languageButton);
+        _status = UiTheme.Text("", 11.5, muted: true);
+        _status.TextWrapping = TextWrapping.NoWrap;
+        _status.TextTrimming = TextTrimming.CharacterEllipsis;
+        _status.HorizontalAlignment = HorizontalAlignment.Right;
+        _status.Margin = new(4, 0, 6, 0);
+        AutomationProperties.SetAutomationId(_status, "TranslationStage");
+        Grid.SetColumn(_status, 1);
+        bar.Children.Add(_status);
+        _actions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        _expandButton = IconButton("M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7");
+        _expandButton.Focusable = false;
+        _expandButton.IsTabStop = false;
+        _expandButton.IsEnabled = false;
         _expandButton.Click += (_, _) => ToggleExpansion();
+        _moreButton = IconButton("M5 12h.01M12 12h.01M19 12h.01");
+        _moreButton.ToolTip = UiTheme.L("更多翻译操作", "More Translation Actions");
+        AutomationProperties.SetName(_moreButton, (string)_moreButton.ToolTip);
+        _moreButton.Click += (_, _) => OpenMenu(_moreButton);
+        _retryButton = IconButton("M20 7v5h-5M20 12a8 8 0 1 0-2 5");
+        _retryButton.ToolTip = UiTheme.L("重试", "Retry");
+        AutomationProperties.SetName(_retryButton, (string)_retryButton.ToolTip);
+        _retryButton.Click += (_, _) => RequestRegenerate(_viewContext?.Token);
+        _retryButton.Visibility = Visibility.Collapsed;
+        _actions.Children.Add(_retryButton);
+        _actions.Children.Add(_expandButton);
+        _actions.Children.Add(_moreButton);
+        Grid.SetColumn(_actions, 2);
+        bar.Children.Add(_actions);
+        _acceptHint = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new(6, 0, 0, 0) };
+        _acceptKeycap = Keycap(_shortcutMessages.AcceptKey);
+        _acceptHint.Children.Add(_acceptKeycap);
+        _tabHint = UiTheme.Text("", 12, muted: true);
+        _tabHint.TextWrapping = TextWrapping.NoWrap;
+        _acceptHint.Children.Add(_tabHint);
+        Grid.SetColumn(_acceptHint, 3);
+        bar.Children.Add(_acceptHint);
         _surface.MouseEnter += (_, _) => UpdateExpansionAffordance();
         _surface.MouseLeave += (_, _) => UpdateExpansionAffordance();
         _surface.IsKeyboardFocusWithinChanged += (_, _) => UpdateExpansionAffordance();
-        tag.Children.Add(_expandButton);
-        Grid.SetColumn(tag, 1);
-        header.Children.Add(tag);
-        _headerBorder = UiTheme.Border(header, 0);
-        _headerBorder.BorderThickness = new(0);
-        _surface.Children.Add(_headerBorder);
+        _barBorder = new Border { Child = bar, Background = Brushes.Transparent };
+        Grid.SetRow(_barBorder, 1);
+        _surface.Children.Add(_barBorder);
+        _body = new Grid { Margin = new(12, 12, 12, 0) };
+        _skeleton = new StackPanel { Margin = new(4, 7, 12, 12), VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false, Visibility = Visibility.Collapsed };
+        foreach (double proportion in new[] { 1d, .62 })
+        {
+            var line = new Border { Height = 9, CornerRadius = new(4.5), Margin = new(0, 0, 0, 9), HorizontalAlignment = HorizontalAlignment.Left };
+            line.SetResourceReference(Border.BackgroundProperty, "Line");
+            line.Tag = proportion;
+            _skeleton.Children.Add(line);
+        }
         _editor = new TextBox
         {
             IsReadOnly = true,
             Focusable = false,
             BorderThickness = new(1),
             BorderBrush = Brushes.Transparent,
-            Margin = new(10, 0, 10, 0),
-            Padding = new(3, 9, 3, 11),
+            Margin = new(0),
+            Padding = new(3, 2, 3, 10),
             FocusVisualStyle = null,
             TextWrapping = TextWrapping.Wrap,
             AcceptsReturn = true,
             AcceptsTab = false,
-            MinHeight = 54,
+            MinHeight = 38,
             MaxHeight = 160,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            FontSize = 15,
+            FontSize = UiTheme.ContentSize,
+            FontFamily = UiTheme.ContentFont,
             Cursor = Cursors.Arrow,
             SpellCheck = { IsEnabled = false }
         };
@@ -291,10 +325,11 @@ internal sealed partial class OverlayWindow : Window, ISessionView
               </Border>
             </ControlTemplate>
             """);
-        _editor.SetValue(TextBlock.LineHeightProperty, 23.7);
-        _editor.SetResourceReference(Control.BackgroundProperty, "Panel");
+        _editor.SetValue(TextBlock.LineHeightProperty, UiTheme.ContentSize * 1.55);
+        _editor.Background = Brushes.Transparent;
         _editor.SetResourceReference(TextBox.CaretBrushProperty, "Accent");
-        AutomationProperties.SetName(_editor, "译文预览");
+        AutomationProperties.SetName(_editor, UiTheme.L("译文预览", "Translation Preview"));
+        AutomationProperties.SetAutomationId(_editor, "TranslationText");
         _editor.MouseEnter += (_, _) => UpdateEditorAffordance();
         _editor.MouseLeave += (_, _) => UpdateEditorAffordance();
         _editor.IsKeyboardFocusWithinChanged += (_, _) => UpdateEditorAffordance();
@@ -325,13 +360,18 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         {
             if (_editing && !_rendering)
             {
+                DismissRegenerateConfirmation(reposition: false);
                 _ordinaryInput?.InvalidateOrdinaryEditorInput();
                 if (_viewContext?.CanEdit == true || PreservesGlossaryEditor)
                     DraftChanged?.Invoke(_editor.Text);
                 UpdateExpansionAffordance();
             }
         };
-        _editor.LostKeyboardFocus += (_, _) => _ordinaryInput?.SetOrdinaryEditor(null);
+        _editor.LostKeyboardFocus += (_, _) =>
+        {
+            _ordinaryInput?.SetOrdinaryEditor(null);
+            DismissRegenerateConfirmation(reposition: true);
+        };
         _editor.GotKeyboardFocus += (_, _) =>
         {
             PublishOrdinaryEditor();
@@ -435,6 +475,8 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         {
             _ordinaryInput?.SetOrdinaryEditor(null);
             _composing = true;
+            _acceptHint.Visibility = Visibility.Collapsed;
+            DismissRegenerateConfirmation(reposition: true);
         });
         TextCompositionManager.AddPreviewTextInputUpdateHandler(_editor, (_, e) =>
         {
@@ -449,48 +491,9 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             PublishOrdinaryEditor();
         });
         _editor.ContextMenu = null;
-        Grid.SetRow(_editor, 1);
-        _surface.Children.Add(_editor);
-        var footer = new DockPanel { LastChildFill = false };
-        var tab = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        _acceptKeycap = Keycap(_shortcutMessages.AcceptKey);
-        tab.Children.Add(_acceptKeycap);
-        _tabHint = UiTheme.Text("交还应用", 10.5, muted: true);
-        tab.Children.Add(_tabHint);
-        footer.Children.Add(tab);
-        _escapeKeycap = Keycap(_shortcutMessages.ExitKey);
-        _escapeLabel = UiTheme.Text(_shortcutMessages.ExitLabel, 10.5, true);
-        var escape = new StackPanel { Orientation = Orientation.Horizontal };
-        escape.Children.Add(_escapeKeycap);
-        escape.Children.Add(_escapeLabel);
-        var esc = new Button { Content = escape, BorderThickness = new(0), Background = Brushes.Transparent, Margin = new(12, 0, 0, 0), Padding = new(0) };
-        esc.PreviewMouseLeftButtonDown += (_, _) =>
-        {
-            _pressedExitToken = _viewContext?.Token;
-            _exitPressPending = true;
-        };
-        esc.Click += (_, _) =>
-        {
-            var token = _exitPressPending ? _pressedExitToken : _viewContext?.Token;
-            _pressedExitToken = null;
-            _exitPressPending = false;
-            if (!_composing && token is not null)
-                EscapeRequested?.Invoke(token);
-        };
-        var actions = new StackPanel { Orientation = Orientation.Horizontal };
-        DockPanel.SetDock(actions, Dock.Right);
-        actions.Children.Add(esc);
-        var more = new Button { Content = "⋯", FontSize = 15, BorderThickness = new(0), Background = Brushes.Transparent, Padding = new(7, 0, 2, 0) };
-        actions.Children.Add(more);
-        footer.Children.Add(actions);
-        more.ToolTip = "更多翻译操作";
-        AutomationProperties.SetName(more, "更多翻译操作");
-        more.Click += (_, _) => OpenMenu(more);
-        _footerBorder = UiTheme.Border(footer, 0);
-        _footerBorder.Margin = new(14, 6, 14, 0);
-        _footerBorder.BorderThickness = new(0, 1, 0, 0);
-        Grid.SetRow(_footerBorder, 2);
-        _surface.Children.Add(_footerBorder);
+        _body.Children.Add(_editor);
+        _body.Children.Add(_skeleton);
+        _surface.Children.Add(_body);
         var paused = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         _pausedStatus = UiTheme.Text("", 10.5, muted: true);
         _resumeHint = UiTheme.Text("", 10.5, muted: true);
@@ -516,13 +519,15 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             if (_pausedRevision is not null && _resumeButton.IsVisible && revision is { } value)
                 ResumeRequested?.Invoke(value);
         };
+        Grid.SetRow(_resumeButton, 1);
         _surface.Children.Add(_resumeButton);
-        var outer = UiTheme.Border(_surface, 16);
-        outer.ClipToBounds = true;
-        outer.Margin = new(12);
-        outer.Effect = new DropShadowEffect { BlurRadius = 22, ShadowDepth = 5, Opacity = .18, Color = Color.FromRgb(19, 29, 52) };
-        _surface.SizeChanged += (_, _) => _surface.Clip = new RectangleGeometry(new Rect(0, 0, _surface.ActualWidth, _surface.ActualHeight), 15, 15);
-        Content = outer;
+        _shell = UiTheme.Border(_surface, 18, "Glass");
+        _shell.BorderThickness = new(.5);
+        _shell.ClipToBounds = true;
+        _shell.Margin = new(12);
+        _shell.Effect = new DropShadowEffect { BlurRadius = 24, ShadowDepth = 7, Opacity = .22, Color = Color.FromRgb(20, 20, 19) };
+        _surface.SizeChanged += (_, _) => UpdateSurfaceClip();
+        Content = _shell;
         SourceInitialized += (_, _) =>
         {
             _hwnd = new WindowInteropHelper(this).Handle;
@@ -540,9 +545,9 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     }
     private static Border Keycap(string value)
     {
-        var cap = UiTheme.Border(UiTheme.Text(value, 10), 5, "Panel", 0);
+        var cap = UiTheme.Border(UiTheme.Text(value, 10, muted: true), 4, "Panel2", 0);
         cap.Padding = new(5, 1, 5, 1);
-        cap.BorderThickness = new(1, 1, 1, 2);
+        cap.BorderThickness = new(0);
         cap.Margin = new(0, 0, 5, 0);
         cap.VerticalAlignment = VerticalAlignment.Center;
         return cap;
@@ -951,9 +956,13 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         bool editable = _editing || _canEditPreview;
         bool hover = _canEditPreview && !_editing && _editor.IsMouseOver;
         _editor.Cursor = editable ? Cursors.IBeam : Cursors.Arrow;
-        _editor.ToolTip = _canEditPreview && !_editing ? "点击译文编辑" : null;
-        AutomationProperties.SetName(_editor, editable ? "编辑译文" : "译文预览");
-        AutomationProperties.SetItemStatus(_editor, _editing && _previewStatus == "当前译文" ? "编辑中的译文" : _previewStatus);
+        _editor.ToolTip = _canEditPreview && !_editing ? UiTheme.L("点击译文编辑", "Click to Edit Translation") : null;
+        AutomationProperties.SetName(_editor, editable ? UiTheme.L("编辑译文", "Edit Translation") : UiTheme.L("译文预览", "Translation Preview"));
+        AutomationProperties.SetItemStatus(_editor, _editing && _previewStatus == UiTheme.L("当前译文", "Current translation") ? UiTheme.L("编辑中的译文", "Editing translation") : _previewStatus);
+        if (_editing)
+            _editor.SetResourceReference(Control.BackgroundProperty, "Panel");
+        else
+            _editor.Background = Brushes.Transparent;
         if (_editing && _editor.IsKeyboardFocusWithin)
             _editor.SetResourceReference(Control.BorderBrushProperty, "Accent");
         else if (_editing || hover)
@@ -967,14 +976,18 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             return;
         _expanded = !_expanded;
         UpdateExpansionAffordance();
+        if (_sourceAnchor is { } source)
+            Position(source.Target, source.Bounds, false, false);
     }
     private void UpdateExpansionAffordance()
     {
-        string name = _expanded ? "收起译文" : "展开译文";
+        string name = _expanded ? UiTheme.L("收起译文", "Collapse Translation") : UiTheme.L("展开译文", "Expand Translation");
         _expandButton.ToolTip = name;
         AutomationProperties.SetName(_expandButton, name);
         _expandButton.IsEnabled = _hasPreview && _editor.Text.Length > 0;
-        _expandButton.Opacity = _surface.IsMouseOver || _surface.IsKeyboardFocusWithin ? 1 : 0;
+        bool visible = _surface.IsMouseOver || _surface.IsKeyboardFocusWithin || _moreButton.ContextMenu?.IsOpen == true;
+        _expandButton.Opacity = visible ? 1 : 0;
+        _moreButton.Opacity = visible ? 1 : 0;
     }
     private void SetNoActivate(bool value)
     {
@@ -1001,8 +1014,13 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     }
     public void Render(Session session, UserSettings settings, bool permit, string? statusOverride = null, SessionViewContext? context = null)
     {
+        if (_settings != settings)
+            Configure(settings);
         _viewContext = context is not null && session.Current?.Target == context.Token.Target ? context : null;
         _sessionState = session.State;
+        if (_regeneratePrompt is not null && (_regenerateToken != _viewContext?.Token || _regenerateDraft != _editor.Text
+            || _regenerateState != session.State || _composing))
+            DismissRegenerateConfirmation(reposition: false);
         _sourceGlossarySnapshot = session.Current;
         if (!PreservesGlossaryEditor)
             _glossaryEditorToken = null;
@@ -1068,13 +1086,13 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         // failure messages and retained previews of an older source revision.
         _previewStatus = session.State switch
         {
-            SessionState.EditingTranslation when session.ManualSourceCurrent => "编辑中的译文",
-            SessionState.ReturningToSource when session.ManualSourceCurrent => "待返回的译文",
+            SessionState.EditingTranslation when session.ManualSourceCurrent => UiTheme.L("编辑中的译文", "Editing translation"),
+            SessionState.ReturningToSource when session.ManualSourceCurrent => UiTheme.L("待返回的译文", "Translation awaiting return"),
             SessionState.ValidTranslation or SessionState.EditedTranslationPending or SessionState.Invalid
-                when session.HasCurrentPreview => "当前译文",
-            SessionState.Translating => "正在翻译",
-            SessionState.TranslationFailed => "翻译失败",
-            _ => "无当前译文"
+                when session.HasCurrentPreview => UiTheme.L("当前译文", "Current translation"),
+            SessionState.Translating => UiTheme.L("正在翻译", "Translating"),
+            SessionState.TranslationFailed => UiTheme.L("翻译失败", "Translation failed"),
+            _ => UiTheme.L("无当前译文", "No current translation")
         };
         _canEditPreview = _viewContext?.CanEdit == true && session.CanBeginEdit && session.Candidate.Length > 0;
         _rendering = true;
@@ -1083,36 +1101,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             _pausedRevision = null;
             _pressedPauseRevision = null;
             _resumeButton.Visibility = Visibility.Collapsed;
-            _headerBorder.Visibility = Visibility.Visible;
-            _editor.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
-            _footerBorder.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
-            _surface.RowDefinitions[2].Height = new(idle ? 0 : 34);
-            _status.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
-            _expandButton.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
-            _dot.Visibility = display.Dot == StatusDot.None ? Visibility.Collapsed : Visibility.Visible;
-            if (idle)
-                _expanded = false;
-            _language.Text = (settings.Source == "zh" ? "中" : ApplicationSupportPresentation.LanguageName(settings.Source))
-                + " → " + (settings.Target == "zh" ? "中" : ApplicationSupportPresentation.LanguageName(settings.Target)) + "  ⌄";
-            string status = statusOverride ?? display.Status;
-            if (status.Length == 0)
-                status = _viewContext?.TranslationActions?.Feedback ?? status;
-            _status.Text = status + (_automationTest ? " · 自动化测试" : "");
-            string previewHelp = previewOnly ? "当前不能通过接受键写回这条译文，接受键会交还原应用。" : "";
-            _status.ToolTip = previewOnly ? previewHelp : null;
-            AutomationProperties.SetHelpText(_status, previewHelp);
-            string dotBrushKey = display.Dot == StatusDot.Green ? "Good" : display.Dot == StatusDot.Yellow ? "Warn" : "Muted";
-            if (_dotBrushKey != dotBrushKey)
-            {
-                _dot.SetResourceReference(Border.BackgroundProperty, dotBrushKey);
-                _dotBrushKey = dotBrushKey;
-            }
-            string shortcutHint = session.State == SessionState.EditingTranslation ? _shortcutMessages.ReturnHint
-                : permit && session.State is SessionState.ValidTranslation or SessionState.EditedTranslationPending
-                    ? _shortcutMessages.AcceptHint : _shortcutMessages.PassThroughHint;
-            _tabHint.Text = shortcutHint[(_shortcutMessages.AcceptKey.Length + 1)..];
-            _escapeKeycap.Visibility = source.Ime == ImeState.Clear ? Visibility.Visible : Visibility.Collapsed;
-            _escapeLabel.Text = source.Ime == ImeState.Clear ? _shortcutMessages.ExitLabel : "隐藏当前翻译";
+            UpdateBar(session, permit, previewOnly, statusOverride);
             bool preserveReturnedDraft = session.State == SessionState.ReturningToSource
                 && (_ownedReturning || _returnedDraftTarget == source.Target);
             if (preserveReturnedDraft)
@@ -1129,13 +1118,14 @@ internal sealed partial class OverlayWindow : Window, ISessionView
                 _editor.Focusable = false;
                 SetNoActivate(_glossary?.Entry.SourceOrigin != true);
                 long textStarted = trace ? Stopwatch.GetTimestamp() : 0;
-                string value = idle ? "" : session.Preview.Length > 0 ? session.Preview : statusOverride is not null ? statusOverride + "…" : "正在翻译…";
+                string value = idle ? "" : session.Preview.Length > 0 ? session.Preview
+                    : session.State == SessionState.TranslationFailed ? UiTheme.L("暂时无法翻译，请重试。", "Couldn’t translate. Try again.") : "";
                 if (_editor.Text != value)
                     _editor.Text = value;
                 if (trace)
                     textMs = Stopwatch.GetElapsedTime(textStarted).TotalMilliseconds;
             }
-            string foregroundKey = session.State is SessionState.Translating or SessionState.TranslationFailed ? "Muted" : "Text";
+            string foregroundKey = session.State is SessionState.Translating or SessionState.TranslationFailed ? "Tertiary" : "Text";
             if (_editorForegroundKey != foregroundKey)
             {
                 _editor.SetResourceReference(Control.ForegroundProperty, foregroundKey);
@@ -1166,12 +1156,12 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         }
         ClearSessionContent();
         _pausedRevision = revision;
-        _pausedStatus.Text = display.Status;
-        _resumeHint.Text = display.TabHint;
-        _headerBorder.Visibility = Visibility.Collapsed;
-        _editor.Visibility = Visibility.Collapsed;
-        _footerBorder.Visibility = Visibility.Collapsed;
-        _surface.RowDefinitions[2].Height = new(0);
+        _pausedStatus.Text = UiTheme.L("已暂停", "Paused");
+        _resumeHint.Text = UiTheme.L("恢复", "Resume");
+        _resumeHint.SetResourceReference(TextBlock.ForegroundProperty, "AccentInk");
+        _barBorder.Visibility = Visibility.Collapsed;
+        _body.Visibility = Visibility.Collapsed;
+        _surface.RowDefinitions[1].Height = new(36);
         _resumeButton.Visibility = Visibility.Visible;
         Position(anchor.Target, anchor.Bounds, true, false);
         if (!IsVisible)
@@ -1181,7 +1171,31 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     {
         (double MeasureMs, double ShowMs, double SetWindowPosMs) timing = default;
         double scale = Math.Max(1, Native.GetDpiForWindow((nint)target.AsWindows().RootHwnd) / 96.0);
-        _panelWidth = idle ? 140 : Math.Clamp(bounds.Width / scale, 320, 520);
+        var rect = new Native.Rect { Left = (int)bounds.X, Top = (int)bounds.Y, Right = (int)bounds.Right, Bottom = (int)bounds.Bottom };
+        var monitor = new Native.MonitorInfo { Size = Marshal.SizeOf<Native.MonitorInfo>() };
+        if (!Native.GetMonitorInfoW(Native.MonitorFromRect(ref rect, 2), ref monitor))
+        {
+            HideQuietly();
+            return timing;
+        }
+        var work = new RectPx(monitor.Work.Left, monitor.Work.Top, monitor.Work.Right - monitor.Work.Left, monitor.Work.Bottom - monitor.Work.Top);
+        double available = Math.Max(300, bounds.Width / scale - 32);
+        if (idle)
+        {
+            FrameworkElement content = _pausedRevision is null ? _languageButton : _resumeButton;
+            content.Measure(new(double.PositiveInfinity, 36));
+            _panelWidth = Math.Max(98, content.DesiredSize.Width + 10);
+        }
+        else
+            _panelWidth = _expanded ? Math.Min(available, 560)
+                : Math.Clamp(_editing ? Math.Max(400, available * .72) : available * .66, 300, 440);
+        _panelWidth = Math.Min(_panelWidth, work.Width / scale - 24);
+        if (_panelWidth <= 0)
+        {
+            HideQuietly();
+            return timing;
+        }
+        _surface.Width = _panelWidth;
         double maximumBodyHeight = _expanded ? 360 : 160;
         double lineHeight = TextBlock.GetLineHeight(_editor);
         var measurementKey = (_editor.Text, _panelWidth, scale, _editor.FontFamily, _editor.FontSize, lineHeight, CultureInfo.CurrentUICulture);
@@ -1191,12 +1205,8 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             var measure = new FormattedText(_editor.Text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
                 new Typeface(_editor.FontFamily, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal), _editor.FontSize, Brushes.Black, scale)
             {
-                // TextBox reserves two more pixels for its caret. Keep its
-                // inset, padding and border in the same measurement as the text.
-                MaxTextWidth = _panelWidth - _editor.Margin.Left - _editor.Margin.Right
-                    - _editor.Padding.Left - _editor.Padding.Right - _editor.BorderThickness.Left - _editor.BorderThickness.Right - 2,
-                // Match TextBox.Wrap: the default trims an unbroken word into
-                // one line and underestimates the editor's actual height.
+                MaxTextWidth = Math.Max(1, _panelWidth - _body.Margin.Left - _body.Margin.Right
+                    - _editor.Padding.Left - _editor.Padding.Right - _editor.BorderThickness.Left - _editor.BorderThickness.Right - 2),
                 Trimming = TextTrimming.None,
                 LineHeight = lineHeight
             };
@@ -1205,65 +1215,82 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             if (trace)
                 timing.MeasureMs = Stopwatch.GetElapsedTime(measureStarted).TotalMilliseconds;
         }
-        // Cache natural text height, not the clipped height: expansion and edits
-        // must still resize the persistent editor on the next render.
-        double bodyHeight = idle ? 54 : Math.Clamp(_measuredTextHeight + _editor.Padding.Top + _editor.Padding.Bottom
-            + _editor.BorderThickness.Top + _editor.BorderThickness.Bottom + 2, 54, maximumBodyHeight);
+        double bodyHeight = idle ? 38 : _skeleton.Visibility == Visibility.Visible ? 56
+            : Math.Clamp(_measuredTextHeight + _editor.Padding.Top + _editor.Padding.Bottom
+                + _editor.BorderThickness.Top + _editor.BorderThickness.Bottom + 2, 38, maximumBodyHeight);
         double glossaryHeight = 0;
         if (!idle && _glossary is { } form)
         {
             form.Panel.Measure(new(_panelWidth, double.PositiveInfinity));
             glossaryHeight = form.Panel.DesiredSize.Height;
         }
-        double height = idle ? 60 : 34 + bodyHeight + 34 + 26 + glossaryHeight, width = _panelWidth + 26;
-        var rect = new Native.Rect
+        if (!idle && _regeneratePrompt is { } confirmation)
         {
-            Left = (int)bounds.X,
-            Top = (int)bounds.Y,
-            Right = (int)bounds.Right,
-            Bottom = (int)bounds.Bottom
-        };
-        var monitor = new Native.MonitorInfo { Size = System.Runtime.InteropServices.Marshal.SizeOf<Native.MonitorInfo>() };
-        Native.GetMonitorInfoW(Native.MonitorFromRect(ref rect, 2), ref monitor);
-        var work = new RectPx(monitor.Work.Left, monitor.Work.Top, monitor.Work.Right - monitor.Work.Left, monitor.Work.Bottom - monitor.Work.Top);
-        RectPx? placement = OverlayPlacement.Place(bounds, work, width * scale, height * scale, gap: 0, minimumHeight: (idle ? 60 : 126) * scale);
+            confirmation.Measure(new(_panelWidth, double.PositiveInfinity));
+            glossaryHeight += confirmation.DesiredSize.Height;
+        }
+        double height = idle ? 60 : bodyHeight + 72 + glossaryHeight;
+        double width = _panelWidth + 24;
+        RectPx? placement = OverlayPlacement.Place(bounds, work, width * scale, height * scale, gap: 0, minimumHeight: (idle ? 60 : 110) * scale);
         if (placement is not { } position)
         {
             HideQuietly();
             return timing;
         }
+        // The shell grows left/up from the source's trailing edge. The shadow
+        // inset leaves the visible glass 16 DIPs inside the source's right edge.
+        position = position with { X = Math.Clamp(bounds.Right - 4 * scale - position.Width, work.X, work.Right - position.Width) };
+        if (!idle)
+            bodyHeight = Math.Max(38, Math.Min(bodyHeight, position.Height / scale - 72 - glossaryHeight));
         bool showing = !IsVisible;
-        bool animate = _clientAreaAnimation();
+        bool animate = _clientAreaAnimation() && !_settings.ReduceMotion;
         if (showing || !animate)
             ResetFade();
         if (showing && animate)
             Opacity = 0;
         bool above = position.Y < bounds.Y;
-        // Round the anchored edge once. Independently truncating top and
-        // height can otherwise move the bottom by a pixel between text sizes.
         var pixels = (X: (int)position.X, Y: above ? (int)bounds.Y - (int)position.Height : (int)position.Y,
             Width: (int)position.Width, Height: (int)position.Height);
         var anchor = (target, bounds, work, scale, above);
-        // Only height changes at an unchanged source anchor can interpolate.
-        // New targets, moved parents, width/DPI changes and avoidance flips use
-        // their final placement immediately, without travelling across inputs.
-        bool resize = !showing && animate && !idle && _heightAnchor == anchor
-            && _placement is { } current && current.X == pixels.X && current.Width == pixels.Width
-            && (above ? current.Y + current.Height == pixels.Y + pixels.Height : current.Y == pixels.Y);
+        bool resize = !showing && animate && _heightAnchor == anchor && _placement is { };
         _heightAnchor = anchor;
+        double radius = 18;
         long positionStarted = trace ? Stopwatch.GetTimestamp() : 0;
-        // A session/permit renewal must not restart the visual deadline.
-        bool continuing = resize && _heightTransition is { } pending && pending.To == pixels
-            && pending.ToBodyHeight == bodyHeight && pending.MaximumBodyHeight == maximumBodyHeight;
-        if (!continuing)
+        if (resize && _placement is { } from)
         {
-            CancelHeightTransition();
-            if (resize && _placement is { } from && from.Height != pixels.Height)
+            if (_heightTransition is not { } pending)
             {
-                _heightTransition = new(from, pixels, _editor.Height, bodyHeight, maximumBodyHeight, above, Stopwatch.GetTimestamp());
+                pending = new HeightTransition
+                {
+                    To = pixels, Width = new(from.Width), Height = new(from.Height), Body = new(_editor.Height),
+                    Radius = new(_shell.CornerRadius.TopLeft), MaximumBodyHeight = maximumBodyHeight,
+                    Above = above, Work = work, Growing = pixels.Width * pixels.Height > from.Width * from.Height
+                };
+                _heightTransition = pending;
+                _heightFrameTime = null;
                 CompositionTarget.Rendering += AdvanceHeightTransition;
             }
-            else if (!SetPlacement(pixels, bodyHeight, maximumBodyHeight, showing))
+            // Retargeting keeps current velocity. Permit renewals neither restart
+            // the spring nor extend its lifetime, and never touch focus or text.
+            bool retargeted = pending.To != pixels || pending.Body.Target != bodyHeight;
+            if (retargeted)
+                pending.Growing = pixels.Width * pixels.Height > pending.Width.Value * pending.Height.Value + 4;
+            pending.To = pixels;
+            pending.Width.Target = pixels.Width;
+            pending.Height.Target = pixels.Height;
+            pending.Body.Target = bodyHeight;
+            pending.Radius.Target = radius;
+            pending.MaximumBodyHeight = maximumBodyHeight;
+            if (pending.Width.Settled && pending.Height.Settled && pending.Body.Settled && pending.Radius.Settled)
+            {
+                CancelHeightTransition();
+                SetPlacement(pixels, bodyHeight, maximumBodyHeight, radius);
+            }
+        }
+        else
+        {
+            CancelHeightTransition();
+            if (!SetPlacement(pixels, bodyHeight, maximumBodyHeight, radius, showing))
                 return timing;
         }
         if (trace)
@@ -1274,14 +1301,9 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             Show();
             if (trace)
                 timing.ShowMs = Stopwatch.GetElapsedTime(showStarted).TotalMilliseconds;
-            // The settled value belongs to the property, not a held animation
-            // clock. Appearance never schedules a later Show or focus change.
             Opacity = 1;
             if (animate && IsVisible)
-                BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140))
-                {
-                    FillBehavior = FillBehavior.Stop
-                }, HandoffBehavior.SnapshotAndReplace);
+                BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140)) { FillBehavior = FillBehavior.Stop }, HandoffBehavior.SnapshotAndReplace);
         }
         return timing;
     }
@@ -1298,31 +1320,47 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         if (_heightFrameTime == frameTime)
             return;
         _heightFrameTime = frameTime;
-        bool animate = _clientAreaAnimation();
+        bool animate = _clientAreaAnimation() && !_settings.ReduceMotion;
+        bool settled;
         if (!animate)
+        {
             ResetFade();
-        double progress = animate
-            ? Math.Clamp(Stopwatch.GetElapsedTime(transition.Started).TotalMilliseconds / 280, 0, 1) : 1;
-        double eased = 1 - Math.Pow(1 - progress, 3);
-        int height = (int)Math.Round(transition.From.Height + (transition.To.Height - transition.From.Height) * eased);
-        int y = transition.Above ? transition.To.Y + transition.To.Height - height : transition.To.Y;
-        double bodyHeight = transition.FromBodyHeight + (transition.ToBodyHeight - transition.FromBodyHeight) * eased;
-        if (progress >= 1)
+            settled = true;
+        }
+        else
+        {
+            double elapsed = Math.Clamp(Stopwatch.GetElapsedTime(transition.LastFrame).TotalSeconds, 0, 1d / 30);
+            transition.LastFrame = Stopwatch.GetTimestamp();
+            double stiffness = transition.Growing ? 340 : 560, damping = transition.Growing ? 26 : 40;
+            foreach (var axis in new[] { transition.Width, transition.Height, transition.Body, transition.Radius })
+                axis.Step(elapsed, stiffness, damping);
+            settled = transition.Width.Settled && transition.Height.Settled && transition.Body.Settled && transition.Radius.Settled;
+        }
+        if (settled)
+        {
             CancelHeightTransition();
-        SetPlacement((transition.To.X, y, transition.To.Width, height), bodyHeight, transition.MaximumBodyHeight);
+            SetPlacement(transition.To, transition.Body.Target, transition.MaximumBodyHeight, transition.Radius.Target);
+            return;
+        }
+        int right = transition.To.X + transition.To.Width;
+        int bottom = transition.To.Y + transition.To.Height;
+        int width = Math.Clamp((int)Math.Round(transition.Width.Value), 1, right - (int)transition.Work.X);
+        int maximumHeight = transition.Above ? bottom - (int)transition.Work.Y : (int)transition.Work.Bottom - transition.To.Y;
+        int height = Math.Clamp((int)Math.Round(transition.Height.Value), 1, maximumHeight);
+        int y = transition.Above ? bottom - height : transition.To.Y;
+        SetPlacement((right - width, y, width, height), transition.Body.Value, transition.MaximumBodyHeight, transition.Radius.Value);
     }
     private bool SetPlacement((int X, int Y, int Width, int Height) pixels, double bodyHeight, double maximumBodyHeight,
-        bool force = false)
+        double radius, bool force = false)
     {
-        // Resize the live editor with its shell. In particular, lowering its
-        // MaxHeight at collapse start would clip the body/footer before motion.
         _editor.MaxHeight = Math.Max(maximumBodyHeight, bodyHeight);
-        _editor.Height = bodyHeight;
+        _editor.Height = Math.Max(_editor.MinHeight, bodyHeight);
+        _shell.CornerRadius = new(Math.Max(0, radius));
+        UpdateSurfaceClip();
         if (!force && _placement == pixels)
             return true;
-        // WPF's Width/Height setters each resize the HWND synchronously.
-        // Move and resize once; WM_SIZE updates both WPF dimensions. This
-        // never shows or activates a hidden HWND and never changes focus.
+        // One nonactivating move/resize; no animation frame can show a hidden
+        // HWND, grant acceptance, or make an input/focus decision.
         bool positioned = Native.SetWindowPos(_hwnd, (nint)(-1), pixels.X, pixels.Y, pixels.Width, pixels.Height, 0x0010);
         _placement = positioned ? pixels : null;
         if (!positioned)
@@ -1333,6 +1371,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     {
         CompositionTarget.Rendering -= AdvanceHeightTransition;
         _heightTransition = null;
+        _heightFrameTime = null;
     }
     private void TraceRender(long atMs, double totalMs, double uiMs, double textMs,
         (double MeasureMs, double ShowMs, double SetWindowPosMs) timing)
@@ -1384,6 +1423,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     }
     private void ClearSessionContent()
     {
+        DismissRegenerateConfirmation(reposition: false);
         if (_glossary is { } form)
             CloseGlossary(form, restoreEditor: false);
         _sourceAnchor = null;
@@ -1398,7 +1438,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         _composing = false;
         _expanded = false;
         _hasPreview = false;
-        _previewStatus = "无当前译文";
+        _previewStatus = UiTheme.L("无当前译文", "No current translation");
         _canEditPreview = false;
         _rendering = true;
         try
@@ -1462,23 +1502,23 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         _glossaryEditorToken = sourceOrigin ? null : token;
         _ordinaryInput?.SetOrdinaryEditor(null);
         KeyboardNavigation.SetTabNavigation(form.Panel, KeyboardNavigationMode.Cycle);
-        AutomationProperties.SetName(form.Panel, "加入术语表");
-        AutomationProperties.SetName(form.Source, "术语源词");
-        AutomationProperties.SetName(form.Target, "术语译词");
-        AutomationProperties.SetName(form.Scope, "术语作用范围");
-        AutomationProperties.SetName(form.Save, "保存术语");
-        AutomationProperties.SetName(form.Cancel, "取消加入术语表");
+        AutomationProperties.SetName(form.Panel, UiTheme.L("加入术语表", "Add to Glossary"));
+        AutomationProperties.SetName(form.Source, UiTheme.L("术语源词", "Glossary source term"));
+        AutomationProperties.SetName(form.Target, UiTheme.L("术语译词", "Glossary translation"));
+        AutomationProperties.SetName(form.Scope, UiTheme.L("术语作用范围", "Glossary scope"));
+        AutomationProperties.SetName(form.Save, UiTheme.L("保存术语", "Save Term"));
+        AutomationProperties.SetName(form.Cancel, UiTheme.L("取消加入术语表", "Cancel Glossary Entry"));
         void AddField(string label, Control control)
         {
             form.Panel.Children.Add(new Label { Content = label, Target = control, Padding = new(0, 3, 0, 2), FontSize = 10.5 });
             form.Panel.Children.Add(control);
         }
-        AddField("源词", form.Source);
-        AddField("译词", form.Target);
-        AddField("作用范围", form.Scope);
-        form.Scope.Items.Add(new ComboBoxItem { Content = "全局" });
+        AddField(UiTheme.L("原文", "Source"), form.Source);
+        AddField(UiTheme.L("译文", "Translation"), form.Target);
+        AddField(UiTheme.L("范围", "Applies to"), form.Scope);
+        form.Scope.Items.Add(new ComboBoxItem { Content = UiTheme.L("所有语言方向", "All directions") });
         foreach (var direction in entry.Directions)
-            form.Scope.Items.Add(new ComboBoxItem { Content = direction.SourceName + " → " + direction.TargetName, Tag = direction });
+            form.Scope.Items.Add(new ComboBoxItem { Content = DirectionCode(direction.Source) + " → " + DirectionCode(direction.Target), Tag = direction });
         form.Scope.SelectedIndex = 0;
         form.Feedback.TextWrapping = TextWrapping.Wrap;
         form.Feedback.Margin = new(0, 4, 0, 4);
@@ -1506,7 +1546,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         };
         form.Save.Click += async (_, _) => await SaveGlossaryAsync(form);
         form.Cancel.Click += async (_, _) => await CancelGlossaryAsync(form);
-        Grid.SetRow(form.Panel, 3);
+        Grid.SetRow(form.Panel, 2);
         _surface.Children.Add(form.Panel);
         RepositionGlossary();
         if (sourceOrigin)
@@ -1538,7 +1578,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         form.Saving = true;
         form.Source.IsReadOnly = form.Target.IsReadOnly = true;
         form.Scope.IsEnabled = false;
-        form.Feedback.Text = "正在保存…";
+        form.Feedback.Text = UiTheme.L("正在保存…", "Saving…");
         try
         {
             var result = await add(request);
@@ -1547,13 +1587,13 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             form.Saved = result.Saved;
             form.OutcomeUnknown = result.Code == "glossary-unconfirmed";
             form.Feedback.Text = result.Saved && result.Code == "glossary-saved-notification-failed"
-                ? "已保存，状态通知未完成。" : GlossaryEntryPresentation.Message(result.Code) ?? "";
+                ? UiTheme.L("已保存，状态通知未完成。", "Saved, but the status notification did not complete.") : LocalizedStatus(GlossaryEntryPresentation.Message(result.Code) ?? "");
             if (result.Saved)
             {
                 form.Source.IsReadOnly = form.Target.IsReadOnly = true;
                 form.Scope.IsEnabled = false;
-                form.Cancel.Content = "关闭";
-                AutomationProperties.SetName(form.Cancel, "关闭术语表单");
+                form.Cancel.Content = UiTheme.L("关闭", "Close");
+                AutomationProperties.SetName(form.Cancel, UiTheme.L("关闭术语表单", "Close Glossary Form"));
             }
         }
         catch (Exception error) when (error is not OutOfMemoryException)
@@ -1561,7 +1601,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             if (!ReferenceEquals(_glossary, form))
                 return;
             form.OutcomeUnknown = true;
-            form.Feedback.Text = "保存结果未确认，请检查术语表后再操作。";
+            form.Feedback.Text = UiTheme.L("保存结果未确认，请检查术语表后再操作。", "Save was not confirmed. Check the glossary before trying again.");
         }
         finally
         {
@@ -1613,28 +1653,39 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         var menu = new ContextMenu();
         void Add(string text, Action action, bool enabled = true)
         {
-            var item = new MenuItem { Header = text, IsEnabled = enabled };
+            var item = new MenuItem { Header = LocalizedStatus(text), IsEnabled = enabled };
             item.Click += (_, _) => action();
             menu.Items.Add(item);
         }
-        Add("复制译文", () => { try { Clipboard.SetText(_editor.Text); } catch (System.Runtime.InteropServices.ExternalException) { } }, _hasPreview);
-        Add("重新翻译", () => RegenerateRequested?.Invoke(), !_composing);
+        Add("复制译文", () =>
+        {
+            if (_viewContext?.Token != viewToken || !_hasPreview)
+                return;
+            try
+            {
+                Clipboard.SetText(_editor.Text);
+                _status.Text = UiTheme.L("已复制", "Copied");
+            }
+            catch (ExternalException) { _status.Text = UiTheme.L("未能复制", "Couldn’t copy"); }
+            _status.Visibility = Visibility.Visible;
+        }, _hasPreview);
+        Add("重新翻译", () => RequestRegenerate(viewToken), !_composing);
         if (viewToken is not null && translation is not null)
         {
             if (translation.StyleReleased)
             {
-                var styleMenu = new MenuItem { Header = "当前应用风格" };
+                var styleMenu = new MenuItem { Header = UiTheme.L("当前应用风格", "Tone for This App") };
                 void AddStyle(string label, TranslationStyle? style, bool enabled, string? reason)
                 {
                     var request = new SessionStyleRequest(viewToken, translation.SettingsRevision, style);
                     bool selected = translation.ApplicationStyle == style;
                     var item = new MenuItem
                     {
-                        Header = label,
+                        Header = LocalizedStatus(label),
                         IsCheckable = true,
                         IsChecked = selected,
                         IsEnabled = enabled && !_composing,
-                        ToolTip = reason
+                        ToolTip = reason is null ? null : LocalizedStatus(reason)
                     };
                     ToolTipService.SetShowOnDisabled(item, true);
                     item.Click += async (_, _) =>
@@ -1658,9 +1709,9 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             {
                 var alternative = new MenuItem
                 {
-                    Header = "换种说法",
+                    Header = UiTheme.L("换种说法", "Rephrase"),
                     IsEnabled = translation.CanRequestAlternative && !_composing,
-                    ToolTip = translation.AlternativeUnavailableReason
+                    ToolTip = translation.AlternativeUnavailableReason is { } reason ? LocalizedStatus(reason) : null
                 };
                 ToolTipService.SetShowOnDisabled(alternative, true);
                 alternative.Click += (_, _) =>
@@ -1676,11 +1727,11 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             {
                 var glossary = new MenuItem
                 {
-                    Header = "加入术语表",
+                    Header = UiTheme.L("加入术语表", "Add to Glossary"),
                     IsEnabled = translation.CanOpenGlossary
                         && (_sessionState == SessionState.EditingTranslation && _editing || SupportsSourceGlossaryEntry(viewToken))
                         && _ownedEditor is null && _glossary is null && !EditingComposition,
-                    ToolTip = translation.GlossaryUnavailableReason
+                    ToolTip = translation.GlossaryUnavailableReason is { } reason ? LocalizedStatus(reason) : null
                 };
                 ToolTipService.SetShowOnDisabled(glossary, true);
                 glossary.Click += async (_, _) =>
@@ -1698,6 +1749,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         // The focusable menu remains an auxiliary keyboard route.
         Add(AutomationProperties.GetName(_expandButton), ToggleExpansion, _expandButton.IsEnabled);
         menu.Items.Add(new Separator());
+        Add(UiTheme.L("设置", "Settings"), () => SettingsRequested?.Invoke());
         Add("不要在这个应用中显示", () => ExcludeRequested?.Invoke());
         Add("隐藏当前翻译", () =>
         {
@@ -1705,6 +1757,13 @@ internal sealed partial class OverlayWindow : Window, ISessionView
                 EscapeRequested?.Invoke(viewToken);
         }, viewToken is not null);
         menu.PlacementTarget = anchor;
+        menu.SetResourceReference(Control.BackgroundProperty, "Glass");
+        menu.SetResourceReference(Control.ForegroundProperty, "Text");
+        menu.SetResourceReference(Control.BorderBrushProperty, "Line");
+        menu.FontFamily = UiTheme.UiFont;
+        anchor.ContextMenu = menu;
+        menu.Closed += (_, _) => UpdateExpansionAffordance();
         menu.IsOpen = true;
+        UpdateExpansionAffordance();
     }
 }

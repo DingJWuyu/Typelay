@@ -795,7 +795,7 @@ public sealed class InlineGlossaryTests
     }
 
     [Fact]
-    public void ProductionReleaseAndMachinePreviewCannotOpenAuxiliaryForm()
+    public void UnsupportedSourceViewsCannotOpenAuxiliaryFormEvenWhenRulesCanBeManaged()
     {
         using var closed = new SessionScenario();
         closed.ReadyCandidate();
@@ -805,5 +805,27 @@ public sealed class InlineGlossaryTests
             modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
         preview.ReadyCandidate();
         Assert.Null(preview.View.BeginGlossaryRequested!(preview.View.Token));
+    }
+
+    [Fact]
+    public async Task EditingCanStoreAnInactiveRuleWithoutReplacingItsDraftOrGrantingModelApplication()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("my exact draft");
+        var entry = Open(s);
+        Assert.False(s.View.Context!.TranslationActions!.GlossaryReleased);
+        var result = await Add(s, entry);
+        Assert.True(result.Saved);
+        Assert.Equal("glossary-saved-inactive", result.Code);
+        Assert.Equal("my exact draft", s.View.Draft);
+        Assert.Equal(SessionState.EditingTranslation, s.View.State);
+        Assert.Null(s.Input.Permit);
+        Assert.Single(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
+        Assert.Equal("fixed", Assert.Single(s.ReloadSettings().Glossary!.Rules).TargetTerm);
+        Assert.False(s.Controller.GetGlossarySettingsState().CanApply);
     }
 }

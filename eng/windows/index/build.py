@@ -52,7 +52,7 @@ def production_exports(raw):
         exports.append(fields[index].decode("ascii", "strict"))
     exports.sort()
     if exports != EXPORTS:
-        raise ValueError("production adapter must expose exactly three Index ABI1 exports")
+        raise ValueError("production adapter must expose exactly the extended Index ABI1 exports")
     return exports
 
 

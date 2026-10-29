@@ -40,5 +40,17 @@
       "all_frames": false
     }
   ],
-  "minimum_chrome_version": "111"
+  "minimum_chrome_version": "111",
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "fonts/inter/*.ttf",
+        "fonts/source-serif/*.ttf"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ]
+    }
+  ]
 }

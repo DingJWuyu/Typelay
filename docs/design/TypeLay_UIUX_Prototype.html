@@ -1,1922 +1,1430 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TypeLay · 翻译浮层原型</title>
-<!-- Independent UI study. Apple WWDC25 219: continuous anchored geometry; CleanShot Quick Access:
-     small in-place utility with hover actions. State changes are synchronous; motion never grants permission. -->
+<title>TypeLay Overlay</title>
+<!-- Source: src/TypeLay_UIUX_Prototype.html → build.py inlines tokens.css, shared.js, icons.svg.
+     Agents: drive the page with window.TypeLay (state(), scenario(name), scenarios, set(prefs)) or URL params
+     ?scenario=&theme=&uiLang=&font=&target=&mode=&textSize= -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@400;500;600&family=Noto+Sans+JP:wght@400;500&family=Noto+Serif+JP:wght@400;500&family=Noto+Sans+KR:wght@400;500&family=Noto+Serif+KR:wght@400;500&display=swap">
 <style>
+/* ==========================================================================
+   TypeLay design tokens — single source, inlined into every prototype by build.py
+   Mirrors the TypeLay Design System artifact (tokens.json). Change here, rebuild.
+   Root attributes drive everything (set by shared.js):
+     data-theme   light | dark
+     data-font    claude | sans | system
+     data-accent  clay | ocean | sage | iris | graphite
+     data-material glass | solid
+     data-motion  full | reduce
+     lang         UI language; any element with [lang] re-resolves its fonts
+   ========================================================================== */
+
+/* ---- 1. Font families per script (raw, never used directly by components) ---- */
 :root {
-  color-scheme:light;
-  --canvas:#e8e9eb;
-  --panel:#fff;
-  --soft:#f5f5f7;
-  --hover:#ededf0;
-  --line:#e5e5e9;
-  --ink:#222327;
-  --muted:#666771;
-  --accent:#2365d8;
-  --accent-soft:#edf3ff;
-  --warning:#99511f;
-  --warning-bg:#fff6ed;
-  --shadow:0 15px 42px #20252e24,0 2px 8px #20252e0d
-}
-[data-theme=dark] {
-  color-scheme:dark;
-  --canvas:#191a1d;
-  --panel:#292a2e;
-  --soft:#303137;
-  --hover:#393a41;
-  --line:#42434b;
-  --ink:#f4f4f6;
-  --muted:#b6b7c0;
-  --accent:#86b0ff;
-  --accent-soft:#293a5c;
-  --warning:#f2bb8d;
-  --warning-bg:#3a3028;
-  --shadow:0 15px 42px #0006,0 2px 8px #0003
-}
-* {
-  box-sizing:border-box
-}
-body {
-  margin:0;
-  font-family:Inter,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
-  color:var(--ink);
-  background:var(--canvas);
-  font-size:14px;
-  line-height:1.5
-}
-button,input,textarea,select {
-  font:inherit;
-  color:inherit
-}
-button {
-  cursor:pointer;
-  border:0;
-  background:transparent
-}
-button:disabled {
-  cursor:default;
-  opacity:.45
-}
-button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible,[tabindex]:focus-visible {
-  outline:3px solid var(--accent);
-  outline-offset:3px
-}
-a {
-  color:var(--accent);
-  text-decoration:none
-}
-a:hover {
-  text-decoration:underline
-}
-h1,p {
-  margin:0
-}
-[hidden] {
-  display:none!important
-}
-svg {
-  width:17px;
-  height:17px;
-  fill:none;
-  stroke:currentColor;
-  stroke-width:1.65;
-  stroke-linecap:round;
-  stroke-linejoin:round;
-  flex:none
-}
-.sprite {
-  position:absolute;
-  width:0;
-  height:0;
-  overflow:hidden
-}
-.lab {
-  max-width:1040px;
-  margin:0 auto;
-  padding:23px 22px 0;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:20px;
-  color:var(--muted)
-}
-.lab-title {
-  font-size:13px;
-  display:flex;
-  gap:10px;
-  align-items:center
-}
-.lab-title strong {
-  font-weight:600;
-  color:var(--ink)
-}
-.lab-links {
-  display:flex;
-  align-items:center;
-  gap:18px;
-  font-size:13px
-}
-.lab details {
-  position:relative
-}
-.lab summary {
-  cursor:pointer;
-  list-style:none
-}
-.lab summary::after {
-  content:'⌄';
-  margin-left:7px
-}
-.lab-panel {
-  position:absolute;
-  top:31px;
-  right:0;
-  width:330px;
-  z-index:40;
-  border:1px solid var(--line);
-  background:var(--panel);
-  padding:18px;
-  border-radius:14px;
-  box-shadow:var(--shadow)
-}
-.lab-panel p {
-  font-size:12px;
-  margin-bottom:14px
-}
-.lab-panel label {
-  display:grid;
-  grid-template-columns:75px 1fr;
-  align-items:center;
-  gap:8px;
-  margin-top:10px
-}
-.lab-panel select {
-  width:100%;
-  min-width:0
-}
-.lab-panel .button {
-  margin-top:12px
-}
-.lab-panel .row {
-  display:flex;
-  gap:8px
-}
-.lab-panel .row .button {
-  flex:1
-}
-.details {
-  margin-top:17px
-}
-.details summary {
-  cursor:pointer;
-  font-size:12px;
-  color:var(--muted)
-}
-.details p {
-  margin:10px 0 0;
-  font-size:12px;
-  line-height:1.65
-}
-.state-readout {
-  white-space:pre-wrap;
-  font-size:11px;
-  line-height:1.7;
-  color:var(--muted);
-  margin:10px 0 0;
-  font-family:inherit
-}
-select {
-  border:1px solid var(--line);
-  border-radius:7px;
-  background:var(--panel);
-  padding:6px 9px;
-  font-size:13px
-}
-.button {
-  display:inline-flex;
-  align-items:center;
-  justify-content:center;
-  gap:7px;
-  min-height:34px;
-  padding:7px 13px;
-  border:1px solid var(--line);
-  background:var(--panel);
-  border-radius:8px;
-  font-size:13px;
-  white-space:nowrap
-}
-.button:hover {
-  background:var(--soft)
-}
-.button.primary {
-  background:#2563db;
-  border-color:#2563db;
-  color:white
-}
-.scene {
-  min-height:calc(100vh - 60px);
-  padding:100px 30px 75px;
-  display:flex;
-  align-items:center;
-  justify-content:center
-}
-.compose-window {
-  position:relative;
-  width:min(680px,100%);
-  border:1px solid var(--line);
-  background:var(--panel);
-  border-radius:16px;
-  box-shadow:0 18px 50px #20252e10;
-  overflow:visible
-}
-.compose-header {
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  padding:20px 24px;
-  border-bottom:1px solid var(--line);
-  border-radius:16px 16px 0 0
-}
-.compose-header strong {
-  font-size:14px;
-  font-weight:600
-}
-.compose-header span {
-  font-size:12px;
-  color:var(--muted)
-}
-.conversation {
-  padding:24px 26px 120px;
-  min-height:290px;
-  display:flex;
-  align-items:flex-start;
-  gap:12px
-}
-.avatar {
-  width:31px;
-  height:31px;
-  border-radius:50%;
-  display:grid;
-  place-items:center;
-  background:#e0e4eb;
-  color:#596273;
-  font-size:12px;
-  font-weight:600;
-  flex:none
-}
-[data-theme=dark] .avatar {
-  background:#3b414d;
-  color:#d2d8e2
-}
-.message-meta {
-  font-size:12px;
-  color:var(--muted);
-  margin:2px 0 6px
-}
-.message-meta strong {
-  font-weight:600;
-  color:var(--ink);
-  margin-right:8px
-}
-.message-bubble {
-  max-width:350px;
-  font-size:14px;
-  line-height:1.6;
-  color:var(--muted)
-}
-.composer-wrap {
-  position:relative;
-  margin:0 21px 21px
-}
-.source-composer {
-  position:relative;
-  background:var(--panel);
-  border:1px solid #c9cbd2;
-  border-radius:11px;
-  transition:border-color 120ms,box-shadow 120ms
-}
-.source-composer:focus-within {
-  border-color:#9aa8c1;
-  box-shadow:0 0 0 3px #5675a408
-}
-[data-theme=dark] .source-composer {
-  border-color:#575964
-}
-.source-label {
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:12px;
-  padding:12px 15px 0;
-  color:var(--muted);
-  font-size:11px
-}
-.source-input {
-  display:block;
-  width:100%;
-  min-height:96px;
-  max-height:180px;
-  resize:vertical;
-  border:0;
-  outline:none!important;
-  background:transparent;
-  padding:12px 15px 15px;
-  font-size:15px;
-  line-height:1.6;
-  color:var(--ink)
-}
-.compose-footer {
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  padding:9px 11px;
-  border-top:1px solid var(--line);
-  font-size:12px;
-  color:var(--muted)
-}
-.send-button {
-  background:var(--soft);
-  color:var(--muted);
-  padding:6px 12px;
-  border-radius:7px;
-  font-size:12px
-}
-.send-button:hover {
-  background:var(--hover)
-}
-.source-notice {
-  font-size:13px;
-  line-height:1.55;
-  color:var(--warning);
-  background:var(--warning-bg);
-  padding:11px 13px;
-  border-radius:8px;
-  margin-top:12px
-}
-.practice-guide {
-  margin:0 0 18px;
-  padding:12px 15px;
-  border-radius:9px;
-  background:var(--accent-soft);
-  font-size:13px;
-  line-height:1.7;
-  color:var(--accent)
-}
-.practice-guide strong {
-  display:block;
-  margin-bottom:3px;
-  font-weight:600
-}
-.practice-guide kbd {
-  background:var(--panel)
-}
-.overlay {
-  position:absolute;
-  right:0;
-  bottom:calc(100% + 13px);
-  z-index:5;
-  width:380px;
-  height:158px;
-  background:var(--panel);
-  border:1px solid color-mix(in srgb,var(--line) 85%,var(--muted));
-  border-radius:16px;
-  box-shadow:var(--shadow);
-  overflow:hidden;
-  isolation:isolate
-}
-.overlay-inner {
-  position:absolute;
-  bottom:0;
-  right:0;
-  width:380px;
-  padding:15px 16px 11px
-}
-.overlay-head {
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:10px;
-  height:25px;
-  white-space:nowrap
-}
-.language-tag {
-  font-size:12px;
-  color:var(--muted);
-  display:inline-flex;
-  align-items:center;
-  gap:7px;
-  font-weight:500
-}
-.language-tag .arrow {
-  font-size:13px;
-  opacity:.7
-}
-.head-right {
-  display:flex;
-  align-items:center;
-  gap:6px;
-  min-width:0
-}
-.phase-label {
-  font-size:11px;
-  line-height:1.3;
-  color:var(--muted);
-  display:flex;
-  align-items:center;
-  gap:6px
-}
-.phase-label.warning {
-  color:var(--warning)
-}
-.spinner {
-  width:9px;
-  height:9px;
-  border-radius:50%;
-  border:1.5px solid var(--line);
-  border-top-color:var(--muted);
-  animation:spin 900ms linear infinite
-}
-@keyframes spin {
-  to {
-    transform:rotate(360deg)
-  }
-}
-.utility {
-  width:27px;
-  height:27px;
-  border-radius:6px;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  color:var(--muted);
-  position:relative
-}
-.utility:hover {
-  background:var(--hover);
-  color:var(--ink)
-}
-.utility svg {
-  width:15px;
-  height:15px
-}
-.quiet-utilities {
-  display:flex;
-  gap:1px;
-  opacity:0;
-  transition:opacity 140ms
-}
-.overlay:hover .quiet-utilities,.overlay:focus-within .quiet-utilities {
-  opacity:1
-}
-.translation-wrap {
-  position:relative;
-  margin:9px -5px 10px
-}
-.candidate {
-  font-size:15px;
-  line-height:1.58;
-  letter-spacing:.005em;
-  white-space:pre-wrap;
-  overflow-wrap:anywhere;
-  max-height:178px;
-  min-height:24px;
-  overflow:auto;
-  padding:3px 5px;
-  border-radius:7px;
-  outline:none;
-  color:var(--ink);
-  scrollbar-width:thin;
-  scrollbar-color:var(--line) transparent
-}
-.candidate[data-editable=true] {
-  cursor:text;
-  padding-right:24px;
-  transition:background 140ms
-}
-.candidate[data-editable=true]:hover,.candidate[data-editable=true]:focus-visible {
-  background:var(--soft)
-}
-.candidate[data-editable=true]:focus-visible {
-  outline:2px solid var(--accent);
-  outline-offset:1px
-}
-.edit-affordance {
-  position:absolute;
-  right:5px;
-  bottom:4px;
-  width:18px;
-  height:18px;
-  pointer-events:none;
-  color:var(--muted);
-  opacity:0;
-  transition:opacity 140ms
-}
-.translation-wrap:hover .edit-affordance,.translation-wrap:focus-within .edit-affordance {
-  opacity:1
-}
-.candidate[contenteditable=true] {
-  min-height:105px;
-  max-height:260px;
-  padding:10px 12px;
-  border:1px solid color-mix(in srgb,var(--accent) 40%,var(--line));
-  background:var(--panel);
-  caret-color:var(--accent);
-  cursor:text
-}
-.candidate[contenteditable=true]:focus,
-.candidate[contenteditable=true]:focus-visible {
-  outline:none;
-  border-color:var(--accent);
-  box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 9%,transparent)
-}
-.motion-snapshot {
-  position:absolute;
-  right:0;
-  bottom:0;
-  pointer-events:none;
-  user-select:none
-}
-.exit-ghost {
-  pointer-events:none;
-  user-select:none
-}
-.candidate.stale {
-  color:var(--muted)
-}
-.candidate.long {
-  max-height:220px
-}
-.overlay.expanded .candidate {
-  max-height:340px
-}
-.overlay-foot {
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:12px;
-  border-top:1px solid var(--line);
-  padding-top:9px;
-  color:var(--muted);
-  font-size:11px;
-  line-height:1.5;
-  min-height:31px
-}
-.key-hint {
-  display:flex;
-  align-items:center;
-  gap:6px;
-  white-space:nowrap
-}
-.key-hint.accept {
-  color:var(--ink)
-}
-kbd {
-  display:inline-flex;
-  align-items:center;
-  justify-content:center;
-  min-width:25px;
-  height:20px;
-  padding:0 5px;
-  font-size:10px;
-  line-height:1;
-  border:1px solid var(--line);
-  border-bottom-width:2px;
-  border-radius:5px;
-  background:var(--soft);
-  font-family:inherit;
-  color:var(--muted)
-}
-.exit-button {
-  display:flex;
-  align-items:center;
-  gap:5px;
-  font-size:11px;
-  color:var(--muted);
-  padding:0;
-  white-space:nowrap
-}
-.exit-button:hover {
-  color:var(--ink)
-}
-.overlay.capsule {
-  border-radius:13px
-}
-.overlay.capsule .overlay-inner {
-  padding:7px 12px
-}
-.overlay.capsule .overlay-head {
-  height:23px
-}
-.overlay.capsule .language-tag {
-  font-size:12px
-}
-.overlay.capsule .translation-wrap,.overlay.capsule .overlay-foot {
-  display:none
-}
-.pause-content {
-  display:flex;
-  align-items:center;
-  gap:12px;
-  font-size:12px;
-  color:var(--muted);
-  padding:2px 0
-}
-.pause-content button {
-  font-size:12px;
-  color:var(--accent);
-  padding:0
-}
-.pause-content svg {
-  width:13px;
-  height:13px
-}
-.overlay.paused {
-  background:color-mix(in srgb,var(--panel) 93%,var(--canvas));
-  box-shadow:0 6px 20px #20252e12
-}
-.overlay[data-phase=returning] .candidate {
-  color:var(--muted)
-}
-.overlay[data-phase=editing] .translation-wrap {
-  margin-top:12px;
-  margin-bottom:13px
-}
-.scene-caption {
-  position:absolute;
-  left:0;
-  right:0;
-  bottom:-38px;
-  text-align:center;
-  font-size:12px;
-  color:var(--muted)
-}
-.live-announcement {
-  position:absolute;
-  width:1px;
-  height:1px;
-  overflow:hidden;
-  clip-path:inset(50%)
-}
-dialog {
-  background:var(--panel);
-  color:var(--ink);
-  border:1px solid var(--line);
-  padding:24px;
-  border-radius:15px;
-  box-shadow:var(--shadow);
-  width:350px;
-  max-width:calc(100vw - 32px)
-}
-dialog::backdrop {
-  background:#14182055
-}
-dialog h2 {
-  font-size:18px;
-  margin:0 0 10px
-}
-dialog p {
-  font-size:14px;
-  color:var(--muted);
-  line-height:1.65
-}
-.dialog-actions {
-  display:flex;
-  justify-content:flex-end;
-  gap:8px;
-  margin-top:20px
-}
-@media(max-width:700px) {
-  .scene {
-    padding:110px 22px 75px
-  }
-  .conversation {
-    min-height:280px;
-    padding-bottom:135px
-  }
-  .compose-header {
-    padding:17px 20px
-  }
-  .composer-wrap {
-    margin:0 15px 15px
-  }
-  .conversation {
-    padding-left:20px;
-    padding-right:20px
-  }
-  .lab {
-    padding-top:18px
-  }
-}
-@media(max-width:430px) {
-  .lab {
-    padding:16px 15px 0;
-    gap:9px
-  }
-  .lab-title span {
-    display:none
-  }
-  .lab-links {
-    gap:13px;
-    font-size:12px
-  }
-  .lab-panel {
-    width:min(310px,calc(100vw - 30px))
-  }
-  .scene {
-    padding:110px 10px 65px
-  }
-  .compose-window {
-    border-radius:13px
-  }
-  .compose-header {
-    padding:14px
-  }
-  .compose-header span {
-    font-size:11px
-  }
-  .composer-wrap {
-    margin:0 11px 14px
-  }
-  .conversation {
-    padding:18px 14px 135px;
-    min-height:260px
-  }
-  .message-bubble {
-    font-size:13px
-  }
-  .source-input {
-    font-size:14px;
-    min-height:105px
-  }
-  .source-label {
-    padding:11px 12px 0;
-    font-size:10px
-  }
-  .compose-footer {
-    font-size:10px
-  }
-  .overlay-inner {
-    padding-left:14px;
-    padding-right:14px
-  }
-  .candidate {
-    font-size:14px;
-    line-height:1.6
-  }
-  .overlay-foot {
-    gap:7px;
-    font-size:10px
-  }
-  .exit-button {
-    font-size:10px
-  }
-  .phase-label {
-    font-size:10px
-  }
-  .scene-caption {
-    font-size:11px
-  }
-  .practice-guide {
-    font-size:12px
-  }
-}
-@media(hover:none) {
-  .quiet-utilities {
-    opacity:1
-  }
-  .edit-affordance {
-    opacity:1
-  }
-}
-@media(prefers-reduced-motion:reduce) {
-  *,*::before,*::after {
-    animation:none!important;
-    transition:none!important;
-    scroll-behavior:auto!important
-  }
+  --ff-latin-serif: "Source Serif 4", "Source Serif Pro", "Iowan Old Style", Georgia;
+  --ff-latin-sans: "Inter", "Inter Variable", -apple-system, "Segoe UI Variable Text", "Segoe UI";
+  --ff-latin-system: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Roboto;
+  --ff-cjk-serif: "Noto Serif SC", "Songti SC", "STSong", "SimSun";
+  --ff-cjk-sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei";
+  --ff-cjk-system: "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei";
+  --ff-mono: "JetBrains Mono", ui-monospace, "SF Mono", Consolas, monospace;
+}
+:lang(zh-Hant), :lang(zh-TW), :lang(zh-HK) {
+  --ff-cjk-serif: "Noto Serif TC", "Songti TC", "PMingLiU";
+  --ff-cjk-sans: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei UI";
+  --ff-cjk-system: "PingFang TC", "Microsoft JhengHei UI";
+}
+:lang(ja) {
+  --ff-cjk-serif: "Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho";
+  --ff-cjk-sans: "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI";
+  --ff-cjk-system: "Hiragino Sans", "Yu Gothic UI";
+}
+:lang(ko) {
+  --ff-cjk-serif: "Noto Serif KR", "AppleMyungjo", "Batang";
+  --ff-cjk-sans: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic";
+  --ff-cjk-system: "Apple SD Gothic Neo", "Malgun Gothic";
+}
+
+/* ---- 2. Font roles — what components use. Re-resolved on every [lang] element ---- */
+:root, [lang] {
+  --font-display: var(--ff-latin-serif), var(--ff-cjk-serif), serif;
+  --font-content: var(--ff-latin-serif), var(--ff-cjk-serif), serif;
+  --font-ui: var(--ff-latin-sans), var(--ff-cjk-sans), sans-serif;
+}
+:root[data-font="sans"], :root[data-font="sans"] [lang] {
+  --font-display: var(--ff-latin-sans), var(--ff-cjk-sans), sans-serif;
+  --font-content: var(--ff-latin-sans), var(--ff-cjk-sans), sans-serif;
+}
+:root[data-font="system"], :root[data-font="system"] [lang] {
+  --font-display: var(--ff-latin-system), var(--ff-cjk-system), system-ui, sans-serif;
+  --font-content: var(--ff-latin-system), var(--ff-cjk-system), system-ui, sans-serif;
+  --font-ui: var(--ff-latin-system), var(--ff-cjk-system), system-ui, sans-serif;
+}
+
+/* ---- 3. Type scale ---- */
+:root {
+  --text-display: 500 30px/1.15 var(--font-display);
+  --text-title: 500 22px/1.25 var(--font-display);
+  --text-headline: 600 13px/18px var(--font-ui);
+  --text-body: 400 13px/18px var(--font-ui);
+  --text-callout: 400 12px/16px var(--font-ui);
+  --text-caption: 500 11px/14px var(--font-ui);
+  --content-size: 15px;            /* user setting: Appearance → Text size */
+  --content-leading: 1.55;
+  --tracking-display: -0.012em;
+}
+
+/* ---- 4. Color — light ---- */
+:root {
+  color-scheme: light;
+  --ink: #141413;
+  --ink-2: #5c5b56;
+  --ink-3: #74726c;
+  --paper: #faf9f5;
+  --window: #f7f6f2;
+  --card: #ffffff;
+  --sidebar: rgba(236, 233, 224, 0.72);
+  --fill-1: rgba(20, 20, 19, 0.045);
+  --fill-2: rgba(20, 20, 19, 0.08);
+  --fill-3: rgba(20, 20, 19, 0.14);
+  --line: rgba(20, 20, 19, 0.085);
+  --line-strong: rgba(20, 20, 19, 0.16);
+  --control: #ffffff;
+  --switch-off: rgba(20, 20, 19, 0.16);
+  --green: #2f8a57;
+  --amber: #a5670e;
+  --red: #c2412d;
+  --glass: rgba(251, 250, 247, 0.74);
+  --glass-strong: rgba(251, 250, 247, 0.9);
+  --glass-edge: rgba(255, 255, 255, 0.75);
+  --glass-border: rgba(20, 20, 19, 0.1);
+  --shimmer: rgba(255, 255, 255, 0.75);
+  --shadow-sm: 0 1px 2px rgba(20, 20, 19, 0.06), 0 0 0 0.5px rgba(20, 20, 19, 0.06);
+  --shadow-md: 0 8px 24px rgba(20, 20, 19, 0.1), 0 1px 3px rgba(20, 20, 19, 0.08);
+  --shadow-lg: 0 24px 64px rgba(20, 20, 19, 0.18), 0 4px 12px rgba(20, 20, 19, 0.08);
+  --scrim: rgba(20, 20, 19, 0.22);
+}
+/* ---- 4b. Color — dark ---- */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ink: #f4f3ee;
+  --ink-2: #b5b3ab;
+  --ink-3: #9a988f;
+  --paper: #1f1e1c;
+  --window: #262624;
+  --card: #2f2e2b;
+  --sidebar: rgba(44, 43, 40, 0.66);
+  --fill-1: rgba(255, 255, 255, 0.05);
+  --fill-2: rgba(255, 255, 255, 0.09);
+  --fill-3: rgba(255, 255, 255, 0.15);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.15);
+  --control: #3a3936;
+  --switch-off: rgba(255, 255, 255, 0.18);
+  --green: #63c48c;
+  --amber: #e5ad55;
+  --red: #f0806c;
+  --glass: rgba(40, 39, 36, 0.7);
+  --glass-strong: rgba(44, 43, 40, 0.92);
+  --glass-edge: rgba(255, 255, 255, 0.1);
+  --glass-border: rgba(0, 0, 0, 0.5);
+  --shimmer: rgba(255, 255, 255, 0.12);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 28px 70px rgba(0, 0, 0, 0.5), 0 4px 14px rgba(0, 0, 0, 0.3);
+  --scrim: rgba(0, 0, 0, 0.45);
+}
+
+/* ---- 5. Accent (user setting). --accent fills controls; --accent-ink is text-safe (≥4.5:1) ---- */
+:root, :root[data-accent="clay"] { --accent: #d97757; --accent-ink: #ad4f2d; --accent-soft: rgba(217, 119, 87, 0.14); --on-accent: #ffffff; --accent-strong: #b5552f; }
+:root[data-accent="ocean"] { --accent: #2f7fe0; --accent-ink: #1f63bb; --accent-soft: rgba(47, 127, 224, 0.13); --accent-strong: #1f63bb; }
+:root[data-accent="sage"] { --accent: #5d9a6e; --accent-ink: #3c7650; --accent-soft: rgba(93, 154, 110, 0.15); --accent-strong: #3c7650; }
+:root[data-accent="iris"] { --accent: #8a6cd8; --accent-ink: #6a4cbc; --accent-soft: rgba(138, 108, 216, 0.14); --accent-strong: #6a4cbc; }
+:root[data-accent="graphite"] { --accent: #77756f; --accent-ink: #55534e; --accent-soft: rgba(119, 117, 111, 0.16); --accent-strong: #55534e; }
+:root[data-theme="dark"], :root[data-theme="dark"][data-accent="clay"] { --accent-ink: #ec9a7c; --accent-strong: #b5552f; }
+:root[data-theme="dark"][data-accent="ocean"] { --accent-ink: #7ab4ff; --accent-strong: #1f63bb; }
+:root[data-theme="dark"][data-accent="sage"] { --accent-ink: #8fcc9f; --accent-strong: #3c7650; }
+:root[data-theme="dark"][data-accent="iris"] { --accent-ink: #b9a4f5; --accent-strong: #6a4cbc; }
+:root[data-theme="dark"][data-accent="graphite"] { --accent-ink: #c4c2bb; --accent-strong: #55534e; }
+
+/* ---- 6. Shape, space, material, motion ---- */
+:root {
+  --r-xs: 6px; --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-xl: 22px; --r-pill: 999px;
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 20px; --s-6: 24px; --s-8: 32px;
+  --blur: saturate(180%) blur(28px);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-1: 120ms; --dur-2: 200ms; --dur-3: 320ms;
+}
+:root[data-material="solid"] { --glass: var(--glass-strong); --blur: none; --sidebar: var(--window); }
+:root[data-motion="reduce"] *, :root[data-motion="reduce"] *::before, :root[data-motion="reduce"] *::after {
+  animation-duration: 1ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important;
+  transition-duration: 1ms !important; transition-delay: 0ms !important;
+}
+
+/* ---- 7. Base ---- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { font: var(--text-body); color: var(--ink); background: var(--paper); -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: default; border: 0; background: none; padding: 0; }
+[hidden] { display: none !important; }
+:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 1px; border-radius: var(--r-xs); }
+kbd { font: 500 11px/1 var(--font-ui); display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 20px; padding: 0 6px; border-radius: 5px; background: var(--fill-2); color: var(--ink-2); box-shadow: inset 0 -1px 0 var(--line-strong); white-space: nowrap; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+svg.i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+/* ---- 8. Shared desktop scenery (both prototypes) ---- */
+.desktop { position: relative; min-height: 100vh; overflow: hidden; isolation: isolate;
+  background:
+    radial-gradient(1200px 700px at 12% -10%, rgba(217, 119, 87, 0.38), transparent 60%),
+    radial-gradient(900px 700px at 105% 110%, rgba(138, 160, 120, 0.4), transparent 60%),
+    radial-gradient(700px 500px at 70% 10%, rgba(232, 210, 170, 0.55), transparent 65%),
+    #ece6db; }
+:root[data-theme="dark"] .desktop { background:
+    radial-gradient(1200px 700px at 12% -10%, rgba(160, 80, 50, 0.4), transparent 60%),
+    radial-gradient(900px 700px at 105% 110%, rgba(70, 95, 70, 0.45), transparent 60%),
+    radial-gradient(700px 500px at 70% 10%, rgba(110, 90, 60, 0.35), transparent 65%),
+    #171614; }
+.menubar { position: relative; z-index: 30; height: 30px; display: flex; align-items: center; gap: 18px; padding: 0 14px;
+  background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); box-shadow: 0 0.5px 0 var(--line); font: 500 13px/1 var(--font-ui); }
+.menubar .app-name { font-weight: 600; }
+.menubar .spacer { flex: 1; }
+.menubar .mb-item { height: 22px; padding: 0 8px; border-radius: 5px; display: inline-flex; align-items: center; gap: 6px; color: var(--ink); }
+.menubar .mb-item[aria-expanded="true"], .menubar .mb-item:hover { background: var(--fill-2); }
+.glass { background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  box-shadow: var(--shadow-lg), inset 0 0 0 0.5px var(--glass-edge), 0 0 0 0.5px var(--glass-border); }
+.traffic { display: flex; gap: 8px; }
+.traffic span { width: 12px; height: 12px; border-radius: 50%; background: #ff5f57; box-shadow: inset 0 0 0 0.5px rgba(0,0,0,.15); }
+.traffic span:nth-child(2) { background: #febc2e; } .traffic span:nth-child(3) { background: #28c840; }
+.window-inactive .traffic span { background: var(--fill-3); }
+
+/* ---- 9. Shared controls ---- */
+.switch { position: relative; flex: none; width: 34px; height: 20px; border-radius: 10px; background: var(--switch-off); transition: background var(--dur-2) var(--ease-out); }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 0 0 0.5px rgba(0,0,0,.06); transition: transform 260ms cubic-bezier(.3,1.5,.5,1); }
+.switch[aria-checked="true"] { background: var(--accent); }
+.switch[aria-checked="true"]::after { transform: translateX(14px); }
+.switch:disabled { opacity: .45; }
+.seg { position: relative; display: inline-flex; padding: 2px; border-radius: 8px; background: var(--fill-2); isolation: isolate; }
+.seg button { position: relative; z-index: 1; min-width: 56px; height: 24px; padding: 0 12px; border-radius: 6px; font: 500 12px/1 var(--font-ui); color: var(--ink-2); white-space: nowrap; transition: color var(--dur-1); }
+.seg button[aria-pressed="true"] { color: var(--ink); }
+.seg .seg-thumb { position: absolute; z-index: 0; top: 2px; bottom: 2px; border-radius: 6px; background: var(--control); box-shadow: var(--shadow-sm); transition: left 300ms cubic-bezier(.3,1.3,.5,1), width 300ms cubic-bezier(.3,1.3,.5,1); }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 26px; padding: 0 12px; border-radius: 7px; font: 500 12.5px/1 var(--font-ui);
+  background: var(--control); color: var(--ink); box-shadow: var(--shadow-sm); white-space: nowrap; transition: transform var(--dur-1), background var(--dur-1); }
+.btn:active:not(:disabled) { transform: scale(.97); background: var(--fill-2); }
+.btn.primary { background: var(--accent-strong); color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.15), inset 0 0.5px 0 rgba(255,255,255,.25); }
+.btn.plain { background: none; box-shadow: none; color: var(--accent-ink); padding: 0 6px; }
+.btn.lg { height: 34px; padding: 0 18px; border-radius: 9px; font-size: 13.5px; }
+.btn:disabled { opacity: .45; }
+.popup { appearance: none; -webkit-appearance: none; height: 26px; padding: 0 28px 0 10px; border: 0; border-radius: 7px; background: var(--control) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='12' viewBox='0 0 10 12'%3E%3Cpath d='M2 4.5 5 1.8 8 4.5M2 7.5 5 10.2 8 7.5' fill='none' stroke='%238b8984' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 9px center;
+  box-shadow: var(--shadow-sm); font: 500 12.5px/1 var(--font-ui); color: var(--ink); }
+.field { height: 28px; padding: 0 10px; border: 0; border-radius: 7px; background: var(--control); box-shadow: inset 0 0 0 0.5px var(--line-strong), var(--shadow-sm); font: var(--text-body); color: var(--ink); outline: none; }
+.field:focus { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft); }
+.toast { position: fixed; left: 50%; bottom: 28px; z-index: 90; transform: translate(-50%, 0); display: flex; align-items: center; gap: 12px; padding: 9px 10px 9px 16px; border-radius: var(--r-pill); font: 500 13px/1 var(--font-ui);
+  animation: toastIn 420ms cubic-bezier(.3,1.4,.5,1); }
+.toast .btn { height: 24px; }
+@keyframes toastIn { from { opacity: 0; transform: translate(-50%, 14px) scale(.96); } }
+dialog.sheet { border: 0; padding: 22px; width: 340px; max-width: calc(100vw - 32px); border-radius: var(--r-lg); color: var(--ink); background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); box-shadow: var(--shadow-lg), inset 0 0 0 0.5px var(--glass-edge); animation: sheetIn 380ms cubic-bezier(.3,1.25,.5,1); }
+dialog.sheet::backdrop { background: var(--scrim); animation: fadeIn 200ms; }
+dialog.sheet h2 { margin: 0 0 14px; font: var(--text-title); font-size: 18px; letter-spacing: var(--tracking-display); }
+dialog.sheet .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+@keyframes sheetIn { from { opacity: 0; transform: translateY(-8px) scale(.97); } }
+@keyframes fadeIn { from { opacity: 0; } }
+
+
+/* ===================== Host app (a stand-in for any chat app) ===================== */
+.stage { position: absolute; inset: 30px 0 0; display: grid; place-items: center; padding: 32px 20px 96px; }
+.app { position: relative; width: min(700px, 100%); height: min(600px, calc(100vh - 150px)); min-height: 440px; display: flex; flex-direction: column;
+  border-radius: 14px; background: var(--window); box-shadow: var(--shadow-lg), 0 0 0 0.5px var(--glass-border); }
+.app-bar { height: 52px; flex: none; display: grid; grid-template-columns: 80px 1fr 80px; align-items: center; padding: 0 16px; border-bottom: 0.5px solid var(--line); }
+.app-bar .who { justify-self: center; display: flex; align-items: center; gap: 8px; font: var(--text-headline); }
+.avatar { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font: 600 11px/1 var(--font-ui); color: #fff; background: linear-gradient(135deg, #b8a48c, #8c7a66); }
+.thread { flex: 1; min-height: 0; overflow: hidden; padding: 20px 20px 0; display: flex; flex-direction: column; gap: 6px; }
+.stamp { align-self: center; font: var(--text-caption); color: var(--ink-3); margin: 4px 0 8px; }
+.bubble { max-width: 70%; padding: 8px 13px; border-radius: 18px; font: 400 14px/1.4 var(--font-ui); }
+.bubble.in { align-self: flex-start; background: var(--fill-2); border-bottom-left-radius: 6px; }
+.bubble.out { align-self: flex-end; background: var(--accent-strong); color: #fff; border-bottom-right-radius: 6px; }
+.compose { position: relative; flex: none; padding: 12px 16px 16px; }
+.field-wrap { position: relative; display: flex; align-items: flex-end; gap: 8px; padding: 6px 6px 6px 14px; border-radius: 20px; background: var(--card); box-shadow: inset 0 0 0 0.5px var(--line-strong); transition: box-shadow var(--dur-2); }
+.field-wrap:focus-within { box-shadow: inset 0 0 0 0.5px var(--line-strong), 0 0 0 3px var(--accent-soft); }
+.field-wrap.flash { animation: acceptFlash 900ms var(--ease-out); }
+@keyframes acceptFlash { 0% { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 6px var(--accent-soft); } 100% { box-shadow: inset 0 0 0 0.5px var(--line-strong), 0 0 0 3px var(--accent-soft); } }
+#source { flex: 1; min-height: 22px; max-height: 132px; resize: none; border: 0; outline: none; background: none; padding: 5px 0; font: 400 15px/22px var(--font-content); color: var(--ink); }
+#source::placeholder { color: var(--ink-3); }
+.send { flex: none; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-strong); color: #fff; transition: transform var(--dur-1), opacity var(--dur-1); }
+.send:disabled { opacity: .3; }
+.send:active:not(:disabled) { transform: scale(.92); }
+.send svg { width: 16px; height: 16px; stroke-width: 2; }
+
+/* ===================== TypeLay overlay ===================== */
+/* The shell's size is driven by springs (JS). Content lives in .tl-inner, pinned bottom-left,
+   so the language chip rides the shell's growing edge — capsule and panel are one object. */
+.tl { position: absolute; right: 16px; bottom: calc(100% - 4px); z-index: 20; overflow: hidden; border-radius: 17px; transform-origin: 100% 100%;
+  background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  box-shadow: var(--shadow-lg), inset 0 0 0 0.5px var(--glass-edge), 0 0 0 0.5px var(--glass-border);
+  transition: opacity 220ms var(--ease-out); }
+.tl.leaving { opacity: 0; pointer-events: none; transition: opacity 160ms ease-in; }
+.tl.entering { opacity: 0; }
+.tl[data-phase="paused"] { opacity: .78; }
+.tl-inner { position: absolute; left: 0; bottom: 0; padding: 14px 12px 8px 14px; }
+.tl[data-mode="capsule"] .tl-inner { width: max-content; padding: 4px; }
+.tl[data-mode="capsule"] .tl-body, .tl[data-mode="capsule"] .tl-fill, .tl[data-mode="capsule"] .tl-phase,
+.tl[data-mode="capsule"] .tl-actions, .tl[data-mode="capsule"] .tl-hint { display: none; }
+
+.tl-body { position: relative; padding: 0 2px 10px; }
+.tl-body.enter { animation: bodyIn 420ms var(--ease-out) both; animation-delay: 70ms; }
+@keyframes bodyIn { from { opacity: 0; filter: blur(5px); transform: translateY(6px); } }
+.tl-text { font-family: var(--font-content); font-size: var(--content-size); line-height: var(--content-leading); letter-spacing: 0.002em; color: var(--ink);
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: calc(var(--content-size) * var(--content-leading) * 7 + 4px); overflow: auto; scrollbar-width: thin; outline: none;
+  border-radius: 10px; margin: -4px -6px; padding: 4px 6px; transition: color 240ms, background 160ms, box-shadow 160ms; }
+.tl[data-expanded="true"] .tl-text { max-height: 360px; }
+.tl-text .w { display: inline-block; white-space: pre; }
+.tl-text .w.in { animation: wordIn 520ms cubic-bezier(.2,.75,.25,1) both; animation-delay: calc(var(--i) * 24ms); }
+@keyframes wordIn { from { opacity: 0; filter: blur(7px); transform: translateY(0.32em) scale(.98); } }
+.tl-text.stale { color: var(--ink-3); }
+.tl-text[data-editable="true"] { cursor: text; }
+.tl-text[data-editable="true"]:hover { background: var(--fill-1); }
+.tl-text[contenteditable="true"] { background: var(--card); box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 0 4px var(--accent-soft); caret-color: var(--accent); padding: 8px 10px; margin: -2px -4px 2px; cursor: text; }
+.tl-body.sweep::after { content: ""; position: absolute; inset: -6px -8px 4px; pointer-events: none; border-radius: 10px;
+  background: linear-gradient(100deg, transparent 30%, var(--shimmer) 50%, transparent 70%); background-size: 250% 100%; animation: sweep 1.5s linear infinite; mix-blend-mode: plus-lighter; }
+@keyframes sweep { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+.tl-skeleton { display: grid; gap: 9px; padding: 6px 0 4px; }
+.tl-skeleton span { height: calc(var(--content-size) * .62); border-radius: 6px; background: linear-gradient(100deg, var(--fill-2) 30%, var(--fill-1) 50%, var(--fill-2) 70%); background-size: 250% 100%; animation: sweep 1.3s linear infinite; }
+.tl-skeleton span:nth-child(2) { width: 62%; }
+
+.tl-bar { display: flex; align-items: center; gap: 6px; height: 28px; }
+.tl[data-mode="capsule"] .tl-bar { height: 26px; }
+.tl-lang { height: 26px; display: inline-flex; align-items: center; gap: 7px; padding: 0 10px 0 9px; border-radius: var(--r-pill); font: 500 12px/1 var(--font-ui); color: var(--ink-2); white-space: nowrap; transition: background var(--dur-1), color var(--dur-1); }
+.tl-lang:hover, .tl-lang[aria-expanded="true"] { background: var(--fill-2); color: var(--ink); }
+.tl-lang .arrow { color: var(--ink-3); }
+.tl-lang svg { width: 13px; height: 13px; }
+.tl-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0 var(--accent-soft); flex: none; }
+.tl[data-busy="true"] .tl-dot { animation: breathe 1.2s ease-in-out infinite; }
+.tl[data-phase="quiet"] .tl-dot { background: var(--ink-3); }
+.tl[data-phase="paused"] .tl-dot { display: none; }
+@keyframes breathe { 50% { transform: scale(.6); box-shadow: 0 0 0 5px var(--accent-soft); } }
+.tl-resume { height: 26px; padding: 0 11px; border-radius: var(--r-pill); font: 600 12px/1 var(--font-ui); color: var(--accent-ink); }
+.tl-resume:hover { background: var(--accent-soft); }
+.tl-fill { flex: 1; }
+.tl-phase { display: inline-flex; align-items: center; gap: 5px; font: 500 11.5px/1 var(--font-ui); color: var(--ink-3); white-space: nowrap; }
+.tl-phase.live { background: linear-gradient(100deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%); background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: sweep 1.6s linear infinite; }
+.tl-phase.warn { color: var(--amber); }
+.tl-phase.edited { color: var(--accent-ink); }
+.tl-phase button { display: inline-flex; color: inherit; padding: 3px; border-radius: 5px; }
+.tl-phase button:hover { background: var(--fill-2); }
+.tl-phase svg { width: 13px; height: 13px; }
+.tl-actions { display: flex; gap: 2px; opacity: 0; transition: opacity var(--dur-2); }
+.tl:hover .tl-actions, .tl:focus-within .tl-actions, .tl-actions.pinned { opacity: 1; }
+.tl-icon { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 7px; color: var(--ink-2); }
+.tl-icon:hover, .tl-icon[aria-expanded="true"] { background: var(--fill-2); color: var(--ink); }
+.tl-icon:disabled { opacity: .35; }
+.tl-icon svg { width: 15px; height: 15px; }
+.tl-hint { display: inline-flex; align-items: center; gap: 6px; margin-left: 2px; padding-right: 2px; font: 500 12px/1 var(--font-ui); color: var(--ink-2); white-space: nowrap; animation: fadeIn 240ms; }
+.tl-ghost { position: fixed; z-index: 25; pointer-events: none; margin: 0; }
+
+/* Menus anchored to the overlay */
+.menu { position: absolute; z-index: 40; min-width: 236px; padding: 5px; border-radius: 12px; transform-origin: var(--origin, 100% 0);
+  background: var(--glass-strong); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); box-shadow: var(--shadow-lg), inset 0 0 0 0.5px var(--glass-edge), 0 0 0 0.5px var(--glass-border);
+  animation: menuIn 300ms cubic-bezier(.3,1.3,.5,1); }
+@keyframes menuIn { from { opacity: 0; transform: scale(.94) translateY(-4px); } }
+.menu-item { width: 100%; height: 30px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border-radius: 7px; font: 400 13px/1 var(--font-ui); color: var(--ink); text-align: left; }
+.menu-item:hover:not(:disabled), .menu-item:focus-visible { background: var(--accent-strong); color: #fff; outline: none; }
+.menu-item:hover:not(:disabled) svg, .menu-item:focus-visible svg { color: #fff; }
+.menu-item:disabled { color: var(--ink-3); }
+.menu-item svg { color: var(--ink-2); }
+.menu-item .end { margin-left: auto; color: inherit; opacity: .6; font-size: 12px; }
+.menu-sep { height: 0.5px; margin: 5px 10px; background: var(--line-strong); }
+.menu-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px 8px; font: 400 13px/1 var(--font-ui); }
+.menu-row > svg { color: var(--ink-2); }
+.menu-row .seg { margin-left: auto; }
+.menu-row .seg button { min-width: 0; padding: 0 8px; height: 22px; font-size: 11.5px; }
+.menu-search { display: flex; align-items: center; gap: 8px; margin: 2px 2px 6px; padding: 0 8px; height: 30px; border-radius: 8px; background: var(--fill-1); }
+.menu-search input { flex: 1; min-width: 0; border: 0; outline: none; background: none; font: var(--text-body); }
+.menu-search input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.menu-search svg { color: var(--ink-3); width: 14px; height: 14px; }
+.lang-list { max-height: 232px; overflow: auto; scrollbar-width: thin; }
+.lang-list .menu-item .native { margin-left: auto; color: inherit; opacity: .55; font-size: 12px; }
+.lang-list .menu-item .tick { width: 14px; height: 14px; color: var(--accent-ink); }
+.lang-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px 8px 10px; font: 600 13px/1 var(--font-ui); }
+.lang-head .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lang-head .tl-icon { width: 28px; height: 28px; }
+
+/* Coach marks for the first-run tutorial */
+.coach { position: absolute; left: 50%; top: 64px; z-index: 15; transform: translateX(-50%); display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 14px; border-radius: var(--r-pill); font: 500 13px/1.3 var(--font-ui); white-space: nowrap; animation: menuIn 420ms cubic-bezier(.3,1.3,.5,1); }
+.coach .steps { display: flex; gap: 4px; }
+.coach .steps i { width: 6px; height: 6px; border-radius: 50%; background: var(--fill-3); transition: background var(--dur-2), width var(--dur-2); }
+.coach .steps i.on { background: var(--accent); width: 16px; border-radius: 3px; }
+.coach .steps i.done { background: var(--accent); }
+.coach kbd { margin: 0 2px; }
+
+/* ===================== Prototype controls (outside the product) ===================== */
+.proto { position: fixed; left: 16px; bottom: 16px; z-index: 60; width: 272px; border-radius: 14px; font: var(--text-callout); overflow: hidden; }
+.proto > button { width: 100%; height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 14px; font: 600 12px/1 var(--font-ui); }
+.proto > button svg { margin-left: auto; transition: transform var(--dur-2); }
+.proto[data-open="false"] > button svg { transform: rotate(-90deg); }
+.proto[data-open="false"] .proto-body { display: none; }
+.proto-body { display: grid; gap: 10px; padding: 0 14px 14px; max-height: calc(100vh - 110px); overflow: auto; }
+.proto label, .proto .lbl { display: grid; gap: 5px; color: var(--ink-2); font-weight: 500; }
+.proto .seg { width: 100%; } .proto .seg button { flex: 1; min-width: 0; padding: 0 6px; }
+.proto .popup { width: 100%; }
+.proto .row { display: flex; gap: 6px; flex-wrap: wrap; }
+.proto .row .btn { flex: 1; }
+.proto pre { margin: 0; max-height: 160px; overflow: auto; padding: 8px; border-radius: 8px; background: var(--fill-1); font: 10.5px/1.5 var(--ff-mono); color: var(--ink-2); white-space: pre-wrap; }
+.proto a { color: var(--accent-ink); text-decoration: none; font-weight: 500; }
+.proto details summary { cursor: default; color: var(--ink-2); font-weight: 500; }
+
+@media (min-width: 1040px) { .desktop:has(.proto[data-open="true"]) .stage { padding-left: 300px; } }
+@media (max-width: 640px) {
+  .stage { padding: 20px 8px 72px; }
+  .app { height: calc(100vh - 110px); }
+  .bubble { max-width: 85%; }
+  .proto { left: 8px; right: 8px; width: auto; bottom: 8px; }
+  .coach { top: 58px; font-size: 12px; }
 }
 </style>
 </head>
 <body>
-  <svg class="sprite" aria-hidden="true">
-    <defs>
-      <symbol id="i-pencil" viewBox="0 0 24 24">
-        <path d="m14 4 6 6M4 20l5-1L21 7a2.1 2.1 0 0 0 0-3l-1-1a2.1 2.1 0 0 0-3 0L5 15Z"/>
-      </symbol>
-      <symbol id="i-refresh" viewBox="0 0 24 24">
-        <path d="M20 7v5h-5M4 17v-5h5M20 12a8 8 0 0 0-14-5M4 12a8 8 0 0 0 14 5"/>
-      </symbol>
-      <symbol id="i-expand" viewBox="0 0 24 24">
-        <path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"/>
-      </symbol>
-      <symbol id="i-x" viewBox="0 0 24 24">
-        <path d="m6 6 12 12M18 6 6 18"/>
-      </symbol>
-      <symbol id="i-pause" viewBox="0 0 24 24">
-        <path d="M8 5v14M16 5v14"/>
-      </symbol>
-    </defs>
-  </svg>
-  <header class="lab">
-    <div class="lab-title">
-      <strong>
-        TypeLay
-      </strong>
-      <span>
-        交互原型 · 翻译浮层
-      </span>
-    </div>
-    <div class="lab-links">
-      <a href="TypeLay_Tray_Settings_Prototype.html">
-        设置 ↗
-      </a>
-      <details id="demoControls">
-        <summary>
-          演示选项
-        </summary>
-        <div class="lab-panel">
-          <p>
-            下方是可操作的原应用输入框。译文使用固定示例，不调用模型。浮层只编辑候选，接受后不会发送。
-          </p>
-          <label>
-            外观
-            <select id="demoTheme">
-              <option value="light">
-                浅色
-              </option>
-              <option value="dark">
-                深色
-              </option>
-            </select>
-          </label>
-          <label>
-            场景
-            <select id="scenarioSelect">
-              <option value="preview">
-                译文预览
-              </option>
-              <option value="editing">
-                编辑译文
-              </option>
-              <option value="updating">
-                更新中
-              </option>
-              <option value="failed">
-                翻译失败
-              </option>
-              <option value="selection">
-                只翻译选区
-              </option>
-              <option value="long">
-                长译文
-              </option>
-              <option value="partial">
-                输入中 · 部分预览
-              </option>
-              <option value="unknown-ime">
-                输入法状态未知
-              </option>
-              <option value="locked">
-                仅预览 · 未确认编辑
-              </option>
-              <option value="returning">
-                返回原输入框中
-              </option>
-              <option value="paused">
-                已暂停
-              </option>
-              <option value="sensitive">
-                敏感字段 · 立即隐藏
-              </option>
-              <option value="empty">
-                空输入框
-              </option>
-              <option value="ondemand">
-                按需模式
-              </option>
-            </select>
-          </label>
-          <label>
-            写入回执
-            <select id="writeOutcome">
-              <option value="verified">
-                已确认
-              </option>
-              <option value="unknown">
-                结果未知
-              </option>
-            </select>
-          </label>
-          <div class="row">
-            <button class="button" id="loadScenario">
-              载入场景
-            </button>
-            <button class="button" id="pauseAction">
-              暂停 TypeLay
-            </button>
-          </div>
-          <div class="row">
-            <button class="button" id="wakeAction">
-              模拟唤醒
-            </button>
-            <button class="button" id="directAction">
-              模拟直接替换
-            </button>
-          </div>
-          <details class="details">
-            <summary>
-              状态与实现边界
-            </summary>
-            <pre class="state-readout" id="stateReadout">
-            </pre>
-            <p>
-              容器延续参考 Apple 菜单变形；就地操作参考 CleanShot Quick Access。尺寸变化不缩放正文。真实输入能力、模型和桌面焦点仍须分别验收。风格、术语表和换种说法不在本演示中伪装成可用功能。
-            </p>
-          </details>
-        </div>
-      </details>
-    </div>
-  </header>
-  <main class="scene">
-    <section class="compose-window" aria-label="原应用演示">
-      <header class="compose-header">
-        <strong>
-          消息草稿
-        </strong>
-        <span>
-          原应用 · 演示
-        </span>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-mark" viewBox="0 0 24 24"><rect x="3" y="4" width="14" height="10" rx="3"/><rect x="7" y="10" width="14" height="10" rx="3" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-swap" viewBox="0 0 24 24"><path d="M4 8h15m-4-4 4 4-4 4M20 16H5m4-4-4 4 4 4"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-6.5 6.5M10 20H4v-6M4 20l6.5-6.5"/></symbol>
+    <symbol id="i-collapse" viewBox="0 0 24 24"><path d="M20 10h-6V4M14 10l6.5-6.5M4 14h6v6M10 14l-6.5 6.5"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 5v5h-5M4 19v-5h5"/><path d="M19.2 10A7.5 7.5 0 0 0 6 7.2M4.8 14A7.5 7.5 0 0 0 18 16.8"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3.5c.6 4.4 2.1 6 6.5 6.5-4.4.6-5.9 2.1-6.5 6.5-.6-4.4-2.1-5.9-6.5-6.5 4.4-.5 5.9-2.1 6.5-6.5Z"/><path d="M18.5 15.5c.2 1.6.8 2.2 2.4 2.4-1.6.2-2.2.8-2.4 2.4-.2-1.6-.8-2.2-2.4-2.4 1.6-.2 2.2-.8 2.4-2.4Z"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M5 4.5h10.5A2.5 2.5 0 0 1 18 7v12.5H7.5A2.5 2.5 0 0 1 5 17Z"/><path d="M5 17a2.5 2.5 0 0 1 2.5-2.5H18M9 8.5h5"/></symbol>
+    <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18M10.6 5.2A9.6 9.6 0 0 1 12 5c5 0 8.5 4.5 9.5 7a13 13 0 0 1-2.9 4M6.4 6.5C4.4 7.8 3.1 9.8 2.5 12c1 2.5 4.5 7 9.5 7a9.4 9.4 0 0 0 4.6-1.2M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
+    <symbol id="i-block" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="m6 6 12 12"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 6v12M15 6v12"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5Z" fill="currentColor"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2 5.5 5.5"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v8M6.6 6.4a8 8 0 1 0 10.8 0"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 3.4 5.4 3.4 8.5s-1 6.1-3.4 8.5c-2.4-2.4-3.4-5.4-3.4-8.5s1-6.1 3.4-8.5Z"/></symbol>
+    <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M8 14.2h8"/></symbol>
+    <symbol id="i-apps" viewBox="0 0 24 24"><rect x="4" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.8"/></symbol>
+    <symbol id="i-chip" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5"/><path d="M9.5 2.5v3.5M14.5 2.5v3.5M9.5 18v3.5M14.5 18v3.5M2.5 9.5H6M2.5 14.5H6M18 9.5h3.5M18 14.5h3.5"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.01"/></symbol>
+    <symbol id="i-paint" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17A8.5 8.5 0 0 0 12 3.5Z" fill="currentColor"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11m-5-5 5 5 5-5M5 19.5h14"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4 2.8 19.5h18.4Z"/><path d="M12 10v4.5M12 17v.01"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m6.5 6.5 11 11M17.5 6.5l-11 11"/></symbol>
+    <symbol id="i-style" viewBox="0 0 24 24"><path d="M4 19h4L19 8l-4-4L4 15Z"/><path d="m13 6 4 4"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v5.5c0 4.3 3 7.6 7 9.5 4-1.9 7-5.2 7-9.5V6Z"/><path d="m9 12 2.2 2.2L15.5 10"/></symbol>
+    <symbol id="i-wand" viewBox="0 0 24 24"><path d="m4 20 11-11M14 5l1-2 1 2 2 1-2 1-1 2-1-2-2-1Z"/></symbol>
+    <symbol id="i-text-size" viewBox="0 0 24 24"><path d="M3 18 7.5 7 12 18M4.5 14.5h6M14 18l3-7.5 3 7.5M15 15.5h4"/></symbol>
+  </defs>
+</svg>
+
+<div class="desktop">
+  <div class="menubar">
+    <span class="app-name">Chat</span>
+    <span class="spacer"></span>
+    <span class="mb-item" id="mbIcon" aria-hidden="true"><svg class="i" style="width:15px;height:15px"><use href="#i-mark"/></svg></span>
+    <span class="mb-item" id="clock"></span>
+  </div>
+
+  <main class="stage">
+    <section class="app" aria-label="Chat">
+      <header class="app-bar">
+        <div class="traffic"><span></span><span></span><span></span></div>
+        <div class="who"><span class="avatar">A</span>Alex Chen</div>
       </header>
-      <div class="conversation">
-        <div class="avatar" aria-hidden="true">
-          A
-        </div>
-        <div>
-          <div class="message-meta">
-            <strong>
-              Alex
-            </strong>
-            14:32
-          </div>
-          <p class="message-bubble">
-            When would be a good time to go over the details?
-          </p>
-        </div>
+      <div class="coach glass" id="coach" role="status" hidden>
+        <span class="steps" id="coachSteps"></span>
+        <span id="coachText"></span>
+        <button class="btn plain" id="coachSkip" data-i18n="coach.skip"></button>
       </div>
-      <div class="composer-wrap" id="composerWrap">
-        <div class="practice-guide" id="practiceGuide" hidden>
-          <strong id="practiceHeading">
-            试一试按需翻译
-          </strong>
-          <span id="practiceText">
-            在下方输入框按 Ctrl+Shift+F9，查看译文。
-          </span>
-        </div>
-        <section class="overlay" id="overlay" aria-label="TypeLay 翻译浮层" data-phase="preview">
-          <div class="overlay-inner" id="overlayInner">
-            <div class="pause-content" id="pauseContent" hidden>
-              <svg>
-                <use href="#i-pause"/>
-              </svg>
-              <span>
-                已暂停
-              </span>
-              <button id="resumeAction">
-                恢复
-              </button>
+      <div class="thread">
+        <span class="stamp">14:32</span>
+        <div class="bubble out" lang="en">Sent the draft over — take a look when you can.</div>
+        <div class="bubble in" lang="en">When would be a good time to go over the details?</div>
+      </div>
+      <div class="compose" id="compose">
+        <!-- ===== TypeLay overlay ===== -->
+        <section class="tl" id="tl" data-mode="capsule" data-phase="hidden" aria-label="TypeLay" hidden>
+          <div class="tl-inner" id="tlInner">
+            <div class="tl-body" id="tlBody">
+              <div class="tl-text" id="tlText" lang="en" role="region"></div>
+              <div class="tl-skeleton" id="tlSkeleton" hidden><span></span><span></span></div>
             </div>
-            <div id="translationContent">
-              <header class="overlay-head">
-                <div class="language-tag">
-                  <span>
-                    Auto
-                  </span>
-                  <span class="arrow">
-                    →
-                  </span>
-                  <span>
-                    EN
-                  </span>
-                </div>
-                <div class="head-right">
-                  <span class="phase-label" id="phaseLabel">
-                  </span>
-                  <div class="quiet-utilities" id="utilityActions">
-                    <button class="utility" id="regenerateAction" aria-label="重新翻译" title="重新翻译">
-                      <svg>
-                        <use href="#i-refresh"/>
-                      </svg>
-                    </button>
-                    <button class="utility" id="expandAction" aria-label="展开译文" title="展开译文">
-                      <svg>
-                        <use href="#i-expand"/>
-                      </svg>
-                    </button>
-                  </div>
-                  <button class="utility" id="capsuleExit" aria-label="退出当前翻译" title="退出当前翻译" hidden>
-                    <svg>
-                      <use href="#i-x"/>
-                    </svg>
-                  </button>
-                </div>
-              </header>
-              <div class="translation-wrap" id="translationWrap">
-                <div class="candidate" id="candidate" role="button" tabindex="0" aria-label="编辑译文" contenteditable="false" data-editable="true">
-                  Could we pick this up tomorrow afternoon?
-                </div>
-                <svg class="edit-affordance" id="editAffordance" aria-hidden="true">
-                  <use href="#i-pencil"/>
-                </svg>
-              </div>
-              <footer class="overlay-foot" id="overlayFoot">
-                <span class="key-hint accept" id="acceptHint">
-                  <kbd id="acceptKey">
-                    Tab
-                  </kbd>
-                  <span id="acceptMeaning">
-                    接受译文
-                  </span>
-                </span>
-                <button class="exit-button" id="exitAction">
-                  <kbd id="exitKey">
-                    Esc
-                  </kbd>
-                  <span>
-                    退出
-                  </span>
-                </button>
-              </footer>
+            <div class="tl-bar">
+              <button class="tl-lang" id="tlLang" aria-haspopup="menu" aria-expanded="false">
+                <span class="tl-dot" aria-hidden="true"></span><span id="tlLangLabel"></span>
+              </button>
+              <button class="tl-resume" id="tlResume" data-i18n="ov.resume" hidden></button>
+              <span class="tl-fill"></span>
+              <span class="tl-phase" id="tlPhase" aria-live="polite"></span>
+              <span class="tl-actions" id="tlActions">
+                <button class="tl-icon" id="tlExpand" data-i18n-label="ov.expand"><svg class="i"><use href="#i-expand"/></svg></button>
+                <button class="tl-icon" id="tlMore" aria-haspopup="menu" aria-expanded="false" data-i18n-label="ov.more"><svg class="i"><use href="#i-more"/></svg></button>
+              </span>
+              <span class="tl-hint" id="tlHint" hidden><kbd id="tlKey">Tab</kbd><span id="tlHintText"></span></span>
             </div>
           </div>
         </section>
-        <div class="source-composer">
-          <label class="source-label" for="sourceInput">
-            <span>
-              回复 Alex
-            </span>
-            <span id="sourceMode">
-              自动模式
-            </span>
-          </label>
-          <textarea class="source-input" id="sourceInput" spellcheck="false" aria-label="原输入框">
-            我们明天下午再聊细节，可以吗？
-          </textarea>
-          <div class="compose-footer">
-            <span id="sourceStatus">
-              译文只在你接受后替换
-            </span>
-            <button class="send-button" id="sendMessage">
-              发送
-            </button>
-          </div>
+
+        <div class="field-wrap" id="fieldWrap">
+          <textarea id="source" rows="1" spellcheck="false" aria-label="Message" data-i18n-placeholder="app.placeholder"></textarea>
+          <button class="send" id="send" data-i18n-label="app.send"><svg class="i"><use href="#i-arrow-up"/></svg></button>
         </div>
-        <p class="source-notice" id="sourceNotice" role="status" hidden>
-        </p>
       </div>
-      <p class="scene-caption">
-        点击译文编辑；在原输入框按 Tab 接受。
-      </p>
     </section>
   </main>
-  <dialog id="regenerateDialog" aria-labelledby="regenerateTitle">
-    <h2 id="regenerateTitle">
-      重新生成译文？
-    </h2>
-    <p>
-      这会替换你在浮层里修改的译文。原输入框保持当前内容。
-    </p>
-    <div class="dialog-actions">
-      <button class="button" id="cancelRegenerate" autofocus>
-        保留修改
-      </button>
-      <button class="button primary" id="confirmRegenerate">
-        重新生成
-      </button>
+
+  <aside class="proto glass" id="proto" data-open="true" aria-label="Prototype controls">
+    <button id="protoToggle" aria-expanded="true"><svg class="i" style="width:14px;height:14px;margin:0"><use href="#i-mark"/></svg><span data-i18n="proto.title"></span><svg class="i" style="width:14px;height:14px"><use href="#i-chevron-down"/></svg></button>
+    <div class="proto-body">
+      <label><span data-i18n="proto.scenario"></span><select class="popup" id="pScenario"></select></label>
+      <div class="lbl"><span data-i18n="proto.theme"></span>
+        <div class="seg" id="pTheme"><button data-value="system" data-i18n="theme.system"></button><button data-value="light" data-i18n="theme.light"></button><button data-value="dark" data-i18n="theme.dark"></button></div></div>
+      <div class="lbl"><span data-i18n="proto.ui"></span>
+        <div class="seg" id="pUi"><button data-value="zh-CN">中文</button><button data-value="en">English</button></div></div>
+      <div class="lbl"><span data-i18n="proto.font"></span>
+        <div class="seg" id="pFont"><button data-value="claude">Claude</button><button data-value="sans" data-i18n="font.sans"></button><button data-value="system" data-i18n="font.system"></button></div></div>
+      <div class="lbl"><span data-i18n="proto.mode"></span>
+        <div class="seg" id="pMode"><button data-value="Automatic" data-i18n="mode.auto"></button><button data-value="OnDemand" data-i18n="mode.ondemand"></button></div></div>
+      <div class="lbl"><span data-i18n="proto.write"></span>
+        <div class="seg" id="pWrite"><button data-value="verified" data-i18n="write.ok"></button><button data-value="unknown" data-i18n="write.unknown"></button></div></div>
+      <div class="row">
+        <button class="btn" id="pPause"></button>
+        <button class="btn" id="pReset" data-i18n="proto.reset"></button>
+      </div>
+      <div class="row">
+        <button class="btn" id="pWake">⌃⇧F9</button>
+        <button class="btn" id="pDirect">⌃⇧F10</button>
+      </div>
+      <details><summary data-i18n="proto.state"></summary><pre id="pState"></pre></details>
+      <a href="TypeLay_Tray_Settings_Prototype.html" data-i18n="proto.settings"></a>
     </div>
-  </dialog>
-  <div class="live-announcement" id="announcement" role="status" aria-live="polite">
-  </div>
+  </aside>
+</div>
+
+<dialog class="sheet" id="regenDialog" aria-labelledby="regenTitle">
+  <h2 id="regenTitle" data-i18n="dialog.regen"></h2>
+  <div class="actions"><button class="btn" id="regenKeep" data-i18n="dialog.keep" autofocus></button><button class="btn primary" id="regenGo" data-i18n="dialog.replace"></button></div>
+</dialog>
+<dialog class="sheet" id="glossDialog" aria-labelledby="glossTitle">
+  <h2 id="glossTitle" data-i18n="gloss.title"></h2>
+  <form method="dialog" style="display:grid;gap:10px">
+    <label style="display:grid;gap:5px;font:var(--text-callout);color:var(--ink-2)"><span data-i18n="gloss.source"></span><input class="field" id="glossSource" required></label>
+    <label style="display:grid;gap:5px;font:var(--text-callout);color:var(--ink-2)"><span data-i18n="gloss.target"></span><input class="field" id="glossTarget" required></label>
+    <label style="display:grid;gap:5px;font:var(--text-callout);color:var(--ink-2)"><span data-i18n="gloss.scope"></span><select class="popup" id="glossScope"></select></label>
+    <div class="actions"><button class="btn" value="cancel" formnovalidate data-i18n="common.cancel"></button><button class="btn primary" value="add" data-i18n="gloss.add"></button></div>
+  </form>
+</dialog>
+
+<script>
+/* TypeLay prototype runtime shared by every page (inlined by build.py).
+   Owns: user preferences, theme/font/accent/motion resolution, language catalog, i18n, segmented controls. */
+const TL = (() => {
+  'use strict';
+  const KEY = 'typelay.prototype.prefs.v2';
+  const DEFAULTS = Object.freeze({
+    theme: 'system', uiLang: 'system', font: 'claude', accent: 'clay', textSize: 15,
+    material: 'glass', motion: 'system', source: 'auto', target: 'en', style: 'natural', mode: 'Automatic'
+  });
+  const dark = matchMedia('(prefers-color-scheme: dark)');
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)');
+  const listeners = new Set();
+  let prefs = load();
+
+  function load() {
+    let stored = {};
+    try { stored = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch { stored = {}; }
+    const q = new URLSearchParams(location.search), fromUrl = {};
+    for (const k of Object.keys(DEFAULTS)) if (q.has(k)) fromUrl[k] = k === 'textSize' ? Number(q.get(k)) : q.get(k);
+    return { ...DEFAULTS, ...stored, ...fromUrl };
+  }
+  function persist() { try { localStorage.setItem(KEY, JSON.stringify(prefs)); } catch { /* storage unavailable: in-memory only */ } }
+
+  /* ---- language catalog: names come from Intl, never hand-written ---- */
+  const LANGS = ['zh-Hans', 'zh-Hant', 'en', 'ja', 'ko', 'fr', 'de', 'es', 'it', 'pt', 'ru', 'ar', 'hi', 'vi', 'th', 'id', 'ms', 'tr', 'nl', 'pl', 'uk', 'sv'];
+  const SHORT = { 'zh-Hans': '中', 'zh-Hant': '繁' };
+  const uiLang = () => prefs.uiLang !== 'system' ? prefs.uiLang : ((navigator.language || 'en').toLowerCase().startsWith('zh') ? 'zh-CN' : 'en');
+  function langName(code, inLocale = uiLang()) {
+    if (code === 'auto') return t('lang.auto');
+    try { return new Intl.DisplayNames([inLocale], { type: 'language' }).of(code) || code; } catch { return code; }
+  }
+  const endonym = code => code === 'auto' ? 'Auto' : langName(code, code);
+  const shortCode = code => code === 'auto' ? 'Auto' : (SHORT[code] || code.split('-')[0].toUpperCase());
+  /* Script detection drives "already in target language → stay quiet" */
+  function scriptOf(text) {
+    if (/[぀-ヿ]/.test(text)) return 'ja';
+    if (/[가-힯]/.test(text)) return 'ko';
+    if (/[㐀-鿿]/.test(text)) return 'han';
+    if (/[A-Za-zÀ-ž]/.test(text)) return 'latin';
+    return 'none';
+  }
+  const scriptOfLang = code => ({ 'zh-Hans': 'han', 'zh-Hant': 'han', ja: 'ja', ko: 'ko', ar: 'arabic', ru: 'cyrillic', uk: 'cyrillic', hi: 'deva', th: 'thai' })[code] || 'latin';
+  const langOfScript = s => ({ han: 'zh-Hans', ja: 'ja', ko: 'ko' })[s] || 'en';
+
+  /* ---- i18n: pages register dictionaries; t() falls back to English then the key ---- */
+  const dict = { 'zh-CN': {}, en: {} };
+  function addStrings(table) { for (const [lang, entries] of Object.entries(table)) Object.assign(dict[lang] ||= {}, entries); }
+  function t(key, vars) {
+    let s = dict[uiLang()]?.[key] ?? dict.en[key] ?? key;
+    if (vars) s = s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? '');
+    return s;
+  }
+  function translateDom(root = document) {
+    root.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
+    root.querySelectorAll('[data-i18n-label]').forEach(el => { el.setAttribute('aria-label', t(el.dataset.i18nLabel)); el.title = t(el.dataset.i18nLabel); });
+    root.querySelectorAll('[data-i18n-placeholder]').forEach(el => { el.placeholder = t(el.dataset.i18nPlaceholder); });
+  }
+
+  /* ---- apply prefs to <html> ---- */
+  function apply() {
+    const r = document.documentElement;
+    r.dataset.theme = prefs.theme === 'system' ? (dark.matches ? 'dark' : 'light') : prefs.theme;
+    r.dataset.font = prefs.font;
+    r.dataset.accent = prefs.accent;
+    r.dataset.material = prefs.material;
+    r.dataset.motion = prefs.motion === 'reduce' || (prefs.motion === 'system' && reduce.matches) ? 'reduce' : 'full';
+    r.lang = uiLang();
+    r.style.setProperty('--content-size', prefs.textSize + 'px');
+    translateDom();
+    listeners.forEach(fn => fn(prefs));
+  }
+  function set(patch) { prefs = { ...prefs, ...patch }; persist(); apply(); }
+  const reducedMotion = () => document.documentElement.dataset.motion === 'reduce';
+  dark.addEventListener('change', apply);
+  reduce.addEventListener('change', apply);
+  addEventListener('storage', e => { if (e.key === KEY) { prefs = load(); apply(); } });
+
+  /* ---- segmented control with sliding thumb: <div class="seg" data-seg="key"><button data-value> ---- */
+  function syncSeg(seg, value) {
+    let thumb = seg.querySelector('.seg-thumb');
+    if (!thumb) { thumb = document.createElement('span'); thumb.className = 'seg-thumb'; seg.prepend(thumb); }
+    let active = null;
+    seg.querySelectorAll('button').forEach(b => { const on = b.dataset.value === String(value); b.setAttribute('aria-pressed', on); if (on) active = b; });
+    if (active && active.offsetWidth) { thumb.style.left = active.offsetLeft + 'px'; thumb.style.width = active.offsetWidth + 'px'; thumb.hidden = false; }
+    else if (!active) thumb.hidden = true;
+  }
+  function bindSeg(seg, onChange) {
+    seg.setAttribute('role', 'group');
+    seg.addEventListener('click', e => { const b = e.target.closest('button[data-value]'); if (b && !b.disabled) onChange(b.dataset.value); });
+  }
+
+  /* ---- toast ---- */
+  function toast(text, action) {
+    document.querySelector('.toast')?.remove();
+    const el = document.createElement('div');
+    el.className = 'toast glass'; el.setAttribute('role', 'status');
+    el.append(text);
+    if (action) { const b = document.createElement('button'); b.className = 'btn'; b.textContent = action.label; b.onclick = () => { el.remove(); action.run(); }; el.append(b); }
+    document.body.append(el);
+    setTimeout(() => el.remove(), action ? 4200 : 2200);
+  }
+
+  /* ---- critically damped-ish spring, interruptible (keeps velocity on retarget) ---- */
+  class Spring {
+    constructor(value = 0, { stiffness = 420, damping = 34, mass = 1 } = {}) { Object.assign(this, { value, target: value, velocity: 0, stiffness, damping, mass }); }
+    to(target, cfg) { this.target = target; if (cfg) Object.assign(this, cfg); }
+    snap(v) { this.value = this.target = v; this.velocity = 0; }
+    step(dt) {
+      const sub = Math.max(1, Math.ceil(dt / (1 / 240)));
+      const h = dt / sub;
+      for (let i = 0; i < sub; i++) {
+        const f = -this.stiffness * (this.value - this.target) - this.damping * this.velocity;
+        this.velocity += (f / this.mass) * h;
+        this.value += this.velocity * h;
+      }
+    }
+    get settled() { return Math.abs(this.velocity) < 0.02 && Math.abs(this.value - this.target) < 0.05; }
+  }
+  const SPRINGS = Object.freeze({ snappy: { stiffness: 560, damping: 40 }, smooth: { stiffness: 380, damping: 36 }, bouncy: { stiffness: 320, damping: 22 } });
+
+  return {
+    get prefs() { return prefs; }, DEFAULTS, set, apply, onChange: fn => listeners.add(fn),
+    t, addStrings, translateDom, uiLang, LANGS, langName, endonym, shortCode, scriptOf, scriptOfLang, langOfScript,
+    syncSeg, bindSeg, toast, Spring, SPRINGS, reducedMotion
+  };
+})();
+
+</script>
 <script>
 (() => {
-  'use strict';
+'use strict';
+/* ============================== strings ============================== */
+TL.addStrings({
+  'zh-CN': {
+    'lang.auto': 'Auto', 'ov.accept': '接受', 'ov.return': '返回', 'ov.translating': '翻译中', 'ov.updating': '更新中', 'ov.preparing': '准备模型',
+    'ov.failed': '未能更新', 'ov.partial': '输入中', 'ov.locked': '仅预览', 'ov.edited': '已修改', 'ov.paused': '已暂停', 'ov.resume': '恢复',
+    'ov.more': '更多', 'ov.expand': '展开', 'ov.collapse': '收起', 'ov.retry': '重试', 'ov.translation': '译文',
+    'menu.retranslate': '重新翻译', 'menu.rephrase': '换种说法', 'menu.style': '风格', 'menu.copy': '复制译文', 'menu.glossary': '加入术语表…',
+    'menu.hide': '暂时隐藏', 'menu.exclude': '不在「{app}」中显示', 'menu.locked': '已人工修改，风格已锁定',
+    'style.natural': '自然', 'style.formal': '正式', 'style.concise': '简洁', 'style.casual': '口语',
+    'lang.swap': '交换语言', 'lang.search': '搜索语言', 'lang.to': '译为',
+    'toast.copied': '已复制', 'toast.excluded': '已在「{app}」中停用', 'toast.undo': '撤销', 'toast.glossary': '已加入术语表',
+    'toast.replaced': '已替换，未发送', 'toast.unknown': '替换结果未确认，请检查输入框', 'toast.changed': '原文已变化，未替换',
+    'toast.direct': '正在翻译并替换…', 'toast.resumedOnDemand': '已恢复 · 按 ⌃⇧F9 开始', 'toast.unsupported': '此输入框不支持翻译',
+    'toast.empty': '输入框是空的', 'toast.blocked': '输入法输入中，未替换',
+    'dialog.regen': '替换你修改过的译文？', 'dialog.keep': '保留', 'dialog.replace': '替换',
+    'gloss.title': '加入术语表', 'gloss.source': '原文', 'gloss.target': '译文', 'gloss.scope': '范围', 'gloss.all': '所有语言方向', 'gloss.add': '添加', 'common.cancel': '取消',
+    'app.placeholder': '信息', 'app.send': '发送',
+    'coach.skip': '跳过', 'coach.done': '完成', 'coach.a1': '输入一句中文，按 {key} 接受', 'coach.a2': '再输入一句，点击译文修改它', 'coach.a3': '按 {key} 回到输入框，再按 {key} 接受', 'coach.a4': '完成 · 文本没有发送',
+    'coach.d1': '按 ⌃⇧F9 唤醒翻译', 'coach.d2': '按 ⌃⇧F10 直接替换原文', 'coach.d3': '完成 · 文本没有发送',
+    'proto.title': '原型控制', 'proto.scenario': '场景', 'proto.theme': '外观', 'proto.ui': '界面语言', 'proto.font': '字体', 'proto.mode': '工作模式', 'proto.write': '写入结果',
+    'proto.pause': '暂停', 'proto.resume': '恢复', 'proto.reset': '重置', 'proto.state': '状态', 'proto.settings': '设置与托盘原型 ↗',
+    'theme.system': '自动', 'theme.light': '浅色', 'theme.dark': '深色', 'font.sans': '无衬线', 'font.system': '系统', 'mode.auto': '自动', 'mode.ondemand': '按需',
+    'write.ok': '已确认', 'write.unknown': '未知',
+    'sc.preview': '译文预览', 'sc.idle': '空输入框 · 胶囊', 'sc.quiet': '已是目标语言', 'sc.translating': '首次翻译', 'sc.preparing': '模型准备中', 'sc.updating': '原文变化 · 更新中',
+    'sc.failed': '翻译失败', 'sc.editing': '编辑译文', 'sc.pending': '修改待接受', 'sc.selection': '只翻译选区', 'sc.long': '长译文', 'sc.partial': '输入法组合中',
+    'sc.locked': '仅预览 · 输入法未确认', 'sc.paused': '已暂停', 'sc.sensitive': '敏感字段', 'sc.ondemand': '按需模式', 'sc.practiceAuto': '教程 · 自动翻译', 'sc.practice': '教程 · 按需翻译'
+  },
+  en: {
+    'lang.auto': 'Auto', 'ov.accept': 'Accept', 'ov.return': 'Back', 'ov.translating': 'Translating', 'ov.updating': 'Updating', 'ov.preparing': 'Preparing model',
+    'ov.failed': 'Couldn’t update', 'ov.partial': 'Typing', 'ov.locked': 'Preview only', 'ov.edited': 'Edited', 'ov.paused': 'Paused', 'ov.resume': 'Resume',
+    'ov.more': 'More', 'ov.expand': 'Expand', 'ov.collapse': 'Collapse', 'ov.retry': 'Retry', 'ov.translation': 'Translation',
+    'menu.retranslate': 'Translate Again', 'menu.rephrase': 'Rephrase', 'menu.style': 'Tone', 'menu.copy': 'Copy Translation', 'menu.glossary': 'Add to Glossary…',
+    'menu.hide': 'Hide for Now', 'menu.exclude': 'Don’t Show in {app}', 'menu.locked': 'Edited by you — tone locked',
+    'style.natural': 'Natural', 'style.formal': 'Formal', 'style.concise': 'Concise', 'style.casual': 'Casual',
+    'lang.swap': 'Swap languages', 'lang.search': 'Search languages', 'lang.to': 'Translate to',
+    'toast.copied': 'Copied', 'toast.excluded': 'Turned off in {app}', 'toast.undo': 'Undo', 'toast.glossary': 'Added to glossary',
+    'toast.replaced': 'Replaced — not sent', 'toast.unknown': 'Couldn’t confirm the replacement. Check the field.', 'toast.changed': 'Text changed — nothing replaced',
+    'toast.direct': 'Translating and replacing…', 'toast.resumedOnDemand': 'Resumed · Press ⌃⇧F9 to start', 'toast.unsupported': 'This field isn’t supported',
+    'toast.empty': 'The field is empty', 'toast.blocked': 'Still composing — nothing replaced',
+    'dialog.regen': 'Replace your edited translation?', 'dialog.keep': 'Keep', 'dialog.replace': 'Replace',
+    'gloss.title': 'Add to Glossary', 'gloss.source': 'Source', 'gloss.target': 'Translation', 'gloss.scope': 'Applies to', 'gloss.all': 'All directions', 'gloss.add': 'Add', 'common.cancel': 'Cancel',
+    'app.placeholder': 'Message', 'app.send': 'Send',
+    'coach.skip': 'Skip', 'coach.done': 'Done', 'coach.a1': 'Type a sentence in Chinese, then press {key}', 'coach.a2': 'Type another one and click the translation to edit it', 'coach.a3': 'Press {key} to go back, then {key} to accept', 'coach.a4': 'Done · nothing was sent',
+    'coach.d1': 'Press ⌃⇧F9 to translate', 'coach.d2': 'Press ⌃⇧F10 to replace in place', 'coach.d3': 'Done · nothing was sent',
+    'proto.title': 'Prototype', 'proto.scenario': 'Scenario', 'proto.theme': 'Appearance', 'proto.ui': 'Interface language', 'proto.font': 'Font', 'proto.mode': 'Mode', 'proto.write': 'Write result',
+    'proto.pause': 'Pause', 'proto.resume': 'Resume', 'proto.reset': 'Reset', 'proto.state': 'State', 'proto.settings': 'Settings & tray prototype ↗',
+    'theme.system': 'Auto', 'theme.light': 'Light', 'theme.dark': 'Dark', 'font.sans': 'Sans', 'font.system': 'System', 'mode.auto': 'Automatic', 'mode.ondemand': 'On demand',
+    'write.ok': 'Verified', 'write.unknown': 'Unknown',
+    'sc.preview': 'Translation preview', 'sc.idle': 'Empty field · capsule', 'sc.quiet': 'Already in target language', 'sc.translating': 'First translation', 'sc.preparing': 'Model warming up', 'sc.updating': 'Source changed · updating',
+    'sc.failed': 'Translation failed', 'sc.editing': 'Editing translation', 'sc.pending': 'Edit pending', 'sc.selection': 'Selection only', 'sc.long': 'Long translation', 'sc.partial': 'IME composing',
+    'sc.locked': 'Preview only · IME unknown', 'sc.paused': 'Paused', 'sc.sensitive': 'Sensitive field', 'sc.ondemand': 'On-demand mode', 'sc.practiceAuto': 'Tutorial · automatic', 'sc.practice': 'Tutorial · on demand'
+  }
+});
 
-  const $ = id => document.getElementById(id),
-    query = new URLSearchParams(location.search),
-    reduce = matchMedia('(prefers-reduced-motion: reduce)');
-  const sample = '我们明天下午再聊细节，可以吗？',
-    translation = 'Could we pick this up tomorrow afternoon?';
-  const state = {
-    phase: 'preview',
-    candidate: translation,
-    manual: '',
-    snapshot: sample,
-    selection: null,
-    enabled: true,
-    mode: 'Automatic',
-    session: true,
-    ime: 'clear',
-    targetSafe: true,
-    editAcknowledged: true,
-    safePermit: true,
-    returnKeyHeld: false,
-    expanded: false,
-    revision: 0,
-    timer: 0,
-    directTimer: 0,
-    writeOutcome: 'verified',
-    quarantined: false,
-    sendCount: 0,
-    acceptCount: 0,
-    practice: 0,
-    automaticPractice: 0
-  };
-  const source = $('sourceInput'),
-    overlay = $('overlay'),
-    inner = $('overlayInner'),
-    candidate = $('candidate');
-  const acceptKey = query.get('accept') && /^(Tab|F(?:[1-9]|1\d|2[0-4]))$/.test(query.get('accept')) ? query.get('accept') : 'Tab';
-  const exitKey = query.get('exit') && /^(Esc|F(?:[1-9]|1\d|2[0-4]))$/.test(query.get('exit')) && query.get('exit') !== acceptKey ? query.get('exit') : 'Esc';
-  const normalizeKey = key => key === 'Escape' ? 'Esc' : key;
-  let suppressSourceFocus = false;
-  function notice(text) {
-    $('sourceNotice').textContent = text;
-    $('sourceNotice').hidden = !text;
+/* ============================== demo translation engine ============================== */
+const SAMPLE = '我们明天下午再聊细节，可以吗？';
+const PHRASES = {
+  [SAMPLE]: {
+    en: { natural: 'Could we go over the details tomorrow afternoon?', formal: 'Would it be possible to discuss the details tomorrow afternoon?', concise: 'Details tomorrow afternoon?', casual: 'Wanna go over the details tomorrow afternoon?', alt: ['How about we talk through the details tomorrow afternoon?', 'Can we pick up the details tomorrow afternoon?'] },
+    ja: { natural: '詳細は明日の午後に話しませんか？', formal: '詳細につきまして、明日の午後にお話しできますでしょうか。', concise: '詳細は明日午後に。', casual: '細かいことは明日の午後に話そっか？', alt: ['明日の午後、詳しく話せますか？'] },
+    fr: { natural: 'On peut voir les détails demain après-midi ?', formal: 'Serait-il possible d’aborder les détails demain après-midi ?', concise: 'Détails demain après-midi ?', casual: 'On se cale les détails demain aprèm ?', alt: ['Et si on parlait des détails demain après-midi ?'] },
+    ko: { natural: '자세한 건 내일 오후에 얘기할까요?', formal: '자세한 내용은 내일 오후에 논의해도 될까요?', concise: '내일 오후에 자세히요?', casual: '자세한 건 내일 오후에 얘기하자!', alt: ['내일 오후에 자세히 이야기 나눌 수 있을까요?'] },
+    de: { natural: 'Können wir die Details morgen Nachmittag besprechen?', formal: 'Wäre es möglich, die Einzelheiten morgen Nachmittag zu besprechen?', concise: 'Details morgen Nachmittag?', casual: 'Quatschen wir morgen Nachmittag über die Details?' },
+    es: { natural: '¿Vemos los detalles mañana por la tarde?', formal: '¿Sería posible tratar los detalles mañana por la tarde?', concise: '¿Detalles mañana por la tarde?', casual: '¿Lo hablamos mañana por la tarde?' }
+  },
+  '也请带上最新的方案。': {
+    en: { natural: 'Please bring the latest proposal, too.', formal: 'Please also bring the most recent proposal.', concise: 'Bring the latest proposal.', casual: 'Bring the latest proposal too!' },
+    ja: { natural: '最新の提案書も持ってきてください。' }, fr: { natural: 'Apporte aussi la dernière proposition, s’il te plaît.' }, ko: { natural: '최신 제안서도 가져와 주세요.' },
+    de: { natural: 'Bitte bring auch den neuesten Entwurf mit.' }, es: { natural: 'Trae también la propuesta más reciente, por favor.' }
+  },
+  '明天下午见': { en: { natural: 'see you tomorrow afternoon' }, ja: { natural: '明日の午後に' }, fr: { natural: 'à demain après-midi' }, ko: { natural: '내일 오후에 봐요' }, de: { natural: 'bis morgen Nachmittag' }, es: { natural: 'nos vemos mañana por la tarde' } },
+  '你好': { en: { natural: 'Hi', formal: 'Hello' }, ja: { natural: 'こんにちは' }, fr: { natural: 'Bonjour' }, ko: { natural: '안녕하세요' } },
+  '谢谢': { en: { natural: 'Thanks', formal: 'Thank you' }, ja: { natural: 'ありがとう' }, fr: { natural: 'Merci' }, ko: { natural: '고마워요' } },
+  'When would be a good time to go over the details?': { 'zh-Hans': { natural: '什么时候方便过一下细节？' } }
+};
+const POOL = {
+  en: ['Sounds good — let’s sync up later today.', 'I’ll take a look and get back to you.', 'Thanks, that works for me.', 'Could you send me the latest version?'],
+  ja: ['了解です。後で確認しますね。', '最新版を送ってもらえますか？'], fr: ['Ça marche, je regarde ça.', 'Tu peux m’envoyer la dernière version ?'],
+  ko: ['좋아요, 확인해 볼게요.', '최신 버전 보내 줄 수 있어요?'], 'zh-Hans': ['好的，我看一下再回复你。', '能把最新版本发我一下吗？'],
+  de: ['Klingt gut, ich schaue es mir an.'], es: ['Perfecto, lo reviso y te digo.']
+};
+const LATIN_JOIN = new Set(['en', 'fr', 'de', 'es', 'it', 'pt', 'nl', 'pl', 'sv', 'id', 'ms', 'tr', 'vi', 'ru', 'uk']);
+const joiner = lang => LATIN_JOIN.has(lang) ? ' ' : '';
+function translate(text) {
+  const { target, style } = TL.prefs;
+  const pool = POOL[target] || POOL.en;
+  const parts = text.match(/[^。！？.!?\n]+[。！？.!?]*|\n+/g) || [text];
+  const out = [];
+  for (const part of parts) {
+    if (/^\n+$/.test(part)) { out.push(part); continue; }
+    const key = part.trim(); if (!key) continue;
+    const entry = PHRASES[key]?.[target];
+    let s;
+    if (entry) s = S.rephrase && entry.alt ? entry.alt[(S.rephrase - 1) % entry.alt.length] : (entry[style] || entry.natural);
+    else { let h = 0; for (const c of key) h = (h * 31 + c.codePointAt(0)) >>> 0; s = pool[(h + S.rephrase) % pool.length]; }
+    out.push(s);
   }
-  function announce(text) {
-    $('announcement').textContent = text;
+  return out.reduce((acc, s) => !acc || acc.endsWith('\n') || s.startsWith('\n') ? acc + s : acc + joiner(target) + s, '');
+}
+function needsTranslation(text) {
+  const script = TL.scriptOf(text);
+  return !!text.trim() && script !== 'none' && script !== TL.scriptOfLang(TL.prefs.target);
+}
+
+/* ============================== state ============================== */
+const $ = id => document.getElementById(id);
+const el = { tl: $('tl'), inner: $('tlInner'), body: $('tlBody'), text: $('tlText'), skeleton: $('tlSkeleton'), lang: $('tlLang'), langLabel: $('tlLangLabel'), resume: $('tlResume'),
+  phase: $('tlPhase'), actions: $('tlActions'), expand: $('tlExpand'), more: $('tlMore'), hint: $('tlHint'), hintText: $('tlHintText'), key: $('tlKey'), compose: $('compose'), source: $('source'), wrap: $('fieldWrap') };
+const q = new URLSearchParams(location.search);
+const ACCEPT = /^(Tab|F(?:[1-9]|1\d|2[0-4]))$/.test(q.get('accept') || '') ? q.get('accept') : 'Tab';
+const EXIT = /^(Esc|F(?:[1-9]|1\d|2[0-4]))$/.test(q.get('exit') || '') && q.get('exit') !== ACCEPT ? q.get('exit') : 'Esc';
+const APP = 'Chat';
+const PANEL = new Set(['preparing', 'translating', 'preview', 'updating', 'failed', 'partial', 'locked', 'editing', 'returning', 'pending']);
+const CAPSULE = new Set(['idle', 'quiet', 'paused']);
+const BUSY = new Set(['preparing', 'translating', 'updating', 'returning']);
+const S = {
+  phase: 'hidden', candidate: '', manual: '', snapshot: '', selection: null, appendOffset: 0,
+  enabled: true, session: false, ime: 'clear', targetSafe: true, model: 'ready', quarantined: false, hiddenField: false, excludedApp: false,
+  editAck: false, permit: false, returnKeyHeld: false, expanded: false, rephrase: 0, failNext: false, editOrigin: '',
+  revision: 0, timer: 0, directTimer: 0, modelTimer: 0, writeOutcome: 'verified',
+  practice: 0, autoPractice: 0, sendCount: 0, acceptCount: 0
+};
+const norm = k => k === 'Escape' ? 'Esc' : k;
+const src = el.source;
+let suppressFocus = false;
+
+const selectionMatches = () => S.selection ? src.selectionStart === S.selection.start && src.selectionEnd === S.selection.end : src.selectionStart === src.selectionEnd;
+const eligible = () => S.enabled && S.session && S.targetSafe && !S.quarantined && !S.excludedApp && !S.hiddenField && S.ime === 'clear' && S.snapshot === src.value;
+const canEdit = () => eligible() && selectionMatches() && S.editAck && (S.phase === 'preview' || S.phase === 'pending') && !!S.candidate.trim();
+const acceptReady = () => eligible() && selectionMatches() && S.permit && !S.returnKeyHeld && (S.phase === 'preview' || S.phase === 'pending') && !!S.candidate.trim();
+const canAccept = () => acceptReady() && document.activeElement === src;
+const activeText = () => S.selection ? S.selection.text : src.value;
+const currentSelection = () => src.selectionEnd > src.selectionStart ? { start: src.selectionStart, end: src.selectionEnd, text: src.value.slice(src.selectionStart, src.selectionEnd), source: src.value } : null;
+function focusSource() { suppressFocus = true; try { src.focus({ preventScroll: true }); } finally { suppressFocus = false; } }
+function cancelPending() { clearTimeout(S.timer); clearTimeout(S.modelTimer); S.revision++; }
+function clearCandidate() { Object.assign(S, { candidate: '', manual: '', selection: null, permit: false, editAck: false, returnKeyHeld: false, rephrase: 0 }); }
+
+/* ============================== spring geometry ============================== */
+const sp = { w: new TL.Spring(0, TL.SPRINGS.smooth), h: new TL.Spring(0, TL.SPRINGS.smooth), r: new TL.Spring(17, TL.SPRINGS.smooth), s: new TL.Spring(1, TL.SPRINGS.bouncy) };
+let raf = 0, last = 0;
+function tick(now) {
+  const dt = Math.min(1 / 30, (now - (last || now)) / 1000 || 1 / 60); last = now;
+  let settled = true;
+  for (const s of Object.values(sp)) { s.step(dt); settled &&= s.settled; }
+  paint();
+  if (settled) { for (const s of Object.values(sp)) s.snap(s.target); paint(); raf = 0; last = 0; return; }
+  raf = requestAnimationFrame(tick);
+}
+function paint() {
+  el.tl.style.width = Math.max(0, sp.w.value) + 'px';
+  el.tl.style.height = Math.max(0, sp.h.value) + 'px';
+  el.tl.style.borderRadius = Math.max(0, sp.r.value) + 'px';
+  el.tl.style.transform = Math.abs(sp.s.value - 1) > 0.001 ? `scale(${sp.s.value})` : '';
+}
+function animate(targets, cfg) {
+  for (const [k, v] of Object.entries(targets)) sp[k].to(v, cfg);
+  if (TL.reducedMotion()) { for (const s of Object.values(sp)) s.snap(s.target); paint(); return; }
+  if (!raf) raf = requestAnimationFrame(tick);
+}
+function panelWidth() {
+  const avail = el.compose.clientWidth - 32;
+  const base = S.expanded ? 560 : S.phase === 'editing' ? Math.max(400, avail * 0.72) : avail * 0.66;
+  return Math.round(Math.min(avail, Math.max(Math.min(300, avail), Math.min(base, S.expanded ? 560 : 440))));
+}
+function layout({ instant = false } = {}) {
+  if (el.tl.hidden) return;
+  const capsule = el.tl.dataset.mode === 'capsule';
+  el.inner.style.width = capsule ? '' : panelWidth() + 'px';
+  const w = el.inner.offsetWidth, h = el.inner.offsetHeight;
+  const r = capsule ? h / 2 : 18;
+  if (instant) { sp.w.snap(w); sp.h.snap(h); sp.r.snap(r); paint(); return; }
+  // Growing feels lively (a touch of overshoot); shrinking settles without wobble.
+  const growing = w * h > sp.w.value * sp.h.value + 4;
+  animate({ w, h, r }, growing ? { stiffness: 340, damping: 26 } : TL.SPRINGS.snappy);
+}
+
+/* ============================== word-by-word text ============================== */
+let shown = [];
+const segmenter = lang => { try { return new Intl.Segmenter(lang, { granularity: 'word' }); } catch { return null; } };
+function tokens(text, lang) {
+  // Space-separated scripts animate per whitespace chunk (keeps kerning and punctuation intact);
+  // CJK has no spaces, so it animates per segmenter word.
+  const seg = ['han', 'ja'].includes(TL.scriptOfLang(lang)) ? segmenter(lang) : null;
+  const raw = seg ? [...seg.segment(text)].map(s => ({ t: s.segment, word: s.isWordLike })) : text.split(/(\s+)/).filter(Boolean).map(t => ({ t, word: !/^\s+$/.test(t) }));
+  // Punctuation sticks to the word before it, so a line never starts with "," or "。"
+  const out = [];
+  for (const { t, word } of raw) {
+    const ws = /^\s+$/.test(t);
+    if (!word && !ws && out.length && !/^\s+$/.test(out[out.length - 1])) out[out.length - 1] += t; else out.push(t);
   }
-  function eligible() {
-    return state.enabled && state.session && state.targetSafe && !state.quarantined && state.ime === 'clear' && state.snapshot === source.value;
+  return out;
+}
+function setText(value, { animate: anim = true } = {}) {
+  const lang = TL.prefs.target;
+  el.text.lang = lang;
+  const next = tokens(value, lang);
+  if (next.join('') === shown.join('') && el.text.childNodes.length) return;
+  let same = 0;
+  while (same < next.length && same < shown.length && next[same] === shown[same]) same++;
+  const frag = document.createDocumentFragment();
+  let n = 0;
+  next.forEach((tok, i) => {
+    if (/^\s+$/.test(tok)) { frag.append(tok); return; }
+    const span = document.createElement('span');
+    span.className = 'w'; span.textContent = tok;
+    if (anim && i >= same && !TL.reducedMotion()) { span.classList.add('in'); span.style.setProperty('--i', Math.min(n++, 28)); }
+    frag.append(span);
+  });
+  el.text.replaceChildren(frag);
+  shown = next;
+}
+
+/* ============================== render ============================== */
+let leaveTimer = 0;
+function showShell() {
+  clearTimeout(leaveTimer);
+  const wasHidden = el.tl.hidden || el.tl.classList.contains('leaving');
+  el.tl.hidden = false; el.tl.inert = false;
+  el.tl.classList.remove('leaving');
+  return wasHidden;
+}
+function hideShell({ fade = false } = {}) {
+  closeMenus();
+  if (el.tl.hidden) return;
+  // Synchronous: the overlay stops being interactive and stops promising Tab before any animation.
+  el.tl.inert = true; el.hint.hidden = true;
+  if (!fade || TL.reducedMotion()) { el.tl.hidden = true; return; }
+  el.tl.classList.add('leaving');
+  animate({ s: 0.92 }, TL.SPRINGS.snappy);
+  leaveTimer = setTimeout(() => { el.tl.hidden = true; el.tl.classList.remove('leaving'); sp.s.snap(1); paint(); }, 170);
+}
+
+function render({ fade = false } = {}) {
+  const visible = S.targetSafe && !S.excludedApp && !S.hiddenField && (S.phase === 'paused' || (S.enabled && S.session && S.phase !== 'hidden'));
+  if (!visible) { hideShell({ fade }); readout(); return; }
+  const prevMode = el.tl.dataset.mode;
+  const appeared = showShell();
+  const mode = CAPSULE.has(S.phase) ? 'capsule' : 'panel';
+  el.tl.dataset.mode = mode;
+  el.tl.dataset.phase = S.phase;
+  el.tl.dataset.busy = BUSY.has(S.phase);
+  el.tl.dataset.expanded = S.expanded;
+
+  // language chip
+  const { source, target } = TL.prefs;
+  if (S.phase === 'paused') el.langLabel.innerHTML = `<svg class="i"><use href="#i-pause"/></svg>${TL.t('ov.paused')}`;
+  else el.langLabel.innerHTML = `${TL.shortCode(source)} <span class="arrow">→</span> ${TL.shortCode(target)}`;
+  el.lang.setAttribute('aria-label', `${TL.langName(source)} → ${TL.langName(target)}`);
+  el.resume.hidden = S.phase !== 'paused';
+
+  // phase label: one word, only when it changes what Tab does
+  const phaseKey = { preparing: 'ov.preparing', translating: 'ov.translating', updating: 'ov.updating', failed: 'ov.failed', partial: 'ov.partial', locked: 'ov.locked', pending: 'ov.edited' }[S.phase];
+  el.phase.replaceChildren();
+  el.phase.className = 'tl-phase' + (BUSY.has(S.phase) ? ' live' : S.phase === 'failed' ? ' warn' : S.phase === 'pending' ? ' edited' : '');
+  if (phaseKey) el.phase.append(TL.t(phaseKey));
+  if (S.phase === 'failed') {
+    const b = document.createElement('button'); b.setAttribute('aria-label', TL.t('ov.retry')); b.title = TL.t('ov.retry');
+    b.innerHTML = '<svg class="i"><use href="#i-refresh"/></svg>'; b.onclick = () => regenerate();
+    el.phase.append(b);
   }
-  function canEdit() {
-    return eligible() && selectionMatches() && state.editAcknowledged && ['preview', 'pending'].includes(state.phase) && !!state.candidate.trim();
+
+  // body
+  const editing = S.phase === 'editing';
+  const skeleton = !S.candidate && (S.phase === 'translating' || S.phase === 'preparing');
+  el.skeleton.hidden = !skeleton; el.text.hidden = skeleton;
+  el.text.setAttribute('contenteditable', String(editing));
+  el.text.dataset.editable = String(canEdit());
+  el.text.setAttribute('role', editing ? 'textbox' : canEdit() ? 'button' : 'region');
+  el.text.setAttribute('aria-label', TL.t('ov.translation'));
+  el.text.tabIndex = editing || canEdit() ? 0 : -1;
+  if (!editing) setText(S.candidate, { animate: mode === 'panel' });
+  el.text.classList.toggle('stale', ['updating', 'failed', 'partial', 'locked', 'returning'].includes(S.phase));
+  el.body.classList.toggle('sweep', S.phase === 'updating' && !TL.reducedMotion());
+  if (mode === 'panel' && prevMode !== 'panel' || appeared && mode === 'panel') { el.body.classList.remove('enter'); void el.body.offsetWidth; el.body.classList.add('enter'); }
+
+  // actions + hint
+  el.expand.hidden = !(S.expanded || el.text.scrollHeight > el.text.clientHeight + 2 || S.candidate.length > 160);
+  el.expand.innerHTML = `<svg class="i"><use href="#i-${S.expanded ? 'collapse' : 'expand'}"/></svg>`;
+  el.expand.dataset.i18nLabel = S.expanded ? 'ov.collapse' : 'ov.expand';
+  el.expand.setAttribute('aria-label', TL.t(el.expand.dataset.i18nLabel)); el.expand.title = TL.t(el.expand.dataset.i18nLabel);
+  el.more.disabled = !S.candidate || BUSY.has(S.phase) && S.phase !== 'updating';
+  el.key.textContent = ACCEPT;
+  const showHint = editing || acceptReady();
+  el.hint.hidden = !showHint;
+  el.hintText.textContent = TL.t(editing ? 'ov.return' : 'ov.accept');
+
+  // geometry: a fresh overlay springs out of a small capsule at the anchor
+  if (appeared) {
+    el.inner.style.width = mode === 'capsule' ? '' : panelWidth() + 'px';
+    const startW = mode === 'capsule' ? el.inner.offsetWidth : 96, startH = mode === 'capsule' ? el.inner.offsetHeight : 34;
+    sp.w.snap(startW * 0.86); sp.h.snap(startH * 0.86); sp.r.snap(startH / 2); sp.s.snap(TL.reducedMotion() ? 1 : 0.9); paint();
+    el.tl.classList.add('entering'); void el.tl.offsetWidth; el.tl.classList.remove('entering');
+    animate({ s: 1 }, TL.SPRINGS.bouncy);
   }
-  function canAccept() {
-    return eligible() && selectionMatches() && state.safePermit && !state.returnKeyHeld && ['preview', 'pending'].includes(state.phase) && !!state.candidate.trim() && document.activeElement === source;
+  layout();
+  readout();
+}
+
+/* ============================== translation flow ============================== */
+function beginTranslation({ preserve = true, delay = 620, manualPrefix = '' } = {}) {
+  cancelPending();
+  if (!S.enabled || !S.session || !S.targetSafe || S.ime !== 'clear' || S.quarantined || S.excludedApp || S.hiddenField) return;
+  const text = activeText();
+  S.permit = false; S.editAck = false; S.snapshot = src.value;
+  if (!needsTranslation(text)) { clearCandidate(); S.phase = text.trim() ? 'quiet' : 'idle'; render(); return; }
+  if (!preserve) { S.candidate = ''; S.manual = ''; }
+  if (S.model !== 'ready') {
+    S.phase = 'preparing'; render();
+    const rev = S.revision;
+    S.modelTimer = setTimeout(() => { if (rev !== S.revision) return; S.model = 'ready'; beginTranslation({ preserve, manualPrefix, delay: 200 }); }, 1800);
+    return;
   }
-  function currentSelection() {
-    const start = source.selectionStart, end = source.selectionEnd;
-    return end > start ? { start, end, text: source.value.slice(start, end), source: source.value } : null;
-  }
-  function selectionMatches() {
-    return state.selection
-      ? source.selectionStart === state.selection.start && source.selectionEnd === state.selection.end
-      : source.selectionStart === source.selectionEnd;
-  }
-  function focusSourceWithoutRestart() {
-    suppressSourceFocus = true;
-    try { source.focus({ preventScroll: true }); }
-    finally { suppressSourceFocus = false; }
-  }
-  function cancelPending() {
-    clearTimeout(state.timer);
-    state.revision++;
-  }
-  function clearCandidate() {
-    state.candidate = '';
-    state.manual = '';
-    state.selection = null;
-    state.safePermit = false;
-    state.editAcknowledged = false;
-    state.returnKeyHeld = false;
-  }
-  function clearVisualMotion() {
-    overlay.getAnimations().forEach(animation => animation.cancel());
-    inner.getAnimations().forEach(animation => animation.cancel());
-    document.querySelectorAll('.motion-snapshot, .exit-ghost').forEach(node => {
-      node.getAnimations().forEach(animation => animation.cancel());
-      node.remove();
-    });
-  }
-  function visualCopy(element, className) {
-    const copy = element.cloneNode(true);
-    copy.removeAttribute('id');
-    copy.querySelectorAll('[id]').forEach(node => node.removeAttribute('id'));
-    copy.classList.add(className);
-    copy.inert = true;
-    copy.setAttribute('aria-hidden', 'true');
-    return copy;
-  }
-  function hideImmediately() {
-    clearVisualMotion();
-    overlay.hidden = true;
-    candidate.contentEditable = 'false';
-    candidate.dataset.editable = 'false';
-    candidate.tabIndex = -1;
-    candidate.textContent = '';
-  }
-  function syncGeometry(animate = true, previousContent = null) {
-    if (overlay.hidden) return;
-    const old = overlay.getBoundingClientRect();
-    const available = Math.max(140, Math.min(window.innerWidth - 32, $('composerWrap').getBoundingClientRect().right - 12));
-    const compact = ['idle', 'paused'].includes(state.phase);
-    const requested = compact ? state.phase === 'paused' ? 164 : 150 : state.expanded ? 520 : state.phase === 'editing' ? 480 : Number(query.get('width')) || 380;
-    const width = Math.min(requested, available);
-    inner.style.width = width + 'px';
-    const height = Math.ceil(inner.getBoundingClientRect().height) + 2;
-    const sameTarget = parseFloat(overlay.style.width) === width && parseFloat(overlay.style.height) === height;
-    if (sameTarget && overlay.getAnimations().some(animation => animation.playState === 'running')) return;
-    clearVisualMotion();
-    overlay.style.width = width + 'px';
-    overlay.style.height = height + 'px';
-    const resized = old.width && Math.abs(old.width - width) + Math.abs(old.height - height) > 2;
-    if (!animate || reduce.matches || !resized) return;
-    // Fade the old text before resizing. Old hints cannot imply a permission that was revoked.
-    if (previousContent) {
-      previousContent.querySelectorAll('.overlay-foot, .head-right').forEach(node => node.style.visibility = 'hidden');
-      overlay.appendChild(previousContent);
-      previousContent.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 80, fill: 'forwards' })
-        .finished.then(() => previousContent.remove()).catch(() => {});
-    }
-    overlay.animate([
-      { width: old.width + 'px', height: old.height + 'px' },
-      { width: width + 'px', height: height + 'px' }
-    ], { delay: 80, duration: 280, easing: 'cubic-bezier(.22,1,.36,1)', fill: 'backwards' });
-    // The live editor already owns input. Only its paint waits until the shell fits it.
-    inner.animate([{ opacity: 0 }, { opacity: 1 }], { delay: 360, duration: 120, fill: 'backwards' });
-  }
-  function render({
-    animate = true,
-    focusEditor = false
-  } = {}) {
-    const visible = state.targetSafe && state.enabled && state.session && state.phase !== 'hidden' || state.phase === 'paused' && state.targetSafe && !state.enabled;
-    if (!visible) {
-      hideImmediately();
-      updateReadout();
-      return;
-    }
-    const wasHidden = overlay.hidden;
-    const previousContent = !wasHidden && animate && !reduce.matches ? visualCopy(inner, 'motion-snapshot') : null;
-    overlay.hidden = false;
-    overlay.dataset.phase = state.phase;
-    const compact = ['idle', 'paused'].includes(state.phase);
-    overlay.classList.toggle('capsule', compact);
-    overlay.classList.toggle('paused', state.phase === 'paused');
-    overlay.classList.toggle('expanded', state.expanded);
-    $('pauseContent').hidden = state.phase !== 'paused';
-    $('translationContent').hidden = state.phase === 'paused';
-    $('capsuleExit').hidden = !compact;
-    $('utilityActions').hidden = compact;
-    $('phaseLabel').replaceChildren();
-    let label = '';
-    if (state.phase === 'editing') label = '编辑译文';else if (state.phase === 'pending') label = '已编辑';else if (state.phase === 'updating') label = '更新中';else if (state.phase === 'translating') label = '正在翻译';else if (state.phase === 'partial') label = '输入中 · 仅预览';else if (state.phase === 'failed') label = '暂时无法翻译';else if (state.phase === 'returning') label = '正在返回';else if (state.phase === 'locked') label = state.ime === 'unknown' ? '仅预览 · 输入法未确认' : '仅预览';
-    if (['updating', 'translating', 'returning'].includes(state.phase)) {
-      const spinner = document.createElement('span');
-      spinner.className = 'spinner';
-      spinner.setAttribute('aria-hidden', 'true');
-      $('phaseLabel').appendChild(spinner);
-    }
-    $('phaseLabel').append(document.createTextNode(label));
-    $('phaseLabel').classList.toggle('warning', state.phase === 'failed');
-    const editing = state.phase === 'editing';
-    candidate.setAttribute('contenteditable', String(editing));
-    candidate.dataset.editable = String(canEdit());
-    candidate.setAttribute('role', editing ? 'textbox' : canEdit() ? 'button' : 'region');
-    candidate.setAttribute('aria-label', editing ? '编辑译文' : canEdit() ? '编辑译文' : '译文预览');
-    candidate.setAttribute('aria-multiline', String(editing));
-    candidate.tabIndex = editing || canEdit() ? 0 : -1;
-    if (!editing || focusEditor) candidate.textContent = state.candidate || (state.phase === 'translating' ? '正在准备译文…' : ['pending', 'returning'].includes(state.phase) ? '译文为空' : '');
-    candidate.classList.toggle('stale', ['updating', 'partial', 'failed', 'locked', 'returning'].includes(state.phase));
-    $('editAffordance').toggleAttribute('hidden', !canEdit());
-    $('regenerateAction').disabled = !['preview', 'pending', 'editing', 'failed'].includes(state.phase) || !eligible();
-    $('expandAction').disabled = !state.candidate;
-    $('expandAction').setAttribute('aria-label', state.expanded ? '收起译文' : '展开译文');
-    $('expandAction').title = state.expanded ? '收起译文' : '展开译文';
-    $('acceptKey').textContent = acceptKey;
-    $('exitKey').textContent = exitKey;
-    const canAcceptAfterFocus = eligible() && selectionMatches() && state.safePermit && !state.returnKeyHeld && ['preview', 'pending'].includes(state.phase) && !!state.candidate.trim();
-    $('acceptMeaning').textContent = editing ? '返回原输入框' : canAcceptAfterFocus ? '接受译文' : '交还应用';
-    $('acceptHint').classList.toggle('accept', editing || canAcceptAfterFocus);
-    syncGeometry(animate && !wasHidden, previousContent);
-    if (wasHidden && animate && !reduce.matches) inner.animate([{
-      opacity: 0
-    }, {
-      opacity: 1
-    }], {
-      duration: 130
-    });
-    if (focusEditor) {
-      candidate.focus();
-      const range = document.createRange();
-      range.selectNodeContents(candidate);
-      range.collapse(false);
-      const selection = getSelection();
-      selection.removeAllRanges();
-      selection.addRange(range);
-    }
-    updateReadout();
-  }
-  function updateReadout() {
-    $('sourceMode').textContent = state.mode === 'Automatic' ? '自动模式' : '按需模式';
-    $('pauseAction').textContent = state.enabled ? '暂停 TypeLay' : '恢复 TypeLay';
-    $('wakeAction').disabled = state.mode !== 'OnDemand' || !state.enabled;
-    $('directAction').disabled = state.mode !== 'OnDemand' || !state.enabled;
-    $('stateReadout').textContent = `状态：${state.phase}\n可编辑：${canEdit()}\n当前可接受：${canAccept()}\n输入法：${state.ime}\n候选匹配原文：${state.snapshot === source.value}\n接受次数：${state.acceptCount}\n原应用发送次数：${state.sendCount}\n减少动态效果：${reduce.matches}`;
-  }
-  function translate(text) {
-    const pairs = new Map([[sample, translation], ['你好，我想确认一下明天下午的会议时间。', 'Hi, could you confirm the time for tomorrow afternoon’s meeting?'], ['明天下午见', 'see you tomorrow afternoon'], ['谢谢', 'Thank you.'], ['你好', 'Hello.'], ['也请带上最新的方案。', 'Please bring the latest proposal, too.']]);
-    return pairs.get(text.trim()) || (text.length > 80 ? 'Could we review the details together tomorrow afternoon?\n\nI would like to confirm the timeline and next steps before we move ahead. Please bring the latest proposal so we can work through any open questions.' : 'Could we discuss the details tomorrow afternoon?');
-  }
-  function activeText() {
-    return state.selection ? state.selection.text : source.value;
-  }
-  function beginTranslation({
-    preserve = true,
-    delay = 650,
-    manualPrefix = ''
-  } = {}) {
-    cancelPending();
-    if (!state.enabled || !state.session || !state.targetSafe || state.ime !== 'clear' || state.quarantined) return;
-    const text = activeText();
-    state.safePermit = false;
-    state.editAcknowledged = false;
-    state.snapshot = source.value;
-    if (!text.trim() || !/[\u3400-\u9fff]/.test(text)) {
-      clearCandidate();
-      state.phase = 'idle';
-      render();
-      return;
-    }
-    if (!preserve) {
-      state.candidate = '';
-      state.manual = '';
-    }
-    state.phase = state.candidate ? 'updating' : 'translating';
+  S.phase = S.candidate ? 'updating' : 'translating';
+  render();
+  const rev = S.revision, snap = src.value;
+  S.timer = setTimeout(() => {
+    if (rev !== S.revision || !S.enabled || !S.session || !S.targetSafe || S.ime !== 'clear' || src.value !== snap) return;
+    if (S.failNext) { S.failNext = false; S.phase = 'failed'; render(); return; }
+    const appended = manualPrefix ? translate(text.slice(S.appendOffset)) : '';
+    const value = manualPrefix ? manualPrefix.replace(/\s+$/, '') + joiner(TL.prefs.target) + appended : translate(text);
+    Object.assign(S, { candidate: value, manual: manualPrefix ? value : '', snapshot: snap, permit: true, editAck: true, phase: manualPrefix ? 'pending' : 'preview' });
+    if (S.practice === 1) { S.practice = 2; coach(); }
     render();
-    const revision = state.revision;
-    const snapshot = source.value;
-    state.timer = setTimeout(() => {
-      if (revision !== state.revision || !state.enabled || !state.session || !state.targetSafe || state.ime !== 'clear' || source.value !== snapshot) return;
-      const value = manualPrefix ? manualPrefix + ' ' + translate(text.slice(state.appendOffset || 0)) : translate(text);
-      state.candidate = value;
-      state.manual = manualPrefix ? value : '';
-      state.snapshot = snapshot;
-      state.safePermit = true;
-      state.editAcknowledged = true;
-      state.phase = manualPrefix ? 'pending' : 'preview';
-      if (state.practice === 1) {
-        state.practice = 2;
-        $('practiceText').textContent = '已看到译文。接着按 Ctrl+Shift+F10，直接替换原文。';
-      }
-      render();
-      announce('译文已更新');
-    }, delay);
-  }
-  function beginEdit() {
-    if (!canEdit()) return;
-    if (state.automaticPractice === 3) state.automaticPractice = 2;
-    cancelPending();
-    state.manual = state.candidate;
-    state.safePermit = false;
-    state.phase = 'editing';
-    render({
-      focusEditor: true
-    });
-    announce('正在编辑译文，' + acceptKey + ' 返回原输入框');
-  }
-  function returnToSource(fromKey = false) {
-    if (state.phase !== 'editing') return;
-    const practiceEdited = state.automaticPractice === 2 && candidate.textContent !== state.candidate;
-    state.candidate = candidate.textContent;
-    state.manual = state.candidate;
-    state.phase = 'returning';
-    state.safePermit = false;
-    state.returnKeyHeld = fromKey;
+  }, delay);
+}
+function beginEdit() {
+  if (!canEdit()) return;
+  closeMenus();
+  if (S.autoPractice === 3) S.autoPractice = 2;
+  cancelPending();
+  S.editOrigin = S.candidate; S.permit = false; S.phase = 'editing';
+  render();
+  el.text.textContent = S.candidate; shown = [];
+  el.text.focus();
+  const r = document.createRange(); r.selectNodeContents(el.text); r.collapse(false);
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  layout();
+}
+function returnToSource(fromKey = false) {
+  if (S.phase !== 'editing') return;
+  const edited = el.text.textContent !== S.editOrigin || !!S.manual && S.manual !== S.editOrigin;
+  S.candidate = el.text.textContent; S.manual = edited ? S.candidate : '';
+  S.phase = 'returning'; S.permit = false; S.returnKeyHeld = fromKey;
+  render();
+  focusSource();
+  const rev = ++S.revision;
+  S.timer = setTimeout(() => {
+    if (S.revision !== rev || S.phase !== 'returning') return;
+    if (!eligible() || !selectionMatches() || !S.editAck || document.activeElement !== src) { endSession(); return; }
+    S.phase = 'pending'; S.permit = !!S.candidate.trim();
+    if (S.autoPractice === 2 && edited && S.permit) { S.autoPractice = 3; coach(); }
     render();
-    source.focus({
-      preventScroll: true
-    });
-    const revision = ++state.revision;
-    state.timer = setTimeout(() => {
-      if (state.revision !== revision || state.phase !== 'returning') return;
-      if (!eligible() || !selectionMatches() || !state.editAcknowledged || document.activeElement !== source) {
-        endSession();
-        return;
-      }
-      state.phase = 'pending';
-      state.safePermit = !!state.candidate.trim();
-      if (practiceEdited && state.safePermit) {
-        state.automaticPractice = 3;
-        $('practiceText').textContent = '已返回原框，尚未替换。再按一次 ' + acceptKey + ' 接受修改。';
-      }
-      render();
-      announce(state.candidate.trim() ? '已返回原输入框。再按一次 ' + acceptKey + ' 接受。' : '译文为空。请重新翻译或退出当前翻译。');
-    }, 350);
+  }, 280);
+}
+function tryAccept() {
+  if (!canAccept()) return false;
+  cancelPending();
+  if (S.selection && src.value !== S.selection.source) { endSession(); TL.toast(TL.t('toast.changed')); return false; }
+  S.permit = false;
+  if (S.writeOutcome === 'unknown') {
+    S.quarantined = true; clearCandidate(); S.phase = 'hidden'; S.session = false; render();
+    TL.toast(TL.t('toast.unknown')); return true;
   }
-  function tryAccept() {
-    if (!canAccept()) return false;
-    cancelPending();
-    if (state.selection && source.value !== state.selection.source) {
-      endSession();
-      notice('原文已变化。请在原输入框重新开始。');
-      return false;
-    }
-    state.safePermit = false;
-    if (state.writeOutcome === 'unknown') {
-      state.quarantined = true;
-      clearCandidate();
-      state.phase = 'hidden';
-      state.session = false;
-      render({
-        animate: false
-      });
-      notice('替换结果未确认，请检查原输入框。不会自动重试。');
-      return true;
-    }
-    const editedPractice = state.automaticPractice === 3 && state.phase === 'pending';
-    const value = state.candidate;
-    if (state.selection) {
-      const selection = state.selection;
-      source.value = source.value.slice(0, selection.start) + value + source.value.slice(selection.end);
-      const end = selection.start + value.length;
-      source.setSelectionRange(end, end);
-    } else {
-      source.value = value;
-      source.setSelectionRange(value.length, value.length);
-    }
-    state.acceptCount++;
-    if (state.automaticPractice === 1) {
-      state.automaticPractice = 2;
-      $('practiceText').textContent = '再输入一句原文，点击新译文并修改；第一次 ' + acceptKey + ' 只返回原框。';
-    } else if (editedPractice) {
-      state.automaticPractice = 4;
-      $('practiceText').textContent = '演示已完成：自动翻译、接受，再修改译文并接受。文本没有发送。';
-    }
-    state.snapshot = source.value;
-    clearCandidate();
-    state.phase = 'idle';
-    render();
-    $('sourceStatus').textContent = '已替换文本，尚未发送';
-    announce('译文已替换到原输入框，未发送');
-    return true;
+  const editedPractice = S.autoPractice === 3 && S.phase === 'pending';
+  const value = S.candidate;
+  flyGhost();
+  if (S.selection) {
+    const { start, end } = S.selection;
+    src.value = src.value.slice(0, start) + value + src.value.slice(end);
+    src.setSelectionRange(start + value.length, start + value.length);
+  } else { src.value = value; src.setSelectionRange(value.length, value.length); }
+  src.lang = TL.prefs.target; autosize();
+  el.wrap.classList.remove('flash'); void el.wrap.offsetWidth; el.wrap.classList.add('flash');
+  S.acceptCount++;
+  if (S.autoPractice === 1) { S.autoPractice = 2; coach(); } else if (editedPractice) { S.autoPractice = 4; coach(); }
+  S.snapshot = src.value; clearCandidate(); S.phase = 'quiet'; S.expanded = false;
+  render();
+  return true;
+}
+/* the accepted words drop toward the field while the shell springs back to a capsule */
+function flyGhost() {
+  if (TL.reducedMotion() || el.text.hidden) return;
+  const r = el.text.getBoundingClientRect();
+  const g = el.text.cloneNode(true);
+  g.removeAttribute('id'); g.className = 'tl-text tl-ghost'; g.inert = true; g.setAttribute('aria-hidden', 'true');
+  Object.assign(g.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px', overflow: 'hidden' });
+  document.body.append(g);
+  const dy = el.wrap.getBoundingClientRect().top - r.top + 6;
+  g.animate([{ transform: 'none', opacity: 1, filter: 'blur(0)' }, { transform: `translateY(${dy}px) scale(.96)`, opacity: 0, filter: 'blur(4px)' }],
+    { duration: 380, easing: 'cubic-bezier(.4,0,.6,1)' }).finished.finally(() => g.remove());
+}
+function endSession({ fade = false } = {}) {
+  cancelPending(); clearCandidate();
+  S.session = false; S.phase = 'hidden'; S.expanded = false;
+  render({ fade });
+}
+function pause() {
+  cancelPending(); clearTimeout(S.directTimer); clearCandidate();
+  Object.assign(S, { enabled: false, session: false, phase: S.targetSafe ? 'paused' : 'hidden', expanded: false });
+  render();
+}
+function resume() {
+  cancelPending(); clearCandidate(); S.enabled = true;
+  if (TL.prefs.mode === 'OnDemand' || !S.targetSafe || S.quarantined) {
+    S.session = false; S.phase = 'hidden'; render({ fade: true });
+    if (TL.prefs.mode === 'OnDemand') TL.toast(TL.t('toast.resumedOnDemand'));
+    return;
   }
-  function endSession({ userExit = false } = {}) {
-    const stable = !overlay.getAnimations().some(animation => animation.playState === 'running') && !inner.getAnimations().some(animation => animation.playState === 'running');
-    const fade = userExit && stable && state.targetSafe && state.ime === 'clear' && !state.quarantined && !reduce.matches && !overlay.hidden;
-    const ghost = fade ? visualCopy(overlay, 'exit-ghost') : null;
-    const bounds = fade ? overlay.getBoundingClientRect() : null;
-    cancelPending();
-    clearCandidate();
-    state.session = false;
-    state.phase = 'hidden';
-    state.expanded = false;
-    render({ animate: false });
-    if (ghost) {
-      ghost.hidden = false;
-      ghost.style.width = bounds.width + 'px';
-      ghost.style.height = bounds.height + 'px';
-      ghost.querySelectorAll('.motion-snapshot').forEach(node => node.remove());
-      overlay.after(ghost);
-      // This callback only deletes a noninteractive visual copy; it cannot restore a session.
-      ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 160 })
-        .finished.then(() => ghost.remove()).catch(() => ghost.remove());
-    }
-  }
-  function pause() {
-    cancelPending();
-    clearTimeout(state.directTimer);
-    clearCandidate();
-    state.enabled = false;
-    state.session = false;
-    state.phase = state.targetSafe ? 'paused' : 'hidden';
-    state.expanded = false;
-    render({
-      animate: false
-    });
-    announce('已暂停，当前译文和草稿已清除');
-  }
-  function resume() {
-    cancelPending();
-    clearCandidate();
-    state.enabled = true;
-    if (state.mode === 'OnDemand' || !state.targetSafe || state.quarantined) {
-      state.session = false;
-      state.phase = 'hidden';
-      render({
-        animate: false
-      });
-      notice(state.mode === 'OnDemand' ? '已恢复。按 Ctrl+Shift+F9 唤醒当前输入框。' : '请在可用的输入框中重新开始。');
-      return;
-    }
-    source.focus({
-      preventScroll: true
-    });
-    state.session = true;
-    state.editAcknowledged = true;
-    beginTranslation({
-      preserve: false
-    });
-  }
-  function wake() {
-    if (state.mode !== 'OnDemand' || !state.enabled) return;
-    notice('');
-    if (!state.targetSafe || state.quarantined) {
-      notice('当前输入框无法开始翻译。请换到可确认的普通输入框。');
-      return;
-    }
-    source.focus({
-      preventScroll: true
-    });
-    state.session = true;
-    state.editAcknowledged = true;
-    if (state.practice) state.practice = 1;
-    beginTranslation({
-      preserve: false
-    });
-  }
-  function direct() {
-    if (state.mode !== 'OnDemand' || !state.enabled) return;
-    if (!state.targetSafe || state.ime !== 'clear' || state.quarantined) {
-      notice('暂时无法替换。请完成输入法输入，或换到可确认的普通输入框。');
-      return;
-    }
-    const snapshot = source.value,
-      start = source.selectionStart,
-      end = source.selectionEnd,
-      text = end > start ? snapshot.slice(start, end) : snapshot;
-    if (!text.trim()) {
-      notice('先在原输入框中输入文字。');
-      return;
-    }
-    clearTimeout(state.directTimer);
-    const enabledAtDispatch = state.enabled;
-    notice('正在翻译原输入框…');
-    state.directTimer = setTimeout(() => {
-      if (!enabledAtDispatch || !state.enabled) return;
-      if (source.value !== snapshot || source.selectionStart !== start || source.selectionEnd !== end || state.ime !== 'clear' || !state.targetSafe) {
-        notice('原文或输入状态已变化，本次没有替换。请检查后重新操作。');
-        return;
-      }
-      if (state.writeOutcome === 'unknown') {
-        state.quarantined = true;
-        endSession();
-        notice('替换结果未确认，请检查原输入框。不会自动重试。');
-        return;
-      }
-      const value = translate(text);
-      source.value = end > start ? snapshot.slice(0, start) + value + snapshot.slice(end) : value;
-      state.snapshot = source.value;
-      clearCandidate();
-      state.phase = state.session ? 'idle' : 'hidden';
-      render();
-      notice('已替换原输入框中的文本，未发送。');
-      if (state.practice === 2) {
-        state.practice = 3;
-        $('practiceText').textContent = '已完成：查看译文，再直接替换。文本仍在输入框中，没有发送。';
-      }
-    }, 800);
-  }
-  function reset() {
-    cancelPending();
-    clearTimeout(state.directTimer);
-    Object.assign(state, {
-      phase: 'preview',
-      candidate: translation,
-      manual: '',
-      snapshot: sample,
-      selection: null,
-      enabled: true,
-      mode: 'Automatic',
-      session: true,
-      ime: 'clear',
-      targetSafe: true,
-      editAcknowledged: true,
-      safePermit: true,
-      returnKeyHeld: false,
-      expanded: false,
-      quarantined: false,
-      practice: 0,
-      automaticPractice: 0
-    });
-    source.value = sample;
-    source.readOnly = false;
-    notice('');
-    $('sourceStatus').textContent = '译文只在你接受后替换';
-    $('practiceGuide').hidden = true;
-    source.focus({
-      preventScroll: true
-    });
-  }
-  function scenario(name) {
-    reset();
-    if (name === 'editing') {
-      render({
-        animate: false
-      });
-      beginEdit();
-      return;
-    }
-    if (name === 'selection') {
-      source.value = 'Hello Alex, 明天下午见, thanks.';
-      const start = source.value.indexOf('明天下午见'),
-        end = start + 6;
-      source.setSelectionRange(start, end);
-      state.selection = {
-        start,
-        end,
-        text: '明天下午见',
-        source: source.value
-      };
-      state.snapshot = source.value;
-      state.candidate = 'see you tomorrow afternoon';
-    } else if (name === 'long') {
-      source.value = '明天下午我们一起仔细讨论方案吧。请带上最新的项目计划，我们需要核对时间安排，确认下一步工作，并逐项讨论尚未解决的问题。会议之后我会把结论整理好，发给需要了解进展的同事。';
-      state.snapshot = source.value;
-      state.candidate = 'Could we review the details together tomorrow afternoon?\n\nPlease bring the latest proposal. We can confirm the timeline and next steps, then work through the remaining questions one by one.\n\nAfterwards, I’ll put together a summary for everyone who needs an update.';
-    } else if (name === 'updating') {
-      state.phase = 'updating';
-      state.safePermit = false;
-      state.editAcknowledged = false;
-      source.value = sample + '也请带上最新的方案。';
-      state.snapshot = source.value;
-    } else if (name === 'failed') {
-      state.phase = 'failed';
-      state.safePermit = false;
-      state.editAcknowledged = false;
-    } else if (name === 'partial') {
-      state.phase = 'partial';
-      state.ime = 'composing';
-      state.safePermit = false;
-      state.editAcknowledged = false;
-      state.candidate = 'Could we pick this up…';
-    } else if (name === 'unknown-ime') {
-      state.phase = 'locked';
-      state.ime = 'unknown';
-      state.safePermit = false;
-      state.editAcknowledged = false;
-    } else if (name === 'locked') {
-      state.phase = 'locked';
-      state.safePermit = false;
-      state.editAcknowledged = false;
-    } else if (name === 'returning') {
-      state.phase = 'returning';
-      state.safePermit = false;
-      state.manual = translation;
-    } else if (name === 'paused') {
-      pause();
-      return;
-    } else if (name === 'sensitive') {
-      state.targetSafe = false;
-      endSession();
-      return;
-    } else if (name === 'empty') {
-      source.value = '';
-      state.snapshot = '';
-      clearCandidate();
-      state.phase = 'idle';
-    } else if (name === 'automatic-practice') {
-      source.value = '';
-      state.snapshot = '';
-      clearCandidate();
-      state.phase = 'idle';
-      state.automaticPractice = 1;
-      $('practiceHeading').textContent = '试一试自动翻译与编辑';
-      $('practiceText').textContent = '输入一句中文，等待译文后按 ' + acceptKey + ' 接受。';
-      $('practiceGuide').hidden = false;
-    } else if (name === 'ondemand' || name === 'practice') {
-      state.mode = 'OnDemand';
-      state.session = false;
-      clearCandidate();
-      state.phase = 'hidden';
-      if (name === 'practice') {
-        state.practice = 1;
-        $('practiceHeading').textContent = '试一试按需翻译';
-        $('practiceText').textContent = '在下方输入框按 Ctrl+Shift+F9，查看译文。';
-        $('practiceGuide').hidden = false;
-      }
-    }
-    render({
-      animate: false
-    });
-  }
-  source.addEventListener('focus', () => {
-    if (state.phase === 'editing') {
-      returnToSource(false);
-      return;
-    }
-    if (!suppressSourceFocus && state.targetSafe && !state.quarantined) {
-      if (!state.enabled) {
-        state.phase = 'paused';
-        render({ animate: false });
-      } else if (state.mode === 'Automatic' && !state.session && state.phase === 'hidden') {
-        state.session = true;
-        state.selection = currentSelection();
-        beginTranslation({ preserve: false });
-      }
-    }
-    updateReadout();
-  });
-  source.addEventListener('pointerdown', () => {
-    if (state.phase === 'editing') returnToSource(false);
-  });
-  source.addEventListener('input', () => {
-    if (state.automaticPractice === 3) state.automaticPractice = 2;
-    notice('');
-    if (!state.enabled || !state.targetSafe || state.quarantined) return;
-    if (state.mode === 'OnDemand' && !state.session) return;
-    const oldSnapshot = state.snapshot,
-      manualPrefix = state.phase === 'pending' && source.value.startsWith(oldSnapshot) ? state.manual : '';
-    state.session = true;
-    state.selection = null;
-    state.appendOffset = manualPrefix ? oldSnapshot.length : 0;
-    if (state.ime === 'composing') {
-      cancelPending();
-      state.safePermit = false;
-      state.editAcknowledged = false;
-      state.phase = state.candidate ? 'partial' : 'hidden';
-      render({
-        animate: false
-      });
-      return;
-    }
-    if (!manualPrefix) state.manual = '';
-    beginTranslation({
-      preserve: true,
-      manualPrefix
-    });
-  });
-  source.addEventListener('select', () => {
-    if (document.activeElement !== source || !state.session || !state.enabled || !state.targetSafe || state.quarantined || state.ime !== 'clear' || ['editing', 'returning'].includes(state.phase)) return;
-    const next = currentSelection(), previous = state.selection;
-    if ((!next && !previous) || (next && previous && next.start === previous.start && next.end === previous.end && next.source === previous.source)) return;
-    state.selection = next;
-    state.manual = '';
-    // Selection changes revoke the old candidate synchronously, before the new translation starts.
-    beginTranslation({ preserve: false, delay: 420 });
-  });
-  source.addEventListener('compositionstart', () => {
-    cancelPending();
-    state.ime = 'composing';
-    state.safePermit = false;
-    state.editAcknowledged = false;
-    state.phase = state.candidate ? 'partial' : 'hidden';
-    render({
-      animate: false
-    });
-  });
-  source.addEventListener('compositionend', () => {
-    state.ime = 'clear';
-    if (state.mode === 'OnDemand' && !state.session) return;
-    state.session = true;
-    beginTranslation({
-      preserve: false
-    });
-  });
-  source.addEventListener('keydown', event => {
-    const key = normalizeKey(event.key);
-    if (!event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey && key === acceptKey && !event.repeat && canAccept()) {
-      event.preventDefault();
-      tryAccept();
-    }
-  });
-  candidate.addEventListener('click', beginEdit);
-  candidate.addEventListener('keydown', event => {
-    const key = normalizeKey(event.key);
-    if ((event.key === 'Enter' || event.key === ' ') && canEdit()) {
-      event.preventDefault();
-      beginEdit();
-      return;
-    }
-    if (key === acceptKey && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey && state.phase === 'editing') {
-      event.preventDefault();
-      if (!event.repeat) returnToSource(true);
-    }
-  });
-  candidate.addEventListener('input', () => {
-    if (state.phase !== 'editing') return;
-    state.candidate = candidate.textContent;
-    state.manual = state.candidate;
-    syncGeometry();
-    updateReadout();
-  });
-  candidate.addEventListener('paste', event => {
-    if (state.phase !== 'editing') return;
-    event.preventDefault();
-    const text = event.clipboardData.getData('text/plain');
-    const selection = getSelection();
-    if (!selection.rangeCount) return;
-    const range = selection.getRangeAt(0);
-    range.deleteContents();
-    const node = document.createTextNode(text);
-    range.insertNode(node);
-    range.setStartAfter(node);
-    range.collapse(true);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    candidate.dispatchEvent(new Event('input'));
-  });
-  document.addEventListener('keyup', event => {
-    if (normalizeKey(event.key) === acceptKey && state.returnKeyHeld) {
-      state.returnKeyHeld = false;
-      render();
-    }
-  });
-  document.addEventListener('keydown', event => {
-    if ($('regenerateDialog').open) return;
-    if (normalizeKey(event.key) === exitKey && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey && state.session) {
-      event.preventDefault();
-      endSession({ userExit: true });
-      focusSourceWithoutRestart();
-      announce('已退出当前翻译');
-    }
-    if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && event.key === 'F9') {
-      if (state.mode === 'OnDemand') {
-        event.preventDefault();
-        wake();
-      }
-    }
-    if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && event.key === 'F10') {
-      if (state.mode === 'OnDemand') {
-        event.preventDefault();
-        direct();
-      }
-    }
-  });
-  $('exitAction').onclick = () => {
-    endSession({ userExit: true });
-    focusSourceWithoutRestart();
+  focusSource(); S.session = true; beginTranslation({ preserve: false, delay: 300 });
+}
+function wake() {
+  if (TL.prefs.mode !== 'OnDemand' || !S.enabled) return;
+  if (!S.targetSafe || S.quarantined) { TL.toast(TL.t('toast.unsupported')); return; }
+  focusSource(); S.session = true;
+  if (S.practice) S.practice = 1;
+  beginTranslation({ preserve: false, delay: 420 });
+}
+function direct() {
+  if (TL.prefs.mode !== 'OnDemand' || !S.enabled) return;
+  if (!S.targetSafe || S.quarantined) { TL.toast(TL.t('toast.unsupported')); return; }
+  if (S.ime !== 'clear') { TL.toast(TL.t('toast.blocked')); return; }
+  const snap = src.value, start = src.selectionStart, end = src.selectionEnd;
+  const text = end > start ? snap.slice(start, end) : snap;
+  if (!text.trim()) { TL.toast(TL.t('toast.empty')); return; }
+  clearTimeout(S.directTimer);
+  TL.toast(TL.t('toast.direct'));
+  S.directTimer = setTimeout(() => {
+    if (!S.enabled) return;
+    if (src.value !== snap || src.selectionStart !== start || src.selectionEnd !== end || S.ime !== 'clear' || !S.targetSafe) { TL.toast(TL.t('toast.changed')); return; }
+    if (S.writeOutcome === 'unknown') { S.quarantined = true; endSession(); TL.toast(TL.t('toast.unknown')); return; }
+    const value = translate(text);
+    src.value = end > start ? snap.slice(0, start) + value + snap.slice(end) : value;
+    src.lang = TL.prefs.target; autosize();
+    el.wrap.classList.remove('flash'); void el.wrap.offsetWidth; el.wrap.classList.add('flash');
+    S.snapshot = src.value; clearCandidate(); S.phase = S.session ? 'quiet' : 'hidden'; render();
+    TL.toast(TL.t('toast.replaced'));
+    if (S.practice === 2) { S.practice = 3; coach(); }
+  }, 700);
+}
+function regenerate({ rephrase = false } = {}) {
+  if (!S.session || !S.enabled || !S.targetSafe) return;
+  closeMenus();
+  if (S.phase === 'editing') { S.phase = 'preview'; }
+  S.manual = ''; S.rephrase = rephrase ? S.rephrase + 1 : 0;
+  focusSource(); S.snapshot = src.value;
+  beginTranslation({ preserve: true, delay: 520 });
+}
+function askRegenerate(opts) {
+  closeMenus();
+  if (S.manual && S.phase !== 'preview') { $('regenDialog').showModal(); $('regenDialog').dataset.rephrase = opts.rephrase ? '1' : ''; }
+  else regenerate(opts);
+}
+
+/* ============================== menus ============================== */
+let openMenu = null;
+function closeMenus() {
+  if (!openMenu) return;
+  openMenu.el.remove(); openMenu.button.setAttribute('aria-expanded', 'false');
+  el.actions.classList.remove('pinned');
+  openMenu = null;
+}
+function placeMenu(menu, button, { alignLeft = false } = {}) {
+  el.compose.append(menu);
+  const host = el.compose.getBoundingClientRect(), b = button.getBoundingClientRect();
+  menu.style.top = (b.bottom - host.top + 6) + 'px';
+  if (alignLeft) { menu.style.left = Math.max(8, b.left - host.left - 4) + 'px'; menu.style.setProperty('--origin', '0 0'); }
+  else { menu.style.right = Math.max(8, host.right - b.right - 4) + 'px'; menu.style.setProperty('--origin', '100% 0'); }
+  const overflow = menu.getBoundingClientRect().bottom - innerHeight + 8;
+  if (overflow > 0) { menu.style.top = (b.top - host.top - menu.offsetHeight - 6) + 'px'; menu.style.setProperty('--origin', alignLeft ? '0 100%' : '100% 100%'); }
+}
+function item(icon, label, run, { disabled = false, end = '' } = {}) {
+  const b = document.createElement('button');
+  b.className = 'menu-item'; b.setAttribute('role', 'menuitem'); b.disabled = disabled;
+  b.innerHTML = `<svg class="i"><use href="#i-${icon}"/></svg><span></span>${end ? `<span class="end">${end}</span>` : ''}`;
+  b.querySelector('span').textContent = label;
+  b.addEventListener('pointerdown', e => e.preventDefault()); // never steal focus from the source field
+  b.onclick = () => { closeMenus(); run(); };
+  return b;
+}
+function sep() { const d = document.createElement('div'); d.className = 'menu-sep'; return d; }
+function toggleMore() {
+  if (openMenu?.button === el.more) { closeMenus(); return; }
+  closeMenus();
+  const m = document.createElement('div');
+  m.className = 'menu'; m.setAttribute('role', 'menu');
+  const edited = !!S.manual;
+  const ready = !BUSY.has(S.phase) && !!S.candidate;
+  m.append(
+    item('refresh', TL.t('menu.retranslate'), () => askRegenerate({}), { disabled: !ready && S.phase !== 'failed' }),
+    item('sparkle', TL.t('menu.rephrase'), () => askRegenerate({ rephrase: true }), { disabled: !ready }),
+  );
+  const row = document.createElement('div');
+  row.className = 'menu-row';
+  row.innerHTML = `<svg class="i"><use href="#i-${edited ? 'lock' : 'style'}"/></svg><span>${TL.t('menu.style')}</span><div class="seg"></div>`;
+  if (edited) row.title = TL.t('menu.locked');
+  const seg = row.querySelector('.seg');
+  for (const k of ['natural', 'formal', 'concise', 'casual']) { const b = document.createElement('button'); b.dataset.value = k; b.textContent = TL.t('style.' + k); b.disabled = edited; b.addEventListener('pointerdown', e => e.preventDefault()); seg.append(b); }
+  TL.bindSeg(seg, v => { TL.set({ style: v }); TL.syncSeg(seg, v); if (!S.manual) regenerate(); });
+  m.append(row,
+    item('copy', TL.t('menu.copy'), copy, { disabled: !S.candidate, end: '⌘C' }),
+    item('book', TL.t('menu.glossary'), openGlossary, { disabled: !edited }),
+    sep(),
+    item('eye-off', TL.t('menu.hide'), hideForNow),
+    item('block', TL.t('menu.exclude', { app: APP }), excludeApp));
+  placeMenu(m, el.more);
+  TL.syncSeg(seg, TL.prefs.style);
+  el.more.setAttribute('aria-expanded', 'true'); el.actions.classList.add('pinned');
+  openMenu = { el: m, button: el.more };
+}
+function toggleLangMenu() {
+  if (openMenu?.button === el.lang) { closeMenus(); return; }
+  closeMenus();
+  if (S.phase === 'paused') return;
+  const m = document.createElement('div');
+  m.className = 'menu'; m.setAttribute('role', 'menu'); m.style.width = '264px';
+  const { source, target } = TL.prefs;
+  m.innerHTML = `<div class="lang-head"><span class="grow"></span><button class="tl-icon" data-i18n-label="lang.swap"><svg class="i"><use href="#i-swap"/></svg></button></div>
+    <div class="menu-search"><svg class="i"><use href="#i-search"/></svg><input type="search" data-i18n-placeholder="lang.search"></div><div class="lang-list" role="group"></div>`;
+  m.querySelector('.grow').textContent = `${TL.langName(source)} → ${TL.langName(target)}`;
+  const swap = m.querySelector('.lang-head .tl-icon');
+  swap.disabled = source === 'auto';
+  swap.onclick = () => { closeMenus(); focusSource(); TL.set({ source: target, target: source }); };
+  TL.translateDom(m);
+  const list = m.querySelector('.lang-list'), input = m.querySelector('input');
+  const draw = () => {
+    const qv = input.value.trim().toLowerCase();
+    list.replaceChildren(...TL.LANGS.filter(c => c !== source).filter(c => !qv || [TL.langName(c), TL.endonym(c), c].some(s => s.toLowerCase().includes(qv))).map(c => {
+      const b = item('check', TL.langName(c), () => { focusSource(); TL.set({ target: c }); });
+      b.querySelector('svg').classList.add('tick'); b.querySelector('svg').style.visibility = c === target ? 'visible' : 'hidden';
+      const n = document.createElement('span'); n.className = 'native'; n.textContent = TL.endonym(c); n.lang = c; b.append(n);
+      return b;
+    }));
   };
-  $('capsuleExit').onclick = $('exitAction').onclick;
-  $('pauseAction').onclick = () => state.enabled ? pause() : resume();
-  $('resumeAction').onclick = resume;
-  $('wakeAction').onclick = wake;
-  $('directAction').onclick = direct;
-  $('expandAction').onclick = () => {
-    state.expanded = !state.expanded;
-    render();
-  };
-  function regenerate() {
-    if (!eligible()) return;
-    state.manual = '';
-    source.focus({
-      preventScroll: true
-    });
-    beginTranslation({
-      preserve: true
-    });
-  }
-  $('regenerateAction').onclick = () => {
-    if (state.manual) {
-      $('regenerateDialog').showModal();
-      $('cancelRegenerate').focus();
-    } else regenerate();
-  };
-  $('cancelRegenerate').onclick = () => {
-    $('regenerateDialog').close();
-    if (state.phase === 'editing') candidate.focus();
-  };
-  $('confirmRegenerate').onclick = () => {
-    $('regenerateDialog').close();
-    regenerate();
-  };
-  $('sendMessage').onclick = () => {
-    if (!source.value.trim()) return;
-    state.sendCount++;
-    source.value = '';
-    endSession();
-    $('sourceStatus').textContent = '原应用已发送 ' + state.sendCount + ' 条消息';
-    notice('');
-  };
-  $('demoTheme').onchange = event => {
-    document.documentElement.dataset.theme = event.target.value;
-  };
-  $('writeOutcome').onchange = event => state.writeOutcome = event.target.value;
-  $('loadScenario').onclick = () => {
-    const name = $('scenarioSelect').value;
-    $('demoControls').open = false;
-    scenario(name);
-  };
-  window.addEventListener('resize', () => syncGeometry(false));
-  reduce.addEventListener('change', () => {
-    clearVisualMotion();
-    updateReadout();
-  });
-  // Browser focus is a demonstration boundary, not proof of a desktop permission. Controls stay outside the product shell.
-  document.addEventListener('focusin', event => {
-    if (event.target === source || overlay.contains(event.target) || $('demoControls').contains(event.target) || $('regenerateDialog').contains(event.target)) return;
-    if (state.session || state.phase === 'paused' || document.querySelector('.exit-ghost')) endSession();
-  });
-  window.addEventListener('blur', () => {
-    if (state.session || state.phase === 'paused' || document.querySelector('.exit-ghost')) endSession();
-  });
-  document.documentElement.dataset.theme = query.get('theme') === 'dark' ? 'dark' : 'light';
-  $('demoTheme').value = document.documentElement.dataset.theme;
-  scenario(query.get('scenario') || (query.get('mode') === 'ondemand' ? 'ondemand' : 'preview'));
-  if (query.get('scenario')) $('scenarioSelect').value = query.get('scenario');
-  $('acceptKey').textContent = acceptKey;
-  $('exitKey').textContent = exitKey;
-  window.prototypeState = () => ({
-    ...state,
-    canEdit: canEdit(),
-    canAccept: canAccept(),
-    source: source.value,
-    focused: document.activeElement.id,
-    animations: overlay.getAnimations().length
-  });
+  input.oninput = draw;
+  input.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); list.querySelector('.menu-item')?.click(); } if (e.key === 'Escape') { closeMenus(); focusSource(); } };
+  draw();
+  placeMenu(m, el.lang, { alignLeft: true });
+  el.lang.setAttribute('aria-expanded', 'true');
+  openMenu = { el: m, button: el.lang };
+  input.focus({ preventScroll: true });
+}
+function retarget() { // language direction changed: config only, never touches the field (PRD 11.7)
+  if (S.session && S.enabled) { S.manual = ''; beginTranslation({ preserve: false, delay: 360 }); } else render();
+}
+function copy() { try { navigator.clipboard?.writeText(S.candidate); } catch { /* demo */ } TL.toast(TL.t('toast.copied')); }
+function hideForNow() { S.hiddenField = true; cancelPending(); clearCandidate(); S.phase = 'hidden'; S.session = false; render({ fade: true }); focusSource(); }
+function excludeApp() {
+  S.excludedApp = true; cancelPending(); clearCandidate(); S.session = false; S.phase = 'hidden'; render({ fade: true }); focusSource();
+  TL.toast(TL.t('toast.excluded', { app: APP }), { label: TL.t('toast.undo'), run: () => { S.excludedApp = false; focusSource(); if (TL.prefs.mode === 'Automatic') { S.session = true; beginTranslation({ preserve: false, delay: 200 }); } } });
+}
+function openGlossary() {
+  const d = $('glossDialog');
+  $('glossSource').value = activeText().trim().slice(0, 40);
+  $('glossTarget').value = S.candidate.trim().slice(0, 60);
+  const scope = $('glossScope');
+  scope.replaceChildren(new Option(TL.t('gloss.all'), 'all'), new Option(`${TL.langName(TL.prefs.source)} → ${TL.langName(TL.prefs.target)}`, 'pair'));
+  d.showModal();
+}
+$('glossDialog').addEventListener('close', () => { if ($('glossDialog').returnValue === 'add') TL.toast(TL.t('toast.glossary')); focusSource(); });
+$('regenKeep').onclick = () => { $('regenDialog').close(); if (S.phase === 'editing') el.text.focus(); else focusSource(); };
+$('regenGo').onclick = () => { $('regenDialog').close(); regenerate({ rephrase: !!$('regenDialog').dataset.rephrase }); };
+
+/* ============================== tutorial coach ============================== */
+function coach() {
+  const box = $('coach');
+  const auto = S.autoPractice > 0, total = auto ? 4 : 3, step = auto ? S.autoPractice : S.practice;
+  box.hidden = !step;
+  if (!step) return;
+  $('coachSteps').innerHTML = Array.from({ length: total }, (_, i) => `<i class="${i + 1 === step ? 'on' : i + 1 < step ? 'done' : ''}"></i>`).join('');
+  $('coachText').textContent = TL.t((auto ? 'coach.a' : 'coach.d') + step, { key: ACCEPT });
+  $('coachSkip').textContent = TL.t(step === total ? 'coach.done' : 'coach.skip');
+}
+$('coachSkip').onclick = () => { S.practice = 0; S.autoPractice = 0; coach(); };
+
+/* ============================== source field events ============================== */
+function autosize() { src.style.height = 'auto'; src.style.height = Math.min(132, src.scrollHeight) + 'px'; $('send').disabled = !src.value.trim(); }
+src.addEventListener('focus', () => {
+  if (S.phase === 'editing') { returnToSource(false); return; }
+  if (suppressFocus || !S.targetSafe || S.quarantined || S.excludedApp) return;
+  S.hiddenField = false; // "hide for now" lasts until the field is focused again
+  if (!S.enabled) { S.phase = 'paused'; render(); return; }
+  if (TL.prefs.mode === 'Automatic' && !S.session) { S.session = true; S.selection = currentSelection(); beginTranslation({ preserve: false, delay: 380 }); }
+});
+src.addEventListener('pointerdown', () => { if (S.phase === 'editing') returnToSource(false); });
+src.addEventListener('input', () => {
+  autosize();
+  src.lang = TL.langOfScript(TL.scriptOf(src.value));
+  if (S.autoPractice === 3) S.autoPractice = 2;
+  if (!S.enabled || !S.targetSafe || S.quarantined || S.excludedApp || S.hiddenField) return;
+  if (TL.prefs.mode === 'OnDemand' && !S.session) return;
+  const old = S.snapshot;
+  const manualPrefix = S.phase === 'pending' && src.value.startsWith(old) && src.value.length > old.length ? S.manual : '';
+  S.session = true; S.selection = null; S.appendOffset = manualPrefix ? old.length : 0;
+  if (S.ime === 'composing') { cancelPending(); S.permit = false; S.editAck = false; S.phase = S.candidate ? 'partial' : 'idle'; render(); return; }
+  if (!src.value.trim()) { cancelPending(); clearCandidate(); S.snapshot = src.value; S.phase = 'idle'; S.expanded = false; render(); return; } // PRD 17.5
+  if (!manualPrefix) S.manual = '';
+  beginTranslation({ preserve: true, manualPrefix });
+});
+src.addEventListener('select', () => {
+  if (document.activeElement !== src || !S.session || !S.enabled || !S.targetSafe || S.quarantined || S.ime !== 'clear' || ['editing', 'returning'].includes(S.phase)) return;
+  const next = currentSelection(), prev = S.selection;
+  if ((!next && !prev) || (next && prev && next.start === prev.start && next.end === prev.end && next.source === prev.source)) return;
+  S.selection = next; S.manual = '';
+  beginTranslation({ preserve: false, delay: 420 }); // wait for the selection to settle (PRD 8.3)
+});
+src.addEventListener('compositionstart', () => { cancelPending(); S.ime = 'composing'; S.permit = false; S.editAck = false; if (S.session) { S.phase = S.candidate ? 'partial' : S.phase === 'hidden' ? 'hidden' : 'idle'; render(); } });
+src.addEventListener('compositionend', () => { S.ime = 'clear'; if (TL.prefs.mode === 'OnDemand' && !S.session) return; S.session = true; beginTranslation({ preserve: true }); });
+src.addEventListener('keydown', e => {
+  const k = norm(e.key);
+  if (k === ACCEPT && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && !e.repeat && canAccept()) { e.preventDefault(); tryAccept(); }
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+});
+el.text.addEventListener('click', beginEdit);
+el.text.addEventListener('keydown', e => {
+  const k = norm(e.key);
+  if ((e.key === 'Enter' || e.key === ' ') && S.phase !== 'editing' && canEdit()) { e.preventDefault(); beginEdit(); return; }
+  if (k === ACCEPT && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && S.phase === 'editing') { e.preventDefault(); if (!e.repeat) returnToSource(true); }
+});
+el.text.addEventListener('input', () => { if (S.phase !== 'editing') return; S.candidate = el.text.textContent; layout(); readout(); });
+el.text.addEventListener('paste', e => {
+  if (S.phase !== 'editing') return;
+  e.preventDefault();
+  const sel = getSelection(); if (!sel.rangeCount) return;
+  const r = sel.getRangeAt(0); r.deleteContents();
+  const node = document.createTextNode(e.clipboardData.getData('text/plain')); r.insertNode(node);
+  r.setStartAfter(node); r.collapse(true); sel.removeAllRanges(); sel.addRange(r);
+  el.text.dispatchEvent(new Event('input'));
+});
+for (const b of [el.lang, el.more, el.expand, el.resume]) b.addEventListener('pointerdown', e => { if (b !== el.lang) e.preventDefault(); });
+el.lang.onclick = toggleLangMenu;
+el.more.onclick = toggleMore;
+el.expand.onclick = () => { S.expanded = !S.expanded; render(); };
+el.resume.onclick = resume;
+document.addEventListener('keyup', e => { if (norm(e.key) === ACCEPT && S.returnKeyHeld) { S.returnKeyHeld = false; render(); } });
+document.addEventListener('keydown', e => {
+  if (document.querySelector('dialog[open]')) return;
+  const k = norm(e.key);
+  if (k === 'Esc' && openMenu) { e.preventDefault(); const wasLang = openMenu.button === el.lang; closeMenus(); if (wasLang) focusSource(); return; }
+  if (k === EXIT && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && S.session) { e.preventDefault(); endSession({ fade: true }); focusSource(); }
+  if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.key === 'F9' && TL.prefs.mode === 'OnDemand') { e.preventDefault(); wake(); }
+  if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.key === 'F10' && TL.prefs.mode === 'OnDemand') { e.preventDefault(); direct(); }
+  if ((e.metaKey || e.ctrlKey) && e.key === 'c' && openMenu?.button === el.more) { e.preventDefault(); closeMenus(); copy(); }
+});
+document.addEventListener('pointerdown', e => { if (openMenu && !openMenu.el.contains(e.target) && !openMenu.button.contains(e.target)) closeMenus(); });
+function send() {
+  if (!src.value.trim()) return;
+  S.sendCount++;
+  const b = document.createElement('div'); b.className = 'bubble out'; b.textContent = src.value; b.lang = src.lang;
+  document.querySelector('.thread').append(b);
+  src.value = ''; autosize(); S.snapshot = '';
+  cancelPending(); clearCandidate();
+  if (S.session) { S.phase = 'idle'; render(); }
+}
+$('send').onclick = () => { send(); focusSource(); };
+// Focus leaving "source field + overlay" ends the session (PRD 22). Prototype chrome and sheets are outside the product.
+const insideSession = t => t === src || el.tl.contains(t) || openMenu?.el.contains(t) || $('proto').contains(t) || t.closest?.('dialog');
+document.addEventListener('focusin', e => { if (!insideSession(e.target) && (S.session || S.phase === 'paused')) endSession({ fade: true }); });
+addEventListener('blur', () => { if (S.session || S.phase === 'paused') endSession(); });
+addEventListener('resize', () => layout({ instant: true }));
+
+/* ============================== scenarios ============================== */
+function reset() {
+  cancelPending(); clearTimeout(S.directTimer); closeMenus();
+  Object.assign(S, { phase: 'hidden', candidate: '', manual: '', snapshot: '', selection: null, appendOffset: 0, enabled: true, session: false, ime: 'clear', targetSafe: true,
+    model: 'ready', quarantined: false, hiddenField: false, excludedApp: false, editAck: false, permit: false, returnKeyHeld: false, expanded: false, rephrase: 0, failNext: false, practice: 0, autoPractice: 0 });
+  src.value = SAMPLE; src.lang = 'zh-Hans'; autosize(); coach();
+}
+function preview(text = SAMPLE, extra = {}) {
+  src.value = text; src.lang = TL.langOfScript(TL.scriptOf(text)); autosize();
+  focusSource();
+  Object.assign(S, { session: true, snapshot: src.value, candidate: translate(text), permit: true, editAck: true, phase: 'preview' }, extra);
+}
+const SCENARIOS = {
+  preview: () => preview(),
+  idle: () => { src.value = ''; autosize(); focusSource(); Object.assign(S, { session: true, snapshot: '', phase: 'idle' }); },
+  quiet: () => { src.value = 'See you tomorrow.'; autosize(); focusSource(); Object.assign(S, { session: true, snapshot: src.value, phase: 'quiet' }); },
+  translating: () => { src.value = ''; autosize(); focusSource(); S.session = true; S.snapshot = ''; S.phase = 'idle'; render(); src.value = SAMPLE; autosize(); S.snapshot = SAMPLE; beginTranslation({ preserve: false, delay: 1400 }); return true; },
+  preparing: () => { src.value = SAMPLE; autosize(); focusSource(); S.session = true; S.model = 'preparing'; beginTranslation({ preserve: false }); return true; },
+  updating: () => { preview(); src.value = SAMPLE + '也请带上最新的方案。'; autosize(); S.snapshot = src.value; S.permit = false; S.editAck = false; S.phase = 'updating'; render(); const rev = S.revision; S.timer = setTimeout(() => { if (rev === S.revision) beginTranslation({ preserve: true, delay: 0 }); }, 1600); return true; },
+  failed: () => preview(SAMPLE, { phase: 'failed', permit: false, editAck: false }),
+  editing: () => { preview(); render(); beginEdit(); return true; },
+  pending: () => { preview(); S.candidate = 'Could we go over the details tomorrow afternoon, around 3?'; S.manual = S.candidate; S.phase = 'pending'; },
+  selection: () => {
+    src.value = 'Hello Alex, 明天下午见, thanks.'; autosize(); focusSource();
+    const start = src.value.indexOf('明天下午见'), end = start + 5; src.setSelectionRange(start, end);
+    Object.assign(S, { session: true, selection: { start, end, text: '明天下午见', source: src.value }, snapshot: src.value, candidate: translate('明天下午见'), permit: true, editAck: true, phase: 'preview' });
+  },
+  long: () => {
+    const text = '明天下午我们一起仔细讨论方案吧。请带上最新的项目计划，我们需要核对时间安排，确认下一步工作，并逐项讨论尚未解决的问题。会议之后我会把结论整理好，发给需要了解进展的同事。';
+    preview(text, { candidate: 'Let’s go through the plan together tomorrow afternoon.\n\nPlease bring the latest project plan — we need to check the timeline, agree on next steps, and work through the open questions one by one.\n\nAfterwards, I’ll write up the conclusions and send them to everyone who needs an update.' });
+  },
+  partial: () => preview(SAMPLE, { phase: 'partial', ime: 'composing', permit: false, editAck: false, candidate: 'Could we go over the…' }),
+  locked: () => preview(SAMPLE, { phase: 'locked', ime: 'unknown', permit: false, editAck: false }),
+  paused: () => { src.value = SAMPLE; autosize(); focusSource(); pause(); return true; },
+  sensitive: () => { S.targetSafe = false; focusSource(); },
+  ondemand: () => { TL.set({ mode: 'OnDemand' }); focusSource(); },
+  practiceAuto: () => { TL.set({ mode: 'Automatic' }); src.value = ''; autosize(); S.autoPractice = 1; coach(); focusSource(); Object.assign(S, { session: true, snapshot: '', phase: 'idle' }); },
+  practice: () => { TL.set({ mode: 'OnDemand' }); S.practice = 1; coach(); focusSource(); }
+};
+function scenario(name) {
+  if (!SCENARIOS[name]) name = 'preview';
+  hideShell(); reset();
+  if (name !== 'ondemand' && name !== 'practice' && !name.startsWith('practice') && TL.prefs.mode !== 'Automatic' && !['paused', 'sensitive'].includes(name)) TL.set({ mode: 'Automatic' });
+  $('pScenario').value = name;
+  if (!SCENARIOS[name]()) render();
+}
+
+/* ============================== prototype panel ============================== */
+function fillScenarioSelect() {
+  const sel = $('pScenario'), cur = sel.value;
+  sel.replaceChildren(...Object.keys(SCENARIOS).map(k => new Option(TL.t('sc.' + k), k)));
+  sel.value = cur || 'preview';
+}
+function syncProto() {
+  const p = TL.prefs;
+  TL.syncSeg($('pTheme'), p.theme); TL.syncSeg($('pUi'), TL.uiLang()); TL.syncSeg($('pFont'), p.font);
+  TL.syncSeg($('pMode'), p.mode); TL.syncSeg($('pWrite'), S.writeOutcome);
+  $('pPause').textContent = TL.t(S.enabled ? 'proto.pause' : 'proto.resume');
+  $('pWake').disabled = $('pDirect').disabled = p.mode !== 'OnDemand' || !S.enabled;
+}
+function readout() {
+  syncProto();
+  $('pState').textContent = JSON.stringify({ phase: S.phase, mode: TL.prefs.mode, canEdit: canEdit(), canAccept: canAccept(), ime: S.ime, matchesSource: S.snapshot === src.value, accepted: S.acceptCount, sent: S.sendCount, target: TL.prefs.target, style: TL.prefs.style }, null, 1);
+}
+TL.bindSeg($('pTheme'), v => TL.set({ theme: v }));
+TL.bindSeg($('pUi'), v => TL.set({ uiLang: v }));
+TL.bindSeg($('pFont'), v => TL.set({ font: v }));
+TL.bindSeg($('pMode'), v => { TL.set({ mode: v }); endSession(); });
+TL.bindSeg($('pWrite'), v => { S.writeOutcome = v; readout(); });
+$('pScenario').onchange = e => scenario(e.target.value);
+$('pPause').onclick = () => S.enabled ? pause() : resume();
+$('pReset').onclick = () => scenario('preview');
+$('pWake').onclick = wake;
+$('pDirect').onclick = direct;
+$('protoToggle').onclick = () => { const p = $('proto'); const open = p.dataset.open !== 'true'; p.dataset.open = open; $('protoToggle').setAttribute('aria-expanded', open); if (open) syncProto(); };
+
+const tickClock = () => { $('clock').textContent = new Date().toLocaleTimeString(TL.uiLang(), { hour: '2-digit', minute: '2-digit' }); };
+tickClock(); setInterval(tickClock, 30000);
+
+let lastTarget = TL.prefs.target, lastSize = TL.prefs.textSize;
+TL.onChange(p => {
+  fillScenarioSelect(); coach();
+  if (p.target !== lastTarget) { lastTarget = p.target; if (S.session && S.enabled && S.phase !== 'editing') { retarget(); return; } }
+  if (p.textSize !== lastSize) { lastSize = p.textSize; }
+  if (!el.tl.hidden && S.phase !== 'editing') render();
+  requestAnimationFrame(() => { syncProto(); layout(); });
+});
+document.fonts?.ready.then(() => layout({ instant: true }));
+
+/* ============================== agent / developer surface ============================== */
+window.TypeLay = Object.freeze({
+  scenarios: Object.keys(SCENARIOS),
+  scenario,
+  set: patch => TL.set(patch),
+  prefs: () => ({ ...TL.prefs }),
+  state: () => ({ ...S, canEdit: canEdit(), canAccept: canAccept(), mode: el.tl.hidden ? 'hidden' : el.tl.dataset.mode, source: src.value, focused: document.activeElement?.id || null }),
+  accept: () => { focusSource(); return tryAccept(); },
+  edit: beginEdit, exit: () => endSession({ fade: true }), pause, resume, wake, direct
+});
+
+TL.apply();
+fillScenarioSelect();
+scenario(q.get('scenario') || (TL.prefs.mode === 'OnDemand' ? 'ondemand' : 'preview'));
+if (q.get('proto') === 'closed') $('protoToggle').click();
 })();
 </script>
 </body>

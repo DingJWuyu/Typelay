@@ -38,11 +38,11 @@ class CollectionError(ValueError):
     """Only fixed, non-private failure codes are exposed in the report."""
 
 
-def arguments(description=__doc__, *, allow_holdout=False):
+def arguments(description=__doc__, *, allow_holdout=False, native="hy"):
     parser = argparse.ArgumentParser(description=description, allow_abbrev=False)
     parser.add_argument("--python", type=Path, help="existing official installation's venv Python")
     parser.add_argument(
-        "--models", type=Path, help="same installation's schema3 Hy model directory"
+        "--models", type=Path, help=f"same installation's schema3 {native} model directory"
     )
     parser.add_argument(
         "--worker", type=Path, help="matching production bundle's worker/run_worker.py"
@@ -72,13 +72,13 @@ def arguments(description=__doc__, *, allow_holdout=False):
     return args
 
 
-def source_hashes():
+def source_hashes(native="hy"):
     paths = [
         WORKER,
         *sorted((WORKER.parent / "typelay_worker").glob("*.py")),
         *(WORKER.parent / name for name in ("requirements.txt", "model-catalog.json")),
         *(
-            WORKER.parent / "native/hy" / name
+            WORKER.parent / "native" / native / name
             for name in ("model.lock.json", "cpu-runtime.lock.json")
         ),
     ]
@@ -88,7 +88,7 @@ def source_hashes():
     }
 
 
-def collection_report(input_sha256, maximum_requests):
+def collection_report(input_sha256, maximum_requests, *, native="hy"):
     """The styled and glossary collectors share the same production limits and evidence."""
     return {
         "schema": 1,
@@ -96,8 +96,8 @@ def collection_report(input_sha256, maximum_requests):
         "quality": "not-run",
         "stage": "input-validation",
         "inputSha256": input_sha256,
-        "workerSourceSha256": source_hashes(),
-        "requiredNativeAbi": 5,
+        "workerSourceSha256": source_hashes(native),
+        "requiredNativeAbi": 1 if native == "index" else 5,
         "maximumTranslationRequests": maximum_requests,
         "configuredLimits": {
             "workerRequestSeconds": 60,
@@ -109,8 +109,8 @@ def collection_report(input_sha256, maximum_requests):
             "modelHandles": 1,
             "parallelRequests": 1,
             "nativeThreads": 2,
-            "contextTokens": 1024,
-            "maximumNewTokens": 192,
+            "contextTokens": 4096 if native == "index" else 1024,
+            "maximumNewTokens": 1024 if native == "index" else 192,
             "sampling": "greedy",
             "quantization": "Q4_K_M",
         },
@@ -181,7 +181,7 @@ def prepare_report(*, include_holdout=False):
     }
 
 
-def installation(args, required_directions=DIRECTIONS):
+def installation(args, required_directions=DIRECTIONS, *, native="hy"):
     # Pin current to one generation without following the venv Python leaf alias.
     args.models = args.models.resolve(strict=True)
     runtime = args.models.parent / "runtime"
@@ -202,10 +202,12 @@ def installation(args, required_directions=DIRECTIONS):
         raise CollectionError("model-inventory-size")
     inventory = json.loads(raw)
     if type(inventory.get("schema")) is not int or inventory["schema"] != 3:
-        raise CollectionError("requires-schema3-hy")
+        raise CollectionError("requires-schema3-" + native)
     selected = read_active_selection(inventory, load_package_catalog())
-    if len(selected) != 1 or selected[0].package.backend != "hy-mt-llama-cpu":
-        raise CollectionError("requires-one-active-hy-package")
+    if len(selected) != 1 or selected[0].package.backend != (
+        "index-translate-llama-cpu" if native == "index" else "hy-mt-llama-cpu"
+    ):
+        raise CollectionError("requires-one-active-" + native + "-package")
     directions = [direction.id for direction in selected[0].directions]
     if not set(required_directions).issubset(directions):
         raise CollectionError("installed-active-directions-do-not-cover-fixed-inputs")
@@ -226,7 +228,7 @@ def installation(args, required_directions=DIRECTIONS):
     }
 
 
-def production_worker(args, expected_hashes):
+def production_worker(args, expected_hashes, *, native="hy"):
     args.worker = args.worker.resolve(strict=True)
     if args.worker.name != "run_worker.py":
         raise CollectionError("requires-production-worker-entry")
@@ -249,13 +251,19 @@ def production_worker(args, expected_hashes):
             actual = stream.read((WORKER.parent / name).stat().st_size + 1)
         if hashlib.sha256(actual).hexdigest() != expected:
             raise CollectionError("production-worker-source-or-lock-mismatch")
-    with (package / "native/hy/production-adapter.json").open("rb") as stream:
+    with (package / "native" / native / "production-adapter.json").open("rb") as stream:
         raw = stream.read(128 * 1024 + 1)
     if len(raw) > 128 * 1024:
         raise CollectionError("production-adapter-manifest-size")
     manifest = json.loads(raw)
-    if type(manifest.get("abi")) is not int or manifest["abi"] != 5:
-        raise CollectionError("requires-abi5-production-adapter")
+    abi = 1 if native == "index" else 5
+    if type(manifest.get("abi")) is not int or manifest["abi"] != abi:
+        raise CollectionError(f"requires-abi{abi}-production-adapter")
+    if native == "index":
+        from typelay_worker.index_assets import CAPABILITIES, EXPORTS
+
+        if manifest.get("exports") != EXPORTS or manifest.get("capabilities") != CAPABILITIES:
+            raise CollectionError("requires-extended-index-production-adapter")
     return {
         "entry": str(args.worker),
         "sourceMatchesCheckout": True,
@@ -370,6 +378,7 @@ async def collect(
     required_directions=DIRECTIONS,
     capability="styledTranslationVersion",
     work_deadline=None,
+    native="hy",
 ):
     process = None
     started = time.monotonic()
@@ -389,9 +398,11 @@ async def collect(
             raise TimeoutError
         async with asyncio.timeout_at(deadline):
             report["stage"] = "installation-intent"
-            report["installation"] = installation(args, required_directions)
+            report["installation"] = installation(args, required_directions, native=native)
             report["stage"] = "production-worker-identity"
-            report["productionWorker"] = production_worker(args, report["workerSourceSha256"])
+            report["productionWorker"] = production_worker(
+                args, report["workerSourceSha256"], native=native
+            )
             report["stage"] = "load-and-hello"
             spawn = asyncio.create_task(
                 asyncio.create_subprocess_exec(
@@ -447,8 +458,15 @@ async def collect(
                 signal.signal(signum, handler)
 
 
-def main(prepare=prepare_report, collector=collect, description=__doc__, *, allow_holdout=False):
-    args = arguments(description, allow_holdout=allow_holdout)
+def main(
+    prepare=prepare_report,
+    collector=collect,
+    description=__doc__,
+    *,
+    allow_holdout=False,
+    native="hy",
+):
+    args = arguments(description, allow_holdout=allow_holdout, native=native)
     report = {
         "schema": 1,
         "status": "not-run",

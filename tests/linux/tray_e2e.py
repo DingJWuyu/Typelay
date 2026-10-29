@@ -1,4 +1,4 @@
-"""Real GTK settings/Ayatana menu + published host; no model or input fixture.
+"""Real GTK settings/StatusNotifier quick panel + published host; no model or input fixture.
 
 Run under a fresh dbus-run-session and an available GTK display. The watcher is
 only a panel boundary, not evidence of Waybar pixels or physical pointer input.
@@ -113,6 +113,7 @@ def main():
             (directory / "config/settings.json").write_text(
                 json.dumps(
                     {
+                        "UiLanguage": "zh-CN",
                         "Styles": {
                             "Default": "formal",
                             "Applications": {"editor": "natural", "mail": "formal"},
@@ -252,7 +253,7 @@ def main():
                 lambda: actions.append("quit"),
                 availability,
             )
-            assert tray.indicator is not None, "AyatanaAppIndicator3 unavailable"
+            assert tray.indicator is not None, "StatusNotifier adapter unavailable"
             panel_failure = None
             try:
                 await asyncio.wait_for(connected.wait(), 3)
@@ -263,6 +264,7 @@ def main():
                 # feedback delivery through the actual notification service.
                 panel_failure = "real indicator did not register with the panel within 3 seconds"
             initial = {
+                "uiLanguage": "zh-CN",
                 "schema": 1,
                 "enabled": True,
                 "source": "auto",
@@ -278,25 +280,24 @@ def main():
             }
             assert await host.ask("settings", initial, timeout=3) is True
             assert not jobs, "rendering acknowledged settings wrote settings again"
-            menu = tray.indicator.get_menu()
-            items = {item.get_label(): item for item in menu.get_children() if item.get_label()}
-            assert list(tray.groups["source"]) == ["auto", "zh", "en"]
-            assert list(tray.groups["target"]) == ["en", "zh"]
-            assert [item.get_label() for item in tray.groups["source"].values()] == [
+            items = tray.actions
+            assert [row[1] for row in tray.parents["source"].get_model()] == ["auto", "zh", "en"]
+            assert [row[1] for row in tray.parents["target"].get_model()] == ["en", "zh"]
+            assert [row[0] for row in tray.parents["source"].get_model()] == [
                 "自动识别",
                 "中文",
                 "英语",
             ]
-            assert tray.groups["source"]["auto"].get_active()
-            assert tray.groups["target"]["en"].get_active()
-            assert tray.model.get_label() == "本地模型尚未就绪"
+            assert tray.parents["source"].get_active_id() == "auto"
+            assert tray.parents["target"].get_active_id() == "en"
+            assert tray.model.get_label() == "○ 本地模型尚未就绪"
             saved_language_choices = (directory / "config/settings.json").read_bytes()
             assert (
                 await host.ask("activateModel", {"identity": "a" * 32, "generation": "b" * 32})
                 == "unchanged"
             )
-            assert tray.groups["source"]["auto"].get_active()
-            assert tray.groups["target"]["en"].get_active()
+            assert tray.parents["source"].get_active_id() == "auto"
+            assert tray.parents["target"].get_active_id() == "en"
             assert tray.parents["source"].get_sensitive() and tray.parents["target"].get_sensitive()
             assert (directory / "config/settings.json").read_bytes() == saved_language_choices
             assert not jobs, "unavailable model changed or tried to save the selected languages"
@@ -320,7 +321,7 @@ def main():
             saved_before_failure = settings_file.read_bytes()
             blocker = settings_file.with_suffix(".json.tmp")
             blocker.mkdir()
-            items["启用 TypeLay"].activate()
+            tray.enabled.set_active(not tray.enabled.get_active())
             await settled()
             assert state["enabled"] is True and tray.enabled.get_active()
             assert settings_file.read_bytes() == saved_before_failure
@@ -328,14 +329,14 @@ def main():
             failure_message = tray.save_notice.get_label()
             assert failure_message == tray.guidance["saveUnconfirmedMessage"]
             tray.report({"modelReady": True})
-            assert tray.model.get_label() == "本地模型已就绪"
+            assert tray.model.get_label() == "● 本地模型已就绪"
             assert (
                 tray.save_notice.get_visible() and tray.save_notice.get_label() == failure_message
             )
             assert not tray.pending and tray.enabled.get_sensitive()
             assert items["设置…"].get_sensitive() and items["退出 TypeLay"].get_sensitive()
             blocker.rmdir()
-            items["启用 TypeLay"].activate()
+            tray.enabled.set_active(not tray.enabled.get_active())
             await settled()
             assert state["enabled"] is False, {
                 "trayStatus": tray.status.get_label(),
@@ -353,22 +354,20 @@ def main():
             }
             assert await host.ask("allowField", metadata) is False
             assert not tray.save_notice.get_visible(), "an explicit successful retry kept the error"
-            assert tray.indicator.get_status() == tray.backend.IndicatorStatus.ACTIVE
-            assert tray.indicator.get_icon() == "typelay-paused", "pause removed the restore entry"
-            items["启用 TypeLay"].activate()
+            assert not tray.indicator.closed
+            assert tray.indicator.icon == "typelay-paused", "pause removed the restore entry"
+            tray.enabled.set_active(not tray.enabled.get_active())
             await settled()
             assert await host.ask("allowField", metadata) is True
             assert state["excludedApplications"] == initial["excludedApplications"]
             assert state["experimentalWriteback"] is False
             assert not tray.swap.get_sensitive(), "Auto must not become a target language"
-            modes = items["工作模式"].get_submenu().get_children()
-            next(item for item in modes if item.get_label() == "按需模式").activate()
+            tray.mode.buttons["OnDemand"].set_active(True)
             await settled()
             assert state["mode"] == "OnDemand"
-            sources = items["源语言"].get_submenu().get_children()
-            next(item for item in sources if item.get_label() == "中文").activate()
+            tray.parents["source"].set_active_id("zh")
             await settled()
-            tray.swap.activate()
+            tray.swap.clicked()
             await settled()
             assert (state["source"], state["target"]) == ("en", "zh")
             assert state["theme"] == "dark"
@@ -383,6 +382,13 @@ def main():
                 else:
                     packages_requested.append(request)
 
+            async def support_action(_identity, action, **_kwargs):
+                from registered_applications import list_managed_applications
+
+                if action == "ListManagedApplications":
+                    return list_managed_applications()
+                raise ValueError("No app connection is available in this test.")
+
             settings_surface = Settings(
                 host,
                 tasks,
@@ -393,7 +399,7 @@ def main():
                 lambda: pauses_requested.append(True),
                 None,
                 lambda: host.ask("applicationSupport", {"facts": []}),
-                None,
+                support_action,
                 None,
                 package_requested=package_requested,
             )
@@ -506,7 +512,7 @@ def main():
             # below the expanded package list while waiting for another status.
             assert not settings_surface.model_ready
             assert settings_surface.preparation_view["primaryAction"]["id"] == "NextStep"
-            assert not preparation.preparation_details.get_expanded()
+            assert preparation.preparation_details.get_visible()
             assert preparation.next_button.get_visible()
             assert preparation.next_button.get_sensitive()
 
@@ -544,7 +550,7 @@ def main():
             assert not preparation.preparation_ready
             settings_surface.refresh_preparation()
             assert not preparation.next_button.get_sensitive(), "stale NextStep stayed enabled"
-            assert not preparation.preparation_details.get_expanded()
+            assert preparation.preparation_details.get_visible()
             await settled()
             assert preparation.next_button.get_sensitive()
             assert not settings_surface.model_ready
@@ -722,7 +728,7 @@ def main():
             # Another settings surface restores enabled after A pauses. Deliver
             # A's actual acknowledgement and then B's actual broadcast together.
             host.settings_after_tray_reply = dict(state)
-            items["启用 TypeLay"].activate()
+            tray.enabled.set_active(not tray.enabled.get_active())
             await settled()
             assert await asyncio.wait_for(host.following_save, 3) is True
             jobs.discard(host.following_save)
@@ -786,8 +792,8 @@ def main():
             assert tray.feedback_status["delivery"] == "unavailable"
             assert tray.operation.get_label() == feedback["message"]
             assert tray.operation.get_visible() and not actions
-            tray.indicator.get_secondary_activate_target().activate()
-            items["退出 TypeLay"].activate()
+            items["设置…"].clicked()
+            items["退出 TypeLay"].clicked()
             assert actions == ["settings", "quit"]
             saved = json.loads((directory / "config/settings.json").read_text())
             assert saved["Mode"] == 1 and saved["Source"] == "en" and saved["Target"] == "zh"
@@ -800,16 +806,17 @@ def main():
             settings_surface.pages.set_visible_child_name("language")
             assert translation.style_state["isReleased"] is False
             assert translation.glossary_state["isReleased"] is False
-            assert not translation.style.get_visible()
+            assert translation.style.get_visible() and not translation.style.get_sensitive()
             assert not translation.editor.get_visible()
             assert len(translation.applications.get_children()) == 2
             assert len(translation.rules.get_children()) == 3
 
-            def row_button(listing, index=0):
+            def row_button(listing, index=0, label=None):
                 return next(
                     widget
                     for widget in listing.get_children()[index].get_child().get_children()
                     if isinstance(widget, Gtk.Button)
+                    and (label is None or widget.get_label() == label)
                 )
 
             async def question(title):
@@ -829,11 +836,8 @@ def main():
                             return dialog
                         await asyncio.sleep(0.01)
 
-            # App deletion is staged, never inferred from the focused/last app.
+            # Removing this saved identity is immediate, never inferred from focus.
             row_button(translation.applications).clicked()
-            assert translation.dirty
-            assert len((await host.ask("getStyleSettings"))["applications"]) == 2
-            settings_surface.save_button.clicked()
             await settled()
             assert not translation.dirty
             assert [
@@ -853,15 +857,12 @@ def main():
             # A real filesystem failure and an unknown response preserve the
             # exact local draft. Retrying reads the dedicated saved state.
             original_rules = (await host.ask("getGlossarySettings"))["savedSnapshot"]["rules"]
-            row_button(translation.rules).clicked()
-            await settled()
-            draft_rules = [dict(rule) for rule in translation.rules_draft]
             blocker = settings_file.with_suffix(".json.tmp")
             before = settings_file.read_bytes()
             blocker.mkdir()
-            settings_surface.save_button.clicked()
+            row_button(translation.rules, label="删除").clicked()
             await settled()
-            assert translation.rules_draft == draft_rules
+            draft_rules = [dict(rule) for rule in translation.rules_draft]
             assert settings_file.read_bytes() == before
             blocker.rmdir()
             host.unknown_translation_reply = True
@@ -892,11 +893,13 @@ def main():
 
             # Unrelated settings revisions are safe to rebase. A genuinely
             # changed rule list requires explicit, revision-bound replacement.
-            row_button(translation.rules).clicked()
-            row_button(translation.rules).clicked()
+            blocker.mkdir()
+            row_button(translation.rules, label="删除").clicked()
+            row_button(translation.rules, label="删除").clicked()
             await settled()
             expected_rules = [original_rules[2]]
             assert translation.rules_draft == expected_rules
+            blocker.rmdir()
             current = await host.ask("getGlossarySettings")
             external = {
                 "session": "00000000-0000-0000-0000-000000000001",
@@ -936,7 +939,7 @@ def main():
             assert (await host.ask("getGlossarySettings"))["savedSnapshot"][
                 "rules"
             ] == expected_rules
-            row_button(translation.rules).clicked()
+            row_button(translation.rules, label="删除").clicked()
             await settled()
             assert (
                 await host.ask(
@@ -948,12 +951,16 @@ def main():
             await settled()
             assert not translation.dirty
             assert (await host.ask("getGlossarySettings"))["savedSnapshot"]["rules"] == []
-            assert not translation.box.get_visible()
+            assert translation.box.get_visible()
             settings_surface.window.hide()
             settings_surface.show()
             await settled()
-            assert not translation.style.get_visible() and not translation.editor.get_visible()
-            assert not translation.box.get_visible()
+            assert (
+                translation.style.get_visible()
+                and not translation.style.get_sensitive()
+                and not translation.editor.get_visible()
+            )
+            assert translation.box.get_visible()
             assert any(item["operation"] == "removeStyleOverride" for item in request_results)
             assert any(item["operation"] == "resetTranslationStyle" for item in request_results)
             assert any(item["operation"] == "changeGlossary" for item in request_results)
@@ -963,7 +970,7 @@ def main():
             )
 
             tray.close()
-            assert tray.indicator.get_status() == tray.backend.IndicatorStatus.PASSIVE
+            assert tray.indicator.closed
             print(
                 "PASS: actual notification delivery, stale queue retirement and unavailable-service fallback",
                 flush=True,
@@ -1003,12 +1010,8 @@ def main():
             connection.unregister_object(registration)
             temporary.cleanup()
 
-    loop = GLibEventLoop(GLib.MainContext.default())
-    try:
-        with loop:
-            loop.run_until_complete(asyncio.wait_for(exercise(), 20))
-    finally:
-        loop.close()
+    with asyncio.Runner(loop_factory=lambda: GLibEventLoop(GLib.MainContext.default())) as runner:
+        runner.run(asyncio.wait_for(exercise(), 40))
 
 
 if __name__ == "__main__":

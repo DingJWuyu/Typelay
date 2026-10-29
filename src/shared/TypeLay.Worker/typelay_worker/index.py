@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-from .engine import EngineError
+from .engine import PROTECTED, EngineError, Result, alternative_key
 from .index_assets import ABI
 from .index_assets import DIRECTIONS as DIRECTION_IDS
 from .index_cpu import LinuxRuntime
@@ -110,6 +110,7 @@ class IndexModel:
         self.styled_available = False
         self.glossary_available = False
         self.styled_glossary_available = False
+        self.alternative_available = False
         try:
             if sys.platform == "win32":
                 from .index_cpu_windows import WindowsRuntime
@@ -151,6 +152,24 @@ class IndexModel:
                 ctypes.c_uint32,
             ]
             self._lib.index_translate_v1.restype = ctypes.c_int32
+            if verified.get("alternative") is True:
+                self._lib.index_translate_alternative_v1.argtypes = [
+                    ctypes.c_void_p,
+                    ctypes.c_uint32,
+                    ctypes.c_void_p,
+                    ctypes.c_uint32,
+                    ctypes.c_void_p,
+                    ctypes.c_uint32,
+                    ctypes.c_void_p,
+                    ctypes.c_uint32,
+                    ctypes.POINTER(ctypes.c_uint32),
+                    ctypes.POINTER(Metrics),
+                    CANCEL,
+                    ctypes.c_void_p,
+                    ctypes.c_void_p,
+                    ctypes.c_uint32,
+                ]
+                self._lib.index_translate_alternative_v1.restype = ctypes.c_int32
             if (
                 verified.get("styles") != list(STYLES)
                 or verified.get("glossary") is not True
@@ -174,6 +193,7 @@ class IndexModel:
             self.styled_available = True
             self.glossary_available = True
             self.styled_glossary_available = True
+            self.alternative_available = verified.get("alternative") is True
         except BaseException:
             self.close()
             raise
@@ -194,7 +214,7 @@ class IndexModel:
                 self._loader.close()
                 self._loader = None
 
-    def translate(self, text, direction, deadline, style=0, flags=0, terms=()):
+    def translate(self, text, direction, deadline, style=0, flags=0, terms=(), *, previous=None):
         if time.monotonic() >= deadline:
             raise EngineError("request-timeout")
         if not self._handle.value or self._lib is None:
@@ -218,15 +238,7 @@ class IndexModel:
             raise EngineError("invalid-request")
         encoded = [(a.encode("utf-8", "strict"), b.encode("utf-8", "strict")) for a, b in terms]
         pairs = (Term * len(encoded))(*(Term(a, len(a), b, len(b)) for a, b in encoded))
-        code = self._lib.index_translate_v1(
-            self._handle,
-            direction,
-            style,
-            flags,
-            pairs,
-            len(pairs),
-            source,
-            len(source),
+        arguments = (
             output,
             MAX_BYTES,
             ctypes.byref(length),
@@ -236,6 +248,35 @@ class IndexModel:
             error,
             len(error),
         )
+        if previous is None:
+            code = self._lib.index_translate_v1(
+                self._handle,
+                direction,
+                style,
+                flags,
+                pairs,
+                len(pairs),
+                source,
+                len(source),
+                *arguments,
+            )
+        else:
+            if not self.alternative_available or style or flags or terms:
+                raise EngineError("alternative-unavailable")
+            if not valid_text(previous):
+                raise EngineError("invalid-request")
+            previous_bytes = previous.encode("utf-8", "strict")
+            if not 1 <= len(previous_bytes) <= MAX_BYTES:
+                raise EngineError("segment-too-long")
+            code = self._lib.index_translate_alternative_v1(
+                self._handle,
+                direction,
+                source,
+                len(source),
+                previous_bytes,
+                len(previous_bytes),
+                *arguments,
+            )
         if self._allowed_cpus is not None:
             verify_linux_affinity(self._allowed_cpus)
         if time.monotonic() >= deadline:
@@ -266,10 +307,27 @@ class IndexModel:
             raise EngineError("invalid-output")
         return result
 
+    def translate_alternative(self, text, previous, direction, deadline):
+        return self.translate(text, direction, deadline, previous=previous)
+
 
 class IndexDirection:
     def __init__(self, model: IndexModel, direction: int):
         self._model, self._direction = model, direction
+
+    def translate_alternative(self, text, previous, *, deadline):
+        if not valid_text(text) or not valid_text(previous):
+            raise EngineError("invalid-request")
+        if PROTECTED.search(text) or PROTECTED.search(previous):
+            raise EngineError("alternative-unavailable")
+        value = self._model.translate_alternative(text, previous, self._direction, deadline)
+        if (
+            not valid_text(value)
+            or PROTECTED.search(value)
+            or alternative_key(value) == alternative_key(previous)
+        ):
+            return Result("no-alternative")
+        return Result("translated", value)
 
     def request(
         self,

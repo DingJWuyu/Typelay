@@ -142,6 +142,10 @@ def serve(engine, self_check, output=None):
                     response["styledGlossaryTranslationVersion"] = (
                         engine.styled_glossary_translation_version
                     )
+                if engine.alternative_translation_version is not None:
+                    response["alternativeTranslationVersion"] = (
+                        engine.alternative_translation_version
+                    )
             elif operation in (
                 "translate",
                 "translate-alternative",
@@ -213,13 +217,24 @@ def serve(engine, self_check, output=None):
                 elif "style" in request:
                     result = Result("error", code="invalid-request")
                 elif operation == "translate-alternative":
-                    result = engine.translate_alternative(
-                        request.get("text"),
-                        request.get("source"),
-                        request.get("target"),
-                        request.get("previousCandidate"),
-                        request.get("preserved"),
-                    )
+                    if set(request) - {
+                        "id",
+                        "op",
+                        "text",
+                        "source",
+                        "target",
+                        "previousCandidate",
+                        "preserved",
+                    }:
+                        result = Result("error", code="invalid-request")
+                    else:
+                        result = engine.translate_alternative(
+                            request.get("text"),
+                            request.get("source"),
+                            request.get("target"),
+                            request.get("previousCandidate"),
+                            request.get("preserved"),
+                        )
                 else:
                     result = engine.translate(
                         request.get("text"),

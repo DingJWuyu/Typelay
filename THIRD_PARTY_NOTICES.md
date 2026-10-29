@@ -29,3 +29,7 @@ Linux 自包含发行包包含 .NET 运行时和共享 Python worker 源码；�
 `.agents/skills/` 保留 Matt Pocock 上游技能及参考文件，原始许可证位于 `.agents/MATT-LICENSE`；来源 revision 和安装约束见 `docs/agents/skills.md`，安装器记录位于 `skills-lock.json`。这些文件不进入 Windows 运行包。
 
 .NET SDK、xUnit、Ruff、Clang/LLD 用于构建、测试或格式检查，不作为产品工具链再分发。独立的物理 Tab 验证包包含已有测试输出及其 xUnit/测试依赖，遵循 [该包专属声明](packaging/windows/physical-tab/THIRD_PARTY_NOTICES.md)，不混入产品运行包。原生启动器只导入 Windows 系统 API。产品规格和已确认原型位于 `docs/product/` 与 `docs/design/`，不作为发布包的一部分。
+
+## 离线界面字体
+
+产品与浏览器扩展包含未修改的 Inter 4.1 和 Source Serif 4 4.005R 静态字体，来源与字重见 [字体资源说明](src/shared/ui/fonts/README.md)。它们采用 SIL Open Font License 1.1，原版权与许可证随各字体目录分发。字体仅用于界面呈现，不建立运行时在线字体依赖。CJK 字形使用平台字体回退，平台字体不复制进产品包。

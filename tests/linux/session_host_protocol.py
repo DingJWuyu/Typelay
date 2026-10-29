@@ -1348,7 +1348,7 @@ while True:
         with (root.parent / "install.lock").open("r+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-    async def test_translation_settings_closed_release_has_no_additions_and_ordinary_dto_is_separate(
+    async def test_glossary_management_is_available_without_quality_release_and_ordinary_dto_is_separate(
         self,
     ):
         style = await self.ask("getStyleSettings")
@@ -1357,7 +1357,8 @@ while True:
         self.assertFalse(style["canChange"])
         glossary = await self.ask("getGlossarySettings")
         self.assertFalse(glossary["isReleased"])
-        self.assertFalse(glossary["canSave"])
+        self.assertTrue(glossary["canSave"])
+        self.assertFalse(glossary["canApply"])
         directions = {(item["source"], item["target"]) for item in glossary["directions"]}
         self.assertIn(("fr", "zh"), directions)
         self.assertNotIn(("fr", "en"), directions)
@@ -1372,13 +1373,76 @@ while True:
             "changeGlossary",
             {**identity, "rules": [{"sourceTerm": "TypeLay", "targetTerm": "TypeLay"}]},
         )
-        self.assertEqual(result, {"saved": False, "code": "glossary-not-released"})
+        self.assertEqual(result, {"saved": True, "code": "glossary-saved-inactive"})
         self.assertFalse(await self.ask("settings", {"styles": None}))
         self.assertFalse(await self.ask("settings", {"glossary": None}))
         self.assertTrue(await self.ask("settings", {"theme": "dark"}))
         ordinary = self.latest("settings")
         self.assertNotIn("styles", ordinary)
         self.assertNotIn("glossary", ordinary)
+
+    async def test_appearance_patches_pause_and_managed_app_preserve_other_settings(self):
+        self.assertTrue(
+            await self.ask("settingsPatch", {"accent": "iris", "textSize": 18, "uiLanguage": "en"})
+        )
+        self.assertTrue(await self.ask("manageApplication", "editor"))
+        self.assertTrue(await self.ask("manageApplication", "mail"))
+        self.assertTrue(await self.ask("manageApplication", "EDITOR"))
+        state = self.latest("settings")
+        self.assertEqual(state["managedApplications"], ["editor", "mail"])
+        self.assertFalse(state["excludedApplications"])
+        self.assertTrue(await self.ask("togglePause"))
+        self.assertFalse(self.latest("settings")["enabled"])
+        self.assertTrue(await self.ask("togglePause"))
+        self.assertTrue(self.latest("settings")["enabled"])
+        for invalid in (
+            {"accent": "unknown"},
+            {"textSize": 20},
+            {"reduceMotion": 1},
+            {"uiLanguage": "fr"},
+        ):
+            self.assertFalse(await self.ask("settingsPatch", invalid))
+        state = self.latest("settings")
+        self.assertEqual(
+            (state["accent"], state["textSize"], state["uiLanguage"]), ("iris", 18, "en")
+        )
+        for revision in (None, "0", -1, {}, True):
+            self.assertEqual(
+                await self.ask(
+                    "changeApplicationStyle",
+                    {
+                        "application": "editor",
+                        "style": "Formal",
+                        "expectedSettingsRevision": revision,
+                    },
+                ),
+                {"saved": False, "code": "invalid-style"},
+            )
+        style = await self.ask("getApplicationStyleSettings", "editor")
+        self.assertFalse(style["canChange"])
+        self.assertEqual(
+            await self.ask(
+                "changeApplicationStyle",
+                {
+                    "application": "editor",
+                    "style": "Formal",
+                    "expectedSettingsRevision": style["settingsRevision"],
+                },
+            ),
+            {"saved": False, "code": "style-unavailable"},
+        )
+        self.assertTrue(
+            await self.ask("applicationEnabled", {"application": "editor", "enabled": False})
+        )
+        self.assertTrue(
+            await self.ask("applicationEnabled", {"application": "mail", "enabled": False})
+        )
+        self.assertTrue(
+            await self.ask("applicationEnabled", {"application": "EDITOR", "enabled": True})
+        )
+        self.assertEqual(self.latest("settings")["excludedApplications"], ["mail"])
+        self.assertFalse(await self.ask("togglePause", {"enabled": False}))
+        self.assertFalse(await self.ask("manageApplication", "bad\nidentity"))
 
     async def test_overlay_style_route_accepts_only_frozen_session_payload_and_keeps_release_closed(
         self,

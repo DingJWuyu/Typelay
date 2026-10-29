@@ -143,14 +143,15 @@ public interface ITranslationService
 // A legacy hello without verified package versions grants no such projection.
 public sealed class VerifiedModelIdentity
 {
-    internal VerifiedModelIdentity(ModelLoadPlan plan)
+    internal VerifiedModelIdentity(ModelLoadPlan plan, bool indexAlternative = false)
     {
         Packages = Array.AsReadOnly(plan.ActivePackages.Select(item => new VerifiedModelPackage(item)).ToArray());
         // Legacy alternative operation has no versioned hello feature. Its
         // compatibility rule belongs to the verified model projection, not UI
         // or session orchestration. This is technical support, not a quality grant.
-        AlternativeTranslationAvailable = Packages.Count > 0 && Packages.All(package =>
-            package.Version == "1.9" && package.Id is "argos-zh-en" or "argos-en-zh");
+        AlternativeTranslationAvailable = plan.UsesIndex && indexAlternative
+            || Packages.Count > 0 && Packages.All(package =>
+                package.Version == "1.9" && package.Id is "argos-zh-en" or "argos-en-zh");
     }
     public Guid ConnectionId { get; } = Guid.NewGuid();
     public IReadOnlyList<VerifiedModelPackage> Packages

@@ -107,6 +107,7 @@ function Publish-Distribution([bool]$SelfContained) {
     foreach ($size in @(16, 48, 128)) {
         Copy-Item "src/shared/browser/icons/typelay-$size.png" (Join-Path $stage 'browser/chromium/icons')
     }
+    Copy-Item 'src/shared/ui/fonts' (Join-Path $stage 'browser/chromium/fonts') -Recurse
     Copy-Item 'src/windows/browser/manifest.chromium.json' (Join-Path $stage 'browser/chromium/manifest.json')
     Copy-Item 'src/windows/browser/connection.chromium.json' (Join-Path $stage 'browser/chromium/connection.json')
     Copy-Item 'docs/platforms/windows/README.md' (Join-Path $stage 'README.md')

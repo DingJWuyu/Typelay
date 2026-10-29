@@ -109,6 +109,7 @@ def run_qt(
         qt_environment = {
             **environment,
             "HOME": str(home),
+            "TYPELAY_HOME": str(arguments.package),
             "XDG_CONFIG_HOME": str(home / "config"),
             "XDG_DATA_HOME": str(home / "data"),
             "XDG_CACHE_HOME": str(home / "cache"),
@@ -560,9 +561,9 @@ def run_qt(
 
                 def themed_overlay(theme, *, paused=False):
                     background, foreground, secondary = (
-                        ("#20242c", "#e8ebf2", "#aeb7c4")
+                        ("#282724", "#f4f3ee", "#b5b3ab")
                         if theme == "dark"
-                        else ("#ffffff", "#171a21", "#6c7482")
+                        else ("#fbfaf7", "#141413", "#5c5b56")
                     )
 
                     def observed():
@@ -575,7 +576,7 @@ def run_qt(
                         control_name = "typelay-resume" if paused else "typelay-menu-trigger"
                         if (
                             value["overlayControls"].get(control_name, {}).get("textColor")
-                            != secondary
+                            != (("#ec9a7c" if theme == "dark" else "#ad4f2d") if paused else secondary)
                         ):
                             return None
                         if paused:
@@ -590,9 +591,8 @@ def run_qt(
                         return (
                             value
                             if value["editorVisible"]
-                            and value["editorPalette"].get("base") == background
                             and value["editorPalette"].get("text") == foreground
-                            and value["editorViewportPalette"].get("base") == background
+
                             and value["editorAccessibleName"] == "译文"
                             else None
                         )
@@ -603,16 +603,18 @@ def run_qt(
                     )
 
                 def theme_screenshot(name, theme, *, paused=False):
-                    background = "#20242c" if theme == "dark" else "#ffffff"
+                    background = "#282724" if theme == "dark" else "#fbfaf7"
                     control_name = "typelay-resume" if paused else "typelay-menu-trigger"
                     before = state()
+                    editor_surface = (background if before["editorReadOnly"] else
+                                      "#2f2e2b" if theme == "dark" else "#ffffff")
                     count = before["themeSampleCount"]
                     command("sample-theme")
                     actual = wait_for(
                         lambda: value
                         if (value := state())["themeSampleCount"] == count + 1
                         and value["themeSamples"]["overlay"] == background
-                        and value["themeSamples"]["editor"] == ("" if paused else background)
+                        and value["themeSamples"]["editor"] == ("" if paused else editor_surface)
                         and (
                             not paused
                             or (
@@ -685,10 +687,11 @@ def run_qt(
                     # paused screenshots separately expose actual pointer hover.
                     colors = dict(actual["overlayTextColors"])
                     assert "typelay-status" in colors
+                    colors.pop("typelay-dot", None)  # Decorative, not a text contrast target.
                     ratios = {key: contrast(color, background) for key, color in colors.items()}
                     control = actual["overlayControls"][control_name]
                     ratios[control_name] = contrast(
-                        control["textColor"], control["backgroundColor"]
+                        control["textColor"], actual["themeSamples"]["overlay"]
                     )
                     if not paused:
                         ratios["editor"] = contrast(
@@ -733,7 +736,7 @@ def run_qt(
                         lambda: value
                         if (value := state())["motionRecordings"] == recording + 1
                         else None,
-                        "Qt widget frames did not reach the original resize deadline",
+                        "Qt widget frames did not reach the bounded spring observation deadline",
                     )
                     frames = actual["motionFrames"]
                     (arguments.output / f"{name}.json").write_text(
@@ -1041,17 +1044,18 @@ def run_qt(
                 candidate = enter_source(original)
                 initial_application = state()
                 # Inspect the real child widgets, not the stylesheet: the
-                # always-visible language/more control stays above the retained
-                # QPlainTextEdit, within the existing compact geometry policy.
+                # compact language bar stays below the retained QPlainTextEdit.
+                # A short translation has no irrelevant expand action.
                 overlay_bounds = initial_application["overlayGeometry"]
                 editor_bounds = initial_application["editorGeometry"]
                 more_control = initial_application["overlayControls"]["typelay-menu-trigger"]
                 more_bounds = more_control["geometry"]
                 assert more_control["visible"] and more_control["enabled"]
                 assert not initial_application["overlayMenuVisible"]
-                assert 390 <= overlay_bounds["width"] <= 520
-                assert editor_bounds["height"] == 100
-                assert more_bounds["y"] + more_bounds["height"] <= editor_bounds["y"]
+                assert 300 <= overlay_bounds["width"] <= 440
+                assert 36 <= editor_bounds["height"] <= 167
+                assert not initial_application["overlayControls"]["typelay-expand"]["visible"]
+                assert more_bounds["y"] >= editor_bounds["y"] + editor_bounds["height"]
                 for bounds in (editor_bounds, more_bounds):
                     assert bounds["width"] > 0 and bounds["height"] > 0
                     assert overlay_bounds["x"] <= bounds["x"]
@@ -1059,15 +1063,33 @@ def run_qt(
                         bounds["x"] + bounds["width"]
                         <= overlay_bounds["x"] + overlay_bounds["width"]
                     )
+                # Establish a real long manual preview, then return without a write.
+                # The short model output above intentionally has nothing to expand.
+                motion_source = state()["first"]["text"]
+                motion_trace = trace_checkpoint()
+                click_rectangle(initial_application, editor_bounds)
+                wait_for(lambda: state()["editorFocused"] and not state()["editorReadOnly"],
+                         "motion setup did not enter the real editor")
+                candidate = ("这是一段用于观察长文浮层弹簧尺寸变化的合成中文文本。保留原生编辑与源文本安全边界。" * 24)
+                command("editor-set", text=candidate)
+                wait_for(lambda: state()["editorText"] == candidate and settled(state()),
+                         "motion setup draft did not settle")
+                key("Tab")
+                wait_for(lambda: ready_to_accept("EditedTranslationPending") and state()["first"]["focused"],
+                         "motion setup did not return to the source")
+                assert state()["first"]["text"] == motion_source
+                assert not new_write_outcomes(motion_trace)
+                initial_application = state()
+                assert initial_application["editorGeometry"]["height"] == 167
                 # One controlled viewport, using the existing real model,
                 # provider, widgets and host renewals. The finite frame record
-                # spans the original 280ms resize and never reads private motion state.
+                # spans the bounded spring settling window and never reads private motion state.
                 assert initial_application["animationDuration"] > 0
                 recording = start_motion("qt-motion-expand", screenshots=True)
                 motion_frames = finish_motion(recording, "qt-motion-expand")
                 heights = [frame["editor"]["height"] for frame in motion_frames]
-                assert heights[-1] == 280 and len(set(heights)) > 3, heights
-                assert any(100 < height < 280 for height in heights)
+                assert heights[-1] == 360 and len(set(heights)) > 3, heights
+                assert any(167 < height < 360 for height in heights)
                 end = motion_frames[-1]["overlay"]
                 above = end["y"] < initial_application["first"]["geometry"]["y"]
                 for frame in motion_frames:
@@ -1085,11 +1107,11 @@ def run_qt(
                 click_overlay("typelay-expand")
                 reverse_frames = finish_motion(recording, "qt-motion-reverse")
                 wait_for(
-                    lambda: state()["editorGeometry"]["height"] == 280,
+                    lambda: state()["editorGeometry"]["height"] == 360,
                     "Qt did not settle at the last requested expanded height",
                 )
                 reverse_heights = [frame["editor"]["height"] for frame in reverse_frames]
-                reversed_before_endpoint = 100 < min(reverse_heights) < 280 and any(
+                reversed_before_endpoint = 167 < min(reverse_heights) < 360 and any(
                     later > earlier for earlier, later in zip(reverse_heights, reverse_heights[1:])
                 )
                 evidence.append(
@@ -1108,7 +1130,7 @@ def run_qt(
                 )
                 recording = start_motion("qt-motion-reduced")
                 reduced_frames = finish_motion(recording, "qt-motion-reduced")
-                assert {frame["editor"]["height"] for frame in reduced_frames} == {100}
+                assert {frame["editor"]["height"] for frame in reduced_frames} == {167}
                 command("application-motion", reduced=False)
                 wait_for(
                     lambda: state()["animationDuration"] > 0,
@@ -1135,12 +1157,10 @@ def run_qt(
                 )
                 # Restore the existing following scenarios to their exact source.
                 candidate = enter_source(original)
-                if state()["editorGeometry"]["height"] != 100:
+                if state()["overlayControls"]["typelay-expand"]["visible"]:
                     click_overlay("typelay-expand")
-                    wait_for(
-                        lambda: state()["editorGeometry"]["height"] == 100,
-                        "Qt did not restore compact height",
-                    )
+                wait_for(lambda: 36 <= state()["editorGeometry"]["height"] <= 167,
+                         "Qt did not restore its natural compact height")
                 initial_application = state()
                 evidence.append(
                     "Qt6 finite live-widget resize frames retain anchor, footer and source focus; "
@@ -1297,7 +1317,6 @@ def run_qt(
 
                 editing_source = "Please review this note."
                 enter_source(editing_source)
-                click_overlay("typelay-expand")
                 actual = state()
                 click_rectangle(actual, actual["editorGeometry"])
                 wait_for(
@@ -1309,14 +1328,14 @@ def run_qt(
                 assert state()["editorUndoRedoEnabled"], (
                     "actual Qt editor disabled native undo/redo"
                 )
-                assert state()["editorPalette"]["text"] in ("#171a21", "#e8ebf2")
+                assert state()["editorPalette"]["text"] in ("#141413", "#f4f3ee")
                 switch_im("keyboard-us")
                 # Synthetic Chinese is inserted through the owned fixture's
                 # real QPlainTextEdit API; this is not physical IME evidence.
                 long_draft = (
                     "这是一段用于检查翻译浮层的合成中文长文本。切换系统外观时，"
                     "文字应保持清晰，正文、光标、选区和原生撤销历史都不应发生变化。"
-                ) * 6
+                ) * 12
                 command("editor-set", text=long_draft)
                 wait_for(
                     lambda: state()["editorText"] == long_draft
@@ -1326,10 +1345,12 @@ def run_qt(
                 )
                 # The new editing view has applied before any later draft
                 # test. Do not require model/IME round trips to fit a frame window.
-                assert state()["editorGeometry"]["height"] == 280
+                click_overlay("typelay-expand")
+                wait_for(lambda: state()["editorGeometry"]["height"] == 360,
+                         "long draft did not expand to its bounded height")
                 click_overlay("typelay-expand")
                 wait_for(
-                    lambda: state()["editorGeometry"]["height"] == 100,
+                    lambda: state()["editorGeometry"]["height"] == 167,
                     "new editing view did not restore compact geometry",
                 )
                 key("ctrl+End")
@@ -1356,7 +1377,7 @@ def run_qt(
                     assert frame["editorFocused"]
                 click_overlay("typelay-expand")
                 wait_for(
-                    lambda: state()["editorGeometry"]["height"] == 100,
+                    lambda: state()["editorGeometry"]["height"] == 167,
                     "Qt draft did not return to compact height",
                 )
                 # The existing Ctrl+Z and two-stage Tab assertions below now
@@ -1407,7 +1428,7 @@ def run_qt(
                 assert state()["first"]["text"] == editing_source
                 before_return = trace_checkpoint()
                 editor_color = state()["editorPalette"]["text"]
-                assert editor_color in ("#171a21", "#e8ebf2")
+                assert editor_color in ("#141413", "#f4f3ee")
                 send_tab()
                 wait_for(
                     lambda: state()["first"]["focused"]

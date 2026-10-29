@@ -23,8 +23,11 @@ internal static class OverlayPreviewObservation
             new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit),
             new PropertyCondition(AutomationElement.ProcessIdProperty, processId),
             new PropertyCondition(AutomationElement.IsOffscreenProperty, false),
+            new PropertyCondition(AutomationElement.AutomationIdProperty, "TranslationText"),
             new OrCondition(new PropertyCondition(AutomationElement.NameProperty, "译文预览"),
-                new PropertyCondition(AutomationElement.NameProperty, "编辑译文"))));
+                new PropertyCondition(AutomationElement.NameProperty, "编辑译文"),
+                new PropertyCondition(AutomationElement.NameProperty, "Translation Preview"),
+                new PropertyCondition(AutomationElement.NameProperty, "Edit Translation"))));
         observation = new("candidate-count", candidates.Count);
         if (candidates.Count != 1)
             return null;
@@ -40,20 +43,21 @@ internal static class OverlayPreviewObservation
         {
             Result = "no-current-translation",
             TextStatus = status is "当前译文" or "编辑中的译文" or "待返回的译文" or "正在翻译" or "翻译失败" or "无当前译文"
+                or "Current translation" or "Editing translation" or "Translation awaiting return" or "Translating" or "Translation failed" or "No current translation"
                 ? status : "unrecognized"
         };
-        if (status is not ("当前译文" or "编辑中的译文" or "待返回的译文"))
+        if (status is not ("当前译文" or "编辑中的译文" or "待返回的译文" or "Current translation" or "Editing translation" or "Translation awaiting return"))
             return null;
         var value = ((ValuePattern)pattern).Current;
         string name = editor.Current.Name;
         observation = observation with
         {
             Result = "candidate-value-or-status-mismatch",
-            EditorName = name is "译文预览" or "编辑译文" ? name : "unrecognized",
+            EditorName = name is "译文预览" or "编辑译文" or "Translation Preview" or "Edit Translation" ? name : "unrecognized",
             ValueReadOnly = value.IsReadOnly
         };
         if (editor.Current.ItemStatus != status || string.IsNullOrWhiteSpace(value.Value) || value.Value == original
-            || name == "译文预览" && !value.IsReadOnly)
+            || name is ("译文预览" or "Translation Preview") && !value.IsReadOnly)
             return null;
         observation = observation with
         {
@@ -63,7 +67,7 @@ internal static class OverlayPreviewObservation
             return editor;
         // An editable preview remains ValuePattern-read-only until clicked.
         // Preserve the separate public acceptance cue; Unknown preview is not ready.
-        if (name != "编辑译文")
+        if (name is not ("编辑译文" or "Edit Translation"))
         {
             observation = observation with
             {
@@ -73,7 +77,9 @@ internal static class OverlayPreviewObservation
         }
         var cue = overlay.FindAll(TreeScope.Descendants, new AndCondition(
             new PropertyCondition(AutomationElement.ProcessIdProperty, processId),
-            new PropertyCondition(AutomationElement.NameProperty, "接受译文"),
+            new PropertyCondition(AutomationElement.AutomationIdProperty, "TranslationAcceptHint"),
+            new OrCondition(new PropertyCondition(AutomationElement.NameProperty, "接受译文"),
+                new PropertyCondition(AutomationElement.NameProperty, "Accept Translation")),
             new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text),
             new PropertyCondition(AutomationElement.IsOffscreenProperty, false)));
         observation = observation with
@@ -83,13 +89,14 @@ internal static class OverlayPreviewObservation
         };
         // A missing short-lived permit is not a capability denial. Only the
         // explicit public status beside a current result can end that wait.
-        if (observePreviewOnly && cue.Count == 0 && status == "当前译文")
+        if (observePreviewOnly && cue.Count == 0 && status is ("当前译文" or "Current translation"))
         {
             var previewOnly = overlay.FindAll(TreeScope.Descendants, new AndCondition(
                 new PropertyCondition(AutomationElement.ProcessIdProperty, processId),
                 new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text),
+                new PropertyCondition(AutomationElement.AutomationIdProperty, "TranslationStage"),
                 new OrCondition(new PropertyCondition(AutomationElement.NameProperty, "仅预览"),
-                    new PropertyCondition(AutomationElement.NameProperty, "仅预览 · 自动化测试")),
+                    new PropertyCondition(AutomationElement.NameProperty, "Preview only")),
                 new PropertyCondition(AutomationElement.IsOffscreenProperty, false)));
             observation = observation with
             {

@@ -253,6 +253,8 @@ class BrowserBundleTests(unittest.TestCase):
                 "icons/typelay-48.png",
                 "icons/typelay-128.png",
             }
+            expected |= {"fonts/" + path.relative_to(ROOT / "src/shared/ui/fonts").as_posix()
+                         for path in (ROOT / "src/shared/ui/fonts").rglob("*") if path.is_file()}
             for browser in ("chromium", "firefox"):
                 with self.subTest(browser=browser):
                     extension = package / "browser" / browser
@@ -266,6 +268,10 @@ class BrowserBundleTests(unittest.TestCase):
                     )
                     manifest = json.loads((extension / "manifest.json").read_text())
                     self.assertEqual(set(manifest["icons"]), {"16", "48", "128"})
+                    for resource in manifest["web_accessible_resources"][0]["resources"]:
+                        self.assertTrue(list(extension.glob(resource)), resource)
+                    self.assertTrue((extension / "fonts/inter/LICENSE.txt").is_file())
+                    self.assertTrue((extension / "fonts/source-serif/LICENSE.md").is_file())
                     for size, name in manifest["icons"].items():
                         png = (extension / name).read_bytes()
                         self.assertEqual(png, (ROOT / "src/shared/browser" / name).read_bytes())

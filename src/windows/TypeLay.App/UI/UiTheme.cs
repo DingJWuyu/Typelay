@@ -4,14 +4,24 @@ using System.Windows.Automation;
 using System.Windows.Markup;
 using System.Windows.Media;
 using Microsoft.Win32;
+using TypeLay.Runtime;
+using System.Globalization;
+using System.Windows.Shapes;
 namespace TypeLay.App;
 
 internal static class UiTheme
 {
+    private static UserSettings _preferences = new();
+    public static bool English => _preferences.UiLanguage == "en" || _preferences.UiLanguage == "system" && !CultureInfo.CurrentUICulture.Name.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
+    public static bool ReduceMotion => _preferences.ReduceMotion || !SystemParameters.ClientAreaAnimation;
+    public static FontFamily UiFont => new(_preferences.Font == "system" ? "Segoe UI, Microsoft YaHei UI" : "pack://application:,,,/TypeLay.App;component/UI/Fonts/#Inter, Noto Sans SC, Segoe UI, Microsoft YaHei UI");
+    public static FontFamily ContentFont => new(_preferences.Font switch { "sans" => "pack://application:,,,/TypeLay.App;component/UI/Fonts/#Inter, Noto Sans SC, Segoe UI, Microsoft YaHei UI", "system" => "Segoe UI, Microsoft YaHei UI", _ => "pack://application:,,,/TypeLay.App;component/UI/Fonts/#Source Serif 4, Noto Serif SC, Georgia, SimSun" });
+    public static double ContentSize => _preferences.TextSize;
+    public static string L(string chinese, string english) => English ? english : chinese;
     private const string StyleXml = """
     <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
       <Style TargetType="Expander"><Setter Property="Foreground" Value="{DynamicResource Text}"/></Style>
-      <Style TargetType="Button"><Setter Property="FontSize" Value="12"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="Background" Value="{DynamicResource Panel}"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="11,7"/><Setter Property="Cursor" Value="Hand"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border x:Name="border" CornerRadius="9" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="border" Property="Opacity" Value="0.82"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.40"/><Setter Property="Cursor" Value="Arrow"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="border" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
+      <Style TargetType="Button"><Setter Property="FontSize" Value="13"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="Background" Value="{DynamicResource Panel}"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="11,7"/><Setter Property="Cursor" Value="Hand"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border x:Name="border" CornerRadius="8" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="border" Property="Opacity" Value="0.82"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.40"/><Setter Property="Cursor" Value="Arrow"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="border" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
       <Style x:Key="SettingToggle" TargetType="CheckBox">
         <Setter Property="Width" Value="48"/>
         <Setter Property="Height" Value="40"/>
@@ -20,13 +30,13 @@ internal static class UiTheme
         <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
         <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="CheckBox">
           <Border x:Name="focus" Background="Transparent" BorderBrush="Transparent" BorderThickness="2" CornerRadius="8">
-            <Border x:Name="track" Width="38" Height="22" CornerRadius="11" Background="#ADB5C1" Padding="3">
+            <Border x:Name="track" Width="38" Height="22" CornerRadius="11" Background="{DynamicResource SwitchOff}" Padding="3">
               <Border x:Name="thumb" Width="16" Height="16" CornerRadius="8" Background="White" HorizontalAlignment="Left"/>
             </Border>
           </Border>
           <ControlTemplate.Triggers>
             <Trigger Property="IsChecked" Value="True">
-              <Setter TargetName="track" Property="Background" Value="#3A6DE2"/>
+              <Setter TargetName="track" Property="Background" Value="{DynamicResource Accent}"/>
               <Setter TargetName="thumb" Property="HorizontalAlignment" Value="Right"/>
             </Trigger>
             <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="focus" Property="BorderBrush" Value="{DynamicResource Text}"/></Trigger>
@@ -51,9 +61,9 @@ internal static class UiTheme
         </ControlTemplate></Setter.Value></Setter>
       </Style>
       <Style TargetType="ComboBox">
-        <Setter Property="FontSize" Value="12"/>
-        <Setter Property="Height" Value="36"/>
-        <Setter Property="MinHeight" Value="36"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="Height" Value="30"/>
+        <Setter Property="MinHeight" Value="30"/>
         <Setter Property="VerticalAlignment" Value="Center"/>
         <Setter Property="Padding" Value="11,0,32,0"/>
         <Setter Property="Foreground" Value="{DynamicResource Text}"/>
@@ -66,7 +76,7 @@ internal static class UiTheme
           <Grid SnapsToDevicePixels="True">
             <ToggleButton x:Name="toggle" Focusable="False" ClickMode="Press" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
               <ToggleButton.Template><ControlTemplate TargetType="ToggleButton">
-                <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="9">
+                <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8">
                   <Path Data="M 0 0 L 4 4 L 8 0" Stroke="{DynamicResource Muted}" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0"/>
                 </Border>
               </ControlTemplate></ToggleButton.Template>
@@ -78,7 +88,7 @@ internal static class UiTheme
               </ControlTemplate></TextBox.Template>
             </TextBox>
             <Popup x:Name="PART_Popup" Placement="Bottom" VerticalOffset="4" AllowsTransparency="True" Focusable="False" IsOpen="{TemplateBinding IsDropDownOpen}">
-              <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="9" Padding="4" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}" MaxHeight="{TemplateBinding MaxDropDownHeight}">
+              <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="4" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}" MaxHeight="{TemplateBinding MaxDropDownHeight}">
                 <ScrollViewer CanContentScroll="True" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
                   <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/>
                 </ScrollViewer>
@@ -134,7 +144,7 @@ internal static class UiTheme
       <SolidColorBrush x:Key="Line" Color="{DynamicResource SettingsLineColor}"/>
       <SolidColorBrush x:Key="Text" Color="{DynamicResource SettingsTextColor}"/>
       <SolidColorBrush x:Key="Muted" Color="{DynamicResource SettingsMutedColor}"/>
-      <SolidColorBrush x:Key="Accent" Color="#2365D8"/>
+
       <SolidColorBrush x:Key="SettingsLink" Color="{DynamicResource SettingsLinkColor}"/>
       <SolidColorBrush x:Key="SettingsSelection" Color="{DynamicResource SettingsSelectionColor}"/>
       <Style x:Key="SettingsThemeChoice" TargetType="RadioButton">
@@ -144,7 +154,7 @@ internal static class UiTheme
         <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
         <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RadioButton">
           <Grid>
-            <Grid.RowDefinitions><RowDefinition Height="80"/><RowDefinition Height="28"/></Grid.RowDefinitions>
+            <Grid.RowDefinitions><RowDefinition Height="50"/><RowDefinition Height="24"/></Grid.RowDefinitions>
             <Border x:Name="preview" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="3">
               <ContentPresenter/>
             </Border>
@@ -171,33 +181,79 @@ internal static class UiTheme
     public static void Initialize(string theme)
     {
         Application.Current.Resources.MergedDictionaries.Add((ResourceDictionary)XamlReader.Parse(StyleXml));
-        Apply(theme);
+        Apply(new UserSettings(Theme: theme));
     }
-    public static void Apply(string theme)
+    public static void Initialize(UserSettings preferences)
     {
-        bool dark = theme == "dark";
-        if (theme == "system")
+        Application.Current.Resources.MergedDictionaries.Add((ResourceDictionary)XamlReader.Parse(StyleXml));
+        Apply(preferences);
+    }
+    public static void Apply(string theme) => Apply(_preferences with { Theme = theme });
+    public static void Apply(UserSettings preferences)
+    {
+        _preferences = preferences;
+        bool dark = preferences.Theme == "dark";
+        if (preferences.Theme == "system")
         {
             using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
             dark = key?.GetValue("AppsUseLightTheme") is int value && value == 0;
         }
         var r = Application.Current.Resources;
-        r["SettingsPanelColor"] = (Color)ColorConverter.ConvertFromString(dark ? "#25262A" : "#FFFFFF");
-        r["SettingsSidebarColor"] = (Color)ColorConverter.ConvertFromString(dark ? "#202125" : "#F5F5F6");
-        r["SettingsLineColor"] = (Color)ColorConverter.ConvertFromString(dark ? "#3B3C43" : "#E6E6E9");
-        r["SettingsTextColor"] = (Color)ColorConverter.ConvertFromString(dark ? "#F3F3F5" : "#222327");
-        r["SettingsMutedColor"] = (Color)ColorConverter.ConvertFromString(dark ? "#B5B5BF" : "#62636B");
-        r["SettingsLinkColor"] = (Color)ColorConverter.ConvertFromString(dark ? "#83AEFF" : "#2365D8");
-        r["SettingsSelectionColor"] = (Color)ColorConverter.ConvertFromString(dark ? "#37383E" : "#ECECEF");
-        r["Panel"] = Brush(dark ? "#242830" : "#FFFFFF");
-        r["Panel2"] = Brush(dark ? "#20242B" : "#F7F8FA");
-        r["Line"] = Brush(dark ? "#3B414C" : "#DFE3EB");
-        r["Text"] = Brush(dark ? "#E8EBF1" : "#252A31");
-        r["Muted"] = Brush(dark ? "#A6ADBB" : "#626C7C");
-        r["Accent"] = Brush("#3267E3");
-        r["AccentSoft"] = Brush(dark ? "#293B61" : "#E9F0FF");
-        r["Good"] = Brush("#299766");
-        r["Warn"] = Brush("#D18A21");
+        string card = dark ? "#2F2E2B" : "#FFFFFF", window = dark ? "#262624" : "#F7F6F2";
+        string line = dark ? "#42413E" : "#E8E7E2", ink = dark ? "#F4F3EE" : "#141413";
+        string muted = dark ? "#B5B3AB" : "#5C5B56";
+        string sidebar = dark ? "#2C2B28" : "#ECE9E0";
+        var accent = preferences.Accent switch
+        {
+            "ocean" => ("#2F7FE0", "#1F63BB", "#7AB4FF"),
+            "sage" => ("#5D9A6E", "#3C7650", "#8FCC9F"),
+            "iris" => ("#8A6CD8", "#6A4CBC", "#B9A4F5"),
+            "graphite" => ("#77756F", "#55534E", "#C4C2BB"),
+            _ => ("#D97757", "#B5552F", "#EC9A7C")
+        };
+        foreach (var (key, color) in new[] { ("SettingsPanelColor", card), ("SettingsSidebarColor", sidebar),
+            ("SettingsLineColor", line), ("SettingsTextColor", ink), ("SettingsMutedColor", muted),
+            ("SettingsLinkColor", dark ? accent.Item3 : accent.Item2), ("SettingsSelectionColor", dark ? "#41403C" : "#DEDCD4") })
+            r[key] = (Color)ColorConverter.ConvertFromString(color);
+        r["Panel"] = Brush(card);
+        r["Panel2"] = Brush(dark ? "#383733" : "#F1F0EB");
+        r["Window"] = Brush(window);
+        r["Sidebar"] = Brush(sidebar);
+        r["Line"] = Brush(line);
+        r["Text"] = Brush(ink);
+        r["Muted"] = Brush(muted);
+        r["Tertiary"] = Brush(dark ? "#9A988F" : "#74726C");
+        r["Accent"] = Brush(accent.Item1);
+        r["AccentInk"] = Brush(dark ? accent.Item3 : preferences.Accent == "clay" ? "#AD4F2D" : accent.Item2);
+        r["AccentStrong"] = Brush(accent.Item2);
+        r["AccentSoft"] = Brush((dark ? "#30" : "#24") + accent.Item1[1..]);
+        r["SwitchOff"] = Brush(dark ? "#5C5B57" : "#D2D1CC");
+        r["Glass"] = Brush(preferences.ReduceTransparency ? dark ? "#2C2B28" : "#FBFAF7" : dark ? "#EB282724" : "#E6FBFAF7");
+        r["Good"] = Brush(dark ? "#63C48C" : "#2F8A57");
+        r["Warn"] = Brush(dark ? "#E5AD55" : "#A5670E");
+        r["Danger"] = Brush(dark ? "#F0806C" : "#C2412D");
+        r["UiFont"] = UiFont;
+        r["ContentFont"] = ContentFont;
+        r["ContentSize"] = ContentSize;
+    }
+    public static FrameworkElement Mark(double size = 26, bool appIcon = false)
+    {
+        var drawing = new Grid { Width = 24, Height = 24 };
+        var back = new Rectangle { Width = 14, Height = 10, RadiusX = 3, RadiusY = 3, StrokeThickness = 1.6,
+            Stroke = Brushes.White, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Margin = new(3, 4, 0, 0) };
+        var front = new Rectangle { Width = 14, Height = 10, RadiusX = 3, RadiusY = 3, Fill = Brushes.White,
+            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Margin = new(7, 10, 0, 0) };
+        drawing.Children.Add(back);
+        drawing.Children.Add(front);
+        var mark = new Viewbox { Width = appIcon ? size * .65 : size, Height = appIcon ? size * .65 : size, Child = drawing };
+        if (!appIcon)
+        {
+            back.SetResourceReference(Shape.StrokeProperty, "AccentInk");
+            front.SetResourceReference(Shape.FillProperty, "AccentInk");
+            return mark;
+        }
+        return new Border { Width = size, Height = size, CornerRadius = new(size / 4), Child = mark,
+            Background = new LinearGradientBrush((Color)ColorConverter.ConvertFromString("#E48A69"), (Color)ColorConverter.ConvertFromString("#C4573A"), 90) };
     }
     public static SolidColorBrush Brush(string color)
     {
@@ -209,21 +265,23 @@ internal static class UiTheme
     {
         var text = new TextBlock
         {
-            Text = value,
+            Text = UiStrings.Translate(value),
+            FontFamily = UiFont,
             FontSize = size,
             FontWeight = bold ? FontWeights.SemiBold : FontWeights.Normal,
             TextWrapping = TextWrapping.Wrap,
             VerticalAlignment = VerticalAlignment.Center
         };
         text.SetResourceReference(TextBlock.ForegroundProperty, muted ? "Muted" : "Text");
+        text.SetResourceReference(TextBlock.FontFamilyProperty, "UiFont");
         return text;
     }
     public static Button Button(string text, Action action, bool primary = false)
     {
-        var button = new Button { Content = text, HorizontalContentAlignment = HorizontalAlignment.Center };
+        var button = new Button { Content = UiStrings.Translate(text), FontFamily = UiFont, HorizontalContentAlignment = HorizontalAlignment.Center };
         if (primary)
         {
-            button.SetResourceReference(Control.BackgroundProperty, "Accent");
+            button.SetResourceReference(Control.BackgroundProperty, "AccentStrong");
             button.Foreground = Brushes.White;
             button.BorderThickness = new(0);
         }

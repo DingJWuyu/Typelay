@@ -160,6 +160,7 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
     replacement = "Replacement body."
     child_environment = {
         **environment,
+        "TYPELAY_HOME": environment.get("TYPELAY_HOME", str(Path(__file__).resolve().parents[2] / "src/shared/ui")),
         "XDG_RUNTIME_DIR": str(runtime),
         "WAYLAND_DISPLAY": str(display),
         "TYPELAY_FIXTURE_STATE": str(state_path),
@@ -311,6 +312,7 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                     return
                 if stage == "preview-colors":
                     check_preview_colors(client, source, generation, state, initial, click_evidence)
+                    check_preview_appearance(client, source, generation, state, initial, click_evidence)
                     print(
                         "GTK preview colors: current text and manual drafts retain normal contrast",
                         flush=True,
@@ -565,6 +567,7 @@ def render_preview(
     evidence=None,
     text="Read-only fixture preview.",
     theme="system",
+    appearance=None,
     editor_owns_text=None,
     language_view=None,
     expires_at=None,
@@ -589,6 +592,7 @@ def render_preview(
             "revision": revision,
             "expiresAtMs": expires,
             "theme": theme,
+            "appearance": {"uiLanguage": "zh-CN", **(appearance or {})},
             "view": {
                 "state": view_state,
                 "editable": can_edit,
@@ -636,7 +640,7 @@ def render_preview(
 
 def check_preview_colors(client, source, generation, state, initial, evidence):
     # DTO-to-widget rendering only. Actual editing/return remains in desktop_e2e.
-    normal, muted = "rgb(34,35,39)", "rgb(102,103,113)"
+    normal, muted = "rgb(20,20,19)", "rgb(116,114,108)"
     cases = [
         ("ValidTranslation", "Existing translation.", False, normal, "light"),
         ("Translating", "Existing translation.", False, muted, "light"),
@@ -656,8 +660,8 @@ def check_preview_colors(client, source, generation, state, initial, evidence):
             [
                 ("ValidTranslation", short_text, False, normal, "light"),
                 ("ValidTranslation", short_text, False, normal, "light"),
-                ("ValidTranslation", short_text, False, "rgb(244,244,246)", "dark"),
-                ("Translating", short_text, False, "rgb(182,183,192)", "dark"),
+                ("ValidTranslation", short_text, False, "rgb(244,243,238)", "dark"),
+                ("Translating", short_text, False, "rgb(154,152,143)", "dark"),
                 ("ValidTranslation", long_text, False, normal, "light"),
                 ("ValidTranslation", short_text, False, normal, "light"),
             ]
@@ -728,6 +732,41 @@ def check_preview_colors(client, source, generation, state, initial, evidence):
             )
         assert actual["focus"] == "fixture-first"
         assert actual["first"] == initial["first"] and actual["second"] == initial["second"]
+
+
+def check_preview_appearance(client, source, generation, state, initial, evidence):
+    """Persisted appearance is observed on real widgets without gaining edit authority."""
+    cases = (
+        ("claude", 13, "clay", "zh-CN", "Source Serif 4", "rgb(217,119,87)", "应用语言方向"),
+        ("sans", 19, "ocean", "en", "Inter", "rgb(47,127,224)", "Apply languages"),
+        ("system", 15, "sage", "en", "sans", "rgb(93,154,110)", "Apply languages"),
+        ("claude", 17, "iris", "zh-CN", "Source Serif 4", "rgb(138,108,216)", "应用语言方向"),
+        ("sans", 15, "graphite", "zh-CN", "Inter", "rgb(119,117,111)", "应用语言方向"),
+    )
+    phases = evidence["appearancePhases"] = []
+    for revision, (font, size, accent, language, family, color, label) in enumerate(cases, 30):
+        phase = {"font": font, "textSize": size, "accent": accent, "uiLanguage": language,
+                 "reduceMotion": True, "reduceTransparency": True}
+        assert render_preview(client, source, generation, revision, "fixture exit", theme="light",
+                              appearance=phase, text="Appearance stays read-only.")["visible"]
+        after = time.monotonic_ns() // 1_000_000
+
+        def rendered():
+            value = state()
+            candidate = value.get("candidate") or {}
+            controls = value.get("overlayControls", {})
+            if (value.get("observedAtMs", 0) <= after or candidate.get("fontPixels") != size
+                or family.lower() not in candidate.get("fontFamily", "").lower()
+                or controls.get("typelay-dot", {}).get("foreground") != color
+                or controls.get("typelay-apply-languages", {}).get("text") != label):
+                return None
+            return value
+
+        actual = wait_for(rendered, f"{font}/{size}/{accent}/{language}: actual appearance was not painted")
+        assert not actual["candidate"]["editable"] and not actual["candidate"]["focused"]
+        assert actual["focus"] == "fixture-first"
+        assert actual["first"] == initial["first"] and actual["second"] == initial["second"]
+        phases.append({**phase, "fontFamily": actual["candidate"]["fontFamily"], "fontPixels": size})
 
 
 def check_language_retention_refusal(
@@ -1309,7 +1348,7 @@ def run_owned_language_options(command, environment, socket_path, state_path, ou
                     "direct": "F10",
                 },
             )
-            overlay.configure({"source": "en", "target": "ja"})
+            overlay.configure({"source": "en", "target": "ja", "uiLanguage": "zh-CN"})
             fixture = await asyncio.create_subprocess_exec(*command, env=environment)
 
             def state():
@@ -1525,7 +1564,7 @@ def check_language_dto(client, source, generation, state, initial, evidence):
             and actual.get("overlayControls", {}).get("typelay-menu-trigger", {}).get("visible")
             and (
                 expected is None
-                or actual["overlayControls"]["typelay-menu-trigger"]["text"] == expected
+                or actual["overlayControls"]["typelay-menu-trigger"]["description"] == expected
             )
             and actual["overlayControls"],
             "language DTO title did not render",
@@ -1840,7 +1879,7 @@ async def check_language_options(
         return list(native_events)
 
     actual = await render()
-    assert actual[trigger]["text"] == "English → 日本語"
+    assert actual[trigger]["description"] == "English → 日本語"
     await toggle(True)
     actual = controls()
     assert actual[source_control]["items"] == ["自动检测", "English", "日本語", "한국어"]
@@ -1899,23 +1938,23 @@ async def check_language_options(
     assert actual[source_control]["selected"] == 3 and actual[target_control]["selected"] == 0
 
     view.update(sourceLanguage="ja", targetLanguage="ko", languageChoices=choices)
-    assert (await render())[trigger]["text"] == "日本語 → 한국어"
+    assert (await render())[trigger]["description"] == "日本語 → 한국어"
     view["languageChoices"] = {}
     unavailable = await render()
-    assert unavailable[trigger]["text"] == "ja（当前不可用） → ko（当前不可用）"
+    assert unavailable[trigger]["description"] == "ja（当前不可用） → ko（当前不可用）"
     assert unavailable[trigger]["focused"], "disabling choices lost owned language focus"
     assert not unavailable[menu]["visible"]
     assert not unavailable[source_control]["enabled"]
     assert not unavailable[target_control]["enabled"]
     view["languageChoices"] = choices
     restored = await render()
-    assert restored[trigger]["text"] == "日本語 → 한국어"
+    assert restored[trigger]["description"] == "日本語 → 한국어"
     assert restored[trigger]["focused"], "restored choices lost owned trigger focus"
     await toggle(True, renew=False)
     assert controls()[source_control]["focused"]
     view["sourceLanguage"] = "zz"
     actual = await render()
-    assert actual[trigger]["text"] == "zz（当前不可用） → 한국어"
+    assert actual[trigger]["description"] == "zz（当前不可用） → 한국어"
     assert actual[source_control]["items"][actual[source_control]["selected"]] == "zz（当前不可用）"
     assert not actual[apply_control]["enabled"]
     assert (await select(source_control, 2))[apply_control]["enabled"]
@@ -1981,7 +2020,7 @@ async def check_language_options(
             assert not actual[name]["enabled"], name
     view.pop("languageChoices")
     actual = await render()
-    assert actual[trigger]["text"] == "ja（当前不可用） → ko（当前不可用）"
+    assert actual[trigger]["description"] == "ja（当前不可用） → ko（当前不可用）"
     # Invalidating the focused choices safely closes the menu onto its trigger.
     # Reopen it through the public button before testing the disabled action.
     assert not actual[menu]["visible"] and actual[trigger]["focused"]

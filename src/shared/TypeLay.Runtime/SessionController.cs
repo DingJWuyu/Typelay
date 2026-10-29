@@ -207,7 +207,8 @@ public sealed partial class SessionController : IDisposable
         _lastShortcutStatus = ShortcutStatus;
         _loop = loop;
         _session = new Session(settings.Value.Direction);
-        _session.SetGlossary(settings.Value.Glossary, _loop.NowMs);
+        _configuredGlossary = GlossaryForTranslation();
+        _session.SetGlossary(_configuredGlossary, _loop.NowMs);
         _activation = new TranslationActivation(settings.Value.Mode);
         _loop.Tick += Tick;
         overlay.BeginEditing = BeginEdit;
@@ -338,6 +339,8 @@ public sealed partial class SessionController : IDisposable
         _permitUntil = 0;
         _session.SetPaused(!_settings.Value.Enabled);
         _session.SetDirection(_settings.Value.Direction, _loop.NowMs);
+        _configuredGlossary = GlossaryForTranslation();
+        _session.SetGlossary(_configuredGlossary, _loop.NowMs);
         _overlay.Configure(_settings.Value);
         Render();
         Changed?.Invoke();
@@ -442,6 +445,8 @@ public sealed partial class SessionController : IDisposable
         }
         RefreshConnectionStatus();
         CheckAutomaticPracticeIdentity();
+        if (!ReferenceEquals(_configuredGlossary, GlossaryForTranslation()))
+            ApplyGlossarySettings();
         DrainInputNotices();
         if (_awaitingPractice is not null && (_automaticRetirementUnconfirmed || _automaticRetirement is { IsCompleted: false }))
             return;
@@ -1016,7 +1021,7 @@ public sealed partial class SessionController : IDisposable
             }
             _session.Observe(snapshot, result.Focus, now);
             bool styled = _settings.Value.Styles is not null && (_model.StyledTranslationCapability is not null
-                || _settings.Value.Glossary?.CouldApply(_settings.Value.Direction) == true);
+                || GlossaryForTranslation()?.CouldApply(_settings.Value.Direction) == true);
             TranslationStyle? effectiveStyle = styled ? _settings.Value.Styles!.Resolve(styleApplication) : null;
             bool applicationChanged = styled && _styleObservation is { } priorStyle
                 && priorStyle.Target == snapshot.Target && priorStyle.Application != styleApplication;
@@ -1260,11 +1265,11 @@ public sealed partial class SessionController : IDisposable
             return;
         }
         TranslationStyle? style = _settings.Value.Styles is { } preferences && (_model.StyledTranslationCapability is not null
-            || _settings.Value.Glossary?.CouldApply(_settings.Value.Direction) == true)
+            || GlossaryForTranslation()?.CouldApply(_settings.Value.Direction) == true)
             ? preferences.Resolve(_settings.NormalizeStyleApplication(notice.Application)) : null;
         var (operation, reason) = notice.CommandCapture is { } capture
-            ? DirectTranslation.StartFromCommandCapture(source, _settings.Value.Direction, capture, _loop.NowMs, style, _configurationRevision, _settings.Value.Glossary)
-            : DirectTranslation.Start(source, _settings.Value.Direction, notice.AcceptedAtMs, style, _configurationRevision, _settings.Value.Glossary);
+            ? DirectTranslation.StartFromCommandCapture(source, _settings.Value.Direction, capture, _loop.NowMs, style, _configurationRevision, GlossaryForTranslation())
+            : DirectTranslation.Start(source, _settings.Value.Direction, notice.AcceptedAtMs, style, _configurationRevision, GlossaryForTranslation());
         if (operation is null)
         {
             SetServiceStatus(reason == Denial.NoCandidate ? "没有需要直接翻译的文本。" : "无法确认原输入内容的安全状态，未执行直接替换。", "shortcut-" + reason.ToString().ToLowerInvariant());
@@ -1404,12 +1409,12 @@ public sealed partial class SessionController : IDisposable
         if (reset && _settings.Value.Styles is null)
             return "style-unchanged";
         if (savedApplication is not null && (_session.Current is not null
-            || _settings.Value.Styles?.Applications?.ContainsKey(savedApplication) != true))
+            || style is null && _settings.Value.Styles?.Applications?.ContainsKey(savedApplication) != true))
             return "style-application-unavailable";
-        if (!reset && savedApplication is null && (!Enum.IsDefined(scope) || style is { } selected && !Enum.IsDefined(selected)
-            || scope == StyleScope.Global && style is null))
+        if (!reset && (!Enum.IsDefined(scope) || style is { } selected && !Enum.IsDefined(selected)
+            || savedApplication is null && scope == StyleScope.Global && style is null))
             return "invalid-style";
-        bool removal = reset || savedApplication is not null || scope == StyleScope.CurrentApplication && style is null;
+        bool removal = reset || style is null && (savedApplication is not null || scope == StyleScope.CurrentApplication);
         if (!removal)
         {
             if (StyleApplicationProblem() is { } unavailable)
@@ -1429,7 +1434,7 @@ public sealed partial class SessionController : IDisposable
 
     private string? StyleApplicationProblem() =>
         QualifyTranslationOperation(TranslationOperation.Style, _settings.Value.Direction)
-            ?? (_settings.Value.Glossary?.CouldApply(_settings.Value.Direction) == true
+            ?? (GlossaryForTranslation()?.CouldApply(_settings.Value.Direction) == true
                 ? QualifyTranslationOperation(TranslationOperation.StyledGlossary, _settings.Value.Direction) : null);
 
     private bool TranslationSettingsBusy() => AutomaticPracticeProgress is not null || PracticeProgress is not null
@@ -1462,6 +1467,28 @@ public sealed partial class SessionController : IDisposable
         ? Task.FromResult(new StyleChangeResult(false, "style-application-unavailable"))
         : SaveStyleAsync(StyleScope.Global, null, expectedSettingsRevision, null, false, cancellationToken, application);
 
+    // A settings row names a user-selected application, not the focused source.
+    // It can be changed only without an active source session, and never grants
+    // input support, model quality, or permission to write to that application.
+    public StyleSettingsState GetApplicationStyleSettingsState(string application,
+        TranslationStyle? style = TranslationStyle.Natural)
+    {
+        string? normalized = _settings.NormalizeStyleApplication(application);
+        string? reason = normalized is null ? "style-application-unavailable"
+            : QualifyStyleChange(StyleScope.Global, style, _settings.Revision, null, false, default,
+                savedApplication: normalized);
+        return new(_settings.Revision, _settings.Value.Styles,
+            StyleApplicationProblem() is null ? _settings.Value.Styles?.Resolve(normalized) : null,
+            normalized, null, TechnicalTranslationAvailable(TranslationOperation.Style), reason,
+            reason is null, IsReleased: _translationRelease.IsReleased(TranslationOperation.Style));
+    }
+
+    public Task<StyleChangeResult> ChangeApplicationStyleAsync(string application, TranslationStyle? style,
+        long expectedSettingsRevision, CancellationToken cancellationToken = default) =>
+        _settings.NormalizeStyleApplication(application) is { } normalized
+            ? SaveStyleAsync(StyleScope.Global, style, expectedSettingsRevision, null, false, cancellationToken, normalized)
+            : Task.FromResult(new StyleChangeResult(false, "style-application-unavailable"));
+
     private async Task<StyleChangeResult> SaveStyleAsync(StyleScope scope, TranslationStyle? style,
         long expectedSettingsRevision, SessionViewToken? token, bool reset, CancellationToken cancellationToken,
         string? savedApplication = null)
@@ -1471,7 +1498,7 @@ public sealed partial class SessionController : IDisposable
         var identity = _model.VerifiedIdentity;
         var observation = _styleObservation;
         long generation = _generation, configuration = _configurationRevision;
-        bool removal = reset || savedApplication is not null || scope == StyleScope.CurrentApplication && style is null;
+        bool removal = reset || style is null && (savedApplication is not null || scope == StyleScope.CurrentApplication);
         string? Check(bool ownsChange = false)
         {
             if (QualifyStyleChange(scope, style, expectedSettingsRevision, token, reset, cancellationToken, ownsChange, savedApplication) is { } reason)
@@ -1503,7 +1530,12 @@ public sealed partial class SessionController : IDisposable
                 var applications = new Dictionary<string, TranslationStyle>(current.Applications
                     ?? new Dictionary<string, TranslationStyle>(), StringComparer.OrdinalIgnoreCase);
                 if (savedApplication is not null)
-                    applications.Remove(savedApplication);
+                {
+                    if (style is { } selected)
+                        applications[savedApplication] = selected;
+                    else
+                        applications.Remove(savedApplication);
+                }
                 else if (scope == StyleScope.CurrentApplication)
                 {
                     string application = observation!.Application!;

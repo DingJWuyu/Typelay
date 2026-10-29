@@ -156,6 +156,7 @@ internal static class Program
                 state.SettingsRevision,
                 state.SavedSnapshot,
                 state.IsReleased,
+                state.CanApply,
                 directions = ModelCatalog.Packages.Packages.SelectMany(package => package.Directions)
                     .DistinctBy(direction => direction.Id).Select(direction => new
                     {
@@ -407,6 +408,19 @@ internal static class Program
                         };
                 case "getStyleSettings":
                     return StyleSettings();
+                case "getApplicationStyleSettings":
+                    return value.ValueKind == JsonValueKind.String
+                        ? controller.GetApplicationStyleSettingsState(value.GetString()!) : null;
+                case "changeApplicationStyle":
+                    if (!ExactObject(value, "application", "style", "expectedSettingsRevision")
+                        || value.GetProperty("application").ValueKind != JsonValueKind.String
+                        || value.GetProperty("style").ValueKind is not (JsonValueKind.String or JsonValueKind.Null)
+                        || value.GetProperty("style").ValueKind == JsonValueKind.String && value.GetProperty("style").GetString() is not ("Natural" or "Formal")
+                        || value.GetProperty("expectedSettingsRevision").ValueKind != JsonValueKind.Number
+                        || !value.GetProperty("expectedSettingsRevision").TryGetInt64(out long applicationRevision) || applicationRevision < 0)
+                        return new StyleChangeResult(false, "invalid-style");
+                    return await controller.ChangeApplicationStyleAsync(value.GetProperty("application").GetString()!,
+                        value.GetProperty("style").ValueKind == JsonValueKind.Null ? null : Enum.Parse<TranslationStyle>(value.GetProperty("style").GetString()!), applicationRevision);
                 case "getGlossarySettings":
                     return GlossarySettings(value);
                 case "changeStyle":
@@ -638,7 +652,59 @@ internal static class Program
                     var placement = DesktopLink.Decode<PlacementRequest>(value);
                     return OverlayPlacement.Place(placement.Input, placement.Work, placement.Width,
                         placement.Height, placement.Gap, placement.MinimumHeight);
+                case "applicationEnabled":
+                    if (!ExactObject(value, "application", "enabled")
+                        || value.GetProperty("application").ValueKind != JsonValueKind.String
+                        || string.IsNullOrWhiteSpace(value.GetProperty("application").GetString())
+                        || value.GetProperty("application").GetString()!.Length > 128
+                        || value.GetProperty("application").GetString()!.Any(char.IsControl)
+                        || value.GetProperty("enabled").ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                        return false;
+                    var policyApplication = value.GetProperty("application").GetString()!.Trim();
+                    var remainingApplications = settings.Value.Excluded.Where(item => !item.Equals(policyApplication, StringComparison.OrdinalIgnoreCase)).ToArray();
+                    if (!value.GetProperty("enabled").GetBoolean() && remainingApplications.Length >= 256)
+                        return false;
+                    try
+                    {
+                        return await ApplySettings(settings.Value with
+                        {
+                            ExcludedApplications = value.GetProperty("enabled").GetBoolean()
+                                ? remainingApplications : [.. remainingApplications, policyApplication]
+                        });
+                    }
+                    catch (SettingsPersistenceException)
+                    {
+                        return false;
+                    }
+                case "manageApplication":
+                    if (value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString())
+                        || value.GetString()!.Length > 128 || value.GetString()!.Any(char.IsControl))
+                        return false;
+                    var managedApplication = value.GetString()!.Trim();
+                    if (settings.Value.Managed.Any(item => item.Equals(managedApplication, StringComparison.OrdinalIgnoreCase)))
+                        return true;
+                    if (settings.Value.Managed.Length >= 256)
+                        return false;
+                    try
+                    {
+                        return await ApplySettings(settings.Value with
+                        {
+                            ManagedApplications = [.. settings.Value.Managed, managedApplication]
+                        });
+                    }
+                    catch (SettingsPersistenceException)
+                    {
+                        return false;
+                    }
+                case "togglePause":
+                    if (value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined))
+                        return false;
+                    return await ApplySettings(settings.Value with { Enabled = !settings.Value.Enabled });
+                case "settingsPatch":
                 case "traySettings":
+                    if (operation == "traySettings" && (value.ValueKind != JsonValueKind.Object
+                        || value.EnumerateObject().Any(property => property.Name is not ("enabled" or "mode" or "source" or "target"))))
+                        return false;
                     if (!TryApplyTraySettings(value, settings.Value, out var traySettings))
                         return false;
                     try
@@ -852,6 +918,39 @@ internal static class Program
                     {
                         Mode = property.Value.GetString() == "Automatic" ? WorkMode.Automatic : WorkMode.OnDemand
                     };
+                    break;
+                case "managedApplications" when property.Value.ValueKind == JsonValueKind.Array:
+                    var managed = property.Value.EnumerateArray().ToArray();
+                    if (managed.Length > 256 || managed.Any(item => item.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(item.GetString()) || item.GetString()!.Length > 128))
+                        return false;
+                    updated = updated with { ManagedApplications = managed.Select(item => item.GetString()!).ToArray() };
+                    break;
+                case "theme" when property.Value.ValueKind == JsonValueKind.String && property.Value.GetString() is "system" or "light" or "dark":
+                    updated = updated with { Theme = property.Value.GetString()! };
+                    break;
+                case "font" when property.Value.ValueKind == JsonValueKind.String && property.Value.GetString() is "claude" or "sans" or "system":
+                    updated = updated with { Font = property.Value.GetString()! };
+                    break;
+                case "textSize" when property.Value.ValueKind == JsonValueKind.Number && property.Value.TryGetInt32(out int size) && size is >= 13 and <= 19:
+                    updated = updated with { TextSize = size };
+                    break;
+                case "accent" when property.Value.ValueKind == JsonValueKind.String && property.Value.GetString() is "clay" or "ocean" or "sage" or "iris" or "graphite":
+                    updated = updated with { Accent = property.Value.GetString()! };
+                    break;
+                case "uiLanguage" when property.Value.ValueKind == JsonValueKind.String && property.Value.GetString() is "system" or "zh-CN" or "en":
+                    updated = updated with { UiLanguage = property.Value.GetString()! };
+                    break;
+                case "reduceMotion" when property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False:
+                    updated = updated with { ReduceMotion = property.Value.GetBoolean() };
+                    break;
+                case "reduceTransparency" when property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False:
+                    updated = updated with { ReduceTransparency = property.Value.GetBoolean() };
+                    break;
+                case "startup" when property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False:
+                    updated = updated with { Startup = property.Value.GetBoolean() };
+                    break;
+                case "experimentalWriteback" when property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False:
+                    updated = updated with { ExperimentalWriteback = property.Value.GetBoolean() };
                     break;
                 case "source" when property.Value.ValueKind == JsonValueKind.String:
                     updated = updated with

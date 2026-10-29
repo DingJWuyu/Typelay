@@ -153,6 +153,7 @@ def build(output, fixture=False, cooperation_package=None, hy_runtime=None, inde
         output / "desktop",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
+    shutil.copytree(ROOT / "src/shared/ui/fonts", output / "fonts")
     package_worker(output, hy_runtime, index_runtime)
     package_browsers(output)
     package_editor(output)
@@ -226,6 +227,7 @@ def package_browsers(output):
     for browser in ("chromium", "firefox"):
         destination = output / "browser" / browser
         (destination / "icons").mkdir(parents=True)
+        shutil.copytree(ROOT / "src/shared/ui/fonts", destination / "fonts")
         source = ROOT / "src/shared/browser"
         for name in files:
             shutil.copy2(source / name, destination / name)
@@ -235,7 +237,8 @@ def package_browsers(output):
     # Firefox stable requires Mozilla signing for permanent installation. Ship
     # the exact unsigned payload for temporary loading or an explicit signing step.
     with zipfile.ZipFile(output / "browser/typelay-firefox-unsigned.xpi", "w") as addon:
-        for name in ("manifest.json", *files):
+        extension = output / "browser/firefox"
+        for name in sorted(path.relative_to(extension).as_posix() for path in extension.rglob("*") if path.is_file()):
             entry = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
             entry.compress_type = zipfile.ZIP_DEFLATED
             entry.external_attr = 0o100644 << 16

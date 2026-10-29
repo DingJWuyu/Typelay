@@ -107,6 +107,7 @@ internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessi
             settings.Source,
             settings.Target,
             settings.ExcludedApplications,
+            settings.ManagedApplications,
             settings.Startup,
             settings.Theme,
             settings.OnboardingComplete,
@@ -115,7 +116,14 @@ internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessi
             settings.WakeShortcut,
             settings.DirectShortcut,
             settings.AcceptShortcut,
-            settings.ExitShortcut
+            settings.ExitShortcut,
+            settings.PauseShortcut,
+            settings.Font,
+            settings.TextSize,
+            settings.Accent,
+            settings.UiLanguage,
+            settings.ReduceMotion,
+            settings.ReduceTransparency
         });
         ConfigureGuidance(settings);
     }

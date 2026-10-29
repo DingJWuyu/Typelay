@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "samples": [
+    {
+      "id": "zh-en-unpromised-delivery",
+      "direction": "zh_en",
+      "text": "我还没有答应周五之前交付电池，最多只能先寄两块样品。",
+      "term": ["电池", "battery"],
+      "semantic_anchors": ["尚未承诺周五之前交付", "交付物是电池", "最多只能先寄两块样品，不是至少两块或保证交付"]
+    },
+    {
+      "id": "en-zh-deposit-attempt",
+      "direction": "en_zh",
+      "text": "We can try to refund the deposit next week, but we cannot promise it will arrive by Friday.",
+      "term": ["deposit", "订金"],
+      "semantic_anchors": ["可以尝试下周退订金，不是保证退款", "无法承诺周五之前到账", "退款动作与到账时间不可混为一件事"]
+    },
+    {
+      "id": "zh-en-conditional-meeting",
+      "direction": "zh_en",
+      "text": "如果客户今天没有回复，请不要取消明天上午九点的会议。",
+      "term": ["客户", "client"],
+      "semantic_anchors": ["条件是客户今天没有回复", "请求不要取消而不是取消", "会议在明天上午九点"]
+    },
+    {
+      "id": "en-zh-strict-boundary",
+      "direction": "en_zh",
+      "text": "Please keep the review under 20 minutes; only Maya may approve the release.",
+      "term": ["review", "评审"],
+      "semantic_anchors": ["评审严格少于20分钟，不是保持20分钟或不超过20分钟", "只有Maya可批准发布", "不是Maya已经批准"]
+    },
+    {
+      "id": "zh-en-unapproved-draft",
+      "direction": "zh_en",
+      "text": "这只是草案，不代表我们已经批准预算；请在周二之后再联系林女士。",
+      "term": ["草案", "draft"],
+      "semantic_anchors": ["只是草案", "不表示预算已经批准", "周二之后再联系林女士，不是周二之前或周二当天"]
+    },
+    {
+      "id": "en-zh-unconfirmed-order",
+      "direction": "en_zh",
+      "text": "The supplier has not confirmed the order yet. If the parts arrive late, we may postpone the test, not cancel it.",
+      "term": ["supplier", "供应商"],
+      "semantic_anchors": ["供应商尚未确认订单", "零件迟到是条件", "可能推迟测试而不是取消，不是确定推迟"]
+    },
+    {
+      "id": "zh-en-review-boundary",
+      "direction": "zh_en",
+      "text": "评审必须少于二十分钟，但现在不需要批准发布。",
+      "term": ["评审", "review"],
+      "semantic_anchors": ["评审必须严格少于二十分钟", "现在不需要批准发布", "不是禁止以后批准，也不是现在已经批准"]
+    },
+    {
+      "id": "en-zh-limited-permission",
+      "direction": "en_zh",
+      "text": "You may share the draft with Lena after Monday, but please do not send it to the whole team yet.",
+      "term": ["draft", "草案"],
+      "semantic_anchors": ["允许在周一之后把草案分享给Lena，不是周一之前", "请求暂时不要发给全体团队", "许可不是必须执行的承诺"]
+    }
+  ]
+}

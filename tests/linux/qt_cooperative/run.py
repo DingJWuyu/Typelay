@@ -461,7 +461,7 @@ def language_options(native, captured, generation, state, window, environment):
             assert checked == [f"typelay-{side}-{code}"], (side, checked)
 
     actual = render()
-    assert actual["overlayControls"]["typelay-menu-trigger"]["text"] == "English → 日本語 ▾"
+    assert actual["overlayControls"]["typelay-menu-trigger"]["description"] == "English → 日本語"
     toggle(True)
     actual = controls()
     for side in ("source", "target"):
@@ -518,21 +518,21 @@ def language_options(native, captured, generation, state, window, environment):
         targetLanguageLabel="Saved Korean",
     )
     assert (
-        render()["overlayControls"]["typelay-menu-trigger"]["text"]
-        == "Saved Japanese → Saved Korean ▾"
+        render()["overlayControls"]["typelay-menu-trigger"]["description"]
+        == "Saved Japanese → Saved Korean"
     )
     view["languageChoices"] = {}
     assert (
-        render()["overlayControls"]["typelay-menu-trigger"]["text"]
-        == "Saved Japanese → Saved Korean ▾"
+        render()["overlayControls"]["typelay-menu-trigger"]["description"]
+        == "Saved Japanese → Saved Korean"
     )
     view["languageChoices"] = choices
     view.pop("sourceLanguageLabel")
     view.pop("targetLanguageLabel")
-    assert render()["overlayControls"]["typelay-menu-trigger"]["text"] == "日本語 → 한국어 ▾"
+    assert render()["overlayControls"]["typelay-menu-trigger"]["description"] == "日本語 → 한국어"
     view["sourceLanguage"] = "zz"
     actual = render()["overlayControls"]
-    assert actual["typelay-menu-trigger"]["text"] == "zz（当前不可用） → 한국어 ▾"
+    assert actual["typelay-menu-trigger"]["description"] == "zz（当前不可用） → 한국어"
     assert not any(
         value["checked"] for name, value in actual.items() if name.startswith("typelay-source-")
     )
@@ -557,7 +557,7 @@ def language_options(native, captured, generation, state, window, environment):
         )
     view.pop("languageChoices")
     actual = render()["overlayControls"]
-    assert actual["typelay-menu-trigger"]["text"] == "ja（当前不可用） → ko（当前不可用） ▾"
+    assert actual["typelay-menu-trigger"]["description"] == "ja（当前不可用） → ko（当前不可用）"
     click("typelay-swap")
     assert events() == before_events
     assert state()["first"]["text"] == original["first"]["text"]
@@ -612,6 +612,7 @@ def ordered_controls(
         server.listen(1)
         server.settimeout(10)
         environment = env | {
+            "TYPELAY_HOME": str(ROOT / "src/shared/ui"),
             "QT_PLUGIN_PATH": f"{out / 'plugins'}:{out / 'native/qt6'}",
             "QT_QPA_GENERIC_PLUGINS": "typelay",
             "TYPELAY_FCITX_COOPERATIVE": "1",
@@ -1210,7 +1211,7 @@ def ordered_controls(
                     timing["assertionsPassed"] = True
 
                 def render_view(
-                    publication, state, text, owns_text, revision, translation_actions=None
+                    publication, state, text, owns_text, revision, translation_actions=None, appearance=None
                 ):
                     target = publication["target"]
                     identity = publication["permit"]["plan"]["expected"]["target"]
@@ -1240,6 +1241,7 @@ def ordered_controls(
                             "revision": revision,
                             "expiresAtMs": now_ms() + 800,
                             "theme": "light",
+                            "appearance": {"uiLanguage": "zh-CN", **(appearance or {})},
                             "view": view,
                         },
                     )
@@ -1251,16 +1253,16 @@ def ordered_controls(
                 # does not wait for or delay the real model's updating phase.
                 for revision, (view_state, text, owned, color) in enumerate(
                     (
-                        ("Translating", "", False, "#171a21"),
-                        ("Translating", "Previous translation", False, "#6c7482"),
-                        ("ValidTranslation", "Fresh translation", False, "#171a21"),
-                        ("TranslationFailed", "Fresh translation", False, "#171a21"),
-                        ("EditingTranslation", "Human draft", True, "#171a21"),
-                        ("ReturningToSource", "Human draft", True, "#171a21"),
-                        ("EditedTranslationPending", "Human draft", False, "#171a21"),
-                        ("Translating", "Human draft", False, "#6c7482"),
-                        ("Translating", "Human draft", True, "#171a21"),
-                        ("ValidTranslation", "Refreshed translation", False, "#171a21"),
+                        ("Translating", "", False, "#141413"),
+                        ("Translating", "Previous translation", False, "#74726c"),
+                        ("ValidTranslation", "Fresh translation", False, "#141413"),
+                        ("TranslationFailed", "Fresh translation", False, "#141413"),
+                        ("EditingTranslation", "Human draft", True, "#141413"),
+                        ("ReturningToSource", "Human draft", True, "#141413"),
+                        ("EditedTranslationPending", "Human draft", False, "#141413"),
+                        ("Translating", "Human draft", False, "#74726c"),
+                        ("Translating", "Human draft", True, "#141413"),
+                        ("ValidTranslation", "Refreshed translation", False, "#141413"),
                     ),
                     start=1,
                 ):
@@ -1277,6 +1279,20 @@ def ordered_controls(
                     assert not actual["editorFocused"]
                 native.call("overlay-hide")
                 result["updating_translation_muted_and_manual_states_normal"] = True
+                for revision, (font, size, family) in enumerate(
+                    (("claude", 13, "Source Serif 4"), ("sans", 19, "Inter"), ("system", 15, "sans")), 30
+                ):
+                    assert render_view(publication, "ValidTranslation", "Appearance stays read-only.", False,
+                                       revision, appearance={"font": font, "textSize": size, "uiLanguage": "en",
+                                                             "reduceMotion": True, "reduceTransparency": True})["visible"]
+                    actual = wait(lambda: value if (value := state()).get("editorFontPixels") == size
+                                  and family.lower() in value.get("editorFontFamily", "").lower() else None,
+                                  "actual Qt font preference did not reach the rendered editor")
+                    assert actual["first"] == source_before
+                    assert not actual["editorFocused"] and actual["editorReadOnly"]
+                native.call("overlay-hide")
+                result["appearance_does_not_acquire_editor_or_source_authority"] = True
+
 
                 # Controlled view data exercises the real QLineEdit/QPlainTextEdit/Fcitx/JSON
                 # adapter. It never enables a production gate or claims model quality.

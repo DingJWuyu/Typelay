@@ -49,6 +49,7 @@ class NoisyEngine:
     styled_translation_version = None
     glossary_translation_version = None
     styled_glossary_translation_version = None
+    alternative_translation_version = None
     self_check_directions = [
         SimpleNamespace(id="en_zh", source="en", target="zh", self_check_text="Synthetic input")
     ]

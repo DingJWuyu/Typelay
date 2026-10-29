@@ -1,0 +1,225 @@
+/* ==========================================================================
+   TypeLay design tokens — single source, inlined into every prototype by build.py
+   Mirrors the TypeLay Design System artifact (tokens.json). Change here, rebuild.
+   Root attributes drive everything (set by shared.js):
+     data-theme   light | dark
+     data-font    claude | sans | system
+     data-accent  clay | ocean | sage | iris | graphite
+     data-material glass | solid
+     data-motion  full | reduce
+     lang         UI language; any element with [lang] re-resolves its fonts
+   ========================================================================== */
+
+/* ---- 1. Font families per script (raw, never used directly by components) ---- */
+:root {
+  --ff-latin-serif: "Source Serif 4", "Source Serif Pro", "Iowan Old Style", Georgia;
+  --ff-latin-sans: "Inter", "Inter Variable", -apple-system, "Segoe UI Variable Text", "Segoe UI";
+  --ff-latin-system: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Roboto;
+  --ff-cjk-serif: "Noto Serif SC", "Songti SC", "STSong", "SimSun";
+  --ff-cjk-sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei";
+  --ff-cjk-system: "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei";
+  --ff-mono: "JetBrains Mono", ui-monospace, "SF Mono", Consolas, monospace;
+}
+:lang(zh-Hant), :lang(zh-TW), :lang(zh-HK) {
+  --ff-cjk-serif: "Noto Serif TC", "Songti TC", "PMingLiU";
+  --ff-cjk-sans: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei UI";
+  --ff-cjk-system: "PingFang TC", "Microsoft JhengHei UI";
+}
+:lang(ja) {
+  --ff-cjk-serif: "Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho";
+  --ff-cjk-sans: "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI";
+  --ff-cjk-system: "Hiragino Sans", "Yu Gothic UI";
+}
+:lang(ko) {
+  --ff-cjk-serif: "Noto Serif KR", "AppleMyungjo", "Batang";
+  --ff-cjk-sans: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic";
+  --ff-cjk-system: "Apple SD Gothic Neo", "Malgun Gothic";
+}
+
+/* ---- 2. Font roles — what components use. Re-resolved on every [lang] element ---- */
+:root, [lang] {
+  --font-display: var(--ff-latin-serif), var(--ff-cjk-serif), serif;
+  --font-content: var(--ff-latin-serif), var(--ff-cjk-serif), serif;
+  --font-ui: var(--ff-latin-sans), var(--ff-cjk-sans), sans-serif;
+}
+:root[data-font="sans"], :root[data-font="sans"] [lang] {
+  --font-display: var(--ff-latin-sans), var(--ff-cjk-sans), sans-serif;
+  --font-content: var(--ff-latin-sans), var(--ff-cjk-sans), sans-serif;
+}
+:root[data-font="system"], :root[data-font="system"] [lang] {
+  --font-display: var(--ff-latin-system), var(--ff-cjk-system), system-ui, sans-serif;
+  --font-content: var(--ff-latin-system), var(--ff-cjk-system), system-ui, sans-serif;
+  --font-ui: var(--ff-latin-system), var(--ff-cjk-system), system-ui, sans-serif;
+}
+
+/* ---- 3. Type scale ---- */
+:root {
+  --text-display: 500 30px/1.15 var(--font-display);
+  --text-title: 500 22px/1.25 var(--font-display);
+  --text-headline: 600 13px/18px var(--font-ui);
+  --text-body: 400 13px/18px var(--font-ui);
+  --text-callout: 400 12px/16px var(--font-ui);
+  --text-caption: 500 11px/14px var(--font-ui);
+  --content-size: 15px;            /* user setting: Appearance → Text size */
+  --content-leading: 1.55;
+  --tracking-display: -0.012em;
+}
+
+/* ---- 4. Color — light ---- */
+:root {
+  color-scheme: light;
+  --ink: #141413;
+  --ink-2: #5c5b56;
+  --ink-3: #74726c;
+  --paper: #faf9f5;
+  --window: #f7f6f2;
+  --card: #ffffff;
+  --sidebar: rgba(236, 233, 224, 0.72);
+  --fill-1: rgba(20, 20, 19, 0.045);
+  --fill-2: rgba(20, 20, 19, 0.08);
+  --fill-3: rgba(20, 20, 19, 0.14);
+  --line: rgba(20, 20, 19, 0.085);
+  --line-strong: rgba(20, 20, 19, 0.16);
+  --control: #ffffff;
+  --switch-off: rgba(20, 20, 19, 0.16);
+  --green: #2f8a57;
+  --amber: #a5670e;
+  --red: #c2412d;
+  --glass: rgba(251, 250, 247, 0.74);
+  --glass-strong: rgba(251, 250, 247, 0.9);
+  --glass-edge: rgba(255, 255, 255, 0.75);
+  --glass-border: rgba(20, 20, 19, 0.1);
+  --shimmer: rgba(255, 255, 255, 0.75);
+  --shadow-sm: 0 1px 2px rgba(20, 20, 19, 0.06), 0 0 0 0.5px rgba(20, 20, 19, 0.06);
+  --shadow-md: 0 8px 24px rgba(20, 20, 19, 0.1), 0 1px 3px rgba(20, 20, 19, 0.08);
+  --shadow-lg: 0 24px 64px rgba(20, 20, 19, 0.18), 0 4px 12px rgba(20, 20, 19, 0.08);
+  --scrim: rgba(20, 20, 19, 0.22);
+}
+/* ---- 4b. Color — dark ---- */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ink: #f4f3ee;
+  --ink-2: #b5b3ab;
+  --ink-3: #9a988f;
+  --paper: #1f1e1c;
+  --window: #262624;
+  --card: #2f2e2b;
+  --sidebar: rgba(44, 43, 40, 0.66);
+  --fill-1: rgba(255, 255, 255, 0.05);
+  --fill-2: rgba(255, 255, 255, 0.09);
+  --fill-3: rgba(255, 255, 255, 0.15);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.15);
+  --control: #3a3936;
+  --switch-off: rgba(255, 255, 255, 0.18);
+  --green: #63c48c;
+  --amber: #e5ad55;
+  --red: #f0806c;
+  --glass: rgba(40, 39, 36, 0.7);
+  --glass-strong: rgba(44, 43, 40, 0.92);
+  --glass-edge: rgba(255, 255, 255, 0.1);
+  --glass-border: rgba(0, 0, 0, 0.5);
+  --shimmer: rgba(255, 255, 255, 0.12);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 28px 70px rgba(0, 0, 0, 0.5), 0 4px 14px rgba(0, 0, 0, 0.3);
+  --scrim: rgba(0, 0, 0, 0.45);
+}
+
+/* ---- 5. Accent (user setting). --accent fills controls; --accent-ink is text-safe (≥4.5:1) ---- */
+:root, :root[data-accent="clay"] { --accent: #d97757; --accent-ink: #ad4f2d; --accent-soft: rgba(217, 119, 87, 0.14); --on-accent: #ffffff; --accent-strong: #b5552f; }
+:root[data-accent="ocean"] { --accent: #2f7fe0; --accent-ink: #1f63bb; --accent-soft: rgba(47, 127, 224, 0.13); --accent-strong: #1f63bb; }
+:root[data-accent="sage"] { --accent: #5d9a6e; --accent-ink: #3c7650; --accent-soft: rgba(93, 154, 110, 0.15); --accent-strong: #3c7650; }
+:root[data-accent="iris"] { --accent: #8a6cd8; --accent-ink: #6a4cbc; --accent-soft: rgba(138, 108, 216, 0.14); --accent-strong: #6a4cbc; }
+:root[data-accent="graphite"] { --accent: #77756f; --accent-ink: #55534e; --accent-soft: rgba(119, 117, 111, 0.16); --accent-strong: #55534e; }
+:root[data-theme="dark"], :root[data-theme="dark"][data-accent="clay"] { --accent-ink: #ec9a7c; --accent-strong: #b5552f; }
+:root[data-theme="dark"][data-accent="ocean"] { --accent-ink: #7ab4ff; --accent-strong: #1f63bb; }
+:root[data-theme="dark"][data-accent="sage"] { --accent-ink: #8fcc9f; --accent-strong: #3c7650; }
+:root[data-theme="dark"][data-accent="iris"] { --accent-ink: #b9a4f5; --accent-strong: #6a4cbc; }
+:root[data-theme="dark"][data-accent="graphite"] { --accent-ink: #c4c2bb; --accent-strong: #55534e; }
+
+/* ---- 6. Shape, space, material, motion ---- */
+:root {
+  --r-xs: 6px; --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-xl: 22px; --r-pill: 999px;
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 20px; --s-6: 24px; --s-8: 32px;
+  --blur: saturate(180%) blur(28px);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-1: 120ms; --dur-2: 200ms; --dur-3: 320ms;
+}
+:root[data-material="solid"] { --glass: var(--glass-strong); --blur: none; --sidebar: var(--window); }
+:root[data-motion="reduce"] *, :root[data-motion="reduce"] *::before, :root[data-motion="reduce"] *::after {
+  animation-duration: 1ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important;
+  transition-duration: 1ms !important; transition-delay: 0ms !important;
+}
+
+/* ---- 7. Base ---- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { font: var(--text-body); color: var(--ink); background: var(--paper); -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: default; border: 0; background: none; padding: 0; }
+[hidden] { display: none !important; }
+:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 1px; border-radius: var(--r-xs); }
+kbd { font: 500 11px/1 var(--font-ui); display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 20px; padding: 0 6px; border-radius: 5px; background: var(--fill-2); color: var(--ink-2); box-shadow: inset 0 -1px 0 var(--line-strong); white-space: nowrap; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+svg.i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+/* ---- 8. Shared desktop scenery (both prototypes) ---- */
+.desktop { position: relative; min-height: 100vh; overflow: hidden; isolation: isolate;
+  background:
+    radial-gradient(1200px 700px at 12% -10%, rgba(217, 119, 87, 0.38), transparent 60%),
+    radial-gradient(900px 700px at 105% 110%, rgba(138, 160, 120, 0.4), transparent 60%),
+    radial-gradient(700px 500px at 70% 10%, rgba(232, 210, 170, 0.55), transparent 65%),
+    #ece6db; }
+:root[data-theme="dark"] .desktop { background:
+    radial-gradient(1200px 700px at 12% -10%, rgba(160, 80, 50, 0.4), transparent 60%),
+    radial-gradient(900px 700px at 105% 110%, rgba(70, 95, 70, 0.45), transparent 60%),
+    radial-gradient(700px 500px at 70% 10%, rgba(110, 90, 60, 0.35), transparent 65%),
+    #171614; }
+.menubar { position: relative; z-index: 30; height: 30px; display: flex; align-items: center; gap: 18px; padding: 0 14px;
+  background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); box-shadow: 0 0.5px 0 var(--line); font: 500 13px/1 var(--font-ui); }
+.menubar .app-name { font-weight: 600; }
+.menubar .spacer { flex: 1; }
+.menubar .mb-item { height: 22px; padding: 0 8px; border-radius: 5px; display: inline-flex; align-items: center; gap: 6px; color: var(--ink); }
+.menubar .mb-item[aria-expanded="true"], .menubar .mb-item:hover { background: var(--fill-2); }
+.glass { background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  box-shadow: var(--shadow-lg), inset 0 0 0 0.5px var(--glass-edge), 0 0 0 0.5px var(--glass-border); }
+.traffic { display: flex; gap: 8px; }
+.traffic span { width: 12px; height: 12px; border-radius: 50%; background: #ff5f57; box-shadow: inset 0 0 0 0.5px rgba(0,0,0,.15); }
+.traffic span:nth-child(2) { background: #febc2e; } .traffic span:nth-child(3) { background: #28c840; }
+.window-inactive .traffic span { background: var(--fill-3); }
+
+/* ---- 9. Shared controls ---- */
+.switch { position: relative; flex: none; width: 34px; height: 20px; border-radius: 10px; background: var(--switch-off); transition: background var(--dur-2) var(--ease-out); }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 0 0 0.5px rgba(0,0,0,.06); transition: transform 260ms cubic-bezier(.3,1.5,.5,1); }
+.switch[aria-checked="true"] { background: var(--accent); }
+.switch[aria-checked="true"]::after { transform: translateX(14px); }
+.switch:disabled { opacity: .45; }
+.seg { position: relative; display: inline-flex; padding: 2px; border-radius: 8px; background: var(--fill-2); isolation: isolate; }
+.seg button { position: relative; z-index: 1; min-width: 56px; height: 24px; padding: 0 12px; border-radius: 6px; font: 500 12px/1 var(--font-ui); color: var(--ink-2); white-space: nowrap; transition: color var(--dur-1); }
+.seg button[aria-pressed="true"] { color: var(--ink); }
+.seg .seg-thumb { position: absolute; z-index: 0; top: 2px; bottom: 2px; border-radius: 6px; background: var(--control); box-shadow: var(--shadow-sm); transition: left 300ms cubic-bezier(.3,1.3,.5,1), width 300ms cubic-bezier(.3,1.3,.5,1); }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 26px; padding: 0 12px; border-radius: 7px; font: 500 12.5px/1 var(--font-ui);
+  background: var(--control); color: var(--ink); box-shadow: var(--shadow-sm); white-space: nowrap; transition: transform var(--dur-1), background var(--dur-1); }
+.btn:active:not(:disabled) { transform: scale(.97); background: var(--fill-2); }
+.btn.primary { background: var(--accent-strong); color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.15), inset 0 0.5px 0 rgba(255,255,255,.25); }
+.btn.plain { background: none; box-shadow: none; color: var(--accent-ink); padding: 0 6px; }
+.btn.lg { height: 34px; padding: 0 18px; border-radius: 9px; font-size: 13.5px; }
+.btn:disabled { opacity: .45; }
+.popup { appearance: none; -webkit-appearance: none; height: 26px; padding: 0 28px 0 10px; border: 0; border-radius: 7px; background: var(--control) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='12' viewBox='0 0 10 12'%3E%3Cpath d='M2 4.5 5 1.8 8 4.5M2 7.5 5 10.2 8 7.5' fill='none' stroke='%238b8984' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 9px center;
+  box-shadow: var(--shadow-sm); font: 500 12.5px/1 var(--font-ui); color: var(--ink); }
+.field { height: 28px; padding: 0 10px; border: 0; border-radius: 7px; background: var(--control); box-shadow: inset 0 0 0 0.5px var(--line-strong), var(--shadow-sm); font: var(--text-body); color: var(--ink); outline: none; }
+.field:focus { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft); }
+.toast { position: fixed; left: 50%; bottom: 28px; z-index: 90; transform: translate(-50%, 0); display: flex; align-items: center; gap: 12px; padding: 9px 10px 9px 16px; border-radius: var(--r-pill); font: 500 13px/1 var(--font-ui);
+  animation: toastIn 420ms cubic-bezier(.3,1.4,.5,1); }
+.toast .btn { height: 24px; }
+@keyframes toastIn { from { opacity: 0; transform: translate(-50%, 14px) scale(.96); } }
+dialog.sheet { border: 0; padding: 22px; width: 340px; max-width: calc(100vw - 32px); border-radius: var(--r-lg); color: var(--ink); background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); box-shadow: var(--shadow-lg), inset 0 0 0 0.5px var(--glass-edge); animation: sheetIn 380ms cubic-bezier(.3,1.25,.5,1); }
+dialog.sheet::backdrop { background: var(--scrim); animation: fadeIn 200ms; }
+dialog.sheet h2 { margin: 0 0 14px; font: var(--text-title); font-size: 18px; letter-spacing: var(--tracking-display); }
+dialog.sheet .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+@keyframes sheetIn { from { opacity: 0; transform: translateY(-8px) scale(.97); } }
+@keyframes fadeIn { from { opacity: 0; } }

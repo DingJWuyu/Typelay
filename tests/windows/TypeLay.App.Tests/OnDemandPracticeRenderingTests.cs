@@ -34,6 +34,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             var settings = WindowsRuntime.CreateSettings(path);
             settings.Update(settings.Value with
             {
+                UiLanguage = "zh-CN",
                 Mode = WorkMode.OnDemand
             });
             using var model = WindowsRuntime.CreateModel(); // Real observations, no inference required.
@@ -84,6 +85,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
                 && N.ReadStaticNotice(GetDlgItem(root, 103)) == ReadyNotice());
             settings.Update(settings.Value with
             {
+                UiLanguage = "zh-CN",
                 WakeShortcut = "Alt+F8"
             });
             await Until(() => controller.PracticeProgress is null
@@ -118,6 +120,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             var settings = WindowsRuntime.CreateSettings(path);
             settings.Update(settings.Value with
             {
+                UiLanguage = "zh-CN",
                 Mode = WorkMode.OnDemand,
                 DirectShortcut = "Alt+F9"
             });
@@ -254,6 +257,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             var settings = WindowsRuntime.CreateSettings(path);
             settings.Update(settings.Value with
             {
+                UiLanguage = "zh-CN",
                 Mode = WorkMode.OnDemand
             });
             var dispatcher = Dispatcher.CurrentDispatcher;
@@ -396,6 +400,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             var settings = WindowsRuntime.CreateSettings(path);
             settings.Update(settings.Value with
             {
+                UiLanguage = "zh-CN",
                 Mode = WorkMode.Automatic
             });
             using var model = WindowsRuntime.CreateModel(); // Capture and retirement need no inference.
@@ -538,6 +543,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             var settings = WindowsRuntime.CreateSettings(path);
             settings.Update(settings.Value with
             {
+                UiLanguage = "zh-CN",
                 Mode = WorkMode.OnDemand,
                 OnboardingComplete = true
             });
@@ -581,6 +587,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
                     controller.PracticeProgress).ProgressNotice);
             settings.Update(settings.Value with
             {
+                UiLanguage = "zh-CN",
                 Theme = "dark"
             });
             Assert.Null(controller.PracticeProgress);

@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using TypeLay.App;
 using TypeLay.Core;
@@ -18,21 +19,22 @@ namespace TypeLay.App.Tests;
 public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
 {
     [Fact]
-    public Task UnreleasedTranslationSettingsExposeNoAdditionControls() => desktop.RunAsync(() =>
+    public Task UnreleasedQualityStillAllowsLocalGlossaryManagementButNotStyleApplication() => desktop.RunAsync(() =>
     {
         using var scene = new SettingsScene();
         Assert.False(scene.Controller.GetStyleSettingsState().IsReleased);
         Assert.False(scene.Controller.GetGlossarySettingsState().IsReleased);
-        scene.Window.ShowPage("translation");
-        scene.Window.UpdateLayout();
-        Assert.Empty(Descendants(scene.Window).OfType<ComboBox>());
-        Assert.DoesNotContain(Descendants(scene.Window).OfType<Button>(), button => button.IsVisible && Equals(button.Content, "重置翻译风格"));
+        scene.Window.ShowPage("language");
+        Assert.False(Named<Button>(scene.Window, "翻译风格 自然").IsEnabled);
+        Assert.False(Named<Button>(scene.Window, "翻译风格 正式").IsEnabled);
         scene.Window.ShowPage("glossary");
-        scene.Window.UpdateLayout();
-        Assert.Empty(Descendants(scene.Window).OfType<TextBox>());
-        Assert.DoesNotContain(Descendants(scene.Window).OfType<Button>(), button => Equals(button.Content, "添加术语"));
+        Click(scene.Window, "添加术语");
+        Term(scene.Window, "源词 1").Text = "PR";
+        Term(scene.Window, "译词 1").Text = "pull request";
+        CommitGlossary(scene.Window);
+        Assert.Equal("pull request", Assert.Single(scene.Reload().Glossary!.Rules).TargetTerm);
+        Assert.False(scene.Controller.GetGlossarySettingsState().CanApply);
         Assert.Null(scene.Reload().Styles);
-        Assert.Null(scene.Reload().Glossary);
     });
 
     [Fact]
@@ -50,29 +52,26 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         Term(scene.Window, "译词 2").Text = "client team";
         var scope = Named<ComboBox>(scene.Window, "术语范围 2");
         scope.SelectedIndex = 1; // The first directed catalog choice is Chinese -> English.
-        Assert.Null(scene.Reload().Glossary);
-        Click(scene.Window, SettingsDraftPresentation.Create().SaveLabel);
+        CommitGlossary(scene.Window);
         Assert.Equal(new[] { new GlossaryRule("PR", "pull request"), new("项目方", "client team", "zh", "en") }, scene.Reload().Glossary!.Rules);
         Assert.Null(scene.Controller.GetGlossarySettingsState().Session);
         Assert.Null(scene.Reload().Styles);
     });
 
     [Fact]
-    public Task ClosedReleaseAllowsOnlyExplicitDeletionOfSavedTerms() => desktop.RunAsync(() =>
+    public Task DeletionSavesImmediatelyAndUndoDoesNotOpenTheQualityGate() => desktop.RunAsync(() =>
     {
         var first = new GlossaryRule("PR", "pull request");
         var second = new GlossaryRule("项目方", "client team", "zh", "en");
         using var scene = new SettingsScene(new(Glossary: new(1, [first, second])));
         scene.Window.ShowPage("glossary");
-        scene.Window.UpdateLayout();
-        Assert.All(Descendants(scene.Window).OfType<TextBox>().Where(box => box.IsVisible), box => Assert.True(box.IsReadOnly));
-        Assert.False(Named<ComboBox>(scene.Window, "术语范围 1").IsEnabled);
-        Assert.DoesNotContain(Descendants(scene.Window).OfType<Button>(), button => button.IsVisible && Equals(button.Content, "添加术语"));
+        Assert.False(Term(scene.Window, "源词 1").IsReadOnly);
         Named<Button>(scene.Window, "删除术语 1").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        Assert.Equal(2, scene.Reload().Glossary!.Rules.Count);
-        Click(scene.Window, SettingsDraftPresentation.Create().SaveLabel);
         Assert.Equal(second, Assert.Single(scene.Reload().Glossary!.Rules));
+        Click(scene.Window, "撤销");
+        Assert.Equal(new[] { first, second }, scene.Reload().Glossary!.Rules);
         Assert.False(scene.Controller.GetGlossarySettingsState().IsReleased);
+        Assert.False(scene.Controller.GetGlossarySettingsState().CanApply);
     });
 
     [Fact]
@@ -83,7 +82,7 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         Click(scene.Window, "添加术语");
         var source = Term(scene.Window, "源词 1");
         var target = Term(scene.Window, "译词 1");
-        source.Text = "PR";
+        source.Text = "";
         target.Text = "review";
         Assert.True(target.Focus());
         target.Select(1, 3);
@@ -104,31 +103,28 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         SettingsRenderingTests.InteractWithCloseDialog(scene.Window, scene.Window.Close, SettingsDraftCloseChoice.Discard);
         scene.Window.ShowPage("glossary");
         scene.Window.UpdateLayout();
-        Assert.Empty(Descendants(scene.Window).OfType<TextBox>());
+        Assert.DoesNotContain(Descendants(scene.Window).OfType<TextBox>(), box => AutomationProperties.GetName(box).StartsWith("源词 "));
     });
 
     [Fact]
     public Task InvalidOrUnwritableGlossaryKeepsDraftAndRetrySavesIt() => desktop.RunAsync(() =>
     {
-        using var scene = new SettingsScene(released: true);
+        using var scene = new SettingsScene(new(Glossary: new(1, [new("PR", "review")])));
         scene.Window.ShowPage("glossary");
-        Click(scene.Window, "添加术语");
-        Term(scene.Window, "源词 1").Text = "PR";
-        Term(scene.Window, "译词 1").Text = "review";
         Click(scene.Window, "添加术语");
         Term(scene.Window, "源词 2").Text = "PR";
         Term(scene.Window, "译词 2").Text = "pull request";
-        Click(scene.Window, SettingsDraftPresentation.Create().SaveLabel);
-        Assert.Null(scene.Reload().Glossary);
-        Assert.Equal("pull request", Term(scene.Window, "译词 2").Text);
-        Named<Button>(scene.Window, "删除术语 2").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        Directory.CreateDirectory(scene.PathToSettings + ".tmp");
-        Click(scene.Window, SettingsDraftPresentation.Create().SaveLabel);
-        Assert.Null(scene.Reload().Glossary);
-        Assert.Equal("review", Term(scene.Window, "译词 1").Text);
-        Directory.Delete(scene.PathToSettings + ".tmp");
-        Click(scene.Window, SettingsDraftPresentation.Create().SaveLabel);
+        CommitGlossary(scene.Window);
         Assert.Equal("review", Assert.Single(scene.Reload().Glossary!.Rules).TargetTerm);
+        Assert.Equal("pull request", Term(scene.Window, "译词 2").Text);
+        Term(scene.Window, "源词 2").Text = "MR";
+        Directory.CreateDirectory(scene.PathToSettings + ".tmp");
+        CommitGlossary(scene.Window);
+        Assert.Single(scene.Reload().Glossary!.Rules);
+        Assert.Equal("pull request", Term(scene.Window, "译词 2").Text);
+        Directory.Delete(scene.PathToSettings + ".tmp");
+        Click(scene.Window, "重试保存");
+        Assert.Equal(2, scene.Reload().Glossary!.Rules.Count);
     });
 
     [Fact]
@@ -137,10 +133,10 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         using var scene = new SettingsScene(released: true);
         scene.Window.ShowPage("glossary");
         Click(scene.Window, "添加术语");
-        Term(scene.Window, "源词 1").Text = "PR";
+        Term(scene.Window, "源词 1").Text = "";
         Term(scene.Window, "译词 1").Text = "review";
         scene.Window.ShowPage("general");
-        Named<ComboBox>(scene.Window, "工作模式").SelectedIndex = 1;
+        Named<RadioButton>(scene.Window, "工作模式 按需").IsChecked = true;
         Assert.Equal(WorkMode.OnDemand, scene.Reload().Mode);
         Assert.Null(scene.Reload().Glossary);
         scene.Window.ShowPage("glossary");
@@ -148,24 +144,25 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
     });
 
     [Fact]
-    public Task OneExplicitSaveCommitsOrdinaryAndGlossaryDraftsThroughTheirSeparateControllers() => desktop.RunAsync(() =>
+    public Task ImmediateShortcutSaveDoesNotCommitAnIncompleteGlossary() => desktop.RunAsync(() =>
     {
-        using var scene = new SettingsScene(released: true);
+        using var scene = new SettingsScene();
         scene.Window.ShowPage("glossary");
         Click(scene.Window, "添加术语");
         Term(scene.Window, "源词 1").Text = "PR";
-        Term(scene.Window, "译词 1").Text = "review";
         scene.Window.ShowPage("shortcuts");
-        Named<TextBox>(scene.Window, "唤醒翻译 UI 快捷键").Text = "Ctrl+Shift+U";
         int ordinary = 0, glossary = 0;
         scene.Settings.Changed += () => ordinary++;
         scene.Settings.GlossarySaved += () => glossary++;
-        Click(scene.Window, SettingsDraftPresentation.Create().SaveLabel);
+        Named<TextBox>(scene.Window, "唤醒翻译 UI 快捷键").Text = "Ctrl+Shift+U";
         Assert.Equal("Ctrl+Shift+U", scene.Reload().WakeShortcut);
+        Assert.Null(scene.Reload().Glossary);
+        Assert.Equal(1, ordinary); Assert.Equal(0, glossary);
+        scene.Window.ShowPage("glossary");
+        Term(scene.Window, "译词 1").Text = "review";
+        CommitGlossary(scene.Window);
         Assert.Equal("review", Assert.Single(scene.Reload().Glossary!.Rules).TargetTerm);
-        Assert.Equal(1, ordinary);
         Assert.Equal(1, glossary);
-        Assert.False(SaveButton(scene.Window).IsEnabled);
     });
 
     [Fact]
@@ -177,9 +174,10 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         Term(scene.Window, "源词 1").Text = "PR";
         Term(scene.Window, "译词 1").Text = "review";
         scene.Window.ShowPage("shortcuts");
-        Named<TextBox>(scene.Window, "唤醒翻译 UI 快捷键").Text = "Ctrl+Shift+U";
         scene.Settings.Changed += () => Assert.True(scene.Controller.ChangeGlossaryAsync([new("term", "saved by another editor")],
             scene.Settings.Revision, cancellationToken: TestContext.Current.CancellationToken).GetAwaiter().GetResult().Saved);
+        Named<TextBox>(scene.Window, "唤醒翻译 UI 快捷键").Text = "Ctrl+Shift+U";
+        scene.Window.ShowPage("glossary");
         bool reviewed = false;
         Exception? failure = null;
         var pending = scene.Window.Dispatcher.BeginInvoke(new Action(() =>
@@ -195,7 +193,7 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
             }
             catch (Exception error) { failure = error; dialog.Close(); }
         }), DispatcherPriority.ContextIdle);
-        Click(scene.Window, SettingsDraftPresentation.Create().SaveLabel);
+        CommitGlossary(scene.Window);
         pending.Abort();
         if (failure is not null)
             ExceptionDispatchInfo.Capture(failure).Throw();
@@ -215,7 +213,7 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         using var scene = new SettingsScene(new(Styles: new(TranslationStyle.Formal,
             new Dictionary<string, TranslationStyle> { ["one"] = TranslationStyle.Natural, ["two"] = TranslationStyle.Formal }),
             Glossary: new(2, [new("PR", "review")])));
-        scene.Window.ShowPage("translation");
+        scene.Window.ShowPage("language");
         ConfirmReset(scene.Window, confirm);
         var saved = scene.Reload();
         Assert.Equal(confirm, saved.Styles is null);
@@ -230,8 +228,8 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
     {
         using var scene = new SettingsScene(new(Styles: new(TranslationStyle.Formal,
             new Dictionary<string, TranslationStyle> { ["one"] = TranslationStyle.Natural, ["two"] = TranslationStyle.Formal })));
-        scene.Window.ShowPage("translation");
-        Named<Button>(scene.Window, "移除风格覆盖 one").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        scene.Window.ShowPage("apps");
+        Named<ComboBox>(scene.Window, "应用风格 one").SelectedIndex = 0;
         Assert.Equal(TranslationStyle.Formal, scene.Reload().Styles!.Default);
         Assert.Equal("two", Assert.Single(scene.Reload().Styles!.Applications!).Key);
         Assert.Null(scene.Controller.LastApplication);
@@ -254,7 +252,7 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         Click(scene.Window, "添加术语");
         Term(scene.Window, "源词 1").Text = "PR";
         Term(scene.Window, "译词 1").Text = "review";
-        Click(scene.Window, SettingsDraftPresentation.Create().SaveLabel);
+        CommitGlossary(scene.Window);
         Assert.False(SaveButton(scene.Window).IsEnabled);
         Assert.Null(scene.Reload().Glossary);
         Term(scene.Window, "译词 1").Text = "newer draft";
@@ -272,7 +270,7 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
             Assert.Equal("review", Assert.Single(scene.Reload().Glossary!.Rules).TargetTerm);
             Assert.Equal("newer draft", Term(scene.Window, "译词 1").Text);
             Assert.True(SaveButton(scene.Window).IsEnabled);
-            Click(scene.Window, SettingsDraftPresentation.Create().SaveLabel);
+            CommitGlossary(scene.Window);
             Assert.Equal("newer draft", Assert.Single(scene.Reload().Glossary!.Rules).TargetTerm);
             Assert.False(SaveButton(scene.Window).IsEnabled);
         }
@@ -280,7 +278,7 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         {
             scene.Window.ShowPage("glossary");
             scene.Window.UpdateLayout();
-            Assert.Empty(Descendants(scene.Window).OfType<TextBox>());
+            Assert.DoesNotContain(Descendants(scene.Window).OfType<TextBox>(), box => AutomationProperties.GetName(box).StartsWith("源词 "));
             Assert.DoesNotContain(Descendants(scene.Window).OfType<TextBlock>(), text => text.Text == SettingsDraftPresentation.Create().SavedMessage);
         }
     });
@@ -300,7 +298,7 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         {
             Theme = "dark"
         });
-        Click(scene.Window, SettingsDraftPresentation.Create().SaveLabel);
+        CommitGlossary(scene.Window);
         Assert.Equal("review", Assert.Single(scene.Reload().Glossary!.Rules).TargetTerm);
         Assert.Equal("dark", scene.Reload().Theme);
         Assert.Same(target, Term(scene.Window, "译词 1"));
@@ -338,7 +336,7 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
             }
             catch (Exception error) { failure = error; dialog.Close(); }
         }), DispatcherPriority.ContextIdle);
-        Click(scene.Window, SettingsDraftPresentation.Create().SaveLabel);
+        CommitGlossary(scene.Window);
         pending.Abort();
         if (failure is not null)
             ExceptionDispatchInfo.Capture(failure).Throw();
@@ -358,7 +356,7 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         Term(scene.Window, "译词 1").Text = "review";
         scene.Settings.GlossarySaved += () => SettingsRenderingTests.InteractWithCloseDialog(scene.Window,
             scene.Window.Close, SettingsDraftCloseChoice.Discard);
-        Click(scene.Window, SettingsDraftPresentation.Create().SaveLabel);
+        CommitGlossary(scene.Window);
         Assert.False(scene.Window.IsVisible);
         Assert.Equal("review", Assert.Single(scene.Reload().Glossary!.Rules).TargetTerm);
         scene.Window.ShowPage("glossary");
@@ -375,7 +373,7 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         Term(scene.Window, "源词 1").Text = "PR";
         Term(scene.Window, "译词 1").Text = "review";
         scene.Settings.GlossarySaved += () => throw new InvalidOperationException("controlled observer failure");
-        Click(scene.Window, SettingsDraftPresentation.Create().SaveLabel);
+        CommitGlossary(scene.Window);
         Assert.Equal("review", Assert.Single(scene.Reload().Glossary!.Rules).TargetTerm);
         Assert.False(SaveButton(scene.Window).IsEnabled);
         Assert.Contains(Descendants(scene.Window).OfType<TextBlock>(), text => text.Text == "已保存，请重新打开设置确认当前状态。");
@@ -386,17 +384,17 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
     public Task GlobalStyleRequiresBothReleaseAndLiveNegotiatedCapability() => desktop.RunAsync(async () =>
     {
         using var scene = new SettingsScene(new(Source: "zh", Target: "ja", Styles: new(TranslationStyle.Formal)), released: true);
-        scene.Window.ShowPage("translation");
-        var choice = Named<ComboBox>(scene.Window, "默认翻译风格");
+        scene.Window.ShowPage("language");
+        var choice = Named<Button>(scene.Window, "翻译风格 自然");
         Assert.False(choice.IsEnabled);
-        Assert.Equal(1, choice.SelectedIndex);
+        Assert.Equal(TranslationStyle.Formal, scene.Reload().Styles!.Default);
         await scene.StartStyleModelAsync();
         Assert.True(scene.Controller.GetStyleSettingsState().CanChange);
         Assert.True(choice.IsEnabled);
         int ordinary = 0, changed = 0;
         scene.Settings.Changed += () => ordinary++;
         scene.Settings.StyleChanged += () => changed++;
-        choice.SelectedIndex = 0;
+        choice.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.Equal(TranslationStyle.Natural, scene.Reload().Styles!.Default);
         Assert.NotNull(scene.Reload().Styles); // Natural is a choice, never reset.
         Assert.Equal(0, ordinary);
@@ -415,9 +413,9 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         await scene.StartStyleModelAsync();
         Assert.True(scene.Controller.GetStyleSettingsState().TechnicalAvailable);
         Assert.False(scene.Controller.GetStyleSettingsState().IsReleased);
-        scene.Window.ShowPage("translation");
+        scene.Window.ShowPage("language");
         scene.Window.UpdateLayout();
-        Assert.DoesNotContain(Descendants(scene.Window).OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "默认翻译风格");
+        Assert.False(Named<Button>(scene.Window, "翻译风格 自然").IsEnabled);
         Assert.Null(scene.Reload().Styles);
     });
 
@@ -427,12 +425,14 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         using var scene = new SettingsScene(new(Source: "zh", Target: "ja",
             Styles: new(TranslationStyle.Formal, new Dictionary<string, TranslationStyle> { ["saved.app"] = TranslationStyle.Natural }),
             Glossary: new(1, [new("PR", "pull request", "zh", "en")])), released: true);
-        scene.Window.ShowPage("translation");
+        scene.Window.ShowPage("language");
         // Windows stores executable names without their extension, unlike the shared test host.
         Assert.Equal(new("saved", TranslationStyle.Natural), Assert.Single(scene.Reload().Styles!.Applications!));
-        Assert.True(Named<Button>(scene.Window, "移除风格覆盖 saved").IsVisible);
+        scene.Window.ShowPage("apps");
+        Assert.True(Named<ComboBox>(scene.Window, "应用风格 saved").IsVisible);
+        scene.Window.ShowPage("language");
         await scene.StartStyleModelAsync(englishCandidate: true);
-        var choice = Named<ComboBox>(scene.Window, "默认翻译风格");
+        var choice = Named<Button>(scene.Window, "翻译风格 自然");
         Assert.True(choice.IsEnabled);
         Assert.Null(choice.ToolTip);
         Assert.Empty(AutomationProperties.GetHelpText(choice));
@@ -444,7 +444,7 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         Assert.Equal("当前模型或语言设置不支持翻译风格。", choice.ToolTip);
         Assert.Equal(choice.ToolTip, AutomationProperties.GetHelpText(choice));
         Assert.True(ToolTipService.GetShowOnDisabled(choice));
-        Assert.Equal(1, choice.SelectedIndex);
+        Assert.Equal(TranslationStyle.Formal, scene.Reload().Styles!.Default);
         Assert.Equal("style-unavailable", scene.Controller.GetStyleSettingsState().UnavailableReason);
         Assert.Equal(TranslationStyle.Formal, scene.Reload().Styles!.Default);
         scene.Settings.Update(scene.Settings.Value with
@@ -459,10 +459,12 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
             Target = "en"
         });
         Assert.Equal(new("saved", TranslationStyle.Natural), Assert.Single(scene.Reload().Styles!.Applications!));
-        var remove = Named<Button>(scene.Window, "移除风格覆盖 saved");
+        scene.Window.ShowPage("apps");
+        var remove = Named<ComboBox>(scene.Window, "应用风格 saved");
         Assert.True(remove.IsVisible);
         Assert.True(remove.IsEnabled);
-        remove.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        remove.SelectedIndex = 0;
+        scene.Window.ShowPage("language");
         Assert.Empty(scene.Reload().Styles!.Applications!);
         Assert.True(scene.Controller.GetStyleSettingsState().CanReset);
         ConfirmReset(scene.Window, confirm: false);
@@ -471,7 +473,6 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         Assert.Null(scene.Reload().Styles);
         scene.Window.ShowPage("glossary");
         Named<Button>(scene.Window, "删除术语 1").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        Click(scene.Window, SettingsDraftPresentation.Create().SaveLabel);
         Assert.Empty(scene.Reload().Glossary!.Rules);
         Assert.Equal("en", scene.Reload().Target);
     });
@@ -503,11 +504,18 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         return Descendants(window).OfType<T>().Single(control => AutomationProperties.GetName(control) == name);
     }
     private static TextBox Term(Window window, string name) => Named<TextBox>(window, name);
-    private static Button SaveButton(Window window) => Descendants(window).OfType<Button>().Single(button => Equals(button.Content, SettingsDraftPresentation.Create().SaveLabel));
+    private static Button SaveButton(Window window) => Descendants(window).OfType<Button>().Single(button => Equals(button.Content, "重试保存"));
+    private static void CommitGlossary(Window window)
+    {
+        window.UpdateLayout();
+        var target = Descendants(window).OfType<TextBox>().Last(box => AutomationProperties.GetName(box).StartsWith("译词 "));
+        target.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(target), 0, Key.Enter)
+            { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+    }
     private static void Click(Window window, string label)
     {
         window.UpdateLayout();
-        Descendants(window).OfType<Button>().Single(button => Equals(button.Content, label))
+        Descendants(window).OfType<Button>().Single(button => Equals(button.Content, label) || AutomationProperties.GetName(button) == label)
             .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     }
 

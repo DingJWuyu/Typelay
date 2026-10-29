@@ -417,6 +417,16 @@ class LocalEngine:
         )
 
     @property
+    def alternative_translation_version(self):
+        return (
+            1
+            if self._selection
+            and self._selection[0].package.backend == "index-translate-llama-cpu"
+            and self._owned[0].alternative_available
+            else None
+        )
+
+    @property
     def self_check_directions(self):
         directions = tuple(direction for item in self._selection for direction in item.directions)
         return (
@@ -438,20 +448,32 @@ class LocalEngine:
         previous: str,
         preserved: str | None = None,
     ) -> Result:
+        backend = self._selection[0].package.backend
+        languages = (
+            {"zh", "en"}
+            if backend == "argos"
+            else {
+                language
+                for direction in self.catalog
+                for language in (direction.source, direction.target)
+            }
+        )
         if (
             not valid_text(text)
             or not valid_text(previous)
             or preserved is not None
             or not isinstance(source, str)
             or not isinstance(target, str)
-            or source not in {"auto", "zh", "en"}
-            or target not in {"zh", "en"}
+            or source not in languages | {"auto"}
+            or target not in languages
         ):
             return Result("error", code="invalid-request")
         if (
             PROTECTED.search(text)
             or PROTECTED.search(previous)
-            or self._selection[0].package.backend != "argos"
+            or backend not in ("argos", "index-translate-llama-cpu")
+            or backend == "index-translate-llama-cpu"
+            and self.alternative_translation_version != 1
         ):
             return Result("error", code="alternative-unavailable")
         detected = self._detector.detect_language_of(text)
@@ -465,6 +487,8 @@ class LocalEngine:
         if pair is None:
             return Result("error", code="language-unavailable")
         try:
+            if backend == "index-translate-llama-cpu":
+                return pair.translate_alternative(text, previous, deadline=time.monotonic() + 60)
             return pair.translate_alternative(text, previous)
         except EngineError as error:
             return Result("error", code=str(error))

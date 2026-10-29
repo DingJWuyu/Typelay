@@ -21,7 +21,8 @@ VERSION = "3a0eca6ce931d88d00614d427ab3ed8ff0743902"
 UPSTREAM = "7aca0d2ea8d92b56911233b822db01f9fbb1ae50"
 TEMPLATE_SHA256 = "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80"
 MODEL_SHA256 = "044b313d29342bd3b2c77cbb64023ca0d209bd9b3247763f9d162767ef2d746a"
-EXPORTS = ["index_close", "index_open_v1", "index_translate_v1"]
+LEGACY_EXPORTS = ["index_close", "index_open_v1", "index_translate_v1"]
+EXPORTS = ["index_close", "index_open_v1", "index_translate_alternative_v1", "index_translate_v1"]
 DIRECTIONS = (
     "zh_ja",
     "ja_zh",
@@ -38,7 +39,8 @@ DIRECTIONS = (
     "zh_en",
     "en_zh",
 )
-CAPABILITIES = {"styles": ["natural", "formal"], "glossary": True, "styled_glossary": True}
+LEGACY_CAPABILITIES = {"styles": ["natural", "formal"], "glossary": True, "styled_glossary": True}
+CAPABILITIES = {**LEGACY_CAPABILITIES, "alternative": True}
 VARIANTS = (
     "alderlake",
     "cannonlake",
@@ -238,8 +240,8 @@ def verify_native():
         or type(manifest["abi"]) is not int
         or manifest["abi"] != ABI
         or manifest["platform"] != ("win-x64" if windows else "linux-x86_64")
-        or manifest["exports"] != EXPORTS
-        or manifest["capabilities"] != CAPABILITIES
+        or (manifest["exports"], manifest["capabilities"])
+        not in ((LEGACY_EXPORTS, LEGACY_CAPABILITIES), (EXPORTS, CAPABILITIES))
         or manifest["upstream_revision"] != UPSTREAM
         or manifest["template_sha256"] != TEMPLATE_SHA256
         or manifest["model_lock_sha256"] != digest(root / "model.lock.json")

@@ -382,6 +382,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             var settings = WindowsRuntime.CreateSettings(path);
             settings.Update(settings.Value with
             {
+                UiLanguage = "zh-CN",
                 Mode = WorkMode.Automatic,
                 ExperimentalWriteback = false
             });
@@ -1212,6 +1213,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             var settings = WindowsRuntime.CreateSettings(path);
             settings.Update(settings.Value with
             {
+                UiLanguage = "zh-CN",
                 Mode = WorkMode.Automatic,
                 ExperimentalWriteback = false
             });
@@ -1677,6 +1679,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             var settings = WindowsRuntime.CreateSettings(path);
             settings.Update(settings.Value with
             {
+                UiLanguage = "zh-CN",
                 Mode = WorkMode.OnDemand,
                 Enabled = true
             });
@@ -2113,6 +2116,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             var settings = WindowsRuntime.CreateSettings(Path.Combine(_directory, "settings.json"));
             settings.Update(settings.Value with
             {
+                UiLanguage = "zh-CN",
                 Mode = WorkMode.Automatic,
                 ExperimentalWriteback = false,
                 AcceptShortcut = _bindings.Accept,

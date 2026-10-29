@@ -5,14 +5,15 @@ namespace TypeLay.Runtime;
 public sealed partial class SessionController
 {
     private bool _glossaryChangeRunning;
+    private GlossarySnapshot? _configuredGlossary;
     public GlossarySettingsState GetGlossarySettingsState(IEnumerable<GlossaryRule>? proposedRules = null)
     {
         var token = CurrentTranslationToken();
         var next = CreateGlossary(proposedRules ?? _settings.Value.Glossary?.Rules ?? [], out string? invalid);
         string? reason = invalid ?? QualifyGlossaryChange(next!, _settings.Revision, token, default);
         string? applicationReason = next?.CouldApply(_settings.Value.Direction) != true ? "glossary-not-applicable"
-            : reason ?? (_session.ManualStyleLocked ? "manual-glossary-deferred"
-                : _session.Current is null ? "glossary-source-unavailable" : GlossaryApplicationProblem(next));
+            : reason ?? GlossaryApplicationProblem(next) ?? (_session.ManualStyleLocked ? "manual-glossary-deferred"
+                : _session.Current is null ? "glossary-source-unavailable" : null);
         return new(_settings.Revision, _settings.Value.Glossary, _session.AppliedGlossary, token,
             TechnicalTranslationAvailable(TranslationOperation.Glossary), reason, reason is null,
             applicationReason is null, applicationReason, _translationRelease.IsReleased(TranslationOperation.Glossary));
@@ -38,8 +39,13 @@ public sealed partial class SessionController
             ? QualifyTranslationOperation(TranslationOperation.StyledGlossary, _settings.Value.Direction)
             : QualifyTranslationOperation(TranslationOperation.Glossary, _settings.Value.Direction);
 
-    private bool IsGlossaryDeletion(GlossarySnapshot next) => _settings.Value.Glossary is { } saved
-        && next.Rules.Count < saved.Rules.Count && next.Rules.All(rule => saved.Rules.Contains(rule));
+    // Saved rules are user data. They become an input to model generation only
+    // after acceptance for this exact package, version and direction. Storage is
+    // not an advanced-operation request and never disables ordinary translation.
+    private GlossarySnapshot? GlossaryForTranslation() => _settings.Value.Glossary is { } saved
+        && _model.VerifiedIdentity is { } identity
+        && _translationRelease.Allows(TranslationOperation.Glossary, identity, _settings.Value.Direction)
+            ? saved : null;
 
     private string? QualifyGlossaryChange(GlossarySnapshot next, long expectedRevision, SessionViewToken? token,
         CancellationToken cancellationToken, bool ownsChange = false)
@@ -48,17 +54,8 @@ public sealed partial class SessionController
             return "glossary-canceled";
         if (_settings.Revision != expectedRevision || _settings.HasChanges(_settings.Value))
             return "glossary-stale";
-        // Only exact retained word pairs AND scope count as deletion recovery.
-        // This bypasses saving gates only; remaining rules still face dispatch gates.
-        bool deletion = IsGlossaryDeletion(next);
-        if (!deletion)
-        {
-            if (!_translationRelease.IsReleased(TranslationOperation.Glossary))
-                return "glossary-not-released";
-            if (_session.Current is not null && !_session.ManualStyleLocked && next.CouldApply(_settings.Value.Direction)
-                && GlossaryApplicationProblem(next) is { } unavailable)
-                return unavailable;
-        }
+        // Management is independent of model availability and quality. The
+        // current form, source identity and in-flight write guards still apply.
         if (!ownsChange && _glossaryChangeRunning || _styleChangeRunning || TranslationSettingsBusy())
             return "glossary-busy";
         if (_session.Current is null)
@@ -91,9 +88,8 @@ public sealed partial class SessionController
         var capability = _model.GlossaryTranslationCapability;
         var combinedCapability = _model.StyledGlossaryTranslationCapability;
         long contentEpoch = _hook.ContentEpoch, foregroundEpoch = _hook.ForegroundEpoch, windowEpoch = _hook.WindowEpoch;
-        bool deletion = IsGlossaryDeletion(next!);
-        bool appliesNow = !deletion && sourceBasis is not null && !_session.ManualStyleLocked
-            && next!.CouldApply(_settings.Value.Direction);
+        bool appliesNow = sourceBasis is not null && !_session.ManualStyleLocked
+            && next!.CouldApply(_settings.Value.Direction) && GlossaryApplicationProblem(next) is null;
         string? Check(bool ownsChange = false)
         {
             if (entryCheck?.Invoke() is { } entryReason)
@@ -143,15 +139,25 @@ public sealed partial class SessionController
             catch (SettingsPersistenceException) { return new(false, "glossary-save-failed"); }
             catch (Exception error) when (error is not OutOfMemoryException && _settings.Revision != before)
             {
-                return new(true, "glossary-saved-notification-failed");
+                return new(true, next!.CouldApply(_settings.Value.Direction) && GlossaryApplicationProblem(next) is not null
+                    ? "glossary-saved-inactive-notification-failed" : "glossary-saved-notification-failed");
             }
-            return new(true, "glossary-saved");
+            return new(true, next!.CouldApply(_settings.Value.Direction) && GlossaryApplicationProblem(next) is not null
+                ? "glossary-saved-inactive" : "glossary-saved");
         }
         finally { _glossaryChangeRunning = false; }
     }
 
     private void ApplyGlossarySettings()
     {
+        var effective = GlossaryForTranslation();
+        if (ReferenceEquals(effective, _configuredGlossary))
+        {
+            Render();
+            Changed?.Invoke();
+            return;
+        }
+        _configuredGlossary = effective;
         if (_pendingDirect is not null)
         {
             _pendingDirect = null;
@@ -159,7 +165,7 @@ public sealed partial class SessionController
         }
         if (_session.ManualStyleLocked)
         {
-            _session.SetGlossary(_settings.Value.Glossary, _loop.NowMs);
+            _session.SetGlossary(effective, _loop.NowMs);
             return; // No Configure, generation, config, permit, view or draft mutation.
         }
         _configurationRevision++;
@@ -174,7 +180,7 @@ public sealed partial class SessionController
         }
         finally
         {
-            _session.SetGlossary(_settings.Value.Glossary, _loop.NowMs);
+            _session.SetGlossary(effective, _loop.NowMs);
             if (_styleObservation is { } observation)
                 _styleObservation = observation with
                 {

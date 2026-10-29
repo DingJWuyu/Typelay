@@ -22,6 +22,43 @@ class IndexAssetTests(unittest.TestCase):
 
 
 class IndexWholeSourceTests(unittest.TestCase):
+    def test_alternative_is_one_original_source_request_bound_to_the_previous_candidate(self):
+        from typelay_worker.index import IndexDirection
+
+        class Model:
+            def translate_alternative(model, text, previous, direction, deadline):
+                self.assertEqual(
+                    ("请周五前回复。", "Reply by Friday.", 13, 123),
+                    (text, previous, direction, deadline),
+                )
+                return "Please respond by Friday."
+
+        result = IndexDirection(Model(), 13).translate_alternative(
+            "请周五前回复。", "Reply by Friday.", deadline=123
+        )
+        self.assertEqual(("translated", "Please respond by Friday."), (result.status, result.text))
+
+    def test_alternative_does_not_manufacture_a_different_result_or_accept_new_protected_content(
+        self,
+    ):
+        from typelay_worker.index import IndexDirection
+
+        for output in (" REPLY BY FRIDAY! ", "Visit https://invented.example", ""):
+
+            class Model:
+                calls = 0
+
+                def translate_alternative(model, *args):
+                    model.calls += 1
+                    return output
+
+            model = Model()
+            result = IndexDirection(model, 13).translate_alternative(
+                "请周五前回复。", "Reply by Friday.", deadline=123
+            )
+            self.assertEqual(("no-alternative", ""), (result.status, result.text))
+            self.assertEqual(1, model.calls)
+
     def test_fragmented_source_is_refused_before_model_access(self):
         from typelay_worker.engine import EngineError
         from typelay_worker.index import IndexDirection

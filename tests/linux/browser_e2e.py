@@ -61,7 +61,10 @@ TRANSPORT = """(() => {
     const bindings = window.fixtureBindings;
     if (['publish', 'direct', 'return', 'overlay-render', 'overlay-renew',
       'overlay-edit', 'overlay-resume'].includes(message.op)) data.generation ??= bindings.generation;
-    if (message.op === 'overlay-render') revision = Math.max(revision, data.revision || 0);
+    if (message.op === 'overlay-render') {
+      data.appearance ??= {uiLanguage: 'zh-CN'};
+      revision = Math.max(revision, data.revision || 0);
+    }
     if (message.op === 'overlay-render' && data.view?.state !== 'Paused') {
       const view = data.view;
       view.viewContext ??= {token: {target: {backend: 'linux-browser', value: data.target, lifetime: 'test'},
@@ -204,6 +207,9 @@ class BrowserContract(unittest.TestCase):
         self.page.locator("#source").focus()
 
     def command(self, operation, data=None):
+        if operation == "overlay-render":
+            data = {**(data or {})}
+            data.setdefault("appearance", {"uiLanguage": "zh-CN"})
         self.sequence += 1
         return self.page.evaluate(
             "message => window.fixtureCommand(message)",
@@ -1963,7 +1969,7 @@ class BrowserContract(unittest.TestCase):
                         if not node.get("ignored")
                     ]
                     names = [node.get("name", {}).get("value") for node in nodes]
-                    for name in ("Auto → EN", "译文就绪", "Tab 交还应用"):
+                    for name in ("Auto → EN", "Tab 交还应用"):
                         self.assertIn(name, names)
                     self.assertNotIn("点击译文以编辑", names)
 
@@ -1982,14 +1988,13 @@ class BrowserContract(unittest.TestCase):
                     editor, editor_box = control_box("TypeLay 译文", "textbox")
                     self.assertEqual(editor.get("description", {}).get("value"), "点击译文以编辑")
                     _, more_box = control_box("更多", "button")
-                    _, exit_box = control_box("Esc 退出当前翻译", "button")
-                    self.assertLessEqual(more_box[5], editor_box[1])
-                    self.assertLessEqual(editor_box[5], exit_box[1])
-                    host = self.page.locator("html > div")
+                    self.assertNotIn("Esc 退出当前翻译", names)
+                    self.assertLessEqual(editor_box[5], more_box[1])
+                    host = self.page.locator("html > div[role=region][aria-label=TypeLay]")
                     self.assertTrue(host.evaluate("element => element.shadowRoot === null"))
                     bounds = host.bounding_box()
                     self.assertEqual(bounds["width"], width)
-                    for box in (editor_box, more_box, exit_box):
+                    for box in (editor_box, more_box):
                         self.assertGreater(box[4], box[0])
                         self.assertGreater(box[5], box[1])
                         self.assertGreaterEqual(box[0], bounds["x"])
@@ -2004,26 +2009,26 @@ class BrowserContract(unittest.TestCase):
                         # or transient host-state polling is needed for colors.
                         for revision, (state, text, owned, color) in enumerate(
                             (
-                                ("Translating", "", False, "rgb(37, 42, 49)"),
-                                ("Translating", original_text, False, "rgb(102, 107, 117)"),
-                                ("ValidTranslation", "Fresh translation", False, "rgb(37, 42, 49)"),
+                                ("Translating", "", False, "rgb(20, 20, 19)"),
+                                ("Translating", original_text, False, "rgb(116, 114, 108)"),
+                                ("ValidTranslation", "Fresh translation", False, "rgb(20, 20, 19)"),
                                 (
                                     "TranslationFailed",
                                     "Fresh translation",
                                     False,
-                                    "rgb(37, 42, 49)",
+                                    "rgb(20, 20, 19)",
                                 ),
-                                ("EditingTranslation", "Human draft", True, "rgb(37, 42, 49)"),
-                                ("ReturningToSource", "Human draft", True, "rgb(37, 42, 49)"),
+                                ("EditingTranslation", "Human draft", True, "rgb(20, 20, 19)"),
+                                ("ReturningToSource", "Human draft", True, "rgb(20, 20, 19)"),
                                 (
                                     "EditedTranslationPending",
                                     "Human draft",
                                     False,
-                                    "rgb(37, 42, 49)",
+                                    "rgb(20, 20, 19)",
                                 ),
-                                ("Translating", "Human draft", False, "rgb(102, 107, 117)"),
-                                ("Translating", "Human draft", True, "rgb(37, 42, 49)"),
-                                ("ValidTranslation", original_text, False, "rgb(37, 42, 49)"),
+                                ("Translating", "Human draft", False, "rgb(116, 114, 108)"),
+                                ("Translating", "Human draft", True, "rgb(20, 20, 19)"),
+                                ("ValidTranslation", original_text, False, "rgb(20, 20, 19)"),
                             ),
                             start=2,
                         ):
@@ -2162,7 +2167,7 @@ class BrowserContract(unittest.TestCase):
         names = menu_names(False)
         self.assertNotIn("复制", names)
         self.assertNotIn("复制译文", names)
-        compact = self.page.locator("html > div").bounding_box()
+        compact = self.page.locator("html > div[role=region][aria-label=TypeLay]").bounding_box()
         click_button("更多")
         names = menu_names(True)
         for name in ["复制译文", "重新翻译", "不要在这个应用中显示", "设置"]:
@@ -2172,9 +2177,9 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
         click_button("展开")
         self.page.wait_for_function(
-            "document.querySelector('html > div').getBoundingClientRect().width === 520"
+            "document.querySelector('html > div[role=region][aria-label=TypeLay]').getBoundingClientRect().width === 520"
         )
-        expanded = self.page.locator("html > div").bounding_box()
+        expanded = self.page.locator("html > div[role=region][aria-label=TypeLay]").bounding_box()
         self.assertEqual(expanded["width"], 520)
         self.assertGreater(expanded["width"], compact["width"])
         self.assertGreater(expanded["height"], compact["height"])
@@ -2185,12 +2190,12 @@ class BrowserContract(unittest.TestCase):
         click_button("缩小")
         self.page.wait_for_function(
             """expected => {
-          const rect = document.querySelector('html > div').getBoundingClientRect();
+          const rect = document.querySelector('html > div[role=region][aria-label=TypeLay]').getBoundingClientRect();
           return ['x', 'y', 'width', 'height'].every(name => rect[name] === expected[name]);
         }""",
             arg=compact,
         )
-        self.assertEqual(self.page.locator("html > div").bounding_box(), compact)
+        self.assertEqual(self.page.locator("html > div[role=region][aria-label=TypeLay]").bounding_box(), compact)
         names = menu_names(False)
         self.assertNotIn("复制译文", names)
         self.assertNotIn("重新翻译", names)
@@ -2276,7 +2281,7 @@ class BrowserContract(unittest.TestCase):
                 "returnByValue": True,
                 "functionDeclaration": """function(expandControl) {
           const editor = this, panel = editor.parentElement, host = panel.getRootNode().host;
-          const exit = panel.querySelector('footer button');
+          const bar = panel.querySelector('header');
           window.fixtureMotionFrames = [];
           window.fixtureMotionDone = false;
           window.fixtureMotionStartedMs = null;
@@ -2284,7 +2289,7 @@ class BrowserContract(unittest.TestCase):
           // Read only after a failed wait, retaining the observed control's
           // identity even if the live overlay was removed or replaced.
           window.fixtureMotionInspection = () => {
-            const liveHost = document.querySelector('html > div');
+            const liveHost = document.querySelector('html > div[role=region][aria-label=TypeLay]');
             return {ms: performance.now(),
               visibility: document.visibilityState, documentFocused: document.hasFocus(),
               hostConnected: host.isConnected, editorConnected: editor.isConnected,
@@ -2302,7 +2307,7 @@ class BrowserContract(unittest.TestCase):
             function sample(now) {
               fixtureMotionFrames.push({ms: now - start, connected: host.isConnected,
                 host: host.getBoundingClientRect().toJSON(), editor: editor.getBoundingClientRect().toJSON(),
-                exit: exit.getBoundingClientRect().toJSON(), text: editor.value,
+                bar: bar.getBoundingClientRect().toJSON(), text: editor.value,
                 start: editor.selectionStart, end: editor.selectionEnd,
                 sourceFocused: document.activeElement.id === 'source'});
               if (now - start < 360) requestAnimationFrame(sample);
@@ -2427,7 +2432,6 @@ class BrowserContract(unittest.TestCase):
                 ),
                 [True, reason],
             )
-        self.overlay_control("译文就绪", "StaticText")
         self.assertFalse(
             self.overlay_dom(self.overlay_control("✓ 继承"), "function() { return this.disabled; }")
         )
@@ -2465,11 +2469,39 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 
+    def test_overlay_appearance_and_language_change_preserve_candidate(self):
+        data = self.motion_view()
+        data["appearance"] = {"uiLanguage": "en", "font": "sans", "textSize": 19,
+                              "accent": "ocean", "reduceMotion": True, "reduceTransparency": True}
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        editor = self.overlay_control("TypeLay Translation", "textbox")
+        value = self.overlay_dom(editor, "function() { return this.value; }")
+        self.assertEqual(value, data["view"]["text"])
+        self.assertEqual(self.overlay_dom(editor, """function() {
+          const section = this.closest('section');
+          return [getComputedStyle(this).fontSize, section.lang, section.dataset.motion, section.dataset.material];
+        }"""), ["19px", "en", "reduce", "solid"])
+        self.click_overlay_control("More")
+        self.overlay_control("Copy Translation")
+        data["appearance"] = {"uiLanguage": "zh-CN", "font": "system", "textSize": 13,
+                              "accent": "sage", "reduceMotion": True}
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        self.assertEqual(self.overlay_dom(editor, "function() { return this.value; }"), value)
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
+    def test_source_glossary_management_without_quality_release_preserves_candidate(self):
+        self.check_source_glossary_returns_without_editing_or_mutating_candidate(False)
+
     def test_source_glossary_returns_without_editing_or_mutating_candidate(self):
+        self.check_source_glossary_returns_without_editing_or_mutating_candidate(True)
+
+    def check_source_glossary_returns_without_editing_or_mutating_candidate(self, released):
         data = self.motion_view()
         self.page.emulate_media(reduced_motion="reduce")
         actions = self.translation_menu_state(
-            glossaryReleased=True, canOpenGlossary=True, glossaryUnavailableReason=None
+            glossaryReleased=released, canOpenGlossary=True, glossaryUnavailableReason=None
         )
         self.set_translation_menu(data, actions)
         self.page.locator("#source").evaluate("element => element.setSelectionRange(1, 4)")
@@ -2772,7 +2804,7 @@ class BrowserContract(unittest.TestCase):
         self.click_overlay_control("中文 → unknown（当前不可用）")
         self.assertTrue(
             self.page.evaluate("""fixtureMessages.some(message =>
-          message.event === 'ui' && message.data.operation === 'settings')""")
+          message.event === 'ui' && message.data.operation === 'languagesPicker')""")
         )
         self.assertFalse(
             self.page.evaluate("""fixtureMessages.some(message =>
@@ -2795,7 +2827,7 @@ class BrowserContract(unittest.TestCase):
         self.cdp.on("Page.screencastFrame", save_frame)
         self.cdp.send("Page.startScreencast", {"format": "png", "everyNthFrame": 2})
         try:
-            before = self.page.locator("html > div").bounding_box()
+            before = self.page.locator("html > div[role=region][aria-label=TypeLay]").bounding_box()
             self.observe_overlay_frames(start_on_click=True)
             self.click_overlay_control("展开")
             frames = self.motion_frames()
@@ -2821,8 +2853,8 @@ class BrowserContract(unittest.TestCase):
             self.assertTrue(frame["sourceFocused"])
             self.assertAlmostEqual(frame["host"]["right"], end["right"], delta=1)
             self.assertAlmostEqual(frame["host"]["bottom"], end["bottom"], delta=1)
-            self.assertGreaterEqual(frame["exit"]["top"], frame["host"]["top"])
-            self.assertLessEqual(frame["exit"]["bottom"], frame["host"]["bottom"])
+            self.assertGreaterEqual(frame["bar"]["top"], frame["host"]["top"])
+            self.assertLessEqual(frame["bar"]["bottom"], frame["host"]["bottom"])
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 
@@ -2846,7 +2878,7 @@ class BrowserContract(unittest.TestCase):
 
     def test_rapid_resize_and_same_content_renew_do_not_restart_motion(self):
         data = self.motion_view()
-        before = self.page.locator("html > div").bounding_box()
+        before = self.page.locator("html > div[role=region][aria-label=TypeLay]").bounding_box()
         # Freeze the browser animation timeline, not adapter state. Otherwise
         # the header can move between CDP's rectangle read and mouse dispatch,
         # so a missed collapse click would test an uninterrupted expansion.
@@ -2862,7 +2894,7 @@ class BrowserContract(unittest.TestCase):
                 animation.currentTime = 140;
             }""",
             )
-            intermediate = self.page.locator("html > div").bounding_box()
+            intermediate = self.page.locator("html > div[role=region][aria-label=TypeLay]").bounding_box()
             self.assertGreater(intermediate["width"], before["width"])
             self.assertLess(intermediate["width"], 520)
             self.command(
@@ -2903,14 +2935,14 @@ class BrowserContract(unittest.TestCase):
         self.command("overlay-hide")
         self.assertEqual(self.overlay_dom(editor, "function() { return this.value; }"), "")
         self.page.wait_for_timeout(360)  # Observation window beyond the original motion deadline.
-        self.assertEqual(self.page.locator("html > div").count(), 0)
+        self.assertEqual(self.page.locator("html > div[role=region][aria-label=TypeLay]").count(), 0)
         self.page.locator("#source").focus()
         data = self.motion_view()
         editor = self.overlay_control("TypeLay 译文", "textbox")
         self.click_overlay_control("展开")
         self.page.locator("#source").evaluate("element => element.remove()")
         self.page.wait_for_timeout(360)
-        self.assertEqual(self.page.locator("html > div").count(), 0)
+        self.assertEqual(self.page.locator("html > div[role=region][aria-label=TypeLay]").count(), 0)
         self.assertEqual(self.overlay_dom(editor, "function() { return this.value; }"), "")
         self.assertEqual(self.accepted(), [])
 
@@ -3047,6 +3079,36 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 
+    def test_retranslation_confirms_human_draft_and_rejects_superseded_confirmation(self):
+        snapshot, data = self.open_editor("Tab", "Esc")
+        self.page.keyboard.press("Control+A")
+        self.page.keyboard.insert_text("My edited translation")
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        self.click_overlay_control("更多")
+        self.click_overlay_control("重新翻译")
+        self.overlay_control("替换你修改过的译文？", "StaticText")
+        count = lambda: self.page.evaluate("fixtureMessages.filter(m => m.event === 'ui' && m.data.operation === 'regenerate').length")
+        self.assertEqual(count(), 0)
+        self.click_overlay_control("保留")
+        self.assertEqual(count(), 0)
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        self.assertEqual(self.overlay_dom(editor, "function() { return this.value; }"), "My edited translation")
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        self.click_overlay_control("更多")
+        self.click_overlay_control("重新翻译")
+        data["revision"] += 1
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        names = [node.get("name", {}).get("value") for node in self.cdp.send("Accessibility.getFullAXTree")["nodes"]]
+        self.assertNotIn("替换你修改过的译文？", names)
+        self.assertEqual(count(), 0)
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        self.click_overlay_control("更多")
+        self.click_overlay_control("重新翻译")
+        self.click_overlay_control("替换")
+        self.assertEqual(count(), 1)
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
     def test_editor_draft_survives_render_and_two_separate_tabs_return_then_accept(self):
         self.check_editor_draft_return_then_accept("Tab", "Esc")
 
@@ -3102,9 +3164,11 @@ class BrowserContract(unittest.TestCase):
         self.assertNotIn(f"{accept} 接受译文", names)
         # The real pointer enters the closed-shadow editor; no test-only access
         # to its DOM, value or implementation is exposed by the adapter.
-        box = self.page.locator("html > div").bounding_box()
+        box = self.page.locator("html > div[role=region][aria-label=TypeLay]").bounding_box()
         self.assertIsNotNone(box)
-        self.page.mouse.click(box["x"] + 30, box["y"] + 55)
+        editor_rect = self.overlay_dom(self.overlay_control("TypeLay 译文", "textbox"),
+            "function() { return this.getBoundingClientRect().toJSON(); }")
+        self.page.mouse.click(editor_rect["x"] + 12, editor_rect["y"] + editor_rect["height"] / 2)
         self.assertTrue(
             self.page.evaluate("""window.fixtureMessages.some(message =>
           message.event === 'ui' && message.data.operation === 'beginEdit')""")
@@ -3130,7 +3194,7 @@ class BrowserContract(unittest.TestCase):
         editor = self.overlay_control("TypeLay 译文", "textbox")
         self.assertEqual(
             self.overlay_dom(editor, "function() { return getComputedStyle(this).color; }"),
-            "rgb(37, 42, 49)",
+            "rgb(20, 20, 19)",
         )
         if accept == "Tab":
             # Reuse the existing two-stage return case for motion, Chinese
@@ -3271,7 +3335,7 @@ class BrowserContract(unittest.TestCase):
             self.overlay_dom(
                 editor, "function() { return [this.value, getComputedStyle(this).color]; }"
             ),
-            [draft, "rgb(37, 42, 49)"],
+            [draft, "rgb(20, 20, 19)"],
         )
         returned = self.capture()
         self.assertEqual(returned["selection"], snapshot["selection"])
@@ -3333,7 +3397,7 @@ class BrowserContract(unittest.TestCase):
         for _ in range(5):
             self.page.wait_for_timeout(400)
             self.page.evaluate(renew, request)
-        self.assertEqual(self.page.locator("html > div").count(), 1)
+        self.assertEqual(self.page.locator("html > div[role=region][aria-label=TypeLay]").count(), 1)
         self.assertEqual(
             self.overlay_dom(editor, "function() { return this.value; }"), "Working draft"
         )
@@ -3347,7 +3411,7 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
         self.page.evaluate(renew, {**request, "revision": request["revision"] + 1})
-        self.assertEqual(self.page.locator("html > div").count(), 0)
+        self.assertEqual(self.page.locator("html > div[role=region][aria-label=TypeLay]").count(), 0)
 
     def test_control_editor_exit_owns_repeat_and_release_without_a_write(self):
         self.open_editor("Ctrl+F7", "Ctrl+F8")

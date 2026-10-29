@@ -27,7 +27,6 @@ public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
         fixture.Window.UpdateLayout();
         Wake().Text = "Ctrl+C";
         string persisted = File.ReadAllText(fixture.Path);
-        Button("保存修改").RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
         Assert.Equal(0, requests); // The warning itself cannot retire the input session.
         Assert.Equal(persisted, File.ReadAllText(fixture.Path));
         Button("强制保存").RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
@@ -69,10 +68,10 @@ public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
         fixture.Window.PrepareSettingsChange = _ => { requests++; return retirement.Task; };
         fixture.Window.ShowPage();
         fixture.Window.UpdateLayout();
-        var modes = Descendants(fixture.Window).OfType<ComboBox>()
-            .Single(control => AutomationProperties.GetName(control) == "工作模式");
+        var modes = Descendants(fixture.Window).OfType<RadioButton>()
+            .Single(control => AutomationProperties.GetName(control) == "工作模式 按需");
         Assert.True(modes.Focus());
-        modes.SelectedIndex = 1;
+        modes.IsChecked = true;
         Assert.Equal(1, requests);
         Assert.Equal(WorkMode.Automatic, fixture.Settings.Value.Mode);
         Assert.Equal(WorkMode.Automatic, new SettingsStore(fixture.Path).Value.Mode);
@@ -81,8 +80,8 @@ public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
         Assert.Equal(acknowledged ? WorkMode.OnDemand : WorkMode.Automatic, fixture.Settings.Value.Mode);
         Assert.Equal(fixture.Settings.Value.Mode, new SettingsStore(fixture.Path).Value.Mode);
-        Assert.True(Descendants(fixture.Window).OfType<ComboBox>()
-            .Single(control => AutomationProperties.GetName(control) == "工作模式").IsKeyboardFocused);
+        Assert.True(Descendants(fixture.Window).OfType<RadioButton>()
+            .Single(control => AutomationProperties.GetName(control) == "工作模式 按需").IsKeyboardFocused);
         if (!acknowledged)
             Assert.Contains(Descendants(fixture.Window).OfType<TextBlock>(), control => control.Text.Contains("设置未保存"));
     });
@@ -98,10 +97,10 @@ public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
         fixture.Window.PrepareSettingsChange = _ => retirement.Task;
         fixture.Window.ShowPage();
         fixture.Window.UpdateLayout();
-        var modes = Descendants(fixture.Window).OfType<ComboBox>()
-            .Single(control => AutomationProperties.GetName(control) == "工作模式");
+        var modes = Descendants(fixture.Window).OfType<RadioButton>()
+            .Single(control => AutomationProperties.GetName(control) == "工作模式 按需");
         Assert.True(modes.Focus());
-        modes.SelectedIndex = 1;
+        modes.IsChecked = true;
         Assert.False(modes.IsEnabled);
         Window? other = null;
         try
@@ -118,7 +117,7 @@ public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
             {
                 if (destination == "page")
                     Descendants(fixture.Window).OfType<Button>()
-                        .Single(button => Equals(button.Content, "文  语言"))
+                        .Single(button => AutomationProperties.GetAutomationId(button) == "SettingsNavigation_language")
                         .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 focused = Descendants(fixture.Window).OfType<Button>()
                     .Single(button => AutomationProperties.GetName(button) == "关闭设置");
@@ -129,8 +128,8 @@ public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
             Assert.Equal(WorkMode.OnDemand, new SettingsStore(fixture.Path).Value.Mode);
             Assert.True(focused.IsKeyboardFocused);
             if (destination == "page")
-                Assert.DoesNotContain(Descendants(fixture.Window).OfType<ComboBox>(),
-                    control => AutomationProperties.GetName(control) == "工作模式");
+                Assert.DoesNotContain(Descendants(fixture.Window).OfType<RadioButton>(),
+                    control => AutomationProperties.GetName(control) == "工作模式 按需");
         }
         finally
         {
@@ -146,8 +145,8 @@ public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
         fixture.Window.PrepareSettingsChange = _ => retirement.Task;
         fixture.Window.ShowPage();
         fixture.Window.UpdateLayout();
-        Descendants(fixture.Window).OfType<ComboBox>()
-            .Single(control => AutomationProperties.GetName(control) == "工作模式").SelectedIndex = 1;
+        Descendants(fixture.Window).OfType<RadioButton>()
+            .Single(control => AutomationProperties.GetName(control) == "工作模式 按需").IsChecked = true;
         fixture.Settings.Update(fixture.Settings.Value with
         {
             Target = "zh"
@@ -171,10 +170,6 @@ public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
         });
         var retirement = new TaskCompletionSource<bool>();
         fixture.Window.PrepareSettingsChange = _ => retirement.Task;
-        fixture.Window.ShowPage("apps");
-        fixture.Window.UpdateLayout();
-        Descendants(fixture.Window).OfType<Button>().Single(button => Equals(button.Content, "移除"))
-            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         fixture.Window.ShowPage("shortcuts");
         fixture.Window.UpdateLayout();
         Descendants(fixture.Window).OfType<TextBox>()
@@ -183,8 +178,7 @@ public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
         fixture.Settings.Changed += () => changes++;
         string persisted = File.ReadAllText(fixture.Path);
         var save = Descendants(fixture.Window).OfType<Button>()
-            .Single(button => Equals(button.Content, SettingsDraftPresentation.Create().SaveLabel));
-        save.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            .Single(button => Equals(button.Content, "重试保存"));
         Assert.False(save.IsEnabled);
         Assert.Equal(persisted, File.ReadAllText(fixture.Path));
         SettingsRenderingTests.InteractWithCloseDialog(fixture.Window, fixture.Window.Close, choice, duringClose: () =>
@@ -208,11 +202,11 @@ public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
         }
         else
         {
-            Assert.Empty(new SettingsStore(fixture.Path).Value.Excluded);
+            Assert.Equal(new[] { "old" }, new SettingsStore(fixture.Path).Value.Excluded);
             Assert.Equal("Ctrl+Shift+U", new SettingsStore(fixture.Path).Value.WakeShortcut);
             SettingsRenderingTests.InteractWithCloseDialog(fixture.Window, fixture.Window.Close, choice: null);
             Assert.False(fixture.Window.IsVisible);
-            Assert.Empty(new SettingsStore(fixture.Path).Value.Excluded);
+            Assert.Equal(new[] { "old" }, new SettingsStore(fixture.Path).Value.Excluded);
         }
     });
 
@@ -226,7 +220,7 @@ public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
         fixture.Window.ShowPage("shortcuts");
         fixture.Window.UpdateLayout();
         var save = Descendants(fixture.Window).OfType<Button>()
-            .Single(button => Equals(button.Content, SettingsDraftPresentation.Create().SaveLabel));
+            .Single(button => Equals(button.Content, "重试保存"));
         Assert.False(save.IsEnabled);
         save.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.Equal(0, requests);

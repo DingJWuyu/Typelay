@@ -12,9 +12,10 @@ from wire import now_ms
 class Overlay:
     """The shared view rendered in its actual GTK parent, without global coordinates."""
 
-    def __init__(self, host, input_service, tasks, settings_requested):
+    def __init__(self, host, input_service, tasks, settings_requested, languages_requested=None):
         self.host, self.input, self.tasks = host, input_service, tasks
         self.settings_requested = settings_requested
+        self.languages_requested = languages_requested or settings_requested
         self.value = self.settings = self.peer = None
         self.language_choices = None
         self.visible = self.editing = self.acceptance_ready = False
@@ -272,6 +273,17 @@ class Overlay:
                     if visual_expansion and visual_expansion[0] == revision
                     else None,
                     "theme": (self.settings or {}).get("theme", "system"),
+                    "appearance": {
+                        key: (self.settings or {}).get(key, default)
+                        for key, default in (
+                            ("font", "claude"),
+                            ("textSize", 15),
+                            ("accent", "clay"),
+                            ("uiLanguage", "system"),
+                            ("reduceMotion", False),
+                            ("reduceTransparency", False),
+                        )
+                    },
                     "expiresAtMs": now_ms() + 800,
                 },
             )
@@ -500,6 +512,11 @@ class Overlay:
             self.tasks(self.begin_edit(peer, event["target"], token))
         elif operation == "settings":
             self.settings_requested()
+        elif operation == "languagesPicker":
+            # Opening a desktop picker retires this source session. It does not
+            # transfer or manufacture source-field focus or write permission.
+            self.host.send("escape", copy.deepcopy(token))
+            self.languages_requested()
         elif operation == "languages":
             self.tasks(self.set_languages(value))
         elif operation == "alternative":

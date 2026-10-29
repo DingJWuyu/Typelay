@@ -1,15 +1,21 @@
-"""Wayland status-notifier menu; settings remain owned by the shared host."""
+"""Wayland status-notifier quick panel; settings remain owned by the shared host."""
 
 import gi
+from design import Segments, app_icon, apply_theme, box, label, style
+from status_notifier import StatusNotifier
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 
 
 class Tray:
     def __init__(self, paths, host, tasks, show_settings, quit_requested, availability_changed):
         self.host, self.tasks = host, tasks
         self.value = self.guidance = None
+        self.last_application = None
+        self.model_ready = False
+        self.application_pending = False
+        self.application_style = None
         self.language_choices = None
         self.save_problem = None
         self.updating = self.pending = self.closed = False
@@ -21,104 +27,171 @@ class Tray:
         self.feedback_sending = False
         self.feedback_status = {"revision": 0, "code": None, "delivery": "none"}
         self.availability_changed = availability_changed
-        self.menu = Gtk.Menu()
-        self.status = self.item("TypeLay · 正在启动", sensitive=False)
-        self.model = self.item("本地模型尚未就绪", sensitive=False)
-        self.operation = self.item("", sensitive=False)
-        self.save_notice = self.item("", sensitive=False)
-        self.menu.append(Gtk.SeparatorMenuItem())
-        self.enabled = Gtk.CheckMenuItem(label="启用 TypeLay")
-        self.enabled.connect("toggled", self.toggle_enabled)
-        self.menu.append(self.enabled)
-        self.groups = {}
-        self.parents = {}
-        self.choices("mode", "工作模式", [("Automatic", "自动模式"), ("OnDemand", "按需模式")])
-        self.choices("source", "源语言", [])
-        self.choices("target", "目标语言", [])
-        self.swap = self.item("交换语言", lambda *_: self.swap_languages())
-        self.menu.append(Gtk.SeparatorMenuItem())
-        settings = self.item("设置…", lambda *_: show_settings())
-        self.item("退出 TypeLay", lambda *_: quit_requested())
-        self.menu.show_all()
-        self.operation.hide()
-        self.save_notice.hide()
-        self.refresh()
-        try:
-            gi.require_version("AyatanaAppIndicator3", "0.1")
-            from gi.repository import AyatanaAppIndicator3
-        except (ImportError, ValueError):
-            availability_changed(False, False)
-            return
-        self.backend = AyatanaAppIndicator3
-        self.indicator = self.backend.Indicator.new(
-            "typelay-" + paths.session.name,
-            "typelay-active",
-            self.backend.IndicatorCategory.APPLICATION_STATUS,
+        self.window = Gtk.Window(title="TypeLay")
+        style(self.window, "quick-panel")
+        visual = self.window.get_screen().get_rgba_visual()
+        if visual:
+            self.window.set_visual(visual)
+        self.window.set_decorated(False)
+        self.window.set_resizable(False)
+        self.window.set_default_size(340, -1)
+        self.window.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+        self.window.set_skip_taskbar_hint(True)
+        self.window.set_skip_pager_hint(True)
+        self.window.connect("delete-event", lambda *_: self.hide_panel())
+        self.window.connect("key-press-event", self.panel_key)
+        self.style_provider = apply_theme(self.window, {})
+        self.panel = box(8)
+        self.panel.set_border_width(10)
+        self.window.add(self.panel)
+        heading = Gtk.Box(spacing=10)
+        heading.pack_start(app_icon(), False, False, 0)
+        names = box(3)
+        names.pack_start(style(label("TypeLay"), "headline"), False, False, 0)
+        self.status = label("正在启动…", muted=True)
+        names.pack_start(self.status, False, False, 0)
+        heading.pack_start(names, True, True, 0)
+        self.enabled = Gtk.Switch()
+        self.enabled.set_valign(Gtk.Align.CENTER)
+        self.enabled.get_accessible().set_name("启用 TypeLay")
+        self.enabled.connect(
+            "notify::active", lambda control, _property: self.toggle_enabled(control)
         )
-        self.indicator.set_icon_theme_path(str(paths.home / "desktop/icons"))
-        self.indicator.set_title("TypeLay")
-        self.indicator.set_menu(self.menu)
-        self.indicator.set_secondary_activate_target(settings)
-        self.indicator.connect("connection-changed", self.connection_changed)
-        self.indicator.set_status(self.backend.IndicatorStatus.ACTIVE)
-        availability_changed(True, self.connected)
+        heading.pack_end(self.enabled, False, False, 0)
+        self.panel.pack_start(heading, False, False, 0)
+        self.card = style(box(10), "quick-card")
+        self.panel.pack_start(self.card, False, False, 0)
+        self.mode = Segments(
+            [("Automatic", "自动"), ("OnDemand", "按需")],
+            lambda value: self.change({"mode": value}),
+        )
+        self.card.pack_start(self.mode, False, False, 0)
+        direction = Gtk.Box(spacing=5)
+        self.groups, self.parents = {}, {}
+        for key in ("source", "target"):
+            picker = Gtk.ComboBoxText()
+            picker.set_hexpand(True)
+            picker.get_accessible().set_name("源语言" if key == "source" else "目标语言")
+            picker.connect(
+                "changed",
+                lambda item, name=key: self.change({name: item.get_active_id()})
+                if item.get_active_id()
+                else None,
+            )
+            self.parents[key] = picker
+            direction.pack_start(picker, True, True, 0)
+            if key == "source":
+                self.swap = style(Gtk.Button(label="⇄"), "flat")
+                self.swap.get_accessible().set_name("交换语言")
+                self.swap.connect("clicked", lambda *_: self.swap_languages())
+                direction.pack_start(self.swap, False, False, 0)
+        self.card.pack_start(direction, False, False, 0)
+        self.current_application = label("尚无当前应用", muted=True)
+        application_row = Gtk.Box(spacing=8)
+        application_row.pack_start(self.current_application, True, True, 0)
+        self.application_enabled = Gtk.Switch()
+        self.application_enabled.set_valign(Gtk.Align.CENTER)
+        self.application_enabled.connect(
+            "notify::active",
+            lambda control, _property: self.tasks(
+                self.change_application_enabled(self.last_application, control.get_active())
+            )
+            if not self.updating and self.last_application
+            else None,
+        )
+        application_row.pack_end(self.application_enabled, False, False, 0)
+        self.card.pack_start(application_row, False, False, 0)
+        self.application_style_picker = Gtk.ComboBoxText()
+        self.application_style_picker.set_sensitive(False)
+        self.application_style_picker.connect("changed", self.application_style_changed)
+        self.card.pack_start(self.application_style_picker, False, False, 0)
+        self.model = style(label("本地模型尚未就绪"), "quick-status")
+        self.operation = style(label(), "quick-status")
+        self.save_notice = style(label(), "settings-warning")
+        for widget in (self.model, self.operation, self.save_notice):
+            widget.set_no_show_all(True)
+            self.panel.pack_start(widget, False, False, 0)
+        self.panel.pack_start(Gtk.Separator(), False, False, 2)
+        self.actions = {}
+        for title, action in (
+            ("设置…", show_settings),
+            ("关闭面板", self.hide_panel),
+            ("退出 TypeLay", quit_requested),
+        ):
+            button = style(Gtk.Button(label=title), "flat")
+            button.set_halign(Gtk.Align.FILL)
+            button.connect("clicked", lambda _button, callback=action: self.panel_action(callback))
+            self.panel.pack_start(button, False, False, 0)
+            self.actions[title] = button
+        from localization import Localizer
 
-    def item(self, label, callback=None, sensitive=True):
-        item = Gtk.MenuItem(label=label)
-        item.set_sensitive(sensitive)
-        if callback is not None:
-            item.connect("activate", callback)
-        self.menu.append(item)
-        return item
+        self.localizer = Localizer(lambda: self.value)
+        self.current_application.typelay_user_content = True
+        self.localizer.bind(self.window)
+        self.indicator = StatusNotifier(paths, self.show_panel, self.connection_changed)
+        self.refresh()
 
-    def choices(self, key, label, choices):
-        parent = self.parents.get(key)
-        if parent is None:
-            parent = self.parents[key] = self.item(label)
-        else:
-            parent.get_submenu().destroy()
-        submenu = Gtk.Menu()
-        parent.set_submenu(submenu)
-        group = None
-        entries = self.groups[key] = {}
-        for value, title in choices:
-            item = Gtk.RadioMenuItem.new_with_label_from_widget(group, title)
-            group = item
-            item.connect("toggled", self.choose, key, value)
-            submenu.append(item)
-            entries[value] = item
-        submenu.show_all()
+    def panel_action(self, callback):
+        self.hide_panel()
+        callback()
 
-    def connection_changed(self, _indicator, connected):
+    def show_panel(self, _x=None, _y=None):
+        if self.closed:
+            return
+        self.window.show_all()
+        self.refresh()
+        self.window.present()
+        self.enabled.grab_focus()
+        if self.last_application:
+            self.tasks(self.load_application_style(self.last_application))
+
+    def hide_panel(self):
+        self.window.hide()
+        return True
+
+    def panel_key(self, _widget, event):
+        if event.keyval == Gdk.KEY_Escape:
+            return self.hide_panel()
+        return False
+
+    def connection_changed(self, available, connected):
         if not self.closed:
             self.connected = bool(connected)
-            self.availability_changed(True, self.connected)
+            self.availability_changed(available, self.connected)
 
     def configure(self, value):
         if not self.closed:
             self.value = value
+            self.localizer.refresh()
+            self.updating = True
+            try:
+                for picker in self.parents.values():
+                    for row in picker.get_model():
+                        row[0] = self.localizer.text(row[0])
+            finally:
+                self.updating = False
             self.refresh()
 
     def render_guidance(self, value):
-        if not self.closed:
-            self.guidance = value
-            choices = value["languageChoices"]
-            if choices != self.language_choices:
-                self.language_choices = choices
-                self.updating = True
-                try:
-                    for key, label in (("source", "源语言"), ("target", "目标语言")):
-                        self.choices(
-                            key,
-                            label,
-                            [(choice["code"], choice["label"]) for choice in choices[key]],
+        if self.closed:
+            return
+        self.guidance = value
+        choices = value["languageChoices"]
+        if choices != self.language_choices:
+            self.language_choices = choices
+            self.updating = True
+            try:
+                for key in ("source", "target"):
+                    self.parents[key].remove_all()
+                    for choice in choices[key]:
+                        self.parents[key].append(
+                            choice["code"], self.localizer.text(choice["label"])
                         )
-                finally:
-                    self.updating = False
-            self.refresh()
+            finally:
+                self.updating = False
+        self.refresh()
 
     def refresh(self):
-        # Rendering acknowledged state must not create settings requests.
         self.updating = True
         try:
             ready = (
@@ -132,40 +205,69 @@ class Tray:
             self.save_notice.set_label(message)
             self.save_notice.set_visible(bool(message))
             self.enabled.set_sensitive(ready)
-            for parent in self.parents.values():
-                parent.set_sensitive(ready)
+            self.mode.set_sensitive(ready)
+            for picker in self.parents.values():
+                picker.set_sensitive(ready)
             source = (self.value or {}).get("source", "auto")
             self.swap.set_sensitive(ready and source != "auto")
-            self.swap.set_label("交换语言" if source != "auto" else "交换语言（需固定源语言）")
             if self.value is None:
                 return
             enabled = self.value["enabled"]
             self.enabled.set_active(enabled)
-            for key, entries in self.groups.items():
-                if item := entries.get(self.value[key]):
-                    item.set_active(True)
-            state = "已启用" if enabled else "已暂停"
-            names = {
-                choice["code"]: choice["label"]
-                for choices in (self.language_choices or {}).values()
-                for choice in choices
-            }
-            self.status.set_label(
-                f"TypeLay · {state} · {names.get(source, source)} → "
-                f"{names.get(self.value['target'], self.value['target'])}"
+            self.mode.set_active_id(self.value["mode"])
+            for key, picker in self.parents.items():
+                picker.set_active_id(self.value[key])
+            english = (
+                self.value.get("uiLanguage") == "en"
+                or self.value.get("uiLanguage", "system") == "system"
+                and not any(name.startswith("zh") for name in GLib.get_language_names())
             )
-            if self.indicator is not None:
-                self.indicator.set_title("TypeLay · " + state)
-                self.indicator.set_icon_full(
-                    "typelay-active" if enabled else "typelay-paused", "TypeLay · " + state
-                )
+            state = (
+                ("Running" if enabled else "Paused")
+                if english
+                else ("运行中" if enabled else "已暂停")
+            )
+            self.model.set_text(
+                ("● Local model ready" if self.model_ready else "○ Local model not ready")
+                if english
+                else ("● 本地模型已就绪" if self.model_ready else "○ 本地模型尚未就绪")
+            )
+            self.current_application.set_text(
+                self.last_application or ("No current app" if english else "尚无当前应用")
+            )
+            for chinese, translated in (
+                ("设置…", "Settings…"),
+                ("关闭面板", "Close panel"),
+                ("退出 TypeLay", "Quit TypeLay"),
+            ):
+                self.actions[chinese].set_label(translated if english else chinese)
+            self.application_enabled.set_active(
+                not self.last_application
+                or self.last_application.casefold()
+                not in {app.casefold() for app in self.value.get("excludedApplications") or []}
+            )
+            self.application_enabled.set_sensitive(
+                bool(self.last_application) and not self.application_pending
+            )
+            self.application_style_picker.set_visible(bool(self.last_application))
+            self.status.set_label(state)
+            self.style_provider = apply_theme(self.window, self.value, self.style_provider)
+            self.indicator.update(enabled, "TypeLay · " + state)
+            self.model.show()
+            self.operation.set_visible(bool(self.operation.get_text()))
         finally:
             self.updating = False
 
     def report(self, value):
         if self.closed:
             return
-        self.model.set_label("本地模型已就绪" if value.get("modelReady") else "本地模型尚未就绪")
+        self.model_ready = bool(value.get("modelReady"))
+        application = value.get("lastApplication")
+        changed = application != self.last_application
+        self.last_application = application
+        self.refresh()
+        if changed and application and self.window.get_visible():
+            self.tasks(self.load_application_style(application))
         revision = value.get("commandFeedbackRevision")
         if type(revision) is int:
             if revision < self.command_revision:
@@ -178,6 +280,93 @@ class Tray:
         message = value.get("operationStatus")
         self.operation.set_label(message or "")
         self.operation.set_visible(bool(message))
+
+    async def change_application_enabled(self, application, enabled):
+        if not application or self.application_pending or self.closed:
+            return
+        self.application_pending = True
+        self.refresh()
+        try:
+            saved = await self.host.ask(
+                "applicationEnabled", {"application": application, "enabled": enabled}, timeout=3
+            )
+            self.save_problem = None if saved is True else "saveUnconfirmedMessage"
+        except (OSError, ValueError, EOFError, TimeoutError):
+            self.save_problem = "saveUnconfirmedMessage"
+        finally:
+            self.application_pending = False
+            self.refresh()
+
+    async def load_application_style(self, application):
+        try:
+            state = await self.host.ask("getApplicationStyleSettings", application, timeout=2)
+            if application != self.last_application or not isinstance(state, dict) or self.closed:
+                return
+            self.application_style = state
+            self.updating = True
+            self.application_style_picker.remove_all()
+            for key, title in (
+                ("inherit", "继承全局风格"),
+                ("Natural", "自然"),
+                ("Formal", "正式"),
+            ):
+                self.application_style_picker.append(key, self.localizer.text(title))
+            styles = (state.get("savedPreferences") or {}).get("applications") or {}
+            saved = next(
+                (
+                    value
+                    for key, value in styles.items()
+                    if key.casefold() == application.casefold()
+                ),
+                "inherit",
+            )
+            self.application_style_picker.set_active_id(saved)
+            self.application_style_picker.set_sensitive(bool(state.get("canChange")))
+            self.application_style_picker.set_tooltip_text("当前未开放的风格不可更改")
+        except (OSError, ValueError, EOFError, TimeoutError):
+            self.application_style_picker.set_sensitive(False)
+        finally:
+            self.updating = False
+
+    def application_style_changed(self, control):
+        if (
+            self.updating
+            or not self.application_style
+            or not self.application_style.get("canChange")
+        ):
+            return
+        application, state, style = (
+            self.last_application,
+            self.application_style,
+            control.get_active_id(),
+        )
+        if style not in ("inherit", "Natural", "Formal"):
+            return
+
+        async def save():
+            control.set_sensitive(False)
+            try:
+                result = await self.host.ask(
+                    "changeApplicationStyle",
+                    {
+                        "application": application,
+                        "style": None if style == "inherit" else style,
+                        "expectedSettingsRevision": state["settingsRevision"],
+                    },
+                    timeout=3,
+                )
+                self.save_problem = (
+                    None
+                    if isinstance(result, dict) and result.get("saved") is True
+                    else "saveUnconfirmedMessage"
+                )
+            except (OSError, ValueError, EOFError, TimeoutError):
+                self.save_problem = "saveUnconfirmedMessage"
+            finally:
+                await self.load_application_style(application)
+                self.refresh()
+
+        self.tasks(save())
 
     def feedback(self, value):
         """Present only explicit command failures from the shared controller."""
@@ -311,5 +500,5 @@ class Tray:
         self.closed = True
         self.connected = False
         if self.indicator is not None:
-            self.indicator.set_status(self.backend.IndicatorStatus.PASSIVE)
-        self.menu.destroy()
+            self.indicator.close()
+        self.window.destroy()

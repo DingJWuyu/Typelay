@@ -7,6 +7,8 @@ from pathlib import Path
 
 import gi
 from application_support import BROWSER_MANAGEMENT_URIS
+from design import Segments, ShortcutRecorder, apply_theme
+from design import row as design_row
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
@@ -16,75 +18,142 @@ class Tutorial:
     """Explicit local-model preview; the external app keeps ownership of Tab/IME."""
 
     def __init__(self, owner, preview):
+        from design import app_icon, box, label, style
+
         self.owner, self.preview = owner, preview
         self.pending = None
         self.revision = 0
         self.state = "idle"
-        self.window = Gtk.Window(title="TypeLay 首次使用")
+        self.step = 0
+        self.window = Gtk.Window(title="欢迎使用 TypeLay")
         self.window.set_transient_for(owner.window)
-        self.window.set_default_size(650, 580)
+        self.window.set_default_size(560, 490)
         self.window.set_border_width(24)
+        self.style_provider = apply_theme(self.window, {})
         self.window.connect("delete-event", self.dismiss)
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        outer = box(20)
         self.window.add(outer)
-        content = Gtk.ScrolledWindow()
-        content.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        outer.pack_start(content, True, True, 0)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
-        box.set_margin_end(10)
-        content.add(box)
-
-        def note(text):
-            label = Gtk.Label(label=text, xalign=0)
-            label.set_line_wrap(True)
-            label.set_max_width_chars(70)
-            box.pack_start(label, False, False, 0)
-            return label
-
-        note("1. 在本机试译")
-        note(
-            "翻译全部在本机运行，不保存翻译历史。请只输入非敏感练习文字，"
-            "先完成输入法候选，再点“生成本地译文”。本窗仅预览，不向其他应用写入，也不拦截 Tab。"
+        self.steps = Gtk.Stack()
+        self.steps.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
+        self.steps.set_transition_duration(320)
+        outer.pack_start(self.steps, True, True, 0)
+        pages = []
+        for index in range(4):
+            page = box(16)
+            page.set_valign(Gtk.Align.CENTER)
+            page.set_margin_start(20)
+            page.set_margin_end(20)
+            self.steps.add_named(page, str(index))
+            pages.append(page)
+        welcome = pages[0]
+        icon = app_icon(76)
+        icon.set_halign(Gtk.Align.CENTER)
+        welcome.pack_start(icon, False, False, 0)
+        welcome.pack_start(
+            style(Gtk.Label(label="欢迎使用 TypeLay"), "welcome-title"), False, False, 0
+        )
+        welcome.pack_start(Gtk.Label(label="让每一次表达，都自然跨越语言。"), False, False, 0)
+        welcome.pack_start(
+            label("所有翻译均在本机运行。\n不上传输入内容，不保存翻译历史。", muted=True),
+            False,
+            False,
+            0,
+        )
+        direction = pages[1]
+        direction.pack_start(style(label("从你熟悉的语言开始"), "welcome-title"), False, False, 0)
+        direction.pack_start(
+            label("选择源语言和目标语言。之后可随时在设置或快捷面板中更改。", muted=True),
+            False,
+            False,
+            0,
+        )
+        self.direction_summary = label()
+        direction.pack_start(self.direction_summary, False, False, 0)
+        choose = Gtk.Button(label="选择语言…")
+        choose.connect("clicked", lambda *_: self.open_page("language"))
+        direction.pack_start(choose, False, False, 0)
+        model = pages[2]
+        model.pack_start(style(label("准备本地翻译"), "welcome-title"), False, False, 0)
+        self.model_summary = label("正在读取模型状态…")
+        model.pack_start(self.model_summary, False, False, 0)
+        model.pack_start(
+            label(
+                "模型安装需要你明确确认。Index、Argos 与 Hy 的可用性以当前实际安装为准。",
+                muted=True,
+            ),
+            False,
+            False,
+            0,
+        )
+        prepare = Gtk.Button(label="管理本地模型…")
+        prepare.connect("clicked", lambda *_: self.open_page("model"))
+        model.pack_start(prepare, False, False, 0)
+        practice = pages[3]
+        practice.pack_start(style(label("试着说一句"), "welcome-title"), False, False, 0)
+        practice.pack_start(
+            label(
+                "输入非敏感练习文字，先完成输入法候选，再生成本地译文。本窗只预览，不向其他应用写入。",
+                muted=True,
+            ),
+            False,
+            False,
+            0,
         )
         self.source = Gtk.Entry()
         self.source.set_max_length(2048)
         self.source.set_placeholder_text("例如：你好，我们明天下午见。")
         self.source.get_accessible().set_name("教程练习原文")
         self.source.connect("changed", self.changed)
-        box.pack_start(self.source, False, False, 0)
-        self.generate = Gtk.Button.new_with_mnemonic("生成本地译文(_G)")
+        practice.pack_start(self.source, False, False, 0)
+        self.generate = Gtk.Button(label="生成本地译文")
         self.generate.set_sensitive(False)
         self.generate.connect("clicked", lambda *_: self.start())
-        box.pack_start(self.generate, False, False, 0)
+        practice.pack_start(self.generate, False, False, 0)
         self.result = Gtk.TextView(editable=False, cursor_visible=False)
         self.result.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.result.get_accessible().set_name("教程本地译文")
         scroll = Gtk.ScrolledWindow()
         scroll.set_min_content_height(85)
         scroll.add(self.result)
-        box.pack_start(scroll, True, True, 0)
-        self.message = note("")
-        note("2. 连接应用并打开受管练习")
-        note(
-            "请在设置的“应用支持”中按指引完成接入，再打开受管练习。"
-            "练习窗口会按当前配置说明操作；需要切换工作模式时会先请你确认。"
-        )
-        note("本窗仅检查本地模型，不代表应用已连接或练习已完成。受管练习不需要开启全局实验替换。")
-        self.connection_button = Gtk.Button(label="…")
+        practice.pack_start(scroll, True, True, 0)
+        self.message = label(muted=True)
+        practice.pack_start(self.message, False, False, 0)
+        self.connection_button = Gtk.Button(label="连接应用并开始练习")
         self.connection_button.connect("clicked", lambda *_: self.open_connection())
-        box.pack_start(self.connection_button, False, False, 0)
-        note(
-            "本窗试译不证明跨应用、自动浮层、物理 Tab 或真实输入法已通过验收。"
-            "需要设置或稍后练习时可以关闭此窗；也可明确跳过，之后从设置重新打开。"
-        )
+        practice.pack_start(self.connection_button, False, False, 0)
         actions = Gtk.Box(spacing=8)
         outer.pack_end(actions, False, False, 0)
-        self.complete = Gtk.Button.new_with_mnemonic("知道了，不再提示(_D)")
-        self.complete.connect("clicked", lambda *_: owner.tasks(self.finish()))
-        actions.pack_start(self.complete, False, False, 0)
-        self.skip = Gtk.Button.new_with_mnemonic("跳过教程(_S)")
+        self.progress = label("●  ○  ○  ○", muted=True)
+        actions.pack_start(self.progress, True, True, 0)
+        self.skip = Gtk.Button(label="稍后设置")
         self.skip.connect("clicked", lambda *_: owner.tasks(self.finish()))
         actions.pack_start(self.skip, False, False, 0)
+        self.back = Gtk.Button(label="返回")
+        self.back.connect("clicked", lambda *_: self.go(self.step - 1))
+        actions.pack_start(self.back, False, False, 0)
+        self.next = Gtk.Button(label="继续")
+        self.next.get_style_context().add_class("suggested-action")
+        self.next.connect("clicked", lambda *_: self.go(self.step + 1))
+        actions.pack_start(self.next, False, False, 0)
+        self.complete = Gtk.Button(label="开始使用")
+        self.complete.set_no_show_all(True)
+        self.complete.connect("clicked", lambda *_: owner.tasks(self.finish()))
+        actions.pack_start(self.complete, False, False, 0)
+
+    def open_page(self, page):
+        self.window.hide()
+        self.owner.show()
+        self.owner.pages.set_visible_child_name(page)
+
+    def go(self, step):
+        self.step = max(0, min(3, step))
+        self.steps.set_visible_child_name(str(self.step))
+        self.progress.set_text("  ".join("●" if index == self.step else "○" for index in range(4)))
+        self.back.set_visible(self.step > 0)
+        self.next.set_visible(self.step < 3)
+        self.complete.set_visible(self.step == 3)
+        if self.step == 3:
+            self.source.grab_focus()
 
     def changed(self, *_):
         self.revision += 1
@@ -154,7 +223,16 @@ class Tutorial:
         self.owner.tasks(self.owner.application_support.refresh())
         self.window.show_all()
         self.window.present()
-        self.source.grab_focus()
+        self.direction_summary.set_text(
+            f"{(self.owner.value or {}).get('source', 'auto')}  →  {(self.owner.value or {}).get('target', 'en')}"
+        )
+        self.model_summary.set_text(
+            "本地模型已就绪" if self.owner.model_ready else "本地模型尚未就绪。请在模型页确认准备。"
+        )
+        self.steps.set_transition_duration(
+            0 if (self.owner.value or {}).get("reduceMotion") else 320
+        )
+        self.go(self.step)
         self.generate.set_sensitive(self.owner.model_ready and bool(self.source.get_text().strip()))
         if not self.owner.model_ready:
             self.message.set_text("请先在设置中明确同意安装本地翻译组件，完成自检后再试译。")
@@ -624,7 +702,7 @@ class ApplicationSupportPane:
         self.action_revision += 1
         self.render_selected()
         dialog = Gtk.Dialog(
-            title="添加排除应用" if for_exclusion else "选择应用",
+            title="添加应用" if for_exclusion else "选择应用",
             transient_for=self.owner.window,
             modal=True,
             destroy_with_parent=True,
@@ -1086,16 +1164,35 @@ class TranslationSettings:
         self.glossary_box = Gtk.Grid(column_spacing=24, row_spacing=10)
         self.glossary_box.set_no_show_all(True)
         self.box.attach(self.glossary_box, 0, 1, 2, 1)
-        self.glossary_box.attach(Gtk.Separator(), 0, 0, 2, 1)
-        self.glossary_box.attach(Gtk.Label(label="术语表", xalign=0), 0, 1, 2, 1)
+        self.search = Gtk.SearchEntry(placeholder_text="搜索术语 / Search glossary")
+        self.search.get_accessible().set_name("搜索术语")
+        self.glossary_box.attach(self.search, 0, 0, 2, 1)
+        headings = Gtk.Box(spacing=14, homogeneous=True)
+        for title in ("源词", "指定译法", "作用范围"):
+            heading = Gtk.Label(label=title, xalign=0)
+            heading.get_style_context().add_class("dim-label")
+            headings.pack_start(heading, True, True, 0)
+        self.glossary_box.attach(headings, 0, 1, 2, 1)
         self.glossary_notice = Gtk.Label(xalign=0)
         self.glossary_notice.set_line_wrap(True)
         self.glossary_notice.set_max_width_chars(48)
         self.glossary_box.attach(self.glossary_notice, 0, 2, 2, 1)
         self.rules = Gtk.ListBox()
-        self.rules.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.rules.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.rules.set_filter_func(
+            lambda item: self.search.get_text().casefold() in item.search_text
+        )
+        self.search.connect("search-changed", lambda *_: self.rules.invalidate_filter())
         self.rules.get_accessible().set_name("本地术语规则")
         self.glossary_box.attach(self.rules, 0, 3, 2, 1)
+        self.editor_open = False
+        self.empty = Gtk.Label(label="还没有术语。添加常用词与指定译法。", xalign=0)
+        self.empty.get_style_context().add_class("dim-label")
+        self.glossary_box.attach(self.empty, 0, 6, 2, 1)
+        self.new_button = Gtk.Button(label="＋ 添加术语")
+        self.new_button.connect("clicked", lambda *_: self.open_editor())
+        self.glossary_box.attach(self.new_button, 0, 5, 2, 1)
+        self.glossary_box.set_border_width(14)
         self.editor = Gtk.Grid(column_spacing=12, row_spacing=8)
         self.editor.set_no_show_all(True)
         self.glossary_box.attach(self.editor, 0, 4, 2, 1)
@@ -1122,9 +1219,10 @@ class TranslationSettings:
         for index, widget in enumerate((self.source_language, self.target_language)):
             widget.set_no_show_all(True)
             self.editor.attach(widget, index, 3, 1, 1)
-        self.add = Gtk.Button(label="加入草稿")
+        self.pending_undo = None
+        self.add = Gtk.Button(label="添加术语")
         self.add.get_accessible().set_name("添加明确术语规则")
-        self.add.connect("clicked", lambda *_: self.add_rule())
+        self.add.connect("clicked", lambda *_: self.add_and_save())
         self.editor.attach(self.add, 0, 4, 2, 1)
         self.render()
 
@@ -1194,6 +1292,7 @@ class TranslationSettings:
             self.style_state, self.glossary_state = style, glossary
             self.state_confirmed = True
             self.render()
+            self.owner.render_applications()
             return True
         except (OSError, ValueError, EOFError, TimeoutError):
             if revision == self.load_revision and session == self.owner.draft_session:
@@ -1209,8 +1308,8 @@ class TranslationSettings:
         self.configuring = True
         try:
             saved = style.get("savedPreferences") if style else None
-            self.style_box.set_visible(bool(style and (style["isReleased"] or saved)))
-            self.style.set_visible(bool(style and style["isReleased"]))
+            self.style_box.set_visible(True)
+            self.style.set_visible(True)
             self.style.set_sensitive(
                 bool(
                     style
@@ -1220,18 +1319,21 @@ class TranslationSettings:
                     and self.state_confirmed
                 )
             )
-            self.style.set_active_id(self.style_draft or (saved or {}).get("default"))
+            self.style.set_active_id(self.style_draft or (saved or {}).get("default") or "Natural")
             current_style = {"Natural": "自然", "Formal": "正式"}.get(
                 (saved or {}).get("default"), "未设置"
             )
             self.style_notice.set_text(
-                "已保存全局："
-                + current_style
+                self.owner.tr("已保存全局：", "Saved global tone: ")
+                + self.owner.tr(
+                    current_style,
+                    {"自然": "Natural", "正式": "Formal", "未设置": "Not set"}.get(
+                        current_style, current_style
+                    ),
+                )
                 + (
-                    "。新增风格尚未开放。"
+                    self.owner.tr("。新增风格尚未开放。", ". Tone application is not released.")
                     if style and not style["isReleased"]
-                    else "。" + self.unavailable_message(style.get("unavailableReason"))
-                    if style and not style.get("canChange")
                     else ""
                 )
             )
@@ -1298,37 +1400,40 @@ class TranslationSettings:
                 )
             self.applications.show_all()
             rules = self.current_rules()
-            self.glossary_box.set_visible(
-                bool(glossary and (glossary["isReleased"] or rules or self.rules_draft is not None))
-            )
-            self.editor.set_visible(bool(glossary and glossary["isReleased"]))
+            self.glossary_box.set_visible(True)
+            self.editor.set_visible(self.editor_open)
             self.editor.set_sensitive(
                 self.pending is None and not self.saving and self.state_confirmed
             )
             self.glossary_notice.set_text(
                 ""
-                if glossary and glossary["isReleased"]
-                else "新增术语尚未开放；可删除已保存规则。"
+                if glossary and glossary.get("canApply")
+                else "术语保存在本机；当前模型方向尚未开放应用，不影响普通翻译。"
             )
             if rules != self.glossary_rows:
                 self.glossary_rows = [dict(rule) for rule in rules]
                 for child in self.rules.get_children():
                     self.rules.remove(child)
                 for index, rule in enumerate(rules):
-                    row = Gtk.Box(spacing=12)
+                    row = Gtk.Box(spacing=14)
+                    row.set_border_width(10)
                     scope = (
                         (rule.get("sourceLanguage") + " → " + rule.get("targetLanguage"))
                         if rule.get("sourceLanguage")
-                        else "全局"
+                        else self.owner.tr("全局", "Global")
                     )
-                    label = Gtk.Label(
-                        label=f"{rule['sourceTerm']} → {rule['targetTerm']} · {scope}", xalign=0
-                    )
-                    label.set_line_wrap(True)
-                    label.set_max_width_chars(35)
-                    label.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
-                    row.pack_start(label, True, True, 0)
-                    button = Gtk.Button(label="删除")
+                    for value in (rule["sourceTerm"], rule["targetTerm"], scope):
+                        text = Gtk.Label(label=value, xalign=0)
+                        text.set_width_chars(10)
+                        text.set_max_width_chars(16)
+                        text.set_ellipsize(Pango.EllipsizeMode.END)
+                        text.set_tooltip_text(value)
+                        row.pack_start(text, True, True, 0)
+                    edit = Gtk.Button(label=self.owner.tr("编辑", "Edit"))
+                    edit.get_accessible().set_name("编辑术语：" + rule["sourceTerm"])
+                    edit.connect("clicked", lambda *_, position=index: self.edit_rule(position))
+                    row.pack_end(edit, False, False, 0)
+                    button = Gtk.Button(label=self.owner.tr("删除", "Delete"))
                     button.get_accessible().set_name(
                         "删除术语：" + rule["sourceTerm"] + " · " + scope
                     )
@@ -1337,12 +1442,18 @@ class TranslationSettings:
                     )
                     button.connect("clicked", lambda *_, position=index: self.remove_rule(position))
                     row.pack_end(button, False, False, 0)
-                    self.rules.add(row)
+                    item = Gtk.ListBoxRow()
+                    item.search_text = (
+                        rule["sourceTerm"] + " " + rule["targetTerm"] + " " + scope
+                    ).casefold()
+                    item.add(row)
+                    self.rules.add(item)
             for row in self.rules.get_children():
                 row.get_child().get_children()[-1].set_sensitive(
                     self.pending is None and not self.saving and self.state_confirmed
                 )
             self.rules.show_all()
+            self.rules.invalidate_filter()
             directions = (glossary or {}).get("directions", [])
             if directions != self.directions:
                 self.directions = directions
@@ -1361,8 +1472,13 @@ class TranslationSettings:
                 for child in section.get_children():
                     if child not in (self.style, self.reset, self.editor):
                         child.show_all()
-            if glossary and glossary["isReleased"]:
-                self.editor.show_all()
+            for child in self.editor.get_children():
+                child.show_all()
+            self.editor.set_visible(self.editor_open)
+            self.new_button.set_sensitive(
+                self.state_confirmed and self.pending is None and not self.saving
+            )
+            self.empty.set_visible(not rules)
             self.render_scope()
             self.glossary_notice.set_visible(bool(self.glossary_notice.get_text()))
         finally:
@@ -1399,6 +1515,7 @@ class TranslationSettings:
             return
         self.style_draft = self.style.get_active_id()
         self.changed()
+        self.owner.tasks(self.save())
 
     def remove_application(self, application):
         if not self.style_state or not any(
@@ -1409,6 +1526,7 @@ class TranslationSettings:
         self.removed_applications.add(application)
         self.changed()
         self.render()
+        self.owner.tasks(self.save())
 
     def current_rules(self):
         if self.rules_draft is not None:
@@ -1419,17 +1537,82 @@ class TranslationSettings:
         if self.pending is not None or not self.glossary_state:
             return
         self.rules_draft = [dict(rule) for rule in self.current_rules()]
-        self.rules_draft.pop(index)
+        removed = self.rules_draft.pop(index)
+        self.pending_undo = (index, removed)
         self.changed()
         self.render()
-        self.refresh()
+        self.owner.tasks(self.save())
+
+    def open_editor(self):
+        self.editor_open = True
+        self.render()
+        self.source_term.grab_focus()
+
+    def add_and_save(self):
+        if self.add_rule():
+            self.editor_open = False
+            self.render()
+            self.owner.tasks(self.save())
+
+    def edit_rule(self, index):
+        if self.pending is not None or not self.state_confirmed:
+            return
+        original = dict(self.current_rules()[index])
+        dialog = Gtk.Dialog(
+            title="编辑术语", transient_for=self.owner.window, modal=True, destroy_with_parent=True
+        )
+        dialog.add_buttons("取消", Gtk.ResponseType.CANCEL, "完成", Gtk.ResponseType.OK)
+        content = dialog.get_content_area()
+        content.set_border_width(18)
+        entries = []
+        for title, key in (("源词", "sourceTerm"), ("指定译法", "targetTerm")):
+            content.pack_start(Gtk.Label(label=title, xalign=0), False, False, 4)
+            entry = Gtk.Entry(text=original[key])
+            entry.set_max_length(128)
+            content.pack_start(entry, False, False, 4)
+            entries.append(entry)
+
+        def response(widget, result):
+            if result == Gtk.ResponseType.OK:
+                rules = [dict(rule) for rule in self.current_rules()]
+                if index >= len(rules) or rules[index] != original:
+                    self.owner.report_save_result(False, "术语已更改，请重新打开编辑。")
+                else:
+                    rules[index] = {
+                        **original,
+                        "sourceTerm": entries[0].get_text(),
+                        "targetTerm": entries[1].get_text(),
+                    }
+                    self.rules_draft = rules
+                    self.changed()
+                    self.render()
+                    self.owner.tasks(self.save())
+            widget.destroy()
+
+        dialog.connect("response", response)
+        dialog.show_all()
+
+    async def undo_remove(self, index, rule):
+        self.load_revision += 1
+        if not await self.load(self.load_revision) or self.pending is not None or self.dirty:
+            self.owner.report_save_result(False, "设置已变化，无法撤销这次删除。")
+            return
+        rules = [dict(item) for item in self.current_rules()]
+
+        def identity(item):
+            return (item["sourceTerm"], item.get("sourceLanguage"), item.get("targetLanguage"))
+
+        if any(identity(item) == identity(rule) for item in rules):
+            self.owner.report_save_result(False, "同名术语已经存在，没有覆盖它。")
+            return
+        self.baseline = None
+        self.rules_draft = rules
+        self.rules_draft.insert(min(index, len(rules)), rule)
+        self.changed()
+        await self.save()
 
     def add_rule(self):
-        if (
-            not self.glossary_state
-            or not self.glossary_state.get("isReleased")
-            or self.pending is not None
-        ):
+        if not self.glossary_state or not self.state_confirmed or self.pending is not None:
             return False
         rule = {
             "sourceTerm": self.source_term.get_text(),
@@ -1479,7 +1662,12 @@ class TranslationSettings:
                 return False
             code = response.get("code") if isinstance(response, dict) else None
             success_codes = (
-                ("glossary-saved", "glossary-saved-notification-failed")
+                (
+                    "glossary-saved",
+                    "glossary-saved-notification-failed",
+                    "glossary-saved-inactive",
+                    "glossary-saved-inactive-notification-failed",
+                )
                 if operation == "changeGlossary"
                 else ("style-saved", "style-saved-notification-failed", "style-unchanged")
             )
@@ -1497,7 +1685,11 @@ class TranslationSettings:
                 ):
                     message = "保存结果未确认。草稿仍保留，请重新打开设置检查。"
                 self.owner.report_save_result(False, message)
-            elif code in ("style-saved-notification-failed", "glossary-saved-notification-failed"):
+            elif code in (
+                "style-saved-notification-failed",
+                "glossary-saved-notification-failed",
+                "glossary-saved-inactive-notification-failed",
+            ):
                 self.owner.message.set_text(
                     "翻译设置已保存，但状态通知未完成。请重新打开设置检查。"
                 )
@@ -1611,6 +1803,15 @@ class TranslationSettings:
                         self.removed_applications.discard(payload["application"])
                     elif operation == "changeGlossary" and self.rules_draft == payload["rules"]:
                         self.rules_draft = None
+                        if self.pending_undo:
+                            index, removed = self.pending_undo
+                            self.pending_undo = None
+                            self.owner.toast.show_message(
+                                "已删除术语",
+                                lambda: self.owner.tasks(self.undo_remove(index, removed)),
+                            )
+                        else:
+                            self.owner.toast.show_message("术语已保存")
                 self.load_revision += 1
                 await self.load(self.load_revision)
                 if saved:
@@ -1809,417 +2010,20 @@ class Settings:
         self.package_requested = package_requested
         self.preparation_refresh = preparation_refresh
         self.package_confirmation = None
-        self.window = Gtk.Window(title="TypeLay 设置")
-        self.window.set_default_size(790, 560)
-        self.window.get_style_context().add_class("typelay-settings")
-        style = Gtk.CssProvider()
-        style.load_from_data(b"""
-            .typelay-settings { background-color: #ffffff; color: #222327; }
-            .typelay-settings .settings-sidebar {
-                background-color: #f5f5f6; border-right: 1px solid #e6e6e9;
-            }
-            .typelay-settings .settings-brand { font-size: 18px; font-weight: bold; }
-            .typelay-settings .settings-navigation,
-            .typelay-settings .settings-navigation list { background-color: transparent; border: 0; }
-            .typelay-settings .settings-navigation row {
-                border-radius: 6px; padding: 12px; margin: 2px 10px; color: #62636b;
-            }
-            .typelay-settings .settings-navigation row:selected {
-                background-color: #ececef; color: #222327; font-weight: bold;
-            }
-            .typelay-settings .settings-navigation row:focus,
-            .typelay-settings switch:focus, .typelay-settings .theme-option:focus {
-                outline: 2px solid #2365d8; outline-offset: -2px;
-            }
-            .typelay-settings switch {
-                min-width: 44px; min-height: 24px; padding: 10px 14px;
-                border: 0; border-radius: 24px; background-clip: content-box;
-                background-image: none; background-color: #b5b6bc; box-shadow: none;
-            }
-            .typelay-settings switch:checked { background-color: #2563db; }
-            .typelay-settings switch slider {
-                min-width: 16px; min-height: 16px; margin: 3px 2px;
-                border: 0; border-radius: 50%; background-image: none;
-                background-color: #ffffff; box-shadow: none;
-            }
-            .typelay-settings .settings-page, .typelay-settings .settings-page viewport {
-                background-color: #ffffff; color: #222327;
-            }
-            .typelay-settings .settings-page-title { font-size: 24px; font-weight: bold; }
-            .typelay-settings .settings-section-title { font-weight: bold; }
-            .typelay-settings .dim-label { color: #62636b; opacity: 1; }
-            .typelay-settings separator { background-color: #e6e6e9; min-height: 1px; }
-            .typelay-settings .settings-footer { border-top: 1px solid #e6e6e9; padding: 12px 28px; }
-            .typelay-settings .settings-notice { background-color: #f7f7f8; border-radius: 6px; }
-            .typelay-settings .settings-warning { color: #9b501a; }
-            .typelay-settings .theme-option {
-                background-image: none; background-color: transparent; color: #222327;
-                border: 2px solid transparent; border-radius: 7px; padding: 6px; box-shadow: none;
-            }
-            .typelay-settings .theme-option:checked { border-color: #2365d8; }
-            .typelay-settings .theme-preview { border: 1px solid #e6e6e9; border-radius: 5px; }
-            .typelay-settings .theme-light { background-color: #f4f4f6; }
-            .typelay-settings .theme-dark { background-color: #292a2f; }
-            .typelay-settings .theme-mini { border: 1px solid #8d8e92; border-radius: 5px; }
-            .typelay-settings .theme-mini-light { background-color: #ffffff; }
-            .typelay-settings .theme-mini-dark { background-color: #35363d; }
-            .typelay-settings .theme-preview .theme-line { background-color: #858894; min-height: 3px; border: 0; }
-            .typelay-settings .theme-preview-light .theme-line { background-color: #656872; }
-            .typelay-settings .theme-preview-dark .theme-line { background-color: #b8bac4; }
-            .typelay-settings.settings-dark { background-color: #25262a; color: #f3f3f5; }
-            .typelay-settings.settings-dark .settings-sidebar { background-color: #202125; border-color: #3b3c43; }
-            .typelay-settings.settings-dark .settings-navigation row { color: #b5b5bf; }
-            .typelay-settings.settings-dark .settings-navigation row:selected { background-color: #37383e; color: #f3f3f5; }
-            .typelay-settings.settings-dark .settings-page,
-            .typelay-settings.settings-dark .settings-page viewport { background-color: #25262a; color: #f3f3f5; }
-            .typelay-settings.settings-dark .dim-label { color: #b5b5bf; }
-            .typelay-settings.settings-dark separator { background-color: #3b3c43; }
-            .typelay-settings.settings-dark .settings-footer { border-color: #3b3c43; }
-            .typelay-settings.settings-dark .settings-notice { background-color: #2d2e33; }
-            .typelay-settings.settings-dark .settings-warning { color: #f4bb88; }
-            .typelay-settings.settings-dark .theme-option { color: #f3f3f5; }
-            .typelay-settings.settings-dark .theme-option:checked { border-color: #83aeff; }
-            .typelay-settings.settings-dark .settings-navigation row:focus,
-            .typelay-settings.settings-dark switch:focus,
-            .typelay-settings.settings-dark .theme-option:focus { outline-color: #83aeff; }
-        """)
-        Gtk.StyleContext.add_provider_for_screen(
-            self.window.get_screen(), style, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        from settings_layout import build
+
+        build(
+            self,
+            quit_requested,
+            preview,
+            support_refresh,
+            support_action,
+            support_folder,
+            Tutorial,
+            ApplicationSupportPane,
+            TranslationSettings,
+            LanguagePicker,
         )
-        self.dark_settings = None
-        self.window.connect("style-updated", self.update_palette)
-        self.update_palette()
-        self.window.connect("delete-event", self.dismiss)
-        panel = Gtk.Box()
-        self.window.add(panel)
-        navigation = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        navigation.set_size_request(176, -1)
-        navigation.get_style_context().add_class("settings-sidebar")
-        brand = Gtk.Label(label="TypeLay", xalign=0)
-        brand.get_style_context().add_class("settings-brand")
-        brand.set_margin_start(22)
-        brand.set_margin_top(28)
-        brand.set_margin_bottom(12)
-        navigation.pack_start(brand, False, False, 0)
-        panel.pack_start(navigation, False, False, 0)
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        panel.pack_start(outer, True, True, 0)
-        self.status = Gtk.Label(xalign=0)
-        self.status.set_line_wrap(True)
-        self.status.set_max_width_chars(48)
-        self.status.set_no_show_all(True)
-        self.status.set_margin_start(28)
-        self.status.set_margin_end(28)
-        self.status.set_margin_top(12)
-        outer.pack_start(self.status, False, False, 0)
-        self.tray_notice = Gtk.Label(xalign=0)
-        self.tray_notice.get_accessible().set_name("托盘状态")
-        self.tray_notice.get_style_context().add_class("dim-label")
-        self.tray_notice.set_line_wrap(True)
-        self.tray_notice.set_max_width_chars(48)
-        self.tray_notice.set_no_show_all(True)
-        self.tray_notice.set_margin_start(28)
-        self.tray_notice.set_margin_end(28)
-        self.tray_notice.set_margin_top(12)
-        outer.pack_start(self.tray_notice, False, False, 0)
-        self.pages = Gtk.Stack()
-        self.pages.set_hexpand(True)
-        self.pages.set_vexpand(True)
-        self.sidebar = Gtk.StackSidebar()
-        self.sidebar.set_stack(self.pages)
-        self.sidebar.get_style_context().add_class("settings-navigation")
-        self.sidebar.get_accessible().set_name("设置导航")
-        navigation.pack_start(self.sidebar, True, True, 0)
-        outer.pack_start(self.pages, True, True, 0)
-        grids = {
-            name: self.add_page(name, title)
-            for name, title in (("general", "常规"), ("language", "语言"), ("shortcuts", "快捷键"))
-        }
-        self.mode_description = Gtk.Label(xalign=0)
-        self.mode_description.get_accessible().set_name("当前工作模式说明")
-        self.acceptance_description = Gtk.Label(xalign=0)
-        self.acceptance_description.get_accessible().set_name("当前接受与退出说明")
-        for label in (self.mode_description, self.acceptance_description):
-            label.set_line_wrap(True)
-            label.set_max_width_chars(48)
-            label.get_style_context().add_class("dim-label")
-        footer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        self.footer = footer
-        footer.set_no_show_all(True)
-        footer.get_style_context().add_class("settings-footer")
-        outer.pack_end(footer, False, False, 0)
-        self.controls = {}
-        self.control_labels = {}
-        self.theme_options = {}
-        function_keys = [(value, value) for value in self.function_keys]
-        rows = [
-            ("enabled", "启用 TypeLay", True),
-            ("mode", "工作模式", [("Automatic", "自动模式"), ("OnDemand", "按需模式")]),
-            (
-                "theme",
-                "翻译浮层",
-                [("system", "跟随系统"), ("light", "浅色"), ("dark", "深色")],
-            ),
-            ("startup", "登录 niri 时启动", True),
-            ("experimentalWriteback", "启用原生输入框替换", True),
-            ("source", "源语言", []),
-            ("target", "目标语言", []),
-            ("wakeShortcut", "唤醒翻译", ""),
-            ("directShortcut", "直接翻译替换", ""),
-            ("acceptShortcut", "接受译文", [("Tab", "Tab")] + function_keys),
-            ("exitShortcut", "退出当前翻译", [("Esc", "Esc")] + function_keys),
-        ]
-        next_rows = {name: 1 for name in grids}
-        for key, label, choices in rows:
-            page = (
-                "language"
-                if key in ("source", "target")
-                else "shortcuts"
-                if key in ("wakeShortcut", "directShortcut", "acceptShortcut", "exitShortcut")
-                else "general"
-            )
-            grid, row = grids[page], next_rows[page]
-            if key == "theme":
-                grid.attach(Gtk.Separator(), 0, row, 2, 1)
-                heading = Gtk.Label(label=label, xalign=0)
-                heading.get_style_context().add_class("settings-section-title")
-                grid.attach(heading, 0, row + 1, 2, 1)
-                themes = Gtk.Box(spacing=10, homogeneous=True)
-                group = None
-                for identity, title in choices:
-                    option = Gtk.RadioButton.new_from_widget(group)
-                    group = option
-                    option.set_mode(False)
-                    option.get_style_context().add_class("theme-option")
-                    option.get_accessible().set_name("设置：翻译浮层主题：" + title)
-                    option.get_accessible().set_description("即时保存，仅改变翻译浮层")
-                    card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-                    preview_box = Gtk.Overlay()
-                    preview_box.set_size_request(-1, 72)
-                    preview_box.get_style_context().add_class("theme-preview")
-                    preview_box.get_style_context().add_class("theme-preview-" + identity)
-                    background = Gtk.Box(homogeneous=True)
-                    miniature = Gtk.Overlay()
-                    miniature.set_margin_start(10)
-                    miniature.set_margin_end(10)
-                    miniature.set_margin_top(12)
-                    miniature.set_margin_bottom(12)
-                    miniature.get_style_context().add_class("theme-mini")
-                    surface = Gtk.Box(homogeneous=True)
-                    for shade in ("light", "dark") if identity == "system" else (identity,):
-                        sample = Gtk.Box()
-                        sample.get_style_context().add_class("theme-" + shade)
-                        background.pack_start(sample, True, True, 0)
-                        face = Gtk.Box()
-                        face.get_style_context().add_class("theme-mini-" + shade)
-                        surface.pack_start(face, True, True, 0)
-                    preview_box.add(background)
-                    miniature.add(surface)
-                    lines = Gtk.Grid(column_homogeneous=True, row_spacing=4)
-                    lines.set_margin_start(8)
-                    lines.set_margin_end(8)
-                    lines.set_valign(Gtk.Align.CENTER)
-                    lines.attach(Gtk.Box(), 9, 0, 1, 1)
-                    for line_row, span in enumerate((3, 8, 5)):
-                        line = Gtk.Separator()
-                        line.get_style_context().add_class("theme-line")
-                        lines.attach(line, 0, line_row, span, 1)
-                    miniature.add_overlay(lines)
-                    preview_box.add_overlay(miniature)
-                    card.pack_start(preview_box, False, False, 0)
-                    card.pack_start(Gtk.Label(label=title, xalign=0), False, False, 0)
-                    option.add(card)
-                    option.connect(
-                        "toggled",
-                        lambda control, name=identity: self.change_control("theme", name)
-                        if control.get_active()
-                        else None,
-                    )
-                    self.theme_options[identity] = option
-                    themes.pack_start(option, True, True, 0)
-                grid.attach(themes, 0, row + 2, 2, 1)
-                grid.attach(Gtk.Separator(), 0, row + 3, 2, 1)
-                next_rows[page] = row + 4
-                continue
-            draft = key in ("wakeShortcut", "directShortcut", "acceptShortcut", "exitShortcut")
-            caption = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            self.control_labels[key] = Gtk.Label(label=label, xalign=0)
-            caption.pack_start(self.control_labels[key], False, False, 0)
-            if key == "experimentalWriteback":
-                warning = Gtk.Label(label="实验功能，仅在当前字段通过安全检查后可用。", xalign=0)
-                warning.set_line_wrap(True)
-                warning.set_max_width_chars(26)
-                warning.get_style_context().add_class("dim-label")
-                caption.pack_start(warning, False, False, 0)
-            caption.set_valign(Gtk.Align.CENTER)
-            grid.attach(caption, 0, row, 1, 1)
-            if choices is True:
-                widget = Gtk.Switch()
-                widget.set_halign(Gtk.Align.END)
-                widget.set_valign(Gtk.Align.CENTER)
-                widget.set_can_focus(True)
-                widget.set_size_request(72, 44)
-            elif isinstance(choices, list):
-                widget = (
-                    LanguagePicker(lambda value, name=key: self.change_control(name, value))
-                    if key in ("source", "target")
-                    else Gtk.ComboBoxText()
-                )
-                for identity, title in choices:
-                    widget.append(identity, title)
-                if key in ("source", "target", "acceptShortcut", "exitShortcut"):
-                    widget.set_sensitive(False)
-            else:
-                widget = Gtk.Entry()
-                widget.set_max_length(64)
-                widget.set_sensitive(False)
-            widget.set_hexpand(True)
-            if page == "general":
-                widget.set_halign(Gtk.Align.END)
-            self.controls[key] = widget
-            widget.get_accessible().set_name("设置：" + label)
-            widget.get_accessible().set_description("保存后生效" if draft else "即时保存")
-            if isinstance(widget, LanguagePicker):
-                widget.get_child().get_accessible().set_name(label)
-            if isinstance(widget, Gtk.Switch):
-                widget.connect(
-                    "notify::active",
-                    lambda control, _property, name=key: self.change_control(
-                        name, control.get_active()
-                    ),
-                )
-            elif key in ("acceptShortcut", "exitShortcut"):
-                widget.connect("changed", lambda _control, name=key: self.draft_changed(name))
-            elif isinstance(widget, Gtk.ComboBoxText) and not isinstance(widget, LanguagePicker):
-                widget.connect(
-                    "changed",
-                    lambda control, name=key: self.change_control(name, control.get_active_id()),
-                )
-            elif isinstance(widget, Gtk.Entry):
-                widget.connect("changed", lambda _control, name=key: self.draft_changed(name))
-            grid.attach(widget, 1, row, 1, 1)
-            row += 1
-            if key == "mode":
-                grid.attach(self.mode_description, 0, row, 2, 1)
-                row += 1
-            elif key == "exitShortcut":
-                grid.attach(self.acceptance_description, 0, row, 2, 1)
-                row += 1
-            next_rows[page] = row
-        self.language_swap = Gtk.Button(label="⇄")
-        self.language_swap.get_accessible().set_name("交换语言")
-        self.language_swap.set_tooltip_text("交换语言")
-        self.language_swap.set_valign(Gtk.Align.CENTER)
-        self.language_swap.set_sensitive(False)
-        self.language_swap.connect("clicked", lambda *_: self.swap_languages())
-        grids["language"].attach(self.language_swap, 2, 1, 1, 2)
-        exclusions_grid = Gtk.Grid(column_spacing=24, row_spacing=10)
-        exclusions_grid.attach(Gtk.Label(label="排除的应用", xalign=0), 0, 0, 1, 1)
-        self.add_exclusion = Gtk.Button(label="添加应用…")
-        self.add_exclusion.get_accessible().set_name("添加排除应用")
-        self.add_exclusion.set_halign(Gtk.Align.END)
-        self.add_exclusion.set_sensitive(False)
-        self.add_exclusion.connect(
-            "clicked", lambda *_: self.application_support.pick_application(for_exclusion=True)
-        )
-        exclusions_grid.attach(self.add_exclusion, 1, 0, 1, 1)
-        self.exclusion_rows = Gtk.ListBox()
-        self.exclusion_rows.set_selection_mode(Gtk.SelectionMode.NONE)
-        self.exclusion_rows.get_accessible().set_name("应用排除列表")
-        excluded_list = Gtk.ScrolledWindow()
-        excluded_list.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        excluded_list.set_shadow_type(Gtk.ShadowType.IN)
-        excluded_list.set_min_content_height(48)
-        excluded_list.set_max_content_height(180)
-        excluded_list.set_propagate_natural_height(True)
-        excluded_list.set_hexpand(True)
-        excluded_list.add(self.exclusion_rows)
-        exclusions_grid.attach(excluded_list, 0, 1, 2, 1)
-        self.excluded = Gtk.TextView()
-        self.excluded.get_accessible().set_name("设置：排除的应用")
-        self.excluded.get_accessible().set_description("每行一个可执行文件名，保存后生效")
-        self.excluded.set_sensitive(False)
-        self.excluded.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        self.excluded.get_buffer().connect("changed", self.exclusions_changed)
-        exclusions = Gtk.ScrolledWindow()
-        exclusions.set_hexpand(True)
-        exclusions.set_size_request(-1, 84)
-        exclusions.add(self.excluded)
-        advanced_exclusions = Gtk.Expander(label="高级编辑")
-        advanced_exclusions.get_accessible().set_name("高级编辑排除应用")
-        advanced_exclusions.add(exclusions)
-        exclusions_grid.attach(advanced_exclusions, 0, 2, 2, 1)
-        self.shortcut_scope = Gtk.Label(xalign=0)
-        self.shortcut_scope.set_line_wrap(True)
-        self.shortcut_scope.set_max_width_chars(48)
-        grids["shortcuts"].attach(self.shortcut_scope, 0, next_rows["shortcuts"], 2, 1)
-        privacy = Gtk.Label(label="本地翻译\n无翻译历史记录", xalign=0)
-        privacy.set_line_wrap(True)
-        privacy.get_style_context().add_class("dim-label")
-        privacy.set_margin_start(22)
-        privacy.set_margin_end(18)
-        navigation.pack_start(privacy, False, False, 0)
-        practice = Gtk.Button(label="接入应用与练习")
-        practice.set_halign(Gtk.Align.START)
-        practice.connect(
-            "clicked", lambda *_: self.pages.set_visible_child_name("application-support")
-        )
-        grids["general"].attach(Gtk.Separator(), 0, next_rows["general"], 2, 1)
-        grids["general"].attach(practice, 0, next_rows["general"] + 1, 2, 1)
-        self.draft_notice = Gtk.Label(xalign=0)
-        self.draft_notice.get_accessible().set_name("设置草稿")
-        self.draft_notice.set_line_wrap(True)
-        self.draft_notice.set_max_width_chars(48)
-        self.draft_notice.set_no_show_all(True)
-        footer.pack_start(self.draft_notice, False, False, 0)
-        self.message = Gtk.Label(xalign=0)
-        self.message.get_accessible().set_name("设置反馈")
-        self.message.set_line_wrap(True)
-        self.message.set_max_width_chars(48)
-        self.message.set_no_show_all(True)
-        self.message.connect("notify::label", self.feedback_changed)
-        footer.pack_start(self.message, False, False, 0)
-        buttons = Gtk.Box(spacing=8)
-        footer.pack_start(buttons, False, False, 0)
-        self.install_button = Gtk.Button(label="安装本地翻译组件…")
-        self.install_button.set_no_show_all(True)
-        self.install_button.set_sensitive(False)
-        self.install_button.connect("clicked", self.install_clicked)
-        quit_button = Gtk.Button(label="退出 TypeLay")
-        quit_button.connect("clicked", lambda *_: self.dismiss(quit_requested=quit_requested))
-        quit_button.set_relief(Gtk.ReliefStyle.NONE)
-        quit_button.set_margin_start(10)
-        quit_button.set_margin_end(10)
-        quit_button.set_margin_bottom(16)
-        navigation.pack_start(quit_button, False, False, 0)
-        self.save_button = Gtk.Button()
-        self.save_button.set_no_show_all(True)
-        self.save_button.get_style_context().add_class("suggested-action")
-        self.save_button.connect("clicked", lambda *_: self.tasks(self.save()))
-        self.save_button.set_sensitive(False)
-        buttons.pack_end(self.save_button, False, False, 0)
-        self.force_shortcuts = Gtk.Button(label="强制保存")
-        self.force_shortcuts.set_no_show_all(True)
-        self.force_shortcuts.connect(
-            "clicked", lambda *_: self.tasks(self.save(force_shortcuts=True))
-        )
-        buttons.pack_end(self.force_shortcuts, False, False, 0)
-        self.edit_shortcuts = Gtk.Button(label="继续编辑")
-        self.edit_shortcuts.set_no_show_all(True)
-        self.edit_shortcuts.connect("clicked", self.keep_editing_shortcuts)
-        buttons.pack_end(self.edit_shortcuts, False, False, 0)
-        buttons.show_all()
-        self.tutorial = Tutorial(self, preview)
-        self.application_support = ApplicationSupportPane(
-            self, support_refresh, support_action, support_folder
-        )
-        self.application_support.box.pack_start(Gtk.Separator(), False, False, 8)
-        self.application_support.box.pack_start(exclusions_grid, False, False, 0)
-        self.application_support.widget.get_style_context().add_class("settings-page")
-        self.application_support.widget.get_accessible().set_name("设置页：应用支持")
-        self.pages.add_titled(self.application_support.widget, "application-support", "应用支持")
-        self.translation = TranslationSettings(self, grids["language"], next_rows["language"])
-        self.tasks(self.load_draft_messages())
 
     def add_page(self, name, title):
         scroll = Gtk.ScrolledWindow()
@@ -2237,17 +2041,265 @@ class Settings:
         return grid
 
     def update_palette(self, *_):
-        # Read the desktop theme; the saved theme choice still affects only the overlay.
-        found, color = self.window.get_style_context().lookup_color("theme_bg_color")
-        dark = found and (color.red * 0.2126 + color.green * 0.7152 + color.blue * 0.0722) < 0.5
-        if dark == self.dark_settings:
+        preferences = self.value or {}
+        gtk_settings = self.window.get_settings()
+        signature = tuple(
+            preferences.get(key)
+            for key in ("theme", "accent", "font", "textSize", "reduceMotion", "reduceTransparency")
+        ) + (
+            gtk_settings.get_property("gtk-theme-name"),
+            gtk_settings.get_property("gtk-application-prefer-dark-theme"),
+        )
+        if getattr(self, "palette_signature", None) == signature:
             return
-        self.dark_settings = dark
-        style = self.window.get_style_context()
-        if dark:
-            style.add_class("settings-dark")
-        else:
-            style.remove_class("settings-dark")
+        self.palette_signature = signature
+        self.style_provider = apply_theme(self.window, preferences, self.style_provider)
+        if hasattr(self, "tutorial"):
+            self.tutorial.style_provider = apply_theme(
+                self.tutorial.window, preferences, self.tutorial.style_provider
+            )
+        if hasattr(self, "preview_text"):
+            family = {
+                "claude": "Source Serif 4, Noto Serif CJK SC, serif",
+                "sans": "Inter, Noto Sans CJK SC, sans-serif",
+                "system": "sans-serif",
+            }.get(preferences.get("font", "claude"))
+            font = Pango.FontDescription.from_string(
+                f"{family} {preferences.get('textSize', 15)}px"
+            )
+            self.preview_text.override_font(font)
+
+    def filter_settings(self):
+        self.sidebar.invalidate_filter()
+        query = self.search.get_text().strip().casefold()
+        if query:
+            match = next(
+                (item for item in self.nav_rows.values() if query in item.search_text.casefold()),
+                None,
+            )
+            if match:
+                self.sidebar.select_row(match)
+
+    def tr(self, chinese, english):
+        language = (self.value or {}).get("uiLanguage", "system")
+        use_english = (
+            language == "en"
+            or language == "system"
+            and not any(name.startswith("zh") for name in GLib.get_language_names())
+        )
+        return english if use_english else chinese
+
+    def localize(self):
+        self.localizer.refresh()
+        was_configuring = self.configuring
+        self.configuring = True
+        try:
+            for key in ("source", "target"):
+                if self.language_choices and self.value:
+                    self.controls[key].configure_choices(
+                        [
+                            {**item, "label": self.localizer.text(item["label"])}
+                            for item in self.language_choices[key]
+                        ],
+                        self.value[key],
+                    )
+            for control in (self.translation.style, self.translation.scope):
+                for item in control.get_model():
+                    item[0] = self.localizer.text(item[0])
+        finally:
+            self.configuring = was_configuring
+        from gi.repository import GLib
+
+        language = (self.value or {}).get("uiLanguage", "system")
+        english = (
+            language == "en"
+            or language == "system"
+            and not any(name.startswith("zh") for name in GLib.get_language_names())
+        )
+        for setter, chinese, translated in self.localized:
+            setter(translated if english else chinese)
+        self.window.set_title("TypeLay Settings" if english else "TypeLay 设置")
+        self.search.set_placeholder_text("Search settings" if english else "搜索设置")
+        self.enabled_status.set_text(
+            ("Running" if english else "运行中")
+            if (self.value or {}).get("enabled")
+            else ("Paused" if english else "已暂停")
+        )
+
+    def schedule_autosave(self):
+        if self.auto_save_source:
+            GLib.source_remove(self.auto_save_source)
+
+        def save():
+            self.auto_save_source = None
+            if (
+                self.dirty_controls
+                and self.pending_draft is None
+                and self.shortcut_confirmation is None
+            ):
+                self.tasks(self.save_ordinary())
+            return False
+
+        self.auto_save_source = GLib.timeout_add(250, save)
+
+    async def load_applications(self):
+        if self.application_catalog_pending:
+            return
+        self.application_catalog_pending = True
+        try:
+            entries = await self.application_support.action_requested(
+                "desktop-text", "ListManagedApplications"
+            )
+            if not isinstance(entries, list):
+                raise ValueError("applications-unavailable")
+            self.application_catalog = entries
+            self.render_applications()
+        except (OSError, ValueError, EOFError, TimeoutError):
+            self.message.set_text("暂时无法读取应用列表，请重新打开设置。")
+        finally:
+            self.application_catalog_pending = False
+
+    def render_applications(self):
+        if not hasattr(self, "applications_box"):
+            return
+        excluded = (self.value or {}).get("excludedApplications") or []
+        translation = getattr(self, "translation", None)
+        style_state = translation.style_state if translation and translation.style_state else {}
+        styles = (style_state.get("savedPreferences") or {}).get("applications") or {}
+        managed = (self.value or {}).get("managedApplications") or []
+        entries = list(self.application_catalog or [])
+        known = {item.get("application", "").casefold() for item in entries}
+        for application in [*managed, *excluded, *styles]:
+            if application.casefold() not in known:
+                known.add(application.casefold())
+                entries.append({"name": application, "application": application, "id": None})
+        query = self.applications_search.get_text().strip().casefold()
+        entries = [
+            item
+            for item in entries
+            if query in (item["name"] + " " + item.get("application", "")).casefold()
+        ]
+        signature = (
+            repr(entries),
+            tuple(excluded),
+            repr(styles),
+            style_state.get("canChange"),
+            self.pending_draft is not None,
+            (self.value or {}).get("uiLanguage"),
+        )
+        if signature == self.applications_signature:
+            return
+        self.applications_signature = signature
+        for child in self.applications_box.get_children():
+            child.destroy()
+        if not entries:
+            empty, _ = design_row(
+                "正在读取应用…" if self.application_catalog is None else "没有匹配的应用"
+            )
+            self.applications_box.pack_start(empty, False, False, 0)
+        for item in entries:
+            application = item.get("application")
+            enabled = Gtk.Switch()
+            enabled.set_active(
+                not application
+                or application.casefold() not in {value.casefold() for value in excluded}
+            )
+            enabled.set_sensitive(bool(application) and self.pending_draft is None)
+            enabled.get_accessible().set_name("在应用中启用：" + item["name"])
+            enabled.set_tooltip_text(
+                item.get("unavailableReason") or "即时保存；不改变应用连接权限"
+            )
+            enabled.connect(
+                "notify::active",
+                lambda control, _property, app=application: self.toggle_application(
+                    app, control.get_active()
+                ),
+            )
+            controls = Gtk.Box(spacing=10)
+            saved_style = next(
+                (
+                    value
+                    for key, value in styles.items()
+                    if application and key.casefold() == application.casefold()
+                ),
+                "inherit",
+            )
+            removal = next(
+                (
+                    item.get("removal", {}).get("canRemove")
+                    for item in style_state.get("applications", [])
+                    if application and item["application"].casefold() == application.casefold()
+                ),
+                False,
+            )
+            can_change = bool(
+                application and style_state.get("isReleased") and style_state.get("canChange")
+            )
+            choices = Gtk.ListStore(str, str, bool)
+            for identity, title in (
+                ("inherit", self.tr("继承全局风格", "Inherit global tone")),
+                ("Natural", self.tr("自然", "Natural")),
+                ("Formal", self.tr("正式", "Formal")),
+            ):
+                choices.append((identity, title, can_change or identity == "inherit" and removal))
+            inherited = Gtk.ComboBox.new_with_model(choices)
+            inherited.set_id_column(0)
+            renderer = Gtk.CellRendererText()
+            inherited.pack_start(renderer, True)
+            inherited.add_attribute(renderer, "text", 1)
+            inherited.add_attribute(renderer, "sensitive", 2)
+            inherited.set_active_id(saved_style)
+            inherited.set_sensitive(can_change or bool(removal))
+            inherited.set_tooltip_text("已保存的覆盖仍显示；当前未开放的风格不可选择。")
+            inherited.connect(
+                "changed",
+                lambda control, app=application: self.tasks(
+                    self.change_application_style(app, control.get_active_id())
+                ),
+            )
+            controls.pack_start(inherited, False, False, 0)
+            controls.pack_end(enabled, False, False, 0)
+            widget, _ = design_row(item["name"], controls, item.get("unavailableReason"))
+            self.applications_box.pack_start(widget, False, False, 0)
+        self.applications_box.show_all()
+
+    async def change_application_style(self, application, style):
+        if not application or style not in ("inherit", "Natural", "Formal"):
+            return
+        try:
+            state = await self.host.ask("getApplicationStyleSettings", application, timeout=2)
+            if not isinstance(state, dict) or type(state.get("settingsRevision")) is not int:
+                raise ValueError("style-state-unavailable")
+            result = await self.host.ask(
+                "changeApplicationStyle",
+                {
+                    "application": application,
+                    "style": None if style == "inherit" else style,
+                    "expectedSettingsRevision": state["settingsRevision"],
+                },
+                timeout=3,
+            )
+            saved = isinstance(result, dict) and result.get("saved") is True
+            self.report_save_result(
+                saved,
+                self.translation.unavailable_message(
+                    result.get("code") if isinstance(result, dict) else None
+                ),
+            )
+        except (OSError, ValueError, EOFError, TimeoutError):
+            self.report_save_result(False, "应用风格保存结果未确认，请重新打开设置检查。")
+        finally:
+            self.translation.refresh()
+
+    def toggle_application(self, application, enabled):
+        if self.configuring or not application or self.value is None:
+            return
+        values = self.draft_value("excludedApplications")
+        following = [item for item in values if item.casefold() != application.casefold()]
+        if not enabled:
+            following.append(application)
+        self.application_undo = (application, not enabled)
+        self.excluded.get_buffer().set_text("\n".join(following))
 
     def render_footer(self):
         self.message.set_visible(bool(self.message.get_text()))
@@ -2281,9 +2333,9 @@ class Settings:
                 self.controls[key].get_accessible().set_name("设置：" + shortcuts[label])
                 self.controls[key].set_sensitive(True)
             self.shortcut_scope.set_text(shortcuts["scopeNote"])
-            self.save_button.set_label(messages["saveLabel"])
+            self.save_button.set_label("重试保存")
             for widget in self.controls.values():
-                if isinstance(widget, Gtk.Entry):
+                if isinstance(widget, (Gtk.Entry, ShortcutRecorder)):
                     widget.set_sensitive(True)
             self.excluded.set_sensitive(True)
             self.add_exclusion.set_sensitive(not self.application_support.busy)
@@ -2306,11 +2358,18 @@ class Settings:
             and not (translation and (translation.pending or translation.saving))
         )
         self.draft_notice.set_text(
-            self.draft_messages["unsavedNotice"] if dirty and self.draft_messages else ""
+            "正在保存…"
+            if self.pending_draft is not None or translation and translation.saving
+            else ""
         )
-        self.draft_notice.set_visible(dirty and self.draft_messages is not None)
+        self.draft_notice.set_visible(bool(self.draft_notice.get_text()))
         confirming = self.shortcut_confirmation is not None
-        self.save_button.set_visible(dirty and self.draft_messages is not None and not confirming)
+        self.save_button.set_visible(
+            dirty
+            and bool(self.message.get_text())
+            and self.draft_messages is not None
+            and not confirming
+        )
         self.force_shortcuts.set_visible(confirming)
         self.edit_shortcuts.set_visible(confirming)
         self.force_shortcuts.set_sensitive(
@@ -2328,7 +2387,13 @@ class Settings:
                 for key in ("source", "target"):
                     widget = self.controls[key]
                     code = self.pending_settings.get(key, self.value[key]) if self.value else None
-                    widget.configure_choices(choices[key], code)
+                    widget.configure_choices(
+                        [
+                            {**item, "label": self.localizer.text(item["label"])}
+                            for item in choices[key]
+                        ],
+                        code,
+                    )
             finally:
                 self.configuring = False
             self.render_language_swap()
@@ -2346,15 +2411,26 @@ class Settings:
         self.acceptance_description.set_text(value["acceptanceDescription"])
 
     def configure(self, value):
+        defaults = {
+            "font": "claude",
+            "textSize": 15,
+            "accent": "clay",
+            "uiLanguage": "system",
+            "reduceMotion": False,
+            "reduceTransparency": False,
+            "pauseShortcut": "",
+        }
+        value = {**defaults, **value}
         first = self.value is None
-        direction_changed = self.value is None or any(
+        direction_changed = first or any(
             self.value[key] != value[key] for key in ("source", "target")
         )
         self.value = value
         self.configuring = True
         try:
-            if "theme" not in self.pending_settings:
-                self.theme_options[value["theme"]].set_active(True)
+            for key, options in self.preference_options.items():
+                if key not in self.pending_settings and value[key] in options:
+                    options[value[key]].set_active(True)
             for key, widget in self.controls.items():
                 if key in self.dirty_controls or key in self.pending_settings:
                     continue
@@ -2362,17 +2438,10 @@ class Settings:
                     widget.set_active(value[key])
                 elif isinstance(widget, LanguagePicker):
                     widget.synchronize(value[key])
-                elif isinstance(widget, Gtk.ComboBoxText):
-                    if key in ("acceptShortcut", "exitShortcut"):
-                        default = "Tab" if key == "acceptShortcut" else "Esc"
-                        choices = [default, *self.function_keys]
-                        if value[key] not in choices:
-                            choices.append(value[key])
-                        if [row[1] for row in widget.get_model()] != choices:
-                            widget.remove_all()
-                            for choice in choices:
-                                widget.append(choice, choice)
+                elif isinstance(widget, (Gtk.ComboBoxText, Segments)):
                     widget.set_active_id(value[key])
+                elif isinstance(widget, Gtk.Scale):
+                    widget.set_value(value[key])
                 else:
                     widget.set_text(value[key])
             if "excludedApplications" not in self.dirty_controls:
@@ -2381,9 +2450,14 @@ class Settings:
                 )
         finally:
             self.configuring = False
+        self.pages.set_transition_duration(0 if value["reduceMotion"] else 200)
+        self.toast.set_transition_duration(0 if value["reduceMotion"] else 200)
+        self.update_palette()
+        self.localize()
         self.render_language_swap()
+        self.render_applications()
         if first and not value["onboardingComplete"]:
-            self.pages.set_visible_child_name("application-support")
+            self.pages.set_visible_child_name("model")
         if direction_changed:
             self.refresh_preparation()
 
@@ -2431,8 +2505,6 @@ class Settings:
             self.configure(self.value)
 
     def draft_value(self, key):
-        if key in ("acceptShortcut", "exitShortcut"):
-            return self.controls[key].get_active_id()
         if key != "excludedApplications":
             return self.controls[key].get_text()
         buffer = self.excluded.get_buffer()
@@ -2483,9 +2555,11 @@ class Settings:
             name = await self.application_support.action_requested(
                 "desktop-text", "ResolveApplicationExclusion", desktop_id=identity
             )
-            values = self.draft_value("excludedApplications")
-            if name.lower() not in (value.lower() for value in values):
-                self.excluded.get_buffer().set_text("\n".join([*values, name]))
+            saved = await self.host.ask("manageApplication", name, timeout=3)
+            self.report_save_result(saved is True, "添加应用的保存结果未确认，请重新打开设置检查。")
+            if saved is True:
+                self.toast.show_message("已添加应用 · 默认启用，继承全局风格")
+                await self.load_applications()
         except (OSError, ValueError, EOFError, TimeoutError) as error:
             self.message.set_text(
                 str(error)
@@ -2502,10 +2576,16 @@ class Settings:
         self.render_draft()
         self.controls["wakeShortcut"].grab_focus()
 
-    def draft_changed(self, key):
+    def draft_changed(self, key, *, schedule=True):
         if self.configuring or self.value is None:
             return
-        if key in ("wakeShortcut", "directShortcut", "acceptShortcut", "exitShortcut"):
+        if key in (
+            "wakeShortcut",
+            "directShortcut",
+            "acceptShortcut",
+            "exitShortcut",
+            "pauseShortcut",
+        ):
             self.shortcut_confirmation = None
         value = self.draft_value(key)
         baseline = self.value.get(key) or ([] if key == "excludedApplications" else "")
@@ -2523,6 +2603,8 @@ class Settings:
                 self.exclusion_baseline = list(baseline)
             self.dirty_controls.add(key)
         self.render_draft()
+        if schedule and self.dirty_controls:
+            self.schedule_autosave()
 
     @staticmethod
     def same_draft_value(key, left, right):
@@ -2546,14 +2628,10 @@ class Settings:
         async with self.settings_lock:
             if self.pending_settings.get(key) != value:
                 return
-            language = key in ("source", "target")
             try:
-                saved = await self.host.ask(
-                    "traySettings" if language else "settings",
-                    {key: value} if language else {**self.value, key: value},
-                )
+                saved = await self.host.ask("settingsPatch", {key: value})
             except (OSError, ValueError, EOFError, TimeoutError):
-                saved = None if language else False
+                saved = None
             if self.pending_settings.get(key) == value:
                 self.pending_settings.pop(key, None)
                 self.configure(self.value)
@@ -2600,6 +2678,7 @@ class Settings:
                         ("direct", "directShortcut"),
                         ("accept", "acceptShortcut"),
                         ("exit", "exitShortcut"),
+                        ("pause", "pauseShortcut"),
                     )
                 }
                 response = await self.host.ask(
@@ -2633,6 +2712,13 @@ class Settings:
                     else None
                 )
                 if saved:
+                    if "excludedApplications" in draft and getattr(self, "application_undo", None):
+                        application, was_disabled = self.application_undo
+                        self.application_undo = None
+                        self.toast.show_message(
+                            "已停用此应用" if was_disabled else "已启用此应用",
+                            lambda: self.toggle_application(application, was_disabled),
+                        )
                     for key, value in draft.items():
                         if self.same_draft_value(key, self.draft_value(key), value):
                             self.dirty_controls.discard(key)
@@ -2659,10 +2745,16 @@ class Settings:
         finally:
             if self.pending_draft is identity:
                 self.pending_draft = None
+                edited_during_save = any(
+                    not self.same_draft_value(key, self.draft_value(key), submitted)
+                    for key, submitted in self.submitted_draft.items()
+                )
                 self.submitted_draft = {}
                 confirmation = self.shortcut_confirmation
                 for key in list(self.dirty_controls):
-                    self.draft_changed(key)
+                    self.draft_changed(key, schedule=False)
+                if edited_during_save and self.dirty_controls:
+                    self.schedule_autosave()
                 current = {
                     name: self.draft_value(key)
                     for name, key in (
@@ -2670,6 +2762,7 @@ class Settings:
                         ("direct", "directShortcut"),
                         ("accept", "acceptShortcut"),
                         ("exit", "exitShortcut"),
+                        ("pause", "pauseShortcut"),
                     )
                 }
                 if confirmation == current:
@@ -2987,15 +3080,132 @@ class Settings:
             message = "托盘未连接，可从应用菜单打开设置。"
             detail = "未连接托盘面板；可从应用菜单打开设置。Waybar 需启用 tray 模块。"
         else:
-            message = "托盘未安装，设置和翻译仍可使用。"
-            detail = "托盘组件未安装：请安装 libayatana-appindicator。设置和翻译仍可使用。"
+            message = "桌面托盘服务不可用，设置和翻译仍可使用。"
+            detail = "无法连接 StatusNotifier 桌面会话服务；可运行 typelay --quick-panel 打开原生快捷面板。"
         self.tray_notice.set_text(message)
         self.tray_notice.set_tooltip_text(detail)
         self.tray_notice.get_accessible().set_description(detail)
         self.tray_notice.set_visible(bool(message))
 
+    def show_language_picker(self):
+        if not self.language_choices or not self.value:
+            return
+        existing = getattr(self, "language_dialog", None)
+        if existing:
+            existing.present()
+            return
+        from design import box, label, style
+
+        dialog = Gtk.Window(title=self.tr("选择语言", "Choose languages"))
+        dialog.set_default_size(360, 440)
+        dialog.set_resizable(False)
+        style(dialog, "typelay-surface")
+        apply_theme(dialog, self.value)
+        self.language_dialog = dialog
+        panel = box(12)
+        panel.set_border_width(16)
+        dialog.add(panel)
+        search = Gtk.SearchEntry(placeholder_text=self.tr("搜索语言", "Search languages"))
+        panel.pack_start(search, False, False, 0)
+        selected = "target"
+        listing = Gtk.ListBox()
+        listing.set_selection_mode(Gtk.SelectionMode.NONE)
+        feedback = label(muted=True)
+        busy = False
+
+        def render():
+            for child in listing.get_children():
+                child.destroy()
+            query = search.get_text().strip().casefold()
+            for choice in self.language_choices[selected]:
+                title = self.localizer.text(choice["label"])
+                if query not in (title + " " + choice["code"]).casefold():
+                    continue
+                button = Gtk.Button(
+                    label=("✓  " if self.value[selected] == choice["code"] else "") + title
+                )
+                button.set_sensitive(not busy)
+                button.connect(
+                    "clicked",
+                    lambda _button, key=selected, value=choice["code"]: self.tasks(
+                        save({key: value})
+                    ),
+                )
+                listing.add(button)
+            listing.show_all()
+
+        def change_section(value):
+            nonlocal selected
+            selected = value
+            render()
+
+        async def save(patch):
+            nonlocal busy
+            if busy:
+                return
+            busy = True
+            render()
+            swap.set_sensitive(False)
+            try:
+                saved = await self.host.ask("traySettings", patch, timeout=3)
+                feedback.set_text(
+                    ""
+                    if saved is True
+                    else self.tr(
+                        "未确认保存，请重新打开检查。", "Save was not confirmed. Reopen to check."
+                    )
+                )
+            except (OSError, ValueError, EOFError, TimeoutError):
+                feedback.set_text(
+                    self.tr(
+                        "未确认保存，请重新打开检查。", "Save was not confirmed. Reopen to check."
+                    )
+                )
+            finally:
+                busy = False
+                if dialog is self.language_dialog:
+                    render()
+                    swap.set_sensitive(self.value["source"] != "auto")
+
+        tabs = Segments(
+            [("source", self.tr("源语言", "Source")), ("target", self.tr("目标语言", "Target"))],
+            change_section,
+        )
+        tabs.set_active_id("target")
+        panel.pack_start(tabs, False, False, 0)
+        swap = Gtk.Button(label=self.tr("⇄  交换语言", "⇄  Swap languages"))
+        swap.set_sensitive(self.value["source"] != "auto")
+        swap.connect(
+            "clicked",
+            lambda *_: self.tasks(
+                save({"source": self.value["target"], "target": self.value["source"]})
+            ),
+        )
+        panel.pack_start(swap, False, False, 0)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.add(listing)
+        panel.pack_start(scroll, True, True, 0)
+        panel.pack_start(feedback, False, False, 0)
+        close = Gtk.Button(label=self.tr("完成", "Done"))
+        close.connect("clicked", lambda *_: dialog.destroy())
+        panel.pack_end(close, False, False, 0)
+        search.connect("search-changed", lambda *_: render())
+        dialog.connect(
+            "key-press-event",
+            lambda _widget, event: dialog.destroy() if event.keyval == Gdk.KEY_Escape else False,
+        )
+        dialog.connect("destroy", lambda *_: setattr(self, "language_dialog", None))
+        render()
+        dialog.show_all()
+        dialog.present()
+        search.grab_focus()
+
     def show(self):
         self.window.show_all()
+        if self.first_show:
+            self.window.unmaximize()
+            self.window.resize(900, 660)
         if self.first_show and (
             not self.model_ready or (self.value and not self.value["onboardingComplete"])
         ):
@@ -3005,6 +3215,7 @@ class Settings:
         self.tasks(self.load_draft_messages())
         self.tasks(self.application_support.refresh())
         self.translation.refresh()
+        self.tasks(self.load_applications())
         self.refresh_preparation()
 
     def confirm_install(self, install, directions):

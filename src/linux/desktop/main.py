@@ -747,10 +747,18 @@ async def desktop(paths, background, lock, tutorial=False):
         ):
             if identity == "desktop-text" and action in (
                 "ListApplications",
+                "ListManagedApplications",
                 "ListExclusionApplications",
                 "ResolveApplicationExclusion",
             ):
-                from registered_applications import list_applications, resolve_exclusion
+                from registered_applications import (
+                    list_applications,
+                    list_managed_applications,
+                    resolve_exclusion,
+                )
+
+                if action == "ListManagedApplications":
+                    return await asyncio.to_thread(list_managed_applications)
 
                 if action == "ResolveApplicationExclusion":
                     return await asyncio.to_thread(resolve_exclusion, desktop_id)
@@ -787,7 +795,11 @@ async def desktop(paths, background, lock, tutorial=False):
             preparation_refresh,
         )
         components["overlay"] = Overlay(
-            host, components["input"], task, components["settings"].show
+            host,
+            components["input"],
+            task,
+            components["settings"].show,
+            components["settings"].show_language_picker,
         )
 
         components["tray"] = Tray(
@@ -804,6 +816,11 @@ async def desktop(paths, background, lock, tutorial=False):
                 return await activate_model(host, value)
             if operation in ("wake", "direct"):
                 return await components["input"].trigger(operation, value)
+            if operation == "togglePause":
+                return await host.ask("togglePause")
+            if operation == "quickPanel":
+                components["tray"].show_panel()
+                return True
             if operation == "settings":
                 components["settings"].show()
                 return True
@@ -1033,6 +1050,10 @@ def main():
         help="明确准备当前组件，首次默认 Index；argos 显式选择原中英组件",
     )
     group.add_argument("--version", action="store_true")
+    group.add_argument(
+        "--toggle-pause", action="store_true", help="暂停或恢复 TypeLay，可绑定到合成器全局快捷键"
+    )
+    group.add_argument("--quick-panel", action="store_true", help="打开 TypeLay 快捷面板")
     group.add_argument("--wake", action="store_true", help="由 niri 快捷键唤醒当前已连接输入框")
     group.add_argument(
         "--direct", action="store_true", help="由 niri 快捷键直接翻译当前已连接输入框"
@@ -1049,6 +1070,10 @@ def main():
         if args.command:
             parser.error("--editor-host does not accept application arguments")
         return editor_host(paths)
+    if args.toggle_pause or args.quick_panel:
+        return (
+            0 if control(paths, "togglePause" if args.toggle_pause else "quickPanel") is True else 1
+        )
     if args.wake or args.direct:
         from niri import contents, request
 

@@ -20,6 +20,10 @@
     <ProjectReference Include="../../shared/TypeLay.Protocol/TypeLay.Protocol.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <Resource Include="../../shared/ui/fonts/**/*.ttf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Content Include="../../shared/ui/fonts/**/LICENSE.*" Link="UI/Fonts/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
     <InternalsVisibleTo Include="TypeLay.DesktopFixture" />
     <InternalsVisibleTo Include="TypeLay.App.Tests" />
   </ItemGroup>

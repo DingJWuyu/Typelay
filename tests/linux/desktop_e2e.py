@@ -901,6 +901,8 @@ def run(arguments):
     tutorial_scope = arguments.desktop_scope in ("setup", "setup-tutorial")
     settings = {
         "Schema": 1,
+        "UiLanguage": "zh-CN",
+        "ReduceTransparency": True,
         "Enabled": True,
         "Source": "en",
         "Target": "zh",
@@ -2854,7 +2856,7 @@ def run(arguments):
                                     (
                                         "收起",
                                         "instant-collapse" if gtk4 else "animate-collapse",
-                                        160,
+                                        167,
                                     ),
                                     ("展开", "disabled-expand", 360),
                                     (
@@ -2862,14 +2864,14 @@ def run(arguments):
                                         "reduced-collapse"
                                         if reduced_supported
                                         else "disabled-collapse",
-                                        160,
+                                        167,
                                     ),
                                 ):
                                     before, started = activate(label, mode)
                                     if baseline is None:
-                                        assert 54 <= before["height"] <= 160
+                                        assert 36 <= before["height"] <= 167
                                     else:
-                                        assert before["height"] == (160 if expected == 360 else 360)
+                                        assert before["height"] == (167 if expected == 360 else 360)
                                     identity = tuple(
                                         before[name]
                                         for name in ("editor", "buffer", "scroll", "shell")
@@ -2920,7 +2922,7 @@ def run(arguments):
                                             else not middle
                                         )
                                     for frame in frames:
-                                        assert low <= frame["height"] <= high
+                                        assert low <= frame["height"] <= high + (8 if mode == "animate-expand" else 0)
                                         assert frame["textMatches"] and frame["focused"]
                                         assert frame["start"] != frame["end"]
                                         assert frame["header"] and frame["footer"]
@@ -2939,10 +2941,13 @@ def run(arguments):
                                             )
                                         assert frame["shellHeight"] > frame["height"]
                                     direction = 1 if expected > before["height"] else -1
-                                    assert all(
-                                        direction * (b - a) >= 0
-                                        for a, b in zip(heights, heights[1:])
-                                    )
+                                    if mode != "animate-expand":
+                                        assert all(
+                                            direction * (b - a) >= 0
+                                            for a, b in zip(heights, heights[1:])
+                                        )
+                                    # The prototype's growing spring deliberately overshoots;
+                                    # allocation remains within 8px and settles at the exact target.
                                     assert (
                                         actual["motionText"] == actual["candidate"]["text"] == draft
                                     )
@@ -3062,7 +3067,7 @@ def run(arguments):
                                 lambda: value
                                 if (value := gtk_state()).get("fullscreen")
                                 and (value.get("candidate") or {}).get("foreground")
-                                in ("rgb(34,35,39)", "rgb(244,244,246)")
+                                in ("rgb(20,20,19)", "rgb(244,243,238)")
                                 else None,
                                 "fullscreen GTK candidate did not expose real widget geometry",
                             )

@@ -4,6 +4,32 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class SettingsDraftPresentationTests
 {
+    [Theory]
+    [InlineData("ctrl+shift+f9")]
+    [InlineData("CTRL+SHIFT+F10")]
+    [InlineData("Ctrl+F7")]
+    [InlineData("Ctrl+F8")]
+    public void PauseCannotReuseAnyConfiguredCommand(string pause)
+    {
+        var settings = new UserSettings(AcceptShortcut: "Ctrl+F7", ExitShortcut: "Ctrl+F8");
+        var draft = ShortcutSettingsDraft.From(settings) with { Pause = pause };
+        Assert.False(draft.TryApply(settings, out var result, out var error));
+        Assert.Null(result);
+        Assert.Equal(ShortcutDraftError.ConflictingBindings, error);
+        Assert.Equal(pause, draft.Pause);
+    }
+
+    [Fact]
+    public void PauseRegistrationAndApplicationConflictsUseTheSameExplicitWarning()
+    {
+        var draft = ShortcutSettingsDraft.From(new UserSettings(PauseShortcut: "Ctrl+P"));
+        var warning = SettingsDraftPresentation.ShortcutConflicts(draft, ["Ctrl+P"]);
+        Assert.True(warning.RequiresConfirmation);
+        Assert.Contains("Ctrl+P", warning.Message);
+        Assert.Contains("无法注册", warning.Message);
+        Assert.Contains("不保证启用", warning.Message);
+    }
+
     [Fact]
     public void CommonApplicationChordRequiresExplicitWarningButUnknownBindingsAreNotClaimedConflictFree()
     {

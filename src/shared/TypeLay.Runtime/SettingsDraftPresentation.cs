@@ -25,7 +25,8 @@ public static class SettingsDraftPresentation
     {
         ShortcutDraftError.InvalidOnDemandBindings => "唤醒与直接替换请使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，也支持 Shift+功能键，暂不支持 F12；两个快捷键不能相同。",
         ShortcutDraftError.InvalidSessionBindings => "接受与退出请选择有效且不同的主键。",
-        ShortcutDraftError.ConflictingBindings => "唤醒、直接替换、接受与退出不能使用相同的快捷键组合。草稿仍保留。",
+        ShortcutDraftError.InvalidPauseBinding => "暂停/恢复请留空，或使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，也支持 Shift+功能键，暂不支持 F12。",
+        ShortcutDraftError.ConflictingBindings => "唤醒、直接替换、接受与退出，以及暂停/恢复不能使用相同的快捷键组合。草稿仍保留。",
         _ => Create().InvalidMessage
     };
 
@@ -35,7 +36,7 @@ public static class SettingsDraftPresentation
     public static ShortcutConflictWarning ShortcutConflicts(ShortcutSettingsDraft draft,
         IReadOnlyList<string>? unavailable = null)
     {
-        string[] chords = [draft.Wake, draft.Direct, draft.Accept, draft.Exit];
+        string[] chords = [draft.Wake, draft.Direct, draft.Accept, draft.Exit, draft.Pause];
         string[] common = ["Ctrl+A", "Ctrl+C", "Ctrl+V", "Ctrl+X", "Ctrl+Z", "Ctrl+Y",
             "Ctrl+S", "Ctrl+F", "Ctrl+P", "Ctrl+O", "Ctrl+N", "Ctrl+W", "Ctrl+T", "Ctrl+L",
             "Ctrl+R", "Alt+F4", "Ctrl+F4", "F1", "F5", "F11", "F12"];
@@ -62,16 +63,16 @@ public static class SettingsDraftPresentation
 
 public enum ShortcutDraftError
 {
-    None, InvalidOnDemandBindings, InvalidSessionBindings, ConflictingBindings
+    None, InvalidOnDemandBindings, InvalidSessionBindings, ConflictingBindings, InvalidPauseBinding
 }
 
 // Immutable settings text, not a second persistence flow. The caller supplies
 // the latest settings at submit time and retains this draft if validation or
 // SettingsStore.Update fails. No controller or input permission is changed here.
-public sealed record ShortcutSettingsDraft(string Wake, string Direct, string Accept, string Exit)
+public sealed record ShortcutSettingsDraft(string Wake, string Direct, string Accept, string Exit, string Pause = "")
 {
     public static ShortcutSettingsDraft From(UserSettings settings) =>
-        new(settings.WakeShortcut, settings.DirectShortcut, settings.AcceptShortcut, settings.ExitShortcut);
+        new(settings.WakeShortcut, settings.DirectShortcut, settings.AcceptShortcut, settings.ExitShortcut, settings.PauseShortcut);
 
     public bool TryApply(UserSettings latest, out UserSettings? settings, out ShortcutDraftError error)
     {
@@ -90,12 +91,24 @@ public sealed record ShortcutSettingsDraft(string Wake, string Direct, string Ac
         error = ShortcutDraftError.ConflictingBindings;
         if (!chords.Add(sessionKeys!.Accept) || !chords.Add(sessionKeys.Exit))
             return false;
+        string pause = "";
+        if (!string.IsNullOrWhiteSpace(Pause))
+        {
+            error = ShortcutDraftError.InvalidPauseBinding;
+            if (!TypeLay.Core.TranslationShortcut.TryParse(Pause, out var pauseKey))
+                return false;
+            pause = pauseKey!.ToString();
+            error = ShortcutDraftError.ConflictingBindings;
+            if (!chords.Add(pause))
+                return false;
+        }
         settings = latest with
         {
             WakeShortcut = wake.ToString(),
             DirectShortcut = direct.ToString(),
             AcceptShortcut = sessionKeys.Accept,
-            ExitShortcut = sessionKeys.Exit
+            ExitShortcut = sessionKeys.Exit,
+            PauseShortcut = pause
         };
         error = ShortcutDraftError.None;
         return true;

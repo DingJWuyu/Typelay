@@ -19,7 +19,9 @@ public sealed record ModelResponse(long Id, string Status, string Text = "", str
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull), JsonNumberHandling(JsonNumberHandling.Strict)]
     int? StyledGlossaryTranslationVersion = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string[]? AdvancedTranslationDirections = null);
+    string[]? AdvancedTranslationDirections = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull), JsonNumberHandling(JsonNumberHandling.Strict)]
+    int? AlternativeTranslationVersion = null);
 
 public sealed record ModelGlossary(long Version, ModelGlossaryRule[] Rules);
 public sealed record ModelGlossaryRule(string SourceTerm, string TargetTerm,

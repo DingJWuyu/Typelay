@@ -38,7 +38,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
             using var model = ProtocolModel(directory);
             window = new SettingsWindow(settings, model, () => { }, installations: Installations(directory));
-            window.ShowPage("apps");
+            window.ShowPage("model");
             window.UpdateLayout();
             nint handle = new WindowInteropHelper(window).Handle;
             var root = await Task.Run(() => AutomationElement.FromHandle(handle), ct).WaitAsync(ct);
@@ -88,7 +88,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             using var model = Model(directory);
             window = new SettingsWindow(settings, model, () => { }, installations: Installations(directory),
                 createInstaller: () => throw new InvalidOperationException("Opening details must not start installation."));
-            window.ShowPage("apps");
+            window.ShowPage("model");
             window.UpdateLayout();
             nint handle = new WindowInteropHelper(window).Handle;
             var root = await Task.Run(() => AutomationElement.FromHandle(handle), ct).WaitAsync(ct);
@@ -207,7 +207,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             }, installations: Installations(directory));
             window.Width = 790;
             window.Height = 560;
-            window.ShowPage("apps");
+            window.ShowPage("model");
             window.UpdateLayout();
             var primary = Named<Button>(window, "PreparationPrimaryAction");
             AssertPrimary(window, primary);
@@ -256,7 +256,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             AssertWithinViewport(window, Named<TextBlock>(window, "PreparationGuidance"));
             AssertWithinViewport(window, Named<Button>(window, "PreparationPrimaryAction"));
             window.RequestClose();
-            window.ShowPage("apps");
+            window.ShowPage("model");
             var directions = DirectionChoices(window);
             Assert.All(directions, choice =>
             {
@@ -282,7 +282,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
             using var model = Model(directory);
             window = new SettingsWindow(settings, model, () => { }, installations: Installations(directory));
-            window.ShowPage("apps");
+            window.ShowPage("model");
             var publication = new ModelInstallationStore.PublicationDiagnostic(
                 unknown ? (ModelInstallationStore.PublicationOperation)999 : ModelInstallationStore.PublicationOperation.ReplacePointer,
                 unknown ? (ModelInstallationStore.PublicationError)999 : ModelInstallationStore.PublicationError.AccessDenied);
@@ -324,7 +324,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
                 attempts.Add(http);
                 return new ModelInstaller(directory, Path.Combine(directory, "worker.py"), http);
             }, installations: Installations(directory));
-            window.ShowPage("apps");
+            window.ShowPage("model");
             Assert.False(Descendants(window).OfType<Expander>()
                 .Single(expander => Equals(expander.Header, "组件与安装说明")).IsExpanded);
             var choices = DirectionChoices(window);
@@ -420,7 +420,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             Assert.All(directions, choice => Assert.Equal(Equals(choice.Tag, installed), choice.IsChecked == true));
             Click(window, "暂停下载");
             await Until(() => Buttons(window).Any(button => Equals(button.Content, SetupFailurePresentation.ResumeLabel)));
-            window.ShowPage("apps");
+            window.ShowPage("model");
             directions = DirectionChoices(window);
             Assert.All(directions, choice =>
             {
@@ -502,7 +502,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             window = new SettingsWindow(settings, model, () => launches++, new WindowsApplicationSupport(), installations: Installations(directory));
             window.Width = 790;
             window.Height = 560;
-            window.ShowPage("apps");
+            window.ShowPage("model");
             window.UpdateLayout();
             Assert.True(model.Installed);
             Assert.False(model.Ready);
@@ -590,7 +590,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             window = new SettingsWindow(settings, model, () => Assert.Fail("A failed preparation must keep recovery first."),
                 createInstaller: () => new ModelInstaller(directory, Path.Combine(directory, "worker.py"),
                     new WaitingHttp(), downloadTimeout: TimeSpan.FromMilliseconds(50)), installations: Installations(directory));
-            window.ShowPage("apps");
+            window.ShowPage("model");
             DirectionChoices(window);
             await ConfirmPackageAction(window, PackageAction(window, "argos-zh-en", ModelPackageOperation.Repair));
             await Until(() => Descendants(window).OfType<Expander>().Any(expander => Equals(expander.Header, "安装诊断")));

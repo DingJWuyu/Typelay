@@ -671,6 +671,28 @@ public sealed class ModelClientCapabilityTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task IndexAlternativeRequiresItsExplicitVerifiedHelloCapability(bool advertised)
+    {
+        string IndexIdentity(string value) => value
+            .Replace("hy-mt2-1-8b-q4-k-m", "index-translate-2b-q4-k-m", StringComparison.Ordinal)
+            .Replace("a0c709d9fac510f2c807aa3af52872340dc37a4a", "3a0eca6ce931d88d00614d427ab3ed8ff0743902", StringComparison.Ordinal)
+            .Replace("zh_ja", "zh_en", StringComparison.Ordinal);
+        string hello = IndexIdentity(HyHello);
+        if (advertised)
+            hello = hello.Replace("\"status\":\"ready\"", "\"status\":\"ready\",\"alternativeTranslationVersion\":1", StringComparison.Ordinal);
+        using var peer = new ProtocolPeer(hello, """{"status":"translated","text":"Good day"}""", IndexIdentity(HyInventory));
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(ModelCatalog.Packages),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        Assert.Equal(advertised, peer.Client.VerifiedIdentity!.AlternativeTranslationAvailable);
+        var result = await peer.Client.TranslateAsync(AlternativeJob(), peer.Client.VerifiedIdentity);
+        Assert.Equal(advertised ? "translated" : "error", result.Status);
+        Assert.Equal(advertised ? "Good day" : "", result.Text);
+        Assert.Equal(advertised ? "" : "alternative-unavailable", result.Code);
+    }
+
+    [Theory]
     [InlineData("translated", "Greetings", "")]
     [InlineData("no-alternative", "", "")]
     [InlineData("error", "", "unknown-operation")]

@@ -1,1 +1,1 @@
-{ global: index_open_v1; index_translate_v1; index_close; local: *; };
+{ global: index_open_v1; index_translate_v1; index_translate_alternative_v1; index_close; local: *; };

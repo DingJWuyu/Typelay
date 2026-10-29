@@ -3,6 +3,20 @@
 (() => {
   "use strict";
   const api = globalThis.browser || chrome;
+  // Packaged OFL resources, never a remote font request. A page cannot choose
+  // the URL or turn a delayed font load into an acceptance permission.
+  if (typeof api.runtime.getURL === "function" && typeof FontFace === "function") {
+    for (const [family, file, weight] of [
+      ["TypeLay Inter", "inter/Inter-Regular.ttf", "400"],
+      ["TypeLay Inter", "inter/Inter-Medium.ttf", "500"],
+      ["TypeLay Inter", "inter/Inter-SemiBold.ttf", "600"],
+      ["TypeLay Source Serif", "source-serif/SourceSerif4-Regular.ttf", "400"],
+      ["TypeLay Source Serif", "source-serif/SourceSerif4-Semibold.ttf", "600"]
+    ]) {
+      const face = new FontFace(family, `url("${api.runtime.getURL(`fonts/${file}`)}")`, {weight});
+      face.load().then(font => document.fonts.add(font)).catch(() => {});
+    }
+  }
   const rich = globalThis.TypeLayEditorBridge;
   const port = api.runtime.connect({name: "typelay-document"});
   const random = crypto.getRandomValues(new Uint8Array(16));
@@ -827,6 +841,49 @@
     previous.hint.textContent = previous.status.textContent = "";
     previous.host.remove();
   }
+  // Translate only product chrome, never source or translated text.
+  const uiEnglish = new Map(Object.entries({
+    "替换你修改过的译文？": "Replace your edited translation?", "保留": "Keep", "替换": "Replace",
+    "恢复": "Resume", "展开": "Expand", "缩小": "Collapse", "收起": "Dismiss",
+    "更多": "More", "更多操作": "More Actions", "语言和设置": "Language and Settings",
+    "复制译文": "Copy Translation", "已复制译文": "Translation Copied",
+    "复制失败，请选中译文手动复制": "Copy failed. Select the translation to copy manually.",
+    "重新翻译": "Translate Again", "不要在这个应用中显示": "Disable for This App", "设置": "Settings",
+    "当前应用风格": "Style for This App", "自然": "Natural", "正式": "Formal", "继承": "Inherit",
+    "换种说法": "Rephrase", "加入术语表": "Add to Glossary", "源词": "Source Term", "译词": "Translation",
+    "术语作用范围": "Term Scope", "全局": "Global", "保存": "Save", "取消": "Cancel", "关闭": "Close",
+    "已暂停": "Paused", "译文就绪": "", "翻译中": "Translating", "更新中": "Updating",
+    "已修改": "Edited", "仅预览": "Preview Only", "编辑译文": "Edit Translation",
+    "点击译文以编辑": "Click to Edit Translation", "TypeLay 译文": "TypeLay Translation",
+    "请先完成两个词的输入。": "Finish entering both terms first.", "正在保存…": "Saving…",
+    "术语已保存。": "Term saved.",
+    "已保存到术语表，当前模型方向尚未开放术语应用": "Saved to glossary. Application is not available for this model and direction.",
+    "已保存到术语表": "Saved to glossary.", "术语已保存，当前模型尚未开放应用。": "Term saved. Application is not available for this model.",
+    "术语已保存，刷新通知失败。": "Term saved, but the refresh notification failed.",
+    "术语未保存，请检查词条或重新打开表单。": "Term not saved. Check the entry or reopen the form.",
+    "保存结果未确认，请关闭表单后在设置中检查。": "Save outcome unknown. Close this form and check Settings.",
+    "无法返回原输入框，请点击译文继续编辑": "Cannot return to the source. Click the translation to keep editing."
+  }));
+  const uiChinese = new Map([...uiEnglish].filter(([, english]) => english).map(([zh, en]) => [en, zh]));
+  function uiText(value) {
+    if (typeof value !== "string") return value;
+    const original = uiChinese.get(value) ?? value;
+    const english = overlay?.uiLanguage === "en";
+    const marker = original.startsWith("✓ ") ? "✓ " : "";
+    const text = marker ? original.slice(2) : original;
+    if (!english) return marker + (uiChinese.get(text) ?? text);
+    if (uiEnglish.has(text)) return marker + uiEnglish.get(text);
+    return original.replace(/ 接受译文$/, " Accept").replace(/ 交还应用$/, " Pass Through")
+      .replace(/ 返回原输入框$/, " Return to Source").replace(/ 收起$/, " Dismiss");
+  }
+  function localizeChrome(current) {
+    for (const element of current.panel.querySelectorAll("button,span,label,option,[aria-label],[title],input")) {
+      if (element !== current.editor && element.childNodes.length === 1 && element.firstChild.nodeType === Node.TEXT_NODE)
+        element.firstChild.data = uiText(element.firstChild.data);
+      for (const attribute of ["aria-label", "title", "placeholder"])
+        if (element.hasAttribute(attribute)) element.setAttribute(attribute, uiText(element.getAttribute(attribute)));
+    }
+  }
   function refreshHint() {
     clearTimeout(hintTimer); hintTimer = null;
     const current = overlay;
@@ -843,7 +900,7 @@
     const text = current.editing ? shortcuts?.returnHint || ""
       : accepts ? (hintRemaining > 0 ? shortcuts.acceptHint : remaining > 0 ? "" : shortcuts.passThroughHint)
       : current.tabHint || "";
-    if (current.hint.textContent !== text) current.hint.textContent = text;
+    if (current.hint.textContent !== uiText(text)) current.hint.textContent = uiText(text);
     // A still-live permit may accept the key during handoff. Do not promise
     // pass-through until its original deadline; a real renewal replaces this timer.
     if (remaining > 0)
@@ -859,7 +916,7 @@
     const {bounds} = geo, host = current.host;
     const geometryKey = JSON.stringify(geo);
     if (!previous && current.motion && current.motion.geometryKey === geometryKey
-      && !reducedMotion.matches) return; // Renewal must not restart a running resize.
+      && !reducedMotion.matches && !current.reduceMotion) return; // Renewal must not restart a running resize.
     cancelMotion(current);
     const width = overlay.paused ? Math.min(innerWidth - 16, 160)
       : Math.min(innerWidth - 16, Math.max(180, Math.min(overlay.expanded ? 720 : 520, overlay.expanded ? Math.max(520, bounds.width) : bounds.width)));
@@ -869,7 +926,7 @@
     const height = host.getBoundingClientRect().height;
     host.style.top = `${Math.max(8, Math.min(innerHeight - height - 8,
       bounds.y >= height + 8 ? bounds.y - height - 6 : bounds.y + bounds.height + 6))}px`;
-    if (!previous || reducedMotion.matches || typeof host.animate !== "function") return;
+    if (!previous || reducedMotion.matches || current.reduceMotion || typeof host.animate !== "function") return;
     const end = host.getBoundingClientRect();
     const above = previous.bottom < bounds.y;
     const sameAnchor = above === (end.bottom < bounds.y)
@@ -908,48 +965,65 @@
     if (overlay && overlay.field !== field) hide();
     if (!overlay) {
       const host = document.createElement("div");
+      host.setAttribute("role", "region");
+      host.setAttribute("aria-label", "TypeLay");
       host.style.cssText = "all:initial;position:fixed;z-index:2147483647;display:block;max-width:calc(100vw - 16px);border-radius:12px";
       const shadow = host.attachShadow({mode: "closed"});
       const style = document.createElement("style");
       style.textContent = `
-        :host{color-scheme:light dark}
-        section{--surface:light-dark(#fff,#252830);--ink:light-dark(#252a31,#eef1f6);
-          --muted:light-dark(#666b75,#b6bdc9);--line:light-dark(#dfe3eb,#48515e);
-          --hover:light-dark(#f1f3f6,#303741);--accent:light-dark(#3267e3,#83a7ff);
-          font:13px system-ui;color:var(--ink);background:var(--surface);border:1px solid var(--line);
-          display:flex;flex-direction:column;box-sizing:border-box;height:100%;border-radius:12px;box-shadow:0 8px 24px #0002;overflow:hidden}
-        header,footer{flex:none;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
-        header{padding:10px 12px 6px;flex-wrap:wrap}
-        header .status{flex:1;min-width:0;text-align:right;overflow-wrap:anywhere}
-        footer{margin:8px 12px 0;padding:7px 0 8px;border-top:1px solid var(--line);flex-wrap:wrap}
-        footer .hint{flex:1}
+        :host{color-scheme:light dark;--content-size:15px;--accent:#d97757;
+          --content-font:"TypeLay Source Serif","Source Serif 4","Noto Serif SC",Georgia,"SimSun",serif;
+          --ui-font:"TypeLay Inter",Inter,"Noto Sans SC","Segoe UI","Microsoft YaHei UI",sans-serif}
+        section{--surface:light-dark(rgba(251,250,247,.9),rgba(44,43,40,.92));
+          --ink:light-dark(#141413,#f4f3ee);--muted:light-dark(#74726c,#9a988f);
+          --line:light-dark(rgba(20,20,19,.1),rgba(255,255,255,.1));
+          --hover:light-dark(rgba(20,20,19,.045),rgba(255,255,255,.05));
+          font:500 12px/1.4 var(--ui-font);color:var(--ink);background:var(--surface);
+          border:1px solid var(--line);backdrop-filter:blur(28px) saturate(1.8);
+          display:flex;flex-direction:column;box-sizing:border-box;height:100%;
+          border-radius:18px;box-shadow:0 8px 24px #1414131a,0 1px 3px #14141314;overflow:hidden}
+        section[data-material=solid]{--surface:light-dark(#faf9f5,#262624);backdrop-filter:none}
+        header{flex:none;display:flex;align-items:center;gap:6px;color:var(--muted)}
+        header{min-height:28px;padding:0 8px 8px 10px;flex-wrap:wrap}
+        header .status{flex:1;min-width:0;text-align:right;overflow-wrap:anywhere;font-size:11.5px}
+        header .language{border-radius:999px;padding:0 10px 0 9px;min-height:26px;color:var(--muted)}
+        header .language::before{content:"";display:inline-block;width:7px;height:7px;
+          border-radius:50%;margin-right:7px;background:var(--accent)}
+        .hint{white-space:nowrap;color:var(--muted);font-size:12px}
         .more-actions{flex:none;display:flex;flex-direction:column;gap:4px;margin:0 12px;padding:8px 0;
           border-top:1px solid var(--line);color:var(--muted);font-size:12px}
         .more-actions button{text-align:left}
         .more-actions input,.more-actions select{box-sizing:border-box;min-width:0;width:100%;font:inherit;
-          color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:5px}
+          color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:7px}
         .more-actions input:focus,.more-actions select:focus{outline:1px solid var(--accent)}
-        textarea{box-sizing:border-box;display:block;resize:none;width:calc(100% - 16px);margin:0 8px;
-          min-height:64px;max-height:160px;border:1px solid transparent;border-radius:6px;padding:6px;
-          outline:none;font:15px/1.58 system-ui;background:transparent;color:var(--ink)}
+        textarea{box-sizing:border-box;display:block;resize:none;width:calc(100% - 24px);margin:12px 12px 5px;
+          min-height:36px;max-height:160px;border:1.5px solid transparent;border-radius:10px;padding:2px;
+          outline:none;font:400 var(--content-size)/1.55 var(--content-font);letter-spacing:.002em;
+          background:transparent;color:var(--ink);caret-color:var(--accent)}
         textarea.stale{color:var(--muted)}
         textarea[data-editable=true]:read-only:hover,textarea[data-editable=true]:read-only:focus-visible{background:var(--hover)}
-        textarea:not(:read-only){border-color:var(--accent)}
+        textarea:not(:read-only){border-color:var(--accent);padding:8px 10px;background:light-dark(#fff,#2f2e2b)}
         textarea:focus-visible{border-color:var(--accent)}
-        button{flex:none;font:inherit;color:inherit;border:0;border-radius:6px;padding:4px 6px;
+        button{flex:none;font:inherit;color:inherit;border:0;border-radius:7px;padding:4px 6px;
           min-height:26px;background:transparent;cursor:pointer}
         button:hover{background:var(--hover);color:var(--ink)}
         button:focus-visible{outline:1px solid var(--accent);outline-offset:1px}
+        .disclosure{opacity:0;transition:opacity 160ms}
+        section:hover .disclosure,section:focus-within .disclosure{opacity:1}
+        section.capsule{border-radius:999px}
+        section.capsule header{padding:4px;min-height:26px;flex-wrap:nowrap}
         section.paused{color:var(--muted);box-shadow:0 2px 8px #0001}
-        section.paused header{padding-bottom:10px;justify-content:space-between}
-        section.paused .status{text-align:left}
-        button[aria-disabled=true]{cursor:default;opacity:.5}
+        section.paused header{justify-content:space-between}
+        section.paused .status{text-align:left;padding-left:8px}
+        section[data-motion=reduce] *{animation:none!important;transition:none!important}
+        button[aria-disabled=true],button:disabled{cursor:default;opacity:.35}
         [hidden]{display:none!important}`;
       const panel = document.createElement("section"), header = document.createElement("header");
       const language = document.createElement("button"), status = document.createElement("span");
       language.title = "语言和设置";
+      language.className = "language";
       status.className = "status";
-      language.addEventListener("click", () => ui("settings"));
+      language.addEventListener("click", event => { if (event.isTrusted) ui("languagesPicker"); });
       const resume = document.createElement("button");
       resume.textContent = "恢复";
       resume.tabIndex = -1;
@@ -985,7 +1059,11 @@
         retireEditorControl();
         if (overlay?.editor !== editor) return;
         if (event.isComposing) overlay.composing = true;
-        if (kind === "input" && overlay.editing) ui("draft", editor.value);
+        if (kind === "input" && overlay.editing) {
+          closeRegenerate(overlay);
+          ui("draft", editor.value);
+          sizeEditor(); position();
+        }
       });
       for (const kind of ["compositionstart", "compositionupdate", "compositionend"]) {
         editor.addEventListener(kind, event => {
@@ -1005,17 +1083,17 @@
         // The auxiliary field is never registered as a translation editor.
         if (!glossaryControl(overlay?.glossary, event.relatedTarget)) ui("focus", false);
       });
-      const footer = document.createElement("footer"), hint = document.createElement("span");
+      const hint = document.createElement("span");
       hint.className = "hint";
-      footer.append(hint);
       const expand = document.createElement("button");
       expand.textContent = "展开";
+      expand.className = "disclosure";
       expand.addEventListener("pointerdown", event => event.preventDefault());
       expand.addEventListener("click", event => {
         if (!event.isTrusted || !overlay) return;
         const previous = overlay.host.getBoundingClientRect();
         overlay.expanded = !overlay.expanded;
-        expand.textContent = overlay.expanded ? "缩小" : "展开";
+        expand.textContent = uiText(overlay.expanded ? "缩小" : "展开");
         setMoreOpen(false, previous);
       });
       const collapse = document.createElement("button");
@@ -1024,6 +1102,7 @@
       collapse.addEventListener("click", () => ui("escape"));
       const more = document.createElement("button"), menu = document.createElement("div");
       more.textContent = "更多";
+      more.className = "disclosure";
       more.setAttribute("aria-expanded", "false");
       more.setAttribute("aria-controls", "more-actions");
       menu.id = menu.className = "more-actions";
@@ -1055,18 +1134,24 @@
         try {
           if (!navigator.clipboard?.writeText) throw new Error("clipboard-unavailable");
           await navigator.clipboard.writeText(current.editor.value);
-          if (overlay === current) current.status.textContent = "已复制译文";
+          if (overlay === current) current.status.textContent = uiText("已复制译文");
         } catch (_) {
-          if (overlay === current) current.status.textContent = "复制失败，请选中译文手动复制";
+          if (overlay === current) current.status.textContent = uiText("复制失败，请选中译文手动复制");
         }
       });
-      header.append(expand, more);
-      footer.append(collapse);
-      menu.append(copy);
+      header.append(expand, more, hint);
+      menu.append(copy, collapse);
       for (const [text, operation] of [["重新翻译", "regenerate"], ["不要在这个应用中显示", "exclude"], ["设置", "settings"]]) {
         const button = document.createElement("button"); button.textContent = text;
         button.addEventListener("pointerdown", event => event.preventDefault());
-        button.addEventListener("click", () => { setMoreOpen(false); ui(operation); }); menu.append(button);
+        button.addEventListener("click", event => {
+          const current = overlay, opened = current?.menuContext;
+          if (!event.isTrusted || !opened || !menuActionCurrent(current, opened)) return;
+          setMoreOpen(false);
+          if (operation === "regenerate" && ["EditingTranslation", "EditedTranslationPending", "ReturningToSource"].includes(current.state))
+            confirmRegenerate(current, opened);
+          else ui(operation);
+        }); menu.append(button);
       }
       const styleActions = document.createElement("div"), styleLabel = document.createElement("span");
       styleActions.setAttribute("role", "group");
@@ -1108,7 +1193,7 @@
       glossary.addEventListener("pointerdown", event => event.preventDefault());
       glossary.addEventListener("click", event => {
         const current = overlay, opened = current?.menuContext, actions = current?.translationActions;
-        if (!event.isTrusted || !opened || !actions?.glossaryReleased || !actions.canOpenGlossary
+        if (!event.isTrusted || !opened || !actions?.canOpenGlossary
           || !glossaryOriginReady(current) || current.glossary || current.glossaryOpening || !liveDeadline(current)
           || current.field !== opened.field || current.revision !== opened.revision
           || current.generation !== opened.generation || JSON.stringify(current.viewToken) !== opened.token
@@ -1119,9 +1204,9 @@
         ui("sessionGlossaryBegin");
       });
       menu.append(styleActions, alternative, glossary, translationFeedback);
-      panel.append(header, editor, footer, menu); shadow.append(style, panel);
+      panel.append(editor, header, menu); shadow.append(style, panel);
       document.documentElement.append(host);
-      overlay = {field, host, shadow, panel, editor, language, status, resume, hint, footer, more, menu, expand, collapse,
+      overlay = {field, host, shadow, panel, editor, language, status, resume, hint, more, menu, expand, collapse,
         styleActions, styleButtons, alternative, glossaryButton: glossary, translationFeedback, editing: false, composing: false, expanded: false};
     }
     if (data.revision < (overlay.revision || 0)) return {visible: true, editing: overlay.editing};
@@ -1135,6 +1220,7 @@
     }
     const viewIdentity = JSON.stringify({generation: data.generation, revision: data.revision, view: identityView});
     if (overlay.viewIdentity !== viewIdentity) {
+      closeRegenerate(overlay);
       retireEditorControl();
       if (overlay.glossaryOpening && (data.revision !== overlay.glossaryOpening.revision
         || JSON.stringify(view.viewContext?.token) !== overlay.glossaryOpening.tokenKey)) overlay.glossaryOpening = null;
@@ -1152,6 +1238,10 @@
     overlay.generation = data.generation;
     overlay.viewToken = view.viewContext?.token;
     overlay.state = view.state;
+    overlay.uiLanguage = data.appearance?.uiLanguage === "en" ? "en"
+      : data.appearance?.uiLanguage === "zh-CN" ? "zh-CN"
+      : navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
+    overlay.panel.lang = overlay.uiLanguage;
     overlay.translationActions = translationActions(view);
     renderTranslationActions(overlay);
     overlay.shortcuts = view.sessionShortcuts;
@@ -1170,16 +1260,31 @@
     overlay.editor.title = overlay.editable
       ? view.presentation.editorOwnsText ? "编辑译文" : "点击译文以编辑" : "";
     overlay.host.style.colorScheme = ["light", "dark"].includes(data.theme) ? data.theme : "light dark";
+    const appearance = data.appearance && typeof data.appearance === "object" ? data.appearance : {};
+    const accents = {clay: "#d97757", ocean: "#2f7fe0", sage: "#5d9a6e", iris: "#8a6cd8", graphite: "#77756f"};
+    const fonts = {claude: '"TypeLay Source Serif","Source Serif 4","Noto Serif SC",Georgia,"SimSun",serif',
+      sans: '"TypeLay Inter",Inter,"Noto Sans SC","Segoe UI","Microsoft YaHei UI",sans-serif',
+      system: 'system-ui,"Microsoft YaHei UI",sans-serif'};
+    overlay.host.style.setProperty("--accent", accents[appearance.accent] || accents.clay);
+    overlay.host.style.setProperty("--content-font", fonts[appearance.font] || fonts.claude);
+    overlay.host.style.setProperty("--content-size", `${Number.isInteger(appearance.textSize)
+      && appearance.textSize >= 13 && appearance.textSize <= 19 ? appearance.textSize : 15}px`);
+    overlay.reduceMotion = appearance.reduceMotion === true;
+    overlay.panel.dataset.motion = overlay.reduceMotion || reducedMotion.matches ? "reduce" : "full";
+    overlay.panel.dataset.material = appearance.reduceTransparency === true ? "solid" : "glass";
+    overlay.editor.lang = typeof view.targetLanguage === "string" && /^[a-zA-Z-]{2,12}$/.test(view.targetLanguage)
+      ? view.targetLanguage : "";
     const languageName = (code, label) => typeof label === "string" && label.length > 0 && label.length <= 80
       ? label : ({auto: "Auto", zh: "中文", en: "EN"})[code] || `${code || ""}（当前不可用）`;
     overlay.language.textContent = `${languageName(view.sourceLanguage, view.sourceLanguageLabel)} → ${languageName(view.targetLanguage, view.targetLanguageLabel)}`;
-    overlay.status.textContent = paused ? "已暂停" : view.status || overlay.translationActions?.feedback || "";
+    overlay.status.textContent = paused ? "已暂停" : view.status === "译文就绪" ? "" : view.status || overlay.translationActions?.feedback || "";
     overlay.tabHint = view.presentation.tabHint;
     overlay.editor.hidden = paused || !view.text && view.state === "IdleCapsule";
-    overlay.footer.hidden = overlay.editor.hidden;
+    overlay.panel.classList.toggle("capsule", overlay.editor.hidden);
+    overlay.hint.hidden = overlay.editor.hidden;
     overlay.more.hidden = overlay.editor.hidden;
     overlay.expand.hidden = overlay.editor.hidden;
-    if (overlay.footer.hidden) {
+    if (overlay.editor.hidden) {
       overlay.menu.hidden = true;
       overlay.menuContext = null;
       overlay.more.setAttribute("aria-expanded", "false");
@@ -1189,8 +1294,40 @@
       if (overlay.editor.value !== text) overlay.editor.value = text;
       overlay.editing = false; overlay.editor.readOnly = true;
     } else if (!overlay.editing) overlay.editor.value = view.text || "";
+    localizeChrome(overlay);
     sizeEditor(); position();
     return {visible: !!overlay, editing: !!overlay?.editing};
+  }
+  function menuActionCurrent(current, opened) {
+    return !!current && overlay === current && liveDeadline(current) && !current.paused && !current.composing
+      && current.field.ime === "Clear" && current.field === opened.field && current.revision === opened.revision
+      && current.generation === opened.generation && JSON.stringify(current.viewToken) === opened.token;
+  }
+  function closeRegenerate(current) {
+    current?.regenerateConfirmation?.box.remove();
+    if (current) current.regenerateConfirmation = null;
+  }
+  function confirmRegenerate(current, opened) {
+    closeRegenerate(current);
+    const draft = current.editor.value;
+    const box = document.createElement("div"), label = document.createElement("span");
+    box.className = "more-actions"; box.setAttribute("role", "group");
+    box.setAttribute("aria-label", uiText("替换你修改过的译文？"));
+    label.textContent = uiText("替换你修改过的译文？"); box.append(label);
+    const confirmation = {box, draft, opened};
+    for (const [text, replace] of [["保留", false], ["替换", true]]) {
+      const button = document.createElement("button"); button.textContent = uiText(text);
+      button.addEventListener("pointerdown", event => event.preventDefault());
+      button.addEventListener("click", event => {
+        if (!event.isTrusted || overlay !== current || current.regenerateConfirmation !== confirmation) return;
+        const allowed = menuActionCurrent(current, opened) && current.editor.value === draft;
+        closeRegenerate(current);
+        if (replace && allowed) ui("regenerate");
+        if (overlay === current) position();
+      });
+      box.append(button);
+    }
+    current.regenerateConfirmation = confirmation; current.panel.append(box); position();
   }
   function translationActions(view) {
     const value = view.viewContext?.translationActions;
@@ -1220,7 +1357,7 @@
     current.alternative.hidden = actions?.alternativeReleased !== true;
     current.alternative.disabled = actions?.canRequestAlternative !== true;
     current.alternative.title = actions?.alternativeUnavailableReason || "";
-    current.glossaryButton.hidden = actions?.glossaryReleased !== true;
+    current.glossaryButton.hidden = !actions || typeof actions.canOpenGlossary !== "boolean";
     current.glossaryButton.disabled = actions?.canOpenGlossary !== true;
     current.glossaryButton.title = actions?.glossaryUnavailableReason || "";
     current.translationFeedback.textContent = actions?.feedback || "";
@@ -1322,7 +1459,6 @@
     if (current.glossary || !glossaryOriginReady(current) || opening.field !== current.field
       || opening.sourceOrigin !== (entry?.sourceOrigin === true)
       || entry?.sourceOrigin !== undefined && typeof entry.sourceOrigin !== "boolean"
-      || !current.translationActions?.glossaryReleased
       || typeof entry?.formId !== "string" || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(entry.formId)
       || !Number.isSafeInteger(entry.settingsRevision) || entry.settingsRevision < 0
       || tokenKey !== JSON.stringify(current.viewToken) || !Array.isArray(entry.directions)
@@ -1369,13 +1505,13 @@
     save.addEventListener("click", event => {
       if (!event.isTrusted || !glossaryCurrent(form) || form.pending || form.saved || form.unknown) return;
       const focus = publishGlossaryFocus();
-      if (focus?.ime !== "Clear") { status.textContent = "请先完成两个词的输入。"; return; }
+      if (focus?.ime !== "Clear") { status.textContent = uiText("请先完成两个词的输入。"); return; }
       const direction = scope.value === "" ? null : entry.directions[Number(scope.value)];
       if (scope.value !== "" && !direction) return;
       save.focus({preventScroll: true});
       if (!glossaryCurrent(form) || current.shadow.activeElement !== save || publishGlossaryFocus()?.ime !== "Clear") return;
       form.returned = false; form.pending = true; source.readOnly = target.readOnly = true; scope.disabled = true;
-      save.setAttribute("aria-disabled", "true"); status.textContent = "正在保存…";
+      save.setAttribute("aria-disabled", "true"); status.textContent = uiText("正在保存…");
       ui("sessionGlossaryAdd", {formId: entry.formId, token: entry.token, settingsRevision: entry.settingsRevision,
         rule: {sourceTerm: source.value, targetTerm: target.value,
           sourceLanguage: direction?.source ?? null, targetLanguage: direction?.target ?? null}});
@@ -1383,6 +1519,7 @@
     box.append(source, target, scope, save, cancel, status);
     retireOrdered(); retireEditorControl(); publication = shortcut = null;
     current.glossary = form; current.panel.append(box);
+    localizeChrome(current);
     const transferred = entry.sourceOrigin === true ? focusGlossaryControl(form, source, "Opening")
       : (source.focus({preventScroll: true}), true);
     publishGlossaryFocus(); position();
@@ -1413,25 +1550,28 @@
     form.pending = false;
     const result = data.result;
     if (result?.saved === true) {
-      const message = result.code === "glossary-saved-notification-failed" ? "术语已保存，刷新通知失败。" : "术语已保存。";
-      form.saved = true; form.save.setAttribute("aria-disabled", "true"); form.cancel.textContent = "关闭";
-      form.status.textContent = typeof result.message === "string" ? result.message : message;
+      const message = ["glossary-saved-inactive", "glossary-saved-inactive-notification-failed"].includes(result.code) ? "术语已保存，当前模型尚未开放应用。"
+        : result.code === "glossary-saved-notification-failed" ? "术语已保存，刷新通知失败。" : "术语已保存。";
+      form.saved = true; form.save.setAttribute("aria-disabled", "true"); form.cancel.textContent = uiText("关闭");
+      form.status.textContent = uiText(typeof result.message === "string" ? result.message : message);
     } else if (result?.saved === false && !["glossary-unconfirmed", "glossary-outcome-unknown"].includes(result.code)) {
       form.source.readOnly = form.target.readOnly = false; form.scope.disabled = false;
       form.save.removeAttribute("aria-disabled");
-      form.status.textContent = typeof result.message === "string" ? result.message : "术语未保存，请检查词条或重新打开表单。";
+      form.status.textContent = uiText(typeof result.message === "string" ? result.message : "术语未保存，请检查词条或重新打开表单。");
     } else {
       // An unknown transport result may already have committed. Never retry it.
       form.unknown = true; form.save.setAttribute("aria-disabled", "true");
-      form.status.textContent = typeof result?.message === "string" ? result.message : "保存结果未确认，请关闭表单后在设置中检查。";
+      form.status.textContent = uiText(typeof result?.message === "string" ? result.message : "保存结果未确认，请关闭表单后在设置中检查。");
     }
   }
   function sizeEditor() {
     if (!overlay) return;
-    const maximum = Math.max(64, Math.min(overlay.expanded ? 360 : 160, innerHeight - 120));
+    const textSize = parseFloat(getComputedStyle(overlay.editor).fontSize) || 15;
+    const maximum = Math.max(36, Math.min(overlay.expanded ? 360 : textSize * 1.55 * 7 + 4, innerHeight - 120));
     overlay.editor.style.maxHeight = `${maximum}px`;
     overlay.editor.style.height = "auto";
-    overlay.editor.style.height = `${Math.min(maximum, Math.max(64, overlay.editor.scrollHeight))}px`;
+    overlay.editor.style.height = `${Math.min(maximum, Math.max(36, overlay.editor.scrollHeight))}px`;
+    overlay.expand.hidden = overlay.editor.hidden || !overlay.expanded && overlay.editor.scrollHeight <= overlay.editor.clientHeight + 1;
   }
   function command(message) {
     const data = message.data || {};
@@ -1679,7 +1819,7 @@
         return null;
       case "overlay-resume":
         if (sourceConfigured(field) && overlay?.field === field && overlayCurrent(data) && !overlay.paused && document.hasFocus()) {
-          overlay.status.textContent = "无法返回原输入框，请点击译文继续编辑";
+          overlay.status.textContent = uiText("无法返回原输入框，请点击译文继续编辑");
         }
         return null;
       case "overlay-hide": hide(); return null;

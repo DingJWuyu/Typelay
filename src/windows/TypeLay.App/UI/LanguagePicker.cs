@@ -54,6 +54,8 @@ internal sealed class LanguagePicker : ComboBox
         finally { _synchronizing = false; }
     }
 
+    public bool CanChoose(string code) => Items.Cast<LanguageChoice>().Any(choice => choice.Available && choice.Code == code);
+
     private LanguageChoice[] Choices(string confirmedCode, IReadOnlyList<string>? availableDirections)
     {
         var directions = ModelCatalog.Packages.Packages.SelectMany(package => package.Directions);
@@ -77,7 +79,7 @@ internal sealed class LanguagePicker : ComboBox
                     new ModelLanguageChoice(direction.Source, direction.SourceName),
                     new ModelLanguageChoice(direction.Target, direction.TargetName)
                 }).FirstOrDefault(choice => choice.Code == confirmedCode)?.Label ?? confirmedCode;
-            choices.Add(new(confirmedCode, label + "（当前不可用）", false));
+            choices.Add(new(confirmedCode, label + UiTheme.L("（当前不可用）", " (unavailable)"), false));
         }
         return choices.ToArray();
     }

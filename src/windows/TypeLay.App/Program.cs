@@ -30,6 +30,7 @@ internal static class Program
         PracticeHost? practiceHost = null;
         SettingsWindow? settingsWindow = null;
         Forms.NotifyIcon? tray = null;
+        GlobalPauseShortcut? pauseShortcut = null;
         Drawing.Icon? icon = null;
         bool disposed = false;
         string? trayTracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
@@ -41,6 +42,7 @@ internal static class Program
             disposed = true;
             startup.Cancel();
             settingsWindow?.CancelPreparation();
+            pauseShortcut?.Dispose();
             session?.Dispose();
             model?.Dispose();
             practiceHost?.Dispose();
@@ -64,7 +66,7 @@ internal static class Program
         app.Startup += async (_, _) =>
         {
             var settings = WindowsRuntime.CreateSettings();
-            UiTheme.Initialize(settings.Value.Theme);
+            UiTheme.Initialize(settings.Value);
             model = WindowsRuntime.CreateModel();
             var overlay = new OverlayWindow(automationTest);
             var support = new WindowsApplicationSupport();
@@ -106,8 +108,21 @@ internal static class Program
                 }
                 finally { quitting = false; }
             }
-            overlay.LanguageRequested = () => window.ShowPage("language");
             var quick = new QuickPanel(settings, model, session, () => window.ShowPage(), Quit);
+            overlay.SettingsRequested = () => window.ShowPage();
+            LanguageSelectionWindow? languageWindow = null;
+            overlay.LanguageRequested = () =>
+            {
+                session.StopSession();
+                if (languageWindow is { IsVisible: true }) { languageWindow.Activate(); return; }
+                languageWindow = new LanguageSelectionWindow(settings, model, quick.SetLanguagesAsync);
+                languageWindow.Closed += (_, _) => languageWindow = null;
+                languageWindow.Show();
+            };
+            pauseShortcut = new GlobalPauseShortcut(settings, quick.SetEnabledAsync);
+            window.PauseShortcutStatus = () => pauseShortcut.Status;
+            window.PauseShortcutConflicts = pauseShortcut.InspectConflicts;
+            pauseShortcut.Changed += window.RefreshShortcutStatus;
             icon = MakeTrayIcon();
             tray = new Forms.NotifyIcon { Icon = icon, Visible = true, Text = "TypeLay · 正在启动" };
             practiceHost.Failed += () =>
@@ -138,10 +153,10 @@ internal static class Program
             var toggle = CreateToggleMenuItem(settings, quick, () => tray.ShowBalloonTip(5000, "TypeLay",
                 SettingsDraftPresentation.SaveUnconfirmedMessage, Forms.ToolTipIcon.Info));
             menu.Items.Add(toggle);
-            menu.Items.Add("设置…", null, (_, _) => app.Dispatcher.Invoke(() => window.ShowPage()));
-            menu.Items.Add("翻译练习", null, (_, _) => app.Dispatcher.Invoke(window.StartPractice));
+            var settingsMenu = menu.Items.Add(UiTheme.L("设置…", "Settings…"), null, (_, _) => app.Dispatcher.Invoke(() => window.ShowPage()));
+            var practiceMenu = menu.Items.Add(UiTheme.L("翻译练习", "Translation Practice"), null, (_, _) => app.Dispatcher.Invoke(window.StartPractice));
             menu.Items.Add(new Forms.ToolStripSeparator());
-            menu.Items.Add("退出 TypeLay", null, (_, _) => app.Dispatcher.Invoke(Quit));
+            var quitMenu = menu.Items.Add(UiTheme.L("退出 TypeLay", "Quit TypeLay"), null, (_, _) => app.Dispatcher.Invoke(Quit));
             tray.ContextMenuStrip = menu;
             tray.MouseClick += (_, e) => { if (e.Button == Forms.MouseButtons.Left) app.Dispatcher.Invoke(quick.OpenAtTray); };
             void TrayStatus()
@@ -153,14 +168,18 @@ internal static class Program
                     app.Dispatcher.BeginInvoke(new Action(TrayStatus));
                     return;
                 }
-                string status = !settings.Value.Enabled ? "已暂停" : !model.Ready ? model.Status
+                string status = !settings.Value.Enabled ? UiTheme.L("已暂停", "Paused") : !model.Ready ? model.Status
                     : !session.InputAvailable ? session.ConnectionStatus
                     : settings.Value.Mode == WorkMode.OnDemand ? session.ShortcutStatus : model.Status;
+                status = UiStrings.Translate(status);
+                settingsMenu.Text = UiTheme.L("设置…", "Settings…");
+                practiceMenu.Text = UiTheme.L("翻译练习", "Translation Practice");
+                quitMenu.Text = UiTheme.L("退出 TypeLay", "Quit TypeLay");
                 string text = "TypeLay · " + status + (automationTest ? " · 自动化测试" : "");
                 string trayText = text.Length > 63 ? text[..63] : text;
                 tray.Text = trayText;
                 BrowserInput.TraceTrayStatus(trayTracePath, trayText);
-                toggle.Text = settings.Value.Enabled ? "暂停 TypeLay" : "启用 TypeLay";
+                toggle.Text = settings.Value.Enabled ? UiTheme.L("暂停 TypeLay", "Pause TypeLay") : UiTheme.L("启用 TypeLay", "Enable TypeLay");
             }
             settings.Changed += TrayStatus;
             settings.Changed += () => { if (!settings.Value.Enabled) support.CancelCheck(); };
@@ -172,11 +191,24 @@ internal static class Program
                 TrayStatus();
                 window.RefreshShortcutStatus();
             };
-            UserPreferenceChangedEventHandler themeChanged = (_, _) => app.Dispatcher.BeginInvoke(new Action(() => UiTheme.Apply(settings.Value.Theme)));
+            UserPreferenceChangedEventHandler themeChanged = (_, _) => app.Dispatcher.BeginInvoke(new Action(() => UiTheme.Apply(settings.Value)));
             SystemEvents.UserPreferenceChanged += themeChanged;
             app.Exit += (_, _) => SystemEvents.UserPreferenceChanged -= themeChanged;
-            if (!model.Installed)
-                window.ShowStartupPage();
+            OnboardingWindow? onboarding = null;
+            void ShowOnboarding(bool restart = false)
+            {
+                session.StopSession();
+                if (onboarding is null)
+                {
+                    onboarding = new OnboardingWindow(settings, model, window);
+                    onboarding.Closed += (_, _) => onboarding = null;
+                }
+                onboarding.ShowOrActivate(restart);
+            }
+            window.ShowOnboarding = () => ShowOnboarding(restart: true);
+            bool needsOnboarding = !settings.Value.OnboardingComplete;
+            if (needsOnboarding) ShowOnboarding();
+            else if (!model.Installed) window.ShowStartupPage();
             await session.StartAsync();
             if (disposed)
                 return;
@@ -189,8 +221,8 @@ internal static class Program
             if (disposed)
                 return;
             TrayStatus();
-            if (!model.Ready || !settings.Value.OnboardingComplete)
-                window.ShowStartupPage();
+            // Startup completion must not reopen a wizard the user dismissed.
+            if (!model.Ready && !needsOnboarding) window.ShowStartupPage();
         };
         try
         {
@@ -200,7 +232,7 @@ internal static class Program
     }
     internal static Forms.ToolStripMenuItem CreateToggleMenuItem(SettingsStore settings, QuickPanel quick, Action showSaveError)
     {
-        var toggle = new Forms.ToolStripMenuItem(settings.Value.Enabled ? "暂停 TypeLay" : "启用 TypeLay");
+        var toggle = new Forms.ToolStripMenuItem(settings.Value.Enabled ? UiTheme.L("暂停 TypeLay", "Pause TypeLay") : UiTheme.L("启用 TypeLay", "Enable TypeLay"));
         toggle.Click += (_, _) => quick.Dispatcher.Invoke(async () =>
         {
             if (!await quick.SetEnabledAsync(!settings.Value.Enabled))
@@ -214,11 +246,15 @@ internal static class Program
         using (var g = Drawing.Graphics.FromImage(bitmap))
         {
             g.SmoothingMode = Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            using var blue = new Drawing.SolidBrush(Drawing.Color.FromArgb(50, 103, 227));
-            g.FillEllipse(blue, 1, 1, 30, 30);
+            using var clay = new Drawing.SolidBrush(Drawing.Color.FromArgb(217, 119, 87));
+            using var background = RoundedRect(1, 1, 30, 30, 7);
+            g.FillPath(clay, background);
             using var white = new Drawing.SolidBrush(Drawing.Color.White);
-            g.FillRectangle(white, 9, 8, 14, 4);
-            g.FillRectangle(white, 14, 11, 4, 14);
+            using var line = new Drawing.Pen(Drawing.Color.White, 1.8f);
+            using var rear = RoundedRect(5, 7, 17, 12, 3);
+            g.DrawPath(line, rear);
+            using var front = RoundedRect(10, 14, 17, 12, 3);
+            g.FillPath(white, front);
         }
         nint handle = bitmap.GetHicon();
         try
@@ -227,6 +263,14 @@ internal static class Program
             return (Drawing.Icon)native.Clone();
         }
         finally { DestroyIcon(handle); }
+    }
+    private static Drawing.Drawing2D.GraphicsPath RoundedRect(float x, float y, float width, float height, float radius)
+    {
+        float diameter = radius * 2;
+        var path = new Drawing.Drawing2D.GraphicsPath();
+        path.AddArc(x, y, diameter, diameter, 180, 90); path.AddArc(x + width - diameter, y, diameter, diameter, 270, 90);
+        path.AddArc(x + width - diameter, y + height - diameter, diameter, diameter, 0, 90); path.AddArc(x, y + height - diameter, diameter, diameter, 90, 90);
+        path.CloseFigure(); return path;
     }
     [DllImport("user32.dll")] private static extern bool DestroyIcon(nint icon);
 }

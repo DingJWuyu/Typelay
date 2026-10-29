@@ -467,7 +467,7 @@ int main(int argc, char **argv) {
             if (!name.startsWith(QStringLiteral("typelay-"))) continue;
             observer.observeOverlay(button);
             QJsonObject control{
-                {"text", button->text()}, {"focused", button->hasFocus()},
+                {"text", button->text()}, {"description", button->accessibleName()}, {"focused", button->hasFocus()},
                 {"visible", button->isVisible()}, {"enabled", button->isEnabled()},
                 {"underMouse", button->underMouse()},
                 {"checked", button->isChecked()}, {"geometry", rectangle(button)},
@@ -527,6 +527,9 @@ int main(int argc, char **argv) {
             {"editorReadOnly", !editor || editor->isReadOnly()},
             {"editorText", editor ? editor->toPlainText() : QString()},
             {"editorPalette", editor ? paletteState(editor->palette()) : QJsonObject()},
+            {"editorFontPixels", editor ? editor->font().pixelSize() : -1},
+            {"editorFontFamily", editor ? editor->font().family() : QString()},
+            {"editorBackgroundAlpha", editor ? editor->palette().color(QPalette::Base).alpha() : -1},
             {"editorViewportPalette", editor ? paletteState(editor->viewport()->palette()) : QJsonObject()},
             {"editorSelectionBackground", editor ? editor->palette().color(QPalette::Active, QPalette::Highlight).name() : QString()},
             {"editorSelectionText", editor ? editor->palette().color(QPalette::Active, QPalette::HighlightedText).name() : QString()},
@@ -609,11 +612,11 @@ int main(int argc, char **argv) {
                             {"editorFocused", translation && translation->hasFocus()}, {"sourceFocused", first->hasFocus()}});
                         // Finite real-widget paint frames, never an animation mock.
                         const auto index = motionFrames.size();
-                        if (!directory.isEmpty() && (index == 1 || index == 5 || index == 10 || index == 18 || elapsed >= 450)) {
+                        if (!directory.isEmpty() && (index == 1 || index == 5 || index == 10 || index == 18 || elapsed >= 800)) {
                             if (!window.grab().save(directory + QStringLiteral("/frame-%1.png").arg(index, 2, 10, QLatin1Char('0'))))
                                 qFatal("Motion frame could not be saved");
                         }
-                        if (elapsed >= 450) {
+                        if (elapsed >= 800) {
                             samples->stop(); samples->deleteLater();
                             motionRecording = false;
                             ++motionRecordings;

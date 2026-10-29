@@ -7,6 +7,10 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="../../shared/ui/fonts/inter/Inter-Regular.ttf" />
+    <EmbeddedResource Include="../../shared/ui/fonts/source-serif/SourceSerif4-Regular.ttf" />
+  </ItemGroup>
+  <ItemGroup>
     <Compile Include="../shared/WindowsInterruptClock.cs" Link="Windows/WindowsInterruptClock.cs" />
     <Compile Include="../shared/OwnedPracticeField.cs" Link="Windows/OwnedPracticeField.cs" />
     <Compile Include="../shared/OwnedPracticeAcceptanceProtocol.cs" Link="Windows/OwnedPracticeAcceptanceProtocol.cs" />

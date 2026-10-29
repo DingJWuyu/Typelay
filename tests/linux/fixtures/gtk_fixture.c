@@ -547,7 +547,8 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         && g_strcmp0(gtk_widget_get_name(parent), "typelay-glossary-form") == 0)
         name = "fixture-glossary-feedback";
     if (expand || language_control(name) || g_str_has_prefix(name, "typelay-glossary-")
-        || g_str_equal(name, "fixture-glossary-feedback")) {
+        || g_str_equal(name, "fixture-glossary-feedback") || g_str_equal(name, "typelay-dot")
+        || g_str_equal(name, "typelay-skeleton")) {
         json_builder_set_member_name(builder, name);
         json_builder_begin_object(builder);
         if (g_strcmp0(name, "typelay-menu-trigger") == 0
@@ -590,12 +591,22 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
             json_builder_set_member_name(builder, "pointerInside");
             json_builder_add_boolean_value(builder, (gtk_widget_get_state_flags(widget) & GTK_STATE_FLAG_PRELIGHT) != 0);
         }
+        if (g_str_equal(name, "typelay-dot")) {
+            GdkRGBA color;
+            gtk_style_context_get_color(gtk_widget_get_style_context(widget), gtk_widget_get_state_flags(widget), &color);
+            char *formatted = gdk_rgba_to_string(&color);
+            json_builder_set_member_name(builder, "foreground"); json_builder_add_string_value(builder, formatted);
+            g_free(formatted);
+        }
         json_builder_set_member_name(builder, "enabled");
         json_builder_add_boolean_value(builder, gtk_widget_is_sensitive(widget));
         GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(report_window));
         json_builder_set_member_name(builder, "focused");
         json_builder_add_boolean_value(builder, focus && (focus == widget || gtk_widget_is_ancestor(focus, widget)));
         if (GTK_IS_BUTTON(widget)) {
+            char *description = gtk_widget_get_tooltip_text(widget);
+            json_builder_set_member_name(builder, "description"); json_builder_add_string_value(builder, description ? description : "");
+            g_free(description);
             const char *label = gtk_button_get_label(GTK_BUTTON(widget));
             json_builder_set_member_name(builder, "text");
             json_builder_add_string_value(builder, label ? label : "");
@@ -795,6 +806,11 @@ static gboolean report_state(gpointer unused) {
             char *color = gdk_rgba_to_string(&foreground);
             json_builder_set_member_name(builder, "foreground"); json_builder_add_string_value(builder, color);
             g_free(color);
+            const PangoFontDescription *font = pango_context_get_font_description(gtk_widget_get_pango_context(candidate));
+            json_builder_set_member_name(builder, "fontPixels");
+            json_builder_add_double_value(builder, (double)pango_font_description_get_size(font) / PANGO_SCALE);
+            json_builder_set_member_name(builder, "fontFamily");
+            json_builder_add_string_value(builder, pango_font_description_get_family(font));
             GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(candidate));
             GtkTextIter first, last;
             gtk_text_buffer_get_bounds(buffer, &first, &last);

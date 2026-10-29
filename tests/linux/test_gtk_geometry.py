@@ -596,7 +596,7 @@ class GtkPreviewObservationTests(unittest.TestCase):
                 "imeClear": True,
                 "candidate": {
                     "text": view["text"],
-                    "foreground": "rgb(102,103,113)" if muted else "rgb(34,35,39)",
+                    "foreground": "rgb(116,114,108)" if muted else "rgb(20,20,19)",
                     "editablePreview": False,
                 },
             }

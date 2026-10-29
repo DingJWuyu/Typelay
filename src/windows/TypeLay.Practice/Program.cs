@@ -126,6 +126,7 @@ internal static partial class Program
         _settingsPath = args[1];
         if (!TryReadSettings(out var settings))
             return Fail();
+        _preferences = settings!;
         var presentation = OnDemandPracticePresentation.Create(settings!);
         _theme = settings!.Theme;
         bool registered = false;
@@ -134,6 +135,7 @@ internal static partial class Program
             // Prepare fixed metadata before input is possible, not within a live permit.
             if (_connection != Guid.Empty)
                 OwnedPracticeAcceptanceProtocol.PreparePlanReaderMetadata();
+            LoadPrivateFonts();
             _instance = Native.GetModuleHandleW(null);
             var windowClass = new Native.WindowClass
             {
@@ -146,7 +148,7 @@ internal static partial class Program
             if (_instance == 0 || Native.RegisterClassW(ref windowClass) == 0)
                 return Fail();
             registered = true;
-            _window = Native.CreateWindowExW(0, WindowClassName, presentation.Title, RootStyle,
+            _window = Native.CreateWindowExW(0, WindowClassName, UiCopy(presentation.Title), RootStyle,
                 int.MinValue, int.MinValue, 800, 720, 0, 0, _instance, 0);
             if (_window == 0 || _exitCode != 0)
                 return Fail();
@@ -161,7 +163,7 @@ internal static partial class Program
             // order, giving the system accessibility provider a field label.
             _inputLabel = Add("Static", presentation.InputLabel);
             _edit = Add("Edit", presentation.SampleText,
-                0x00010000 | 0x00200000 | 0x0004 | 0x0040 | 0x1000, EditId, 0x0200);
+                0x00010000 | 0x00200000 | 0x0004 | 0x0040 | 0x1000, EditId);
             if (_connection != Guid.Empty)
             {
                 _owned = new OwnedPracticeField(_edit.Handle, Path.Combine(AppContext.BaseDirectory, "TypeLay.NativeInput.dll"));
@@ -177,6 +179,7 @@ internal static partial class Program
             Native.EnableWindow(_restart.Handle, false);
             InitializeCompletionControl();
             _close = Add("Button", presentation.CloseLabel, 0x00010000 | 0x4000, CloseId);
+            RefreshPracticeLabels(settings!);
             RefreshTheme();
             SetFonts();
             SizeInitialWindow();
@@ -293,6 +296,7 @@ internal static partial class Program
                 Native.DeleteObject(_titleFont);
             if (_backgroundBrush != 0)
                 Native.DeleteObject(_backgroundBrush);
+            ReleaseAppearance();
             if (registered)
                 Native.UnregisterClassW(WindowClassName, _instance);
         }
@@ -331,6 +335,9 @@ internal static partial class Program
             return settings is not null && settings.Schema == 1
                 && settings.Source is "auto" or "zh" or "en" && settings.Target is "zh" or "en"
                 && settings.Theme is "system" or "light" or "dark" && settings.Excluded.Length <= 256
+                && settings.UiLanguage is "system" or "zh-CN" or "en"
+                && settings.Font is "claude" or "sans" or "system" && settings.TextSize is >= 13 and <= 19
+                && settings.Accent is "clay" or "ocean" or "sage" or "iris" or "graphite"
                 && Enum.IsDefined(settings.Mode)
                 && TranslationShortcut.TryParse(settings.WakeShortcut, out var wake)
                 && TranslationShortcut.TryParse(settings.DirectShortcut, out var direct) && wake != direct;
@@ -347,6 +354,8 @@ internal static partial class Program
         // STATIC must display literal ampersands, including customized chords.
         if (className == "Static")
             style |= 0x0080; // SS_NOPREFIX
+        if (className != "Edit")
+            text = UiCopy(text);
         nint handle = Native.CreateWindowExW(extendedStyle, className, text, ChildStyle | style,
             0, 0, 1, 1, _window, (nint)id, _instance, 0);
         if (handle == 0)
@@ -368,7 +377,11 @@ internal static partial class Program
         }
         else
         {
-            _theme = settings!.Theme;
+            bool fontsChanged = _preferences.Font != settings!.Font || _preferences.TextSize != settings.TextSize;
+            _preferences = settings;
+            _theme = settings.Theme;
+            if (fontsChanged && _bodyFont != 0)
+                SetFonts();
             if (_automatic)
             {
                 var view = AutomaticPracticePresentation.Create(settings!, _automaticProgress);
@@ -377,7 +390,7 @@ internal static partial class Program
                     | SetText(_replace, view.ReplaceStep)
                     | SetText(_capability!, "")
                     | SetText(_progressNotice, CompletionProgressNotice(view.ProgressNotice));
-                Native.SetWindowTextW(_window, view.Title);
+                Native.SetWindowTextW(_window, UiCopy(view.Title));
             }
             else
             {
@@ -386,9 +399,12 @@ internal static partial class Program
                     | SetText(_capability!, view.CapabilityNote) | SetText(_notice, view.CurrentStateNotice)
                     | SetText(_preview, view.PreviewStep) | SetText(_replace, view.ReplaceStep)
                     | SetText(_progressNotice, view.ProgressNotice);
-                Native.SetWindowTextW(_window, view.Title);
+                Native.SetWindowTextW(_window, UiCopy(view.Title));
             }
         }
+        if (settings is not null)
+            changed |= RefreshPracticeLabels(settings);
+        RefreshCompletionControl();
         // The source field is intentionally never read or reset by refresh.
         if (changed)
             Layout();
@@ -2056,9 +2072,10 @@ internal static partial class Program
         }
         // Same Panel/Text palette as the Windows App's UiTheme. COLORREF stores
         // these RGB colors with red in the low byte.
-        uint background = systemColors ? Native.GetSysColor(5) : dark ? 0x00302824u : 0x00ffffffu;
-        uint text = systemColors ? Native.GetSysColor(8) : dark ? 0x00f1ebe8u : 0x00312a25u;
-        if (_themeInitialized && background == _backgroundColor && text == _textColor
+        uint background = systemColors ? Native.GetSysColor(5) : dark ? 0x00242626u : 0x00F2F6F7u;
+        uint text = systemColors ? Native.GetSysColor(8) : dark ? 0x00EEF3F4u : 0x00131414u;
+        uint accent = _preferences.Accent switch { "ocean" => 0x00E07F2Fu, "sage" => 0x006E9A5Du, "iris" => 0x00D86C8Au, "graphite" => 0x006F7577u, _ => 0x005777D9u };
+        if (_themeInitialized && background == _backgroundColor && text == _textColor && accent == _accentColor
             && systemColors == _systemColors && dark == _dark)
             return;
 
@@ -2069,6 +2086,12 @@ internal static partial class Program
         _backgroundBrush = brush;
         _backgroundColor = background;
         _textColor = text;
+        _accentColor = accent;
+        _mutedColor = dark ? 0x00ABB3B5u : 0x00565B5Cu;
+        _cardColor = systemColors ? Native.GetSysColor(5) : dark ? 0x002B2E2Fu : 0x00FFFFFFu;
+        if (_cardBrush != 0)
+            Native.DeleteObject(_cardBrush);
+        _cardBrush = systemColors ? 0 : Native.CreateSolidBrush(_cardColor);
         _systemColors = systemColors;
         _dark = dark;
         _themeInitialized = true;
@@ -2086,6 +2109,7 @@ internal static partial class Program
 
     private static bool SetText(Control control, string value)
     {
+        value = UiCopy(value);
         if (control.Text == value)
             return false;
         if (!Native.SetWindowTextW(control.Handle, value))
@@ -2096,25 +2120,28 @@ internal static partial class Program
 
     private static void SetFonts()
     {
-        nint body = Native.CreateFontW(-Scale(16), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0, "Segoe UI");
-        nint title = Native.CreateFontW(-Scale(24), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 0, 0, "Segoe UI");
-        if (body == 0 || title == 0)
+        string uiFace = PrivateFonts.Count > 0 ? "Inter" : "Segoe UI";
+        string contentFace = _preferences.Font == "system" ? "Segoe UI" : _preferences.Font == "sans" ? uiFace
+            : PrivateFonts.Count > 1 ? "Source Serif 4" : "Georgia";
+        nint body = Native.CreateFontW(-Scale(13), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, uiFace);
+        nint title = Native.CreateFontW(-Scale(28), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, contentFace);
+        nint content = Native.CreateFontW(-Scale(Math.Clamp(_preferences.TextSize, 13, 19)), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, contentFace);
+        if (body == 0 || title == 0 || content == 0)
         {
-            if (body != 0)
-                Native.DeleteObject(body);
-            if (title != 0)
-                Native.DeleteObject(title);
+            foreach (nint font in new[] { body, title, content })
+                if (font != 0)
+                    Native.DeleteObject(font);
             throw new InvalidOperationException();
         }
         foreach (var control in Controls)
-            Native.SendMessageW(control.Handle, 0x0030, (nuint)(control == _title ? title : body), 1);
-        nint oldBody = _bodyFont, oldTitle = _titleFont;
+            Native.SendMessageW(control.Handle, 0x0030, (nuint)(control == _title ? title : control == _edit ? content : body), 1);
+        nint oldBody = _bodyFont, oldTitle = _titleFont, oldContent = _contentFont;
         _bodyFont = body;
         _titleFont = title;
-        if (oldBody != 0)
-            Native.DeleteObject(oldBody);
-        if (oldTitle != 0)
-            Native.DeleteObject(oldTitle);
+        _contentFont = content;
+        foreach (nint font in new[] { oldBody, oldTitle, oldContent })
+            if (font != 0)
+                Native.DeleteObject(font);
     }
 
     private static void SizeInitialWindow()
@@ -2122,8 +2149,8 @@ internal static partial class Program
         var monitor = new Native.MonitorInfo { Size = Marshal.SizeOf<Native.MonitorInfo>() };
         if (!Native.GetMonitorInfoW(Native.MonitorFromWindow(_window, 2), ref monitor))
             throw new InvalidOperationException();
-        int width = Math.Min(Scale(800), monitor.Work.Right - monitor.Work.Left);
-        int height = Math.Min(Scale(740), monitor.Work.Bottom - monitor.Work.Top);
+        int width = Math.Min(Scale(720), monitor.Work.Right - monitor.Work.Left);
+        int height = Math.Min(Scale(600), monitor.Work.Bottom - monitor.Work.Top);
         Native.SetWindowPos(_window, 0, monitor.Work.Left + (monitor.Work.Right - monitor.Work.Left - width) / 2,
             monitor.Work.Top + (monitor.Work.Bottom - monitor.Work.Top - height) / 2,
             width, height, 0x0014); // Do not activate or change Z order.
@@ -2141,32 +2168,48 @@ internal static partial class Program
         try
         {
             Native.GetClientRect(_window, out var client);
-            int margin = Scale(24), width = Math.Max(Scale(120), client.Right - 2 * margin);
-            int y = margin;
+            int margin = Scale(36), width = Math.Max(Scale(120), client.Right - 2 * margin);
+            int y = Scale(30);
             previous = Native.SelectObject(dc, _bodyFont);
-            foreach (var control in Controls)
+            int Measure(Control control, int available)
             {
-                int height;
-                if (control == _edit)
-                    height = Scale(128);
-                else if (control == _finish)
-                    height = CompletionControlVisible ? Scale(36) : 0;
-                else if (control == _close || control == _restart)
-                    height = Scale(36);
-                else if (control.Text.Length == 0)
-                    height = 0;
-                else
-                {
-                    Native.SelectObject(dc, control == _title ? _titleFont : _bodyFont);
-                    var measure = new Native.Rect { Right = width };
-                    Native.DrawTextW(dc, control.Text, -1, ref measure, 0x0010 | 0x0400 | 0x0800 | 0x2000);
-                    height = measure.Bottom + Scale(4);
-                }
-                control.Bounds = new(margin, y, control == _close || control == _restart || control == _finish ? Scale(144) : width, height);
-                if (height != 0)
-                    y += height + Scale(control == _inputLabel ? 6 : 12);
+                if (control.Text.Length == 0)
+                    return 0;
+                Native.SelectObject(dc, control == _title ? _titleFont : _bodyFont);
+                var measure = new Native.Rect { Right = available };
+                Native.DrawTextW(dc, control.Text, -1, ref measure, 0x0010 | 0x0400 | 0x0800 | 0x2000);
+                return measure.Bottom + Scale(4);
             }
-            _contentHeight = y + margin - Scale(12);
+            void Place(Control control, int height, int inset = 0, int gap = 12)
+            {
+                control.Bounds = new(margin + inset, y, width - 2 * inset, height);
+                if (height > 0)
+                    y += height + Scale(gap);
+            }
+            Place(_title!, Measure(_title!, width), gap: 8);
+            Place(_summary!, Measure(_summary!, width), gap: 20);
+            Place(_notice!, Measure(_notice!, width));
+            int coachY = y;
+            y += Scale(12);
+            Place(_progressNotice!, Measure(_progressNotice!, width - Scale(28)), Scale(14), gap: 10);
+            _coachCard = new(margin, coachY, width, y - coachY + Scale(2));
+            y += Scale(20);
+            Place(_inputLabel!, Measure(_inputLabel!, width), gap: 8);
+            int inputY = y;
+            y += Scale(12);
+            Place(_edit!, Scale(112), Scale(14), gap: 12);
+            _inputCard = new(margin, inputY, width, y - inputY);
+            y += Scale(20);
+            Place(_preview!, Measure(_preview!, width), gap: 8);
+            Place(_replace!, Measure(_replace!, width), gap: 18);
+            Place(_capability!, Measure(_capability!, width));
+            int buttonWidth = Math.Min(Scale(156), (width - Scale(12)) / 2);
+            _restart!.Bounds = new(margin, y, buttonWidth, Scale(34));
+            _close!.Bounds = new(margin + width - buttonWidth, y, buttonWidth, Scale(34));
+            if (_finish is not null)
+                _finish.Bounds = CompletionControlVisible ? new(margin + width - buttonWidth, y + Scale(44), buttonWidth, Scale(34)) : new(margin, y, 0, 0);
+            y += Scale(CompletionControlVisible ? 78 : 34);
+            _contentHeight = y + Scale(30);
             _scroll = Math.Clamp(_scroll, 0, Math.Max(0, _contentHeight - client.Bottom));
             var scroll = new Native.ScrollInfo
             {
@@ -2180,6 +2223,7 @@ internal static partial class Program
             foreach (var control in Controls)
                 Native.MoveWindow(control.Handle, control.Bounds.X, control.Bounds.Y - _scroll,
                     control.Bounds.Width, control.Bounds.Height, true);
+            Native.RedrawWindow(_window, 0, 0, 0x0001 | 0x0004 | 0x0080);
         }
         finally
         {
@@ -2248,6 +2292,7 @@ internal static partial class Program
                 case 0x0014: // WM_ERASEBKGND
                     Native.GetClientRect(window, out var background);
                     Native.FillRect((nint)wParam, ref background, BackgroundBrush);
+                    PaintPracticeCards((nint)wParam);
                     return 1;
                 case 0x0015: // WM_SYSCOLORCHANGE
                 case 0x001A: // WM_SETTINGCHANGE, including high-contrast changes.
@@ -2310,9 +2355,11 @@ internal static partial class Program
                     return 0;
                 case 0x0133: // WM_CTLCOLOREDIT; the Edit's WndProc stays untouched.
                 case 0x0138: // WM_CTLCOLORSTATIC
-                    Native.SetTextColor((nint)wParam, _themeInitialized ? _textColor : Native.GetSysColor(8));
-                    Native.SetBkColor((nint)wParam, _themeInitialized ? _backgroundColor : Native.GetSysColor(5));
-                    return BackgroundBrush;
+                    bool card = _edit?.Handle == lParam || _progressNotice?.Handle == lParam;
+                    bool muted = _summary?.Handle == lParam || _inputLabel?.Handle == lParam;
+                    Native.SetTextColor((nint)wParam, _themeInitialized && !_systemColors ? muted ? _mutedColor : _textColor : Native.GetSysColor(8));
+                    Native.SetBkColor((nint)wParam, _themeInitialized && !_systemColors ? card ? _cardColor : _backgroundColor : Native.GetSysColor(5));
+                    return card && _cardBrush != 0 ? _cardBrush : BackgroundBrush;
                 case 0x020A: // WM_MOUSEWHEEL not consumed by the stock Edit.
                     ScrollTo(_scroll - (short)((wParam >> 16) & 0xffff) * Scale(48) / 120);
                     return 0;

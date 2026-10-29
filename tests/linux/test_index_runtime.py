@@ -98,6 +98,55 @@ class IndexRuntimeTests(unittest.TestCase):
         """)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_alternative_export_refuses_missing_previous_without_partial_output(self):
+        result = self.run_isolated("""
+            import ctypes
+            from typelay_worker.index_assets import verify_native
+            from typelay_worker.index_cpu import LinuxRuntime
+            from typelay_worker.index import Metrics, CANCEL
+            loader = LinuxRuntime(verify_native())
+            loader.select_cpu_backend()
+            call = loader.load_adapter().index_translate_alternative_v1
+            call.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
+                ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32,
+                ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32),
+                ctypes.POINTER(Metrics), CANCEL, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32]
+            call.restype = ctypes.c_int32
+            out, error = ctypes.create_string_buffer(8192), ctypes.create_string_buffer(512)
+            cancel = CANCEL(lambda _: 1)
+            for previous, length in [(None, 0), (b"", 0), (None, 1)]:
+                n, metrics = ctypes.c_uint32(123), Metrics()
+                code = call(None, 13, b"source", 6, previous, length, out, 8192,
+                    ctypes.byref(n), ctypes.byref(metrics), cancel, None, error, 512)
+                assert code == 1 and n.value == 0
+                assert error.value == b"previous candidate required"
+            loader.close()
+        """)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_explicit_legacy_production_payload_keeps_only_original_capabilities(self):
+        legacy = os.environ.get("TYPELAY_INDEX_LEGACY_NATIVE")
+        if not legacy:
+            self.skipTest("explicit original three-export production payload required")
+        legacy_worker = self.directory / "legacy worker"
+        shutil.copytree(self.worker / "typelay_worker", legacy_worker / "typelay_worker")
+        shutil.copytree(legacy, legacy_worker / "native/index")
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", textwrap.dedent("""
+            import sys
+            sys.path.insert(0, sys.argv[1])
+            from typelay_worker.index_assets import verify_native
+            from typelay_worker.index_cpu import LinuxRuntime
+            manifest = verify_native()
+            assert not manifest.get("alternative", False)
+            loader = LinuxRuntime(manifest)
+            loader.select_cpu_backend()
+            lib = loader.load_adapter()
+            assert hasattr(lib, "index_translate_v1")
+            assert not hasattr(lib, "index_translate_alternative_v1")
+            loader.close()
+        """), str(legacy_worker)], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_resource_limits_apply_only_inside_the_owned_process(self):
         result = self.run_isolated(
             "import os,resource,json; from typelay_worker.index import limit_linux_process; "

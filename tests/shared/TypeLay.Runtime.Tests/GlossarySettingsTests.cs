@@ -6,20 +6,83 @@ namespace TypeLay.Runtime.Tests;
 public sealed class GlossarySettingsTests
 {
     [Fact]
-    public async Task ProductionManagementIsClosedEvenWithoutASessionOrModel()
+    public async Task ProductionManagementSavesOfflineWithoutClaimingModelApplication()
     {
         using var s = new SessionScenario();
         var state = s.Controller.GetGlossarySettingsState([new("hello", "fixed")]);
         Assert.False(state.IsReleased);
-        Assert.False(state.CanSave);
-        Assert.Equal("glossary-not-released", state.UnavailableReason);
+        Assert.True(state.CanSave);
+        Assert.False(state.CanApply);
+        Assert.Null(state.UnavailableReason);
         var result = await s.Controller.ChangeGlossaryAsync([new("hello", "fixed")], s.Settings.Revision, cancellationToken: TestContext.Current.CancellationToken);
-        Assert.Equal(state.UnavailableReason, result.Code);
-        Assert.Null(s.ReloadSettings().Glossary);
+        Assert.True(result.Saved);
+        Assert.Equal("glossary-saved-inactive", result.Code);
+        Assert.Equal("fixed", Assert.Single(s.ReloadSettings().Glossary!.Rules).TargetTerm);
+        Assert.Empty(s.Model.Jobs);
+    }
+
+    [Theory]
+    [InlineData(WorkMode.Automatic)]
+    [InlineData(WorkMode.OnDemand)]
+    public void StoredUnreleasedRulesDoNotBlockOrdinaryPreviewOrDirectTranslation(WorkMode mode)
+    {
+        using var s = new SessionScenario(mode, initialGlossary: new(1, [new("hello", "fixed")]));
+        if (mode == WorkMode.OnDemand)
+            s.Command("direct");
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        var job = Assert.Single(s.Model.Jobs);
+        Assert.Null(job.Glossary);
+        Assert.Equal("hello", job.SourceText);
+        Assert.False(s.Controller.GetGlossarySettingsState().IsReleased);
+        Assert.False(s.Controller.GetGlossarySettingsState().CanApply);
+        Assert.Equal("fixed", Assert.Single(s.ReloadSettings().Glossary!.Rules).TargetTerm);
     }
 
     [Fact]
-    public async Task MachineSaveChecksTheProposedCombinationBeforePersisting()
+    public void AutomaticRulesFollowTheVerifiedModelIdentityAfterStartupAndReplacement()
+    {
+        using var s = new SessionScenario(translationRelease: SessionScenario.HyRelease,
+            direction: new("zh", "ja"), glossaryAvailable: true,
+            initialGlossary: new(1, [new("hello", "fixed")]));
+        s.Model.Ready = false;
+        s.Tick();
+        Assert.Empty(s.Model.Jobs);
+        s.Model.VerifiedIdentity = SessionScenario.HyIdentity;
+        s.Model.Ready = true;
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        Assert.Equal("fixed", Assert.Single(s.Model.Jobs).Glossary!.Rules[0].TargetTerm);
+        s.CompleteTranslation("translated with rule");
+        s.Model.VerifiedIdentity = SessionScenario.ArgosIdentity;
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        Assert.Equal(2, s.Model.Jobs.Count);
+        Assert.Null(s.Model.Jobs[^1].Glossary);
+        Assert.Equal("fixed", Assert.Single(s.ReloadSettings().Glossary!.Rules).TargetTerm);
+    }
+
+    [Fact]
+    public async Task InactiveManagementSaveKeepsTheCurrentCandidateAndReportsCommittedNotificationFailure()
+    {
+        using var s = new SessionScenario();
+        s.ReadyCandidate();
+        var token = s.View.Token;
+        string candidate = s.View.Preview;
+        s.Settings.GlossarySaved += () => throw new IOException("controlled notification failure");
+        var result = await s.Controller.ChangeGlossaryAsync([new("hello", "fixed")], s.Settings.Revision,
+            token, TestContext.Current.CancellationToken);
+        Assert.True(result.Saved);
+        Assert.Equal("glossary-saved-inactive-notification-failed", result.Code);
+        Assert.Equal(token, s.View.Token);
+        Assert.Equal(candidate, s.View.Preview);
+        Assert.Single(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
+        Assert.Equal("fixed", Assert.Single(s.ReloadSettings().Glossary!.Rules).TargetTerm);
+    }
+
+    [Fact]
+    public async Task ManagementCanSaveACombinationWithoutGrantingItsApplication()
     {
         using var s = new SessionScenario(translationRelease: SessionScenario.HyRelease,
             modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true,
@@ -28,15 +91,19 @@ public sealed class GlossarySettingsTests
         s.ReadyCandidate();
         var rules = new[] { new GlossaryRule("hello", "fixed") };
         var state = s.Controller.GetGlossarySettingsState(rules);
-        Assert.False(state.CanSave);
+        Assert.True(state.CanSave);
         Assert.False(state.CanApply);
-        Assert.Equal("glossary-combination-unavailable", state.UnavailableReason);
+        Assert.Null(state.UnavailableReason);
+        Assert.Equal("glossary-combination-unavailable", state.ApplyUnavailableReason);
         var token = s.View.Token;
         var result = await s.Controller.ChangeGlossaryAsync(rules, s.Settings.Revision, token, TestContext.Current.CancellationToken);
-        Assert.Equal(state.UnavailableReason, result.Code);
-        Assert.Null(s.ReloadSettings().Glossary);
-        Assert.Equal(token, s.View.Token);
+        Assert.True(result.Saved);
+        Assert.Equal("glossary-saved-inactive", result.Code);
+        Assert.Equal(rules, s.ReloadSettings().Glossary!.Rules);
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
         Assert.Single(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
     }
 
     [Theory]
@@ -59,11 +126,16 @@ public sealed class GlossarySettingsTests
         var rules = new[] { new GlossaryRule("hello", "fixed") };
         var result = await s.Controller.ChangeGlossaryAsync(rules, s.Settings.Revision, s.View.Token,
             TestContext.Current.CancellationToken);
-        Assert.Equal(released, result.Saved);
+        Assert.True(result.Saved);
         if (!released)
         {
-            Assert.Equal("glossary-combination-not-released", result.Code);
-            Assert.Null(s.ReloadSettings().Glossary);
+            Assert.Equal("glossary-saved-inactive", result.Code);
+            Assert.Equal(rules, s.ReloadSettings().Glossary!.Rules);
+            Assert.Equal("glossary-combination-not-released", s.Controller.GetGlossarySettingsState().ApplyUnavailableReason);
+            s.Tick();
+            s.Tick(Limits.DebounceMs);
+            Assert.Single(s.Model.Jobs);
+            Assert.Empty(s.Service.Writes);
         }
         else
         {
@@ -76,11 +148,11 @@ public sealed class GlossarySettingsTests
     }
 
     [Theory]
-    [InlineData("subset", true)]
-    [InlineData("clear", true)]
-    [InlineData("changed-target", false)]
-    [InlineData("changed-scope", false)]
-    public async Task ClosedReleaseAllowsOnlyExactGlossaryDeletionRecovery(string edit, bool saved)
+    [InlineData("subset")]
+    [InlineData("clear")]
+    [InlineData("changed-target")]
+    [InlineData("changed-scope")]
+    public async Task OfflineManagementAllowsDeletionAndEditingWithoutModelApplication(string edit)
     {
         var initial = new GlossarySnapshot(2, [new("hello", "fixed"), new("PR", "PR", "zh", "ja")]);
         using var s = new SessionScenario(initialGlossary: initial);
@@ -93,10 +165,10 @@ public sealed class GlossarySettingsTests
             _ => [new("PR", "PR")]
         };
         var state = s.Controller.GetGlossarySettingsState(rules);
-        Assert.Equal(saved, state.CanSave);
+        Assert.True(state.CanSave);
         var result = await s.Controller.ChangeGlossaryAsync(rules, s.Settings.Revision, cancellationToken: TestContext.Current.CancellationToken);
-        Assert.Equal(saved, result.Saved);
-        Assert.Equal(saved ? rules.Length : 2, s.ReloadSettings().Glossary!.Rules.Count);
+        Assert.True(result.Saved);
+        Assert.Equal(rules.Length, s.ReloadSettings().Glossary!.Rules.Count);
         Assert.Empty(s.Model.Jobs);
     }
 
@@ -113,7 +185,9 @@ public sealed class GlossarySettingsTests
         Assert.True((await s.Controller.ResetTranslationStyleAsync(s.Settings.Revision,
             s.Controller.GetStyleSettingsState().Session, TestContext.Current.CancellationToken)).Saved);
         s.Tick(Limits.DebounceMs);
-        Assert.Empty(s.Model.Jobs);
+        var ordinary = Assert.Single(s.Model.Jobs);
+        Assert.Null(ordinary.Glossary);
+        Assert.Null(ordinary.Style);
         Assert.Null(s.ReloadSettings().Styles);
         Assert.Equal("fixed", Assert.Single(s.ReloadSettings().Glossary!.Rules).TargetTerm);
         Assert.Equal("glossary-not-released", s.Controller.GetGlossarySettingsState().ApplyUnavailableReason);
@@ -134,7 +208,7 @@ public sealed class GlossarySettingsTests
         Assert.Equal("PR", s.Settings.Value.Glossary!.Rules[0].SourceTerm);
         Assert.Equal(0, changed);
         Assert.True(s.Controller.GetGlossarySettingsState().CanSave);
-        Assert.Equal("glossary-source-unavailable", s.Controller.GetGlossarySettingsState().ApplyUnavailableReason);
+        Assert.Equal("glossary-unavailable", s.Controller.GetGlossarySettingsState().ApplyUnavailableReason);
     }
 
     private static GlossaryChangeResult Save(SessionScenario s, string target = "fixed") =>

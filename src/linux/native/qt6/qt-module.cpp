@@ -1,6 +1,7 @@
 // The platform IM owns input ordering; this additive plugin owns only native
 // field access and presentation. Session/model/acceptance policy stays in Runtime.
 #include "../fcitx5/typelay-fcitx-qt-v1.h"
+#include "../common/overlay-design.h"
 #include <QApplication>
 #include <QAbstractItemView>
 #include <QButtonGroup>
@@ -9,6 +10,11 @@
 #include <QCryptographicHash>
 #include <QDynamicPropertyChangeEvent>
 #include <QFrame>
+#include <QFontDatabase>
+#include <QDir>
+#include <QElapsedTimer>
+#include <QLocale>
+#include <QPainter>
 #include <QGenericPlugin>
 #include <QGridLayout>
 #include <QJsonArray>
@@ -38,9 +44,9 @@
 #include <QTimer>
 #include <QUuid>
 #include <QVariant>
-#include <QVariantAnimation>
 #include <QVBoxLayout>
 #include <QtEndian>
+#include <QtMath>
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
@@ -57,6 +63,45 @@
 #include <utility>
 
 namespace {
+/* Decorative, pointer-transparent loading ink; it never owns an editor or
+ * dispatches a command. Hiding/destroying the parent synchronously stops it. */
+class OverlaySkeleton final : public QWidget {
+public:
+    explicit OverlaySkeleton(QWidget *parent) : QWidget(parent) {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setFocusPolicy(Qt::NoFocus);
+        timer_.setInterval(40);
+        connect(&timer_, &QTimer::timeout, this, [this] { update(); });
+        clock_.start();
+    }
+    void configure(const QColor &color, bool reduced) {
+        color_ = color; reduced_ = reduced;
+        if (isVisible() && !reduced_) timer_.start(); else timer_.stop();
+        update();
+    }
+protected:
+    void showEvent(QShowEvent *event) override {
+        QWidget::showEvent(event);
+        if (!reduced_) timer_.start();
+    }
+    void hideEvent(QHideEvent *event) override { timer_.stop(); QWidget::hideEvent(event); }
+    void paintEvent(QPaintEvent *) override {
+        QPainter paint(this);
+        paint.setRenderHint(QPainter::Antialiasing);
+        const auto phase = clock_.elapsed() % 1200;
+        paint.setOpacity(reduced_ ? 1.0 : .45 + .55 * double(phase < 600 ? phase : 1200 - phase) / 600.0);
+        paint.setPen(Qt::NoPen); paint.setBrush(color_);
+        const int available = qMax(1, width() - 20);
+        paint.drawRoundedRect(QRectF(10, 12, available, 9), 4.5, 4.5);
+        paint.drawRoundedRect(QRectF(10, 30, available * .62, 9), 4.5, 4.5);
+    }
+private:
+    QColor color_;
+    bool reduced_ = false;
+    QTimer timer_;
+    QElapsedTimer clock_;
+};
+
 constexpr qsizetype MaxFrame = 256 * 1024;
 constexpr qsizetype MaxText = 8192;
 constexpr auto ProviderProperty = "typelay.fcitx.qt.provider.v1";
@@ -1616,13 +1661,14 @@ private:
         if (motionTraceRemaining_ <= 0) return;
         --motionTraceRemaining_;
         std::fprintf(stderr, "tlqt-motion phase=%s time=%d running=%d revision=%lld incoming=%lld from=%lld continuation=%d\n",
-            phase, overlayMotion_.currentTime(), overlayMotion_.state() == QAbstractAnimation::Running,
+            phase, motionClock_.isValid() ? int(motionClock_.elapsed()) : 0, overlayMotion_.isActive(),
             static_cast<long long>(overlayRevision_), static_cast<long long>(incomingRevision),
             static_cast<long long>(expansionFrom), continuation);
     }
     void stopOverlayMotion(const char *reason = "layout-stop") {
-        if (overlayMotion_.state() == QAbstractAnimation::Running) traceOverlayMotion(reason);
+        if (overlayMotion_.isActive()) traceOverlayMotion(reason);
         overlayMotion_.stop();
+        motionSpring_.velocity = 0;
         disconnect(&overlayMotion_, nullptr, this, nullptr);
     }
     void hideOverlay() {
@@ -1653,10 +1699,19 @@ private:
         sourceChoices_ = {}; targetChoices_ = {}; savedSourceLanguage_.clear(); savedTargetLanguage_.clear();
         overlayView_ = {}; overlayAuthority_ = {}; overlayGeneration_ = QJsonValue(); overlaySourceProvider_ = nullptr; overlayFocused_ = false; composing_ = false;
         overlayTheme_ = QStringLiteral("system");
+        overlayAppearance_ = {};
+        skeleton_ = nullptr; dot_ = nullptr;
         pendingEdit_ = false; pendingResume_ = false;
         card->hide();
         card->deleteLater();
     }
+    bool overlayEnglish() const {
+        auto language = overlayAppearance_.value("uiLanguage").toString(QStringLiteral("system"));
+        if (language == QStringLiteral("system")) language = QLocale::system().name();
+        return !language.startsWith(QStringLiteral("zh"));
+    }
+    QString overlayUi(const char *text) const { return QString::fromUtf8(tl_overlay_ui(text, overlayEnglish())); }
+    int overlayTextSize() const { return qBound(13, overlayAppearance_.value("textSize").toInt(15), 19); }
     void applyOverlayTheme() {
         if (!card_) return;
         bool dark = overlayTheme_ == QStringLiteral("dark");
@@ -1666,39 +1721,55 @@ private:
             dark = scheme == Qt::ColorScheme::Dark || (scheme == Qt::ColorScheme::Unknown
                 && palette.color(QPalette::Window).lightness() < palette.color(QPalette::WindowText).lightness());
         }
-        const auto background = dark ? QStringLiteral("#20242c") : QStringLiteral("#ffffff");
-        const auto foreground = dark ? QStringLiteral("#e8ebf2") : QStringLiteral("#171a21");
-        const auto border = dark ? QStringLiteral("#48515e") : QStringLiteral("#dfe3eb");
-        const auto muted = dark ? QStringLiteral("#aeb7c4") : QStringLiteral("#6c7482");
+        const auto accentChoice = overlayAppearance_.value("accent").toString().toUtf8();
+        const auto tokens = tl_overlay_palette(dark, accentChoice.constData(), overlayAppearance_.value("reduceTransparency").toBool());
         const bool stale = overlayView_.value("state").toString() == QStringLiteral("Translating")
             && !overlayView_.value("text").toString().isEmpty()
             && !overlayView_.value("presentation").toObject().value("editorOwnsText").toBool();
-        const auto editorForeground = stale ? muted : foreground;
-        const auto hover = dark ? QStringLiteral("#303741") : QStringLiteral("#f1f3f6");
-        const auto accent = dark ? QStringLiteral("#83a7ff") : QStringLiteral("#3267e3");
-        const auto editorBorder = editor_ && !editor_->isReadOnly() ? accent : QStringLiteral("transparent");
-        // Only our child surface is styled; the host application's palette and
-        // the source field's input, focus and geometry remain unchanged.
-        auto style = QStringLiteral(
-            "QFrame#typelay-overlay { background:%1; color:%2; border:1px solid %3; border-radius:12px; }"
-            "QFrame#typelay-overlay QLabel, QFrame#typelay-overlay QRadioButton { color:%2; background:transparent; }"
-            "QFrame#typelay-overlay QLabel#typelay-status, QFrame#typelay-overlay QLabel#typelay-hint { color:%4; font-size:12px; }"
-            "QFrame#typelay-overlay QPushButton { color:%4; background-color:%1; border:0; border-radius:6px;"
-            " padding:4px 6px; min-height:20px; font-size:12px; }"
-            "QFrame#typelay-overlay QPushButton:hover { color:%2; background-color:%5; }"
-            "QFrame#typelay-overlay QPushButton:pressed { color:%2; background-color:%5; }"
-            "QFrame#typelay-overlay QWidget#typelay-footer, QFrame#typelay-overlay QWidget#typelay-menu { border-top:1px solid %3; }"
-            "QFrame#typelay-overlay QPlainTextEdit#typelay-editor { background:%1; color:%8; border:1px solid %7;"
-            " border-radius:6px; padding:4px; font-size:15px; selection-background-color:%6; selection-color:%1; }"
-            "QFrame#typelay-overlay QWidget#typelay-glossary QLineEdit { background:%1; color:%2; border:1px solid %3;"
-            " border-radius:6px; padding:4px; selection-background-color:%6; selection-color:%1; }"
-            "QFrame#typelay-overlay QWidget#typelay-glossary QLineEdit:focus { border-color:%6; }")
-            .arg(background, foreground, border, muted, hover, accent, editorBorder, editorForeground);
-        if (editor_ && editor_->isReadOnly() && overlayView_.value("editable").toBool()
-            && overlayView_.value("viewContext").toObject().value("canEdit").toBool())
-            style += QStringLiteral("QFrame#typelay-overlay QPlainTextEdit#typelay-editor:hover { border-color:%1; }").arg(border);
-        style += QStringLiteral("QFrame#typelay-overlay QPlainTextEdit#typelay-editor:focus { border-color:%1; }").arg(accent);
+        const auto family = overlayAppearance_.value("font").toString().toUtf8();
+        const auto language = overlayView_.value("targetLanguage").toString().toUtf8();
+        const bool editable = editor_ && editor_->isReadOnly() && overlayView_.value("editable").toBool()
+            && overlayView_.value("viewContext").toObject().value("canEdit").toBool();
+        char css[16384];
+        const int count = tl_overlay_qt_css(css, sizeof css, tokens,
+            tl_overlay_content_font(family.constData(), language.constData()), overlayTextSize(), stale,
+            editor_ && !editor_->isReadOnly(), editable);
+        if (count < 0 || size_t(count) >= sizeof css) return;
+        const auto style = QString::fromUtf8(css);
+        const QPointer<QFrame> surface = card_;
+        const auto view = overlayView_;
+        const auto generation = overlayGeneration_;
+        const auto revision = overlayRevision_;
         if (card_->styleSheet() != style) card_->setStyleSheet(style);
+        if (!surface || card_ != surface || overlayView_ != view || overlayGeneration_ != generation || overlayRevision_ != revision) return;
+        if (skeleton_) skeleton_->configure(QColor(dark ? 255 : 20, dark ? 255 : 20, dark ? 255 : 19, dark ? 23 : 20),
+            overlayAppearance_.value("reduceMotion").toBool()
+            || card_->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, card_) <= 0);
+        if (editor_) editor_->setAccessibleName(overlayUi("译文"));
+        if (!surface || card_ != surface || overlayView_ != view || overlayGeneration_ != generation || overlayRevision_ != revision) return;
+        QList<QPointer<QAbstractButton>> buttons;
+        for (auto *button : card_->findChildren<QAbstractButton *>()) buttons.append(button);
+        for (const auto &button : buttons) {
+            if (!surface || card_ != surface || overlayView_ != view || overlayGeneration_ != generation || overlayRevision_ != revision) return;
+            if (button) button->setText(overlayUi(button->text().toUtf8().constData()));
+        }
+        QList<QPointer<QLabel>> labels;
+        for (auto *label : card_->findChildren<QLabel *>()) labels.append(label);
+        for (const auto &label : labels) {
+            if (!surface || card_ != surface || overlayView_ != view || overlayGeneration_ != generation || overlayRevision_ != revision) return;
+            if (label) label->setText(overlayUi(label->text().toUtf8().constData()));
+        }
+    }
+    bool setOverlayStatus(const QString &diagnostic) {
+        const QPointer<QLabel> label = status_;
+        const auto view = overlayView_;
+        if (!label) return false;
+        const auto phase = QString::fromUtf8(tl_overlay_phase(view.value("state").toString().toUtf8().constData(),
+            view.value("text").toString().toUtf8().constData(), diagnostic.toUtf8().constData(), overlayEnglish()));
+        label->setToolTip(diagnostic);
+        if (!label || status_ != label || overlayView_ != view) return false;
+        label->setText(phase);
+        return label && status_ == label && overlayView_ == view;
     }
     void refreshSystemTheme() {
         // These synchronous notifications repaint only the currently displayed
@@ -1714,6 +1785,12 @@ private:
         if (presentation.value("editorOwnsText").toBool()) hint = shortcuts.value("returnHint").toString();
         else if (hint == shortcuts.value("acceptHint").toString() || hint == shortcuts.value("passThroughHint").toString())
             hint = shortcuts.value(ready(overlayTarget_, publication_) ? "acceptHint" : "passThroughHint").toString();
+        const auto key = shortcuts.value("acceptKey").toString();
+        if (!key.isEmpty() && hint == shortcuts.value("acceptHint").toString())
+            hint = key + (overlayEnglish() ? QStringLiteral("  Accept") : QStringLiteral("  接受"));
+        else if (!key.isEmpty() && hint == shortcuts.value("returnHint").toString())
+            hint = key + (overlayEnglish() ? QStringLiteral("  Return") : QStringLiteral("  返回"));
+        else if (!key.isEmpty() && hint == shortcuts.value("passThroughHint").toString()) hint.clear();
         hint_->setText(hint);
     }
     void arrangeOverlay(int editorHeight = -1) {
@@ -1723,12 +1800,26 @@ private:
         auto *top = field->window();
         if (card_->parentWidget() != top) { hideOverlay(); return; }
         const bool capsule = paused() || overlayView_.value("state").toString() == "IdleCapsule";
-        const int width = qMin(capsule && !menu_->isVisible() ? 160 : qBound(390, field->width(), 520),
-            qMax(1, top->width() - 16));
-        editor_->setFixedHeight(editorHeight < 0 ? (expanded_ ? 280 : 100) : editorHeight);
+        const int proposed = capsule && !menu_->isVisible() ? 160 : expanded_ ? qBound(300, field->width(), 560)
+            : editor_->isReadOnly() ? qBound(300, field->width() * 66 / 100, 440) : qBound(400, field->width() * 72 / 100, 440);
+        const int width = qMin(proposed, qMax(1, top->width() - 16));
+        const int collapsedHeight = (overlayTextSize() * 155 * 7 + 99) / 100 + 4;
+        if (editorHeight < 0) {
+            QTextDocument measurement;
+            measurement.setDefaultFont(editor_->font());
+            measurement.setDocumentMargin(4);
+            measurement.setPlainText(editor_->toPlainText());
+            measurement.setTextWidth(qMax(1, width - 36));
+            editorHeight = qBound(36, qCeil(measurement.size().height()) + 8, expanded_ ? 360 : collapsedHeight);
+            if (skeleton_ && skeleton_->isVisible()) editorHeight = qMax(editorHeight, 54);
+        }
+        editor_->setFixedHeight(editorHeight);
+        if (auto *expand = card_->findChild<QPushButton *>(QStringLiteral("typelay-expand")))
+            expand->setVisible(expanded_ || editorHeight >= collapsedHeight);
         card_->setFixedWidth(width);
         card_->layout()->activate();
         card_->adjustSize();
+        if (skeleton_) { skeleton_->setGeometry(editor_->viewport()->rect()); skeleton_->raise(); }
         const auto bounds = geometry(overlayTarget_).value("bounds").toObject();
         const int x = qBound(0, int(integer(bounds, "x") + integer(bounds, "width")) - width, qMax(0, top->width() - width));
         const int above = int(integer(bounds, "y")) - card_->height() - 6;
@@ -1741,6 +1832,7 @@ private:
         motionTraceRemaining_ = qEnvironmentVariableIsSet("TYPELAY_QT_PROBE") ? 16 : 0;
         traceOverlayMotion("attempt");
         if (!card_ || !editor_ || !overlayActive()) { traceOverlayMotion("inactive-skip"); arrangeOverlay(); return; }
+        const double inheritedVelocity = overlayMotion_.isActive() ? motionSpring_.velocity : 0;
         const int startHeight = editor_->height();
         const QRect start = card_->geometry();
         arrangeOverlay();
@@ -1749,7 +1841,8 @@ private:
         const int endHeight = editor_->height();
         // The current Qt style is the public platform/application preference.
         // A zero duration disables motion; it is not a universal OS preference API.
-        if (startHeight == endHeight || start.width() != end.width()
+        if (startHeight == endHeight
+            || overlayAppearance_.value("reduceMotion").toBool()
             || card_->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, card_) <= 0) {
             traceOverlayMotion("size-or-style-skip"); return;
         }
@@ -1777,14 +1870,14 @@ private:
         motionFocusPolicy_ = editor_->focusPolicy();
         const auto generation = overlayGeneration_;
         arrangeOverlay(startHeight);
-        overlayMotion_.setDuration(280);
-        QEasingCurve easing(QEasingCurve::BezierSpline);
-        easing.addCubicBezierSegment(QPointF(.22, 1), QPointF(.36, 1), QPointF(1, 1));
-        overlayMotion_.setEasingCurve(easing);
-        overlayMotion_.setStartValue(startHeight);
-        overlayMotion_.setEndValue(endHeight);
-        connect(&overlayMotion_, &QVariantAnimation::valueChanged, this,
-            [this, parent, parentBounds, bounds, generation](const QVariant &value) {
+        tl_overlay_spring_snap(&motionSpring_, startHeight);
+        motionSpring_.velocity = inheritedVelocity;
+        tl_overlay_spring_to(&motionSpring_, endHeight);
+        motionClock_.restart(); motionLastFrame_ = 0;
+        overlayMotion_.setInterval(16);
+        overlayMotion_.setTimerType(Qt::PreciseTimer);
+        connect(&overlayMotion_, &QTimer::timeout, this,
+            [this, parent, parentBounds, bounds, generation] {
                 if (!overlayActive()) { traceOverlayMotion("inactive-frame"); hideOverlay(); return; }
                 if (!parent || card_->parentWidget() != parent || parent->geometry() != parentBounds
                     || overlayRevision_ != motionRevision_ || overlayGeneration_ != generation
@@ -1792,10 +1885,16 @@ private:
                     || editor_->document() != motionDocument_ || editor_->document()->revision() != motionDocumentRevision_
                     || editor_->isReadOnly() != motionReadOnly_ || editor_->focusPolicy() != motionFocusPolicy_
                     || geometry(overlayTarget_) != bounds
+                    || overlayAppearance_.value("reduceMotion").toBool()
                     || card_->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, card_) <= 0) {
                     traceOverlayMotion("frame-guard-stop"); arrangeOverlay(); return;
                 }
-                arrangeOverlay(value.toInt());
+                const qint64 elapsed = motionClock_.elapsed();
+                const double dt = double(elapsed - motionLastFrame_) / 1000.0;
+                motionLastFrame_ = elapsed;
+                const bool moving = tl_overlay_spring_step(&motionSpring_, dt);
+                arrangeOverlay(int(motionSpring_.value + .5));
+                if (!moving) stopOverlayMotion("settled");
             });
         // No completion callback: the final value only lays out the current
         // widgets. Nothing can show, restore text, focus or renew a hidden view.
@@ -1928,8 +2027,14 @@ private:
             choice->setEnabled(valid);
         }
         if (!languageCurrent(rendered)) return false;
-        language_->setText(languageTitle(view, "sourceLanguageLabel", source, sourceChoices)
-            + QStringLiteral(" → ") + languageTitle(view, "targetLanguageLabel", target, targetChoices) + QStringLiteral(" ▾"));
+        language_->setText((source == QStringLiteral("auto") ? QStringLiteral("Auto") : source.toUpper())
+            + QStringLiteral(" → ") + target.toUpper());
+        if (!languageCurrent(rendered)) return false;
+        const auto description = languageTitle(view, "sourceLanguageLabel", source, sourceChoices)
+            + QStringLiteral(" → ") + languageTitle(view, "targetLanguageLabel", target, targetChoices);
+        language_->setToolTip(description);
+        if (!languageCurrent(rendered)) return false;
+        language_->setAccessibleName(description);
         if (!languageCurrent(rendered)) return false;
         swap_->setEnabled(valid && source != QStringLiteral("auto")
             && languageIndex(sourceChoices, target) >= 0 && languageIndex(targetChoices, source) >= 0);
@@ -2284,7 +2389,7 @@ private:
         if (!translationActionMenu_ || !menu_ || menu_->isHidden() || glossary_ || glossaryOpening_) return;
         const auto context = *translationActionMenu_;
         const auto actions = translationActions(overlayView_);
-        if (!actions.value("glossaryReleased").toBool() || !actions.value("canOpenGlossary").toBool()
+        if (!actions.value("canOpenGlossary").toBool()
             || !glossaryOriginReady(context)) return;
         glossaryOpeningSource_.reset();
         if (context.state != QStringLiteral("EditingTranslation")) {
@@ -2363,11 +2468,9 @@ private:
         auto source = std::exchange(glossaryOpeningSource_, std::nullopt);
         const auto entry = data.value("entry").toObject();
         const auto directions = entry.value("directions");
-        const auto actions = translationActions(overlayView_);
         if (glossaryOpeningFocus_ != focusGeneration_ || !glossaryContextCurrent(context)
             || !glossaryOriginReady(context) || (source && !glossarySourceCurrent(*source))
             || entry.value("sourceOrigin").toBool() != bool(source)
-            || !actions.value("glossaryReleased").toBool()
             || !entry.value("formId").isString() || QUuid(entry.value("formId").toString()).isNull()
             || entry.value("token").toObject() != context.token
             || integer(entry, "settingsRevision") < 0 || entry.value("settingsRevision") != context.actions.value("settingsRevision")
@@ -2523,14 +2626,14 @@ private:
         if (!languageCurrent(rendered) || !alternative_) return false;
         alternative_->setToolTip(actions.value("alternativeUnavailableReason").toString());
         if (!languageCurrent(rendered) || !glossaryAction_) return false;
-        glossaryAction_->setVisible(actions.value("glossaryReleased").toBool());
+        glossaryAction_->setVisible(actions.contains("canOpenGlossary"));
         if (!languageCurrent(rendered) || !glossaryAction_) return false;
         glossaryAction_->setEnabled(current && !glossary_ && !glossaryOpening_
             && (rendered.view.value("state").toString() == QStringLiteral("EditingTranslation")
                 || ((rendered.view.value("state").toString() == QStringLiteral("ValidTranslation")
                     || rendered.view.value("state").toString() == QStringLiteral("EditedTranslationPending"))
                     && sourceGlossarySupported(overlayTarget_)))
-            && actions.value("glossaryReleased").toBool() && actions.value("canOpenGlossary").toBool());
+            && actions.value("canOpenGlossary").toBool());
         if (!languageCurrent(rendered) || !glossaryAction_) return false;
         glossaryAction_->setToolTip(actions.value("glossaryUnavailableReason").toString());
         if (!languageCurrent(rendered) || !translationFeedback_) return false;
@@ -2568,6 +2671,16 @@ private:
         if (card_ == opened.card) arrangeOverlay();
     }
     void createOverlay(Target *target) {
+        if (!fontsRegistered_) {
+            fontsRegistered_ = true;
+            const auto home = qEnvironmentVariable("TYPELAY_HOME");
+            if (QDir::isAbsolutePath(home)) {
+                const QStringList files{QStringLiteral("inter/Inter-Regular.ttf"), QStringLiteral("inter/Inter-Medium.ttf"),
+                    QStringLiteral("inter/Inter-SemiBold.ttf"), QStringLiteral("source-serif/SourceSerif4-Regular.ttf"),
+                    QStringLiteral("source-serif/SourceSerif4-Semibold.ttf")};
+                for (const auto &file : files) QFontDatabase::addApplicationFont(home + QStringLiteral("/fonts/") + file);
+            }
+        }
         auto *top = target->field->window();
         auto *frame = new QFrame(top); // Child surface, never a new toplevel/input grab.
         frame->setObjectName(QStringLiteral("typelay-overlay"));
@@ -2578,8 +2691,8 @@ private:
         overlayTarget_ = target;
         overlaySourceProvider_ = sessionProvider(target->field) ? target->provider : QPointer<QObject>();
         auto *layout = new QVBoxLayout(frame);
-        layout->setContentsMargins(12, 10, 12, 8);
-        layout->setSpacing(8);
+        layout->setContentsMargins(14, 10, 12, 8);
+        layout->setSpacing(4);
         auto button = [&](QWidget *parent, QBoxLayout *box, const QString &label, const char *operation) {
             auto *value = new QPushButton(label, parent);
             value->setFocusPolicy(Qt::NoFocus);
@@ -2610,7 +2723,7 @@ private:
                 } else if (qstrcmp(operation, "expand") == 0) {
                     menu_->hide();
                     expanded_ = !expanded_;
-                    value->setText(expanded_ ? QStringLiteral("缩小") : QStringLiteral("展开"));
+                    value->setText(expanded_ ? overlayUi("收起") : overlayUi("展开"));
                     ui("expand", expanded_);
                     resizeOverlay();
                     return;
@@ -2626,6 +2739,10 @@ private:
             return value;
         };
         auto *header = new QHBoxLayout;
+        header->setSpacing(4);
+        dot_ = new QLabel(QStringLiteral("●"), frame);
+        dot_->setObjectName(QStringLiteral("typelay-dot"));
+        header->addWidget(dot_);
         language_ = button(frame, header, QString(), "menu");
         language_->setObjectName(QStringLiteral("typelay-menu-trigger"));
         language_->setAccessibleName(QStringLiteral("语言与更多操作"));
@@ -2639,13 +2756,14 @@ private:
         auto *toolsLayout = new QHBoxLayout(tools_);
         toolsLayout->setContentsMargins(0, 0, 0, 0);
         toolsLayout->setSpacing(2);
-        button(tools_, toolsLayout, QStringLiteral("重译"), "regenerate");
-        button(tools_, toolsLayout, expanded_ ? QStringLiteral("缩小") : QStringLiteral("展开"), "expand")->setObjectName(QStringLiteral("typelay-expand"));
+        auto *more = button(tools_, toolsLayout, QStringLiteral("⋯"), "menu");
+        more->setAccessibleName(overlayUi("更多"));
+        more->setToolTip(overlayUi("更多"));
+        button(tools_, toolsLayout, expanded_ ? overlayUi("收起") : overlayUi("展开"), "expand")->setObjectName(QStringLiteral("typelay-expand"));
         header->addWidget(tools_);
         resume_ = button(frame, header, QStringLiteral("恢复"), "resume");
         resume_->setObjectName(QStringLiteral("typelay-resume"));
         resume_->hide();
-        layout->addLayout(header);
         auto *translationEditor = new TranslationEditor(frame);
         editor_ = translationEditor;
         connect(translationEditor, &TranslationEditor::inputRejected, this, [this] {
@@ -2658,6 +2776,9 @@ private:
         editor_->setTabChangesFocus(false);
         // Keep the default unlimited maximumBlockCount. Setting even zero disables native undo.
         layout->addWidget(editor_);
+        skeleton_ = new OverlaySkeleton(editor_->viewport());
+        skeleton_->hide();
+        layout->addLayout(header);
         connect(editor_, &QPlainTextEdit::textChanged, this, [this] {
             if (settingText_ || !editor_ || editor_->isReadOnly()) return;
             revokeEditorOrdered();
@@ -2668,13 +2789,14 @@ private:
         footer_ = new QWidget(frame);
         footer_->setObjectName(QStringLiteral("typelay-footer"));
         auto *footerLayout = new QHBoxLayout(footer_);
-        footerLayout->setContentsMargins(0, 6, 0, 0);
+        footerLayout->setContentsMargins(0, 0, 0, 0);
+        footerLayout->setSpacing(4);
         hint_ = new QLabel(footer_);
         hint_->setObjectName(QStringLiteral("typelay-hint"));
         hint_->setWordWrap(true);
         footerLayout->addWidget(hint_); footerLayout->addStretch();
         exit_ = button(footer_, footerLayout, QString(), "escape");
-        layout->addWidget(footer_);
+        header->addWidget(footer_);
         menu_ = new QWidget(frame);
         menu_->setObjectName(QStringLiteral("typelay-menu"));
         auto *menuLayout = new QVBoxLayout(menu_);
@@ -2744,6 +2866,7 @@ private:
         translationFeedback_->setStyleSheet(QStringLiteral("color: palette(mid);"));
         translationFeedback_->hide();
         menuLayout->addWidget(translationFeedback_);
+        button(menu_, menuLayout, QStringLiteral("重新翻译"), "regenerate");
         button(menu_, menuLayout, QStringLiteral("复制译文"), "copy")->setObjectName(QStringLiteral("typelay-copy"));
         button(menu_, menuLayout, QStringLiteral("不要在这个应用中显示"), "exclude");
         button(menu_, menuLayout, QStringLiteral("设置…"), "settings");
@@ -2788,6 +2911,7 @@ private:
                 const bool menuOnly = card_ && overlayTarget_ == target
                     && overlayGeneration_ == data.value("generation") && overlayRevision_ == integer(data, "revision", 0)
                     && data.value("theme").toString(QStringLiteral("system")) == overlayTheme_
+                    && data.value("appearance").toObject() == overlayAppearance_
                     && (!glossary_ || !glossary_->source || retainedSourceForm)
                     && overlayView_ != view && editorViewIdentity(overlayView_) == editorViewIdentity(view);
                 if (menuOnly) {
@@ -2798,11 +2922,11 @@ private:
                     if (renderTranslationActions() && status_) {
                         auto status = view.value("status").toString();
                         if (status.isEmpty()) status = translationActions(view).value("feedback").toString();
-                        status_->setText(isPaused ? QStringLiteral("已暂停") : status);
+                        if (!setOverlayStatus(status)) return {{"visible", overlayActive()}, {"editing", editor_ && !editor_->isReadOnly()}};
                     }
                     return {{"visible", overlayActive()}, {"editing", editor_ && !editor_->isReadOnly()}};
                 }
-                const bool continueMotion = overlayMotion_.state() == QAbstractAnimation::Running
+                const bool continueMotion = overlayMotion_.isActive()
                     && integer(data, "visualExpansionFrom", -1) == overlayRevision_
                     && integer(data, "revision", -1) == overlayRevision_ + 1
                     && target == overlayTarget_ && target->field == motionSource_ && editor_ == motionEditor_
@@ -2811,8 +2935,9 @@ private:
                     && card_ && card_->parentWidget() == motionParent_ && motionParent_
                     && motionParent_->geometry() == motionParentBounds_ && target->field->window() == motionParent_
                     && geometry(target) == motionGeometry_ && data.value("generation") == overlayGeneration_
-                    && view == overlayView_ && data.value("theme").toString(QStringLiteral("system")) == overlayTheme_;
-                if (overlayMotion_.state() == QAbstractAnimation::Running)
+                    && view == overlayView_ && data.value("theme").toString(QStringLiteral("system")) == overlayTheme_
+                    && data.value("appearance").toObject() == overlayAppearance_;
+                if (overlayMotion_.isActive())
                     traceOverlayMotion("render", integer(data, "revision", -1), integer(data, "visualExpansionFrom", -1), continueMotion);
                 if (!card_ || overlayTarget_ != target) { hideOverlay(); createOverlay(target); }
                 const auto nextToken = view.value("viewContext").toObject().value("token").toObject();
@@ -2837,8 +2962,11 @@ private:
                 if (overlayRevision_ != integer(data, "revision", 0) || overlayView_ != view) revokeEditorOrdered();
                 if (overlayRevision_ != integer(data, "revision", 0)) pendingResume_ = false;
                 overlayView_ = view; overlayAuthority_ = basis; overlayGeneration_ = data.value("generation");
+                overlayAppearance_ = data.value("appearance").toObject();
                 if (focused() == target && sessionProvider(target->field)) overlaySourceProvider_ = target->provider;
-                exit_->setText(view.value("sessionShortcuts").toObject().value("exitHint").toString());
+                const auto shortcuts = view.value("sessionShortcuts").toObject();
+                exit_->setText(shortcuts.value("exitKey").toString().isEmpty() ? shortcuts.value("exitHint").toString() : QStringLiteral("×"));
+                exit_->setToolTip(shortcuts.value("exitHint").toString());
                 overlayUntil_ = until; overlayRevision_ = integer(data, "revision", 0);
                 // Retiring editor readiness for auxiliary focus does not
                 // surrender its manual buffer, caret or undo history. Keep
@@ -2870,28 +2998,31 @@ private:
                 }
                 const bool editable = !isPaused && view.value("editable").toBool()
                     && view.value("viewContext").toObject().value("canEdit").toBool();
-                const auto editHint = editing ? QStringLiteral("编辑译文")
-                    : editable ? QStringLiteral("点击译文以编辑") : QString();
+                const auto editHint = editing ? overlayUi("编辑译文")
+                    : editable ? overlayUi("点击译文编辑") : QString();
                 editor_->setToolTip(editHint);
                 editor_->setAccessibleDescription(editHint);
                 if (!renderLanguages(view)) return {{"visible", overlayActive()}, {"editing", editor_ && !editor_->isReadOnly()}};
                 if (!renderTranslationActions()) return {{"visible", overlayActive()}, {"editing", editor_ && !editor_->isReadOnly()}};
                 auto status = view.value("status").toString();
                 if (status.isEmpty()) status = translationActions(view).value("feedback").toString();
-                status_->setText(isPaused ? QStringLiteral("已暂停") : status);
+                if (!setOverlayStatus(status)) return {{"visible", overlayActive()}, {"editing", editor_ && !editor_->isReadOnly()}};
                 refreshHint();
                 const bool capsule = isPaused || view.value("state").toString() == "IdleCapsule";
                 editor_->setVisible(!capsule); footer_->setVisible(!capsule); tools_->setVisible(!capsule);
+                dot_->setVisible(!isPaused);
+                skeleton_->setVisible(!capsule && text.isEmpty() && !editing && view.value("state").toString() == QStringLiteral("Translating"));
                 status_->setVisible(isPaused || !capsule);
                 language_->setVisible(!isPaused); resume_->setVisible(isPaused); resume_->setEnabled(!pendingResume_);
                 if (isPaused) menu_->hide();
                 // Only the exact one-use expansion echo may continue geometry.
                 // All current view/authority/edit state above has already applied.
                 if (continueMotion) motionRevision_ = overlayRevision_;
-                arrangeOverlay(continueMotion ? editor_->height() : -1);
-                if (!card_) return {{"visible", false}, {"editing", false}};
                 overlayTheme_ = data.value("theme").toString(QStringLiteral("system"));
                 applyOverlayTheme();
+                if (!card_) return {{"visible", false}, {"editing", false}};
+                arrangeOverlay(continueMotion ? editor_->height() : -1);
+                if (!card_) return {{"visible", false}, {"editing", false}};
                 card_->show(); card_->raise(); syncOverlay();
             }
         } else if (op == "overlay-renew") {
@@ -3297,7 +3428,10 @@ private:
     QStringList consumed_;
     QString lifetime_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
     QTimer reconnect_, expiry_;
-    QVariantAnimation overlayMotion_;
+    QTimer overlayMotion_;
+    QElapsedTimer motionClock_;
+    qint64 motionLastFrame_ = 0;
+    TlOverlaySpring motionSpring_{};
     int motionTraceRemaining_ = 0;
     QPointer<QWidget> motionSource_, motionParent_;
     QPointer<QPlainTextEdit> motionEditor_;
@@ -3313,6 +3447,10 @@ private:
     QByteArray incoming_, outgoing_;
     QJsonObject publication_, overlayView_, overlayAuthority_, shortcutConfiguration_, shortcutAuthority_;
     QString overlayTheme_ = QStringLiteral("system");
+    QJsonObject overlayAppearance_;
+    bool fontsRegistered_ = false;
+    QPointer<OverlaySkeleton> skeleton_;
+    QPointer<QLabel> dot_;
     std::optional<ShortcutRequest> pendingShortcut_;
     std::shared_ptr<OrderedTicket> ordered_;
     std::shared_ptr<EditorOrderedTicket> editorOrdered_;

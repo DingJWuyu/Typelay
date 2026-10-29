@@ -37,7 +37,8 @@ internal static class WindowsRuntime
         var browser = new BrowserInput(new BrowserServer(overlay.Dispatcher), monitor);
         bindShortcutRecovery?.Invoke(new(() => browser.CommandRegistrationFailure, browser.RetryCommandRegistration, draft => ShortcutConflictProbe.Inspect(draft, monitor.RegisteredShortcuts)));
         support?.BindBrowser(browser);
-        var browserView = new BrowserSessionView(browser, () => overlay.LanguageRequested?.Invoke());
+        var browserView = new BrowserSessionView(browser, () => overlay.SettingsRequested?.Invoke(),
+            () => overlay.LanguageRequested?.Invoke());
         var view = new WindowsSessionView(overlay, browserView);
         // The formal composition has one source route. Automation, user settings
         // and injected Brokers cannot select legacy sent activation or grant

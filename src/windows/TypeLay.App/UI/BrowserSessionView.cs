@@ -9,11 +9,13 @@ internal sealed class BrowserSessionView : ISessionView
 {
     private readonly BrowserInput _input;
     private readonly Action _settings;
+    private readonly Action _languages;
     private BrowserObservation? _record;
     private SessionViewContext? _context;
     private string? _last;
     private long _renewed;
     private string _theme = "system";
+    private object? _appearance;
     private string[] _excluded = [];
     private bool _renewing;
     private SessionState _state;
@@ -82,15 +84,25 @@ internal sealed class BrowserSessionView : ISessionView
     {
         get; private set;
     }
-    public BrowserSessionView(BrowserInput input, Action settings)
+    public BrowserSessionView(BrowserInput input, Action settings, Action? languages = null)
     {
         _input = input;
         _settings = settings;
+        _languages = languages ?? settings;
         input.Ui += Event;
     }
     public void Configure(UserSettings settings)
     {
         _theme = settings.Theme;
+        _appearance = new
+        {
+            settings.Font,
+            settings.TextSize,
+            settings.Accent,
+            settings.UiLanguage,
+            settings.ReduceMotion,
+            settings.ReduceTransparency
+        };
         _excluded = settings.Excluded;
         HideQuietly();
     }
@@ -146,7 +158,8 @@ internal sealed class BrowserSessionView : ISessionView
             generation = context.Token.CommandGeneration,
             revision = context.Token.Revision,
             expiresAtMs = _renewed + 800,
-            theme = _theme
+            theme = _theme,
+            appearance = _appearance
         });
     }
     public void Poll()
@@ -312,6 +325,9 @@ internal sealed class BrowserSessionView : ISessionView
                 break;
             case "exclude":
                 ExcludeRequested?.Invoke();
+                break;
+            case "languagesPicker":
+                _languages();
                 break;
             case "settings":
                 _settings();
