@@ -56,6 +56,10 @@ internal static partial class BrowserCooperationCheck
         {
             get; set;
         }
+        public SourceLayoutObservation? SourceLayout
+        {
+            get; set;
+        }
         public int ShortcutPresses
         {
             get; set;
@@ -373,7 +377,7 @@ internal static partial class BrowserCooperationCheck
                 {
                     setup.Stage = "confirm-connect-return-to-page-" + step;
                     Record("scene-progress", setup);
-                });
+                }, observation => setup.SourceLayout = observation);
                 setup.Stage = "confirm-connect-wait-connected";
                 await WaitBrowserConnectionStatusAsync(app.Process, "已连接", ct);
             });
@@ -407,7 +411,8 @@ internal static partial class BrowserCooperationCheck
             });
             await Phase(direct, "wait-public-command-ready", 30, async ct =>
             {
-                var sourceBounds = await FocusCommandFieldAsync(cdp!, windows!, commandSettings!, ct);
+                var sourceBounds = await FocusCommandFieldAsync(cdp!, windows!, commandSettings!, ct,
+                    observeLayout: observation => direct.SourceLayout = observation);
                 direct.Stage = "prepare-final-selection";
                 await PrepareInputAsync(cdp!, windows!, "Keep [", "] unchanged", selectSource: true, ct);
                 Record("final-selection-complete", direct);
@@ -426,7 +431,8 @@ internal static partial class BrowserCooperationCheck
             });
             await Phase(background, "wait-public-command-ready", 30, async ct =>
             {
-                var sourceBounds = await FocusCommandFieldAsync(cdp!, windows!, commandSettings!, ct);
+                var sourceBounds = await FocusCommandFieldAsync(cdp!, windows!, commandSettings!, ct,
+                    observeLayout: observation => background.SourceLayout = observation);
                 background.Stage = "prepare-final-text";
                 await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
                 Record("final-text-complete", background);

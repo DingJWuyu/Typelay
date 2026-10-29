@@ -849,6 +849,8 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                         "pointerInside",
                                         "pointerEnteredAtMonoMs",
                                         "pointerObservation",
+                                        "canTarget",
+                                        "canFocus",
                                     )
                                 },
                                 "pixelPoint": current_pixel,

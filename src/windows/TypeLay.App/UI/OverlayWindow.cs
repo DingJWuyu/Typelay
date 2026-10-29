@@ -319,6 +319,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         _surface.Children.Add(_barBorder);
         _body = new Grid { Margin = new(12, 12, 12, 0) };
         _skeleton = new StackPanel { Margin = new(4, 7, 12, 12), VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false, Visibility = Visibility.Collapsed };
+        AutomationProperties.SetAutomationId(_skeleton, "TranslationLoadingPlaceholder");
         foreach (double proportion in new[] { 1d, .62 })
         {
             var line = new Border { Height = 9, CornerRadius = new(4.5), Margin = new(0, 0, 0, 9), HorizontalAlignment = HorizontalAlignment.Left };

@@ -1667,6 +1667,46 @@ static char *candidate(void) {
     gtk_text_buffer_get_bounds(buffer, &start, &end);
     return gtk_text_buffer_get_text(buffer, &start, &end, TRUE);
 }
+static gint measured_body_height(const char *text, gint width) {
+    PangoLayout *layout = gtk_widget_create_pango_layout(overlay.text, text);
+    pango_layout_set_width(layout, MAX(1, width - 30) * PANGO_SCALE);
+    pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
+    gint height;
+    pango_layout_get_pixel_size(layout, NULL, &height);
+    g_object_unref(layout);
+    gint collapsed = (overlay.text_size * 155 * 7 + 99) / 100 + 4;
+    return CLAMP(height + 16, 36, overlay.expanded ? 360 : collapsed);
+}
+static void body_height(gint height, gboolean animate);
+static void resize_owned_draft(GtkTextBuffer *buffer) {
+    /* Ordinary draft changes do not ask the host for another presentation.
+     * Resize only this live native buffer, never synthesize a render/token. */
+    if (!active() || !overlay.text || !overlay.card || !overlay.scroll || !overlay.expand
+        || overlay.setting_text || !tl_configuration_current(overlay.generation)
+        || !tl_view_context_matches(overlay.target, overlay.view)
+        || !boolean(tl_object(overlay.view, "presentation"), "editorOwnsText")
+        || buffer != gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text))
+        || !gtk_text_view_get_editable(GTK_TEXT_VIEW(overlay.text))) return;
+    GtkWidget *editor = g_object_ref(overlay.text), *scroll = g_object_ref(overlay.scroll);
+    GtkWidget *card = g_object_ref(overlay.card), *expand = g_object_ref(overlay.expand);
+    JsonObject *view = json_object_ref(overlay.view);
+    gint width = 0;
+    gtk_widget_get_size_request(card, &width, NULL);
+    char *text = candidate();
+    gint height = measured_body_height(text, MAX(1, width));
+    g_free(text);
+    if (overlay.view == view && overlay.text == editor && overlay.scroll == scroll
+        && overlay.card == card && overlay.expand == expand && active()) {
+        gint collapsed = (overlay.text_size * 155 * 7 + 99) / 100 + 4;
+        gtk_widget_set_visible(expand, overlay.expanded || height >= collapsed);
+        if (overlay.view == view && overlay.text == editor && overlay.scroll == scroll
+            && overlay.card == card && active()) {
+            body_height(height, FALSE);
+        }
+    }
+    json_object_unref(view);
+    g_object_unref(expand); g_object_unref(card); g_object_unref(scroll); g_object_unref(editor);
+}
 static void draft_changed(GtkTextBuffer *buffer, gpointer data) {
     (void)buffer; (void)data;
     tl_overlay_control_cancel();
@@ -1677,6 +1717,7 @@ static void draft_changed(GtkTextBuffer *buffer, gpointer data) {
         char *text = candidate();
         emit_string("draft", text);
         g_free(text);
+        resize_owned_draft(buffer);
     }
 }
 static void limit_draft(GtkTextBuffer *buffer, GtkTextIter *location, gchar *text, gint length, gpointer data) {
@@ -2346,14 +2387,9 @@ static gboolean render(Target *target, JsonObject *data) {
         && overlay.target == target && overlay.popover == old_popover && overlay.text == old_editor
         && tl_configuration_current(generation) && tl_view_context_matches(target, overlay.view)
         ? candidate() : NULL;
-    PangoLayout *layout = gtk_widget_create_pango_layout(overlay.text, draft ? draft : text_or_empty(value, "text"));
+    gint height = measured_body_height(draft ? draft : text_or_empty(value, "text"), width);
     g_free(draft);
-    pango_layout_set_width(layout, MAX(1, width - 30) * PANGO_SCALE);
-    pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
-    gint height;
-    pango_layout_get_pixel_size(layout, NULL, &height); g_object_unref(layout);
     gint collapsed_height = (overlay.text_size * 155 * 7 + 99) / 100 + 4;
-    height = CLAMP(height + 16, 36, overlay.expanded ? 360 : collapsed_height);
     gboolean busy = g_strcmp0(state, "Translating") == 0 && !boolean(presentation, "editorOwnsText");
     if (busy && !*text_or_empty(value, "text")) height = MAX(54, height);
     gtk_widget_set_visible(overlay.skeleton, busy && !*text_or_empty(value, "text"));

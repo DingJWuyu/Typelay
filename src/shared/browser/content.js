@@ -849,7 +849,8 @@
     "复制译文": "Copy Translation", "已复制译文": "Translation Copied",
     "复制失败，请选中译文手动复制": "Copy failed. Select the translation to copy manually.",
     "重新翻译": "Translate Again", "不要在这个应用中显示": "Disable for This App", "设置": "Settings",
-    "当前应用风格": "Style for This App", "自然": "Natural", "正式": "Formal", "继承": "Inherit",
+    "当前应用风格": "Style for This App", "风格": "Style", "自然": "Natural", "正式": "Formal", "继承": "Inherit",
+    "简洁": "Concise", "口语": "Casual", "尚未提供": "Not Available",
     "简洁 · 尚未提供": "Concise · Not Available", "口语 · 尚未提供": "Casual · Not Available",
     "换种说法": "Rephrase", "加入术语表": "Add to Glossary", "源词": "Source Term", "译词": "Translation",
     "术语作用范围": "Term Scope", "全局": "Global", "保存": "Save", "取消": "Cancel", "关闭": "Close",
@@ -907,6 +908,29 @@
     if (remaining > 0)
       hintTimer = setTimeout(refreshHint, Math.max(1, Math.ceil(hintRemaining > 0 ? hintRemaining : remaining)));
   }
+  function closeMore(current = overlay) {
+    if (!current) return;
+    current.menu.hidden = true;
+    current.menuContext = null;
+    current.more.setAttribute("aria-expanded", "false");
+  }
+  function positionMore(current) {
+    if (current.menu.hidden) return;
+    if (!current.menuContext || !menuActionCurrent(current, current.menuContext)) {
+      closeMore(current); return;
+    }
+    const panel = current.panel.getBoundingClientRect(), button = current.more.getBoundingClientRect();
+    const menu = current.menu;
+    menu.style.maxHeight = `${Math.max(0, innerHeight - 16)}px`;
+    const size = menu.getBoundingClientRect();
+    const left = Math.max(8, Math.min(innerWidth - size.width - 8, button.right + 4 - size.width));
+    const below = button.bottom + 6;
+    const top = Math.max(8, Math.min(innerHeight - size.height - 8,
+      below + size.height <= innerHeight - 8 ? below : button.top - size.height - 6));
+    menu.style.left = `${left - panel.left - current.panel.clientLeft}px`;
+    menu.style.top = `${top - panel.top - current.panel.clientTop}px`;
+    menu.style.transformOrigin = top >= button.bottom ? "100% 0" : "100% 100%";
+  }
   function position(previous = null) {
     refreshHint();
     if (!overlay) return;
@@ -917,7 +941,9 @@
     const {bounds} = geo, host = current.host;
     const geometryKey = JSON.stringify(geo);
     if (!previous && current.motion && current.motion.geometryKey === geometryKey
-      && !reducedMotion.matches && !current.reduceMotion) return; // Renewal must not restart a running resize.
+      && !reducedMotion.matches && !current.reduceMotion) {
+      positionMore(current); return; // Renewal must not restart a running resize.
+    }
     cancelMotion(current);
     const width = overlay.paused ? Math.min(innerWidth - 16, 160)
       : Math.min(innerWidth - 16, Math.max(180, Math.min(overlay.expanded ? 720 : 520, overlay.expanded ? Math.max(520, bounds.width) : bounds.width)));
@@ -927,6 +953,7 @@
     const height = host.getBoundingClientRect().height;
     host.style.top = `${Math.max(8, Math.min(innerHeight - height - 8,
       bounds.y >= height + 8 ? bounds.y - height - 6 : bounds.y + bounds.height + 6))}px`;
+    positionMore(current);
     if (!previous || reducedMotion.matches || current.reduceMotion || typeof host.animate !== "function") return;
     const end = host.getBoundingClientRect();
     const above = previous.bottom < bounds.y;
@@ -944,7 +971,9 @@
       });
       current.motion = {animation, geometryKey};
       animation.onfinish = () => {
-        if (overlay === current && current.motion?.animation === animation) cancelMotion(current);
+        if (overlay === current && current.motion?.animation === animation) {
+          cancelMotion(current); positionMore(current);
+        }
       };
     } catch (_) { cancelMotion(current); } // Unsupported animation lands at the measured final layout.
   }
@@ -972,7 +1001,7 @@
       const shadow = host.attachShadow({mode: "closed"});
       const style = document.createElement("style");
       style.textContent = `
-        :host{color-scheme:light dark;--content-size:15px;--accent:#d97757;
+        :host{color-scheme:light dark;--content-size:15px;--accent:#d97757;--accent-strong:#b5552f;
           --content-font:"TypeLay Source Serif","Source Serif 4","Noto Serif SC",Georgia,"SimSun",serif;
           --ui-font:"TypeLay Inter",Inter,"Noto Sans SC","Segoe UI","Microsoft YaHei UI",sans-serif}
         section{--surface:light-dark(rgba(251,250,247,.9),rgba(44,43,40,.92));
@@ -982,7 +1011,7 @@
           font:500 12px/1.4 var(--ui-font);color:var(--ink);background:var(--surface);
           border:1px solid var(--line);backdrop-filter:blur(28px) saturate(1.8);
           display:flex;flex-direction:column;box-sizing:border-box;height:100%;
-          border-radius:18px;box-shadow:0 8px 24px #1414131a,0 1px 3px #14141314;overflow:hidden}
+          border-radius:18px;box-shadow:0 8px 24px #1414131a,0 1px 3px #14141314;position:relative;overflow:visible}
         section[data-material=solid]{--surface:light-dark(#faf9f5,#262624);backdrop-filter:none}
         header{flex:none;display:flex;align-items:center;gap:6px;color:var(--muted)}
         header{min-height:28px;padding:0 8px 8px 10px;flex-wrap:wrap}
@@ -994,6 +1023,21 @@
         .more-actions{flex:none;display:flex;flex-direction:column;gap:4px;margin:0 12px;padding:8px 0;
           border-top:1px solid var(--line);color:var(--muted);font-size:12px}
         .more-actions button{text-align:left;color:var(--ink)}
+        .more-popup{position:absolute;z-index:2;box-sizing:border-box;display:flex;flex-direction:column;
+          width:max-content;min-width:min(236px,calc(100vw - 16px));max-width:calc(100vw - 16px);
+          padding:5px;border:1px solid var(--line);border-radius:12px;background:var(--surface);
+          backdrop-filter:blur(28px) saturate(1.8);box-shadow:0 12px 36px #14141326,0 2px 8px #14141314;
+          overflow:auto;color:var(--ink);font:400 13px/1.4 var(--ui-font)}
+        .more-popup>button{height:30px;min-height:30px;padding:0 10px;text-align:left;display:flex;align-items:center;gap:10px}
+        .more-popup svg{width:15px;height:15px;flex:none;color:var(--muted)}
+        .more-popup>button:hover:not(:disabled) svg{color:inherit}
+        .menu-separator{height:.5px;flex:none;margin:5px 10px;background:var(--line)}
+        .more-popup>button:hover:not(:disabled){background:var(--accent-strong);color:#fff}
+        .more-popup>[role=group]{display:flex;align-items:center;flex-wrap:wrap;gap:2px;padding:6px 10px 8px}
+        .more-popup>[role=group]>span{margin-right:8px}
+        .more-popup>[role=group]>button{font-size:11.5px;padding:0 6px;min-height:22px}
+        .more-popup>.hint{white-space:normal;padding:5px 10px;max-width:260px}
+        section[data-material=solid] .more-popup{backdrop-filter:none}
         .more-actions input,.more-actions select{box-sizing:border-box;min-width:0;width:100%;font:inherit;
           color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:7px}
         .more-actions input:focus,.more-actions select:focus{outline:1px solid var(--accent)}
@@ -1106,7 +1150,7 @@
       more.className = "disclosure";
       more.setAttribute("aria-expanded", "false");
       more.setAttribute("aria-controls", "more-actions");
-      menu.id = menu.className = "more-actions";
+      menu.id = "more-actions"; menu.className = "more-popup";
       menu.setAttribute("role", "group");
       menu.setAttribute("aria-label", "更多操作");
       menu.hidden = true;
@@ -1117,7 +1161,8 @@
         } : null;
         menu.hidden = !open;
         more.setAttribute("aria-expanded", String(open));
-        position(previous);
+        if (open) positionMore(overlay);
+        else position(previous);
       };
       // Disclosure controls retain source/editor focus just like the existing
       // actions. Opening this UI never renews its host lease or a write permit.
@@ -1142,6 +1187,7 @@
       });
       header.append(expand, more, hint);
       menu.append(copy, collapse);
+      const menuItems = new Map();
       for (const [text, operation] of [["重新翻译", "regenerate"], ["不要在这个应用中显示", "exclude"], ["设置", "settings"]]) {
         const button = document.createElement("button"); button.textContent = text;
         button.addEventListener("pointerdown", event => event.preventDefault());
@@ -1152,12 +1198,12 @@
           if (operation === "regenerate" && ["EditingTranslation", "EditedTranslationPending", "ReturningToSource"].includes(current.state))
             confirmRegenerate(current, opened);
           else ui(operation);
-        }); menu.append(button);
+        }); menu.append(button); menuItems.set(operation, button);
       }
       const styleActions = document.createElement("div"), styleLabel = document.createElement("span");
       styleActions.setAttribute("role", "group");
       styleActions.setAttribute("aria-label", "当前应用风格");
-      styleLabel.textContent = "当前应用风格";
+      styleLabel.textContent = "风格";
       styleActions.append(styleLabel);
       const styleButtons = new Map();
       const translationAction = (event, operation, selectedStyle = null) => {
@@ -1184,7 +1230,8 @@
       }
       for (const text of ["简洁 · 尚未提供", "口语 · 尚未提供"]) {
         const button = document.createElement("button");
-        button.textContent = text; button.disabled = true;
+        button.textContent = text.split(" · ")[0]; button.disabled = true;
+        button.setAttribute("aria-label", text); button.title = "尚未提供";
         styleActions.append(button);
       }
       const alternative = document.createElement("button");
@@ -1209,10 +1256,37 @@
         setMoreOpen(false);
         ui("sessionGlossaryBegin");
       });
-      menu.append(styleActions, alternative, glossary, translationFeedback);
+      const glyphs = {
+        refresh: [["path", {d:"M20 5v5h-5M4 19v-5h5M19.2 10A7.5 7.5 0 0 0 6 7.2M4.8 14A7.5 7.5 0 0 0 18 16.8"}]],
+        sparkle: [["path", {d:"M12 3.5c.6 4.4 2.1 6 6.5 6.5-4.4.6-5.9 2.1-6.5 6.5-.6-4.4-2.1-5.9-6.5-6.5 4.4-.5 5.9-2.1 6.5-6.5ZM18.5 15.5c.2 1.6.8 2.2 2.4 2.4-1.6.2-2.2.8-2.4 2.4-.2-1.6-.8-2.2-2.4-2.4 1.6-.2 2.2-.8 2.4-2.4Z"}]],
+        copy: [["rect", {x:8,y:8,width:12,height:12,rx:2.5}], ["path", {d:"M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"}]],
+        book: [["path", {d:"M5 4.5h10.5A2.5 2.5 0 0 1 18 7v12.5H7.5A2.5 2.5 0 0 1 5 17ZM5 17a2.5 2.5 0 0 1 2.5-2.5H18M9 8.5h5"}]],
+        eye: [["path", {d:"M3 3l18 18M10.6 5.2A9.6 9.6 0 0 1 12 5c5 0 8.5 4.5 9.5 7a13 13 0 0 1-2.9 4M6.4 6.5C4.4 7.8 3.1 9.8 2.5 12c1 2.5 4.5 7 9.5 7a9.4 9.4 0 0 0 4.6-1.2M9.9 9.9a3 3 0 0 0 4.2 4.2"}]],
+        block: [["circle", {cx:12,cy:12,r:8.5}], ["path", {d:"m6 6 12 12"}]],
+        gear: [["circle", {cx:12,cy:12,r:3}], ["path", {d:"M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2 5.5 5.5"}]]
+      };
+      const menuIcon = (button, kind) => {
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        for (const [name, value] of Object.entries({viewBox:"0 0 24 24",fill:"none",stroke:"currentColor","stroke-width":1.6,"stroke-linecap":"round","stroke-linejoin":"round","aria-hidden":"true"}))
+          svg.setAttribute(name, String(value));
+        for (const [tag, attributes] of glyphs[kind]) {
+          const child = document.createElementNS(svg.namespaceURI, tag);
+          for (const [name, value] of Object.entries(attributes)) child.setAttribute(name, String(value));
+          svg.append(child);
+        }
+        const label = document.createElement("span"); label.textContent = button.textContent;
+        button.replaceChildren(svg, label); return label;
+      };
+      menuIcon(menuItems.get("regenerate"), "refresh"); menuIcon(alternative, "sparkle");
+      menuIcon(copy, "copy"); menuIcon(glossary, "book");
+      const collapseLabel = menuIcon(collapse, "eye");
+      menuIcon(menuItems.get("exclude"), "block"); menuIcon(menuItems.get("settings"), "gear");
+      const separator = document.createElement("div"); separator.className = "menu-separator";
+      menu.replaceChildren(menuItems.get("regenerate"), alternative, styleActions, copy, glossary,
+        separator, collapse, menuItems.get("exclude"), menuItems.get("settings"), translationFeedback);
       panel.append(editor, header, menu); shadow.append(style, panel);
       document.documentElement.append(host);
-      overlay = {field, host, shadow, panel, editor, language, status, resume, hint, more, menu, expand, collapse,
+      overlay = {field, host, shadow, panel, editor, language, status, resume, hint, more, menu, expand, collapse, collapseLabel,
         styleActions, styleButtons, alternative, glossaryButton: glossary, translationFeedback, editing: false, composing: false, expanded: false};
     }
     if (data.revision < (overlay.revision || 0)) return {visible: true, editing: overlay.editing};
@@ -1226,6 +1300,7 @@
     }
     const viewIdentity = JSON.stringify({generation: data.generation, revision: data.revision, view: identityView});
     if (overlay.viewIdentity !== viewIdentity) {
+      closeMore(overlay);
       closeRegenerate(overlay);
       retireEditorControl();
       if (overlay.glossaryOpening && (data.revision !== overlay.glossaryOpening.revision
@@ -1251,7 +1326,7 @@
     overlay.translationActions = translationActions(view);
     renderTranslationActions(overlay);
     overlay.shortcuts = view.sessionShortcuts;
-    overlay.collapse.textContent = view.sessionShortcuts?.exitHint || "收起";
+    overlay.collapseLabel.textContent = view.sessionShortcuts?.exitHint || "收起";
     overlay.paused = paused;
     overlay.authority = data.authority;
     overlay.resume.setAttribute("aria-disabled", String(!!overlay.resumePending));
@@ -1268,10 +1343,12 @@
     overlay.host.style.colorScheme = ["light", "dark"].includes(data.theme) ? data.theme : "light dark";
     const appearance = data.appearance && typeof data.appearance === "object" ? data.appearance : {};
     const accents = {clay: "#d97757", ocean: "#2f7fe0", sage: "#5d9a6e", iris: "#8a6cd8", graphite: "#77756f"};
+    const strongAccents = {clay: "#b5552f", ocean: "#1f63bb", sage: "#3c7650", iris: "#6a4cbc", graphite: "#55534e"};
     const fonts = {claude: '"TypeLay Source Serif","Source Serif 4","Noto Serif SC",Georgia,"SimSun",serif',
       sans: '"TypeLay Inter",Inter,"Noto Sans SC","Segoe UI","Microsoft YaHei UI",sans-serif',
       system: 'system-ui,"Microsoft YaHei UI",sans-serif'};
     overlay.host.style.setProperty("--accent", accents[appearance.accent] || accents.clay);
+    overlay.host.style.setProperty("--accent-strong", strongAccents[appearance.accent] || strongAccents.clay);
     overlay.host.style.setProperty("--content-font", fonts[appearance.font] || fonts.claude);
     overlay.host.style.setProperty("--content-size", `${Number.isInteger(appearance.textSize)
       && appearance.textSize >= 13 && appearance.textSize <= 19 ? appearance.textSize : 15}px`);
@@ -2140,6 +2217,14 @@
     const press = {consumed: false};
     observeHeld(press, event);
     held.set(event.code, press);
+    if (event.key === "Escape" && overlay && !overlay.menu.hidden
+      && !event.isComposing && event.keyCode !== 229 && !overlay.composing
+      && overlay.field.ime === "Clear" && liveDeadline(overlay)
+      && (overlay.editing ? event.target === overlay.host && overlay.shadow.activeElement === overlay.editor
+        : event.target === overlay.field.element && focused(overlay.field))) {
+      retireOrdered(); retireEditorControl(); consume(event); press.consumed = true;
+      closeMore(overlay); return;
+    }
     if (overlay && event.target === overlay.host && glossaryFocus()) {
       // Form navigation and IME own these keys, including configured Fn keys.
       retireOrdered(); retireEditorControl();

@@ -1631,7 +1631,19 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
             session.Observe(populated, FocusMember.Source, 1600);
             overlay.Render(session, settings, false);
             overlay.UpdateLayout();
-            Assert.True(Descendants(overlay).OfType<TextBox>().Single().IsVisible);
+            Assert.Equal(SessionState.Translating, session.State);
+            Assert.True(overlay.IsVisible);
+            var editor = Descendants(overlay).OfType<TextBox>().Single();
+            Assert.Equal(Visibility.Hidden, editor.Visibility);
+            Assert.False(editor.IsVisible);
+            Assert.True(editor.IsReadOnly);
+            Assert.False(editor.Focusable);
+            Assert.Empty(editor.Text);
+            var loading = Descendants(overlay).OfType<FrameworkElement>().Single(element =>
+                AutomationProperties.GetAutomationId(element) == "TranslationLoadingPlaceholder");
+            Assert.True(loading.IsVisible);
+            Assert.True(loading.ActualWidth > 0 && loading.ActualHeight > 0);
+            Assert.Equal(foreground, Native.GetForegroundWindow());
             Assert.InRange(NativeSize().Height, 110, 232);
             session.Observe(source with
             {

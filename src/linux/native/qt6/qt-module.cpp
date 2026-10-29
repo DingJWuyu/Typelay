@@ -2783,12 +2783,23 @@ private:
         skeleton_ = new OverlaySkeleton(editor_->viewport());
         skeleton_->hide();
         layout->addLayout(header);
-        connect(editor_, &QPlainTextEdit::textChanged, this, [this] {
-            if (settingText_ || !editor_ || editor_->isReadOnly()) return;
+        connect(editor_, &QPlainTextEdit::textChanged, this, [this, owner = QPointer<QPlainTextEdit>(editor_)] {
+            if (!owner || owner != editor_ || settingText_ || editor_->isReadOnly()) return;
             revokeEditorOrdered();
+            const QPointer<QPlainTextEdit> editor = editor_;
+            const QPointer<QTextDocument> document = editor_->document();
+            const auto view = overlayView_;
+            const auto generation = overlayGeneration_;
+            const auto revision = overlayRevision_;
             const auto value = editor_->toPlainText();
             if (validText(value)) ui("draft", value);
             else if (hint_) hint_->setText(QStringLiteral("译文超过 8192 字符限制，请缩短后再返回"));
+            // The host retains ordinary drafts without echoing a new view.
+            // Layout this native buffer only; old callbacks cannot resize a
+            // replacement editor or preserve any ordered-input permission.
+            if (editor && editor_ == editor && editor_->document() == document
+                && overlayView_ == view && overlayGeneration_ == generation && overlayRevision_ == revision
+                && !editor_->isReadOnly() && overlayActive()) arrangeOverlay();
         });
         footer_ = new QWidget(frame);
         footer_->setObjectName(QStringLiteral("typelay-footer"));
@@ -2943,6 +2954,15 @@ private:
                     && data.value("appearance").toObject() == overlayAppearance_;
                 if (overlayMotion_.isActive())
                     traceOverlayMotion("render", integer(data, "revision", -1), integer(data, "visualExpansionFrom", -1), continueMotion);
+                if (overlayMotion_.isActive() && motionTraceRemaining_ > 0) {
+                    --motionTraceRemaining_;
+                    std::fprintf(stderr, "tlqt-motion-identity sameView=%d sameTheme=%d sameAppearance=%d sameGeneration=%d nextRevision=%d sameDocument=%d sameDocumentRevision=%d sameGeometry=%d\n",
+                        view == overlayView_, data.value("theme").toString(QStringLiteral("system")) == overlayTheme_,
+                        data.value("appearance").toObject() == overlayAppearance_, data.value("generation") == overlayGeneration_,
+                        integer(data, "revision", -1) == overlayRevision_ + 1,
+                        editor_ && editor_->document() == motionDocument_,
+                        editor_ && editor_->document()->revision() == motionDocumentRevision_, geometry(target) == motionGeometry_);
+                }
                 if (!card_ || overlayTarget_ != target) { hideOverlay(); createOverlay(target); }
                 const auto nextToken = view.value("viewContext").toObject().value("token").toObject();
                 if (glossary_ && (glossary_->context.token != nextToken

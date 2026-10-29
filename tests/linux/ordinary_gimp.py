@@ -252,6 +252,7 @@ def run_gimp(
         Atspi,
         GLib,
         bounds,
+        focus_settings_control,
         focused,
         named,
         select_settings_page,
@@ -318,12 +319,20 @@ def run_gimp(
         return node if showing(node) else None
 
     def action(pid, name, *, dialog_title=None):
+        deadline = time.monotonic() + 15
         node = wait_for(lambda: named(pid, name), "public control missing: " + name)
-        if not showing(node):
-            assert Atspi.Component.scroll_to(
-                node.get_component_iface(), Atspi.ScrollType.ANYWHERE
-            ), name
-        wait_for(lambda: showing(node), "public control did not scroll into view: " + name)
+        if pid == host_pid:
+            focus_settings_control(pid, node, timeout=deadline - time.monotonic())
+        else:
+            if not showing(node):
+                assert Atspi.Component.scroll_to(
+                    node.get_component_iface(), Atspi.ScrollType.ANYWHERE
+                ), name
+            wait_for(
+                lambda: showing(node),
+                "public control did not scroll into view: " + name,
+                timeout=deadline - time.monotonic(),
+            )
         if dialog_title is not None:
             ancestor = node
             for _ in range(16):
@@ -373,7 +382,13 @@ def run_gimp(
             lambda: next((a for a in desktop_row()["actions"] if a["id"] == identity), None),
             "desktop action unavailable: " + identity,
         )
-        action(host_pid, row_action["label"])
+        primary = desktop_row().get("primaryAction")
+        action(
+            host_pid,
+            "应用连接：" + desktop_row()["title"]
+            if primary and primary["id"] == identity
+            else row_action["label"],
+        )
         action(host_pid, support()["labels"]["cancel" if cancel else "confirm"])
 
     def main_window():

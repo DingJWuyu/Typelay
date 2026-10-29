@@ -843,9 +843,14 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             string phase = "opening";
             try
             {
-                await ToggleExpansion(overlay, expand: true, mouse: true);
-                overlay.Render(session, settings, true, context: context);
-                Assert.Equal(compact, Bounds(overlay));
+                await ToggleExpansion(overlay, expand: true, mouse: true, afterClick: () =>
+                {
+                    // Observe the real Click synchronously. Rendering may run
+                    // before the asynchronous input helper resumes its caller.
+                    Assert.Equal(compact, Bounds(overlay));
+                    overlay.Render(session, settings, true, context: context);
+                    Assert.Equal(compact, Bounds(overlay));
+                });
                 phase = "expanding";
                 motionClock.Restart();
                 await ObserveRenderingFor(TimeSpan.FromMilliseconds(1000), () =>
@@ -896,9 +901,12 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                     images.Add(CaptureScreenshot(overlay));
 
                 phase = "collapsing";
-                await ToggleExpansion(overlay, expand: false);
-                overlay.Render(session, settings, false, context: context);
-                Assert.Equal(expanded, Bounds(overlay));
+                await ToggleExpansion(overlay, expand: false, afterClick: () =>
+                {
+                    Assert.Equal(expanded, Bounds(overlay));
+                    overlay.Render(session, settings, false, context: context);
+                    Assert.Equal(expanded, Bounds(overlay));
+                });
                 Assert.DoesNotContain("接受", VisibleLabels(overlay));
                 Assert.DoesNotContain("Tab", VisibleLabels(overlay));
                 var collapse = new List<(int Left, int Top, int Width, int Height)> { expanded };
@@ -2458,7 +2466,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         Assert.Equal(before, Bounds(overlay));
     }
 
-    private static async Task ToggleExpansion(OverlayWindow overlay, bool expand, bool mouse = false)
+    private static async Task ToggleExpansion(OverlayWindow overlay, bool expand, bool mouse = false, Action? afterClick = null)
     {
         // Exercise the direct header action through UIA and real software mouse
         // input, including WM_MOUSEACTIVATE. Neither may need focus repair.
@@ -2470,7 +2478,15 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         Assert.Equal(peer.GetName(), button.ToolTip);
         Assert.True(peer.IsEnabled());
         var clicked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        RoutedEventHandler onClick = (_, _) => clicked.TrySetResult();
+        RoutedEventHandler onClick = (_, _) =>
+        {
+            try
+            {
+                afterClick?.Invoke();
+                clicked.TrySetResult();
+            }
+            catch (Exception error) { clicked.TrySetException(error); }
+        };
         button.Click += onClick;
         var focused = Keyboard.FocusedElement;
         nint foreground = Native.GetForegroundWindow();

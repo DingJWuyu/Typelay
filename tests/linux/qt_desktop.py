@@ -1055,8 +1055,14 @@ def run_qt(
                 )
                 command("editor-set", text=candidate)
                 wait_for(
-                    lambda: state()["editorText"] == candidate and settled(state()),
-                    "motion setup draft did not settle",
+                    lambda: value
+                    if (value := state())["editorText"] == candidate
+                    and value["editorFocused"]
+                    and not value["editorReadOnly"]
+                    and value["editorGeometry"]["height"] == 167
+                    and settled(value)
+                    else None,
+                    "long owned draft did not resize in the live editor before returning",
                 )
                 key("Tab")
                 wait_for(

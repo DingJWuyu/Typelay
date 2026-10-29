@@ -342,13 +342,14 @@ internal static partial class HyPackageCheck
                             new PropertyCondition(AutomationElement.ProcessIdProperty, app.Process.Id),
                             new PropertyCondition(AutomationElement.NameProperty, "TypeLay · 自动化测试"),
                             new PropertyCondition(AutomationElement.IsOffscreenProperty, false)));
-                        if (overlay is null || Find(overlay, AutomationElement.NameProperty,
-                            "译文就绪 · 自动化测试", ControlType.Text) is null)
+                        if (overlay is null)
                             return "";
                         // The public edit affordance is offered only for a complete
-                        // candidate. Busy/error placeholder text never gets this name.
-                        var editor = Find(overlay, AutomationElement.NameProperty, "编辑译文", ControlType.Edit);
-                        if (editor is null || editor.Current.IsOffscreen || !editor.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern))
+                        // current candidate. Observe the unique real editor and its
+                        // public text status, not the retired status-bar sentence.
+                        var editor = OverlayPreviewObservation.Find(overlay, app.Process.Id, text, ready: false);
+                        if (editor is null || editor.Current.Name != "编辑译文" || editor.Current.ItemStatus != "当前译文"
+                            || !editor.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern))
                             return "";
                         var value = ((ValuePattern)pattern).Current;
                         return value.IsReadOnly ? value.Value : "";

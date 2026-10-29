@@ -495,6 +495,10 @@ static void report_control_surface(JsonBuilder *builder, GtkWidget *widget) {
     json_builder_set_member_name(builder, "pointerEnteredAtMonoMs");
     json_builder_add_int_value(builder,
         (gintptr)g_object_get_data(G_OBJECT(widget), "fixture-control-enter-at"));
+    json_builder_set_member_name(builder, "canTarget");
+    json_builder_add_boolean_value(builder, gtk_widget_get_can_target(widget));
+    json_builder_set_member_name(builder, "canFocus");
+    json_builder_add_boolean_value(builder, gtk_widget_get_can_focus(widget));
     GtkNative *native = gtk_widget_get_native(widget);
     GdkSurface *surface = native ? gtk_native_get_surface(native) : NULL;
     GdkSurface *parent = gtk_native_get_surface(GTK_NATIVE(report_window));
@@ -521,6 +525,31 @@ static void report_control_surface(JsonBuilder *builder, GtkWidget *widget) {
             json_builder_set_member_name(builder, "pick");
             if (picked) json_builder_add_string_value(builder, gtk_widget_get_name(picked));
             else json_builder_add_null_value(builder);
+            /* A bounded owned-widget path distinguishes a real overlapping
+             * sibling from a descendant whose motion observer missed entry.
+             * Never inspect label text or another application's widget tree. */
+            json_builder_set_member_name(builder, "pickedAncestors");
+            json_builder_begin_array(builder);
+            for (guint depth = 0; picked && depth < 8; depth++, picked = gtk_widget_get_parent(picked)) {
+                json_builder_begin_object(builder);
+                json_builder_set_member_name(builder, "type");
+                json_builder_add_string_value(builder, G_OBJECT_TYPE_NAME(picked));
+                json_builder_set_member_name(builder, "instance");
+                json_builder_add_int_value(builder, language_instance(G_OBJECT(picked)));
+                json_builder_set_member_name(builder, "isObservedControl");
+                json_builder_add_boolean_value(builder, picked == widget);
+                json_builder_set_member_name(builder, "canTarget");
+                json_builder_add_boolean_value(builder, gtk_widget_get_can_target(picked));
+                json_builder_set_member_name(builder, "canFocus");
+                json_builder_add_boolean_value(builder, gtk_widget_get_can_focus(picked));
+                json_builder_set_member_name(builder, "visible");
+                json_builder_add_boolean_value(builder, gtk_widget_get_visible(picked));
+                json_builder_set_member_name(builder, "mapped");
+                json_builder_add_boolean_value(builder, gtk_widget_get_mapped(picked));
+                json_builder_end_object(builder);
+                if (picked == report_window) break;
+            }
+            json_builder_end_array(builder);
         }
     }
     json_builder_end_object(builder);
@@ -832,6 +861,37 @@ static gboolean report_state(gpointer unused) {
             json_builder_add_double_value(builder, pixels);
             json_builder_set_member_name(builder, "fontFamily");
             json_builder_add_string_value(builder, pango_font_description_get_family(font));
+            /* Public content/draw bounds and requested viewport geometry, not
+             * a forced measure/allocation. Keep the failing 2px observation. */
+            json_builder_set_member_name(builder, "layoutGeometry");
+            json_builder_begin_object(builder);
+            graphene_rect_t border_bounds;
+            if (gtk_widget_compute_bounds(candidate, candidate, &border_bounds)) {
+                json_builder_set_member_name(builder, "boundsX");
+                json_builder_add_double_value(builder, border_bounds.origin.x);
+                json_builder_set_member_name(builder, "boundsY");
+                json_builder_add_double_value(builder, border_bounds.origin.y);
+                json_builder_set_member_name(builder, "boundsWidth");
+                json_builder_add_double_value(builder, border_bounds.size.width);
+                json_builder_set_member_name(builder, "boundsHeight");
+                json_builder_add_double_value(builder, border_bounds.size.height);
+            }
+            GtkWidget *scroll = gtk_widget_get_ancestor(candidate, GTK_TYPE_SCROLLED_WINDOW);
+            if (scroll) {
+                gint requested_width, requested_height;
+                gtk_widget_get_size_request(scroll, &requested_width, &requested_height);
+                json_builder_set_member_name(builder, "scrollWidth");
+                json_builder_add_int_value(builder, gtk_widget_get_width(scroll));
+                json_builder_set_member_name(builder, "scrollHeight");
+                json_builder_add_int_value(builder, gtk_widget_get_height(scroll));
+                json_builder_set_member_name(builder, "scrollRequestedWidth");
+                json_builder_add_int_value(builder, requested_width);
+                json_builder_set_member_name(builder, "scrollRequestedHeight");
+                json_builder_add_int_value(builder, requested_height);
+            }
+            json_builder_set_member_name(builder, "fontWeight");
+            json_builder_add_int_value(builder, pango_font_description_get_weight(font));
+            json_builder_end_object(builder);
             GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(candidate));
             GtkTextIter first, last;
             gtk_text_buffer_get_bounds(buffer, &first, &last);

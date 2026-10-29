@@ -218,3 +218,69 @@ def select_work_mode(pid, mode):
     assert states.contains(Atspi.StateType.SHOWING) and states.contains(Atspi.StateType.SENSITIVE)
     assert Atspi.Action.do_action(node.get_action_iface(), 0), name
     return node
+
+
+def focus_settings_control(pid, node, timeout=15):
+    """Reveal an exact settings peer through GTK focus, then prove all clips.
+
+    GTK3 does not implement Component.scroll_to. This uses its native focus
+    adjustment, not a hidden control Action or a guessed viewport fallback.
+    """
+    deadline = time.monotonic() + timeout
+    node.clear_cache()
+    assert node.get_process_id() == pid
+    name = node.get_name()
+    assert Atspi.Component.grab_focus(node.get_component_iface()), name
+
+    def settings_control_visible():
+        node.clear_cache()
+        assert node.get_process_id() == pid and node.get_name() == name
+        states = node.get_state_set()
+        if not all(
+            states.contains(state)
+            for state in (
+                Atspi.StateType.SHOWING,
+                Atspi.StateType.FOCUSED,
+                Atspi.StateType.SENSITIVE,
+                Atspi.StateType.ENABLED,
+            )
+        ):
+            return False
+        area = Atspi.Component.get_extents(node.get_component_iface(), Atspi.CoordType.SCREEN)
+        if area.width <= 0 or area.height <= 0:
+            return False
+        ancestor = node.get_parent()
+        for _ in range(16):
+            assert ancestor is not None and ancestor.get_process_id() == pid
+            ancestor.clear_cache()
+            role = ancestor.get_role()
+            if role in (
+                Atspi.Role.VIEWPORT,
+                Atspi.Role.SCROLL_PANE,
+                Atspi.Role.FRAME,
+                Atspi.Role.DIALOG,
+            ):
+                clip = Atspi.Component.get_extents(
+                    ancestor.get_component_iface(), Atspi.CoordType.SCREEN
+                )
+                if not (
+                    clip.width > 0
+                    and clip.height > 0
+                    and clip.x != -(2**31)
+                    and clip.y != -(2**31)
+                    and clip.x <= area.x <= clip.x + clip.width - area.width
+                    and clip.y <= area.y <= clip.y + clip.height - area.height
+                ):
+                    return False
+                if role in (Atspi.Role.FRAME, Atspi.Role.DIALOG):
+                    assert role == Atspi.Role.DIALOG or ancestor.get_name() == "TypeLay 设置"
+                    return True
+            ancestor = ancestor.get_parent()
+        raise AssertionError("settings control exceeds its bounded owned ancestry")
+
+    while time.monotonic() < deadline:
+        if settings_control_visible():
+            assert settings_control_visible(), "settings control moved after focus: " + name
+            return node
+        time.sleep(0.05)
+    raise AssertionError("settings control did not focus/scroll fully into view: " + name)

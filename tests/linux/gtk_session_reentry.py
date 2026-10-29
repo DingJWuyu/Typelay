@@ -714,8 +714,12 @@ def check_preview_colors(client, source, generation, state, initial, evidence):
                     ),
                     "candidateHeight": candidate.get("height") if candidate else None,
                     "baselineShortHeight": short_height,
+                    "fontFamily": candidate.get("fontFamily") if candidate else None,
+                    "fontPixels": candidate.get("fontPixels") if candidate else None,
+                    "layoutGeometry": candidate.get("layoutGeometry") if candidate else None,
                 }
-                if candidate:
+                if candidate and value.get("observedAtMs", 0) > rendered_at:
+                    phase.setdefault("firstLiveObservation", phase["lastObservation"])
                     phase["lastLiveObservation"] = phase["lastObservation"]
             if (
                 value.get("observedAtMs", 0) <= rendered_at

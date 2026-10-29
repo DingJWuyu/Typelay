@@ -4674,7 +4674,7 @@ def run(arguments):
                 assert action is not None and Atspi.Action.do_action(action, 0), name
                 return node
 
-            def activate_scrolled_setting(name, *, evidence_name=None, timeout=15):
+            def activate_scrolled_setting(name, *, evidence_name=None, timeout=15, activate=True):
                 # Continued interactions may follow an earlier page scroll. The
                 # initial primary actions retain their unscrolled screen checks.
                 deadline = time.monotonic() + timeout
@@ -4905,8 +4905,9 @@ def run(arguments):
                 assert control_in_view(), (
                     "scrolled settings control moved out of view before activation"
                 )
-                action = node.get_action_iface()
-                assert action is not None and Atspi.Action.do_action(action, 0), name
+                if activate:
+                    action = node.get_action_iface()
+                    assert action is not None and Atspi.Action.do_action(action, 0), name
                 return node
 
             def settings_page(title):
@@ -5109,10 +5110,32 @@ def run(arguments):
                     if action["request"]["operation"] == "Repair"
                 )
                 repair_name = current_package["title"] + "：" + repair["label"]
+                manager = settings_control("本地翻译组件管理")
+                assert not manager.get_state_set().contains(Atspi.StateType.EXPANDED), (
+                    "ready repair took over the default preparation screen"
+                )
                 repair_button = named(process.pid, repair_name)
-                assert repair_button is None or not repair_button.get_state_set().contains(
-                    Atspi.StateType.SHOWING
-                ), "ready repair took over the default preparation screen"
+                if repair_button is not None:
+                    # A never-mapped GTK3 expander child can report SHOWING with
+                    # its initial 1 x 1 allocation. Check the real collapsed
+                    # owner and owned ancestry, not that cached flag alone.
+                    ancestor = repair_button
+                    for _ in range(16):
+                        assert ancestor is not None and ancestor.get_process_id() == process.pid
+                        if ancestor == manager:
+                            break
+                        assert ancestor.get_role() != Atspi.Role.FRAME
+                        ancestor = ancestor.get_parent()
+                    else:
+                        raise AssertionError("repair action escaped its collapsed model manager")
+                    repair_button.clear_cache()
+                    initial_repair = Atspi.Component.get_extents(
+                        repair_button.get_component_iface(), Atspi.CoordType.SCREEN
+                    )
+                    assert not repair_button.get_state_set().contains(Atspi.StateType.SHOWING) or (
+                        initial_repair.width,
+                        initial_repair.height,
+                    ) == (1, 1), "collapsed model management exposed an allocated repair action"
                 for expanded in (True, False):
                     deadline = time.monotonic() + 15
                     manager = settings_control(
@@ -5370,7 +5393,7 @@ def run(arguments):
                     if row["id"] == "desktop-text"
                 )
                 assert row["state"] == "NeedsInstall"
-                activate_setting(row["primaryAction"]["label"])
+                activate_scrolled_setting("应用连接：" + row["title"])
                 activate_setting(support["labels"]["confirm"])
 
                 def prepared_component():
@@ -5384,11 +5407,22 @@ def run(arguments):
                 # This includes integrity checking and unpacking the real shipped
                 # archive, not a GUI animation or a readiness sleep.
                 row = wait_for(prepared_component, "same-package preparation failed", timeout=60)
-                wait_for(
-                    lambda: (choice := named(process.pid, "选择应用…"))
-                    and choice.get_state_set().contains(Atspi.StateType.SHOWING),
-                    "prepared managed component did not reveal application selection",
-                )
+
+                def prepared_chooser():
+                    choice = named(process.pid, "选择应用…")
+                    details = named(process.pid, "连接详情")
+                    # Host completion may precede the GTK busy state retiring.
+                    # The real chooser lives below the unified app cards; its
+                    # full focused allocation is checked before use below.
+                    return (
+                        choice is not None
+                        and choice.get_process_id() == process.pid
+                        and choice.get_state_set().contains(Atspi.StateType.SENSITIVE)
+                        and details is not None
+                        and details.get_state_set().contains(Atspi.StateType.EXPANDED)
+                    )
+
+                wait_for(prepared_chooser, "prepared component did not enable its actual chooser")
                 assert not any(row["capabilities"].values()), row
                 assert not status()["setup"]["onboardingComplete"]
                 evidence.append(
@@ -5523,6 +5557,9 @@ def run(arguments):
                     "fresh client must require the user's original input-method acknowledgement",
                 )
                 calibrate_settings_scroll(settings_control(next_step_label))
+                # The chooser is below the unified app cards. Prove its actual
+                # focused, fully clipped allocation without opening it yet.
+                activate_scrolled_setting("选择应用…", activate=False)
                 activate_scrolled_setting(
                     "我已记下原输入法的启动方式，并知道如何恢复",
                     evidence_name="application-support-recovery-acknowledgement-scroll",

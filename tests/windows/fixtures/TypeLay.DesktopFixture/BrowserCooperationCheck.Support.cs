@@ -111,8 +111,10 @@ internal static partial class BrowserCooperationCheck
             await Task.Delay(40, ct);
         }
     }
+    private sealed record SourceLayoutObservation(double BrowserLeft, double BrowserWidth, double SettingsLeft,
+        double SettingsWidth, int WorkLeft, int WorkWidth, double Scale, double ViewportWidth, double ExposedWidth);
     private static async Task<System.Windows.Rect> FocusCommandFieldAsync(Cdp cdp, BrowserWindows windows, AutomationElement settings, CancellationToken ct,
-        Action<string>? stage = null)
+        Action<string>? stage = null, Action<SourceLayoutObservation>? observeLayout = null)
     {
         // A real user returns from Settings by clicking the exposed source.
         // Programmatic foreground activation is not a prerequisite for that click.
@@ -133,6 +135,10 @@ internal static partial class BrowserCooperationCheck
             && Math.Abs(monitor.Work.Bottom - monitor.Work.Top - metrics.GetProperty("screenHeight").GetDouble() * scale) <= 2,
             "source-screen-scale-mismatch");
         double width = Math.Min(metrics.GetProperty("width").GetDouble(), (settingsBounds.Left - browserBounds.Left - 32) / scale);
+        // Only already-read geometry from these owned windows is retained.
+        // This observation neither rearranges them nor changes the click gate.
+        observeLayout?.Invoke(new(browserBounds.Left, browserBounds.Width, settingsBounds.Left, settingsBounds.Width,
+            monitor.Work.Left, monitor.Work.Right - monitor.Work.Left, scale, metrics.GetProperty("width").GetDouble(), width));
         Require(width >= 100, "source-command-layout-unavailable");
         // Only this controlled page's layout changes. Chrome keeps its normal
         // window; both real fields fit in the exposed space left of Settings.
@@ -204,12 +210,21 @@ internal static partial class BrowserCooperationCheck
                             Y = (int)(source.Top + source.Height / 2)
                         }), 2) == pages[0].Handle,
                         "settings-command-layout-unavailable");
-                    var status = settings.FindFirst(TreeScope.Descendants, new AndCondition(
+                    var statuses = settings.FindAll(TreeScope.Descendants, new AndCondition(
                         new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text),
-                        new PropertyCondition(AutomationElement.NameProperty, ready),
-                        new PropertyCondition(AutomationElement.IsOffscreenProperty, false)));
-                    if (status is null)
+                        new PropertyCondition(AutomationElement.IsOffscreenProperty, false)))
+                        .Cast<AutomationElement>().Where(item =>
+                        {
+                            // Pause registration is a separate second line. The
+                            // complete browser command cue must still match exactly.
+                            string name = item.Current.Name;
+                            int end = name.IndexOf('\n');
+                            return (end < 0 ? name : name[..end]) == ready;
+                        }).ToArray();
+                    Require(statuses.Length <= 1, "public-command-ready-ambiguous");
+                    if (statuses.Length == 0)
                         return false;
+                    var status = statuses[0];
                     var viewport = settings.FindFirst(TreeScope.Descendants,
                         new PropertyCondition(AutomationElement.ClassNameProperty, "ScrollViewer"));
                     var bounds = status.Current.BoundingRectangle;

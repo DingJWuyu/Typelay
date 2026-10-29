@@ -2256,6 +2256,11 @@ class BrowserContract(unittest.TestCase):
         compact = self.page.locator("html > div[role=region][aria-label=TypeLay]").bounding_box()
         click_button("更多")
         names = menu_names(True)
+        self.assertEqual(
+            self.page.locator("html > div[role=region][aria-label=TypeLay]").bounding_box(),
+            compact,
+            "Opening the anchored menu must not resize or move the translation bubble",
+        )
         for name in ["复制译文", "重新翻译", "不要在这个应用中显示", "设置"]:
             self.assertIn(name, names)
         self.assertIn("Tab 交还应用", names)
@@ -2497,6 +2502,181 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 
+    def test_more_popup_clamps_to_viewport_and_escape_preserves_source(self):
+        data = self.motion_view()
+        self.page.emulate_media(reduced_motion="reduce")
+        for width, height, x, y in [
+            (640, 500, 8, 8),
+            (640, 500, 472, 440),
+            (280, 220, 8, 8),
+            (280, 220, 112, 160),
+        ]:
+            with self.subTest(width=width, height=height, x=x, y=y):
+                self.command("overlay-hide")
+                self.page.set_viewport_size({"width": width, "height": height})
+                self.page.locator("#source").evaluate(
+                    "(element, p) => {element.style.cssText = `position:fixed;left:${p.x}px;top:${p.y}px;width:160px;height:40px;margin:0;box-sizing:border-box`;}",
+                    {"x": x, "y": y},
+                )
+                self.page.locator("#source").focus()
+                self.page.keyboard.press("Control+A")
+                snapshot = self.type_source()
+                data.update(target=snapshot["target"], authority=snapshot["authority"])
+                data["revision"] += 1
+                self.set_translation_menu(data, self.translation_menu_state())
+                host = self.page.locator("html > div[role=region][aria-label=TypeLay]")
+                before = host.bounding_box()
+                selection = self.page.locator("#source").evaluate(
+                    "e => [e.selectionStart, e.selectionEnd]"
+                )
+                self.click_overlay_control("更多")
+                menu = self.overlay_control("更多操作", "group")
+                rect = self.overlay_dom(
+                    menu, "function() { return this.getBoundingClientRect().toJSON(); }"
+                )
+                self.assertEqual(host.bounding_box(), before)
+                self.assertGreaterEqual(rect["x"], 8)
+                self.assertGreaterEqual(rect["y"], 8)
+                self.assertLessEqual(rect["right"], width - 8)
+                self.assertLessEqual(rect["bottom"], height - 8)
+                self.page.keyboard.press("Escape")
+                self.assertTrue(self.overlay_dom(menu, "function() { return this.hidden; }"))
+                self.assertEqual(host.bounding_box(), before)
+                self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+                self.assertEqual(
+                    self.page.locator("#source").evaluate(
+                        "e => [e.selectionStart, e.selectionEnd]"
+                    ),
+                    selection,
+                )
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.accepted(), [])
+        self.assertFalse(
+            self.page.evaluate(
+                "fixtureMessages.some(m => m.event === 'ui' && ['escape', 'return'].includes(m.data.operation))"
+            )
+        )
+
+    def test_more_popup_escape_keeps_editor_draft_and_selection(self):
+        _snapshot, data = self.open_editor("Tab", "Esc")
+        self.page.emulate_media(reduced_motion="reduce")
+        self.set_translation_menu(data, self.translation_menu_state(), "Tab", "Esc")
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        before = self.overlay_dom(
+            editor, "function() { return [this.value, this.selectionStart, this.selectionEnd]; }"
+        )
+        self.click_overlay_control("更多")
+        self.assertTrue(self.overlay_dom(editor, "function() { return this.matches(':focus'); }"))
+        self.page.keyboard.press("Escape")
+        self.assertTrue(self.overlay_dom(editor, "function() { return this.matches(':focus'); }"))
+        self.assertEqual(
+            self.overlay_dom(
+                editor,
+                "function() { return [this.value, this.selectionStart, this.selectionEnd]; }",
+            ),
+            before,
+        )
+        self.assertFalse(
+            self.page.evaluate(
+                "fixtureMessages.some(m => m.event === 'ui' && ['escape', 'return'].includes(m.data.operation))"
+            )
+        )
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
+    def test_more_popup_opened_during_resize_anchors_to_settled_header(self):
+        data = self.motion_view()
+        self.set_translation_menu(data, self.translation_menu_state())
+        self.cdp.send("Animation.enable")
+        self.cdp.send("Animation.setPlaybackRate", {"playbackRate": 0})
+        try:
+            initial_width = self.page.locator(
+                "html > div[role=region][aria-label=TypeLay]"
+            ).bounding_box()["width"]
+            self.click_overlay_control("展开")
+            editor = self.overlay_control("TypeLay 译文", "textbox")
+            animation_count = self.overlay_dom(
+                editor,
+                """function() {
+                  const animations = this.getRootNode().host.getAnimations();
+                  for (const animation of animations)
+                    animation.currentTime = 140;
+                  return animations.length;
+                }""",
+            )
+            self.assertGreater(animation_count, 0)
+            intermediate_width = self.page.locator(
+                "html > div[role=region][aria-label=TypeLay]"
+            ).bounding_box()["width"]
+            self.assertGreater(intermediate_width, initial_width)
+            self.assertLess(intermediate_width, 520)
+            self.click_overlay_control("更多")
+            menu = self.overlay_control("更多操作", "group")
+            self.assertFalse(self.overlay_dom(menu, "function() { return this.hidden; }"))
+        finally:
+            self.cdp.send("Animation.setPlaybackRate", {"playbackRate": 1})
+        self.observe_overlay_frames()
+        frames = self.motion_frames()
+        self.assertEqual(frames[-1]["host"]["width"], 520)
+        geometry = self.overlay_dom(
+            menu,
+            """function() {
+              const button = this.getRootNode().querySelector('[aria-controls="more-actions"]');
+              return {menu: this.getBoundingClientRect().toJSON(),
+                button: button.getBoundingClientRect().toJSON(), hidden: this.hidden};
+            }""",
+        )
+        self.assertFalse(geometry["hidden"])
+        self.assertAlmostEqual(geometry["menu"]["right"], geometry["button"]["right"] + 4, delta=1)
+        viewport_height = self.page.evaluate("innerHeight")
+        menu_height = geometry["menu"]["height"]
+        below = geometry["button"]["bottom"] + 6
+        anchored_top = (
+            below
+            if below + menu_height <= viewport_height - 8
+            else geometry["button"]["top"] - menu_height - 6
+        )
+        self.assertAlmostEqual(
+            geometry["menu"]["top"],
+            max(8, min(viewport_height - menu_height - 8, anchored_top)),
+            delta=1,
+        )
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
+    def test_more_popup_escape_does_not_consume_unknown_editor_composition(self):
+        _snapshot, data = self.open_editor("Tab", "Esc")
+        self.page.emulate_media(reduced_motion="reduce")
+        self.set_translation_menu(data, self.translation_menu_state(), "Tab", "Esc")
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        self.click_overlay_control("更多")
+        menu = self.overlay_control("更多操作", "group")
+        before = self.overlay_dom(editor, "function() { return this.value; }")
+        # An untrusted notification cannot establish trusted IME completion.
+        # It revokes Clear; this is a negative boundary, not physical IME proof.
+        self.overlay_dom(
+            editor,
+            "function() { this.dispatchEvent(new CompositionEvent('compositionstart')); }",
+        )
+        self.page.evaluate("""() => {
+          window.popupEscapes = [];
+          window.addEventListener('keydown', event => {
+            if (event.key === 'Escape') popupEscapes.push(event.isTrusted);
+          });
+        }""")
+        self.page.keyboard.press("Escape")
+        self.assertEqual(self.page.evaluate("popupEscapes"), [True])
+        self.assertFalse(self.overlay_dom(menu, "function() { return this.hidden; }"))
+        self.assertTrue(self.overlay_dom(editor, "function() { return this.matches(':focus'); }"))
+        self.assertEqual(self.overlay_dom(editor, "function() { return this.value; }"), before)
+        self.assertFalse(
+            self.page.evaluate(
+                "fixtureMessages.some(m => m.event === 'ui' && ['escape', 'return'].includes(m.data.operation))"
+            )
+        )
+        self.assertEqual(self.accepted(), [])
+
     def test_closed_quality_menu_keeps_future_styles_disabled_but_allows_removing_override(self):
         data = self.motion_view()
         self.page.emulate_media(reduced_motion="reduce")
@@ -2547,9 +2727,19 @@ class BrowserContract(unittest.TestCase):
         self.click_overlay_control("更多")
         self.set_translation_menu(data, self.translation_menu_state())
         self.click_overlay_control("更多")
+        retired = self.overlay_control("自然")
+        retired_rect = self.overlay_dom(
+            retired, "function() { return this.getBoundingClientRect().toJSON(); }"
+        )
         data["revision"] += 1
         self.set_translation_menu(data, self.translation_menu_state(settingsRevision=13))
-        self.click_overlay_control("自然")
+        self.assertTrue(
+            self.overlay_dom(retired, "function() { return this.closest('#more-actions').hidden; }")
+        )
+        self.page.mouse.click(
+            retired_rect["x"] + retired_rect["width"] / 2,
+            retired_rect["y"] + retired_rect["height"] / 2,
+        )
         self.assertFalse(
             self.page.evaluate("""fixtureMessages.some(message =>
           message.event === 'ui' && ['style', 'alternative'].includes(message.data.operation))""")
