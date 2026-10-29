@@ -158,6 +158,67 @@ internal static class UiTheme
 
       <SolidColorBrush x:Key="SettingsLink" Color="{DynamicResource SettingsLinkColor}"/>
       <SolidColorBrush x:Key="SettingsSelection" Color="{DynamicResource SettingsSelectionColor}"/>
+      <SolidColorBrush x:Key="SettingsControlFill" Color="{DynamicResource SettingsControlFillColor}"/>
+      <SolidColorBrush x:Key="SettingsControlHover" Color="{DynamicResource SettingsControlHoverColor}"/>
+      <SolidColorBrush x:Key="SettingsControlLine" Color="{DynamicResource SettingsControlLineColor}"/>
+      <!-- Explicit settings-only keys: never restyle a source/overlay editor. -->
+      <Style x:Key="SettingsSearchField" TargetType="TextBox">
+        <Setter Property="Background" Value="{DynamicResource SettingsControlFill}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text}"/>
+        <Setter Property="CaretBrush" Value="{DynamicResource Text}"/>
+        <Setter Property="SelectionBrush" Value="{DynamicResource AccentSoft}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource SettingsControlLine}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TextBox">
+          <Grid>
+            <Border x:Name="surface" CornerRadius="8" Background="{TemplateBinding Background}"/>
+            <ScrollViewer x:Name="PART_ContentHost" VerticalAlignment="Center" Focusable="False"
+              HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden"/>
+            <Border x:Name="outline" CornerRadius="8" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" IsHitTestVisible="False"/>
+            <Border x:Name="focus" CornerRadius="11" BorderBrush="{DynamicResource AccentSoft}" BorderThickness="3" Margin="-3" Visibility="Collapsed" IsHitTestVisible="False"/>
+          </Grid>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+              <Setter TargetName="outline" Property="BorderBrush" Value="{DynamicResource Accent}"/>
+              <Setter TargetName="outline" Property="BorderThickness" Value="1"/>
+              <Setter TargetName="focus" Property="Visibility" Value="Visible"/>
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate></Setter.Value></Setter>
+      </Style>
+      <Style x:Key="SettingsListSearchField" TargetType="TextBox" BasedOn="{StaticResource SettingsSearchField}">
+        <Setter Property="Background" Value="{DynamicResource Panel}"/>
+        <Setter Property="BorderThickness" Value="0.5"/>
+      </Style>
+      <Style x:Key="SettingsShortcutRecorder" TargetType="TextBox">
+        <Setter Property="Background" Value="{DynamicResource SettingsControlFill}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text}"/>
+        <Setter Property="SelectionBrush" Value="{DynamicResource AccentSoft}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource SettingsControlLine}"/>
+        <Setter Property="BorderThickness" Value="0,0,0,1"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TextBox">
+          <Grid>
+            <Border x:Name="surface" CornerRadius="7" Background="{TemplateBinding Background}"/>
+            <ScrollViewer x:Name="PART_ContentHost" VerticalAlignment="Center" Focusable="False"
+              HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden"/>
+            <Border x:Name="outline" CornerRadius="7" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" IsHitTestVisible="False"/>
+          </Grid>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="surface" Property="Background" Value="{DynamicResource SettingsControlHover}"/></Trigger>
+            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+              <Setter TargetName="surface" Property="Background" Value="{DynamicResource AccentSoft}"/>
+              <Setter TargetName="outline" Property="BorderBrush" Value="{DynamicResource Accent}"/>
+              <Setter TargetName="outline" Property="BorderThickness" Value="1.5"/>
+              <Setter Property="Foreground" Value="{DynamicResource AccentInk}"/>
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate></Setter.Value></Setter>
+      </Style>
       <Style x:Key="SettingsThemeChoice" TargetType="RadioButton">
         <Setter Property="Foreground" Value="{DynamicResource Text}"/>
         <Setter Property="FontSize" Value="13"/>
@@ -224,7 +285,10 @@ internal static class UiTheme
         };
         foreach (var (key, color) in new[] { ("SettingsPanelColor", card), ("SettingsSidebarColor", sidebar),
             ("SettingsLineColor", line), ("SettingsTextColor", ink), ("SettingsMutedColor", muted),
-            ("SettingsLinkColor", dark ? accent.Item3 : accent.Item2), ("SettingsSelectionColor", dark ? "#41403C" : "#DEDCD4") })
+            ("SettingsLinkColor", dark ? accent.Item3 : accent.Item2), ("SettingsSelectionColor", dark ? "#41403C" : "#DEDCD4"),
+            ("SettingsControlFillColor", dark ? "#17FFFFFF" : "#14141413"),
+            ("SettingsControlHoverColor", dark ? "#26FFFFFF" : "#24141413"),
+            ("SettingsControlLineColor", dark ? "#26FFFFFF" : "#29141413") })
             r[key] = (Color)ColorConverter.ConvertFromString(color);
         r["Panel"] = Brush(card);
         r["Panel2"] = Brush(dark ? "#383733" : "#F1F0EB");

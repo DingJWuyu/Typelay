@@ -18,18 +18,23 @@ public sealed class ShortcutConfirmationTests(WpfDesktopFixture desktop)
         try
         {
             string path = Path.Combine(directory, "settings.json");
-            var settings = WindowsRuntime.CreateSettings(path); settings.Update(settings.Value);
+            var settings = WindowsRuntime.CreateSettings(path);
+            settings.Update(settings.Value);
             using var model = WindowsRuntime.CreateModel();
-            var window = new SettingsWindow(settings, model, () => { }); window.ShowPage("shortcuts");
+            var window = new SettingsWindow(settings, model, () => { });
+            window.ShowPage("shortcuts");
             var wake = Named<TextBox>("唤醒翻译 UI 快捷键");
             wake.Text = "Ctrl+C";
-            var oldSave = Button("强制保存"); var oldKeep = Button("继续编辑");
+            var oldSave = Button("强制保存");
+            var oldKeep = Button("继续编辑");
             Click(oldKeep);
-            wake.Text = "Ctrl+V"; wake.Text = "Ctrl+C";
+            wake.Text = "Ctrl+V";
+            wake.Text = "Ctrl+C";
             var currentSave = Button("强制保存");
             Assert.NotSame(oldSave, currentSave);
             string persisted = File.ReadAllText(path);
-            Click(oldSave); Click(oldKeep);
+            Click(oldSave);
+            Click(oldKeep);
             Assert.Equal(persisted, File.ReadAllText(path));
             Assert.Same(currentSave, Button("强制保存"));
             Assert.True(currentSave.IsVisible);
@@ -37,11 +42,13 @@ public sealed class ShortcutConfirmationTests(WpfDesktopFixture desktop)
             Assert.Equal("Ctrl+C", WindowsRuntime.CreateSettings(path).Value.WakeShortcut);
             T Named<T>(string name) where T : FrameworkElement
             {
-                window.UpdateLayout(); return Descendants(window).OfType<T>().Single(item => AutomationProperties.GetName(item) == name);
+                window.UpdateLayout();
+                return Descendants(window).OfType<T>().Single(item => AutomationProperties.GetName(item) == name);
             }
             Button Button(string label)
             {
-                window.UpdateLayout(); return Descendants(window).OfType<Button>().Single(button => Equals(button.Content, label));
+                window.UpdateLayout();
+                return Descendants(window).OfType<Button>().Single(button => Equals(button.Content, label));
             }
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
@@ -51,8 +58,10 @@ public sealed class ShortcutConfirmationTests(WpfDesktopFixture desktop)
     {
         for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
         {
-            var child = VisualTreeHelper.GetChild(root, i); yield return child;
-            foreach (var nested in Descendants(child)) yield return nested;
+            var child = VisualTreeHelper.GetChild(root, i);
+            yield return child;
+            foreach (var nested in Descendants(child))
+                yield return nested;
         }
     }
 }

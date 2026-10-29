@@ -186,6 +186,14 @@ class DesktopComponent:
         if not isinstance(files, dict) or files != actual:
             raise ValueError("component-files-mismatch")
         for required in (
+            "fonts/inter/Inter-Regular.ttf",
+            "fonts/inter/Inter-Medium.ttf",
+            "fonts/inter/Inter-SemiBold.ttf",
+            "fonts/inter/LICENSE.txt",
+            "fonts/source-serif/SourceSerif4-Regular.ttf",
+            "fonts/source-serif/SourceSerif4-Semibold.ttf",
+            "fonts/source-serif/LICENSE.md",
+            "fonts/README.md",
             "fcitx-cooperative.py",
             "core/bin/fcitx5",
             "README.md",

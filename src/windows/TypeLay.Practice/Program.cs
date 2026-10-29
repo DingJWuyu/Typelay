@@ -2067,7 +2067,14 @@ internal static partial class Program
         // these RGB colors with red in the low byte.
         uint background = systemColors ? Native.GetSysColor(5) : dark ? 0x00242626u : 0x00F2F6F7u;
         uint text = systemColors ? Native.GetSysColor(8) : dark ? 0x00EEF3F4u : 0x00131414u;
-        uint accent = _preferences.Accent switch { "ocean" => 0x00E07F2Fu, "sage" => 0x006E9A5Du, "iris" => 0x00D86C8Au, "graphite" => 0x006F7577u, _ => 0x005777D9u };
+        uint accent = _preferences.Accent switch
+        {
+            "ocean" => 0x00E07F2Fu,
+            "sage" => 0x006E9A5Du,
+            "iris" => 0x00D86C8Au,
+            "graphite" => 0x006F7577u,
+            _ => 0x005777D9u
+        };
         if (_themeInitialized && background == _backgroundColor && text == _textColor && accent == _accentColor
             && systemColors == _systemColors && dark == _dark)
             return;

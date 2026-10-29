@@ -366,6 +366,7 @@ def cooperation_metadata(archive):
     ):
         raise ValueError("Cooperation manifest, pins or archive files mismatch")
     required = (
+        *recipe.FONT_FILES,
         "fcitx-cooperative.py",
         "THIRD_PARTY_NOTICES.md",
         "core/bin/fcitx5",
@@ -394,6 +395,10 @@ def cooperation_metadata(archive):
     for name in required:
         if "sha256" not in archived_file(name):
             raise ValueError(f"Incomplete cooperation payload: {name}")
+    for name in recipe.FONT_FILES:
+        expected_font = cooperation.sha256(ROOT / "src/shared/ui" / name)
+        if files.get(name) != {"sha256": expected_font}:
+            raise ValueError(f"Packaged cooperation font or license differs: {name}")
     versions = metadata.get("versions", {})
     if (
         versions.get("component_source_versions") != cooperation.SOURCE_VERSIONS
@@ -464,6 +469,7 @@ def cooperation_metadata(archive):
     expected.update(
         cooperation.hashes(
             (
+                *("src/shared/ui/" + name for name in recipe.FONT_FILES),
                 "packaging/linux/fcitx-cooperative/pack.py",
                 "packaging/linux/fcitx-cooperative/fcitx-cooperative.py",
                 "docs/platforms/linux/fcitx.md",

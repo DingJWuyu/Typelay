@@ -215,14 +215,15 @@ internal static partial class HyPackageCheck
                         observation.TextCount = status.Count;
                         var categories = new List<string>();
                         bool headingFound = false;
-                        // Keep the original Name reads and Any short circuit. Only
-                        // fixed public status categories survive this poll; no UI text.
+                        // The status block also contains a separate global-pause
+                        // line. Classify only its complete native-shortcut line;
+                        // pause registration is not native command readiness.
                         bool matched = status.Cast<AutomationElement>().Any(item =>
                         {
                             string name = item.Current.Name;
-                            if (name == "按需快捷键状态")
+                            if (name == "快捷键" && item.Current.AutomationId == "SettingsPageHeading")
                                 headingFound = true;
-                            string? category = ShortcutCategory(name);
+                            string? category = ShortcutCategory(NativeShortcutStatusLine(name));
                             if (category is not null)
                                 categories.Add(category);
                             return category == "native-registered";
@@ -306,7 +307,7 @@ internal static partial class HyPackageCheck
                         && N.Focused() == (root, field), "source-ready-precondition-changed");
                     var statuses = await UiAsync(() => settings!.FindAll(TreeScope.Descendants,
                         new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text))
-                        .Cast<AutomationElement>().Select(item => item.Current.Name)
+                        .Cast<AutomationElement>().Select(item => NativeShortcutStatusLine(item.Current.Name))
                         .Select(name => name == "两个快捷键已启用；操作不会切换工作模式。 当前输入框的直接替换快捷键已就绪。"
                             ? "native-source-ready" : ShortcutCategory(name))
                         .Where(category => category is not null).Distinct().ToArray(), ct);
@@ -674,6 +675,14 @@ internal static partial class HyPackageCheck
         {
             get; set;
         }
+    }
+    // Settings presents the native shortcut status first and the independent
+    // global-pause status after a newline. Do not trim or match substrings: the
+    // native line must still equal one of the original complete public cues.
+    private static string NativeShortcutStatusLine(string name)
+    {
+        int end = name.IndexOf('\n');
+        return end < 0 ? name : name[..end];
     }
     private static string? ShortcutCategory(string name)
     {

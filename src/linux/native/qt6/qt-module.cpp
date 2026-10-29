@@ -2673,12 +2673,16 @@ private:
     void createOverlay(Target *target) {
         if (!fontsRegistered_) {
             fontsRegistered_ = true;
-            const auto home = qEnvironmentVariable("TYPELAY_HOME");
-            if (QDir::isAbsolutePath(home)) {
+            auto root = qEnvironmentVariable("TYPELAY_UI_FONT_ROOT");
+            if (!qEnvironmentVariableIsSet("TYPELAY_UI_FONT_ROOT")) {
+                const auto home = qEnvironmentVariable("TYPELAY_HOME");
+                if (QDir::isAbsolutePath(home)) root = QDir(home).filePath(QStringLiteral("fonts"));
+            }
+            if (QDir::isAbsolutePath(root)) {
                 const QStringList files{QStringLiteral("inter/Inter-Regular.ttf"), QStringLiteral("inter/Inter-Medium.ttf"),
                     QStringLiteral("inter/Inter-SemiBold.ttf"), QStringLiteral("source-serif/SourceSerif4-Regular.ttf"),
                     QStringLiteral("source-serif/SourceSerif4-Semibold.ttf")};
-                for (const auto &file : files) QFontDatabase::addApplicationFont(home + QStringLiteral("/fonts/") + file);
+                for (const auto &file : files) QFontDatabase::addApplicationFont(QDir(root).filePath(file));
             }
         }
         auto *top = target->field->window();

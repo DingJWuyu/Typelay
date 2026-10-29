@@ -15,7 +15,10 @@ internal sealed partial class OverlayWindow
     {
         ResetAppearance();
         _shell.RenderTransformOrigin = new(1, above ? 1 : 0);
-        _appearanceSpring = new(.9) { Target = 1 };
+        _appearanceSpring = new(.9)
+        {
+            Target = 1
+        };
         _appearanceScale.ScaleX = _appearanceScale.ScaleY = .9;
         _appearanceFrame = Stopwatch.GetTimestamp();
         CompositionTarget.Rendering += AdvanceAppearance;

@@ -88,8 +88,12 @@ internal sealed class LanguagePicker : ComboBox
 
     private static string LanguageLabel(string code, string fallback)
     {
-        if (!UiTheme.English || code == "auto") return fallback;
-        try { return CultureInfo.GetCultureInfo(code).EnglishName; }
+        if (!UiTheme.English || code == "auto")
+            return fallback;
+        try
+        {
+            return CultureInfo.GetCultureInfo(code).EnglishName;
+        }
         catch (CultureNotFoundException) { return fallback; }
     }
 

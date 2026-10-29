@@ -17,7 +17,7 @@ public sealed class QuickPanelUndoTests(WpfDesktopFixture desktop)
     public Task RetiredUndoCannotReenableANewerExclusionOrRunAfterPanelClosure() => desktop.RunAsync(async () =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-panel-undo-" + Guid.NewGuid().ToString("N"));
-        var overlay = new OverlayWindow(automationTest: true);
+        var view = new MetadataView();
         QuickPanel? panel = null;
         try
         {
@@ -26,10 +26,13 @@ public sealed class QuickPanelUndoTests(WpfDesktopFixture desktop)
             using var model = WindowsRuntime.CreateModel();
             var loop = new MetadataLoop();
             using var input = new MetadataInput(loop);
-            using var controller = new SessionController(settings, model, overlay, input, input, loop);
+            using var controller = new SessionController(settings, model, view, input, input, loop);
             await controller.StartAsync();
             loop.Advance();
             Assert.Equal("controlled", controller.GetStyleSettingsState().Application);
+            Assert.Equal("controlled", input.ObservedShortcut?.Application);
+            Assert.False(input.ShortcutsReady);
+            Assert.False(input.CanInterceptAcceptance);
             panel = new(settings, model, controller, () => { }, () => { });
             panel.OpenAtTray();
             Toggle().IsChecked = false;
@@ -77,7 +80,6 @@ public sealed class QuickPanelUndoTests(WpfDesktopFixture desktop)
         finally
         {
             panel?.Hide();
-            overlay.Close();
             if (Directory.Exists(directory))
                 Directory.Delete(directory, true);
         }
@@ -92,6 +94,75 @@ public sealed class QuickPanelUndoTests(WpfDesktopFixture desktop)
             yield return child;
             foreach (var nested in Descendants(child))
                 yield return nested;
+        }
+    }
+
+    // The actual UI under test is QuickPanel. A controlled metadata source has
+    // no Windows HWND, so it must not be rendered through a native source overlay.
+    private sealed class MetadataView : ISessionView
+    {
+        public Func<SessionViewToken, bool>? BeginEditing
+        {
+            get; set;
+        }
+        public Action<string>? DraftChanged
+        {
+            get; set;
+        }
+        public Action<SessionViewToken>? ReturnRequested
+        {
+            get; set;
+        }
+        public Action<SessionViewToken>? EscapeRequested
+        {
+            get; set;
+        }
+        public Action<SessionViewToken>? AlternativeRequested
+        {
+            get; set;
+        }
+        public Func<SessionStyleRequest, Task<StyleChangeResult>>? StyleRequested
+        {
+            get; set;
+        }
+        public Action? RegenerateRequested
+        {
+            get; set;
+        }
+        public Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
+        {
+            get; set;
+        }
+        public Func<SessionGlossaryRequest, Task<GlossaryChangeResult>>? AddGlossaryRequested
+        {
+            get; set;
+        }
+        public Action<Guid>? CloseGlossaryRequested
+        {
+            get; set;
+        }
+        public SessionGlossaryFocus? GlossaryEntryFocus => null;
+        public Action? ExcludeRequested
+        {
+            get; set;
+        }
+        public Action<long>? ResumeRequested
+        {
+            get; set;
+        }
+        public bool EditingComposition => false;
+        public void Configure(UserSettings settings)
+        {
+        }
+        public void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null, SessionViewContext? context = null) => Assert.False(canAccept);
+        public void RenderPaused(PauseAnchor anchor, long revision)
+        {
+        }
+        public void HideQuietly()
+        {
+        }
+        public void ResumeEditor()
+        {
         }
     }
 
@@ -141,7 +212,13 @@ public sealed class QuickPanelUndoTests(WpfDesktopFixture desktop)
             return false;
         }
         public void Publish(InputLease lease, AcceptancePermit? permit) => Assert.Null(permit);
-        public void PublishShortcut(ShortcutLease lease) => throw new InvalidOperationException("No shortcut permission in a metadata UI test.");
+        public ShortcutLease? ObservedShortcut
+        {
+            get; private set;
+        }
+        // The controller publishes a read-only binding in both modes. Recording
+        // it does not register hotkeys, emit commands or grant an acceptance permit.
+        public void PublishShortcut(ShortcutLease lease) => ObservedShortcut = lease;
         public void Revoke()
         {
         }

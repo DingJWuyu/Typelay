@@ -114,7 +114,11 @@ internal static class Program
             overlay.LanguageRequested = () =>
             {
                 session.StopSession();
-                if (languageWindow is { IsVisible: true }) { languageWindow.Activate(); return; }
+                if (languageWindow is { IsVisible: true })
+                {
+                    languageWindow.Activate();
+                    return;
+                }
                 languageWindow = new LanguageSelectionWindow(settings, model, quick.SetLanguagesAsync);
                 languageWindow.Closed += (_, _) => languageWindow = null;
                 languageWindow.Show();
@@ -209,8 +213,10 @@ internal static class Program
             }
             window.ShowOnboarding = () => ShowOnboarding(restart: true);
             bool needsOnboarding = !settings.Value.OnboardingComplete;
-            if (needsOnboarding) ShowOnboarding();
-            else if (!model.Installed) window.ShowStartupPage();
+            if (needsOnboarding)
+                ShowOnboarding();
+            else if (!model.Installed)
+                window.ShowStartupPage();
             await session.StartAsync();
             if (disposed)
                 return;
@@ -224,7 +230,8 @@ internal static class Program
                 return;
             TrayStatus();
             // Startup completion must not reopen a wizard the user dismissed.
-            if (!model.Ready && !needsOnboarding) window.ShowStartupPage();
+            if (!model.Ready && !needsOnboarding)
+                window.ShowStartupPage();
         };
         try
         {
@@ -270,9 +277,12 @@ internal static class Program
     {
         float diameter = radius * 2;
         var path = new Drawing.Drawing2D.GraphicsPath();
-        path.AddArc(x, y, diameter, diameter, 180, 90); path.AddArc(x + width - diameter, y, diameter, diameter, 270, 90);
-        path.AddArc(x + width - diameter, y + height - diameter, diameter, diameter, 0, 90); path.AddArc(x, y + height - diameter, diameter, diameter, 90, 90);
-        path.CloseFigure(); return path;
+        path.AddArc(x, y, diameter, diameter, 180, 90);
+        path.AddArc(x + width - diameter, y, diameter, diameter, 270, 90);
+        path.AddArc(x + width - diameter, y + height - diameter, diameter, diameter, 0, 90);
+        path.AddArc(x, y + height - diameter, diameter, diameter, 90, 90);
+        path.CloseFigure();
+        return path;
     }
     [DllImport("user32.dll")] private static extern bool DestroyIcon(nint icon);
 }

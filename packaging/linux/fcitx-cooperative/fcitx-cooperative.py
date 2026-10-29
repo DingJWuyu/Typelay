@@ -17,6 +17,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 SERVICE = "org.fcitx.Fcitx5"
+FONT_FILES = (
+    "fonts/inter/Inter-Regular.ttf",
+    "fonts/inter/Inter-Medium.ttf",
+    "fonts/inter/Inter-SemiBold.ttf",
+    "fonts/inter/LICENSE.txt",
+    "fonts/source-serif/SourceSerif4-Regular.ttf",
+    "fonts/source-serif/SourceSerif4-Semibold.ttf",
+    "fonts/source-serif/LICENSE.md",
+    "fonts/README.md",
+)
 SOURCE_VERSIONS = {
     "fcitx5": "5.1.22",
     "fcitx5-chinese-addons": "5.1.14",
@@ -125,6 +135,12 @@ def environment(*, daemon=False, gtk4=False, qt6=False):
     if gtk4:
         env["GTK_PATH"] = paths([ROOT / "lib/gtk-4.0"], env.get("GTK_PATH"))
     env.pop("TYPELAY_FCITX_PROBE", None)
+    # Only the requested UI child receives this bundle's immutable resource root.
+    # TYPELAY_HOME continues to identify the full TypeLay installation.
+    if daemon:
+        env.pop("TYPELAY_UI_FONT_ROOT", None)
+    else:
+        env["TYPELAY_UI_FONT_ROOT"] = str(ROOT / "fonts")
     return env
 
 
@@ -183,6 +199,10 @@ def verify(*, gtk4=False, qt6=False):
     manifest = json.loads((ROOT / "manifest.json").read_text())
     if manifest.get("schemaVersion") != 1:
         raise RuntimeError("Unsupported bundle manifest")
+    for relative in FONT_FILES:
+        entry = manifest.get("files", {}).get(relative, {})
+        if set(entry) != {"sha256"}:
+            raise RuntimeError(f"Required bundled UI font or license missing: {relative}")
     for relative, expected in manifest["files"].items():
         file = ROOT / relative
         if Path(relative).is_absolute() or ".." in Path(relative).parts:

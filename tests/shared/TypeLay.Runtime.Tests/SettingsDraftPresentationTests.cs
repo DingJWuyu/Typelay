@@ -12,7 +12,10 @@ public sealed class SettingsDraftPresentationTests
     public void PauseCannotReuseAnyConfiguredCommand(string pause)
     {
         var settings = new UserSettings(AcceptShortcut: "Ctrl+F7", ExitShortcut: "Ctrl+F8");
-        var draft = ShortcutSettingsDraft.From(settings) with { Pause = pause };
+        var draft = ShortcutSettingsDraft.From(settings) with
+        {
+            Pause = pause
+        };
         Assert.False(draft.TryApply(settings, out var result, out var error));
         Assert.Null(result);
         Assert.Equal(ShortcutDraftError.ConflictingBindings, error);

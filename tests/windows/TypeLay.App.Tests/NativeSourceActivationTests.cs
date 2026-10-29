@@ -500,6 +500,8 @@ public sealed partial class NativeSourceActivationTests(WpfDesktopFixture ui)
             nint? hit = null;
             CallerHit? refusedHit = null;
             bool? clickComplete = null, releaseComplete = null;
+            bool? activationReturned = null;
+            nint? foregroundAfterActivation = null;
             bool callerPrepared = false;
             string stage = "show";
             try
@@ -511,8 +513,12 @@ public sealed partial class NativeSourceActivationTests(WpfDesktopFixture ui)
                 source.Token.ThrowIfCancellationRequested();
                 navigationRoot = new WindowInteropHelper(navigation).Handle;
                 Assert.NotEqual(nint.Zero, navigationRoot);
+                stage = "activate-caller";
+                activationReturned = navigation.Activate();
+                foregroundAfterActivation = N.GetForegroundWindow();
                 // A visible caller need not have permission to activate itself.
-                // Establish the unmet foreground condition with one verified click.
+                // The return value is not permission: only the actual foreground
+                // decides whether the original one verified click is still needed.
                 if (N.GetForegroundWindow() != navigationRoot)
                     await ClickNavigation();
                 stage = "foreground";
@@ -543,6 +549,7 @@ public sealed partial class NativeSourceActivationTests(WpfDesktopFixture ui)
                         + $"own={navigationRoot}; sourceRoot={source.Root}; sourceField={field}; sourceProcessId={source.FixtureProcessId}; "
                         + $"lastPreflightHit={hit?.ToString() ?? "not-sampled"}; hitIsSourceRoot={hitIsSourceRoot?.ToString() ?? "not-sampled"}; "
                         + $"foregroundAfterFailure={foregroundAfterFailure}; foregroundIsSourceRoot={foregroundAfterFailure == source.Root}; "
+                        + $"activationReturned={activationReturned?.ToString() ?? "not-sampled"}; foregroundAfterActivation={foregroundAfterActivation?.ToString() ?? "not-sampled"}; "
                         + $"clickComplete={clickComplete?.ToString() ?? "not-sampled"}; releaseComplete={releaseComplete?.ToString() ?? "not-sampled"}; "
                         + $"mouseUpReceived={mouseUp.Task.IsCompletedSuccessfully}; "
                         + $"windowIdentity={JsonSerializer.Serialize(identity)}.");

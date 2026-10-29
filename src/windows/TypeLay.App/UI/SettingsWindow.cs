@@ -264,6 +264,7 @@ internal sealed partial class SettingsWindow : Window
         brand.Children.Add(wordmark);
         DockPanel.SetDock(brand, Dock.Top);
         sidebar.Children.Add(brand);
+        _settingsSearch.SetResourceReference(StyleProperty, "SettingsSearchField");
         _settingsSearch.Height = 28;
         _settingsSearch.Padding = new(28, 4, 8, 4);
         _settingsSearch.Margin = new(2, 0, 2, 12);
@@ -272,7 +273,7 @@ internal sealed partial class SettingsWindow : Window
         _settingsSearch.TextChanged += (_, _) => RefreshNavigation();
         var searchHost = new Grid();
         searchHost.Children.Add(_settingsSearch);
-        var searchIcon = PrototypeGlyph("M17,11 A6,6 0 1 1 5,11 A6,6 0 1 1 17,11 m20 20-4.5-4.5", "Tertiary", stroke: 1.6);
+        var searchIcon = PrototypeGlyph("M17,11 A6,6 0 1 1 5,11 A6,6 0 1 1 17,11 M20,20 L15.5,15.5", "Tertiary", stroke: 1.6);
         searchIcon.HorizontalAlignment = HorizontalAlignment.Left;
         searchIcon.Margin = new(10, 0, 0, 12);
         searchHost.Children.Add(searchIcon);
@@ -645,8 +646,10 @@ internal sealed partial class SettingsWindow : Window
     {
         var host = new Grid();
         host.Children.Add(input);
-        input.Padding = new(29, 5, 9, 5);
-        var icon = PrototypeGlyph("M17,11 A6,6 0 1 1 5,11 A6,6 0 1 1 17,11 m20 20-4.5-4.5", "Tertiary", stroke: 1.6);
+        input.SetResourceReference(StyleProperty, "SettingsListSearchField");
+        input.Height = 28;
+        input.Padding = new(28, 4, 8, 4);
+        var icon = PrototypeGlyph("M17,11 A6,6 0 1 1 5,11 A6,6 0 1 1 17,11 M20,20 L15.5,15.5", "Tertiary", stroke: 1.6);
         icon.HorizontalAlignment = HorizontalAlignment.Left;
         icon.Margin = new(8, 0, 0, 12);
         host.Children.Add(icon);
@@ -1178,7 +1181,7 @@ internal sealed partial class SettingsWindow : Window
         Row(UiTheme.L("唤醒翻译", "Wake translation"), "", wake);
         Row(UiTheme.L("直接翻译并替换", "Translate and replace"), "", direct);
         BeginGroup(UiTheme.L("全局", "Global"));
-        var pause = _pauseShortcutInput = ShortcutRecorder.Create(draft.Pause, "暂停或恢复 TypeLay 快捷键", allowEmpty: true);
+        var pause = _pauseShortcutInput = ShortcutInput(draft.Pause, "暂停或恢复 TypeLay 快捷键", allowEmpty: true);
         pause.TextChanged += (_, _) => Changed();
         Row(UiTheme.L("暂停或恢复 TypeLay", "Pause or resume TypeLay"), UiTheme.L("Backspace 清除", "Backspace clears"), pause);
         _shortcutStatus = UiTheme.Text("", 12, true);
@@ -1433,7 +1436,20 @@ internal sealed partial class SettingsWindow : Window
             input.ItemsSource = choices;
         input.SelectedItem = value;
     }
-    private static TextBox ShortcutInput(string value, string label) => ShortcutRecorder.Create(value, label);
+    private static TextBox ShortcutInput(string value, string label, bool allowEmpty = false)
+    {
+        var input = ShortcutRecorder.Create(value, label, allowEmpty);
+        input.SetResourceReference(StyleProperty, "SettingsShortcutRecorder");
+        input.Width = double.NaN;
+        input.MinWidth = 92;
+        input.MaxWidth = 178;
+        input.Height = 26;
+        input.Padding = new(10, 0, 10, 0);
+        input.FontSize = 12.5;
+        input.FontWeight = FontWeights.Medium;
+        input.TextAlignment = TextAlignment.Center;
+        return input;
+    }
     private void Applications()
     {
         object identity = _pageIdentity;

@@ -95,14 +95,17 @@ public sealed partial class NativeSourceControllerTests
         try
         {
             string path = Path.Combine(directory, "settings.json");
-            var settings = new SettingsStore(path);
-            settings.Update(settings.Value with
+            // An existing installation may retain a dormant override. Author that
+            // fixture input before opening the real store; ordinary Update must
+            // continue rejecting feature changes outside the session controller.
+            await File.WriteAllTextAsync(path, System.Text.Json.JsonSerializer.Serialize(new UserSettings
             {
                 Styles = new(TranslationStyle.Formal, new Dictionary<string, TranslationStyle>
                 {
                     [application] = TranslationStyle.Natural
                 })
-            });
+            }), native.Token);
+            var settings = new SettingsStore(path);
             using var controller = WindowsRuntime.CreateSession(settings, new Translation(), overlay, broker: broker);
             await controller.StartAsync().WaitAsync(native.Token);
             await Until(() => overlay.IsVisible && RuntimeTranslation(overlay) == "Hello", native.Token);

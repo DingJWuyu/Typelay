@@ -16,6 +16,27 @@ internal sealed class BrowserCdpDiagnostics
     internal sealed record FrameSnapshot(string Status, string? UrlCategory = null, string? UnreachableUrlCategory = null,
         string? FrameIdState = null, bool? InitialFrame = null, string? LoaderIdState = null, bool? InitialLoader = null,
         string? ErrorCategory = null);
+    internal sealed record NetworkEvent(string Kind, int RequestNumber, string ResourceType, string UrlCategory,
+        string? ErrorCategory, bool? Canceled, string? BlockedReason, string? CorsError, long ElapsedMs);
+    private readonly Dictionary<string, (int Number, string UrlCategory)> _networkRequests = new(StringComparer.Ordinal);
+    private readonly List<NetworkEvent> _networkEvents = new();
+    private bool _observingNetwork;
+    public string NetworkObservation { get; private set; } = "unobserved";
+    public IReadOnlyList<NetworkEvent> NetworkEvents => _networkEvents;
+    public int NetworkEventsDropped
+    {
+        get; private set;
+    }
+    public void BeginNetworkObservation()
+    {
+        _observingNetwork = true;
+        NetworkObservation = "enabled";
+    }
+    public void EndNetworkObservation()
+    {
+        _observingNetwork = false;
+        _networkRequests.Clear();
+    }
     private readonly long _startedAt = Environment.TickCount64;
     private readonly List<Notification> _notifications = new();
     public IReadOnlyList<Notification> Notifications => _notifications;
@@ -47,6 +68,11 @@ internal sealed class BrowserCdpDiagnostics
         try
         {
             string? kind = Text(message, "method");
+            if (kind is "Network.requestWillBeSent" or "Network.loadingFailed")
+            {
+                ObserveNetwork(message, kind, pageSession, mainFrame, expectedUrl);
+                return;
+            }
             if (kind is not ("Page.frameStartedLoading" or "Page.frameStoppedLoading" or "Page.frameStartedNavigating" or "Page.frameNavigated"
                 or "Page.frameDetached" or "Target.detachedFromTarget" or "Target.targetDestroyed" or "Target.targetCrashed"))
                 return;
@@ -79,6 +105,65 @@ internal sealed class BrowserCdpDiagnostics
                 } : null, Math.Clamp(Environment.TickCount64 - _startedAt, 0, 600000)));
         }
         catch { }
+    }
+
+    private void ObserveNetwork(JsonElement message, string kind, string? pageSession, string? mainFrame, string? expectedUrl)
+    {
+        // Network loadingFailed has no frame ID. Admit it only after correlating a
+        // Document request from this exact attached session and known main frame.
+        // Identifiers live only in this bounded private map, never in the report.
+        if (!_observingNetwork || Same(Text(message, "sessionId"), pageSession) != true)
+            return;
+        var parameters = Object(message, "params");
+        string? requestId = Text(parameters, "requestId");
+        if (requestId is not { Length: > 0 and <= 256 } || Text(parameters, "type") != "Document")
+            return;
+        if (kind == "Network.requestWillBeSent")
+        {
+            if (Same(Text(parameters, "frameId"), mainFrame) != true)
+                return;
+            if (!_networkRequests.ContainsKey(requestId) && _networkRequests.Count == 16)
+            {
+                NetworkEventsDropped = Math.Min(1000000, NetworkEventsDropped + 1);
+                return;
+            }
+            string category = UrlCategory(Object(parameters, "request"), "url", expectedUrl) switch
+            {
+                "expected-loopback" => "expected-loopback",
+                "about-blank" => "about-blank",
+                "other" => "other",
+                _ => "unknown"
+            };
+            int number = _networkRequests.TryGetValue(requestId, out var existing) ? existing.Number : _networkRequests.Count + 1;
+            _networkRequests[requestId] = (number, category);
+        }
+        if (!_networkRequests.TryGetValue(requestId, out var request))
+            return;
+        if (_networkEvents.Count == 16)
+        {
+            NetworkEventsDropped = Math.Min(1000000, NetworkEventsDropped + 1);
+            return;
+        }
+        bool failed = kind == "Network.loadingFailed";
+        bool? canceled = parameters.TryGetProperty("canceled", out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? value.GetBoolean() : null;
+        _networkEvents.Add(new(kind, request.Number, "Document", request.UrlCategory,
+            failed ? FieldState(parameters, "errorText") == "nonempty" ? BrowserPageOpenResponse.NavigationFailure(parameters) : "unknown" : null,
+            failed ? canceled : null,
+            failed ? Text(parameters, "blockedReason") switch
+            {
+                "other" or "csp" or "mixed-content" or "origin" or "inspector" or "integrity" or "subresource-filter"
+                    or "content-type" or "coep-frame-resource-needs-coep-header" or "coop-sandboxed-iframe-cannot-navigate-to-coop-page"
+                    or "corp-not-same-origin" or "corp-not-same-site" => Text(parameters, "blockedReason"),
+                _ => "unknown"
+            } : null,
+            failed ? Text(Object(parameters, "corsErrorStatus"), "corsError") switch
+            {
+                "DisallowedByMode" or "InvalidResponse" or "InsecureLocalNetwork" or "InvalidLocalNetworkAccess"
+                    or "LocalNetworkAccessPermissionDenied" => Text(Object(parameters, "corsErrorStatus"), "corsError"),
+                _ => "unknown"
+            } : null,
+            Math.Clamp(Environment.TickCount64 - _startedAt, 0, 600000)));
     }
 
     public void RecordNavigationResponse(JsonElement response, string? mainFrame, string? initialLoader)
@@ -118,7 +203,7 @@ internal sealed class BrowserCdpDiagnostics
                 "Target.getTargets" or "Target.attachToTarget" or "Target.detachFromTarget"
                     or "Runtime.evaluate" or "Runtime.callFunctionOn" or "Runtime.releaseObject"
                     or "DOM.enable" or "DOM.getDocument" or "DOM.resolveNode"
-                    or "Page.enable" or "Page.navigate" or "Page.getFrameTree" or "Input.dispatchMouseEvent" => method,
+                    or "Network.enable" or "Network.disable" or "Page.enable" or "Page.navigate" or "Page.getFrameTree" or "Input.dispatchMouseEvent" => method,
                 _ => "other"
             }, phase is "send" or "receive" or "decode" or "response" ? phase : "other",
                 ErrorCategory(error), error.HResult, cancellationRequested);

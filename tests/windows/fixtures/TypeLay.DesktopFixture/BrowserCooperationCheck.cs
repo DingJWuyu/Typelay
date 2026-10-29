@@ -52,7 +52,7 @@ internal static partial class BrowserCooperationCheck
         {
             get; set;
         }
-        public HyPackageCheck.Scene? PublicSettingsNavigation
+        public object? PublicSettingsNavigation
         {
             get; set;
         }
@@ -339,13 +339,17 @@ internal static partial class BrowserCooperationCheck
                 appStart.Environment["TYPELAY_HOME"] = distribution;
                 appStart.Environment["TYPELAY_TRACE"] = trace;
                 app = appLifetime.Start(() => new ChildProcess(appStart));
+                registrationAttempted = true; // Reconcile even if public onboarding or cancellation fails.
+                registrationAbsent = false;
                 await PublicOnboardingActions.CompleteAsync(app.Process, () => ReadOwnedSettings(data),
                     step => setup.Stage = step, ct);
                 setup.Stage = "open-initial-public-settings";
-                setup.PublicSettingsNavigation = new HyPackageCheck.Scene("open-public-settings");
-                await HyPackageCheck.OpenSettingsThroughTrayAsync(app.Process, setup.PublicSettingsNavigation, ct);
-                registrationAttempted = true; // Also reconcile an unexpected registration after cancellation.
-                registrationAbsent = false;
+                var navigation = new HyPackageCheck.Scene("open-public-settings");
+                try
+                {
+                    await HyPackageCheck.OpenSettingsThroughTrayAsync(app.Process, navigation, ct);
+                }
+                finally { setup.PublicSettingsNavigation = new { navigation.Stage, navigation.Facts }; }
                 await BrowserConnectionActionAsync(app.Process, "接入", step => setup.Stage = "cancel-connect-" + step, ct, accept: false);
                 setup.Stage = "cancel-connect-host-status";
                 using (var cancelled = JsonDocument.Parse(await HostCommandAsync(host, ["status"], ct)))

@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import re
 import shutil
 import struct
@@ -16,6 +17,16 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+FONT_FILES = (
+    "fonts/README.md",
+    "fonts/inter/Inter-Medium.ttf",
+    "fonts/inter/Inter-Regular.ttf",
+    "fonts/inter/Inter-SemiBold.ttf",
+    "fonts/inter/LICENSE.txt",
+    "fonts/source-serif/LICENSE.md",
+    "fonts/source-serif/SourceSerif4-Regular.ttf",
+    "fonts/source-serif/SourceSerif4-Semibold.ttf",
+)
 QT_TEST_INPUTS = (
     "tests/linux/qt_cooperative/run.py",
     "tests/linux/qt_cooperative/fixture.cpp",
@@ -84,6 +95,128 @@ class PackageReadmeTests(unittest.TestCase):
                 self.assertIn("/blob/" + "a" * 40 + "/docs/product/README.md", readme)
                 self.assertNotIn("](..", readme)
                 self.assertIn("不代表", readme)
+
+
+class CooperativeFontResourcesTests(unittest.TestCase):
+    """Relocated package bytes and real launcher child environment, not Fcitx admission."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "typelay_font_pack", ROOT / "packaging/linux/fcitx-cooperative/pack.py"
+        )
+        self.recipe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.recipe)
+        temporary = tempfile.TemporaryDirectory(prefix="typelay font resources ")
+        self.addCleanup(temporary.cleanup)
+        self.work = Path(temporary.name)
+        original = self.work / "original"
+        original.mkdir()
+        self.recipe.copy_fonts(original)
+        shutil.copyfile(
+            ROOT / "packaging/linux/fcitx-cooperative/fcitx-cooperative.py",
+            original / "fcitx-cooperative.py",
+        )
+        self.manifest = self.recipe.manifest(original, {}, {}, {}, None)
+        (original / "manifest.json").write_text(json.dumps(self.manifest))
+        archive = self.work / "resources.tar.gz"
+        self.recipe.write_archive(original, archive)
+        shutil.rmtree(original)
+        relocated = self.work / "搬迁 bundle with spaces"
+        relocated.mkdir()
+        with tarfile.open(archive) as package:
+            package.extractall(relocated, filter="data")
+        self.bundle = relocated / "original"
+        self.launcher = self.bundle / "fcitx-cooperative.py"
+
+    def test_relocated_resources_keep_original_fonts_licenses_and_manifest_bytes(self):
+        self.assertEqual(set(self.manifest["files"]), {*FONT_FILES, "fcitx-cooperative.py"})
+        for relative in FONT_FILES:
+            with self.subTest(relative=relative):
+                content = (self.bundle / relative).read_bytes()
+                self.assertEqual(content, (ROOT / "src/shared/ui" / relative).read_bytes())
+                self.assertEqual(self.manifest["files"][relative], {"sha256": digest(content)})
+
+    def test_each_ui_child_gets_only_its_relocated_font_root_without_redefining_home(self):
+        program = """
+import hashlib,json,os,pathlib,runpy,subprocess,sys
+api=runpy.run_path(sys.argv[1]); before=dict(os.environ); observed=[]
+child='import hashlib,json,os,pathlib;root=pathlib.Path(os.environ["TYPELAY_UI_FONT_ROOT"]);print(json.dumps({"root":str(root),"home":os.environ.get("HOME"),"typelayHome":os.environ.get("TYPELAY_HOME"),"files":{p.relative_to(root).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in root.rglob("*") if p.is_file()}}))'
+for flags in ({},{"gtk4":True},{"qt6":True}):
+    environment=api["environment"](**flags)
+    observed.append(json.loads(subprocess.check_output([sys.executable,"-I","-B","-c",child],env=environment,text=True)))
+daemon=api["environment"](daemon=True)
+print(json.dumps({"children":observed,"parentUnchanged":dict(os.environ)==before,"daemonFontRoot":daemon.get("TYPELAY_UI_FONT_ROOT")}))
+"""
+        for installation in (None, str(self.work / "separate TypeLay installation")):
+            with self.subTest(installation=installation):
+                environment = {
+                    key: value for key, value in os.environ.items() if key != "TYPELAY_HOME"
+                }
+                environment["HOME"] = str(self.work / "unchanged user home")
+                environment["TYPELAY_UI_FONT_ROOT"] = str(self.work / "unrelated caller font root")
+                if installation is not None:
+                    environment["TYPELAY_HOME"] = installation
+                result = subprocess.run(
+                    [sys.executable, "-I", "-B", "-c", program, str(self.launcher)],
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                actual = json.loads(result.stdout)
+                self.assertTrue(actual["parentUnchanged"])
+                self.assertIsNone(actual["daemonFontRoot"])
+                self.assertEqual(len(actual["children"]), 3)
+                for child in actual["children"]:
+                    self.assertEqual(child["root"], str(self.bundle / "fonts"))
+                    self.assertEqual(child["home"], environment["HOME"])
+                    self.assertEqual(child["typelayHome"], installation)
+                    self.assertEqual(
+                        child["files"],
+                        {
+                            relative.removeprefix("fonts/"): digest(
+                                (ROOT / "src/shared/ui" / relative).read_bytes()
+                            )
+                            for relative in FONT_FILES
+                        },
+                    )
+
+    def test_real_launcher_refuses_missing_changed_and_unlisted_font_resources_before_preflight(
+        self,
+    ):
+        original_manifest = json.dumps(self.manifest)
+        for relative in FONT_FILES:
+            path = self.bundle / relative
+            original = path.read_bytes()
+            for fault in ("missing", "changed", "unlisted"):
+                with self.subTest(relative=relative, fault=fault):
+                    if fault == "missing":
+                        path.unlink()
+                    elif fault == "changed":
+                        path.write_bytes(original + b"changed")
+                    else:
+                        manifest = {**self.manifest, "files": dict(self.manifest["files"])}
+                        manifest["files"].pop(relative)
+                        (self.bundle / "manifest.json").write_text(json.dumps(manifest))
+                    result = subprocess.run(
+                        [sys.executable, "-I", "-B", str(self.launcher), "preflight"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertIn(relative, result.stderr)
+                    self.assertIn(
+                        {
+                            "missing": "Bundle file missing or replaced",
+                            "changed": "Bundle checksum mismatch",
+                            "unlisted": "Required bundled UI font or license missing",
+                        }[fault],
+                        result.stderr,
+                    )
+                    path.write_bytes(original)
+                    (self.bundle / "manifest.json").write_text(original_manifest)
 
 
 class FcitxTestManifestTests(unittest.TestCase):
@@ -297,6 +430,7 @@ class MainBundleTests(unittest.TestCase):
         self.repository = self.directory / "checkout"
         self.repository.mkdir()
         for relative in (
+            *("src/shared/ui/" + name for name in FONT_FILES),
             *inputs.FCITX_BUILD_INPUTS,
             *inputs.FCITX_TEST_INPUTS,
             *inputs.QT_BUILD_INPUTS,
@@ -358,6 +492,9 @@ class MainBundleTests(unittest.TestCase):
             "lib/im-fcitx5.so": b"fixture GTK library\n",
             "source/upstream/fcitx5/LICENSES/LGPL-2.1-or-later.txt": b"retained license\n",
         }
+        self.files.update(
+            {name: (ROOT / "src/shared/ui" / name).read_bytes() for name in FONT_FILES}
+        )
         for name in (
             "THIRD_PARTY_NOTICES.md",
             "lib/libFcitx5GClient.so",
@@ -408,6 +545,7 @@ class MainBundleTests(unittest.TestCase):
         ):
             self.files[name] = b"inert packaged fixture\n"
         for relative in (
+            *("src/shared/ui/" + name for name in FONT_FILES),
             *inputs.FCITX_BUILD_INPUTS,
             *inputs.FCITX_TEST_INPUTS,
             "packaging/linux/fcitx-cooperative/pack.py",
@@ -504,6 +642,24 @@ class MainBundleTests(unittest.TestCase):
         self.files["source/tests/linux/fixtures/gtk4_fixture.c"] += b"\n/* drift */\n"
         self.write_archive()
         self.assert_rejected("Packaged cooperation source differs")
+
+    def test_missing_font_or_license_cannot_form_a_complete_component(self):
+        for relative in ("fonts/inter/Inter-Regular.ttf", "fonts/source-serif/LICENSE.md"):
+            with self.subTest(relative=relative):
+                original = self.files.pop(relative)
+                self.write_archive()
+                self.assert_rejected("Incomplete cooperation payload")
+                self.files[relative] = original
+
+    def test_repackaging_sources_must_retain_the_original_ui_fonts(self):
+        self.files.pop("source/src/shared/ui/fonts/inter/Inter-Regular.ttf")
+        self.write_archive()
+        self.assert_rejected("Packaged cooperation source differs")
+
+    def test_self_consistent_archive_cannot_substitute_changed_font_bytes(self):
+        self.files["fonts/inter/Inter-Regular.ttf"] += b"changed"
+        self.write_archive()
+        self.assert_rejected("Packaged cooperation font or license differs")
 
     def test_matching_payload_is_bound_to_main_manifest_without_rebuilding(self):
         self.write_archive()

@@ -47,10 +47,22 @@ internal sealed class OnboardingWindow : Window
         FontFamily = UiTheme.UiFont;
         AutomationProperties.SetAutomationId(this, "TypeLayOnboarding");
         _root = new Grid { Margin = new(16, 16, 16, 20) };
-        _root.RowDefinitions.Add(new() { Height = new(28) });
-        _root.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
-        _root.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        _root.RowDefinitions.Add(new() { Height = new(58) });
+        _root.RowDefinitions.Add(new()
+        {
+            Height = new(28)
+        });
+        _root.RowDefinitions.Add(new()
+        {
+            Height = new(1, GridUnitType.Star)
+        });
+        _root.RowDefinitions.Add(new()
+        {
+            Height = GridLength.Auto
+        });
+        _root.RowDefinitions.Add(new()
+        {
+            Height = new(58)
+        });
         var caption = new Grid { Background = Brushes.Transparent };
         caption.MouseLeftButtonDown += (_, args) => { if (args.LeftButton == System.Windows.Input.MouseButtonState.Pressed) DragMove(); };
         var close = _close = UiTheme.Button("×", Hide);
@@ -63,8 +75,13 @@ internal sealed class OnboardingWindow : Window
         AutomationProperties.SetAutomationId(close, "OnboardingClose");
         caption.Children.Add(close);
         _root.Children.Add(caption);
-        var scroll = new ScrollViewer { Content = _body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Padding = new(36, 4, 36, 0) };
+        var scroll = new ScrollViewer
+        {
+            Content = _body,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Padding = new(36, 4, 36, 0)
+        };
         Grid.SetRow(scroll, 1);
         _root.Children.Add(scroll);
         _feedback.Margin = new(22, 8, 22, 0);
@@ -72,8 +89,14 @@ internal sealed class OnboardingWindow : Window
         _root.Children.Add(_feedback);
         var footer = new Grid { Margin = new(8, 18, 8, 0) };
         footer.ColumnDefinitions.Add(new());
-        footer.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        footer.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        footer.ColumnDefinitions.Add(new()
+        {
+            Width = GridLength.Auto
+        });
+        footer.ColumnDefinitions.Add(new()
+        {
+            Width = GridLength.Auto
+        });
         footer.Children.Add(_dots);
         _back = UiTheme.Button(UiTheme.L("返回", "Back"), () => { if (IsVisible && !_busy && _step > 1) { _step--; _feedback.Text = ""; Refresh(); } });
         _back.Margin = new(0, 0, 10, 0);
@@ -194,9 +217,16 @@ internal sealed class OnboardingWindow : Window
         var shield = new System.Windows.Shapes.Path
         {
             Data = Geometry.Parse("M12 3 L5 6 V11.5 C5 15.8 8 19.1 12 21 C16 19.1 19 15.8 19 11.5 V6 Z M9 12 L11.2 14.2 L15.5 10"),
-            Width = 15, Height = 16, Stretch = Stretch.Uniform, StrokeThickness = 1.6,
-            StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, StrokeLineJoin = PenLineJoin.Round,
-            Margin = new(0, 0, 7, 0), VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false
+            Width = 15,
+            Height = 16,
+            Stretch = Stretch.Uniform,
+            StrokeThickness = 1.6,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            StrokeLineJoin = PenLineJoin.Round,
+            Margin = new(0, 0, 7, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false
         };
         shield.SetResourceReference(System.Windows.Shapes.Shape.StrokeProperty, "Good");
         row.Children.Add(shield);
@@ -210,7 +240,10 @@ internal sealed class OnboardingWindow : Window
         Heading(UiTheme.L("你想译成什么语言？", "What do you want to write in?"));
         var directions = new Grid { Margin = new(0, 5, 0, 20) };
         directions.ColumnDefinitions.Add(new());
-        directions.ColumnDefinitions.Add(new() { Width = new(56) });
+        directions.ColumnDefinitions.Add(new()
+        {
+            Width = new(56)
+        });
         directions.ColumnDefinitions.Add(new());
         foreach (bool source in new[] { true, false })
         {
@@ -218,7 +251,13 @@ internal sealed class OnboardingWindow : Window
             group.Children.Add(UiTheme.Text(source ? UiTheme.L("源语言", "From") : UiTheme.L("目标语言", "To"), 12, true));
             var picker = new LanguagePicker(source, source ? _settings.Value.Source : _settings.Value.Target,
                 async code => await SavePageAsync(page, () => source ? _settings.Value with { Source = code } : _settings.Value with { Target = code }),
-                _model.Ready ? _model.AvailableDirections : null) { Margin = new(0, 7, 0, 0), MinWidth = 0, Height = 44, IsEnabled = !_busy };
+                _model.Ready ? _model.AvailableDirections : null)
+            {
+                Margin = new(0, 7, 0, 0),
+                MinWidth = 0,
+                Height = 44,
+                IsEnabled = !_busy
+            };
             group.Children.Add(picker);
             Grid.SetColumn(group, source ? 0 : 2);
             directions.Children.Add(group);
@@ -247,7 +286,10 @@ internal sealed class OnboardingWindow : Window
                     return;
                 _busy = true;
                 Refresh();
-                try { await _settingsWindow.ChangeOnboardingStyleAsync(style.Value); }
+                try
+                {
+                    await _settingsWindow.ChangeOnboardingStyleAsync(style.Value);
+                }
                 finally { _busy = false; Refresh(); }
             });
             button.Margin = new(1);
@@ -277,8 +319,15 @@ internal sealed class OnboardingWindow : Window
         status.Margin = new(0, 12, 0, 0);
         card.Children.Add(status);
         bool preparing = view.PrimaryAction.Id == TranslationPreparationAction.Pause;
-        var progress = new ProgressBar { Height = 5, Minimum = 0, Maximum = 1, Value = _model.Ready ? 1 : 0,
-            IsIndeterminate = preparing, Margin = new(0, 14, 0, 12) };
+        var progress = new ProgressBar
+        {
+            Height = 5,
+            Minimum = 0,
+            Maximum = 1,
+            Value = _model.Ready ? 1 : 0,
+            IsIndeterminate = preparing,
+            Margin = new(0, 14, 0, 12)
+        };
         progress.SetResourceReference(Control.ForegroundProperty, "Accent");
         AutomationProperties.SetName(progress, UiTheme.L("本地模型准备状态", "Local Model Preparation Status"));
         card.Children.Add(progress);
@@ -371,7 +420,10 @@ internal sealed class OnboardingWindow : Window
         _feedback.Text = "";
         Refresh();
         bool saved;
-        try { saved = await _settingsWindow.SaveOnboardingSettingsAsync(value()); }
+        try
+        {
+            saved = await _settingsWindow.SaveOnboardingSettingsAsync(value());
+        }
         finally { _busy = false; }
         if (!saved)
             _feedback.Text = UiTheme.L("未能保存，请重试。", "Couldn’t save. Try again.");

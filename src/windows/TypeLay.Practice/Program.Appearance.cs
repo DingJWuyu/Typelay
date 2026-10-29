@@ -120,7 +120,10 @@ internal static partial class Program
             if (pen == 0)
                 return;
             nint oldPen = Native.SelectObject(dc, pen), oldBrush = Native.SelectObject(dc, _cardBrush);
-            try { RoundRect(dc, bounds.X, bounds.Y - _scroll, bounds.X + bounds.Width, bounds.Y - _scroll + bounds.Height, Scale(24), Scale(24)); }
+            try
+            {
+                RoundRect(dc, bounds.X, bounds.Y - _scroll, bounds.X + bounds.Width, bounds.Y - _scroll + bounds.Height, Scale(24), Scale(24));
+            }
             finally
             {
                 Native.SelectObject(dc, oldBrush);

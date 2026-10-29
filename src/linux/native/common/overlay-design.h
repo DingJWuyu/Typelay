@@ -179,19 +179,23 @@ static inline int tl_overlay_qt_css(char *out, size_t capacity, TlOverlayPalette
  * the explicit platform fallback; neither branch installs fonts globally. */
 static inline void tl_overlay_install_fonts(GtkWidget *card) {
 #if PANGO_VERSION_CHECK(1, 56, 0)
+    const char *explicit_root = g_getenv("TYPELAY_UI_FONT_ROOT");
     const char *home = g_getenv("TYPELAY_HOME");
-    if (!home || !g_path_is_absolute(home)) return;
+    char *root = explicit_root ? g_strdup(explicit_root)
+        : home && g_path_is_absolute(home) ? g_build_filename(home, "fonts", NULL) : NULL;
+    if (!root || !g_path_is_absolute(root)) { g_free(root); return; }
     const char *files[] = {"inter/Inter-Regular.ttf", "inter/Inter-Medium.ttf", "inter/Inter-SemiBold.ttf",
         "source-serif/SourceSerif4-Regular.ttf", "source-serif/SourceSerif4-Semibold.ttf"};
     PangoFontMap *map = pango_cairo_font_map_new();
     gboolean loaded = FALSE;
     for (guint i = 0; i < G_N_ELEMENTS(files); i++) {
-        char *path = g_build_filename(home, "fonts", files[i], NULL);
+        char *path = g_build_filename(root, files[i], NULL);
         loaded |= pango_font_map_add_font_file(map, path, NULL);
         g_free(path);
     }
     if (loaded) gtk_widget_set_font_map(card, map);
     g_object_unref(map);
+    g_free(root);
 #else
     (void)card;
 #endif

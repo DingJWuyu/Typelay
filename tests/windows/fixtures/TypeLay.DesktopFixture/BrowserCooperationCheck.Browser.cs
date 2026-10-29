@@ -317,46 +317,61 @@ internal static partial class BrowserCooperationCheck
                 _initialLoader = frame.TryGetProperty("loaderId", out var loader) && loader.ValueKind == JsonValueKind.String ? loader.GetString() : null;
             }
             Diagnostics.RecordFrameSnapshot(initial, url, null, null, afterAbort: false);
-            stage("navigate");
-            var navigation = await PageCallAsync("Page.navigate", new
+            stage("enable-network-observation");
+            await PageCallAsync("Network.enable", new
             {
-                url
             }, ct);
-            NavigationFailure = BrowserPageOpenResponse.NavigationFailure(navigation);
-            Diagnostics.RecordNavigationResponse(navigation, _mainFrame, _initialLoader);
-            if (NavigationFailure == "aborted")
+            Diagnostics.BeginNetworkObservation();
+            try
             {
-                // Observe the original target once and drain already queued events.
-                // This cannot retry navigation, recover the scene or replace its error.
-                using var snapshot = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                snapshot.CancelAfter(TimeSpan.FromSeconds(2));
-                try
+                stage("navigate");
+                var navigation = await PageCallAsync("Page.navigate", new
                 {
-                    snapshot.Token.ThrowIfCancellationRequested();
-                    var after = await PageCallAsync("Page.getFrameTree", new
+                    url
+                }, ct);
+                NavigationFailure = BrowserPageOpenResponse.NavigationFailure(navigation);
+                Diagnostics.RecordNavigationResponse(navigation, _mainFrame, _initialLoader);
+                if (NavigationFailure == "aborted")
+                {
+                    // Observe the original target once and drain already queued events.
+                    // This cannot retry navigation, recover the scene or replace its error.
+                    using var snapshot = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    snapshot.CancelAfter(TimeSpan.FromSeconds(2));
+                    try
                     {
-                    }, snapshot.Token);
-                    Diagnostics.RecordFrameSnapshot(after, url, _mainFrame, _initialLoader, afterAbort: true);
+                        snapshot.Token.ThrowIfCancellationRequested();
+                        var after = await PageCallAsync("Page.getFrameTree", new
+                        {
+                        }, snapshot.Token);
+                        Diagnostics.RecordFrameSnapshot(after, url, _mainFrame, _initialLoader, afterAbort: true);
+                    }
+                    catch (Exception error) when (error is not OutOfMemoryException)
+                    {
+                        Diagnostics.RecordAbortSnapshotFailure(error);
+                    }
                 }
-                catch (Exception error) when (error is not OutOfMemoryException)
+                Require(BrowserPageOpenResponse.NavigationSucceeded(navigation), "owned-page-navigation-failed");
+                string lastReadiness = "unobserved";
+                while (true)
                 {
-                    Diagnostics.RecordAbortSnapshotFailure(error);
+                    stage("readiness-response-" + lastReadiness);
+                    var response = await EvaluateAsync("({documentComplete:document.readyState==='complete',stateAvailable:typeof state==='function'})", ct);
+                    var ready = BrowserPageOpenResponse.Readiness(response) ?? throw new Failure("owned-page-readiness-invalid");
+                    if (ready.DocumentComplete && ready.StateAvailable)
+                        break;
+                    lastReadiness = (ready.DocumentComplete ? "document-complete" : "document-incomplete")
+                        + (ready.StateAvailable ? "-state-available" : "-state-missing");
+                    stage("readiness-pending-" + lastReadiness);
+                    await Task.Delay(40, ct);
                 }
+                // Close only after successful page readiness. The failure path
+                // keeps its original navigation error and closes the owned browser.
+                stage("disable-network-observation");
+                await PageCallAsync("Network.disable", new
+                {
+                }, ct);
             }
-            Require(BrowserPageOpenResponse.NavigationSucceeded(navigation), "owned-page-navigation-failed");
-            string lastReadiness = "unobserved";
-            while (true)
-            {
-                stage("readiness-response-" + lastReadiness);
-                var response = await EvaluateAsync("({documentComplete:document.readyState==='complete',stateAvailable:typeof state==='function'})", ct);
-                var ready = BrowserPageOpenResponse.Readiness(response) ?? throw new Failure("owned-page-readiness-invalid");
-                if (ready.DocumentComplete && ready.StateAvailable)
-                    break;
-                lastReadiness = (ready.DocumentComplete ? "document-complete" : "document-incomplete")
-                    + (ready.StateAvailable ? "-state-available" : "-state-missing");
-                stage("readiness-pending-" + lastReadiness);
-                await Task.Delay(40, ct);
-            }
+            finally { Diagnostics.EndNetworkObservation(); }
         }
         public Task<JsonElement> PageCallAsync(string method, object parameters, CancellationToken ct) => CallAsync(method, parameters, _page, ct);
         public async Task<JsonElement> EvaluateAsync(string expression, CancellationToken ct)

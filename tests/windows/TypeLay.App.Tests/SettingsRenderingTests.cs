@@ -266,7 +266,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                             foreach (var (input, label) in shortcutControls)
                             {
                                 Assert.True(input.IsVisible, label);
-                                Assert.InRange(input.ActualWidth, 150, window.ActualWidth);
+                                Assert.InRange(input.ActualWidth, input is TextBox ? 92 : 150, window.ActualWidth);
                                 Assert.InRange(input.ActualHeight, 26, 50);
                                 var row = VisualTreeHelper.GetParent(input);
                                 Assert.NotNull(row);
@@ -1616,8 +1616,8 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                 overlay.UpdateLayout();
                 Assert.True(overlay.IsVisible, "A supported empty field must display the language capsule.");
                 Assert.False(Descendants(overlay).OfType<TextBox>().Single().IsVisible);
-                Assert.InRange(overlay.Width, 98, 220);
-                Assert.InRange(overlay.Height, 58, 62);
+                Assert.InRange(NativeSize().Width, 98, 220);
+                Assert.InRange(NativeSize().Height, 58, 62);
                 Assert.Equal(foreground, Native.GetForegroundWindow());
                 Assert.Null(session.TakeTranslationJob(1500));
                 Render(overlay, $"overlay-idle-{theme}.png");
@@ -1632,7 +1632,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
             overlay.Render(session, settings, false);
             overlay.UpdateLayout();
             Assert.True(Descendants(overlay).OfType<TextBox>().Single().IsVisible);
-            Assert.True(overlay.Height > 100);
+            Assert.InRange(NativeSize().Height, 110, 232);
             session.Observe(source with
             {
                 InputEpoch = 3
@@ -1641,7 +1641,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
             overlay.UpdateLayout();
             Assert.True(overlay.IsVisible);
             Assert.False(Descendants(overlay).OfType<TextBox>().Single().IsVisible);
-            Assert.InRange(overlay.Height, 58, 62);
+            Assert.InRange(NativeSize().Height, 58, 62);
             session.Escape();
             overlay.Render(session, settings, false);
             Assert.False(overlay.IsVisible);
@@ -1653,6 +1653,16 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
             Assert.False(overlay.IsVisible);
         }
         finally { overlay.Close(); }
+        Size NativeSize()
+        {
+            // Placement is performed through SetWindowPos. Its actual rectangle
+            // is authoritative; WPF Height may still hold the preceding capsule.
+            Assert.True(TypeLay.Platform.Windows.NativeMethods.GetWindowRect(overlay.Handle, out var bounds));
+            uint dpi = Native.GetDpiForWindow(overlay.Handle);
+            Assert.NotEqual(0u, dpi);
+            double scale = dpi / 96d;
+            return new((bounds.Right - bounds.Left) / scale, (bounds.Bottom - bounds.Top) / scale);
+        }
     }
 
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)

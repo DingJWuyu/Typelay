@@ -24,7 +24,10 @@ public sealed record UserSettings(int Schema = 1, bool Enabled = true, string So
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string[]? ManagedApplications = null)
 {
     [JsonExtensionData]
-    public Dictionary<string, JsonElement>? ExtensionData { get; init; }
+    public Dictionary<string, JsonElement>? ExtensionData
+    {
+        get; init;
+    }
     public string[] Excluded => ExcludedApplications ?? [];
     [JsonIgnore]
     public string[] Managed => ManagedApplications ?? [];
@@ -105,9 +108,15 @@ public sealed class SettingsStore
         loadedChords.Add(wake!.ToString());
         loadedChords.Add(direct!.ToString());
         if (!loadedChords.Add(Value.AcceptShortcut))
-            Value = Value with { AcceptShortcut = "Tab" };
+            Value = Value with
+            {
+                AcceptShortcut = "Tab"
+            };
         if (!loadedChords.Add(Value.ExitShortcut))
-            Value = Value with { ExitShortcut = "Esc" };
+            Value = Value with
+            {
+                ExitShortcut = "Esc"
+            };
         Value = Value with
         {
             PauseShortcut = TranslationShortcut.TryParse(Value.PauseShortcut, out var pause)
@@ -128,7 +137,10 @@ public sealed class SettingsStore
         };
         try
         {
-            Value = Value with { ManagedApplications = CanonicalManagedApplications(Value.ManagedApplications) };
+            Value = Value with
+            {
+                ManagedApplications = CanonicalManagedApplications(Value.ManagedApplications)
+            };
         }
         catch (ArgumentException) { Value = Value with { ManagedApplications = null }; }
         _committedValue = Snapshot(Value);

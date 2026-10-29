@@ -369,7 +369,9 @@ internal static partial class BrowserCooperationCheck
         await Task.Run(() =>
         {
             var sections = window.FindAll(TreeScope.Descendants,
-                new PropertyCondition(AutomationElement.NameProperty, "连接状态与详情")).Cast<AutomationElement>().ToArray();
+                new AndCondition(new PropertyCondition(AutomationElement.NameProperty, "连接状态与详情"),
+                    new PropertyCondition(AutomationElement.IsExpandCollapsePatternAvailableProperty, true)))
+                .Cast<AutomationElement>().ToArray();
             Require(sections.Length > 0, "settings-connection-sections-unavailable");
             foreach (var section in sections)
             {

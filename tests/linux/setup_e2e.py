@@ -1903,7 +1903,9 @@ class ApplicationSupportTests(unittest.TestCase):
         self.assertEqual(reopened.browser_status("chromium")["extensionId"], "d" * 32)
         self.assertEqual(reopened.browser_status("chromium")["state"], "registered")
 
-    def desktop_payload(self, *, extra_entries=(), version="5.1.22", content_overrides=None):
+    def desktop_payload(
+        self, *, extra_entries=(), version="5.1.22", content_overrides=None, content_omissions=()
+    ):
         support = self.package / "support/desktop"
         support.mkdir(parents=True, exist_ok=True)
         marker = self.home / "must-not-run-component"
@@ -1916,7 +1918,17 @@ class ApplicationSupportTests(unittest.TestCase):
             "source/upstream/fcitx5/LICENSES/LGPL-2.1-or-later.txt": b"License text",
             "lib/libexample.so.1": b"Cooperative library",
         }
+        content.update(
+            {
+                "fonts/"
+                + path.relative_to(ROOT / "src/shared/ui/fonts").as_posix(): path.read_bytes()
+                for path in (ROOT / "src/shared/ui/fonts").rglob("*")
+                if path.is_file()
+            }
+        )
         content.update(content_overrides or {})
+        for relative in content_omissions:
+            content.pop(relative)
         manifest = {
             "schemaVersion": 1,
             "bundleName": "TypeLay-Fcitx-cooperative",
@@ -2009,6 +2021,19 @@ class ApplicationSupportTests(unittest.TestCase):
         self.assertEqual(
             os.readlink(managed / "current"), "releases/" + descriptor["archiveSha256"]
         )
+
+    def test_component_preparation_rejects_a_manifest_without_a_required_font_or_license(self):
+        for relative in ("fonts/inter/Inter-Regular.ttf", "fonts/source-serif/LICENSE.md"):
+            with self.subTest(relative=relative):
+                _, marker = self.desktop_payload(content_omissions=(relative,))
+                result = asyncio.run(self.support.execute("desktop-text", "Install"))
+                self.assertFalse(result["ok"], result)
+                self.assertEqual(result["reason"], "cooperative-preparation-failed")
+                self.assertEqual(result["detail"], "component-source-or-runtime-missing")
+                self.assertFalse(marker.exists())
+                self.assertFalse(
+                    (self.home / "data/typelay/components/desktop-text/current").exists()
+                )
 
     def test_disconnect_is_offered_only_for_a_stoppable_owned_session(self):
         self.desktop_payload()

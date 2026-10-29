@@ -1744,7 +1744,13 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 string receipt = Path.Combine(received, $"{++observedFrames}.json");
                 while (!File.Exists(receipt))
                     await Task.Delay(10, deadline.Token);
-                string json = await File.ReadAllTextAsync(receipt, deadline.Token);
+                // The payload was closed before os.replace published this name.
+                // Permit its still-finishing rename handle's DELETE access, not
+                // concurrent writes or a retry of an incomplete receipt.
+                await using var stream = new FileStream(receipt, FileMode.Open, FileAccess.Read,
+                    FileShare.Read | FileShare.Delete, 4096, FileOptions.Asynchronous);
+                using var reader = new StreamReader(stream);
+                string json = await reader.ReadToEndAsync(deadline.Token);
                 return System.Text.Json.JsonSerializer.Deserialize<PracticeMessage>(json)!;
             }
         }

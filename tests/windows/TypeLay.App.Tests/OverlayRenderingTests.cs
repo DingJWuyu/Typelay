@@ -1052,8 +1052,27 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 var menu = Assert.IsType<ContextMenu>(more.ContextMenu);
                 var hide = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "隐藏当前翻译"));
                 Assert.True(hide.IsEnabled);
-                menu.IsOpen = false;
-                hide.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                var clicked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                RoutedEventHandler onClick = (_, _) => clicked.TrySetResult();
+                RoutedEventHandler onClosed = (_, _) => closed.TrySetResult();
+                hide.Click += onClick;
+                menu.Closed += onClosed;
+                try
+                {
+                    // Invoke the public menu route: WPF closes/restores the menu
+                    // before dispatching Click after rendering. A direct raised
+                    // Click bypasses that lifecycle and is not a user hide action.
+                    var invoke = Assert.IsAssignableFrom<IInvokeProvider>(
+                        new MenuItemAutomationPeer(hide).GetPattern(PatternInterface.Invoke));
+                    invoke.Invoke();
+                    await Task.WhenAll(clicked.Task, closed.Task).WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+                }
+                finally
+                {
+                    hide.Click -= onClick;
+                    menu.Closed -= onClosed;
+                }
             }
             else
                 overlay.HideQuietly();

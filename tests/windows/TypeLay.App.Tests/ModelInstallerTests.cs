@@ -547,6 +547,7 @@ public sealed class ModelInstallerTests
         byte[] archive = ModelArchive("en_zh");
         var body = new StallingBody(archive[..64]);
         var network = new BodyHandler(files.Responses(ModelArchive), "/v1/translate-en_zh-1_9.argosmodel", body, archive.Length);
+        long startedAtMs = Environment.TickCount64;
         using var watchdog = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         watchdog.CancelAfter(TimeSpan.FromSeconds(3));
         var installer = files.Installer(network, downloadTimeout: TimeSpan.FromMilliseconds(100),
@@ -558,20 +559,50 @@ public sealed class ModelInstallerTests
             ["argos-en-zh"], ["argos-en-zh"], null), progress, watchdog.Token)
             : installer.PrepareAsync(progress, watchdog.Token, ["en_zh"]);
         var error = await Assert.ThrowsAsync<ModelSetupException>(() => prepare);
-        Assert.False(watchdog.IsCancellationRequested);
-        Assert.Equal(SetupFailureCategory.Network, error.Category);
-        Assert.Equal(ModelSetupStage.ModelDownload, error.Stage);
-        Assert.True(body.ReadStarted.Task.IsCompleted);
-        Assert.True(body.Disposed);
-        Assert.Equal(archive[..64], File.ReadAllBytes(files.CachedModel("en_zh") + ".part"));
-        Assert.False(File.Exists(files.CachedModel("en_zh")));
-        Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
-        Assert.Empty(Directory.GetDirectories(Path.Combine(files.Root, "components")));
-        var last = updates[^1];
-        Assert.Equal(packages ? "下载 English → 中文" : "下载English → 中文 模型", last.Label);
-        Assert.Equal(SetupDownloadPhase.Body, last.DownloadPhase);
-        Assert.Equal(64, last.Downloaded);
-        Assert.Equal(archive.Length, last.Total);
+        long returnedAtMs = Environment.TickCount64;
+        try
+        {
+            Assert.False(watchdog.IsCancellationRequested);
+            Assert.Equal(SetupFailureCategory.Network, error.Category);
+            Assert.Equal(ModelSetupStage.ModelDownload, error.Stage);
+            Assert.True(body.ReadStarted.Task.IsCompleted);
+            Assert.True(body.Disposed);
+            Assert.Equal(archive[..64], File.ReadAllBytes(files.CachedModel("en_zh") + ".part"));
+            Assert.False(File.Exists(files.CachedModel("en_zh")));
+            Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
+            Assert.Empty(Directory.GetDirectories(Path.Combine(files.Root, "components")));
+            var last = updates[^1];
+            Assert.Equal(packages ? "下载 English → 中文" : "下载English → 中文 模型", last.Label);
+            Assert.Equal(SetupDownloadPhase.Body, last.DownloadPhase);
+            Assert.Equal(64, last.Downloaded);
+            Assert.Equal(archive.Length, last.Total);
+        }
+        finally
+        {
+            // Fixed-size observations after the original assertions, even when one fails.
+            // Output cannot consume the watchdog before its original check;
+            // neither timeout is extended/reset and no I/O is retried.
+            try
+            {
+                TestContext.Current.TestOutputHelper?.WriteLine("Archive body timeout boundary: " + JsonSerializer.Serialize(new
+                {
+                    packages,
+                    returnedMs = returnedAtMs - startedAtMs,
+                    headersMs = network.ResponseAtMs - startedAtMs,
+                    firstReadMs = body.FirstReadAtMs - startedAtMs,
+                    stallMs = body.StallAtMs - startedAtMs,
+                    cancellationMs = body.CancellationAtMs - startedAtMs,
+                    body.ReadAttempts,
+                    body.PrefixBytesRead,
+                    body.Disposed,
+                    lastPhase = updates.LastOrDefault()?.DownloadPhase?.ToString() ?? "unknown",
+                    lastDownloaded = updates.LastOrDefault()?.Downloaded
+                }));
+            }
+            catch (Exception observationError) when (observationError is not OutOfMemoryException)
+            { /* Observation cannot replace the original timeout assertions. */
+            }
+        }
     }
 
     [Theory]
@@ -1004,10 +1035,15 @@ public sealed class ModelInstallerTests
     private sealed class BodyHandler(HttpMessageHandler inner, string path, Stream body, long? length = null)
         : DelegatingHandler(inner)
     {
+        public long? ResponseAtMs
+        {
+            get; private set;
+        }
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             if (request.RequestUri!.AbsolutePath != path)
                 return base.SendAsync(request, ct);
+            ResponseAtMs = Environment.TickCount64;
             var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(body) };
             response.Content.Headers.ContentLength = length;
             return Task.FromResult(response);
@@ -1017,6 +1053,26 @@ public sealed class ModelInstallerTests
     private sealed class StallingBody(byte[] prefix) : MemoryStream(prefix)
     {
         public TaskCompletionSource ReadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int ReadAttempts
+        {
+            get; private set;
+        }
+        public int PrefixBytesRead
+        {
+            get; private set;
+        }
+        public long? FirstReadAtMs
+        {
+            get; private set;
+        }
+        public long? StallAtMs
+        {
+            get; private set;
+        }
+        public long? CancellationAtMs
+        {
+            get; private set;
+        }
         public bool Disposed
         {
             get; private set;
@@ -1024,11 +1080,26 @@ public sealed class ModelInstallerTests
         public override bool CanSeek => false;
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
         {
-            if (Position < Length)
-                return await base.ReadAsync(buffer, ct);
-            ReadStarted.TrySetResult();
-            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
-            return 0;
+            ReadAttempts++;
+            FirstReadAtMs ??= Environment.TickCount64;
+            try
+            {
+                if (Position < Length)
+                {
+                    int read = await base.ReadAsync(buffer, ct);
+                    PrefixBytesRead += read;
+                    return read;
+                }
+                ReadStarted.TrySetResult();
+                StallAtMs ??= Environment.TickCount64;
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                return 0;
+            }
+            catch (OperationCanceledException)
+            {
+                CancellationAtMs ??= Environment.TickCount64;
+                throw;
+            }
         }
         public override async Task CopyToAsync(Stream destination, int bufferSize, CancellationToken ct)
         {

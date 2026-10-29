@@ -45,6 +45,8 @@ python packaging/linux/fcitx-cooperative/pack.py \
 
 包内包含私有运行库、原始许可证、修改后的对应源码、补丁、固定来源校验和与重建脚本。保留整个源码与许可证目录后再分发；不要只抽取修改后的二进制。LGPL 组件的原 SPDX 声明及修改说明保留在源码中。系统库版本、构建记录与文件校验和见包内 manifest.json。
 
+组件包的 `fonts/` 保留原始 Inter 与 Source Serif 4 字体、各自 OFL 许可和来源说明，文件纳入包清单；缺失或篡改时拒绝预检与受管准备。逐应用启动器只在请求的 UI 子进程中设置绝对 `TYPELAY_UI_FONT_ROOT`，指向当前搬迁后的组件字体目录，不改变父进程环境、`HOME`、完整主包的 `TYPELAY_HOME` 或宿主 fontconfig。GTK/Qt 合作浮层优先读取该显式字体根，未设置时仍使用 `TYPELAY_HOME/fonts`。GTK 的私有字体注册要求 Pango 1.56 或更新版本，旧版仍回退系统字体，CJK 字形也仍使用平台回退，不保证逐像素一致。
+
 ### 预检
 
 解压到独立用户目录即可，不需要安装或 sudo。完整 TypeLay 主包中的合作压缩包位于 `TypeLay-Linux-preview/support/desktop/TypeLay-Fcitx-cooperative.tar.gz`；使用主包时，先进入解压后的 `TypeLay-Linux-preview/support/desktop/` 目录。单独取得合作压缩包时，先进入该压缩包所在目录。两种来源均可从上述目录执行下列命令。以下只是用户审阅后明确执行的操作，不会由 TypeLay 自动执行。

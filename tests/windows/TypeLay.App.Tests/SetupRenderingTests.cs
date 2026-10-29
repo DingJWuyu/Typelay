@@ -524,9 +524,21 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
                 AssertPrimary(window, primary);
                 AssertWithinViewport(window, primary);
                 AssertWithinViewport(window, Named<TextBlock>(window, "PreparationGuidance"));
-                Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == ApplicationSupportPresentation.ReasonText(ApplicationSupportReason.NoFocusedField));
                 Assert.DoesNotContain(Descendants(window).OfType<TextBlock>(), text => text.Text == "已连接");
             }
+            window.ShowPage("apps");
+            window.UpdateLayout();
+            var ordinary = Descendants(window).OfType<Expander>().Single(expander => Equals(expander.Header, "其他普通输入框"));
+            ordinary.IsExpanded = true;
+            window.UpdateLayout();
+            var details = Descendants(ordinary).OfType<Expander>().Single(expander => Equals(expander.Header, "查看详情"));
+            details.IsExpanded = true;
+            window.UpdateLayout();
+            Assert.Contains(Descendants(details).OfType<TextBlock>(), text => text.IsVisible
+                && text.Text == ApplicationSupportPresentation.ReasonText(ApplicationSupportReason.NoFocusedField));
+            Assert.DoesNotContain(Descendants(ordinary).OfType<TextBlock>(), text => text.IsVisible && text.Text == "已连接");
+            window.ShowPage("model");
+            window.UpdateLayout();
             Assert.Equal(acceptKey, settings.Value.AcceptShortcut);
             bool sawConfirmation = false;
             Exception? confirmationFailure = null;

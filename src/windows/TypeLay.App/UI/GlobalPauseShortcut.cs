@@ -36,8 +36,10 @@ internal sealed class GlobalPauseShortcut : IDisposable
     public GlobalPauseShortcut(SettingsStore settings, Func<bool, Task<bool>> setEnabled,
         Func<nint, int, uint, uint, bool>? register = null, Func<nint, int, bool>? unregister = null)
     {
-        _settings = settings; _setEnabled = setEnabled;
-        _register = register ?? Native.RegisterHotKey; _unregister = unregister ?? Native.UnregisterHotKey;
+        _settings = settings;
+        _setEnabled = setEnabled;
+        _register = register ?? Native.RegisterHotKey;
+        _unregister = unregister ?? Native.UnregisterHotKey;
         _window = new HwndSource(new HwndSourceParameters("TypeLay pause shortcut") { ParentWindow = new nint(-3), WindowStyle = 0, Width = 0, Height = 0 });
         _window.AddHook(Message);
         settings.Changed += Configure;
@@ -46,37 +48,47 @@ internal sealed class GlobalPauseShortcut : IDisposable
     private void Configure()
     {
         string requested = _settings.Value.PauseShortcut;
-        if (requested == _configured && (requested.Length == 0 || _registered)) return;
+        if (requested == _configured && (requested.Length == 0 || _registered))
+            return;
         if (_registered)
         {
             if (!_unregister(_window.Handle, Id))
             {
-                _configured = null; _status = "release-failed"; Changed?.Invoke(); return;
+                _configured = null;
+                _status = "release-failed";
+                Changed?.Invoke();
+                return;
             }
             _registered = false;
         }
         _configured = requested;
         if (!TranslationShortcut.TryParse(requested, out var chord))
         {
-            _status = "unset"; Changed?.Invoke(); return;
+            _status = "unset";
+            Changed?.Invoke();
+            return;
         }
         uint key = chord!.Key.Length == 1 ? chord.Key[0] : 0x6Fu + uint.Parse(chord.Key.AsSpan(1), CultureInfo.InvariantCulture);
         uint modifiers = (chord.Modifiers.HasFlag(ShortcutModifiers.Alt) ? 1u : 0) | (chord.Modifiers.HasFlag(ShortcutModifiers.Control) ? 2u : 0)
             | (chord.Modifiers.HasFlag(ShortcutModifiers.Shift) ? 4u : 0) | 0x4000u;
-        _virtualKey = key; _modifiers = modifiers & 0x0Fu;
+        _virtualKey = key;
+        _modifiers = modifiers & 0x0Fu;
         _registered = _register(_window.Handle, Id, modifiers, key);
         _status = _registered ? "active" : "registration-failed";
         Changed?.Invoke();
     }
     public IReadOnlyList<string> InspectConflicts(string candidate)
     {
-        if (candidate.Length == 0 || _registered && _configured == candidate) return [];
-        if (!TranslationShortcut.TryParse(candidate, out var chord)) return [];
+        if (candidate.Length == 0 || _registered && _configured == candidate)
+            return [];
+        if (!TranslationShortcut.TryParse(candidate, out var chord))
+            return [];
         using var probe = new HwndSource(new HwndSourceParameters("TypeLay pause shortcut check") { ParentWindow = new nint(-3), WindowStyle = 0, Width = 0, Height = 0 });
         uint key = chord!.Key.Length == 1 ? chord.Key[0] : 0x6Fu + uint.Parse(chord.Key.AsSpan(1), CultureInfo.InvariantCulture);
         uint modifiers = (chord.Modifiers.HasFlag(ShortcutModifiers.Alt) ? 1u : 0) | (chord.Modifiers.HasFlag(ShortcutModifiers.Control) ? 2u : 0)
             | (chord.Modifiers.HasFlag(ShortcutModifiers.Shift) ? 4u : 0) | 0x4000u;
-        if (!Native.RegisterHotKey(probe.Handle, Id, modifiers, key)) return [candidate];
+        if (!Native.RegisterHotKey(probe.Handle, Id, modifiers, key))
+            return [candidate];
         return Native.UnregisterHotKey(probe.Handle, Id) ? [] : [candidate];
     }
     private nint Message(nint hwnd, int message, nint wParam, nint lParam, ref bool handled)
@@ -84,7 +96,8 @@ internal sealed class GlobalPauseShortcut : IDisposable
         if (message == 0x0312 && wParam == Id && _registered && _configured == _settings.Value.PauseShortcut && !_changing && !ShortcutRecorder.IsRecording
             && ((ulong)lParam >> 16 & 0xFFFF) == _virtualKey && ((ulong)lParam & 0x0F) == _modifiers)
         {
-            handled = true; Toggle();
+            handled = true;
+            Toggle();
         }
         return 0;
     }
@@ -95,7 +108,8 @@ internal sealed class GlobalPauseShortcut : IDisposable
         {
             if (!await _setEnabled(!_settings.Value.Enabled))
             {
-                _status = "save-failed"; Changed?.Invoke();
+                _status = "save-failed";
+                Changed?.Invoke();
             }
         }
         finally { _changing = false; }
@@ -103,7 +117,10 @@ internal sealed class GlobalPauseShortcut : IDisposable
     public void Dispose()
     {
         _settings.Changed -= Configure;
-        if (_registered) _unregister(_window.Handle, Id);
-        _registered = false; _window.RemoveHook(Message); _window.Dispose();
+        if (_registered)
+            _unregister(_window.Handle, Id);
+        _registered = false;
+        _window.RemoveHook(Message);
+        _window.Dispose();
     }
 }

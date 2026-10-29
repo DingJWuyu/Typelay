@@ -28,6 +28,7 @@ from gtk_session_reentry import (  # noqa: E402
 )
 from hy_package_e2e import package_scroll_value, rectangle_contains  # noqa: E402
 from native_e2e import (  # noqa: E402
+    glossary_gtk3_hover_current,
     glossary_hover_current,
     glossary_interaction_loss,
     glossary_menu_scroll_advanced,
@@ -284,6 +285,117 @@ class Gtk3GlossaryPaintGeometryTests(unittest.TestCase):
             mutate(control)
             with self.subTest(control=control):
                 self.assertFalse(glossary_painted_geometry(control, 521948, toolkit="gtk3"))
+
+
+class Gtk3GlossaryFixedPointTests(unittest.TestCase):
+    def setUp(self):
+        # CI542: this same painted Add button moved up 8px after one move.
+        geometry = dict(instance=44, scale=1, x=828, y=379, width=400, height=30)
+        self.before = dict(
+            **geometry,
+            visible=True,
+            enabled=True,
+            pointerInside=False,
+            paintObservation=dict(
+                ready=True,
+                mapGeneration=1,
+                paintedMapGeneration=1,
+                clockInstance=29,
+                drawClockInstance=29,
+                paintedClockInstance=29,
+                mappedAtMonoMs=528890,
+                paintedAtMonoMs=528936,
+                frame=9,
+                drawFrame=6,
+                paintedFrame=6,
+                geometry=dict(geometry),
+            ),
+        )
+        self.current = copy.deepcopy(self.before)
+        self.current.update(y=371, pointerInside=True)
+        self.current["paintObservation"].update(
+            paintedAtMonoMs=529019,
+            frame=11,
+            drawFrame=11,
+            paintedFrame=11,
+            geometry={**geometry, "y": 371},
+        )
+        self.pointer = dict(
+            status="captured",
+            ownedNiri=6291458,
+            WINDOW=6291458,
+            observedAtMonoMs=529027,
+            X=1028,
+            Y=394,
+        )
+
+    def admitted(self, *, observed_at=529020, point=(1028, 394), origin=(0, 0)):
+        return glossary_gtk3_hover_current(
+            self.current, observed_at, self.before, point, 529012, self.pointer, origin
+        )
+
+    def repaint(self):
+        self.current["paintObservation"]["geometry"] = {
+            key: self.current[key] for key in ("instance", "scale", "x", "y", "width", "height")
+        }
+
+    def test_one_fixed_point_still_hits_the_same_repainted_button_after_layout(self):
+        self.assertTrue(self.admitted())
+        self.pointer.update(X=1128, Y=444)
+        self.assertTrue(self.admitted(origin=(100, 50)))
+
+    def test_fixed_point_outside_current_button_is_not_relocated_to_new_center(self):
+        self.current["y"] = 401
+        self.repaint()
+        self.assertFalse(self.admitted())
+
+    def test_replaced_instance_map_clock_or_scale_cannot_reuse_original_point(self):
+        for change in ("instance", "scale", "map", "clock"):
+            with self.subTest(change=change):
+                self.setUp()
+                if change in ("instance", "scale"):
+                    self.current[change] += 1
+                    self.repaint()
+                elif change == "map":
+                    self.current["paintObservation"].update(mapGeneration=2, paintedMapGeneration=2)
+                else:
+                    self.current["paintObservation"].update(
+                        clockInstance=30, drawClockInstance=30, paintedClockInstance=30
+                    )
+                self.assertFalse(self.admitted())
+
+    def test_unpainted_geometry_stale_time_or_absent_hover_cannot_authorize_click(self):
+        for mutate in (
+            lambda c: c.update(pointerInside=False),
+            lambda c: c.update(visible=False),
+            lambda c: c.update(enabled=False),
+            lambda c: c["paintObservation"]["geometry"].update(y=379),
+            lambda c: c["paintObservation"].update(ready=False),
+            lambda c: c["paintObservation"].update(paintedAtMonoMs=529021),
+            lambda c: c["paintObservation"].update(paintedAtMonoMs=528889),
+        ):
+            with self.subTest(mutate=mutate):
+                self.setUp()
+                mutate(self.current)
+                self.assertFalse(self.admitted())
+        self.setUp()
+        self.assertFalse(self.admitted(observed_at=529011))
+
+    def test_real_x_pointer_must_match_the_original_point_and_owned_niri(self):
+        for change in (
+            dict(status="unavailable"),
+            dict(X=1029),
+            dict(Y=386),
+            dict(WINDOW=6291459),
+            dict(ownedNiri=0),
+            dict(observedAtMonoMs=529011),
+        ):
+            with self.subTest(change=change):
+                self.setUp()
+                self.pointer.update(change)
+                self.assertFalse(self.admitted())
+        self.pointer = {}
+        self.assertFalse(self.admitted())
 
 
 class GlossaryPaintGeometryTests(unittest.TestCase):

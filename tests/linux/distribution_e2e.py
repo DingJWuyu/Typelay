@@ -1,6 +1,7 @@
 """Exercise the actual Linux archive through its user-local install and CLI entry points."""
 
 import fcntl
+import hashlib
 import json
 import os
 import socket
@@ -388,6 +389,81 @@ class DistributionTests(unittest.TestCase):
         current = self.home / "data/typelay/components/desktop-text/current"
         self.assertTrue(current.is_symlink())
         self.assertTrue((current / "TypeLay-Fcitx-cooperative/manifest.json").is_file())
+
+        bundle = (current / "TypeLay-Fcitx-cooperative").resolve()
+        manifest = json.loads((bundle / "manifest.json").read_text())
+        fonts = (
+            "inter/Inter-Regular.ttf",
+            "inter/Inter-Medium.ttf",
+            "inter/Inter-SemiBold.ttf",
+            "inter/LICENSE.txt",
+            "source-serif/SourceSerif4-Regular.ttf",
+            "source-serif/SourceSerif4-Semibold.ttf",
+            "source-serif/LICENSE.md",
+            "README.md",
+        )
+        for relative in fonts:
+            original = (self.package / "fonts" / relative).read_bytes()
+            actual = (bundle / "fonts" / relative).read_bytes()
+            self.assertEqual(actual, original)
+            self.assertEqual(
+                manifest["files"]["fonts/" + relative],
+                {"sha256": hashlib.sha256(original).hexdigest()},
+            )
+        # The actual relocated launcher supplies component fonts even without
+        # a full-installation environment. No daemon or UI application is started.
+        environment = {
+            key: value
+            for key, value in self.env.items()
+            if key not in ("TYPELAY_HOME", "TYPELAY_UI_FONT_ROOT")
+        }
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                "import os,runpy,subprocess,sys; before=dict(os.environ); "
+                "launch=runpy.run_path(sys.argv[1]); environment=launch['environment'](qt6=True); "
+                "subprocess.run([sys.executable,'-I','-B','-c',"
+                "\"import json,os; print(json.dumps({key:os.environ.get(key) for key in ('TYPELAY_UI_FONT_ROOT','TYPELAY_HOME','HOME')}))\"],"
+                "env=environment,check=True); assert dict(os.environ)==before",
+                str(bundle / "fcitx-cooperative.py"),
+            ],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assert_success(result)
+        observed = json.loads(result.stdout)
+        self.assertEqual(observed["TYPELAY_UI_FONT_ROOT"], str(bundle / "fonts"))
+        self.assertIsNone(observed["TYPELAY_HOME"])
+        self.assertEqual(observed["HOME"], self.env["HOME"])
+        (bundle / "fonts/inter/Inter-Regular.ttf").unlink()
+        refused = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                "import json,sys; from pathlib import Path; from types import SimpleNamespace; "
+                "home=Path(sys.argv[1]); data=Path(sys.argv[2]); sys.path.insert(0,str(home/'desktop')); "
+                "from desktop_component import DesktopComponent; "
+                "print(json.dumps(DesktopComponent(SimpleNamespace(home=home,data=data)).prepare()))",
+                str(self.package),
+                str(self.home / "data/typelay"),
+            ],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assert_success(refused)
+        failure = json.loads(refused.stdout)
+        self.assertFalse(failure["ok"], failure)
+        self.assertEqual(failure["reason"], "cooperative-preparation-failed")
+        self.assertEqual(failure["detail"], "component-files-mismatch")
 
     def test_install_relocates_and_reinstalls_without_models_or_shell_edits(self):
         fish = self.home / "config/fish/config.fish"

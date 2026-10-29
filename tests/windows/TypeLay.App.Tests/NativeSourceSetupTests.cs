@@ -404,6 +404,10 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                     long startedAtMs = WindowsInterruptClock.NowMs;
                     bool? kernelExitSignaled = null, rootHandleExists = null, fieldHandleExists = null;
                     int? exitCode = null, nativeErrorCode = null;
+                    bool? sourceThreadIdentityMatched = null, sourceGuiRead = null;
+                    string? sourceActive = null, sourceFocus = null, sourceCapture = null;
+                    uint? sourceGuiFlags = null;
+                    int? sourceGuiError = null;
                     string stage = "kernel-exit";
                     try
                     {
@@ -421,6 +425,24 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                         rootHandleExists = N.IsWindow(source.Root);
                         stage = "field-handle-exists";
                         fieldHandleExists = N.IsWindow(source.Field);
+                        stage = "retained-source-gui-thread";
+                        uint thread = N.GetWindowThreadProcessId(source.Root, out uint owner);
+                        sourceThreadIdentityMatched = thread != 0 && owner == source.Process.Id;
+                        if (sourceThreadIdentityMatched == true)
+                        {
+                            var gui = new N.GuiThreadInfo { Size = (uint)Marshal.SizeOf<N.GuiThreadInfo>() };
+                            sourceGuiRead = N.GetGUIThreadInfo(thread, ref gui);
+                            if (sourceGuiRead == true)
+                            {
+                                sourceActive = gui.Active == source.Root ? "source" : gui.Active == 0 ? "none" : "other";
+                                sourceFocus = gui.Focus == source.Field ? "source-field" : gui.Focus == source.OtherField ? "other-field"
+                                    : gui.Focus == 0 ? "none" : "other";
+                                sourceCapture = gui.Capture == source.Field ? "source-field" : gui.Capture == 0 ? "none" : "other";
+                                sourceGuiFlags = gui.Flags;
+                            }
+                            else
+                                sourceGuiError = Marshal.GetLastPInvokeError();
+                        }
                         stage = "completed";
                     }
                     catch (Exception error)
@@ -435,6 +457,13 @@ public sealed class NativeSourceSetupTests(WpfDesktopFixture desktop)
                         exitCode,
                         rootHandleExists,
                         fieldHandleExists,
+                        sourceThreadIdentityMatched,
+                        sourceGuiRead,
+                        sourceActive,
+                        sourceFocus,
+                        sourceCapture,
+                        sourceGuiFlags,
+                        sourceGuiError,
                         stage,
                         nativeErrorCode
                     }));

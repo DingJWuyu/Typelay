@@ -100,6 +100,8 @@ internal sealed partial class SettingsWindow
         source.FontFamily = UiTheme.ContentFont;
         var sourceCard = UiTheme.Border(source, 21, "Panel", 14);
         sourceCard.Height = 42;
+        sourceCard.Padding = new(14, 8, 14, 8);
+        AutomationProperties.SetAutomationId(sourceCard, "AppearanceSourcePreview");
         sourceCard.Margin = new(28, 0, 28, 26);
         sourceCard.VerticalAlignment = VerticalAlignment.Bottom;
         preview.Children.Add(sourceCard);

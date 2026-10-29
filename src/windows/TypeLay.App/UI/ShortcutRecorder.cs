@@ -18,8 +18,13 @@ internal static class ShortcutRecorder
     {
         var input = new TextBox
         {
-            Text = value, Width = 178, MaxLength = 64, Padding = new(9, 6, 9, 6),
-            VerticalAlignment = VerticalAlignment.Center, FontSize = 12, IsReadOnly = true,
+            Text = value,
+            Width = 178,
+            MaxLength = 64,
+            Padding = new(9, 6, 9, 6),
+            VerticalAlignment = VerticalAlignment.Center,
+            FontSize = 12,
+            IsReadOnly = true,
             HorizontalContentAlignment = HorizontalAlignment.Center,
             ToolTip = UiTheme.L("点击后按下快捷键，Esc 取消", "Click, then press a shortcut. Esc cancels")
         };
@@ -31,23 +36,35 @@ internal static class ShortcutRecorder
         input.LostKeyboardFocus += (_, _) => input.SetResourceReference(Control.BorderBrushProperty, "Line");
         input.PreviewKeyDown += (_, e) =>
         {
-            if (!input.IsVisible || !input.IsKeyboardFocusWithin) return;
+            if (!input.IsVisible || !input.IsKeyboardFocusWithin)
+                return;
             Key key = e.Key == Key.System ? e.SystemKey : e.Key;
-            if (key == Key.Tab && Keyboard.Modifiers is ModifierKeys.None or ModifierKeys.Shift) return;
+            if (key == Key.Tab && Keyboard.Modifiers is ModifierKeys.None or ModifierKeys.Shift)
+                return;
             e.Handled = true;
-            if (key == Key.Escape) { input.Text = previous; Keyboard.ClearFocus(); return; }
-            if (key is Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt or Key.RightAlt or Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin) return;
+            if (key == Key.Escape)
+            {
+                input.Text = previous;
+                Keyboard.ClearFocus();
+                return;
+            }
+            if (key is Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt or Key.RightAlt or Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin)
+                return;
             if (allowEmpty && key is Key.Back or Key.Delete && Keyboard.Modifiers == ModifierKeys.None)
             {
-                input.Text = ""; previous = ""; return;
+                input.Text = "";
+                previous = "";
+                return;
             }
             string? chord = Chord(key, Keyboard.Modifiers);
             if (chord is not null && TranslationShortcut.TryParse(chord, out var parsed))
             {
-                input.Text = parsed!.ToString(); previous = input.Text;
+                input.Text = parsed!.ToString();
+                previous = input.Text;
                 input.ToolTip = UiTheme.L("已录制；自动保存", "Recorded; saves automatically");
             }
-            else input.ToolTip = UiTheme.L("使用 Ctrl / Alt 与字母、数字或功能键；不支持 F12。", "Use Ctrl / Alt with a letter, number or function key. F12 is reserved.");
+            else
+                input.ToolTip = UiTheme.L("使用 Ctrl / Alt 与字母、数字或功能键；不支持 F12。", "Use Ctrl / Alt with a letter, number or function key. F12 is reserved.");
         };
         return input;
     }
@@ -59,17 +76,23 @@ internal static class ShortcutRecorder
         input.ToolTip = UiTheme.L("选择或按下快捷键", "Choose or press a shortcut");
         input.PreviewKeyDown += (_, e) =>
         {
-            if (!input.IsVisible || !input.IsKeyboardFocusWithin || input.IsDropDownOpen) return;
+            if (!input.IsVisible || !input.IsKeyboardFocusWithin || input.IsDropDownOpen)
+                return;
             Key key = e.Key == Key.System ? e.SystemKey : e.Key;
             string? value = key == Key.Tab && defaultKey == "Tab" && Keyboard.Modifiers == ModifierKeys.None ? "Tab"
                 : key == Key.Escape && defaultKey == "Esc" && Keyboard.Modifiers == ModifierKeys.None ? "Esc" : Chord(key, Keyboard.Modifiers);
-            if (value is not null && input.Items.Contains(value)) { e.Handled = true; input.SelectedItem = value; }
+            if (value is not null && input.Items.Contains(value))
+            {
+                e.Handled = true;
+                input.SelectedItem = value;
+            }
         };
     }
 
     private static string? Chord(Key key, ModifierKeys modifiers)
     {
-        if (modifiers.HasFlag(ModifierKeys.Windows)) return null;
+        if (modifiers.HasFlag(ModifierKeys.Windows))
+            return null;
         string? name = key >= Key.A && key <= Key.Z ? key.ToString()
             : key >= Key.D0 && key <= Key.D9 ? ((int)key - (int)Key.D0).ToString(System.Globalization.CultureInfo.InvariantCulture)
             : key >= Key.F1 && key <= Key.F24 ? key.ToString() : null;

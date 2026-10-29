@@ -24,7 +24,11 @@ public sealed class OnboardingRenderingTests(WpfDesktopFixture desktop)
         try
         {
             var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
-            settings.Update(settings.Value with { UiLanguage = "zh-CN", Mode = WorkMode.OnDemand });
+            settings.Update(settings.Value with
+            {
+                UiLanguage = "zh-CN",
+                Mode = WorkMode.OnDemand
+            });
             using var model = WindowsRuntime.CreateModel();
             int preparations = 0;
             var host = new SettingsWindow(settings, model, () => { }, createInstaller: () =>
@@ -54,7 +58,10 @@ public sealed class OnboardingRenderingTests(WpfDesktopFixture desktop)
             Assert.Equal(WorkMode.OnDemand, settings.Value.Mode);
             Assert.False(model.Ready);
             Assert.Equal(0, preparations);
-            settings.Update(settings.Value with { UiLanguage = "en" });
+            settings.Update(settings.Value with
+            {
+                UiLanguage = "en"
+            });
             window.ShowOrActivate(restart: true);
             Assert.Contains(Labels(window), label => label.Text == "Welcome to TypeLay");
             Assert.Equal("Close Setup", AutomationProperties.GetName(Button(window, "OnboardingClose")));
@@ -74,13 +81,21 @@ public sealed class OnboardingRenderingTests(WpfDesktopFixture desktop)
         {
             string path = Path.Combine(directory, "settings.json");
             var settings = WindowsRuntime.CreateSettings(path);
-            settings.Update(settings.Value with { UiLanguage = "zh-CN", Target = "en" });
+            settings.Update(settings.Value with
+            {
+                UiLanguage = "zh-CN",
+                Target = "en"
+            });
             using var model = WindowsRuntime.CreateModel();
             var host = new SettingsWindow(settings, model, () => { });
             var window = new OnboardingWindow(settings, model, host);
             window.ShowOrActivate();
             Click(window, "OnboardingNext");
-            settings.Update(settings.Value with { Accent = "sage", TextSize = 19 });
+            settings.Update(settings.Value with
+            {
+                Accent = "sage",
+                TextSize = 19
+            });
             var unavailable = Descendants(window).OfType<Button>()
                 .Where(button => Equals(button.Content, "简洁") || Equals(button.Content, "口语")).ToArray();
             Assert.Equal(2, unavailable.Length);
@@ -108,7 +123,11 @@ public sealed class OnboardingRenderingTests(WpfDesktopFixture desktop)
         try
         {
             var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
-            settings.Update(settings.Value with { UiLanguage = "zh-CN", Target = "en" });
+            settings.Update(settings.Value with
+            {
+                UiLanguage = "zh-CN",
+                Target = "en"
+            });
             using var model = WindowsRuntime.CreateModel();
             var retirement = new TaskCompletionSource<bool>();
             int retirements = 0;
@@ -124,7 +143,10 @@ public sealed class OnboardingRenderingTests(WpfDesktopFixture desktop)
             Assert.False(Button(window, "OnboardingNext").IsEnabled);
             Assert.All(Descendants(window).OfType<ComboBox>(), picker => Assert.False(picker.IsEnabled));
             Click(window, "OnboardingClose");
-            settings.Update(settings.Value with { Accent = "ocean" });
+            settings.Update(settings.Value with
+            {
+                Accent = "ocean"
+            });
             retirement.SetResult(true);
             await Dispatcher.Yield(DispatcherPriority.ContextIdle);
             Assert.False(window.IsVisible);
@@ -147,7 +169,12 @@ public sealed class OnboardingRenderingTests(WpfDesktopFixture desktop)
         try
         {
             var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
-            settings.Update(settings.Value with { UiLanguage = "zh-CN", Target = "en", Mode = WorkMode.OnDemand });
+            settings.Update(settings.Value with
+            {
+                UiLanguage = "zh-CN",
+                Target = "en",
+                Mode = WorkMode.OnDemand
+            });
             using var model = WindowsRuntime.CreateModel();
             var host = new SettingsWindow(settings, model, () => { });
             var window = new OnboardingWindow(settings, model, host);
@@ -192,7 +219,11 @@ public sealed class OnboardingRenderingTests(WpfDesktopFixture desktop)
         try
         {
             var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
-            settings.Update(settings.Value with { UiLanguage = "zh-CN", Mode = WorkMode.OnDemand });
+            settings.Update(settings.Value with
+            {
+                UiLanguage = "zh-CN",
+                Mode = WorkMode.OnDemand
+            });
             // A real isolated protocol worker establishes presentation readiness,
             // not model quality, inference or authority to write a source field.
             using var model = SetupRenderingTests.ProtocolModel(directory);
@@ -202,7 +233,9 @@ public sealed class OnboardingRenderingTests(WpfDesktopFixture desktop)
             var host = new SettingsWindow(settings, model, () => launches++);
             var window = new OnboardingWindow(settings, model, host);
             window.ShowOrActivate();
-            Click(window, "OnboardingNext"); Click(window, "OnboardingNext"); Click(window, "OnboardingNext");
+            Click(window, "OnboardingNext");
+            Click(window, "OnboardingNext");
+            Click(window, "OnboardingNext");
             var oldPeer = new ButtonAutomationPeer(Button(window, "OnboardingPractice_Automatic"));
             var invoke = Assert.IsAssignableFrom<IInvokeProvider>(oldPeer.GetPattern(PatternInterface.Invoke));
             if (close)
@@ -213,7 +246,9 @@ public sealed class OnboardingRenderingTests(WpfDesktopFixture desktop)
                 Assert.Equal(0, launches);
                 Assert.Equal(WorkMode.OnDemand, settings.Value.Mode);
                 window.ShowOrActivate(restart: true);
-                Click(window, "OnboardingNext"); Click(window, "OnboardingNext"); Click(window, "OnboardingNext");
+                Click(window, "OnboardingNext");
+                Click(window, "OnboardingNext");
+                Click(window, "OnboardingNext");
             }
             else
             {
@@ -264,7 +299,8 @@ public sealed class OnboardingRenderingTests(WpfDesktopFixture desktop)
         {
             var child = VisualTreeHelper.GetChild(root, index);
             yield return child;
-            foreach (var descendant in Descendants(child)) yield return descendant;
+            foreach (var descendant in Descendants(child))
+                yield return descendant;
         }
     }
 }

@@ -14,7 +14,10 @@ public sealed class AppearanceSettingsTests : IDisposable
         Directory.CreateDirectory(_directory);
         File.WriteAllText(SettingsPath, """{"Enabled":false,"ExcludedApplications":["private-app"],"FuturePreference":{"choice":"kept","level":3}}""");
         var store = new SettingsStore(SettingsPath);
-        store.Update(store.Value with { Theme = "dark" });
+        store.Update(store.Value with
+        {
+            Theme = "dark"
+        });
         using var saved = JsonDocument.Parse(File.ReadAllText(SettingsPath));
         Assert.Equal("kept", saved.RootElement.GetProperty("FuturePreference").GetProperty("choice").GetString());
         var reloaded = new SettingsStore(SettingsPath);
@@ -29,8 +32,13 @@ public sealed class AppearanceSettingsTests : IDisposable
         var store = new SettingsStore(SettingsPath);
         store.Update(store.Value with
         {
-            Font = "sans", TextSize = 19, Accent = "ocean", UiLanguage = "en",
-            ReduceMotion = true, ReduceTransparency = true, PauseShortcut = "alt+shift+p",
+            Font = "sans",
+            TextSize = 19,
+            Accent = "ocean",
+            UiLanguage = "en",
+            ReduceMotion = true,
+            ReduceTransparency = true,
+            PauseShortcut = "alt+shift+p",
             ExcludedApplications = ["private-app"]
         });
         var restored = new SettingsStore(SettingsPath).Value;
@@ -44,7 +52,10 @@ public sealed class AppearanceSettingsTests : IDisposable
         Assert.Equal("auto", restored.Source);
         Assert.Equal("en", restored.Target);
         Assert.Equal(["private-app"], restored.Excluded);
-        store.Update(restored with { PauseShortcut = "" });
+        store.Update(restored with
+        {
+            PauseShortcut = ""
+        });
         Assert.Equal("", new SettingsStore(SettingsPath).Value.PauseShortcut);
     }
 
@@ -87,7 +98,10 @@ public sealed class AppearanceSettingsTests : IDisposable
         var store = new SettingsStore(SettingsPath, startup.Add);
         store.Update(store.Value);
         string saved = File.ReadAllText(SettingsPath);
-        var changed = store.Value with { Startup = true };
+        var changed = store.Value with
+        {
+            Startup = true
+        };
         changed = property switch
         {
             "Font" => changed with { Font = "unknown" },
@@ -109,9 +123,15 @@ public sealed class AppearanceSettingsTests : IDisposable
         var store = new SettingsStore(SettingsPath, startup.Add);
         long originalRevision = store.Revision;
         var original = store.Value;
-        store.Update(originalRevision, original with { Accent = "ocean" });
+        store.Update(originalRevision, original with
+        {
+            Accent = "ocean"
+        });
         long savedRevision = store.Revision;
-        store.Update(savedRevision, store.Value with { TextSize = 17 });
+        store.Update(savedRevision, store.Value with
+        {
+            TextSize = 17
+        });
         string saved = File.ReadAllText(SettingsPath);
         Assert.Throws<SettingsConflictException>(() => store.Update(originalRevision, original with { Startup = true }));
         Assert.Throws<SettingsConflictException>(() => store.Update(savedRevision, original));
@@ -125,7 +145,10 @@ public sealed class AppearanceSettingsTests : IDisposable
     public void AManagedApplicationPersistsWhileEnabledAndInheritingWithoutGrantingAnyCapability()
     {
         var store = new SettingsStore(SettingsPath, normalizeApplication: app => app.Trim().ToLowerInvariant());
-        store.Update(store.Value with { ManagedApplications = [" Org.Example.Writer ", "org.example.writer"] });
+        store.Update(store.Value with
+        {
+            ManagedApplications = [" Org.Example.Writer ", "org.example.writer"]
+        });
         var restored = new SettingsStore(SettingsPath).Value;
         Assert.Equal(["org.example.writer"], restored.Managed);
         Assert.Empty(restored.Excluded);

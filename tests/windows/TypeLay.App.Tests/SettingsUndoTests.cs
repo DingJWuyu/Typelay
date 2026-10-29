@@ -20,11 +20,18 @@ public sealed class SettingsUndoTests(WpfDesktopFixture desktop)
             string path = Path.Combine(directory, "settings.json");
             var settings = WindowsRuntime.CreateSettings(path);
             using var model = WindowsRuntime.CreateModel();
-            var window = new SettingsWindow(settings, model, () => { }); window.ShowPage("apps");
+            var window = new SettingsWindow(settings, model, () => { });
+            window.ShowPage("apps");
             Toggle("chrome").IsChecked = false;
             var oldUndo = Undo();
-            settings.Update(settings.Value with { ExcludedApplications = [] });
-            settings.Update(settings.Value with { ExcludedApplications = ["chrome"] });
+            settings.Update(settings.Value with
+            {
+                ExcludedApplications = []
+            });
+            settings.Update(settings.Value with
+            {
+                ExcludedApplications = ["chrome"]
+            });
             Click(oldUndo);
             Assert.Contains("chrome", WindowsRuntime.CreateSettings(path).Value.Excluded);
             Toggle("code").IsChecked = false;
@@ -39,19 +46,23 @@ public sealed class SettingsUndoTests(WpfDesktopFixture desktop)
             Toggle("code").IsChecked = false;
             var dismissedUndo = Undo();
             var dismiss = Descendants(window).OfType<Button>().Single(button => AutomationProperties.GetName(button) == "关闭通知");
-            Click(dismiss); Click(dismissedUndo);
+            Click(dismiss);
+            Click(dismissedUndo);
             Assert.Contains("code", WindowsRuntime.CreateSettings(path).Value.Excluded);
             var oldToggle = Toggle("chrome");
-            window.ShowPage("general"); window.ShowPage("apps");
+            window.ShowPage("general");
+            window.ShowPage("apps");
             oldToggle.IsChecked = true;
             Assert.Contains("chrome", WindowsRuntime.CreateSettings(path).Value.Excluded);
             CheckBox Toggle(string app)
             {
-                window.UpdateLayout(); return Descendants(window).OfType<CheckBox>().Single(box => AutomationProperties.GetName(box) == "在 " + app + " 中启用");
+                window.UpdateLayout();
+                return Descendants(window).OfType<CheckBox>().Single(box => AutomationProperties.GetName(box) == "在 " + app + " 中启用");
             }
             Button Undo()
             {
-                window.UpdateLayout(); return Descendants(window).OfType<Button>().Single(button => Equals(button.Content, "撤销"));
+                window.UpdateLayout();
+                return Descendants(window).OfType<Button>().Single(button => Equals(button.Content, "撤销"));
             }
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
@@ -61,8 +72,10 @@ public sealed class SettingsUndoTests(WpfDesktopFixture desktop)
     {
         for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
         {
-            var child = VisualTreeHelper.GetChild(root, i); yield return child;
-            foreach (var nested in Descendants(child)) yield return nested;
+            var child = VisualTreeHelper.GetChild(root, i);
+            yield return child;
+            foreach (var nested in Descendants(child))
+                yield return nested;
         }
     }
 }

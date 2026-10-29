@@ -276,4 +276,204 @@ public sealed class BrowserCdpDiagnosticsTests
         Assert.DoesNotContain("private", JsonSerializer.Serialize(diagnostics));
     }
 
+    [Fact]
+    public void OwnedDocumentFailureRetainsOnlyCorrelatedWhitelistedNetworkEvidence()
+    {
+        var diagnostics = new BrowserCdpDiagnostics();
+        Assert.Equal("unobserved", diagnostics.NetworkObservation);
+        diagnostics.BeginNetworkObservation();
+        ObserveNetwork(diagnostics, "Network.requestWillBeSent", new
+        {
+            requestId = "private-request",
+            frameId = "private-frame",
+            type = "Document",
+            request = new
+            {
+                url = "http://127.0.0.1:12345/private-fixture",
+                headers = new
+                {
+                    secret = "private-header"
+                }
+            }
+        });
+        // A known request ID alone cannot authorize a foreign-session or subresource failure.
+        ObserveNetwork(diagnostics, "Network.loadingFailed", new
+        {
+            requestId = "private-request",
+            type = "Document",
+            errorText = "net::ERR_ABORTED",
+            canceled = true
+        }, "private-other-session");
+        ObserveNetwork(diagnostics, "Network.loadingFailed", new
+        {
+            requestId = "private-request",
+            type = "XHR",
+            errorText = "net::ERR_ABORTED",
+            canceled = true
+        });
+        Assert.Single(diagnostics.NetworkEvents);
+        ObserveNetwork(diagnostics, "Network.loadingFailed", new
+        {
+            requestId = "private-request",
+            type = "Document",
+            errorText = "net::ERR_ABORTED",
+            canceled = true,
+            blockedReason = "inspector",
+            corsErrorStatus = new
+            {
+                corsError = "LocalNetworkAccessPermissionDenied",
+                failedParameter = "private-parameter"
+            }
+        });
+        Assert.Equal("enabled", diagnostics.NetworkObservation);
+        Assert.Collection(diagnostics.NetworkEvents,
+            request => { Assert.Equal("Network.requestWillBeSent", request.Kind); Assert.Equal(1, request.RequestNumber); },
+            failure =>
+            {
+                Assert.Equal("Network.loadingFailed", failure.Kind);
+                Assert.Equal(1, failure.RequestNumber);
+                Assert.Equal("Document", failure.ResourceType);
+                Assert.Equal("expected-loopback", failure.UrlCategory);
+                Assert.Equal("aborted", failure.ErrorCategory);
+                Assert.True(failure.Canceled);
+                Assert.Equal("inspector", failure.BlockedReason);
+                Assert.Equal("LocalNetworkAccessPermissionDenied", failure.CorsError);
+            });
+        Assert.Equal(0, diagnostics.NetworkEventsDropped);
+        string json = JsonSerializer.Serialize(diagnostics);
+        Assert.DoesNotContain("private", json);
+        Assert.DoesNotContain("127.0.0.1", json);
+        Assert.DoesNotContain("headers", json);
+        Assert.DoesNotContain("failedParameter", json);
+    }
+
+
+    [Theory]
+    [InlineData("private-other-session", "private-frame", "Document", "private-frame")]
+    [InlineData("private-session", "private-subframe", "Document", "private-frame")]
+    [InlineData("private-session", "private-frame", "XHR", "private-frame")]
+    [InlineData("private-session", "private-frame", "Document", null)]
+    public void UnrelatedOrUnknownDocumentIdentityCannotAuthorizeFailureEvidence(string session, string frame,
+        string resource, string? knownMainFrame)
+    {
+        var diagnostics = new BrowserCdpDiagnostics();
+        diagnostics.BeginNetworkObservation();
+        ObserveNetwork(diagnostics, "Network.requestWillBeSent", new
+        {
+            requestId = "private-request",
+            frameId = frame,
+            type = resource,
+            request = new
+            {
+                url = "http://127.0.0.1:12345/private-fixture"
+            }
+        }, session, knownMainFrame);
+        ObserveNetwork(diagnostics, "Network.loadingFailed", new
+        {
+            requestId = "private-request",
+            type = "Document",
+            errorText = "net::ERR_ABORTED",
+            canceled = true
+        });
+        Assert.Empty(diagnostics.NetworkEvents);
+        Assert.Equal(0, diagnostics.NetworkEventsDropped);
+    }
+
+    [Fact]
+    public void MissingUnknownAndForeignFailureFieldsNeverBecomeAffirmativeEvidence()
+    {
+        var diagnostics = new BrowserCdpDiagnostics();
+        diagnostics.BeginNetworkObservation();
+        ObserveNetwork(diagnostics, "Network.loadingFailed", new
+        {
+            requestId = "private-request",
+            type = "Document"
+        });
+        Assert.Empty(diagnostics.NetworkEvents);
+        ObserveNetwork(diagnostics, "Network.requestWillBeSent", new
+        {
+            requestId = "private-request",
+            frameId = "private-frame",
+            type = "Document",
+            request = new
+            {
+            }
+        });
+        ObserveNetwork(diagnostics, "Network.loadingFailed", new
+        {
+            requestId = "private-request",
+            type = "Document"
+        });
+        ObserveNetwork(diagnostics, "Network.loadingFailed", new
+        {
+            requestId = "private-request",
+            type = "Document",
+            errorText = "net::ERR_ABORTED private-url",
+            canceled = "private-value",
+            blockedReason = "private-reason",
+            corsErrorStatus = new
+            {
+                corsError = "private-cors",
+                failedParameter = "private-secret"
+            }
+        });
+        Assert.Equal(3, diagnostics.NetworkEvents.Count);
+        Assert.All(diagnostics.NetworkEvents.Skip(1), failure =>
+        {
+            Assert.Equal("unknown", failure.UrlCategory);
+            Assert.Equal("unknown", failure.ErrorCategory);
+            Assert.Null(failure.Canceled);
+            Assert.Equal("unknown", failure.BlockedReason);
+            Assert.Equal("unknown", failure.CorsError);
+        });
+        Assert.DoesNotContain("private", JsonSerializer.Serialize(diagnostics));
+    }
+
+    [Fact]
+    public void ObservationOnlyCoversItsExplicitWindowAndKeepsSixteenEventsWithDropEvidence()
+    {
+        var diagnostics = new BrowserCdpDiagnostics();
+        var request = new
+        {
+            requestId = "private-request",
+            frameId = "private-frame",
+            type = "Document",
+            request = new
+            {
+                url = "about:blank"
+            }
+        };
+        ObserveNetwork(diagnostics, "Network.requestWillBeSent", request);
+        Assert.Empty(diagnostics.NetworkEvents);
+        diagnostics.BeginNetworkObservation();
+        for (int index = 0; index < 20; index++)
+            ObserveNetwork(diagnostics, "Network.requestWillBeSent", request);
+        Assert.Equal(16, diagnostics.NetworkEvents.Count);
+        Assert.Equal(4, diagnostics.NetworkEventsDropped);
+        Assert.All(diagnostics.NetworkEvents, entry =>
+        {
+            Assert.Equal("about-blank", entry.UrlCategory);
+            Assert.Equal(1, entry.RequestNumber);
+        });
+        diagnostics.EndNetworkObservation();
+        ObserveNetwork(diagnostics, "Network.loadingFailed", new
+        {
+            requestId = "private-request",
+            type = "Document"
+        });
+        Assert.Equal(16, diagnostics.NetworkEvents.Count);
+        Assert.Equal(4, diagnostics.NetworkEventsDropped);
+        Assert.DoesNotContain("private", JsonSerializer.Serialize(diagnostics));
+    }
+
+    private static void ObserveNetwork(BrowserCdpDiagnostics diagnostics, string kind, object parameters,
+        string session = "private-session", string? mainFrame = "private-frame") =>
+        diagnostics.Observe(JsonSerializer.SerializeToElement(new
+        {
+            method = kind,
+            sessionId = session,
+            @params = parameters
+        }),
+            "private-session", "private-target", mainFrame, "http://127.0.0.1:12345/private-fixture");
+
 }

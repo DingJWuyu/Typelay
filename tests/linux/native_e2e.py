@@ -143,6 +143,41 @@ def glossary_hover_current(control, observed_at, before, point, moved_at):
     )
 
 
+def glossary_gtk3_hover_current(control, observed_at, before, point, moved_at, pointer, origin):
+    """Current PRELIGHT and paint must still admit the one original XTest point."""
+    if (
+        not glossary_painted_geometry(control, observed_at, toolkit="gtk3")
+        or type(moved_at) is not int
+        or moved_at <= 0
+        or observed_at < moved_at
+        or not isinstance(pointer, dict)
+        or pointer.get("status") != "captured"
+        or any(
+            type(pointer.get(key)) is not int
+            for key in ("observedAtMonoMs", "ownedNiri", "WINDOW", "X", "Y")
+        )
+        or pointer["observedAtMonoMs"] < moved_at
+        or pointer["ownedNiri"] <= 0
+        or pointer["WINDOW"] != pointer["ownedNiri"]
+        or len(point) != 2
+        or len(origin) != 2
+        or any(type(value) is not int for value in (*point, *origin))
+        or (pointer["X"], pointer["Y"]) != tuple(a + b for a, b in zip(origin, point))
+    ):
+        return False
+    paint, original = control["paintObservation"], before["paintObservation"]
+    scale = control["scale"]
+    return (
+        control.get("enabled") is True
+        and control.get("pointerInside") is True
+        and control["instance"] == before.get("instance")
+        and scale == before.get("scale")
+        and all(paint[key] == original.get(key) for key in ("mapGeneration", "clockInstance"))
+        and control["x"] <= point[0] / scale < control["x"] + control["width"]
+        and control["y"] <= point[1] / scale < control["y"] + control["height"]
+    )
+
+
 def glossary_save_outcome(events, controls):
     if events:
         return events[-1]["value"]
@@ -757,8 +792,10 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             evidence["nestedOrigin"], pixel, display, strict=True
                         )
                     ), f"{name}: point outside actual X display: {evidence}"
-                    # One move, then only a real crossing of this same control
-                    # authorizes the one click. Never search offsets or move again.
+                    # One move, then the same mapped control's current hover and
+                    # painted bounds must still cover that fixed point. GTK3's
+                    # PRELIGHT is a current observation, not a crossing history.
+                    # Never search offsets or move again.
                     execute("xdotool", "mousemove", "--window", window, *pixel)
                     moved_at = time.monotonic_ns() // 1000000
                     evidence["moveFinishedAtMonoMs"] = moved_at
@@ -822,11 +859,14 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 observed
                                 if (
                                     toolkit == "gtk3"
-                                    and observed.get("observedAtMs", 0) >= moved_at
-                                    and item.get("pointerInside") is True
-                                    and all(
-                                        item.get(k) == control.get(k)
-                                        for k in ("instance", "x", "y", "width", "height")
+                                    and glossary_gtk3_hover_current(
+                                        item,
+                                        observed.get("observedAtMs"),
+                                        control,
+                                        pixel,
+                                        moved_at,
+                                        evidence["xPointer"],
+                                        evidence["nestedOrigin"],
                                     )
                                 )
                                 or toolkit == "gtk4"

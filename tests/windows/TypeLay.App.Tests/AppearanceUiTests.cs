@@ -193,6 +193,133 @@ public sealed class AppearanceUiTests(WpfDesktopFixture desktop)
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
     });
 
+    [Theory]
+    [InlineData("light", "claude")]
+    [InlineData("dark", "claude")]
+    [InlineData("light", "sans")]
+    [InlineData("dark", "sans")]
+    [InlineData("light", "system")]
+    [InlineData("dark", "system")]
+    public Task AppearancePreviewKeepsTheEntireSourceLineInsideItsPill(string theme, string font) => desktop.RunAsync(() =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-preview-line-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
+            settings.Update(settings.Value with
+            {
+                Theme = theme,
+                Font = font
+            });
+            using var model = WindowsRuntime.CreateModel();
+            var window = new SettingsWindow(settings, model, () => { });
+            window.ShowPage("appearance");
+            window.UpdateLayout();
+            var card = Assert.Single(Descendants(window).OfType<Border>(), border => AutomationProperties.GetAutomationId(border) == "AppearanceSourcePreview");
+            var source = Assert.IsType<TextBlock>(card.Child);
+            // Measure the actual font without the card's height constraint. A
+            // constrained DesiredSize alone hid the observed 42 - 28 px clipping.
+            var fullLine = new TextBlock
+            {
+                Text = source.Text,
+                FontFamily = source.FontFamily,
+                FontSize = source.FontSize,
+                FontWeight = source.FontWeight,
+                FontStyle = source.FontStyle,
+                FontStretch = source.FontStretch,
+                TextWrapping = TextWrapping.NoWrap
+            };
+            fullLine.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            double available = card.ActualHeight - card.Padding.Top - card.Padding.Bottom - card.BorderThickness.Top - card.BorderThickness.Bottom;
+            Assert.True(available >= fullLine.DesiredSize.Height, $"{font}/{theme}: {available} px clips a {fullLine.DesiredSize.Height} px source line.");
+            Assert.True(source.ActualHeight >= fullLine.DesiredSize.Height);
+            var bounds = source.TransformToAncestor(card).TransformBounds(new Rect(source.RenderSize));
+            Assert.InRange(bounds.Top, card.Padding.Top, card.ActualHeight);
+            Assert.InRange(bounds.Bottom, 0, card.ActualHeight - card.Padding.Bottom);
+            Assert.Equal(42, card.ActualHeight);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+    });
+
+    [Theory]
+    [InlineData("light")]
+    [InlineData("dark")]
+    public Task SettingsSearchAndRecorderUseRoundedNativeFieldsWithoutReplacingOtherEditors(string theme) => desktop.RunAsync(() =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-field-ui-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string path = Path.Combine(directory, "settings.json");
+            var settings = WindowsRuntime.CreateSettings(path);
+            settings.Update(settings.Value with
+            {
+                Theme = theme
+            });
+            string before = File.ReadAllText(path);
+            using var model = WindowsRuntime.CreateModel();
+            var window = new SettingsWindow(settings, model, () => { });
+            window.ShowPage("apps");
+            window.UpdateLayout();
+            var sidebar = Named("搜索设置");
+            AssertField(sidebar, 8, 28, "SettingsControlFill");
+            var search = Named("搜索应用");
+            AssertField(search, 8, 28, "Panel");
+            Assert.Equal(new Thickness(.5), search.BorderThickness);
+            var host = Assert.IsType<Grid>(search.Parent);
+            var glyph = Assert.Single(Descendants(host).OfType<System.Windows.Shapes.Path>());
+            Assert.Equal(new Rect(5, 5, 15, 15), glyph.Data.Bounds);
+            Assert.True(search.Focus());
+            search.Text = "Firefox";
+            window.UpdateLayout();
+            Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.IsVisible && text.Text == "Firefox");
+            Assert.DoesNotContain(Descendants(window).OfType<TextBlock>(), text => text.IsVisible && text.Text == "Visual Studio Code");
+            Assert.Equal(before, File.ReadAllText(path));
+            window.ShowPage("glossary");
+            window.UpdateLayout();
+            AssertField(Named("搜索术语"), 8, 28, "Panel");
+            window.ShowPage("shortcuts");
+            window.UpdateLayout();
+            foreach (string name in new[] { "唤醒翻译 UI 快捷键", "直接翻译并替换快捷键", "暂停或恢复 TypeLay 快捷键" })
+            {
+                var recorder = Named(name);
+                AssertField(recorder, 7, 26, "SettingsControlFill");
+                Assert.True(recorder.IsReadOnly);
+                Assert.InRange(recorder.ActualWidth, 92, 178);
+                Assert.Equal(new Thickness(10, 0, 10, 0), recorder.Padding);
+                Assert.Equal(12.5, recorder.FontSize);
+            }
+            // Keyed styles live only on Settings. Source and overlay TextBoxes
+            // continue to resolve their own native editor templates.
+            Assert.False(UiTheme.SettingsResources().Contains(typeof(TextBox)));
+            Assert.Equal(before, File.ReadAllText(path));
+
+            TextBox Named(string name) => Descendants(window).OfType<TextBox>().Single(control => AutomationProperties.GetName(control) == name);
+            void AssertField(TextBox field, double radius, double height, string fill)
+            {
+                Assert.True(field.IsVisible);
+                Assert.Equal(height, field.ActualHeight);
+                var surface = Assert.IsType<Border>(field.Template.FindName("surface", field));
+                Assert.Equal(new CornerRadius(radius), surface.CornerRadius);
+                Assert.Same(window.FindResource(fill), field.Background);
+                var content = Assert.IsType<ScrollViewer>(field.Template.FindName("PART_ContentHost", field));
+                Assert.Equal(new Thickness(0), content.Margin);
+                Assert.Equal(field.Padding, content.Padding);
+                var fullLine = new TextBlock
+                {
+                    Text = string.IsNullOrEmpty(field.Text) ? "输入 M" : field.Text,
+                    FontFamily = field.FontFamily,
+                    FontSize = field.FontSize,
+                    FontWeight = field.FontWeight,
+                    TextWrapping = TextWrapping.NoWrap
+                };
+                fullLine.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                Assert.True(content.ViewportHeight >= fullLine.DesiredSize.Height,
+                    $"{AutomationProperties.GetName(field)}: text viewport {content.ViewportHeight} clips line {fullLine.DesiredSize.Height}.");
+            }
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+    });
+
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
     {
         for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)

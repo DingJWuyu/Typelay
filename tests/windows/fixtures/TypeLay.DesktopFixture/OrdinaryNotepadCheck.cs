@@ -398,7 +398,7 @@ internal static partial class HyPackageCheck
                     var publication = ObserveOrdinaryEscapePublication(trace, escapeTraceOffset, ct);
                     bool ready = publication is not null && await UiAsync(() => settings!.FindAll(TreeScope.Descendants,
                         new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text))
-                        .Cast<AutomationElement>().Any(item => item.Current.Name
+                        .Cast<AutomationElement>().Any(item => NativeShortcutStatusLine(item.Current.Name)
                             == "两个快捷键已启用；操作不会切换工作模式。 当前输入框的直接替换快捷键已就绪。"), ct);
                     scene.Facts = new
                     {
