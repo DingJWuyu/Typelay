@@ -73,7 +73,8 @@ internal sealed partial class SettingsWindow
         _content.Children.Add(SearchField(search, UiTheme.L("搜索术语", "Search terms")));
         if (state is null)
         {
-            Note(UiTheme.L("术语表不可用", "Glossary unavailable"), UiTheme.L("翻译服务尚未连接。", "The translation service is not connected."));
+            var unavailable = Note(UiTheme.L("术语表不可用", "Glossary unavailable"), UiTheme.L("翻译服务尚未连接。", "The translation service is not connected."));
+            RegisterSearchTarget("glossary", (Panel)unavailable.Parent);
             return;
         }
         var scopes = new[] { new GlossaryScope(UiTheme.L("所有方向", "All directions"), null, null) }.Concat(ModelCatalog.Packages.Packages
@@ -87,6 +88,7 @@ internal sealed partial class SettingsWindow
         (int Selected, GlossaryRule? Rule, object Generation, bool Writable, int Count)? toolbarState = null;
         bool rendering = false;
         var table = new StackPanel();
+        RegisterSearchTarget("glossary", table);
         table.Resources.MergedDictionaries.Add((ResourceDictionary)XamlReader.Parse(GlossaryStyles));
         var header = GlossaryColumns();
         header.Margin = new(0, 10, 0, 8);

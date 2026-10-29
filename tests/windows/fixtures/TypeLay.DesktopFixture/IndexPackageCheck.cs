@@ -62,6 +62,7 @@ internal static class IndexPackageCheck
         var children = new List<Owned>();
         var cleanup = new List<string>();
         string stage = stages[0], failure = "none";
+        string? failureReason = null;
         string data = Path.Combine(directory, "data"), worker = Path.Combine(distribution, "worker", "run_worker.py");
         var store = new ModelInstallationStore(data, worker);
         ModelClient? model = null;
@@ -250,6 +251,15 @@ internal static class IndexPackageCheck
         {
             outcomes[stage] = "failed";
             failure = error is OperationCanceledException ? "deadline" : error.GetType().Name;
+            // Only fixed activation assertions are safe diagnostic categories.
+            // Never copy arbitrary exception text, paths, or nested messages.
+            failureReason = error is IOException ? error.Message switch
+            {
+                "index-publication-unconfirmed" => "index-publication-unconfirmed",
+                "index-hello-identity" => "index-hello-identity",
+                "index-inference-profile-unqualified" => "index-inference-profile-unqualified",
+                _ => null
+            } : null;
         }
         finally
         {
@@ -265,6 +275,7 @@ internal static class IndexPackageCheck
                 suite = "index-windows-production-package-lifecycle",
                 outcomes,
                 failure,
+                failureReason,
                 responses,
                 payloadHashes,
                 inferenceProfiles,

@@ -867,6 +867,7 @@
     "更多": "More", "更多操作": "More Actions", "语言和设置": "Language and Settings",
     "复制译文": "Copy Translation", "已复制译文": "Translation Copied",
     "复制失败，请选中译文手动复制": "Copy failed. Select the translation to copy manually.",
+    "重试": "Retry", "未能更新": "Couldn’t update", "正在翻译": "Translating",
     "重新翻译": "Translate Again", "不要在这个应用中显示": "Disable for This App", "设置": "Settings",
     "当前应用风格": "Style for This App", "风格": "Style", "自然": "Natural", "正式": "Formal", "继承": "Inherit",
     "简洁": "Concise", "口语": "Casual", "尚未提供": "Not Available",
@@ -1027,6 +1028,9 @@
           --ink:light-dark(#141413,#f4f3ee);--muted:light-dark(#74726c,#9a988f);
           --line:light-dark(rgba(20,20,19,.1),rgba(255,255,255,.1));
           --hover:light-dark(rgba(20,20,19,.045),rgba(255,255,255,.05));
+          --fill-2:light-dark(rgba(20,20,19,.08),rgba(255,255,255,.09));
+          --shimmer:light-dark(rgba(255,255,255,.75),rgba(255,255,255,.12));
+          --warning:light-dark(#a5670e,#e5ad55);
           font:500 12px/1.4 var(--ui-font);color:var(--ink);background:var(--surface);
           border:1px solid var(--line);backdrop-filter:blur(28px) saturate(1.8);
           display:flex;flex-direction:column;box-sizing:border-box;height:100%;
@@ -1065,6 +1069,22 @@
           outline:none;font:400 var(--content-size)/1.55 var(--content-font);letter-spacing:.002em;
           background:transparent;color:var(--ink);caret-color:var(--accent)}
         textarea.stale{color:var(--muted)}
+        .skeleton{display:grid;gap:9px;padding:6px 0 4px;margin:12px 16px 15px;pointer-events:none}
+        .skeleton span{height:calc(var(--content-size)*.62);border-radius:6px;
+          background:linear-gradient(100deg,var(--fill-2) 30%,var(--hover) 50%,var(--fill-2) 70%);
+          background-size:250% 100%;animation:tl-sweep 1.3s linear infinite}
+        .skeleton span:nth-child(2){width:62%}
+        .updating-sweep{position:absolute;left:4px;right:4px;top:6px;height:calc(var(--editor-height,36px) + 12px);
+          pointer-events:none;border-radius:10px;background:linear-gradient(100deg,transparent 30%,var(--shimmer) 50%,transparent 70%);
+          background-size:250% 100%;animation:tl-sweep 1.5s linear infinite;mix-blend-mode:plus-lighter}
+        @keyframes tl-sweep{from{background-position:120% 0}to{background-position:-120% 0}}
+        header .status.live{background:linear-gradient(100deg,var(--muted) 35%,var(--ink) 50%,var(--muted) 65%);
+          background-size:250% 100%;background-clip:text;color:transparent;animation:tl-sweep 1.6s linear infinite}
+        header .status.warn,.retry{color:var(--warning)}
+        button.retry{display:inline-flex;align-items:center;justify-content:center;padding:3px;min-height:19px;border-radius:5px}
+        .retry svg{width:13px;height:13px}
+        section[data-busy=true] .language::before{animation:tl-breathe 1.2s ease-in-out infinite}
+        @keyframes tl-breathe{50%{transform:scale(.6)}}
         textarea[data-editable=true]:read-only:hover,textarea[data-editable=true]:read-only:focus-visible{background:var(--hover)}
         textarea:not(:read-only){border-color:var(--accent);padding:8px 10px;background:light-dark(#fff,#2f2e2b)}
         textarea:focus-visible{border-color:var(--accent)}
@@ -1079,7 +1099,9 @@
         section.paused{color:var(--muted);box-shadow:0 2px 8px #0001}
         section.paused header{justify-content:space-between}
         section.paused .status{text-align:left;padding-left:8px}
-        section[data-motion=reduce] *{animation:none!important;transition:none!important}
+        section[data-motion=reduce] *,section[data-motion=reduce] *::before,section[data-motion=reduce] *::after{animation:none!important;transition:none!important}
+        section[data-motion=reduce] .status.live{background:none;color:var(--muted)}
+        section[data-motion=reduce] .updating-sweep{display:none}
         button[aria-disabled=true],button:disabled{cursor:default;opacity:.35}
         [hidden]{display:none!important}`;
       const panel = document.createElement("section"), header = document.createElement("header");
@@ -1306,9 +1328,15 @@
       const separator = document.createElement("div"); separator.className = "menu-separator";
       menu.replaceChildren(menuItems.get("regenerate"), alternative, styleActions, copy, glossary,
         separator, collapse, menuItems.get("exclude"), menuItems.get("settings"), translationFeedback);
-      panel.append(editor, header, menu); shadow.append(style, panel);
+      // Decorations are siblings, never a cloned/replaced translation editor.
+      const skeleton = document.createElement("div"), sweep = document.createElement("div");
+      skeleton.id = "loading-skeleton"; skeleton.className = "skeleton";
+      sweep.id = "updating-sweep"; sweep.className = "updating-sweep";
+      for (const decoration of [skeleton, sweep]) { decoration.hidden = true; decoration.setAttribute("aria-hidden", "true"); }
+      skeleton.append(document.createElement("span"), document.createElement("span"));
+      panel.append(skeleton, editor, sweep, header, menu); shadow.append(style, panel);
       document.documentElement.append(host);
-      overlay = {field, host, shadow, panel, editor, language, status, resume, hint, more, menu, expand, collapse, collapseLabel,
+      overlay = {field, host, shadow, panel, editor, skeleton, sweep, language, status, resume, hint, more, menu, expand, collapse, collapseLabel,
         styleActions, styleButtons, alternative, glossaryButton: glossary, translationFeedback, editing: false, composing: false, expanded: false};
     }
     if (data.revision < (overlay.revision || 0)) return {visible: true, editing: overlay.editing};
@@ -1322,6 +1350,7 @@
     }
     const viewIdentity = JSON.stringify({generation: data.generation, revision: data.revision, view: identityView});
     if (overlay.viewIdentity !== viewIdentity) {
+      overlay.retryPending = false;
       closeMore(overlay);
       closeRegenerate(overlay);
       retireEditorControl();
@@ -1358,8 +1387,12 @@
     overlay.renewed = data.expiresAtMs - 800;
     overlay.editable = !paused && editorConfigured(field) && view.editable && view.viewContext?.canEdit === true;
     overlay.editor.dataset.editable = String(!!overlay.editable);
-    overlay.editor.classList.toggle("stale", view.state === "Translating" && !!view.text
-      && !view.presentation.editorOwnsText);
+    const busy = view.state === "Translating" && !view.presentation.editorOwnsText;
+    const loading = busy && !view.text, updating = busy && !!view.text;
+    overlay.editor.classList.toggle("stale", updating);
+    overlay.skeleton.hidden = !loading;
+    overlay.sweep.hidden = !updating;
+    overlay.panel.dataset.busy = String(busy);
     overlay.editor.title = overlay.editable
       ? view.presentation.editorOwnsText ? "编辑译文" : "点击译文以编辑" : "";
     overlay.host.style.colorScheme = ["light", "dark"].includes(data.theme) ? data.theme : "light dark";
@@ -1387,14 +1420,43 @@
     const languageName = (code, label) => typeof label === "string" && label.length > 0 && label.length <= 80
       ? label : ({auto: "Auto", zh: "中文", en: "EN"})[code] || `${code || ""}（当前不可用）`;
     overlay.language.textContent = `${languageName(view.sourceLanguage, view.sourceLanguageLabel)} → ${languageName(view.targetLanguage, view.targetLanguageLabel)}`;
-    overlay.status.textContent = paused ? "已暂停" : view.status === "译文就绪" ? "" : view.status || overlay.translationActions?.feedback || "";
+    const failed = view.state === "TranslationFailed";
+    overlay.status.textContent = paused ? "已暂停" : failed ? "未能更新"
+      : view.status === "译文就绪" ? "" : view.status || overlay.translationActions?.feedback || "";
+    overlay.status.title = failed ? view.status || "" : "";
+    overlay.status.classList.toggle("live", busy);
+    overlay.status.classList.toggle("warn", failed);
+    overlay.retry?.remove(); overlay.retry = null;
+    if (failed) {
+      const current = overlay, retry = document.createElement("button");
+      const opened = {field: current.field, generation: current.generation, revision: current.revision,
+        token: JSON.stringify(current.viewToken)};
+      retry.id = "translation-retry"; retry.className = "retry";
+      retry.setAttribute("aria-label", "重试"); retry.title = "重试";
+      retry.disabled = !!current.retryPending;
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      for (const [name, value] of Object.entries({viewBox:"0 0 24 24",fill:"none",stroke:"currentColor","stroke-width":1.6,"stroke-linecap":"round","stroke-linejoin":"round","aria-hidden":"true"}))
+        svg.setAttribute(name, String(value));
+      const path = document.createElementNS(svg.namespaceURI, "path");
+      path.setAttribute("d", "M20 5v5h-5M4 19v-5h5M19.2 10A7.5 7.5 0 0 0 6 7.2M4.8 14A7.5 7.5 0 0 0 18 16.8");
+      svg.append(path); retry.append(svg);
+      retry.addEventListener("pointerdown", event => event.preventDefault());
+      retry.addEventListener("click", event => {
+        if (!event.isTrusted || current.retry !== retry || current.retryPending
+          || current.state !== "TranslationFailed" || !menuActionCurrent(current, opened)) return;
+        current.retryPending = true; retry.disabled = true;
+        ui("regenerate");
+      });
+      current.retry = retry; current.status.after(retry);
+    }
     overlay.tabHint = view.presentation.tabHint;
-    overlay.editor.hidden = paused || !view.text && view.state === "IdleCapsule";
-    overlay.panel.classList.toggle("capsule", overlay.editor.hidden);
-    overlay.hint.hidden = overlay.editor.hidden;
-    overlay.more.hidden = overlay.editor.hidden;
-    overlay.expand.hidden = overlay.editor.hidden;
-    if (overlay.editor.hidden) {
+    const capsule = paused || !view.text && view.state === "IdleCapsule";
+    overlay.editor.hidden = capsule || loading;
+    overlay.panel.classList.toggle("capsule", capsule);
+    overlay.hint.hidden = capsule;
+    overlay.more.hidden = capsule;
+    overlay.expand.hidden = capsule;
+    if (capsule) {
       overlay.menu.hidden = true;
       overlay.menuContext = null;
       overlay.more.setAttribute("aria-expanded", "false");
@@ -1686,6 +1748,7 @@
     overlay.editor.style.maxHeight = `${maximum}px`;
     overlay.editor.style.height = "auto";
     overlay.editor.style.height = `${Math.min(maximum, Math.max(36, overlay.editor.scrollHeight))}px`;
+    overlay.panel.style.setProperty("--editor-height", overlay.editor.style.height);
     overlay.expand.hidden = overlay.editor.hidden || !overlay.expanded && overlay.editor.scrollHeight <= overlay.editor.clientHeight + 1;
   }
   function command(message) {

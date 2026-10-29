@@ -23,7 +23,7 @@ namespace TypeLay.App.Tests;
 public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
 {
     [Fact]
-    public Task UnreleasedActionsStayDisabledAndMissingOrMalformedActionsStayHidden() => desktop.RunAsync(() =>
+    public Task UnreleasedAndUnknownActionsStayVisibleDisabledAndCannotInvokeTheirHandlers() => desktop.RunAsync(() =>
     {
         var (overlay, session, context) = OpenPreview();
         foreach (var actions in new TranslationMenuState?[] { null, Actions() with
@@ -45,36 +45,34 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
                 Assert.Contains("复制译文", labels);
                 Assert.Contains("重新翻译", labels);
                 Assert.Contains("不要在这个应用中显示", labels);
-                Assert.Contains("隐藏当前翻译", labels);
-                if (actions is { StyleReleased: false, SettingsRevision: >= 0 })
-                {
-                    var choices = Item(menu, "当前应用风格").Items.OfType<MenuItem>().ToArray();
-                    Assert.Equal(new[] { "跟随全局设置", "自然", "正式", "简洁", "口语" }, choices.Select(item => (string)item.Header));
-                    Assert.All(choices, item => Assert.False(item.IsEnabled));
-                    Assert.All(choices, item => Assert.NotNull(item.ToolTip));
-                    int requests = 0;
-                    overlay.StyleRequested = _ => { requests++; return Task.FromResult(new StyleChangeResult(false, "style-unavailable")); };
-                    foreach (var item in choices)
-                        item.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-                    Assert.Equal(0, requests);
-                }
-                else
-                    Assert.DoesNotContain("当前应用风格", labels);
-                Assert.DoesNotContain("换种说法", labels);
-                if (actions is { StyleReleased: false, SettingsRevision: >= 0 })
-                    Assert.False(Item(menu, "加入术语表").IsEnabled);
-                else
-                    Assert.DoesNotContain("加入术语表", labels);
+                Assert.Contains("暂时隐藏", labels);
+                var choices = StyleChoices(menu);
+                Assert.Equal(new[] { "跟随全局设置", "自然", "正式", "简洁", "口语" }, choices.Select(item => (string)item.Header));
+                Assert.All(choices, item => Assert.False(item.IsEnabled));
+                Assert.All(choices, item => Assert.NotNull(item.ToolTip));
+                int requests = 0, alternatives = 0, glossary = 0;
+                overlay.StyleRequested = _ => { requests++; return Task.FromResult(new StyleChangeResult(false, "style-unavailable")); };
+                overlay.AlternativeRequested = _ => alternatives++;
+                overlay.BeginGlossaryRequested = _ => { glossary++; return null; };
+                foreach (var item in choices)
+                    item.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                var rephrase = Item(menu, "换种说法");
+                var terms = Item(menu, "加入术语表…");
+                Assert.False(rephrase.IsEnabled);
+                Assert.False(terms.IsEnabled);
+                rephrase.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                terms.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                Assert.Equal((0, 0, 0), (requests, alternatives, glossary));
             }
             finally { menu.IsOpen = false; }
         }
     });
 
     [Theory]
-    [InlineData(null, "跟随全局设置")]
+    [InlineData(null, "正式")]
     [InlineData(TranslationStyle.Natural, "自然")]
     [InlineData(TranslationStyle.Formal, "正式")]
-    public Task MenuChecksTheApplicationOverrideAndFreezesTheOriginalSaveContext(TranslationStyle? applicationStyle, string selected)
+    public Task MenuShowsTheEffectiveToneAndFreezesTheAdmittedApplicationSaveContext(TranslationStyle? applicationStyle, string selected)
         => desktop.RunAsync(async () =>
     {
         var (overlay, session, context) = OpenPreview();
@@ -90,21 +88,20 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
         var received = new TaskCompletionSource<SessionStyleRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
         int saves = 0;
         var completion = new TaskCompletionSource<StyleChangeResult>();
-        overlay.StyleRequested = request =>
-        {
-            saves++;
-            received.TrySetResult(request);
-            return completion.Task;
-        };
+        overlay.StyleRequested = request => { saves++; received.TrySetResult(request); return completion.Task; };
         var menu = OpenMenu(overlay);
         try
         {
-            var submenu = Item(menu, "当前应用风格");
-            submenu.IsSubmenuOpen = true;
             menu.UpdateLayout();
-            var choices = submenu.Items.OfType<MenuItem>().ToArray();
-            Assert.Equal(new[] { "跟随全局设置", "自然", "正式", "简洁", "口语" }, choices.Select(item => (string)item.Header));
-            Assert.Equal(selected, Assert.Single(choices, item => item.IsChecked).Header);
+            var choices = StyleChoices(menu);
+            Assert.Equal(selected, Assert.Single(choices.Skip(1), item => item.IsChecked).Header);
+            Assert.Equal(applicationStyle is null, choices[0].IsChecked);
+            var choice = Item(menu, "正式");
+            Assert.IsAssignableFrom<IInvokeProvider>(new MenuItemAutomationPeer(choice).GetPattern(PatternInterface.Invoke)).Invoke();
+            Assert.Equal(new SessionStyleRequest(context.Token, 4, TranslationStyle.Formal),
+                await received.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken));
+            Assert.False(menu.IsOpen); // Native WPF closes before the admitted Click.
+            Assert.Equal(selected, Assert.Single(choices.Skip(1), item => item.IsChecked).Header);
             var next = context with
             {
                 Token = context.Token with
@@ -118,23 +115,16 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
                 }
             };
             overlay.Render(session, settings, false, context: next);
-            var choice = choices.Single(item => Equals(item.Header, "正式"));
-            var invoke = Assert.IsAssignableFrom<IInvokeProvider>(new MenuItemAutomationPeer(choice).GetPattern(PatternInterface.Invoke));
-            invoke.Invoke();
-            Assert.Equal(new SessionStyleRequest(context.Token, 4, TranslationStyle.Formal),
-                await received.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken));
-            Assert.Equal(selected, Assert.Single(choices, item => item.IsChecked).Header);
             choice.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             Assert.False(choice.IsEnabled);
             Assert.Equal(1, saves);
-            menu.IsOpen = false;
             completion.SetResult(new(false, "style-stale"));
             await completion.Task;
             menu = OpenMenu(overlay);
-            Assert.Equal("自然", Assert.Single(Item(menu, "当前应用风格").Items.OfType<MenuItem>(), item => item.IsChecked).Header);
+            Assert.Equal("自然", Assert.Single(StyleChoices(menu).Skip(1), item => item.IsChecked).Header);
             Assert.DoesNotContain(Descendants(overlay).OfType<TextBlock>(), label => label.Text == "style-stale");
         }
-        finally { menu.IsOpen = false; }
+        finally { menu.IsOpen = false; completion.TrySetResult(new(false, "style-stale")); }
     });
 
     [Theory]
@@ -142,7 +132,7 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
     [InlineData(false, true)]
     [InlineData(true, false)]
     [InlineData(false, false)]
-    public Task InheritanceAndAlternativeFollowTheirIndependentSharedEligibility(bool canInherit, bool styleReleased) => desktop.RunAsync(() =>
+    public Task InheritanceAndAlternativeFollowTheirIndependentSharedEligibility(bool canInherit, bool styleReleased) => desktop.RunAsync(async () =>
     {
         var (overlay, session, context) = OpenPreview();
         context = context with
@@ -170,7 +160,7 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
         var menu = OpenMenu(overlay);
         try
         {
-            var choices = Item(menu, "当前应用风格").Items.OfType<MenuItem>().ToArray();
+            var choices = StyleChoices(menu);
             foreach (var choice in choices.Where(item => Equals(item.Header, "自然") || Equals(item.Header, "正式")))
             {
                 Assert.False(choice.IsEnabled);
@@ -191,7 +181,10 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
             Assert.Equal(0, alternatives);
             var inherit = choices.Single(item => Equals(item.Header, "跟随全局设置"));
             Assert.Equal(canInherit, inherit.IsEnabled);
-            inherit.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            if (canInherit)
+                await InvokeMoreCommand(inherit);
+            else
+                inherit.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             if (canInherit)
                 Assert.Equal(new SessionStyleRequest(context.Token, 4, null), Assert.Single(requests));
             else
@@ -201,7 +194,7 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
     });
 
     [Fact]
-    public Task AlternativeKeepsItsMenuTokenAndFeedbackNeverOverridesExistingStatus() => desktop.RunAsync(() =>
+    public Task AlternativeRejectsARetiredMenuTokenAndFeedbackNeverOverridesExistingStatus() => desktop.RunAsync(() =>
     {
         var (overlay, session, context) = OpenPreview();
         context = context with
@@ -229,7 +222,7 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
                 TranslationActions = Actions()
             });
             Item(menu, "换种说法").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-            Assert.Equal(context.Token, Assert.Single(tokens));
+            Assert.Empty(tokens); // No new view may be reached through this detached menu.
             Assert.DoesNotContain(Descendants(overlay).OfType<TextBlock>(), label => AutomationProperties.GetAutomationId(label) == "TranslationStage" && label.IsVisible);
             Assert.DoesNotContain(Descendants(overlay).OfType<TextBlock>(), label => label.Text == "暂时没有不同的译法");
         }
@@ -424,7 +417,7 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
             await ClickMouse(more, Button.ClickEvent, "more", deadline.Token);
             Assert.True(more.Focusable);
             Assert.True(more.IsTabStop);
-            menu = Assert.IsType<ContextMenu>(more.ContextMenu);
+            menu = Assert.IsAssignableFrom<ContextMenu>(more.ContextMenu);
             Assert.True(menu.IsOpen);
             menu.UpdateLayout();
         }
@@ -604,6 +597,10 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
     private static Button RegenerateButton(OverlayWindow overlay, string id) => Descendants(overlay).OfType<Button>()
         .Single(button => AutomationProperties.GetAutomationId(button) == id);
 
+    private static MenuItem[] StyleChoices(ContextMenu menu) =>
+        [Item(menu, "跟随全局设置"), .. menu.Items.OfType<MenuItem>()
+            .Where(item => AutomationProperties.GetAutomationId(item).StartsWith("MoreTone", StringComparison.Ordinal))];
+
     private static MenuItem Item(ContextMenu menu, string label) => menu.Items.OfType<MenuItem>()
         .Single(item => Equals(item.Header, label));
 
@@ -637,7 +634,7 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
 
     private static ContextMenu OpenMenu(OverlayWindow overlay)
     {
-        Descendants(overlay).OfType<Button>().Single(button => AutomationProperties.GetName(button) == "更多翻译操作")
+        Descendants(overlay).OfType<Button>().Single(button => AutomationProperties.GetName(button) == UiTheme.L("更多翻译操作", "More Translation Actions"))
             .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         return PresentationSource.CurrentSources.OfType<HwndSource>().Select(source => source.RootVisual)
             .OfType<DependencyObject>().SelectMany(root => Descendants(root).Prepend(root))

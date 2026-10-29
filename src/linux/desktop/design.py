@@ -91,6 +91,27 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface.settings-dark .language-search, .typelay-surface.settings-dark .language-search:focus { background: rgba(255,255,255,.05); }
 .typelay-surface.settings-dark .language-search image { color: #9a988f; }
 .typelay-surface.settings-dark.reduce-transparency .language-panel { background: #2c2b28; }
+/* Glossary: the three read-only cells and their one inline editor share widths. */
+.typelay-surface .glossary-search { min-height: 26px; padding: 0 8px; background: #fff; }
+.typelay-surface .glossary-heading { padding: 10px 14px 8px; font-size: 11.5px; font-weight: 600; color: #74726c; }
+.typelay-surface .glossary-table { background: transparent; }
+.typelay-surface .glossary-table row { min-height: 38px; padding: 0; border-radius: 0; box-shadow: inset 0 1px rgba(20,20,19,.085); }
+.typelay-surface .glossary-table row:hover { background: rgba(20,20,19,.045); }
+.typelay-surface .glossary-table row:selected { background: alpha(@accent,.14); color: inherit; }
+.typelay-surface .glossary-cell { padding: 0 14px; min-height: 38px; }
+.typelay-surface .glossary-term { font-family: 'Source Serif 4','Noto Serif SC',serif; font-size: 14px; }
+.typelay-surface .glossary-scope { font-size: 12px; color: #74726c; }
+.typelay-surface .glossary-editor entry { min-height: 24px; margin: 6px 0; padding: 0 6px; font-size: 14px; }
+.typelay-surface .glossary-editor combobox button { min-height: 24px; padding: 0 4px; margin: 6px 0; font-size: 12px; }
+.typelay-surface .glossary-listbar { padding: 4px; box-shadow: inset 0 1px rgba(20,20,19,.085); }
+.typelay-surface button.glossary-action { min-width: 28px; min-height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; box-shadow: none; color: #74726c; }
+.typelay-surface button.glossary-action:hover { background: rgba(20,20,19,.08); color: #141413; }
+.typelay-surface button.glossary-action:disabled { opacity: .35; }
+.typelay-surface .glossary-empty { padding: 36px 20px; color: #74726c; }
+.typelay-surface.settings-dark .glossary-search { background: #2f2e2b; }
+.typelay-surface.settings-dark .glossary-heading, .typelay-surface.settings-dark .glossary-scope, .typelay-surface.settings-dark button.glossary-action, .typelay-surface.settings-dark .glossary-empty { color: #b5b3ab; }
+.typelay-surface.settings-dark .glossary-table row, .typelay-surface.settings-dark .glossary-listbar { box-shadow: inset 0 1px rgba(255,255,255,.08); }
+.typelay-surface.settings-dark .glossary-table row:hover, .typelay-surface.settings-dark button.glossary-action:hover { background: rgba(255,255,255,.05); }
 .typelay-surface .tile { border: 2px solid transparent; background: transparent; box-shadow: none; padding: 4px; }
 .typelay-surface .tile:checked { border-color: @accent; }
 .typelay-surface .tile-art { border-radius: 9px; min-width: 68px; min-height: 44px; border: 1px solid rgba(20,20,19,.16); }
@@ -418,6 +439,7 @@ def apply_theme(window, preferences, provider=None):
         CSS
         + endonym_css
         + f"\n.typelay-surface {{ font-family: {ui_font}; }}"
+        + f"\n.typelay-surface .glossary-term {{ font-family: {content_font}; }}"
         + f"\n.typelay-surface .settings-page-title, .typelay-surface .welcome-title, .typelay-surface .language-name {{ font-family: {display_font}; }}"
         + f"\n.typelay-surface .translation-preview, .typelay-surface .translation-content, .typelay-surface .translation-content text {{ font-family: {content_font}; font-size: {content_size}px; font-weight: 400; }}"
     ).replace(".typelay-surface", ".typelay-surface." + scope)

@@ -33,7 +33,9 @@ internal static partial class IndexInferenceProfile
             Plain(worker, true);
             Plain(generation, true);
             string runtime = Path.Combine(generation, "runtime");
-            string python = Path.Combine(runtime, OperatingSystem.IsWindows() ? "python/tools/python.exe" : "venv/bin/python");
+            string python = OperatingSystem.IsWindows()
+                ? Path.Combine(runtime, "python", "tools", "python.exe")
+                : Path.Combine(runtime, "venv", "bin", "python");
             if (!string.Equals(plan.Paths.Python, python, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
                 return null;
             Plain(runtime, true);

@@ -199,8 +199,8 @@
     },
     {
       "path": "noto-sans/TypeLayNotoSansSC-SemiBold.ttf",
-      "bytes": 10586036,
-      "sha256": "49ffd3f6571fc1ab0cb0cbb785eea915cd77a193410de247e2a4a089c4efa241",
+      "bytes": 10585992,
+      "sha256": "1c6a1648063dd38cb812ac6485433f67aa8b8340b796848ce94c37d4fedc4300",
       "source": {
         "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/523d033d6cb47f4a80c58a35753646f5c3608a78/Sans/Variable/TTF/Subset/NotoSansSC-VF.ttf",
         "bytes": 17773132,

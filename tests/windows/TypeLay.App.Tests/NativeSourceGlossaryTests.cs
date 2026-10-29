@@ -1,6 +1,8 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Automation;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -16,6 +18,19 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
 {
+    private static async Task InvokeGlossaryCommandAsync(MenuItem command, CancellationToken cancellation)
+    {
+        var clicked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        RoutedEventHandler observe = (_, _) => clicked.TrySetResult();
+        command.Click += observe;
+        try
+        {
+            Assert.IsAssignableFrom<IInvokeProvider>(new MenuItemAutomationPeer(command).GetPattern(PatternInterface.Invoke)).Invoke();
+            await clicked.Task.WaitAsync(cancellation);
+        }
+        finally { command.Click -= observe; }
+    }
+
     // The WPF menu/fields and foreground hook are real; source reads and returns
     // cross production Broker IPC into a separate-process stock Edit. Runtime's
     // persistence/quality checks are covered separately by InlineGlossaryTests.
@@ -112,10 +127,10 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
             var menu = PresentationSource.CurrentSources.OfType<HwndSource>().Select(item => item.RootVisual)
                 .OfType<DependencyObject>().SelectMany(root => Children(root).Prepend(root))
                 .OfType<ContextMenu>().Single(item => item.IsOpen);
-            var command = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "加入术语表"));
+            var command = menu.Items.OfType<MenuItem>().Single(item => AutomationProperties.GetAutomationId(item) == "MoreGlossary");
             Assert.True(command.IsEnabled);
-            menu.IsOpen = false;
-            command.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            await InvokeGlossaryCommandAsync(command, native.Token);
+            Assert.False(menu.IsOpen);
             if (action == "wrong-source-field")
             {
                 Assert.Null(entry);

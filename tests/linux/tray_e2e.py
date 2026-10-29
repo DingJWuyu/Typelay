@@ -881,13 +881,9 @@ def main():
             assert settings_surface.application_controls["mail"][1].get_active_id() == "Formal"
             assert len(translation.rules.get_children()) == 3
 
-            def row_button(listing, index=0, label=None):
-                return next(
-                    widget
-                    for widget in listing.get_children()[index].get_child().get_children()
-                    if isinstance(widget, Gtk.Button)
-                    and (label is None or widget.get_label() == label)
-                )
+            def remove_selected(index=0):
+                translation.rules.select_row(translation.rules.get_children()[index])
+                translation.remove_button.clicked()
 
             async def question(title):
                 async with asyncio.timeout(3):
@@ -934,13 +930,35 @@ def main():
 
             # A real filesystem failure and an unknown response preserve the
             # exact local draft. Retrying reads the dedicated saved state.
+            settings_surface.pages.set_visible_child_name("glossary")
+            await settled()
             original_rules = (await host.ask("getGlossarySettings"))["savedSnapshot"]["rules"]
             blocker = settings_file.with_suffix(".json.tmp")
             before = settings_file.read_bytes()
             blocker.mkdir()
-            row_button(translation.rules, label="删除").clicked()
+            remove_selected()
             await settled()
             draft_rules = [dict(rule) for rule in translation.rules_draft]
+            assert settings_file.read_bytes() == before
+            assert (
+                settings_surface.save_button.get_mapped()
+                and settings_surface.save_button.is_sensitive()
+            )
+            # A retained failed draft remains editable through its current
+            # row. This must not reset the original conflict baseline.
+            baseline = translation.baseline_rules
+            current_row = translation.rules.get_children()[0]
+            current_row.grab_focus()
+            translation.rules.emit("row-activated", current_row)
+            async with asyncio.timeout(3):
+                while not translation.editor_open:
+                    await asyncio.sleep(0.01)
+            translation.target_term.set_text("Edited retained draft")
+            translation.target_term.emit("activate")
+            await settled()
+            draft_rules = [dict(rule) for rule in translation.rules_draft]
+            assert draft_rules[0]["targetTerm"] == "Edited retained draft"
+            assert translation.baseline_rules == baseline
             assert settings_file.read_bytes() == before
             blocker.rmdir()
             host.unknown_translation_reply = True
@@ -972,8 +990,8 @@ def main():
             # Unrelated settings revisions are safe to rebase. A genuinely
             # changed rule list requires explicit, revision-bound replacement.
             blocker.mkdir()
-            row_button(translation.rules, label="删除").clicked()
-            row_button(translation.rules, label="删除").clicked()
+            remove_selected()
+            remove_selected()
             await settled()
             expected_rules = [original_rules[2]]
             assert translation.rules_draft == expected_rules
@@ -1017,7 +1035,7 @@ def main():
             assert (await host.ask("getGlossarySettings"))["savedSnapshot"][
                 "rules"
             ] == expected_rules
-            row_button(translation.rules, label="删除").clicked()
+            remove_selected()
             await settled()
             assert (
                 await host.ask(
@@ -1042,6 +1060,82 @@ def main():
             assert any(item["operation"] == "changeApplicationStyle" for item in request_results)
             assert any(item["operation"] == "resetTranslationStyle" for item in request_results)
             assert any(item["operation"] == "changeGlossary" for item in request_results)
+            # The same real save/failure/conflict/undo paths expose English
+            # chrome without translating user content or changing the gate.
+            settings_surface.controls["uiLanguage"].set_active_id("en")
+            await settled()
+            assert state["uiLanguage"] == "en"
+            settings_surface.pages.set_visible_child_name("glossary")
+            translation.new_button.clicked()
+            translation.source_term.set_text("关闭")
+            translation.target_term.set_text("Close")
+            translation.target_term.emit("activate")
+            await settled()
+            assert settings_surface.toast.text.get_text() == "Terms saved"
+            assert translation.search.get_placeholder_text() == "Search terms"
+            english_rules = (await host.ask("getGlossarySettings"))["savedSnapshot"]["rules"]
+            assert english_rules[0]["sourceTerm"] == "关闭"
+            blocker.mkdir()
+            before = settings_file.read_bytes()
+            try:
+                current_row = translation.rules.get_children()[0]
+                current_row.grab_focus()
+                translation.rules.emit("row-activated", current_row)
+                async with asyncio.timeout(3):
+                    while not translation.editor_open:
+                        await asyncio.sleep(0.01)
+                translation.target_term.set_text("My retained translation")
+                translation.target_term.emit("activate")
+                await settled()
+                assert "Terms were not saved" in settings_surface.message.get_text()
+                assert "Your draft is kept" in settings_surface.message.get_text()
+                assert settings_file.read_bytes() == before
+            finally:
+                blocker.rmdir()
+            current = await host.ask("getGlossarySettings")
+            assert (
+                await host.ask(
+                    "changeGlossary",
+                    {
+                        "session": "00000000-0000-0000-0000-000000000002",
+                        "request": 1,
+                        "expectedSettingsRevision": current["settingsRevision"],
+                        "rules": [{**english_rules[0], "targetTerm": "Another writer"}],
+                    },
+                )
+            )["saved"] is True
+            settings_surface.save_button.clicked()
+            dialog = await question("Glossary rules changed")
+            assert "entire glossary" in dialog.get_property("secondary-text")
+            assert (
+                dialog.get_widget_for_response(Gtk.ResponseType.CANCEL).get_label()
+                == "Keep editing"
+            )
+            assert (
+                dialog.get_widget_for_response(Gtk.ResponseType.OK).get_label()
+                == "Replace all glossary rules"
+            )
+            dialog.response(Gtk.ResponseType.CANCEL)
+            await settled()
+            assert translation.dirty
+            assert (await host.ask("getGlossarySettings"))["savedSnapshot"]["rules"][0][
+                "targetTerm"
+            ] == "Another writer"
+            settings_surface.save_button.clicked()
+            (await question("Glossary rules changed")).response(Gtk.ResponseType.OK)
+            await settled()
+            assert not translation.dirty
+            assert (await host.ask("getGlossarySettings"))["savedSnapshot"]["rules"][0][
+                "targetTerm"
+            ] == "My retained translation"
+            remove_selected()
+            await settled()
+            assert settings_surface.toast.text.get_text() == "Term removed"
+            settings_surface.toast.undo.clicked()
+            await settled()
+            assert (await host.ask("getGlossarySettings"))["savedSnapshot"]["rules"][0][
+                "sourceTerm"
+            ] == "关闭"
             print(
                 "PASS: GTK dedicated translation recovery, drafts, failure/retry, closed release and revision-bound conflict confirmation",
                 flush=True,

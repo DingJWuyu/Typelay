@@ -117,14 +117,13 @@ public sealed partial class NativeSourceControllerTests
             var more = RuntimeDescendants(overlay).OfType<Button>().Single(button =>
                 AutomationProperties.GetName(button) == "更多翻译操作");
             more.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            var menu = Assert.IsType<ContextMenu>(more.ContextMenu);
+            var menu = Assert.IsAssignableFrom<ContextMenu>(more.ContextMenu);
             try
             {
-                var tone = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "当前应用风格"));
-                var inherit = tone.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "跟随全局设置"));
+                var inherit = menu.Items.OfType<MenuItem>().Single(item => AutomationProperties.GetAutomationId(item) == "MoreInherit");
                 Assert.True(inherit.IsEnabled);
-                Assert.All(tone.Items.OfType<MenuItem>().Where(item => item != inherit), item => Assert.False(item.IsEnabled));
-                tone.IsSubmenuOpen = true;
+                Assert.All(menu.Items.OfType<MenuItem>().Where(item => AutomationProperties.GetAutomationId(item).StartsWith("MoreTone", StringComparison.Ordinal)),
+                    item => Assert.False(item.IsEnabled));
                 menu.UpdateLayout();
                 var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 RoutedEventHandler onClosed = (_, _) => closed.TrySetResult();

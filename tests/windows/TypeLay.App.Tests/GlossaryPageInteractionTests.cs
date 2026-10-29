@@ -213,7 +213,9 @@ public sealed partial class TranslationSettingsTests
         scene.Window.ShowPage("glossary");
         string before = File.ReadAllText(scene.PathToSettings);
         var oldRow = GlossaryRow(scene.Window, 1);
-        SelectGlossaryRow(oldRow);
+        var oldSelection = GlossarySelection(oldRow);
+        oldSelection.Select();
+        var oldRowEnter = GlossaryKeyEvent(oldRow, Key.Enter);
         var oldRemove = GlossaryButton(scene.Window, "GlossaryRemove");
         var search = Named<TextBox>(scene.Window, "搜索术语");
         search.Text = "no matching term";
@@ -221,18 +223,24 @@ public sealed partial class TranslationSettingsTests
         Assert.Contains(Descendants(scene.Window).OfType<TextBlock>(), text => text.IsVisible && text.Text == "没有匹配的术语");
         Assert.False(GlossaryButton(scene.Window, "GlossaryRemove").IsEnabled);
         search.Text = "A";
-        SelectGlossaryRow(oldRow);
-        GlossaryKey(oldRow, Key.Enter);
+        try
+        {
+            oldSelection.Select();
+        }
+        catch (ElementNotAvailableException) { }
+        catch (ElementNotEnabledException) { }
+        oldRow.RaiseEvent(oldRowEnter);
         oldRemove.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.Equal(before, File.ReadAllText(scene.PathToSettings));
         Assert.DoesNotContain(Descendants(scene.Window).OfType<TextBox>(), box => AutomationProperties.GetName(box).StartsWith("源词 "));
         SelectGlossaryRow(GlossaryRow(scene.Window, 1));
         GlossaryKey(GlossaryRow(scene.Window, 1), Key.Enter);
         var oldSource = Term(scene.Window, "源词 1");
+        var oldSourceEnter = GlossaryKeyEvent(oldSource, Key.Enter);
         Term(scene.Window, "译词 1").Text = "canceled";
         GlossaryKey(oldSource, Key.Escape);
         oldSource.Text = "late";
-        GlossaryKey(oldSource, Key.Enter);
+        oldSource.RaiseEvent(oldSourceEnter);
         Assert.Equal(before, File.ReadAllText(scene.PathToSettings));
         Click(scene.Window, "添加术语");
         Assert.Equal("", search.Text);
@@ -312,6 +320,7 @@ public sealed partial class TranslationSettingsTests
         var currentAdd = GlossaryButton(scene.Window, "GlossaryEmptyAdd");
         currentAdd.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         source = Term(scene.Window, "Source term 1");
+        var sourceEnter = GlossaryKeyEvent(source, Key.Enter);
         GlossaryKey(source, Key.Escape);
         var oldToolbarAdd = GlossaryButton(scene.Window, "GlossaryAdd");
         Assert.True(scene.Window.RequestClose());
@@ -319,7 +328,7 @@ public sealed partial class TranslationSettingsTests
         oldToolbarAdd.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         currentAdd.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         source.Text = "late draft";
-        GlossaryKey(source, Key.Enter);
+        source.RaiseEvent(sourceEnter);
         Assert.Null(scene.Reload().Glossary);
         Assert.DoesNotContain(Descendants(scene.Window).OfType<TextBox>(), box => AutomationProperties.GetName(box).StartsWith("Source term "));
     });
@@ -430,10 +439,21 @@ public sealed partial class TranslationSettingsTests
         window.UpdateLayout();
         return Descendants(window).OfType<ListBoxItem>().Single(row => AutomationProperties.GetAutomationId(row) == "GlossaryRow_" + number);
     }
-    private static void SelectGlossaryRow(ListBoxItem row)
+    private static ISelectionItemProvider GlossarySelection(ListBoxItem row)
     {
-        var peer = UIElementAutomationPeer.CreatePeerForElement(row)!;
-        ((ISelectionItemProvider)peer.GetPattern(PatternInterface.SelectionItem)!).Select();
+        // WPF exposes SelectionItem on the parent list's data-item peer, not
+        // the ListBoxItem container's wrapper peer.
+        var list = Assert.IsType<ListBox>(ItemsControl.ItemsControlFromItemContainer(row));
+        var peer = Assert.IsType<ListBoxAutomationPeer>(UIElementAutomationPeer.CreatePeerForElement(list));
+        var item = Assert.Single(peer.GetChildren(), child => child.GetAutomationId() == AutomationProperties.GetAutomationId(row));
+        return Assert.IsAssignableFrom<ISelectionItemProvider>(item.GetPattern(PatternInterface.SelectionItem));
     }
-    private static void GlossaryKey(UIElement element, Key key) => element.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(element), 0, key) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+    private static void SelectGlossaryRow(ListBoxItem row) => GlossarySelection(row).Select();
+    private static KeyEventArgs GlossaryKeyEvent(UIElement element, Key key)
+    {
+        var source = PresentationSource.FromVisual(element);
+        Assert.NotNull(source);
+        return new KeyEventArgs(Keyboard.PrimaryDevice, source, 0, key) { RoutedEvent = Keyboard.PreviewKeyDownEvent };
+    }
+    private static void GlossaryKey(UIElement element, Key key) => element.RaiseEvent(GlossaryKeyEvent(element, key));
 }

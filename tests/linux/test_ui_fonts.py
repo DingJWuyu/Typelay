@@ -43,7 +43,7 @@ class BundledUiFonts(unittest.TestCase):
         self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), selected["checksum"])
         return matches[0], face.describe().get_weight()
 
-    def test_semibold_preferred_family_is_complete_for_each_windows_language(self):
+    def test_semibold_static_face_has_complete_names_without_empty_variable_style(self):
         # Read the actual generated SFNT name table without adding fontTools to
         # the desktop runtime. Windows locale-specific family resolution must
         # not fall back to a separate legacy SemiBold family.
@@ -55,6 +55,8 @@ class BundledUiFonts(unittest.TestCase):
                 struct.unpack_from(">4sIII", data, 12 + index * 16) for index in range(tables)
             )
         }
+        self.assertNotIn(b"fvar", offsets)
+        self.assertNotIn(b"STAT", offsets)
         offset = offsets[b"name"]
         _, count, strings = struct.unpack_from(">HHH", data, offset)
         records = {}

@@ -33,6 +33,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     private SessionShortcutMessages _shortcutMessages = SettingsDraftPresentation.SessionShortcuts(SessionShortcutBindings.Default);
     private SessionViewContext? _viewContext;
     private SessionState _sessionState;
+    private bool _menuStyleLocked;
     private string _previewStatus = UiTheme.L("无当前译文", "No current translation");
     private (TargetId Target, RectPx Bounds)? _sourceAnchor;
     private InlineGlossaryForm? _glossary;
@@ -1053,6 +1054,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             Configure(settings);
         _viewContext = context is not null && session.Current?.Target == context.Token.Target ? context : null;
         _sessionState = session.State;
+        _menuStyleLocked = session.ManualStyleLocked;
         if (_regeneratePrompt is not null && (_regenerateToken != _viewContext?.Token || _regenerateDraft != _editor.Text
             || _regenerateState != session.State || _composing))
             DismissRegenerateConfirmation(reposition: false);
@@ -1492,6 +1494,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         _composing = false;
         _expanded = false;
         _hasPreview = false;
+        _menuStyleLocked = false;
         _previewStatus = UiTheme.L("无当前译文", "No current translation");
         _canEditPreview = false;
         _rendering = true;
@@ -1700,20 +1703,105 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     private void OpenMenu(Button anchor)
     {
         var viewToken = _viewContext?.Token;
+        var sourceTarget = _sourceAnchor?.Target;
+        string menuDraft = _editor.Text;
+        var menuState = _sessionState;
         var translation = _viewContext?.TranslationActions;
         if (translation is { SettingsRevision: < 0 }
             || translation?.ApplicationStyle is { } applicationStyle && !Enum.IsDefined(applicationStyle))
             translation = null;
-        var menu = new ContextMenu();
-        void Add(string text, Action action, bool enabled = true)
+        var menu = new MoreContextMenu();
+        bool ContextCurrent() => !menu.Reopened && IsVisible && ReferenceEquals(anchor.ContextMenu, menu)
+            && _viewContext?.Token == viewToken && _sourceAnchor?.Target == sourceTarget
+            && _editor.Text == menuDraft && _sessionState == menuState
+            && (translation is null || _viewContext?.TranslationActions?.SettingsRevision == translation.SettingsRevision);
+        bool Current() => !menu.Retired && menu.IsOpen && ContextCurrent() && !EditingComposition;
+        bool Dispatch(MoreMenuItem item)
         {
-            var item = new MenuItem { Header = LocalizedStatus(text), IsEnabled = enabled };
-            item.Click += (_, _) => action();
-            menu.Items.Add(item);
+            bool admitted = item.TakeClick();
+            return admitted && ContextCurrent() && !menu.IsOpen && item.IsEnabled && !EditingComposition;
         }
-        Add("复制译文", () =>
+        string unavailable = UiTheme.L("当前状态暂不可用", "Not available in the current state");
+        MenuItem Add(string id, string text, string icon, Action? action, bool enabled = true, string? reason = null)
         {
-            if (_viewContext?.Token != viewToken || !_hasPreview)
+            var item = new MoreMenuItem(Current) { Header = text, IsEnabled = enabled, Tag = Geometry.Parse(icon), ToolTip = reason };
+            AutomationProperties.SetAutomationId(item, id);
+            ToolTipService.SetShowOnDisabled(item, true);
+            if (action is not null)
+                item.Click += (_, _) => { if (Dispatch(item)) action(); };
+            menu.Items.Add(item);
+            return item;
+        }
+        var regenerate = Add("MoreRegenerate", UiTheme.L("重新翻译", "Translate Again"), MoreRefresh,
+            () => RequestRegenerate(viewToken), viewToken is not null && !EditingComposition);
+        var alternative = Add("MoreAlternative", UiTheme.L("换种说法", "Rephrase"), MoreSparkle, () =>
+        {
+            AlternativeRequested?.Invoke(viewToken!);
+        }, viewToken is not null && translation is { AlternativeReleased: true, CanRequestAlternative: true } && !EditingComposition,
+            translation?.AlternativeUnavailableReason is { } alternativeReason ? LocalizedStatus(alternativeReason)
+                : translation is { AlternativeReleased: true, CanRequestAlternative: true } ? null
+                : translation?.AlternativeReleased == false ? UiTheme.L("当前模型方向尚未开放换种说法", "Rephrasing is not released for this model direction") : unavailable);
+        var toneLabel = new Separator { Tag = MoreToneLabel(_menuStyleLocked) };
+        toneLabel.SetValue(MoreRoleProperty, MoreRole.ToneLabel);
+        AutomationProperties.SetAutomationId(toneLabel, "MoreToneLabel");
+        menu.Items.Add(toneLabel);
+        var choices = new List<MenuItem>();
+        MenuItem AddStyle(string id, string label, TranslationStyle? style, bool enabled, string? reason, bool segment)
+        {
+            bool selected = segment
+                ? (translation?.ApplicationStyle ?? _settings.Styles?.Default ?? TranslationStyle.Natural) == style
+                : translation is not null && translation.ApplicationStyle == style;
+            var item = new MoreMenuItem(Current)
+            {
+                Header = label,
+                IsCheckable = true,
+                IsChecked = selected,
+                IsEnabled = viewToken is not null && enabled && !EditingComposition,
+                ToolTip = reason,
+                Tag = Geometry.Parse(MoreStyle)
+            };
+            AutomationProperties.SetAutomationId(item, id);
+            ToolTipService.SetShowOnDisabled(item, true);
+            if (segment)
+                item.SetValue(MoreRoleProperty, MoreRole.ToneSegment);
+            item.Click += async (_, _) =>
+            {
+                // Selection describes confirmed state; a Click must not publish
+                // an optimistic override, including a queued disabled UIA peer.
+                item.IsChecked = selected;
+                if (!Dispatch(item) || viewToken is null || translation is null
+                    || _viewContext?.TranslationActions?.SettingsRevision != translation.SettingsRevision
+                    || segment && _menuStyleLocked || StyleRequested is not { } change)
+                    return;
+                item.IsEnabled = false;
+                await change(new(viewToken, translation.SettingsRevision, style));
+            };
+            menu.Items.Add(item);
+            if (segment)
+                choices.Add(item);
+            return item;
+        }
+        string? styleReason = _menuStyleLocked ? UiTheme.L("已人工修改，风格已锁定", "Edited by you - tone locked")
+            : translation?.StyleUnavailableReason is { } reason ? LocalizedStatus(reason)
+            : translation is { StyleReleased: true, CanChangeStyle: true } ? null
+            : translation?.StyleReleased == false ? UiTheme.L("当前模型方向尚未开放翻译风格", "Tone is not released for this model direction") : unavailable;
+        bool canStyle = translation is { StyleReleased: true, CanChangeStyle: true } && !_menuStyleLocked;
+        AddStyle("MoreToneNatural", UiTheme.L("自然", "Natural"), TranslationStyle.Natural, canStyle, styleReason, true);
+        AddStyle("MoreToneFormal", UiTheme.L("正式", "Formal"), TranslationStyle.Formal, canStyle, styleReason, true);
+        foreach (var (id, label) in new[] { ("MoreToneConcise", UiTheme.L("简洁", "Concise")), ("MoreToneCasual", UiTheme.L("口语", "Casual")) })
+        {
+            // These styles have no runtime request. Their visible disabled peers
+            // must remain inert even when an automation provider raises Click.
+            var placeholder = new MenuItem { Header = label, IsEnabled = false, ToolTip = UiTheme.L("尚未提供", "Not available") };
+            placeholder.SetValue(MoreRoleProperty, MoreRole.ToneSegment);
+            AutomationProperties.SetAutomationId(placeholder, id);
+            ToolTipService.SetShowOnDisabled(placeholder, true);
+            choices.Add(placeholder);
+            menu.Items.Add(placeholder);
+        }
+        void CopyTranslation()
+        {
+            if (!ContextCurrent() || !_hasPreview || EditingComposition)
                 return;
             try
             {
@@ -1722,106 +1810,39 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             }
             catch (ExternalException) { _status.Text = UiTheme.L("未能复制", "Couldn’t copy"); }
             _status.Visibility = Visibility.Visible;
-        }, _hasPreview);
-        Add("重新翻译", () => RequestRegenerate(viewToken), !_composing);
-        if (viewToken is not null && translation is not null)
-        {
-            {
-                var styleMenu = new MenuItem { Header = UiTheme.L("当前应用风格", "Tone for This App") };
-                void AddStyle(string label, TranslationStyle? style, bool enabled, string? reason)
-                {
-                    var request = new SessionStyleRequest(viewToken, translation.SettingsRevision, style);
-                    bool selected = translation.ApplicationStyle == style;
-                    var item = new MenuItem
-                    {
-                        Header = LocalizedStatus(label),
-                        IsCheckable = true,
-                        IsChecked = selected,
-                        IsEnabled = enabled && !_composing,
-                        ToolTip = reason is null ? null : LocalizedStatus(reason)
-                    };
-                    ToolTipService.SetShowOnDisabled(item, true);
-                    item.Click += async (_, _) =>
-                    {
-                        // Checkmarks only describe confirmed application overrides.
-                        // WPF toggles a checkable item before raising Click.
-                        item.IsChecked = selected;
-                        if (!item.IsEnabled || _composing || StyleRequested is not { } change)
-                            return;
-                        item.IsEnabled = false;
-                        await change(request);
-                    };
-                    styleMenu.Items.Add(item);
-                }
-                string? styleReason = translation.StyleUnavailableReason
-                    ?? (translation.StyleReleased ? null : UiTheme.L("当前模型方向尚未开放翻译风格", "Tone is not released for this model direction"));
-                // Removing a saved override is management, not a new model
-                // style request. The host projects its own independent gate.
-                AddStyle("跟随全局设置", null, translation.CanInheritStyle, translation.InheritUnavailableReason);
-                AddStyle("自然", TranslationStyle.Natural, translation.StyleReleased && translation.CanChangeStyle, styleReason);
-                AddStyle("正式", TranslationStyle.Formal, translation.StyleReleased && translation.CanChangeStyle, styleReason);
-                foreach (string label in new[] { UiTheme.L("简洁", "Concise"), UiTheme.L("口语", "Casual") })
-                {
-                    var unavailable = new MenuItem { Header = label, IsEnabled = false, ToolTip = UiTheme.L("尚未提供", "Not available") };
-                    ToolTipService.SetShowOnDisabled(unavailable, true);
-                    styleMenu.Items.Add(unavailable);
-                }
-                menu.Items.Add(styleMenu);
-            }
-            if (translation.AlternativeReleased)
-            {
-                var alternative = new MenuItem
-                {
-                    Header = UiTheme.L("换种说法", "Rephrase"),
-                    IsEnabled = translation.CanRequestAlternative && !_composing,
-                    ToolTip = translation.AlternativeUnavailableReason is { } reason ? LocalizedStatus(reason) : null
-                };
-                ToolTipService.SetShowOnDisabled(alternative, true);
-                alternative.Click += (_, _) =>
-                {
-                    if (!alternative.IsEnabled || _composing)
-                        return;
-                    alternative.IsEnabled = false;
-                    AlternativeRequested?.Invoke(viewToken);
-                };
-                menu.Items.Add(alternative);
-            }
-            // Saving a rule is independent of whether this model may apply it.
-            // The current token, editor/source ownership and host eligibility
-            // still govern entry, and remain rechecked in OpenGlossaryAsync.
-            {
-                var glossary = new MenuItem
-                {
-                    Header = UiTheme.L("加入术语表", "Add to Glossary"),
-                    IsEnabled = translation.CanOpenGlossary
-                        && (_sessionState == SessionState.EditingTranslation && _editing || SupportsSourceGlossaryEntry(viewToken))
-                        && _ownedEditor is null && _glossary is null && !EditingComposition,
-                    ToolTip = translation.GlossaryUnavailableReason is { } reason ? LocalizedStatus(reason) : null
-                };
-                ToolTipService.SetShowOnDisabled(glossary, true);
-                glossary.Click += async (_, _) =>
-                {
-                    if (!glossary.IsEnabled)
-                        return;
-                    menu.IsOpen = false;
-                    await OpenGlossaryAsync(viewToken);
-                };
-                menu.Items.Add(glossary);
-            }
-            if (!string.IsNullOrEmpty(translation.Feedback))
-                Add(translation.Feedback, () => { }, false);
         }
-        // The focusable menu remains an auxiliary keyboard route.
-        Add(AutomationProperties.GetName(_expandButton), ToggleExpansion, _expandButton.IsEnabled);
-        menu.Items.Add(new Separator());
-        Add(UiTheme.L("设置", "Settings"), () => SettingsRequested?.Invoke());
-        Add("不要在这个应用中显示", () => ExcludeRequested?.Invoke());
-        Add("隐藏当前翻译", () =>
+        var copy = Add("MoreCopy", UiTheme.L("复制译文", "Copy Translation"), MoreCopy, CopyTranslation, _hasPreview);
+        copy.InputGestureText = "Ctrl+C";
+        var glossary = Add("MoreGlossary", UiTheme.L("加入术语表…", "Add to Glossary…"), MoreBook, null,
+            viewToken is not null && translation is { CanOpenGlossary: true }
+                && (_sessionState == SessionState.EditingTranslation && _editing || SupportsSourceGlossaryEntry(viewToken))
+                && _ownedEditor is null && _glossary is null && !EditingComposition,
+            translation?.GlossaryUnavailableReason is { } glossaryReason ? LocalizedStatus(glossaryReason)
+                : translation?.CanOpenGlossary == true ? null : unavailable);
+        glossary.Click += async (_, _) =>
         {
-            if (viewToken is not null)
-                EscapeRequested?.Invoke(viewToken);
-        }, viewToken is not null);
+            if (!Dispatch((MoreMenuItem)glossary) || viewToken is null)
+                return;
+            menu.IsOpen = false;
+            await OpenGlossaryAsync(viewToken);
+        };
+        menu.Items.Add(new Separator());
+        Add("MoreHide", UiTheme.L("暂时隐藏", "Hide for Now"), MoreHide,
+            () => EscapeRequested?.Invoke(viewToken!), viewToken is not null);
+        Add("MoreExclude", UiTheme.L("不要在这个应用中显示", "Don’t Show in This App"), MoreExclude,
+            () => ExcludeRequested?.Invoke(), sourceTarget is not null);
+        // Existing management and keyboard routes remain available, separate
+        // from the prototype's main action order. They never grant a style.
+        menu.Items.Add(new Separator());
+        AddStyle("MoreInherit", UiTheme.L("跟随全局设置", "Follow Global Settings"), null,
+            translation?.CanInheritStyle == true, translation?.InheritUnavailableReason is { } inheritReason ? LocalizedStatus(inheritReason)
+                : translation?.CanInheritStyle == true ? null : unavailable, false);
+        Add("MoreExpand", AutomationProperties.GetName(_expandButton), MoreExpand, ToggleExpansion, _expandButton.IsEnabled);
+        Add("MoreSettings", UiTheme.L("设置", "Settings"), MoreSettings, () => SettingsRequested?.Invoke());
+        if (!string.IsNullOrEmpty(translation?.Feedback))
+            Add("MoreFeedback", LocalizedStatus(translation.Feedback), MoreInfo, () => { }, false);
         StyleMenu(menu, anchor);
+        ConfigureMoreKeyboard(menu, choices, alternative, regenerate, copy, Current, CopyTranslation);
         anchor.ContextMenu = menu;
         menu.Closed += (_, _) => UpdateExpansionAffordance();
         menu.IsOpen = true;

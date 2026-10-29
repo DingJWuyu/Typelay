@@ -140,6 +140,16 @@ def instantiate(source, output, item, version):
             font["name"].setName(value, name_id, platform, encoding, language)
     font["name"].removeNames(nameID=25)
     font["name"].removeUnusedNames(font)
+    # A fully instantiated face can retain a STAT axis with no style values.
+    # Keep the static OS/2 weight and complete family names, as in the static
+    # siblings, instead of an empty variable-style description. Real Windows
+    # glyph tests still verify that the resulting face is selected at 600.
+    if not {"fvar", "gvar"}.intersection(font.keys()) and "STAT" in font:
+        stat = font["STAT"].table
+        if stat.AxisValueCount == 0 and (
+            stat.AxisValueArray is None or not stat.AxisValueArray.AxisValue
+        ):
+            del font["STAT"]
     if font.getBestCmap() != cmap or font["OS/2"].usWeightClass != item["instance"]["wght"]:
         raise ValueError("font-instance-character-or-weight-mismatch")
     if {"fvar", "gvar", "avar", "HVAR", "MVAR", "VVAR"}.intersection(font.keys()):

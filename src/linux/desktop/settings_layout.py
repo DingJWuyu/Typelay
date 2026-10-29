@@ -602,7 +602,6 @@ def build(
     owner.page_boxes["glossary"].pack_start(owner.translation.glossary_box, False, False, 0)
     owner.translation.box.set_hexpand(True)
     owner.translation.style_box.set_hexpand(True)
-    style(owner.translation.glossary_box, "settings-group")
     future_model = card("model")
     for chinese, english, value in (
         ("推理设备", "Inference device", "CPU · 当前后端"),

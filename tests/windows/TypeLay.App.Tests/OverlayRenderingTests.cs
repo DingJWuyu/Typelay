@@ -1057,8 +1057,8 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 var more = Descendants(overlay).OfType<Button>().Single(button =>
                     new ButtonAutomationPeer(button).GetName() == "更多翻译操作");
                 more.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                var menu = Assert.IsType<ContextMenu>(more.ContextMenu);
-                var hide = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "隐藏当前翻译"));
+                var menu = Assert.IsAssignableFrom<ContextMenu>(more.ContextMenu);
+                var hide = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "暂时隐藏"));
                 Assert.True(hide.IsEnabled);
                 var clicked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1395,7 +1395,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
     }
 
     [Fact]
-    public Task EditorRequiresDisplayedContextAndMenuExitRetainsItsOriginalToken() => desktop.RunAsync(() =>
+    public Task EditorRequiresDisplayedContextAndMenuExitRetainsItsOriginalToken() => desktop.RunAsync(async () =>
     {
         var (_, input, source) = OpenSource();
         var settings = new UserSettings(Theme: "light");
@@ -1418,13 +1418,13 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         {
             var more = Descendants(overlay).OfType<Button>().Single(button => new ButtonAutomationPeer(button).GetName() == "更多翻译操作");
             more.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            return Assert.IsType<ContextMenu>(more.ContextMenu);
+            return Assert.IsAssignableFrom<ContextMenu>(more.ContextMenu);
         }
         BeginEdit();
         Assert.Empty(edits);
         Assert.True(editor.IsReadOnly);
         var menu = Menu();
-        Assert.False(menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "隐藏当前翻译")).IsEnabled);
+        Assert.False(menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "暂时隐藏")).IsEnabled);
         menu.IsOpen = false;
         var context = EditableView(source) with
         {
@@ -1434,10 +1434,18 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         BeginEdit();
         Assert.Empty(edits);
         menu = Menu();
-        var exit = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "隐藏当前翻译"));
+        var exit = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "暂时隐藏"));
         Assert.True(exit.IsEnabled);
-        exit.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-        menu.IsOpen = false;
+        var clicked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        RoutedEventHandler onExit = (_, _) => clicked.TrySetResult();
+        exit.Click += onExit;
+        try
+        {
+            Assert.IsAssignableFrom<IInvokeProvider>(new MenuItemAutomationPeer(exit).GetPattern(PatternInterface.Invoke)).Invoke();
+            await clicked.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+            Assert.False(menu.IsOpen);
+        }
+        finally { exit.Click -= onExit; menu.IsOpen = false; }
         Assert.Equal(new[] { context.Token }, exits);
         exits.Clear();
         overlay.Render(session, settings, false, context: context with
@@ -1450,7 +1458,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         BeginEdit();
         Assert.Empty(edits);
         menu = Menu();
-        Assert.False(menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "隐藏当前翻译")).IsEnabled);
+        Assert.False(menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "暂时隐藏")).IsEnabled);
         menu.IsOpen = false;
         context = context with
         {
@@ -1461,7 +1469,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         Assert.Equal(new[] { context.Token }, edits);
         Assert.False(editor.IsReadOnly);
         menu = Menu();
-        exit = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "隐藏当前翻译"));
+        exit = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "暂时隐藏"));
         overlay.Render(session, settings, false, context: context with
         {
             Token = context.Token with
@@ -1471,11 +1479,11 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         });
         exit.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
         menu.IsOpen = false;
-        Assert.Equal(new[] { context.Token }, exits);
+        Assert.Empty(exits); // The old menu cannot submit its retired view token.
         overlay.Render(session, settings, false);
         BeginEdit();
         Assert.Single(edits);
-        Assert.Single(exits);
+        Assert.Empty(exits);
         Assert.True(editor.IsReadOnly);
         Assert.Equal("Source text", input.Text);
     });

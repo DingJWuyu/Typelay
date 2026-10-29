@@ -89,13 +89,16 @@ public sealed class ModelClientCapabilityTests
     [InlineData("shadow-directory")]
     [InlineData("dependency-version")]
     [InlineData("missing-dependencies")]
+    [InlineData("python-sibling")]
     public async Task IndexProfileUsesRealLaunchFilesWithoutTakingOrdinaryReadinessAway(string change)
     {
         using var peer = new ProtocolPeer(IndexIdentity(HyHello).Replace("\"status\":\"ready\"",
             "\"status\":\"ready\"," + AdvancedVersions, StringComparison.Ordinal),
             """{"status":"translated","text":"ordinary"}""", IndexIdentity(HyInventory), profileFiles: true);
         peer.ChangeProfileFiles(change);
-        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(ModelCatalog.Packages),
+        var plan = peer.CreateLoadPlan(ModelCatalog.Packages);
+        Assert.Equal(Path.GetFullPath(plan.Paths.Python), plan.Paths.Python);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(plan,
             () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
         var identity = Assert.IsType<VerifiedModelIdentity>(peer.Client.VerifiedIdentity);
         using var expected = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "IndexInferenceProfile.json")));
@@ -1353,7 +1356,12 @@ public sealed class ModelClientCapabilityTests
             string generation = Path.Combine(_directory, "components", Guid.NewGuid().ToString("N"));
             string models = Path.Combine(generation, "models");
             Directory.CreateDirectory(models);
-            string python = Path.Combine(generation, "runtime", OperatingSystem.IsWindows() ? "python/tools/python.exe" : "venv/bin/python");
+            // Match the installed runtime layout, including native separators.
+            // An embedded "python/tools/..." string can mask a Windows-only
+            // production path comparison bug by repeating it in the peer.
+            string python = OperatingSystem.IsWindows()
+                ? Path.Combine(generation, "runtime", "python", "tools", "python.exe")
+                : Path.Combine(generation, "runtime", "venv", "bin", "python");
             Directory.CreateDirectory(Path.GetDirectoryName(python)!);
             File.WriteAllText(python, "controlled process port, not an interpreter");
             var installed = JsonNode.Parse(inventory)!;
@@ -1384,7 +1392,16 @@ public sealed class ModelClientCapabilityTests
         {
             string worker = Path.GetDirectoryName(_paths.Worker)!;
             string generation = Path.GetDirectoryName(_paths.Models)!;
-            if (change is "engine" or "loader")
+            if (change == "python-sibling")
+            {
+                string python = OperatingSystem.IsWindows()
+                    ? Path.Combine(generation, "runtime-other", "python", "tools", "python.exe")
+                    : Path.Combine(generation, "runtime-other", "venv", "bin", "python");
+                Directory.CreateDirectory(Path.GetDirectoryName(python)!);
+                File.Copy(_paths.Python, python);
+                _paths = new(python, _paths.Worker, _paths.Models);
+            }
+            else if (change is "engine" or "loader")
                 File.AppendAllText(Path.Combine(worker, "typelay_worker", change == "engine" ? "engine.py" : "index_cpu.py"), "\n# changed\n");
             else if (change == "bytecode")
                 File.WriteAllBytes(Path.Combine(worker, "typelay_worker", "engine.pyc"), [0]);

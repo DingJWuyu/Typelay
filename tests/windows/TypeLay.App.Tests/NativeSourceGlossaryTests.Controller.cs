@@ -64,10 +64,10 @@ public sealed partial class NativeSourceGlossaryTests
             var menu = PresentationSource.CurrentSources.OfType<HwndSource>().Select(item => item.RootVisual)
                 .OfType<DependencyObject>().SelectMany(root => Children(root).Prepend(root))
                 .OfType<ContextMenu>().Single(item => item.IsOpen);
-            var command = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "加入术语表"));
+            var command = menu.Items.OfType<MenuItem>().Single(item => AutomationProperties.GetAutomationId(item) == "MoreGlossary");
             Assert.True(command.IsEnabled);
-            menu.IsOpen = false;
-            command.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            await InvokeGlossaryCommandAsync(command, native.Token);
+            Assert.False(menu.IsOpen);
             while (view.GlossaryEntryFocus is null)
                 await Task.Delay(10, native.Token);
             Children(overlay).OfType<TextBox>().Single(item => AutomationProperties.GetName(item) == "术语源词").Text = "你好";

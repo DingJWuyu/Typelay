@@ -1,6 +1,8 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Automation;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -47,7 +49,7 @@ public sealed class OverlayGlossaryTests(WpfDesktopFixture desktop)
         var requests = new List<SessionGlossaryRequest>();
         var pending = new TaskCompletionSource<GlossaryChangeResult>();
         overlay.AddGlossaryRequested = request => { requests.Add(request); return pending.Task; };
-        OpenGlossary(overlay);
+        await OpenGlossary(overlay);
         var source = Field(overlay, "术语源词");
         var target = Field(overlay, "术语译词");
         foreach (var control in Descendants(overlay).OfType<Control>().Where(control => control.IsVisible
@@ -104,7 +106,7 @@ public sealed class OverlayGlossaryTests(WpfDesktopFixture desktop)
     });
 
     [Fact]
-    public Task AuxiliaryKeysAndImeNeverReturnTheTranslationOrCloseAnUnclearComposition() => desktop.RunAsync(() =>
+    public Task AuxiliaryKeysAndImeNeverReturnTheTranslationOrCloseAnUnclearComposition() => desktop.RunAsync(async () =>
     {
         var (overlay, _, context, editor) = OpenEditor();
         var entry = new SessionGlossaryEntry(Guid.NewGuid(), context.Token, 4, []);
@@ -114,7 +116,7 @@ public sealed class OverlayGlossaryTests(WpfDesktopFixture desktop)
         overlay.EscapeRequested = _ => escaped++;
         overlay.CloseGlossaryRequested = _ => closed++;
         overlay.AddGlossaryRequested = _ => { saved++; return Task.FromResult(new GlossaryChangeResult(true, "glossary-saved")); };
-        OpenGlossary(overlay);
+        await OpenGlossary(overlay);
         var source = Field(overlay, "术语源词");
         var target = Field(overlay, "术语译词");
         Assert.True(source.MoveFocus(new(FocusNavigationDirection.Next)));
@@ -152,7 +154,7 @@ public sealed class OverlayGlossaryTests(WpfDesktopFixture desktop)
         overlay.AddGlossaryRequested = _ => completion.Task;
         var closed = new List<Guid>();
         overlay.CloseGlossaryRequested = closed.Add;
-        OpenGlossary(overlay);
+        await OpenGlossary(overlay);
         Field(overlay, "术语源词").Text = "PR";
         Field(overlay, "术语译词").Text = "PR";
         Button(overlay, "保存术语").RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
@@ -173,7 +175,7 @@ public sealed class OverlayGlossaryTests(WpfDesktopFixture desktop)
         Assert.DoesNotContain(Descendants(overlay).OfType<TextBlock>(), item => item.Text.Contains("已保存"));
         Assert.True(overlay.Activate());
         Assert.True(editor.Focus());
-        OpenGlossary(overlay);
+        await OpenGlossary(overlay);
         overlay.Render(session, new(), false, context: context with
         {
             Token = context.Token with
@@ -202,7 +204,7 @@ public sealed class OverlayGlossaryTests(WpfDesktopFixture desktop)
             return saved ? Task.FromResult(new GlossaryChangeResult(true, "glossary-saved-notification-failed"))
                 : Task.FromException<GlossaryChangeResult>(new IOException("synthetic transport interruption"));
         };
-        OpenGlossary(overlay);
+        await OpenGlossary(overlay);
         Field(overlay, "术语源词").Text = "PR";
         Field(overlay, "术语译词").Text = "PR";
         var save = Button(overlay, "保存术语");
@@ -217,13 +219,13 @@ public sealed class OverlayGlossaryTests(WpfDesktopFixture desktop)
     });
 
     [Fact]
-    public Task AnUnregisteredDescendantCannotBorrowAuxiliaryFocusOrSave() => desktop.RunAsync(() =>
+    public Task AnUnregisteredDescendantCannotBorrowAuxiliaryFocusOrSave() => desktop.RunAsync(async () =>
     {
         var (overlay, _, context, _) = OpenEditor();
         overlay.BeginGlossaryRequested = _ => new(Guid.NewGuid(), context.Token, 4, []);
         int saves = 0;
         overlay.AddGlossaryRequested = _ => { saves++; return Task.FromResult(new GlossaryChangeResult(true, "glossary-saved")); };
-        OpenGlossary(overlay);
+        await OpenGlossary(overlay);
         var panel = Descendants(overlay).OfType<StackPanel>()
             .Single(control => AutomationProperties.GetName(control) == "加入术语表");
         var unrelated = new Button { Content = "Unrelated descendant" };
@@ -286,17 +288,26 @@ public sealed class OverlayGlossaryTests(WpfDesktopFixture desktop)
         return (overlay, session, context, editor);
     }
 
-    private static void OpenGlossary(OverlayWindow overlay)
+    private static async Task OpenGlossary(OverlayWindow overlay)
     {
         Button(overlay, "更多翻译操作").RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
         var menu = PresentationSource.CurrentSources.OfType<HwndSource>().Select(source => source.RootVisual)
             .OfType<DependencyObject>().SelectMany(root => Descendants(root).Prepend(root))
             .OfType<ContextMenu>().Single(item => item.IsOpen);
-        var item = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "加入术语表"));
+        var item = menu.Items.OfType<MenuItem>().Single(item => AutomationProperties.GetAutomationId(item) == "MoreGlossary");
         Assert.True(item.IsEnabled);
-        menu.IsOpen = false;
-        item.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-        overlay.UpdateLayout();
+        var clicked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        RoutedEventHandler observe = (_, _) => clicked.TrySetResult();
+        item.Click += observe;
+        try
+        {
+            var invoke = Assert.IsAssignableFrom<IInvokeProvider>(new MenuItemAutomationPeer(item).GetPattern(PatternInterface.Invoke));
+            invoke.Invoke();
+            await clicked.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+            Assert.False(menu.IsOpen);
+            overlay.UpdateLayout();
+        }
+        finally { item.Click -= observe; menu.IsOpen = false; }
     }
 
     private static Button Button(OverlayWindow overlay, string name) => Descendants(overlay).OfType<Button>()

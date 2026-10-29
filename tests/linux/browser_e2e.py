@@ -2439,6 +2439,174 @@ class BrowserContract(unittest.TestCase):
         names = [node.get("name", {}).get("value") for node in accessible_nodes()]
         self.assertNotIn("更多", names)
 
+    def test_loading_and_updating_decorations_preserve_editor_and_source(self):
+        output = ROOT / "artifacts/linux/browser-native/overlay" / f"states-{uuid.uuid4().hex}"
+        output.mkdir(parents=True)
+        print(f"Overlay state screenshots: {output}", flush=True)
+        inspect = """function() {
+          const root = this.getRootNode(), skeleton = root.querySelector('#loading-skeleton');
+          const sweep = root.querySelector('#updating-sweep');
+          const bars = skeleton ? [...skeleton.children] : [];
+          return {sameEditor: this.isConnected && root.querySelector('textarea') === this,
+            value: this.value, readOnly: this.readOnly, editorHidden: this.hidden,
+            skeletonVisible: !!skeleton && !skeleton.hidden,
+            skeletonHiddenFromAccessibility: skeleton?.getAttribute('aria-hidden'),
+            bars: bars.map(bar => ({width: bar.getBoundingClientRect().width,
+              height: bar.getBoundingClientRect().height, animation: getComputedStyle(bar).animationName})),
+            gap: skeleton && getComputedStyle(skeleton).rowGap,
+            sweepVisible: !!sweep && !sweep.hidden && getComputedStyle(sweep).display !== 'none',
+            sweepAnimation: sweep && getComputedStyle(sweep).animationName,
+            sweepPointerEvents: sweep && getComputedStyle(sweep).pointerEvents,
+            color: getComputedStyle(this).color,
+            retryVisible: !!root.querySelector('#translation-retry'),
+            selection: [document.querySelector('#source').selectionStart, document.querySelector('#source').selectionEnd]};
+        }"""
+        for theme, language in (("light", "zh-CN"), ("dark", "en")):
+            for motion in ("full", "reduce"):
+                # Each preference pair is an independent source session. Do not
+                # spread twenty states and ten screenshots across one clock
+                # proof or renew an expired session just to keep a matrix alive.
+                self.page.reload()
+                self.command(
+                    "configure-shortcuts",
+                    {
+                        "generation": "browser-default",
+                        "sessionEnabled": True,
+                        "enabled": False,
+                        "accept": "Tab",
+                        "exit": "Esc",
+                    },
+                )
+                self.page.locator("#source").focus()
+                data = self.motion_view()
+                editor = self.overlay_control("TypeLay 译文", "textbox")
+                revision = 1
+                for state, text, status in (
+                    ("IdleCapsule", "", ""),
+                    ("Translating", "", "翻译中"),
+                    ("ValidTranslation", "Existing translation.", "译文就绪"),
+                    ("Translating", "Existing translation.", "更新中"),
+                    ("TranslationFailed", "Existing translation.", "暂时无法翻译"),
+                ):
+                    with self.subTest(theme=theme, motion=motion, state=state, text=bool(text)):
+                        revision += 1
+                        data.update(
+                            revision=revision,
+                            theme=theme,
+                            appearance={"uiLanguage": language, "motion": motion},
+                        )
+                        data["view"].update(state=state, text=text, status=status, editable=False)
+                        self.assertTrue(self.command("overlay-render", data)["visible"])
+                        actual = self.overlay_dom(editor, inspect)
+                        self.assertTrue(actual["sameEditor"] and actual["readOnly"], actual)
+                        self.assertEqual(actual["value"], text)
+                        self.assertEqual(actual["selection"], [5, 5])
+                        self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+                        loading, updating = (
+                            state == "Translating" and not text,
+                            state == "Translating" and bool(text),
+                        )
+                        self.assertEqual(actual["skeletonVisible"], loading, actual)
+                        self.assertEqual(actual["editorHidden"], loading or state == "IdleCapsule")
+                        self.assertEqual(actual["sweepVisible"], updating and motion == "full")
+                        self.assertEqual(actual["retryVisible"], state == "TranslationFailed")
+                        if loading:
+                            self.assertEqual(actual["skeletonHiddenFromAccessibility"], "true")
+                            self.assertEqual(len(actual["bars"]), 2)
+                            self.assertEqual(actual["gap"], "9px")
+                            self.assertAlmostEqual(
+                                actual["bars"][1]["width"] / actual["bars"][0]["width"],
+                                0.62,
+                                places=2,
+                            )
+                            for bar in actual["bars"]:
+                                self.assertAlmostEqual(bar["height"], 15 * 0.62, delta=0.02)
+                                self.assertEqual(
+                                    bar["animation"], "none" if motion == "reduce" else "tl-sweep"
+                                )
+                        if updating:
+                            self.assertEqual(actual["sweepPointerEvents"], "none")
+                            self.assertEqual(
+                                actual["sweepAnimation"],
+                                "none" if motion == "reduce" else "tl-sweep",
+                            )
+                            self.assertEqual(
+                                actual["color"],
+                                "rgb(116, 114, 108)" if theme == "light" else "rgb(154, 152, 143)",
+                            )
+                        if motion == "reduce":
+                            host = self.page.locator("html > div[role=region][aria-label=TypeLay]")
+                            self.page.screenshot(
+                                path=output / f"{theme}-{state}-{'old' if text else 'empty'}.png",
+                                clip=host.bounding_box(),
+                            )
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.accepted(), [])
+
+    def test_failure_retry_uses_original_view_and_refuses_unknown_composition(self):
+        data = self.motion_view()
+        data.update(revision=2, appearance={"uiLanguage": "zh-CN", "motion": "reduce"})
+        data["view"].update(
+            state="TranslationFailed",
+            text="Previous translation",
+            status="暂时无法翻译",
+            editable=False,
+        )
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        retry = self.overlay_control("重试")
+        point = self.overlay_dom(
+            retry,
+            "function() { return this.getBoundingClientRect().toJSON(); }",
+        )
+        self.page.mouse.click(point["x"] + point["width"] / 2, point["y"] + point["height"] / 2)
+
+        def retries():
+            return self.page.evaluate(
+                "fixtureMessages.filter(m => m.event === 'ui' && m.data.operation === 'regenerate').map(m => ({revision:m.data.revision,generation:m.data.generation,target:m.data.target}))"
+            )
+
+        self.assertEqual(
+            retries(), [{"revision": 2, "generation": "browser-default", "target": data["target"]}]
+        )
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+        self.assertTrue(self.overlay_dom(retry, "function() { return this.disabled; }"))
+        self.page.mouse.click(point["x"] + point["width"] / 2, point["y"] + point["height"] / 2)
+        self.assertEqual(len(retries()), 1)
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+        data["revision"] = 3
+        data["view"].update(state="ValidTranslation", text="New translation", status="译文就绪")
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        self.assertFalse(self.overlay_dom(retry, "function() { return this.isConnected; }"))
+        data["revision"] = 4
+        data["view"].update(state="TranslationFailed", status="暂时无法翻译")
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        self.overlay_dom(
+            editor,
+            "function() { this.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true})); }",
+        )
+        self.click_overlay_control("重试")
+        self.assertEqual(len(retries()), 1)
+        self.assertTrue(
+            self.overlay_dom(
+                editor,
+                "function() { return this.isConnected && this.value === 'New translation'; }",
+            )
+        )
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+        # The retired button's old pixel now hits ordinary header chrome.
+        # A real click there may naturally blur the source; it is not a late
+        # event delivered to the detached button. Check only its lack of action.
+        data["revision"] = 5
+        data["view"].update(state="ValidTranslation", status="译文就绪")
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        self.assertFalse(self.overlay_dom(retry, "function() { return this.isConnected; }"))
+        self.page.mouse.click(point["x"] + point["width"] / 2, point["y"] + point["height"] / 2)
+        self.assertEqual(len(retries()), 1)
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
     def motion_view(self):
         self.page.emulate_media(reduced_motion="no-preference")
         self.page.locator("#source").evaluate("""element => {

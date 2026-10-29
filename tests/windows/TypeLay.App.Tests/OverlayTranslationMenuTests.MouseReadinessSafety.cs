@@ -37,7 +37,7 @@ public sealed partial class OverlayTranslationMenuTests
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(3));
         await ClickMouse(more, Button.ClickEvent, "more", deadline.Token);
-        var menu = Assert.IsType<ContextMenu>(more.ContextMenu);
+        var menu = Assert.IsAssignableFrom<ContextMenu>(more.ContextMenu);
         Assert.True(menu.IsOpen);
         menu.UpdateLayout();
         var regenerate = Item(menu, "重新翻译");
@@ -174,7 +174,7 @@ public sealed partial class OverlayTranslationMenuTests
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(3));
         await ClickMouse(more, Button.ClickEvent, "more", deadline.Token);
-        var menu = Assert.IsType<ContextMenu>(more.ContextMenu);
+        var menu = Assert.IsAssignableFrom<ContextMenu>(more.ContextMenu);
         var regenerate = Item(menu, "重新翻译");
         regenerate.Click += (_, _) => menuClicks++;
         ContextMenu? replacement = null;

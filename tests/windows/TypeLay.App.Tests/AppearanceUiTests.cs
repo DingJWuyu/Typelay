@@ -138,7 +138,7 @@ public sealed class AppearanceUiTests(WpfDesktopFixture desktop)
     });
 
     [Fact]
-    public Task SettingsSearchFiltersNativeNavigationWithoutChangingPreferences() => desktop.RunAsync(() =>
+    public Task SettingsSearchLocatesTheComputeDeviceWithoutChangingPreferences() => desktop.RunAsync(() =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-search-ui-" + Guid.NewGuid().ToString("N"));
         try
@@ -154,12 +154,14 @@ public sealed class AppearanceUiTests(WpfDesktopFixture desktop)
             var search = Descendants(window).OfType<TextBox>().Single(box => AutomationProperties.GetName(box) == "搜索设置");
             search.Text = "CPU";
             window.UpdateLayout();
-            var result = Assert.Single(Descendants(window).OfType<Button>(), button => AutomationProperties.GetAutomationId(button).StartsWith("SettingsNavigation_"));
-            Assert.Equal("SettingsNavigation_model", AutomationProperties.GetAutomationId(result));
+            var result = Assert.Single(Descendants(window).OfType<Button>(), button => AutomationProperties.GetAutomationId(button).StartsWith("SettingsSearchResult_"));
+            Assert.Equal("SettingsSearchResult_model_device", AutomationProperties.GetAutomationId(result));
             result.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             window.UpdateLayout();
-            Assert.Equal("", search.Text);
+            Assert.Equal("CPU", search.Text);
             Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "本地模型");
+            var row = Assert.Single(Descendants(window).OfType<Panel>(), panel => AutomationProperties.GetAutomationId(panel) == "SettingsRow_model_device");
+            Assert.False(Assert.Single(Descendants(row).OfType<ComboBox>()).IsEnabled);
             Assert.Equal(before, File.ReadAllText(path));
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }

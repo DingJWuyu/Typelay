@@ -11,16 +11,16 @@ namespace TypeLay.App;
 
 internal sealed partial class SettingsWindow
 {
-    private static readonly (string Id, string Chinese, string English, string Color, string Icon, string Search)[] Pages =
+    private static readonly (string Id, string Chinese, string English, string Color, string Icon)[] Pages =
     [
-        ("general", "常规", "General", "#8A8986", "M15,12 A3,3 0 1 1 9,12 A3,3 0 1 1 15,12 M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2 5.5 5.5", "启用 暂停 工作模式 自动 按需 启动 教程 练习 写回 enable pause mode automatic demand startup tutorial practice writeback"),
-        ("appearance", "外观", "Appearance", "#3D3C39", "M20.5,12 A8.5,8.5 0 1 1 3.5,12 A8.5,8.5 0 1 1 20.5,12", "主题 字体 字号 强调色 界面语言 减少动态 降低透明度 theme font size accent interface language motion transparency"),
-        ("language", "语言与风格", "Language & Tone", "#3478F6", "M20.5,12 A8.5,8.5 0 1 1 3.5,12 A8.5,8.5 0 1 1 20.5,12 M3.5 12h17M12 3.5c2.4 2.4 3.4 5.4 3.4 8.5s-1 6.1-3.4 8.5c-2.4-2.4-3.4-5.4-3.4-8.5s1-6.1 3.4-8.5Z", "源语言 目标语言 翻译方向 自然 正式 简洁 口语 source target direction style natural formal concise casual"),
-        ("glossary", "术语表", "Glossary", "#C8642F", "M5 4.5h10.5A2.5 2.5 0 0 1 18 7v12.5H7.5A2.5 2.5 0 0 1 5 17Z M5 17a2.5 2.5 0 0 1 2.5-2.5H18M9 8.5h5", "源词 译词 范围 添加 删除 术语 glossary terms source target add delete"),
-        ("shortcuts", "快捷键", "Shortcuts", "#6E6D69", "M5,6 H19 A2.5,2.5 0 0 1 21.5,8.5 V15.5 A2.5,2.5 0 0 1 19,18 H5 A2.5,2.5 0 0 1 2.5,15.5 V8.5 A2.5,2.5 0 0 1 5,6 Z M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M8 14.2h8", "接受 退出 唤醒 直接替换 暂停 录制 keyboard accept exit wake direct pause shortcut record"),
-        ("apps", "应用", "Applications", "#8256D0", "M5.8,4 H8.7 A1.8,1.8 0 0 1 10.5,5.8 V8.7 A1.8,1.8 0 0 1 8.7,10.5 H5.8 A1.8,1.8 0 0 1 4,8.7 V5.8 A1.8,1.8 0 0 1 5.8,4 Z M15.3,4 H18.2 A1.8,1.8 0 0 1 20,5.8 V8.7 A1.8,1.8 0 0 1 18.2,10.5 H15.3 A1.8,1.8 0 0 1 13.5,8.7 V5.8 A1.8,1.8 0 0 1 15.3,4 Z M5.8,13.5 H8.7 A1.8,1.8 0 0 1 10.5,15.3 V18.2 A1.8,1.8 0 0 1 8.7,20 H5.8 A1.8,1.8 0 0 1 4,18.2 V15.3 A1.8,1.8 0 0 1 5.8,13.5 Z M15.3,13.5 H18.2 A1.8,1.8 0 0 1 20,15.3 V18.2 A1.8,1.8 0 0 1 18.2,20 H15.3 A1.8,1.8 0 0 1 13.5,18.2 V15.3 A1.8,1.8 0 0 1 15.3,13.5 Z", "应用 排除 连接 风格 浏览器 chrome edge app exclude connection style browser"),
-        ("model", "本地模型", "Local Model", "#2F8A57", "M8.5,6 H15.5 A2.5,2.5 0 0 1 18,8.5 V15.5 A2.5,2.5 0 0 1 15.5,18 H8.5 A2.5,2.5 0 0 1 6,15.5 V8.5 A2.5,2.5 0 0 1 8.5,6 Z M9.5 2.5v3.5M14.5 2.5v3.5M9.5 18v3.5M14.5 18v3.5M2.5 9.5H6M2.5 14.5H6M18 9.5h3.5M18 14.5h3.5", "翻译 模型 下载 更新 计算设备 CPU GPU NPU 常驻 Index Hy Argos model download update device resident"),
-        ("about", "关于与隐私", "About & Privacy", "#8A8986", "M20.5,12 A8.5,8.5 0 1 1 3.5,12 A8.5,8.5 0 1 1 20.5,12 M12 11v5.5M12 7.8v.01", "关于 隐私 版本 软件 更新 数据 本地 about privacy version software update data local")
+        ("general", "常规", "General", "#8A8986", "M15,12 A3,3 0 1 1 9,12 A3,3 0 1 1 15,12 M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2 5.5 5.5"),
+        ("appearance", "外观", "Appearance", "#3D3C39", "M20.5,12 A8.5,8.5 0 1 1 3.5,12 A8.5,8.5 0 1 1 20.5,12"),
+        ("language", "语言与风格", "Language & Tone", "#3478F6", "M20.5,12 A8.5,8.5 0 1 1 3.5,12 A8.5,8.5 0 1 1 20.5,12 M3.5 12h17M12 3.5c2.4 2.4 3.4 5.4 3.4 8.5s-1 6.1-3.4 8.5c-2.4-2.4-3.4-5.4-3.4-8.5s1-6.1 3.4-8.5Z"),
+        ("glossary", "术语表", "Glossary", "#C8642F", "M5 4.5h10.5A2.5 2.5 0 0 1 18 7v12.5H7.5A2.5 2.5 0 0 1 5 17Z M5 17a2.5 2.5 0 0 1 2.5-2.5H18M9 8.5h5"),
+        ("shortcuts", "快捷键", "Shortcuts", "#6E6D69", "M5,6 H19 A2.5,2.5 0 0 1 21.5,8.5 V15.5 A2.5,2.5 0 0 1 19,18 H5 A2.5,2.5 0 0 1 2.5,15.5 V8.5 A2.5,2.5 0 0 1 5,6 Z M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M8 14.2h8"),
+        ("apps", "应用", "Applications", "#8256D0", "M5.8,4 H8.7 A1.8,1.8 0 0 1 10.5,5.8 V8.7 A1.8,1.8 0 0 1 8.7,10.5 H5.8 A1.8,1.8 0 0 1 4,8.7 V5.8 A1.8,1.8 0 0 1 5.8,4 Z M15.3,4 H18.2 A1.8,1.8 0 0 1 20,5.8 V8.7 A1.8,1.8 0 0 1 18.2,10.5 H15.3 A1.8,1.8 0 0 1 13.5,8.7 V5.8 A1.8,1.8 0 0 1 15.3,4 Z M5.8,13.5 H8.7 A1.8,1.8 0 0 1 10.5,15.3 V18.2 A1.8,1.8 0 0 1 8.7,20 H5.8 A1.8,1.8 0 0 1 4,18.2 V15.3 A1.8,1.8 0 0 1 5.8,13.5 Z M15.3,13.5 H18.2 A1.8,1.8 0 0 1 20,15.3 V18.2 A1.8,1.8 0 0 1 18.2,20 H15.3 A1.8,1.8 0 0 1 13.5,18.2 V15.3 A1.8,1.8 0 0 1 15.3,13.5 Z"),
+        ("model", "本地模型", "Local Model", "#2F8A57", "M8.5,6 H15.5 A2.5,2.5 0 0 1 18,8.5 V15.5 A2.5,2.5 0 0 1 15.5,18 H8.5 A2.5,2.5 0 0 1 6,15.5 V8.5 A2.5,2.5 0 0 1 8.5,6 Z M9.5 2.5v3.5M14.5 2.5v3.5M9.5 18v3.5M14.5 18v3.5M2.5 9.5H6M2.5 14.5H6M18 9.5h3.5M18 14.5h3.5"),
+        ("about", "关于与隐私", "About & Privacy", "#8A8986", "M20.5,12 A8.5,8.5 0 1 1 3.5,12 A8.5,8.5 0 1 1 20.5,12 M12 11v5.5M12 7.8v.01")
     ];
 
     private object _navigationButtons = new();
@@ -30,12 +30,11 @@ internal sealed partial class SettingsWindow
             return;
         object navigation = _navigationButtons = new();
         _nav.Children.Clear();
-        string query = _settingsSearch.Text.Trim();
-        var matches = Pages.Where(page => query.Length == 0 || (page.Chinese + " " + page.English + " " + page.Search)
-            .Contains(query, StringComparison.OrdinalIgnoreCase)).ToArray();
-        foreach (var page in matches)
+        if (RenderSettingsSearch())
+            return;
+        foreach (var page in Pages)
         {
-            if (query.Length == 0 && page.Id is "apps" or "about")
+            if (page.Id is "apps" or "about")
                 _nav.Children.Add(new Border { Height = 12 });
             var row = new StackPanel { Orientation = Orientation.Horizontal };
             var icon = PrototypeGlyph(page.Icon, filled: page.Id == "appearance" ? "M12 3.5v17A8.5 8.5 0 0 0 12 3.5Z" : null);
@@ -58,12 +57,6 @@ internal sealed partial class SettingsWindow
             AutomationProperties.SetName(button, UiTheme.L(page.Chinese, page.English));
             AutomationProperties.SetAutomationId(button, "SettingsNavigation_" + page.Id);
             _nav.Children.Add(button);
-        }
-        if (matches.Length == 0)
-        {
-            var empty = UiTheme.Text(UiTheme.L("没有找到设置", "No matching settings"), 12, true);
-            empty.Margin = new(8);
-            _nav.Children.Add(empty);
         }
     }
 

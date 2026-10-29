@@ -244,10 +244,31 @@ static void control_pointer_leave(GtkEventControllerMotion *motion, gpointer dat
     (void)data;
     GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(motion));
     g_object_set_data(G_OBJECT(widget), "fixture-control-enter-at", NULL);
+    g_object_set_data(G_OBJECT(widget), "fixture-control-leave-at",
+        (gpointer)(gintptr)(g_get_monotonic_time() / 1000));
 }
 static void control_pointer_unmap(GtkWidget *widget, gpointer data) {
     (void)data;
     g_object_set_data(G_OBJECT(widget), "fixture-control-enter-at", NULL);
+}
+/* Compare propagation phases without changing the existing BUBBLE click gate.
+ * These void signal observers do not consume pointer events or move focus. */
+static void control_capture_pointer_enter(GtkEventControllerMotion *motion, double x, double y, gpointer data) {
+    (void)x; (void)y; (void)data;
+    GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(motion));
+    g_object_set_data(G_OBJECT(widget), "fixture-control-capture-enter-at",
+        (gpointer)(gintptr)(g_get_monotonic_time() / 1000));
+}
+static void control_capture_pointer_leave(GtkEventControllerMotion *motion, gpointer data) {
+    (void)data;
+    GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(motion));
+    g_object_set_data(G_OBJECT(widget), "fixture-control-capture-enter-at", NULL);
+    g_object_set_data(G_OBJECT(widget), "fixture-control-capture-leave-at",
+        (gpointer)(gintptr)(g_get_monotonic_time() / 1000));
+}
+static void control_capture_pointer_unmap(GtkWidget *widget, gpointer data) {
+    (void)data;
+    g_object_set_data(G_OBJECT(widget), "fixture-control-capture-enter-at", NULL);
 }
 static JsonNode *control_surface_geometry(GtkWidget *widget) {
     GtkNative *native = gtk_widget_get_native(widget);
@@ -488,6 +509,21 @@ static void report_control_surface(JsonBuilder *builder, GtkWidget *widget) {
         g_signal_connect(observer, "leave", G_CALLBACK(control_pointer_leave), NULL);
         g_signal_connect(widget, "unmap", G_CALLBACK(control_pointer_unmap), NULL);
         g_object_set_data(G_OBJECT(widget), "fixture-control-motion", observer);
+        g_object_set_data(G_OBJECT(widget), "fixture-control-motion-attached-at",
+            (gpointer)(gintptr)(g_get_monotonic_time() / 1000));
+        gtk_widget_add_controller(widget, observer);
+    }
+    GtkEventControllerMotion *capture_motion = g_object_get_data(G_OBJECT(widget), "fixture-control-capture-motion");
+    if (!capture_motion) {
+        GtkEventController *observer = gtk_event_controller_motion_new();
+        capture_motion = GTK_EVENT_CONTROLLER_MOTION(observer);
+        gtk_event_controller_set_propagation_phase(observer, GTK_PHASE_CAPTURE);
+        g_signal_connect(observer, "enter", G_CALLBACK(control_capture_pointer_enter), NULL);
+        g_signal_connect(observer, "leave", G_CALLBACK(control_capture_pointer_leave), NULL);
+        g_signal_connect(widget, "unmap", G_CALLBACK(control_capture_pointer_unmap), NULL);
+        g_object_set_data(G_OBJECT(widget), "fixture-control-capture-motion", observer);
+        g_object_set_data(G_OBJECT(widget), "fixture-control-capture-motion-attached-at",
+            (gpointer)(gintptr)(g_get_monotonic_time() / 1000));
         gtk_widget_add_controller(widget, observer);
     }
     json_builder_set_member_name(builder, "pointerInside");
@@ -496,6 +532,27 @@ static void report_control_surface(JsonBuilder *builder, GtkWidget *widget) {
     json_builder_set_member_name(builder, "pointerEnteredAtMonoMs");
     json_builder_add_int_value(builder,
         (gintptr)g_object_get_data(G_OBJECT(widget), "fixture-control-enter-at"));
+    json_builder_set_member_name(builder, "pointerLeftAtMonoMs");
+    json_builder_add_int_value(builder,
+        (gintptr)g_object_get_data(G_OBJECT(widget), "fixture-control-leave-at"));
+    json_builder_set_member_name(builder, "pointerObserverAttachedAtMonoMs");
+    json_builder_add_int_value(builder,
+        (gintptr)g_object_get_data(G_OBJECT(widget), "fixture-control-motion-attached-at"));
+    json_builder_set_member_name(builder, "pointerCaptureObservation");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "inside");
+    json_builder_add_boolean_value(builder, gtk_widget_get_mapped(widget)
+        && gtk_event_controller_motion_contains_pointer(capture_motion));
+    json_builder_set_member_name(builder, "enteredAtMonoMs");
+    json_builder_add_int_value(builder,
+        (gintptr)g_object_get_data(G_OBJECT(widget), "fixture-control-capture-enter-at"));
+    json_builder_set_member_name(builder, "leftAtMonoMs");
+    json_builder_add_int_value(builder,
+        (gintptr)g_object_get_data(G_OBJECT(widget), "fixture-control-capture-leave-at"));
+    json_builder_set_member_name(builder, "attachedAtMonoMs");
+    json_builder_add_int_value(builder,
+        (gintptr)g_object_get_data(G_OBJECT(widget), "fixture-control-capture-motion-attached-at"));
+    json_builder_end_object(builder);
     json_builder_set_member_name(builder, "canTarget");
     json_builder_add_boolean_value(builder, gtk_widget_get_can_target(widget));
     json_builder_set_member_name(builder, "canFocus");

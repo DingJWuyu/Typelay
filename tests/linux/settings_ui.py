@@ -456,19 +456,28 @@ def main():
             assert state["textSize"] == 18
             # CRUD is available offline, but never grants model application quality.
             translation = surface.translation
+            surface.pages.set_visible_child_name("glossary")
+            await settle(lambda: translation.glossary_box.get_mapped())
+
+            def remove_selected(index=0):
+                translation.rules.select_row(translation.rules.get_children()[index])
+                translation.remove_button.clicked()
+
             assert translation.glossary_state["isReleased"] is False
             translation.new_button.clicked()
             translation.source_term.set_text("TypeLay")
             translation.target_term.set_text("TypeLay")
-            translation.add.clicked()
+            translation.target_term.emit("activate")
             await settle(lambda: not translation.dirty and not translation.saving)
             glossary = await host.ask("getGlossarySettings")
             assert glossary["savedSnapshot"]["rules"][0]["sourceTerm"] == "TypeLay"
             assert glossary["canApply"] is False
             translation.search.set_text("no match")
-            await settle(lambda: not translation.rules.get_children()[0].get_child_visible())
+            await settle(
+                lambda: not translation.rules.get_children() and translation.empty.get_visible()
+            )
             translation.search.set_text("")
-            translation.remove_rule(0)
+            remove_selected(0)
             await settle(lambda: not translation.dirty and not translation.saving)
             assert (await host.ask("getGlossarySettings"))["savedSnapshot"]["rules"] == []
             surface.toast.undo.clicked()
@@ -490,29 +499,169 @@ def main():
             assert GLib.MainContext.default().find_source_by_id(retired_timer) is None
             assert GLib.MainContext.default().find_source_by_id(current_timer) is None
             # A deleted row peer must not target a new rule occupying its index.
-            old_row = translation.rules.get_children()[0].get_child()
-            old_delete = next(
-                child
-                for child in old_row.get_children()
-                if isinstance(child, Gtk.Button) and child.get_label() == "删除"
-            )
-            old_edit = next(
-                child
-                for child in old_row.get_children()
-                if isinstance(child, Gtk.Button) and child.get_label() == "编辑"
-            )
-            translation.remove_rule(0)
+            old_row = translation.rules.get_children()[0]
+            translation.rules.select_row(old_row)
+            old_delete = translation.remove_button
+            remove_selected(0)
             await settle(lambda: not translation.dirty and not translation.saving)
             surface.toast.undo.clicked()
             await settle()
             old_delete.clicked()
-            old_edit.clicked()
+            translation.rules.emit("row-activated", old_row)
             await settle()
             assert not any(
                 isinstance(window, Gtk.Dialog) and window.get_visible()
                 for window in Gtk.Window.list_toplevels()
             )
             assert len((await host.ask("getGlossarySettings"))["savedSnapshot"]["rules"]) == 1
+
+            # Filtering A -> B -> A retires row/delete peers even when the
+            # same saved rule reappears. No old GTK signal can act on it.
+            current = translation.rules.get_children()[0]
+            translation.rules.select_row(current)
+            retired_remove = translation.remove_button
+            before = (directory / "config/settings.json").read_bytes()
+            translation.search.set_text("missing glossary term")
+            translation.search.set_text("")
+            retired_remove.clicked()
+            translation.rules.emit("row-activated", current)
+            await settle()
+            assert not translation.editor_open
+            assert (directory / "config/settings.json").read_bytes() == before
+            # A retired selection or Escape must not cancel the new row's
+            # pending public activation, even after query A -> B -> A.
+            escape = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+            escape.keyval, escape.state = Gdk.KEY_Escape, Gdk.ModifierType(0)
+            replacement_row = translation.rules.get_children()[0]
+            translation.rules.select_row(replacement_row)
+            selected = translation.selected_rule
+            translation.rules.emit("row-selected", current)
+            assert translation.selected_rule == selected
+            replacement_row.grab_focus()
+            translation.rules.emit("row-activated", replacement_row)
+            pending_edit = translation.editor_request
+            assert pending_edit is not None
+            current.emit("key-press-event", escape)
+            translation.rules.emit("row-activated", current)
+            assert translation.editor_request is pending_edit
+            await settle(lambda: translation.editor_open)
+            translation.target_term.emit("key-press-event", escape)
+            assert not translation.dirty
+            # Each inline editor has fresh peers. Retired A must not submit or
+            # change replacement A, including an equal-text ABA reopening.
+            translation.new_button.clicked()
+            translation.source_term.set_text("Transient")
+            translation.target_term.set_text("Draft")
+            retired_entry = translation.target_term
+            retired_entry.emit("key-press-event", escape)
+            assert not translation.editor_open and not translation.dirty
+            translation.new_button.clicked()
+            translation.source_term.set_text("Transient")
+            translation.target_term.set_text("Draft")
+            replacement_entry = translation.target_term
+            assert replacement_entry is not retired_entry
+            retired_entry.set_text("Must not appear")
+            retired_entry.emit("activate")
+            retired_entry.emit("key-press-event", escape)
+            await settle()
+            assert translation.editor_open and replacement_entry.get_text() == "Draft"
+            assert (directory / "config/settings.json").read_bytes() == before
+            replacement_entry.emit("key-press-event", escape)
+            assert not translation.dirty
+
+            # A native window close still requires Keep/Discard for a real
+            # inline draft. Discard/reopen cannot revive an old editor peer.
+            translation.new_button.clicked()
+            translation.source_term.set_text("Unsaved")
+            translation.target_term.set_text("Keep exactly")
+            closing_entry = translation.target_term
+
+            def close_question():
+                return next(
+                    (
+                        widget
+                        for widget in Gtk.Window.list_toplevels()
+                        if isinstance(widget, Gtk.MessageDialog)
+                        and widget.get_visible()
+                        and widget.get_property("text") == surface.draft_messages["closeTitle"]
+                    ),
+                    None,
+                )
+
+            surface.window.close()
+            await settle(lambda: close_question() is not None)
+            close_question().response(Gtk.ResponseType.CANCEL)
+            await settle()
+            assert translation.editor_open and closing_entry.get_text() == "Keep exactly"
+            surface.window.close()
+            await settle(lambda: close_question() is not None)
+            close_question().response(Gtk.ResponseType.OK)
+            await settle(lambda: not surface.window.get_visible())
+            assert not translation.dirty and not translation.editor_open
+            surface.show()
+            await settle(lambda: translation.glossary_box.get_mapped())
+            translation.new_button.clicked()
+            translation.source_term.set_text("Unsaved")
+            translation.target_term.set_text("Keep exactly")
+            closing_entry.set_text("Old window draft")
+            closing_entry.emit("activate")
+            await settle()
+            assert translation.target_term.get_text() == "Keep exactly"
+            assert (directory / "config/settings.json").read_bytes() == before
+            translation.target_term.emit("key-press-event", escape)
+            # Clearing both fields of an existing rule is an invalid draft,
+            # not an untouched empty new row. Enter/retry and native close
+            # must preserve it until explicit Discard.
+            current = translation.rules.get_children()[0]
+            current.grab_focus()
+            translation.rules.emit("row-activated", current)
+            await settle(lambda: translation.editor_open)
+            empty_source, empty_target = translation.source_term, translation.target_term
+            empty_source.set_text("")
+            empty_target.set_text("")
+            empty_target.emit("activate")
+            await settle()
+            assert translation.editor_open and translation.dirty
+            assert (directory / "config/settings.json").read_bytes() == before
+            surface.save_button.clicked()
+            await settle()
+            assert translation.editor_open and translation.dirty
+            assert "草稿仍保留" in surface.message.get_text()
+            surface.window.close()
+            await settle(lambda: close_question() is not None)
+            close_question().response(Gtk.ResponseType.CANCEL)
+            await settle()
+            assert translation.editor_open and translation.dirty
+            assert empty_source.get_text() == empty_target.get_text() == ""
+            surface.window.close()
+            await settle(lambda: close_question() is not None)
+            close_question().response(Gtk.ResponseType.OK)
+            await settle(lambda: not surface.window.get_visible())
+            assert not translation.dirty and not translation.editor_open
+            surface.show()
+            await settle(lambda: translation.glossary_box.get_mapped())
+            current = translation.rules.get_children()[0]
+            current.grab_focus()
+            translation.rules.emit("row-activated", current)
+            await settle(lambda: translation.editor_open)
+            empty_source.set_text("Retired empty source")
+            empty_target.set_text("Retired empty translation")
+            empty_target.emit("activate")
+            empty_target.emit("key-press-event", escape)
+            await settle()
+            assert translation.editor_open and translation.source_term.get_text() == "TypeLay"
+            assert translation.target_term.get_text() == "TypeLay"
+            assert (directory / "config/settings.json").read_bytes() == before
+            translation.target_term.emit("key-press-event", escape)
+            # A pending activation loses its opening permission on navigation.
+            current = translation.rules.get_children()[0]
+            current.grab_focus()
+            translation.rules.emit("row-activated", current)
+            surface.pages.set_visible_child_name("about")
+            await settle()
+            assert not translation.editor_open
+            surface.pages.set_visible_child_name("glossary")
+            await settle(lambda: translation.glossary_box.get_mapped())
 
             # Warning A -> B -> A is a new confirmation, even with equal text.
             async def warn(chord):
@@ -656,10 +805,12 @@ def main():
             )
             surface.tutorial.dismiss()
             # Switching product chrome never translates user-provided terms.
+            surface.pages.set_visible_child_name("glossary")
+            await settle(lambda: translation.glossary_box.get_mapped())
             translation.new_button.clicked()
             translation.source_term.set_text("关闭")
             translation.target_term.set_text("Close")
-            translation.add.clicked()
+            translation.target_term.emit("activate")
             await settle(lambda: not translation.saving and not translation.dirty)
             surface.controls["uiLanguage"].set_active_id("en")
             await settle(lambda: state.get("uiLanguage") == "en")

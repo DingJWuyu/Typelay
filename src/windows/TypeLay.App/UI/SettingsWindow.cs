@@ -272,8 +272,15 @@ internal sealed partial class SettingsWindow : Window
         _settingsSearch.Padding = new(28, 4, 8, 4);
         _settingsSearch.Margin = new(2, 0, 2, 12);
         _settingsSearch.ToolTip = UiTheme.L("搜索设置", "Search settings");
-        AutomationProperties.SetName(_settingsSearch, "搜索设置");
-        _settingsSearch.TextChanged += (_, _) => RefreshNavigation();
+        AutomationProperties.SetName(_settingsSearch, UiTheme.L("搜索设置", "Search settings"));
+        AutomationProperties.SetAutomationId(_settingsSearch, "SettingsSearch");
+        _settingsSearch.TextChanged += (_, _) => SettingsQueryChanged();
+        _settingsSearch.PreviewKeyDown += SettingsSearchKey;
+        IsVisibleChanged += (_, _) => { _settingsQuery = new(); ClearSearchLocation(); RefreshNavigation(); };
+        SizeChanged += (_, _) => ClearSearchLocation();
+        PreviewMouseWheel += (_, _) => ClearSearchLocation();
+        PreviewMouseDown += (_, _) => ClearSearchLocation();
+        _pageScroll.PreviewKeyDown += (_, _) => ClearSearchLocation();
         var searchHost = new Grid();
         searchHost.Children.Add(_settingsSearch);
         var searchIcon = PrototypeGlyph("M17,11 A6,6 0 1 1 5,11 A6,6 0 1 1 17,11 M20,20 L15.5,15.5", "Tertiary", stroke: 1.6);
@@ -297,6 +304,9 @@ internal sealed partial class SettingsWindow : Window
         {
             Title = UiTheme.L("TypeLay 设置", "TypeLay Settings");
             _settingsSearch.ToolTip = UiTheme.L("搜索设置", "Search settings");
+            AutomationProperties.SetName(_settingsSearch, UiTheme.L("搜索设置", "Search settings"));
+            _settingsQuery = new();
+            RefreshNavigation();
             searchHint.Text = UiTheme.L("搜索", "Search");
             privacy.Text = UiTheme.L("本地翻译 · 无历史记录", "On-device · No history");
             string[] names = [UiTheme.L("最小化", "Minimize"), UiTheme.L("最大化", "Maximize"), UiTheme.L("关闭设置", "Close Settings")];
@@ -524,16 +534,21 @@ internal sealed partial class SettingsWindow : Window
             ShowPage("model");
     }
     public void ShowPage(string page = "general") => NavigatePage(page, clearSearch: false);
-    private async void NavigatePage(string page, bool clearSearch)
+    private async void NavigatePage(string page, bool clearSearch, string? searchRow = null, object? search = null)
     {
+        if (search is not null && (!IsVisible || _closeDialog is not null || !ReferenceEquals(search, _settingsQuery)))
+            return;
+        ClearSearchLocation();
         object navigation = _pageNavigation = new();
         string next = page == "translation" ? "model" : page;
+        bool changed = _page != next;
         if (IsVisible && _page == "glossary" && next != _page)
         {
             // Commit while the row is still current. The deferred focus-loss
             // event cannot authorize work after its page has been retired.
             await CommitGlossaryBeforeNavigationAsync();
-            if (!ReferenceEquals(navigation, _pageNavigation) || !IsVisible || _closeDialog is not null)
+            if (!ReferenceEquals(navigation, _pageNavigation) || !IsVisible || _closeDialog is not null
+                || search is not null && !ReferenceEquals(search, _settingsQuery))
                 return;
         }
         _startupPresentationAllowed = false;
@@ -543,10 +558,13 @@ internal sealed partial class SettingsWindow : Window
         if (clearSearch)
             _settingsSearch.Clear();
         Refresh();
-        _pageScroll.ScrollToTop();
+        if (searchRow is null || changed)
+            _pageScroll.ScrollToTop();
         if (!IsVisible)
             Show();
         Activate();
+        if (searchRow is not null && search is not null)
+            LocateSearchRow(searchRow, navigation, search);
     }
     private void Refresh()
     {
@@ -610,6 +628,8 @@ internal sealed partial class SettingsWindow : Window
         string? focusedToggle = Keyboard.FocusedElement is Control focused && focused.IsDescendantOf(this)
             ? AutomationProperties.GetName(focused) : null;
         _pageIdentity = new object();
+        ClearSearchLocation();
+        _searchTargets.Clear();
         _content.Children.Clear();
         _group = null;
         _sourceLanguage = _targetLanguage = null;
@@ -767,6 +787,7 @@ internal sealed partial class SettingsWindow : Window
             _group.Children.Add(line);
         }
         _group.Children.Add(grid);
+        RegisterSearchRow(name, grid);
         return desc;
     }
     private TextBlock Note(string title, string text)
@@ -782,6 +803,7 @@ internal sealed partial class SettingsWindow : Window
         box.Padding = new(0, 10, 0, 14);
         box.Margin = new(0, 4, 0, 12);
         _content.Children.Add(box);
+        RegisterSearchRow(title, panel);
         return body;
     }
     private async Task<bool> SaveAsync(UserSettings value, long? draftSubmission = null)
@@ -924,6 +946,7 @@ internal sealed partial class SettingsWindow : Window
         Grid.SetColumn(enabled, 2);
         hero.Children.Add(enabled);
         _group!.Children.Add(hero);
+        RegisterSearchTarget("enable", hero);
         BeginGroup();
         var modes = new UniformGrid { Columns = 2, Width = 180 };
         var modeChoices = new List<RadioButton>();
@@ -1180,6 +1203,7 @@ internal sealed partial class SettingsWindow : Window
         Grid.SetColumn(_swapLanguages, 1);
         direction.Children.Add(_swapLanguages);
         _group!.Children.Add(direction);
+        RegisterSearchTarget("direction", direction);
         TranslationStyles();
         var applications = UiTheme.Button(UiTheme.L("按应用设置…", "Per-application settings…"), () =>
         {
@@ -1525,6 +1549,7 @@ internal sealed partial class SettingsWindow : Window
         _content.Children.Add(SearchField(search, UiTheme.L("搜索应用", "Search applications")));
         var list = new StackPanel();
         _content.Children.Add(list);
+        RegisterSearchTarget("applist", list);
         var refreshStyles = new List<Action>();
         void RenderApplications()
         {
@@ -1737,11 +1762,14 @@ internal sealed partial class SettingsWindow : Window
         var card = UiTheme.Border(body, 0, "Panel", 0);
         card.BorderThickness = new(0, 0, 0, 1);
         card.Padding = new(0, 14, 0, 14);
+        if (row.Id == "desktop-text")
+            RegisterSearchTarget("desktop", body);
         return card;
     }
     private FrameworkElement BrowserSupportRow(ApplicationSupportView view)
     {
         var body = new StackPanel();
+        RegisterSearchTarget("browser", body);
         var header = new DockPanel();
         var status = UiTheme.Text("", 12, true);
         AutomationProperties.SetAutomationId(status, "ChromeConnectionStatus");
@@ -1966,6 +1994,8 @@ internal sealed partial class SettingsWindow : Window
     private void InstallCard(bool compact = false)
     {
         var panel = new StackPanel();
+        if (_page is "model" or "translation")
+            RegisterSearchTarget("preparation", panel);
         if (!compact)
             panel.Children.Add(UiTheme.Text(ApplicationSupportPresentation.Create([]).Labels.PrepareTranslation, 12, true));
         _preparationStatus = UiTheme.Text("", compact ? 13 : 15, bold: true);
