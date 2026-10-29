@@ -1,0 +1,367 @@
+{
+  "schemaVersion": 1,
+  "fontToolsVersion": "4.61.1",
+  "upstream": {
+    "Noto Sans": {
+      "tag": "Sans2.004",
+      "revision": "523d033d6cb47f4a80c58a35753646f5c3608a78",
+      "licenseUrl": "https://raw.githubusercontent.com/notofonts/noto-cjk/523d033d6cb47f4a80c58a35753646f5c3608a78/LICENSE"
+    },
+    "Noto Serif": {
+      "tag": "Serif2.003",
+      "revision": "9b0f1436e455d902de067a2501422e5dc71ad16b",
+      "licenseUrl": "https://raw.githubusercontent.com/notofonts/noto-cjk/9b0f1436e455d902de067a2501422e5dc71ad16b/Serif/LICENSE"
+    }
+  },
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 2684,
+      "sha256": "d648ad19674f618d08ec01602d869c97d7a5fde16ae7844267609605acdfc049",
+      "source": {
+        "repositoryPath": "eng/fonts/README.md",
+        "bytes": 2684,
+        "sha256": "d648ad19674f618d08ec01602d869c97d7a5fde16ae7844267609605acdfc049"
+      }
+    },
+    {
+      "path": "inter/Inter-Medium.ttf",
+      "bytes": 417300,
+      "sha256": "97ad806f526e41546d46365bb3a393145f75b7b1568913db74549ad8b8dba872",
+      "source": {
+        "repositoryPath": "src/shared/ui/fonts/inter/Inter-Medium.ttf",
+        "bytes": 417300,
+        "sha256": "97ad806f526e41546d46365bb3a393145f75b7b1568913db74549ad8b8dba872"
+      },
+      "family": "Inter",
+      "weight": 500,
+      "roles": [
+        "ui",
+        "display",
+        "content"
+      ]
+    },
+    {
+      "path": "inter/Inter-Regular.ttf",
+      "bytes": 411640,
+      "sha256": "40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82",
+      "source": {
+        "repositoryPath": "src/shared/ui/fonts/inter/Inter-Regular.ttf",
+        "bytes": 411640,
+        "sha256": "40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82"
+      },
+      "family": "Inter",
+      "weight": 400,
+      "roles": [
+        "ui",
+        "display",
+        "content"
+      ]
+    },
+    {
+      "path": "inter/Inter-SemiBold.ttf",
+      "bytes": 419744,
+      "sha256": "78a843fade9d4612a5567302fb595b56976eb5fcebf4fea5a5912d638bafcde3",
+      "source": {
+        "repositoryPath": "src/shared/ui/fonts/inter/Inter-SemiBold.ttf",
+        "bytes": 419744,
+        "sha256": "78a843fade9d4612a5567302fb595b56976eb5fcebf4fea5a5912d638bafcde3"
+      },
+      "family": "Inter",
+      "weight": 600,
+      "roles": [
+        "ui",
+        "display",
+        "content"
+      ]
+    },
+    {
+      "path": "inter/LICENSE.txt",
+      "bytes": 4380,
+      "sha256": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a",
+      "source": {
+        "repositoryPath": "src/shared/ui/fonts/inter/LICENSE.txt",
+        "bytes": 4380,
+        "sha256": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a"
+      }
+    },
+    {
+      "path": "noto-sans/LICENSE.txt",
+      "bytes": 4301,
+      "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+      "source": {
+        "repositoryPath": "eng/fonts/Noto-CJK-LICENSE.txt",
+        "bytes": 4301,
+        "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
+      }
+    },
+    {
+      "path": "noto-sans/NotoSansJP-Medium.otf",
+      "bytes": 4549132,
+      "sha256": "f396a3b57256e4515be9cb41f7aac54766d654890082a9f1b5c2451b5c093d8a",
+      "source": {
+        "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/523d033d6cb47f4a80c58a35753646f5c3608a78/Sans/SubsetOTF/JP/NotoSansJP-Medium.otf",
+        "bytes": 4549132,
+        "sha256": "f396a3b57256e4515be9cb41f7aac54766d654890082a9f1b5c2451b5c093d8a"
+      },
+      "family": "Noto Sans JP",
+      "weight": 500,
+      "roles": [
+        "ui",
+        "display",
+        "content"
+      ]
+    },
+    {
+      "path": "noto-sans/NotoSansJP-Regular.otf",
+      "bytes": 4533028,
+      "sha256": "dff723ba59d57d136764a04b9b2d03205544f7cd785a711442d6d2d085ac5073",
+      "source": {
+        "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/523d033d6cb47f4a80c58a35753646f5c3608a78/Sans/SubsetOTF/JP/NotoSansJP-Regular.otf",
+        "bytes": 4533028,
+        "sha256": "dff723ba59d57d136764a04b9b2d03205544f7cd785a711442d6d2d085ac5073"
+      },
+      "family": "Noto Sans JP",
+      "weight": 400,
+      "roles": [
+        "ui",
+        "display",
+        "content"
+      ]
+    },
+    {
+      "path": "noto-sans/NotoSansKR-Medium.otf",
+      "bytes": 4669816,
+      "sha256": "b46988ef13e8bac08f3933af686eaf770972994f9b6d335be0184d60169b5431",
+      "source": {
+        "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/523d033d6cb47f4a80c58a35753646f5c3608a78/Sans/SubsetOTF/KR/NotoSansKR-Medium.otf",
+        "bytes": 4669816,
+        "sha256": "b46988ef13e8bac08f3933af686eaf770972994f9b6d335be0184d60169b5431"
+      },
+      "family": "Noto Sans KR",
+      "weight": 500,
+      "roles": [
+        "ui",
+        "display",
+        "content"
+      ]
+    },
+    {
+      "path": "noto-sans/NotoSansKR-Regular.otf",
+      "bytes": 4644748,
+      "sha256": "69975a0ac8472717870aefeab0a4d52739308d90856b9955313b2ad5e0148d68",
+      "source": {
+        "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/523d033d6cb47f4a80c58a35753646f5c3608a78/Sans/SubsetOTF/KR/NotoSansKR-Regular.otf",
+        "bytes": 4644748,
+        "sha256": "69975a0ac8472717870aefeab0a4d52739308d90856b9955313b2ad5e0148d68"
+      },
+      "family": "Noto Sans KR",
+      "weight": 400,
+      "roles": [
+        "ui",
+        "display",
+        "content"
+      ]
+    },
+    {
+      "path": "noto-sans/NotoSansSC-Medium.otf",
+      "bytes": 8345436,
+      "sha256": "7633f5a016d4dd95e685a69633d818aabc4644c4b08e26bd35b1b30c45ed5dda",
+      "source": {
+        "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/523d033d6cb47f4a80c58a35753646f5c3608a78/Sans/SubsetOTF/SC/NotoSansSC-Medium.otf",
+        "bytes": 8345436,
+        "sha256": "7633f5a016d4dd95e685a69633d818aabc4644c4b08e26bd35b1b30c45ed5dda"
+      },
+      "family": "Noto Sans SC",
+      "weight": 500,
+      "roles": [
+        "ui",
+        "display",
+        "content"
+      ]
+    },
+    {
+      "path": "noto-sans/NotoSansSC-Regular.otf",
+      "bytes": 8331336,
+      "sha256": "faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9",
+      "source": {
+        "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/523d033d6cb47f4a80c58a35753646f5c3608a78/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf",
+        "bytes": 8331336,
+        "sha256": "faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9"
+      },
+      "family": "Noto Sans SC",
+      "weight": 400,
+      "roles": [
+        "ui",
+        "display",
+        "content"
+      ]
+    },
+    {
+      "path": "noto-sans/TypeLayNotoSansSC-SemiBold.ttf",
+      "bytes": 10585976,
+      "sha256": "faba73785d620b63c807b715e1a9b285a5830c4c07bd3608ae5b9056c57b0bf1",
+      "source": {
+        "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/523d033d6cb47f4a80c58a35753646f5c3608a78/Sans/Variable/TTF/Subset/NotoSansSC-VF.ttf",
+        "bytes": 17773132,
+        "sha256": "d68bafcb48a2707749396aa12bbbd833cb70401f3a9a689fd2902c7e0d295964"
+      },
+      "instance": {
+        "wght": 600
+      },
+      "family": "Noto Sans SC",
+      "weight": 600,
+      "roles": [
+        "ui"
+      ]
+    },
+    {
+      "path": "noto-serif/LICENSE.txt",
+      "bytes": 4301,
+      "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+      "source": {
+        "repositoryPath": "eng/fonts/Noto-CJK-LICENSE.txt",
+        "bytes": 4301,
+        "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
+      }
+    },
+    {
+      "path": "noto-serif/NotoSerifJP-Medium.otf",
+      "bytes": 6279496,
+      "sha256": "f3a906cadd27f812a8b4b18618fa750928e65339fb372bd3f825f24e3271180b",
+      "source": {
+        "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/9b0f1436e455d902de067a2501422e5dc71ad16b/Serif/SubsetOTF/JP/NotoSerifJP-Medium.otf",
+        "bytes": 6279496,
+        "sha256": "f3a906cadd27f812a8b4b18618fa750928e65339fb372bd3f825f24e3271180b"
+      },
+      "family": "Noto Serif JP",
+      "weight": 500,
+      "roles": [
+        "display",
+        "content"
+      ]
+    },
+    {
+      "path": "noto-serif/NotoSerifJP-Regular.otf",
+      "bytes": 6210492,
+      "sha256": "2c9a12dbd4f2408c4610c7ee84a108b62d7236c3775baed618c64d9cb44b2f04",
+      "source": {
+        "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/9b0f1436e455d902de067a2501422e5dc71ad16b/Serif/SubsetOTF/JP/NotoSerifJP-Regular.otf",
+        "bytes": 6210492,
+        "sha256": "2c9a12dbd4f2408c4610c7ee84a108b62d7236c3775baed618c64d9cb44b2f04"
+      },
+      "family": "Noto Serif JP",
+      "weight": 400,
+      "roles": [
+        "display",
+        "content"
+      ]
+    },
+    {
+      "path": "noto-serif/NotoSerifKR-Medium.otf",
+      "bytes": 7769336,
+      "sha256": "4635a54699624f9235ff4511e932dd8229edce678bdb00d43f46b4668b151062",
+      "source": {
+        "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/9b0f1436e455d902de067a2501422e5dc71ad16b/Serif/SubsetOTF/KR/NotoSerifKR-Medium.otf",
+        "bytes": 7769336,
+        "sha256": "4635a54699624f9235ff4511e932dd8229edce678bdb00d43f46b4668b151062"
+      },
+      "family": "Noto Serif KR",
+      "weight": 500,
+      "roles": [
+        "display",
+        "content"
+      ]
+    },
+    {
+      "path": "noto-serif/NotoSerifKR-Regular.otf",
+      "bytes": 7669020,
+      "sha256": "5ea012e15cb7eacc1f680aee1703f3b164791b1443ea3e52b65080cca5d179cf",
+      "source": {
+        "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/9b0f1436e455d902de067a2501422e5dc71ad16b/Serif/SubsetOTF/KR/NotoSerifKR-Regular.otf",
+        "bytes": 7669020,
+        "sha256": "5ea012e15cb7eacc1f680aee1703f3b164791b1443ea3e52b65080cca5d179cf"
+      },
+      "family": "Noto Serif KR",
+      "weight": 400,
+      "roles": [
+        "display",
+        "content"
+      ]
+    },
+    {
+      "path": "noto-serif/NotoSerifSC-Medium.otf",
+      "bytes": 11734356,
+      "sha256": "e4e9beb5aaeb951e101aa8f122e2a6801ea9e48ac9f9b6bdfeef2436b55bc8ee",
+      "source": {
+        "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/9b0f1436e455d902de067a2501422e5dc71ad16b/Serif/SubsetOTF/SC/NotoSerifSC-Medium.otf",
+        "bytes": 11734356,
+        "sha256": "e4e9beb5aaeb951e101aa8f122e2a6801ea9e48ac9f9b6bdfeef2436b55bc8ee"
+      },
+      "family": "Noto Serif SC",
+      "weight": 500,
+      "roles": [
+        "display",
+        "content"
+      ]
+    },
+    {
+      "path": "noto-serif/NotoSerifSC-Regular.otf",
+      "bytes": 11625800,
+      "sha256": "e8f396decc1f0963a016a989c3d8852e863d1350996f573860a80767c83a1cd3",
+      "source": {
+        "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/9b0f1436e455d902de067a2501422e5dc71ad16b/Serif/SubsetOTF/SC/NotoSerifSC-Regular.otf",
+        "bytes": 11625800,
+        "sha256": "e8f396decc1f0963a016a989c3d8852e863d1350996f573860a80767c83a1cd3"
+      },
+      "family": "Noto Serif SC",
+      "weight": 400,
+      "roles": [
+        "display",
+        "content"
+      ]
+    },
+    {
+      "path": "source-serif/LICENSE.md",
+      "bytes": 4492,
+      "sha256": "75784a295293a8992f5a8d99210566e0064a012e6dab6731305e3787f15896c7",
+      "source": {
+        "repositoryPath": "src/shared/ui/fonts/source-serif/LICENSE.md",
+        "bytes": 4492,
+        "sha256": "75784a295293a8992f5a8d99210566e0064a012e6dab6731305e3787f15896c7"
+      }
+    },
+    {
+      "path": "source-serif/SourceSerif4-Regular.ttf",
+      "bytes": 261868,
+      "sha256": "e5a4ee6a3d87bb9024796be390c6771e2a0eb1883dae25effaf57ca01668e24b",
+      "source": {
+        "repositoryPath": "src/shared/ui/fonts/source-serif/SourceSerif4-Regular.ttf",
+        "bytes": 261868,
+        "sha256": "e5a4ee6a3d87bb9024796be390c6771e2a0eb1883dae25effaf57ca01668e24b"
+      },
+      "family": "Source Serif 4",
+      "weight": 400,
+      "roles": [
+        "display",
+        "content"
+      ]
+    },
+    {
+      "path": "source-serif/SourceSerif4-Semibold.ttf",
+      "bytes": 272088,
+      "sha256": "36db62940cb5728b12b1802476dc7fcf4c6c519a7bdd476ba23a4e555fc4655f",
+      "source": {
+        "repositoryPath": "src/shared/ui/fonts/source-serif/SourceSerif4-Semibold.ttf",
+        "bytes": 272088,
+        "sha256": "36db62940cb5728b12b1802476dc7fcf4c6c519a7bdd476ba23a4e555fc4655f"
+      },
+      "family": "Source Serif 4",
+      "weight": 600,
+      "roles": [
+        "display",
+        "content"
+      ]
+    }
+  ]
+}

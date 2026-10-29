@@ -160,13 +160,13 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                     window.UpdateLayout();
                     var languages = Descendants(window).OfType<LanguagePicker>().ToArray();
                     Assert.Equal(2, languages.Length);
-                    Assert.Equal(new[] { "Auto", "中文", "English" }, languages[0].Items.Cast<object>().Select(item => item.ToString()));
-                    Assert.Equal(new[] { "中文", "English" }, languages[1].Items.Cast<object>().Select(item => item.ToString()));
-                    Assert.Equal("English", languages[0].SelectedItem?.ToString());
+                    Assert.Equal(new[] { "自动检测", "中文", "英语" }, languages[0].Items.Cast<object>().Select(item => item.ToString()));
+                    Assert.Equal(new[] { "中文", "英语" }, languages[1].Items.Cast<object>().Select(item => item.ToString()));
+                    Assert.Equal("英语", languages[0].SelectedItem?.ToString());
                     Assert.Equal("中文", languages[1].SelectedItem?.ToString());
                     Assert.All(languages, language => Assert.True(language.IsEnabled));
                     Assert.Contains(Descendants(window).OfType<TextBlock>(), text =>
-                        text.Text == "模型尚未就绪");
+                        text.Text == "需要下载本地翻译模型");
                     Assert.False(model.Ready);
                     Assert.False(model.Installed);
                     Assert.Empty(model.AvailableDirections);
@@ -317,17 +317,19 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                             foreach (var selector in languages)
                             {
                                 Assert.True(selector.IsLoaded);
-                                Assert.True(selector.IsEditable);
-                                var editor = Assert.IsType<TextBox>(selector.Template.FindName("PART_EditableTextBox", selector));
-                                Assert.True(editor.IsVisible);
-                                Assert.Equal(selector.Text, editor.Text);
-                                Assert.Equal(Assert.IsType<SolidColorBrush>(window.FindResource("Panel")).Color, Assert.IsType<SolidColorBrush>(selector.Background).Color);
-                                Assert.Equal(Assert.IsType<SolidColorBrush>(window.FindResource("Text")).Color, Assert.IsType<SolidColorBrush>(editor.Foreground).Color);
-                                Assert.Equal(VerticalAlignment.Center, editor.VerticalContentAlignment);
+                                Assert.False(selector.IsEditable);
+                                Assert.Equal(44, selector.ActualHeight);
+                                Assert.Equal(Assert.IsType<SolidColorBrush>(window.FindResource("SettingsLanguageFill")).Color, Assert.IsType<SolidColorBrush>(selector.Background).Color);
                                 selector.IsDropDownOpen = true;
                                 window.UpdateLayout();
                                 window.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
-                                Assert.True(Assert.IsType<Popup>(selector.Template.FindName("PART_Popup", selector)).IsOpen);
+                                var popup = Assert.IsType<Popup>(selector.Template.FindName("PART_Popup", selector));
+                                Assert.True(popup.IsOpen);
+                                Assert.Equal(280, Assert.IsAssignableFrom<FrameworkElement>(popup.Child).ActualWidth);
+                                var search = Assert.IsType<TextBox>(selector.Template.FindName("PART_LanguageSearch", selector));
+                                Assert.True(search.IsVisible);
+                                Assert.Equal(30, search.ActualHeight);
+                                Assert.Equal("", search.Text);
                                 selector.IsDropDownOpen = false;
                             }
                             AssertReadableSettingsText(window);

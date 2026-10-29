@@ -1,4 +1,5 @@
 using System.Windows.Automation;
+using System.Globalization;
 
 namespace TypeLay.Windows.Testing;
 
@@ -23,10 +24,18 @@ internal static class SettingsLanguageActions
         expand.Expand();
 
         stage("find-target-language-item");
+        string? code = CultureInfo.GetCultures(CultureTypes.NeutralCultures).FirstOrDefault(culture =>
+            string.Equals(culture.NativeName, label, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(culture.EnglishName, label, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(culture.Name, label, StringComparison.OrdinalIgnoreCase))?.Name;
+        if (label == "中文")
+            code = "zh";
+        Condition language = code is null ? new PropertyCondition(AutomationElement.NameProperty, label)
+            : new PropertyCondition(AutomationElement.AutomationIdProperty, "LanguageOption_" + code);
         AutomationElement? choice;
         while ((choice = picker.FindFirst(TreeScope.Descendants, new AndCondition(
             new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ListItem),
-            new PropertyCondition(AutomationElement.NameProperty, label),
+            language,
             new PropertyCondition(AutomationElement.IsEnabledProperty, true)))) is null)
             await Task.Delay(40, ct);
 

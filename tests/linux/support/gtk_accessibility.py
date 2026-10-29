@@ -250,8 +250,14 @@ def focus_settings_control(pid, node, timeout=15):
         if area.width <= 0 or area.height <= 0:
             return False
         ancestor = node.get_parent()
-        for _ in range(16):
+        seen = {node}
+        # The real GTK searchable popover adds six nested accessibility peers;
+        # its owned settings frame is at depth 19. Keep traversal bounded and
+        # reject cycles while checking every clip, not just the final frame.
+        for _ in range(24):
             assert ancestor is not None and ancestor.get_process_id() == pid
+            assert ancestor not in seen, "settings accessibility ancestry contains a cycle"
+            seen.add(ancestor)
             ancestor.clear_cache()
             role = ancestor.get_role()
             if role in (
@@ -284,3 +290,31 @@ def focus_settings_control(pid, node, timeout=15):
             return node
         time.sleep(0.05)
     raise AssertionError("settings control did not focus/scroll fully into view: " + name)
+
+
+def language_label(node):
+    """Read the current selected language from the visible native button."""
+    node.clear_cache()
+    assert node.get_role() == Atspi.Role.PUSH_BUTTON
+    return node.get_description()
+
+
+def select_language(pid, title, code, timeout=15):
+    """Choose an owned current option from the real native search popover."""
+    deadline = time.monotonic() + timeout
+
+    def accessible(name):
+        while time.monotonic() < deadline:
+            node = named(pid, name)
+            if node is not None and node.get_state_set().contains(Atspi.StateType.SHOWING):
+                return focus_settings_control(pid, node, timeout=deadline - time.monotonic())
+            time.sleep(0.05)
+        raise AssertionError("language control was not accessible: " + name)
+
+    button = accessible("设置：" + title)
+    assert button.get_role() == Atspi.Role.PUSH_BUTTON
+    assert Atspi.Action.do_action(button.get_action_iface(), 0)
+    option = accessible("语言选项：" + code)
+    assert option.get_role() == Atspi.Role.PUSH_BUTTON
+    assert Atspi.Action.do_action(option.get_action_iface(), 0)
+    return button

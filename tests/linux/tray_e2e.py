@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -629,90 +630,158 @@ def main():
             for identity in ("argos-zh-en", "argos-en-zh"):
                 assert preparation.package_widgets[identity]["buttons"]["Install"].get_sensitive()
             settings_surface.pages.set_visible_child_name("language")
+            await settled()
             assert model_state["modelReady"] is False
             assert model_state["modelDirections"] == []
             for key, codes, labels, selected in (
-                ("source", ["auto", "zh", "en"], ["自动识别", "中文", "英语"], "en"),
+                ("source", ["auto", "zh", "en"], ["自动检测", "中文", "英语"], "en"),
                 ("target", ["en", "zh"], ["英语", "中文"], "zh"),
             ):
                 control = settings_surface.controls[key]
-                assert [row[1] for row in control.get_model()] == codes
-                assert [row[0] for row in control.get_model()] == labels
+                assert [code for code, _ in control.choices] == codes
+                assert [label for _, label in control.choices] == labels
                 assert control.get_active_id() == selected and control.get_sensitive()
             before_refresh = settings_file.read_bytes()
             settings_surface.render_guidance(tray.guidance)
             settings_surface.configure(state)
             assert not jobs, "rendering catalog choices tried to save settings"
             assert settings_file.read_bytes() == before_refresh
+
+            def pick(picker, code):
+                picker.clicked()
+                assert picker.popover.get_visible()
+                button = next(
+                    row.get_child()
+                    for row in picker.listing.get_children()
+                    if row.get_child().get_accessible().get_name() == "语言选项：" + code
+                )
+                assert button.get_sensitive()
+                button.clicked()
+
             for key, replacement, label in (("source", "zh", "中文"), ("target", "en", "英语")):
                 picker = settings_surface.controls[key]
-                editor = picker.get_child()
-                assert isinstance(editor, Gtk.Entry), "language choices cannot be searched"
                 original = state[key]
-                editor.grab_focus()
+                focus_events = []
+
+                def observe_focus(_widget, *_args, current=picker, events=focus_events):
+                    if len(events) < 16:
+                        events.append(
+                            {
+                                "signalWidget": type(_widget).__name__,
+                                "mapped": current.get_mapped(),
+                                "opened": current.opened,
+                                "popoverVisible": current.popover.get_visible(),
+                                "focus": current.search.has_focus(),
+                                "active": settings_surface.window.is_active(),
+                            }
+                        )
+                    return False
+
+                def observe_window_focus(_window, focused, current=picker, events=focus_events):
+                    if focused is None and current.opened and len(events) < 16:
+                        events.append({"clearedBy": traceback.format_stack(limit=14)})
+
+                settings_surface.window.connect("set-focus", observe_window_focus)
+                picker.search.connect("focus-out-event", observe_focus)
+                picker.popover.connect("closed", observe_focus)
+                picker.connect("unmap", observe_focus)
+                picker.clicked()
+                editor = picker.search
+                assert editor.has_focus(), "language search did not take actual keyboard focus"
                 editor.set_text("zz")
                 editor.select_region(0, 1)
                 before_search = settings_file.read_bytes()
                 settings_surface.render_guidance(tray.guidance)
                 settings_surface.configure(state)
                 assert editor.get_text() == "zz" and editor.get_selection_bounds() == (0, 1)
-                assert settings_surface.window.get_focus() is editor
+                assert editor.has_focus() and picker.popover.get_visible()
                 assert not jobs and settings_file.read_bytes() == before_search
-                picker.popup()
-                assert picker.get_property("popup-shown")
-                settings_surface.render_guidance(tray.guidance)
-                settings_surface.configure(state)
-                assert picker.get_property("popup-shown")
-                assert editor.get_text() == "zz" and editor.get_selection_bounds() == (0, 1)
-                picker.popdown()
                 assert await host.ask("traySettings", {"enabled": False}) is True
                 await settled()
                 assert editor.get_text() == "zz" and editor.get_selection_bounds() == (0, 1)
-                assert settings_surface.window.get_focus() is editor
-                assert state[key] == original
-                # A real external language save replaces the search on the same
-                # widget, without creating a second save or moving keyboard focus.
+                if not editor.has_focus() or state[key] != original:
+
+                    def focus_name(widget):
+                        return type(widget).__name__ + ":" + widget.get_name() if widget else None
+
+                    print(
+                        "LANGUAGE SEARCH FOCUS",
+                        json.dumps(
+                            {
+                                "key": key,
+                                "events": focus_events,
+                                "enabled": state["enabled"],
+                                "unchanged": state[key] == original,
+                                "sensitive": picker.is_sensitive(),
+                                "mapped": picker.get_mapped(),
+                                "opened": picker.opened,
+                                "popoverVisible": picker.popover.get_visible(),
+                                "popoverMapped": picker.popover.get_mapped(),
+                                "hasFocus": editor.has_focus(),
+                                "isFocus": editor.is_focus(),
+                                "windows": [
+                                    {
+                                        "title": window.get_title(),
+                                        "visible": window.get_visible(),
+                                        "active": window.is_active(),
+                                        "focus": focus_name(window.get_focus()),
+                                    }
+                                    for window in Gtk.Window.list_toplevels()
+                                ],
+                            },
+                            ensure_ascii=False,
+                        ),
+                        flush=True,
+                    )
+                assert editor.has_focus() and state[key] == original
+                # External commits update the selected button without replacing
+                # this popup's local query, its selection or keyboard focus.
                 assert await host.ask("traySettings", {key: replacement}) is True
                 await settled()
-                assert picker.get_active_id() == replacement and editor.get_text() == label
-                assert settings_surface.window.get_focus() is editor
+                assert picker.get_active_id() == replacement and picker.caption.get_text() == label
+                assert editor.get_text() == "zz" and editor.has_focus()
+                picker.popdown()
                 blocker = settings_file.with_suffix(".json.tmp")
                 blocker.mkdir()
                 before_failure = settings_file.read_bytes()
                 try:
-                    picker.set_active_id(original)
+                    pick(picker, original)
                     await settled()
-                    assert picker.get_active_id() == replacement and editor.get_text() == label
+                    assert (
+                        picker.get_active_id() == replacement and picker.caption.get_text() == label
+                    )
                     assert "未保存" in settings_surface.message.get_text()
                     assert settings_file.read_bytes() == before_failure
-                    assert settings_surface.window.get_focus() is editor
+                    assert picker.has_focus()
                 finally:
                     blocker.rmdir()
-                picker.set_active_id(original)
+                pick(picker, original)
                 await settled()
                 assert state[key] == original and picker.get_active_id() == original
-                assert settings_surface.window.get_focus() is editor
+                assert picker.has_focus()
                 assert state["enabled"] is False and state["theme"] == "dark"
                 assert await host.ask("traySettings", {"enabled": True}) is True
                 await settled()
             source_picker = settings_surface.controls["source"]
             target_picker = settings_surface.controls["target"]
-            target_editor = target_picker.get_child()
+            target_picker.clicked()
+            target_editor = target_picker.search
             target_editor.grab_focus()
             target_editor.set_text("zz")
             target_editor.select_region(0, 1)
             assert await host.ask("traySettings", {"source": "ja"}) is True
             await settled()
             assert source_picker.get_active_id() == "ja"
-            assert source_picker.get_child().get_text() == "日本語（当前不可用）"
+            assert source_picker.caption.get_text() == "日语（当前不可用）"
             assert target_editor.get_text() == "zz"
             assert target_editor.get_selection_bounds() == (0, 1)
-            assert settings_surface.window.get_focus() is target_editor
+            assert target_editor.has_focus()
             assert await host.ask("traySettings", {"source": "en"}) is True
             await settled()
             assert source_picker.get_active_id() == "en"
             assert target_editor.get_text() == "zz"
-            target_picker.set_active_id("zh")
+            target_picker.popdown()
+            pick(target_picker, "zh")
             assert not jobs, "selecting the already confirmed language saved the search"
             settings_surface.language_swap.clicked()
             await settled()

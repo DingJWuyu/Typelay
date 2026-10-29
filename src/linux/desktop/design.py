@@ -5,12 +5,18 @@ user intent; committed values are always rendered by the settings owner.
 """
 
 import ctypes
+import json
+import os
+import sys
+from itertools import count
 from pathlib import Path
 
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
+gi.require_version("Gdk", "3.0")
+gi.require_version("PangoCairo", "1.0")
+from gi.repository import Gdk, GLib, Gtk, Pango, PangoCairo  # noqa: E402
 
 ACCENTS = {
     "clay": ("#d97757", "#ad4f2d", "#ec9a7c"),
@@ -26,7 +32,7 @@ window.typelay-surface.quick-panel { background: rgba(251,250,247,.96); border: 
 window.typelay-surface.quick-panel.reduce-transparency { background: #fbfaf7; }
 window.typelay-surface.quick-panel.settings-dark { background: rgba(44,43,40,.96); border-color: rgba(255,255,255,.1); }
 window.typelay-surface.quick-panel.settings-dark.reduce-transparency { background: #2c2b28; }
-.typelay-surface { background: #f7f6f2; color: #141413; font-family: 'Inter', 'Noto Sans CJK SC', sans-serif; font-size: 13px; }
+.typelay-surface { background: #f7f6f2; color: #141413; font-family: 'Inter', 'Noto Sans SC', sans-serif; font-size: 13px; }
 .typelay-surface label { color: inherit; }
 .typelay-surface .settings-sidebar { background: #eeece5; border: 1px solid rgba(20,20,19,.085); border-radius: 12px; padding: 14px 10px 10px; margin: 8px; }
 .typelay-surface .settings-brand { font-size: 13px; font-weight: 600; }
@@ -36,7 +42,7 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface .settings-navigation row:hover { background: rgba(20,20,19,.045); }
 .typelay-surface .nav-icon { color: white; border-radius: 6px; padding: 4px; min-width: 14px; min-height: 14px; }
 .typelay-surface .settings-page, .typelay-surface .settings-page viewport { background: transparent; }
-.typelay-surface .settings-page-title { font-family: 'Source Serif 4', 'Noto Serif CJK SC', serif; font-size: 22px; font-weight: 500; margin-bottom: 0; }
+.typelay-surface .settings-page-title { font-family: 'Source Serif 4', 'Noto Serif SC', serif; font-size: 22px; font-weight: 500; margin-bottom: 0; }
 .typelay-surface .settings-section-title { font-size: 12px; font-weight: 600; color: #5c5b56; margin: 8px 4px 0; }
 .typelay-surface .settings-group { background: #ffffff; border: 0; border-radius: 12px; box-shadow: inset 0 0 0 1px rgba(20,20,19,.085), 0 1px 2px rgba(20,20,19,.04); }
 .typelay-surface .settings-row { padding: 8px 14px; min-height: 28px; }
@@ -58,8 +64,23 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface switch:checked { background: @accent; }
 .typelay-surface switch slider { background: #fff; border: 0; border-radius: 50%; min-width: 16px; min-height: 16px; box-shadow: 0 1px 2px rgba(0,0,0,.16); }
 .typelay-surface .segments { border-radius: 8px; padding: 2px; background: rgba(20,20,19,.08); }
-.typelay-surface .segments button { background: transparent; border: 0; border-radius: 6px; box-shadow: none; padding: 3px 12px; min-height: 18px; font-size: 12px; }
+.typelay-surface .segments button { background: transparent; border: 0; border-radius: 6px; box-shadow: none; padding: 3px 12px; min-height: 18px; min-width: 32px; font-size: 12px; font-weight: 500; }
 .typelay-surface .segments button:checked { background: #fff; box-shadow: 0 1px 3px rgba(20,20,19,.12); }
+.typelay-surface button.language-button { min-height: 42px; padding: 0 12px 0 14px; border-radius: 10px; background: rgba(20,20,19,.045); border: 1px solid rgba(20,20,19,.085); box-shadow: none; }
+.typelay-surface button.language-swap { min-width: 36px; min-height: 36px; padding: 0; border: 0; border-radius: 50%; color: #74726c; }
+.typelay-surface button.language-swap:disabled { opacity: .35; }
+.typelay-surface .language-chevron, .typelay-surface .language-swap image { -gtk-icon-effect: none; -gtk-icon-shadow: none; }
+.typelay-surface .language-button, .typelay-surface .language-option { text-shadow: none; }
+.typelay-surface.settings-dark button.language-swap { color: #b5b3ab; }
+.typelay-surface .language-chevron { color: #74726c; }
+.typelay-surface.settings-dark .language-chevron { color: #9a988f; }
+.typelay-surface .language-name { font-size: 15px; font-weight: 500; }
+.typelay-surface .model-warning-row { min-height: 34px; }
+.typelay-surface .language-popover { background: #fbfaf7; border-radius: 12px; padding: 0; }
+.typelay-surface .language-popover button.language-option { border: 0; box-shadow: none; background: transparent; padding: 0 8px; min-height: 30px; border-radius: 7px; }
+.typelay-surface .language-popover button.language-option:hover, .typelay-surface .language-popover button.language-option.keyboard { background: @accent; color: white; }
+.typelay-surface.settings-dark button.language-button { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.10); }
+.typelay-surface.settings-dark .language-popover { background: #2c2b28; }
 .typelay-surface .tile { border: 2px solid transparent; background: transparent; box-shadow: none; padding: 4px; }
 .typelay-surface .tile:checked { border-color: @accent; }
 .typelay-surface .tile-art { border-radius: 9px; min-width: 68px; min-height: 44px; border: 1px solid rgba(20,20,19,.16); }
@@ -67,7 +88,7 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface .tile-light { background: linear-gradient(135deg, #f1e3d3, #dfe5d6); }
 .typelay-surface .tile-dark { background: linear-gradient(135deg, #3b2a22, #1e2620); }
 .typelay-surface .font-art { font-size: 20px; background: #faf9f5; }
-.typelay-surface .serif, .typelay-surface .translation-preview { font-family: 'Source Serif 4', 'Noto Serif CJK SC', serif; }
+.typelay-surface .serif, .typelay-surface .translation-preview { font-family: 'Source Serif 4', 'Noto Serif SC', serif; }
 .typelay-surface .swatch { border: 2px solid transparent; border-radius: 50%; min-width: 18px; min-height: 18px; padding: 0; margin: 3px; }
 .typelay-surface .swatch:checked { border-color: #141413; box-shadow: 0 0 0 2px #fff; }
 .typelay-surface .keycap { background: rgba(20,20,19,.08); border: 0; border-bottom: 1px solid rgba(20,20,19,.16); min-width: 110px; font-size: 12px; }
@@ -75,7 +96,7 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface .preview-canvas { padding: 24px; background: linear-gradient(135deg,#e9dfcf,#dfe5d6); border-radius: 12px; min-height: 140px; }
 .typelay-surface .preview-overlay { background: rgba(251,250,247,.94); border: 1px solid rgba(20,20,19,.1); border-radius: 18px; padding: 13px 14px 9px; box-shadow: 0 8px 24px rgba(20,20,19,.1); }
 .typelay-surface .translation-preview { font-size: 15px; }
-.typelay-surface .preview-source { background: #fff; padding: 10px 16px; border-radius: 21px; font-family: 'Noto Serif CJK SC',serif; }
+.typelay-surface .preview-source { background: #fff; padding: 10px 16px; border-radius: 21px; font-family: 'Noto Serif SC',serif; }
 .typelay-surface .settings-footer { padding: 8px 28px 12px; }
 .typelay-surface .toast { background: #262624; color: #f4f3ee; border-radius: 18px; padding: 8px 14px; }
 .typelay-surface .toast button { background: transparent; color: #ec9a7c; border: 0; box-shadow: none; }
@@ -98,7 +119,7 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface .model-details { padding: 10px 0; }
 .typelay-surface .model-package { border: 1px solid rgba(20,20,19,.085); border-radius: 12px; padding: 12px 14px; background: #fff; }
 .typelay-surface.settings-dark .connection-card, .typelay-surface.settings-dark .model-package { background: #2c2b28; border-color: rgba(255,255,255,.10); }
-.typelay-surface .welcome-title { font-family: 'Source Serif 4','Noto Serif CJK SC',serif; font-size: 30px; font-weight: 500; }
+.typelay-surface .welcome-title { font-family: 'Source Serif 4','Noto Serif SC',serif; font-size: 30px; font-weight: 500; }
 .typelay-surface.settings-dark { background: #262624; color: #f4f3ee; }
 .typelay-surface.settings-dark .settings-sidebar { background: #2c2b28; border-color: rgba(255,255,255,.08); }
 .typelay-surface.settings-dark .settings-navigation row { color: #f4f3ee; }
@@ -187,48 +208,158 @@ def app_icon(size=44):
     return image
 
 
-def design_icon(name, size=14):
+def design_icon(name, size=14, *, symbolic=False):
     from gi.repository import GdkPixbuf
 
+    suffix = "-symbolic" if symbolic else ""
     pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
-        str(Path(__file__).parent / f"icons/settings-{name}.svg"), size, size, True
+        str(Path(__file__).parent / f"icons/settings-{name}{suffix}.svg"), size, size, True
     )
     image = Gtk.Image.new_from_pixbuf(pixbuf)
+    if symbolic:
+        # GTK recolors fills, not the original prototype's SVG strokes. Keep
+        # their exact alpha mask and tint this small native image from its own
+        # CSS foreground; no Python cairo bridge or global theme changes.
+        source = pixbuf.get_pixels()
+        width, height = pixbuf.get_width(), pixbuf.get_height()
+        channels, stride = pixbuf.get_n_channels(), pixbuf.get_rowstride()
+        previous = None
+
+        def recolor(widget, *_args):
+            nonlocal previous
+            color = widget.get_style_context().get_color(widget.get_state_flags())
+            rgba = tuple(
+                round(component * 255)
+                for component in (color.red, color.green, color.blue, color.alpha)
+            )
+            if rgba == previous:
+                return
+            previous = rgba
+            pixels = bytearray(width * height * 4)
+            for y in range(height):
+                for x in range(width):
+                    alpha = source[y * stride + x * channels + 3] if channels == 4 else 255
+                    offset = (y * width + x) * 4
+                    pixels[offset : offset + 4] = bytes((*rgba[:3], round(alpha * rgba[3] / 255)))
+            widget.set_from_pixbuf(
+                GdkPixbuf.Pixbuf.new_from_bytes(
+                    GLib.Bytes.new(bytes(pixels)),
+                    GdkPixbuf.Colorspace.RGB,
+                    True,
+                    8,
+                    width,
+                    height,
+                    width * 4,
+                )
+            )
+
+        image.connect("style-updated", recolor)
+        image.connect("state-flags-changed", recolor)
+        recolor(image)
     image.set_valign(Gtk.Align.CENTER)
     return image
 
 
-_fonts_registered = False
+_registered_fonts = None
+_theme_scopes = count(1)
 
 
 def register_fonts():
-    """Register bundled fonts in this process only; never install system fonts."""
-    global _fonts_registered
-    if _fonts_registered:
-        return
-    _fonts_registered = True
+    """Register the verified package's declared faces in this process only.
+
+    The build verifies the authoritative lock. Runtime consumes its packaged
+    manifest and does not search/install fonts or contact a font service.
+    """
+    global _registered_fonts
+    if _registered_fonts is not None:
+        return _registered_fonts
+    _registered_fonts = ()
     source = Path(__file__).resolve()
-    roots = (source.parent.parent / "fonts", source.parents[2] / "shared/ui/fonts")
-    font_root = next((root for root in roots if root.is_dir()), None)
-    if font_root is None:
-        return
+    explicit = os.environ.get("TYPELAY_UI_FONT_ROOT")
+    roots = (
+        (Path(explicit),)
+        if explicit
+        else (source.parent.parent / "fonts", source.parents[3] / "artifacts/ui-fonts")
+    )
+    font_root = next((root for root in roots if (root / "manifest.json").is_file()), None)
     try:
+        if font_root is None:
+            raise ValueError("bundled font manifest unavailable")
+        records = json.loads((font_root / "manifest.json").read_text())["files"]
+        fonts = []
+        for record in records:
+            relative = Path(record["path"])
+            if relative.suffix not in (".ttf", ".otf"):
+                continue
+            font = font_root / relative
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or font.is_symlink()
+                or not font.is_file()
+                or not font.resolve().is_relative_to(font_root.resolve())
+            ):
+                raise ValueError("invalid bundled font path")
+            fonts.append(font.resolve())
+        if not fonts:
+            raise ValueError("bundled font faces unavailable")
         fontconfig = ctypes.CDLL("libfontconfig.so.1")
         fontconfig.FcConfigGetCurrent.restype = ctypes.c_void_p
         fontconfig.FcConfigAppFontAddFile.argtypes = (ctypes.c_void_p, ctypes.c_char_p)
         fontconfig.FcConfigAppFontAddFile.restype = ctypes.c_int
         config = fontconfig.FcConfigGetCurrent()
-        for font in font_root.rglob("*.ttf"):
-            fontconfig.FcConfigAppFontAddFile(config, str(font).encode())
-    except OSError:
-        # The platform font stack remains a usable, explicit fallback.
-        return
+        for font in fonts:
+            if not fontconfig.FcConfigAppFontAddFile(config, str(font).encode()):
+                raise ValueError("bundled font could not be registered")
+        PangoCairo.FontMap.get_default().changed()
+        _registered_fonts = tuple(fonts)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        # Keep a damaged development/package surface usable, but do not report
+        # the platform fallback as successful bundled-font registration.
+        print("TypeLay bundled UI fonts unavailable: " + str(error), file=sys.stderr)
+    return _registered_fonts
+
+
+def font_families(preferences, role="display"):
+    """Select region-specific faces without enabling new translation languages."""
+    choice = preferences.get("font", "claude")
+    if choice == "system":
+        settings = Gtk.Settings.get_default()
+        description = settings.get_property("gtk-font-name") if settings else None
+        family = (
+            Pango.FontDescription.from_string(description).get_family() if description else None
+        )
+        return (family or "sans-serif",)
+    if role == "ui":
+        return ("Inter", "Noto Sans SC", "sans-serif")
+    language = preferences.get("target" if role == "content" else "uiLanguage", "zh-CN")
+    region = {"ja": "JP", "ko": "KR"}.get(str(language).split("-")[0].lower(), "SC")
+    serif = choice == "claude"
+    families = [
+        "Source Serif 4" if serif else "Inter",
+        f"Noto {'Serif' if serif else 'Sans'} {region}",
+    ]
+    if region != "SC":
+        families.append("Noto Serif SC" if serif else "Noto Sans SC")
+    return (*families, "serif" if serif else "sans-serif")
+
+
+def css_font_family(preferences, role="display"):
+    return ", ".join(
+        family
+        if family in ("serif", "sans-serif")
+        else "'" + family.replace("\\", "\\\\").replace("'", "\\'") + "'"
+        for family in font_families(preferences, role)
+    )
 
 
 def apply_theme(window, preferences, provider=None):
     register_fonts()
     context = window.get_style_context()
-    style(window, "typelay-surface")
+    if not hasattr(window, "typelay_theme_scope"):
+        window.typelay_theme_scope = "typelay-window-" + str(next(_theme_scopes))
+    scope = window.typelay_theme_scope
+    style(window, "typelay-surface", scope)
     theme = preferences.get("theme", "system")
     found, color = context.lookup_color("theme_bg_color")
     dark = (
@@ -246,21 +377,52 @@ def apply_theme(window, preferences, provider=None):
     accent, ink, dark_ink = ACCENTS.get(preferences.get("accent"), ACCENTS["clay"])
     if provider is None:
         provider = Gtk.CssProvider()
+        screen = window.get_screen()
         Gtk.StyleContext.add_provider_for_screen(
-            window.get_screen(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
-    display_font = {
-        "claude": "'Source Serif 4', 'Noto Serif CJK SC', serif",
-        "sans": "'Inter', 'Noto Sans CJK SC', sans-serif",
-        "system": "sans-serif",
-    }.get(preferences.get("font", "claude"), "sans-serif")
-    provider.load_from_data(
-        (
-            f"@define-color accent {accent}; @define-color accent_ink {dark_ink if dark else ink};\n"
-            + CSS
-            + f"\n.typelay-surface .settings-page-title, .typelay-surface .welcome-title {{ font-family: {display_font}; }}"
-        ).encode()
+        window.connect(
+            "destroy", lambda *_: Gtk.StyleContext.remove_provider_for_screen(screen, provider)
+        )
+    ui_font = css_font_family(preferences, "ui")
+    display_font = css_font_family(preferences)
+    content_font = css_font_family(preferences, "content")
+    content_size = max(13, min(19, preferences.get("textSize", 15)))
+    endonym_css = "".join(
+        f"\n.typelay-surface .language-endonym-{language} {{ font-family: "
+        + css_font_family(
+            {
+                **preferences,
+                "font": "system" if preferences.get("font") == "system" else "sans",
+                "target": language,
+            },
+            "content",
+        )
+        + "; }"
+        for language in ("ja", "ko")
     )
+    # GTK screen providers otherwise outlive transient windows and override
+    # unrelated surfaces at the same priority. Scope selectors and colors to
+    # this exact owner, then remove its provider when that owner is destroyed.
+    rules = (
+        CSS
+        + endonym_css
+        + f"\n.typelay-surface {{ font-family: {ui_font}; }}"
+        + f"\n.typelay-surface .settings-page-title, .typelay-surface .welcome-title, .typelay-surface .language-name {{ font-family: {display_font}; }}"
+        + f"\n.typelay-surface .translation-preview, .typelay-surface .translation-content, .typelay-surface .translation-content text {{ font-family: {content_font}; font-size: {content_size}px; font-weight: 400; }}"
+    ).replace(".typelay-surface", ".typelay-surface." + scope)
+    rules = rules.replace("@accent_ink", "@" + scope + "-ink").replace(
+        "@accent", "@" + scope + "-accent"
+    )
+    payload = (
+        f"@define-color {scope}-accent {accent}; @define-color {scope}-ink {dark_ink if dark else ink};\n"
+        + rules
+    ).encode()
+    # An unrelated settings broadcast must not invalidate every GTK surface
+    # by reloading an identical screen provider while a popover owns focus.
+    if getattr(provider, "typelay_payload", None) != payload:
+        provider.load_from_data(payload)
+        provider.typelay_payload = payload
     return provider
 
 

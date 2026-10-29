@@ -186,14 +186,8 @@ class DesktopComponent:
         if not isinstance(files, dict) or files != actual:
             raise ValueError("component-files-mismatch")
         for required in (
-            "fonts/inter/Inter-Regular.ttf",
-            "fonts/inter/Inter-Medium.ttf",
-            "fonts/inter/Inter-SemiBold.ttf",
-            "fonts/inter/LICENSE.txt",
-            "fonts/source-serif/SourceSerif4-Regular.ttf",
-            "fonts/source-serif/SourceSerif4-Semibold.ttf",
-            "fonts/source-serif/LICENSE.md",
-            "fonts/README.md",
+            "source/eng/fonts/fonts.lock.json",
+            "fonts/manifest.json",
             "fcitx-cooperative.py",
             "core/bin/fcitx5",
             "README.md",
@@ -204,6 +198,46 @@ class DesktopComponent:
                 raise ValueError("component-source-or-runtime-missing")
         if not any(name.startswith("source/upstream/") and "/LICENSES/" in name for name in files):
             raise ValueError("component-license-missing")
+        # The enclosing manifest hash is supplied by the trusted main distribution.
+        # All extracted bytes, including the source lock, already match that manifest.
+        lock = json.loads(read_small(bundle / "source/eng/fonts/fonts.lock.json", 1024**2))
+        if not isinstance(lock, dict) or lock.get("schemaVersion") != 1:
+            raise ValueError("component-font-lock-invalid")
+        records = lock.get("files")
+        if not isinstance(records, list) or not records:
+            raise ValueError("component-font-lock-invalid")
+        required_fonts = {"fonts/manifest.json"}
+        for item in records:
+            if (
+                not isinstance(item, dict)
+                or type(item.get("bytes")) is not int
+                or item["bytes"] <= 0
+                or not checksum(item.get("sha256"))
+            ):
+                raise ValueError("component-font-lock-invalid")
+            relative = "fonts/" + str(relative_path(item.get("path")))
+            if relative in required_fonts:
+                raise ValueError("component-font-lock-invalid")
+            required_fonts.add(relative)
+            if relative not in files:
+                raise ValueError("component-source-or-runtime-missing")
+            if files[relative] != {"sha256": item["sha256"]}:
+                raise ValueError("component-font-files-mismatch")
+            with regular_file(bundle / relative, maximum=item["bytes"]) as stream:
+                if os.fstat(stream.fileno()).st_size != item["bytes"]:
+                    raise ValueError("component-font-files-mismatch")
+        if {name for name in files if name.startswith("fonts/")} != required_fonts:
+            raise ValueError("component-font-files-mismatch")
+        font_manifest = json.loads(read_small(bundle / "fonts/manifest.json", 1024**2))
+        expected_fonts = {
+            "schemaVersion": 1,
+            "files": [
+                {key: value for key, value in item.items() if key not in ("source", "instance")}
+                for item in records
+            ],
+        }
+        if font_manifest != expected_fonts:
+            raise ValueError("component-font-manifest-mismatch")
 
     @staticmethod
     def _space(fd, needed):

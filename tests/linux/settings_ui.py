@@ -12,6 +12,8 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
+from collections import deque
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,7 +28,7 @@ def main():
     from types import SimpleNamespace
 
     from gi.events import GLibEventLoop
-    from gi.repository import Gdk, GLib, Gtk
+    from gi.repository import Gdk, GLib, Gtk, Pango
     from link import Link
     from registered_applications import list_managed_applications
     from tray import Tray
@@ -69,6 +71,13 @@ def main():
         state, guidance, status = {}, {}, {}
         jobs = set()
         failures = []
+        previous_exception_hook = sys.excepthook
+
+        def signal_exception(kind, error, trace):
+            failures.append("native signal: " + repr(error))
+            previous_exception_hook(kind, error, trace)
+
+        sys.excepthook = signal_exception
         closed = asyncio.Event()
 
         def notification(operation, value):
@@ -104,7 +113,58 @@ def main():
             task.add_done_callback(finished)
             return task
 
-        host = Link(GLib, parent.fileno(), parent.fileno(), notification, None, closed.set)
+        ipc_trace = deque(maxlen=512)
+
+        class ObservedLink(Link):
+            # Diagnostic metadata only. Preserve the real transport, replies and
+            # original request deadlines; never log content or replay a request.
+            async def ask(self, operation, *args, **kwargs):
+                started = time.monotonic()
+                identity = self.sequence + 1
+                outcome = "returned"
+                ipc_trace.append(
+                    {"phase": "ask", "operation": operation, "id": identity, "at": started}
+                )
+                try:
+                    return await super().ask(operation, *args, **kwargs)
+                except BaseException as error:
+                    outcome = type(error).__name__
+                    raise
+                finally:
+                    ipc_trace.append(
+                        {
+                            "phase": "ask-end",
+                            "operation": operation,
+                            "id": identity,
+                            "outcome": outcome,
+                            "at": time.monotonic(),
+                            "elapsed": time.monotonic() - started,
+                        }
+                    )
+
+            def receive(self, frame):
+                started = time.monotonic()
+                ipc_trace.append(
+                    {
+                        "phase": "receive",
+                        "event": frame.get("event"),
+                        "operation": frame.get("op"),
+                        "reply": frame.get("reply"),
+                        "at": started,
+                    }
+                )
+                try:
+                    return super().receive(frame)
+                finally:
+                    ipc_trace.append(
+                        {
+                            "phase": "receive-end",
+                            "at": time.monotonic(),
+                            "elapsed": time.monotonic() - started,
+                        }
+                    )
+
+        host = ObservedLink(GLib, parent.fileno(), parent.fileno(), notification, None, closed.set)
 
         async def support_refresh():
             return await host.ask("applicationSupport", {"facts": []}, timeout=2)
@@ -222,9 +282,111 @@ def main():
             )
             surface.pages.set_visible_child_name("general")
             assert not status.get("modelReady"), "No model may be simulated as ready"
+            # A system font preference uses this real GTK desktop's chosen
+            # family in UI chrome as well as display/content, not fixed Inter.
+            system_family = Pango.FontDescription.from_string(
+                surface.window.get_settings().get_property("gtk-font-name")
+            ).get_family()
+            assert await host.ask("settingsPatch", {"font": "system"}) is True
+            await settle(lambda: state.get("font") == "system")
+            for widget in (surface.search, surface.page_headings["general"], surface.preview_text):
+                actual_family = (
+                    widget.get_style_context().get_font(Gtk.StateFlags.NORMAL).get_family()
+                )
+                assert actual_family == system_family, (
+                    "system font differs from GTK preference",
+                    system_family,
+                    actual_family,
+                )
+
+            print("SYSTEM FONT PASS", system_family, flush=True)
+            assert await host.ask("settingsPatch", {"font": "claude"}) is True
+            await settle(lambda: state.get("font") == "claude")
+            # A retired language window must not leave an older screen-wide
+            # provider overriding the owner's current saved appearance.
+            assert await host.ask("settingsPatch", {"font": "sans"}) is True
+            await settle(lambda: state.get("font") == "sans")
+            surface.show_language_picker()
+            await settle(lambda: surface.language_dialog.get_visible())
+            surface.language_dialog.destroy()
+            assert await host.ask("settingsPatch", {"font": "claude"}) is True
+            await settle(lambda: state.get("font") == "claude")
+            assert (
+                surface.page_headings["language"]
+                .get_style_context()
+                .get_font(Gtk.StateFlags.NORMAL)
+                .get_family()
+                .startswith("Source Serif 4")
+            ), "retired popup style overrode the saved Claude preference"
             # Actual control signals must commit through the host, then round-trip.
             surface.preference_options["accent"]["ocean"].set_active(True)
             await settle(lambda: state.get("accent") == "ocean")
+            surface.pages.set_visible_child_name("language")
+            source_picker = surface.controls["source"]
+            await settle(lambda: source_picker.get_mapped())
+            source_picker.clicked()
+            await settle(
+                lambda: source_picker.popover.get_visible() and source_picker.search.has_focus()
+            )
+            assert source_picker.caption.get_text() == "自动检测"
+            # Search the displayed endonym from the real host catalog, not a
+            # separate UI-only language list, and retain its localized title.
+            source_picker.search.set_text("English")
+            await settle(lambda: len(source_picker.options) == 1)
+            assert source_picker.options[0].get_accessible().get_description() == "英语 · English"
+            source_picker.search.set_text("")
+            await settle(lambda: len(source_picker.options) == 3)
+            retired = source_picker.listing.get_children()[-1].get_child()
+            before_language = dict(state)
+            source_picker.search.set_text("zz-no-match")
+            await settle(
+                lambda: not source_picker.options and source_picker.no_results.get_visible()
+            )
+            assert source_picker.no_results.get_text() == "没有匹配的语言"
+            source_picker.search.emit("activate")
+            assert state == before_language
+            source_picker.search.set_text("")
+            await settle(lambda: len(source_picker.options) == 3)
+            retired.clicked()
+            assert state == before_language, "retired language row changed current preferences"
+            arrow = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+            arrow.keyval = Gdk.KEY_Down
+            arrow.state = Gdk.ModifierType(0)
+            source_picker.search.emit("key-press-event", arrow)
+            assert source_picker.options[1].get_style_context().has_class("keyboard")
+            chosen = source_picker.options[1]
+            source_picker.search.emit("activate")
+            # Reopen before the old GTK popdown animation completes. Its late
+            # close/row must not retire or choose a value for this new popup.
+            source_picker.clicked()
+            await settle(lambda: state.get("source") == "zh")
+            assert source_picker.caption.get_text() == "中文"
+            assert source_picker.opened and source_picker.popover.get_visible()
+            assert source_picker.search.has_focus()
+            chosen.clicked()
+            assert state.get("source") == "zh"
+            source_picker.popdown()
+            await settle(lambda: not source_picker.popover.get_visible())
+            surface.pages.set_visible_child_name("about")
+            await settle(lambda: not source_picker.get_mapped())
+            source_picker.clicked()
+            assert not source_picker.opened and not source_picker.popover.get_visible()
+            surface.pages.set_visible_child_name("language")
+            await settle(lambda: source_picker.get_mapped())
+            assert await host.ask("settingsPatch", {"source": "auto"}) is True
+            await settle(lambda: state.get("source") == "auto")
+            assert list(surface.translation.style.buttons) == [
+                "Natural",
+                "Formal",
+                "Concise",
+                "Casual",
+            ]
+            assert all(
+                not button.is_sensitive() for button in surface.translation.style.buttons.values()
+            )
+            assert surface.language_model_notice.get_visible() and not surface.model_ready
+            assert status["modelInstalled"] is False
+            assert surface.language_model_label.get_text() == "需要下载本地翻译模型"
             surface.controls["reduceMotion"].set_active(True)
             await settle(lambda: state.get("reduceMotion") is True)
             surface.controls["textSize"].set_value(18)
@@ -453,6 +615,19 @@ def main():
             assert surface.page_headings["general"].get_text() == "General"
             assert surface.tutorial.next.get_label() == "Continue"
             assert tray.actions["设置…"].get_label() == "Settings…"
+            surface.pages.set_visible_child_name("language")
+            await settle(lambda: source_picker.get_mapped())
+            assert source_picker.caption.get_text() == "Detect automatically"
+            source_picker.clicked()
+            await settle(lambda: source_picker.popover.get_visible())
+            assert source_picker.search.get_placeholder_text() == "Search languages"
+            assert source_picker.search.get_accessible().get_name() == "Search languages"
+            source_picker.search.set_text("zz-no-match")
+            await settle(lambda: source_picker.no_results.get_visible())
+            assert source_picker.no_results.get_text() == "No matching languages"
+            assert source_picker.more.get_text() == "More languages · Not available"
+            source_picker.popdown()
+            await settle(lambda: not source_picker.popover.get_visible())
             assert any(
                 rule["sourceTerm"] == "关闭"
                 for rule in (await host.ask("getGlossarySettings"))["savedSnapshot"]["rules"]
@@ -474,6 +649,60 @@ def main():
             await settle()
             assert surface.language_dialog.get_visible()
             surface.language_dialog.destroy()
+
+            async def capture_visible(window, name):
+                window.present()
+                await settle(lambda: window.is_active())
+                await paint(window)
+                width, height = window.get_size()
+                Gdk.pixbuf_get_from_window(window.get_window(), 0, 0, width, height).savev(
+                    str(options.output / (name + ".png")), "png", [], []
+                )
+
+            # Compare equal preference states, rather than comparing initial
+            # light defaults with the intentionally modified persistence draft.
+            canonical = {
+                "font": "claude",
+                "textSize": 15,
+                "accent": "clay",
+                "uiLanguage": "zh-CN",
+                "reduceMotion": True,
+                "mode": "Automatic",
+                "source": "auto",
+                "target": "en",
+            }
+            for theme in ("light", "dark"):
+                assert await host.ask("settingsPatch", {**canonical, "theme": theme}) is True
+                await settle(
+                    lambda: all(state.get(key) == value for key, value in canonical.items())
+                    and state.get("theme") == theme
+                )
+                for page in surface.page_headings:
+                    surface.pages.set_visible_child_name(page)
+                    await capture_visible(surface.window, "visual-" + page + "-" + theme)
+                surface.pages.set_visible_child_name("language")
+                await settle(lambda: source_picker.get_mapped())
+                source_picker.clicked()
+                await settle(lambda: source_picker.popover.get_visible())
+                await capture_visible(surface.window, "visual-language-search-" + theme)
+                source_picker.popdown()
+                await settle(lambda: not source_picker.popover.get_visible())
+                tray.show_panel()
+                await capture_visible(tray.window, "visual-quick-panel-" + theme)
+                tray.hide_panel()
+                surface.show_language_picker()
+                await capture_visible(surface.language_dialog, "visual-language-picker-" + theme)
+                surface.language_dialog.destroy()
+                surface.tutorial.show()
+                for step in range(4):
+                    surface.tutorial.go(step)
+                    await capture_visible(
+                        surface.tutorial.window, f"visual-tutorial-{step + 1}-{theme}"
+                    )
+                surface.tutorial.dismiss()
+            (options.output / "visual-state.json").write_text(
+                json.dumps({"preferences": canonical, "gtkSystemFamily": system_family}, indent=2)
+            )
             (options.output / "result.json").write_text(
                 json.dumps(
                     {
@@ -506,6 +735,8 @@ def main():
                 async with asyncio.timeout(1800):
                     await closed.wait()
         finally:
+            sys.excepthook = previous_exception_hook
+            (options.output / "ipc-trace.json").write_text(json.dumps(list(ipc_trace), indent=2))
             if tray:
                 tray.close()
             if surface:

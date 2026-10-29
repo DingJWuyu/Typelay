@@ -10,11 +10,13 @@ import re
 import subprocess
 import sys
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 
 from main import control
 from niri import contents, request
 from paths import Paths, connect_private, peer_credentials
+from support.xtest import prepare_pointer
 from wire import now_ms
 
 
@@ -97,7 +99,11 @@ def run_qt(
     state_path.unlink(missing_ok=True)
     click_trace = arguments.output / "qt-overlay-clicks.jsonl"
     click_trace.unlink(missing_ok=True)
-    with tempfile.TemporaryDirectory(prefix="typelay-qt-desktop-") as temporary:
+    with (
+        tempfile.TemporaryDirectory(prefix="typelay-qt-desktop-") as temporary,
+        ExitStack() as pointer_resources,
+    ):
+        motion_click = prepare_pointer(pointer_resources, nested_window)
         home = Path(temporary)
         config = home / "config/fcitx5"
         config.mkdir(parents=True)
@@ -334,6 +340,59 @@ def run_qt(
                         else "geometry"
                     )
                     click_rectangle(actual, actual["overlayControls"][name][geometry_key], name)
+
+                def click_motion_control():
+                    # Resolve the unchanged nested viewport before observing a
+                    # moving button. No subprocess is launched after this fresh
+                    # report; the native event evidence below still decides
+                    # whether this single real input hit the same control.
+                    geometry = dict(
+                        line.split("=", 1)
+                        for line in subprocess.check_output(
+                            ["xdotool", "getwindowgeometry", "--shell", nested_window],
+                            text=True,
+                            timeout=3,
+                        ).splitlines()
+                    )
+                    after = now_ms()
+                    actual = wait_for(
+                        lambda: value
+                        if (value := state()).get("observedAtMs", 0) > after
+                        and value.get("overlayControls", {})
+                        .get("typelay-expand", {})
+                        .get("visible")
+                        and value["overlayControls"]["typelay-expand"]["enabled"]
+                        else None,
+                        "fresh Qt motion control geometry was unavailable",
+                    )
+                    assert actual["fullscreen"]
+                    scale = actual["scale"]
+                    assert actual["width"] * scale == int(geometry["WIDTH"])
+                    assert actual["height"] * scale == int(geometry["HEIGHT"])
+                    control = actual["overlayControls"]["typelay-expand"]
+                    bounds = control["geometry"]
+                    x, y = bounds["x"] + bounds["width"] // 2, bounds["y"] + bounds["height"] // 2
+                    assert bounds["width"] > 0 and bounds["height"] > 0
+                    assert 0 <= x < actual["width"] and 0 <= y < actual["height"]
+                    timing = {}
+                    motion_click(round(x * scale), round(y * scale), timing=timing)
+                    with click_trace.open("a") as trace:
+                        trace.write(
+                            json.dumps(
+                                {
+                                    "transport": "preconnected-xtest",
+                                    "observedAtMs": actual["observedAtMs"],
+                                    "role": "typelay-expand",
+                                    "instance": control["instance"],
+                                    "geometry": bounds,
+                                    "x": x,
+                                    "y": y,
+                                    "injection": timing,
+                                }
+                            )
+                            + "\n"
+                        )
+                    return control["instance"]
 
                 def settled(value):
                     # Missing diagnostics remain unknown, never an invented zero.
@@ -705,10 +764,11 @@ def run_qt(
                         lambda: state()["motionArmed"] == before["motionArmed"] + 1,
                         "Qt fixture did not arm the finite widget-frame observation",
                     )
-                    click_overlay("typelay-expand")
-                    return before["motionRecordings"]
+                    planned = click_motion_control()
+                    return before["motionRecordings"], [planned]
 
-                def finish_motion(recording, name):
+                def finish_motion(recording, name, *, clicks=1):
+                    recording, planned = recording
                     actual = wait_for(
                         lambda: value
                         if (value := state())["motionRecordings"] == recording + 1
@@ -716,9 +776,32 @@ def run_qt(
                         "Qt widget frames did not reach the bounded spring observation deadline",
                     )
                     frames = actual["motionFrames"]
+                    (arguments.output / f"{name}-input.json").write_text(
+                        json.dumps(actual.get("motionInputs", []), indent=2) + "\n"
+                    )
                     (arguments.output / f"{name}.json").write_text(
                         json.dumps(frames, indent=2) + "\n"
                     )
+                    inputs = actual["motionInputs"]
+                    assert len(planned) == clicks and all(
+                        instance > 0 for instance in planned
+                    ), planned
+                    assert [event["event"] for event in inputs] == [
+                        "mouse-press",
+                        "mouse-release",
+                        "clicked",
+                    ] * clicks, inputs
+                    assert len({event["instance"] for event in inputs}) == 1, inputs
+                    assert [event["instance"] for event in inputs] == [
+                        instance for instance in planned for _ in range(3)
+                    ], (planned, inputs)
+                    for event in inputs:
+                        assert event["role"] == "typelay-expand", event
+                        if event["event"] != "clicked":
+                            bounds = event["geometry"]
+                            assert event["spontaneous"], event
+                            assert bounds["x"] <= event["x"] < bounds["x"] + bounds["width"], event
+                            assert bounds["y"] <= event["y"] < bounds["y"] + bounds["height"], event
                     return frames
 
                 def unchanged_theme_input(before, after):
@@ -1097,8 +1180,8 @@ def run_qt(
                 # is not proof that the second click beat the first deadline.
                 # The real host continues its ordinary 200ms renewals.
                 recording = start_motion("qt-motion-reverse")
-                click_overlay("typelay-expand")
-                reverse_frames = finish_motion(recording, "qt-motion-reverse")
+                recording[1].append(click_motion_control())
+                reverse_frames = finish_motion(recording, "qt-motion-reverse", clicks=2)
                 wait_for(
                     lambda: state()["editorGeometry"]["height"] == 360,
                     "Qt did not settle at the last requested expanded height",

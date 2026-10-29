@@ -119,6 +119,7 @@ FCITX_TEST_INPUTS = (
     "tests/linux/fixtures/gtk4_fixture.c",
     "tests/linux/fixtures/gtk_fixture.c",
     "tests/linux/fixtures/gtk_glossary.inc",
+    "tests/linux/fixtures/gtk_font_observation.inc",
     "tests/linux/fixtures/gtk_input_notifications.inc",
     "tests/linux/fixtures/gtk_direct_epoch.inc",
     "tests/linux/fixtures/gtk_reentry.inc",

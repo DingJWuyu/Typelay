@@ -737,7 +737,10 @@ internal static class Program
                     // even when an old form was opened before a dedicated save.
                     if (value.ValueKind != JsonValueKind.Object || value.EnumerateObject().Any(property =>
                         property.Name.Equals("styles", StringComparison.OrdinalIgnoreCase)
-                        || property.Name.Equals("glossary", StringComparison.OrdinalIgnoreCase)))
+                        || property.Name.Equals("glossary", StringComparison.OrdinalIgnoreCase)
+                        || property.Name.Equals("motion", StringComparison.OrdinalIgnoreCase)
+                            && (property.Value.ValueKind != JsonValueKind.String
+                                || property.Value.GetString() is not ("system" or "full" or "reduce"))))
                         return false;
                     var next = DesktopLink.Decode<UserSettings>(value) with
                     {
@@ -975,11 +978,18 @@ internal static class Program
                         UiLanguage = property.Value.GetString()!
                     };
                     break;
-                case "reduceMotion" when property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False:
+                case "motion" when property.Value.ValueKind == JsonValueKind.String
+                    && property.Value.GetString() is "system" or "full" or "reduce":
                     updated = updated with
                     {
-                        ReduceMotion = property.Value.GetBoolean()
+                        Motion = property.Value.GetString()!
                     };
+                    break;
+                case "reduceMotion" when property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False:
+                    // Explicit mode wins independently of JSON property order.
+                    // A legacy-only patch still represents the user's old boolean intent.
+                    if (!patch.TryGetProperty("motion", out _))
+                        updated = updated.WithLegacyReduceMotion(property.Value.GetBoolean());
                     break;
                 case "reduceTransparency" when property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False:
                     updated = updated with

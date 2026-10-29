@@ -281,6 +281,10 @@ class Overlay:
                             ("accent", "clay"),
                             ("uiLanguage", "system"),
                             ("reduceMotion", False),
+                            (
+                                "motion",
+                                "reduce" if (self.settings or {}).get("reduceMotion") else "system",
+                            ),
                             ("reduceTransparency", False),
                         )
                     },

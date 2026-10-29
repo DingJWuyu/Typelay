@@ -2,6 +2,8 @@
 #include <string.h>
 #include "../common/overlay-design.h"
 
+void tl_overlay_prepare_fonts(void) { (void)tl_overlay_font_map(); }
+
 /* One source-bound popover per application, never another toplevel or an input grab.
  * This is deliberately in the GTK thread: niri does not publish tiled-window origins.
  * GTK owns the parent surface, clipping, scaling and movement of its own popover. */
@@ -1993,17 +1995,22 @@ static gboolean theme(JsonObject *data, gboolean stale_preview, gboolean capsule
     g_free(name);
     if (!*language || strcmp(language, "system") == 0) language = g_get_language_names()[0];
     overlay.english = !g_str_has_prefix(language, "zh");
-    overlay.reduce_motion = boolean(appearance, "reduceMotion");
+    overlay.reduce_motion = tl_overlay_gtk_motion_reduced(overlay.card,
+        tl_overlay_motion(tl_string(appearance, "motion"), boolean(appearance, "reduceMotion")));
     overlay.text_size = (gint)CLAMP(tl_integer(appearance, "textSize", 15), 13, 19);
     TlOverlayPalette palette = tl_overlay_palette(dark, tl_string(appearance, "accent"), boolean(appearance, "reduceTransparency"));
     char css[16384];
     int count = tl_overlay_gtk_css(css, sizeof css, palette,
         tl_overlay_content_font(tl_string(appearance, "font"), tl_string(overlay.view, "targetLanguage")),
-        overlay.text_size, capsule, stale_preview, overlay.reduce_motion, GTK_MAJOR_VERSION == 4);
+        tl_overlay_ui_font(tl_string(appearance, "font")), overlay.text_size, capsule, stale_preview, overlay.reduce_motion, GTK_MAJOR_VERSION == 4);
     if (count < 0 || (gsize)count >= sizeof css) return FALSE;
     JsonObject *view = json_object_ref(overlay.view);
     GtkWidget *card = g_object_ref(overlay.card);
     GtkCssProvider *provider = g_object_ref(overlay.css);
+    tl_overlay_install_fonts(card, tl_string(appearance, "font"));
+    if (overlay.view != view || overlay.card != card) {
+        g_object_unref(provider); g_object_unref(card); json_object_unref(view); return FALSE;
+    }
 #if GTK_CHECK_VERSION(4, 12, 0)
     gtk_css_provider_load_from_string(provider, css);
 #else
@@ -2063,7 +2070,6 @@ static void create(Target *target) {
     gtk_widget_set_parent(overlay.popover, target->widget);
     gtk_popover_set_position(GTK_POPOVER(overlay.popover), GTK_POS_TOP);
     overlay.card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    tl_overlay_install_fonts(overlay.card);
     gtk_popover_set_child(GTK_POPOVER(overlay.popover), overlay.card);
     overlay.header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     gtk_widget_set_name(overlay.header, "typelay-header");

@@ -122,7 +122,8 @@ internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessi
             settings.TextSize,
             settings.Accent,
             settings.UiLanguage,
-            settings.ReduceMotion,
+            Motion = settings.MotionPreference,
+            ReduceMotion = settings.MotionPreference == "reduce",
             settings.ReduceTransparency
         });
         ConfigureGuidance(settings);
@@ -150,7 +151,7 @@ internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessi
             }
         });
     }
-    private ModelLanguageChoice[] LanguageChoices(string saved, bool source)
+    private PresentedLanguageChoice[] LanguageChoices(string saved, bool source)
     {
         var legacy = source ? ModelCatalog.SourceChoices : ModelCatalog.TargetChoices;
         var installed = _packages is { InventoryKnown: true } facts
@@ -161,25 +162,28 @@ internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessi
         var choices = legacy.Concat(installed.Select(direction => source
                 ? new ModelLanguageChoice(direction.Source, direction.SourceName)
                 : new ModelLanguageChoice(direction.Target, direction.TargetName)))
-            .DistinctBy(choice => choice.Code).Select(LanguageChoice).ToList();
+            .DistinctBy(choice => choice.Code).Select(choice => LanguageChoice(choice)).ToList();
         if (choices.All(choice => choice.Code != saved))
         {
             var known = ModelCatalog.Packages.Packages.SelectMany(package => package.Directions)
                 .SelectMany(direction => new[] { new ModelLanguageChoice(direction.Source, direction.SourceName),
                     new ModelLanguageChoice(direction.Target, direction.TargetName) }).FirstOrDefault(choice => choice.Code == saved);
-            choices.Add(new(saved, (known?.Label ?? saved) + "（当前不可用）"));
+            choices.Add(LanguageChoice(new(saved, known?.Label ?? saved), available: false));
         }
         return choices.ToArray();
     }
-    private static ModelLanguageChoice LanguageChoice(ModelLanguageChoice choice) => choice with
+    private sealed record PresentedLanguageChoice(string Code, string Label, string LabelZh, string LabelEn, string NativeLabel);
+    private static PresentedLanguageChoice LanguageChoice(ModelLanguageChoice choice, bool available = true)
     {
-        Label = choice.Code switch
+        var names = LanguageChoicePresentation.Create(choice.Code, available);
+        string label = !available ? choice.Label + "（当前不可用）" : choice.Code switch
         {
             "auto" => "自动识别",
             "en" => "英语",
             _ => choice.Label
-        }
-    };
+        };
+        return new(choice.Code, label, names.LabelZh, names.LabelEn, names.NativeLabel);
+    }
     public void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null, SessionViewContext? context = null)
     {
         var presentation = Presentation.From(session.State, canAccept, session.Preview.Length > 0,

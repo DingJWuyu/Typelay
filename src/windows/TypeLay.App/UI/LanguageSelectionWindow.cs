@@ -34,7 +34,7 @@ internal sealed class LanguageSelectionWindow : Window
         FontFamily = UiTheme.UiFont;
         var content = new StackPanel { Margin = new(24) };
         var heading = UiTheme.Text(UiTheme.L("翻译语言", "Translation languages"), 22);
-        heading.FontFamily = UiTheme.ContentFont;
+        heading.FontFamily = UiTheme.DisplayFont;
         heading.Margin = new(0, 0, 0, 18);
         content.Children.Add(heading);
         _source = new(true, settings.Value.Source, async value => await SaveAsync(value, _settings.Value.Target), Directions);

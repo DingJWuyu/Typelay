@@ -10,6 +10,17 @@ typedef struct {
     const char *accent, *accent_ink, *accent_soft, *warning;
 } TlOverlayPalette;
 
+typedef enum { TL_MOTION_SYSTEM, TL_MOTION_FULL, TL_MOTION_REDUCE } TlOverlayMotion;
+static inline TlOverlayMotion tl_overlay_motion(const char *mode, int legacy_reduce) {
+    if (mode && strcmp(mode, "full") == 0) return TL_MOTION_FULL;
+    if (mode && strcmp(mode, "reduce") == 0) return TL_MOTION_REDUCE;
+    if (mode && strcmp(mode, "system") == 0) return TL_MOTION_SYSTEM;
+    return legacy_reduce ? TL_MOTION_REDUCE : TL_MOTION_SYSTEM;
+}
+static inline int tl_overlay_motion_reduced(TlOverlayMotion mode, int system_reduced) {
+    return mode == TL_MOTION_REDUCE || (mode == TL_MOTION_SYSTEM && system_reduced);
+}
+
 /* Same bounded spring as the approved prototype. Retargeting keeps velocity;
  * callers own lifetime checks and may only apply the returned visual size. */
 typedef struct { double value, target, velocity, stiffness, damping; } TlOverlaySpring;
@@ -60,7 +71,7 @@ static inline TlOverlayPalette tl_overlay_palette(int dark, const char *accent, 
 }
 
 static inline const char *tl_overlay_content_font(const char *font, const char *language) {
-    if (font && strcmp(font, "system") == 0) return "sans-serif";
+    if (font && strcmp(font, "system") == 0) return NULL;
     const int sans = font && strcmp(font, "sans") == 0;
     if (language && strncmp(language, "ja", 2) == 0)
         return sans ? "'Inter', 'Noto Sans JP', sans-serif" : "'Source Serif 4', 'Noto Serif JP', serif";
@@ -69,6 +80,28 @@ static inline const char *tl_overlay_content_font(const char *font, const char *
     if (language && (strcmp(language, "zh-TW") == 0 || strcmp(language, "zh-HK") == 0 || strcmp(language, "zh-Hant") == 0))
         return sans ? "'Inter', 'Noto Sans TC', sans-serif" : "'Source Serif 4', 'Noto Serif TC', serif";
     return sans ? "'Inter', 'Noto Sans SC', sans-serif" : "'Source Serif 4', 'Noto Serif SC', serif";
+}
+
+static inline const char *tl_overlay_ui_font(const char *font) {
+    return font && strcmp(font, "system") == 0 ? NULL : "'Inter', 'Noto Sans SC', sans-serif";
+}
+
+/* Fixed files from the verified offline bundle, never a wire-supplied path or
+ * a recursive search through the source application's fonts. */
+static inline const char *const *tl_overlay_font_files(size_t *count) {
+    static const char *const files[] = {
+        "inter/Inter-Regular.ttf", "inter/Inter-Medium.ttf", "inter/Inter-SemiBold.ttf",
+        "source-serif/SourceSerif4-Regular.ttf", "source-serif/SourceSerif4-Semibold.ttf",
+        "noto-sans/NotoSansSC-Regular.otf", "noto-sans/NotoSansSC-Medium.otf",
+        "noto-sans/TypeLayNotoSansSC-SemiBold.ttf",
+        "noto-sans/NotoSansJP-Regular.otf", "noto-sans/NotoSansJP-Medium.otf",
+        "noto-sans/NotoSansKR-Regular.otf", "noto-sans/NotoSansKR-Medium.otf",
+        "noto-serif/NotoSerifSC-Regular.otf", "noto-serif/NotoSerifSC-Medium.otf",
+        "noto-serif/NotoSerifJP-Regular.otf", "noto-serif/NotoSerifJP-Medium.otf",
+        "noto-serif/NotoSerifKR-Regular.otf", "noto-serif/NotoSerifKR-Medium.otf"
+    };
+    *count = sizeof files / sizeof files[0];
+    return files;
 }
 
 /* Exact UI messages only. Unknown model/host diagnostics remain untouched. */
@@ -105,15 +138,15 @@ static inline const char *tl_overlay_phase(const char *state, const char *text, 
     return "";
 }
 
-/* Compiled into each module: no runtime file lookup or network font download.
+/* CSS is compiled into each module: no runtime stylesheet lookup.
  * Native popovers cannot sample/blur the source application, so glass uses a
  * high-opacity readable fallback rather than pretending to provide backdrop blur. */
 static inline int tl_overlay_gtk_css(char *out, size_t capacity, TlOverlayPalette p,
-        const char *font, int text_size, int capsule, int stale, int reduced, int gtk4) {
+        const char *font, const char *ui_font, int text_size, int capsule, int stale, int reduced, int gtk4) {
     return snprintf(out, capacity,
         "%s { background: %s; color: %s; border: 1px solid %s; border-radius: %dpx; padding: 0;"
         " box-shadow: 0 12px 32px rgba(20,20,19,0.18); }"
-        "#typelay-overlay { font-family: 'Inter', 'Noto Sans SC', sans-serif; font-size: 12px; }"
+        "#typelay-overlay { %s%s%s font-size: 12px; }"
         "#typelay-overlay #typelay-header { padding: %s; color: %s; min-height: 26px; }"
         "#typelay-overlay #typelay-footer { margin: 0; padding: 0; border: 0; color: %s; font-size: 12px; }"
         "#typelay-overlay button { padding: 0 6px; min-height: 26px; min-width: 0; border: 0; border-radius: 7px;"
@@ -126,7 +159,7 @@ static inline int tl_overlay_gtk_css(char *out, size_t capacity, TlOverlayPalett
         "#typelay-overlay #typelay-status { color: %s; font-size: 11px; }"
         "#typelay-overlay #typelay-status.pending { color: %s; }"
         "#typelay-overlay #typelay-candidate, #typelay-overlay #typelay-candidate text { background: transparent;"
-        " color: %s; font-family: %s; font-size: %dpx; caret-color: %s; }"
+        " color: %s; %s%s%s font-size: %dpx; caret-color: %s; }"
         "#typelay-overlay #typelay-candidate { border: 1px solid transparent; border-radius: 10px; outline: none; box-shadow: none; }"
         "#typelay-overlay #typelay-candidate.editable-preview:hover { background: %s; }"
         "#typelay-overlay #typelay-candidate:focus, #typelay-overlay #typelay-candidate:focus > text {"
@@ -138,17 +171,43 @@ static inline int tl_overlay_gtk_css(char *out, size_t capacity, TlOverlayPalett
         "@keyframes typelay-breathe { 0%% { opacity: 0.45; } 50%% { opacity: 1; } 100%% { opacity: 0.45; } }"
         "#typelay-overlay .typelay-busy { animation: %s; }",
         gtk4 ? "#typelay-overlay > contents" : "#typelay-overlay", p.surface, p.ink, p.line, 18,
+        ui_font ? "font-family:" : "", ui_font ? ui_font : "", ui_font ? ";" : "",
         capsule ? "4px 8px" : "0 10px 8px 14px", p.secondary, p.secondary, p.secondary, p.hover, p.ink,
         p.accent_ink, capsule ? p.tertiary : p.accent, p.tertiary, p.warning,
-        stale ? p.tertiary : p.ink, font, text_size, p.accent, p.hover, p.card, p.accent,
+        stale ? p.tertiary : p.ink, font ? "font-family:" : "", font ? font : "", font ? ";" : "",
+        text_size, p.accent, p.hover, p.card, p.accent,
         p.line, p.hover, reduced ? "none" : "typelay-breathe 1200ms ease-in-out infinite");
 }
 
+/* A separately allocated GTK3 menu must not participate in candidate sizing. */
+static inline int tl_overlay_gtk_more_css(char *out, size_t capacity, TlOverlayPalette p,
+        const char *ui_font, const char *accent) {
+    const char *strong = accent && strcmp(accent, "ocean") == 0 ? "#1f63bb"
+        : accent && strcmp(accent, "sage") == 0 ? "#3c7650"
+        : accent && strcmp(accent, "iris") == 0 ? "#6a4cbc"
+        : accent && strcmp(accent, "graphite") == 0 ? "#55534e" : "#b5552f";
+    return snprintf(out, capacity,
+        "#typelay-more-popup { background:%s; color:%s; border:1px solid %s; border-radius:12px; padding:5px;"
+        " box-shadow:0 12px 32px rgba(20,20,19,0.18); %s%s%s font-size:13px; }"
+        "#typelay-more-popup button { background:transparent; color:%s; border:0; border-radius:7px;"
+        " padding:0 10px; min-height:30px; min-width:0; box-shadow:none; text-shadow:none; font-weight:normal; }"
+        "#typelay-more-popup button:hover { background:%s; color:%s; }"
+        "#typelay-more-popup button:disabled { color:%s; opacity:0.55; }"
+        "#typelay-more-popup #typelay-style-row { padding:6px 10px 8px; }"
+        "#typelay-more-popup #typelay-style-segments { background:%s; border-radius:6px; padding:2px; }"
+        "#typelay-more-popup #typelay-style-segments button { min-height:22px; padding:0 8px; font-size:11.5px; }"
+        "#typelay-more-popup #typelay-style-segments button.selected { background:%s; color:%s; }"
+        "#typelay-more-popup #typelay-action-feedback { color:%s; padding:4px 10px; font-size:11px; }"
+        "#typelay-more-popup separator { background:%s; min-height:1px; margin:5px 10px; }",
+        p.surface, p.ink, p.line, ui_font ? "font-family:" : "", ui_font ? ui_font : "", ui_font ? ";" : "",
+        p.ink, strong, "#ffffff", p.tertiary, p.hover, p.card, p.ink, p.secondary, p.line);
+}
+
 static inline int tl_overlay_qt_css(char *out, size_t capacity, TlOverlayPalette p,
-        const char *font, int text_size, int stale, int editing, int editable) {
+        const char *font, const char *ui_font, int text_size, int stale, int editing, int editable) {
     return snprintf(out, capacity,
         "QFrame#typelay-overlay { background:%s; color:%s; border:1px solid %s; border-radius:18px;"
-        " font-family:'Inter','Noto Sans SC',sans-serif; font-size:12px; }"
+        " font-family:%s; font-size:12px; }"
         "QFrame#typelay-overlay QLabel, QFrame#typelay-overlay QRadioButton { color:%s; background:transparent; }"
         "QFrame#typelay-overlay QLabel#typelay-status { color:%s; font-size:11px; }"
         "QFrame#typelay-overlay QLabel#typelay-hint { color:%s; font-size:12px; }"
@@ -166,7 +225,7 @@ static inline int tl_overlay_qt_css(char *out, size_t capacity, TlOverlayPalette
         "QFrame#typelay-overlay QWidget#typelay-glossary QLineEdit { background:%s; color:%s; border:1px solid %s;"
         " border-radius:8px; padding:5px; selection-background-color:%s; selection-color:%s; }"
         "QFrame#typelay-overlay QWidget#typelay-glossary QLineEdit:focus { border-color:%s; }",
-        p.surface, p.ink, p.line, p.ink, p.tertiary, p.secondary, p.accent, p.secondary,
+        p.surface, p.ink, p.line, ui_font, p.ink, p.tertiary, p.secondary, p.accent, p.secondary,
         p.ink, p.hover, p.accent_ink, p.line, editing ? p.card : "transparent", stale ? p.tertiary : p.ink,
         editing ? p.accent : "transparent", font, text_size, p.accent_ink, p.card,
         editing ? p.card : editable ? p.hover : "transparent", p.accent, p.card,
@@ -175,29 +234,58 @@ static inline int tl_overlay_qt_css(char *out, size_t capacity, TlOverlayPalette
 
 #if defined(GTK_MAJOR_VERSION)
 #include <pango/pangocairo.h>
-/* A private font map is inherited only by TypeLay's subtree. Older Pango keeps
- * the explicit platform fallback; neither branch installs fonts globally. */
-static inline void tl_overlay_install_fonts(GtkWidget *card) {
-#if PANGO_VERSION_CHECK(1, 56, 0)
+#include <pango/pangofc-fontmap.h>
+#include <fontconfig/fontconfig.h>
+static inline gboolean tl_overlay_gtk_motion_reduced(GtkWidget *widget, TlOverlayMotion mode) {
+    if (mode != TL_MOTION_SYSTEM) return mode == TL_MOTION_REDUCE;
+    GtkSettings *settings = gtk_widget_get_settings(widget);
+    gboolean enabled = FALSE;
+    gint reduced = 0;
+    g_object_get(settings, "gtk-enable-animations", &enabled, NULL);
+    if (g_object_class_find_property(G_OBJECT_GET_CLASS(settings), "gtk-interface-reduced-motion"))
+        g_object_get(settings, "gtk-interface-reduced-motion", &reduced, NULL);
+    return !enabled || reduced != 0;
+}
+/* Only TypeLay's widget subtree uses this private map. In particular, no call
+ * changes Fontconfig's current config or Pango's process-default map. */
+static inline PangoFontMap *tl_overlay_font_map(void) {
+    /* GTK UI thread only. Retain one private map for this module's lifetime. */
+    static PangoFontMap *map;
+    static gboolean attempted;
+    if (attempted) return map;
+    attempted = TRUE;
     const char *explicit_root = g_getenv("TYPELAY_UI_FONT_ROOT");
     const char *home = g_getenv("TYPELAY_HOME");
     char *root = explicit_root ? g_strdup(explicit_root)
         : home && g_path_is_absolute(home) ? g_build_filename(home, "fonts", NULL) : NULL;
-    if (!root || !g_path_is_absolute(root)) { g_free(root); return; }
-    const char *files[] = {"inter/Inter-Regular.ttf", "inter/Inter-Medium.ttf", "inter/Inter-SemiBold.ttf",
-        "source-serif/SourceSerif4-Regular.ttf", "source-serif/SourceSerif4-Semibold.ttf"};
-    PangoFontMap *map = pango_cairo_font_map_new();
-    gboolean loaded = FALSE;
-    for (guint i = 0; i < G_N_ELEMENTS(files); i++) {
+    if (!root || !g_path_is_absolute(root)) { g_free(root); return NULL; }
+    size_t count;
+    const char *const *files = tl_overlay_font_files(&count);
+    /* Build one private config, rather than rebuilding the system font set
+     * after every add_font_file. This API also supports Pango before 1.56. */
+    FcConfig *config = FcInitLoadConfig();
+    gboolean loaded = config != NULL;
+    for (size_t i = 0; config && i < count; i++) {
         char *path = g_build_filename(root, files[i], NULL);
-        loaded |= pango_font_map_add_font_file(map, path, NULL);
+        if (!FcConfigAppFontAddFile(config, (const FcChar8 *)path)) loaded = FALSE;
         g_free(path);
     }
-    if (loaded) gtk_widget_set_font_map(card, map);
-    g_object_unref(map);
+    if (loaded) loaded = FcConfigBuildFonts(config);
+    if (loaded) {
+        PangoFontMap *candidate = pango_cairo_font_map_new_for_font_type(CAIRO_FONT_TYPE_FT);
+        if (candidate && PANGO_IS_FC_FONT_MAP(candidate)) {
+            pango_fc_font_map_set_config(PANGO_FC_FONT_MAP(candidate), config);
+            map = candidate;
+        } else { if (candidate) g_object_unref(candidate); loaded = FALSE; }
+    }
+    if (config) FcConfigDestroy(config);
+    if (!loaded) g_warning("TypeLay offline font bundle could not be loaded");
     g_free(root);
-#else
-    (void)card;
-#endif
+    return map;
+}
+static inline void tl_overlay_install_fonts(GtkWidget *card, const char *font) {
+    /* The connection-time cache may exist, but system never attaches it. */
+    PangoFontMap *map = font && strcmp(font, "system") == 0 ? NULL : tl_overlay_font_map();
+    gtk_widget_set_font_map(card, map);
 }
 #endif

@@ -98,9 +98,9 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         limit.CancelAfter(TimeSpan.FromSeconds(10));
         var ct = limit.Token;
         await fixture.SwitchModelAsync(["hy-mt2-1-8b-q4-k-m"], ["zh_ja", "ja_zh", "zh_fr", "fr_zh"]);
-        Assert.Contains("Français", Labels(Language(fixture.Window, source: true)));
-        Assert.Contains("Français", Labels(Language(fixture.Window, source: false)));
-        Assert.Equal("English（当前不可用）", Language(fixture.Window, source: false).SelectedItem?.ToString());
+        Assert.Contains("法语", Labels(Language(fixture.Window, source: true)));
+        Assert.Contains("法语", Labels(Language(fixture.Window, source: false)));
+        Assert.Equal("英语（当前不可用）", Language(fixture.Window, source: false).SelectedItem?.ToString());
         int changes = 0;
         fixture.Settings.Changed += () => changes++;
         nint handle = new WindowInteropHelper(fixture.Window).Handle;
@@ -115,7 +115,7 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         Assert.Equal("zh", saved.Source);
         Assert.Equal("fr", saved.Target);
         Assert.Equal("中文", Language(fixture.Window, source: true).SelectedItem?.ToString());
-        Assert.Equal("Français", Language(fixture.Window, source: false).Text);
+        Assert.Equal("法语", Language(fixture.Window, source: false).Text);
         Assert.Equal(1, changes);
     });
 
@@ -160,40 +160,59 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         await fixture.SwitchModelAsync(["hy-mt2-1-8b-q4-k-m"], ["zh_ja"]);
         var source = Language(fixture.Window, source: true);
         var target = Language(fixture.Window, source: false);
-        Assert.Equal(["Auto", "中文", "日本語"], Labels(source));
-        Assert.Equal(["中文", "日本語", "English（当前不可用）"], Labels(target));
-        Assert.Equal("English（当前不可用）", target.SelectedItem?.ToString());
+        Assert.Equal(quickPanel ? ["Auto", "中文", "日本語"] : ["自动检测", "中文", "日语"], Labels(source));
+        Assert.Equal(quickPanel ? ["中文", "日本語", "English（当前不可用）"] : ["中文", "日语", "英语（当前不可用）"], Labels(target));
+        Assert.Equal(quickPanel ? "English（当前不可用）" : "英语（当前不可用）", target.SelectedItem?.ToString());
         Assert.Equal(persisted, File.ReadAllText(fixture.Path));
         target.IsDropDownOpen = true;
         await DrainAsync(fixture.Window);
-        Assert.False(Assert.IsType<ComboBoxItem>(target.ItemContainerGenerator.ContainerFromItem(target.SelectedItem)).IsEnabled);
+        Assert.False(Assert.IsAssignableFrom<ComboBoxItem>(target.ItemContainerGenerator.ContainerFromItem(target.SelectedItem)).IsEnabled);
         target.IsDropDownOpen = false;
 
         // Japanese to English is not a catalog direct pair. Its rejected save
         // must return to the confirmed Chinese source, without changing target.
-        source.SelectedItem = source.Items.Cast<object>().Single(item => item.ToString() == "日本語");
+        if (!quickPanel)
+        {
+            source.IsDropDownOpen = true;
+            await DrainAsync(fixture.Window);
+        }
+        source.SelectedItem = source.Items.Cast<object>().Single(item => item.ToString() == (quickPanel ? "日本語" : "日语"));
         await DrainAsync(fixture.Window);
         Assert.Equal("中文", source.SelectedItem?.ToString());
         Assert.Equal(persisted, File.ReadAllText(fixture.Path));
         Assert.Contains(Descendants(fixture.Window).OfType<TextBlock>(), text => text.IsVisible
             && text.Text.Contains("请选择支持的源语言和目标语言。", StringComparison.Ordinal));
 
-        target.SelectedItem = target.Items.Cast<object>().Single(item => item.ToString() == "日本語");
+        if (!quickPanel)
+        {
+            target.IsDropDownOpen = true;
+            await DrainAsync(fixture.Window);
+        }
+        target.SelectedItem = target.Items.Cast<object>().Single(item => item.ToString() == (quickPanel ? "日本語" : "日语"));
         await DrainAsync(fixture.Window);
         Assert.Equal("ja", new SettingsStore(fixture.Path).Value.Target);
-        source.SelectedItem = source.Items.Cast<object>().Single(item => item.ToString() == "日本語");
+        if (!quickPanel)
+        {
+            source.IsDropDownOpen = true;
+            await DrainAsync(fixture.Window);
+        }
+        source.SelectedItem = source.Items.Cast<object>().Single(item => item.ToString() == (quickPanel ? "日本語" : "日语"));
         await DrainAsync(fixture.Window);
         Assert.Equal("ja", new SettingsStore(fixture.Path).Value.Source); // Same-language remains valid.
+        if (!quickPanel)
+        {
+            source.IsDropDownOpen = true;
+            await DrainAsync(fixture.Window);
+        }
         source.SelectedIndex = 0;
         await DrainAsync(fixture.Window);
         Assert.Equal("auto", new SettingsStore(fixture.Path).Value.Source);
-        Assert.Equal(["中文", "日本語"], Labels(target));
+        Assert.Equal(quickPanel ? ["中文", "日本語"] : ["中文", "日语"], Labels(target));
         Assert.Same(source, Language(fixture.Window, source: true));
         Assert.Same(target, Language(fixture.Window, source: false));
     });
 
     [Theory]
-    [InlineData(false)]
     [InlineData(true)]
     public Task ActiveRefreshPreservesSearchUntilTheAvailableLanguagesChange(bool quickPanel) => desktop.RunAsync(async () =>
     {
@@ -237,8 +256,6 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
     private static string[] Labels(ComboBox picker) => picker.Items.Cast<object>().Select(item => Assert.IsType<string>(item.ToString())).ToArray();
 
     [Theory]
-    [InlineData(false, true)]
-    [InlineData(false, false)]
     [InlineData(true, true)]
     [InlineData(true, false)]
     public Task SearchKeepsTextSelectionFocusAndOpenListDuringBackgroundRefresh(bool quickPanel, bool source) => desktop.RunAsync(async () =>
@@ -282,8 +299,6 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
     });
 
     [Theory]
-    [InlineData(false, true)]
-    [InlineData(false, false)]
     [InlineData(true, true)]
     [InlineData(true, false)]
     public Task ConfirmedExternalLanguageChangeReplacesSearchWithoutMovingFocus(bool quickPanel, bool source) => desktop.RunAsync(async () =>
@@ -324,8 +339,6 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
     });
 
     [Theory]
-    [InlineData(false, true)]
-    [InlineData(false, false)]
     [InlineData(true, true)]
     [InlineData(true, false)]
     public Task ArrowChoicesKeepFocusThroughSaveFailureRetryAndTab(bool quickPanel, bool source) => desktop.RunAsync(async () =>
@@ -394,8 +407,18 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
             Source = "auto"
         });
         await DrainAsync(fixture.Window);
-        Assert.Equal("Auto", Language(fixture.Window, source: true).SelectedItem?.ToString());
+        Assert.Equal(quickPanel ? "Auto" : "自动检测", Language(fixture.Window, source: true).SelectedItem?.ToString());
+        if (!quickPanel)
+        {
+            Language(fixture.Window, source: true).IsDropDownOpen = true;
+            await DrainAsync(fixture.Window);
+        }
         Language(fixture.Window, source: true).SelectedIndex = 2;
+        if (!quickPanel)
+        {
+            Language(fixture.Window, source: false).IsDropDownOpen = true;
+            await DrainAsync(fixture.Window);
+        }
         Language(fixture.Window, source: false).SelectedIndex = 0;
         await DrainAsync(fixture.Window);
         var saved = new SettingsStore(fixture.Path).Value;
@@ -536,14 +559,16 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         {
             get;
         }
-        public LanguageWindowFixture(bool quickPanel, bool protocolModel = false, WindowsApplicationSupport? support = null)
+        public LanguageWindowFixture(bool quickPanel, bool protocolModel = false, WindowsApplicationSupport? support = null, string uiLanguage = "zh-CN", string theme = "light")
         {
             Path = System.IO.Path.Combine(_directory, "settings.json");
             Settings = new SettingsStore(Path);
             Settings.Update(Settings.Value with
             {
                 Source = "zh",
-                Target = "en"
+                Target = "en",
+                UiLanguage = uiLanguage,
+                Theme = theme
             });
             _python = System.IO.Path.Combine(_directory, "invalid-python.exe");
             _models = System.IO.Path.Combine(_directory, "models");

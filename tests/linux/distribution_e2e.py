@@ -392,24 +392,30 @@ class DistributionTests(unittest.TestCase):
 
         bundle = (current / "TypeLay-Fcitx-cooperative").resolve()
         manifest = json.loads((bundle / "manifest.json").read_text())
-        fonts = (
-            "inter/Inter-Regular.ttf",
-            "inter/Inter-Medium.ttf",
-            "inter/Inter-SemiBold.ttf",
-            "inter/LICENSE.txt",
-            "source-serif/SourceSerif4-Regular.ttf",
-            "source-serif/SourceSerif4-Semibold.ttf",
-            "source-serif/LICENSE.md",
-            "README.md",
-        )
-        for relative in fonts:
+        font_files = {
+            item["path"]: item
+            for item in json.loads(
+                (Path(__file__).resolve().parents[2] / "eng/fonts/fonts.lock.json").read_text(
+                    encoding="utf-8"
+                )
+            )["files"]
+        }
+        for font_root in (self.package / "fonts", bundle / "fonts"):
+            self.assertEqual(
+                {p.relative_to(font_root).as_posix() for p in font_root.rglob("*") if p.is_file()},
+                set(font_files) | {"manifest.json"},
+            )
+        for relative, item in font_files.items():
             original = (self.package / "fonts" / relative).read_bytes()
             actual = (bundle / "fonts" / relative).read_bytes()
             self.assertEqual(actual, original)
-            self.assertEqual(
-                manifest["files"]["fonts/" + relative],
-                {"sha256": hashlib.sha256(original).hexdigest()},
-            )
+            self.assertEqual(len(actual), item["bytes"])
+            self.assertEqual(hashlib.sha256(actual).hexdigest(), item["sha256"])
+            self.assertEqual(manifest["files"]["fonts/" + relative], {"sha256": item["sha256"]})
+        self.assertEqual(
+            (bundle / "fonts/manifest.json").read_bytes(),
+            (self.package / "fonts/manifest.json").read_bytes(),
+        )
         # The actual relocated launcher supplies component fonts even without
         # a full-installation environment. No daemon or UI application is started.
         environment = {

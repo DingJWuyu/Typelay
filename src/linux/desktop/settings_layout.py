@@ -17,7 +17,7 @@ from design import (
 )
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk  # noqa: E402
+from gi.repository import Gtk, Pango  # noqa: E402
 
 PAGES = (
     ("general", "通用", "General", "gear", "#8a8986"),
@@ -382,12 +382,31 @@ def build(
     )
     setting(accessibility, "reduceMotion", "减少动效", "Reduce motion", switch("reduceMotion"))
 
+    owner.language_model_notice = card("language")
+    owner.language_model_notice.set_no_show_all(True)
+    warning = design_icon("warning", 16)
+    warning.set_margin_end(2)
+    view_model = Gtk.Button(label="查看")
+    owner.localized.append((view_model.set_label, "查看", "View"))
+    view_model.connect("clicked", lambda *_: owner.pages.set_visible_child_name("model"))
+    model_notice, owner.language_model_label = row("正在确认本地模型状态…", view_model)
+    model_notice.pack_start(warning, False, False, 0)
+    model_notice.reorder_child(warning, 0)
+    style(model_notice, "model-warning-row")
+    owner.language_model_notice.pack_start(model_notice, False, False, 0)
+    model_notice.show_all()
     direction = card("language")
     direction_row = Gtk.Box(spacing=10)
-    direction_row.set_border_width(14)
+    direction_row.set_margin_top(16)
+    direction_row.set_margin_bottom(16)
+    direction_row.set_margin_start(14)
+    direction_row.set_margin_end(14)
     for key, chinese, english in (("source", "源语言", "Source"), ("target", "目标语言", "Target")):
         column = box(7)
         caption = label(chinese, muted=True)
+        line = Pango.AttrList()
+        line.insert(Pango.attr_line_height_new_absolute(12 * Pango.SCALE))
+        caption.set_attributes(line)
         owner.localized.append((caption.set_text, chinese, english))
         column.pack_start(caption, False, False, 0)
         picker = language_type(lambda value, name=key: owner.change_control(name, value))
@@ -399,16 +418,15 @@ def build(
         column.pack_start(picker, False, False, 0)
         direction_row.pack_start(column, True, True, 0)
         if key == "source":
-            owner.language_swap = style(Gtk.Button(label="⇄"), "flat")
+            owner.language_swap = style(Gtk.Button(), "flat", "language-swap")
+            owner.language_swap.add(design_icon("swap", 16, symbolic=True))
+            owner.language_swap.set_margin_bottom(4)
             owner.language_swap.set_valign(Gtk.Align.END)
             owner.language_swap.set_sensitive(False)
             owner.language_swap.get_accessible().set_name("交换语言")
             owner.language_swap.connect("clicked", lambda *_: owner.swap_languages())
             direction_row.pack_start(owner.language_swap, False, False, 0)
     direction.pack_start(direction_row, False, False, 0)
-    more_languages = Gtk.Button(label="更多语言 · 尚未提供")
-    more_languages.set_sensitive(False)
-    owner.page_boxes["language"].pack_start(more_languages, False, False, 0)
     translation_grid = Gtk.Grid()
     owner.page_boxes["language"].pack_start(translation_grid, False, False, 0)
 
@@ -582,15 +600,7 @@ def build(
     owner.page_boxes["glossary"].pack_start(owner.translation.glossary_box, False, False, 0)
     owner.translation.box.set_hexpand(True)
     owner.translation.style_box.set_hexpand(True)
-    owner.translation.style_box.set_border_width(14)
-    style(owner.translation.style_box, "settings-group")
     style(owner.translation.glossary_box, "settings-group")
-    future_tones = card("language")
-    for title in ("简洁 · 尚未提供", "口语 · 尚未提供"):
-        button = Gtk.Button(label=title)
-        button.set_sensitive(False)
-        future_tones.pack_start(button, False, False, 0)
-
     future_model = card("model")
     for chinese, english, value in (
         ("推理设备", "Inference device", "CPU · 当前后端"),

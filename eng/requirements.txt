@@ -1,1 +1,2 @@
 ruff==0.14.0
+fonttools==4.61.1

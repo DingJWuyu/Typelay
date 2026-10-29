@@ -148,9 +148,16 @@ def translate_whole_source(text, direction, deadline, style, rules, source, targ
     if not valid_text(result):
         raise EngineError("invalid-output")
 
-    # Validate logical topology before source-owned layout serialization. Only
-    # whole-request SP/TAB padding and the spelling of existing line breaks may
-    # differ; internal whitespace, literals and per-slot terminology stay exact.
+    return _serialize_index_result(text, parts, translatable, groups, result)
+
+
+def _serialize_index_result(text, parts, translatable, groups, result):
+    """Validate one whole-source result; only source-owned layout is serialized."""
+    linebreaks = tuple(re.findall(r"\r\n|\r|\n", text))
+
+    # Preserve topology before serializing source-owned layout. The sole token
+    # boundary exception below reassigns one period to an existing prose slot;
+    # it does not infer missing literals, content or terminology.
     def logical(value):
         return value.replace("\r\n", "\n").replace("\r", "\n")
 
@@ -163,14 +170,67 @@ def translate_whole_source(text, direction, deadline, style, rules, source, targ
         if part:
             source_parts.append((logical(part), translate, group))
     body = logical(result.strip(" \t"))
-    output_parts = [part for part in PROTECTED.split(body) if part]
-    if (
-        len(output_parts) != len(source_parts)
-        or tuple(PROTECTED.findall(body)) != tuple(PROTECTED.findall(logical(text)))
-        or body.count("\n") != len(linebreaks)
-    ):
+    source_tokens = [
+        (i, part) for i, (part, _, _) in enumerate(source_parts) if PROTECTED.fullmatch(part)
+    ]
+    output_tokens = list(PROTECTED.finditer(body))
+    if len(output_tokens) != len(source_tokens) or body.count("\n") != len(linebreaks):
         raise EngineError("structure-not-preserved")
-    for (original, translate, group), output in zip(source_parts, output_parts):
+    output_parts, reassigned, position = [], set(), 0
+    for (slot, expected), actual in zip(source_tokens, output_tokens):
+        end = actual.end()
+        if actual.group() != expected:
+            # A maximal URL/mention match may consume one prose period. Its
+            # ownership must already be explicit in the next source slot.
+            following = source_parts[slot + 1] if slot + 1 < len(source_parts) else None
+            prose = (
+                following is not None
+                and following[1]
+                and re.match(r"[ \t]+[,，.。]", following[0])
+                and any(c.isalpha() for c in following[0])
+            )
+            terminal = (
+                following is not None
+                and not following[1]
+                and following[0].strip(" \t") in (".", "。")
+                and (slot + 2 == len(source_parts) or source_parts[slot + 2][0] == "\n")
+            )
+            if not (
+                (
+                    expected.startswith(("https://", "http://", "www."))
+                    or re.fullmatch(r"@[\w.-]+", expected)
+                )
+                and not expected.endswith(".")
+                and actual.group() == expected + "."
+                and (end == len(body) or body[end] in " \t\n")
+                and (prose or terminal)
+            ):
+                raise EngineError("structure-not-preserved")
+            end -= 1
+            reassigned.add(slot + 1)
+        if actual.start() > position:
+            output_parts.append(body[position : actual.start()])
+        output_parts.append(body[actual.start() : end])
+        position = end
+    if position < len(body):
+        output_parts.append(body[position:])
+    if len(output_parts) != len(source_parts):
+        raise EngineError("structure-not-preserved")
+    serialized = []
+    for slot, ((original, translate, group), output) in enumerate(zip(source_parts, output_parts)):
+        if slot in reassigned:
+            if translate:
+                if not any(c.isalpha() for c in output):
+                    raise EngineError("structure-not-preserved")
+                output = (
+                    original[: len(original) - len(original.lstrip(" \t"))]
+                    + output.strip(" \t")
+                    + original[len(original.rstrip(" \t")) :]
+                )
+            elif output.strip(" \t") == ".":
+                # The model supplied exactly one sentence stop, not an empty
+                # slot, question, number or formula. Serialize the source stop.
+                output = original
         if translate and not output.strip():
             raise EngineError("structure-not-preserved")
         if not translate:
@@ -185,6 +245,14 @@ def translate_whole_source(text, direction, deadline, style, rules, source, targ
             raise EngineError("structure-not-preserved")
         if not required_targets_present(output, group):
             raise EngineError("glossary-output-missing")
+        serialized.append(output)
+    body = "".join(serialized)
+    if (
+        [part for part in PROTECTED.split(body) if part] != serialized
+        or tuple(PROTECTED.findall(body)) != tuple(token for _, token in source_tokens)
+        or body.count("\n") != len(linebreaks)
+    ):
+        raise EngineError("structure-not-preserved")
     separators = iter(linebreaks)
     rendered = (
         text[: len(text) - len(text.lstrip(" \t"))]

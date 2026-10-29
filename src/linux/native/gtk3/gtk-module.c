@@ -1623,6 +1623,7 @@ static void initialize_display(GdkDisplay *display) {
     lifetime = g_uuid_string_random();
     initialized = TRUE;
     gdk_event_handler_set(dispatch, NULL, NULL);
+    tl_overlay_prepare_fonts(); /* Before a peer can issue a render lease. */
     connect_peer(NULL);
     g_timeout_add_seconds(1, connect_peer, NULL);
 }

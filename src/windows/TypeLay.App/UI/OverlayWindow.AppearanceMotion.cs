@@ -28,7 +28,7 @@ internal sealed partial class OverlayWindow
     {
         if (_appearanceSpring is not { } spring)
             return;
-        if (!IsVisible || !_clientAreaAnimation() || _settings.ReduceMotion)
+        if (!IsVisible || _settings.ShouldReduceMotion(!_clientAreaAnimation()))
         {
             ResetFade();
             return;

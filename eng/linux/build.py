@@ -19,6 +19,7 @@ from xml.etree import ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+from eng.fonts.prepare import prepare_bundle, verify_bundle  # noqa: E402
 from eng.linux.cooperative import inputs as cooperation  # noqa: E402
 
 DESKTOP_ARCHIVE = "TypeLay-Fcitx-cooperative.tar.gz"
@@ -26,6 +27,11 @@ SOURCE_PATHS = (
     "src/linux",
     "src/shared",
     "eng/linux",
+    "eng/fonts/prepare.py",
+    "eng/fonts/fonts.lock.json",
+    "eng/fonts/Noto-CJK-LICENSE.txt",
+    "eng/fonts/README.md",
+    "eng/requirements.txt",
     "packaging/linux",
     "docs/platforms/linux",
     "tests/linux/fcitx_cooperative",
@@ -114,6 +120,8 @@ def build(output, fixture=False, cooperation_package=None, hy_runtime=None, inde
     output = output.resolve()
     if output == ROOT or not output.is_relative_to(ROOT / "artifacts"):
         raise ValueError("output-must-be-in-artifacts")
+    font_root = ROOT / "artifacts/ui-fonts"
+    prepare_bundle(font_root, ROOT / "artifacts/font-sources")
     if output.exists():
         shutil.rmtree(output)
     output.mkdir(parents=True)
@@ -153,9 +161,10 @@ def build(output, fixture=False, cooperation_package=None, hy_runtime=None, inde
         output / "desktop",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
-    shutil.copytree(ROOT / "src/shared/ui/fonts", output / "fonts")
+    shutil.copytree(font_root, output / "fonts")
+    verify_bundle(output / "fonts")
     package_worker(output, hy_runtime, index_runtime)
-    package_browsers(output)
+    package_browsers(output, font_root)
     package_editor(output)
     for name in ("typelay", "typelay-browser-host", "install.py"):
         shutil.copy2(ROOT / "packaging/linux" / name, output / name)
@@ -214,7 +223,8 @@ def package_worker(output, hy_runtime=None, index_runtime=None):
             shutil.copyfile(source / "native/index/include" / name, native / name)
 
 
-def package_browsers(output):
+def package_browsers(output, font_root):
+    verify_bundle(font_root)
     files = (
         "content.js",
         "background.js",
@@ -227,7 +237,8 @@ def package_browsers(output):
     for browser in ("chromium", "firefox"):
         destination = output / "browser" / browser
         (destination / "icons").mkdir(parents=True)
-        shutil.copytree(ROOT / "src/shared/ui/fonts", destination / "fonts")
+        shutil.copytree(font_root, destination / "fonts")
+        verify_bundle(destination / "fonts")
         source = ROOT / "src/shared/browser"
         for name in files:
             shutil.copy2(source / name, destination / name)
@@ -395,8 +406,9 @@ def cooperation_metadata(archive):
     for name in required:
         if "sha256" not in archived_file(name):
             raise ValueError(f"Incomplete cooperation payload: {name}")
-    for name in recipe.FONT_FILES:
-        expected_font = cooperation.sha256(ROOT / "src/shared/ui" / name)
+    if {name for name in files if name.startswith("fonts/")} != set(recipe.FONT_HASHES):
+        raise ValueError("Packaged cooperation font file set differs")
+    for name, expected_font in recipe.FONT_HASHES.items():
         if files.get(name) != {"sha256": expected_font}:
             raise ValueError(f"Packaged cooperation font or license differs: {name}")
     versions = metadata.get("versions", {})
@@ -469,7 +481,7 @@ def cooperation_metadata(archive):
     expected.update(
         cooperation.hashes(
             (
-                *("src/shared/ui/" + name for name in recipe.FONT_FILES),
+                *recipe.FONT_SOURCE_FILES,
                 "packaging/linux/fcitx-cooperative/pack.py",
                 "packaging/linux/fcitx-cooperative/fcitx-cooperative.py",
                 "docs/platforms/linux/fcitx.md",

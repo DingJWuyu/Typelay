@@ -222,10 +222,18 @@ class BrowserContract(unittest.TestCase):
             == "test_source_command_activation_requires_release_proof_frozen_when_keys_were_observed"
             else ""
         )
+        font_setup = (
+            "window.chrome.runtime.getURL = file => 'http://127.0.0.1/' + file;"
+            if self._testMethodName
+            == "test_packaged_cjk_faces_render_by_target_without_loading_all_regions"
+            else ""
+        )
         self.context.add_init_script(
             clock_setup
             + command_metadata_setup
             + TRANSPORT
+            + "\n"
+            + font_setup
             + "\n"
             + held_key_observer
             + "\n"
@@ -235,6 +243,23 @@ class BrowserContract(unittest.TestCase):
         )
         self.page = self.context.new_page()
         self.cdp = self.context.new_cdp_session(self.page)
+        if font_setup:
+            self.font_requests = []
+            locked = json.loads((ROOT / "eng/fonts/fonts.lock.json").read_text())["files"]
+            font_files = {
+                "http://127.0.0.1/fonts/" + item["path"]: ROOT / "artifacts/ui-fonts" / item["path"]
+                for item in locked
+                if "family" in item
+            }
+
+            def packaged_font(route):
+                path = font_files[route.request.url]
+                self.font_requests.append(path.name)
+                route.fulfill(
+                    path=path, content_type="font/otf" if path.suffix == ".otf" else "font/ttf"
+                )
+
+            self.page.route("http://127.0.0.1/fonts/**", packaged_font)
         self.page.route(
             "http://127.0.0.1/fixture",
             lambda route: route.fulfill(body=FIXTURE, content_type="text/html"),
@@ -2183,6 +2208,93 @@ class BrowserContract(unittest.TestCase):
                         path=output / f"{theme}-{width}-editing.png", clip=host.bounding_box()
                     )
 
+    def test_packaged_cjk_faces_render_by_target_without_loading_all_regions(self):
+        self.assertEqual(self.font_requests, [])
+        data = self.motion_view()
+        data["view"]["text"] = "中文译文"
+        data["view"]["targetLanguage"] = "zh"
+        data["appearance"] = {"font": "claude", "uiLanguage": "zh-CN", "reduceMotion": True}
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        self.page.evaluate("document.fonts.ready")
+        self.assertIn("NotoSerifSC-Regular.otf", self.font_requests)
+        self.assertFalse(any("JP-" in name or "KR-" in name for name in self.font_requests))
+        self.cdp.send("DOM.enable")
+        self.cdp.send("CSS.enable")
+
+        def actual_fonts(object_id):
+            self.cdp.send("DOM.getDocument", {"depth": -1, "pierce": True})
+            node = self.cdp.send("DOM.requestNode", {"objectId": object_id})["nodeId"]
+            # The textarea's rendered text belongs to its user-agent
+            # shadow subtree, not the light-DOM textarea element.
+            tree = self.cdp.send("DOM.describeNode", {"nodeId": node, "depth": -1, "pierce": True})[
+                "node"
+            ]
+            pending = [tree]
+            fonts = []
+            while pending:
+                rendered_node = pending.pop()
+                pending.extend(rendered_node.get("children", []))
+                pending.extend(rendered_node.get("shadowRoots", []))
+                if rendered_node["nodeType"] == 1:
+                    rendered_id = self.cdp.send(
+                        "DOM.pushNodesByBackendIdsToFrontend",
+                        {"backendNodeIds": [rendered_node["backendNodeId"]]},
+                    )["nodeIds"][0]
+                    fonts.extend(
+                        self.cdp.send("CSS.getPlatformFontsForNode", {"nodeId": rendered_id})[
+                            "fonts"
+                        ]
+                    )
+            return fonts
+
+        for language, region, sample in [
+            ("zh", "SC", "中文译文"),
+            ("ja", "JP", "日本語の翻訳"),
+            ("ko", "KR", "한국어 번역"),
+        ]:
+            for kind, family in [("claude", "Serif"), ("sans", "Sans")]:
+                with self.subTest(language=language, kind=kind):
+                    snapshot = self.capture()
+                    data.update(target=snapshot["target"], authority=snapshot["authority"])
+                    data["revision"] += 1
+                    data["appearance"]["font"] = kind
+                    data["view"]["text"] = sample
+                    data["view"]["targetLanguage"] = language
+                    self.assertTrue(self.command("overlay-render", data)["visible"])
+                    self.page.evaluate("document.fonts.ready")
+                    # Loading a new regional file can outlive the old display
+                    # lease. Render a newly captured view after font readiness;
+                    # do not extend or retry the original authority.
+                    snapshot = self.capture()
+                    data.update(target=snapshot["target"], authority=snapshot["authority"])
+                    data["revision"] += 1
+                    self.assertTrue(self.command("overlay-render", data)["visible"])
+                    fonts = actual_fonts(self.overlay_control("TypeLay 译文", "textbox"))
+                    self.assertTrue(
+                        any(
+                            font["isCustomFont"]
+                            and font["familyName"] == f"Noto {family} {region}"
+                            and font["glyphCount"] > 0
+                            for font in fonts
+                        ),
+                        fonts,
+                    )
+        snapshot = self.capture()
+        data.update(target=snapshot["target"], authority=snapshot["authority"])
+        data["revision"] += 1
+        data["appearance"]["font"] = "system"
+        data["view"].update(text="System fonts", targetLanguage="en")
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        for object_id in (
+            self.overlay_control("TypeLay 译文", "textbox"),
+            self.overlay_control("EN → EN"),
+        ):
+            fonts = actual_fonts(object_id)
+            self.assertTrue(any(font["glyphCount"] > 0 for font in fonts), fonts)
+            self.assertFalse(any(font["isCustomFont"] for font in fonts), fonts)
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
     def test_more_actions_are_disclosed_without_moving_source_focus(self):
         self.page.set_viewport_size({"width": 640, "height": 500})
         self.page.locator("#source").evaluate(
@@ -2397,7 +2509,10 @@ class BrowserContract(unittest.TestCase):
           function startObservation() {
             const start = performance.now();
             window.fixtureMotionStartedMs = start;
-            function sample(now) {
+            function sample() {
+              // CDP Animation playback changes can offset RAF's timeline. Use
+              // the same monotonic clock as the unchanged observation start.
+              const now = performance.now();
               fixtureMotionFrames.push({ms: now - start, connected: host.isConnected,
                 host: host.getBoundingClientRect().toJSON(), editor: editor.getBoundingClientRect().toJSON(),
                 bar: bar.getBoundingClientRect().toJSON(), text: editor.value,
@@ -2585,6 +2700,20 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.accepted(), [])
 
     def test_more_popup_opened_during_resize_anchors_to_settled_header(self):
+        # Observe the existing display clock without renewing it. A detached
+        # shell is not a settled animation and must retain its timing evidence.
+        self.page.evaluate("""() => {
+          window.fixtureMenuRenewals = [];
+          const original = window.fixtureRawCommand;
+          window.fixtureRawCommand = message => {
+            const result = original(message);
+            if (['overlay-render', 'overlay-renew'].includes(message.op)
+                && fixtureMenuRenewals.length < 8)
+              fixtureMenuRenewals.push({ms: performance.now(), operation: message.op,
+                expiresAtPerformanceMs: message.data.expiresAtMs - 1000000});
+            return result;
+          };
+        }""")
         data = self.motion_view()
         self.set_translation_menu(data, self.translation_menu_state())
         self.cdp.send("Animation.enable")
@@ -2617,6 +2746,15 @@ class BrowserContract(unittest.TestCase):
             self.cdp.send("Animation.setPlaybackRate", {"playbackRate": 1})
         self.observe_overlay_frames()
         frames = self.motion_frames()
+        output = ROOT / "artifacts/linux/browser-native/overlay/motion"
+        output.mkdir(parents=True, exist_ok=True)
+        evidence = self.page.evaluate("""() => ({renewals: fixtureMenuRenewals,
+          sampleStartedMs: fixtureMotionStartedMs, focus: document.hasFocus(),
+          visibility: document.visibilityState,
+          frames: fixtureMotionFrames.slice(0, 120).map(({text, ...frame}) => frame)})""")
+        (output / "more-popup-resize-observation.json").write_text(
+            json.dumps(evidence, indent=2), encoding="utf-8"
+        )
         self.assertEqual(frames[-1]["host"]["width"], 520)
         geometry = self.overlay_dom(
             menu,
@@ -3284,6 +3422,45 @@ class BrowserContract(unittest.TestCase):
         frames = self.motion_frames()
         self.assertEqual({frame["host"]["width"] for frame in frames}, {480})
         self.assertEqual(len({frame["host"]["height"] for frame in frames}), 1)
+
+    def test_explicit_motion_mode_overrides_os_and_legacy_boolean(self):
+        data = self.motion_view()
+        self.page.emulate_media(reduced_motion="reduce")
+        data["appearance"] = {"uiLanguage": "zh-CN", "motion": "full", "reduceMotion": True}
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        self.assertEqual(
+            self.overlay_dom(editor, "function() { return this.parentElement.dataset.motion; }"),
+            "full",
+        )
+        self.observe_overlay_frames(start_on_click=True)
+        self.click_overlay_control("展开")
+        frames = self.motion_frames()
+        self.assertGreater(len({frame["host"]["height"] for frame in frames}), 2)
+        self.page.emulate_media(reduced_motion="no-preference")
+        self.assertEqual(
+            self.overlay_dom(editor, "function() { return this.parentElement.dataset.motion; }"),
+            "full",
+        )
+        data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce", "reduceMotion": False}
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        self.click_overlay_control("缩小")
+        self.observe_overlay_frames()
+        frames = self.motion_frames()
+        self.assertEqual(len({frame["host"]["height"] for frame in frames}), 1)
+        data["appearance"] = {"uiLanguage": "zh-CN", "motion": "system", "reduceMotion": True}
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        self.assertEqual(
+            self.overlay_dom(editor, "function() { return this.parentElement.dataset.motion; }"),
+            "full",
+        )
+        self.page.emulate_media(reduced_motion="reduce")
+        self.page.wait_for_function("matchMedia('(prefers-reduced-motion: reduce)').matches")
+        self.assertEqual(
+            self.overlay_dom(editor, "function() { return this.parentElement.dataset.motion; }"),
+            "reduce",
+        )
+        self.assertEqual(self.accepted(), [])
 
     def test_hint_preserves_unchanged_text_and_updates_on_revocation(self):
         snapshot = self.type_source()

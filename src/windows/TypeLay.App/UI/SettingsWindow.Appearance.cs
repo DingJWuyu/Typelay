@@ -97,7 +97,7 @@ internal sealed partial class SettingsWindow
         var preview = new Grid { Height = 188 };
         preview.Background = new LinearGradientBrush(UiTheme.Brush("#F1E3D3").Color, UiTheme.Brush("#DFE5D6").Color, 25);
         var source = UiTheme.Text("我们明天下午再聊细节，可以吗？", 15);
-        source.FontFamily = UiTheme.ContentFont;
+        source.FontFamily = UiTheme.ContentFontForLanguage("zh-CN");
         var sourceCard = UiTheme.Border(source, 21, "Panel", 14);
         sourceCard.Height = 42;
         sourceCard.Padding = new(14, 8, 14, 8);
@@ -107,7 +107,7 @@ internal sealed partial class SettingsWindow
         preview.Children.Add(sourceCard);
         var translation = new StackPanel();
         var sample = UiTheme.Text("Could we go over the details tomorrow afternoon?", UiTheme.ContentSize);
-        sample.FontFamily = UiTheme.ContentFont;
+        sample.FontFamily = UiTheme.ContentFontForLanguage("en");
         sample.LineHeight = UiTheme.ContentSize * 1.55;
         sample.Margin = new(0, 0, 0, 9);
         translation.Children.Add(sample);
@@ -195,7 +195,7 @@ internal sealed partial class SettingsWindow
         Row(UiTheme.L("强调色", "Accent color"), "", swatches);
         BeginGroup();
         var fonts = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 8, 0, 8) };
-        foreach (var (value, name, family) in new[] { ("claude", "Claude", UiTheme.BundledFont("Source Serif 4", "Noto Serif SC, Georgia, SimSun")), ("sans", UiTheme.L("无衬线", "Sans serif"), UiTheme.BundledFont("Inter", "Noto Sans SC, Segoe UI")), ("system", UiTheme.L("系统", "System"), new FontFamily("Segoe UI, Microsoft YaHei UI")) })
+        foreach (var (value, name, family) in new[] { ("claude", "Claude", UiTheme.BundledFont("Source Serif 4", "./UI/Fonts/#Noto Serif SC")), ("sans", UiTheme.L("无衬线", "Sans serif"), UiTheme.BundledFont("Inter", "./UI/Fonts/#Noto Sans SC")), ("system", UiTheme.L("系统", "System"), new FontFamily("Segoe UI, Microsoft YaHei UI")) })
         {
             var body = new StackPanel();
             var sampleText = UiTheme.Text("Aa 文", 20);
@@ -236,7 +236,7 @@ internal sealed partial class SettingsWindow
         Row(UiTheme.L("降低透明度", "Reduce transparency"), "", UiTheme.Toggle("降低透明度", () => _settings.Value.ReduceTransparency,
             async value => await SaveAppearanceAsync(_settings.Value with { ReduceTransparency = value })));
         Row(UiTheme.L("减少动态效果", "Reduce motion"), "", UiTheme.Toggle("减少动态效果", () => _settings.Value.ReduceMotion,
-            async value => await SaveAppearanceAsync(_settings.Value with { ReduceMotion = value })));
+            async value => await SaveAppearanceAsync(_settings.Value.WithLegacyReduceMotion(value))));
     }
 
     private static ComboBox PreferenceChoice((string Value, string Label)[] choices, string selected, Action<string> save, string name)

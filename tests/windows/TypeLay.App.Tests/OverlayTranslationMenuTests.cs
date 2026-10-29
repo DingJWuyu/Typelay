@@ -20,7 +20,7 @@ namespace TypeLay.App.Tests;
 // Controlled render states exercise actual WPF menu controls. They do not
 // qualify a model, bypass the controller, or claim physical input coverage.
 [Collection("Desktop")]
-public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
+public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
 {
     [Fact]
     public Task UnreleasedActionsStayDisabledAndMissingOrMalformedActionsStayHidden() => desktop.RunAsync(() =>
@@ -414,9 +414,11 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         };
         editor.GotKeyboardFocus += onFocus;
         ContextMenu menu;
+        Button? mouseAnchor = null;
         if (mouse)
         {
             var more = Descendants(overlay).OfType<Button>().Single(button => AutomationProperties.GetName(button) == "更多翻译操作");
+            mouseAnchor = more;
             Assert.True(more.Focusable);
             Assert.True(more.IsTabStop);
             await ClickMouse(more, Button.ClickEvent, "more", deadline.Token);
@@ -439,7 +441,8 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         {
             Assert.True(regenerate.IsEnabled);
             if (mouse)
-                await ClickMouse(regenerate, MenuItem.ClickEvent, "regenerate-menu-item", deadline.Token);
+                await ClickMouse(regenerate, MenuItem.ClickEvent, "regenerate-menu-item", deadline.Token,
+                    new(menu, Assert.IsAssignableFrom<Button>(mouseAnchor), overlay));
             else
             {
                 var invoke = Assert.IsAssignableFrom<IInvokeProvider>(
@@ -466,7 +469,8 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         }
     }
 
-    private static async Task ClickMouse(FrameworkElement target, RoutedEvent clickEvent, string role, CancellationToken cancellation)
+    private static async Task ClickMouse(FrameworkElement target, RoutedEvent clickEvent, string role, CancellationToken cancellation,
+        MenuMouseContext? menuContext = null)
     {
         // Let WPF mount a just-opened Popup and process pending layout/input
         // before observing its real HWND; this does not repair focus or retry a click.
@@ -477,29 +481,44 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         var host = Assert.IsType<HwndSource>(PresentationSource.FromVisual(target));
         var point = target.PointToScreen(new(target.ActualWidth / 2, target.ActualHeight / 2));
         var pixel = new Native.Point { X = (int)point.X, Y = (int)point.Y };
-        RequireHit("before-pointer-move");
-        Assert.True(Native.GetCursorPos(out var original));
-        Assert.False(Native.GetAsyncKeyState(1) < 0);
-        var clicked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        RoutedEventHandler onClick = (_, _) => clicked.TrySetResult();
-        target.AddHandler(clickEvent, onClick);
-        try
+        if (menuContext is not null)
+            await WithMenuMouseTargetReady(target, host, point, pixel, menuContext, cancellation, ClickReady);
+        else
+            await ClickReady(null);
+
+        async Task ClickReady(Action? validate)
         {
-            Assert.True(SetCursorPos(pixel.X, pixel.Y));
-            RequireHit("after-pointer-move");
-            // Actual software pointer input exercises ButtonBase focus/capture
-            // and MenuItem closing. It is not physical-input evidence.
-            MouseInput[] input = [new() { Flags = 2 }, new() { Flags = 4 }];
-            uint inserted = SendInput(2, input, Marshal.SizeOf<MouseInput>());
-            if (inserted == 1)
-                Assert.Equal(1u, SendInput(1, [input[1]], Marshal.SizeOf<MouseInput>()));
-            Assert.Equal(2u, inserted);
-            await clicked.Task.WaitAsync(cancellation);
-        }
-        finally
-        {
-            target.RemoveHandler(clickEvent, onClick);
-            Assert.True(SetCursorPos(original.X, original.Y));
+            cancellation.ThrowIfCancellationRequested();
+            validate?.Invoke();
+            RequireHit("before-pointer-move");
+            Assert.True(Native.GetCursorPos(out var original));
+            Assert.False(Native.GetAsyncKeyState(1) < 0);
+            var clicked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            RoutedEventHandler onClick = (_, _) => clicked.TrySetResult();
+            target.AddHandler(clickEvent, onClick);
+            try
+            {
+                Assert.True(SetCursorPos(pixel.X, pixel.Y));
+                validate?.Invoke();
+                RequireHit("after-pointer-move");
+                // Actual software pointer input exercises ButtonBase focus/capture
+                // and MenuItem closing. It is not physical-input evidence.
+                MouseInput[] input = [new() { Flags = 2 }, new() { Flags = 4 }];
+                cancellation.ThrowIfCancellationRequested();
+                validate?.Invoke();
+                menuContext?.InputAttempted?.Invoke();
+                validate?.Invoke();
+                uint inserted = SendInput(2, input, Marshal.SizeOf<MouseInput>());
+                if (inserted == 1)
+                    Assert.Equal(1u, SendInput(1, [input[1]], Marshal.SizeOf<MouseInput>()));
+                Assert.Equal(2u, inserted);
+                await clicked.Task.WaitAsync(cancellation);
+            }
+            finally
+            {
+                target.RemoveHandler(clickEvent, onClick);
+                Assert.True(SetCursorPos(original.X, original.Y));
+            }
         }
 
         void RequireHit(string stage)

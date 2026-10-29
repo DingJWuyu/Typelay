@@ -1727,12 +1727,19 @@ private:
             && !overlayView_.value("text").toString().isEmpty()
             && !overlayView_.value("presentation").toObject().value("editorOwnsText").toBool();
         const auto family = overlayAppearance_.value("font").toString().toUtf8();
+        auto systemFamily = QApplication::font().family();
+        systemFamily.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+        systemFamily.replace(QLatin1Char('\''), QStringLiteral("\\'"));
+        const auto systemFont = (QLatin1Char('\'') + systemFamily + QLatin1Char('\'')).toUtf8();
+        const bool systemFontSelected = family == "system";
         const auto language = overlayView_.value("targetLanguage").toString().toUtf8();
         const bool editable = editor_ && editor_->isReadOnly() && overlayView_.value("editable").toBool()
             && overlayView_.value("viewContext").toObject().value("canEdit").toBool();
         char css[16384];
         const int count = tl_overlay_qt_css(css, sizeof css, tokens,
-            tl_overlay_content_font(family.constData(), language.constData()), overlayTextSize(), stale,
+            systemFontSelected ? systemFont.constData() : tl_overlay_content_font(family.constData(), language.constData()),
+            systemFontSelected ? systemFont.constData() : tl_overlay_ui_font(family.constData()),
+            overlayTextSize(), stale,
             editor_ && !editor_->isReadOnly(), editable);
         if (count < 0 || size_t(count) >= sizeof css) return;
         const auto style = QString::fromUtf8(css);
@@ -1793,6 +1800,12 @@ private:
         else if (!key.isEmpty() && hint == shortcuts.value("passThroughHint").toString()) hint.clear();
         hint_->setText(hint);
     }
+    bool reducedOverlayMotion() const {
+        const auto mode = overlayAppearance_.value("motion").toString().toUtf8();
+        return tl_overlay_motion_reduced(tl_overlay_motion(mode.constData(),
+            overlayAppearance_.value("reduceMotion").toBool()), !card_
+            || card_->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, card_) <= 0);
+    }
     void arrangeOverlay(int editorHeight = -1) {
         if (editorHeight < 0) stopOverlayMotion();
         if (!card_ || !overlayTarget_ || !overlayTarget_->field) return;
@@ -1841,9 +1854,7 @@ private:
         const int endHeight = editor_->height();
         // The current Qt style is the public platform/application preference.
         // A zero duration disables motion; it is not a universal OS preference API.
-        if (startHeight == endHeight
-            || overlayAppearance_.value("reduceMotion").toBool()
-            || card_->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, card_) <= 0) {
+        if (startHeight == endHeight || reducedOverlayMotion()) {
             traceOverlayMotion("size-or-style-skip"); return;
         }
         const auto bounds = geometry(overlayTarget_);
@@ -1885,8 +1896,7 @@ private:
                     || editor_->document() != motionDocument_ || editor_->document()->revision() != motionDocumentRevision_
                     || editor_->isReadOnly() != motionReadOnly_ || editor_->focusPolicy() != motionFocusPolicy_
                     || geometry(overlayTarget_) != bounds
-                    || overlayAppearance_.value("reduceMotion").toBool()
-                    || card_->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, card_) <= 0) {
+                    || reducedOverlayMotion()) {
                     traceOverlayMotion("frame-guard-stop"); arrangeOverlay(); return;
                 }
                 const qint64 elapsed = motionClock_.elapsed();
@@ -2679,10 +2689,10 @@ private:
                 if (QDir::isAbsolutePath(home)) root = QDir(home).filePath(QStringLiteral("fonts"));
             }
             if (QDir::isAbsolutePath(root)) {
-                const QStringList files{QStringLiteral("inter/Inter-Regular.ttf"), QStringLiteral("inter/Inter-Medium.ttf"),
-                    QStringLiteral("inter/Inter-SemiBold.ttf"), QStringLiteral("source-serif/SourceSerif4-Regular.ttf"),
-                    QStringLiteral("source-serif/SourceSerif4-Semibold.ttf")};
-                for (const auto &file : files) QFontDatabase::addApplicationFont(QDir(root).filePath(file));
+                size_t count;
+                const auto files = tl_overlay_font_files(&count);
+                for (size_t index = 0; index < count; index++)
+                    QFontDatabase::addApplicationFont(QDir(root).filePath(QString::fromUtf8(files[index])));
             }
         }
         auto *top = target->field->window();

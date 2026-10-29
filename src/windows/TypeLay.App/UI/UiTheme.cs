@@ -9,23 +9,34 @@ using System.Globalization;
 using System.Windows.Shapes;
 namespace TypeLay.App;
 
-internal static class UiTheme
+internal static partial class UiTheme
 {
     private static UserSettings _preferences = new();
     public static bool English => _preferences.UiLanguage == "en" || _preferences.UiLanguage == "system" && !CultureInfo.CurrentUICulture.Name.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
-    public static bool ReduceMotion => _preferences.ReduceMotion || !SystemParameters.ClientAreaAnimation;
+    public static bool ReduceMotion => _preferences.ShouldReduceMotion(!SystemParameters.ClientAreaAnimation);
     // WPF requires an absolute base URI plus a relative family name. A single
     // string starting with pack: silently falls back instead of loading a font.
     public static FontFamily BundledFont(string family, string? fallback = null) =>
         new(new Uri("pack://application:,,,/TypeLay.App;component/"), "./UI/Fonts/#" + family + (string.IsNullOrWhiteSpace(fallback) ? "" : ", " + fallback));
-    public static FontFamily UiFont => _preferences.Font == "system" ? new("Segoe UI, Microsoft YaHei UI")
-        : BundledFont("Inter", "Noto Sans SC, Segoe UI, Microsoft YaHei UI");
-    public static FontFamily ContentFont => _preferences.Font switch
+    private static string InterfaceLanguage => English ? "en" : "zh-CN";
+    public static FontFamily UiFont => RoleFont(serif: false, InterfaceLanguage);
+    public static FontFamily DisplayFont => ContentFontForLanguage(InterfaceLanguage);
+    public static FontFamily ContentFont => ContentFontForLanguage(_preferences.Target);
+    public static FontFamily ContentFontForLanguage(string? language) => RoleFont(_preferences.Font == "claude", language);
+
+    private static FontFamily RoleFont(bool serif, string? language)
     {
-        "sans" => BundledFont("Inter", "Noto Sans SC, Segoe UI, Microsoft YaHei UI"),
-        "system" => new("Segoe UI, Microsoft YaHei UI"),
-        _ => BundledFont("Source Serif 4", "Noto Serif SC, Georgia, SimSun")
-    };
+        string region = language?.StartsWith("ja", StringComparison.OrdinalIgnoreCase) == true ? "JP"
+            : language?.StartsWith("ko", StringComparison.OrdinalIgnoreCase) == true ? "KR" : "SC";
+        if (_preferences.Font == "system")
+            return new("Segoe UI, " + (region == "JP" ? "Yu Gothic UI" : region == "KR" ? "Malgun Gothic" : "Microsoft YaHei UI"));
+        string cjk = serif ? "Noto Serif " : "Noto Sans ";
+        // Every bundled fallback needs its own resource locator. A bare Noto
+        // family name would query installed fonts and silently lose offline CJK.
+        string[] regions = [region, .. new[] { "SC", "JP", "KR" }.Where(value => value != region)];
+        string fallback = string.Join(", ", regions.Select(value => "./UI/Fonts/#" + cjk + value));
+        return BundledFont(serif ? "Source Serif 4" : "Inter", fallback);
+    }
     public static double ContentSize => _preferences.TextSize;
     public static string L(string chinese, string english) => English ? english : chinese;
     private const string StyleXml = """
@@ -301,6 +312,8 @@ internal static class UiTheme
         r["Accent"] = Brush(accent.Item1);
         r["AccentInk"] = Brush(dark ? accent.Item3 : preferences.Accent == "clay" ? "#AD4F2D" : accent.Item2);
         r["AccentStrong"] = Brush(accent.Item2);
+        r["SettingsLanguageFill"] = Brush(dark ? "#0DFFFFFF" : "#0B141413");
+        r["SettingsLanguageThumb"] = Brush(dark ? "#3A3936" : "#FFFFFF");
         r["AccentSoft"] = Brush((dark ? "#30" : "#24") + accent.Item1[1..]);
         r["SwitchOff"] = Brush(dark ? "#5C5B57" : "#D2D1CC");
         r["Glass"] = Brush(preferences.ReduceTransparency ? dark ? "#2C2B28" : "#FBFAF7" : dark ? "#EB282724" : "#E6FBFAF7");
@@ -309,6 +322,7 @@ internal static class UiTheme
         r["Danger"] = Brush(dark ? "#F0806C" : "#C2412D");
         r["UiFont"] = UiFont;
         r["ContentFont"] = ContentFont;
+        r["DisplayFont"] = DisplayFont;
         r["ContentSize"] = ContentSize;
     }
     public static FrameworkElement Mark(double size = 26, bool appIcon = false)

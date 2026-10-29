@@ -86,6 +86,7 @@ internal sealed partial class SettingsWindow : Window
     private LanguagePicker? _sourceLanguage, _targetLanguage;
     private Button? _swapLanguages;
     private TextBlock? _languageAvailability;
+    private Border? _languageStatusCard;
     private TextBlock? _returnShortcutHint, _savedModeGuidance, _savedAcceptanceGuidance, _controlShortcutWarning;
     private TextBlock? _shortcutStatus;
     private Button? _shortcutRetryButton, _pauseShortcutRetryButton;
@@ -210,6 +211,7 @@ internal sealed partial class SettingsWindow : Window
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         FontFamily = UiTheme.UiFont;
         Resources.MergedDictionaries.Add(UiTheme.SettingsResources());
+        Resources.MergedDictionaries.Add(UiTheme.LanguageResources());
         Resources.MergedDictionaries.Add(UiTheme.QuickPanelResources());
         var shell = new Grid();
         shell.RowDefinitions.Add(new()
@@ -320,7 +322,7 @@ internal sealed partial class SettingsWindow : Window
         });
         _headerTitle.FontSize = 22;
         _headerTitle.FontWeight = FontWeights.Medium;
-        _headerTitle.FontFamily = UiTheme.ContentFont;
+        _headerTitle.FontFamily = UiTheme.DisplayFont;
         _headerTitle.Margin = new(28, 8, 28, 0);
         _headerTitle.VerticalAlignment = VerticalAlignment.Center;
         _headerTitle.SetResourceReference(TextBlock.ForegroundProperty, "Text");
@@ -547,7 +549,7 @@ internal sealed partial class SettingsWindow : Window
             _interfaceLanguage = _settings.Value.UiLanguage;
             _renderedPage = null;
         }
-        string stamp = $"{_settings.Value.Theme}|{_settings.Value.Font}|{_settings.Value.TextSize}|{_settings.Value.Accent}|{_settings.Value.UiLanguage}|{_settings.Value.ReduceMotion}|{_settings.Value.ReduceTransparency}";
+        string stamp = $"{_settings.Value.Theme}|{_settings.Value.Font}|{_settings.Value.TextSize}|{_settings.Value.Accent}|{_settings.Value.UiLanguage}|{_settings.Value.MotionPreference}|{_settings.Value.ReduceTransparency}";
         if (_appearanceStamp != stamp)
         {
             _appearanceStamp = stamp;
@@ -557,7 +559,7 @@ internal sealed partial class SettingsWindow : Window
             _forceShortcutButton.Content = UiTheme.L("强制保存", "Save Anyway");
             _editShortcutButton.Content = UiTheme.L("继续编辑", "Keep Editing");
             _toastUndo.Content = UiTheme.L("撤销", "Undo");
-            _headerTitle.FontFamily = UiTheme.ContentFont;
+            _headerTitle.FontFamily = UiTheme.DisplayFont;
             if (_page == "appearance")
                 _renderedPage = null;
         }
@@ -595,6 +597,7 @@ internal sealed partial class SettingsWindow : Window
         _sourceLanguage = _targetLanguage = null;
         _swapLanguages = null;
         _languageAvailability = null;
+        _languageStatusCard = null;
         _themeChoices.Clear();
         _progress = null;
         _progressLabel = null;
@@ -676,7 +679,7 @@ internal sealed partial class SettingsWindow : Window
     private void Heading(string name, string description = "")
     {
         _headerTitle.Text = name;
-        _headerTitle.FontFamily = UiTheme.ContentFont;
+        _headerTitle.FontFamily = UiTheme.DisplayFont;
         if (description.Length == 0)
             return;
         var sub = UiTheme.Text(description, 12, true);
@@ -1093,33 +1096,63 @@ internal sealed partial class SettingsWindow : Window
         object identity = _pageIdentity;
         Task<bool> SaveLanguageAsync(UserSettings value) => IsVisible && ReferenceEquals(identity, _pageIdentity) ? SaveAsync(value) : Task.FromResult(false);
         Heading(UiTheme.L("语言与风格", "Language & Tone"));
+        var modelStatus = new Grid();
+        modelStatus.ColumnDefinitions.Add(new());
+        modelStatus.ColumnDefinitions.Add(new()
+        {
+            Width = GridLength.Auto
+        });
+        _languageAvailability = UiTheme.Text("", 13);
+        _languageAvailability.FontWeight = FontWeights.Medium;
+        var modelMessage = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        var warning = PrototypeGlyph("M12,4 L2.8,19.5 H21.2 Z M12,10 V14.5 M12,17 V17.01", "Warn");
+        warning.Width = warning.Height = 18;
+        warning.Margin = new(0, 0, 12, 0);
+        modelMessage.Children.Add(warning);
+        modelMessage.Children.Add(_languageAvailability);
+        modelStatus.Children.Add(modelMessage);
+        var viewModel = UiTheme.Button(UiTheme.L("查看", "View"), () => { if (IsVisible && ReferenceEquals(identity, _pageIdentity)) ShowPage("model"); });
+        viewModel.Padding = new(10, 4, 10, 4);
+        Grid.SetColumn(viewModel, 1);
+        modelStatus.Children.Add(viewModel);
+        _languageStatusCard = UiTheme.Border(modelStatus, 12);
+        _languageStatusCard.Padding = new(14, 12, 14, 12);
+        _languageStatusCard.BorderThickness = new(.5);
+        _languageStatusCard.Margin = new(0, 0, 0, 18);
+        _content.Children.Add(_languageStatusCard);
         BeginGroup();
         _sourceLanguage = new(true, _settings.Value.Source,
-            async code => await SaveLanguageAsync(_settings.Value with { Source = code }), _model.Ready ? _model.AvailableDirections : null);
+            async code => await SaveLanguageAsync(_settings.Value with { Source = code }), _model.Ready ? _model.AvailableDirections : null, searchPopover: true);
         _targetLanguage = new(false, _settings.Value.Target,
-            async code => await SaveLanguageAsync(_settings.Value with { Target = code }), _model.Ready ? _model.AvailableDirections : null);
+            async code => await SaveLanguageAsync(_settings.Value with { Target = code }), _model.Ready ? _model.AvailableDirections : null, searchPopover: true);
         var direction = new Grid { Margin = new(14, 16, 14, 16) };
         direction.ColumnDefinitions.Add(new());
         direction.ColumnDefinitions.Add(new()
         {
-            Width = new(48)
+            Width = new(56)
         });
         direction.ColumnDefinitions.Add(new());
-        foreach (var (picker, title, column) in new[] { (_sourceLanguage, UiTheme.L("源语言", "Source language"), 0), (_targetLanguage, UiTheme.L("目标语言", "Target language"), 2) })
+        foreach (var (picker, title, column) in new[] { (_sourceLanguage, UiTheme.L("源语言", "From"), 0), (_targetLanguage, UiTheme.L("目标语言", "To"), 2) })
         {
             var side = new StackPanel();
             var label = UiTheme.Text(title, 12, true);
+            label.FontWeight = FontWeights.Medium;
+            label.LineHeight = 12;
+            label.LineStackingStrategy = LineStackingStrategy.BlockLineHeight;
             label.Margin = new(0, 0, 0, 7);
             side.Children.Add(label);
             picker.Height = 44;
             picker.FontSize = 15;
-            picker.FontFamily = UiTheme.ContentFont;
+            picker.FontWeight = FontWeights.Medium;
+            picker.SetResourceReference(Control.FontFamilyProperty, "DisplayFont");
             side.Children.Add(picker);
             Grid.SetColumn(side, column);
             direction.Children.Add(side);
         }
         _swapLanguages = UiTheme.Button("⇄", async () => await SaveLanguageAsync(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
-        AutomationProperties.SetName(_swapLanguages, "交换语言");
+        AutomationProperties.SetName(_swapLanguages, UiTheme.L("交换语言", "Swap languages"));
+        _swapLanguages.Content = PrototypeGlyph("M4,8 H19 M15,4 L19,8 L15,12 M20,16 H5 M9,12 L5,16 L9,20", "Muted");
+        _swapLanguages.SetResourceReference(StyleProperty, "SettingsLanguageSwap");
         _swapLanguages.Height = 36;
         _swapLanguages.Width = 36;
         _swapLanguages.Padding = new(0);
@@ -1129,13 +1162,18 @@ internal sealed partial class SettingsWindow : Window
         Grid.SetColumn(_swapLanguages, 1);
         direction.Children.Add(_swapLanguages);
         _group!.Children.Add(direction);
-        var moreLanguages = UiTheme.Button(UiTheme.L("尚未提供", "Not Available"), () => { });
-        moreLanguages.IsEnabled = false;
-        Row(UiTheme.L("更多语言", "More languages"), UiTheme.L("新增语言包管理尚未提供；可用语言仍由已选模型决定。", "Additional language-pack management is not available. Available languages still follow the selected model."), moreLanguages);
         TranslationStyles();
-        _languageAvailability = UiTheme.Text("", 12, true);
-        _languageAvailability.Margin = new(4, 0, 4, 8);
-        _content.Children.Add(_languageAvailability);
+        var applications = UiTheme.Button(UiTheme.L("按应用设置…", "Per-application settings…"), () =>
+        {
+            if (IsVisible && ReferenceEquals(identity, _pageIdentity))
+                ShowPage("apps");
+        });
+        applications.Background = Brushes.Transparent;
+        applications.BorderThickness = new(0);
+        applications.Padding = new(4, 4, 4, 4);
+        applications.HorizontalAlignment = HorizontalAlignment.Left;
+        applications.SetResourceReference(Control.ForegroundProperty, "SettingsLink");
+        _content.Children.Add(applications);
         RefreshLanguages();
     }
     private void RefreshLanguages()
@@ -1145,8 +1183,10 @@ internal sealed partial class SettingsWindow : Window
         _targetLanguage?.Synchronize(_settings.Value.Target, directions);
         if (_languageAvailability is not null)
             _languageAvailability.Text = directions is null
-                ? UiTheme.L("模型尚未就绪", "Model not ready")
+                ? _model.Installed ? UiTheme.L("模型尚未就绪", "Model not ready") : UiTheme.L("需要下载本地翻译模型", "Download the local translation model")
                 : UiTheme.English ? "Available translation directions: " + directions.Count : "当前模型支持 " + directions.Count + " 个翻译方向";
+        if (_languageStatusCard is not null)
+            _languageStatusCard.Visibility = directions is null ? Visibility.Visible : Visibility.Collapsed;
         if (_swapLanguages is not null)
             _swapLanguages.IsEnabled = _settings.Value.Source != "auto";
     }
@@ -2388,8 +2428,7 @@ internal sealed partial class SettingsWindow : Window
         object identity = _pageIdentity;
         bool CurrentPage() => IsVisible && ReferenceEquals(identity, _pageIdentity);
         BeginGroup();
-        var state = _controller?.GetStyleSettingsState();
-        var choices = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 6, 0, 6) };
+        var choices = new StackPanel { Orientation = Orientation.Horizontal };
         var buttons = new List<(Button Button, TranslationStyle? Style)>();
         foreach (var (zh, en, style) in new (string, string, TranslationStyle?)[] { ("自然", "Natural", TranslationStyle.Natural), ("正式", "Formal", TranslationStyle.Formal), ("简洁", "Concise", null), ("口语", "Casual", null) })
         {
@@ -2400,15 +2439,15 @@ internal sealed partial class SettingsWindow : Window
                 var current = _controller.GetStyleSettingsState();
                 await SaveTranslationChangeAsync(ct => _controller.ChangeStyleAsync(StyleScope.Global, style, current.SettingsRevision, cancellationToken: ct));
             });
-            choice.MinWidth = 54;
-            choice.Padding = new(10, 6, 10, 6);
-            choice.Margin = new(2, 0, 2, 0);
-            AutomationProperties.SetName(choice, "翻译风格 " + zh);
+            choice.SetResourceReference(StyleProperty, "SettingsToneChoice");
+            AutomationProperties.SetName(choice, UiTheme.L("翻译风格 " + zh, "Translation tone " + en));
             ToolTipService.SetShowOnDisabled(choice, true);
             buttons.Add((choice, style));
             choices.Children.Add(choice);
         }
-        Row(UiTheme.L("默认风格", "Default tone"), "", choices);
+        var segments = new Border { CornerRadius = new(8), Padding = new(2), Child = choices, VerticalAlignment = VerticalAlignment.Center };
+        segments.SetResourceReference(Border.BackgroundProperty, "SettingsControlFill");
+        Row(UiTheme.L("默认风格", "Default tone"), "", segments);
         var notice = UiTheme.Text("", 12, true);
         notice.Margin = new(4, 0, 4, 14);
         _content.Children.Add(notice);
@@ -2432,9 +2471,10 @@ internal sealed partial class SettingsWindow : Window
                     : button.IsEnabled ? null : UiStrings.Translate(TranslationMenuPresentation.Reason(current?.UnavailableReason ?? "style-unavailable") ?? "");
                 AutomationProperties.SetHelpText(button, button.ToolTip as string ?? "");
                 AutomationProperties.SetItemStatus(button, style is not null && current?.SavedPreferences?.Default == style ? "selected" : "");
-                button.SetResourceReference(Control.BackgroundProperty, style is not null && current?.SavedPreferences?.Default == style ? "AccentSoft" : "Panel2");
+                button.Tag = style is not null && current?.SavedPreferences?.Default == style ? "selected" : "";
             }
-            notice.Text = current?.IsReleased == true ? "" : UiTheme.L("风格翻译尚未通过质量验收。简洁与口语尚未提供。", "Tone translation has not passed quality validation. Concise and casual are not available.");
+            notice.Text = UiTheme.L("语言由当前模型提供；新增语言包、简洁与口语尚未提供。", "Languages follow the current model. Additional language packs, concise and casual tones are not available.")
+                + (current?.IsReleased == true ? "" : UiTheme.L(" 自然与正式风格尚未通过质量验收。", " Natural and formal tones have not passed quality validation."));
             notice.Visibility = notice.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
             reset.Visibility = current?.SavedPreferences is null ? Visibility.Collapsed : Visibility.Visible;
             reset.IsEnabled = current is { CanReset: true, Session: null } && !_savingTranslation;
@@ -2652,8 +2692,8 @@ internal sealed partial class SettingsWindow : Window
                 {
                     Width = new(30)
                 });
-                var source = new TextBox { Text = rule.SourceTerm, Height = 28, Margin = new(0, 4, 8, 4), Padding = new(4, 2, 4, 2), FontFamily = UiTheme.ContentFont, FontSize = 14, BorderThickness = new(0) };
-                var target = new TextBox { Text = rule.TargetTerm, Height = 28, Margin = new(0, 4, 8, 4), Padding = new(4, 2, 4, 2), FontFamily = UiTheme.ContentFont, FontSize = 14, BorderThickness = new(0) };
+                var source = new TextBox { Text = rule.SourceTerm, Height = 28, Margin = new(0, 4, 8, 4), Padding = new(4, 2, 4, 2), FontFamily = UiTheme.ContentFontForLanguage(rule.SourceLanguage ?? _settings.Value.Source), FontSize = 14, BorderThickness = new(0) };
+                var target = new TextBox { Text = rule.TargetTerm, Height = 28, Margin = new(0, 4, 8, 4), Padding = new(4, 2, 4, 2), FontFamily = UiTheme.ContentFontForLanguage(rule.TargetLanguage ?? _settings.Value.Target), FontSize = 14, BorderThickness = new(0) };
                 AutomationProperties.SetName(source, "源词 " + (index + 1));
                 AutomationProperties.SetName(target, "译词 " + (index + 1));
                 row.Children.Add(source);
@@ -2853,7 +2893,7 @@ internal sealed partial class SettingsWindow : Window
         var brand = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, Margin = new(0, 12, 0, 28) };
         brand.Children.Add(UiTheme.Mark(76, appIcon: true));
         var name = UiTheme.Text("TypeLay", 30);
-        name.FontFamily = UiTheme.ContentFont;
+        name.FontFamily = UiTheme.DisplayFont;
         name.HorizontalAlignment = HorizontalAlignment.Center;
         name.Margin = new(0, 14, 0, 4);
         brand.Children.Add(name);

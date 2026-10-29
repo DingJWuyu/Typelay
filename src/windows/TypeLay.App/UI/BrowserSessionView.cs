@@ -100,7 +100,8 @@ internal sealed class BrowserSessionView : ISessionView
             settings.TextSize,
             settings.Accent,
             settings.UiLanguage,
-            settings.ReduceMotion,
+            Motion = settings.MotionPreference,
+            ReduceMotion = settings.MotionPreference == "reduce",
             settings.ReduceTransparency
         };
         _excluded = settings.Excluded;

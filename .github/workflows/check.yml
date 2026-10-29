@@ -377,12 +377,14 @@ jobs:
         env:
           TYPELAY_TRACE: ${{ github.workspace }}/artifacts/controller-trace.jsonl
         run: dotnet test TypeLay.slnx -c Release --no-build --no-restore --logger trx --results-directory artifacts/test-results
-      - name: Preserve early Windows contract failure evidence
-        if: ${{ !cancelled() && steps.windows-contracts.outcome == 'failure' }}
+      - name: Preserve early Windows contract and rendering evidence
+        if: ${{ !cancelled() && (steps.windows-contracts.outcome == 'success' || steps.windows-contracts.outcome == 'failure') }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: typelay-windows-contracts-failure-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/test-results/*.trx
+          name: typelay-windows-contracts-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/test-results/*.trx
+            artifacts/test-results/rendering/
           if-no-files-found: error
           retention-days: 14
       - name: Observe claimed-key low-level callback timeout in owned sources
@@ -821,6 +823,10 @@ jobs:
           # checkout runs as the host UID; this disposable container runs as root.
           # Trust only this Actions checkout, never every repository on the machine.
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          uv venv artifacts/font-tools
+          uv pip install --python artifacts/font-tools/bin/python -r eng/requirements.txt
+          artifacts/font-tools/bin/python eng/fonts/prepare.py
+          TYPELAY_UI_FONT_ROOT="$PWD/artifacts/ui-fonts" python tests/linux/test_ui_fonts.py -v
           python tests/linux/test_build_bundle.py -v
           python tests/linux/setup_e2e.py -v
           python tests/linux/test_desktop_session.py -v

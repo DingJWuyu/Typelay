@@ -2,6 +2,8 @@
 #include <QApplication>
 #include <QAbstractButton>
 #include <QClipboard>
+#include <QCryptographicHash>
+#include <QGlyphRun>
 #include <QImage>
 #include <QIntValidator>
 #include <QInputMethodEvent>
@@ -23,10 +25,12 @@
 #include <QPointer>
 #include <QPixmap>
 #include <QRadioButton>
+#include <QRawFont>
 #include <QTextBlock>
 #include <QTextDocument>
 #include <QTextFrame>
 #include <QTextList>
+#include <QTextLayout>
 #include <QSaveFile>
 #include <QSocketNotifier>
 #include <QStyleHints>
@@ -47,6 +51,61 @@ qint64 observedAtMs() {
     return qint64(value.tv_sec) * 1000 + value.tv_nsec / 1000000;
 }
 
+using FontIdentities = QList<QPair<QRawFont, QJsonObject>>;
+static QJsonObject fontIdentity(const QRawFont &font, FontIdentities &identities) {
+    for (const auto &cached : identities) if (cached.first == font) return cached.second;
+    QJsonObject identity{{"family", font.familyName()}, {"weight", int(font.weight())}};
+    for (const auto *tag : {"name", "OS/2", "cmap", "CFF ", "glyf"}) {
+        const auto table = font.fontTable(tag);
+        if (!table.isEmpty()) identity.insert(QString::fromLatin1(tag),
+            QString::fromLatin1(QCryptographicHash::hash(table, QCryptographicHash::Sha256).toHex()));
+    }
+    if (identities.size() < 32) identities.append({font, identity});
+    return identity;
+}
+static QJsonArray renderedFontRuns(QPlainTextEdit *editor, FontIdentities &identities) {
+    QJsonArray result;
+    if (!editor || !editor->isVisible()) return result;
+    // Observe already-laid-out document glyphs; do not create a replacement
+    // layout or change the source/editor to obtain a font match.
+    int blocks = 0;
+    for (auto block = editor->document()->begin(); block.isValid() && blocks < 8; block = block.next(), blocks++) {
+        if (!block.layout()) continue;
+        for (const auto &run : block.layout()->glyphRuns()) {
+            if (result.size() >= 16) return result;
+            auto identity = fontIdentity(run.rawFont(), identities);
+            int missing = 0;
+            for (auto glyph : run.glyphIndexes()) if (glyph == 0) missing++;
+            identity.insert("missingGlyphs", missing);
+            result.append(identity);
+        }
+    }
+    return result;
+}
+static QJsonArray applicationCjkFonts(FontIdentities &identities) {
+    QJsonArray result;
+    // Synthetic host text, not the overlay: application fonts are process-wide.
+    // Compare physical fallback faces before and after TypeLay registration,
+    // including an unchanged missing-glyph result on hosts without CJK fonts.
+    for (const auto &text : {QStringLiteral("汉字翻译"), QStringLiteral("日本語翻訳"), QStringLiteral("한국어번역")}) {
+        QTextLayout layout(text, QApplication::font());
+        layout.beginLayout();
+        auto line = layout.createLine();
+        if (line.isValid()) line.setLineWidth(500);
+        layout.endLayout();
+        QJsonArray runs;
+        for (const auto &run : layout.glyphRuns()) {
+            auto identity = fontIdentity(run.rawFont(), identities);
+            QJsonArray glyphs;
+            for (auto glyph : run.glyphIndexes()) glyphs.append(qint64(glyph));
+            identity.insert("glyphs", glyphs);
+            runs.append(identity);
+        }
+        result.append(runs);
+    }
+    return result;
+}
+
 class KeyObserver final : public QObject {
     Q_OBJECT
 public:
@@ -56,6 +115,8 @@ public:
     struct OverlayObject { QString role; quint64 instance; QRect bounds; };
     QHash<QObject *, OverlayObject> overlayObjects;
     quint64 overlayInstance = 0, overlayEventCount = 0, languageClickEventCount = 0;
+    QJsonArray motionInputs;
+    bool observeMotionInputs = false;
     QJsonObject counts;
     QJsonArray providerEvents;
     quint64 providerSequence = 0;
@@ -109,6 +170,18 @@ public:
     void overlayEvent(const char *event, const OverlayObject &object, QJsonObject extra = {}) {
         // Owned TypeLay control roles and numeric geometry/timing only. Never
         // log widget text, unrelated object names or native addresses.
+        const auto &bounds = object.bounds;
+        extra.insert("atMs", observedAtMs());
+        extra.insert("event", QLatin1String(event));
+        extra.insert("role", object.role);
+        extra.insert("instance", qint64(object.instance));
+        extra.insert("geometry", QJsonObject{{"x", bounds.x()}, {"y", bounds.y()},
+            {"width", bounds.width()}, {"height", bounds.height()}});
+        // Independent finite evidence for the two real motion clicks. The
+        // earlier desktop cases may have exhausted the general event budget.
+        if (observeMotionInputs && motionInputs.size() < 8
+            && (qstrcmp(event, "mouse-press") == 0 || qstrcmp(event, "mouse-release") == 0
+                || qstrcmp(event, "clicked") == 0)) motionInputs.append(extra);
         // Preserve the existing total bound, reserving twelve events for the
         // first real Auto/English clicks after the preceding desktop cases.
         const bool languageClick = (object.role == QStringLiteral("typelay-source-auto")
@@ -119,14 +192,7 @@ public:
         if (overlayEventCount >= 160 || (languageClick ? languageClickEventCount >= 12
                 : overlayEventCount - languageClickEventCount >= 148)) return;
         if (languageClick) ++languageClickEventCount;
-        const auto &bounds = object.bounds;
         extra.insert("sequence", qint64(++overlayEventCount));
-        extra.insert("atMs", observedAtMs());
-        extra.insert("event", QLatin1String(event));
-        extra.insert("role", object.role);
-        extra.insert("instance", qint64(object.instance));
-        extra.insert("geometry", QJsonObject{{"x", bounds.x()}, {"y", bounds.y()},
-            {"width", bounds.width()}, {"height", bounds.height()}});
         const auto bytes = QJsonDocument(extra).toJson(QJsonDocument::Compact);
         std::fprintf(stderr, "qt-overlay-event %s\n", bytes.constData());
     }
@@ -240,6 +306,9 @@ public:
 
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
+    FontIdentities fontIdentities; /* Released before QApplication and its font engine. */
+    const auto initialApplicationFontFace = fontIdentity(QRawFont::fromFont(QApplication::font()), fontIdentities);
+    const auto initialApplicationCjkFonts = applicationCjkFonts(fontIdentities);
     const QPalette initialPalette = app.palette();
     int applicationThemeChanges = 0;
     int themeSampleCount = 0;
@@ -387,7 +456,7 @@ int main(int argc, char **argv) {
     QString editorProviderAction;
     QJsonArray motionFrames;
     int motionRecordings = 0, motionArmed = 0;
-    bool motionRecording = false;
+    bool motionRecording = false, observeFonts = false;
     const auto initialStyleSheet = app.styleSheet();
     auto publish = [&] {
         if (path.isEmpty()) return;
@@ -495,6 +564,7 @@ int main(int argc, char **argv) {
             {"applicationThemeChanges", applicationThemeChanges},
             {"themeSampleCount", themeSampleCount}, {"themeSamples", themeSamples},
             { "motionArmed", motionArmed }, {"motionFrames", motionFrames}, {"motionRecordings", motionRecordings}, {"motionRecording", motionRecording},
+            {"motionInputs", observer.motionInputs},
             {"animationDuration", overlay ? overlay->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, overlay) : -1},
             {"fullscreen", window.isFullScreen()}, {"width", window.width()}, {"height", window.height()},
             {"scale", window.devicePixelRatioF()}, {"keys", observer.counts},
@@ -541,6 +611,14 @@ int main(int argc, char **argv) {
             {"editorUndoAvailable", editor && editor->document()->isUndoAvailable()},
             {"editorRedoAvailable", editor && editor->document()->isRedoAvailable()},
             {"editorGeometry", editor ? rectangle(editor) : QJsonObject()}};
+        if (observeFonts) {
+            state.insert("editorFontRuns", renderedFontRuns(editor, fontIdentities));
+            state.insert("applicationFontFamily", QApplication::font().family());
+            state.insert("applicationFontFace", fontIdentity(QRawFont::fromFont(QApplication::font()), fontIdentities));
+            state.insert("initialApplicationFontFace", initialApplicationFontFace);
+            state.insert("applicationCjkFonts", applicationCjkFonts(fontIdentities));
+            state.insert("initialApplicationCjkFonts", initialApplicationCjkFonts);
+        }
         // Read the actual provider's optional research counters without issuing
         // another IM RPC that could perturb the consumer's short-lived proof.
         for (const auto *name : {"tlqtPendingDbus", "tlqtPendingForward", "tlqtOutputDepth", "tlqtEngine", "tlqtRetired", "tlqtKeyReplies", "tlqtCommits", "tlqtPreedits",
@@ -579,6 +657,7 @@ int main(int argc, char **argv) {
                     command.contains("value") ? command.value("value").toVariant() : QVariant());
             }
             else if (op == "reset-ime") QGuiApplication::inputMethod()->reset();
+            else if (op == "observe-fonts") observeFonts = command.value("enabled").toBool();
             else if (op == "application-motion") {
                 // Exercise Qt's public style preference on this isolated app.
                 // This does not claim the compositor exports an OS preference.
@@ -590,6 +669,8 @@ int main(int argc, char **argv) {
                 if (!expand || motionRecording) qFatal("Overlay motion observation unavailable");
                 const auto directory = command.value("directory").toString();
                 if (!directory.isEmpty() && !QDir().mkpath(directory)) qFatal("Motion output directory unavailable");
+                observer.motionInputs = {};
+                observer.observeMotionInputs = true;
                 QObject::connect(expand, &QAbstractButton::clicked, &window, [&, directory] {
                     motionFrames = {};
                     motionRecording = true;
@@ -619,6 +700,7 @@ int main(int argc, char **argv) {
                         if (elapsed >= 800) {
                             samples->stop(); samples->deleteLater();
                             motionRecording = false;
+                            observer.observeMotionInputs = false;
                             ++motionRecordings;
                         }
                     };

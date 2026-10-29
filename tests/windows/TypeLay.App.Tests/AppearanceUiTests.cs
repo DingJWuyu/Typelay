@@ -50,6 +50,7 @@ public sealed class AppearanceUiTests(WpfDesktopFixture desktop)
             Assert.Equal(19, saved.TextSize);
             Assert.True(saved.ReduceTransparency);
             Assert.True(saved.ReduceMotion);
+            Assert.Equal("reduce", saved.MotionPreference);
             Assert.Equal("en", saved.UiLanguage);
             Assert.True(UiTheme.English);
             Assert.True(UiTheme.ReduceMotion);
@@ -68,6 +69,46 @@ public sealed class AppearanceUiTests(WpfDesktopFixture desktop)
                 return Descendants(window).OfType<T>().Single(control => AutomationProperties.GetName(control) == name);
             }
             void Click(string name) => Named<Button>(name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+    });
+
+    [Fact]
+    public Task LegacyMotionControlUpdatesTheCanonicalPreferenceWithoutOverwritingFullDuringOtherEdits() => desktop.RunAsync(() =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-motion-ui-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string path = Path.Combine(directory, "settings.json");
+            var settings = WindowsRuntime.CreateSettings(path);
+            settings.Update(settings.Value with
+            {
+                Motion = "full"
+            });
+            using var model = WindowsRuntime.CreateModel();
+            var window = new SettingsWindow(settings, model, () => { });
+            window.ShowPage("appearance");
+            window.UpdateLayout();
+            Assert.False(UiTheme.ReduceMotion);
+            Descendants(window).OfType<Slider>().Single(control => AutomationProperties.GetName(control) == "译文字号").Value = 19;
+            Assert.Equal("full", WindowsRuntime.CreateSettings(path).Value.MotionPreference);
+            MotionControl().IsChecked = true;
+            Assert.Equal("reduce", WindowsRuntime.CreateSettings(path).Value.MotionPreference);
+            Assert.True(UiTheme.ReduceMotion);
+            MotionControl().IsChecked = false;
+            Assert.Equal("system", WindowsRuntime.CreateSettings(path).Value.MotionPreference);
+            Assert.Equal(!SystemParameters.ClientAreaAnimation, UiTheme.ReduceMotion);
+            settings.Update(settings.Value with
+            {
+                Motion = "full"
+            });
+            Assert.False(UiTheme.ReduceMotion);
+            window.Close();
+            CheckBox MotionControl()
+            {
+                window.UpdateLayout();
+                return Descendants(window).OfType<CheckBox>().Single(control => AutomationProperties.GetName(control) == "减少动态效果");
+            }
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
     });

@@ -36,6 +36,7 @@ sys.path.insert(0, str(ROOT / "src/shared/TypeLay.Worker"))
 import setup  # noqa: E402
 from application_support import ApplicationSupport  # noqa: E402
 from paths import Paths  # noqa: E402
+from support.font_bundle_fixture import inert_font_payload  # noqa: E402
 from typelay_worker.catalog import ArchivePin, load_catalog  # noqa: E402
 from wire import now_ms  # noqa: E402
 
@@ -1918,14 +1919,8 @@ class ApplicationSupportTests(unittest.TestCase):
             "source/upstream/fcitx5/LICENSES/LGPL-2.1-or-later.txt": b"License text",
             "lib/libexample.so.1": b"Cooperative library",
         }
-        content.update(
-            {
-                "fonts/"
-                + path.relative_to(ROOT / "src/shared/ui/fonts").as_posix(): path.read_bytes()
-                for path in (ROOT / "src/shared/ui/fonts").rglob("*")
-                if path.is_file()
-            }
-        )
+        _, font_payload = inert_font_payload()
+        content.update(font_payload)
         content.update(content_overrides or {})
         for relative in content_omissions:
             content.pop(relative)
@@ -2023,7 +2018,15 @@ class ApplicationSupportTests(unittest.TestCase):
         )
 
     def test_component_preparation_rejects_a_manifest_without_a_required_font_or_license(self):
-        for relative in ("fonts/inter/Inter-Regular.ttf", "fonts/source-serif/LICENSE.md"):
+        for relative in (
+            "fonts/inter/Inter-Regular.ttf",
+            "fonts/source-serif/LICENSE.md",
+            "fonts/noto-sans/TypeLayNotoSansSC-SemiBold.ttf",
+            "fonts/noto-serif/NotoSerifKR-Medium.otf",
+            "fonts/noto-sans/LICENSE.txt",
+            "fonts/manifest.json",
+            "source/eng/fonts/fonts.lock.json",
+        ):
             with self.subTest(relative=relative):
                 _, marker = self.desktop_payload(content_omissions=(relative,))
                 result = asyncio.run(self.support.execute("desktop-text", "Install"))

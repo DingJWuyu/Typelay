@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -18,6 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
+from eng.fonts import prepare as fonts  # noqa: E402
 from eng.linux.cooperative.inputs import (  # noqa: E402
     CHINESE_DATA_ARCHIVES,
     CORE_VERSION,
@@ -39,15 +41,23 @@ from eng.linux.cooperative.inputs import (  # noqa: E402
 )
 
 BUNDLE = "TypeLay-Fcitx-cooperative"
-FONT_FILES = (
-    "fonts/inter/Inter-Regular.ttf",
-    "fonts/inter/Inter-Medium.ttf",
-    "fonts/inter/Inter-SemiBold.ttf",
-    "fonts/inter/LICENSE.txt",
-    "fonts/source-serif/SourceSerif4-Regular.ttf",
-    "fonts/source-serif/SourceSerif4-Semibold.ttf",
-    "fonts/source-serif/LICENSE.md",
-    "fonts/README.md",
+FONT_LOCK = fonts.load_lock()
+FONT_HASHES = {"fonts/" + item["path"]: item["sha256"] for item in FONT_LOCK["files"]}
+FONT_HASHES["fonts/manifest.json"] = hashlib.sha256(fonts.manifest_bytes(FONT_LOCK)).hexdigest()
+FONT_FILES = tuple(FONT_HASHES)
+FONT_SOURCE_FILES = tuple(
+    dict.fromkeys(
+        (
+            "eng/fonts/prepare.py",
+            "eng/fonts/fonts.lock.json",
+            "eng/requirements.txt",
+            *(
+                item["source"]["repositoryPath"]
+                for item in FONT_LOCK["files"]
+                if "repositoryPath" in item["source"]
+            ),
+        )
+    )
 )
 PATCHED_UPSTREAM = PATCH_PROJECTS
 UPSTREAM = (*PATCHED_UPSTREAM, "libime")
@@ -300,7 +310,7 @@ def copy_sources(build, bundle, pins, inputs, test_inputs):
             raise ValueError(f"Missing original upstream LGPL text: {license_file}")
         copy_tree(upstream, source / "upstream" / project)
     files = [
-        *("src/shared/ui/" + name for name in FONT_FILES),
+        *FONT_SOURCE_FILES,
         *FCITX_BUILD_INPUTS,
         *FCITX_TEST_INPUTS,
         "packaging/linux/fcitx-cooperative/pack.py",
@@ -329,9 +339,10 @@ def copy_sources(build, bundle, pins, inputs, test_inputs):
         "Build and test: python3 tests/linux/fcitx_cooperative/run.py --core-version 5.1.22",
         "This requires the documented build dependencies and pinned upstream downloads.",
         "You may modify and rebuild these components under their applicable licenses.\n",
-        "Original Inter and Source Serif 4 UI fonts are redistributed under the SIL Open Font License 1.1.",
-        "Their original notices and source references are in fonts/inter/LICENSE.txt,",
-        "fonts/source-serif/LICENSE.md and fonts/README.md. No fonts are installed system-wide.\n",
+        "Inter, Source Serif 4 and Noto CJK UI fonts are redistributed under the SIL Open Font License 1.1.",
+        "Original notices and the SC600 static-instance attribution are retained under fonts/.",
+        "Pinned font inputs and the build-time preparation recipe are in source/eng/fonts/.",
+        "No fonts are installed system-wide; no font is downloaded while the product runs.\n",
         "Pinned upstream revisions and source archive SHA-256 values:",
     ]
     for project in UPSTREAM:
@@ -523,15 +534,11 @@ def copy_qt(qt, bundle):
     }
 
 
-def copy_fonts(bundle):
-    # Original OFL files and notices are runtime resources, not native build inputs.
-    for relative in FONT_FILES:
-        source = ROOT / "src/shared/ui" / relative
-        if source.is_symlink() or not source.is_file():
-            raise ValueError(f"Missing original UI font or license: {relative}")
-        destination = bundle / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
+def copy_fonts(bundle, font_root):
+    # Fonts are verified runtime resources, not native compilation inputs.
+    fonts.verify_bundle(font_root)
+    shutil.copytree(font_root, bundle / "fonts")
+    fonts.verify_bundle(bundle / "fonts")
 
 
 def manifest(bundle, versions, pins, inputs, test_inputs, qt=None):
@@ -619,13 +626,15 @@ def main():
     versions, pins = metadata(build)
     inputs = verify_sources(build)
     test_inputs = verify_tests(build)
+    font_root = ROOT / "artifacts/ui-fonts"
+    fonts.prepare_bundle(font_root, ROOT / "artifacts/font-sources")
     with tempfile.TemporaryDirectory(prefix="typelay-fcitx-pack-") as temporary:
         bundle = Path(temporary) / BUNDLE
         bundle.mkdir()
         copy_core(build, bundle)
         copy_libraries(build, bundle)
         copy_sources(build, bundle, pins, inputs, test_inputs)
-        copy_fonts(bundle)
+        copy_fonts(bundle, font_root)
         shutil.copyfile(ROOT / "docs/platforms/linux/fcitx.md", bundle / "README.md")
         for name in ("fcitx.md", "qt.md"):
             shutil.copyfile(ROOT / "docs/platforms/linux" / name, bundle / name)

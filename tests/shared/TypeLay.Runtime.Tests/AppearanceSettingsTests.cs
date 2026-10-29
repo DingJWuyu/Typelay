@@ -36,7 +36,7 @@ public sealed class AppearanceSettingsTests : IDisposable
             TextSize = 19,
             Accent = "ocean",
             UiLanguage = "en",
-            ReduceMotion = true,
+            Motion = "reduce",
             ReduceTransparency = true,
             PauseShortcut = "alt+shift+p",
             ExcludedApplications = ["private-app"]

@@ -20,6 +20,7 @@ static char *glossary_body(GtkTextBuffer *buffer) {
     return gtk_text_buffer_get_text(buffer, &start, &end, TRUE);
 }
 #if GTK_MAJOR_VERSION == 3
+static GtkWidget *saved_more_button;
 /* event-after is emitted after the specific button handler, even when that
  * handler consumes the event. This observes only the real fixture TextView;
  * it neither consumes input nor changes focus, selection or provider state. */
@@ -86,6 +87,35 @@ static void glossary_host_command(void) {
         } else if (g_str_equal(action, "prepare-entry")) {
             glossary_multiline = FALSE;
             gtk_editable_set_position(GTK_EDITABLE(report_first), -1);
+#if GTK_MAJOR_VERSION == 3
+        } else if (g_str_equal(action, "retain-more-button")) {
+            GtkWidget *button = find_named_widget(report_window, "typelay-glossary-add");
+            if (!button || !GTK_IS_BUTTON(button) || !gtk_widget_get_mapped(button))
+                g_error("Expected the current visible more-menu button");
+            g_set_object(&saved_more_button, button);
+        } else if (g_str_equal(action, "activate-retired-more")) {
+            if (!saved_more_button || gtk_widget_get_mapped(saved_more_button))
+                g_error("Expected a retired more-menu button");
+            /* Public widget activation is deliberately NOT pointer evidence.
+             * This negative checks a retained old instance cannot act anew. */
+            gtk_button_clicked(GTK_BUTTON(saved_more_button));
+            g_clear_object(&saved_more_button);
+        } else if (g_str_equal(action, "capture-more")) {
+            GtkWidget *popup = find_named_widget(report_window, "typelay-more-popup");
+            if (!popup || !gtk_widget_is_drawable(popup)) g_error("Expected a mapped more popup");
+            gint width = gtk_widget_get_allocated_width(popup), height = gtk_widget_get_allocated_height(popup);
+            if (width <= 0 || height <= 0) g_error("More popup allocation missing");
+            cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+            cairo_t *cr = cairo_create(surface);
+            /* Real current GtkWidget draw, not a compositor screenshot. The
+             * surrounding test separately requires mapped/painted input hits. */
+            gtk_widget_draw(popup, cr);
+            cairo_destroy(cr);
+            char *image = g_strdup_printf("%s.more.png", path);
+            cairo_status_t status = cairo_surface_write_to_png(surface, image);
+            cairo_surface_destroy(surface); g_free(image);
+            if (status != CAIRO_STATUS_SUCCESS) g_error("Cannot capture the current more popup");
+#endif
         } else if (g_str_equal(action, "reset-inactive-term")) {
             GtkWidget *term = find_named_widget(report_window, "typelay-glossary-source");
             GtkWidget *client = term && GTK_IS_ENTRY(term) ? entry_client(term) : NULL;

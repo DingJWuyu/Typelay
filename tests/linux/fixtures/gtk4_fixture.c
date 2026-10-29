@@ -4,6 +4,7 @@
 #include <json-glib/json-glib.h>
 #include "../../../src/linux/native/fcitx5/typelay-fcitx-v1.h"
 #include "../support/fixture_state.h"
+#include "gtk_font_observation.inc"
 
 /* Only the isolated test executable writes this evidence. Production has no
  * command to dump source text, inject input or change a test model. */
@@ -897,6 +898,12 @@ static gboolean report_state(gpointer unused) {
             gtk_text_buffer_get_bounds(buffer, &first, &last);
             char *text = gtk_text_buffer_get_text(buffer, &first, &last, TRUE);
             json_builder_set_member_name(builder, "text"); json_builder_add_string_value(builder, text);
+            report_font_runs(builder, candidate, text, "fontRuns");
+            gboolean host_map = pango_context_get_font_map(font_context)
+                == pango_context_get_font_map(gtk_widget_get_pango_context(report_window));
+            json_builder_set_member_name(builder, "usesHostFontMap");
+            json_builder_add_boolean_value(builder, host_map);
+            if (host_map) report_font_runs(builder, report_window, text, "hostFontRuns");
             g_free(text);
             json_builder_end_object(builder);
         } else json_builder_add_null_value(builder);

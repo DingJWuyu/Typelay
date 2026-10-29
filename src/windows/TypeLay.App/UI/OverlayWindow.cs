@@ -1280,7 +1280,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         if (!idle)
             bodyHeight = Math.Max(38, Math.Min(bodyHeight, position.Height / scale - 72 - glossaryHeight));
         bool showing = !IsVisible;
-        bool animate = _clientAreaAnimation() && !_settings.ReduceMotion;
+        bool animate = !_settings.ShouldReduceMotion(!_clientAreaAnimation());
         if (showing || !animate)
             ResetFade();
         if (showing && animate)
@@ -1373,7 +1373,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         if (_heightFrameTime == frameTime)
             return;
         _heightFrameTime = frameTime;
-        bool animate = _clientAreaAnimation() && !_settings.ReduceMotion;
+        bool animate = !_settings.ShouldReduceMotion(!_clientAreaAnimation());
         bool settled;
         if (!animate)
         {

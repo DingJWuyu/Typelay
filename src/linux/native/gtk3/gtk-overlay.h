@@ -2,6 +2,7 @@
 #include "gtk-target.h"
 
 /* Presentation is parent-relative; product state and edit authorization stay in Runtime. */
+void tl_overlay_prepare_fonts(void);
 gboolean tl_overlay_contains(GtkWidget *widget);
 gboolean tl_overlay_bindings_ready(Target *target);
 /* Only this target's current inline form retires source acceptance readiness. */

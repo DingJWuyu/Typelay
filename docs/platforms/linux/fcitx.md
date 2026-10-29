@@ -45,7 +45,7 @@ python packaging/linux/fcitx-cooperative/pack.py \
 
 包内包含私有运行库、原始许可证、修改后的对应源码、补丁、固定来源校验和与重建脚本。保留整个源码与许可证目录后再分发；不要只抽取修改后的二进制。LGPL 组件的原 SPDX 声明及修改说明保留在源码中。系统库版本、构建记录与文件校验和见包内 manifest.json。
 
-组件包的 `fonts/` 保留原始 Inter 与 Source Serif 4 字体、各自 OFL 许可和来源说明，文件纳入包清单；缺失或篡改时拒绝预检与受管准备。逐应用启动器只在请求的 UI 子进程中设置绝对 `TYPELAY_UI_FONT_ROOT`，指向当前搬迁后的组件字体目录，不改变父进程环境、`HOME`、完整主包的 `TYPELAY_HOME` 或宿主 fontconfig。GTK/Qt 合作浮层优先读取该显式字体根，未设置时仍使用 `TYPELAY_HOME/fonts`。GTK 的私有字体注册要求 Pango 1.56 或更新版本，旧版仍回退系统字体，CJK 字形也仍使用平台回退，不保证逐像素一致。
+组件包的 `fonts/` 包含锁定的 Inter、Source Serif 4 与简体中文、日文、韩文 Noto 字体，保留 OFL 许可与来源说明；构建时准备完整离线资源，缺失或篡改时拒绝预检与受管准备。逐应用启动器只在请求的 UI 子进程中设置绝对 `TYPELAY_UI_FONT_ROOT`，指向当前搬迁后的组件字体目录，不改变父进程环境、`HOME`、完整主包的 `TYPELAY_HOME` 或宿主 fontconfig。GTK/Qt 合作浮层优先读取该显式字体根，未设置时仍使用 `TYPELAY_HOME/fonts`。GTK 使用 PangoFc 1.38 起支持的私有 Fontconfig 配置和私有字体映射，在连接宿主前一次准备，只附到 TypeLay 浮层；不修改应用的默认映射。选择系统字体时不附加该映射，恢复宿主字体继承。Qt 在应用进程注册受控字体文件，系统选项沿用应用默认字体。原生字体验收必须运行对应平台回归，检查 GTK/Pango 字体身份与 Qt 文档字形字体表，不以 CSS 族名字符串证明加载成功；繁体专用字体和 Source Serif 光学尺寸仍须单独核验，不能据此宣称逐像素一致。
 
 ### 预检
 

@@ -45,7 +45,10 @@
     {
       "resources": [
         "fonts/inter/*.ttf",
-        "fonts/source-serif/*.ttf"
+        "fonts/source-serif/*.ttf",
+        "fonts/noto-sans/*.otf",
+        "fonts/noto-sans/*.ttf",
+        "fonts/noto-serif/*.otf"
       ],
       "matches": [
         "http://*/*",

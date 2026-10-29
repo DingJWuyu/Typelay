@@ -14,11 +14,11 @@
 
 当前代码见 [work/linux-usability](https://github.com/DingJWuyu/Typelay/tree/work/linux-usability)。最近已结束完整回归的参考检查点为 [`2e2e747`](https://github.com/DingJWuyu/Typelay/commit/2e2e747f263c404f1cb57dfbbda300899929ecde)，[对应 CI544](https://github.com/DingJWuyu/Typelay/actions/runs/40849916681) 已终态失败。该批包括已审的原生自有草稿布局与有界诊断、Linux 公开导航与焦点滚动、浏览器独立菜单、Windows 加载态/动效观察及 Hy 公开定位修补。它不包含后续 CJK 字体、Source Serif 角色字重或共享模型能力开放。 CI544 已逐条确认前批加载态与两项真实动效修补通过，Hy 及两端 Index 生命周期通过；整体仍因 Windows 前台预检/菜单、浏览器与 Notepad，以及 Linux 公开 UI/合作模块路径失败而未验收。
 
-CI543 共享检查及 Windows/Linux Index 正式包生命周期通过。Windows App 980 项中 977 项通过、3 项失败：加载态测试仍期待编辑器，以及两项动效测试在异步 Click 返回后才观察起点。修补保留真实 Click、逐帧动画、焦点和原期限，已独立审查，待下一 CI。前轮 16 项前台预检失败本轮未复现，不据此推断旧问题根因。
+当前已发布第六候选 [`fbce3ae`](https://github.com/DingJWuyu/Typelay/commit/fbce3aedd9126b297614c84f34455c7e14f8b841)，[CI545](https://github.com/DingJWuyu/Typelay/actions/runs/40857811719) 已终态失败。早期结构化 Windows App 结果为总 1006、执行 984、通过 983、失败 1、未执行 22；原 17 项导航前台失败本轮通过，新增自有置顶清理回归通过，不据此宣称 Terminal 根因已证实。剩余真实鼠标菜单项命中失败：目标 popup 可见且 native Topmost，原命中仍为 Terminal，继续保留真实命中门定位。共享检查、Windows Index 与 Hy 生命周期成功；此窄测试提交按范围跳过 Linux，不能当双端验收。浏览器 800 DIP 几何修复后 setup、automatic-preview-tab、on-demand-settings 通过，当前新红是 direct-selection / wait-public-command-ready；Notepad 可信输入条件未满足的两场景仍未执行。
 
-Windows 后段浏览器连接确认通过，但返回源字段的可见布局前提不足；Notepad 自动接受仍拒绝缺少可信来源输入，不能放宽；Hy 真实推理 3.825 秒完成，但测试仍等已退休的状态文本。正分别迁移公开状态定位和补有界几何证据，不将这些路径计为通过。
+Windows 新语言页及统一 CJK 消费正在独立审查和最后增量编译，尚未发布或取得当前 WPF 渲染证据。Linux 新语言页已实际通过选择、搜索键盘、旧实例失效与保存回归。跨窗口 CSS 污染经真实旧实现红断言、新作用域实现绿断言验证修复；新 DLL 双语名称与浅深页也通过。进一步公开 AT-SPI 测试发现真实 popup 父链为 19 层而旧 helper 只容 16；改有界 24 层、循环拒绝并保全部祖先资格后，真实选择/写盘失败恢复通过。托盘搜索仍在初次 popup 映射后失焦，尚未定位根因；SVG 着色正在消除运行时 Cairo bridge 依赖错误。几何与字形已取得真实证据，但仍不把这些子项算完整页面闭环。
 
-Linux 设置/教程/GIMP 公开导航、实际焦点滚动与完整裁剪修补已独立审查，并经真实 AT-SPI 辅助路径验证，待完整 CI。GTK 长文自有草稿布局修补与 GTK4/Qt 有界几何诊断已审；GTK4 原固定点指针资格和收缩高度、Qt 后续视图打断动效仍待实际平台证据。
+CI544 Linux 原件分别显示应用选择器可访问名称重名、教程控件非 showing、设置未保存关闭弹窗抢前台，以及 GTK4 首呈现/Qt 第二次反向点击问题；各由真实控制所有者修复，不归为一个泛化环境错误。Qt 初次展开与同源续期通过，第二点击可能因 subprocess 延迟点位过期，采用预连接公开 XTest 单次注入检验，不增加重试或改高度/期限。GTK4 首次映射后未绘制即消失仍待证据。原始 glossary artifact 中 GTK4 40/40 通过，失败是 GTK3 第 20 例后的 textview / ValidTranslation / save 同表面 hover deadline；不得按 artifact 名字误判平台。
 
 CI 在部分失败后继续执行后续步骤；进入打包不能证明前序成功。逐项检查实际 `conclusion`、结构化结果和精确源码身份。
 已发布检查点的本地验证包括真实 Chromium 74 项交互合同、Linux GTK 设置持久化/术语和应用撤销/语言/托盘流程，以及共享运行时、协议、worker 与分发合同。Windows 托管编译通过不等于 WPF 实际运行。当前 Linux 修补还通过真实 AT-SPI 八页导航、模式即时保存、快捷键录制与还原；不替代真实模型路径验收。两端完整包、原生合作模块和最终界面状态仍在验证，视觉差异不能计为一比一完成。
@@ -27,19 +27,34 @@ Index 能力放行表保持关闭。真实固定样本存在权限语义和严�
 
 当前已发布修补覆盖 WPF 几何、对比度、菜单焦点和旧交互实例，以及 Linux 八页导航、即时保存和实际控件录制流程。已发布浏览器检查点本地真实完整 74 项通过。后续独立弹出菜单候选已在独占窗口完成 78 项通过；此前 76 项运行的 2 个新视图正控过期失败原件保留，同期负载重叠不是根因证明，不提高期限。此前全量出现一次持键激活与预期拒绝不符，以及接受路径失败；单次旁观诊断与本次通过均未解释原失败，不能标记根因已修复。保留有界可信事件与命令证据，后续正常全量继续核查，不刷新授权或放宽时限。
 
-Windows 后续修补已在该参考提交的独立源码副本完成官方格式与 App.Tests/DesktopFixture 编译：自有导航 caller 临时置顶仅到真实前台成立，源准备之前清除并读回；浏览器场景使用真实支持的 800 DIP 设置宽度，保留原可见源与命中要求。弹出菜单失败仅增加有界旁观证据。这些均待新 CI 实际验证，不据编译或过去偶然通过宣称环境根因已解决。
+### 当前失败的原件定位
+
+下列路径均相对于被忽略的 `artifacts/ui-rebuild/`；判断以文件内结果为准，不以步骤名或包名推断。
+
+| 原件 | 实际 case / stage | 当前结果 |
+| --- | --- | --- |
+| `ci545/contracts/*10_30_54*.trx` | `RegenerateKeepPreservesTheDraftAndExplicitReplacementRunsOnlyOnce(mouse:true)`，第二菜单项 `before-pointer-move` | 命中 Terminal 而非 popup，未注入第二点击；后来几何不是原始同帧证据 |
+| `ci545/windows/browser-cooperation/result.json` | `direct-selection / wait-public-command-ready` | 公开就绪等待失败；旧几何与自动预览/按需设置已通过 |
+| `ci545/windows/ordinary-notepad/result.json` | `automatic-accept-and-undo / trusted-source-input-required` | 未尝试；后续 edit-return 依赖未运行，不是已接受 |
+| `ci544/gtk4-early/gtk3-glossary-{result,clicks}.json` | `textview / ValidTranslation / save` | 20 例后固定点 hover 失败，控件已从旧矩形移走，未点击 |
+| `ci544/gtk4-early/gtk4-glossary-result.json` | 40 个 glossary case | 全部通过；不属于当前待修项，不代表模型质量放行 |
+| `ci544/linux/linux/gtk-desktop/{inside.log,failure.png}` | `set_session_keys` 后 `edit_and_accept → enter_source / clear-source` | 设置脏关闭模态仍前台，源失焦正确拒绝 |
+| `ci544/linux/linux/gtk4-desktop/gtk-reentry-language-options-unchanged-click.json` | 自有语言 popup 首次呈现 | 首帧前 unmapped，未 paint；源仍聚焦，原因待证 |
+| `ci544/linux/linux/qt-desktop/{qt-motion-reverse.json,qt-overlay-clicks.jsonl}` | 第二次展开打断 collapse | 初展通过，第二 click 实际命中待新有界观测；末高 167 而非 360 |
 
 ## 当前负责人及下一动作
 
 | 责任线 | 下一动作 | 完成依据 |
 | --- | --- | --- |
 | 集成 | 发布经审查的精确源码修补并跟踪双端 CI | 逐项结果、真实包和独立审查 |
-| Windows UI | CI544 早期仍有同一 Terminal 遮挡的 18 项预检失败；查自有测试窗口前台资格与正常激活，不放宽真实命中 | 新版实际操作与像素对照，不以编译替代 |
-| Linux UI | 用可用 Atspi 依赖验证有界导航和新版设置操作 | 实际 GTK/AT-SPI，再跑模型与第三方应用路径 |
+| Windows UI | 完整语言页独审、最终编译并发布取得真实截图；菜单点击剩余失败另按原件定位 | 新版实际操作与像素对照，不以编译替代 |
+| Linux UI | 修复跨窗口 CSS 字体污染，完成语言页实际主机 DTO、搜索和选择验收，再进入术语页 | 实际 GTK/AT-SPI，再跑模型与第三方应用路径 |
 | 合作浮层 | 独立组件字体包装和 GTK3 原固定点点击合同已修待 CI；继续 GTK4 几何验收 | 同平台有界几何原件及真实打包路径，不用资源探针冒充完整合作运行 |
-| 共享模型能力 | 额外保义提示经两份独立评审无有效提升，已退役；术语专用 feature-delta 验证已按冻结方案单次运行：10 源 20 翻译完成，第 21 次 G07 普通请求因结构未保留停止，后续 19 次未运行；原件保留。获准仅续未执行项的新会话在 G07 术语请求触发原 60 秒超时后终止；两会话合计 22 个唯一请求，20 译文、1 结构拒绝、1 超时，余 18 项未执行。无重试、无质量放行；当前只静态定位保护格式链路，不再自动采集 | 与未改普通基线比较功能收益和重大退化；不是质量放行，换种说法单列后续验收 |
+| 共享模型能力 | 额外保义提示经两份独立评审无有效提升，已退役；术语专用 feature-delta 验证已按冻结方案单次运行：10 源 20 翻译完成，第 21 次 G07 普通请求因结构未保留停止，后续 19 次未运行；原件保留。获准仅续未执行项的新会话在 G07 术语请求触发原 60 秒超时后终止；两会话合计 22 个唯一请求，20 译文、1 结构拒绝、1 超时，余 18 项未执行。无重试、无质量放行；诊断已确认 greedy token 边界吸入输出句号造成保护串误拒，窄源锚定后处理已真实原件回放 RED→GREEN，独立审查及全 worker 207 项通过；当前新身份仅改返回校验，固定 G07–G16 共 20 次实际验证已终态：18 译文、G08 两次安全结构拒绝，118.485 秒且 worker 正常退出；G07 两模式真实结构成功，独立 feature-delta 评审与精确执行 profile 绑定待收口，旧失败保留，原新会话超时仍未解释，禁止自动重试 | 与未改普通基线比较功能收益和重大退化；不是质量放行，换种说法单列后续验收 |
 | 离线字体 | 官方 CJK 与统一字体包的生产准备已成功，正在接双端与合作模块实际字体选择 | 包内离线、正确族名/字重、真实渲染；CJK 和 Source Serif 500 是本次未完成义务，不是允许留空的未来功能 |
 | 独立审查 | 核对测试迁移与浏览器资格失败观测 | 不削弱写回、IME、身份、期限或取消合同 |
+
+共享三态动效存储/协议与语言双语呈现 helper 已通过针对性和运行时合同；各端消费者仍在整合，旧 bool UI 必须显式转换，`full` 必须覆盖系统减少动效。完整三态外观页尚未验收，不能单发存储变化造成开关无效。
 
 ## 接下来必须完成
 
@@ -52,4 +67,4 @@ Windows 后续修补已在该参考提交的独立源码副本完成官方格式
 
 输入来源、焦点身份、IME 状态、租约、接受资格、写回与 Undo 安全条件不因界面重构而放宽。耗时敏感的桌面/浏览器验收与重 CPU 构建、模型采集统一排程；模型窗口仅在采集器就绪且其他动态作业确认结束后开始，等待准备期间继续静态实现和审查。物理按键、真实 IME、UIAccess 和第三方应用需要各自证据，软件注入不替代可信来源接受。新空库存默认 Index，保留已有 Argos/Hy、显式选择及方向；不自动下载或替换，修复失败保旧代。
 
-已发布字体为随包 OFL Inter 与 Source Serif 4。未发布的统一离线 CJK 包准备与包装回归已通过，WPF 消费已编译、GTK 实际字形已验证；浏览器六组区域及字族实际字形已验证，合作模块实际字形、Source Serif 500 与光学尺寸仍待完成。模型权重不进入源码或产品运行包。当前未更新稳定版、`main` 或既有体验推荐。
+已发布字体为随包 OFL Inter 与 Source Serif 4。未发布的统一离线 CJK 包准备与包装回归已通过，WPF 消费已编译、GTK 实际字形已验证；浏览器六组区域及字族实际字形与三态动效针对合同已验证；最新完整 80 项通过 79 项、菜单在 resize 观察结束时已脱离一项失败，已以只读证据确认测试 RAF/performance 混时基导致观察窗拉长，统一 performance 时基后针对例通过，待修后全量。合作模块实际字形、Source Serif 500 与光学尺寸仍待完成。模型权重不进入源码或产品运行包。当前未更新稳定版、`main` 或既有体验推荐。

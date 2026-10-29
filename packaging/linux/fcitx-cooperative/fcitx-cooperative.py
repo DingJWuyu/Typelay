@@ -17,16 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 SERVICE = "org.fcitx.Fcitx5"
-FONT_FILES = (
-    "fonts/inter/Inter-Regular.ttf",
-    "fonts/inter/Inter-Medium.ttf",
-    "fonts/inter/Inter-SemiBold.ttf",
-    "fonts/inter/LICENSE.txt",
-    "fonts/source-serif/SourceSerif4-Regular.ttf",
-    "fonts/source-serif/SourceSerif4-Semibold.ttf",
-    "fonts/source-serif/LICENSE.md",
-    "fonts/README.md",
-)
+FONT_LOCK = "source/eng/fonts/fonts.lock.json"
 SOURCE_VERSIONS = {
     "fcitx5": "5.1.22",
     "fcitx5-chinese-addons": "5.1.14",
@@ -195,11 +186,63 @@ def verify_qt(manifest):
     return observation
 
 
+def verify_fonts(manifest):
+    # The caller has already verified every manifest file, including this source lock.
+    # The manifest is bundle integrity evidence, not independent publisher authentication.
+    def read_json(relative):
+        with (ROOT / relative).open("rb") as stream:
+            body = stream.read(1024 * 1024 + 1)
+        if len(body) > 1024 * 1024:
+            raise RuntimeError(f"Bundled font metadata too large: {relative}")
+        return json.loads(body)
+
+    lock = read_json(FONT_LOCK)
+    if not isinstance(lock, dict) or lock.get("schemaVersion") != 1:
+        raise RuntimeError("Invalid bundled font lock")
+    records = lock.get("files")
+    if not isinstance(records, list) or not records:
+        raise RuntimeError("Invalid bundled font lock")
+    required = {"fonts/manifest.json"}
+    for item in records:
+        if not isinstance(item, dict):
+            raise RuntimeError("Invalid bundled font lock entry")
+        name = item.get("path")
+        if (
+            not isinstance(name, str)
+            or any(part in ("", ".", "..") for part in name.split("/"))
+            or "\\" in name
+            or type(item.get("bytes")) is not int
+            or item["bytes"] <= 0
+            or not isinstance(item.get("sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None
+        ):
+            raise RuntimeError("Invalid bundled font lock entry")
+        relative = "fonts/" + name
+        if relative in required:
+            raise RuntimeError("Duplicate bundled font lock entry")
+        required.add(relative)
+        if manifest["files"].get(relative) != {"sha256": item["sha256"]}:
+            raise RuntimeError(f"Required bundled UI font or license missing: {relative}")
+        if (ROOT / relative).stat().st_size != item["bytes"]:
+            raise RuntimeError(f"Bundled UI font size mismatch: {relative}")
+    if {name for name in manifest["files"] if name.startswith("fonts/")} != required:
+        raise RuntimeError("Bundled UI font file set mismatch")
+    expected = {
+        "schemaVersion": 1,
+        "files": [
+            {key: value for key, value in item.items() if key not in ("source", "instance")}
+            for item in records
+        ],
+    }
+    if read_json("fonts/manifest.json") != expected:
+        raise RuntimeError("Bundled UI font manifest differs from its source lock")
+
+
 def verify(*, gtk4=False, qt6=False):
     manifest = json.loads((ROOT / "manifest.json").read_text())
     if manifest.get("schemaVersion") != 1:
         raise RuntimeError("Unsupported bundle manifest")
-    for relative in FONT_FILES:
+    for relative in (FONT_LOCK, "fonts/manifest.json"):
         entry = manifest.get("files", {}).get(relative, {})
         if set(entry) != {"sha256"}:
             raise RuntimeError(f"Required bundled UI font or license missing: {relative}")
@@ -219,6 +262,7 @@ def verify(*, gtk4=False, qt6=False):
                 digest = hashlib.file_digest(stream, "sha256").hexdigest()
             if digest != expected["sha256"]:
                 raise RuntimeError(f"Bundle checksum mismatch: {relative}")
+    verify_fonts(manifest)
     sources = manifest["versions"].get("component_source_versions")
     if sources != SOURCE_VERSIONS:
         raise RuntimeError("Explicit private component source versions are missing or unsupported")

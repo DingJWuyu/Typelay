@@ -281,7 +281,13 @@ def exercise_model_lifecycle(
 
 
 def run(arguments):
-    from support.gtk_accessibility import Atspi, named, select_settings_page
+    from support.gtk_accessibility import (
+        Atspi,
+        language_label,
+        named,
+        select_language,
+        select_settings_page,
+    )
 
     sys.stdout = sys.stderr = (arguments.output / "inside.log").open("w", buffering=1)
     started, process = time.monotonic(), None
@@ -1021,13 +1027,12 @@ def run(arguments):
                 node.clear_cache()
                 assert node.get_state_set().contains(Atspi.StateType.SHOWING)
                 assert node.get_state_set().contains(Atspi.StateType.SENSITIVE)
-                assert Atspi.Selection.select_child(node.get_selection_iface(), index)
+                select_language(process.pid, "目标语言", destination)
                 wait(
                     lambda: languages(source, destination),
                     "language picker did not persist its choice",
                 )
-                selected = Atspi.Selection.get_selected_child(node.get_selection_iface(), 0)
-                actual_label = selected.get_name() if selected is not None else None
+                actual_label = language_label(node)
                 assert actual_label == label, (
                     f"selected target label {actual_label!r} differs from {label!r}"
                 )
@@ -1053,7 +1058,7 @@ def run(arguments):
             preview("Please send me the address.", stage="preview-en-zh")
             activate("交换语言")
             wait(lambda: languages("zh", "en"), "language swap did not restore the source")
-            target(4, "Français", "zh", "fr")
+            target(4, "法语", "zh", "fr")
             assert json.loads((paths.models / "installed.json").read_bytes()) == upgraded
             assert paths.models.parent.resolve(strict=True).name == previous_generation
             saved_settings = paths.settings.read_bytes()

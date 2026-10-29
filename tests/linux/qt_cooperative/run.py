@@ -12,6 +12,7 @@ import json
 import os
 import shlex
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
@@ -23,6 +24,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT))
+from eng.fonts.prepare import verify_bundle  # noqa: E402
 from eng.linux.cooperative import qt as qt_build  # noqa: E402
 from eng.linux.cooperative.inputs import QT_PIN, hashes, sha256  # noqa: E402
 
@@ -68,6 +70,26 @@ def counter_exceeds(observation, name, baseline=0):
     # Null means the provider has not published an observation yet, never zero.
     value = observation.get(name)
     return type(value) is int and type(baseline) is int and value > baseline
+
+
+def font_table_hashes(path):
+    """Independent SFNT bytes to compare with actual document QRawFont tables."""
+    import hashlib
+
+    with path.open("rb") as stream:
+        header = stream.read(12)
+        assert header[:4] in (b"OTTO", b"\x00\x01\x00\x00"), path
+        count = struct.unpack_from(">H", header, 4)[0]
+        records = [struct.unpack(">4sIII", stream.read(16)) for _ in range(count)]
+        result = {}
+        for tag, _, offset, length in records:
+            if tag in (b"name", b"OS/2", b"cmap", b"CFF ", b"glyf"):
+                stream.seek(offset)
+                data = stream.read(length)
+                assert len(data) == length, path
+                result[tag.decode("ascii")] = hashlib.sha256(data).hexdigest()
+        assert {"name", "OS/2", "cmap"} <= result.keys() and ({"CFF ", "glyf"} & result.keys())
+        return result
 
 
 def prepare_source_glossary_capture_basis(describe, settled, expected_field):
@@ -581,6 +603,12 @@ def ordered_controls(
     from support.xtest import prepare_key, prepare_xtest
     from wire import now_ms
 
+    # This suite starts compiled developer modules directly, not the product
+    # launcher. Use the same verified offline build input, without redefining
+    # TYPELAY_HOME or downloading anything in the UI process.
+    font_root = ROOT / "artifacts/ui-fonts"
+    verify_bundle(font_root)
+
     identity = env.get("WAYLAND_DISPLAY", "") + "\n" + env.get("NIRI_SOCKET", "")
     directory = (
         Path(env["XDG_RUNTIME_DIR"])
@@ -612,7 +640,7 @@ def ordered_controls(
         server.listen(1)
         server.settimeout(10)
         environment = env | {
-            "TYPELAY_HOME": str(ROOT / "src/shared/ui"),
+            "TYPELAY_UI_FONT_ROOT": str(font_root),
             "QT_PLUGIN_PATH": f"{out / 'plugins'}:{out / 'native/qt6'}",
             "QT_QPA_GENERIC_PLUGINS": "typelay",
             "TYPELAY_FCITX_COOPERATIVE": "1",
@@ -1218,6 +1246,7 @@ def ordered_controls(
                     revision,
                     translation_actions=None,
                     appearance=None,
+                    target_language="zh-CN",
                 ):
                     target = publication["target"]
                     identity = publication["permit"]["plan"]["expected"]["target"]
@@ -1225,6 +1254,7 @@ def ordered_controls(
                         "state": state,
                         "text": text,
                         "editable": True,
+                        "targetLanguage": target_language,
                         "viewContext": {
                             "token": {
                                 "target": identity,
@@ -1285,6 +1315,7 @@ def ordered_controls(
                     assert not actual["editorFocused"]
                 native.call("overlay-hide")
                 result["updating_translation_muted_and_manual_states_normal"] = True
+                fixture("observe-fonts", enabled=True)
                 for revision, (font, size, family) in enumerate(
                     (
                         ("claude", 13, "Source Serif 4"),
@@ -1309,15 +1340,86 @@ def ordered_controls(
                     )["visible"]
                     actual = wait(
                         lambda: value
-                        if (value := state()).get("editorFontPixels") == size
-                        and family.lower() in value.get("editorFontFamily", "").lower()
+                        if (value := state()).get("editorVisible")
+                        and value.get("editorFontPixels") == size
+                        and (
+                            value.get("editorFontFamily") == value.get("applicationFontFamily")
+                            if font == "system"
+                            else family.lower() in value.get("editorFontFamily", "").lower()
+                        )
                         else None,
                         "actual Qt font preference did not reach the rendered editor",
                     )
                     assert actual["first"] == source_before
                     assert not actual["editorFocused"] and actual["editorReadOnly"]
+                    if font == "system":
+                        runs = actual.get("editorFontRuns") or []
+                        host_face = actual.get("applicationFontFace") or {}
+                        assert host_face == actual.get("initialApplicationFontFace"), actual
+                        host_cjk = actual.get("applicationCjkFonts") or []
+                        assert len(host_cjk) == 3 and all(host_cjk), actual
+                        assert host_cjk == actual.get("initialApplicationCjkFonts"), (
+                            "TypeLay registration changed the host application's CJK fallback",
+                            host_cjk,
+                            actual.get("initialApplicationCjkFonts"),
+                        )
+                        assert {"name", "OS/2", "cmap"} <= host_face.keys()
+                        assert runs and all(
+                            run.get("missingGlyphs") == 0
+                            and all(run.get(tag) == digest for tag, digest in host_face.items())
+                            for run in runs
+                        ), actual
                 native.call("overlay-hide")
                 result["appearance_does_not_acquire_editor_or_source_authority"] = True
+                faces = result["offline_font_faces"] = []
+                for revision, (font, language, text, file) in enumerate(
+                    (
+                        ("claude", "zh-CN", "汉字翻译", "noto-serif/NotoSerifSC-Regular.otf"),
+                        ("sans", "zh-CN", "汉字翻译", "noto-sans/NotoSansSC-Regular.otf"),
+                        ("claude", "ja", "日本語翻訳", "noto-serif/NotoSerifJP-Regular.otf"),
+                        ("sans", "ja", "日本語翻訳", "noto-sans/NotoSansJP-Regular.otf"),
+                        ("claude", "ko", "한국어번역", "noto-serif/NotoSerifKR-Regular.otf"),
+                        ("sans", "ko", "한국어번역", "noto-sans/NotoSansKR-Regular.otf"),
+                    ),
+                    40,
+                ):
+                    expected = font_table_hashes(font_root / file)
+                    assert render_view(
+                        publication,
+                        "ValidTranslation",
+                        text,
+                        False,
+                        revision,
+                        appearance={"font": font, "reduceMotion": True},
+                        target_language=language,
+                    )["visible"]
+
+                    def correct_face():
+                        value = state()
+                        runs = value.get("editorFontRuns") or []
+                        if value.get("editorText") != text or not runs:
+                            return None
+                        if any(
+                            run.get("missingGlyphs") != 0
+                            or any(run.get(tag) != digest for tag, digest in expected.items())
+                            for run in runs
+                        ):
+                            return None
+                        return value
+
+                    actual = wait(correct_face, f"{font}/{language}: offline Qt face not observed")
+                    assert actual["first"] == source_before
+                    assert not actual["editorFocused"] and actual["editorReadOnly"]
+                    faces.append(
+                        {
+                            "font": font,
+                            "target": language,
+                            "file": file,
+                            "runs": actual["editorFontRuns"],
+                        }
+                    )
+                fixture("observe-fonts", enabled=False)
+                native.call("overlay-hide")
 
                 # Controlled view data exercises the real QLineEdit/QPlainTextEdit/Fcitx/JSON
                 # adapter. It never enables a production gate or claims model quality.

@@ -225,8 +225,7 @@ internal static partial class BrowserCooperationCheck
                     if (statuses.Length == 0)
                         return false;
                     var status = statuses[0];
-                    var viewport = settings.FindFirst(TreeScope.Descendants,
-                        new PropertyCondition(AutomationElement.ClassNameProperty, "ScrollViewer"));
+                    var viewport = SettingsPageActions.ContainingScrollViewport(settings, status, ct);
                     var bounds = status.Current.BoundingRectangle;
                     return viewport is not null && !viewport.Current.IsOffscreen && !bounds.IsEmpty
                         && bounds.Width > 0 && bounds.Height > 0 && settingsBounds.Contains(bounds)

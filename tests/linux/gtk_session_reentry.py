@@ -160,9 +160,6 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
     replacement = "Replacement body."
     child_environment = {
         **environment,
-        "TYPELAY_HOME": environment.get(
-            "TYPELAY_HOME", str(Path(__file__).resolve().parents[2] / "src/shared/ui")
-        ),
         "XDG_RUNTIME_DIR": str(runtime),
         "WAYLAND_DISPLAY": str(display),
         "TYPELAY_FIXTURE_STATE": str(state_path),
@@ -170,6 +167,17 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
         "TYPELAY_FIXTURE_REENTRY_STAGE": stage,
         "TYPELAY_FIXTURE_REENTRY_TEXT": replacement,
     }
+    if len(command) == 1:
+        # The direct developer fixture has no production package launcher to
+        # supply its private font root. Require the same complete offline bundle
+        # as Qt; never silently qualify a five-font source-tree fallback.
+        root = Path(__file__).resolve().parents[2]
+        sys.path.insert(0, str(root))
+        from eng.fonts.prepare import verify_bundle
+
+        font_root = root / "artifacts/ui-fonts"
+        verify_bundle(font_root)
+        child_environment["TYPELAY_UI_FONT_ROOT"] = str(font_root)
     child_environment.pop("TYPELAY_FIXTURE_TWO_WINDOWS", None)
 
     if stage == "footer":
@@ -796,15 +804,32 @@ def check_preview_appearance(client, source, generation, state, initial, evidenc
                     "fontFamily": candidate.get("fontFamily"),
                     "foreground": controls.get("typelay-dot", {}).get("foreground"),
                     "applyText": controls.get("typelay-apply-languages", {}).get("text"),
+                    "fontRuns": candidate.get("fontRuns"),
+                    "hostFontRuns": candidate.get("hostFontRuns"),
+                    "usesHostFontMap": candidate.get("usesHostFontMap"),
                 }
             if (
                 value.get("observedAtMs", 0) <= after
                 or candidate.get("fontPixels") != size
-                or family.lower() not in candidate.get("fontFamily", "").lower()
+                or font != "system"
+                and family.lower() not in candidate.get("fontFamily", "").lower()
                 or controls.get("typelay-dot", {}).get("foreground") != color
                 or controls.get("typelay-apply-languages", {}).get("text") != label
             ):
                 return None
+            if font == "system":
+                runs = (candidate.get("fontRuns") or {}).get("runs") or []
+                host_runs = (candidate.get("hostFontRuns") or {}).get("runs") or []
+                if (
+                    candidate.get("usesHostFontMap") is not True
+                    or not runs
+                    or not host_runs
+                    or any(run.get("missingGlyphs") != 0 for run in runs)
+                    or any(not (run.get("font") or {}).get("checksum") for run in runs + host_runs)
+                    or {(run.get("font") or {}).get("checksum") for run in runs}
+                    != {(run.get("font") or {}).get("checksum") for run in host_runs}
+                ):
+                    return None
             return value
 
         actual = wait_for(
@@ -814,6 +839,61 @@ def check_preview_appearance(client, source, generation, state, initial, evidenc
         assert actual["focus"] == "fixture-first"
         assert actual["first"] == initial["first"] and actual["second"] == initial["second"]
         phase.update(fontFamily=actual["candidate"]["fontFamily"], fontPixels=size)
+
+    # Family strings are requests, not evidence that the offline face shaped
+    # the text. Compare Pango's observed font identity with the locked bytes.
+    font_lock = json.loads(
+        (Path(__file__).resolve().parents[2] / "eng/fonts/fonts.lock.json").read_text()
+    )
+    files = {item["path"]: item for item in font_lock["files"]}
+    for revision, (font, target, sample, file) in enumerate(
+        (
+            ("claude", "zh-CN", "汉字翻译", "noto-serif/NotoSerifSC-Regular.otf"),
+            ("sans", "zh-CN", "汉字翻译", "noto-sans/NotoSansSC-Regular.otf"),
+            ("claude", "ja", "日本語翻訳", "noto-serif/NotoSerifJP-Regular.otf"),
+            ("sans", "ja", "日本語翻訳", "noto-sans/NotoSansJP-Regular.otf"),
+            ("claude", "ko", "한국어번역", "noto-serif/NotoSerifKR-Regular.otf"),
+            ("sans", "ko", "한국어번역", "noto-sans/NotoSansKR-Regular.otf"),
+        ),
+        40,
+    ):
+        phase = {"font": font, "targetLanguage": target, "fontFile": file}
+        phases.append(phase)
+        assert render_preview(
+            client,
+            source,
+            generation,
+            revision,
+            "fixture exit",
+            appearance={"font": font, "reduceMotion": True},
+            language_view={"targetLanguage": target},
+            text=sample,
+        )["visible"]
+        after = time.monotonic_ns() // 1_000_000
+
+        def offline_face():
+            value = state()
+            candidate = value.get("candidate") or {}
+            observation = candidate.get("fontRuns") or {}
+            phase["lastObservation"] = observation
+            runs = observation.get("runs") or []
+            if (
+                value.get("observedAtMs", 0) <= after
+                or candidate.get("text") != sample
+                or not runs
+                or any(
+                    run.get("missingGlyphs") != 0
+                    or (run.get("font") or {}).get("checksum") != files[file]["sha256"]
+                    for run in runs
+                )
+            ):
+                return None
+            return value
+
+        actual = wait_for(offline_face, f"{font}/{target}: bundled face did not shape live preview")
+        assert not actual["candidate"]["editable"] and not actual["candidate"]["focused"]
+        assert actual["focus"] == "fixture-first"
+        assert actual["first"] == initial["first"] and actual["second"] == initial["second"]
 
 
 def check_language_retention_refusal(

@@ -29,10 +29,14 @@ $env:PYTHONPATH = Join-Path $root 'src/shared/TypeLay.Worker'
 $artifacts = Join-Path $root 'artifacts'
 $archive = Join-Path $artifacts 'TypeLay-Windows-preview.zip'
 
+function Prepare-UiFonts {
+    Invoke-Checked python @('eng/fonts/prepare.py', '--output', (Join-Path $artifacts 'ui-fonts'))
+}
 function Restore-Workspace {
     Invoke-Checked dotnet @('restore', 'TypeLay.slnx', '--locked-mode')
 }
 function Build-Workspace {
+    Prepare-UiFonts
     Restore-Workspace
     Invoke-Checked dotnet @('build', 'TypeLay.slnx', '-c', $Configuration, '--no-restore', '-warnaserror')
 }
@@ -48,12 +52,15 @@ function Publish-Distribution([bool]$SelfContained) {
     }
     $base = if ($SelfContained) { 'package' } else { 'dev' }
     $stage = Join-Path $artifacts "$base/TypeLay"
+    $fontRoot = Join-Path $artifacts 'ui-fonts'
+    Prepare-UiFonts
     if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
     New-Item -ItemType Directory -Force $stage | Out-Null
     foreach ($project in @('TypeLay.App', 'TypeLay.Broker', 'TypeLay.Practice', 'TypeLay.BrowserHost')) {
         Invoke-Checked dotnet @('publish', "src/windows/$project/$project.csproj", '-c', $Configuration,
             '-r', 'win-x64', '--self-contained', $SelfContained.ToString().ToLowerInvariant(),
-            '-o', (Join-Path $stage 'app'), '-p:PublishSingleFile=false', '-p:PublishTrimmed=false')
+            '-o', (Join-Path $stage 'app'), '-p:PublishSingleFile=false', '-p:PublishTrimmed=false',
+            "-p:TypeLayUiFontRoot=$fontRoot")
     }
     if ($SelfContained) {
         # Resolve actual packs; preserve every upstream license/notice without inventing absent files.
@@ -77,6 +84,8 @@ function Publish-Distribution([bool]$SelfContained) {
             }
         }
     }
+    Copy-Item -LiteralPath $fontRoot -Destination (Join-Path $stage 'fonts') -Recurse
+    Invoke-Checked python @('eng/fonts/prepare.py', '--output', (Join-Path $stage 'fonts'), '--verify')
     # The deployment surface is explicit. Never copy a repository, developer data, or model cache.
     New-Item -ItemType Directory -Force (Join-Path $stage 'worker/typelay_worker') | Out-Null
     Copy-Item 'src/shared/TypeLay.Worker/run_worker.py', 'src/shared/TypeLay.Worker/requirements.txt', 'src/shared/TypeLay.Worker/model-catalog.json' (Join-Path $stage 'worker')
@@ -107,7 +116,8 @@ function Publish-Distribution([bool]$SelfContained) {
     foreach ($size in @(16, 48, 128)) {
         Copy-Item "src/shared/browser/icons/typelay-$size.png" (Join-Path $stage 'browser/chromium/icons')
     }
-    Copy-Item 'src/shared/ui/fonts' (Join-Path $stage 'browser/chromium/fonts') -Recurse
+    Copy-Item -LiteralPath $fontRoot -Destination (Join-Path $stage 'browser/chromium/fonts') -Recurse
+    Invoke-Checked python @('eng/fonts/prepare.py', '--output', (Join-Path $stage 'browser/chromium/fonts'), '--verify')
     Copy-Item 'src/windows/browser/manifest.chromium.json' (Join-Path $stage 'browser/chromium/manifest.json')
     Copy-Item 'src/windows/browser/connection.chromium.json' (Join-Path $stage 'browser/chromium/connection.json')
     Copy-Item 'docs/platforms/windows/README.md' (Join-Path $stage 'README.md')

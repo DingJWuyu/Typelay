@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 project(typelay_linux_gtk4 LANGUAGES C)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(TYPELAY_GTK4 REQUIRED IMPORTED_TARGET gtk4 json-glib-1.0)
+pkg_check_modules(TYPELAY_GTK4 REQUIRED IMPORTED_TARGET gtk4 json-glib-1.0 pangoft2>=1.38 fontconfig)
 add_library(typelay-gtk4 SHARED gtk-module.c gtk-target.c gtk-overlay.c)
 target_link_libraries(typelay-gtk4 PRIVATE PkgConfig::TYPELAY_GTK4 m)
 set_target_properties(typelay-gtk4 PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_VISIBILITY_PRESET hidden)

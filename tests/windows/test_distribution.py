@@ -1,6 +1,7 @@
 """Test the shipped ZIP after relocation. Model inference and physical GUI input are separate gates."""
 
 import ctypes
+import hashlib
 import json
 import os
 import queue
@@ -157,6 +158,14 @@ class DistributionTests(unittest.TestCase):
 
     def test_browser_icons_survive_relocation(self):
         extension = self.home / "browser/chromium"
+        font_files = {
+            item["path"]: item
+            for item in json.loads(
+                (Path(__file__).resolve().parents[2] / "eng/fonts/fonts.lock.json").read_text(
+                    encoding="utf-8"
+                )
+            )["files"]
+        }
         self.assertEqual(
             {p.relative_to(extension).as_posix() for p in extension.rglob("*") if p.is_file()},
             {
@@ -167,24 +176,25 @@ class DistributionTests(unittest.TestCase):
                 "icons/typelay-16.png",
                 "icons/typelay-48.png",
                 "icons/typelay-128.png",
-                "fonts/README.md",
-                "fonts/inter/Inter-Regular.ttf",
-                "fonts/inter/Inter-Medium.ttf",
-                "fonts/inter/Inter-SemiBold.ttf",
-                "fonts/inter/LICENSE.txt",
-                "fonts/source-serif/SourceSerif4-Regular.ttf",
-                "fonts/source-serif/SourceSerif4-Semibold.ttf",
-                "fonts/source-serif/LICENSE.md",
+                "fonts/manifest.json",
+                *("fonts/" + name for name in font_files),
             },
         )
-        fonts = Path(__file__).resolve().parents[2] / "src/shared/ui/fonts"
-        for source in fonts.rglob("*"):
-            if source.is_file():
-                relative = source.relative_to(fonts)
-                with self.subTest(font=str(relative)):
-                    self.assertEqual(
-                        (extension / "fonts" / relative).read_bytes(), source.read_bytes()
-                    )
+        for font_root in (self.home / "fonts", extension / "fonts"):
+            self.assertEqual(
+                {p.relative_to(font_root).as_posix() for p in font_root.rglob("*") if p.is_file()},
+                set(font_files) | {"manifest.json"},
+            )
+            for name, item in font_files.items():
+                with self.subTest(root=str(font_root), font=name):
+                    content = (font_root / name).read_bytes()
+                    self.assertEqual(len(content), item["bytes"])
+                    self.assertEqual(hashlib.sha256(content).hexdigest(), item["sha256"])
+            recorded = json.loads((font_root / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                {item["path"]: item["sha256"] for item in recorded["files"]},
+                {name: item["sha256"] for name, item in font_files.items()},
+            )
         manifest = json.loads((extension / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(set(manifest["icons"]), {"16", "48", "128"})
         for size, name in manifest["icons"].items():

@@ -1180,6 +1180,36 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 item.get("event") == "accepted" for item in native.events[before:]
                             )
 
+                        def open_more():
+                            click("typelay-more" if toolkit == "gtk3" else "typelay-menu-trigger")
+                            if toolkit != "gtk3":
+                                return
+                            baseline = clicks[-1]["geometryReadiness"]["last"]["layout"][
+                                "candidate"
+                            ]
+                            actual = observe(
+                                lambda value: value
+                                if value.get("overlayControls", {})
+                                .get("typelay-more-popup", {})
+                                .get("visible")
+                                else None,
+                                "independent more popup visible",
+                            )
+                            assert {
+                                key: actual["candidate"][key] for key in baseline
+                            } == baseline, (
+                                "opening more moved the source candidate",
+                                baseline,
+                                actual["candidate"],
+                            )
+                            assert actual["focus"] == original["focus"]
+                            assert all(
+                                actual["overlayControls"][name]["visible"]
+                                and not actual["overlayControls"][name]["enabled"]
+                                for name in ("typelay-style-concise", "typelay-style-casual")
+                            )
+                            unchanged()
+
                         entry = {
                             "formId": str(uuid.uuid4()),
                             "token": token,
@@ -1210,8 +1240,54 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 "overlay-render",
                                 {**base, "expiresAtMs": now_ms() + 800, "view": view},
                             )["visible"]
-                        click("typelay-menu-trigger")
+                        open_more()
                         if check_inherit:
+                            if toolkit == "gtk3":
+                                previous = state()["overlayControls"]["typelay-glossary-add"][
+                                    "instance"
+                                ]
+                                host("capture-more")
+                                host("retain-more-button")
+                                execute("xdotool", "key", "Escape")
+                                observe(
+                                    lambda value: not value.get("overlayControls", {})
+                                    .get("typelay-more-popup", {})
+                                    .get("visible"),
+                                    "Escape retired only the current more popup",
+                                    require_visible=True,
+                                )
+                                assert not events("escape")
+                                open_more()
+                                assert (
+                                    state()["overlayControls"]["typelay-glossary-add"]["instance"]
+                                    != previous
+                                )
+                                host("activate-retired-more")
+                                assert not events("sessionGlossaryBegin")
+                                unchanged()
+                                host("retain-more-button")
+                                assert call(
+                                    "overlay-render",
+                                    {
+                                        **base,
+                                        "expiresAtMs": now_ms() + 800,
+                                        "view": {**view, "status": "Updated preview"},
+                                    },
+                                )["visible"]
+                                observe(
+                                    lambda value: not value.get("overlayControls", {})
+                                    .get("typelay-more-popup", {})
+                                    .get("visible"),
+                                    "new rendered view retired the old more opening",
+                                    require_visible=True,
+                                )
+                                host("activate-retired-more")
+                                assert not events("sessionGlossaryBegin")
+                                assert call(
+                                    "overlay-render",
+                                    {**base, "expiresAtMs": now_ms() + 800, "view": view},
+                                )["visible"]
+                                open_more()
                             actual = observe(
                                 lambda value: value.get("overlayControls", {})
                                 .get("typelay-style-inherit", {})
@@ -1248,7 +1324,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 "overlay-render",
                                 {**base, "expiresAtMs": now_ms() + 800, "view": view},
                             )["visible"]
-                            click("typelay-menu-trigger")
+                            open_more()
                         click("typelay-glossary-add")
                         observe(lambda _: events("sessionGlossaryBegin"), "explicit glossary click")
                         if finish in ("save", "pointer-save", "cancel"):
@@ -1345,7 +1421,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 # settings/model projection after opening must not
                                 # be mistaken for the host's benign ACK render.
                                 previous_begins = len(events("sessionGlossaryBegin"))
-                                click("typelay-menu-trigger")
+                                open_more()
                                 click("typelay-glossary-add")
                                 observe(
                                     lambda _: len(events("sessionGlossaryBegin")) > previous_begins,

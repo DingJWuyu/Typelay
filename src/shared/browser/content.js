@@ -6,16 +6,29 @@
   // Packaged OFL resources, never a remote font request. A page cannot choose
   // the URL or turn a delayed font load into an acceptance permission.
   if (typeof api.runtime.getURL === "function" && typeof FontFace === "function") {
-    for (const [family, file, weight] of [
+    const faces = [
       ["TypeLay Inter", "inter/Inter-Regular.ttf", "400"],
       ["TypeLay Inter", "inter/Inter-Medium.ttf", "500"],
       ["TypeLay Inter", "inter/Inter-SemiBold.ttf", "600"],
       ["TypeLay Source Serif", "source-serif/SourceSerif4-Regular.ttf", "400"],
-      ["TypeLay Source Serif", "source-serif/SourceSerif4-Semibold.ttf", "600"]
-    ]) {
-      const face = new FontFace(family, `url("${api.runtime.getURL(`fonts/${file}`)}")`, {weight});
-      face.load().then(font => document.fonts.add(font)).catch(() => {});
+      ["TypeLay Source Serif", "source-serif/SourceSerif4-Semibold.ttf", "600"],
+      ["TypeLay Noto Sans SC", "noto-sans/TypeLayNotoSansSC-SemiBold.ttf", "600"]
+    ];
+    for (const region of ["SC", "JP", "KR"]) {
+      for (const [weight, name] of [["400", "Regular"], ["500", "Medium"]]) {
+        faces.push([`TypeLay Noto Sans ${region}`, `noto-sans/NotoSans${region}-${name}.otf`, weight]);
+        faces.push([`TypeLay Noto Serif ${region}`, `noto-serif/NotoSerif${region}-${name}.otf`, weight]);
+      }
     }
+    for (const [family, file, weight] of faces) {
+      const face = new FontFace(family, `url("${api.runtime.getURL(`fonts/${file}`)}")`, {weight});
+      // Register lazily: a document loads only faces actually used by its UI,
+      // not every regional CJK file merely because the extension is installed.
+      document.fonts.add(face);
+    }
+    document.fonts.addEventListener("loadingdone", () => {
+      if (overlay?.host.isConnected) { sizeEditor(); position(); }
+    });
   }
   const rich = globalThis.TypeLayEditorBridge;
   const port = api.runtime.connect({name: "typelay-document"});
@@ -825,8 +838,14 @@
     current?.motion?.animation.cancel();
     if (current) current.motion = null;
   }
+  function shouldReduceMotion(current) {
+    return current.motionPreference === "reduce"
+      || current.motionPreference === "system" && reducedMotion.matches;
+  }
   reducedMotion.addEventListener("change", () => {
-    if (reducedMotion.matches && overlay) { cancelMotion(overlay); position(); }
+    if (!overlay) return;
+    overlay.panel.dataset.motion = shouldReduceMotion(overlay) ? "reduce" : "full";
+    if (shouldReduceMotion(overlay)) { cancelMotion(overlay); position(); }
   });
   function hide() {
     retireOrdered(); retireEditorControl();
@@ -941,7 +960,7 @@
     const {bounds} = geo, host = current.host;
     const geometryKey = JSON.stringify(geo);
     if (!previous && current.motion && current.motion.geometryKey === geometryKey
-      && !reducedMotion.matches && !current.reduceMotion) {
+      && !shouldReduceMotion(current)) {
       positionMore(current); return; // Renewal must not restart a running resize.
     }
     cancelMotion(current);
@@ -954,7 +973,7 @@
     host.style.top = `${Math.max(8, Math.min(innerHeight - height - 8,
       bounds.y >= height + 8 ? bounds.y - height - 6 : bounds.y + bounds.height + 6))}px`;
     positionMore(current);
-    if (!previous || reducedMotion.matches || current.reduceMotion || typeof host.animate !== "function") return;
+    if (!previous || shouldReduceMotion(current) || typeof host.animate !== "function") return;
     const end = host.getBoundingClientRect();
     const above = previous.bottom < bounds.y;
     const sameAnchor = above === (end.bottom < bounds.y)
@@ -1002,8 +1021,8 @@
       const style = document.createElement("style");
       style.textContent = `
         :host{color-scheme:light dark;--content-size:15px;--accent:#d97757;--accent-strong:#b5552f;
-          --content-font:"TypeLay Source Serif","Source Serif 4","Noto Serif SC",Georgia,"SimSun",serif;
-          --ui-font:"TypeLay Inter",Inter,"Noto Sans SC","Segoe UI","Microsoft YaHei UI",sans-serif}
+          --content-font:"TypeLay Source Serif","TypeLay Noto Serif SC",Georgia,"SimSun",serif;
+          --ui-font:"TypeLay Inter","TypeLay Noto Sans SC","Segoe UI","Microsoft YaHei UI",sans-serif}
         section{--surface:light-dark(rgba(251,250,247,.9),rgba(44,43,40,.92));
           --ink:light-dark(#141413,#f4f3ee);--muted:light-dark(#74726c,#9a988f);
           --line:light-dark(rgba(20,20,19,.1),rgba(255,255,255,.1));
@@ -1344,16 +1363,21 @@
     const appearance = data.appearance && typeof data.appearance === "object" ? data.appearance : {};
     const accents = {clay: "#d97757", ocean: "#2f7fe0", sage: "#5d9a6e", iris: "#8a6cd8", graphite: "#77756f"};
     const strongAccents = {clay: "#b5552f", ocean: "#1f63bb", sage: "#3c7650", iris: "#6a4cbc", graphite: "#55534e"};
-    const fonts = {claude: '"TypeLay Source Serif","Source Serif 4","Noto Serif SC",Georgia,"SimSun",serif',
-      sans: '"TypeLay Inter",Inter,"Noto Sans SC","Segoe UI","Microsoft YaHei UI",sans-serif',
+    const fontRegion = /^ja(?:-|$)/i.test(view.targetLanguage || "") ? "JP"
+      : /^ko(?:-|$)/i.test(view.targetLanguage || "") ? "KR" : "SC";
+    const fonts = {claude: `"TypeLay Source Serif","TypeLay Noto Serif ${fontRegion}",Georgia,"SimSun",serif`,
+      sans: `"TypeLay Inter","TypeLay Noto Sans ${fontRegion}","Segoe UI","Microsoft YaHei UI",sans-serif`,
       system: 'system-ui,"Microsoft YaHei UI",sans-serif'};
     overlay.host.style.setProperty("--accent", accents[appearance.accent] || accents.clay);
     overlay.host.style.setProperty("--accent-strong", strongAccents[appearance.accent] || strongAccents.clay);
     overlay.host.style.setProperty("--content-font", fonts[appearance.font] || fonts.claude);
+    overlay.host.style.setProperty("--ui-font", appearance.font === "system" ? fonts.system
+      : '"TypeLay Inter","TypeLay Noto Sans SC","Segoe UI","Microsoft YaHei UI",sans-serif');
     overlay.host.style.setProperty("--content-size", `${Number.isInteger(appearance.textSize)
       && appearance.textSize >= 13 && appearance.textSize <= 19 ? appearance.textSize : 15}px`);
-    overlay.reduceMotion = appearance.reduceMotion === true;
-    overlay.panel.dataset.motion = overlay.reduceMotion || reducedMotion.matches ? "reduce" : "full";
+    overlay.motionPreference = ["system", "full", "reduce"].includes(appearance.motion)
+      ? appearance.motion : appearance.reduceMotion === true ? "reduce" : "system";
+    overlay.panel.dataset.motion = shouldReduceMotion(overlay) ? "reduce" : "full";
     overlay.panel.dataset.material = appearance.reduceTransparency === true ? "solid" : "glass";
     overlay.editor.lang = typeof view.targetLanguage === "string" && /^[a-zA-Z-]{2,12}$/.test(view.targetLanguage)
       ? view.targetLanguage : "";

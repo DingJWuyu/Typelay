@@ -1584,6 +1584,7 @@ G_MODULE_EXPORT void tl_gtk4_attach(GtkWidget *client_widget) {
     if (!initialized) {
         initialized = TRUE;
         lifetime = g_uuid_string_random();
+        tl_overlay_prepare_fonts(); /* Before a peer can issue a render lease. */
         connect_peer(NULL);
         g_timeout_add_seconds(1, connect_peer, NULL);
     }

@@ -21,7 +21,9 @@ public sealed record UserSettings(int Schema = 1, bool Enabled = true, string So
     [property: JsonConverter(typeof(BooleanPreferenceConverter))] bool ReduceTransparency = false,
     [property: JsonConverter(typeof(SessionShortcutPreferenceConverter))] string PauseShortcut = "",
     [property: JsonConverter(typeof(ApplicationListPreferenceConverter))]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string[]? ManagedApplications = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string[]? ManagedApplications = null,
+    [property: JsonConverter(typeof(SessionShortcutPreferenceConverter))]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Motion = null)
 {
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? ExtensionData
@@ -32,6 +34,22 @@ public sealed record UserSettings(int Schema = 1, bool Enabled = true, string So
     [JsonIgnore]
     public string[] Managed => ManagedApplications ?? [];
     public LanguageDirection Direction => new(Source, Target);
+    // Motion is authoritative when present. ReduceMotion is the legacy input
+    // and persisted compatibility mirror, not an additional system override.
+    [JsonIgnore]
+    public string MotionPreference => ValidMotion(Motion) ? Motion! : ReduceMotion ? "reduce" : "system";
+    public bool ShouldReduceMotion(bool systemPrefersReducedMotion) => MotionPreference switch
+    {
+        "reduce" => true,
+        "full" => false,
+        _ => systemPrefersReducedMotion
+    };
+    public UserSettings WithLegacyReduceMotion(bool value) => this with
+    {
+        Motion = value ? "reduce" : "system",
+        ReduceMotion = value
+    };
+    internal static bool ValidMotion(string? value) => value is "system" or "full" or "reduce";
 }
 
 // Only the settings file write failed. Host callbacks keep their original
@@ -93,6 +111,7 @@ public sealed class SettingsStore
                 DirectShortcut = "Ctrl+Shift+F10"
             };
         var sessionKeys = SessionShortcutBindings.Restore(Value.AcceptShortcut, Value.ExitShortcut);
+        string loadedMotion = Value.MotionPreference;
         Value = Value with
         {
             AcceptShortcut = sessionKeys.Accept,
@@ -100,7 +119,9 @@ public sealed class SettingsStore
             Font = ValidFont(Value.Font) ? Value.Font : "claude",
             TextSize = ValidTextSize(Value.TextSize) ? Value.TextSize : 15,
             Accent = ValidAccent(Value.Accent) ? Value.Accent : "clay",
-            UiLanguage = ValidUiLanguage(Value.UiLanguage) ? Value.UiLanguage : "system"
+            UiLanguage = ValidUiLanguage(Value.UiLanguage) ? Value.UiLanguage : "system",
+            Motion = loadedMotion,
+            ReduceMotion = loadedMotion == "reduce"
         };
         var loadedChords = new HashSet<string>(StringComparer.Ordinal);
         TranslationShortcut.TryParse(Value.WakeShortcut, out wake);
@@ -266,12 +287,15 @@ public sealed class SettingsStore
         if (!Enum.IsDefined(settings.Mode))
             throw new ArgumentException("请选择有效的工作模式。");
         if (settings.Theme is not ("system" or "light" or "dark") || !ValidFont(settings.Font)
-            || !ValidTextSize(settings.TextSize) || !ValidAccent(settings.Accent) || !ValidUiLanguage(settings.UiLanguage))
+            || !ValidTextSize(settings.TextSize) || !ValidAccent(settings.Accent) || !ValidUiLanguage(settings.UiLanguage)
+            || settings.Motion is not null && !UserSettings.ValidMotion(settings.Motion))
             throw new ArgumentException("请选择有效的外观设置。");
         if (!ShortcutSettingsDraft.From(settings).TryApply(settings, out var canonical, out var error))
             throw new ArgumentException(SettingsDraftPresentation.ShortcutErrorMessage(error));
         return canonical! with
         {
+            Motion = canonical!.MotionPreference,
+            ReduceMotion = canonical!.MotionPreference == "reduce",
             Styles = CanonicalStyles(canonical!.Styles),
             ManagedApplications = CanonicalManagedApplications(canonical.ManagedApplications)
         };

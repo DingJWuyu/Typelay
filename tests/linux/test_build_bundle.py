@@ -17,16 +17,13 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-FONT_FILES = (
-    "fonts/README.md",
-    "fonts/inter/Inter-Medium.ttf",
-    "fonts/inter/Inter-Regular.ttf",
-    "fonts/inter/Inter-SemiBold.ttf",
-    "fonts/inter/LICENSE.txt",
-    "fonts/source-serif/LICENSE.md",
-    "fonts/source-serif/SourceSerif4-Regular.ttf",
-    "fonts/source-serif/SourceSerif4-Semibold.ttf",
-)
+FONT_FILES = tuple(
+    "fonts/" + item["path"]
+    for item in json.loads((ROOT / "eng/fonts/fonts.lock.json").read_text(encoding="utf-8"))[
+        "files"
+    ]
+) + ("fonts/manifest.json",)
+FONT_LOCK_SOURCE = "source/eng/fonts/fonts.lock.json"
 QT_TEST_INPUTS = (
     "tests/linux/qt_cooperative/run.py",
     "tests/linux/qt_cooperative/fixture.cpp",
@@ -36,12 +33,33 @@ QT_TEST_INPUTS = (
 )
 sys.path.insert(0, str(ROOT))
 
+from support.font_bundle_fixture import inert_font_payload  # noqa: E402
+
+from eng.fonts import prepare as fonts  # noqa: E402
 from eng.linux import build  # noqa: E402
 from eng.linux.cooperative import inputs  # noqa: E402
 
 
 def digest(content):
     return hashlib.sha256(content).hexdigest()
+
+
+class PreparedFontBundleTests(unittest.TestCase):
+    def test_prepared_manifest_must_have_canonical_bytes_not_only_equal_json(self):
+        sources, payload = inert_font_payload()
+        lock = json.loads(sources["eng/fonts/fonts.lock.json"])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative, content in payload.items():
+                if relative.startswith("fonts/"):
+                    path = root / relative.removeprefix("fonts/")
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(content)
+            fonts.verify_bundle(root, lock)
+            manifest = root / "manifest.json"
+            manifest.write_bytes(manifest.read_bytes() + b"\n")
+            with self.assertRaisesRegex(ValueError, "font-bundle-manifest-mismatch"):
+                fonts.verify_bundle(root, lock)
 
 
 class PackageReadmeTests(unittest.TestCase):
@@ -100,40 +118,64 @@ class PackageReadmeTests(unittest.TestCase):
 class CooperativeFontResourcesTests(unittest.TestCase):
     """Relocated package bytes and real launcher child environment, not Fcitx admission."""
 
-    def setUp(self):
+    @classmethod
+    def setUpClass(cls):
         spec = importlib.util.spec_from_file_location(
             "typelay_font_pack", ROOT / "packaging/linux/fcitx-cooperative/pack.py"
         )
-        self.recipe = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(self.recipe)
-        temporary = tempfile.TemporaryDirectory(prefix="typelay font resources ")
-        self.addCleanup(temporary.cleanup)
-        self.work = Path(temporary.name)
-        original = self.work / "original"
+        cls.recipe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.recipe)
+        temporary = tempfile.TemporaryDirectory(prefix="typelay font archive ")
+        cls.addClassCleanup(temporary.cleanup)
+        cls.fixture = Path(temporary.name)
+        original = cls.fixture / "original"
         original.mkdir()
-        self.recipe.copy_fonts(original)
+        cls.recipe.copy_fonts(original, ROOT / "artifacts/ui-fonts")
+        lock = original / FONT_LOCK_SOURCE
+        lock.parent.mkdir(parents=True)
+        shutil.copyfile(ROOT / "eng/fonts/fonts.lock.json", lock)
         shutil.copyfile(
             ROOT / "packaging/linux/fcitx-cooperative/fcitx-cooperative.py",
             original / "fcitx-cooperative.py",
         )
-        self.manifest = self.recipe.manifest(original, {}, {}, {}, None)
-        (original / "manifest.json").write_text(json.dumps(self.manifest))
-        archive = self.work / "resources.tar.gz"
-        self.recipe.write_archive(original, archive)
+        cls.original_manifest = cls.recipe.manifest(original, {}, {}, {}, None)
+        (original / "manifest.json").write_text(json.dumps(cls.original_manifest))
+        cls.archive = cls.fixture / "resources.tar.gz"
+        cls.recipe.write_archive(original, cls.archive)
         shutil.rmtree(original)
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="typelay font resources ")
+        self.addCleanup(temporary.cleanup)
+        self.work = Path(temporary.name)
         relocated = self.work / "搬迁 bundle with spaces"
         relocated.mkdir()
-        with tarfile.open(archive) as package:
+        with tarfile.open(self.archive) as package:
             package.extractall(relocated, filter="data")
         self.bundle = relocated / "original"
         self.launcher = self.bundle / "fcitx-cooperative.py"
+        self.manifest = json.loads(json.dumps(self.original_manifest))
 
     def test_relocated_resources_keep_original_fonts_licenses_and_manifest_bytes(self):
-        self.assertEqual(set(self.manifest["files"]), {*FONT_FILES, "fcitx-cooperative.py"})
+        self.assertEqual(
+            set(self.manifest["files"]), {*FONT_FILES, FONT_LOCK_SOURCE, "fcitx-cooperative.py"}
+        )
+        canonical = json.loads((ROOT / "eng/fonts/fonts.lock.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            (self.bundle / FONT_LOCK_SOURCE).read_bytes(),
+            (ROOT / "eng/fonts/fonts.lock.json").read_bytes(),
+        )
+        for item in canonical["files"]:
+            content = (self.bundle / "fonts" / item["path"]).read_bytes()
+            self.assertEqual(len(content), item["bytes"], item["path"])
+            self.assertEqual(digest(content), item["sha256"], item["path"])
         for relative in FONT_FILES:
             with self.subTest(relative=relative):
                 content = (self.bundle / relative).read_bytes()
-                self.assertEqual(content, (ROOT / "src/shared/ui" / relative).read_bytes())
+                self.assertEqual(
+                    content,
+                    (ROOT / "artifacts/ui-fonts" / relative.removeprefix("fonts/")).read_bytes(),
+                )
                 self.assertEqual(self.manifest["files"][relative], {"sha256": digest(content)})
 
     def test_each_ui_child_gets_only_its_relocated_font_root_without_redefining_home(self):
@@ -176,7 +218,9 @@ print(json.dumps({"children":observed,"parentUnchanged":dict(os.environ)==before
                         child["files"],
                         {
                             relative.removeprefix("fonts/"): digest(
-                                (ROOT / "src/shared/ui" / relative).read_bytes()
+                                (
+                                    ROOT / "artifacts/ui-fonts" / relative.removeprefix("fonts/")
+                                ).read_bytes()
                             )
                             for relative in FONT_FILES
                         },
@@ -186,11 +230,13 @@ print(json.dumps({"children":observed,"parentUnchanged":dict(os.environ)==before
         self,
     ):
         original_manifest = json.dumps(self.manifest)
-        for relative in FONT_FILES:
+        for relative in (*FONT_FILES, FONT_LOCK_SOURCE):
             path = self.bundle / relative
             original = path.read_bytes()
             for fault in ("missing", "changed", "unlisted"):
                 with self.subTest(relative=relative, fault=fault):
+                    self.assertEqual(path.read_bytes(), original)
+                    self.assertEqual((self.bundle / "manifest.json").read_text(), original_manifest)
                     if fault == "missing":
                         path.unlink()
                     elif fault == "changed":
@@ -375,7 +421,14 @@ class BrowserBundleTests(unittest.TestCase):
     def test_browser_payloads_include_the_declared_icons_and_exact_xpi(self):
         with tempfile.TemporaryDirectory(prefix="typelay-browser-") as directory:
             package = Path(directory) / "发行 包"
-            build.package_browsers(package)
+            font_root = ROOT / "artifacts/ui-fonts"
+            font_files = {
+                item["path"]: item
+                for item in json.loads(
+                    (ROOT / "eng/fonts/fonts.lock.json").read_text(encoding="utf-8")
+                )["files"]
+            }
+            build.package_browsers(package, font_root)
             expected = {
                 "manifest.json",
                 "background.js",
@@ -386,11 +439,7 @@ class BrowserBundleTests(unittest.TestCase):
                 "icons/typelay-48.png",
                 "icons/typelay-128.png",
             }
-            expected |= {
-                "fonts/" + path.relative_to(ROOT / "src/shared/ui/fonts").as_posix()
-                for path in (ROOT / "src/shared/ui/fonts").rglob("*")
-                if path.is_file()
-            }
+            expected |= {"fonts/" + name for name in font_files} | {"fonts/manifest.json"}
             for browser in ("chromium", "firefox"):
                 with self.subTest(browser=browser):
                     extension = package / "browser" / browser
@@ -408,6 +457,15 @@ class BrowserBundleTests(unittest.TestCase):
                         self.assertTrue(list(extension.glob(resource)), resource)
                     self.assertTrue((extension / "fonts/inter/LICENSE.txt").is_file())
                     self.assertTrue((extension / "fonts/source-serif/LICENSE.md").is_file())
+                    for name, item in font_files.items():
+                        content = (extension / "fonts" / name).read_bytes()
+                        self.assertEqual(len(content), item["bytes"], name)
+                        self.assertEqual(digest(content), item["sha256"], name)
+                    font_manifest = json.loads((extension / "fonts/manifest.json").read_text())
+                    self.assertEqual(
+                        {item["path"]: item["sha256"] for item in font_manifest["files"]},
+                        {name: item["sha256"] for name, item in font_files.items()},
+                    )
                     for size, name in manifest["icons"].items():
                         png = (extension / name).read_bytes()
                         self.assertEqual(png, (ROOT / "src/shared/browser" / name).read_bytes())
@@ -429,8 +487,13 @@ class MainBundleTests(unittest.TestCase):
         self.directory = Path(self.temporary.name)
         self.repository = self.directory / "checkout"
         self.repository.mkdir()
+        font_sources, font_payload = inert_font_payload()
+        self.font_source_paths = tuple(
+            dict.fromkeys(("eng/fonts/prepare.py", "eng/requirements.txt", *font_sources))
+        )
         for relative in (
-            *("src/shared/ui/" + name for name in FONT_FILES),
+            "eng/fonts/prepare.py",
+            "eng/requirements.txt",
             *inputs.FCITX_BUILD_INPUTS,
             *inputs.FCITX_TEST_INPUTS,
             *inputs.QT_BUILD_INPUTS,
@@ -445,6 +508,10 @@ class MainBundleTests(unittest.TestCase):
             destination = self.repository / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / relative, destination)
+        for relative, content in font_sources.items():
+            destination = self.repository / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(content)
         (self.repository / ".gitignore").write_text("artifacts/\n__pycache__/\n")
         # This is an owned disposable Git repository, never the working checkout.
         for arguments in (
@@ -492,9 +559,7 @@ class MainBundleTests(unittest.TestCase):
             "lib/im-fcitx5.so": b"fixture GTK library\n",
             "source/upstream/fcitx5/LICENSES/LGPL-2.1-or-later.txt": b"retained license\n",
         }
-        self.files.update(
-            {name: (ROOT / "src/shared/ui" / name).read_bytes() for name in FONT_FILES}
-        )
+        self.files.update(font_payload)
         for name in (
             "THIRD_PARTY_NOTICES.md",
             "lib/libFcitx5GClient.so",
@@ -545,7 +610,7 @@ class MainBundleTests(unittest.TestCase):
         ):
             self.files[name] = b"inert packaged fixture\n"
         for relative in (
-            *("src/shared/ui/" + name for name in FONT_FILES),
+            *self.font_source_paths,
             *inputs.FCITX_BUILD_INPUTS,
             *inputs.FCITX_TEST_INPUTS,
             "packaging/linux/fcitx-cooperative/pack.py",
@@ -554,7 +619,7 @@ class MainBundleTests(unittest.TestCase):
             "docs/platforms/linux/qt.md",
             "THIRD_PARTY_NOTICES.md",
         ):
-            self.files[f"source/{relative}"] = (ROOT / relative).read_bytes()
+            self.files[f"source/{relative}"] = (self.repository / relative).read_bytes()
         self.metadata = {
             "schemaVersion": 1,
             "bundleName": "TypeLay-Fcitx-cooperative",
@@ -644,7 +709,14 @@ class MainBundleTests(unittest.TestCase):
         self.assert_rejected("Packaged cooperation source differs")
 
     def test_missing_font_or_license_cannot_form_a_complete_component(self):
-        for relative in ("fonts/inter/Inter-Regular.ttf", "fonts/source-serif/LICENSE.md"):
+        for relative in (
+            "fonts/inter/Inter-Regular.ttf",
+            "fonts/source-serif/LICENSE.md",
+            "fonts/noto-sans/TypeLayNotoSansSC-SemiBold.ttf",
+            "fonts/noto-serif/NotoSerifKR-Medium.otf",
+            "fonts/noto-serif/LICENSE.txt",
+            "fonts/manifest.json",
+        ):
             with self.subTest(relative=relative):
                 original = self.files.pop(relative)
                 self.write_archive()
@@ -660,6 +732,25 @@ class MainBundleTests(unittest.TestCase):
         self.files["fonts/inter/Inter-Regular.ttf"] += b"changed"
         self.write_archive()
         self.assert_rejected("Packaged cooperation font or license differs")
+
+    def test_self_consistent_archive_cannot_add_unlocked_font_resources(self):
+        self.files["fonts/unlocked.ttf"] = b"unlocked font fixture"
+        self.write_archive()
+        self.assert_rejected("Packaged cooperation font file set differs")
+
+    def test_font_lock_source_cannot_drift_from_the_checkout(self):
+        self.files[FONT_LOCK_SOURCE] += b"\n"
+        self.write_archive()
+        self.assert_rejected("Packaged cooperation source differs")
+
+    def test_self_reported_font_lock_cannot_remove_a_required_cjk_face(self):
+        relative = "fonts/noto-sans/TypeLayNotoSansSC-SemiBold.ttf"
+        self.files.pop(relative)
+        lock = json.loads(self.files[FONT_LOCK_SOURCE])
+        lock["files"] = [item for item in lock["files"] if "fonts/" + item["path"] != relative]
+        self.files[FONT_LOCK_SOURCE] = json.dumps(lock).encode()
+        self.write_archive()
+        self.assert_rejected("Incomplete cooperation payload")
 
     def test_matching_payload_is_bound_to_main_manifest_without_rebuilding(self):
         self.write_archive()

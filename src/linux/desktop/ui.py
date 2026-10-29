@@ -109,7 +109,9 @@ class Tutorial:
         self.generate.set_sensitive(False)
         self.generate.connect("clicked", lambda *_: self.start())
         practice.pack_start(self.generate, False, False, 0)
-        self.result = Gtk.TextView(editable=False, cursor_visible=False)
+        self.result = style(
+            Gtk.TextView(editable=False, cursor_visible=False), "translation-content"
+        )
         self.result.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.result.get_accessible().set_name("教程本地译文")
         scroll = Gtk.ScrolledWindow()
@@ -1091,81 +1093,215 @@ class ApplicationSupportPane:
             self.render_selected()
 
 
-class LanguagePicker(Gtk.ComboBoxText):
-    """Keep editable search local until a concrete catalog choice is selected."""
+class LanguagePicker(Gtk.Button):
+    """A native direction button with a local, searchable catalog popover."""
 
     def __init__(self, save):
-        super().__init__(has_entry=True)
+        from design import box, design_icon, label, style
+
+        super().__init__()
         self.save = save
         self.selection_code = None
-        self.synchronizing = False
         self.choices = []
-        completion = Gtk.EntryCompletion()
-        completion.set_model(self.get_model())
-        completion.set_text_column(self.get_entry_text_column())
-        completion.connect("match-selected", self.match_selected)
-        self.get_child().set_completion(completion)
-        self.connect("changed", self.selected)
+        self.native_names = {}
+        self.options = []
+        self.keyboard_index = 0
+        self.keyboard_used = False
+        self.generation = None
+        self.opened = False
+        style(self, "language-button")
+        body = Gtk.Box(spacing=8)
+        self.caption = style(Gtk.Label(xalign=0), "language-name")
+        self.caption.set_ellipsize(Pango.EllipsizeMode.END)
+        body.pack_start(self.caption, True, True, 0)
+        arrow = style(design_icon("chevron-down", 14, symbolic=True), "language-chevron")
+        body.pack_end(arrow, False, False, 0)
+        self.add(body)
+        self.popover = style(Gtk.Popover.new(self), "language-popover")
+        self.popover.set_position(Gtk.PositionType.BOTTOM)
+        panel = box(6)
+        panel.set_border_width(6)
+        panel.set_size_request(280, -1)
+        self.popover.add(panel)
+        self.search = Gtk.SearchEntry()
+        self.search.set_placeholder_text("搜索语言")
+        self.search.get_accessible().set_name("搜索语言")
+        panel.pack_start(self.search, False, False, 0)
+        self.listing = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        scroll = self.scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_max_content_height(260)
+        scroll.set_propagate_natural_height(True)
+        scroll.add(self.listing)
+        panel.pack_start(scroll, True, True, 0)
+        self.no_results = label("没有匹配的语言", muted=True)
+        self.no_results.set_no_show_all(True)
+        self.no_results.set_margin_top(8)
+        self.no_results.set_margin_bottom(8)
+        panel.pack_start(self.no_results, False, False, 0)
+        self.more = label("更多语言 · 尚未提供", muted=True)
+        self.more.set_xalign(0.5)
+        panel.pack_start(self.more, False, False, 0)
+        self.search.connect("changed", self.search_changed)
+        self.search.connect("activate", self.activate_selected)
+        self.search.connect("key-press-event", self.search_key)
+        self.connect("clicked", lambda *_: self.popup())
+        self.popover.connect("closed", lambda *_: self.retire())
+        self.connect("unmap", lambda *_: self.popdown())
 
-    def match_selected(self, _completion, _model, iterator):
-        self.set_active_iter(iterator)
-        return True
-
-    def selected(self, *_):
-        code = self.get_active_id()
-        if self.synchronizing or code is None or code == self.selection_code:
+    def popup(self):
+        if not self.is_sensitive() or not self.get_mapped():
             return
-        self.selection_code = code
+        self.opened = True
+        self.keyboard_index = 0
+        self.keyboard_used = False
+        self.search.set_text("")
+        self.render_choices()
+        self.popover.show_all()
+        self.popover.popup()
+        self.search.grab_focus()
+
+    def popdown(self):
+        self.retire()
+        self.popover.popdown()
+
+    def retire(self):
+        self.opened = False
+        self.generation = None
+
+    def search_changed(self, *_):
+        self.keyboard_index = 0
+        self.keyboard_used = bool(self.search.get_text())
+        self.render_choices()
+
+    def activate_selected(self, *_):
+        if self.options:
+            self.options[self.keyboard_index].clicked()
+
+    def search_key(self, _widget, event):
+        if event.keyval == Gdk.KEY_Escape:
+            self.popdown()
+            self.grab_focus()
+            return True
+        if event.keyval in (Gdk.KEY_Up, Gdk.KEY_Down):
+            if self.options:
+                self.keyboard_index = (
+                    self.keyboard_index + (1 if event.keyval == Gdk.KEY_Down else -1)
+                ) % len(self.options)
+                self.keyboard_used = True
+                self.update_keyboard()
+                row = self.options[self.keyboard_index].get_parent().get_allocation()
+                self.scroll.get_vadjustment().clamp_page(row.y, row.y + row.height)
+            return True
+        return False
+
+    def update_keyboard(self):
+        for index, button in enumerate(self.options):
+            context = button.get_style_context()
+            (
+                context.add_class
+                if self.keyboard_used and index == self.keyboard_index
+                else context.remove_class
+            )("keyboard")
+        self.search.get_accessible().set_description(
+            self.options[self.keyboard_index].get_accessible().get_description()
+            if self.options
+            else self.no_results.get_text()
+        )
+
+    def render_choices(self):
+        self.generation = object() if self.opened else None
+        generation = self.generation
+        for child in self.listing.get_children():
+            child.destroy()
+        query = self.search.get_text().strip().casefold()
+        self.options = []
+        for code, title in self.choices:
+            native = self.native_names.get(code, code)
+            if query not in (code + " " + title + " " + native).casefold():
+                continue
+            button = Gtk.Button()
+            content = Gtk.Box(spacing=8)
+            tick = Gtk.Label(label="✓" if code == self.selection_code else "")
+            tick.set_size_request(14, -1)
+            content.pack_start(tick, False, False, 0)
+            content.pack_start(Gtk.Label(label=title, xalign=0), True, True, 0)
+            if code != "auto":
+                endonym = Gtk.Label(label=native, xalign=1)
+                endonym.get_style_context().add_class("dim-label")
+                region = str(code).split("-")[0]
+                if region in ("ja", "ko"):
+                    endonym.get_style_context().add_class("language-endonym-" + region)
+                language = Pango.AttrList()
+                language.insert(Pango.attr_language_new(Pango.Language.from_string(code)))
+                endonym.set_attributes(language)
+                content.pack_end(endonym, False, False, 0)
+            button.add(content)
+            button.get_accessible().set_name("语言选项：" + code)
+            button.get_accessible().set_description(
+                title + (" · " + native if code != "auto" else "")
+            )
+            button.get_style_context().add_class("language-option")
+
+            def choose(_button, identity=code, expected=generation):
+                if (
+                    expected is None
+                    or expected is not self.generation
+                    or not self.opened
+                    or not self.popover.get_visible()
+                    or not self.is_sensitive()
+                    or not self.get_mapped()
+                    or not _button.is_sensitive()
+                ):
+                    return
+                # Retire this peer before delivering intent: a synchronous
+                # save callback may reopen another interaction instance.
+                self.popdown()
+                self.grab_focus()
+                self.set_active_id(identity)
+
+            button.connect("clicked", choose)
+            self.listing.add(button)
+            self.options.append(button)
+        self.keyboard_index = min(self.keyboard_index, max(0, len(self.options) - 1))
+        self.no_results.set_visible(not self.options)
+        self.update_keyboard()
+        self.listing.show_all()
+
+    def get_active_id(self):
+        return self.selection_code
+
+    def set_active_id(self, code):
+        if code == self.selection_code or not any(item[0] == code for item in self.choices):
+            return
+        self.synchronize(code)
         self.save(code)
 
     def synchronize(self, code):
-        if self.selection_code == code:
-            return
-        self.synchronizing = True
-        try:
-            self.selection_code = code
-            self.set_active_id(code)
-        finally:
-            self.synchronizing = False
+        self.selection_code = code
+        self.caption.set_text(
+            next((title for identity, title in self.choices if identity == code), code or "")
+        )
+        self.get_accessible().set_description(self.caption.get_text())
+        if self.popover.get_visible():
+            self.render_choices()
 
     def configure_choices(self, choices, code):
-        choices = [(choice["code"], choice["label"]) for choice in choices]
-        if choices == self.choices:
-            self.synchronize(code)
-            return
-        editor = self.get_child()
-        searching = (
-            self.get_active_id() is None
-            and self.selection_code == code
-            and any(identity == code for identity, _label in self.choices)
+        updated = [(choice["code"], choice["label"]) for choice in choices]
+        native_names = {
+            choice["code"]: choice.get("nativeLabel", choice["code"]) for choice in choices
+        }
+        changed = (
+            updated != self.choices
+            or native_names != self.native_names
+            or code != self.selection_code
         )
-        text, position = editor.get_text(), editor.get_position()
-        selection = editor.get_selection_bounds()
-        self.synchronizing = True
-        try:
-            # Keep the same native model and popup. Insert before removing old
-            # rows so a catalog refresh never temporarily empties the choices.
-            current = list(self.choices)
-            for index, choice in enumerate(choices):
-                if index >= len(current) or current[index] != choice:
-                    self.insert(index, *choice)
-                    current.insert(index, choice)
-            for index in range(len(current) - 1, len(choices) - 1, -1):
-                self.remove(index)
-            self.choices = choices
-            self.selection_code = code
-            if searching:
-                self.set_active(-1)
-                if editor.get_text() != text:
-                    editor.set_text(text)
-                if selection:
-                    editor.select_region(*selection)
-                else:
-                    editor.set_position(position)
-            else:
-                self.set_active_id(code)
-        finally:
-            self.synchronizing = False
+        self.choices = updated
+        self.native_names = native_names
+        if changed:
+            # The search entry, its selection and focus survive a live catalog
+            # update. Only current option peers may commit a concrete choice.
+            self.synchronize(code)
 
 
 class TranslationSettings:
@@ -1190,27 +1326,43 @@ class TranslationSettings:
         self.box = Gtk.Grid(column_spacing=24, row_spacing=12)
         self.box.set_no_show_all(True)
         grid.attach(self.box, 0, row, 2, 1)
-        self.style_box = Gtk.Grid(column_spacing=24, row_spacing=10)
+        from design import box, group, label
+        from design import style as styled
+
+        self.style_box = box(8)
         self.style_box.set_no_show_all(True)
         self.box.attach(self.style_box, 0, 0, 2, 1)
-        self.style_box.attach(Gtk.Separator(), 0, 0, 2, 1)
-        self.style_box.attach(Gtk.Label(label="翻译风格", xalign=0), 0, 1, 1, 1)
-        self.style = Gtk.ComboBoxText()
+        self.style = Segments(
+            [("Natural", "自然"), ("Formal", "正式"), ("Concise", "简洁"), ("Casual", "口语")],
+            self.style_changed,
+        )
+        self.style.show_all()
         self.style.set_no_show_all(True)
         self.style.get_accessible().set_name("全局翻译风格")
-        for key, title in (("Natural", "自然"), ("Formal", "正式")):
-            self.style.append(key, title)
-        self.style.connect("changed", self.style_changed)
-        self.style_box.attach(self.style, 1, 1, 1, 1)
-        self.style_notice = Gtk.Label(xalign=0)
-        self.style_notice.set_line_wrap(True)
-        self.style_notice.set_max_width_chars(48)
-        self.style_box.attach(self.style_notice, 0, 2, 2, 1)
+        for key, button in self.style.buttons.items():
+            button.get_accessible().set_name("全局翻译风格：" + key)
+            if key in ("Concise", "Casual"):
+                button.set_sensitive(False)
+                button.set_tooltip_text("尚未提供")
+        self.style_card = group()
+        style_row, caption = design_row("默认风格", self.style)
+        owner.localized.append((caption.set_text, "默认风格", "Default tone"))
+        self.style_card.pack_start(style_row, False, False, 0)
+        self.style_box.pack_start(self.style_card, False, False, 0)
+        self.style_notice = label(muted=True)
+        self.style_box.pack_start(self.style_notice, False, False, 0)
         self.reset = Gtk.Button(label="重置翻译风格…")
         self.reset.get_accessible().set_name("重置全局及所有应用翻译风格")
         self.reset.set_no_show_all(True)
+        self.style_box.pack_start(self.reset, False, False, 0)
+        self.app_styles = styled(Gtk.Button(label="按应用设置风格…"), "flat")
+        self.app_styles.set_halign(Gtk.Align.START)
+        self.app_styles.connect(
+            "clicked", lambda *_: owner.pages.set_visible_child_name("application-support")
+        )
+        owner.localized.append((self.app_styles.set_label, "按应用设置风格…", "Set tone by app…"))
+        self.style_box.pack_start(self.app_styles, False, False, 0)
         self.reset.connect("clicked", self.confirm_reset)
-        self.style_box.attach(self.reset, 0, 4, 2, 1)
         self.glossary_box = Gtk.Grid(column_spacing=24, row_spacing=10)
         self.glossary_box.set_no_show_all(True)
         self.box.attach(self.glossary_box, 0, 1, 2, 1)
@@ -1362,6 +1514,7 @@ class TranslationSettings:
             self.style.set_sensitive(
                 bool(
                     style
+                    and style.get("isReleased")
                     and style.get("canChange")
                     and self.pending is None
                     and not self.saving
@@ -1530,7 +1683,11 @@ class TranslationSettings:
             or not self.style_state.get("canChange")
         ):
             return
-        self.style_draft = self.style.get_active_id()
+        selected = self.style.get_active_id()
+        if selected not in ("Natural", "Formal"):
+            self.render()
+            return
+        self.style_draft = selected
         self.changed()
         self.owner.tasks(self.save())
 
@@ -2019,6 +2176,8 @@ class Settings:
         self.settings_lock = asyncio.Lock()
         self.settings_feedback_owned = False
         self.model_ready = False
+        self.model_readiness_known = False
+        self.model_installed = None
         self.model_status = ""
         self.first_show = True
         self.installation_state = "idle"
@@ -2054,10 +2213,21 @@ class Settings:
         gtk_settings = self.window.get_settings()
         signature = tuple(
             preferences.get(key)
-            for key in ("theme", "accent", "font", "textSize", "reduceMotion", "reduceTransparency")
+            for key in (
+                "theme",
+                "accent",
+                "font",
+                "textSize",
+                "reduceMotion",
+                "reduceTransparency",
+                "uiLanguage",
+                "source",
+                "target",
+            )
         ) + (
             gtk_settings.get_property("gtk-theme-name"),
             gtk_settings.get_property("gtk-application-prefer-dark-theme"),
+            gtk_settings.get_property("gtk-font-name"),
         )
         if getattr(self, "palette_signature", None) == signature:
             return
@@ -2067,16 +2237,11 @@ class Settings:
             self.tutorial.style_provider = apply_theme(
                 self.tutorial.window, preferences, self.tutorial.style_provider
             )
-        if hasattr(self, "preview_text"):
-            family = {
-                "claude": "Source Serif 4, Noto Serif CJK SC, serif",
-                "sans": "Inter, Noto Sans CJK SC, sans-serif",
-                "system": "sans-serif",
-            }.get(preferences.get("font", "claude"))
-            font = Pango.FontDescription.from_string(
-                f"{family} {preferences.get('textSize', 15)}px"
+        if getattr(self, "language_dialog", None):
+            dialog = self.language_dialog
+            dialog.typelay_style_provider = apply_theme(
+                dialog, preferences, dialog.typelay_style_provider
             )
-            self.preview_text.override_font(font)
 
     def filter_settings(self):
         self.sidebar.invalidate_filter()
@@ -2098,6 +2263,18 @@ class Settings:
         )
         return english if use_english else chinese
 
+    def localized_languages(self, choices):
+        return [
+            {
+                **choice,
+                "label": self.tr(
+                    choice.get("labelZh", choice["label"]),
+                    choice.get("labelEn", self.localizer.text(choice["label"])),
+                ),
+            }
+            for choice in choices
+        ]
+
     def localize(self):
         self.localizer.refresh()
         was_configuring = self.configuring
@@ -2106,14 +2283,10 @@ class Settings:
             for key in ("source", "target"):
                 if self.language_choices and self.value:
                     self.controls[key].configure_choices(
-                        [
-                            {**item, "label": self.localizer.text(item["label"])}
-                            for item in self.language_choices[key]
-                        ],
+                        self.localized_languages(self.language_choices[key]),
                         self.value[key],
                     )
             for control in (
-                self.translation.style,
                 self.translation.scope,
                 self.application_support.selector,
             ):
@@ -2135,6 +2308,14 @@ class Settings:
         self.search.set_placeholder_text("Search" if english else "搜索")
         self.application_support.render_preparation()
         self.translation.render()
+        self.render_language_status()
+        for key in ("source", "target"):
+            picker = self.controls[key]
+            picker.search.set_placeholder_text(self.tr("搜索语言", "Search languages"))
+            picker.search.get_accessible().set_name(self.tr("搜索语言", "Search languages"))
+            picker.more.set_text(self.tr("更多语言 · 尚未提供", "More languages · Not available"))
+            picker.no_results.set_text(self.tr("没有匹配的语言", "No matching languages"))
+            picker.update_keyboard()
         if getattr(self, "guidance", None):
             self.render_guidance(self.guidance)
         self.enabled_status.set_text(
@@ -2489,10 +2670,7 @@ class Settings:
                     widget = self.controls[key]
                     code = self.pending_settings.get(key, self.value[key]) if self.value else None
                     widget.configure_choices(
-                        [
-                            {**item, "label": self.localizer.text(item["label"])}
-                            for item in choices[key]
-                        ],
+                        self.localized_languages(choices[key]),
                         code,
                     )
             finally:
@@ -2578,6 +2756,24 @@ class Settings:
             self.pages.set_visible_child_name("model")
         if direction_changed:
             self.refresh_preparation()
+
+    def render_language_status(self):
+        self.language_model_notice.set_visible(
+            not self.model_readiness_known or not self.model_ready
+        )
+        if not self.model_readiness_known:
+            message = self.tr("正在确认本地模型状态…", "Checking local model status…")
+        elif self.installation_state == "failed":
+            message = self.tr("本地模型准备失败", "Local model setup failed")
+        elif self.installation_state == "paused":
+            message = self.tr("本地模型下载已暂停", "Model download paused")
+        elif self.installation_state in ("running", "starting", "pausing"):
+            message = self.tr("正在准备本地翻译模型…", "Preparing the local translation model…")
+        elif self.model_installed is False:
+            message = self.tr("需要下载本地翻译模型", "Download the local translation model")
+        else:
+            message = self.tr("本地翻译模型尚未就绪", "Local translation model is not ready")
+        self.language_model_label.set_text(message)
 
     def render_language_swap(self):
         ready = self.value is not None and self.language_choices is not None
@@ -2893,7 +3089,11 @@ class Settings:
         self.render_applications()
         if self.window.get_visible() and not self.translation.saving:
             self.translation.refresh()
-        self.model_ready = value.get("modelReady", False)
+        self.model_readiness_known = type(value.get("modelReady")) is bool
+        self.model_ready = value.get("modelReady") is True
+        installed = value.get("modelInstalled")
+        self.model_installed = installed if type(installed) is bool else None
+        self.render_language_status()
         self.model_status = value.get("model") or ""
         self.render_preparation_notice()
         self.tutorial.generate.set_sensitive(
@@ -3046,6 +3246,7 @@ class Settings:
 
     def installation(self, state, message="", failure=None):
         self.installation_state = state
+        self.render_language_status()
         if state in ("ready", "idle"):
             self.package_confirmation = None
         self.installation_failure = failure
@@ -3159,7 +3360,7 @@ class Settings:
         dialog.set_default_size(360, 440)
         dialog.set_resizable(False)
         style(dialog, "typelay-surface")
-        apply_theme(dialog, self.value)
+        dialog.typelay_style_provider = apply_theme(dialog, self.value)
         self.language_dialog = dialog
         panel = box(12)
         panel.set_border_width(16)

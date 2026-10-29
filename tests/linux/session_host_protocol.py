@@ -340,6 +340,11 @@ while True:
             [item["code"] for item in choices["target"]],
             ["en", "zh", "ja", "ko", "fr", "es", "de", "pt"],
         )
+        french = next(item for item in choices["target"] if item["code"] == "fr")
+        self.assertEqual(
+            (french["labelZh"], french["labelEn"], french["nativeLabel"]),
+            ("法语", "French", "français"),
+        )
         self.assertTrue(await self.ask("traySettings", {"source": "zh", "target": "fr"}))
         saved = (self.home / "config/settings.json").read_bytes()
         self.assertFalse(await self.ask("traySettings", {"source": "fr", "target": "ja"}))
@@ -427,7 +432,13 @@ while True:
         )
         self.assertEqual(
             self.latest("settingsGuidance")["languageChoices"]["target"][-1],
-            {"code": "ja", "label": "日本語（当前不可用）"},
+            {
+                "code": "ja",
+                "label": "日本語（当前不可用）",
+                "labelZh": "日语（当前不可用）",
+                "labelEn": "Japanese (currently unavailable)",
+                "nativeLabel": "日本語",
+            },
         )
         self.assertEqual(self.latest("settings")["target"], "ja")
 
@@ -1380,6 +1391,42 @@ while True:
         ordinary = self.latest("settings")
         self.assertNotIn("styles", ordinary)
         self.assertNotIn("glossary", ordinary)
+
+    async def test_motion_patch_preserves_explicit_mode_and_legacy_boolean_intent(self):
+        self.assertTrue(await self.ask("settingsPatch", {"motion": "full", "accent": "ocean"}))
+        settings_path = self.home / "config/settings.json"
+        for patch, mode, reduced in (
+            ({"reduceMotion": True, "motion": "full"}, "full", False),
+            ({"motion": "full", "reduceMotion": True}, "full", False),
+            ({"motion": "reduce", "reduceMotion": False}, "reduce", True),
+            ({"reduceMotion": False, "motion": "reduce"}, "reduce", True),
+            ({"reduceMotion": False}, "system", False),
+            ({"reduceMotion": True}, "reduce", True),
+            ({"motion": "system"}, "system", False),
+        ):
+            with self.subTest(patch=patch):
+                self.assertTrue(await self.ask("settingsPatch", patch))
+                state = self.latest("settings")
+                self.assertEqual((state["motion"], state["reduceMotion"]), (mode, reduced))
+                self.assertEqual(state["accent"], "ocean")
+                saved = json.loads(settings_path.read_text())
+                self.assertEqual((saved["Motion"], saved["ReduceMotion"]), (mode, reduced))
+        before = settings_path.read_bytes()
+        for mode in (None, "", "FULL", "unknown", False, 1, {}, []):
+            with self.subTest(invalid=mode):
+                self.assertFalse(
+                    await self.ask("settingsPatch", {"motion": mode, "reduceMotion": True})
+                )
+                self.assertEqual(settings_path.read_bytes(), before)
+                self.assertEqual(self.latest("settings")["motion"], "system")
+                self.assertFalse(await self.ask("settings", {"motion": mode}))
+                self.assertEqual(settings_path.read_bytes(), before)
+        # Whole-object saves retain explicit mode even if an old boolean mirror disagrees.
+        self.assertTrue(await self.ask("settings", {"motion": "full", "reduceMotion": True}))
+        self.assertEqual(self.latest("settings")["motion"], "full")
+        self.assertFalse(self.latest("settings")["reduceMotion"])
+        self.assertTrue(await self.ask("settings", {"reduceMotion": False}))
+        self.assertEqual(self.latest("settings")["motion"], "system")
 
     async def test_appearance_patches_pause_and_managed_app_preserve_other_settings(self):
         self.assertTrue(

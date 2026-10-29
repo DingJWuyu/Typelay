@@ -265,7 +265,9 @@ def select_session_keys(paths, host_pid, accept, exit_key, send_key):
             )
             assert Atspi.Action.do_action(force.get_action_iface(), 0)
         wait_for(
-            lambda: json.loads(paths.settings.read_text()).get(field) == chord,
+            lambda: json.loads(paths.settings.read_text()).get(field) == chord
+            and (snapshot := control(paths, "status"))
+            and snapshot["setup"]["settingsDraft"] is False,
             "production settings did not confirm the recorded session key: " + title,
         )
     saved = json.loads(paths.settings.read_text())
@@ -4531,7 +4533,9 @@ def run(arguments):
                 Atspi,
                 bounds,
                 focused,
+                language_label,
                 named,
+                select_language,
                 select_settings_page,
                 settings_navigation,
                 settings_page_row,
@@ -5067,17 +5071,17 @@ def run(arguments):
                 settings_page("语言与风格")
                 source_language = settings_control("设置：源语言")
                 target_language = settings_control("设置：目标语言")
-                assert Atspi.Selection.is_child_selected(source_language.get_selection_iface(), 0)
-                assert Atspi.Selection.is_child_selected(target_language.get_selection_iface(), 0)
+                assert language_label(source_language) == "自动检测"
+                assert language_label(target_language) == "英语"
                 assert not paths.settings.exists(), "viewing defaults changed preferences"
-                assert Atspi.Selection.select_child(source_language.get_selection_iface(), 2)
+                select_language(process.pid, "源语言", "en")
                 wait_for(
                     lambda: paths.settings.is_file()
                     and json.loads(paths.settings.read_text())["Source"] == "en",
                     "explicit English source selection was not saved",
                 )
                 target_language = settings_control("设置：目标语言")
-                assert Atspi.Selection.select_child(target_language.get_selection_iface(), 1)
+                select_language(process.pid, "目标语言", "zh")
                 wait_for(
                     lambda: json.loads(paths.settings.read_text())["Target"] == "zh",
                     "explicit Chinese target selection was not saved",
@@ -5210,8 +5214,8 @@ def run(arguments):
                 wait_for(
                     lambda: (value := json.loads(paths.settings.read_text()))["Source"] == "zh"
                     and value["Target"] == "en"
-                    and Atspi.Selection.is_child_selected(source_language.get_selection_iface(), 1)
-                    and Atspi.Selection.is_child_selected(target_language.get_selection_iface(), 0)
+                    and language_label(source_language) == "中文"
+                    and language_label(target_language) == "英语"
                     and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE)
                     and status()["commandFeedbackRevision"] == revision + 1,
                     "settings language swap did not save and display one paired direction change",
@@ -5224,12 +5228,8 @@ def run(arguments):
                     wait_for(
                         lambda: "未保存" in text(settings_control("设置反馈"))
                         and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE)
-                        and Atspi.Selection.is_child_selected(
-                            source_language.get_selection_iface(), 1
-                        )
-                        and Atspi.Selection.is_child_selected(
-                            target_language.get_selection_iface(), 0
-                        ),
+                        and language_label(source_language) == "中文"
+                        and language_label(target_language) == "英语",
                         "failed language swap did not retain the actual saved direction",
                     )
                     assert paths.settings.read_bytes() == before_swap_failure
@@ -5240,19 +5240,19 @@ def run(arguments):
                 wait_for(
                     lambda: (value := json.loads(paths.settings.read_text()))["Source"] == "en"
                     and value["Target"] == "zh"
-                    and Atspi.Selection.is_child_selected(source_language.get_selection_iface(), 2)
-                    and Atspi.Selection.is_child_selected(target_language.get_selection_iface(), 1)
+                    and language_label(source_language) == "英语"
+                    and language_label(target_language) == "中文"
                     and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE),
                     "language swap could not recover after the save blocker was removed",
                 )
-                assert Atspi.Selection.select_child(source_language.get_selection_iface(), 0)
+                select_language(process.pid, "源语言", "auto")
                 wait_for(
                     lambda: json.loads(paths.settings.read_text())["Source"] == "auto"
                     and not swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE),
                     "Auto source did not disable language swap",
                 )
                 assert json.loads(paths.settings.read_text())["Target"] == "zh"
-                assert Atspi.Selection.select_child(source_language.get_selection_iface(), 2)
+                select_language(process.pid, "源语言", "en")
                 wait_for(
                     lambda: json.loads(paths.settings.read_text())["Source"] == "en"
                     and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE),
@@ -6514,7 +6514,7 @@ def run(arguments):
                 # consume or overwrite an independently saved language choice.
                 settings_page("语言与风格")
                 source_language = settings_control("设置：源语言")
-                assert Atspi.Selection.select_child(source_language.get_selection_iface(), 0)
+                select_language(process.pid, "源语言", "auto")
                 wait_for(
                     lambda: json.loads(paths.settings.read_text())["Source"] == "auto",
                     "language page did not save independently of rejected shortcuts",
@@ -6528,10 +6528,7 @@ def run(arguments):
                 recorded("唤醒翻译", saved["WakeShortcut"], "WakeShortcut")
                 assert json.loads(paths.settings.read_text())["Source"] == "auto"
                 settings_page("语言与风格")
-                assert Atspi.Selection.select_child(
-                    source_language.get_selection_iface(),
-                    ("auto", "zh", "en").index(saved["Source"]),
-                )
+                select_language(process.pid, "源语言", saved["Source"])
                 wait_for(
                     lambda: json.loads(paths.settings.read_text())["Source"] == saved["Source"],
                     "language choice was not restored",
@@ -7049,8 +7046,7 @@ def run(arguments):
                         )
                         request({"Action": {"FocusWindow": {"id": selected_settings["id"]}}})
                         settings_page("语言与风格")
-                        language = settings_control("设置：源语言")
-                        assert Atspi.Selection.select_child(language.get_selection_iface(), 1)
+                        select_language(process.pid, "源语言", "zh")
                         wait_for(
                             lambda: json.loads(paths.settings.read_text())["Source"] == "zh",
                             "practice language change did not save",
@@ -7086,7 +7082,7 @@ def run(arguments):
                             "practice settings refresh changed the source selection",
                         )
                         assert control(paths, "settings") is True
-                        assert Atspi.Selection.select_child(language.get_selection_iface(), 2)
+                        select_language(process.pid, "源语言", "en")
                         wait_for(
                             lambda: json.loads(paths.settings.read_text())["Source"] == "en",
                             "restoring the source language did not save",

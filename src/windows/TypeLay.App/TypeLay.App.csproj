@@ -8,6 +8,7 @@
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>TypeLay.App</AssemblyName>
+    <TypeLayUiFontRoot Condition="'$(TypeLayUiFontRoot)' == ''">$(MSBuildThisFileDirectory)../../../artifacts/ui-fonts</TypeLayUiFontRoot>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../shared/OwnedPracticeAcceptanceProtocol.cs" Link="Windows/OwnedPracticeAcceptanceProtocol.cs" />
@@ -19,10 +20,33 @@
     <ProjectReference Include="../../shared/TypeLay.Runtime/TypeLay.Runtime.csproj" />
     <ProjectReference Include="../../shared/TypeLay.Protocol/TypeLay.Protocol.csproj" />
   </ItemGroup>
+  <!-- Prepared and hash-verified by the public build entry point. Direct dotnet
+       builds require the same offline bundle; never silently ship Latin-only UI. -->
   <ItemGroup>
-    <Resource Include="../../shared/ui/fonts/**/*.ttf" Link="UI/Fonts/%(Filename)%(Extension)" />
-    <Content Include="../../shared/ui/fonts/**/LICENSE.*" Link="UI/Fonts/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Resource Include="$(TypeLayUiFontRoot)/inter/Inter-Medium.ttf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Resource Include="$(TypeLayUiFontRoot)/inter/Inter-Regular.ttf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Resource Include="$(TypeLayUiFontRoot)/inter/Inter-SemiBold.ttf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Resource Include="$(TypeLayUiFontRoot)/noto-sans/NotoSansJP-Medium.otf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Resource Include="$(TypeLayUiFontRoot)/noto-sans/NotoSansJP-Regular.otf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Resource Include="$(TypeLayUiFontRoot)/noto-sans/NotoSansKR-Medium.otf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Resource Include="$(TypeLayUiFontRoot)/noto-sans/NotoSansKR-Regular.otf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Resource Include="$(TypeLayUiFontRoot)/noto-sans/NotoSansSC-Medium.otf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Resource Include="$(TypeLayUiFontRoot)/noto-sans/NotoSansSC-Regular.otf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Resource Include="$(TypeLayUiFontRoot)/noto-sans/TypeLayNotoSansSC-SemiBold.ttf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Resource Include="$(TypeLayUiFontRoot)/noto-serif/NotoSerifJP-Medium.otf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Resource Include="$(TypeLayUiFontRoot)/noto-serif/NotoSerifJP-Regular.otf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Resource Include="$(TypeLayUiFontRoot)/noto-serif/NotoSerifKR-Medium.otf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Resource Include="$(TypeLayUiFontRoot)/noto-serif/NotoSerifKR-Regular.otf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Resource Include="$(TypeLayUiFontRoot)/noto-serif/NotoSerifSC-Medium.otf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Resource Include="$(TypeLayUiFontRoot)/noto-serif/NotoSerifSC-Regular.otf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Resource Include="$(TypeLayUiFontRoot)/source-serif/SourceSerif4-Regular.ttf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Resource Include="$(TypeLayUiFontRoot)/source-serif/SourceSerif4-Semibold.ttf" Link="UI/Fonts/%(Filename)%(Extension)" />
+    <Content Include="$(TypeLayUiFontRoot)/**/LICENSE.*" Link="UI/Fonts/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+  <Target Name="ValidateUiFontBundle" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('$(TypeLayUiFontRoot)/manifest.json')" Text="The complete offline UI font bundle is required. Run python eng/fonts/prepare.py --output artifacts/ui-fonts, or set TypeLayUiFontRoot to a verified bundle." />
+    <Error Condition="!Exists('%(Resource.Identity)')" Text="Missing offline UI font: %(Resource.Identity). Prepare the complete locked bundle before building." />
+  </Target>
   <ItemGroup>
     <InternalsVisibleTo Include="TypeLay.DesktopFixture" />
     <InternalsVisibleTo Include="TypeLay.App.Tests" />

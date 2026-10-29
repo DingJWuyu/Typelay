@@ -40,7 +40,7 @@ class IndexSelectionTests(unittest.TestCase):
 
 
 class WholeSourceTests(unittest.TestCase):
-    def run_translation(self, source, output):
+    def run_translation(self, source, output, *, rules=None):
         from typelay_worker.engine import translate_whole_source
 
         class NativeBoundary:
@@ -54,8 +54,164 @@ class WholeSourceTests(unittest.TestCase):
                 self.calls += 1
                 return output
 
+            def translate_glossary(boundary, text, terms):
+                return boundary.translate(text)
+
         self.calls = 0
-        return translate_whole_source(source, NativeBoundary(), 60, None, None, "en", "zh")
+        return translate_whole_source(source, NativeBoundary(), 60, None, rules, "en", "zh")
+
+    def test_source_owned_prose_period_boundaries_keep_one_whole_request(self):
+        from typelay_worker.engine import translate_whole_source
+        from typelay_worker.glossary import Rule
+
+        # Minimal synthetic structure reproducer, not model-quality evidence.
+        source = "  队列。\r\n见 https://a.test/x ，通知 @Sam。  "
+        output = "The queue.\nSee https://a.test/x. Notify @Sam."
+        expected = "  The queue.\r\nSee https://a.test/x . Notify @Sam。  "
+        for glossary in (False, True):
+            with self.subTest(glossary=glossary):
+                calls = []
+
+                class NativeBoundary:
+                    def request(boundary, original, deadline, style, **requirements):
+                        self.assertEqual(source, original)
+                        self.assertEqual((60, None), (deadline, style))
+                        self.assertEqual(
+                            ("https://a.test/x", "@Sam", "。  "),
+                            requirements["preserved_literals"],
+                        )
+                        self.assertTrue(requirements["preserve_linebreaks"])
+                        self.assertTrue(requirements["preserve_whitespace"])
+                        return boundary
+
+                    def translate(boundary, original):
+                        self.assertEqual(source, original)
+                        calls.append(())
+                        return output
+
+                    def translate_glossary(boundary, original, terms):
+                        self.assertEqual(source, original)
+                        calls.append(terms)
+                        return output
+
+                result = translate_whole_source(
+                    source,
+                    NativeBoundary(),
+                    60,
+                    None,
+                    (Rule("队列", "queue", None, None),) if glossary else None,
+                    "zh",
+                    "en",
+                )
+                self.assertEqual(expected, result)
+                self.assertEqual([(("队列", "queue"),)] if glossary else [()], calls)
+
+    def test_period_ownership_is_limited_to_existing_source_prose_boundaries(self):
+        for source, output, expected in (
+            (
+                "Send https://a.test/x ，now.",
+                "发送 https://a.test/x. 现在。",
+                "发送 https://a.test/x . 现在。",
+            ),
+            ("Notify @sam。", "通知 @sam.", "通知 @sam。"),
+            ("Notify @sam。\r\nLater.", "通知 @sam.\n随后。", "通知 @sam。\r\n随后。"),
+            ("Use https://a.test/x .", "用 https://a.test/x.", "用 https://a.test/x ."),
+            (
+                "Ask @sam ，please; notify @sam。",
+                "联系 @sam. 请；通知 @sam.",
+                "联系 @sam . 请；通知 @sam。",
+            ),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(expected, self.run_translation(source, output))
+                self.assertEqual(1, self.calls)
+
+    def test_exact_valid_token_cores_and_nonexception_outputs_remain_byte_identical(self):
+        for source, output in (
+            ("Use https://a.test/v1.2/x. next.", "用 https://a.test/v1.2/x. 继续。"),
+            ("Use https://a.test/?x=1.2&v=a,b next.", "用 https://a.test/?x=1.2&v=a,b 继续。"),
+            ("Ask @sam.dev next.", "询问 @sam.dev 接下来。"),
+            ("Ask @sam. next.", "询问 @sam. 接下来。"),
+            ("See https://a.test/x ，next.", "看 https://a.test/x ，继续。"),
+            ("Ask @sam then @sam.", "询问 @sam 再问 @sam."),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(output, self.run_translation(source, output))
+                self.assertEqual(1, self.calls)
+
+    def test_prose_period_exception_never_repairs_changed_or_missing_structure(self):
+        from typelay_worker.engine import EngineError
+
+        cases = [
+            ("Send https://a.test/x ，now.", "发送 " + token + " 现在。")
+            for token in (
+                "https://a.test/x.y",
+                "https://a.test/x/",
+                "https://a.test/x..",
+                "https://a.test/x?new=1",
+                "https://a.test/x#new",
+                "https://a.test/x.y.",
+            )
+        ]
+        cases += [
+            ("Ask @sam ，please.", "询问 " + token + " 请。")
+            for token in ("@sam.dev", "@samy", "@sam..", "@sam?x", "@sam/#new")
+        ]
+        cases += [
+            ("Send https://a.test/x ，now.", "发送 https://a.test/x.\u00a0现在。"),
+            ("Send https://a.test/x body.", "发送 https://a.test/x. 正文。"),
+            ("Send https://a.test/x. ，now.", "发送 https://a.test/x 现在。"),
+            ("Send https://a.test/x. ，now.", "发送 https://a.test/x.. 现在。"),
+            ("Notify @sam。", "通知 @sam"),
+            ("Notify @sam？", "通知 @sam."),
+            ("Notify @sam。", "通知 @sam.?"),
+            ("Notify @sam。", "通知 @sam. 另加正文"),
+            ("Send https://a.test/x 123", "发送 https://a.test/x."),
+            ("Send https://a.test/x 1+2=3", "发送 https://a.test/x."),
+            ("1+2=3 https://a.test/x ，send.", "9 https://a.test/x. 发送。"),
+            ("Send  https://a.test/x ，now.", "发送 https://a.test/x. 现在。"),
+            ("Send https://a.test/x ，now.\u00a0", "发送 https://a.test/x. 现在。"),
+            ("Send https://a.test/x \u00a0，now.", "发送 https://a.test/x. 现在。"),
+            ("Send https://a.test/x ，now.", "发送 https://a.test/x.  "),
+            ("Send https://a.test/x ，now.", "发送 https://a.test/x. ."),
+            (
+                "Please https://a.test/x ，battery https://b.test thanks.",
+                "请 https://a.test/x. https://b.test 谢谢。",
+            ),
+            ("Ask @sam ，please; notify @sam。", "联系 @sam. 请。"),
+            ("Ask @sam ，please.", "联系 @sam. 请 @sam。"),
+            ("Ask @sam ，notify @pat。", "联系 @pat. 通知 @sam."),
+            ("Ask @sam。\nLater.", "联系\n@sam. 随后。"),
+            ("Ask @sam。\nLater.", "联系 @sam.\n\n随后。"),
+            ("Ask @sam。\nLater.", "联系 @sam. 随后。"),
+        ]
+        for source, output in cases:
+            with self.subTest(source=source, output=output):
+                with self.assertRaisesRegex(EngineError, "structure-not-preserved"):
+                    self.run_translation(source, output)
+                self.assertEqual(1, self.calls)
+
+    def test_reassigned_period_does_not_move_glossary_ownership(self):
+        from typelay_worker.engine import EngineError
+        from typelay_worker.glossary import Rule
+
+        source = "Please https://a.test/x ，battery https://b.test thanks."
+        with self.assertRaisesRegex(EngineError, "glossary-output-missing"):
+            self.run_translation(
+                source,
+                "电池 https://a.test/x. 请 https://b.test 谢谢。",
+                rules=(Rule("battery", "电池", None, None),),
+            )
+        self.assertEqual(1, self.calls)
+        self.assertEqual(
+            "请 https://a.test/x . 电池 https://b.test 谢谢。",
+            self.run_translation(
+                source,
+                "请 https://a.test/x. 电池 https://b.test 谢谢。",
+                rules=(Rule("battery", "电池", None, None),),
+            ),
+        )
+        self.assertEqual(1, self.calls)
 
     def test_plain_source_has_no_artificial_requirements(self):
         self.assertEqual("明天见。", self.run_translation("See you tomorrow.", "明天见。"))

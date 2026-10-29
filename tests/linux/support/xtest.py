@@ -54,3 +54,62 @@ def prepare_key(stack, name, *, connection=None):
         assert sent, f"XTest refused {name} key event"
 
     return send_key
+
+
+def prepare_pointer(stack, window):
+    """Preconnect one real move/press/release to an owned nested client."""
+    x11, xtst, display = prepare_xtest(stack)
+    window = int(window, 0)
+    assert window > 0
+    x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+    x11.XDefaultRootWindow.restype = ctypes.c_ulong
+    x11.XTranslateCoordinates.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_ulong),
+    ]
+    x11.XTranslateCoordinates.restype = ctypes.c_int
+    xtst.XTestFakeMotionEvent.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_ulong,
+    ]
+    xtst.XTestFakeMotionEvent.restype = ctypes.c_int
+    xtst.XTestFakeButtonEvent.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint,
+        ctypes.c_int,
+        ctypes.c_ulong,
+    ]
+    xtst.XTestFakeButtonEvent.restype = ctypes.c_int
+    root = x11.XDefaultRootWindow(display)
+
+    def click(x, y, *, timing):
+        timing["startedAtMs"] = now_ms()
+        root_x, root_y, child = ctypes.c_int(), ctypes.c_int(), ctypes.c_ulong()
+        assert x11.XTranslateCoordinates(
+            display,
+            window,
+            root,
+            x,
+            y,
+            ctypes.byref(root_x),
+            ctypes.byref(root_y),
+            ctypes.byref(child),
+        ), "Cannot resolve the owned nested window coordinates"
+        assert xtst.XTestFakeMotionEvent(display, -1, root_x.value, root_y.value, 0)
+        assert xtst.XTestFakeButtonEvent(display, 1, 1, 0)
+        assert xtst.XTestFakeButtonEvent(display, 1, 0, 0)
+        timing["queuedAtMs"] = now_ms()
+        x11.XSync(display, 0)
+        timing["xSyncReturnedAtMs"] = now_ms()
+        # XSync acknowledges X server processing, not Qt hit testing or click.
+
+    return click
