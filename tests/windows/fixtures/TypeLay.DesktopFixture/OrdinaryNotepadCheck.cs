@@ -286,8 +286,12 @@ internal static partial class HyPackageCheck
                 app = Start(info);
                 workers = new WorkerObserver(app.Process, data);
                 workers.Start();
+                await PublicOnboardingActions.CompleteAsync(app.Process, () => ReadSettings(data), stage => scene.Stage = stage, ct);
+                await OpenSettingsThroughTrayAsync(app.Process, scene, ct);
                 scene.Stage = "find-public-settings";
                 settings = await SettingsAsync(app.Process, ct);
+                scene.Stage = "navigate-public-model";
+                await NavigateAsync(settings, "model", "本地模型", ct);
                 scene.Stage = "await-public-model-ready";
                 await WaitAsync(async () => (await PublicStatusAsync(settings, ct)).StartsWith("本地翻译已就绪", StringComparison.Ordinal), ct);
                 scene.Stage = "navigate-public-general";
@@ -346,7 +350,7 @@ internal static partial class HyPackageCheck
                 async scene => { await OverlayEditor(true, scene); }, async scene =>
             {
                 scene.Stage = "set-public-on-demand-mode";
-                await ShowNotepadSettings(app!.Process, ct);
+                await ShowNotepadSettings(app!.Process, scene, ct);
                 settings = await SettingsAsync(app.Process, ct);
                 await NavigateAsync(settings!, "general", "常规", ct);
                 await UiAsync(() =>
@@ -607,20 +611,11 @@ internal static partial class HyPackageCheck
         bool? LastDiscardButtonMatched = null, string? LastDiscardAutomationId = null,
         int DiscardInvokeStartedCount = 0, int DiscardInvokeReturnedCount = 0);
 
-    private static async Task ShowNotepadSettings(Process app, CancellationToken ct)
+    private static async Task ShowNotepadSettings(Process app, Scene scene, CancellationToken ct)
     {
-        AutomationElement? language = null;
-        await WaitAsync(async () => await UiAsync(() =>
-        {
-            var overlay = AutomationElement.RootElement.FindFirst(TreeScope.Children, new AndCondition(
-                new PropertyCondition(AutomationElement.ProcessIdProperty, app.Id),
-                new PropertyCondition(AutomationElement.NameProperty, "TypeLay · 自动化测试"),
-                new PropertyCondition(AutomationElement.IsOffscreenProperty, false)));
-            language = overlay is null ? null : Find(overlay, AutomationElement.NameProperty, "翻译语言", ControlType.Button);
-            return language is not null && language.Current.IsEnabled && !language.Current.IsOffscreen;
-        }, ct), ct);
-        // The visible language affordance opens the same public Settings window.
-        await UiAsync(() => ((InvokePattern)language!.GetCurrentPattern(InvokePattern.Pattern)).Invoke(), ct);
+        // The overlay's language button now owns a separate language picker,
+        // not the Settings window. Open Settings through its real tray action.
+        await OpenSettingsThroughTrayAsync(app, scene, ct);
         var settings = await SettingsAsync(app, ct);
         await WaitAsync(async () => await UiAsync(() => !settings.Current.IsOffscreen, ct), ct);
     }

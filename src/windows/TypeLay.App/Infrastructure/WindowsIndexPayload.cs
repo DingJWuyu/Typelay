@@ -23,8 +23,7 @@ internal static class WindowsIndexPayload
                 || manifest.GetProperty("platform").GetString() != "win-x64"
                 || manifest.GetProperty("template_sha256").GetString() != Template
                 || manifest.GetProperty("upstream_revision").GetString() != Revision
-                || !manifest.GetProperty("exports").EnumerateArray().Select(item => item.GetString())
-                    .SequenceEqual(new[] { "index_close", "index_open_v1", "index_translate_v1" }))
+                || !SupportedManifestFeatures(manifest))
                 return false;
             RequireFile(root, "typelay_index.dll", manifest.GetProperty("adapter"));
             RequireFile(root, "LICENSE.llama.cpp", manifest.GetProperty("license"));
@@ -60,4 +59,25 @@ internal static class WindowsIndexPayload
             return false;
         }
     }
+    private static bool SupportedManifestFeatures(JsonElement manifest)
+    {
+        var exports = manifest.GetProperty("exports").EnumerateArray().Select(item => item.GetString()).ToArray();
+        bool alternative = exports.SequenceEqual(new[]
+            { "index_close", "index_open_v1", "index_translate_alternative_v1", "index_translate_v1" });
+        if (!alternative && !exports.SequenceEqual(new[] { "index_close", "index_open_v1", "index_translate_v1" }))
+            return false;
+        var capabilities = manifest.GetProperty("capabilities");
+        string[] names = alternative ? ["styles", "glossary", "styled_glossary", "alternative"]
+            : ["styles", "glossary", "styled_glossary"];
+        // Match the worker's two complete manifest shapes, never mix an old
+        // export set with a new feature claim. This remains only a presence hint.
+        return capabilities.EnumerateObject().Select(item => item.Name).Order(StringComparer.Ordinal)
+            .SequenceEqual(names.Order(StringComparer.Ordinal))
+            && capabilities.GetProperty("styles").EnumerateArray().Select(item => item.GetString())
+                .SequenceEqual(new[] { "natural", "formal" })
+            && capabilities.GetProperty("glossary").GetBoolean()
+            && capabilities.GetProperty("styled_glossary").GetBoolean()
+            && (!alternative || capabilities.GetProperty("alternative").GetBoolean());
+    }
+
 }

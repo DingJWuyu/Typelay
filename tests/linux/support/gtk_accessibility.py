@@ -1,6 +1,7 @@
 """Observe owned GTK test windows through the real desktop accessibility API."""
 
 import time
+from collections import deque
 
 import gi
 
@@ -19,11 +20,15 @@ def named(pid, name):
                 continue
         except GLib.Error:
             continue  # An unrelated owned fixture may have just exited.
-        pending = [app]
-        for _ in range(256):
+        # The unified Apps page exposes installed application rows. An actual
+        # 797-node GTK tree puts navigation beyond the retired 256-node DFS cap.
+        # Breadth-first observation reaches shallow chrome before list details;
+        # keep an explicit finite limit and fail visibly if the fixture exceeds it.
+        pending = deque([app])
+        for _ in range(4096):
             if not pending:
                 break
-            node = pending.pop()
+            node = pending.popleft()
             if node is None:
                 continue  # A child can disappear between count and lookup.
             try:
@@ -41,6 +46,9 @@ def named(pid, name):
                 # siblings remain valid. The caller keeps its original deadline
                 # and obtains a fresh tree on its next ordinary observation.
                 continue
+        else:
+            if pending:
+                raise AssertionError("owned GTK accessibility tree exceeds 4096 nodes")
     return None
 
 
@@ -96,7 +104,7 @@ def bounds(node, pid, expected_size, *, expected_role=None, expected_name=None):
 
 
 def settings_navigation(pid):
-    """Return the real sidebar selection and its four labelled rows, if mapped."""
+    """Return the real sidebar selection and its labelled rows, if mapped."""
     sidebar = named(pid, "设置导航")
     pending = [sidebar] if sidebar else []
     for _ in range(32):
@@ -157,3 +165,56 @@ def select_settings_page(pid, title, timeout=15):
             return row
         time.sleep(0.05)
     raise AssertionError("selected settings page did not become visible: " + title)
+
+
+def record_shortcut(pid, title, chord, send_key, timeout=15):
+    """Record through the focused GTK button and real desktop key delivery.
+
+    This is settings input, not trusted source input or global registration.
+    Esc cancels recording; the explicit reset action restores the default Esc.
+    """
+    deadline = time.monotonic() + timeout
+    name = "恢复默认：" + title if chord == "Esc" else "设置：" + title
+    while time.monotonic() < deadline:
+        node = named(pid, name)
+        if node is not None:
+            node.clear_cache()
+            states = node.get_state_set()
+            if (
+                node.get_role() == Atspi.Role.PUSH_BUTTON
+                and states.contains(Atspi.StateType.SHOWING)
+                and states.contains(Atspi.StateType.SENSITIVE)
+            ):
+                break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("shortcut recorder was not accessible: " + name)
+    assert Atspi.Component.grab_focus(node.get_component_iface()), name
+    assert Atspi.Action.do_action(node.get_action_iface(), 0), name
+    if chord == "Esc":
+        return node
+    while time.monotonic() < deadline:
+        if focused(node) and node.get_description() == "按下快捷键…":
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("shortcut recorder did not take focus: " + title)
+    send_key(
+        chord.replace("Ctrl", "ctrl")
+        .replace("Shift", "shift")
+        .replace("Alt", "alt")
+        .replace("Super", "super")
+    )
+    return node
+
+
+def select_work_mode(pid, mode):
+    """Activate the actual native segmented radio, not the retired combo box."""
+    assert mode in (0, 1)
+    name = "设置：工作模式：" + ("自动" if mode == 0 else "按需")
+    node = named(pid, name)
+    assert node is not None and node.get_role() == Atspi.Role.RADIO_BUTTON, name
+    states = node.get_state_set()
+    assert states.contains(Atspi.StateType.SHOWING) and states.contains(Atspi.StateType.SENSITIVE)
+    assert Atspi.Action.do_action(node.get_action_iface(), 0), name
+    return node

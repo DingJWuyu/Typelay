@@ -582,6 +582,21 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                     observations = {}
                     evidence = None
 
+                    def layout_observation(snapshot):
+                        # Public widget geometry distinguishes a moving popup from
+                        # a body/menu relayout, without capturing source contents.
+                        widgets = {"candidate": snapshot.get("candidate")}
+                        widgets.update(
+                            (key, snapshot.get("overlayControls", {}).get(key))
+                            for key in ("typelay-menu-trigger", "typelay-language-menu")
+                        )
+                        return {
+                            name: {key: item.get(key) for key in ("x", "y", "width", "height")}
+                            if item
+                            else None
+                            for name, item in widgets.items()
+                        }
+
                     def ready():
                         renewed = {}
                         if overlay_control:
@@ -598,6 +613,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             "fullscreen": actual.get("fullscreen"),
                             "parent": parent,
                             "overlayPopup": actual.get("overlayPopup"),
+                            "layout": layout_observation(actual),
                             "control": {
                                 key: control.get(key)
                                 for key in (
@@ -780,6 +796,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             observed, item, current_pixel = current
                             observation = {
                                 "observedAtMonoMs": observed.get("observedAtMs"),
+                                "layout": layout_observation(observed),
                                 "control": {
                                     key: item.get(key)
                                     for key in (
@@ -972,6 +989,17 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             "feedback": None,
                             "glossaryUnavailableReason": None,
                         }
+                        check_inherit = (
+                            source_kind == "entry"
+                            and view_state == "ValidTranslation"
+                            and finish == "save"
+                        )
+                        if check_inherit:
+                            actions.update(
+                                canInheritStyle=True,
+                                applicationStyle="Formal",
+                                glossaryReleased=False,
+                            )
                         view = {
                             "state": view_state,
                             "text": "Kept candidate",
@@ -1034,6 +1062,9 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                     "typelay-target-language",
                                     "typelay-apply-languages",
                                     "typelay-glossary-add",
+                                    "typelay-style-inherit",
+                                    "typelay-style-natural",
+                                    "typelay-style-formal",
                                 ):
                                     break
                                 menu, direction = observe(
@@ -1138,6 +1169,44 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 {**base, "expiresAtMs": now_ms() + 800, "view": view},
                             )["visible"]
                         click("typelay-menu-trigger")
+                        if check_inherit:
+                            actual = observe(
+                                lambda value: value.get("overlayControls", {})
+                                .get("typelay-style-inherit", {})
+                                .get("visible")
+                                and value,
+                                "closed-quality inherit control rendered",
+                            )
+                            controls = actual["overlayControls"]
+                            assert (
+                                controls["typelay-style-inherit"]["visible"]
+                                and controls["typelay-style-inherit"]["enabled"]
+                            )
+                            assert all(
+                                not controls[name]["enabled"]
+                                for name in ("typelay-style-natural", "typelay-style-formal")
+                            )
+                            click("typelay-style-inherit")
+                            inherit = observe(
+                                lambda _: events("style"), "closed-quality null style request"
+                            )
+                            assert inherit == [
+                                {
+                                    "target": target,
+                                    "generation": generation,
+                                    "revision": 1,
+                                    "operation": "style",
+                                    "value": {"settingsRevision": 12, "style": None},
+                                }
+                            ]
+                            unchanged()
+                            # Controlled host response, not a production settings write.
+                            actions.update(canInheritStyle=False, applicationStyle=None)
+                            assert call(
+                                "overlay-render",
+                                {**base, "expiresAtMs": now_ms() + 800, "view": view},
+                            )["visible"]
+                            click("typelay-menu-trigger")
                         click("typelay-glossary-add")
                         observe(lambda _: events("sessionGlossaryBegin"), "explicit glossary click")
                         if finish in ("save", "pointer-save", "cancel"):

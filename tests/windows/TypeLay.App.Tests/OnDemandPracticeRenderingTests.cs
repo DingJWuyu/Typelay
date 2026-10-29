@@ -358,15 +358,15 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
                 window.ShowPage();
                 window.UpdateLayout();
                 var start = Descendants(window).OfType<Button>().Single(button =>
-                    Equals(button.Content, AutomaticPracticePresentation.Create(settings.Value).StartLabel));
+                    Equals(button.Content, "打开"));
                 start.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 window.UpdateLayout();
                 Assert.Equal(0, launches);
                 Assert.False(model.Ready);
                 Assert.Equal(WorkMode.Automatic, WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json")).Value.Mode);
                 Assert.False(settings.Value.OnboardingComplete);
-                Assert.Contains(Descendants(window).OfType<TextBlock>(), text =>
-                    text.Text == ApplicationSupportPresentation.Create([]).Title);
+                Assert.Contains(Descendants(window).OfType<Border>(), card =>
+                    card.IsVisible && card.Name == "TranslationPreparationCard");
                 var prepare = Descendants(window).OfType<Button>().Single(button => button.Name == "PreparationPrimaryAction");
                 Assert.Equal("准备 Index 本地翻译…", prepare.Content);
                 Assert.False(prepare.IsEnabled); // No Index native payload; never fall back implicitly.

@@ -673,10 +673,18 @@ def check_preview_colors(client, source, generation, state, initial, evidence):
     short_height = None
     phases = evidence["previewColorPhases"] = []
     for revision, (view_state, text, owns_text, foreground, theme) in enumerate(cases, 1):
-        phase = None
-        if len(phases) < 8:
-            phase = {"state": view_state, "editorOwnsText": owns_text, "theme": theme}
-            phases.append(phase)
+        phase = {
+            "revision": revision,
+            "state": view_state,
+            "editorOwnsText": owns_text,
+            "theme": theme,
+            "lengthCase": "long"
+            if text == long_text
+            else "short"
+            if text == short_text
+            else "state",
+        }
+        phases.append(phase)
         assert render_preview(
             client,
             source,
@@ -704,7 +712,11 @@ def check_preview_colors(client, source, generation, state, initial, evidence):
                     "foregroundMatches": bool(
                         candidate and candidate.get("foreground") == foreground
                     ),
+                    "candidateHeight": candidate.get("height") if candidate else None,
+                    "baselineShortHeight": short_height,
                 }
+                if candidate:
+                    phase["lastLiveObservation"] = phase["lastObservation"]
             if (
                 value.get("observedAtMs", 0) <= rendered_at
                 or not candidate
@@ -767,12 +779,20 @@ def check_preview_appearance(client, source, generation, state, initial, evidenc
             appearance=phase,
             text="Appearance stays read-only.",
         )["visible"]
+        phases.append(phase)
         after = time.monotonic_ns() // 1_000_000
 
         def rendered():
             value = state()
             candidate = value.get("candidate") or {}
             controls = value.get("overlayControls", {})
+            if candidate:
+                phase["lastObservation"] = {
+                    "fontPixels": candidate.get("fontPixels"),
+                    "fontFamily": candidate.get("fontFamily"),
+                    "foreground": controls.get("typelay-dot", {}).get("foreground"),
+                    "applyText": controls.get("typelay-apply-languages", {}).get("text"),
+                }
             if (
                 value.get("observedAtMs", 0) <= after
                 or candidate.get("fontPixels") != size
@@ -789,9 +809,7 @@ def check_preview_appearance(client, source, generation, state, initial, evidenc
         assert not actual["candidate"]["editable"] and not actual["candidate"]["focused"]
         assert actual["focus"] == "fixture-first"
         assert actual["first"] == initial["first"] and actual["second"] == initial["second"]
-        phases.append(
-            {**phase, "fontFamily": actual["candidate"]["fontFamily"], "fontPixels": size}
-        )
+        phase.update(fontFamily=actual["candidate"]["fontFamily"], fontPixels=size)
 
 
 def check_language_retention_refusal(

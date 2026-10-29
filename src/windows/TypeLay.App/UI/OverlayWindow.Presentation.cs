@@ -11,9 +11,12 @@ namespace TypeLay.App;
 
 internal sealed partial class OverlayWindow
 {
-    private static Button IconButton(string path)
+    private static Button IconButton(string path, Button? button = null)
     {
-        var button = new Button { Width = 26, Height = 26, Padding = new(0), BorderThickness = new(0), Background = Brushes.Transparent };
+        button ??= new Button();
+        button.Width = button.Height = 26;
+        button.Padding = button.BorderThickness = new(0);
+        button.Background = Brushes.Transparent;
         button.Template = (ControlTemplate)XamlReader.Parse("""
             <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
               <Border x:Name="button" CornerRadius="7" Background="{TemplateBinding Background}">
@@ -26,9 +29,17 @@ internal sealed partial class OverlayWindow
               </ControlTemplate.Triggers>
             </ControlTemplate>
             """);
-        var icon = new System.Windows.Shapes.Path { Data = Geometry.Parse(path), StrokeThickness = 1.6,
-            StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, StrokeLineJoin = PenLineJoin.Round,
-            Width = 15, Height = 15, Stretch = Stretch.Uniform };
+        var icon = new System.Windows.Shapes.Path
+        {
+            Data = Geometry.Parse(path),
+            StrokeThickness = 1.6,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            StrokeLineJoin = PenLineJoin.Round,
+            Width = 15,
+            Height = 15,
+            Stretch = Stretch.Uniform
+        };
         icon.SetResourceReference(System.Windows.Shapes.Shape.StrokeProperty, "Muted");
         button.Content = icon;
         return button;

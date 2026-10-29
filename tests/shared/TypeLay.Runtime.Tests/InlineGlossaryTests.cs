@@ -808,6 +808,44 @@ public sealed class InlineGlossaryTests
     }
 
     [Fact]
+    public async Task ClosedReleaseSourceFormRejectsOldTokensAndSavesOnlyInactiveRulesAfterRevalidation()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        var token = s.View.Token;
+        Assert.False(s.View.Context!.TranslationActions!.GlossaryReleased);
+        Assert.True(s.View.Context.TranslationActions.CanOpenGlossary);
+        var stale = token with
+        {
+            Revision = token.Revision - 1
+        };
+        Assert.Null(s.View.BeginGlossaryRequested!(stale));
+        var entry = Open(s);
+        var rejected = await s.View.AddGlossaryRequested!(new(entry.FormId, stale, entry.SettingsRevision, new("hello", "fixed")));
+        Assert.False(rejected.Saved);
+        Assert.Equal("glossary-stale", rejected.Code);
+        Assert.Null(s.ReloadSettings().Glossary);
+        s.Input.InEditor = true;
+        s.View.ReturnGlossary = returned =>
+        {
+            Assert.Same(entry, returned);
+            s.Input.InEditor = false;
+            s.View.GlossaryEntryFocus = null;
+            return Task.FromResult(true);
+        };
+        int captures = s.Service.Captures;
+        var saved = await Add(s, entry);
+        Assert.True(saved.Saved, saved.Code);
+        Assert.Equal("glossary-saved-inactive", saved.Code);
+        Assert.Equal(captures + 1, s.Service.Captures);
+        Assert.Equal("fixed", Assert.Single(s.ReloadSettings().Glossary!.Rules).TargetTerm);
+        Assert.False(s.Controller.GetGlossarySettingsState().CanApply);
+        Assert.Single(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
     public async Task EditingCanStoreAnInactiveRuleWithoutReplacingItsDraftOrGrantingModelApplication()
     {
         using var s = new SessionScenario(experimental: true);

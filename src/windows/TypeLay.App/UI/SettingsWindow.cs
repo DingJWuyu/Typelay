@@ -30,6 +30,7 @@ internal sealed partial class SettingsWindow : Window
     private Func<Task>? _undo;
     private Func<bool>? _undoStillValid;
     private Action? _refreshChrome;
+    private Action? _refreshGeneralStatus;
     private string _applicationQuery = "";
     private string _appearanceStamp = "";
     private string _interfaceLanguage = "";
@@ -92,8 +93,14 @@ internal sealed partial class SettingsWindow : Window
     private Window? _closeDialog;
     private bool _updatingShortcuts, _emergencyShutdown;
     private bool _startupPresentationAllowed = true;
-    public Func<string>? PauseShortcutStatus { get; set; }
-    public Func<string, IReadOnlyList<string>>? PauseShortcutConflicts { get; set; }
+    public Func<string>? PauseShortcutStatus
+    {
+        get; set;
+    }
+    public Func<string, IReadOnlyList<string>>? PauseShortcutConflicts
+    {
+        get; set;
+    }
     public Func<string>? ShortcutStatus
     {
         get; set;
@@ -129,8 +136,14 @@ internal sealed partial class SettingsWindow : Window
     {
         get; set;
     }
-    public Func<bool>? CanRetryPauseShortcut { get; set; }
-    public Action? RetryPauseShortcut { get; set; }
+    public Func<bool>? CanRetryPauseShortcut
+    {
+        get; set;
+    }
+    public Action? RetryPauseShortcut
+    {
+        get; set;
+    }
     public void RefreshShortcutStatus()
     {
         if (!Dispatcher.CheckAccess())
@@ -199,14 +212,20 @@ internal sealed partial class SettingsWindow : Window
         Resources.MergedDictionaries.Add(UiTheme.SettingsResources());
         Resources.MergedDictionaries.Add(UiTheme.QuickPanelResources());
         var shell = new Grid();
-        shell.RowDefinitions.Add(new() { Height = new(32) });
+        shell.RowDefinitions.Add(new()
+        {
+            Height = new(32)
+        });
         shell.RowDefinitions.Add(new());
         var caption = new Grid { Background = Brushes.Transparent, Margin = new(12, 0, 4, 0) };
         caption.MouseLeftButtonDown += (_, e) =>
         {
-            if (e.ChangedButton != MouseButton.Left) return;
-            if (e.ClickCount == 2) WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
-            else DragMove();
+            if (e.ChangedButton != MouseButton.Left)
+                return;
+            if (e.ClickCount == 2)
+                WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+            else
+                DragMove();
         };
         var captionTitle = UiTheme.Text("TypeLay", 12, true);
         caption.Children.Add(captionTitle);
@@ -219,7 +238,11 @@ internal sealed partial class SettingsWindow : Window
         })
         {
             var button = UiTheme.Button(label, action);
-            button.Width = 42; button.Height = 28; button.Padding = new(0); button.BorderThickness = new(0); button.Background = Brushes.Transparent;
+            button.Width = 42;
+            button.Height = 28;
+            button.Padding = new(0);
+            button.BorderThickness = new(0);
+            button.Background = Brushes.Transparent;
             AutomationProperties.SetName(button, name);
             chrome.Children.Add(button);
         }
@@ -228,69 +251,138 @@ internal sealed partial class SettingsWindow : Window
         var root = new Grid();
         Grid.SetRow(root, 1);
         shell.Children.Add(root);
-        root.ColumnDefinitions.Add(new() { Width = new(232) });
+        root.ColumnDefinitions.Add(new()
+        {
+            Width = new(232)
+        });
         root.ColumnDefinitions.Add(new());
         var sidebar = new DockPanel { LastChildFill = true, Margin = new(10, 14, 10, 10) };
         var brand = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(6, 0, 0, 18) };
         brand.Children.Add(UiTheme.Mark(26, appIcon: true));
-        var wordmark = UiTheme.Text("TypeLay", 15, bold: true); wordmark.Margin = new(9, 0, 0, 0); brand.Children.Add(wordmark);
-        DockPanel.SetDock(brand, Dock.Top); sidebar.Children.Add(brand);
-        _settingsSearch.Height = 30; _settingsSearch.Padding = new(9, 5, 9, 5); _settingsSearch.Margin = new(2, 0, 2, 12);
+        var wordmark = UiTheme.Text("TypeLay", 15, bold: true);
+        wordmark.Margin = new(9, 0, 0, 0);
+        brand.Children.Add(wordmark);
+        DockPanel.SetDock(brand, Dock.Top);
+        sidebar.Children.Add(brand);
+        _settingsSearch.Height = 28;
+        _settingsSearch.Padding = new(28, 4, 8, 4);
+        _settingsSearch.Margin = new(2, 0, 2, 12);
         _settingsSearch.ToolTip = UiTheme.L("搜索设置", "Search settings");
         AutomationProperties.SetName(_settingsSearch, "搜索设置");
         _settingsSearch.TextChanged += (_, _) => RefreshNavigation();
-        var searchHost = new Grid(); searchHost.Children.Add(_settingsSearch);
-        var searchHint = UiTheme.Text(UiTheme.L("⌕  搜索", "⌕  Search"), 12, true); searchHint.Margin = new(11, 0, 11, 12); searchHint.IsHitTestVisible = false; searchHost.Children.Add(searchHint);
+        var searchHost = new Grid();
+        searchHost.Children.Add(_settingsSearch);
+        var searchIcon = PrototypeGlyph("M17,11 A6,6 0 1 1 5,11 A6,6 0 1 1 17,11 m20 20-4.5-4.5", "Tertiary", stroke: 1.6);
+        searchIcon.HorizontalAlignment = HorizontalAlignment.Left;
+        searchIcon.Margin = new(10, 0, 0, 12);
+        searchHost.Children.Add(searchIcon);
+        var searchHint = UiTheme.Text(UiTheme.L("搜索", "Search"), 13, true);
+        searchHint.Margin = new(30, 0, 11, 12);
+        searchHint.IsHitTestVisible = false;
+        searchHost.Children.Add(searchHint);
         _settingsSearch.TextChanged += (_, _) => searchHint.Visibility = _settingsSearch.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-        DockPanel.SetDock(searchHost, Dock.Top); sidebar.Children.Add(searchHost);
+        DockPanel.SetDock(searchHost, Dock.Top);
+        sidebar.Children.Add(searchHost);
         var privacy = UiTheme.Text(UiTheme.L("本地翻译 · 无历史记录", "On-device · No history"), 11, true);
-        privacy.Margin = new(8, 16, 0, 0); DockPanel.SetDock(privacy, Dock.Bottom); sidebar.Children.Add(privacy);
-        _nav = new StackPanel(); sidebar.Children.Add(new ScrollViewer { Content = _nav, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        privacy.Margin = new(8, 16, 0, 0);
+        DockPanel.SetDock(privacy, Dock.Bottom);
+        sidebar.Children.Add(privacy);
+        _nav = new StackPanel();
+        sidebar.Children.Add(new ScrollViewer { Content = _nav, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         _refreshChrome = () =>
         {
             Title = UiTheme.L("TypeLay 设置", "TypeLay Settings");
             _settingsSearch.ToolTip = UiTheme.L("搜索设置", "Search settings");
-            searchHint.Text = UiTheme.L("⌕  搜索", "⌕  Search");
+            searchHint.Text = UiTheme.L("搜索", "Search");
             privacy.Text = UiTheme.L("本地翻译 · 无历史记录", "On-device · No history");
             string[] names = [UiTheme.L("最小化", "Minimize"), UiTheme.L("最大化", "Maximize"), UiTheme.L("关闭设置", "Close Settings")];
-            foreach (var (button, name) in chrome.Children.OfType<Button>().Zip(names)) AutomationProperties.SetName(button, name);
+            foreach (var (button, name) in chrome.Children.OfType<Button>().Zip(names))
+                AutomationProperties.SetName(button, name);
         };
-        var navBorder = UiTheme.Border(sidebar, 12, "Sidebar"); navBorder.Margin = new(8, 0, 0, 8); navBorder.BorderThickness = new(.5);
+        var navBorder = UiTheme.Border(sidebar, 12, "Sidebar");
+        navBorder.Margin = new(8, 0, 0, 8);
+        navBorder.BorderThickness = new(.5);
         root.Children.Add(navBorder);
         _content = new StackPanel { Margin = new(28, 8, 28, 32) };
-        _pageScroll.Content = _content; _pageScroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+        _pageScroll.Content = _content;
+        _pageScroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
         _pageScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
-        var main = new Grid(); main.RowDefinitions.Add(new() { Height = new(54) }); main.RowDefinitions.Add(new()); main.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        _headerTitle.FontSize = 22; _headerTitle.FontWeight = FontWeights.Medium; _headerTitle.FontFamily = UiTheme.ContentFont;
-        _headerTitle.Margin = new(28, 8, 28, 0); _headerTitle.VerticalAlignment = VerticalAlignment.Center;
+        var main = new Grid();
+        main.RowDefinitions.Add(new()
+        {
+            Height = new(54)
+        });
+        main.RowDefinitions.Add(new());
+        main.RowDefinitions.Add(new()
+        {
+            Height = GridLength.Auto
+        });
+        _headerTitle.FontSize = 22;
+        _headerTitle.FontWeight = FontWeights.Medium;
+        _headerTitle.FontFamily = UiTheme.ContentFont;
+        _headerTitle.Margin = new(28, 8, 28, 0);
+        _headerTitle.VerticalAlignment = VerticalAlignment.Center;
         _headerTitle.SetResourceReference(TextBlock.ForegroundProperty, "Text");
         AutomationProperties.SetAutomationId(_headerTitle, "SettingsPageHeading");
-        main.Children.Add(_headerTitle); Grid.SetRow(_pageScroll, 1); main.Children.Add(_pageScroll);
+        main.Children.Add(_headerTitle);
+        Grid.SetRow(_pageScroll, 1);
+        main.Children.Add(_pageScroll);
         var draftActions = new DockPanel { LastChildFill = true };
         _saveDraftButton = UiTheme.Button(UiTheme.L("重试保存", "Retry Save"), async () => await SaveDraftAsync(), primary: true);
-        _saveDraftButton.Margin = new(18, 0, 0, 0); DockPanel.SetDock(_saveDraftButton, Dock.Right); draftActions.Children.Add(_saveDraftButton);
+        _saveDraftButton.Margin = new(18, 0, 0, 0);
+        DockPanel.SetDock(_saveDraftButton, Dock.Right);
+        draftActions.Children.Add(_saveDraftButton);
         _forceShortcutButton = UiTheme.Button("强制保存", async () => await SaveDraftAsync(forceShortcutSave: true));
-        AutomationProperties.SetAutomationId(_forceShortcutButton, "ForceSaveShortcuts"); DockPanel.SetDock(_forceShortcutButton, Dock.Right); draftActions.Children.Add(_forceShortcutButton);
+        AutomationProperties.SetAutomationId(_forceShortcutButton, "ForceSaveShortcuts");
+        DockPanel.SetDock(_forceShortcutButton, Dock.Right);
+        draftActions.Children.Add(_forceShortcutButton);
         _editShortcutButton = UiTheme.Button("继续编辑", () => { ClearShortcutConfirmation(); RefreshDraftBar(); _wakeShortcutInput?.Focus(); });
-        AutomationProperties.SetAutomationId(_editShortcutButton, "EditConflictingShortcuts"); DockPanel.SetDock(_editShortcutButton, Dock.Right); draftActions.Children.Add(_editShortcutButton);
-        _draftNotice = UiTheme.Text("", 12); draftActions.Children.Add(_draftNotice);
-        _draftBar = UiTheme.Border(draftActions, 0, "Window"); _draftBar.BorderThickness = new(0, .5, 0, 0); _draftBar.Padding = new(28, 12, 28, 14);
-        Grid.SetRow(_draftBar, 2); main.Children.Add(_draftBar);
-        Grid.SetColumn(main, 1); root.Children.Add(main);
+        AutomationProperties.SetAutomationId(_editShortcutButton, "EditConflictingShortcuts");
+        DockPanel.SetDock(_editShortcutButton, Dock.Right);
+        draftActions.Children.Add(_editShortcutButton);
+        _draftNotice = UiTheme.Text("", 12);
+        draftActions.Children.Add(_draftNotice);
+        _draftBar = UiTheme.Border(draftActions, 0, "Window");
+        _draftBar.BorderThickness = new(0, .5, 0, 0);
+        _draftBar.Padding = new(28, 12, 28, 14);
+        Grid.SetRow(_draftBar, 2);
+        main.Children.Add(_draftBar);
+        Grid.SetColumn(main, 1);
+        root.Children.Add(main);
         var toastBody = new DockPanel();
         var dismissToast = _toastDismiss = UiTheme.Button("×", () => { _toast.Visibility = Visibility.Collapsed; _undo = null; _undoIdentity = null; _undoStillValid = null; });
-        dismissToast.Width = 24; dismissToast.Height = 24; dismissToast.Padding = new(0); dismissToast.BorderThickness = new(0);
+        dismissToast.Width = 24;
+        dismissToast.Height = 24;
+        dismissToast.Padding = new(0);
+        dismissToast.BorderThickness = new(0);
         AutomationProperties.SetName(dismissToast, UiTheme.L("关闭通知", "Dismiss notification"));
-        DockPanel.SetDock(dismissToast, Dock.Right); toastBody.Children.Add(dismissToast);
-        _toastUndo.Content = UiTheme.L("撤销", "Undo"); _toastUndo.BorderThickness = new(0); _toastUndo.Margin = new(12, 0, 0, 0);
-        DockPanel.SetDock(_toastUndo, Dock.Right); toastBody.Children.Add(_toastUndo);
-        _toastMessage.VerticalAlignment = VerticalAlignment.Center; _toastMessage.SetResourceReference(TextBlock.ForegroundProperty, "Text"); toastBody.Children.Add(_toastMessage);
-        _toast.Child = toastBody; _toast.CornerRadius = new(12); _toast.Padding = new(14, 8, 10, 8); _toast.Margin = new(24);
-        _toast.SetResourceReference(Border.BackgroundProperty, "Panel"); _toast.SetResourceReference(Border.BorderBrushProperty, "Line"); _toast.BorderThickness = new(1);
-        _toast.HorizontalAlignment = HorizontalAlignment.Center; _toast.VerticalAlignment = VerticalAlignment.Bottom; _toast.Visibility = Visibility.Collapsed;
+        DockPanel.SetDock(dismissToast, Dock.Right);
+        toastBody.Children.Add(dismissToast);
+        _toastUndo.Content = UiTheme.L("撤销", "Undo");
+        _toastUndo.BorderThickness = new(0);
+        _toastUndo.Margin = new(12, 0, 0, 0);
+        DockPanel.SetDock(_toastUndo, Dock.Right);
+        toastBody.Children.Add(_toastUndo);
+        _toastMessage.VerticalAlignment = VerticalAlignment.Center;
+        _toastMessage.SetResourceReference(TextBlock.ForegroundProperty, "Text");
+        toastBody.Children.Add(_toastMessage);
+        _toast.Child = toastBody;
+        _toast.CornerRadius = new(12);
+        _toast.Padding = new(14, 8, 10, 8);
+        _toast.Margin = new(24);
+        _toast.SetResourceReference(Border.BackgroundProperty, "Panel");
+        _toast.SetResourceReference(Border.BorderBrushProperty, "Line");
+        _toast.BorderThickness = new(1);
+        _toast.HorizontalAlignment = HorizontalAlignment.Center;
+        _toast.VerticalAlignment = VerticalAlignment.Bottom;
+        _toast.Visibility = Visibility.Collapsed;
         _toast.Effect = new DropShadowEffect { BlurRadius = 18, ShadowDepth = 3, Opacity = .15 };
-        Grid.SetColumnSpan(_toast, 2); Panel.SetZIndex(_toast, 20); root.Children.Add(_toast);
-        var outer = UiTheme.Border(shell, 18, "Window"); outer.Margin = new(8); outer.Effect = new DropShadowEffect { BlurRadius = 16, ShadowDepth = 3, Opacity = .12 };
+        Grid.SetColumnSpan(_toast, 2);
+        Panel.SetZIndex(_toast, 20);
+        root.Children.Add(_toast);
+        var outer = UiTheme.Border(shell, 18, "Window");
+        outer.Margin = new(8);
+        outer.Effect = new DropShadowEffect { BlurRadius = 16, ShadowDepth = 3, Opacity = .12 };
         Content = outer;
         shell.SizeChanged += (_, _) => shell.Clip = new RectangleGeometry(new Rect(0, 0, shell.ActualWidth, shell.ActualHeight), 17, 17);
         Closing += (_, e) =>
@@ -328,6 +420,8 @@ internal sealed partial class SettingsWindow : Window
             Dispatcher.BeginInvoke(new Action(RefreshModel));
             return;
         }
+        if (_page == "general")
+            _refreshGeneralStatus?.Invoke();
         if (_renderedPage == _page && (_page is "apps" or "model" or "translation" || _page == "general" && _preparationCard is not null))
         {
             RefreshPreparation();
@@ -355,7 +449,10 @@ internal sealed partial class SettingsWindow : Window
         _draftFeedback = null;
         _settingsError = null;
         _support?.CancelCheck();
-        _undo = null; _undoIdentity = null; _undoStillValid = null; _toast.Visibility = Visibility.Collapsed;
+        _undo = null;
+        _undoIdentity = null;
+        _undoStillValid = null;
+        _toast.Visibility = Visibility.Collapsed;
         RefreshDraftBar();
         _renderedPage = null;
         Hide();
@@ -387,7 +484,8 @@ internal sealed partial class SettingsWindow : Window
         var keep = UiTheme.Button(_draftMessages.KeepEditingLabel, () => { if (ReferenceEquals(_closeDialog, dialog) && dialog.IsVisible) dialog.DialogResult = false; }, primary: true);
         var discard = UiTheme.Button(_draftMessages.DiscardLabel, () =>
         {
-            if (!ReferenceEquals(_closeDialog, dialog) || !dialog.IsVisible) return;
+            if (!ReferenceEquals(_closeDialog, dialog) || !dialog.IsVisible)
+                return;
             // Invalidate only draft submissions, before closing the modal can
             // dispatch a retirement ACK. Already persisted settings stay saved.
             _draftSubmissionGeneration++;
@@ -438,7 +536,10 @@ internal sealed partial class SettingsWindow : Window
         }
         if (_undo is not null && (_settings.Revision != _undoRevision || _undoStillValid?.Invoke() == false))
         {
-            _undo = null; _undoIdentity = null; _undoStillValid = null; _toastUndo.Visibility = Visibility.Collapsed;
+            _undo = null;
+            _undoIdentity = null;
+            _undoStillValid = null;
+            _toastUndo.Visibility = Visibility.Collapsed;
         }
         if (_interfaceLanguage != _settings.Value.UiLanguage)
         {
@@ -456,7 +557,8 @@ internal sealed partial class SettingsWindow : Window
             _editShortcutButton.Content = UiTheme.L("继续编辑", "Keep Editing");
             _toastUndo.Content = UiTheme.L("撤销", "Undo");
             _headerTitle.FontFamily = UiTheme.ContentFont;
-            if (_page == "appearance") _renderedPage = null;
+            if (_page == "appearance")
+                _renderedPage = null;
         }
         // Keep the actual editors mounted during background status refreshes so
         // neither unsaved text nor keyboard focus and selection are disturbed.
@@ -480,6 +582,7 @@ internal sealed partial class SettingsWindow : Window
             return;
         }
         _refreshBrowserRow = null;
+        _refreshGeneralStatus = null;
         _refreshTranslationSettings = _refreshGlossarySettings = null;
         _renderedPage = _page;
         RefreshNavigation();
@@ -540,55 +643,104 @@ internal sealed partial class SettingsWindow : Window
     }
     private static FrameworkElement SearchField(TextBox input, string placeholder)
     {
-        var host = new Grid(); host.Children.Add(input);
+        var host = new Grid();
+        host.Children.Add(input);
         input.Padding = new(29, 5, 9, 5);
-        var hint = new StackPanel { Orientation = Orientation.Horizontal, IsHitTestVisible = false, VerticalAlignment = VerticalAlignment.Center, Margin = new(10, 0, 9, 12) };
-        var icon = new System.Windows.Shapes.Path { Data = Geometry.Parse("M10,6 A4,4 0 1 1 2,6 A4,4 0 1 1 10,6 M9,9 L13,13"), StrokeThickness = 1.2, Width = 13, Height = 13, Margin = new(0, 0, 6, 0) };
-        icon.SetResourceReference(System.Windows.Shapes.Shape.StrokeProperty, "Muted"); hint.Children.Add(icon);
-        var label = UiTheme.Text(placeholder, 12, true); hint.Children.Add(label); host.Children.Add(hint);
-        void Update() => hint.Visibility = input.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-        input.TextChanged += (_, _) => Update(); Update(); return host;
+        var icon = PrototypeGlyph("M17,11 A6,6 0 1 1 5,11 A6,6 0 1 1 17,11 m20 20-4.5-4.5", "Tertiary", stroke: 1.6);
+        icon.HorizontalAlignment = HorizontalAlignment.Left;
+        icon.Margin = new(8, 0, 0, 12);
+        host.Children.Add(icon);
+        var label = UiTheme.Text(placeholder, 13, true);
+        label.IsHitTestVisible = false;
+        label.Margin = new(28, 0, 9, 12);
+        host.Children.Add(label);
+        void Update() => label.Visibility = input.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        input.TextChanged += (_, _) => Update();
+        Update();
+        return host;
     }
     private static IEnumerable<Control> VisualControls(DependencyObject root)
     {
         for (int index = 0; index < VisualTreeHelper.GetChildrenCount(root); index++)
         {
             var child = VisualTreeHelper.GetChild(root, index);
-            if (child is Control control) yield return control;
-            foreach (var descendant in VisualControls(child)) yield return descendant;
+            if (child is Control control)
+                yield return control;
+            foreach (var descendant in VisualControls(child))
+                yield return descendant;
         }
     }
     private void Heading(string name, string description = "")
     {
         _headerTitle.Text = name;
         _headerTitle.FontFamily = UiTheme.ContentFont;
-        if (description.Length == 0) return;
-        var sub = UiTheme.Text(description, 12, true); sub.Margin = new(4, 0, 4, 18); _content.Children.Add(sub);
+        if (description.Length == 0)
+            return;
+        var sub = UiTheme.Text(description, 12, true);
+        sub.Margin = new(4, 0, 4, 18);
+        _content.Children.Add(sub);
     }
     private void BeginGroup(string? title = null)
     {
         if (title is not null)
         {
-            var label = UiTheme.Text(title, 12, true, true); label.Margin = new(4, 4, 4, 7); _content.Children.Add(label);
+            var label = UiTheme.Text(title, 12, true, true);
+            label.Margin = new(4, 4, 4, 7);
+            _content.Children.Add(label);
         }
         _group = new StackPanel();
-        var card = UiTheme.Border(_group, 12); card.BorderThickness = new(.5); card.Margin = new(0, 0, 0, 18);
+        var card = UiTheme.Border(_group, 12);
+        card.BorderThickness = new(.5);
+        card.Margin = new(0, 0, 0, 18);
         _content.Children.Add(card);
     }
     private void Rule() => _group = null;
-    private TextBlock? Row(string name, string description, UIElement control)
+    private TextBlock? Row(string name, string description, UIElement control, string? badge = null)
     {
-        if (_group is null) BeginGroup();
+        if (_group is null)
+            BeginGroup();
         var grid = new Grid { MinHeight = 44, Margin = new(14, 0, 14, 0) };
-        grid.ColumnDefinitions.Add(new()); grid.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new());
+        grid.ColumnDefinitions.Add(new()
+        {
+            Width = GridLength.Auto
+        });
         var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 8, 14, 8) };
-        texts.Children.Add(UiTheme.Text(name, 13));
+        if (badge is null)
+            texts.Children.Add(UiTheme.Text(name, 13));
+        else
+        {
+            var caption = new StackPanel { Orientation = Orientation.Horizontal };
+            caption.Children.Add(UiTheme.Text(name, 13));
+            var badgeText = UiTheme.Text(badge, 10.5, bold: true);
+            badgeText.SetResourceReference(TextBlock.ForegroundProperty, "AccentInk");
+            AutomationProperties.SetAutomationId(badgeText, "ExperimentalWritebackBadge");
+            caption.Children.Add(new Border
+            {
+                Height = 18,
+                CornerRadius = new(9),
+                Padding = new(7, 0, 7, 0),
+                Margin = new(6, 0, 0, 0),
+                Child = badgeText,
+                Background = (Brush)FindResource("AccentSoft")
+            });
+            texts.Children.Add(caption);
+        }
         TextBlock? desc = null;
-        if (description.Length > 0) { desc = UiTheme.Text(description, 12, true); desc.Margin = new(0, 3, 0, 0); texts.Children.Add(desc); }
-        grid.Children.Add(texts); Grid.SetColumn(control, 1); grid.Children.Add(control);
+        if (description.Length > 0)
+        {
+            desc = UiTheme.Text(description, 12, true);
+            desc.Margin = new(0, 3, 0, 0);
+            texts.Children.Add(desc);
+        }
+        grid.Children.Add(texts);
+        Grid.SetColumn(control, 1);
+        grid.Children.Add(control);
         if (_group!.Children.Count > 0)
         {
-            var line = new Border { Height = .5, Margin = new(14, 0, 0, 0) }; line.SetResourceReference(Border.BackgroundProperty, "Line"); _group.Children.Add(line);
+            var line = new Border { Height = .5, Margin = new(14, 0, 0, 0) };
+            line.SetResourceReference(Border.BackgroundProperty, "Line");
+            _group.Children.Add(line);
         }
         _group.Children.Add(grid);
         return desc;
@@ -615,7 +767,8 @@ internal sealed partial class SettingsWindow : Window
         var expected = _settings.Value;
         long expectedRevision = _settings.Revision;
         _savingSettings = true;
-        if (_draftFeedback is "已保存，请重新打开设置确认当前状态。" or SettingsDraftPresentation.UnknownSaveMessage) _draftFeedback = null;
+        if (_draftFeedback is "已保存，请重新打开设置确认当前状态。" or SettingsDraftPresentation.UnknownSaveMessage)
+            _draftFeedback = null;
         RefreshDraftBar();
         bool IsCurrentSubmission() => draftSubmission is null || draftSubmission == _draftSubmissionGeneration;
         string page = _page;
@@ -716,31 +869,65 @@ internal sealed partial class SettingsWindow : Window
         Heading(UiTheme.L("常规", "General"));
         BeginGroup();
         var hero = new Grid { Margin = new(14, 12, 14, 12), MinHeight = 48 };
-        hero.ColumnDefinitions.Add(new() { Width = new(58) }); hero.ColumnDefinitions.Add(new()); hero.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        hero.ColumnDefinitions.Add(new()
+        {
+            Width = new(58)
+        });
+        hero.ColumnDefinitions.Add(new());
+        hero.ColumnDefinitions.Add(new()
+        {
+            Width = GridLength.Auto
+        });
         hero.Children.Add(UiTheme.Mark(44, appIcon: true));
-        var identity = new StackPanel { VerticalAlignment = VerticalAlignment.Center }; identity.Children.Add(UiTheme.Text("TypeLay", 15, bold: true));
-        var status = UiTheme.Text(_settings.Value.Enabled ? _model.Ready ? UiTheme.L("● 本地翻译已就绪", "● Ready on this device") : _model.Status : UiTheme.L("● 已暂停", "● Paused"), 12, true);
-        status.Margin = new(0, 3, 0, 0); identity.Children.Add(status); Grid.SetColumn(identity, 1); hero.Children.Add(identity);
-        var enabled = UiTheme.Toggle("启用 TypeLay", () => _settings.Value.Enabled, async value => await SaveAsync(_settings.Value with { Enabled = value })); Grid.SetColumn(enabled, 2); hero.Children.Add(enabled); _group!.Children.Add(hero);
+        var identity = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        identity.Children.Add(UiTheme.Text("TypeLay", 15, bold: true));
+        var statusLine = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 3, 0, 0) };
+        var statusDot = new System.Windows.Shapes.Ellipse { Width = 7, Height = 7, Margin = new(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
+        statusDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, !_settings.Value.Enabled ? "Tertiary" : _model.Ready ? "Good" : "Warn");
+        AutomationProperties.SetAutomationId(statusDot, "GeneralTranslationStatusDot");
+        statusLine.Children.Add(statusDot);
+        var status = UiTheme.Text(_settings.Value.Enabled ? _model.Ready ? UiTheme.L("本地翻译已就绪", "Ready on this device") : _model.Status : UiTheme.L("已暂停", "Paused"), 12, true);
+        _refreshGeneralStatus = () =>
+        {
+            statusDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, !_settings.Value.Enabled ? "Tertiary" : _model.Ready ? "Good" : "Warn");
+            status.Text = UiStrings.Translate(_settings.Value.Enabled ? _model.Ready ? UiTheme.L("本地翻译已就绪", "Ready on this device") : _model.Status : UiTheme.L("已暂停", "Paused"));
+        };
+        statusLine.Children.Add(status);
+        identity.Children.Add(statusLine);
+        Grid.SetColumn(identity, 1);
+        hero.Children.Add(identity);
+        var enabled = UiTheme.Toggle("启用 TypeLay", () => _settings.Value.Enabled, async value => await SaveAsync(_settings.Value with { Enabled = value }));
+        Grid.SetColumn(enabled, 2);
+        hero.Children.Add(enabled);
+        _group!.Children.Add(hero);
         BeginGroup();
         var modes = new UniformGrid { Columns = 2, Width = 180 };
         var modeChoices = new List<RadioButton>();
         foreach (var (mode, zh, en) in new[] { (WorkMode.Automatic, "自动", "Automatic"), (WorkMode.OnDemand, "按需", "On demand") })
         {
             var choice = new RadioButton { Content = UiTheme.L(zh, en), GroupName = "SettingsWorkMode", IsChecked = _settings.Value.Mode == mode, IsTabStop = _settings.Value.Mode == mode };
-            choice.SetResourceReference(StyleProperty, "QuickPanelModeChoice"); AutomationProperties.SetName(choice, "工作模式 " + zh);
-            choice.Checked += async (_, _) => await SaveAsync(_settings.Value with { Mode = mode }); modeChoices.Add(choice); modes.Children.Add(choice);
+            choice.SetResourceReference(StyleProperty, "QuickPanelModeChoice");
+            AutomationProperties.SetName(choice, "工作模式 " + zh);
+            choice.Checked += async (_, _) => await SaveAsync(_settings.Value with { Mode = mode });
+            modeChoices.Add(choice);
+            modes.Children.Add(choice);
         }
         modes.PreviewKeyDown += (_, e) =>
         {
-            if (Keyboard.Modifiers != ModifierKeys.None || Keyboard.FocusedElement is not RadioButton focused) return;
+            if (Keyboard.Modifiers != ModifierKeys.None || Keyboard.FocusedElement is not RadioButton focused)
+                return;
             int step = e.Key is Key.Right or Key.Down ? 1 : e.Key is Key.Left or Key.Up ? -1 : 0;
-            int index = modeChoices.IndexOf(focused); if (step == 0 || index < 0) return;
-            e.Handled = true; var next = modeChoices[(index + step + modeChoices.Count) % modeChoices.Count]; if (next.Focus()) next.IsChecked = true;
+            int index = modeChoices.IndexOf(focused);
+            if (step == 0 || index < 0)
+                return;
+            e.Handled = true;
+            var next = modeChoices[(index + step + modeChoices.Count) % modeChoices.Count];
+            if (next.Focus())
+                next.IsChecked = true;
         };
         Row(UiTheme.L("工作模式", "Work mode"), "", UiTheme.Border(modes, 8, "Panel2", 2));
         Row(UiTheme.L("登录 Windows 后自动启动", "Open at Windows login"), "", UiTheme.Toggle("登录 Windows 后自动启动", () => _settings.Value.Startup, async value => await SaveAsync(_settings.Value with { Startup = value })));
-        Row(UiTheme.L("原生输入框替换 · Beta", "Native input replacement · Beta"), "", UiTheme.Toggle("开发版实验：允许 Tab 写回", () => _settings.Value.ExperimentalWriteback, async enabled =>
+        Row(UiTheme.L("原生输入框替换", "Native input replacement"), "", UiTheme.Toggle("开发版实验：允许 Tab 写回", () => _settings.Value.ExperimentalWriteback, async enabled =>
         {
             if (!enabled)
             {
@@ -756,12 +943,15 @@ internal sealed partial class SettingsWindow : Window
                 {
                     ExperimentalWriteback = true
                 });
-        }));
+        }), badge: "Beta");
         BeginGroup();
         Row(UiTheme.L("翻译练习", "Translation practice"), "", UiTheme.Button(UiTheme.L("打开", "Open"), StartPractice));
         Row(UiTheme.L("重新设置", "Run setup again"), "", UiTheme.Button(UiTheme.L("开始", "Start"), () => { if (ShowOnboarding is { } show) show(); else ShowPage("model"); }));
-        _practiceStatus = UiTheme.Text("", 12, true); _content.Children.Add(_practiceStatus); RefreshPracticeProgress();
-        if (PreparationView().PrimaryAction.Id != TranslationPreparationAction.NextStep) InstallCard(compact: true);
+        _practiceStatus = UiTheme.Text("", 12, true);
+        _content.Children.Add(_practiceStatus);
+        RefreshPracticeProgress();
+        if (PreparationView().PrimaryAction.Id != TranslationPreparationAction.NextStep)
+            InstallCard(compact: true);
     }
     private static FrameworkElement ThemePreview(string theme)
     {
@@ -906,19 +1096,43 @@ internal sealed partial class SettingsWindow : Window
         _targetLanguage = new(false, _settings.Value.Target,
             async code => await SaveLanguageAsync(_settings.Value with { Target = code }), _model.Ready ? _model.AvailableDirections : null);
         var direction = new Grid { Margin = new(14, 16, 14, 16) };
-        direction.ColumnDefinitions.Add(new()); direction.ColumnDefinitions.Add(new() { Width = new(48) }); direction.ColumnDefinitions.Add(new());
+        direction.ColumnDefinitions.Add(new());
+        direction.ColumnDefinitions.Add(new()
+        {
+            Width = new(48)
+        });
+        direction.ColumnDefinitions.Add(new());
         foreach (var (picker, title, column) in new[] { (_sourceLanguage, UiTheme.L("源语言", "Source language"), 0), (_targetLanguage, UiTheme.L("目标语言", "Target language"), 2) })
         {
-            var side = new StackPanel(); var label = UiTheme.Text(title, 12, true); label.Margin = new(0, 0, 0, 7); side.Children.Add(label);
-            picker.Height = 44; picker.FontSize = 15; picker.FontFamily = UiTheme.ContentFont; side.Children.Add(picker); Grid.SetColumn(side, column); direction.Children.Add(side);
+            var side = new StackPanel();
+            var label = UiTheme.Text(title, 12, true);
+            label.Margin = new(0, 0, 0, 7);
+            side.Children.Add(label);
+            picker.Height = 44;
+            picker.FontSize = 15;
+            picker.FontFamily = UiTheme.ContentFont;
+            side.Children.Add(picker);
+            Grid.SetColumn(side, column);
+            direction.Children.Add(side);
         }
         _swapLanguages = UiTheme.Button("⇄", async () => await SaveLanguageAsync(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
-        AutomationProperties.SetName(_swapLanguages, "交换语言"); _swapLanguages.Height = 36; _swapLanguages.Width = 36; _swapLanguages.Padding = new(0); _swapLanguages.BorderThickness = new(0); _swapLanguages.VerticalAlignment = VerticalAlignment.Bottom; _swapLanguages.Margin = new(0, 0, 0, 4);
-        Grid.SetColumn(_swapLanguages, 1); direction.Children.Add(_swapLanguages); _group!.Children.Add(direction);
-        var moreLanguages = UiTheme.Button(UiTheme.L("尚未提供", "Not Available"), () => { }); moreLanguages.IsEnabled = false;
+        AutomationProperties.SetName(_swapLanguages, "交换语言");
+        _swapLanguages.Height = 36;
+        _swapLanguages.Width = 36;
+        _swapLanguages.Padding = new(0);
+        _swapLanguages.BorderThickness = new(0);
+        _swapLanguages.VerticalAlignment = VerticalAlignment.Bottom;
+        _swapLanguages.Margin = new(0, 0, 0, 4);
+        Grid.SetColumn(_swapLanguages, 1);
+        direction.Children.Add(_swapLanguages);
+        _group!.Children.Add(direction);
+        var moreLanguages = UiTheme.Button(UiTheme.L("尚未提供", "Not Available"), () => { });
+        moreLanguages.IsEnabled = false;
         Row(UiTheme.L("更多语言", "More languages"), UiTheme.L("新增语言包管理尚未提供；可用语言仍由已选模型决定。", "Additional language-pack management is not available. Available languages still follow the selected model."), moreLanguages);
         TranslationStyles();
-        _languageAvailability = UiTheme.Text("", 12, true); _languageAvailability.Margin = new(4, 0, 4, 8); _content.Children.Add(_languageAvailability);
+        _languageAvailability = UiTheme.Text("", 12, true);
+        _languageAvailability.Margin = new(4, 0, 4, 8);
+        _content.Children.Add(_languageAvailability);
         RefreshLanguages();
     }
     private void RefreshLanguages()
@@ -936,46 +1150,65 @@ internal sealed partial class SettingsWindow : Window
     private void Shortcuts()
     {
         object identity = _pageIdentity;
-        void Changed() { if (IsVisible && ReferenceEquals(identity, _pageIdentity)) ShortcutDraftChanged(); }
+        void Changed()
+        {
+            if (IsVisible && ReferenceEquals(identity, _pageIdentity))
+                ShortcutDraftChanged();
+        }
         var draft = _shortcutDraft ?? ShortcutSettingsDraft.From(_settings.Value);
         var messages = SettingsDraftPresentation.SessionShortcuts(SessionShortcutBindings.Restore(draft.Accept, draft.Exit));
         Heading(UiTheme.L("快捷键", "Shortcuts"));
         BeginGroup(UiTheme.L("翻译", "Translation"));
         var accept = _acceptShortcutInput = SessionShortcutInput(draft.Accept, "Tab", messages.AcceptLabel);
         var exit = _exitShortcutInput = SessionShortcutInput(draft.Exit, "Esc", messages.ExitLabel);
-        accept.SelectionChanged += (_, _) => Changed(); exit.SelectionChanged += (_, _) => Changed();
+        accept.SelectionChanged += (_, _) => Changed();
+        exit.SelectionChanged += (_, _) => Changed();
         accept.ToolTip = UiTheme.L("仅在译文与原文对应、焦点和输入法状态明确时尝试写回。", "Replaces text only when the candidate, focus and IME state are confirmed.");
         exit.ToolTip = UiTheme.L("不修改原文，不发送、不提交。输入法组合中优先交还输入法。", "Does not change or send text. Composition keys remain with the IME.");
         Row(UiTheme.L("接受译文", "Accept translation"), "", accept);
         Row(UiTheme.L("退出当前翻译", "Exit translation"), "", exit);
-        _returnShortcutHint = UiTheme.Text("", 12, true); _returnShortcutHint.Margin = new(4, 0, 4, 14); _content.Children.Add(_returnShortcutHint);
+        _returnShortcutHint = UiTheme.Text("", 12, true);
+        _returnShortcutHint.Margin = new(4, 0, 4, 14);
+        _content.Children.Add(_returnShortcutHint);
         BeginGroup(UiTheme.L("按需模式", "On demand"));
         var wake = _wakeShortcutInput = ShortcutInput(draft.Wake, "唤醒翻译 UI 快捷键");
         var direct = _directShortcutInput = ShortcutInput(draft.Direct, "直接翻译并替换快捷键");
-        wake.TextChanged += (_, _) => Changed(); direct.TextChanged += (_, _) => Changed();
+        wake.TextChanged += (_, _) => Changed();
+        direct.TextChanged += (_, _) => Changed();
         Row(UiTheme.L("唤醒翻译", "Wake translation"), "", wake);
         Row(UiTheme.L("直接翻译并替换", "Translate and replace"), "", direct);
         BeginGroup(UiTheme.L("全局", "Global"));
         var pause = _pauseShortcutInput = ShortcutRecorder.Create(draft.Pause, "暂停或恢复 TypeLay 快捷键", allowEmpty: true);
         pause.TextChanged += (_, _) => Changed();
         Row(UiTheme.L("暂停或恢复 TypeLay", "Pause or resume TypeLay"), UiTheme.L("Backspace 清除", "Backspace clears"), pause);
-        _shortcutStatus = UiTheme.Text("", 12, true); _shortcutStatus.Margin = new(4, 0, 4, 10); _content.Children.Add(_shortcutStatus);
+        _shortcutStatus = UiTheme.Text("", 12, true);
+        _shortcutStatus.Margin = new(4, 0, 4, 10);
+        _content.Children.Add(_shortcutStatus);
         _pauseShortcutRetryButton = UiTheme.Button(UiTheme.L("重试全局暂停快捷键", "Retry Global Pause Shortcut"), () => { RetryPauseShortcut?.Invoke(); RefreshShortcutStatus(); });
         AutomationProperties.SetAutomationId(_pauseShortcutRetryButton, "RetryGlobalPauseShortcut");
-        _pauseShortcutRetryButton.HorizontalAlignment = HorizontalAlignment.Left; _pauseShortcutRetryButton.Margin = new(0, 0, 0, 10); _content.Children.Add(_pauseShortcutRetryButton);
+        _pauseShortcutRetryButton.HorizontalAlignment = HorizontalAlignment.Left;
+        _pauseShortcutRetryButton.Margin = new(0, 0, 0, 10);
+        _content.Children.Add(_pauseShortcutRetryButton);
         _shortcutRetryButton = UiTheme.Button(UiTheme.L("重试启用快捷键", "Retry Shortcut Registration"), () =>
         {
-            if (_shortcutFailure is { } failure) ShortcutRecovery?.Retry(failure.Generation);
+            if (_shortcutFailure is { } failure)
+                ShortcutRecovery?.Retry(failure.Generation);
             RefreshShortcutStatus();
         });
-        AutomationProperties.SetAutomationId(_shortcutRetryButton, "RetrySavedShortcuts"); _shortcutRetryButton.HorizontalAlignment = HorizontalAlignment.Left; _shortcutRetryButton.Margin = new(0, 0, 0, 14); _content.Children.Add(_shortcutRetryButton);
+        AutomationProperties.SetAutomationId(_shortcutRetryButton, "RetrySavedShortcuts");
+        _shortcutRetryButton.HorizontalAlignment = HorizontalAlignment.Left;
+        _shortcutRetryButton.Margin = new(0, 0, 0, 14);
+        _content.Children.Add(_shortcutRetryButton);
         var details = new StackPanel { Margin = new(0, 8, 0, 0) };
-        _savedModeGuidance = UiTheme.Text("", 12, true); _savedAcceptanceGuidance = UiTheme.Text("", 12, true);
+        _savedModeGuidance = UiTheme.Text("", 12, true);
+        _savedAcceptanceGuidance = UiTheme.Text("", 12, true);
         _controlShortcutWarning = UiTheme.Text("", 12, true);
         AutomationProperties.SetAutomationId(_savedModeGuidance, "ShortcutSavedModeGuidance");
         AutomationProperties.SetAutomationId(_savedAcceptanceGuidance, "ShortcutSavedAcceptanceGuidance");
         AutomationProperties.SetAutomationId(_controlShortcutWarning, "ShortcutControlKeyRestriction");
-        details.Children.Add(_savedModeGuidance); details.Children.Add(_savedAcceptanceGuidance); details.Children.Add(_controlShortcutWarning);
+        details.Children.Add(_savedModeGuidance);
+        details.Children.Add(_savedAcceptanceGuidance);
+        details.Children.Add(_controlShortcutWarning);
         details.Children.Add(UiTheme.Text(UiTheme.L("点击键帽后按下组合键，Esc 取消。接受与退出支持 Tab / Esc、功能键或 Ctrl+功能键；唤醒、直接替换与暂停支持 Ctrl / Alt / Shift 组合；这些全局键不支持 F12。", "Click a keycap and press a chord; Esc cancels. Accept and exit support Tab / Esc, function keys or Ctrl+function keys. Wake, direct replacement and pause support Ctrl / Alt / Shift combinations; F12 is reserved for these global shortcuts."), 12, true));
         details.Children.Add(UiTheme.Text(UiTheme.L("无法完整检测每个应用内部的快捷键。未发现冲突不代表没有冲突，实际启用状态以注册结果为准。直接替换仍绑定原输入框，不抢回焦点、不自动发送，输入法状态未知时拒绝。", "App-internal conflicts cannot be fully detected. Registration status is authoritative. Direct replacement stays bound to the original field, never takes focus or sends, and rejects unknown IME state."), 12, true));
         _content.Children.Add(new Expander { Header = UiTheme.L("快捷键与安全范围", "Shortcut and safety details"), Content = details, Margin = new(4, 0, 4, 0) });
@@ -993,7 +1226,8 @@ internal sealed partial class SettingsWindow : Window
         _draftFeedback = null;
         _settingsError = null;
         RefreshShortcuts();
-        if (_shortcutDraft is not null) await SaveDraftAsync();
+        if (_shortcutDraft is not null)
+            await SaveDraftAsync();
     }
     private void RefreshShortcuts()
     {
@@ -1007,7 +1241,8 @@ internal sealed partial class SettingsWindow : Window
             {
                 UpdateShortcutText(_wakeShortcutInput, _settings.Value.WakeShortcut);
                 UpdateShortcutText(_directShortcutInput, _settings.Value.DirectShortcut);
-                if (_pauseShortcutInput is not null) UpdateShortcutText(_pauseShortcutInput, _settings.Value.PauseShortcut);
+                if (_pauseShortcutInput is not null)
+                    UpdateShortcutText(_pauseShortcutInput, _settings.Value.PauseShortcut);
                 UpdateSessionShortcutInput(_acceptShortcutInput, _settings.Value.AcceptShortcut, "Tab");
                 UpdateSessionShortcutInput(_exitShortcutInput, _settings.Value.ExitShortcut, "Esc");
             }
@@ -1092,7 +1327,8 @@ internal sealed partial class SettingsWindow : Window
                     _shortcutConflictMessage = warning.Message;
                     // Replace the actual action peer for each review. A queued
                     // invocation of an older peer cannot authorize a new chord.
-                    var reviewDraft = canonical; var reviewBaseline = baseline;
+                    var reviewDraft = canonical;
+                    var reviewBaseline = baseline;
                     var reviewIdentity = _shortcutConfirmation = new object();
                     var oldButton = _forceShortcutButton;
                     _forceShortcutButton = UiTheme.Button("强制保存", async () => await SaveDraftAsync(true, reviewDraft, reviewBaseline, reviewIdentity));
@@ -1101,20 +1337,25 @@ internal sealed partial class SettingsWindow : Window
                     if (oldButton.Parent is Panel parent)
                     {
                         int index = parent.Children.IndexOf(oldButton);
-                        parent.Children.RemoveAt(index); parent.Children.Insert(index, _forceShortcutButton);
+                        parent.Children.RemoveAt(index);
+                        parent.Children.Insert(index, _forceShortcutButton);
                     }
                     var oldEdit = _editShortcutButton;
                     _editShortcutButton = UiTheme.Button("继续编辑", () =>
                     {
-                        if (!ReferenceEquals(reviewIdentity, _shortcutConfirmation)) return;
-                        ClearShortcutConfirmation(); RefreshDraftBar(); _wakeShortcutInput?.Focus();
+                        if (!ReferenceEquals(reviewIdentity, _shortcutConfirmation))
+                            return;
+                        ClearShortcutConfirmation();
+                        RefreshDraftBar();
+                        _wakeShortcutInput?.Focus();
                     });
                     AutomationProperties.SetAutomationId(_editShortcutButton, "EditConflictingShortcuts");
                     DockPanel.SetDock(_editShortcutButton, Dock.Right);
                     if (oldEdit.Parent is Panel editParent)
                     {
                         int index = editParent.Children.IndexOf(oldEdit);
-                        editParent.Children.RemoveAt(index); editParent.Children.Insert(index, _editShortcutButton);
+                        editParent.Children.RemoveAt(index);
+                        editParent.Children.Insert(index, _editShortcutButton);
                     }
                     _draftFeedback = null;
                     _settingsError = null;
@@ -1133,13 +1374,16 @@ internal sealed partial class SettingsWindow : Window
             ClearShortcutConfirmation();
             // A newer recording may have arrived while session retirement was
             // pending. Never replace it with the submitted chord after commit.
-            if (_shortcutDraft == shortcuts) _shortcutDraft = null;
-            if (_draftFeedback != "已保存，请重新打开设置确认当前状态。") _draftFeedback = null;
+            if (_shortcutDraft == shortcuts)
+                _shortcutDraft = null;
+            if (_draftFeedback != "已保存，请重新打开设置确认当前状态。")
+                _draftFeedback = null;
         }
         else
             _draftFeedback = _draftMessages.InvalidMessage;
         Refresh();
-        if (saved && _shortcutDraft is not null) await SaveDraftAsync();
+        if (saved && _shortcutDraft is not null)
+            await SaveDraftAsync();
     }
     private void RefreshDraftBar()
     {
@@ -1202,27 +1446,54 @@ internal sealed partial class SettingsWindow : Window
             .Concat(_settings.Value.Styles?.Applications?.Keys ?? []).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
         var search = new TextBox { Height = 30, Padding = new(9, 5, 9, 5), Margin = new(0, 0, 0, 12) };
         search.Text = _applicationQuery;
-        AutomationProperties.SetName(search, "搜索应用"); search.ToolTip = UiTheme.L("搜索应用", "Search applications"); _content.Children.Add(SearchField(search, UiTheme.L("搜索应用", "Search applications")));
-        var list = new StackPanel(); _content.Children.Add(list);
+        AutomationProperties.SetName(search, "搜索应用");
+        search.ToolTip = UiTheme.L("搜索应用", "Search applications");
+        _content.Children.Add(SearchField(search, UiTheme.L("搜索应用", "Search applications")));
+        var list = new StackPanel();
+        _content.Children.Add(list);
         var refreshStyles = new List<Action>();
         void RenderApplications()
         {
             object rendered = rowsIdentity = new object();
             bool CurrentRows() => CurrentPage() && ReferenceEquals(rendered, rowsIdentity);
-            list.Children.Clear(); refreshStyles.Clear();
+            list.Children.Clear();
+            refreshStyles.Clear();
             foreach (string application in applications.Where(application => application.Contains(search.Text.Trim(), StringComparison.OrdinalIgnoreCase)
                 || known.Any(pair => pair.Item1 == application && pair.Item2.Contains(search.Text.Trim(), StringComparison.OrdinalIgnoreCase))))
             {
                 string title = known.FirstOrDefault(pair => pair.Item1 == application).Item2 ?? application + ".exe";
                 var body = new StackPanel();
                 var row = new Grid { Margin = new(14, 8, 14, 8), MinHeight = 40 };
-                row.ColumnDefinitions.Add(new() { Width = new(36) }); row.ColumnDefinitions.Add(new()); row.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-                var initial = UiTheme.Text(title[..1].ToUpperInvariant(), 13, bold: true); initial.Foreground = Brushes.White; initial.HorizontalAlignment = HorizontalAlignment.Center;
+                row.ColumnDefinitions.Add(new()
+                {
+                    Width = new(36)
+                });
+                row.ColumnDefinitions.Add(new());
+                row.ColumnDefinitions.Add(new()
+                {
+                    Width = GridLength.Auto
+                });
+                row.ColumnDefinitions.Add(new()
+                {
+                    Width = GridLength.Auto
+                });
+                var initial = UiTheme.Text(title[..1].ToUpperInvariant(), 13, bold: true);
+                initial.Foreground = Brushes.White;
+                initial.HorizontalAlignment = HorizontalAlignment.Center;
                 row.Children.Add(new Border { Width = 26, Height = 26, CornerRadius = new(7), Background = UiTheme.Brush("#8256D0"), Child = initial });
-                var label = UiTheme.Text(title, 13); Grid.SetColumn(label, 1); row.Children.Add(label);
-                var style = new ComboBox { MinWidth = 110, Height = 26, MinHeight = 26, Margin = new(8, 0, 8, 0),
-                    ItemsSource = new[] { new ComboBoxItem { Content = UiTheme.L("跟随默认", "Use default") }, new ComboBoxItem { Content = UiTheme.L("自然", "Natural") }, new ComboBoxItem { Content = UiTheme.L("正式", "Formal") } } };
-                AutomationProperties.SetName(style, "应用风格 " + application); ToolTipService.SetShowOnDisabled(style, true);
+                var label = UiTheme.Text(title, 13);
+                Grid.SetColumn(label, 1);
+                row.Children.Add(label);
+                var style = new ComboBox
+                {
+                    MinWidth = 110,
+                    Height = 26,
+                    MinHeight = 26,
+                    Margin = new(8, 0, 8, 0),
+                    ItemsSource = new[] { new ComboBoxItem { Content = UiTheme.L("跟随默认", "Use default") }, new ComboBoxItem { Content = UiTheme.L("自然", "Natural") }, new ComboBoxItem { Content = UiTheme.L("正式", "Formal") } }
+                };
+                AutomationProperties.SetName(style, "应用风格 " + application);
+                ToolTipService.SetShowOnDisabled(style, true);
                 bool refreshing = false;
                 void RefreshStyle()
                 {
@@ -1238,7 +1509,8 @@ internal sealed partial class SettingsWindow : Window
                     style.ToolTip = canSet ? null : reason;
                     foreach (var item in style.Items.Cast<ComboBoxItem>().Skip(1))
                     {
-                        item.ToolTip = canSet ? null : reason; ToolTipService.SetShowOnDisabled(item, true);
+                        item.ToolTip = canSet ? null : reason;
+                        ToolTipService.SetShowOnDisabled(item, true);
                         AutomationProperties.SetHelpText(item, canSet ? "" : reason);
                     }
                     AutomationProperties.SetHelpText(style, canSet ? "" : reason);
@@ -1246,32 +1518,59 @@ internal sealed partial class SettingsWindow : Window
                 }
                 style.SelectionChanged += async (_, _) =>
                 {
-                    if (refreshing || _controller is null || !CurrentRows()) return;
+                    if (refreshing || _controller is null || !CurrentRows())
+                        return;
                     TranslationStyle? value = style.SelectedIndex == 0 ? null : style.SelectedIndex == 2 ? TranslationStyle.Formal : TranslationStyle.Natural;
                     var state = _controller.GetApplicationStyleSettingsState(application, value);
                     await SaveTranslationChangeAsync(ct => _controller.ChangeApplicationStyleAsync(application, value, state.SettingsRevision, ct));
                 };
-                RefreshStyle(); refreshStyles.Add(RefreshStyle); Grid.SetColumn(style, 2); row.Children.Add(style);
+                RefreshStyle();
+                refreshStyles.Add(RefreshStyle);
+                Grid.SetColumn(style, 2);
+                row.Children.Add(style);
                 var enabled = UiTheme.Toggle("在 " + application + " 中启用", () => !_settings.Value.Excluded.Contains(application, StringComparer.OrdinalIgnoreCase),
-                    async value => { if (CurrentRows()) await SetApplicationEnabledAsync(application, value); }); Grid.SetColumn(enabled, 3); row.Children.Add(enabled); body.Children.Add(row);
-                string[] ids = application switch { "firefox" => ["firefox"], "chrome" => ["google-chrome", "chromium"], "msedge" => ["microsoft-edge"], "code" => ["vscode"], _ => [] };
+                    async value => { if (CurrentRows()) await SetApplicationEnabledAsync(application, value); });
+                Grid.SetColumn(enabled, 3);
+                row.Children.Add(enabled);
+                body.Children.Add(row);
+                string[] ids = application switch
+                {
+                    "firefox" => ["firefox"],
+                    "chrome" => ["google-chrome", "chromium"],
+                    "msedge" => ["microsoft-edge"],
+                    "code" => ["vscode"],
+                    _ => []
+                };
                 var details = new StackPanel();
-                foreach (var support in view.Rows.Where(candidate => ids.Contains(candidate.Id))) details.Children.Add(SupportRow(support, view));
+                foreach (var support in view.Rows.Where(candidate => ids.Contains(candidate.Id)))
+                    details.Children.Add(SupportRow(support, view));
                 if (details.Children.Count > 0)
                     body.Children.Add(new Expander { Header = UiTheme.L("连接状态与详情", "Connection status and details"), Content = details, Margin = new(14, 0, 14, 10) });
-                var card = UiTheme.Border(body, 12); card.BorderThickness = new(.5); card.Margin = new(0, 0, 0, 10); list.Children.Add(card);
+                var card = UiTheme.Border(body, 12);
+                card.BorderThickness = new(.5);
+                card.Margin = new(0, 0, 0, 10);
+                list.Children.Add(card);
             }
         }
-        search.TextChanged += (_, _) => { _applicationQuery = search.Text; RenderApplications(); }; RenderApplications();
+        search.TextChanged += (_, _) => { _applicationQuery = search.Text; RenderApplications(); };
+        RenderApplications();
         var add = UiTheme.Button(UiTheme.L("添加应用…", "Add Application…"), async () =>
         {
-            if (!CurrentPage() || _selectApplication(this) is not { } path || !CurrentPage()) return;
+            if (!CurrentPage() || _selectApplication(this) is not { } path || !CurrentPage())
+                return;
             string? application = _settings.NormalizeStyleApplication(path);
-            if (application is null) return;
+            if (application is null)
+                return;
             var managed = _settings.Value.Managed.Append(application).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            if (await SaveAsync(_settings.Value with { ManagedApplications = managed })) Toast(UiTheme.L("已添加应用", "Application added"));
+            if (await SaveAsync(_settings.Value with
+            {
+                ManagedApplications = managed
+            }))
+                Toast(UiTheme.L("已添加应用", "Application added"));
         });
-        add.HorizontalAlignment = HorizontalAlignment.Left; add.Margin = new(0, 2, 0, 16); _content.Children.Add(add);
+        add.HorizontalAlignment = HorizontalAlignment.Left;
+        add.Margin = new(0, 2, 0, 16);
+        _content.Children.Add(add);
         var ordinary = view.Rows.FirstOrDefault(row => row.Id == "desktop-text");
         if (ordinary is not null)
             _content.Children.Add(new Expander { Header = UiTheme.L("其他普通输入框", "Other text fields"), Content = SupportRow(ordinary, view), Margin = new(4, 0, 4, 12) });
@@ -1283,13 +1582,22 @@ internal sealed partial class SettingsWindow : Window
         bool wasExcluded = _settings.Value.Excluded.Contains(application, StringComparer.OrdinalIgnoreCase);
         var excluded = enabled ? _settings.Value.Excluded.Where(value => !StringComparer.OrdinalIgnoreCase.Equals(value, application)).ToArray()
             : _settings.Value.Excluded.Append(application).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        if (!await SaveAsync(_settings.Value with { ExcludedApplications = excluded })) return;
+        if (!await SaveAsync(_settings.Value with
+        {
+            ExcludedApplications = excluded
+        }))
+            return;
         if (!enabled && !wasExcluded)
             Toast(UiTheme.English ? "Disabled in " + application : "已停用「" + application + "」", async () =>
             {
-                if (!_settings.Value.Excluded.Contains(application, StringComparer.OrdinalIgnoreCase)) return;
+                if (!_settings.Value.Excluded.Contains(application, StringComparer.OrdinalIgnoreCase))
+                    return;
                 var restored = _settings.Value.Excluded.Where(value => !StringComparer.OrdinalIgnoreCase.Equals(value, application)).ToArray();
-                if (await SaveAsync(_settings.Value with { ExcludedApplications = restored })) Toast(UiTheme.L("已恢复启用", "Enabled again"));
+                if (await SaveAsync(_settings.Value with
+                {
+                    ExcludedApplications = restored
+                }))
+                    Toast(UiTheme.L("已恢复启用", "Enabled again"));
             }, () => _settings.Value.Excluded.Contains(application, StringComparer.OrdinalIgnoreCase));
     }
     private FrameworkElement SupportRow(ApplicationSupportRow row, ApplicationSupportView view)
@@ -1559,7 +1867,8 @@ internal sealed partial class SettingsWindow : Window
         AutomationProperties.SetAutomationId(_modelChoice, "LocalModelSelection");
         _modelChoice.SelectionChanged += (_, _) =>
         {
-            if (_updatingModelChoice || _modelChoice.SelectedItem is not ComboBoxItem { Tag: ModelPackageActionView action }) return;
+            if (_updatingModelChoice || _modelChoice.SelectedItem is not ComboBoxItem { Tag: ModelPackageActionView action })
+                return;
             // Selecting an entry is only a request. The displayed selection
             // remains the confirmed inventory until the existing transaction wins.
             RefreshModelChoices(PreparationView());
@@ -1571,9 +1880,11 @@ internal sealed partial class SettingsWindow : Window
         BeginGroup();
         var devices = new ComboBox { ItemsSource = new[] { "CPU", "GPU", "NPU" }, Text = UiTheme.L("尚未提供", "Not available"), IsEditable = true, IsReadOnly = true, IsEnabled = false, MinWidth = 140 };
         Row(UiTheme.L("计算设备", "Compute device"), UiTheme.L("尚未提供设备选择；由当前运行组件管理。", "Device selection is not available; managed by the current runtime."), devices);
-        var resident = UiTheme.Toggle("模型常驻", () => false, _ => { }); resident.IsEnabled = false;
+        var resident = UiTheme.Toggle("模型常驻", () => false, _ => { });
+        resident.IsEnabled = false;
         Row(UiTheme.L("模型常驻", "Keep model in memory"), UiTheme.L("尚未提供；不会改变模型生命周期。", "Not available; model lifetime is unchanged."), resident);
-        var updates = UiTheme.Button(UiTheme.L("检查更新", "Check for Updates"), () => { }); updates.IsEnabled = false;
+        var updates = UiTheme.Button(UiTheme.L("检查更新", "Check for Updates"), () => { });
+        updates.IsEnabled = false;
         Row(UiTheme.L("模型更新", "Model updates"), UiTheme.L("尚未提供自动更新检查。", "Automatic update checking is not available."), updates);
         Rule();
         Note("较长文本", "输入长度限制因模型而异；超过限制时会停止，请缩短选区后重试。不会在后台截断原文后给出可接受候选。换行、URL、mention 和编号采用显式结构保护。");
@@ -1673,7 +1984,8 @@ internal sealed partial class SettingsWindow : Window
     }
     private void RefreshModelChoices(TranslationPreparationView view)
     {
-        if (_modelChoice is null) return;
+        if (_modelChoice is null)
+            return;
         _updatingModelChoice = true;
         try
         {
@@ -1683,10 +1995,17 @@ internal sealed partial class SettingsWindow : Window
             {
                 var action = row.Actions.FirstOrDefault(action => action.Request.Operation == ModelPackageOperation.Select)
                     ?? row.Actions.FirstOrDefault(action => action.Request.Operation == ModelPackageOperation.Install);
-                var item = new ComboBoxItem { Content = row.Title + (row.Current ? "" : " · " + UiStrings.Translate(row.AvailabilityText)),
-                    Tag = row.Current ? null : action, IsEnabled = row.Current || action?.Enabled == true && _install is null && _packageRequest is null };
-                ToolTipService.SetShowOnDisabled(item, true); item.ToolTip = UiStrings.Translate(row.AvailabilityText);
-                _modelChoice.Items.Add(item); if (row.Current) selected = item;
+                var item = new ComboBoxItem
+                {
+                    Content = row.Title + (row.Current ? "" : " · " + UiStrings.Translate(row.AvailabilityText)),
+                    Tag = row.Current ? null : action,
+                    IsEnabled = row.Current || action?.Enabled == true && _install is null && _packageRequest is null
+                };
+                ToolTipService.SetShowOnDisabled(item, true);
+                item.ToolTip = UiStrings.Translate(row.AvailabilityText);
+                _modelChoice.Items.Add(item);
+                if (row.Current)
+                    selected = item;
             }
             if (selected is null)
             {
@@ -1792,7 +2111,10 @@ internal sealed partial class SettingsWindow : Window
     internal void RunOnboardingPreparation(TranslationPreparationActionView action) => RunPreparationAction(action);
     internal Task<bool> SaveOnboardingSettingsAsync(UserSettings settings) => SaveAsync(settings);
     internal event Action? PreparationChanged;
-    public Action? ShowOnboarding { get; set; }
+    public Action? ShowOnboarding
+    {
+        get; set;
+    }
 
     private void RefreshPreparation()
     {
@@ -2047,6 +2369,8 @@ internal sealed partial class SettingsWindow : Window
     }
     private void TranslationStyles()
     {
+        object identity = _pageIdentity;
+        bool CurrentPage() => IsVisible && ReferenceEquals(identity, _pageIdentity);
         BeginGroup();
         var state = _controller?.GetStyleSettingsState();
         var choices = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 6, 0, 6) };
@@ -2055,23 +2379,33 @@ internal sealed partial class SettingsWindow : Window
         {
             var choice = UiTheme.Button(UiTheme.L(zh, en), async () =>
             {
-                if (style is null || _controller is null) return;
+                if (!CurrentPage() || style is null || _controller is null)
+                    return;
                 var current = _controller.GetStyleSettingsState();
                 await SaveTranslationChangeAsync(ct => _controller.ChangeStyleAsync(StyleScope.Global, style, current.SettingsRevision, cancellationToken: ct));
             });
-            choice.MinWidth = 54; choice.Padding = new(10, 6, 10, 6); choice.Margin = new(2, 0, 2, 0);
-            AutomationProperties.SetName(choice, "翻译风格 " + zh); ToolTipService.SetShowOnDisabled(choice, true);
-            buttons.Add((choice, style)); choices.Children.Add(choice);
+            choice.MinWidth = 54;
+            choice.Padding = new(10, 6, 10, 6);
+            choice.Margin = new(2, 0, 2, 0);
+            AutomationProperties.SetName(choice, "翻译风格 " + zh);
+            ToolTipService.SetShowOnDisabled(choice, true);
+            buttons.Add((choice, style));
+            choices.Children.Add(choice);
         }
         Row(UiTheme.L("默认风格", "Default tone"), "", choices);
-        var notice = UiTheme.Text("", 12, true); notice.Margin = new(4, 0, 4, 14); _content.Children.Add(notice);
+        var notice = UiTheme.Text("", 12, true);
+        notice.Margin = new(4, 0, 4, 14);
+        _content.Children.Add(notice);
         var reset = UiTheme.Button(UiTheme.L("重置翻译风格", "Reset Translation Tone"), async () =>
         {
             var current = _controller?.GetStyleSettingsState();
-            if (current is null || !current.CanReset || !ConfirmStyleReset()) return;
+            if (!CurrentPage() || current is null || !current.CanReset || !ConfirmStyleReset() || !CurrentPage())
+                return;
             await SaveTranslationChangeAsync(ct => _controller!.ResetTranslationStyleAsync(current.SettingsRevision, cancellationToken: ct));
         });
-        reset.HorizontalAlignment = HorizontalAlignment.Left; reset.Margin = new(0, 0, 0, 14); _content.Children.Add(reset);
+        reset.HorizontalAlignment = HorizontalAlignment.Left;
+        reset.Margin = new(0, 0, 0, 14);
+        _content.Children.Add(reset);
         _refreshTranslationSettings = () =>
         {
             var current = _controller?.GetStyleSettingsState();
@@ -2188,10 +2522,13 @@ internal sealed partial class SettingsWindow : Window
         Heading(UiTheme.L("术语表", "Glossary"));
         var state = _controller?.GetGlossarySettingsState();
         var search = new TextBox { Height = 30, Padding = new(9, 5, 9, 5), Margin = new(0, 0, 0, 12) };
-        AutomationProperties.SetName(search, "搜索术语"); search.ToolTip = UiTheme.L("搜索源词或译词", "Search source or target terms"); _content.Children.Add(SearchField(search, UiTheme.L("搜索源词或译词", "Search source or target terms")));
+        AutomationProperties.SetName(search, "搜索术语");
+        search.ToolTip = UiTheme.L("搜索源词或译词", "Search source or target terms");
+        _content.Children.Add(SearchField(search, UiTheme.L("搜索源词或译词", "Search source or target terms")));
         if (state is null)
         {
-            Note(UiTheme.L("术语表不可用", "Glossary unavailable"), UiTheme.L("翻译服务尚未连接。", "The translation service is not connected.")); return;
+            Note(UiTheme.L("术语表不可用", "Glossary unavailable"), UiTheme.L("翻译服务尚未连接。", "The translation service is not connected."));
+            return;
         }
         var scopes = new[] { new GlossaryScope(UiTheme.L("全局", "All languages"), null, null) }.Concat(ModelCatalog.Packages.Packages
             .SelectMany(package => package.Directions).DistinctBy(direction => direction.Id)
@@ -2202,82 +2539,168 @@ internal sealed partial class SettingsWindow : Window
         object rowsIdentity = new();
         var table = new StackPanel();
         var header = new Grid { Margin = new(14, 10, 14, 8) };
-        header.ColumnDefinitions.Add(new()); header.ColumnDefinitions.Add(new()); header.ColumnDefinitions.Add(new() { Width = new(150) }); header.ColumnDefinitions.Add(new() { Width = new(30) });
+        header.ColumnDefinitions.Add(new());
+        header.ColumnDefinitions.Add(new());
+        header.ColumnDefinitions.Add(new()
+        {
+            Width = new(150)
+        });
+        header.ColumnDefinitions.Add(new()
+        {
+            Width = new(30)
+        });
         int column = 0;
         foreach (string title in new[] { UiTheme.L("源词", "Source term"), UiTheme.L("译词", "Translation"), UiTheme.L("范围", "Scope") })
         {
-            var label = UiTheme.Text(title, 11.5, true, true); Grid.SetColumn(label, column++); header.Children.Add(label);
+            var label = UiTheme.Text(title, 11.5, true, true);
+            Grid.SetColumn(label, column++);
+            header.Children.Add(label);
         }
         table.Children.Add(header);
-        var rows = new StackPanel(); table.Children.Add(rows);
-        var empty = UiTheme.Text("", 13, true); empty.Margin = new(20, 36, 20, 36); empty.HorizontalAlignment = HorizontalAlignment.Center; table.Children.Add(empty);
+        var rows = new StackPanel();
+        table.Children.Add(rows);
+        var empty = UiTheme.Text("", 13, true);
+        empty.Margin = new(20, 36, 20, 36);
+        empty.HorizontalAlignment = HorizontalAlignment.Center;
+        table.Children.Add(empty);
         var listbar = new DockPanel { Margin = new(4) };
         var card = UiTheme.Border(table, 12);
         var add = UiTheme.Button("+", async () =>
         {
-            if (_savingTranslation || !IsVisible || !_content.Children.Contains(card)) return;
+            if (_savingTranslation || !IsVisible || !_content.Children.Contains(card))
+                return;
             await CommitIfComplete();
-            if (!IsVisible || !_content.Children.Contains(card)) return;
-            BeginGlossaryDraft(); _glossaryDraft!.Add(new("", "")); search.Clear(); RenderRows(); RefreshDraftBar();
+            if (!IsVisible || !_content.Children.Contains(card))
+                return;
+            BeginGlossaryDraft();
+            _glossaryDraft!.Add(new("", ""));
+            search.Clear();
+            RenderRows();
+            RefreshDraftBar();
             _ = Dispatcher.BeginInvoke(new Action(() => VisualControls(rows).OfType<TextBox>().LastOrDefault(box => AutomationProperties.GetName(box).StartsWith("源词 ", StringComparison.Ordinal))?.Focus()));
         });
-        add.Width = 30; add.Height = 26; add.Padding = new(0); add.BorderThickness = new(0); add.ToolTip = UiTheme.L("添加术语", "Add Term"); AutomationProperties.SetName(add, "添加术语"); listbar.Children.Add(add); table.Children.Add(listbar);
-        card.BorderThickness = new(.5); card.Margin = new(0, 0, 0, 14); _content.Children.Add(card);
-        var availability = UiTheme.Text("", 12, true); availability.Margin = new(4, 0, 4, 8); _content.Children.Add(availability);
+        add.Width = 30;
+        add.Height = 26;
+        add.Padding = new(0);
+        add.BorderThickness = new(0);
+        add.ToolTip = UiTheme.L("添加术语", "Add Term");
+        AutomationProperties.SetName(add, "添加术语");
+        listbar.Children.Add(add);
+        table.Children.Add(listbar);
+        card.BorderThickness = new(.5);
+        card.Margin = new(0, 0, 0, 14);
+        _content.Children.Add(card);
+        var availability = UiTheme.Text("", 12, true);
+        availability.Margin = new(4, 0, 4, 8);
+        _content.Children.Add(availability);
         IReadOnlyList<GlossaryRule> DisplayedRules() => _glossaryDraft ?? (IReadOnlyList<GlossaryRule>?)displayed?.Rules ?? [];
         void BeginGlossaryDraft()
         {
-            if (_glossaryDraft is not null) return;
-            _glossaryDraft = DisplayedRules().ToList(); _glossaryDraftRevision = displayedRevision; _glossaryDraftBaseline = displayed?.Rules.ToArray() ?? [];
+            if (_glossaryDraft is not null)
+                return;
+            _glossaryDraft = DisplayedRules().ToList();
+            _glossaryDraftRevision = displayedRevision;
+            _glossaryDraftBaseline = displayed?.Rules.ToArray() ?? [];
         }
         async Task CommitIfComplete()
         {
-            if (_glossaryDraft is null || _savingTranslation || _glossaryDraft.Any(rule => string.IsNullOrWhiteSpace(rule.SourceTerm) || string.IsNullOrWhiteSpace(rule.TargetTerm))) return;
+            if (_glossaryDraft is null || _savingTranslation || _glossaryDraft.Any(rule => string.IsNullOrWhiteSpace(rule.SourceTerm) || string.IsNullOrWhiteSpace(rule.TargetTerm)))
+                return;
             await SaveGlossaryDraftAsync();
         }
         void RenderRows()
         {
             var renderedIdentity = rowsIdentity = new object();
-            rows.Children.Clear(); var rules = DisplayedRules(); mountedRules = rules.ToArray(); int shown = 0; string query = search.Text.Trim();
+            rows.Children.Clear();
+            var rules = DisplayedRules();
+            mountedRules = rules.ToArray();
+            int shown = 0;
+            string query = search.Text.Trim();
             for (int index = 0; index < rules.Count; index++)
             {
-                int selectedIndex = index; var rule = rules[index];
+                int selectedIndex = index;
+                var rule = rules[index];
                 bool IsCurrentRow() => IsVisible && _content.Children.Contains(card) && ReferenceEquals(renderedIdentity, rowsIdentity)
                     && selectedIndex < DisplayedRules().Count && Equals(DisplayedRules()[selectedIndex], rule);
-                if (query.Length > 0 && !(rule.SourceTerm + " " + rule.TargetTerm).Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
+                if (query.Length > 0 && !(rule.SourceTerm + " " + rule.TargetTerm).Contains(query, StringComparison.OrdinalIgnoreCase))
+                    continue;
                 shown++;
                 var row = new Grid { Margin = new(14, 0, 8, 0), MinHeight = 38 };
-                row.ColumnDefinitions.Add(new()); row.ColumnDefinitions.Add(new()); row.ColumnDefinitions.Add(new() { Width = new(150) }); row.ColumnDefinitions.Add(new() { Width = new(30) });
+                row.ColumnDefinitions.Add(new());
+                row.ColumnDefinitions.Add(new());
+                row.ColumnDefinitions.Add(new()
+                {
+                    Width = new(150)
+                });
+                row.ColumnDefinitions.Add(new()
+                {
+                    Width = new(30)
+                });
                 var source = new TextBox { Text = rule.SourceTerm, Height = 28, Margin = new(0, 4, 8, 4), Padding = new(4, 2, 4, 2), FontFamily = UiTheme.ContentFont, FontSize = 14, BorderThickness = new(0) };
                 var target = new TextBox { Text = rule.TargetTerm, Height = 28, Margin = new(0, 4, 8, 4), Padding = new(4, 2, 4, 2), FontFamily = UiTheme.ContentFont, FontSize = 14, BorderThickness = new(0) };
-                AutomationProperties.SetName(source, "源词 " + (index + 1)); AutomationProperties.SetName(target, "译词 " + (index + 1));
-                row.Children.Add(source); Grid.SetColumn(target, 1); row.Children.Add(target);
+                AutomationProperties.SetName(source, "源词 " + (index + 1));
+                AutomationProperties.SetName(target, "译词 " + (index + 1));
+                row.Children.Add(source);
+                Grid.SetColumn(target, 1);
+                row.Children.Add(target);
                 var selectedScope = scopes.SingleOrDefault(item => item.Source == rule.SourceLanguage && item.Target == rule.TargetLanguage)
                     ?? new GlossaryScope(rule.SourceLanguage + " → " + rule.TargetLanguage, rule.SourceLanguage, rule.TargetLanguage);
                 var scope = new ComboBox { ItemsSource = scopes.Contains(selectedScope) ? scopes : scopes.Append(selectedScope).ToArray(), DisplayMemberPath = nameof(GlossaryScope.Label), SelectedItem = selectedScope, Height = 26, MinHeight = 26, Margin = new(0, 0, 8, 0), FontSize = 11.5 };
-                AutomationProperties.SetName(scope, "术语范围 " + (index + 1)); Grid.SetColumn(scope, 2); row.Children.Add(scope);
+                AutomationProperties.SetName(scope, "术语范围 " + (index + 1));
+                Grid.SetColumn(scope, 2);
+                row.Children.Add(scope);
                 var remove = UiTheme.Button("−", async () =>
                 {
-                    if (_savingTranslation || !IsCurrentRow()) return;
-                    var before = DisplayedRules().ToArray(); BeginGlossaryDraft(); _glossaryDraft!.RemoveAt(selectedIndex); var after = _glossaryDraft.ToArray(); RenderRows();
+                    if (_savingTranslation || !IsCurrentRow())
+                        return;
+                    var before = DisplayedRules().ToArray();
+                    BeginGlossaryDraft();
+                    _glossaryDraft!.RemoveAt(selectedIndex);
+                    var after = _glossaryDraft.ToArray();
+                    RenderRows();
                     await SaveGlossaryDraftAsync();
-                    if (_glossaryDraft is null) Toast(UiTheme.L("已删除术语", "Term deleted"), async () =>
+                    if (_glossaryDraft is null)
+                        Toast(UiTheme.L("已删除术语", "Term deleted"), async () =>
                     {
-                        if (_glossaryDraft is not null) { Toast(UiTheme.L("请先完成当前术语编辑。", "Finish the current term edit first.")); return; }
-                        if (!after.SequenceEqual(_settings.Value.Glossary?.Rules ?? [])) { Toast(UiTheme.L("术语表已变化，无法撤销。", "The glossary changed; undo is unavailable.")); return; }
+                        if (_glossaryDraft is not null)
+                        {
+                            Toast(UiTheme.L("请先完成当前术语编辑。", "Finish the current term edit first."));
+                            return;
+                        }
+                        if (!after.SequenceEqual(_settings.Value.Glossary?.Rules ?? []))
+                        {
+                            Toast(UiTheme.L("术语表已变化，无法撤销。", "The glossary changed; undo is unavailable."));
+                            return;
+                        }
                         var result = await _controller!.ChangeGlossaryAsync(before, _settings.Revision);
                         Toast(result.Saved ? UiTheme.L("已恢复术语", "Term restored") : UiTheme.L("恢复未确认，请检查术语表。", "Restore was not confirmed. Review the glossary."));
                     }, () => after.SequenceEqual(_settings.Value.Glossary?.Rules ?? []));
                 });
-                remove.Width = 26; remove.Height = 26; remove.Padding = new(0); remove.BorderThickness = new(0); AutomationProperties.SetName(remove, "删除术语 " + (index + 1)); Grid.SetColumn(remove, 3); row.Children.Add(remove);
-                var line = new Border { BorderThickness = new(0, .5, 0, 0), Child = row }; line.SetResourceReference(Border.BorderBrushProperty, "Line"); rows.Children.Add(line);
+                remove.Width = 26;
+                remove.Height = 26;
+                remove.Padding = new(0);
+                remove.BorderThickness = new(0);
+                AutomationProperties.SetName(remove, "删除术语 " + (index + 1));
+                Grid.SetColumn(remove, 3);
+                row.Children.Add(remove);
+                var line = new Border { BorderThickness = new(0, .5, 0, 0), Child = row };
+                line.SetResourceReference(Border.BorderBrushProperty, "Line");
+                rows.Children.Add(line);
                 void Edit()
                 {
-                    if (_savingTranslation || !IsCurrentRow() || scope.SelectedItem is not GlossaryScope selected) return;
-                    BeginGlossaryDraft(); rule = new(source.Text, target.Text, selected.Source, selected.Target); _glossaryDraft![selectedIndex] = rule; mountedRules = _glossaryDraft.ToArray(); _draftFeedback = _settingsError = null; RefreshDraftBar();
+                    if (!IsCurrentRow() || scope.SelectedItem is not GlossaryScope selected)
+                        return;
+                    BeginGlossaryDraft();
+                    rule = new(source.Text, target.Text, selected.Source, selected.Target);
+                    _glossaryDraft![selectedIndex] = rule;
+                    mountedRules = _glossaryDraft.ToArray();
+                    _draftFeedback = _settingsError = null;
+                    RefreshDraftBar();
                 }
-                source.TextChanged += (_, _) => Edit(); target.TextChanged += (_, _) => Edit();
-                source.LostKeyboardFocus += async (_, _) => { if (IsCurrentRow()) await CommitIfComplete(); }; target.LostKeyboardFocus += async (_, _) => { if (IsCurrentRow()) await CommitIfComplete(); };
+                source.TextChanged += (_, _) => Edit();
+                target.TextChanged += (_, _) => Edit();
+                source.LostKeyboardFocus += async (_, _) => { if (IsCurrentRow()) await CommitIfComplete(); };
+                target.LostKeyboardFocus += async (_, _) => { if (IsCurrentRow()) await CommitIfComplete(); };
                 scope.SelectionChanged += async (_, _) => { if (!IsCurrentRow()) return; Edit(); await CommitIfComplete(); };
                 source.PreviewKeyDown += async (_, e) => { if (e.Key == Key.Enter && IsCurrentRow()) { e.Handled = true; await CommitIfComplete(); } };
                 target.PreviewKeyDown += async (_, e) => { if (e.Key == Key.Enter && IsCurrentRow()) { e.Handled = true; await CommitIfComplete(); } };
@@ -2291,21 +2714,29 @@ internal sealed partial class SettingsWindow : Window
             var current = _controller!.GetGlossarySettingsState();
             if (_glossaryDraft is null && !ReferenceEquals(displayed, current.SavedSnapshot))
             {
-                bool same = mountedRules.SequenceEqual(current.SavedSnapshot?.Rules ?? []); displayed = current.SavedSnapshot; if (!same) RenderRows();
+                bool same = mountedRules.SequenceEqual(current.SavedSnapshot?.Rules ?? []);
+                displayed = current.SavedSnapshot;
+                if (!same)
+                    RenderRows();
             }
-            if (_glossaryDraft is null) displayedRevision = current.SettingsRevision;
+            if (_glossaryDraft is null)
+                displayedRevision = current.SettingsRevision;
             bool writable = current.CanSave && !_savingTranslation;
             add.IsEnabled = writable && DisplayedRules().Count < GlossarySnapshot.MaxRules;
             foreach (var input in VisualControls(rows).OfType<TextBox>().Where(input => AutomationProperties.GetName(input).StartsWith("源词 ", StringComparison.Ordinal)
-                || AutomationProperties.GetName(input).StartsWith("译词 ", StringComparison.Ordinal))) input.IsReadOnly = !writable;
-            foreach (var choice in VisualControls(rows).OfType<ComboBox>()) choice.IsEnabled = writable;
-            foreach (var button in VisualControls(rows).OfType<Button>()) button.IsEnabled = writable;
+                || AutomationProperties.GetName(input).StartsWith("译词 ", StringComparison.Ordinal)))
+                input.IsReadOnly = !writable;
+            foreach (var choice in VisualControls(rows).OfType<ComboBox>())
+                choice.IsEnabled = writable;
+            foreach (var button in VisualControls(rows).OfType<Button>())
+                button.IsEnabled = writable;
             availability.Text = current.IsReleased
                 ? UiTheme.L("保存只更新本地术语表；实际应用仍由模型、方向与输入状态检查决定。", "Saving updates only the local glossary. Application still depends on model, direction and input-state checks.")
                 : UiTheme.L("术语保存在本机。当前模型方向尚未开放术语应用。", "Terms are stored on this device. Glossary application is not available for the current model and direction.");
             availability.Visibility = availability.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
         };
-        RenderRows(); _refreshGlossarySettings();
+        RenderRows();
+        _refreshGlossarySettings();
     }
     private bool ConfirmGlossaryReplacement(IReadOnlyList<GlossaryRule> savedRules)
     {
@@ -2405,11 +2836,19 @@ internal sealed partial class SettingsWindow : Window
         Heading(UiTheme.L("关于与隐私", "About & Privacy"));
         var brand = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, Margin = new(0, 12, 0, 28) };
         brand.Children.Add(UiTheme.Mark(76, appIcon: true));
-        var name = UiTheme.Text("TypeLay", 30); name.FontFamily = UiTheme.ContentFont; name.HorizontalAlignment = HorizontalAlignment.Center; name.Margin = new(0, 14, 0, 4); brand.Children.Add(name);
+        var name = UiTheme.Text("TypeLay", 30);
+        name.FontFamily = UiTheme.ContentFont;
+        name.HorizontalAlignment = HorizontalAlignment.Center;
+        name.Margin = new(0, 14, 0, 4);
+        brand.Children.Add(name);
         var version = typeof(SettingsWindow).Assembly.GetName().Version?.ToString(3) ?? UiTheme.L("未知版本", "Unknown version");
-        var versionText = UiTheme.Text("Windows · " + version, 12, true); versionText.HorizontalAlignment = HorizontalAlignment.Center; brand.Children.Add(versionText); _content.Children.Add(brand);
+        var versionText = UiTheme.Text("Windows · " + version, 12, true);
+        versionText.HorizontalAlignment = HorizontalAlignment.Center;
+        brand.Children.Add(versionText);
+        _content.Children.Add(brand);
         BeginGroup();
-        var update = UiTheme.Button(UiTheme.L("检查更新", "Check for Updates"), () => { }); update.IsEnabled = false;
+        var update = UiTheme.Button(UiTheme.L("检查更新", "Check for Updates"), () => { });
+        update.IsEnabled = false;
         Row(UiTheme.L("软件更新", "Software updates"), UiTheme.L("尚未提供自动更新检查。", "Automatic update checking is not available."), update);
         Row(UiTheme.L("本地数据", "Local data"), UiTheme.L("设置、模型与下载缓存", "Settings, models and download cache"), UiTheme.Button(UiTheme.L("打开目录", "Open Folder"), () => Process.Start(new ProcessStartInfo(AppPaths.Data) { UseShellExecute = true })));
         Note(UiTheme.L("完全本地的输入翻译", "Translation stays on your device"), UiTheme.L("实际输入与译文不上传云端，不建立翻译历史数据库。运行组件与模型下载使用 HTTPS；推理子进程没有网络下载路径。", "Source text and translations are not uploaded. No translation history is stored. Runtime and model downloads use HTTPS; the inference process does not download content."));

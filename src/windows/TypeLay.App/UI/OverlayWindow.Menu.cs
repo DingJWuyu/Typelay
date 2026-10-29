@@ -2,11 +2,37 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Markup;
+using System.Windows.Input;
 
 namespace TypeLay.App;
 
 internal sealed partial class OverlayWindow
 {
+    private sealed class EditorMenuButton(OverlayWindow owner) : Button
+    {
+        protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
+        {
+            // ButtonBase normally focuses itself on mouse-down. Keep an already
+            // focused ordinary editor as the menu's natural restoration target;
+            // keyboard navigation and every owned-source handoff stay unchanged.
+            bool focusable = Focusable;
+            bool preserve = owner._editing && owner._editor.IsKeyboardFocused && !owner.EditingComposition
+                && owner._ownedEditor is null && owner._viewContext is { CanEdit: true } context
+                && owner._ownedEditorHost?.IsOwnedEditorTarget(context.Token.Target) != true;
+            try
+            {
+                if (preserve)
+                    SetCurrentValue(FocusableProperty, false);
+                base.OnMouseLeftButtonDown(e);
+            }
+            finally
+            {
+                if (preserve)
+                    SetCurrentValue(FocusableProperty, focusable);
+            }
+        }
+    }
+
     private static void StyleMenu(ContextMenu menu, Button anchor)
     {
         // Preserve MenuItem, its PART_Popup and the native WPF menu keyboard/

@@ -340,7 +340,7 @@ def run_gimp(
         assert interface and Atspi.Action.do_action(interface, 0), name
         return node
 
-    def settings(page="应用支持"):
+    def settings(page="应用"):
         assert control(paths, "settings") is True
         window = wait_for(
             lambda: next((w for w in windows(host_pid) if w.get("title") == "TypeLay 设置"), None),
@@ -348,6 +348,15 @@ def run_gimp(
         )
         focus_window(window)
         select_settings_page(host_pid, page)
+        if page == "应用":
+            details = wait_for(lambda: find(host_pid, "连接详情"), "connection details missing")
+            if not details.get_state_set().contains(Atspi.StateType.EXPANDED):
+                assert Atspi.Component.grab_focus(details.get_component_iface())
+                assert Atspi.Action.do_action(details.get_action_iface(), 0)
+                wait_for(
+                    lambda: details.get_state_set().contains(Atspi.StateType.EXPANDED),
+                    "connection details did not expand",
+                )
         return window
 
     def support():
@@ -829,14 +838,14 @@ def run_gimp(
             "Original system GIMP registration selected and launched through Settings; cancel created no process; real connection confirmed"
         )
 
-        settings("常规")
-        action(host_pid, "设置：启用原生输入框替换")
+        settings("通用")
+        action(host_pid, "设置：原生输入框替换")
         wait_for(
             lambda: json.loads(paths.settings.read_text())["ExperimentalWriteback"] is True,
             "native writeback approval not saved",
         )
-        mode = wait_for(lambda: find(host_pid, "设置：工作模式"), "mode selector missing")
-        assert Atspi.Selection.select_child(mode.get_selection_iface(), 0)
+        mode = wait_for(lambda: find(host_pid, "设置：工作模式：自动"), "mode selector missing")
+        assert Atspi.Action.do_action(mode.get_action_iface(), 0)
         wait_for(
             lambda: json.loads(paths.settings.read_text())["Mode"] == 0, "automatic mode not saved"
         )
@@ -920,9 +929,9 @@ def run_gimp(
         )
 
         record("on-demand-direct-and-native-undo")
-        settings("常规")
-        mode = wait_for(lambda: find(host_pid, "设置：工作模式"), "mode selector missing")
-        assert Atspi.Selection.select_child(mode.get_selection_iface(), 1)
+        settings("通用")
+        mode = wait_for(lambda: find(host_pid, "设置：工作模式：按需"), "mode selector missing")
+        assert Atspi.Action.do_action(mode.get_action_iface(), 0)
         wait_for(
             lambda: json.loads(paths.settings.read_text())["Mode"] == 1, "on-demand mode not saved"
         )

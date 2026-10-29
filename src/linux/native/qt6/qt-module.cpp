@@ -2602,7 +2602,7 @@ private:
         const auto rendered = languageRender();
         const auto actions = translationActions(rendered.view);
         const bool current = translationActionMenu_ && translationMenuCurrent(*translationActionMenu_);
-        styleOptions_->setVisible(actions.value("styleReleased").toBool());
+        styleOptions_->setVisible(actions.value("styleReleased").toBool() || actions.value("canInheritStyle").toBool());
         if (!languageCurrent(rendered) || !applicationStyles_) return false;
         const auto style = actions.value("applicationStyle");
         const int selected = style.isNull() ? 0 : style.toString() == QStringLiteral("Natural") ? 1 : 2;
@@ -2613,7 +2613,7 @@ private:
             const int index = applicationStyles_->id(choice);
             choice->setChecked(!actions.isEmpty() && index == selected);
             if (!choice || !languageCurrent(rendered)) return false;
-            choice->setEnabled(current && actions.value("styleReleased").toBool()
+            choice->setEnabled(current && (index == 0 || actions.value("styleReleased").toBool())
                 && actions.value(index == 0 ? "canInheritStyle" : "canChangeStyle").toBool());
             if (!choice || !languageCurrent(rendered)) return false;
             choice->setToolTip(actions.value(index == 0 ? "inheritUnavailableReason" : "styleUnavailableReason").toString());
@@ -2652,7 +2652,7 @@ private:
         const auto actions = translationActions(overlayView_);
         QJsonObject event{{"target", opened.target}, {"generation", opened.generation}, {"revision", opened.revision}};
         if (style) {
-            if (index < 0 || index > 2 || !actions.value("styleReleased").toBool()
+            if (index < 0 || index > 2 || (index != 0 && !actions.value("styleReleased").toBool())
                 || !actions.value(index == 0 ? "canInheritStyle" : "canChangeStyle").toBool()) return;
             const QJsonValue selected = index == 0 ? QJsonValue(QJsonValue::Null)
                 : QJsonValue(index == 1 ? QStringLiteral("Natural") : QStringLiteral("Formal"));

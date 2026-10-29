@@ -1489,7 +1489,14 @@ while True:
             "revision": 1,
         }
         request = {"token": token, "settingsRevision": before["settingsRevision"], "style": None}
-        for style in (None, "Natural", "Formal"):
+        # Inherit only removes a saved override and is independent of model
+        # release. It still requires the exact live source identity: this forged
+        # token must fail the stale-session gate without changing preferences.
+        self.assertEqual(
+            await self.ask("sessionStyle", request),
+            {"saved": False, "code": "style-stale"},
+        )
+        for style in ("Natural", "Formal"):
             self.assertEqual(
                 await self.ask("sessionStyle", {**request, "style": style}),
                 {"saved": False, "code": "style-not-released"},
@@ -1684,11 +1691,12 @@ while True:
                 {"saved": False, "code": "invalid-translation-settings"},
             )
         altered = [{**rules[0], "targetTerm": "altered"}]
-        self.assertFalse((await self.ask("getGlossarySettings", altered))["canSave"])
-        self.assertEqual(
-            await self.ask("changeGlossary", {**draft, "rules": altered}),
-            {"saved": False, "code": "glossary-not-released"},
-        )
+        management = await self.ask("getGlossarySettings", altered)
+        self.assertTrue(management["canSave"])
+        self.assertFalse(management["canApply"])
+        self.assertFalse(management["isReleased"])
+        # Management is available without model quality release. Invalid syntax,
+        # stale revisions and failed persistence still leave the current rules.
         obstruction = settings_file.with_suffix(".json.tmp")
         obstruction.mkdir()
         self.assertEqual(
@@ -1702,6 +1710,17 @@ while True:
         self.assertEqual(
             (await self.ask("getGlossarySettings"))["savedSnapshot"]["rules"], [rules[0]]
         )
+        current = await self.ask("getGlossarySettings")
+        saved_inactive = await self.ask(
+            "changeGlossary",
+            {**draft, "expectedSettingsRevision": current["settingsRevision"], "rules": altered},
+        )
+        self.assertEqual(saved_inactive, {"saved": True, "code": "glossary-saved-inactive"})
+        current = await self.ask("getGlossarySettings")
+        self.assertEqual(current["savedSnapshot"]["rules"], altered)
+        self.assertTrue(current["canSave"])
+        self.assertFalse(current["canApply"])
+        self.assertFalse(current["isReleased"])
 
     async def test_translation_cancel_during_retirement_is_exact_and_prevents_late_commit(self):
         settings_file = await self.seed_translation_preferences()

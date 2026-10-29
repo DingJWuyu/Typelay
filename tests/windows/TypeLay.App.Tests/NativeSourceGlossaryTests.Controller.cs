@@ -17,8 +17,10 @@ namespace TypeLay.App.Tests;
 
 public sealed partial class NativeSourceGlossaryTests
 {
-    [Fact]
-    public Task RealControllerPersistsAnExplicitRuleAfterNativeReturnWithoutAWritePermit() => desktop.RunAsync(async () =>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public Task RealControllerPersistsAnExplicitRuleAfterNativeReturnWithoutAWritePermit(bool applicationReleased) => desktop.RunAsync(async () =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "TypeLay.GlossaryController." + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -46,8 +48,9 @@ public sealed partial class NativeSourceGlossaryTests
             var view = new WindowsSessionView(overlay, new OverlayWindow(clientAreaAnimation: () => false));
             // This is a deterministic model-protocol fixture, not a claim of
             // translation quality or permission to open the production gate.
-            var release = new TranslationReleasePolicy([
-                new(TranslationOperation.Glossary, GlossaryProtocolPeer.Package, GlossaryProtocolPeer.Version, "zh_ja")]);
+            var release = new TranslationReleasePolicy(applicationReleased
+                ? [new(TranslationOperation.Glossary, GlossaryProtocolPeer.Package, GlossaryProtocolPeer.Version, "zh_ja")]
+                : []);
             controller = new(settings, model.Client, view, monitor, input, new DesktopLoop(), translationRelease: release);
             await controller.StartAsync();
             await native.Prepare(native.A, "你好", new(0, 2));
@@ -76,6 +79,9 @@ public sealed partial class NativeSourceGlossaryTests
             while (settings.Value.Glossary?.Rules.Contains(expected) != true)
                 await Task.Delay(10, native.Token);
             Assert.Contains(expected, new SettingsStore(Path.Combine(directory, "settings.json")).Value.Glossary!.Rules);
+            Assert.Equal(applicationReleased, controller.GetGlossarySettingsState().IsReleased);
+            if (!applicationReleased)
+                Assert.False(controller.GetGlossarySettingsState().CanApply);
             Assert.Equal((native.Root, native.A), N.Focused());
             Assert.Equal("你好", N.ReadText(native.A, Limits.MaxTextUnits));
             Assert.Equal(new TextRange(0, 2), N.ReadSelection(native.A));

@@ -124,13 +124,14 @@ internal static class UiTheme
     public static ResourceDictionary QuickPanelResources() => (ResourceDictionary)XamlReader.Parse("""
     <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
       <Style x:Key="QuickPanelModeChoice" TargetType="RadioButton">
+        <Setter Property="Background" Value="{DynamicResource Panel2}"/>
         <Setter Property="Foreground" Value="{DynamicResource Muted}"/>
         <Setter Property="FontSize" Value="13"/>
         <Setter Property="MinHeight" Value="34"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
         <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RadioButton">
-          <Border x:Name="segment" Background="Transparent" BorderBrush="Transparent" BorderThickness="2" CornerRadius="6" Padding="8,5">
+          <Border x:Name="segment" Background="{TemplateBinding Background}" BorderBrush="Transparent" BorderThickness="2" CornerRadius="6" Padding="8,5">
             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
           </Border>
           <ControlTemplate.Triggers>
@@ -249,10 +250,29 @@ internal static class UiTheme
     public static FrameworkElement Mark(double size = 26, bool appIcon = false)
     {
         var drawing = new Grid { Width = 24, Height = 24 };
-        var back = new Rectangle { Width = 14, Height = 10, RadiusX = 3, RadiusY = 3, StrokeThickness = 1.6,
-            Stroke = Brushes.White, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Margin = new(3, 4, 0, 0) };
-        var front = new Rectangle { Width = 14, Height = 10, RadiusX = 3, RadiusY = 3, Fill = Brushes.White,
-            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Margin = new(7, 10, 0, 0) };
+        var back = new Rectangle
+        {
+            Width = 14,
+            Height = 10,
+            RadiusX = 3,
+            RadiusY = 3,
+            StrokeThickness = 1.6,
+            Stroke = Brushes.White,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new(3, 4, 0, 0)
+        };
+        var front = new Rectangle
+        {
+            Width = 14,
+            Height = 10,
+            RadiusX = 3,
+            RadiusY = 3,
+            Fill = Brushes.White,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new(7, 10, 0, 0)
+        };
         drawing.Children.Add(back);
         drawing.Children.Add(front);
         var mark = new Viewbox { Width = appIcon ? size * .65 : size, Height = appIcon ? size * .65 : size, Child = drawing };
@@ -262,8 +282,14 @@ internal static class UiTheme
             front.SetResourceReference(Shape.FillProperty, "AccentInk");
             return mark;
         }
-        return new Border { Width = size, Height = size, CornerRadius = new(size / 4), Child = mark,
-            Background = new LinearGradientBrush((Color)ColorConverter.ConvertFromString("#E48A69"), (Color)ColorConverter.ConvertFromString("#C4573A"), 90) };
+        return new Border
+        {
+            Width = size,
+            Height = size,
+            CornerRadius = new(size / 4),
+            Child = mark,
+            Background = new LinearGradientBrush((Color)ColorConverter.ConvertFromString("#E48A69"), (Color)ColorConverter.ConvertFromString("#C4573A"), 90)
+        };
     }
     public static SolidColorBrush Brush(string color)
     {

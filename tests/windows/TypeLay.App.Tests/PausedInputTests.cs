@@ -133,9 +133,8 @@ public sealed class PausedInputTests(WpfDesktopFixture desktop)
             Assert.Equal(0, other.ValueReads);
             Assert.Equal(0, password.ValueReads);
             overlay.UpdateLayout();
-            var presentation = Presentation.From(SessionState.Paused, false, hasPauseAnchor: true);
             var resume = Descendants(overlay).OfType<Button>().Single(button => button.IsVisible
-                && Descendants(button).OfType<TextBlock>().Any(text => text.Text.Contains(presentation.TabHint)));
+                && AutomationProperties.GetName(button) == "恢复翻译");
             await ClickOwned(overlay, resume);
             await Until(() => settings.Value.Enabled && !overlay.IsVisible);
             Assert.Equal(WorkMode.OnDemand, settings.Value.Mode);

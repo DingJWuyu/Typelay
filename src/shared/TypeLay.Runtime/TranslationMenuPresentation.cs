@@ -47,7 +47,7 @@ public sealed partial class SessionController
         string? feedback = _translationMenuFeedback is { } current && current.Token == CurrentTranslationToken()
             && current.Revision == _commandFeedbackRevision ? current.Text : null;
         return new(style.SettingsRevision, style.IsReleased, style.IsReleased && style.CanChange,
-            style.IsReleased && inherit.CanChange, applicationStyle, TranslationMenuPresentation.Reason(style.UnavailableReason),
+            inherit.CanChange, applicationStyle, TranslationMenuPresentation.Reason(style.UnavailableReason),
             TranslationMenuPresentation.Reason(inherit.UnavailableReason), alternative.IsReleased,
             alternative.IsReleased && alternative.CanRequest, TranslationMenuPresentation.Reason(alternative.UnavailableReason), feedback,
             _translationRelease.IsReleased(TranslationOperation.Glossary), glossaryReason is null,
@@ -57,7 +57,7 @@ public sealed partial class SessionController
     private async Task<StyleChangeResult> ChangeViewStyleAsync(SessionStyleRequest request)
     {
         long feedbackRevision = _commandFeedbackRevision;
-        var result = !_translationRelease.IsReleased(TranslationOperation.Style)
+        var result = request.Style is not null && !_translationRelease.IsReleased(TranslationOperation.Style)
             ? new StyleChangeResult(false, "style-not-released")
             : await ChangeStyleAsync(StyleScope.CurrentApplication, request.Style, request.SettingsRevision, request.Token);
         if (!result.Saved)

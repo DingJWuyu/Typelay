@@ -212,13 +212,14 @@ static gboolean render_translation_actions(JsonObject *view) {
     if (context) json_object_ref(context);
     const char *style = tl_string(state, "applicationStyle"), *feedback = text_or_empty(state, "feedback");
     gboolean released = boolean(state, "styleReleased"), current = translation_menu_current();
-    gboolean change = current && boolean(state, "canChangeStyle");
+    gboolean show_style = released || boolean(state, "canInheritStyle");
+    gboolean change = current && released && boolean(state, "canChangeStyle");
     GtkWidget *widgets[] = {overlay.style_label, overlay.style_inherit, overlay.style_natural,
         overlay.style_formal, overlay.alternative, overlay.glossary_action, overlay.action_feedback};
     const char *labels[] = {NULL, !style ? "✓ 继承" : "继承",
         g_strcmp0(style, "Natural") == 0 ? "✓ 自然" : "自然",
         g_strcmp0(style, "Formal") == 0 ? "✓ 正式" : "正式", "换种说法", "加入术语表", feedback};
-    gboolean visible[] = {released, released, released, released, boolean(state, "alternativeReleased"), state && json_object_has_member(state, "canOpenGlossary"), *feedback != '\0'};
+    gboolean visible[] = {show_style, show_style, show_style, show_style, boolean(state, "alternativeReleased"), state && json_object_has_member(state, "canOpenGlossary"), *feedback != '\0'};
     gboolean enabled[] = {TRUE, current && boolean(state, "canInheritStyle"), change, change,
         current && boolean(state, "canRequestAlternative"), current && boolean(state, "canOpenGlossary"), TRUE};
     const char *reasons[] = {NULL, tl_string(state, "inheritUnavailableReason"),
@@ -1773,7 +1774,8 @@ static void translation_action_clicked(const char *operation, JsonObject *view) 
     if (glossary ? !boolean(state, "canOpenGlossary")
         || overlay.pending_glossary || overlay.glossary
         : alternative ? !boolean(state, "alternativeReleased") || !boolean(state, "canRequestAlternative")
-        : !boolean(state, "styleReleased") || !boolean(state, inherit ? "canInheritStyle" : "canChangeStyle")) return;
+        : (!inherit && !boolean(state, "styleReleased"))
+            || !boolean(state, inherit ? "canInheritStyle" : "canChangeStyle")) return;
     /* The bridge resolves this exact transport record to its original complete
      * session token. Never emit() here: it reads the latest overlay identity. */
     JsonObject *event = json_object_new(), *token = json_object_ref(overlay.menu_token);

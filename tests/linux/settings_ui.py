@@ -200,6 +200,26 @@ def main():
                     flush=True,
                 )
                 capture(name)
+                if name == "general":
+                    for widget in (
+                        surface.pages.get_visible_child(),
+                        surface.page_headings[name],
+                        surface.page_boxes[name],
+                        surface.page_boxes[name].get_children()[0],
+                    ):
+                        allocation = widget.get_allocation()
+                        print(
+                            "LAYOUT",
+                            type(widget).__name__,
+                            allocation.x,
+                            allocation.y,
+                            allocation.width,
+                            allocation.height,
+                            flush=True,
+                        )
+            assert tuple(surface.window.get_size()) == (900, 660), (
+                "reference window must retain its native size"
+            )
             surface.pages.set_visible_child_name("general")
             assert not status.get("modelReady"), "No model may be simulated as ready"
             # Actual control signals must commit through the host, then round-trip.
@@ -323,8 +343,11 @@ def main():
             await settle(lambda: "fixture-editor" not in (state.get("excludedApplications") or []))
             # Exercise the real focused recorder signal, not a global key hook.
             recorder = surface.controls["pauseShortcut"]
+            assert recorder.get_accessible().get_name() == "设置：暂停 / 恢复 TypeLay"
+            assert recorder.get_accessible().get_description() == recorder.get_label()
             surface.pages.set_visible_child_name("shortcuts")
             recorder.clicked()
+            assert recorder.get_accessible().get_description() == "按下快捷键…"
             assert recorder.recording
             event = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
             event.keyval = Gdk.KEY_F11
@@ -346,6 +369,13 @@ def main():
             await settle()
             assert "fixture-editor" in state["excludedApplications"]
             assert state["font"] == "sans"
+            assert (
+                "Inter"
+                in surface.page_headings["general"]
+                .get_style_context()
+                .get_font(Gtk.StateFlags.NORMAL)
+                .get_family()
+            )
             surface.toggle_application("fixture-editor", True)
             await settle(lambda: "fixture-editor" not in (state.get("excludedApplications") or []))
             # A renderer must never silently save fallback values on reopen.
@@ -376,6 +406,12 @@ def main():
                 str(options.output / "quick-panel.png"), "png", [], []
             )
             assert tray.window.get_visible() and not isinstance(tray.panel, Gtk.Menu)
+            future = {
+                row[0]: row[2]
+                for row in tray.application_style_choices
+                if row[0] in ("Concise", "Casual")
+            }
+            assert future == {"Concise": False, "Casual": False}
             tray.enabled.set_active(False)
             await settle(lambda: state.get("enabled") is False)
             tray.enabled.set_active(True)

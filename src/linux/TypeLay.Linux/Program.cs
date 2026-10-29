@@ -656,7 +656,9 @@ internal static class Program
                 case "applicationEnabled":
                     object ApplicationPolicyResult(bool saved, string code) => new
                     {
-                        saved, code, settingsRevision = saved ? (long?)settings.Revision : null
+                        saved,
+                        code,
+                        settingsRevision = saved ? (long?)settings.Revision : null
                     };
                     if (!ExactObject(value, "application", "enabled", "expectedSettingsRevision")
                         || value.GetProperty("application").ValueKind != JsonValueKind.String
@@ -711,7 +713,10 @@ internal static class Program
                 case "togglePause":
                     if (value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined))
                         return false;
-                    return await ApplySettings(settings.Value with { Enabled = !settings.Value.Enabled });
+                    return await ApplySettings(settings.Value with
+                    {
+                        Enabled = !settings.Value.Enabled
+                    });
                 case "settingsPatch":
                 case "traySettings":
                     if (operation == "traySettings" && (value.ValueKind != JsonValueKind.Object
@@ -935,34 +940,64 @@ internal static class Program
                     var managed = property.Value.EnumerateArray().ToArray();
                     if (managed.Length > 256 || managed.Any(item => item.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(item.GetString()) || item.GetString()!.Length > 128))
                         return false;
-                    updated = updated with { ManagedApplications = managed.Select(item => item.GetString()!).ToArray() };
+                    updated = updated with
+                    {
+                        ManagedApplications = managed.Select(item => item.GetString()!).ToArray()
+                    };
                     break;
                 case "theme" when property.Value.ValueKind == JsonValueKind.String && property.Value.GetString() is "system" or "light" or "dark":
-                    updated = updated with { Theme = property.Value.GetString()! };
+                    updated = updated with
+                    {
+                        Theme = property.Value.GetString()!
+                    };
                     break;
                 case "font" when property.Value.ValueKind == JsonValueKind.String && property.Value.GetString() is "claude" or "sans" or "system":
-                    updated = updated with { Font = property.Value.GetString()! };
+                    updated = updated with
+                    {
+                        Font = property.Value.GetString()!
+                    };
                     break;
                 case "textSize" when property.Value.ValueKind == JsonValueKind.Number && property.Value.TryGetInt32(out int size) && size is >= 13 and <= 19:
-                    updated = updated with { TextSize = size };
+                    updated = updated with
+                    {
+                        TextSize = size
+                    };
                     break;
                 case "accent" when property.Value.ValueKind == JsonValueKind.String && property.Value.GetString() is "clay" or "ocean" or "sage" or "iris" or "graphite":
-                    updated = updated with { Accent = property.Value.GetString()! };
+                    updated = updated with
+                    {
+                        Accent = property.Value.GetString()!
+                    };
                     break;
                 case "uiLanguage" when property.Value.ValueKind == JsonValueKind.String && property.Value.GetString() is "system" or "zh-CN" or "en":
-                    updated = updated with { UiLanguage = property.Value.GetString()! };
+                    updated = updated with
+                    {
+                        UiLanguage = property.Value.GetString()!
+                    };
                     break;
                 case "reduceMotion" when property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False:
-                    updated = updated with { ReduceMotion = property.Value.GetBoolean() };
+                    updated = updated with
+                    {
+                        ReduceMotion = property.Value.GetBoolean()
+                    };
                     break;
                 case "reduceTransparency" when property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False:
-                    updated = updated with { ReduceTransparency = property.Value.GetBoolean() };
+                    updated = updated with
+                    {
+                        ReduceTransparency = property.Value.GetBoolean()
+                    };
                     break;
                 case "startup" when property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False:
-                    updated = updated with { Startup = property.Value.GetBoolean() };
+                    updated = updated with
+                    {
+                        Startup = property.Value.GetBoolean()
+                    };
                     break;
                 case "experimentalWriteback" when property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False:
-                    updated = updated with { ExperimentalWriteback = property.Value.GetBoolean() };
+                    updated = updated with
+                    {
+                        ExperimentalWriteback = property.Value.GetBoolean()
+                    };
                     break;
                 case "source" when property.Value.ValueKind == JsonValueKind.String:
                     updated = updated with

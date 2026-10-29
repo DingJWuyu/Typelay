@@ -75,7 +75,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
     });
 
     [Fact]
-    public Task PackageDetailsReopenAfterSettingsSaveRebuildsApplicationsPage() => desktop.RunAsync(async () =>
+    public Task PackageDetailsStayMountedAcrossImmediateSettingsSave() => desktop.RunAsync(async () =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-package-refresh-" + Guid.NewGuid().ToString("N"));
         SettingsWindow? window = null;
@@ -95,8 +95,8 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             var previous = await SettingsPackageActions.OpenDetailsAsync(root, _ => { }, ct);
             int[] previousId = await Task.Run(previous.GetRuntimeId, ct).WaitAsync(ct);
 
-            // Successful model adoption saves this same public setting and publishes
-            // Changed. Exercise the real WPF rebuild without manufacturing model Ready.
+            // Immediate settings saves preserve the model page's mounted details
+            // and focus. This does not manufacture model Ready or install anything.
             settings.Update(settings.Value with
             {
                 OnboardingComplete = true
@@ -108,8 +108,8 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
                     new PropertyCondition(AutomationElement.NameProperty, "组件与安装说明"),
                     new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Group)));
                 Assert.NotNull(current);
-                Assert.False(current.GetRuntimeId().SequenceEqual(previousId));
-                Assert.Equal(ExpandCollapseState.Collapsed,
+                Assert.Equal(previousId, current.GetRuntimeId());
+                Assert.Equal(ExpandCollapseState.Expanded,
                     ((ExpandCollapsePattern)current.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Current.ExpandCollapseState);
                 return current.GetRuntimeId();
             }, ct).WaitAsync(ct);
@@ -120,9 +120,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
                 Assert.Equal(currentId, details.GetRuntimeId());
                 Assert.Equal(ExpandCollapseState.Expanded,
                     ((ExpandCollapsePattern)details.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Current.ExpandCollapseState);
-                Assert.Equal(2, details.FindAll(TreeScope.Descendants, new AndCondition(
-                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text),
-                    new PropertyCondition(AutomationElement.NameProperty, "尚未安装"))).Count);
+                Assert.Equal(new[] { "尚未安装", "尚未安装" }, SettingsPackageActions.ReadStatuses(details, ["argos-zh-en", "argos-en-zh"]));
                 Assert.Empty(details.FindAll(TreeScope.Descendants, new AndCondition(
                     new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text),
                     new PropertyCondition(AutomationElement.NameProperty, "当前 · 已就绪"))).Cast<AutomationElement>());
@@ -144,9 +142,10 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             using var model = Model(directory);
             window = new SettingsWindow(settings, model, () => { }, installations: Installations(directory),
                 createInstaller: () => throw new InvalidOperationException("Finding an action must not start installation."));
-            foreach (string page in new[] { "apps", "translation" })
+            foreach (string previousPage in new[] { "apps", "general" })
             {
-                window.ShowPage(page);
+                window.ShowPage(previousPage);
+                window.ShowPage("model");
                 window.UpdateLayout();
                 nint handle = new WindowInteropHelper(window).Handle;
                 var root = await Task.Run(() =>
@@ -459,9 +458,9 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
                     throw new InvalidOperationException("Unknown installation must not be changed.");
                 }, installations: Installations(directory));
             window.ReportSetupFailure(new(SetupFailureCategory.Integrity, ModelSetupStage.Activate));
-            foreach (string page in new[] { "translation", "apps" })
+            for (int presentation = 0; presentation < 2; presentation++)
             {
-                window.ShowPage(page);
+                window.ShowPage("model");
                 var directions = DirectionChoices(window);
                 Assert.All(directions, choice => { Assert.False(choice.IsChecked); Assert.False(choice.IsEnabled); });
                 Assert.Equal("未更改模型。请重新打开 TypeLay 检查安装记录。", Named<TextBlock>(window, "PreparationGuidance").Text);
@@ -622,13 +621,13 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ContextIdle);
             var input = Descendants(window).OfType<TextBox>().Single(control =>
                 AutomationProperties.GetName(control) == "唤醒翻译 UI 快捷键");
-            input.Text = "Ctrl+Shift+U";
+            input.Text = "Ctrl+Shift+";
             Assert.True(input.Focus());
             input.Select(5, 5);
             await model.StartAsync().WaitAsync(TimeSpan.FromSeconds(5));
             Assert.True(model.Ready);
             Assert.Same(input, Keyboard.FocusedElement);
-            Assert.Equal("Ctrl+Shift+U", input.Text);
+            Assert.Equal("Ctrl+Shift+", input.Text);
             Assert.Equal(5, input.SelectionStart);
             Assert.Equal(5, input.SelectionLength);
             Assert.NotEqual(input.Text, settings.Value.WakeShortcut);
@@ -787,7 +786,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
 
     private static void AssertPrimary(Window window, Button button)
     {
-        var accent = Assert.IsType<SolidColorBrush>(window.FindResource("Accent")).Color;
+        var accent = Assert.IsType<SolidColorBrush>(window.FindResource("AccentStrong")).Color;
         Assert.Equal(accent, Assert.IsType<SolidColorBrush>(button.Background).Color);
         Assert.Equal(Colors.White, Assert.IsType<SolidColorBrush>(button.Foreground).Color);
         Assert.Same(button, Assert.Single(Buttons(Named<Border>(window, "TranslationPreparationCard")),
@@ -796,7 +795,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
 
     private static void AssertWithinViewport(Window window, FrameworkElement control)
     {
-        var viewport = Descendants(window).OfType<ScrollContentPresenter>().First();
+        var viewport = Descendants(window).OfType<ScrollContentPresenter>().First(candidate => control.IsDescendantOf(candidate));
         var bounds = control.TransformToAncestor(viewport).TransformBounds(new Rect(control.RenderSize));
         Assert.True(control.IsVisible);
         Assert.InRange(bounds.Top, 0, viewport.ActualHeight);

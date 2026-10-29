@@ -6,6 +6,8 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../../src/windows/TypeLay.App/Infrastructure/WindowsIndexPayload.cs" Link="WindowsIndexPayload.cs" />
+    <Compile Include="../../../src/windows/TypeLay.App/Infrastructure/WindowsHyPayload.cs" Link="WindowsHyPayload.cs" />
     <Compile Include="../../../src/windows/TypeLay.Broker/Input/CaptureTrace.cs" Link="CaptureTrace.cs" />
     <Compile Include="../../../src/windows/shared/WindowsInterruptClock.cs" Link="WindowsInterruptClock.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/BrowserExtensionMetadataResponse.cs" Link="BrowserExtensionMetadataResponse.cs" />

@@ -12,6 +12,7 @@ import base64
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 import uuid
@@ -86,6 +87,44 @@ TRANSPORT = """(() => {
       message.data.expiresAtMs = message.clock.boottimeMs + 800;
     receive(message);
     return output.findLast(item => item.id === message.id)?.data;
+  };
+})();"""
+
+
+# Failure evidence for the held-key contract only. Observe the existing fixture
+# transport and trusted event delivery before content.js; never issue a command,
+# refresh an authority clock, change a key, or extend the contract's deadline.
+HELD_KEY_OBSERVER = r"""(() => {
+  const rows=[]; let omitted=0;
+  const log=value=>{
+    if(rows.length<192) rows.push({sequence:rows.length,mono:performance.now(),wall:Date.now(),...value});
+    else omitted++;
+  };
+  window.fixtureHeldAudit={rows,get omitted(){return omitted;}};
+  log({kind:'observer-ready'});
+  for(const type of ['keydown','keyup','focus','blur','focusin','focusout','visibilitychange']) window.addEventListener(type,event=>{
+    log({kind:'event',type:event.type,key:event.key,code:event.code,trusted:event.isTrusted,repeat:event.repeat,
+      eventStamp:event.timeStamp,shift:event.shiftKey,ctrl:event.ctrlKey,alt:event.altKey,meta:event.metaKey,
+      focus:document.hasFocus(),visibility:document.visibilityState,active:document.activeElement?.id||'',
+      target:event.target?.id||'',prevented:event.defaultPrevented});
+  },true);
+  window.addEventListener('error',event=>log({kind:'error',message:String(event.message).slice(0,400)}),true);
+  window.addEventListener('unhandledrejection',event=>log({kind:'unhandledrejection',message:String(event.reason).slice(0,400)}),true);
+  const raw=window.fixtureRawCommand;
+  window.fixtureRawCommand=message=>{
+    const first=fixtureMessages.length;
+    log({kind:'command-before',op:message.op,id:message.id,releasedAtMs:message.data?.releasedAtMs,
+      focus:document.hasFocus(),active:document.activeElement?.id||''});
+    try {
+      const result=raw(message);
+      const replies=fixtureMessages.slice(first).filter(item=>item.event==='command-owner');
+      const acks=replies.slice(0,16).map(item=>({
+        state:item.data.state,rejectionReason:item.data.rejectionReason,grantSequence:item.data.grantSequence}));
+      log({kind:'command-after',op:message.op,id:message.id,clock:message.clock,
+        authorityObservedAtMs:result?.authority?.observedAtMs,diagnostics:result?.diagnostics,
+        acks,omittedAcks:Math.max(0,replies.length-acks.length)});
+      return result;
+    } catch(error) {log({kind:'command-error',op:message.op,message:String(error).slice(0,400)});throw error;}
   };
 })();"""
 
@@ -177,10 +216,18 @@ class BrowserContract(unittest.TestCase):
             )
             else ""
         )
+        held_key_observer = (
+            HELD_KEY_OBSERVER
+            if self._testMethodName
+            == "test_source_command_activation_requires_release_proof_frozen_when_keys_were_observed"
+            else ""
+        )
         self.context.add_init_script(
             clock_setup
             + command_metadata_setup
             + TRANSPORT
+            + "\n"
+            + held_key_observer
             + "\n"
             + bridge
             + "\n"
@@ -261,7 +308,7 @@ class BrowserContract(unittest.TestCase):
         }
 
     def publish(self, snapshot, plan):
-        self.command(
+        return self.command(
             "publish",
             {
                 "target": snapshot["target"],
@@ -789,46 +836,65 @@ class BrowserContract(unittest.TestCase):
         self.assertGreater(commands[1]["data"]["commandId"], commands[0]["data"]["commandId"])
 
     def test_source_command_activation_requires_release_proof_frozen_when_keys_were_observed(self):
-        # No describe/capture has calibrated the page when this press starts.
-        self.page.keyboard.insert_text("Hello")
-        self.page.keyboard.down("Shift")
-        result = self.activate_source_command_owner()
-        self.assertEqual(result["ack"]["state"], "rejected")
-        self.assertEqual(result["ack"]["rejectionReason"], "KeysHeld")
-        self.assertNotIn("diagnostic", result["ack"])
-        # A simultaneous deadline failure is not a recoverable release rejection.
-        expired_ack = self.page.evaluate("""() => {
-          const prepared = fixtureCommand({id: 7804, op: 'prepare-command-owner',
-            data: {ownerId: fixtureOwner.ownerId, generation: fixtureOwner.generation}});
-          fixtureCommand({id: 7805, op: 'activate-command-owner', data: {
-            ...fixtureOwner, authority: prepared.authority, expiresAtMs: 0}});
-          return fixtureMessages.filter(item => item.event === 'command-owner').at(-1).data;
-        }""")
-        self.assertEqual(expired_ack["state"], "rejected")
-        self.assertNotIn("rejectionReason", expired_ack)
-        self.page.keyboard.up("Shift")
-        # Release does not restore the consumed preparation or the old owner.
-        self.page.evaluate("""() => fixtureCommand({id: 7803,
-          op: 'activate-command-owner', data: fixtureOwner})""")
-        old_ack = self.page.evaluate(
-            "fixtureMessages.filter(item => item.event === 'command-owner').at(-1).data"
-        )
-        self.assertEqual(old_ack["state"], "rejected")
-        self.assertNotIn("rejectionReason", old_ack)
-        self.page.keyboard.down("Shift")
-        result = self.activate_source_command_owner(released_at=0)
-        self.assertEqual(result["ack"]["state"], "rejected")
-        self.assertEqual(result["ack"]["rejectionReason"], "KeysHeld")
-        self.assertNotIn("diagnostic", result["ack"])
-        self.page.keyboard.up("Shift")
-        result = self.activate_source_command_owner("released-owner")
-        self.assertEqual(result["ack"]["state"], "active")
-        self.assertEqual(result["ack"]["ownerId"], "released-owner")
-        self.assertNotIn("rejectionReason", result["ack"])
-        self.assertNotIn("diagnostic", result["ack"])
-        self.page.keyboard.press("F10")
-        self.assertEqual(len(self.source_commands()), 1)
-        self.assertIn("native", self.source_commands()[0]["data"])
+        try:
+            # No describe/capture has calibrated the page when this press starts.
+            self.page.keyboard.insert_text("Hello")
+            self.page.keyboard.down("Shift")
+            result = self.activate_source_command_owner()
+            self.assertEqual(result["ack"]["state"], "rejected")
+            self.assertEqual(result["ack"]["rejectionReason"], "KeysHeld")
+            self.assertNotIn("diagnostic", result["ack"])
+            # A simultaneous deadline failure is not a recoverable release rejection.
+            expired_ack = self.page.evaluate("""() => {
+              const prepared = fixtureCommand({id: 7804, op: 'prepare-command-owner',
+                data: {ownerId: fixtureOwner.ownerId, generation: fixtureOwner.generation}});
+              fixtureCommand({id: 7805, op: 'activate-command-owner', data: {
+                ...fixtureOwner, authority: prepared.authority, expiresAtMs: 0}});
+              return fixtureMessages.filter(item => item.event === 'command-owner').at(-1).data;
+            }""")
+            self.assertEqual(expired_ack["state"], "rejected")
+            self.assertNotIn("rejectionReason", expired_ack)
+            self.page.keyboard.up("Shift")
+            # Release does not restore the consumed preparation or the old owner.
+            self.page.evaluate("""() => fixtureCommand({id: 7803,
+              op: 'activate-command-owner', data: fixtureOwner})""")
+            old_ack = self.page.evaluate(
+                "fixtureMessages.filter(item => item.event === 'command-owner').at(-1).data"
+            )
+            self.assertEqual(old_ack["state"], "rejected")
+            self.assertNotIn("rejectionReason", old_ack)
+            self.page.keyboard.down("Shift")
+            result = self.activate_source_command_owner(released_at=0)
+            self.assertEqual(result["ack"]["state"], "rejected")
+            self.assertEqual(result["ack"]["rejectionReason"], "KeysHeld")
+            self.assertNotIn("diagnostic", result["ack"])
+            self.page.keyboard.up("Shift")
+            result = self.activate_source_command_owner("released-owner")
+            self.assertEqual(result["ack"]["state"], "active")
+            self.assertEqual(result["ack"]["ownerId"], "released-owner")
+            self.assertNotIn("rejectionReason", result["ack"])
+            self.assertNotIn("diagnostic", result["ack"])
+            self.page.keyboard.press("F10")
+            self.assertEqual(len(self.source_commands()), 1)
+            self.assertIn("native", self.source_commands()[0]["data"])
+        except Exception:
+            # Read already-collected evidence only after the original failure.
+            # Collection errors must not replace or repair that failure.
+            try:
+                evidence = self.page.evaluate("""() => ({
+                  rows: fixtureHeldAudit.rows, omitted: fixtureHeldAudit.omitted,
+                  documentEvents: fixtureMessages.filter(item => item.event === 'document')
+                    .slice(0, 4).map(item => item.data)
+                })""")
+            except Exception as error:
+                evidence = {"observationError": repr(error)}
+            try:
+                print(
+                    "HELD_KEY_FAILURE " + json.dumps(evidence, ensure_ascii=False), file=sys.stderr
+                )
+            except Exception:
+                pass  # Evidence output cannot replace the original test failure.
+            raise
 
     def shortcut_snapshot(self, dispatch=None):
         return self.page.evaluate(
@@ -1213,14 +1279,24 @@ class BrowserContract(unittest.TestCase):
 
     def test_already_applied_receipt_survives_configuration_in_input_callback(self):
         snapshot = self.type_source()
-        self.publish(snapshot, self.plan(snapshot))
+        published = self.publish(snapshot, self.plan(snapshot))
+        self.assertTrue(published["published"], published)
         self.page.evaluate("""document.querySelector('#source').addEventListener('input', () => {
           fixtureCommand({id: 5002, op: 'configure-shortcuts', data: {
             generation: 'configured-in-input', enabled: false, sessionEnabled: true,
             accept: 'F12', exit: 'F24'}});
         }, {once: true});""")
         self.page.keyboard.press("Tab")
-        self.assertEqual(self.page.locator("#source").input_value(), "你好")
+        actual = self.page.locator("#source").input_value()
+        diagnostics = (
+            None
+            if actual == "你好"
+            else {
+                "state": self.command("describe"),
+                "events": self.page.evaluate("fixtureMessages.filter(m => m.event)"),
+            }
+        )
+        self.assertEqual(actual, "你好", diagnostics)
         self.assertEqual(len(self.accepted()), 1)
         self.assertEqual(self.accepted()[0]["data"]["receipt"]["status"], "Verified")
         self.assertEqual(
@@ -1332,9 +1408,19 @@ class BrowserContract(unittest.TestCase):
     def test_unknown_ime_never_reads_body_then_trusted_input_allows_acceptance(self):
         self.assertIsNone(self.capture())
         snapshot = self.type_source()
-        self.publish(snapshot, self.plan(snapshot))
+        published = self.publish(snapshot, self.plan(snapshot))
+        self.assertTrue(published["published"], published)
         self.page.keyboard.press("Tab")
-        self.assertEqual(self.page.locator("#source").input_value(), "你好")
+        actual = self.page.locator("#source").input_value()
+        diagnostics = (
+            None
+            if actual == "你好"
+            else {
+                "state": self.command("describe"),
+                "events": self.page.evaluate("fixtureMessages.filter(m => m.event)"),
+            }
+        )
+        self.assertEqual(actual, "你好", diagnostics)
         self.assertEqual(len(self.accepted()), 1)
         self.assertEqual(self.accepted()[0]["data"]["receipt"]["status"], "Verified")
         self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
@@ -2371,10 +2457,9 @@ class BrowserContract(unittest.TestCase):
     def test_translation_menu_uses_shared_state_and_freezes_opened_settings_revision(self):
         data = self.motion_view()
         self.page.emulate_media(reduced_motion="reduce")
-        # Missing/released-off/unknown payloads must not advertise an action.
+        # Missing/unknown payloads must not advertise an action.
         for actions in (
             None,
-            self.translation_menu_state(styleReleased=False, alternativeReleased=False),
             self.translation_menu_state(applicationStyle="unknown"),
         ):
             self.set_translation_menu(data, actions)
@@ -2409,6 +2494,28 @@ class BrowserContract(unittest.TestCase):
           message.event === 'ui' && message.data.operation === 'alternative')""")
         )
         self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
+    def test_closed_quality_menu_keeps_future_styles_disabled_but_allows_removing_override(self):
+        data = self.motion_view()
+        self.page.emulate_media(reduced_motion="reduce")
+        self.set_translation_menu(
+            data,
+            self.translation_menu_state(
+                styleReleased=False, alternativeReleased=False, applicationStyle="Formal"
+            ),
+        )
+        self.click_overlay_control("更多")
+        for name in ("自然", "✓ 正式", "换种说法", "简洁 · 尚未提供", "口语 · 尚未提供"):
+            self.assertTrue(
+                self.overlay_dom(self.overlay_control(name), "function() { return this.disabled; }")
+            )
+        self.click_overlay_control("继承")
+        events = self.page.evaluate(
+            "fixtureMessages.filter(m => m.event === 'ui' && m.data.operation === 'style').map(m => m.data.value)"
+        )
+        self.assertEqual(events, [{"settingsRevision": 12, "style": None}])
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 

@@ -86,7 +86,8 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         var oldTarget = Term(scene.Window, "译词 1");
         oldDelete.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.Equal(second, Assert.Single(scene.Reload().Glossary!.Rules));
-        oldSource.Text = "stale"; oldTarget.Text = "stale";
+        oldSource.Text = "stale";
+        oldTarget.Text = "stale";
         oldTarget.RaiseEvent(new KeyboardFocusChangedEventArgs(Keyboard.PrimaryDevice, 0, oldTarget, null) { RoutedEvent = Keyboard.LostKeyboardFocusEvent });
         oldDelete.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.Equal(second, Assert.Single(scene.Reload().Glossary!.Rules));
@@ -178,7 +179,8 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         Named<TextBox>(scene.Window, "唤醒翻译 UI 快捷键").Text = "Ctrl+Shift+U";
         Assert.Equal("Ctrl+Shift+U", scene.Reload().WakeShortcut);
         Assert.Null(scene.Reload().Glossary);
-        Assert.Equal(1, ordinary); Assert.Equal(0, glossary);
+        Assert.Equal(1, ordinary);
+        Assert.Equal(0, glossary);
         scene.Window.ShowPage("glossary");
         Term(scene.Window, "译词 1").Text = "review";
         CommitGlossary(scene.Window);
@@ -428,6 +430,27 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
     });
 
     [Fact]
+    public Task RetiredStyleChoiceCannotChangePreferencesAfterReturningToTheSamePage() => desktop.RunAsync(async () =>
+    {
+        using var scene = new SettingsScene(new(Source: "zh", Target: "ja", Styles: new(TranslationStyle.Formal)), released: true);
+        scene.Window.ShowPage("language");
+        await scene.StartStyleModelAsync();
+        var retired = Named<Button>(scene.Window, "翻译风格 自然");
+        Assert.True(retired.IsEnabled);
+        scene.Window.ShowPage("general");
+        scene.Window.ShowPage("language");
+        var current = Named<Button>(scene.Window, "翻译风格 自然");
+        Assert.NotSame(retired, current);
+        long revision = scene.Settings.Revision;
+        retired.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Equal(revision, scene.Settings.Revision);
+        Assert.Equal(TranslationStyle.Formal, scene.Reload().Styles!.Default);
+        current.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Equal(TranslationStyle.Natural, scene.Reload().Styles!.Default);
+        Assert.Null(scene.Controller.GetStyleSettingsState().Session);
+    });
+
+    [Fact]
     public Task LiveTechnicalCapabilityCannotRevealProductionStyleControls() => desktop.RunAsync(async () =>
     {
         using var scene = new SettingsScene(new(Source: "zh", Target: "ja"));
@@ -531,7 +554,9 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         window.UpdateLayout();
         var target = Descendants(window).OfType<TextBox>().Last(box => AutomationProperties.GetName(box).StartsWith("译词 "));
         target.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(target), 0, Key.Enter)
-            { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+        {
+            RoutedEvent = Keyboard.PreviewKeyDownEvent
+        });
     }
     private static void Click(Window window, string label)
     {
@@ -651,7 +676,7 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         public void StopModel()
         {
             _model.Dispose();
-            Window.ShowPage("translation");
+            Window.ShowPage("language");
         }
         public UserSettings Reload() => WindowsRuntime.CreateSettings(PathToSettings).Value;
         public void Dispose()

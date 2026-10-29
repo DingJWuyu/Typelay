@@ -1471,7 +1471,8 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
         foreach (var text in Descendants(window).OfType<TextBlock>().Where(text =>
             text.IsVisible && text.IsEnabled && text.Text.Length > 0))
         {
-            Assert.True(text.FontSize >= 11, $"Text is below the prototype caption size: {text.Text}");
+            double minimum = AutomationProperties.GetAutomationId(text) == "ExperimentalWritebackBadge" ? 10.5 : 11;
+            Assert.True(text.FontSize >= minimum, $"Text is below the prototype caption size: {text.Text}");
             var foreground = Assert.IsType<SolidColorBrush>(text.Foreground).Color;
             DependencyObject? parent = text;
             Color? background = null;

@@ -89,7 +89,7 @@ internal static partial class ContinuousTranslationCheck
             TextRange selection = N.ReadSelection(field);
             Require(selection.Start == selection.End && N.ReadText(field, Limits.MaxTextUnits) == original,
                 "owned-source-not-ordinary-collapsed-caret");
-            var editor = ((Grid)((Border)overlay.Content).Child).Children.OfType<TextBox>().Single();
+            var editor = TranslationEditor(overlay);
             result.Stage = "owned-automatic-preview";
             // No F9, reference inference, publish probe, or private install wait.
             await UntilAsync(() =>
@@ -519,7 +519,8 @@ internal static partial class ContinuousTranslationCheck
     }
 
     private static bool OwnedAcceptanceVisible(OverlayWindow overlay) => Descendants(overlay).OfType<TextBlock>()
-        .Any(hint => hint.IsVisible && hint.Text == "接受译文" && hint.Parent is StackPanel row
+        .Any(hint => hint.IsVisible && AutomationProperties.GetAutomationId(hint) == "TranslationAcceptHint"
+            && AutomationProperties.GetName(hint) == "接受译文" && hint.Text == "接受" && hint.Parent is StackPanel row
             && Descendants(row).OfType<TextBlock>().Any(key => key.IsVisible && key.Text == OwnedAcceptShortcut));
 
     private static async Task<SceneResult> VerifyOwnedReturnAsync(OwnedReturnKind kind, nint root, nint field,

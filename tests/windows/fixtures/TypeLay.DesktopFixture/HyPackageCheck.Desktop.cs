@@ -53,7 +53,7 @@ internal static partial class HyPackageCheck
                 throw;
             }
         }
-        async Task StartApplicationAsync(string trace, Scene? revealSettings = null)
+        async Task StartApplicationAsync(string trace, Scene scene)
         {
             var info = StartInfo(Path.Combine(distribution, "app", "TypeLay.App.exe"));
             info.ArgumentList.Add("--automation-test");
@@ -63,11 +63,14 @@ internal static partial class HyPackageCheck
             app = StartOwned(info);
             workers = new WorkerObserver(app.Process, data);
             workers.Start();
-            if (revealSettings is not null)
-                await OpenSettingsThroughTrayAsync(app.Process, revealSettings, ct);
+            if (ReadSettings(data)?.OnboardingComplete == false)
+                await PublicOnboardingActions.CompleteAsync(app.Process, () => ReadSettings(data), stage => scene.Stage = stage, ct);
+            await OpenSettingsThroughTrayAsync(app.Process, scene, ct);
+            scene.Stage = "find-public-settings";
             settings = await SettingsAsync(app.Process, ct);
-            if (revealSettings is not null)
-                await NavigateAsync(settings, "model", "本地模型", ct);
+            scene.Stage = "navigate-public-model";
+            await NavigateAsync(settings, "model", "本地模型", ct);
+            scene.Stage = "await-public-model-ready";
             await WaitAsync(async () =>
             {
                 workers!.Check();
@@ -125,7 +128,7 @@ internal static partial class HyPackageCheck
                 await File.WriteAllTextAsync(Path.Combine(data, "settings.json"), JsonSerializer.Serialize(new UserSettings(
                     Source: "zh", Target: "en", Theme: "light", UiLanguage: "zh-CN", Mode: WorkMode.OnDemand,
                     OnboardingComplete: false, ExperimentalWriteback: false)), ct);
-                await StartApplicationAsync("trace.jsonl");
+                await StartApplicationAsync("trace.jsonl", scene);
                 scene.Facts = new
                 {
                     workerPid = lastWorker,
@@ -844,9 +847,8 @@ internal static partial class HyPackageCheck
             }
             if (observation.PublicReady != true)
                 return false;
-            // The successful first install saves OnboardingComplete and rebuilds
-            // the apps page with collapsed details. Reveal that current container
-            // once, after real publication/exit/Ready, using the original deadline.
+            // Reveal the current model-page details only after real package
+            // publication/exit/Ready, using the original lifecycle deadline.
             if (details is null)
             {
                 observation.Gate = "expand-package-details";
@@ -1074,7 +1076,7 @@ internal static partial class HyPackageCheck
                 new PropertyCondition(AutomationElement.NameProperty, "TypeLay 快速面板")));
             observation.AppExitObserved = app.HasExited;
             observation.SameProcessPanelFound = panel is not null;
-            quit = panel is null ? null : Find(panel, AutomationElement.NameProperty, "⏻    退出 TypeLay", ControlType.Button);
+            quit = panel is null ? null : Find(panel, AutomationElement.NameProperty, "退出 TypeLay", ControlType.Button);
             observation.QuitFound = quit is not null;
             observation.QuitEnabled = quit is not null && quit.Current.IsEnabled;
             observation.QuitVisible = quit is not null && !quit.Current.IsOffscreen;

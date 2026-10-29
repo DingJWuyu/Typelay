@@ -29,24 +29,24 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface { background: #f7f6f2; color: #141413; font-family: 'Inter', 'Noto Sans CJK SC', sans-serif; font-size: 13px; }
 .typelay-surface label { color: inherit; }
 .typelay-surface .settings-sidebar { background: #eeece5; border: 1px solid rgba(20,20,19,.085); border-radius: 12px; padding: 14px 10px 10px; margin: 8px; }
-.typelay-surface .settings-brand { font-size: 17px; font-weight: 600; }
+.typelay-surface .settings-brand { font-size: 13px; font-weight: 600; }
 .typelay-surface .settings-navigation, .typelay-surface .settings-navigation list { background: transparent; border: 0; }
-.typelay-surface .settings-navigation row { border: 0; border-radius: 8px; padding: 0 8px; min-height: 32px; margin: 1px 0; }
+.typelay-surface .settings-navigation row { border: 0; border-radius: 8px; padding: 0 8px; min-height: 32px; margin: 0 0 1px; }
 .typelay-surface .settings-navigation row:selected { background: rgba(20,20,19,.08); color: #141413; font-weight: 600; }
 .typelay-surface .settings-navigation row:hover { background: rgba(20,20,19,.045); }
 .typelay-surface .nav-icon { color: white; border-radius: 6px; padding: 4px; min-width: 14px; min-height: 14px; }
 .typelay-surface .settings-page, .typelay-surface .settings-page viewport { background: transparent; }
-.typelay-surface .settings-page-title { font-family: 'Source Serif 4', 'Noto Serif CJK SC', serif; font-size: 22px; font-weight: 500; margin-bottom: 8px; }
+.typelay-surface .settings-page-title { font-family: 'Source Serif 4', 'Noto Serif CJK SC', serif; font-size: 22px; font-weight: 500; margin-bottom: 0; }
 .typelay-surface .settings-section-title { font-size: 12px; font-weight: 600; color: #5c5b56; margin: 8px 4px 0; }
-.typelay-surface .settings-group { background: #ffffff; border: 1px solid rgba(20,20,19,.085); border-radius: 12px; box-shadow: 0 1px 2px rgba(20,20,19,.04); }
+.typelay-surface .settings-group { background: #ffffff; border: 0; border-radius: 12px; box-shadow: inset 0 0 0 1px rgba(20,20,19,.085), 0 1px 2px rgba(20,20,19,.04); }
 .typelay-surface .settings-row { padding: 8px 14px; min-height: 28px; }
-.typelay-surface .settings-row + .settings-row { border-top: 1px solid rgba(20,20,19,.06); }
+.typelay-surface .settings-row + .settings-row { box-shadow: inset 0 1px rgba(20,20,19,.06); }
 .typelay-surface .hero-row { min-height: 56px; }
 .typelay-surface .headline { font-size: 15px; font-weight: 600; }
 .typelay-surface .dim-label { color: #74726c; opacity: 1; font-size: 12px; }
 .typelay-surface .settings-warning { color: #a5670e; font-size: 12px; }
 .typelay-surface .settings-notice { padding: 12px 14px; background: #fff; border-radius: 12px; border: 1px solid rgba(20,20,19,.085); }
-.typelay-surface button { background-image: none; background-color: #ffffff; color: #141413; border: 1px solid rgba(20,20,19,.16); border-radius: 8px; padding: 4px 10px; min-height: 20px; box-shadow: 0 1px 2px rgba(20,20,19,.04); }
+.typelay-surface button { background-image: none; background-color: #ffffff; color: #141413; border: 1px solid rgba(20,20,19,.16); border-radius: 8px; padding: 3px 12px; min-height: 18px; font-size: 12.5px; box-shadow: 0 1px 2px rgba(20,20,19,.04); }
 .typelay-surface button:hover { background-color: #f2f0e9; }
 .typelay-surface button:disabled { opacity: .5; }
 .typelay-surface .flat { background: transparent; border-color: transparent; box-shadow: none; }
@@ -54,11 +54,11 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface entry { background: #fff; color: #141413; border: 1px solid rgba(20,20,19,.16); border-radius: 8px; padding: 4px 8px; min-height: 22px; box-shadow: none; }
 .typelay-surface entry:focus, .typelay-surface button:focus { border-color: @accent; outline-color: @accent; }
 .typelay-surface .settings-search { background: rgba(20,20,19,.08); border: 0; min-height: 20px; }
-.typelay-surface switch { min-width: 36px; min-height: 21px; border: 0; border-radius: 12px; padding: 2px; background: rgba(20,20,19,.16); box-shadow: none; }
+.typelay-surface switch { min-width: 30px; min-height: 16px; border: 0; border-radius: 12px; padding: 2px; background: rgba(20,20,19,.16); box-shadow: none; }
 .typelay-surface switch:checked { background: @accent; }
-.typelay-surface switch slider { background: #fff; border: 0; border-radius: 50%; min-width: 17px; min-height: 17px; box-shadow: 0 1px 2px rgba(0,0,0,.16); }
-.typelay-surface .segments { border-radius: 8px; padding: 3px; background: rgba(20,20,19,.08); }
-.typelay-surface .segments button { background: transparent; border: 0; border-radius: 6px; box-shadow: none; padding: 4px 12px; min-height: 18px; }
+.typelay-surface switch slider { background: #fff; border: 0; border-radius: 50%; min-width: 16px; min-height: 16px; box-shadow: 0 1px 2px rgba(0,0,0,.16); }
+.typelay-surface .segments { border-radius: 8px; padding: 2px; background: rgba(20,20,19,.08); }
+.typelay-surface .segments button { background: transparent; border: 0; border-radius: 6px; box-shadow: none; padding: 3px 12px; min-height: 18px; font-size: 12px; }
 .typelay-surface .segments button:checked { background: #fff; box-shadow: 0 1px 3px rgba(20,20,19,.12); }
 .typelay-surface .tile { border: 2px solid transparent; background: transparent; box-shadow: none; padding: 4px; }
 .typelay-surface .tile:checked { border-color: @accent; }
@@ -79,6 +79,11 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface .settings-footer { padding: 8px 28px 12px; }
 .typelay-surface .toast { background: #262624; color: #f4f3ee; border-radius: 18px; padding: 8px 14px; }
 .typelay-surface .toast button { background: transparent; color: #ec9a7c; border: 0; box-shadow: none; }
+.typelay-surface .status-dot { color: #3a8e62; font-size: 8px; min-width: 7px; }
+.typelay-surface .status-dot.paused { color: #74726c; }
+.typelay-surface .beta-badge { background: rgba(217,119,87,.14); color: #ad4f2d; border-radius: 9px; font-size: 10.5px; font-weight: 600; padding: 1px 7px; }
+.typelay-surface.settings-dark .beta-badge { color: #ec9a7c; }
+.typelay-surface .typelay-app-icon { border-radius: 11px; box-shadow: 0 2px 6px rgba(150,60,30,.3); }
 .typelay-surface .app-mark { background: linear-gradient(160deg,#e48a69,#c4573a); color: #fff; border-radius: 11px; font-size: 25px; min-width: 44px; min-height: 44px; }
 .typelay-surface .app-mark.large { min-width: 76px; min-height: 76px; border-radius: 18px; font-size: 38px; }
 .typelay-surface list { background: transparent; }
@@ -86,6 +91,7 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface textview, .typelay-surface textview text { background: #fff; color: #141413; }
 .typelay-surface separator { background: rgba(20,20,19,.085); min-height: 1px; }
 .typelay-surface .quick-card { background: rgba(20,20,19,.045); border: 1px solid rgba(20,20,19,.085); border-radius: 12px; padding: 10px; }
+.typelay-surface .quick-headline { font-size: 14px; font-weight: 600; }
 .typelay-surface .quick-status { color: #5c5b56; font-size: 12px; padding: 2px 6px; }
 .typelay-surface .model-mark { background: linear-gradient(160deg,#4fae77,#2a7a4b); color: white; padding: 10px; border-radius: 11px; min-width: 24px; min-height: 24px; }
 .typelay-surface .connection-card { background: #fff; border: 1px solid rgba(20,20,19,.085); border-radius: 12px; padding: 12px 14px; }
@@ -98,7 +104,8 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface.settings-dark .settings-navigation row { color: #f4f3ee; }
 .typelay-surface.settings-dark .settings-navigation row:selected { background: rgba(255,255,255,.09); color: #f4f3ee; }
 .typelay-surface.settings-dark .settings-group, .typelay-surface.settings-dark .settings-notice { background: #2f2e2b; border-color: rgba(255,255,255,.08); }
-.typelay-surface.settings-dark .settings-row + .settings-row { border-color: rgba(255,255,255,.08); }
+.typelay-surface.settings-dark .settings-group { box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
+.typelay-surface.settings-dark .settings-row + .settings-row { box-shadow: inset 0 1px rgba(255,255,255,.08); }
 .typelay-surface.settings-dark .dim-label, .typelay-surface.settings-dark .settings-section-title, .typelay-surface.settings-dark .quick-status { color: #b5b3ab; }
 .typelay-surface.settings-dark button, .typelay-surface.settings-dark entry { background: #3a3936; color: #f4f3ee; border-color: rgba(255,255,255,.15); }
 .typelay-surface.settings-dark button:hover { background: #44433f; }
@@ -175,6 +182,19 @@ def app_icon(size=44):
         str(Path(__file__).parent / "icons/typelay-active.svg"), size, size, True
     )
     image.set_from_pixbuf(pixbuf)
+    style(image, "typelay-app-icon")
+    image.set_valign(Gtk.Align.CENTER)
+    return image
+
+
+def design_icon(name, size=14):
+    from gi.repository import GdkPixbuf
+
+    pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
+        str(Path(__file__).parent / f"icons/settings-{name}.svg"), size, size, True
+    )
+    image = Gtk.Image.new_from_pixbuf(pixbuf)
+    image.set_valign(Gtk.Align.CENTER)
     return image
 
 
@@ -229,10 +249,16 @@ def apply_theme(window, preferences, provider=None):
         Gtk.StyleContext.add_provider_for_screen(
             window.get_screen(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
+    display_font = {
+        "claude": "'Source Serif 4', 'Noto Serif CJK SC', serif",
+        "sans": "'Inter', 'Noto Sans CJK SC', sans-serif",
+        "system": "sans-serif",
+    }.get(preferences.get("font", "claude"), "sans-serif")
     provider.load_from_data(
         (
             f"@define-color accent {accent}; @define-color accent_ink {dark_ink if dark else ink};\n"
             + CSS
+            + f"\n.typelay-surface .settings-page-title, .typelay-surface .welcome-title {{ font-family: {display_font}; }}"
         ).encode()
     )
     return provider
@@ -282,6 +308,12 @@ class ShortcutRecorder(Gtk.Button):
         self.session = session
         style(self, "keycap")
         self.connect("clicked", self.start)
+        # GTK buttons expose no separate label child through ATK once named.
+        # Keep the current chord/recording prompt available to screen readers.
+        self.connect(
+            "notify::label",
+            lambda *_: self.get_accessible().set_description(self.get_label() or ""),
+        )
         self.connect("key-press-event", self.key)
         self.connect("focus-out-event", lambda *_: self.cancel())
         self.set_text("")

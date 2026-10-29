@@ -46,7 +46,7 @@ internal static partial class ContinuousTranslationCheck
             controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true, broker: broker);
             result.Stage = "cold-page-start-controller";
             await controller.StartAsync().WaitAsync(cancellation);
-            var editor = ((Grid)((Border)overlay.Content).Child).Children.OfType<TextBox>().Single();
+            var editor = TranslationEditor(overlay);
             void RequireSource()
             {
                 cancellation.ThrowIfCancellationRequested();

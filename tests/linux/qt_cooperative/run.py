@@ -1365,6 +1365,13 @@ def ordered_controls(
                         "canOpenGlossary": True,
                         "glossaryUnavailableReason": None,
                     }
+                    check_inherit = (
+                        field == "first" and view_state == "ValidTranslation" and finish == "save"
+                    )
+                    if check_inherit:
+                        actions.update(
+                            canInheritStyle=True, applicationStyle="Formal", glossaryReleased=False
+                        )
                     assert native.describe(target)["sourceGlossarySupported"] is True
                     assert render_view(
                         publication, view_state, "Kept candidate", False, 1, actions
@@ -1459,6 +1466,37 @@ def ordered_controls(
                     observe(lambda value: value.get("overlayVisible"), "source glossary preview")
                     click("typelay-menu-trigger")
                     observe(lambda value: value.get("overlayMenuVisible"), "source glossary menu")
+                    if check_inherit:
+                        controls = state()["overlayControls"]
+                        assert (
+                            controls["typelay-style-inherit"]["visible"]
+                            and controls["typelay-style-inherit"]["enabled"]
+                        )
+                        assert all(
+                            not controls[name]["enabled"]
+                            for name in ("typelay-style-natural", "typelay-style-formal")
+                        )
+                        click("typelay-style-inherit")
+                        inherit = wait(lambda: events("style"), "closed-quality null style request")
+                        assert inherit == [
+                            {
+                                "target": target,
+                                "generation": generation,
+                                "revision": 1,
+                                "operation": "style",
+                                "value": {"settingsRevision": 12, "style": None},
+                            }
+                        ]
+                        unchanged()
+                        actions.update(canInheritStyle=False, applicationStyle=None)
+                        assert render_view(
+                            publication, view_state, "Kept candidate", False, 1, actions
+                        )["visible"]
+                        click("typelay-menu-trigger")
+                        observe(
+                            lambda value: value.get("overlayMenuVisible"),
+                            "glossary menu after null style request",
+                        )
                     click("typelay-glossary-open")
                     event = wait(
                         lambda: events("sessionGlossaryBegin"),

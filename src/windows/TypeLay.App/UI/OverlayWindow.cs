@@ -226,14 +226,35 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         Height = 158;
         FontFamily = UiTheme.UiFont;
         _surface = new Grid { VerticalAlignment = VerticalAlignment.Bottom, HorizontalAlignment = HorizontalAlignment.Left };
-        _surface.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        _surface.RowDefinitions.Add(new() { Height = new(36) });
-        _surface.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        _surface.RowDefinitions.Add(new()
+        {
+            Height = GridLength.Auto
+        });
+        _surface.RowDefinitions.Add(new()
+        {
+            Height = new(36)
+        });
+        _surface.RowDefinitions.Add(new()
+        {
+            Height = GridLength.Auto
+        });
         var bar = new Grid { Margin = new(5, 0, 10, 5) };
-        bar.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        bar.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
-        bar.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        bar.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        bar.ColumnDefinitions.Add(new()
+        {
+            Width = GridLength.Auto
+        });
+        bar.ColumnDefinitions.Add(new()
+        {
+            Width = new(1, GridUnitType.Star)
+        });
+        bar.ColumnDefinitions.Add(new()
+        {
+            Width = GridLength.Auto
+        });
+        bar.ColumnDefinitions.Add(new()
+        {
+            Width = GridLength.Auto
+        });
         var direction = new StackPanel { Orientation = Orientation.Horizontal };
         _dot = new Border { Width = 7, Height = 7, CornerRadius = new(3.5), Margin = new(0, 0, 7, 0), VerticalAlignment = VerticalAlignment.Center };
         _dot.SetResourceReference(Border.BackgroundProperty, "Accent");
@@ -241,8 +262,15 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         _language.TextWrapping = TextWrapping.NoWrap;
         direction.Children.Add(_dot);
         direction.Children.Add(_language);
-        _languageButton = new Button { Content = direction, BorderThickness = new(0), Background = Brushes.Transparent,
-            Padding = new(9, 0, 9, 0), Height = 26, VerticalAlignment = VerticalAlignment.Center };
+        _languageButton = new Button
+        {
+            Content = direction,
+            BorderThickness = new(0),
+            Background = Brushes.Transparent,
+            Padding = new(9, 0, 9, 0),
+            Height = 26,
+            VerticalAlignment = VerticalAlignment.Center
+        };
         _languageButton.ToolTip = UiTheme.L("翻译语言", "Translation Languages");
         AutomationProperties.SetName(_languageButton, (string)_languageButton.ToolTip);
         _languageButton.Click += (_, _) => LanguageRequested?.Invoke();
@@ -261,7 +289,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         _expandButton.IsTabStop = false;
         _expandButton.IsEnabled = false;
         _expandButton.Click += (_, _) => ToggleExpansion();
-        _moreButton = IconButton("M5 12h.01M12 12h.01M19 12h.01");
+        _moreButton = IconButton("M5 12h.01M12 12h.01M19 12h.01", new EditorMenuButton(this));
         _moreButton.ToolTip = UiTheme.L("更多翻译操作", "More Translation Actions");
         AutomationProperties.SetName(_moreButton, (string)_moreButton.ToolTip);
         _moreButton.Click += (_, _) => OpenMenu(_moreButton);
@@ -320,9 +348,11 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         };
         // Keep the native TextBox and its content host. A single border supplies
         // hover/focus feedback without the system template's additional chrome.
+        // TextBoxBase forwards Padding to PART_ContentHost itself; padding the
+        // outer border too would double the inset and clip otherwise fitting text.
         _editor.Template = (ControlTemplate)XamlReader.Parse("""
             <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="TextBox">
-              <Border CornerRadius="7" Padding="{TemplateBinding Padding}" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+              <Border CornerRadius="7" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
                 <ScrollViewer x:Name="PART_ContentHost" Focusable="False"/>
               </Border>
             </ControlTemplate>
@@ -1031,8 +1061,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         _sourceAnchor = session.Current is { } anchor ? (anchor.Target, anchor.Bounds) : null;
         if (_glossary is { } glossary && (_viewContext?.Token != glossary.Entry.Token
             || (glossary.Entry.SourceOrigin ? session.State is not (SessionState.ValidTranslation or SessionState.EditedTranslationPending)
-                : session.State != SessionState.EditingTranslation)
-            || _viewContext.TranslationActions?.GlossaryReleased != true))
+                : session.State != SessionState.EditingTranslation)))
             CloseGlossary(glossary, restoreEditor: false);
         if (_ownedEditor is { } attempt)
         {
@@ -1243,7 +1272,10 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         }
         // The shell grows left/up from the source's trailing edge. The shadow
         // inset leaves the visible glass 16 DIPs inside the source's right edge.
-        position = position with { X = Math.Clamp(bounds.Right - 4 * scale - position.Width, work.X, work.Right - position.Width) };
+        position = position with
+        {
+            X = Math.Clamp(bounds.Right - 4 * scale - position.Width, work.X, work.Right - position.Width)
+        };
         if (!idle)
             bodyHeight = Math.Max(38, Math.Min(bodyHeight, position.Height / scale - 72 - glossaryHeight));
         bool showing = !IsVisible;
@@ -1253,8 +1285,13 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         if (showing && animate)
             Opacity = 0;
         bool above = position.Y < bounds.Y;
-        var pixels = (X: (int)position.X, Y: above ? (int)bounds.Y - (int)position.Height : (int)position.Y,
-            Width: (int)position.Width, Height: (int)position.Height);
+        // Quantize the anchored edge once, not X and Width independently.
+        // Fractional source/layout widths must not move the right edge a pixel
+        // when a spring starts, settles or is interrupted by new content.
+        int pixelWidth = (int)position.Width;
+        int pixelRight = Math.Clamp((int)(bounds.Right - 4 * scale), (int)work.X + pixelWidth, (int)work.Right);
+        var pixels = (X: pixelRight - pixelWidth, Y: above ? (int)bounds.Y - (int)position.Height : (int)position.Y,
+            Width: pixelWidth, Height: (int)position.Height);
         var anchor = (target, bounds, work, scale, above);
         bool resize = !showing && animate && _heightAnchor == anchor && _placement is { };
         if (!showing && _heightAnchor != anchor)
@@ -1268,9 +1305,15 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             {
                 pending = new HeightTransition
                 {
-                    To = pixels, Width = new(from.Width), Height = new(from.Height), Body = new(_editor.Height),
-                    Radius = new(_shell.CornerRadius.TopLeft), MaximumBodyHeight = maximumBodyHeight,
-                    Above = above, Work = work, Growing = pixels.Width * pixels.Height > from.Width * from.Height
+                    To = pixels,
+                    Width = new(from.Width),
+                    Height = new(from.Height),
+                    Body = new(_editor.Height),
+                    Radius = new(_shell.CornerRadius.TopLeft),
+                    MaximumBodyHeight = maximumBodyHeight,
+                    Above = above,
+                    Work = work,
+                    Growing = pixels.Width * pixels.Height > from.Width * from.Height
                 };
                 _heightTransition = pending;
                 _heightFrameTime = null;
@@ -1470,7 +1513,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         if (_glossary is not null || _composing || _ownedEditor is not null
             || _ownedEditorHost?.IsOwnedEditorTarget(token.Target) == true
             || _viewContext?.Token != token
-            || _viewContext.TranslationActions is not { GlossaryReleased: true, CanOpenGlossary: true }
+            || _viewContext.TranslationActions is not { CanOpenGlossary: true }
             || (sourceOrigin ? !SupportsSourceGlossaryEntry(token)
                 || !KeyboardHook.ExactNativeFieldFocused(token.Target.AsWindows())
                 : !_editing || _sessionState != SessionState.EditingTranslation || Native.GetForegroundWindow() != _hwnd))
@@ -1711,8 +1754,9 @@ internal sealed partial class OverlayWindow : Window, ISessionView
                 }
                 string? styleReason = translation.StyleUnavailableReason
                     ?? (translation.StyleReleased ? null : UiTheme.L("当前模型方向尚未开放翻译风格", "Tone is not released for this model direction"));
-                AddStyle("跟随全局设置", null, translation.StyleReleased && translation.CanInheritStyle,
-                    translation.StyleReleased ? translation.InheritUnavailableReason : styleReason);
+                // Removing a saved override is management, not a new model
+                // style request. The host projects its own independent gate.
+                AddStyle("跟随全局设置", null, translation.CanInheritStyle, translation.InheritUnavailableReason);
                 AddStyle("自然", TranslationStyle.Natural, translation.StyleReleased && translation.CanChangeStyle, styleReason);
                 AddStyle("正式", TranslationStyle.Formal, translation.StyleReleased && translation.CanChangeStyle, styleReason);
                 foreach (string label in new[] { UiTheme.L("简洁", "Concise"), UiTheme.L("口语", "Casual") })
@@ -1741,7 +1785,9 @@ internal sealed partial class OverlayWindow : Window, ISessionView
                 };
                 menu.Items.Add(alternative);
             }
-            if (translation.GlossaryReleased)
+            // Saving a rule is independent of whether this model may apply it.
+            // The current token, editor/source ownership and host eligibility
+            // still govern entry, and remain rechecked in OpenGlossaryAsync.
             {
                 var glossary = new MenuItem
                 {

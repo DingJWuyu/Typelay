@@ -467,8 +467,7 @@ internal static partial class ContinuousTranslationCheck
             controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true, broker: broker);
             controller.OperationFeedback += feedback => feedbackCode ??= feedback.Code;
             await controller.StartAsync().WaitAsync(setupDeadline.Token);
-            var editor = Descendants(overlay).OfType<TextBox>().Single(control =>
-                AutomationProperties.GetAutomationId(control) == "TranslationText");
+            var editor = TranslationEditor(overlay);
             TargetId? target = null;
             void RequireUnchanged(bool sourceFocused)
             {
@@ -952,8 +951,7 @@ internal static partial class ContinuousTranslationCheck
             result.Stage = "start-controller";
             await controller.StartAsync().WaitAsync(setupDeadline.Token);
             await UntilAsync(() => controller.InputAvailable && controller.LastApplication is not null, setupDeadline.Token);
-            var editor = Descendants(overlay).OfType<TextBox>().Single(control =>
-                AutomationProperties.GetAutomationId(control) == "TranslationText");
+            var editor = TranslationEditor(overlay);
             var firstPreview = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             int sourceUnits = 0;
             result.Stage = "continuous-input";
@@ -1389,8 +1387,7 @@ internal static partial class ContinuousTranslationCheck
             }
             finally { initialReadEndedAtMs ??= WindowsInterruptClock.NowMs; }
             controller.OperationFeedback += value => feedbackCode ??= value.Code;
-            var editor = Descendants(overlay).OfType<TextBox>().Single(control =>
-                AutomationProperties.GetAutomationId(control) == "TranslationText");
+            var editor = TranslationEditor(overlay);
             result.Stage = "practice-preview-ready";
             string readyNotice = OnDemandPracticePresentation.Create(settings.Value,
                 controller.PracticeProgress! with
@@ -1518,6 +1515,12 @@ internal static partial class ContinuousTranslationCheck
         return host;
     }
 
+    // The single editor already exists before the first preview makes the
+    // Window visible. Walk its actual content, not an unmounted Window visual.
+    private static TextBox TranslationEditor(OverlayWindow overlay) =>
+        Descendants((DependencyObject)overlay.Content).OfType<TextBox>().Single(control =>
+            AutomationProperties.GetAutomationId(control) == "TranslationText");
+
     private static SettingsStore CreateSettings(string path, WorkMode mode)
     {
         var settings = WindowsRuntime.CreateSettings(path);
@@ -1525,6 +1528,7 @@ internal static partial class ContinuousTranslationCheck
         {
             Source = "zh",
             Target = "en",
+            UiLanguage = "zh-CN",
             Mode = mode,
             Enabled = true,
             ExperimentalWriteback = false,

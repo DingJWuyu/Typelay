@@ -9,6 +9,7 @@ from design import (
     app_icon,
     apply_theme,
     box,
+    design_icon,
     group,
     label,
     row,
@@ -19,14 +20,14 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk  # noqa: E402
 
 PAGES = (
-    ("general", "通用", "General", "preferences-system-symbolic", "#85847f"),
-    ("appearance", "外观", "Appearance", "display-brightness-symbolic", "#484743"),
-    ("language", "语言与风格", "Language & tone", "preferences-desktop-locale-symbolic", "#3478f6"),
-    ("glossary", "术语表", "Glossary", "accessories-dictionary-symbolic", "#c97336"),
-    ("shortcuts", "快捷键", "Shortcuts", "input-keyboard-symbolic", "#77756f"),
-    ("application-support", "应用", "Apps", "view-grid-symbolic", "#8a6cd8"),
-    ("model", "本地模型", "Local model", "drive-harddisk-symbolic", "#2f8a57"),
-    ("about", "关于", "About", "help-about-symbolic", "#8a8986"),
+    ("general", "通用", "General", "gear", "#8a8986"),
+    ("appearance", "外观", "Appearance", "paint", "#3d3c39"),
+    ("language", "语言与风格", "Language & tone", "globe", "#287cff"),
+    ("glossary", "术语表", "Glossary", "book", "#c8642f"),
+    ("shortcuts", "快捷键", "Shortcuts", "keyboard", "#6e6d69"),
+    ("application-support", "应用", "Apps", "apps", "#8256d0"),
+    ("model", "本地模型", "Local model", "chip", "#2f8a57"),
+    ("about", "关于", "About", "info", "#8a8986"),
 )
 
 
@@ -66,14 +67,14 @@ def build(
     overlay.add_overlay(owner.toast)
     panel = Gtk.Box()
     overlay.add(panel)
-    navigation = style(box(10), "settings-sidebar")
+    navigation = style(box(12), "settings-sidebar")
     navigation.set_size_request(232, -1)
     brand = style(label("TypeLay"), "settings-brand")
     brand.set_margin_start(7)
-    brand.set_margin_top(4)
+    brand.set_margin_top(0)
     navigation.pack_start(brand, False, False, 0)
     owner.search = style(Gtk.SearchEntry(), "settings-search")
-    owner.search.set_placeholder_text("搜索设置")
+    owner.search.set_placeholder_text("搜索")
     owner.search.get_accessible().set_name("搜索设置")
     navigation.pack_start(owner.search, False, False, 0)
     owner.sidebar = style(Gtk.ListBox(), "settings-navigation")
@@ -103,21 +104,32 @@ def build(
         scroll = style(Gtk.ScrolledWindow(), "settings-page")
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroll.get_accessible().set_name("设置页：" + chinese)
-        content = box(18)
-        content.set_border_width(28)
-        content.set_valign(Gtk.Align.START)
+        page = box(0)
         heading = style(label(chinese), "settings-page-title")
-        content.pack_start(heading, False, False, 0)
+        heading.set_margin_start(28)
+        heading.set_margin_end(28)
+        heading.set_margin_top(14)
+        header = Gtk.Box()
+        header.set_size_request(-1, 60)
+        header.pack_start(heading, True, True, 0)
+        page.pack_start(header, False, False, 0)
+        content = box(18)
+        content.set_valign(Gtk.Align.START)
+        content.set_margin_start(42)
+        content.set_margin_end(42)
+        content.set_margin_top(8)
+        content.set_margin_bottom(32)
         owner.localized.append((heading.set_text, chinese, english))
         owner.page_headings[name] = heading
         scroll.add(content)
-        owner.pages.add_titled(scroll, name, chinese)
+        page.pack_start(scroll, True, True, 0)
+        owner.pages.add_titled(page, name, chinese)
         owner.page_boxes[name] = content
         nav_row = Gtk.ListBoxRow()
         nav_row.page_name = name
         nav_row.search_text = chinese + " " + english
         line = Gtk.Box(spacing=9)
-        image = Gtk.Image.new_from_icon_name(icon_name, Gtk.IconSize.MENU)
+        image = design_icon(icon_name)
         style(image, "nav-icon")
         provider = Gtk.CssProvider()
         provider.load_from_data(f"image {{ background: {color}; }}".encode())
@@ -128,7 +140,7 @@ def build(
         line.pack_start(caption, True, True, 0)
         nav_row.add(line)
         if name in ("application-support", "about"):
-            nav_row.set_margin_top(10)
+            nav_row.set_margin_top(12)
         owner.nav_rows[name] = nav_row
         owner.sidebar.add(nav_row)
     for page, keywords in {
@@ -195,28 +207,45 @@ def build(
 
     hero = card("general")
     owner.enabled_status = label("正在启动…", muted=True)
+    status_line = Gtk.Box(spacing=6)
+    owner.enabled_dot = style(Gtk.Label(label="●"), "status-dot")
+    status_line.pack_start(owner.enabled_dot, False, False, 0)
+    status_line.pack_start(owner.enabled_status, False, False, 0)
     hero_row = setting(
-        hero, "enabled", "TypeLay", "TypeLay", switch("enabled"), owner.enabled_status, hero=True
+        hero, "enabled", "TypeLay", "TypeLay", switch("enabled"), status_line, hero=True
     )
     mark = app_icon()
     hero_row.pack_start(mark, False, False, 0)
     hero_row.reorder_child(mark, 0)
     basic = card("general")
     owner.mode_description = label(muted=True)
+    owner.mode_description.get_accessible().set_name("当前工作模式说明")
     owner.acceptance_description = label(muted=True)
+    owner.acceptance_description.get_accessible().set_name("当前接受与退出说明")
     mode = Segments(
         [("Automatic", "自动"), ("OnDemand", "按需")],
         lambda value: owner.change_control("mode", value),
     )
     setting(basic, "mode", "工作模式", "Working mode", mode)
+    for identity, title in (("Automatic", "自动"), ("OnDemand", "按需")):
+        mode.buttons[identity].get_accessible().set_name("设置：工作模式：" + title)
     setting(basic, "startup", "登录 niri 时启动", "Open at niri login", switch("startup"))
     setting(
         basic,
         "experimentalWriteback",
-        "原生输入框替换 · Beta",
-        "Native field replacement · Beta",
+        "原生输入框替换",
+        "Native field replacement",
         switch("experimentalWriteback"),
     )
+    replacement_caption = owner.control_labels["experimentalWriteback"]
+    captions = replacement_caption.get_parent()
+    captions.remove(replacement_caption)
+    inline = Gtk.Box(spacing=6)
+    inline.pack_start(replacement_caption, False, False, 0)
+    badge = style(Gtk.Label(label="Beta"), "beta-badge")
+    badge.set_valign(Gtk.Align.CENTER)
+    inline.pack_start(badge, False, False, 0)
+    captions.pack_start(inline, False, False, 0)
     owner.page_boxes["about"].pack_start(owner.mode_description, False, False, 0)
     tutorials = card("general")
     for chinese, english, button_label, callback in (
@@ -432,6 +461,8 @@ def build(
             reset.connect("clicked", restore)
             actions.pack_end(reset, False, False, 0)
             setting(shortcuts, key, chinese, english, actions)
+            actions.get_accessible().set_name(chinese + "快捷键操作")
+            recorder.get_accessible().set_name("设置：" + chinese)
             owner.controls[key] = recorder
     owner.shortcut_scope = label(muted=True)
     owner.page_boxes["shortcuts"].pack_start(owner.shortcut_scope, False, False, 0)
@@ -504,9 +535,7 @@ def build(
     model_line, model_caption = row(
         "TypeLay Translate", owner.install_button, support.model, hero=True
     )
-    model_mark = style(
-        Gtk.Image.new_from_icon_name("drive-harddisk-symbolic", Gtk.IconSize.DIALOG), "model-mark"
-    )
+    model_mark = style(design_icon("chip", 24), "model-mark")
     model_line.pack_start(model_mark, False, False, 0)
     model_line.reorder_child(model_mark, 0)
     model_hero.pack_start(model_line, False, False, 0)
@@ -539,7 +568,10 @@ def build(
     owner.page_boxes["application-support"].pack_start(owner.applications_box, False, False, 0)
     owner.applications_search = Gtk.SearchEntry(placeholder_text="搜索应用")
     owner.page_boxes["application-support"].pack_start(owner.applications_search, False, False, 0)
-    owner.page_boxes["application-support"].reorder_child(owner.applications_search, 4)
+    owner.page_boxes["application-support"].reorder_child(
+        owner.applications_search,
+        owner.page_boxes["application-support"].get_children().index(owner.applications_box),
+    )
     owner.applications_search.connect("search-changed", lambda *_: owner.render_applications())
     owner.application_catalog = None
     owner.application_catalog_pending = False

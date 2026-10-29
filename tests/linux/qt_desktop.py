@@ -425,7 +425,12 @@ def run_qt(
                     )
 
                 def set_mode(mode=None, *, enabled=None, session_keys=None, theme=None):
-                    from support.gtk_accessibility import Atspi, named, select_settings_page
+                    from support.gtk_accessibility import (
+                        Atspi,
+                        named,
+                        select_settings_page,
+                        select_work_mode,
+                    )
 
                     before_settings = state()
                     paths = Paths(arguments.package)
@@ -445,49 +450,17 @@ def run_qt(
                         "owned production settings window did not map",
                     )
                     request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
-                    select_settings_page(host_pid, "常规")
-                    names = ("自动模式", "按需模式")
-
-                    def mode_combo():
-                        root = named(host_pid, "TypeLay 设置")
-                        pending = [root] if root else []
-                        for _ in range(256):
-                            if not pending:
-                                return None
-                            node = pending.pop()
-                            node.clear_cache()
-                            if node.get_role() == Atspi.Role.COMBO_BOX:
-                                selection = node.get_selection_iface()
-                                if selection and Atspi.Selection.get_n_selected_children(selection):
-                                    selected = Atspi.Selection.get_selected_child(selection, 0)
-                                    if selected and selected.get_name() in names:
-                                        return node
-                            pending.extend(
-                                node.get_child_at_index(i) for i in range(node.get_child_count())
-                            )
-                        raise AssertionError(
-                            "production settings accessibility tree exceeds its bound"
-                        )
-
+                    select_settings_page(host_pid, "通用")
                     if mode is not None:
-                        combo = wait_for(mode_combo, "real work-mode combo was not accessible")
-                        assert Atspi.Selection.select_child(combo.get_selection_iface(), mode)
+                        option = select_work_mode(host_pid, mode)
                         wait_for(
-                            lambda: Atspi.Selection.get_selected_child(
-                                combo.get_selection_iface(), 0
-                            ).get_name()
-                            == names[mode],
-                            "real settings combo did not change work mode",
-                        )
-                        # Ordinary choices save immediately through SettingsStore;
-                        # the global draft-save action owns all four shortcuts and exclusions.
-                        wait_for(
-                            lambda: json.loads(paths.settings.read_text()).get("Mode") == mode,
+                            lambda: json.loads(paths.settings.read_text()).get("Mode") == mode
+                            and option.get_state_set().contains(Atspi.StateType.CHECKED),
                             "production settings did not persist the selected work mode",
                         )
                     if enabled is not None:
                         switch = wait_for(
-                            lambda: named(host_pid, "设置：启用 TypeLay"),
+                            lambda: named(host_pid, "设置：TypeLay"),
                             "real enable switch was not accessible",
                         )
                         if json.loads(paths.settings.read_text())["Enabled"] is not enabled:
@@ -498,9 +471,10 @@ def run_qt(
                             "production settings did not persist the enable switch",
                         )
                     if theme is not None:
-                        label = {"system": "跟随系统", "light": "浅色", "dark": "深色"}[theme]
+                        select_settings_page(host_pid, "外观")
+                        label = {"system": "自动", "light": "浅色", "dark": "深色"}[theme]
                         option = wait_for(
-                            lambda: named(host_pid, "设置：翻译浮层主题：" + label),
+                            lambda: named(host_pid, "theme: " + label),
                             "real overlay-theme radio was not accessible",
                         )
                         assert option.get_role() == Atspi.Role.RADIO_BUTTON
@@ -513,7 +487,7 @@ def run_qt(
                             "production settings did not select and persist the overlay theme",
                         )
                     if session_keys is not None:
-                        select_session_keys(paths, host_pid, *session_keys)
+                        select_session_keys(paths, host_pid, *session_keys, key)
                     after_settings = state()
                     for field in ("first", "second"):
                         assert after_settings[field]["text"] == before_settings[field]["text"]

@@ -110,7 +110,11 @@ internal sealed class QuickPanel : Window
         if (!_sourceLanguage.CanChoose(source)
             || !_targetLanguage.CanChoose(target))
             return Task.FromResult(false);
-        return SaveAsync(_settings.Value with { Source = source, Target = target });
+        return SaveAsync(_settings.Value with
+        {
+            Source = source,
+            Target = target
+        });
     }
     public Task<bool> SetEnabledAsync(bool enabled) => SaveAsync(_settings.Value with { Enabled = enabled });
     private async Task<bool> SaveAsync(UserSettings value)
@@ -223,7 +227,8 @@ internal sealed class QuickPanel : Window
             if (!ReferenceEquals(_body.Children[index], _controlCard))
                 _body.Children.RemoveAt(index);
         for (int index = _controls.Children.Count - 1; index >= 0; index--)
-            if (!ReferenceEquals(_controls.Children[index], _languages)) _controls.Children.RemoveAt(index);
+            if (!ReferenceEquals(_controls.Children[index], _languages))
+                _controls.Children.RemoveAt(index);
         _modeChoices.Clear();
         var header = new Grid { Height = 44, Margin = new(4, 0, 4, 8) };
         header.ColumnDefinitions.Add(new()
@@ -241,8 +246,12 @@ internal sealed class QuickPanel : Window
         var title = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         title.Children.Add(UiTheme.Text("TypeLay", 14, bold: true));
         var sub = UiTheme.Text(_settings.Value.Enabled ? UiTheme.L("已启用", "Enabled") : UiTheme.L("已暂停", "Paused"), 12, true);
-        sub.Margin = new(0, 2, 0, 0);
-        title.Children.Add(sub);
+        var stateLine = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 2, 0, 0) };
+        var stateDot = new System.Windows.Shapes.Ellipse { Width = 7, Height = 7, Margin = new(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
+        stateDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, !_settings.Value.Enabled ? "Tertiary" : _model.Ready ? "Good" : "Warn");
+        stateLine.Children.Add(stateDot);
+        stateLine.Children.Add(sub);
+        title.Children.Add(stateLine);
         Grid.SetColumn(title, 1);
         header.Children.Add(title);
         var toggle = UiTheme.Toggle("启用 TypeLay", () => _settings.Value.Enabled, async enabled => { if (CurrentRender()) await SetEnabledAsync(enabled); });
@@ -292,15 +301,26 @@ internal sealed class QuickPanel : Window
             var notice = new DockPanel { Margin = new(4, 8, 4, 4) };
             var undo = UiTheme.Button(UiTheme.L("撤销", "Undo"), async () =>
             {
-                if (!CurrentRender() || !ReferenceEquals(undoIdentity, _undoApplicationIdentity) || _settings.Revision != undoRevision) return;
-                _undoApplication = null; _undoApplicationIdentity = null;
+                if (!CurrentRender() || !ReferenceEquals(undoIdentity, _undoApplicationIdentity) || _settings.Revision != undoRevision)
+                    return;
+                _undoApplication = null;
+                _undoApplicationIdentity = null;
                 var restored = _settings.Value.Excluded.Where(value => !StringComparer.OrdinalIgnoreCase.Equals(value, undoApplication)).ToArray();
-                await SaveAsync(_settings.Value with { ExcludedApplications = restored });
+                await SaveAsync(_settings.Value with
+                {
+                    ExcludedApplications = restored
+                });
             });
-            DockPanel.SetDock(undo, Dock.Right); notice.Children.Add(undo);
-            notice.Children.Add(UiTheme.Text(UiTheme.L("已在该应用停用", "Disabled in this app"), 12)); _body.Children.Add(notice);
+            DockPanel.SetDock(undo, Dock.Right);
+            notice.Children.Add(undo);
+            notice.Children.Add(UiTheme.Text(UiTheme.L("已在该应用停用", "Disabled in this app"), 12));
+            _body.Children.Add(notice);
         }
-        else { _undoApplication = null; _undoApplicationIdentity = null; }
+        else
+        {
+            _undoApplication = null;
+            _undoApplicationIdentity = null;
+        }
         var directions = _model.Ready ? _model.AvailableDirections : null;
         _sourceLanguage.Synchronize(_settings.Value.Source, directions);
         _targetLanguage.Synchronize(_settings.Value.Target, directions);
@@ -357,38 +377,59 @@ internal sealed class QuickPanel : Window
         bool CurrentRender() => IsVisible && ReferenceEquals(rendered, _renderIdentity);
         var state = _session.GetStyleSettingsState();
         var styleRow = new DockPanel { Margin = new(0, 10, 0, 0) };
-        var choices = new ComboBox { Width = 112, ItemsSource = new[] { new ComboBoxItem { Content = UiTheme.L("未设置", "Not set"), IsEnabled = false }, new ComboBoxItem { Content = UiTheme.L("自然", "Natural") }, new ComboBoxItem { Content = UiTheme.L("正式", "Formal") }, new ComboBoxItem { Content = UiTheme.L("简洁 · 尚未提供", "Concise · Unavailable"), IsEnabled = false }, new ComboBoxItem { Content = UiTheme.L("口语 · 尚未提供", "Casual · Unavailable"), IsEnabled = false } },
+        var choices = new ComboBox
+        {
+            Width = 112,
+            ItemsSource = new[] { new ComboBoxItem { Content = UiTheme.L("未设置", "Not set"), IsEnabled = false }, new ComboBoxItem { Content = UiTheme.L("自然", "Natural") }, new ComboBoxItem { Content = UiTheme.L("正式", "Formal") }, new ComboBoxItem { Content = UiTheme.L("简洁 · 尚未提供", "Concise · Unavailable"), IsEnabled = false }, new ComboBoxItem { Content = UiTheme.L("口语 · 尚未提供", "Casual · Unavailable"), IsEnabled = false } },
             SelectedIndex = state.SavedPreferences is null ? 0 : state.SavedPreferences.Default == TranslationStyle.Formal ? 2 : 1,
-            IsEnabled = state.IsReleased && state.CanChange && state.Session is null };
+            IsEnabled = state.IsReleased && state.CanChange && state.Session is null
+        };
         AutomationProperties.SetName(choices, "默认翻译风格");
         ToolTipService.SetShowOnDisabled(choices, true);
         choices.ToolTip = choices.IsEnabled ? null : TranslationMenuPresentation.Reason(state.UnavailableReason) ?? UiTheme.L("当前模型尚未通过风格质量验收", "Style quality validation is pending");
         choices.SelectionChanged += async (_, _) =>
         {
-            if (!CurrentRender()) return;
-            if (choices.SelectedIndex is not (1 or 2)) { Refresh(); return; }
+            if (!CurrentRender())
+                return;
+            if (choices.SelectedIndex is not (1 or 2))
+            {
+                Refresh();
+                return;
+            }
             var current = _session.GetStyleSettingsState();
             var result = await _session.ChangeStyleAsync(StyleScope.Global, choices.SelectedIndex == 2 ? TranslationStyle.Formal : TranslationStyle.Natural, current.SettingsRevision);
-            if (!result.Saved) _saveError = UiTheme.L("风格未保存，请在设置中查看当前状态。", "Style was not saved. Review its status in Settings.");
+            if (!result.Saved)
+                _saveError = UiTheme.L("风格未保存，请在设置中查看当前状态。", "Style was not saved. Review its status in Settings.");
             Refresh();
         };
-        DockPanel.SetDock(choices, Dock.Right); styleRow.Children.Add(choices); styleRow.Children.Add(UiTheme.Text(UiTheme.L("默认风格", "Default tone"), 12)); _controls.Children.Add(styleRow);
+        DockPanel.SetDock(choices, Dock.Right);
+        styleRow.Children.Add(choices);
+        styleRow.Children.Add(UiTheme.Text(UiTheme.L("默认风格", "Default tone"), 12));
+        _controls.Children.Add(styleRow);
         if (_selectedApplication is { } application)
         {
             var appRow = new DockPanel { Margin = new(0, 8, 0, 0) };
             var toggle = UiTheme.Toggle("在应用中启用 TypeLay", () => !_settings.Value.Excluded.Contains(application, StringComparer.OrdinalIgnoreCase), async enabled =>
             {
-                if (!CurrentRender()) return;
+                if (!CurrentRender())
+                    return;
                 var excluded = enabled ? _settings.Value.Excluded.Where(value => !StringComparer.OrdinalIgnoreCase.Equals(value, application)).ToArray()
                     : _settings.Value.Excluded.Append(application).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-                if (await SaveAsync(_settings.Value with { ExcludedApplications = excluded }))
+                if (await SaveAsync(_settings.Value with
+                {
+                    ExcludedApplications = excluded
+                }))
                 {
                     _undoApplication = enabled ? null : application;
-                    _undoApplicationRevision = _settings.Revision; _undoApplicationIdentity = enabled ? null : new object();
+                    _undoApplicationRevision = _settings.Revision;
+                    _undoApplicationIdentity = enabled ? null : new object();
                     Refresh();
                 }
             });
-            DockPanel.SetDock(toggle, Dock.Right); appRow.Children.Add(toggle); appRow.Children.Add(UiTheme.Text(UiTheme.English ? "Enable in " + application : "在「" + application + "」中启用", 12)); _controls.Children.Add(appRow);
+            DockPanel.SetDock(toggle, Dock.Right);
+            appRow.Children.Add(toggle);
+            appRow.Children.Add(UiTheme.Text(UiTheme.English ? "Enable in " + application : "在「" + application + "」中启用", 12));
+            _controls.Children.Add(appRow);
         }
     }
     private void BuildLanguages()

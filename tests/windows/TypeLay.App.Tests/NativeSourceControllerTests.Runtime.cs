@@ -1,6 +1,10 @@
 using System.IO;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Automation;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Media;
 using TypeLay.Core;
 using TypeLay.Runtime;
@@ -56,7 +60,9 @@ public sealed partial class NativeSourceControllerTests
             Assert.True(captured.WriteSupported); // Raw Broker availability is not the missing capture proof.
             Assert.False(settings.Value.ExperimentalWriteback);
             Assert.False(RuntimeShowsAcceptance(overlay));
-            Assert.Contains(RuntimeLabels(overlay), label => label.IsVisible && label.Text == "交还应用");
+            Assert.Contains(RuntimeLabels(overlay), label => label.IsVisible
+                && AutomationProperties.GetAutomationId(label) == "TranslationStage" && label.Text == "仅预览"
+                && AutomationProperties.GetHelpText(label).Contains("交还原应用", StringComparison.Ordinal));
             var row = support.Read(settings.Value).Rows.Single(row => row.Id == "desktop-text");
             Assert.True(row.Capabilities.Preview);
             Assert.False(row.Capabilities.TabAccept);
@@ -67,6 +73,78 @@ public sealed partial class NativeSourceControllerTests
             Assert.Equal("你好", N.ReadText(native.A, Limits.MaxTextUnits));
             Assert.Equal((native.Root, native.A), N.Focused());
             native.AssertZeroSubmits();
+        }
+        finally
+        {
+            overlay.Close();
+            Directory.Delete(directory, true);
+        }
+    });
+
+    [Fact]
+    public Task RealNativeMenuCanClearADormantOverrideWithoutReleasingStyle() => desktop.RunAsync(async () =>
+    {
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start();
+        await native.Prepare(native.A, "你好", new(0, 2));
+        using var sourceProcess = Process.GetProcessById(native.FixtureProcessId);
+        string application = sourceProcess.ProcessName.ToLowerInvariant();
+        using var broker = new FixtureBroker(native);
+        var overlay = new OverlayWindow(clientAreaAnimation: () => false);
+        string directory = Path.Combine(Path.GetTempPath(), "TypeLay.DormantStyleMenu." + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            string path = Path.Combine(directory, "settings.json");
+            var settings = new SettingsStore(path);
+            settings.Update(settings.Value with
+            {
+                Styles = new(TranslationStyle.Formal, new Dictionary<string, TranslationStyle>
+                {
+                    [application] = TranslationStyle.Natural
+                })
+            });
+            using var controller = WindowsRuntime.CreateSession(settings, new Translation(), overlay, broker: broker);
+            await controller.StartAsync().WaitAsync(native.Token);
+            await Until(() => overlay.IsVisible && RuntimeTranslation(overlay) == "Hello", native.Token);
+            var eligibility = controller.GetStyleSettingsState(StyleScope.CurrentApplication, null);
+            Assert.False(eligibility.IsReleased);
+            Assert.True(eligibility.CanChange);
+            Assert.Equal(application, eligibility.Application);
+            long revision = settings.Revision;
+            var more = RuntimeDescendants(overlay).OfType<Button>().Single(button =>
+                AutomationProperties.GetName(button) == "更多翻译操作");
+            more.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var menu = Assert.IsType<ContextMenu>(more.ContextMenu);
+            try
+            {
+                var tone = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "当前应用风格"));
+                var inherit = tone.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "跟随全局设置"));
+                Assert.True(inherit.IsEnabled);
+                Assert.All(tone.Items.OfType<MenuItem>().Where(item => item != inherit), item => Assert.False(item.IsEnabled));
+                tone.IsSubmenuOpen = true;
+                menu.UpdateLayout();
+                var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                RoutedEventHandler onClosed = (_, _) => closed.TrySetResult();
+                menu.Closed += onClosed;
+                try
+                {
+                    var invoke = Assert.IsAssignableFrom<IInvokeProvider>(
+                        new MenuItemAutomationPeer(inherit).GetPattern(PatternInterface.Invoke));
+                    invoke.Invoke();
+                    await closed.Task.WaitAsync(native.Token);
+                    await Until(() => settings.Revision > revision, native.Token);
+                }
+                finally { menu.Closed -= onClosed; }
+                Assert.Empty(new SettingsStore(path).Value.Styles!.Applications!);
+                Assert.Equal(TranslationStyle.Formal, settings.Value.Styles!.Default);
+                Assert.False(controller.GetStyleSettingsState().IsReleased);
+                Assert.Equal(0, broker.Writes);
+                Assert.Equal("你好", N.ReadText(native.A, Limits.MaxTextUnits));
+                Assert.Equal(new TextRange(0, 2), N.ReadSelection(native.A));
+                Assert.Equal((native.Root, native.A), N.Focused());
+                native.AssertZeroSubmits();
+            }
+            finally { menu.IsOpen = false; }
         }
         finally
         {
@@ -219,7 +297,9 @@ public sealed partial class NativeSourceControllerTests
     });
 
     private static bool RuntimeShowsAcceptance(OverlayWindow overlay) => overlay.IsVisible
-        && RuntimeLabels(overlay).Any(label => label.IsVisible && label.Text == "接受译文");
+        && RuntimeLabels(overlay).Any(label => label.IsVisible
+            && AutomationProperties.GetAutomationId(label) == "TranslationAcceptHint"
+            && AutomationProperties.GetName(label) == "接受译文" && label.Text == "接受");
     private static string? RuntimeTranslation(OverlayWindow overlay) =>
         RuntimeDescendants(overlay).OfType<TextBox>().SingleOrDefault()?.Text;
     private static IEnumerable<TextBlock> RuntimeLabels(OverlayWindow overlay) => RuntimeDescendants(overlay).OfType<TextBlock>();

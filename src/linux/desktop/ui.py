@@ -644,6 +644,7 @@ class ApplicationSupportPane:
                 label=self.owner.localizer.text(action["label"] if action else "查看详情")
             )
             button.set_sensitive(not self.busy)
+            button.get_accessible().set_name("应用连接：" + title)
 
             def activate(_button, identity=item["id"], intent=action):
                 self.selector.set_active_id(identity)
@@ -2131,7 +2132,7 @@ class Settings:
         for setter, chinese, translated in self.localized:
             setter(translated if english else chinese)
         self.window.set_title("TypeLay Settings" if english else "TypeLay 设置")
-        self.search.set_placeholder_text("Search settings" if english else "搜索设置")
+        self.search.set_placeholder_text("Search" if english else "搜索")
         self.application_support.render_preparation()
         self.translation.render()
         if getattr(self, "guidance", None):
@@ -2141,6 +2142,8 @@ class Settings:
             if (self.value or {}).get("enabled")
             else ("Paused" if english else "已暂停")
         )
+        dot = self.enabled_dot.get_style_context()
+        (dot.remove_class if (self.value or {}).get("enabled") else dot.add_class)("paused")
 
     def schedule_autosave(self):
         if self.auto_save_source:
@@ -3265,6 +3268,7 @@ class Settings:
         search.grab_focus()
 
     def show(self):
+        first_show = self.first_show
         self.window.show_all()
         if self.first_show:
             self.window.resize(900, 660)
@@ -3274,6 +3278,8 @@ class Settings:
             self.pages.set_visible_child_name("application-support")
         self.first_show = False
         self.window.present()
+        if first_show:
+            self.window.set_focus(self.nav_rows[self.pages.get_visible_child_name()])
         self.tasks(self.load_draft_messages())
         self.tasks(self.application_support.refresh())
         self.translation.refresh()

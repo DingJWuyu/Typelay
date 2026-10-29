@@ -65,7 +65,7 @@ internal static partial class ContinuousTranslationCheck
             controller.OperationFeedback += feedback => feedbackCode ??= feedback.Code;
             result.Stage = "new-tab-start-controller";
             await controller.StartAsync().WaitAsync(cancellation);
-            var editor = ((Grid)((Border)overlay.Content).Child).Children.OfType<TextBox>().Single();
+            var editor = TranslationEditor(overlay);
             TargetId? target = null;
             async Task RequireSourceAsync()
             {

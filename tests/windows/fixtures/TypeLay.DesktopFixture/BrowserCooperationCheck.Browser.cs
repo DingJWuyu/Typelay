@@ -431,20 +431,38 @@ internal static partial class BrowserCooperationCheck
         {
             string? id = await PreviewObjectAsync(ct);
             Require(id is not null, "preview-settings-unavailable");
-            JsonElement point;
             try
             {
-                var result = await PageCallAsync("Runtime.callFunctionOn", new
+                foreach (bool more in new[] { true, false })
                 {
-                    objectId = id,
-                    returnByValue = true,
-                    functionDeclaration = "function(){const b=this.getRootNode().querySelector('button[title=\"语言和设置\"]');const r=b.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,visible:b.isConnected&&!b.hidden&&r.width>0&&r.height>0};}"
-                }, ct);
-                point = result.GetProperty("result").GetProperty("value");
+                    JsonElement point;
+                    while (true)
+                    {
+                        var result = await PageCallAsync("Runtime.callFunctionOn", new
+                        {
+                            objectId = id,
+                            returnByValue = true,
+                            arguments = new[] { new { value = more } },
+                            functionDeclaration = "function(more){const root=this.getRootNode(),buttons=more?root.querySelectorAll('button[aria-controls=\"more-actions\"]'):[...root.querySelectorAll('[role=group][aria-label=\"更多操作\"]>button')].filter(b=>b.textContent==='设置');if(buttons.length!==1)return {visible:false};const b=buttons[0],r=b.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,visible:b.isConnected&&!b.hidden&&!b.disabled&&r.width>0&&r.height>0,painted:Number(getComputedStyle(b).opacity)>0};}"
+                        }, ct);
+                        point = result.GetProperty("result").GetProperty("value");
+                        Require(point.GetProperty("visible").GetBoolean(), more ? "preview-more-hidden" : "preview-settings-hidden");
+                        // Reveal the real hover-only More control with a trusted pointer
+                        // movement, never by mutating its style or calling its handler.
+                        if (point.GetProperty("painted").GetBoolean())
+                            break;
+                        await PageCallAsync("Input.dispatchMouseEvent", new
+                        {
+                            type = "mouseMoved",
+                            x = point.GetProperty("x").GetDouble(),
+                            y = point.GetProperty("y").GetDouble()
+                        }, ct);
+                        await Task.Delay(40, ct);
+                    }
+                    await ClickPointAsync(point, ct);
+                }
             }
             finally { await PageCallAsync("Runtime.releaseObject", new { objectId = id }, ct); }
-            Require(point.GetProperty("visible").GetBoolean(), "preview-settings-hidden");
-            await ClickPointAsync(point, ct);
         }
         public async Task ClickSubmitAsync(CancellationToken ct)
         {

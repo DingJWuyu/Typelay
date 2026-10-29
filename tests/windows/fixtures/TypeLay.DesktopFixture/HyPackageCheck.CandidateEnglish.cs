@@ -74,7 +74,7 @@ internal static partial class HyPackageCheck
         }
     }
 
-    private static async Task OpenSettingsThroughTrayAsync(System.Diagnostics.Process app, Scene scene,
+    internal static async Task OpenSettingsThroughTrayAsync(System.Diagnostics.Process app, Scene scene,
         CancellationToken ct)
     {
         var navigation = new OrdinaryQuitObservation();
@@ -91,7 +91,7 @@ internal static partial class HyPackageCheck
             var panel = AutomationElement.RootElement.FindFirst(TreeScope.Children, new AndCondition(
                 new PropertyCondition(AutomationElement.ProcessIdProperty, app.Id),
                 new PropertyCondition(AutomationElement.NameProperty, "TypeLay 快速面板")));
-            settings = panel is null ? null : Find(panel, AutomationElement.NameProperty, "⚙    设置…", ControlType.Button);
+            settings = panel is null ? null : Find(panel, AutomationElement.NameProperty, "设置…", ControlType.Button);
             return settings is not null && settings.Current.IsEnabled && !settings.Current.IsOffscreen;
         }, ct), ct);
         await UiAsync(() => ((InvokePattern)settings!.GetCurrentPattern(InvokePattern.Pattern)).Invoke(), ct);
@@ -104,7 +104,7 @@ internal static partial class HyPackageCheck
         await NavigateAsync(settings, "language", "语言与风格", ct);
         await UiAsync(() =>
         {
-            var swap = Find(settings, AutomationElement.NameProperty, "交换", ControlType.Button);
+            var swap = Find(settings, AutomationElement.NameProperty, "交换语言", ControlType.Button);
             Require(swap is not null && swap.Current.IsEnabled, "swap-language-unavailable");
             ((InvokePattern)swap!.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
         }, ct);

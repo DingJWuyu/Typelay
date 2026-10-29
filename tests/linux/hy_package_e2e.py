@@ -404,6 +404,7 @@ def run(arguments):
             json.dumps(
                 {
                     "Schema": 1,
+                    "UiLanguage": "zh-CN",
                     "Enabled": True,
                     "Source": "zh",
                     "Target": "fr",
@@ -716,7 +717,7 @@ def run(arguments):
                 frame, frame_value = observed[-1]
                 assert (
                     pane.get_role() == Atspi.Role.SCROLL_PANE
-                    and pane.get_name() == "设置页：应用支持"
+                    and pane.get_name() == "设置页：本地模型"
                     and frame.get_role() == Atspi.Role.FRAME
                     and frame.get_name() == "TypeLay 设置"
                     and not any(
@@ -893,7 +894,7 @@ def run(arguments):
                 raise
 
         def action(title, label, *, confirm=True):
-            select_settings_page(process.pid, "应用支持", timeout=min(15, remaining()))
+            select_settings_page(process.pid, "本地模型", timeout=min(15, remaining()))
             activate(title + "：" + label, package_control=True)
             wait(
                 lambda: named(process.pid, label.rstrip("…") + "？"), "confirmation dialog missing"
@@ -993,7 +994,7 @@ def run(arguments):
             # The actual serving host is closed normally. Reopen this exact
             # generation; ready() deliberately requires a NEW transaction instead.
             restart_same_generation(expected, log)
-            select_settings_page(process.pid, "语言", timeout=min(15, remaining()))
+            select_settings_page(process.pid, "语言与风格", timeout=min(15, remaining()))
 
             normalized = None
 

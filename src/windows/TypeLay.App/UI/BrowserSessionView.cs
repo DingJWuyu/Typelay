@@ -319,8 +319,9 @@ internal sealed class BrowserSessionView : ISessionView
                     AlternativeRequested?.Invoke(token);
                 break;
             case "style":
-                if (!EditingComposition && context.TranslationActions is { StyleReleased: true }
-                    && TryStyleRequest(value, token, out var request))
+                if (!EditingComposition && context.TranslationActions is { } actions
+                    && TryStyleRequest(value, token, out var request)
+                    && (request.Style is null ? actions.CanInheritStyle : actions.StyleReleased && actions.CanChangeStyle))
                     _ = StyleRequested?.Invoke(request);
                 break;
             case "exclude":
@@ -343,7 +344,7 @@ internal sealed class BrowserSessionView : ISessionView
         {
             if (_glossary is null && !EditingComposition
                 && _state is SessionState.EditingTranslation or SessionState.ValidTranslation or SessionState.EditedTranslationPending
-                && context.TranslationActions is { GlossaryReleased: true, CanOpenGlossary: true })
+                && context.TranslationActions is { CanOpenGlossary: true })
                 entry = BeginGlossaryRequested?.Invoke(token);
             if (entry is not null && (entry.Token != token || _context?.Token != token || !_input.OpenGlossaryEntry(entry)))
             {

@@ -500,6 +500,12 @@ internal static partial class BrowserCooperationCheck
         Require(Native.SetWindowPos(settingsHandle, -1, monitor.Work.Right - width, monitor.Work.Top, width, height,
             0x0010), "settings-command-layout-failed"); // TOPMOST | NOACTIVATE
     }
+    private static UserSettings? ReadOwnedSettings(string data)
+    {
+        using var stream = new FileStream(Path.Combine(data, "settings.json"), FileMode.Open, FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+        return JsonSerializer.Deserialize<UserSettings>(stream);
+    }
     private static async Task<string> ReadSharedTextAsync(string path, CancellationToken ct)
     {
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);

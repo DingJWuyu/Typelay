@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Automation.Peers;
@@ -25,6 +26,8 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         foreach (var actions in new TranslationMenuState?[] { null, Actions() with
         {
             StyleReleased = false,
+            CanInheritStyle = false,
+            InheritUnavailableReason = "请等待当前操作完成",
             AlternativeReleased = false
         }, Actions() with { SettingsRevision = -1 }, Actions() with { ApplicationStyle = (TranslationStyle)99 } })
         {
@@ -48,13 +51,17 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
                     Assert.All(choices, item => Assert.NotNull(item.ToolTip));
                     int requests = 0;
                     overlay.StyleRequested = _ => { requests++; return Task.FromResult(new StyleChangeResult(false, "style-unavailable")); };
-                    foreach (var item in choices) item.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                    foreach (var item in choices)
+                        item.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
                     Assert.Equal(0, requests);
                 }
                 else
                     Assert.DoesNotContain("当前应用风格", labels);
                 Assert.DoesNotContain("换种说法", labels);
-                Assert.DoesNotContain("加入术语表", labels);
+                if (actions is { StyleReleased: false, SettingsRevision: >= 0 })
+                    Assert.False(Item(menu, "加入术语表").IsEnabled);
+                else
+                    Assert.DoesNotContain("加入术语表", labels);
             }
             finally { menu.IsOpen = false; }
         }
@@ -128,15 +135,18 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
     });
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public Task InheritanceAndAlternativeFollowTheirIndependentSharedEligibility(bool canInherit) => desktop.RunAsync(() =>
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    public Task InheritanceAndAlternativeFollowTheirIndependentSharedEligibility(bool canInherit, bool styleReleased) => desktop.RunAsync(() =>
     {
         var (overlay, session, context) = OpenPreview();
         context = context with
         {
             TranslationActions = Actions() with
             {
+                StyleReleased = styleReleased,
                 CanChangeStyle = false,
                 CanInheritStyle = canInherit,
                 CanRequestAlternative = false,
@@ -230,7 +240,7 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
     [InlineData("token")]
     [InlineData("ime")]
     [InlineData("focus")]
-    public Task RegenerateConfirmationCannotReplaceANewerDraftOrSession(string change) => desktop.RunAsync(() =>
+    public Task RegenerateConfirmationCannotReplaceANewerDraftOrSession(string change) => desktop.RunAsync(async () =>
     {
         var (overlay, session, context) = OpenPreview(out var source);
         string original = source.Text;
@@ -249,7 +259,7 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         Assert.True(editor.IsKeyboardFocused);
         int requests = 0;
         overlay.RegenerateRequested = () => requests++;
-        RequestRegenerate(overlay);
+        await RequestRegenerate(overlay);
         var replace = RegenerateButton(overlay, "RegenerateReplace");
         Assert.Equal(0, requests);
         Assert.Single(Descendants(overlay).OfType<TextBox>());
@@ -257,11 +267,16 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         Assert.True(editor.CanUndo);
         switch (change)
         {
-            case "draft": editor.AppendText(" - newer"); break;
+            case "draft":
+                editor.AppendText(" - newer");
+                break;
             case "token":
                 overlay.Render(session, new(), false, context: context with
                 {
-                    Token = context.Token with { Revision = context.Token.Revision + 1 }
+                    Token = context.Token with
+                    {
+                        Revision = context.Token.Revision + 1
+                    }
                 });
                 break;
             case "ime":
@@ -288,11 +303,14 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         Assert.Equal(sourceLength, source.SelectionLength);
     });
 
-    [Fact]
-    public Task RegenerateKeepPreservesTheDraftAndExplicitReplacementRunsOnlyOnce() => desktop.RunAsync(() =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task RegenerateKeepPreservesTheDraftAndExplicitReplacementRunsOnlyOnce(bool mouse) => desktop.RunAsync(async () =>
     {
         var (overlay, session, context) = OpenPreview(out var source);
         string original = source.Text;
+        source.Select(2, 3);
         overlay.BeginEditing = _ => session.BeginEdit();
         overlay.DraftChanged = session.ChangeDraft;
         var editor = Descendants(overlay).OfType<TextBox>().Single();
@@ -303,19 +321,37 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         overlay.Render(session, new(), false, context: context);
         editor.AppendText(" - manual");
         string draft = editor.Text;
+        editor.Select(1, 2);
         int requests = 0;
         overlay.RegenerateRequested = () => requests++;
-        RequestRegenerate(overlay);
+        await RequestRegenerate(overlay, mouse);
         RegenerateButton(overlay, "RegenerateKeep").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.Equal(0, requests);
         Assert.Equal(draft, editor.Text);
         Assert.True(editor.IsKeyboardFocused);
-        RequestRegenerate(overlay);
+        Assert.True(editor.CanUndo);
+        Assert.Equal(1, editor.SelectionStart);
+        Assert.Equal(2, editor.SelectionLength);
+        await RequestRegenerate(overlay, mouse);
         var replace = RegenerateButton(overlay, "RegenerateReplace");
-        replace.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        if (mouse)
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            deadline.CancelAfter(TimeSpan.FromSeconds(3));
+            await ClickMouse(replace, Button.ClickEvent, deadline.Token);
+        }
+        else
+            replace.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         replace.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.Equal(1, requests);
         Assert.Equal(original, source.Text);
+        Assert.Equal(2, source.SelectionStart);
+        Assert.Equal(3, source.SelectionLength);
+        Assert.True(editor.IsKeyboardFocused);
+        Assert.Equal(overlay.Handle, Native.GetForegroundWindow());
+        Assert.True(editor.CanUndo);
+        Assert.Equal(1, editor.SelectionStart);
+        Assert.Equal(2, editor.SelectionLength);
         Assert.Equal(draft, editor.Text); // Only the host may replace a preview.
     });
 
@@ -337,7 +373,7 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         editor.AppendText(" - first draft");
         int requests = 0;
         overlay.RegenerateRequested = () => requests++;
-        RequestRegenerate(overlay);
+        await RequestRegenerate(overlay);
         var oldPeer = new ButtonAutomationPeer(RegenerateButton(overlay, oldAction));
         var oldInvoke = Assert.IsAssignableFrom<IInvokeProvider>(oldPeer.GetPattern(PatternInterface.Invoke));
         RegenerateButton(overlay, "RegenerateKeep").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -347,7 +383,7 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         // ChangeDraft does not advance the host token: confirmation identity
         // must distinguish these two prompts even under that exact ABA shape.
         overlay.Render(session, new(), false, context: context);
-        RequestRegenerate(overlay);
+        await RequestRegenerate(overlay);
         var currentReplace = RegenerateButton(overlay, "RegenerateReplace");
         oldInvoke.Invoke();
         await System.Windows.Threading.Dispatcher.Yield();
@@ -362,15 +398,121 @@ public sealed class OverlayTranslationMenuTests(WpfDesktopFixture desktop)
         Assert.Equal(currentDraft, editor.Text);
     });
 
-    private static void RequestRegenerate(OverlayWindow overlay)
+    private static async Task RequestRegenerate(OverlayWindow overlay, bool mouse = false)
     {
-        var menu = OpenMenu(overlay);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(3));
+        var editor = Assert.IsType<TextBox>(Keyboard.FocusedElement);
+        var restored = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        KeyboardFocusChangedEventHandler onFocus = (_, _) =>
+        {
+            if (editor.IsKeyboardFocused)
+                restored.TrySetResult();
+        };
+        editor.GotKeyboardFocus += onFocus;
+        ContextMenu menu;
+        if (mouse)
+        {
+            var more = Descendants(overlay).OfType<Button>().Single(button => AutomationProperties.GetName(button) == "更多翻译操作");
+            Assert.True(more.Focusable);
+            Assert.True(more.IsTabStop);
+            await ClickMouse(more, Button.ClickEvent, deadline.Token);
+            Assert.True(more.Focusable);
+            Assert.True(more.IsTabStop);
+            menu = Assert.IsType<ContextMenu>(more.ContextMenu);
+            Assert.True(menu.IsOpen);
+            menu.UpdateLayout();
+        }
+        else
+            menu = OpenMenu(overlay);
+        var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var clicked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        RoutedEventHandler onClosed = (_, _) => closed.TrySetResult();
+        RoutedEventHandler onClick = (_, _) => clicked.TrySetResult();
         var regenerate = Item(menu, "重新翻译");
-        Assert.True(regenerate.IsEnabled);
-        menu.IsOpen = false;
-        regenerate.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-        overlay.UpdateLayout();
+        menu.Closed += onClosed;
+        regenerate.Click += onClick;
+        try
+        {
+            Assert.True(regenerate.IsEnabled);
+            if (mouse)
+                await ClickMouse(regenerate, MenuItem.ClickEvent, deadline.Token);
+            else
+            {
+                var invoke = Assert.IsAssignableFrom<IInvokeProvider>(
+                    new MenuItemAutomationPeer(regenerate).GetPattern(PatternInterface.Invoke));
+                invoke.Invoke();
+            }
+            // WPF exits menu mode asynchronously. Observe its actual close and
+            // focus restoration; never call Focus/Activate to repair the path.
+            await clicked.Task.WaitAsync(deadline.Token);
+            await closed.Task.WaitAsync(deadline.Token);
+            if (!editor.IsKeyboardFocused)
+                await restored.Task.WaitAsync(deadline.Token);
+            Assert.Same(editor, Keyboard.FocusedElement);
+            Assert.Equal(overlay.Handle, Native.GetForegroundWindow());
+            overlay.UpdateLayout();
+        }
+        finally
+        {
+            editor.GotKeyboardFocus -= onFocus;
+            menu.Closed -= onClosed;
+            regenerate.Click -= onClick;
+            if (menu.IsOpen)
+                menu.IsOpen = false;
+        }
     }
+
+    private static async Task ClickMouse(FrameworkElement target, RoutedEvent clickEvent, CancellationToken cancellation)
+    {
+        // Let WPF mount a just-opened Popup and process pending layout/input
+        // before observing its real HWND; this does not repair focus or retry a click.
+        await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        cancellation.ThrowIfCancellationRequested();
+        target.UpdateLayout();
+        Assert.True(target.IsVisible && target.ActualWidth > 0 && target.ActualHeight > 0);
+        var host = Assert.IsType<HwndSource>(PresentationSource.FromVisual(target));
+        var point = target.PointToScreen(new(target.ActualWidth / 2, target.ActualHeight / 2));
+        var pixel = new Native.Point { X = (int)point.X, Y = (int)point.Y };
+        Assert.Equal(host.Handle, WindowFromPoint(pixel));
+        Assert.True(Native.GetCursorPos(out var original));
+        Assert.False(Native.GetAsyncKeyState(1) < 0);
+        var clicked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        RoutedEventHandler onClick = (_, _) => clicked.TrySetResult();
+        target.AddHandler(clickEvent, onClick);
+        try
+        {
+            Assert.True(SetCursorPos(pixel.X, pixel.Y));
+            Assert.Equal(host.Handle, WindowFromPoint(pixel));
+            // Actual software pointer input exercises ButtonBase focus/capture
+            // and MenuItem closing. It is not physical-input evidence.
+            MouseInput[] input = [new() { Flags = 2 }, new() { Flags = 4 }];
+            uint inserted = SendInput(2, input, Marshal.SizeOf<MouseInput>());
+            if (inserted == 1)
+                Assert.Equal(1u, SendInput(1, [input[1]], Marshal.SizeOf<MouseInput>()));
+            Assert.Equal(2u, inserted);
+            await clicked.Task.WaitAsync(cancellation);
+        }
+        finally
+        {
+            target.RemoveHandler(clickEvent, onClick);
+            Assert.True(SetCursorPos(original.X, original.Y));
+        }
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 40)]
+    private struct MouseInput
+    {
+        [FieldOffset(0)] public uint Type;
+        [FieldOffset(20)] public uint Flags;
+    }
+    [DllImport("user32.dll")]
+    private static extern nint WindowFromPoint(Native.Point point);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint count, MouseInput[] input, int size);
 
     private static Button RegenerateButton(OverlayWindow overlay, string id) => Descendants(overlay).OfType<Button>()
         .Single(button => AutomationProperties.GetAutomationId(button) == id);

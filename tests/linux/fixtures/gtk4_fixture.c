@@ -1,4 +1,5 @@
 #include <gtk/gtk.h>
+#include <pango/pangocairo.h>
 #include <stdio.h>
 #include <json-glib/json-glib.h>
 #include "../../../src/linux/native/fcitx5/typelay-fcitx-v1.h"
@@ -228,6 +229,7 @@ static gboolean language_control(const char *name) {
         || g_strcmp0(name, "typelay-source-language") == 0
         || g_strcmp0(name, "typelay-target-language") == 0
         || g_strcmp0(name, "typelay-apply-languages") == 0
+        || g_str_has_prefix(name, "typelay-style-")
         || g_strcmp0(name, "typelay-language-menu") == 0
         || g_str_has_prefix(name, "typelay-glossary-");
 }
@@ -818,9 +820,16 @@ static gboolean report_state(gpointer unused) {
             char *color = gdk_rgba_to_string(&foreground);
             json_builder_set_member_name(builder, "foreground"); json_builder_add_string_value(builder, color);
             g_free(color);
-            const PangoFontDescription *font = pango_context_get_font_description(gtk_widget_get_pango_context(candidate));
+            PangoContext *font_context = gtk_widget_get_pango_context(candidate);
+            const PangoFontDescription *font = pango_context_get_font_description(font_context);
+            double pixels = (double)pango_font_description_get_size(font) / PANGO_SCALE;
+            if (!pango_font_description_get_size_is_absolute(font)) {
+                double dpi = pango_cairo_context_get_resolution(font_context);
+                if (dpi <= 0) dpi = pango_cairo_font_map_get_resolution(PANGO_CAIRO_FONT_MAP(pango_context_get_font_map(font_context)));
+                pixels *= dpi / 72.0;
+            }
             json_builder_set_member_name(builder, "fontPixels");
-            json_builder_add_double_value(builder, (double)pango_font_description_get_size(font) / PANGO_SCALE);
+            json_builder_add_double_value(builder, pixels);
             json_builder_set_member_name(builder, "fontFamily");
             json_builder_add_string_value(builder, pango_font_description_get_family(font));
             GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(candidate));

@@ -6,7 +6,7 @@ namespace TypeLay.Runtime.Tests;
 public sealed class TranslationMenuTests
 {
     [Fact]
-    public async Task ProductionMenuHidesActionsAndCannotInvokeDormantInheritance()
+    public async Task ProductionMenuCanRemoveDormantOverrideWithoutReleasingStyleOrAlternative()
     {
         using var s = new SessionScenario(modelIdentity: SessionScenario.HyIdentity,
             direction: new("zh", "ja"), initialStyles: new(TranslationStyle.Formal,
@@ -16,14 +16,57 @@ public sealed class TranslationMenuTests
         s.Tick(Limits.DebounceMs);
         var menu = Assert.IsType<TranslationMenuState>(s.View.Context!.TranslationActions);
         Assert.False(menu.StyleReleased);
-        Assert.False(menu.CanInheritStyle);
+        Assert.True(menu.CanInheritStyle);
+        Assert.False(menu.CanChangeStyle);
         Assert.False(menu.AlternativeReleased);
         long revision = s.Settings.Revision;
         var result = await s.View.StyleRequested!(new(s.View.Token, revision, null));
-        Assert.False(result.Saved);
-        Assert.Equal(revision, s.Settings.Revision);
-        Assert.Single(s.ReloadSettings().Styles!.Applications!);
+        Assert.True(result.Saved);
+        Assert.True(s.Settings.Revision > revision);
+        Assert.Empty(s.ReloadSettings().Styles!.Applications!);
+        Assert.Equal(TranslationStyle.Formal, s.ReloadSettings().Styles!.Default);
         s.View.AlternativeRequested!(s.View.Token);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData("token", "style-stale")]
+    [InlineData("revision", "style-stale")]
+    [InlineData("composition", "manual-style-locked")]
+    [InlineData("source-ime", "style-stale")]
+    [InlineData("style", "style-not-released")]
+    public async Task ClosedReleaseInheritanceStillRequiresTheOriginalSafeSession(string blocked, string expected)
+    {
+        using var s = new SessionScenario(modelIdentity: SessionScenario.HyIdentity,
+            direction: new("zh", "ja"), initialStyles: new(TranslationStyle.Formal,
+                new Dictionary<string, TranslationStyle> { ["org.typelay.ControlledApp"] = TranslationStyle.Natural }));
+        s.Model.StyledTranslationCapability = new(1);
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        var token = s.View.Token;
+        long revision = s.Settings.Revision;
+        if (blocked == "token")
+            token = token with
+            {
+                Revision = token.Revision - 1
+            };
+        if (blocked == "composition")
+            s.View.EditingComposition = true;
+        if (blocked == "source-ime")
+        {
+            s.Source = s.Source with
+            {
+                Ime = ImeState.Composing
+            };
+            s.Tick();
+        }
+        var result = await s.View.StyleRequested!(new(token, blocked == "revision" ? revision - 1 : revision,
+            blocked == "style" ? TranslationStyle.Formal : null));
+        Assert.False(result.Saved);
+        Assert.Equal(expected, result.Code);
+        Assert.Equal(revision, s.Settings.Revision);
+        Assert.Equal(TranslationStyle.Natural, s.ReloadSettings().Styles!.Applications!["org.typelay.ControlledApp"]);
         Assert.Empty(s.Model.Jobs);
         Assert.Empty(s.Service.Writes);
     }

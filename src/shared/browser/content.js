@@ -850,6 +850,7 @@
     "复制失败，请选中译文手动复制": "Copy failed. Select the translation to copy manually.",
     "重新翻译": "Translate Again", "不要在这个应用中显示": "Disable for This App", "设置": "Settings",
     "当前应用风格": "Style for This App", "自然": "Natural", "正式": "Formal", "继承": "Inherit",
+    "简洁 · 尚未提供": "Concise · Not Available", "口语 · 尚未提供": "Casual · Not Available",
     "换种说法": "Rephrase", "加入术语表": "Add to Glossary", "源词": "Source Term", "译词": "Translation",
     "术语作用范围": "Term Scope", "全局": "Global", "保存": "Save", "取消": "Cancel", "关闭": "Close",
     "已暂停": "Paused", "译文就绪": "", "翻译中": "Translating", "更新中": "Updating",
@@ -992,7 +993,7 @@
         .hint{white-space:nowrap;color:var(--muted);font-size:12px}
         .more-actions{flex:none;display:flex;flex-direction:column;gap:4px;margin:0 12px;padding:8px 0;
           border-top:1px solid var(--line);color:var(--muted);font-size:12px}
-        .more-actions button{text-align:left}
+        .more-actions button{text-align:left;color:var(--ink)}
         .more-actions input,.more-actions select{box-sizing:border-box;min-width:0;width:100%;font:inherit;
           color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:7px}
         .more-actions input:focus,.more-actions select:focus{outline:1px solid var(--accent)}
@@ -1166,8 +1167,8 @@
           || current.generation !== opened.generation || JSON.stringify(current.viewToken) !== opened.token
           || !opened.actions || !actions || (operation === "alternative"
             ? !actions.alternativeReleased || !actions.canRequestAlternative
-            : !actions.styleReleased || !(selectedStyle === null
-              ? actions.canInheritStyle : actions.canChangeStyle))) return;
+            : !(selectedStyle === null ? actions.canInheritStyle
+              : actions.styleReleased && actions.canChangeStyle))) return;
         const value = operation === "style" ? {
           settingsRevision: opened.actions.settingsRevision, style: selectedStyle
         } : null;
@@ -1180,6 +1181,11 @@
         button.addEventListener("pointerdown", event => event.preventDefault());
         button.addEventListener("click", event => translationAction(event, "style", selectedStyle));
         styleButtons.set(selectedStyle, button); styleActions.append(button);
+      }
+      for (const text of ["简洁 · 尚未提供", "口语 · 尚未提供"]) {
+        const button = document.createElement("button");
+        button.textContent = text; button.disabled = true;
+        styleActions.append(button);
       }
       const alternative = document.createElement("button");
       alternative.textContent = "换种说法";
@@ -1347,15 +1353,15 @@
   }
   function renderTranslationActions(current) {
     const actions = current.translationActions;
-    current.styleActions.hidden = actions?.styleReleased !== true;
+    current.styleActions.hidden = !actions;
     for (const [style, button] of current.styleButtons) {
-      button.disabled = (style === null ? actions?.canInheritStyle : actions?.canChangeStyle) !== true;
+      button.disabled = (style === null ? actions?.canInheritStyle : actions?.styleReleased && actions?.canChangeStyle) !== true;
       button.setAttribute("aria-pressed", String(!!actions && actions.applicationStyle === style));
       button.textContent = `${actions && actions.applicationStyle === style ? "✓ " : ""}${({Natural: "自然", Formal: "正式"})[style] || "继承"}`;
       button.title = (style === null ? actions?.inheritUnavailableReason : actions?.styleUnavailableReason) || "";
     }
-    current.alternative.hidden = actions?.alternativeReleased !== true;
-    current.alternative.disabled = actions?.canRequestAlternative !== true;
+    current.alternative.hidden = !actions;
+    current.alternative.disabled = actions?.alternativeReleased !== true || actions?.canRequestAlternative !== true;
     current.alternative.title = actions?.alternativeUnavailableReason || "";
     current.glossaryButton.hidden = !actions || typeof actions.canOpenGlossary !== "boolean";
     current.glossaryButton.disabled = actions?.canOpenGlossary !== true;

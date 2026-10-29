@@ -240,80 +240,36 @@ def wait_for(predicate, description, timeout=15):
     raise AssertionError(description)
 
 
-def select_session_keys(paths, host_pid, accept, exit_key):
-    """Select and save the real settings controls, shared by desktop scopes."""
-    from support.gtk_accessibility import Atspi, named, select_settings_page
+def select_session_keys(paths, host_pid, accept, exit_key, send_key):
+    """Record real session keys and observe each instant-save acknowledgement."""
+    from support.gtk_accessibility import Atspi, named, record_shortcut, select_settings_page
 
     select_settings_page(host_pid, "快捷键")
-    before = paths.settings.read_bytes()
-    for name, key_name, default in (
-        ("接受译文", accept, "Tab"),
-        ("退出当前翻译", exit_key, "Esc"),
+    for title, field, chord in (
+        ("接受译文", "AcceptShortcut", accept),
+        ("退出当前翻译", "ExitShortcut", exit_key),
     ):
-
-        def ready_combo():
-            value = named(host_pid, "设置：" + name)
-            if value is None:
-                return None
-            states = value.get_state_set()
-            return (
-                value
-                if states.contains(Atspi.StateType.SENSITIVE)
-                and states.contains(Atspi.StateType.SHOWING)
-                else None
+        if json.loads(paths.settings.read_text()).get(field) == chord:
+            continue
+        before = paths.settings.read_bytes()
+        record_shortcut(host_pid, title, chord, send_key)
+        if chord in ("F1", "F5", "F11", "F12", "Ctrl+F4"):
+            force = wait_for(
+                lambda: (node := named(host_pid, "仍然使用"))
+                and node.get_state_set().contains(Atspi.StateType.SHOWING)
+                and node,
+                "shortcut risk confirmation was unavailable",
             )
-
-        combo = wait_for(ready_combo, "real session-key combo was not ready: " + name)
-        choices = [default] + [
-            f"{prefix}F{number}" for prefix in ("", "Ctrl+") for number in range(1, 25)
-        ]
-        assert Atspi.Selection.select_child(combo.get_selection_iface(), choices.index(key_name))
-        selected = Atspi.Selection.get_selected_child(combo.get_selection_iface(), 0)
-        assert selected and selected.get_name() == key_name
-        action = combo.get_action_iface()
-        assert action and Atspi.Action.do_action(action, 0)
-
-        def row_selectable():
-            selected.clear_cache()
-            states = selected.get_state_set()
-            return states.contains(Atspi.StateType.SHOWING) and states.contains(
-                Atspi.StateType.SENSITIVE
+            assert paths.settings.read_bytes() == before, (
+                "risk warning silently persisted shortcuts"
             )
-
-        wait_for(row_selectable, "session shortcut was not selectable in its real popup")
-        assert Atspi.Action.do_action(action, 0)
-
-        def popup_closed():
-            selected.clear_cache()
-            return not selected.get_state_set().contains(Atspi.StateType.SHOWING)
-
-        wait_for(popup_closed, "session-key popup did not close before saving")
-    assert paths.settings.read_bytes() == before, "session-key draft saved before confirmation"
-    save = wait_for(lambda: named(host_pid, "保存修改"), "session key save was unavailable")
-    assert Atspi.Action.do_action(save.get_action_iface(), 0)
-    if accept in ("F1", "F5", "F11", "F12", "Ctrl+F4") or exit_key in (
-        "F1",
-        "F5",
-        "F11",
-        "F12",
-        "Ctrl+F4",
-    ):
-        force = wait_for(
-            lambda: named(host_pid, "强制保存"), "shortcut risk confirmation was unavailable"
+            assert Atspi.Action.do_action(force.get_action_iface(), 0)
+        wait_for(
+            lambda: json.loads(paths.settings.read_text()).get(field) == chord,
+            "production settings did not confirm the recorded session key: " + title,
         )
-        assert paths.settings.read_bytes() == before, "risk warning silently persisted shortcuts"
-        assert Atspi.Action.do_action(force.get_action_iface(), 0)
-
-    def saved_pair():
-        saved = json.loads(paths.settings.read_text())
-        save.clear_cache()
-        return (
-            saved.get("AcceptShortcut") == accept
-            and saved.get("ExitShortcut") == exit_key
-            and not save.get_state_set().contains(Atspi.StateType.SHOWING)
-        )
-
-    wait_for(saved_pair, "production settings did not confirm the saved session key pair")
+    saved = json.loads(paths.settings.read_text())
+    assert (saved["AcceptShortcut"], saved["ExitShortcut"]) == (accept, exit_key)
 
 
 def send_gtk_acceptance(gtk4, shortcut, send_tab, send_configured, timing):
@@ -674,7 +630,7 @@ def verify_direction_installation(arguments, environment):
                         lambda: state().get("setup", {}).get("preparation"),
                         "initial preparation missing",
                     )
-                    select_settings_page(process.pid, "应用支持", timeout=min(15, remaining()))
+                    select_settings_page(process.pid, "本地模型", timeout=min(15, remaining()))
                     preparation = state()["setup"]["preparation"]
                     assert preparation["primaryAction"]["label"] == "准备 Index 本地翻译…"
                     assert preparation["defaultPackageAction"]["request"]["packageIds"] == [
@@ -884,6 +840,10 @@ def run(arguments):
             resources.close()
             raise
         resources.enter_context(patch.dict(os.environ, {"XDG_DATA_HOME": str(isolated_data)}))
+    if arguments.desktop_scope in ("setup", "setup-settings", "setup-tutorial"):
+        # This scenario must keep the settings file absent. Pin the system UI
+        # locale rather than persisting a preference merely to find the window.
+        resources.enter_context(patch.dict(os.environ, {"LANGUAGE": "zh_CN"}))
     paths = Paths(package)
     environment = dict(os.environ)
     if arguments.desktop_scope == "ordinary-gimp":
@@ -1019,9 +979,9 @@ def run(arguments):
         if experimental is not None:
             from support.gtk_accessibility import Atspi, named, select_settings_page
 
-            select_settings_page(process.pid, "常规")
+            select_settings_page(process.pid, "通用")
             switch = wait_for(
-                lambda: named(process.pid, "设置：启用原生输入框替换"),
+                lambda: named(process.pid, "设置：原生输入框替换"),
                 "experimental writeback setting did not appear",
             )
             if json.loads(paths.settings.read_text())["ExperimentalWriteback"] != experimental:
@@ -1032,7 +992,7 @@ def run(arguments):
                 "explicit experimental setting did not save",
             )
             settings["ExperimentalWriteback"] = experimental
-        select_session_keys(paths, process.pid, accept, exit_key)
+        select_session_keys(paths, process.pid, accept, exit_key, key)
         settings.update(AcceptShortcut=accept, ExitShortcut=exit_key)
         request({"Action": {"CloseWindow": {"id": settings_window["id"]}}})
 
@@ -3793,9 +3753,9 @@ def run(arguments):
                             "GTK pause settings window did not map",
                         )
                         request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
-                        select_settings_page(process.pid, "常规")
+                        select_settings_page(process.pid, "通用")
                         enabled = wait_for(
-                            lambda: visible_control(process.pid, "设置：启用 TypeLay"),
+                            lambda: visible_control(process.pid, "设置：TypeLay"),
                             "GTK pause setting was not accessible and visible",
                         )
                         assert json.loads(paths.settings.read_text())["Enabled"]
@@ -4569,7 +4529,6 @@ def run(arguments):
             assert not status()["setup"]["onboardingComplete"]
             from support.gtk_accessibility import (
                 Atspi,
-                GLib,
                 bounds,
                 focused,
                 named,
@@ -4640,7 +4599,7 @@ def run(arguments):
                     len(path) < 3
                     or path[0][2] != "viewport"
                     or path[1][2] != "scroll-pane"
-                    or path[1][0].get_name() != "设置页：应用支持"
+                    or path[1][0].get_name() not in ("设置页：应用", "设置页：本地模型")
                     or path[-1][0].get_name() != "TypeLay 设置"
                 ):
                     return None
@@ -4721,6 +4680,32 @@ def run(arguments):
                 deadline = time.monotonic() + timeout
                 node = settings_control(name, timeout=deadline - time.monotonic())
                 assert node.get_process_id() == process.pid and node.get_name() == name
+                # Connection details are intentionally collapsed after reopening.
+                # Expand the actual native ancestor before asking its child to
+                # scroll/focus; never activate a hidden child as a substitute.
+                ancestor = node.get_parent()
+                for _ in range(16):
+                    assert ancestor is not None and ancestor.get_process_id() == process.pid
+                    if ancestor.get_role() == Atspi.Role.FRAME:
+                        break
+                    if ancestor.get_name() == "连接详情" and not ancestor.get_state_set().contains(
+                        Atspi.StateType.EXPANDED
+                    ):
+                        assert Atspi.Component.grab_focus(ancestor.get_component_iface())
+                        wait_for(
+                            lambda: focused(ancestor),
+                            "connection expander did not take focus",
+                            timeout=deadline - time.monotonic(),
+                        )
+                        assert Atspi.Action.do_action(ancestor.get_action_iface(), 0)
+                        wait_for(
+                            lambda: ancestor.get_state_set().contains(Atspi.StateType.EXPANDED),
+                            "connection details did not expand",
+                            timeout=deadline - time.monotonic(),
+                        )
+                    ancestor = ancestor.get_parent()
+                else:
+                    raise AssertionError("settings control exceeds its bounded owned ancestry")
 
                 def interactive():
                     node.clear_cache()
@@ -4935,24 +4920,44 @@ def run(arguments):
                 current = settings_navigation(process.pid)
                 index, _ = settings_page_row(current[1], title)
                 assert Atspi.Selection.is_child_selected(current[0], index)
-                save = named(process.pid, "保存修改")
-                save_visible = save is not None and save.get_state_set().contains(
-                    Atspi.StateType.SHOWING
-                )
-                assert save_visible == status()["setup"]["settingsDraft"], (
-                    "global save action did not follow the cross-page draft"
-                )
                 return row
+
+            def tutorial_practice():
+                # Follow the four visible onboarding steps. Reopening may retain
+                # the current step, so no hidden-field action is accepted.
+                for _ in range(4):
+                    source = named(process.pid, "教程练习原文")
+                    if source is not None and source.get_state_set().contains(
+                        Atspi.StateType.SHOWING
+                    ):
+                        return source
+                    headings = ("欢迎使用 TypeLay", "从你熟悉的语言开始", "准备本地翻译")
+                    current = next(
+                        (
+                            named(process.pid, title)
+                            for title in headings
+                            if (item := named(process.pid, title)) is not None
+                            and item.get_state_set().contains(Atspi.StateType.SHOWING)
+                        ),
+                        None,
+                    )
+                    assert current is not None, "tutorial has no visible current step"
+                    activate_setting("继续")
+                    wait_for(
+                        lambda: not current.get_state_set().contains(Atspi.StateType.SHOWING),
+                        "tutorial did not retire its previous native step",
+                    )
+                raise AssertionError("tutorial practice did not become visible in four steps")
 
             navigation = wait_for(
                 lambda: settings_navigation(process.pid), "settings sidebar was not accessible"
             )
             selection, rows = navigation
-            assert len(rows) == 4, "settings sidebar contains an empty or unexpected page"
-            titles = ("常规", "语言", "快捷键", "应用支持")
+            assert len(rows) == 8, "settings sidebar contains an empty or unexpected page"
+            titles = ("通用", "外观", "语言与风格", "术语表", "快捷键", "应用", "本地模型", "关于")
             for title in titles:
                 settings_page_row(rows, title)
-            support_index, _ = settings_page_row(rows, "应用支持")
+            support_index, _ = settings_page_row(rows, "应用")
             assert Atspi.Selection.is_child_selected(selection, support_index), (
                 "first-run settings did not select application support"
             )
@@ -4960,7 +4965,7 @@ def run(arguments):
             # Drive actual GTK actions; the model being ready never completes an
             # application connection or a canceled component selection.
             desktop_support = next(row for row in support["rows"] if row["id"] == "desktop-text")
-            primary = settings_control(desktop_support["primaryAction"]["label"])
+            primary = settings_control("应用连接：" + desktop_support["title"])
             application_choice = named(process.pid, "选择应用…")
             assert application_choice is None or not application_choice.get_state_set().contains(
                 Atspi.StateType.SHOWING
@@ -5053,12 +5058,12 @@ def run(arguments):
                 # Models were installed by CI, not by this tutorial invocation.
                 assert not paths.settings.exists()
                 assert not status()["setup"]["onboardingComplete"]
-                settings_page("常规")
-                mode = settings_control("设置：工作模式")
-                assert Atspi.Selection.is_child_selected(mode.get_selection_iface(), 0)
-                writeback = settings_control("设置：启用原生输入框替换")
+                settings_page("通用")
+                mode = settings_control("设置：工作模式：自动")
+                assert mode.get_state_set().contains(Atspi.StateType.CHECKED)
+                writeback = settings_control("设置：原生输入框替换")
                 assert not writeback.get_state_set().contains(Atspi.StateType.CHECKED)
-                settings_page("语言")
+                settings_page("语言与风格")
                 source_language = settings_control("设置：源语言")
                 target_language = settings_control("设置：目标语言")
                 assert Atspi.Selection.is_child_selected(source_language.get_selection_iface(), 0)
@@ -5076,9 +5081,9 @@ def run(arguments):
                     lambda: json.loads(paths.settings.read_text())["Target"] == "zh",
                     "explicit Chinese target selection was not saved",
                 )
-                settings_page("常规")
-                mode = settings_control("设置：工作模式")
-                assert Atspi.Selection.select_child(mode.get_selection_iface(), 1)
+                settings_page("通用")
+                mode = settings_control("设置：工作模式：按需")
+                assert Atspi.Action.do_action(mode.get_action_iface(), 0)
                 wait_for(
                     lambda: json.loads(paths.settings.read_text())["Mode"] == 1,
                     "explicit on-demand selection was not saved",
@@ -5087,7 +5092,7 @@ def run(arguments):
                 assert (selected["Source"], selected["Target"]) == ("en", "zh")
                 assert selected["OnboardingComplete"] is False
                 assert selected["ExperimentalWriteback"] is False
-                settings_page("应用支持")
+                settings_page("应用")
                 settings_scroll_calibration = None
                 evidence.append(
                     "Empty settings first launch: Automatic, auto-to-English and writeback off; "
@@ -5096,6 +5101,7 @@ def run(arguments):
                     "Uses the CI-installed model; no default Chinese input/translation claim"
                 )
             if settings_scope:
+                settings_page("本地模型")
                 current_package = next(row for row in preparation["packageRows"] if row["current"])
                 repair = next(
                     action
@@ -5141,39 +5147,21 @@ def run(arguments):
                             return False
                         if expanded:
                             return True
-                        current_trial = named(process.pid, next_step_label)
-                        if current_trial is None:
-                            return False
-                        assert current_trial == trial
-                        if not current_trial.get_state_set().contains(Atspi.StateType.SHOWING):
-                            return False
+                        # The compact connection entry now lives on Apps,
+                        # while backend management remains on Local model.
+                        # Check the actual collapsed expander in its own page.
                         area = Atspi.Component.get_extents(
-                            current_trial.get_component_iface(), Atspi.CoordType.SCREEN
+                            manager.get_component_iface(), Atspi.CoordType.SCREEN
                         )
-                        measured = settings_scroll_snapshot(
-                            settings_scroll_calibration["ancestry"][0][0]
+                        pane = settings_control("设置页：本地模型")
+                        clip = Atspi.Component.get_extents(
+                            pane.get_component_iface(), Atspi.CoordType.SCREEN
                         )
-                        if (
-                            measured is None
-                            or not measured["alive"]
-                            or measured["showing"] != (True, True)
-                            or measured["ancestry"] != settings_scroll_calibration["ancestry"]
-                            or area.x == -(2**31)
-                            or area.y == -(2**31)
-                            or area.width <= 0
-                            or area.height <= 0
-                        ):
-                            return False
-                        return all(
-                            x != -(2**31)
-                            and y != -(2**31)
-                            and width > 0
-                            and height > 0
-                            and x <= area.x <= x + width - area.width
-                            and y <= area.y <= y + height - area.height
-                            for x, y, width, height in (
-                                measured[key] for key in ("viewport", "pane", "frame")
-                            )
+                        return (
+                            area.width > 0
+                            and area.height > 0
+                            and clip.x <= area.x <= clip.x + clip.width - area.width
+                            and clip.y <= area.y <= clip.y + clip.height - area.height
                         )
 
                     wait_for(
@@ -5188,7 +5176,7 @@ def run(arguments):
                     "Connection choice and selected application primary action fully visible "
                     "in the real 790 x 560 GTK viewport; ready repair stays available in collapsed model management"
                 )
-                settings_page("语言")
+                settings_page("语言与风格")
                 source_language = settings_control("设置：源语言")
                 target_language = settings_control("设置：目标语言")
                 swap_language = settings_control("交换语言")
@@ -5308,6 +5296,30 @@ def run(arguments):
                         "GTK Unicode composition did not commit the language search prefix",
                         timeout=search_deadline - time.monotonic(),
                     )
+                    character = Atspi.Text.get_character_extents(
+                        editor.get_text_iface(), 0, Atspi.CoordType.SCREEN
+                    )
+                    clips, ancestor = [], editor.get_parent()
+                    for _ in range(16):
+                        assert ancestor is not None and ancestor.get_process_id() == process.pid
+                        role = ancestor.get_role()
+                        if role in (Atspi.Role.SCROLL_PANE, Atspi.Role.FRAME):
+                            area = Atspi.Component.get_extents(
+                                ancestor.get_component_iface(), Atspi.CoordType.SCREEN
+                            )
+                            clips.append((area.x, area.y, area.width, area.height))
+                        if role == Atspi.Role.FRAME:
+                            break
+                        ancestor = ancestor.get_parent()
+                    else:
+                        raise AssertionError("language search exceeds its bounded owned ancestry")
+                    assert (
+                        len(clips) == 2
+                        and settings_text_visible_point(
+                            (character.x, character.y, character.width, character.height), clips
+                        )
+                        is not None
+                    ), "focused language-search text lies outside the actual page/frame"
                     wait_for(
                         lambda: text(editor) == label[0] and visible_language_choice(label),
                         "typing a language prefix did not expose its native completion",
@@ -5341,8 +5353,8 @@ def run(arguments):
                     "Auto disables swap and returning to a fixed source enables it; "
                     "native language search saves only the keyboard-selected match and preserves Tab navigation"
                 )
-            settings_page("应用支持")
-            activate_setting(desktop_support["primaryAction"]["label"])
+            settings_page("应用")
+            activate_setting("应用连接：" + desktop_support["title"])
             bundled_component = (package / "support/desktop/component.json").is_file()
             if bundled_component:
                 assert desktop_support["primaryAction"]["id"] == "Install"
@@ -5906,7 +5918,7 @@ def run(arguments):
                         "restored fixture settings did not retain the small-window test size",
                     )
                     request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
-                    settings_page("应用支持")
+                    settings_page("应用")
                     # Every proxy and scroll observation below belongs to this new
                     # process/window, never the closed pre-Finish settings instance.
                     selection, rows = wait_for(
@@ -5962,40 +5974,43 @@ def run(arguments):
                     before_exclusions = json.loads(paths.settings.read_text()).get(
                         "ExcludedApplications"
                     )
-                    before_exclusion_save = paths.settings.read_bytes()
-                    activate_scrolled_setting("添加排除应用")
+                    before_management = paths.settings.read_bytes()
+                    activate_scrolled_setting("添加应用…")
                     settings_control("搜索已安装的本机应用")
                     activate_setting("取消")
-                    assert not status()["setup"]["settingsDraft"]
-                    assert paths.settings.read_bytes() == before_exclusion_save
-                    activate_scrolled_setting("添加排除应用")
+                    assert paths.settings.read_bytes() == before_management
+                    activate_scrolled_setting("添加应用…")
                     select_registered_fixture()
                     activate_setting("选择")
                     wait_for(
-                        lambda: status()["setup"]["settingsDraft"]
-                        and named(process.pid, "移除排除项：gtk-fixture"),
-                        "registered application was not added to the unsaved exclusion list",
+                        lambda: "gtk-fixture"
+                        in json.loads(paths.settings.read_text()).get("ManagedApplications", []),
+                        "selected application was not saved in the unified managed list",
                     )
-                    assert paths.settings.read_bytes() == before_exclusion_save
+                    app_switch = "在应用中启用：TypeLay Registered Fixture"
+                    before_disable = paths.settings.read_bytes()
                     blocker = paths.settings.with_suffix(".json.tmp")
                     blocker.mkdir()
                     try:
-                        activate_setting("保存修改")
+                        activate_scrolled_setting(app_switch)
                         wait_for(
-                            lambda: "未保存" in text(settings_control("设置反馈")),
-                            "failed exclusion save did not report failure",
+                            lambda: "未确认" in text(settings_control("设置反馈")),
+                            "failed app setting did not report unconfirmed persistence",
                         )
-                        assert status()["setup"]["settingsDraft"]
-                        assert named(process.pid, "移除排除项：gtk-fixture")
-                        assert paths.settings.read_bytes() == before_exclusion_save
+                        assert paths.settings.read_bytes() == before_disable
+                        wait_for(
+                            lambda: settings_control(app_switch)
+                            .get_state_set()
+                            .contains(Atspi.StateType.CHECKED),
+                            "failed app setting did not restore its saved enabled state",
+                        )
                     finally:
                         blocker.rmdir()
-                    activate_setting("保存修改")
+                    activate_scrolled_setting(app_switch)
                     wait_for(
                         lambda: json.loads(paths.settings.read_text()).get("ExcludedApplications")
-                        == [*(before_exclusions or []), "gtk-fixture"]
-                        and not status()["setup"]["settingsDraft"],
-                        "exclusion list did not save after persistence recovered",
+                        == [*(before_exclusions or []), "gtk-fixture"],
+                        "single-app disable did not save immediately after persistence recovered",
                     )
                     before_excluded_captures = status()["input"]["captureCounts"].get(
                         "supported", 0
@@ -6114,20 +6129,13 @@ def run(arguments):
                             check=True,
                             timeout=3,
                         )
-                        activate_scrolled_setting("移除排除项：gtk-fixture")
-                        assert (
-                            "gtk-fixture"
-                            in json.loads(paths.settings.read_text())["ExcludedApplications"]
-                        )
-                        assert status()["setup"]["settingsDraft"]
-                        activate_setting("保存修改")
+                        activate_scrolled_setting(app_switch)
                         wait_for(
                             lambda: json.loads(paths.settings.read_text()).get(
                                 "ExcludedApplications"
                             )
-                            == (before_exclusions or [])
-                            and not status()["setup"]["settingsDraft"],
-                            "removing an exclusion did not require and complete explicit save",
+                            == (before_exclusions or []),
+                            "single-app enable did not immediately remove only its exclusion",
                         )
                     finally:
                         close_managed_window()
@@ -6137,7 +6145,7 @@ def run(arguments):
                         "closed registered fixture retained a live connection or component lease",
                     )
                     evidence.append(
-                        "Registered local GTK fixture: searchable selection, chooser cancellation changes no exclusion draft; failed save retains the list; saved exclusion refuses source capture and overlay; per-item removal requires save; real guardian-owned connection and normal close; screenshots retained"
+                        "Registered local GTK fixture: searchable managed app selection, cancellation saves nothing; failed disable restores the saved state; immediate per-app exclusion refuses source capture and overlay; enable removes only that exclusion; real guardian-owned connection and normal close; screenshots retained"
                     )
                     stopped = cleanup_managed_session()
                     assert stopped and stopped["ok"], (
@@ -6216,7 +6224,7 @@ def run(arguments):
                         ),
                         "clipboard practice field did not gain compositor focus",
                     )
-                    source = settings_control("教程练习原文")
+                    source = tutorial_practice()
                     assert text(source) == ""
                     assert Atspi.Component.grab_focus(source.get_component_iface())
                     key("ctrl+v")
@@ -6239,11 +6247,11 @@ def run(arguments):
                     "address and component folder after dialog dismissal; reopening works and "
                     "closing practice does not complete onboarding"
                 )
-                general_row = settings_page("常规")
+                general_row = settings_page("通用")
                 # Native sidebar rows retain selection, keyboard focus, and page
                 # visibility together. Arrow navigation must not invoke our handlers.
                 assert Atspi.Component.grab_focus(general_row.get_component_iface())
-                for title in ("语言", "快捷键", "应用支持"):
+                for title in ("外观", "语言与风格", "术语表", "快捷键", "应用"):
                     key("Down")
                     index, row = settings_page_row(rows, title)
                     wait_for(
@@ -6262,11 +6270,11 @@ def run(arguments):
                     lambda: Atspi.Selection.is_child_selected(selection, shortcuts_index),
                     "sidebar reverse keyboard navigation did not select shortcuts",
                 )
-                settings_page("常规")
+                settings_page("外观")
                 themes = {
-                    value: settings_control("设置：翻译浮层主题：" + label)
+                    value: settings_control("theme: " + label)
                     for value, label in (
-                        ("system", "跟随系统"),
+                        ("system", "自动"),
                         ("light", "浅色"),
                         ("dark", "深色"),
                     )
@@ -6284,7 +6292,7 @@ def run(arguments):
                 )
                 assert current_window["is_floating"]
                 assert current_window["layout"]["window_size"] == [790, 560]
-                general_page = settings_control("设置页：常规")
+                general_page = settings_control("设置页：外观")
                 assert general_page.get_process_id() == process.pid
                 assert general_page.get_role() == Atspi.Role.SCROLL_PANE
                 assert general_page.get_state_set().contains(Atspi.StateType.SHOWING)
@@ -6379,7 +6387,8 @@ def run(arguments):
                     "Three native theme radios fit the unscrolled 790 x 560 general page; keyboard choice "
                     "persists once, actual file failure restores the saved choice, and retry recovers"
                 )
-                enabled = settings_control("设置：启用 TypeLay")
+                settings_page("通用")
+                enabled = settings_control("设置：TypeLay")
                 wait_for(
                     lambda: enabled.get_state_set().contains(Atspi.StateType.SHOWING),
                     "general settings page did not become visible",
@@ -6395,7 +6404,7 @@ def run(arguments):
                 enabled_area = Atspi.Component.get_extents(
                     enabled.get_component_iface(), Atspi.CoordType.SCREEN
                 )
-                assert enabled_area.width >= 72 and enabled_area.height >= 44
+                assert enabled_area.width >= 34 and enabled_area.height >= 20
                 subprocess.run(
                     ["grim", str(arguments.output / "settings-switch-focus.png")],
                     check=True,
@@ -6416,6 +6425,7 @@ def run(arguments):
                     control(paths, "startOnDemandPractice", {"confirmedSwitch": True}) is False
                 ), "practice silently enabled a paused client"
                 assert not json.loads(paths.settings.read_text())["Enabled"]
+                settings_page("关于")
                 wait_for(
                     lambda: "已暂停" in text(settings_control("当前工作模式说明")),
                     "saved switch state did not reach its adjacent guidance",
@@ -6428,554 +6438,175 @@ def run(arguments):
                     "one keyboard switch activation persisted more than one settings change"
                 )
                 assert named(process.pid, "设置保存范围") is None
-                settings_page("快捷键")
-                wake = settings_control("设置：唤醒翻译")
-                direct = settings_control("设置：直接翻译替换")
-                assert Atspi.EditableText.set_text_contents(
-                    wake.get_editable_text_iface(), "Ctrl+Shift+F8"
-                )
-                wait_for(
-                    lambda: status()["setup"]["settingsDraft"],
-                    "shortcut edit was not retained as draft",
-                )
-                assert "离开此页后仍会保留" in text(settings_control("设置草稿"))
-                settings_page("常规")
-                assert (
-                    saved["WakeShortcut"] in settings_control("当前工作模式说明").get_description()
-                )
-                assert "Ctrl+Shift+F8" not in settings_control("当前工作模式说明").get_description()
-                activate_setting("设置：启用 TypeLay")
+                from support.gtk_accessibility import record_shortcut
+
+                def recorded(title, chord, field, *, confirm=False):
+                    settings_page("快捷键")
+                    record_shortcut(process.pid, title, chord, key)
+                    if confirm:
+                        wait_for(
+                            lambda: (node := named(process.pid, "仍然使用"))
+                            and node.get_state_set().contains(Atspi.StateType.SHOWING),
+                            "shortcut risk did not require explicit confirmation",
+                        )
+                        activate_setting("仍然使用")
+                    wait_for(
+                        lambda: json.loads(paths.settings.read_text()).get(field) == chord
+                        and not status()["setup"]["settingsDraft"],
+                        "recorded shortcut did not save immediately: " + title,
+                    )
+
+                recorded("唤醒翻译", "Ctrl+Shift+F8", "WakeShortcut")
+                settings_page("通用")
+                activate_setting("设置：TypeLay")
                 wait_for(
                     lambda: json.loads(paths.settings.read_text())["Enabled"],
                     "second switch change was not saved",
                 )
-                assert text(wake) == "Ctrl+Shift+F8", (
-                    "settings notification overwrote the pending shortcut"
-                )
+                assert json.loads(paths.settings.read_text())["WakeShortcut"] == "Ctrl+Shift+F8"
                 settings_page("快捷键")
-                assert Atspi.EditableText.set_text_contents(
-                    direct.get_editable_text_iface(), "Ctrl+Shift+F8"
-                )
-                activate_setting("保存修改")
+                before_duplicate = paths.settings.read_bytes()
+                record_shortcut(process.pid, "直接翻译替换", "Ctrl+Shift+F8", key)
                 wait_for(
-                    lambda: "两个快捷键不能相同。" in text(settings_control("设置反馈")),
-                    "invalid shortcut pair did not report rejection",
+                    lambda: status()["setup"]["settingsDraft"]
+                    and "不能相同" in text(settings_control("设置反馈")),
+                    "duplicate recorded shortcuts were not rejected",
                 )
-                assert (
-                    json.loads(paths.settings.read_text())["WakeShortcut"] == saved["WakeShortcut"]
-                )
-                assert status()["setup"]["settingsDraft"], (
-                    "invalid shortcut pair discarded the draft"
-                )
-                assert Atspi.EditableText.set_text_contents(
-                    direct.get_editable_text_iface(), saved["DirectShortcut"]
-                )
-                activate_setting("保存修改")
-                wait_for(
-                    lambda: json.loads(paths.settings.read_text())["WakeShortcut"]
-                    == "Ctrl+Shift+F8",
-                    "valid shortcut pair did not persist",
-                )
-                settings_page("常规")
-                wait_for(
-                    lambda: "Ctrl+Shift+F8"
-                    in settings_control("当前工作模式说明").get_description(),
-                    "saved wake shortcut was not shown in the mode guidance",
-                )
-                settings_page("快捷键")
-                assert Atspi.EditableText.set_text_contents(
-                    wake.get_editable_text_iface(), saved["WakeShortcut"]
-                )
-                activate_setting("保存修改")
-                wait_for(
-                    lambda: not status()["setup"]["settingsDraft"]
-                    and (
-                        (feedback := named(process.pid, "设置反馈")) is None
-                        or not feedback.get_state_set().contains(Atspi.StateType.SHOWING)
-                    ),
-                    "saved shortcuts still appeared dirty",
-                )
-                accept_key = settings_control("设置：接受译文")
-                exit_key = settings_control("设置：退出当前翻译")
-                assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 7)
-                assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 7)
-                wait_for(
-                    lambda: status()["setup"]["settingsDraft"],
-                    "session key choice saved without explicit draft submission",
-                )
-                assert json.loads(paths.settings.read_text())["AcceptShortcut"] == "Tab"
-                activate_setting("保存修改")
-                wait_for(
-                    lambda: text(settings_control("设置反馈"))
-                    == "接受与退出请选择有效且不同的主键。",
-                    "duplicate session key did not reject the complete draft",
-                )
-                assert status()["setup"]["settingsDraft"]
-                assert json.loads(paths.settings.read_text())["ExitShortcut"] == "Esc"
-                assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 8)
-                activate_setting("保存修改")
-                wait_for(
-                    lambda: json.loads(paths.settings.read_text())["AcceptShortcut"] == "F7"
-                    and json.loads(paths.settings.read_text())["ExitShortcut"] == "F8"
-                    and not status()["setup"]["settingsDraft"],
-                    "valid session key pair was not persisted together",
-                )
-                assert "F7" in text(settings_control("当前接受与退出说明"))
-                assert "F8" in text(settings_control("当前接受与退出说明"))
-                assert "Tab" not in text(settings_control("当前接受与退出说明"))
-                assert (
-                    json.loads(paths.settings.read_text())["ExperimentalWriteback"]
-                    == saved["ExperimentalWriteback"]
-                ), "saving session keys changed experimental writeback"
-                assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 0)
-                assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 0)
-                activate_setting("保存修改")
-                wait_for(
-                    lambda: json.loads(paths.settings.read_text())["AcceptShortcut"] == "Tab"
-                    and json.loads(paths.settings.read_text())["ExitShortcut"] == "Esc"
-                    and not status()["setup"]["settingsDraft"],
-                    "default session keys were not restored for later desktop scenarios",
-                )
-                # A common application chord is a risk, not proof that this app
-                # has that binding. Both cancellation and changed-draft confirmation
-                # are exercised through the real GTK controls and production host.
-                before_conflict = paths.settings.read_bytes()
-                assert Atspi.EditableText.set_text_contents(
-                    wake.get_editable_text_iface(), "Ctrl+C"
-                )
-                activate_setting("保存修改")
-                wait_for(
-                    lambda: "Ctrl+C" in text(settings_control("设置反馈"))
-                    and "可能" in text(settings_control("设置反馈")),
-                    "common shortcut risk was not explained before persistence",
-                )
-                assert paths.settings.read_bytes() == before_conflict
-                activate_setting("继续编辑")
-                assert text(wake) == "Ctrl+C"
-                assert paths.settings.read_bytes() == before_conflict
-                assert Atspi.EditableText.set_text_contents(
-                    wake.get_editable_text_iface(), "Ctrl+V"
-                )
-                activate_setting("保存修改")
-                wait_for(
-                    lambda: "Ctrl+V" in text(settings_control("设置反馈")),
-                    "edited shortcut reused an earlier confirmation",
-                )
-                assert paths.settings.read_bytes() == before_conflict
-                activate_setting("强制保存")
-                wait_for(
-                    lambda: json.loads(paths.settings.read_text())["WakeShortcut"] == "Ctrl+V"
-                    and not status()["setup"]["settingsDraft"],
-                    "explicit shortcut confirmation did not save the exact draft",
-                )
-                assert Atspi.EditableText.set_text_contents(
-                    wake.get_editable_text_iface(), saved["WakeShortcut"]
-                )
-                activate_setting("保存修改")
-                wait_for(
-                    lambda: json.loads(paths.settings.read_text())["WakeShortcut"]
-                    == saved["WakeShortcut"]
-                    and not status()["setup"]["settingsDraft"],
-                    "shortcut conflict scenario did not restore the saved binding",
-                )
-                evidence.append(
-                    "Real GTK shortcut risk warning, keep-editing, changed draft and explicit force-save; original binding restored."
-                )
-                # One global draft spans all four shortcuts and the separate support
-                # page's exclusions. A language change must save without consuming it.
-                assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 12)
-                assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 11)
-                assert Atspi.EditableText.set_text_contents(
-                    wake.get_editable_text_iface(), "Ctrl+Shift+F8"
-                )
-                assert Atspi.EditableText.set_text_contents(
-                    direct.get_editable_text_iface(), "Ctrl+Shift+F7"
-                )
-                settings_page("应用支持")
-                # The earlier browser-page calibration was deliberately retired.
-                # Establish this draft layout from its own visible top control,
-                # before scrolling to exclusions, never by rescuing a failed clip.
-                trial = settings_control(next_step_label)
-                assert Atspi.Component.grab_focus(trial.get_component_iface())
-                viewport = trial.get_parent()
-                for _ in range(16):
-                    assert viewport is not None and viewport.get_process_id() == process.pid
-                    viewport.clear_cache()
-                    if viewport.get_role() in clip_roles:
-                        assert viewport.get_role() == Atspi.Role.VIEWPORT
-                        break
-                    viewport = viewport.get_parent()
-                else:
-                    raise AssertionError("draft support page has no bounded viewport")
-                wait_for(
-                    lambda: focused(trial)
-                    and (measured := settings_scroll_snapshot(viewport)) is not None
-                    and measured["viewport"] == measured["pane"]
-                    and measured["viewport"][0] != -(2**31),
-                    "draft support page did not expose its own first-screen geometry",
-                )
-                calibrate_settings_scroll(trial)
-                advanced_exclusions = settings_control("高级编辑排除应用")
-                assert advanced_exclusions.get_process_id() == process.pid
-                assert not advanced_exclusions.get_state_set().contains(Atspi.StateType.EXPANDED)
-                deadline = time.monotonic() + 15
-                assert Atspi.Component.grab_focus(advanced_exclusions.get_component_iface())
-                wait_for(
-                    lambda: advanced_exclusions.get_state_set().contains(Atspi.StateType.SHOWING)
-                    and advanced_exclusions.get_state_set().contains(Atspi.StateType.FOCUSED)
-                    and any(
-                        window.get("id") == settings_window["id"]
-                        and window.get("pid") == process.pid
-                        and window.get("is_focused") is True
-                        for window in contents(request("Windows"), "Windows")
-                    ),
-                    "advanced exclusions did not gain actual settings keyboard focus",
-                    timeout=deadline - time.monotonic(),
-                )
-                # Exercise the focused native expander's keyboard binding; no hidden
-                # action or later-layout reuse of the earlier viewport calibration.
-                key("space")
-                wait_for(
-                    lambda: focused(advanced_exclusions)
-                    and advanced_exclusions.get_state_set().contains(Atspi.StateType.EXPANDED),
-                    "Space did not expand the advanced exclusion section",
-                    timeout=deadline - time.monotonic(),
-                )
-                excluded = settings_control("设置：排除的应用", timeout=deadline - time.monotonic())
-                assert excluded.get_process_id() == process.pid
-                # Expanding at the bottom edge can leave the child below the
-                # viewport. A real Tab moves focus and lets GTK scroll it into
-                # view before measuring visibility; focus alone is not proof.
-                assert focused(advanced_exclusions) and not focused(excluded)
-                key("Tab")
-                exclusion_focus_state = {
-                    "focused": None,
-                    "showing": None,
-                    "settingsWindowFocused": None,
-                    "calibratedBounds": {
-                        name: settings_scroll_calibration[name]
-                        for name in ("viewport", "pane", "frame")
-                    },
-                }
-
-                def exclusion_editor_focused():
-                    # Keep the known-bad SHOWING bit as diagnostic evidence;
-                    # actual keyboard navigation, clip and input checks prove interactivity.
-                    exclusion_focus_state.update(
-                        focused=None, showing=None, settingsWindowFocused=None
-                    )
-                    exclusion_focus_state["focused"] = focused(excluded)
-                    exclusion_focus_state["showing"] = excluded.get_state_set().contains(
-                        Atspi.StateType.SHOWING
-                    )
-                    exclusion_focus_state["settingsWindowFocused"] = any(
-                        window.get("id") == settings_window["id"]
-                        and window.get("pid") == process.pid
-                        and window.get("is_focused") is True
-                        for window in contents(request("Windows"), "Windows")
-                    )
-                    return (
-                        exclusion_focus_state["focused"]
-                        and exclusion_focus_state["settingsWindowFocused"]
-                    )
-
-                try:
-                    wait_for(
-                        exclusion_editor_focused,
-                        "advanced exclusion editor did not gain visible settings keyboard focus",
-                        timeout=deadline - time.monotonic(),
-                    )
-                finally:
-                    # Observe after the verdict without changing the acceptance gate.
-                    # A screenshot alone cannot distinguish stale AT-SPI state from
-                    # GTK's on_screen/viewport calculation or a clipped editor.
-                    try:
-                        ancestry = []
-                        exclusion_focus_state["freshAncestry"] = ancestry
-                        exclusion_focus_state["frameReached"] = False
-                        ancestor = excluded
-                        for _ in range(16):
-                            if ancestor is None:
-                                break
-                            ancestor.clear_cache()
-                            states = ancestor.get_state_set()
-                            role = ancestor.get_role()
-                            observation = {
-                                "role": ancestor.get_role_name(),
-                                "pidMatches": ancestor.get_process_id() == process.pid,
-                                "focused": states.contains(Atspi.StateType.FOCUSED),
-                                "showing": states.contains(Atspi.StateType.SHOWING),
-                                "visible": states.contains(Atspi.StateType.VISIBLE),
-                                "defunct": states.contains(Atspi.StateType.DEFUNCT),
-                            }
-                            ancestry.append(observation)
-                            component = ancestor.get_component_iface()
-                            if component is not None:
-                                rect = Atspi.Component.get_extents(
-                                    component, Atspi.CoordType.SCREEN
-                                )
-                                observation["screenBounds"] = [
-                                    rect.x,
-                                    rect.y,
-                                    rect.width,
-                                    rect.height,
-                                ]
-                            if role == Atspi.Role.FRAME:
-                                exclusion_focus_state["frameReached"] = observation["pidMatches"]
-                                break
-                            if not observation["pidMatches"]:
-                                break
-                            ancestor = ancestor.get_parent()
-                    except Exception as error:
-                        # Diagnostic failures must not mask the actual focus failure.
-                        exclusion_focus_state["observationError"] = type(error).__name__
-                    try:
-                        (arguments.output / "settings-exclusion-focus.json").write_text(
-                            json.dumps(exclusion_focus_state, indent=2)
-                        )
-                    except OSError:
-                        pass  # Evidence output must not replace the original failure.
-                # GTK 3.24.52 compares this nested TextView's local allocation
-                # against its outer viewport adjustment in on_screen(). Its
-                # SHOWING/Component extents can therefore falsely reject a visible
-                # editor. Text extents instead use the actual text GDK window:
-                # gtk/a11y/gtktextviewaccessible.c, get_character_extents.
-                excluded.clear_cache()
-                states = excluded.get_state_set()
-                assert all(
-                    states.contains(state)
-                    for state in (
-                        Atspi.StateType.VISIBLE,
-                        Atspi.StateType.ENABLED,
-                        Atspi.StateType.SENSITIVE,
-                        Atspi.StateType.EDITABLE,
-                    )
-                ) and not states.contains(Atspi.StateType.DEFUNCT)
-                assert focused(excluded)
-                character = Atspi.Text.get_character_extents(
-                    excluded.get_text_iface(), 0, Atspi.CoordType.SCREEN
-                )
-                clips = []
-                ancestor = excluded.get_parent()
-                for _ in range(16):
-                    assert ancestor is not None and ancestor.get_process_id() == process.pid
-                    ancestor.clear_cache()
-                    assert not ancestor.get_state_set().contains(Atspi.StateType.DEFUNCT)
-                    role = ancestor.get_role()
-                    if role in clip_roles:
-                        area = Atspi.Component.get_extents(
-                            ancestor.get_component_iface(), Atspi.CoordType.SCREEN
-                        )
-                        clip = (area.x, area.y, area.width, area.height)
-                        if role == Atspi.Role.VIEWPORT and clip[:2] == (-(2**31),) * 2:
-                            clip = settings_viewport_from_pane(
-                                settings_scroll_calibration, settings_scroll_snapshot(ancestor)
-                            )
-                        else:
-                            assert ancestor.get_state_set().contains(Atspi.StateType.SHOWING)
-                        clips.append(clip)
-                    if role == Atspi.Role.FRAME:
-                        assert ancestor.get_name() == "TypeLay 设置"
-                        break
-                    ancestor = ancestor.get_parent()
-                else:
-                    raise AssertionError("exclusion editor has no bounded settings frame")
-                point = settings_text_visible_point(
-                    (character.x, character.y, character.width, character.height), clips
-                )
-                exclusion_focus_state["characterBounds"] = [
-                    character.x,
-                    character.y,
-                    character.width,
-                    character.height,
-                ]
-                exclusion_focus_state["visibleClips"] = clips
-                exclusion_focus_state["visiblePoint"] = point
-                (arguments.output / "settings-exclusion-focus.json").write_text(
-                    json.dumps(exclusion_focus_state, indent=2)
-                )
-                assert point is not None, (
-                    "exclusion editor text point is outside known visible clips"
-                )
-                assert any(
-                    window.get("id") == settings_window["id"]
-                    and window.get("pid") == process.pid
-                    and window.get("is_focused") is True
-                    for window in contents(request("Windows"), "Windows")
-                )
-                persisted_before_edit = paths.settings.read_bytes()
-                key("ctrl+a")
-                typed("typelay-navigation-test")
-                wait_for(
-                    lambda: focused(excluded)
-                    and text(excluded) == "typelay-navigation-test"
-                    and status()["setup"]["settingsDraft"],
-                    "real exclusion editor input did not change the expected draft",
-                    timeout=deadline - time.monotonic(),
-                )
-                assert paths.settings.read_bytes() == persisted_before_edit
-                settings_page("语言")
+                assert paths.settings.read_bytes() == before_duplicate
+                # A rejected edit remains pending across pages, but must not
+                # consume or overwrite an independently saved language choice.
+                settings_page("语言与风格")
                 source_language = settings_control("设置：源语言")
                 assert Atspi.Selection.select_child(source_language.get_selection_iface(), 0)
                 wait_for(
                     lambda: json.loads(paths.settings.read_text())["Source"] == "auto",
-                    "language page did not save its choice independently",
+                    "language page did not save independently of rejected shortcuts",
                 )
                 assert status()["setup"]["settingsDraft"]
                 assert (
-                    json.loads(paths.settings.read_text())["WakeShortcut"] == saved["WakeShortcut"]
+                    json.loads(paths.settings.read_text())["DirectShortcut"]
+                    == saved["DirectShortcut"]
                 )
-                assert (
-                    json.loads(paths.settings.read_text())["ExcludedApplications"]
-                    == saved["ExcludedApplications"]
-                )
-                settings_page("常规")
-                activate_setting("保存修改")
-                wait_for(
-                    lambda: "F12" in text(settings_control("设置反馈"))
-                    and "F11" in text(settings_control("设置反馈")),
-                    "cross-page function-key risk was not confirmed",
-                )
-                activate_setting("强制保存")
-                wait_for(
-                    lambda: (value := json.loads(paths.settings.read_text()))["WakeShortcut"]
-                    == "Ctrl+Shift+F8"
-                    and value["DirectShortcut"] == "Ctrl+Shift+F7"
-                    and value["AcceptShortcut"] == "F12"
-                    and value["ExitShortcut"] == "F11"
-                    and value["ExcludedApplications"] == ["typelay-navigation-test"]
-                    and value["Source"] == "auto"
-                    and not status()["setup"]["settingsDraft"],
-                    "global save did not persist the complete cross-page draft",
-                )
-                settings_page("应用支持")
-                assert text(excluded) == "typelay-navigation-test"
-                assert Atspi.EditableText.set_text_contents(
-                    excluded.get_editable_text_iface(),
-                    "TYPELAY-NAVIGATION-TEST\ntypelay-navigation-test",
-                )
-                wait_for(
-                    lambda: not status()["setup"]["settingsDraft"]
-                    and text(excluded) == "typelay-navigation-test",
-                    "equivalent ASCII exclusions incorrectly created an unsaved draft",
-                )
-                saved_exclusions = saved["ExcludedApplications"]
-                assert saved_exclusions is None or (
-                    isinstance(saved_exclusions, list)
-                    and all(isinstance(item, str) for item in saved_exclusions)
-                ), "saved application exclusions must be null or a list of executable names"
-                assert Atspi.EditableText.set_text_contents(
-                    excluded.get_editable_text_iface(),
-                    "\n".join([] if saved_exclusions is None else saved_exclusions),
-                )
-                settings_page("快捷键")
-                assert Atspi.Selection.is_child_selected(accept_key.get_selection_iface(), 12)
-                assert Atspi.Selection.is_child_selected(exit_key.get_selection_iface(), 11)
-                assert Atspi.EditableText.set_text_contents(
-                    wake.get_editable_text_iface(), saved["WakeShortcut"]
-                )
-                assert Atspi.EditableText.set_text_contents(
-                    direct.get_editable_text_iface(), saved["DirectShortcut"]
-                )
-                assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 0)
-                assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 0)
-                activate_setting("保存修改")
-                wait_for(
-                    lambda: not status()["setup"]["settingsDraft"],
-                    "restoring the cross-page draft did not finish",
-                )
-                settings_page("语言")
-                original_source = ("auto", "zh", "en").index(saved["Source"])
+                recorded("直接翻译替换", saved["DirectShortcut"], "DirectShortcut")
+                recorded("唤醒翻译", saved["WakeShortcut"], "WakeShortcut")
+                assert json.loads(paths.settings.read_text())["Source"] == "auto"
+                settings_page("语言与风格")
                 assert Atspi.Selection.select_child(
-                    source_language.get_selection_iface(), original_source
+                    source_language.get_selection_iface(),
+                    ("auto", "zh", "en").index(saved["Source"]),
                 )
                 wait_for(
                     lambda: json.loads(paths.settings.read_text())["Source"] == saved["Source"],
-                    "language page did not restore the original source",
+                    "language choice was not restored",
                 )
-                evidence.append(
-                    "Four real sidebar pages: accessibility selection and Up/Down keyboard focus; "
-                    "one visible save action persists four shortcut drafts and exclusions across "
-                    "pages without overwriting an immediately saved language change"
+
+                recorded("接受译文", "F7", "AcceptShortcut")
+                before_duplicate = paths.settings.read_bytes()
+                record_shortcut(process.pid, "退出当前翻译", "F7", key)
+                wait_for(
+                    lambda: status()["setup"]["settingsDraft"]
+                    and "不同" in text(settings_control("设置反馈")),
+                    "duplicate session key did not reject the pending edit",
                 )
-                settings_page("快捷键")
-                assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 12)
-                assert Atspi.EditableText.set_text_contents(
-                    wake.get_editable_text_iface(), "Ctrl+Shift+F8"
-                )
-                settings_page("应用支持")
+                assert paths.settings.read_bytes() == before_duplicate
+                recorded("退出当前翻译", "F8", "ExitShortcut")
+                assert "F7" in text(settings_control("当前接受与退出说明"))
+                assert "F8" in text(settings_control("当前接受与退出说明"))
                 assert (
-                    settings_control("设置页：应用支持")
-                    .get_state_set()
-                    .contains(Atspi.StateType.SHOWING)
+                    json.loads(paths.settings.read_text())["ExperimentalWriteback"]
+                    == saved["ExperimentalWriteback"]
                 )
-                assert status()["setup"]["settingsDraft"]
+                recorded("接受译文", "Tab", "AcceptShortcut")
+                recorded("退出当前翻译", "Esc", "ExitShortcut")
+
+                # A common app chord is a risk, not proof that an app owns it.
+                before_risk = paths.settings.read_bytes()
+                record_shortcut(process.pid, "唤醒翻译", "Ctrl+C", key)
+                wait_for(
+                    lambda: "Ctrl+C" in text(settings_control("设置反馈")),
+                    "common shortcut risk was not explained before persistence",
+                )
+                assert paths.settings.read_bytes() == before_risk
+                activate_setting("继续编辑")
+                assert paths.settings.read_bytes() == before_risk
+                record_shortcut(process.pid, "唤醒翻译", "Ctrl+V", key)
+                wait_for(
+                    lambda: "Ctrl+V" in text(settings_control("设置反馈")),
+                    "changed shortcut reused an earlier risk confirmation",
+                )
+                assert paths.settings.read_bytes() == before_risk
+                activate_setting("仍然使用")
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text())["WakeShortcut"] == "Ctrl+V"
+                    and not status()["setup"]["settingsDraft"],
+                    "explicit confirmation did not save the exact recorded chord",
+                )
+                recorded("唤醒翻译", saved["WakeShortcut"], "WakeShortcut")
+
+                before_failure = paths.settings.read_bytes()
+                blocker = paths.settings.with_suffix(".json.tmp")
+                blocker.mkdir()
+                try:
+                    record_shortcut(process.pid, "唤醒翻译", "Ctrl+Shift+F8", key)
+                    wait_for(
+                        lambda: status()["setup"]["settingsDraft"]
+                        and "未保存" in text(settings_control("设置反馈")),
+                        "failed instant save did not retain the recorded edit",
+                    )
+                    assert paths.settings.read_bytes() == before_failure
+                finally:
+                    blocker.rmdir()
+                activate_setting("重试保存")
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text())["WakeShortcut"]
+                    == "Ctrl+Shift+F8"
+                    and not status()["setup"]["settingsDraft"],
+                    "explicit retry did not save after filesystem recovery",
+                )
+                recorded("唤醒翻译", saved["WakeShortcut"], "WakeShortcut")
+
+                # Only an actually rejected edit prompts on close. Valid changes
+                # were already committed; there is no retired global Save button.
+                record_shortcut(process.pid, "直接翻译替换", saved["WakeShortcut"], key)
+                wait_for(
+                    lambda: status()["setup"]["settingsDraft"]
+                    and "不能相同" in text(settings_control("设置反馈")),
+                    "close scenario did not retain the invalid shortcut",
+                )
+                settings_page("应用")
                 settings_page("快捷键")
-                assert text(wake) == "Ctrl+Shift+F8", "page navigation discarded the shortcut draft"
-                window = wait_for(
-                    lambda: next(
-                        (
-                            window
-                            for window in (contents(request("Windows"), "Windows") or [])
-                            if window.get("title") == "TypeLay 设置"
-                        ),
-                        None,
-                    ),
-                    "settings window missing before close",
-                )
-                request({"Action": {"CloseWindow": {"id": window["id"]}}})
+                request({"Action": {"CloseWindow": {"id": settings_window["id"]}}})
                 keep_editing = settings_control("继续编辑")
                 wait_for(
-                    lambda: keep_editing.get_state_set().contains(Atspi.StateType.FOCUSED),
-                    "closing a draft did not default to keeping the user's work",
+                    lambda: focused(keep_editing),
+                    "closing a rejected edit did not default to keeping the user's work",
                 )
                 key("Return")
-
-                def close_prompt_gone():
-                    try:
-                        return named(process.pid, "放弃修改") is None
-                    except GLib.Error as error:
-                        # Only the known closing-dialog child race is transient.
-                        # Re-read the real tree; a vanished child is not proof that
-                        # every copy of the prompt has closed.
-                        if error.domain == "atspi_error" and re.fullmatch(
-                            r'Method "GetChildAtIndex".*object /org/a11y/atspi/accessible/\d+ does not exist\s*',
-                            error.message,
-                            flags=re.DOTALL,
-                        ):
-                            return False
-                        raise
-
                 wait_for(
-                    close_prompt_gone,
-                    "default keep-editing action did not dismiss the close prompt",
+                    lambda: named(process.pid, "放弃修改") is None,
+                    "keep-editing action did not dismiss the close prompt",
                 )
                 assert status()["setup"]["settingsDraft"]
-                assert text(wake) == "Ctrl+Shift+F8"
-                request({"Action": {"CloseWindow": {"id": window["id"]}}})
+                request({"Action": {"CloseWindow": {"id": settings_window["id"]}}})
                 activate_setting("放弃修改")
                 wait_for(
                     lambda: not status()["setup"]["settingsDraft"],
-                    "explicit discard retained the unsaved draft",
+                    "explicit discard retained the invalid shortcut",
                 )
                 assert (
-                    json.loads(paths.settings.read_text())["WakeShortcut"] == saved["WakeShortcut"]
+                    json.loads(paths.settings.read_text())["DirectShortcut"]
+                    == saved["DirectShortcut"]
                 )
                 assert control(paths, "settings") is True
-                wake = settings_control("设置：唤醒翻译")
-                assert text(wake) == saved["WakeShortcut"]
-                assert json.loads(paths.settings.read_text())["AcceptShortcut"] == "Tab"
-                assert Atspi.Selection.is_child_selected(accept_key.get_selection_iface(), 0)
-                assert "Tab" in text(settings_control("当前接受与退出说明"))
-                settings_page("常规")
-                assert (
-                    saved["WakeShortcut"] in settings_control("当前工作模式说明").get_description()
-                )
-                settings_page("应用支持")
-                assert Atspi.Component.grab_focus(trial.get_component_iface())
+                settings_page("应用")
                 activate_setting(next_step_label)
                 assert not status()["setup"]["tutorialVisible"]
-                assert selector.get_name() == desktop_support["title"]
+                evidence.append(
+                    "Eight native settings pages, keyboard sidebar navigation, focused shortcut "
+                    "recording and immediate persistence; duplicate edits retained across pages "
+                    "without overwriting language changes; risk confirmation, failed-save retry "
+                    "and close keep/discard preserve the exact saved preferences"
+                )
             if tutorial_scope:
                 assert control(paths, "tutorial") is True
                 wait_for(
@@ -6988,9 +6619,12 @@ def run(arguments):
                     "tutorial did not gain real compositor focus before typing",
                 )
                 assert not status()["setup"]["onboardingComplete"]
+                source = tutorial_practice()
+                assert Atspi.Component.grab_focus(source.get_component_iface())
+                wait_for(lambda: focused(source), "tutorial source did not gain native focus")
                 key("ctrl+a")
                 typed("Please send me the final version.")
-                key("alt+g")
+                activate_setting("生成本地译文")
                 wait_for(
                     lambda: status().get("setup", {}).get("tutorialState") == "preview",
                     "explicit tutorial preview did not use the actual local model",
@@ -7000,7 +6634,7 @@ def run(arguments):
                     ["grim", str(arguments.output / "tutorial-preview.png")], check=True, timeout=3
                 )
                 assert not status()["setup"]["onboardingComplete"]
-                key("alt+d")
+                activate_setting("开始使用")
                 wait_for(
                     lambda: status().get("setup", {}).get("onboardingComplete")
                     and not status()["setup"]["tutorialVisible"],
@@ -7032,12 +6666,11 @@ def run(arguments):
                     == "TypeLay 首次使用",
                     "reopened tutorial did not gain real compositor focus",
                 )
+                tutorial_practice()
                 connection = settings_control(support["labels"]["connectApplications"])
                 assert Atspi.Component.grab_focus(connection.get_component_iface())
                 for instruction in (
-                    "2. 连接应用并打开受管练习",
-                    "本窗仅检查本地模型，不代表应用已连接或练习已完成。"
-                    "受管练习不需要开启全局实验替换。",
+                    "输入非敏感练习文字，先完成输入法候选，再生成本地译文。本窗只预览，不向其他应用写入。",
                 ):
                     wait_for(
                         lambda: (label := named(process.pid, instruction))
@@ -7046,7 +6679,7 @@ def run(arguments):
                     )
                 activate_setting(support["labels"]["connectApplications"])
                 wait_for(
-                    lambda: settings_control("设置页：应用支持")
+                    lambda: settings_control("设置页：应用")
                     .get_state_set()
                     .contains(Atspi.StateType.SHOWING),
                     "tutorial opened before settings did not route to application support",
@@ -7055,7 +6688,7 @@ def run(arguments):
                     lambda: settings_navigation(process.pid),
                     "tutorial connection route did not expose the settings sidebar",
                 )
-                support_index, _ = settings_page_row(navigation[1], "应用支持")
+                support_index, _ = settings_page_row(navigation[1], "应用")
                 assert Atspi.Selection.is_child_selected(navigation[0], support_index)
                 assert not status()["setup"]["tutorialVisible"]
                 persisted = json.loads(paths.settings.read_text())
@@ -7066,7 +6699,7 @@ def run(arguments):
                     == "TypeLay 首次使用",
                     "tutorial did not regain focus after opening application support",
                 )
-                key("alt+s")
+                activate_setting("稍后设置")
                 wait_for(
                     lambda: not status().get("setup", {}).get("tutorialVisible"),
                     "explicit tutorial skip did not close the trial window",
@@ -7378,7 +7011,7 @@ def run(arguments):
                             "settings did not reopen after practice activation",
                         )
                         request({"Action": {"FocusWindow": {"id": selected_settings["id"]}}})
-                        settings_page("语言")
+                        settings_page("语言与风格")
                         language = settings_control("设置：源语言")
                         assert Atspi.Selection.select_child(language.get_selection_iface(), 1)
                         wait_for(
@@ -7437,21 +7070,21 @@ def run(arguments):
                         ), "closing TypeLay closed the user's practice application"
                         start()
                         assert control(paths, "settings") is True
-                        settings_page("应用支持")
+                        settings_page("应用")
                         wait_for(
                             lambda: (row := desktop_row())
                             and row["details"]
                             and not any(a["id"] == "Remove" for a in row["actions"]),
                             "an application still using the components was offered removal",
                         )
-                        settings_page("常规")
-                        mode = settings_control("设置：工作模式")
-                        assert Atspi.Selection.select_child(mode.get_selection_iface(), 0)
+                        settings_page("通用")
+                        mode = settings_control("设置：工作模式：自动")
+                        assert Atspi.Action.do_action(mode.get_action_iface(), 0)
                         wait_for(
                             lambda: json.loads(paths.settings.read_text())["Mode"] == 0,
                             "the user's later mode change did not save",
                         )
-                        settings_page("应用支持")
+                        settings_page("应用")
                     finally:
                         # A cleanup error must not replace the original test failure.
                         if sys.exc_info()[0] is None:

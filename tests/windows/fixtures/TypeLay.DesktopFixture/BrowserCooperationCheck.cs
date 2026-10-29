@@ -52,6 +52,10 @@ internal static partial class BrowserCooperationCheck
         {
             get; set;
         }
+        public HyPackageCheck.Scene? PublicSettingsNavigation
+        {
+            get; set;
+        }
         public int ShortcutPresses
         {
             get; set;
@@ -335,6 +339,11 @@ internal static partial class BrowserCooperationCheck
                 appStart.Environment["TYPELAY_HOME"] = distribution;
                 appStart.Environment["TYPELAY_TRACE"] = trace;
                 app = appLifetime.Start(() => new ChildProcess(appStart));
+                await PublicOnboardingActions.CompleteAsync(app.Process, () => ReadOwnedSettings(data),
+                    step => setup.Stage = step, ct);
+                setup.Stage = "open-initial-public-settings";
+                setup.PublicSettingsNavigation = new HyPackageCheck.Scene("open-public-settings");
+                await HyPackageCheck.OpenSettingsThroughTrayAsync(app.Process, setup.PublicSettingsNavigation, ct);
                 registrationAttempted = true; // Also reconcile an unexpected registration after cancellation.
                 registrationAbsent = false;
                 await BrowserConnectionActionAsync(app.Process, "接入", step => setup.Stage = "cancel-connect-" + step, ct, accept: false);
@@ -384,8 +393,8 @@ internal static partial class BrowserCooperationCheck
             });
             await Phase(mode, "open-real-settings", 30, async ct =>
             {
-                // Reopen the normal visible language/settings button; the model stays
-                // running in the actual App while the real settings UI changes mode.
+                // Open the public More > Settings action. The language button now opens
+                // its own picker; the real App/model continues running while mode changes.
                 await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
                 await WaitPreviewAsync(cdp!, ct);
                 await cdp!.ClickOverlaySettingsAsync(ct);

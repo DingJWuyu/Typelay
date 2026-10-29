@@ -18,11 +18,21 @@ namespace TypeLay.App.Tests;
 public sealed class OverlayGlossaryTests(WpfDesktopFixture desktop)
 {
     [Theory]
-    [InlineData(346)]
-    [InlineData(600)]
-    public Task InlineRulePreservesTheEditorAndKeepsFailedInputsForAnExplicitRetry(int width) => desktop.RunAsync(async () =>
+    [InlineData(346, true)]
+    [InlineData(600, true)]
+    [InlineData(346, false)]
+    [InlineData(600, false)]
+    public Task InlineRulePreservesTheEditorAndKeepsFailedInputsForAnExplicitRetry(int width, bool applicationReleased) => desktop.RunAsync(async () =>
     {
         var (overlay, session, context, editor) = OpenEditor(width);
+        context = context with
+        {
+            TranslationActions = context.TranslationActions! with
+            {
+                GlossaryReleased = applicationReleased
+            }
+        };
+        overlay.Render(session, new(), false, context: context);
         editor.Select(1, 3);
         editor.SelectedText = "人工";
         editor.Select(2, 2);

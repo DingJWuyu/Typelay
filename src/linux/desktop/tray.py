@@ -16,6 +16,7 @@ class Tray:
         self.model_ready = False
         self.application_pending = False
         self.application_style = None
+        self.style_load_revision = 0
         self.language_choices = None
         self.save_problem = None
         self.updating = self.pending = self.closed = False
@@ -34,7 +35,7 @@ class Tray:
             self.window.set_visual(visual)
         self.window.set_decorated(False)
         self.window.set_resizable(False)
-        self.window.set_default_size(340, -1)
+        self.window.set_default_size(320, -1)
         self.window.set_type_hint(Gdk.WindowTypeHint.UTILITY)
         self.window.set_skip_taskbar_hint(True)
         self.window.set_skip_pager_hint(True)
@@ -49,11 +50,16 @@ class Tray:
         self.toast = Toast()
         overlay.add_overlay(self.toast)
         heading = Gtk.Box(spacing=10)
-        heading.pack_start(app_icon(), False, False, 0)
+        heading.set_border_width(4)
+        heading.pack_start(app_icon(26), False, False, 0)
         names = box(3)
-        names.pack_start(style(label("TypeLay"), "headline"), False, False, 0)
+        names.pack_start(style(label("TypeLay"), "quick-headline"), False, False, 0)
         self.status = label("正在启动…", muted=True)
-        names.pack_start(self.status, False, False, 0)
+        status_line = Gtk.Box(spacing=5)
+        self.status_dot = style(Gtk.Label(label="●"), "status-dot")
+        status_line.pack_start(self.status_dot, False, False, 0)
+        status_line.pack_start(self.status, False, False, 0)
+        names.pack_start(status_line, False, False, 0)
         heading.pack_start(names, True, True, 0)
         self.enabled = Gtk.Switch()
         self.enabled.set_valign(Gtk.Align.CENTER)
@@ -71,7 +77,7 @@ class Tray:
         )
         self.card.pack_start(self.mode, False, False, 0)
         direction = Gtk.Box(spacing=5)
-        self.groups, self.parents = {}, {}
+        self.parents = {}
         for key in ("source", "target"):
             picker = Gtk.ComboBoxText()
             picker.set_hexpand(True)
@@ -90,6 +96,7 @@ class Tray:
                 self.swap.connect("clicked", lambda *_: self.swap_languages())
                 direction.pack_start(self.swap, False, False, 0)
         self.card.pack_start(direction, False, False, 0)
+        self.card.reorder_child(direction, 0)
         self.current_application = label("尚无当前应用", muted=True)
         application_row = Gtk.Box(spacing=8)
         application_row.pack_start(self.current_application, True, True, 0)
@@ -114,7 +121,11 @@ class Tray:
         self.application_style_picker.add_attribute(tone_renderer, "sensitive", 2)
         self.application_style_picker.set_sensitive(False)
         self.application_style_picker.connect("changed", self.application_style_changed)
-        self.card.pack_start(self.application_style_picker, False, False, 0)
+        self.style_row = Gtk.Box(spacing=8)
+        self.style_row.pack_start(label("风格"), True, True, 0)
+        self.style_row.pack_end(self.application_style_picker, False, False, 0)
+        self.card.pack_start(self.style_row, False, False, 0)
+        self.card.reorder_child(self.style_row, 2)
         self.model = style(label("本地模型尚未就绪"), "quick-status")
         self.operation = style(label(), "quick-status")
         self.save_notice = style(label(), "settings-warning")
@@ -125,11 +136,11 @@ class Tray:
         self.actions = {}
         for title, action in (
             ("设置…", show_settings),
-            ("关闭面板", self.hide_panel),
             ("退出 TypeLay", quit_requested),
         ):
             button = style(Gtk.Button(label=title), "flat")
             button.set_halign(Gtk.Align.FILL)
+            button.get_child().set_xalign(0)
             button.connect("clicked", lambda _button, callback=action: self.panel_action(callback))
             self.panel.pack_start(button, False, False, 0)
             self.actions[title] = button
@@ -153,10 +164,10 @@ class Tray:
         self.refresh()
         self.window.present()
         self.enabled.grab_focus()
-        if self.last_application:
-            self.tasks(self.load_application_style(self.last_application))
+        self.tasks(self.load_application_style(self.last_application))
 
     def hide_panel(self):
+        self.style_load_revision += 1
         self.window.hide()
         return True
 
@@ -254,7 +265,6 @@ class Tray:
             )
             for chinese, translated in (
                 ("设置…", "Settings…"),
-                ("关闭面板", "Close panel"),
                 ("退出 TypeLay", "Quit TypeLay"),
             ):
                 self.actions[chinese].set_label(translated if english else chinese)
@@ -266,7 +276,9 @@ class Tray:
             self.application_enabled.set_sensitive(
                 bool(self.last_application) and not self.application_pending
             )
-            self.application_style_picker.set_visible(bool(self.last_application))
+            self.application_style_picker.set_visible(True)
+            dot = self.status_dot.get_style_context()
+            (dot.remove_class if enabled else dot.add_class)("paused")
             self.status.set_label(state)
             self.style_provider = apply_theme(self.window, self.value, self.style_provider)
             self.toast.set_transition_duration(0 if self.value.get("reduceMotion") else 200)
@@ -284,7 +296,7 @@ class Tray:
         changed = application != self.last_application
         self.last_application = application
         self.refresh()
-        if changed and application and self.window.get_visible():
+        if changed and self.window.get_visible():
             self.tasks(self.load_application_style(application))
         revision = value.get("commandFeedbackRevision")
         if type(revision) is int:
@@ -331,13 +343,27 @@ class Tray:
             self.refresh()
 
     async def load_application_style(self, application):
+        self.style_load_revision += 1
+        revision = self.style_load_revision
         try:
-            state = await self.host.ask("getApplicationStyleSettings", application, timeout=2)
             recovery = await self.host.ask("getStyleSettings", timeout=2)
-            if application != self.last_application or not isinstance(state, dict) or self.closed:
+            if not isinstance(recovery, dict):
+                raise ValueError("style-state-unavailable")
+            state = (
+                await self.host.ask("getApplicationStyleSettings", application, timeout=2)
+                if application
+                else {**recovery, "canChange": False}
+            )
+            if (
+                revision != self.style_load_revision
+                or application != self.last_application
+                or not isinstance(state, dict)
+                or self.closed
+            ):
                 return
             state["canRemove"] = bool(
-                isinstance(recovery, dict)
+                application
+                and isinstance(recovery, dict)
                 and recovery.get("settingsRevision") == state.get("settingsRevision")
                 and any(
                     item.get("application", "").casefold() == application.casefold()
@@ -349,25 +375,32 @@ class Tray:
             self.updating = True
             self.application_style_choices.clear()
             for key, title in (
-                ("inherit", "继承全局风格"),
+                ("inherit", "继承全局风格" if application else "未设置"),
                 ("Natural", "自然"),
                 ("Formal", "正式"),
+                ("Concise", "简洁"),
+                ("Casual", "口语"),
             ):
                 self.application_style_choices.append(
                     (
                         key,
                         self.localizer.text(title),
-                        bool(state.get("canChange") or key == "inherit" and state["canRemove"]),
+                        key not in ("Concise", "Casual")
+                        and bool(state.get("canChange") or key == "inherit" and state["canRemove"]),
                     )
                 )
             styles = (state.get("savedPreferences") or {}).get("applications") or {}
-            saved = next(
-                (
-                    value
-                    for key, value in styles.items()
-                    if key.casefold() == application.casefold()
-                ),
-                "inherit",
+            saved = (
+                next(
+                    (
+                        value
+                        for key, value in styles.items()
+                        if key.casefold() == application.casefold()
+                    ),
+                    "inherit",
+                )
+                if application
+                else (state.get("savedPreferences") or {}).get("default") or "inherit"
             )
             self.application_style_picker.set_active_id(saved)
             self.application_style_picker.set_sensitive(
@@ -375,7 +408,8 @@ class Tray:
             )
             self.application_style_picker.set_tooltip_text("当前未开放的风格不可更改")
         except (OSError, ValueError, EOFError, TimeoutError):
-            self.application_style_picker.set_sensitive(False)
+            if revision == self.style_load_revision and not self.closed:
+                self.application_style_picker.set_sensitive(False)
         finally:
             self.updating = False
 
