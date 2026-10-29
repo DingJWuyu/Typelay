@@ -30,10 +30,21 @@ def main():
     parser.add_argument("--configuration", choices=("Debug", "Release"), default="Release")
     parser.add_argument("--results-directory", type=Path, default=Path("artifacts/test-results"))
     args = parser.parse_args()
-    directory = (ROOT / args.results_directory).resolve() / ("contracts-" + uuid.uuid4().hex)
+    results_root = (ROOT / args.results_directory).resolve()
+    results_root.mkdir(parents=True, exist_ok=True)
+    current = results_root / "current-contracts.json"
+    # Invalidate old admission even if this invocation fails before dotnet starts.
+    current.unlink(missing_ok=True)
+    directory = results_root / ("contracts-" + uuid.uuid4().hex)
     primary, isolated = directory / "main", directory / "archive-body-timeout"
     primary.mkdir(parents=True)
     isolated.mkdir()
+    pointer = directory / "current.tmp"
+    pointer.write_text(
+        json.dumps({"schemaVersion": 1, "runDirectory": directory.name}) + "\n",
+        encoding="utf-8",
+    )
+    pointer.replace(current)
     report = {"mainExitCode": None, "isolatedExitCode": None, "failures": []}
     failures = report["failures"]
     try:
@@ -107,9 +118,9 @@ def main():
         return 1
     finally:
         report.update(mainDirectory=str(primary), isolatedDirectory=str(isolated))
-        (directory / "result.json").write_text(
-            json.dumps(report, indent=2) + "\n", encoding="utf-8"
-        )
+        completed = directory / "result.tmp"
+        completed.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        completed.replace(directory / "result.json")
         print(json.dumps({"results": str(directory), "failures": failures}), flush=True)
 
 

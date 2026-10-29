@@ -91,6 +91,43 @@ TRANSPORT = """(() => {
 })();"""
 
 
+# Bounded diagnostics beside existing public command/DOM reads. No additional
+# transport request, capture, clock update, event, or display renewal is sent.
+READ_OBSERVER = r"""(() => {
+  const rows = []; let omitted = 0, expiry = null;
+  const state = node => ({ms: performance.now(), wall: Date.now(), expiry,
+    documentFocused: document.hasFocus(), visibility: document.visibilityState,
+    sourceFocused: document.activeElement?.id === 'source',
+    hostConnected: !!document.querySelector('html > div[role=region][aria-label=TypeLay]')?.isConnected,
+    nodeConnected: node?.isConnected ?? null, nodeHidden: node?.hidden ?? null,
+    nodeFocused: node?.matches?.(':focus') ?? null});
+  const note = (kind, detail = {}, node = null) => {
+    if (rows.length < 128) rows.push({kind, ...state(node), ...detail}); else omitted++;
+  };
+  const raw = fixtureRawCommand;
+  window.fixtureRawCommand = message => {
+    note('command-before', {operation: message.op, revision: message.data?.revision ?? null});
+    const result = raw(message);
+    if (['overlay-render', 'overlay-renew'].includes(message.op))
+      expiry = message.data.expiresAtMs - 1000000; // Existing fixture clock offset.
+    const basis = result?.authority ?? message.data?.authority;
+    note('command-after', {operation: message.op, revision: message.data?.revision ?? null,
+      visibleReply: result?.visible ?? null, returned: !!result,
+      inputRevision: basis?.inputRevision ?? null, focusRevision: basis?.focusRevision ?? null,
+      authorityObservedAtMs: basis?.observedAtMs ?? null,
+      clockReason: result?.diagnostics?.lastClockReason ?? null,
+      clockAgeMs: result?.diagnostics?.clockAgeMs ?? null});
+    return result;
+  };
+  window.fixtureReadAudit = {
+    drain(node) {
+      note('existing-read-return', {}, node);
+      const value = {rows: rows.splice(0), omitted}; omitted = 0; return value;
+    }
+  };
+})();"""
+
+
 # Failure evidence for held-key and source-control lifetime contracts. Observe the existing fixture
 # transport and trusted event delivery before content.js; never issue a command,
 # refresh an authority clock, change a key, or extend the contract's deadline.
@@ -148,6 +185,18 @@ class BrowserContract(unittest.TestCase):
         cls.home.cleanup()
 
     def setUp(self):
+        self.read_observations = (
+            []
+            if self._testMethodName
+            in (
+                "test_host_renewed_motion_modes_override_os_and_legacy_boolean",
+                "test_more_menu_hide_hint_and_outside_pointer_dismissal",
+                "test_packaged_cjk_faces_render_by_target_without_loading_all_regions",
+            )
+            else None
+        )
+        self.read_omitted = 0
+        self.addCleanup(self.save_read_observations)
         temporary = tempfile.TemporaryDirectory(dir=self.home.name)
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -245,6 +294,8 @@ class BrowserContract(unittest.TestCase):
             + "\n"
             + held_key_observer
             + "\n"
+            + (READ_OBSERVER if self.read_observations is not None else "")
+            + "\n"
             + bridge
             + "\n"
             + CONTENT.read_text()
@@ -291,9 +342,41 @@ class BrowserContract(unittest.TestCase):
             data = {**(data or {})}
             data.setdefault("appearance", {"uiLanguage": "zh-CN"})
         self.sequence += 1
+        if self.read_observations is not None:
+            observed = self.page.evaluate(
+                """message => {
+                  const value = fixtureCommand(message);
+                  return {value, audit: fixtureReadAudit.drain()};
+                }""",
+                {"id": self.sequence, "op": operation, "data": data or {}},
+            )
+            self.record_read_observations(observed["audit"])
+            return observed.get("value")
         return self.page.evaluate(
             "message => window.fixtureCommand(message)",
             {"id": self.sequence, "op": operation, "data": data or {}},
+        )
+
+    def record_read_observations(self, audit):
+        if self.read_observations is None or not audit:
+            return
+        remaining = max(0, 256 - len(self.read_observations))
+        self.read_observations.extend(audit["rows"][:remaining])
+        self.read_omitted += audit["omitted"] + max(0, len(audit["rows"]) - remaining)
+
+    def save_read_observations(self):
+        if self.read_observations is None:
+            return
+        output = Path(
+            os.environ.get(
+                "TYPELAY_BROWSER_LIFETIME_OUTPUT",
+                ROOT / "artifacts/linux/browser-native/overlay/lifetime",
+            )
+        )
+        output.mkdir(parents=True, exist_ok=True)
+        (output / (self._testMethodName + "-reads.json")).write_text(
+            json.dumps({"rows": self.read_observations, "omitted": self.read_omitted}, indent=2),
+            encoding="utf-8",
         )
 
     def capture(self):
@@ -303,15 +386,17 @@ class BrowserContract(unittest.TestCase):
         result = self.page.evaluate(
             """id => {
               const description = fixtureCommand({id, op: 'describe'});
-              if (!description) return {described: false, snapshot: null, diagnostics: null};
+              if (!description) return {described: false, snapshot: null, diagnostics: null,
+                audit: window.fixtureReadAudit?.drain()};
               const snapshot = fixtureCommand({id: id + 1, op: 'capture', data: {
                 target: description.target, authority: description.authority}});
               const diagnostics = snapshot ? null : fixtureCommand({id: id + 2,
                 op: 'describe', data: {target: description.target}})?.diagnostics ?? null;
-              return {described: true, snapshot, diagnostics};
+              return {described: true, snapshot, diagnostics, audit: window.fixtureReadAudit?.drain()};
             }""",
             self.sequence - 2,
         )
+        self.record_read_observations(result.get("audit"))
         self.capture_diagnostics = result["diagnostics"]
         self.assertTrue(result["described"], self.capture_diagnostics)
         return result["snapshot"]
@@ -2760,7 +2845,14 @@ class BrowserContract(unittest.TestCase):
         ]["objectId"]
 
     def overlay_dom(self, object_id, function):
-        return self.cdp.send(
+        if self.read_observations is not None:
+            function = (
+                "function() { const value = ("
+                + function
+                + """).call(this);
+              return {value, audit: fixtureReadAudit.drain(this)}; }"""
+            )
+        result = self.cdp.send(
             "Runtime.callFunctionOn",
             {
                 "objectId": object_id,
@@ -2768,6 +2860,10 @@ class BrowserContract(unittest.TestCase):
                 "returnByValue": True,
             },
         )["result"].get("value")
+        if self.read_observations is not None and result is not None:
+            self.record_read_observations(result["audit"])
+            return result.get("value")
+        return result
 
     def click_overlay_control(self, name):
         rect = self.overlay_dom(
@@ -2776,7 +2872,7 @@ class BrowserContract(unittest.TestCase):
         )
         self.page.mouse.click(rect["x"] + rect["width"] / 2, rect["y"] + rect["height"] / 2)
 
-    def observe_overlay_frames(self, *, start_on_click=False):
+    def observe_overlay_frames(self, *, start_on_click=False, click_label="展开"):
         # Public browser DOM/RAF observation of the real closed-shadow widgets.
         # It neither reads adapter variables nor supplies an animation model.
         return self.cdp.send(
@@ -2784,7 +2880,7 @@ class BrowserContract(unittest.TestCase):
             {
                 "objectId": self.overlay_control("TypeLay 译文", "textbox"),
                 "arguments": (
-                    [{"objectId": self.overlay_control("展开")}] if start_on_click else []
+                    [{"objectId": self.overlay_control(click_label)}] if start_on_click else []
                 ),
                 "returnByValue": True,
                 "functionDeclaration": """function(expandControl) {
@@ -2794,6 +2890,7 @@ class BrowserContract(unittest.TestCase):
           window.fixtureMotionDone = false;
           window.fixtureMotionStartedMs = null;
           window.fixtureMotionClick = null;
+          window.fixtureMotionControl = expandControl ?? null;
           // Read only after a failed wait, retaining the observed control's
           // identity even if the live overlay was removed or replaced.
           window.fixtureMotionInspection = () => {
@@ -4537,10 +4634,12 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual({frame["host"]["width"] for frame in frames}, {480})
         self.assertEqual(len({frame["host"]["height"] for frame in frames}), 1)
 
-    def test_explicit_motion_mode_overrides_os_and_legacy_boolean(self):
+    def test_host_renewed_motion_modes_override_os_and_legacy_boolean(self):
         # Long animation samples are separate preference scenes, not one
         # synthetic host session without its normal fresh source observations.
-        # Never recapture on failure or extend the original 1500/800ms clocks.
+        # Only full/reduce long-frame positives receive one normal host display
+        # renewal after setup. Never revive a failed scene or renew a key ticket;
+        # the 1500/800ms clocks and 360ms sample window remain unchanged.
         observations = []
         output = Path(
             os.environ.get(
@@ -4566,6 +4665,7 @@ class BrowserContract(unittest.TestCase):
                 self.page.evaluate("""() => {
                   const rows = [], media = matchMedia('(prefers-reduced-motion: reduce)');
                   let editor = null, panel = null, expiry = null, omitted = 0, viewProof = null, sameView = true;
+                  let displayProof = null, renewals = 0;
                   const log = kind => {
                     if (rows.length < 48) rows.push({kind, ms: performance.now(),
                       matches: media.matches, connected: editor?.isConnected ?? null,
@@ -4584,7 +4684,13 @@ class BrowserContract(unittest.TestCase):
                       const proof = JSON.stringify([message.data.target, message.data.generation,
                         message.data.revision, message.data.view.viewContext?.token]);
                       sameView = viewProof === null || viewProof === proof; viewProof ??= proof;
+                      displayProof = JSON.stringify([message.data.target, message.data.authority,
+                        message.data.revision, message.data.generation]);
                       log('render');
+                    }
+                    if (message.op === 'overlay-renew') {
+                      expiry = message.data.expiresAtMs - 1000000;
+                      log('renew');
                     }
                     if (message.op === 'capture') log('capture-return');
                     return result;
@@ -4600,6 +4706,33 @@ class BrowserContract(unittest.TestCase):
                       log('assert-read');
                       return value.parentElement.dataset.motion;
                     },
+                    renew(value, request, selection) {
+                      request.data.generation ??= fixtureBindings.generation;
+                      const proof = JSON.stringify([request.data.target, request.data.authority,
+                        request.data.revision, request.data.generation]);
+                      const host = panel?.getRootNode().host, now = performance.now();
+                      const trigger = window.fixtureMotionControl;
+                      if (renewals || !sameView || value !== editor || !editor?.isConnected
+                          || editor.parentElement !== panel || !host?.isConnected
+                          || !trigger?.isConnected || trigger.getRootNode().host !== host
+                          || !(now < expiry) || proof !== displayProof || !document.hasFocus()
+                          || document.activeElement?.id !== 'source' || !editor.readOnly
+                          || editor.selectionStart !== selection[0] || editor.selectionEnd !== selection[1])
+                        return {eligible: false};
+                      const animations = host.getAnimations(), times = animations.map(a => a.currentTime);
+                      const previousExpiry = expiry;
+                      renewals++;
+                      fixtureCommand(request);
+                      const after = host.getAnimations();
+                      return {eligible: true, singleRenewal: renewals === 1,
+                        sameView: editor.isConnected && editor.parentElement === panel && host.isConnected
+                          && trigger.isConnected && trigger.getRootNode().host === host,
+                        sameSelection: editor.selectionStart === selection[0] && editor.selectionEnd === selection[1],
+                        sameMotion: animations.length === after.length
+                          && animations.every((a, i) => a === after[i] && a.currentTime === times[i]),
+                        displayed: performance.now() < expiry && expiry > previousExpiry,
+                        sourceFocused: document.hasFocus() && document.activeElement?.id === 'source'};
+                    },
                     ready() {
                       return editor?.isConnected && editor.parentElement === panel && panel.dataset.motion === 'reduce'
                         && Number.isFinite(expiry) && performance.now() < expiry;
@@ -4610,6 +4743,7 @@ class BrowserContract(unittest.TestCase):
                     }
                   };
                 }""")
+                frames = []
                 try:
                     data = self.motion_view()
                     if mode == "full":
@@ -4632,19 +4766,55 @@ class BrowserContract(unittest.TestCase):
                         editor,
                         "function() { return [this.selectionStart, this.selectionEnd]; }",
                     )
-                    if mode == "full":
-                        self.observe_overlay_frames(start_on_click=True)
-                        self.click_overlay_control("展开")
+                    if mode in ("full", "reduce"):
+                        if mode == "reduce":
+                            self.click_overlay_control("展开")
+                        label = "展开" if mode == "full" else "缩小"
+                        self.observe_overlay_frames(start_on_click=True, click_label=label)
+                        # Resolve the original single-click point before renewal,
+                        # not by looking for a replacement after an expired view.
+                        control = self.overlay_control(label)
+                        rect = self.overlay_dom(
+                            control, "function() { return this.getBoundingClientRect().toJSON(); }"
+                        )
+                        self.sequence += 1
+                        renewal = {
+                            "id": self.sequence,
+                            "op": "overlay-renew",
+                            "data": {
+                                "target": data["target"],
+                                "authority": data["authority"],
+                                "revision": data["revision"],
+                            },
+                        }
+                        self.assertEqual(
+                            self.overlay_dom(
+                                editor,
+                                "function() { return fixtureMotionAudit.renew(this, %s, %s); }"
+                                % (json.dumps(renewal), json.dumps(selection)),
+                            ),
+                            dict(
+                                eligible=True,
+                                singleRenewal=True,
+                                sameView=True,
+                                sameSelection=True,
+                                sameMotion=True,
+                                displayed=True,
+                                sourceFocused=True,
+                            ),
+                        )
+                        self.page.mouse.click(
+                            rect["x"] + rect["width"] / 2, rect["y"] + rect["height"] / 2
+                        )
                         frames = self.motion_frames()
-                        self.assertGreater(len({frame["host"]["height"] for frame in frames}), 2)
-                        self.page.emulate_media(reduced_motion="no-preference")
-                        self.assertEqual(actual_mode(), "full")
-                    elif mode == "reduce":
-                        self.click_overlay_control("展开")
-                        self.click_overlay_control("缩小")
-                        self.observe_overlay_frames()
-                        frames = self.motion_frames()
-                        self.assertEqual(len({frame["host"]["height"] for frame in frames}), 1)
+                        if mode == "full":
+                            self.assertGreater(
+                                len({frame["host"]["height"] for frame in frames}), 2
+                            )
+                            self.page.emulate_media(reduced_motion="no-preference")
+                            self.assertEqual(actual_mode(), "full")
+                        else:
+                            self.assertEqual(len({frame["host"]["height"] for frame in frames}), 1)
                     else:
                         # Preserve immediate three-mode changes on this same
                         # live editor/token, without three long frame samples.
@@ -4689,7 +4859,11 @@ class BrowserContract(unittest.TestCase):
                     self.assertEqual(self.accepted(), [])
                 finally:
                     observations.append(
-                        {"mode": mode, **self.page.evaluate("fixtureMotionAudit.finish()")}
+                        {
+                            "mode": mode,
+                            "frames": frames,
+                            **self.page.evaluate("fixtureMotionAudit.finish()"),
+                        }
                     )
                     (output / (self._testMethodName + ".json")).write_text(
                         json.dumps(observations, indent=2), encoding="utf-8"

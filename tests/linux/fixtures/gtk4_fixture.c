@@ -239,9 +239,12 @@ typedef struct {
     const char *last_signal;
     gint64 observed_at;
     gint event_type;
-    guint64 surface_instance, native_instance;
+    guint64 surface_instance, native_instance, widget_instance, controller_instance;
+    double x, y;
+    gboolean has_position, pointer_device;
 } ControlPointerEvent;
-static void observe_control_pointer_event(GtkEventControllerMotion *motion, const char *signal) {
+static void observe_control_pointer_event(GtkEventControllerMotion *motion, const char *signal,
+        gboolean has_position, double x, double y) {
     GtkEventController *controller = GTK_EVENT_CONTROLLER(motion);
     ControlPointerEvent *observation = g_object_get_data(G_OBJECT(controller), "fixture-last-pointer-event");
     if (!observation) {
@@ -260,16 +263,37 @@ static void observe_control_pointer_event(GtkEventControllerMotion *motion, cons
     observation->event_type = event ? (gint)gdk_event_get_event_type(event) : -1;
     observation->surface_instance = owned ? language_instance(G_OBJECT(surface)) : 0;
     observation->native_instance = owned ? language_instance(G_OBJECT(native)) : 0;
+    observation->widget_instance = language_instance(G_OBJECT(gtk_event_controller_get_widget(controller)));
+    observation->controller_instance = language_instance(G_OBJECT(controller));
+    observation->has_position = has_position;
+    observation->x = x; observation->y = y;
+    GdkSeat *seat = gdk_display_get_default_seat(gtk_widget_get_display(GTK_WIDGET(report_window)));
+    observation->pointer_device = event && seat
+        && gdk_event_get_device(event) == gdk_seat_get_pointer(seat);
 }
 static void control_pointer_motion(GtkEventControllerMotion *motion, double x, double y, gpointer data) {
     (void)x; (void)y; (void)data;
-    observe_control_pointer_event(motion, "motion");
+    observe_control_pointer_event(motion, "motion", TRUE, x, y);
 }
 static void report_control_pointer_event(JsonBuilder *builder, GtkEventControllerMotion *motion) {
     GtkEventController *controller = GTK_EVENT_CONTROLLER(motion);
     ControlPointerEvent *observation = g_object_get_data(G_OBJECT(controller), "fixture-last-pointer-event");
     GtkNative *native = gtk_widget_get_native(gtk_event_controller_get_widget(controller));
     json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "controllerInstance");
+    json_builder_add_int_value(builder, language_instance(G_OBJECT(controller)));
+    json_builder_set_member_name(builder, "widgetInstance");
+    json_builder_add_int_value(builder, language_instance(G_OBJECT(gtk_event_controller_get_widget(controller))));
+    json_builder_set_member_name(builder, "eventControllerInstance");
+    json_builder_add_int_value(builder, observation ? observation->controller_instance : 0);
+    json_builder_set_member_name(builder, "eventWidgetInstance");
+    json_builder_add_int_value(builder, observation ? observation->widget_instance : 0);
+    json_builder_set_member_name(builder, "hasPosition");
+    json_builder_add_boolean_value(builder, observation && observation->has_position);
+    json_builder_set_member_name(builder, "x"); json_builder_add_double_value(builder, observation ? observation->x : 0);
+    json_builder_set_member_name(builder, "y"); json_builder_add_double_value(builder, observation ? observation->y : 0);
+    json_builder_set_member_name(builder, "pointerDevice");
+    json_builder_add_boolean_value(builder, observation && observation->pointer_device);
     json_builder_set_member_name(builder, "phase");
     json_builder_add_int_value(builder, gtk_event_controller_get_propagation_phase(controller));
     json_builder_set_member_name(builder, "limit");
@@ -293,14 +317,14 @@ static void report_control_pointer_event(JsonBuilder *builder, GtkEventControlle
 }
 static void control_pointer_enter(GtkEventControllerMotion *motion, double x, double y, gpointer data) {
     (void)x; (void)y; (void)data;
-    observe_control_pointer_event(motion, "enter");
+    observe_control_pointer_event(motion, "enter", TRUE, x, y);
     GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(motion));
     g_object_set_data(G_OBJECT(widget), "fixture-control-enter-at",
         (gpointer)(gintptr)(g_get_monotonic_time() / 1000));
 }
 static void control_pointer_leave(GtkEventControllerMotion *motion, gpointer data) {
     (void)data;
-    observe_control_pointer_event(motion, "leave");
+    observe_control_pointer_event(motion, "leave", FALSE, 0, 0);
     GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(motion));
     g_object_set_data(G_OBJECT(widget), "fixture-control-enter-at", NULL);
     g_object_set_data(G_OBJECT(widget), "fixture-control-leave-at",
@@ -310,18 +334,18 @@ static void control_pointer_unmap(GtkWidget *widget, gpointer data) {
     (void)data;
     g_object_set_data(G_OBJECT(widget), "fixture-control-enter-at", NULL);
 }
-/* Compare propagation phases without changing the existing BUBBLE click gate.
+/* Independent phase observations support the fixed-point click contract.
  * These void signal observers do not consume pointer events or move focus. */
 static void control_capture_pointer_enter(GtkEventControllerMotion *motion, double x, double y, gpointer data) {
     (void)x; (void)y; (void)data;
-    observe_control_pointer_event(motion, "enter");
+    observe_control_pointer_event(motion, "enter", TRUE, x, y);
     GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(motion));
     g_object_set_data(G_OBJECT(widget), "fixture-control-capture-enter-at",
         (gpointer)(gintptr)(g_get_monotonic_time() / 1000));
 }
 static void control_capture_pointer_leave(GtkEventControllerMotion *motion, gpointer data) {
     (void)data;
-    observe_control_pointer_event(motion, "leave");
+    observe_control_pointer_event(motion, "leave", FALSE, 0, 0);
     GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(motion));
     g_object_set_data(G_OBJECT(widget), "fixture-control-capture-enter-at", NULL);
     g_object_set_data(G_OBJECT(widget), "fixture-control-capture-leave-at",
@@ -644,6 +668,10 @@ static void report_control_surface(JsonBuilder *builder, GtkWidget *widget) {
         GtkNative *pointer_native = gtk_native_get_for_surface(pointer_surface);
         /* Report a pick only inside this owned fixture, never other app names. */
         if (pointer_native && gtk_widget_get_root(GTK_WIDGET(pointer_native)) == GTK_ROOT(report_window)) {
+            json_builder_set_member_name(builder, "surfaceInstance");
+            json_builder_add_int_value(builder, language_instance(G_OBJECT(pointer_surface)));
+            json_builder_set_member_name(builder, "nativeInstance");
+            json_builder_add_int_value(builder, language_instance(G_OBJECT(pointer_native)));
             double ox, oy;
             gtk_native_get_surface_transform(pointer_native, &ox, &oy);
             GtkWidget *picked = gtk_widget_pick(GTK_WIDGET(pointer_native), px + ox, py + oy, GTK_PICK_DEFAULT);

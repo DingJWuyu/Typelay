@@ -14,9 +14,10 @@ class PackageChainBudgetTests(unittest.TestCase):
     def test_bounded_chain_admission(self):
         for elapsed, admitted in (
             (425, True),
-            (900, True),
-            (901, False),
-            (4501, False),
+            (979, True),
+            (1200, True),
+            (1201, False),
+            (4801, False),
             (-1, False),
         ):
             with self.subTest(elapsed=elapsed), tempfile.TemporaryDirectory() as directory:
@@ -41,7 +42,7 @@ class PackageChainBudgetTests(unittest.TestCase):
                     dict(
                         admitted=admitted,
                         elapsedSeconds=elapsed,
-                        remainingSeconds=4500 - elapsed,
+                        remainingSeconds=4800 - elapsed,
                         requiredSeconds=3600,
                     ),
                 )

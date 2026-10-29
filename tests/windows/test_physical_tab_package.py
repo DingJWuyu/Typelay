@@ -195,6 +195,54 @@ class PhysicalTabPackageTests(unittest.TestCase):
             with self.subTest(ordered=ordered), self.assertRaises(ValueError):
                 package.verify_original_suite(self.home)
 
+    def test_current_contract_manifest_selects_only_this_runs_main_results(self):
+        results = self.home / "test-results"
+        run = results / ("contracts-" + "a" * 32)
+        primary = run / "main"
+        isolated = run / "archive-body-timeout"
+        primary.mkdir(parents=True)
+        isolated.mkdir()
+        shutil.copyfile(self.write_trx(), primary / "main.trx")
+        # Old top-level and isolated results must not be counted or substituted.
+        shutil.copyfile(self.write_trx(outcome="Failed"), results / "old.trx")
+        shutil.copyfile(self.write_trx(), isolated / "unrelated.trx")
+        manifest = results / "current-contracts.json"
+        manifest.write_text(json.dumps({"schemaVersion": 1, "runDirectory": run.name}))
+        report = {
+            "mainDirectory": str(primary),
+            "mainExitCode": 1,
+            "isolatedExitCode": 0,
+            "failures": ["main-result-failed"],
+        }
+        (run / "result.json").write_text(json.dumps(report))
+        selected = package.current_main_results(results)
+        self.assertEqual(primary, selected)
+        package.verify_original_suite(selected)
+        (primary / "main.trx").unlink()
+        with self.assertRaises(ValueError):
+            package.verify_original_suite(package.current_main_results(results))
+        for bad in (
+            dict(report, mainDirectory=str(isolated)),
+            dict(report, mainExitCode=None),
+            dict(report, mainExitCode=130),
+            dict(report, isolatedExitCode=None),
+            dict(report, mainExitCode=0, isolatedExitCode=0, failures=["interrupted"]),
+            dict(report, failures=None),
+        ):
+            (run / "result.json").write_text(json.dumps(bad))
+            with self.subTest(report=bad), self.assertRaises(ValueError):
+                package.current_main_results(results)
+        (run / "result.json").unlink()
+        with self.assertRaises(ValueError):
+            package.current_main_results(results)
+        for name in ("../outside", "contracts-old", str(run.resolve())):
+            manifest.write_text(json.dumps({"schemaVersion": 1, "runDirectory": name}))
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                package.current_main_results(results)
+        manifest.unlink()
+        with self.assertRaises(ValueError):
+            package.current_main_results(results)
+
     def test_original_suite_admission_does_not_ignore_failed_or_missing_rows(self):
         self.write_trx()
         package.verify_original_suite(self.home)

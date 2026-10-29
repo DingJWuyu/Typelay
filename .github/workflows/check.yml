@@ -107,7 +107,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.windows == 'true'
     runs-on: windows-latest
-    timeout-minutes: 75
+    timeout-minutes: 80
     steps:
       - name: Record the Windows check budget start
         shell: pwsh
@@ -518,7 +518,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $elapsed = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [long]$env:TYPELAY_WINDOWS_CHECK_START
           python eng/windows/admit-package-chain.py --elapsed-seconds $elapsed --report artifacts/hy-results/admission.json
-          if ($LASTEXITCODE -ne 0) { throw 'Insufficient 75-minute job budget for the bounded ordinary-app and Hy chain.' }
+          if ($LASTEXITCODE -ne 0) { throw 'Insufficient 80-minute job budget for the bounded ordinary-app and Hy chain.' }
           $pin = Get-Content src/shared/TypeLay.Worker/native/hy/assets.lock.json -Raw | ConvertFrom-Json
           "cache-key=typelay-hy-win-$($pin.model.sha256)-$($pin.runtime_archive.sha256)" >> $env:GITHUB_OUTPUT
       - name: Restore the fixed Hy model and CPU archive cache
@@ -996,6 +996,8 @@ jobs:
             artifacts/linux/qt-cooperative/unmodified-reentry-native.log
             artifacts/linux/qt-cooperative/ordered-result.json
             artifacts/linux/qt-cooperative/font-preference-observations.json
+            artifacts/linux/qt-cooperative/font-order-*.json
+            artifacts/linux/qt-cooperative/font-order-*.log
             artifacts/linux/qt-cooperative/ordered-native-state.json
             artifacts/linux/qt-cooperative/ordered-native.log
             artifacts/linux/qt-cooperative/ordered-delayed-result.json

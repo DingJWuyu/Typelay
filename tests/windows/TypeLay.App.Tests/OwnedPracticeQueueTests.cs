@@ -1261,7 +1261,44 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             Assert.False(hook.AcceptanceReady(firstToken, proposed, handoffAt));
             Assert.False(Installed((first.Lease, proposed, first.CapturedAtMs)));
             Assert.Equal(first.Lease.Source.ObservedAtMs + Limits.PermitMaxAgeMs, first.Permit.ExpiresAtMs);
-            string original = N.ReadText(field, Limits.MaxTextUnits);
+            string original;
+            try
+            {
+                original = N.ReadText(field, Limits.MaxTextUnits);
+            }
+            catch (N.NativeMessageException error)
+            {
+                // One failure-only observation of this retained owned child.
+                // No second WM_GETTEXT, replacement timeout or inferred success.
+                try
+                {
+                    bool exited = child!.Process.HasExited;
+                    uint thread = N.GetWindowThreadProcessId(field, out uint process);
+                    bool owned = process == (uint)child.Process.Id && N.GetAncestor(field, 2) == root;
+                    var gui = new N.GuiThreadInfo { Size = (uint)Marshal.SizeOf<N.GuiThreadInfo>() };
+                    bool? guiRead = !exited && owned && thread != 0 ? N.GetGUIThreadInfo(thread, ref gui) : null;
+                    int? guiError = guiRead == false ? Marshal.GetLastPInvokeError() : null;
+                    TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        operation = "owned-source-read-failed",
+                        afterFailure = true,
+                        nativeOperation = error.Operation is "ReadText" or "Send" ? error.Operation : "unknown",
+                        error.MessageId,
+                        error.Win32Error,
+                        childExited = exited,
+                        sameOwnedProcessAndRoot = owned,
+                        rootExists = N.IsWindow(root),
+                        fieldExists = N.IsWindow(field),
+                        sourceForeground = Native.GetForegroundWindow() == root,
+                        guiThreadInfoSucceeded = guiRead,
+                        guiThreadInfoError = guiError,
+                        sourceActive = guiRead == true ? gui.Active == root : (bool?)null,
+                        fieldFocused = guiRead == true ? gui.Focus == field : (bool?)null
+                    }));
+                }
+                catch { /* Keep the original bounded native-message exception. */ }
+                throw;
+            }
             Assert.True(host.EditorReady(first.Lease.Source.Target));
             if (!allowInjectedInput)
             {

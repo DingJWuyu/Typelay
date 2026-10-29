@@ -65,6 +65,10 @@ class WindowsContractRunnerTests(unittest.TestCase):
                 shim.chmod(0o700)
             calls = root / "calls.jsonl"
             results = root / "results"
+            results.mkdir()
+            (results / "current-contracts.json").write_text(
+                json.dumps({"schemaVersion": 1, "runDirectory": "contracts-" + "f" * 32})
+            )
             environment = dict(
                 os.environ,
                 PATH=str(root) + os.pathsep + os.environ["PATH"],
@@ -112,6 +116,10 @@ class WindowsContractRunnerTests(unittest.TestCase):
             summaries = list(results.glob("contracts-*/result.json"))
             self.assertEqual(1, len(summaries))
             summary = json.loads(summaries[0].read_text(encoding="utf-8-sig"))
+            current = json.loads((results / "current-contracts.json").read_text())
+            self.assertEqual(
+                {"schemaVersion": 1, "runDirectory": summaries[0].parent.name}, current
+            )
             expected_main = (
                 None
                 if mode == "main-interrupt"

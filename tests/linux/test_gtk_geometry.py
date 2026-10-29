@@ -495,6 +495,183 @@ class GlossaryPaintGeometryTests(unittest.TestCase):
         self.assertFalse(glossary_hover_current(self.control(), 107, before, (976, 432), 108))
 
 
+class GlossaryMotionGeometryTests(unittest.TestCase):
+    """Captured controller/device evidence, not a real GTK or XTest execution."""
+
+    def setUp(self):
+        self.before = GlossaryPaintGeometryTests().control()
+        self.point, self.origin = (976, 432), (10, 20)
+        self.pointer = dict(
+            status="captured", observedAtMonoMs=111, ownedNiri=99, WINDOW=99, X=986, Y=452
+        )
+        for key, phase, instance in (("pointerDispatchObservation", 2, 301), ("capture", 1, 302)):
+            dispatch = dict(
+                controllerInstance=instance,
+                widgetInstance=224,
+                signalCount=1,
+                phase=phase,
+                limit=1,
+                nativeInstance=200,
+            )
+            if key == "capture":
+                self.before["pointerCaptureObservation"] = dict(
+                    attachedAtMonoMs=99, leftAtMonoMs=0, dispatch=dispatch
+                )
+            else:
+                self.before[key] = dispatch
+        self.before.update(pointerObserverAttachedAtMonoMs=99, pointerLeftAtMonoMs=0)
+        self.control = copy.deepcopy(self.before)
+        self.control.update(
+            pointerInside=False,
+            pointerEnteredAtMonoMs=0,
+            pointerObservation=dict(
+                status="captured",
+                surface="control-native",
+                surfaceInstance=216,
+                nativeInstance=200,
+                x=252.0,
+                y=334.0,
+                pickedAncestors=[
+                    dict(instance=224, isObservedControl=True, visible=True, mapped=True)
+                ],
+            ),
+        )
+        for dispatch in (
+            self.control["pointerDispatchObservation"],
+            self.control["pointerCaptureObservation"]["dispatch"],
+        ):
+            dispatch.update(
+                signalCount=2,
+                lastSignal="motion",
+                eventType=1,
+                observedAtMonoMs=112,
+                eventControllerInstance=dispatch["controllerInstance"],
+                eventWidgetInstance=224,
+                eventSurfaceInstance=216,
+                eventNativeInstance=200,
+                pointerDevice=True,
+                hasPosition=True,
+                x=232.0,
+                y=11.0,
+            )
+
+    def admitted(self):
+        return glossary_hover_current(
+            self.control, 120, self.before, self.point, 108, self.pointer, self.origin, 107
+        )
+
+    def test_post_move_actual_motion_can_prove_current_point_without_enter_history(self):
+        self.assertTrue(self.admitted())
+        self.assertFalse(self.control["pointerInside"])
+        self.assertEqual(self.control["pointerEnteredAtMonoMs"], 0)
+
+    def test_old_foreign_or_unpositioned_dispatch_cannot_replace_crossing(self):
+        original = copy.deepcopy(self.control)
+        for phase in ("pointerDispatchObservation", "pointerCaptureObservation"):
+            for change in (
+                dict(observedAtMonoMs=107),
+                dict(observedAtMonoMs=121),
+                dict(signalCount=1),
+                dict(lastSignal="enter"),
+                dict(lastSignal="leave"),
+                dict(eventType=2),
+                dict(controllerInstance=999),
+                dict(eventControllerInstance=999),
+                dict(widgetInstance=999),
+                dict(eventWidgetInstance=999),
+                dict(eventSurfaceInstance=999),
+                dict(eventNativeInstance=999),
+                dict(nativeInstance=999),
+                dict(pointerDevice=False),
+                dict(hasPosition=False),
+                dict(x=233.0),
+                dict(y=12.0),
+                dict(x=float("nan")),
+                dict(limit=0),
+                dict(phase=0),
+            ):
+                with self.subTest(phase=phase, change=change):
+                    self.control = copy.deepcopy(original)
+                    dispatch = self.control[phase]
+                    if phase == "pointerCaptureObservation":
+                        dispatch = dispatch["dispatch"]
+                    dispatch.update(change)
+                    self.assertFalse(self.admitted())
+
+    def test_controller_installed_late_or_later_leave_refuses(self):
+        original = copy.deepcopy(self.control)
+        for capture in (False, True):
+            for key, value in (("attachedAtMonoMs", 108), ("leftAtMonoMs", 113)):
+                with self.subTest(capture=capture, key=key):
+                    self.control = copy.deepcopy(original)
+                    if capture:
+                        self.control["pointerCaptureObservation"][key] = value
+                    else:
+                        self.control[
+                            "pointerObserverAttachedAtMonoMs"
+                            if key == "attachedAtMonoMs"
+                            else "pointerLeftAtMonoMs"
+                        ] = value
+                    self.assertFalse(self.admitted())
+
+    def test_actual_device_point_pick_surface_and_x_window_are_all_required(self):
+        original = copy.deepcopy(self.control)
+        for change in (
+            dict(status="unavailable"),
+            dict(surface="fixture-window"),
+            dict(surfaceInstance=999),
+            dict(nativeInstance=999),
+            dict(x=251.0),
+            dict(y=335.0),
+            dict(pickedAncestors=[]),
+            dict(
+                pickedAncestors=[
+                    dict(instance=999, isObservedControl=True, visible=True, mapped=True)
+                ]
+            ),
+            dict(
+                pickedAncestors=[
+                    dict(instance=224, isObservedControl=True, visible=True, mapped=False)
+                ]
+            ),
+        ):
+            with self.subTest(device=change):
+                self.control = copy.deepcopy(original)
+                self.control["pointerObservation"].update(change)
+                self.assertFalse(self.admitted())
+        self.control = original
+        original_pointer = dict(self.pointer)
+        for change in (
+            dict(status="unavailable"),
+            dict(observedAtMonoMs=107),
+            dict(observedAtMonoMs=121),
+            dict(WINDOW=999),
+            dict(X=987),
+            dict(Y=453),
+        ):
+            with self.subTest(pointer=change):
+                self.pointer = {**original_pointer, **change}
+                self.assertFalse(self.admitted())
+
+    def test_unmap_replacement_old_paint_or_fixed_point_outside_still_refuses(self):
+        original = copy.deepcopy(self.control)
+        mutations = (
+            lambda c: c.update(instance=999),
+            lambda c: c.update(enabled=False),
+            lambda c: c.update(visible=False),
+            lambda c: c["paintObservation"].update(mapGeneration=3, paintedMapGeneration=3),
+            lambda c: c["paintObservation"].update(paintedAtMonoMs=121),
+            lambda c: c["paintObservation"].update(ready=False),
+        )
+        for mutate in mutations:
+            self.control = copy.deepcopy(original)
+            mutate(self.control)
+            self.assertFalse(self.admitted())
+        self.control = original
+        self.point = (976, 400)
+        self.assertFalse(self.admitted())
+
+
 class GlossarySaveOutcomeTests(unittest.TestCase):
     def test_actual_ime_refusal_ends_one_click_without_waiting_for_deadline(self):
         with self.assertRaisesRegex(AssertionError, "explicit Save refused"):

@@ -2527,13 +2527,21 @@ public sealed partial class OverlayRenderingTests(WpfDesktopFixture desktop)
                 finally { button.MouseEnter -= onEnter; }
                 Assert.True(button.IsMouseOver);
                 Assert.Equal(overlay.Handle, WindowFromPoint(pixel));
-                Assert.Equal(1, button.Opacity);
-                Assert.False(Native.GetAsyncKeyState(1) < 0);
-                KeyboardInput[] input = [new() { MouseFlags = 2 }, new() { MouseFlags = 4 }];
-                uint sent = SendInput(2, input, Marshal.SizeOf<KeyboardInput>());
-                if (sent == 1)
-                    Assert.Equal(1u, SendInput(1, [input[1]], Marshal.SizeOf<KeyboardInput>()));
-                Assert.Equal(2u, sent);
+                await WithActionPresented(button, overlay, point, pixel, actionOpacity: true, deadline.Token, validate =>
+                {
+                    validate();
+                    Assert.True(button.IsMouseOver);
+                    Assert.Equal(1, button.Opacity);
+                    Assert.Equal(overlay.Handle, WindowFromPoint(pixel));
+                    Assert.False(Native.GetAsyncKeyState(1) < 0);
+                    KeyboardInput[] input = [new() { MouseFlags = 2 }, new() { MouseFlags = 4 }];
+                    validate();
+                    uint sent = SendInput(2, input, Marshal.SizeOf<KeyboardInput>());
+                    if (sent == 1)
+                        Assert.Equal(1u, SendInput(1, [input[1]], Marshal.SizeOf<KeyboardInput>()));
+                    Assert.Equal(2u, sent);
+                    return Task.CompletedTask;
+                });
             }
             else
             {

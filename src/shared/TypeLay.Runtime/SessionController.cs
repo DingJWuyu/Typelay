@@ -309,6 +309,7 @@ public sealed partial class SessionController : IDisposable
     private void Configure()
     {
         _styleObservation = null;
+        _editorGlossaryHandoff = null;
         _pendingPracticeCompletion = null;
         RetireAutomaticPractice(false);
         if (PracticeProgress is { } practice)
@@ -569,6 +570,7 @@ public sealed partial class SessionController : IDisposable
         {
             RevokeInput("editing-translation");
             _permitUntil = 0;
+            CheckEditorGlossaryHandoff();
             // Editor focus/composition arrives after BeginEdit's synchronous render.
             // Refresh only changed read-only qualifications, never a source lease.
             if (_renderedTranslationMenu != GetTranslationMenuState())
@@ -1799,6 +1801,12 @@ public sealed partial class SessionController : IDisposable
         BeginAutomaticEdit();
         _generation++;
         _editTransitionUntil = _loop.NowMs + 500;
+        _editorGlossaryHandoff = _styleObservation is { } observation
+            && observation.Target == source.Target && observation.SourceEpoch == _hook.SourceUserEpoch
+            && observation.CommandGeneration == _hook.CommandGeneration
+                ? new(observation, source, new(source.Target, _hook.CommandGeneration, _generation),
+                    _configurationRevision, _settings.Revision, _hook.ConnectionId, _hook.WindowEpoch, _editTransitionUntil)
+                : null;
         RevokeInput("begin-edit");
         _permitUntil = 0;
         Render();
@@ -2054,6 +2062,7 @@ public sealed partial class SessionController : IDisposable
         CancelGlossaryEntry();
         _manualObservation = null;
         _styleObservation = null;
+        _editorGlossaryHandoff = null;
         if (_ownedPractice is not null || _awaitingPractice is not null || _awaitingPracticeReturn is not null)
             RetireAutomaticPractice();
         if (_session.Current is not null)

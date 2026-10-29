@@ -150,30 +150,46 @@ public sealed partial class OverlayRenderingTests
         finally { Assert.True(SetCursorPos(original.X, original.Y)); }
     });
 
-    private static async Task MoveActionPointer(FrameworkElement target, nint expectedWindow, FrameworkElement? leaving = null)
+    private static async Task MoveActionPointer(FrameworkElement target, nint expectedWindow, FrameworkElement? leaving = null,
+        Action? inputAttempted = null, Action? observation = null, CancellationToken? cancellation = null, Point? retainedPoint = null)
     {
-        var at = target.PointToScreen(new(target.ActualWidth / 2, target.ActualHeight / 2));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation ?? TestContext.Current.CancellationToken);
+        if (cancellation is null)
+            deadline.CancelAfter(TimeSpan.FromSeconds(3));
+        var owner = Window.GetWindow(target);
+        Assert.NotNull(owner);
+        Assert.Equal(expectedWindow, new WindowInteropHelper(owner).Handle);
+        var at = retainedPoint ?? target.PointToScreen(new(target.ActualWidth / 2, target.ActualHeight / 2));
         var pixel = new Native.Point { X = (int)at.X, Y = (int)at.Y };
-        Assert.Equal(expectedWindow, WindowFromPoint(pixel));
-        var moved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        MouseEventHandler observed = (_, _) => moved.TrySetResult();
-        target.MouseEnter += observed;
-        if (leaving is not null)
-            leaving.MouseLeave += observed;
-        try
+        await WithActionPresented(target, owner, at, pixel, actionOpacity: false, deadline.Token, async validate =>
         {
-            Assert.True(SetCursorPos(pixel.X, pixel.Y));
-            if (!target.IsMouseOver || leaving?.IsMouseOver == true)
-                await moved.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
-            Assert.True(target.IsMouseOver);
+            Assert.Equal(expectedWindow, WindowFromPoint(pixel));
+            var moved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            MouseEventHandler observed = (_, _) => moved.TrySetResult();
+            target.MouseEnter += observed;
             if (leaving is not null)
-                Assert.False(leaving.IsMouseOver);
-        }
-        finally
-        {
-            target.MouseEnter -= observed;
-            if (leaving is not null)
-                leaving.MouseLeave -= observed;
-        }
+                leaving.MouseLeave += observed;
+            try
+            {
+                validate();
+                inputAttempted?.Invoke();
+                validate();
+                Assert.Equal(expectedWindow, WindowFromPoint(pixel));
+                validate();
+                Assert.True(SetCursorPos(pixel.X, pixel.Y));
+                if (!target.IsMouseOver || leaving?.IsMouseOver == true)
+                    await moved.Task.WaitAsync(deadline.Token);
+                validate();
+                Assert.True(target.IsMouseOver);
+                if (leaving is not null)
+                    Assert.False(leaving.IsMouseOver);
+            }
+            finally
+            {
+                target.MouseEnter -= observed;
+                if (leaving is not null)
+                    leaving.MouseLeave -= observed;
+            }
+        }, observation);
     }
 }

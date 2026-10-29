@@ -22,12 +22,12 @@
   "files": [
     {
       "path": "README.md",
-      "bytes": 4299,
-      "sha256": "3c653a8eb2f37f279153a13ac78e97453b5ee258457f6ed6dc7f4411acf3c9d3",
+      "bytes": 4704,
+      "sha256": "8a41f37fc85ff49d98ccf8504688070b23d4c96e9eb5c369ca11818b3fe28309",
       "source": {
         "repositoryPath": "eng/fonts/README.md",
-        "bytes": 4299,
-        "sha256": "3c653a8eb2f37f279153a13ac78e97453b5ee258457f6ed6dc7f4411acf3c9d3"
+        "bytes": 4704,
+        "sha256": "8a41f37fc85ff49d98ccf8504688070b23d4c96e9eb5c369ca11818b3fe28309"
       }
     },
     {
@@ -377,7 +377,7 @@
         "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
       },
       "bytes": 327068,
-      "sha256": "89061a359c9ebe39d8313fdd2cdc5100faa4a0f6510831da1afd4449ab2e6c82"
+      "sha256": "d7669652796d99666c63f941d47f584e2aa14939560267f9c420d1b05cc82ecf"
     },
     {
       "path": "source-serif/TypeLaySerif-15-Regular.ttf",
@@ -419,7 +419,7 @@
         "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
       },
       "bytes": 327376,
-      "sha256": "55d963dce0b3a8d0cff221489c2432a08f92b03bd754b2dc3a46ae82770f3f5e"
+      "sha256": "d55c63979f8b8a1d0505dffc90d3918ec6c7a23173b669cbb20be5e238c4ca96"
     },
     {
       "path": "source-serif/TypeLaySerif-17-Regular.ttf",
@@ -440,7 +440,7 @@
         "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
       },
       "bytes": 327580,
-      "sha256": "a547372922d7c1e8907ed817d0d0dc39f3490b87efaded80fef0fd2f8c31aa53"
+      "sha256": "406b452170a69265efabd67cb9fefc76359917a3b986145409e16d40e6302f21"
     },
     {
       "path": "source-serif/TypeLaySerif-18-Regular.ttf",
@@ -461,7 +461,7 @@
         "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
       },
       "bytes": 327644,
-      "sha256": "5f482362e28c3064edc6df068a3c619da241e856c1752506a2d86be848740a92"
+      "sha256": "65f564e595856ab0d1b38d8978cea8701a2fa711541ac04043a70f9e5a621ffa"
     },
     {
       "path": "source-serif/TypeLaySerif-19-Regular.ttf",
@@ -503,7 +503,7 @@
         "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
       },
       "bytes": 326316,
-      "sha256": "802c670eaf4966d324dad0c6155efceb63b59d5a706f9a0a0cba8b23efad78d8"
+      "sha256": "08ab144a8387e428ea03013569b9c5de2265028d4515bd4e384abed208a94af5"
     },
     {
       "path": "source-serif/TypeLaySerif-13.5-Medium.ttf",
@@ -566,7 +566,7 @@
         "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
       },
       "bytes": 327596,
-      "sha256": "4079a956e452f539e17ab88cf3e8027cb4b0861adb94a5762aa559716553a812"
+      "sha256": "29d0e798d63a710e3fbee89d511ce876c24ad7d7674006a0ca2025f40433d4c1"
     },
     {
       "path": "source-serif/TypeLaySerif-18-Medium.ttf",
@@ -587,7 +587,7 @@
         "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
       },
       "bytes": 327752,
-      "sha256": "836a05c4e9c1450084f30b30875ac9cbbd7a3a9d26c398415c7c243eea0e8c75"
+      "sha256": "e3d164185b78b7b4992bb450221ce5568fc8f256aa8482492b7e3cbba8c3203f"
     },
     {
       "path": "source-serif/TypeLaySerif-20-Medium.ttf",

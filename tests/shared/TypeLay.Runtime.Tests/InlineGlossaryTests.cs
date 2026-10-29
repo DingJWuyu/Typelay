@@ -6,6 +6,216 @@ namespace TypeLay.Runtime.Tests;
 public sealed class InlineGlossaryTests
 {
     [Fact]
+    public void AcknowledgedEditorHandoffRechecksUnchangedSourceForGlossaryManagement()
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: new([]));
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        var editing = s.View.Token;
+        string draft = s.View.Draft;
+        int publications = s.Input.PublishedLeases.Count;
+        int captures = s.Service.Captures;
+
+        // The real browser reports the original field's blur before the exact
+        // editor focus ACK. It changes source/focus epochs, not its text/input epoch.
+        s.Input.UserEpoch += 2;
+        s.Input.SourceUserEpoch++;
+        s.Input.ForegroundEpoch += 2;
+        s.Input.InEditor = true;
+        s.Tick();
+
+        Assert.True(s.View.Context!.TranslationActions!.CanOpenGlossary);
+        Assert.Equal(captures + 1, s.Service.Captures);
+        Assert.Null(s.Controller.GetGlossarySettingsState().UnavailableReason);
+        Assert.False(s.View.Context.TranslationActions.GlossaryReleased);
+        Assert.Equal(editing, s.View.Token);
+        Assert.Equal(draft, s.View.Draft);
+        Assert.Equal(publications, s.Input.PublishedLeases.Count);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.View.CanAccept);
+        Assert.Empty(s.Service.Writes);
+
+        int renders = s.View.Renders;
+        s.Tick();
+        s.Tick();
+        Assert.Equal(captures + 1, s.Service.Captures);
+        Assert.Equal(renders, s.View.Renders);
+        s.Input.SourceUserEpoch++;
+        s.Tick();
+        Assert.False(s.View.Context.TranslationActions.CanOpenGlossary);
+        Assert.Equal(captures + 1, s.Service.Captures);
+        Assert.Equal(publications, s.Input.PublishedLeases.Count);
+        Assert.Null(s.Input.Permit);
+    }
+
+    [Theory]
+    [InlineData("stale-before-edit")]
+    [InlineData("extra-source-event")]
+    [InlineData("late-ack")]
+    [InlineData("composition")]
+    public void EditorHandoffDoesNotRecheckAnUnqualifiedEntrance(string change)
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: new([]));
+        s.ReadyCandidate();
+        if (change == "stale-before-edit")
+            s.Input.SourceUserEpoch++;
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        int captures = s.Service.Captures;
+        s.Input.UserEpoch += 2;
+        s.Input.SourceUserEpoch += change == "extra-source-event" ? 2 : 1;
+        s.Input.ForegroundEpoch += 2;
+        s.Input.InEditor = true;
+        s.View.EditingComposition = change == "composition";
+        s.Tick(change == "late-ack" ? 501 : 40);
+        s.View.EditingComposition = false;
+        s.Tick();
+
+        Assert.False(s.View.Context!.TranslationActions!.CanOpenGlossary);
+        Assert.Equal(captures, s.Service.Captures);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData("source-input")]
+    [InlineData("source-text")]
+    [InlineData("selection")]
+    [InlineData("unknown-ime")]
+    [InlineData("old-observation")]
+    [InlineData("old-ack")]
+    [InlineData("missing-editor-ack")]
+    [InlineData("settings")]
+    [InlineData("window")]
+    [InlineData("other-source")]
+    [InlineData("editor-ime")]
+    [InlineData("source-event")]
+    [InlineData("deadline")]
+    public void EditorHandoffReadCannotRefreshManagementAfterItsEvidenceChanges(string change)
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: new([]));
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        var editing = s.View.Token;
+        string draft = s.View.Draft;
+        s.Input.UserEpoch += 2;
+        s.Input.SourceUserEpoch++;
+        s.Input.ForegroundEpoch += 2;
+        s.Input.InEditor = true;
+        s.Service.PendingCapture = new();
+        int captures = s.Service.Captures;
+        int publications = s.Input.PublishedLeases.Count;
+        s.Tick();
+        Assert.Equal(captures + 1, s.Service.Captures);
+        Assert.False(s.View.Context!.TranslationActions!.CanOpenGlossary);
+
+        var capture = new InputCapture(s.Fresh, FocusMember.Overlay, s.Service.Application,
+            s.Input.UserEpoch, s.Input.ForegroundEpoch,
+            new(s.Source.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true));
+        switch (change)
+        {
+            case "source-input":
+                capture = capture with
+                {
+                    Snapshot = s.Fresh with
+                    {
+                        InputEpoch = s.Source.InputEpoch + 1
+                    }
+                };
+                break;
+            case "source-text":
+                capture = capture with
+                {
+                    Snapshot = s.Fresh with
+                    {
+                        Text = "other text"
+                    }
+                };
+                break;
+            case "selection":
+                capture = capture with
+                {
+                    Snapshot = s.Fresh with
+                    {
+                        Selection = new(0, 0)
+                    }
+                };
+                break;
+            case "unknown-ime":
+                capture = capture with
+                {
+                    Snapshot = s.Fresh with
+                    {
+                        Ime = ImeState.Unknown
+                    }
+                };
+                break;
+            case "old-observation":
+                capture = capture with
+                {
+                    Snapshot = s.Fresh with
+                    {
+                        ObservedAtMs = s.Loop.NowMs - 1
+                    }
+                };
+                break;
+            case "old-ack":
+                capture = capture with
+                {
+                    SessionShortcuts = capture.SessionShortcuts! with
+                    {
+                        Generation = Guid.NewGuid()
+                    }
+                };
+                break;
+            case "missing-editor-ack":
+                capture = capture with
+                {
+                    SessionShortcuts = capture.SessionShortcuts! with
+                    {
+                        EditorReady = false
+                    }
+                };
+                break;
+            case "settings":
+                s.Settings.Update(s.Settings.Value with
+                {
+                    Theme = "dark"
+                });
+                break;
+            case "window":
+                s.Input.WindowEpoch++;
+                break;
+            case "other-source":
+                s.Input.InEditor = false;
+                s.FocusAnotherField();
+                break;
+            case "editor-ime":
+                s.View.EditingComposition = true;
+                break;
+            case "source-event":
+                s.Input.SourceUserEpoch++;
+                break;
+            case "deadline":
+                s.Tick(501);
+                capture = capture with
+                {
+                    Snapshot = s.Fresh
+                };
+                break;
+        }
+        s.CompleteCapture(capture);
+        Assert.NotEqual(true, s.View.Context?.TranslationActions?.CanOpenGlossary);
+        Assert.Null(s.View.BeginGlossaryRequested!(editing));
+        Assert.Equal(captures + 1, s.Service.Captures);
+        Assert.Equal(publications, s.Input.PublishedLeases.Count);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+        Assert.Null(s.ReloadSettings().Glossary);
+        if (change != "settings")
+            Assert.Equal(draft, s.View.Draft);
+    }
+
+    [Fact]
     public void AcknowledgedEditorFocusReprojectsGlossaryEntryWithoutGrantingAcceptance()
     {
         using var s = new SessionScenario(experimental: true, translationRelease: new([]));

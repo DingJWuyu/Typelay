@@ -108,6 +108,7 @@ internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessi
             settings.Target,
             settings.ExcludedApplications,
             settings.ManagedApplications,
+            settings.ApplicationListCustomized,
             settings.Startup,
             settings.Theme,
             settings.OnboardingComplete,

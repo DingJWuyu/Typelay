@@ -1429,6 +1429,175 @@ while True:
         self.assertTrue(await self.ask("settings", {"reduceMotion": False}))
         self.assertEqual(self.latest("settings")["motion"], "system")
 
+    async def test_application_list_customization_preserves_policy_and_explicit_empty(self):
+        settings_file = await self.seed_translation_preferences()
+        known = ["editor", "mail", "terminal", "EDITOR"]
+        state = await self.ask("getApplicationList", {"knownApplications": known})
+        self.assertIsInstance(state, dict)
+        self.assertEqual(state["applications"], ["editor", "mail", "private-editor", "terminal"])
+        self.assertFalse(state["customized"])
+        preserved = json.loads(settings_file.read_text())
+
+        async def change(application, included):
+            nonlocal state
+            result = await self.ask(
+                "changeApplicationList",
+                {
+                    "application": application,
+                    "included": included,
+                    "expectedSettingsRevision": state["settingsRevision"],
+                    "knownApplications": known,
+                },
+            )
+            self.assertTrue(result["saved"], result)
+            state = await self.ask("getApplicationList", {"knownApplications": known})
+            self.assertEqual(result["settingsRevision"], state["settingsRevision"])
+            saved = json.loads(settings_file.read_text())
+            self.assertEqual(saved["Styles"], preserved["Styles"])
+            self.assertEqual(saved["ExcludedApplications"], preserved["ExcludedApplications"])
+            self.assertTrue(saved["ApplicationListCustomized"])
+            return saved
+
+        await change("mail", False)
+        self.assertEqual(state["applications"], ["editor", "private-editor", "terminal"])
+        for application in tuple(state["applications"]):
+            await change(application, False)
+        self.assertEqual(state["applications"], [])
+        self.assertEqual(json.loads(settings_file.read_text())["ManagedApplications"], [])
+        await self.asyncTearDown()
+        self.events.clear()
+        await self.start_host()
+        known.append("newly-discovered")
+        state = await self.ask("getApplicationList", {"knownApplications": known})
+        self.assertTrue(state["customized"])
+        self.assertEqual(state["applications"], [])
+        await change("private-editor", True)
+        self.assertEqual(state["applications"], ["private-editor"])
+        self.assertFalse((await self.ask("getStyleSettings"))["isReleased"])
+
+    async def test_application_list_stale_and_failed_changes_preserve_current_membership(self):
+        settings_file = await self.seed_translation_preferences()
+        known = ["editor", "mail"]
+        state = await self.ask("getApplicationList", {"knownApplications": known})
+        self.assertIsInstance(state, dict)
+        request = {
+            "application": "mail",
+            "included": False,
+            "expectedSettingsRevision": state["settingsRevision"],
+            "knownApplications": known,
+        }
+        self.assertTrue(await self.ask("settingsPatch", {"accent": "ocean"}))
+        before = settings_file.read_bytes()
+        result = await self.ask("changeApplicationList", request)
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["code"], "settings-changed")
+        self.assertEqual(settings_file.read_bytes(), before)
+        current = await self.ask("getApplicationList", {"knownApplications": known})
+        request["expectedSettingsRevision"] = current["settingsRevision"]
+        obstruction = settings_file.with_suffix(".json.tmp")
+        obstruction.mkdir()
+        result = await self.ask("changeApplicationList", request)
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["code"], "application-save-failed")
+        self.assertEqual(settings_file.read_bytes(), before)
+        obstruction.rmdir()
+        result = await self.ask("changeApplicationList", request)
+        self.assertTrue(result["saved"])
+        self.assertEqual(json.loads(settings_file.read_text())["Accent"], "ocean")
+        self.assertNotIn(
+            "mail",
+            (await self.ask("getApplicationList", {"knownApplications": known}))["applications"],
+        )
+        # Old Undo cannot re-add membership after another committed preference.
+        undo = {**request, "included": True, "expectedSettingsRevision": result["settingsRevision"]}
+        self.assertTrue(await self.ask("settingsPatch", {"textSize": 17}))
+        before = settings_file.read_bytes()
+        self.assertEqual(
+            (await self.ask("changeApplicationList", undo))["code"], "settings-changed"
+        )
+        self.assertEqual(settings_file.read_bytes(), before)
+
+    async def test_old_ordinary_settings_dto_cannot_restore_a_retired_application_list(self):
+        await self.seed_translation_preferences()
+        known = ["editor", "mail"]
+        current = await self.ask("getApplicationList", {"knownApplications": known})
+        self.assertIsInstance(current, dict)
+        old_form = {
+            "theme": "light",
+            "accent": "ocean",
+            "managedApplications": ["retired-old-list"],
+            "applicationListCustomized": False,
+        }
+        for application in tuple(current["applications"]):
+            changed = await self.ask(
+                "changeApplicationList",
+                {
+                    "application": application,
+                    "included": False,
+                    "expectedSettingsRevision": current["settingsRevision"],
+                    "knownApplications": known,
+                },
+            )
+            self.assertTrue(changed["saved"])
+            current = await self.ask("getApplicationList", {"knownApplications": known})
+        self.assertEqual(current["applications"], [])
+        self.assertTrue(await self.ask("settings", old_form))
+        current = await self.ask("getApplicationList", {"knownApplications": known})
+        self.assertTrue(current["customized"])
+        self.assertEqual(current["applications"], [])
+        changed = await self.ask(
+            "changeApplicationList",
+            {
+                "application": "new-editor",
+                "included": True,
+                "expectedSettingsRevision": current["settingsRevision"],
+                "knownApplications": known,
+            },
+        )
+        self.assertTrue(changed["saved"])
+        self.assertTrue(await self.ask("settings", {**old_form, "theme": "dark"}))
+        current = await self.ask("getApplicationList", {"knownApplications": known})
+        self.assertEqual(current["applications"], ["new-editor"])
+        self.assertTrue(current["customized"])
+        self.assertEqual(self.latest("settings")["theme"], "dark")
+        self.assertEqual(self.latest("settings")["accent"], "ocean")
+
+    async def test_application_list_rejects_malformed_metadata_without_writing(self):
+        settings_file = await self.seed_translation_preferences()
+        state = await self.ask("getApplicationList", {"knownApplications": ["editor"]})
+        self.assertIsInstance(state, dict)
+        request = {
+            "application": "editor",
+            "included": False,
+            "expectedSettingsRevision": state["settingsRevision"],
+            "knownApplications": ["editor"],
+        }
+        before = settings_file.read_bytes()
+        for field, invalid in (
+            ("application", "bad\nidentity"),
+            ("application", "/"),
+            ("application", None),
+            ("included", 1),
+            ("expectedSettingsRevision", True),
+            ("expectedSettingsRevision", -1),
+            ("knownApplications", "editor"),
+            ("knownApplications", [""]),
+            ("knownApplications", ["bad\nidentity"]),
+            ("knownApplications", [None]),
+        ):
+            with self.subTest(field=field, invalid=invalid):
+                result = await self.ask("changeApplicationList", {**request, field: invalid})
+                self.assertFalse(result["saved"])
+                self.assertEqual(result["code"], "invalid-application-list")
+                self.assertEqual(settings_file.read_bytes(), before)
+        self.assertIsNone(
+            await self.ask("getApplicationList", {"knownApplications": ["bad\nidentity"]})
+        )
+        self.assertIsNone(
+            await self.ask("getApplicationList", {"knownApplications": [], "extra": True})
+        )
+        self.assertEqual(settings_file.read_bytes(), before)
+
     async def test_appearance_patches_pause_and_managed_app_preserve_other_settings(self):
         self.assertTrue(
             await self.ask("settingsPatch", {"accent": "iris", "textSize": 18, "uiLanguage": "en"})

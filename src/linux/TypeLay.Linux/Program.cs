@@ -692,6 +692,64 @@ internal static class Program
                     {
                         return ApplicationPolicyResult(false, "application-save-failed");
                     }
+                case "getApplicationList":
+                    if (!ExactObject(value, "knownApplications")
+                        || !ApplicationIdentities(value.GetProperty("knownApplications"), out var knownApplications))
+                        return null;
+                    return new
+                    {
+                        applications = settings.Value.VisibleApplications(knownApplications),
+                        customized = settings.Value.ApplicationListCustomized,
+                        settingsRevision = settings.Revision
+                    };
+                case "changeApplicationList":
+                    object ApplicationListResult(bool saved, string code) => new
+                    {
+                        saved,
+                        code,
+                        settingsRevision = saved ? (long?)settings.Revision : null
+                    };
+                    if (!ExactObject(value, "application", "included", "expectedSettingsRevision", "knownApplications")
+                        || value.GetProperty("application").ValueKind != JsonValueKind.String
+                        || string.IsNullOrWhiteSpace(value.GetProperty("application").GetString())
+                        || value.GetProperty("application").GetString()!.Length > 128
+                        || value.GetProperty("application").GetString()!.Any(char.IsControl)
+                        || value.GetProperty("included").ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+                        || value.GetProperty("expectedSettingsRevision").ValueKind != JsonValueKind.Number
+                        || !value.GetProperty("expectedSettingsRevision").TryGetInt64(out long membershipRevision)
+                        || membershipRevision < 0
+                        || !ApplicationIdentities(value.GetProperty("knownApplications"), out var membershipKnown))
+                        return ApplicationListResult(false, "invalid-application-list");
+                    if (membershipRevision != settings.Revision)
+                        return ApplicationListResult(false, "settings-changed");
+                    var member = Path.GetFileName(value.GetProperty("application").GetString()!.Trim()).ToLowerInvariant();
+                    if (string.IsNullOrWhiteSpace(member))
+                        return ApplicationListResult(false, "invalid-application-list");
+                    var members = settings.Value.VisibleApplications(membershipKnown)
+                        .Where(item => !item.Equals(member, StringComparison.OrdinalIgnoreCase));
+                    if (value.GetProperty("included").GetBoolean())
+                        members = members.Append(member);
+                    var nextMembers = members.Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Order(StringComparer.OrdinalIgnoreCase).ToArray();
+                    if (nextMembers.Length > 256)
+                        return ApplicationListResult(false, "application-capacity");
+                    try
+                    {
+                        bool saved = await ApplySettings(settings.Value with
+                        {
+                            ManagedApplications = nextMembers,
+                            ApplicationListCustomized = true
+                        });
+                        return ApplicationListResult(saved, saved ? "application-list-saved" : "settings-changed");
+                    }
+                    catch (SettingsPersistenceException)
+                    {
+                        return ApplicationListResult(false, "application-save-failed");
+                    }
+                    catch (SettingsConflictException)
+                    {
+                        return ApplicationListResult(false, "settings-changed");
+                    }
                 case "manageApplication":
                     if (value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString())
                         || value.GetString()!.Length > 128 || value.GetString()!.Any(char.IsControl))
@@ -747,7 +805,9 @@ internal static class Program
                     var next = DesktopLink.Decode<UserSettings>(value) with
                     {
                         Styles = settings.Value.Styles,
-                        Glossary = settings.Value.Glossary
+                        Glossary = settings.Value.Glossary,
+                        ManagedApplications = settings.Value.ManagedApplications,
+                        ApplicationListCustomized = settings.Value.ApplicationListCustomized
                     };
                     if (next.Schema != 1 || next.Theme is not ("system" or "light" or "dark")
                         || next.Excluded.Length > 256 || next.Excluded.Any(app => string.IsNullOrWhiteSpace(app) || app.Length > 128))
@@ -912,6 +972,22 @@ internal static class Program
     }
     private static bool PositiveNativeRevision(JsonElement value) => value.ValueKind == JsonValueKind.Number
         && value.TryGetInt64(out long revision) && revision > 0 && revision < 1L << 53;
+
+    private static bool ApplicationIdentities(JsonElement value, out string[] identities)
+    {
+        identities = [];
+        if (value.ValueKind != JsonValueKind.Array || value.GetArrayLength() > 4096)
+            return false;
+        var items = value.EnumerateArray().ToArray();
+        if (items.Any(item => item.ValueKind != JsonValueKind.String
+            || string.IsNullOrWhiteSpace(item.GetString()) || item.GetString()!.Length > 128
+            || item.GetString()!.Any(char.IsControl)
+            || string.IsNullOrWhiteSpace(Path.GetFileName(item.GetString()!.Trim()))))
+            return false;
+        identities = items.Select(item => Path.GetFileName(item.GetString()!.Trim()).ToLowerInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        return true;
+    }
 
     private static bool NonEmptyGuid(JsonElement value) => value.ValueKind == JsonValueKind.String
         && value.TryGetGuid(out var result) && result != Guid.Empty;

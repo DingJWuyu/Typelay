@@ -49,6 +49,10 @@ Source Serif 派生面使用同一固定 fontTools 4.61.1、完整字形集与�
 原始版权与name0/13/14、原版4.004 OFL随包保留；name3/5/10标明修改来源，
 name1/4/6/16/17不使用保留字体名Source，不暗示上游对派生面的认可。
 保留有效的静态STAT值；只有实例化后为空的STAT轴描述才删除。
+每个光学字号已形成独立静态族，其唯一opsz值按
+[OpenType STAT](https://learn.microsoft.com/en-us/typography/opentype/spec/stat)
+标为可省略的默认轴值名（ELIDABLE_AXIS_VALUE_NAME），避免Windows按WWS命名再追加光学字号。
+不删除该轴或改其坐标、weight/italic值、字形、布局表及hinting；实际Windows角色选字仍由GlyphTypeface回归验证。
 
 16角色加Inter3面和Noto13面共32面。界面代码使用固定字号族及原区域CJK回退，
 系统字体模式仍走平台字体。没有对应角色的调用使用明确有限回退，不称精确光学匹配。

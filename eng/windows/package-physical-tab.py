@@ -89,6 +89,57 @@ def method_results(path, expected_method):
     return root, results
 
 
+def current_main_results(directory):
+    """Read only the explicitly selected, completed contract run's main partition."""
+    directory = directory.resolve()
+    current = directory / "current-contracts.json"
+    try:
+        if current.is_symlink():
+            raise ValueError("Current contract pointer must not be a link")
+        pointer = json.loads(current.read_text(encoding="utf-8"))
+        if (
+            not isinstance(pointer, dict)
+            or set(pointer) != {"schemaVersion", "runDirectory"}
+            or type(pointer["schemaVersion"]) is not int
+            or pointer["schemaVersion"] != 1
+            or not isinstance(pointer["runDirectory"], str)
+            or re.fullmatch(r"contracts-[0-9a-f]{32}", pointer["runDirectory"]) is None
+        ):
+            raise ValueError("Invalid current contract pointer")
+        run = directory / pointer["runDirectory"]
+        report_path = run / "result.json"
+        primary = run / "main"
+        if (
+            run.is_symlink()
+            or run.resolve() != run
+            or report_path.is_symlink()
+            or primary.is_symlink()
+            or primary.resolve() != run.resolve() / "main"
+            or not primary.is_dir()
+        ):
+            raise ValueError("Contract results must stay in their exact run directory")
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if (
+            not isinstance(report, dict)
+            or not isinstance(report.get("mainDirectory"), str)
+            or Path(report["mainDirectory"]).resolve() != primary.resolve()
+            or not isinstance(report.get("failures"), list)
+            or any(
+                failure in ("interrupted", "main-canceled", "isolated-canceled")
+                for failure in report["failures"]
+            )
+            or any(
+                type(report.get(key)) is not int
+                or report[key] in (-2, -15, 130, -1073741510, 0xC000013A)
+                for key in ("mainExitCode", "isolatedExitCode")
+            )
+        ):
+            raise ValueError("Current contract run is incomplete, canceled, or mismatched")
+        return primary
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("Current contract run evidence is unavailable") from error
+
+
 def verify_original_suite(directory):
     results = []
     for path in directory.glob("*.trx"):
@@ -278,9 +329,9 @@ def main():
     evidence.mkdir()
     deadline = time.monotonic() + 110  # Work shares one limit; cleanup gets at most 5s.
     start = int(os.environ["TYPELAY_WINDOWS_CHECK_START"])
-    if not 0 <= time.time() - start <= 75 * 60 - 180:
+    if not 0 <= time.time() - start <= 80 * 60 - 180:
         raise ValueError("Need the existing 2-minute tail slot plus 1 minute for artifact upload")
-    verify_original_suite(artifacts / "test-results")
+    verify_original_suite(current_main_results(artifacts / "test-results"))
     with tempfile.TemporaryDirectory(
         prefix="TypeLay physical Tab 中 ", dir=os.environ["RUNNER_TEMP"]
     ) as temporary:

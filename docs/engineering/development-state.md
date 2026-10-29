@@ -10,17 +10,17 @@
 
 ## 验证状态与当前阻塞
 
-本批发布前基线 [`2742dc0`](https://github.com/DingJWuyu/Typelay/commit/2742dc0691363eb233614e53c5f74f71920fd621) 已发布，其 [CI553](https://github.com/DingJWuyu/Typelay/actions/runs/40924464287) Linux 已终态失败。它只在 CP13 上修正 guardian 测试 PID 标记的原子发布，不夹带未验证的字体或计时改动；本地 20/20 与独立审查通过。main/trunk 未改。
+最新开发候选 [`e68c4e4`](https://github.com/DingJWuyu/Typelay/commit/e68c4e47cb22e920892146cb48690d7737b37635) 已发布，[CI554](https://github.com/DingJWuyu/Typelay/actions/runs/40930927256) 已双端终态失败。main/trunk 未改。本批包含离线32面与角色消费者、真实托盘模型和方向、应用图标、教程布局、退出确认UIA查找及下载计时隔离；不推荐为稳定体验包。前一仅guardian修复的CI553已终态，后继不得用微批中断本head双端完整验收。
 
-CP13 的 CI552：共享与两平台 Index 生命周期成功。Linux 在 build 阶段旧 guardian fixture 读取未写完的 JSON 标记失败，后续原生/教程/Qt 阶段未执行，不能借同名旧失败归因。Windows App 实际 1178 执行、1177 通过、1 失败、22 未执行；Runtime 1436、Core 302、Protocol 28、WinContracts 210 全部通过。唯一 App 失败是 100ms 下载超时测试尚未写入 64-byte 前缀即取消，观察到其它 testhost 重叠；正准备两 case 单独进程的窄 runner，不改期限或断言。Windows 后继浏览器/Notepad已有步骤失败，最终run被下一同ref并发候选取消；未完成阶段不当通过，下一整体head须两端跑至终态。
+独立后继：首次合法编辑移交只重验原源一次的菜单资格候选已真实RED→380/380 GREEN，102输入无漂移；不是新grant/lease，Windows真实链仍待。Linux原生Combo公开current/closed两例通过，外窗present未取得ACTIVE前置不算通过；永久fixture已独审，后继CI验证。Linux S08完整显式应用名单与O05普通源确认仍在独立实现，不混本批已发布事实。
 
-CP13 已发布 ACK 菜单投影、浏览器胶囊、WPF More/S08/滚动条、Linux 四步教程及精确失败观测。CI552 S08 16 项、接入动作 2 项、滚动条 6 项实际通过；图片发现应用表加号/详情/停用点引用不存在颜色键，后继窄修待验。CI551 S07 22 项、O05 普通编辑态 8 项、O06 加载 6 项以及 T02/S10 有效证据保留。不能据行为合同通过宣称全页像素相同。
+CI554：共享与两平台 Index 生命周期成功。Windows App 主批1227执行、1211通过、16失败；独立100ms原两case均通过，未改变其期限/64-byte前缀合同。16红分为8个Source Serif角色选脸、T01旧动画时钟、1个owned原生读取、2个展开就绪和4个hover窗口命中，均按原件独立处理。退出确认UIA有owner/无owner两态与原五项已通过，但本轮未运行Notepad实际退出链，不宣称已完全解决旧超时。
 
-浏览器胶囊六项与四张原型几何对照通过；全90项曾89通过、1复合动效场景过期，改成预先独立场景后 focused 通过，不冒称完整90全绿。Linux教程真实保存/失败恢复/旧peer/迟到启动守卫通过；后继稳定五图已达到560×460，使用旧18字体且练习图为明确renderer输入，完整真实练习仍待永久链。接入当前请求焦点与公开ComboBox流程继续窄验证。
+Windows Python的9个错误已定位证据路径分隔符：采集报告用平台路径字符串，而固定profile要求POSIX键；后继只规范键拼写，不改文件集合、字节SHA或质量门，不重跑模型。物理Tab包因新runner将TRX置于唯一run/main子目录、旧打包仍查顶层而失败，后继使用本轮明确manifest定位，不泛扫历史结果。后续真实应用链因前置979秒、75分钟job剩3521秒不足既定3600秒而未运行；现已批准外层80分钟（前置20+原链60）校准，所有模型、场景与清理期限不变，尚待后继CI。
 
-下一共同树App、Tests、Fixture、Linux构建与全Runtime1436/1436真实通过，947输入无漂移；完整Browser90实际87/90、3方法5子例失败，未以编译替Windows真实呈现。
+Linux CI554：原GTK4术语40例阶段通过；设置已跨旧Combo点，当前源语言auto选项在focus后资格复核被拒，通用错误尚不能区分焦点或几何；后继原生菜单current/closed两例已有实际证据。教程scope-result与desktop-result已真实通过，包含四步Ready门、两owned练习链接、关闭重开及跳过保偏好；模型/输入证明边界仍按原件区分。Qt新Latin13角色实际选脸通过，但日文仍选SC面；GTK3展开已通过、收起有166低于167下界的一帧；GTK4同短内容仍42/44差异，dirty候选未解决。保留全部失败，不放宽字形、尺寸或原时间断言。
 
-32面最终离线字体候选已完成全部文件哈希/manifest和Pango五项；新共同树Browser两个focused合同实际通过，覆盖7个Latin角色、6个CJK区域与system/appearance，全部输入前后相同；尚未发布，不冒充WPF/Qt/GTK原生或完整90项通过。新包全量90实际87通过，动效两个子例、菜单外点两个子例及ko/claude一例失败；保原件，先固定观测区分失效，不重跑粉饰。T01真实模型准备/语言搜索、浮层按钮动效、GTK4几何dirty候选均按页面审查与运行，不阻塞成熟修复发布。
+后继独立树已真实Runtime1454/1454通过。Browser新32面完整90此前87/90、3方法5子例失败；固定诊断3方法通过未复现，不当作修复。合法host单次续显下的360ms动效正控及原不续按键资格合同focused2实际通过，完整90仍待。More外点和ko场景原红保留。Root字体7面仅静态STAT opsz值可省略标志变更，逐表证明其它字形/布局不变，单面官方recipe重生字节一致、Pango5通过；实际Windows角色仍待下批，不称本地即修复。
 
 完整原型审查曾发现部分页面仅更换样式而缺少原型交互，属于范围执行和验收遗漏，不是细节。现按[固定25项页面/状态表](../design/prototype-parity.md)逐页收敛；等待外部CI时可推进下一独立切片，但未验证项不标完成。双端尚未达成完整一比一验收。
 
@@ -30,15 +30,15 @@ CP13 已发布 ACK 菜单投影、浏览器胶囊、WPF More/S08/滚动条、Lin
 
 | 原件 | 实际情况 | 下一动作 |
 | --- | --- | --- |
-| `ci553` Linux | guardian入口已跨过、build与21–29成功；30/33/42/43/46/47失败，45浏览器与49Code成功、48Qt未执行 | 本轮small diagnostics已取得，逐case核，不按旧step猜 |
-| `ci552/contracts/` | App仅下载计时 fixture 前缀未入场；S08/滚动条当前合同通过 | 窄两阶段 runner 候选；不改100ms/3s/64或生产取消 |
-| `ci550/windows-full/` browser | 第二轮glossary菜单投影隐藏 | CI552实际menu可见但buttonDisabled；SourceEpoch在begin-edit到ACK间变化，查移交而不删守卫 |
-| `ci552/windows-full/` Notepad | 自动预览/按需直译通过，ordinary-exit确认查找deadline；自动接受及依赖编辑仍可信物理输入not-run | root限同PID owned窗口层级查找候选待真实CI，物理旧缺口不软件伪造 |
-| CI550 Hy / CI552 | 旧cold-start-english等待Ready；552被取消且无result.json | 不声称已取得本轮cold诊断，保旧未知 |
-| `ci553/qt-early/` | claude/ja在完整有效展示期始终真实选SC face，预期JP不符 | 查实际Qt多family更新，不放宽region字形表 |
-| `ci553/linux-diagnostics/` settings/tutorial | ComboBox外层grab_focus失败；教程已跨四步后desktop_row局部作用域未定义 | 原生popup current/closed实际通过；外窗present未取得ACTIVE前置、未算通过；唯一desktop_row作用域窄修已通过静态检查，本批等待真实教程重走 |
-| 同目录 GTK3 | 实际PNG中间帧已证，命令完成较晚 | CP13仅无损压缩减扰，原几何期限不改 |
-| 同目录 GTK4 | 高度42→165→44，不是颜色失败 | 已审仅尺寸变更dirty候选，真实CI待验 |
+| `ci554/contracts/` | App16红按字体8、T01时钟1、owned原生读取1、展开2/hover4分组；独立计时2通过 | 精确metadata/就绪候选与原读取失败诊断；原门不变 |
+| `ci552/windows-full/` browser | 菜单可见但buttonDisabled，编辑移交SourceEpoch变化 | 一次原源重验候选本地380及整合Runtime1454通过，真实Windows待验 |
+| `ci552/windows-full/` Notepad | ordinary-exit确认查找deadline；自动接受仍物理条件not-run | CI554窗口UIA两态过，真实应用链尚未因预算准入 |
+| CI550 Hy / CI554 admission | 旧cold等待Ready未知；本轮前置979超15min | 外层80min明确前置20min，原后链60min保持，不重跑求运气 |
+| `ci554/qt-early/` | Latin新角色通过；ja在有效期实际SC face | 双顺序新进程诊断及源码缓存机制定位，不放宽glyph |
+| `ci554/linux-diagnostics/setup-settings` | 源语言auto选项focus后可见/焦点/clip联合复核失败 | 只读定位真实同实例布局，不降点击/可见门 |
+| 同目录 `setup-tutorial` | scope及四项desktop结果passed | 保有效子项；不同renderer/模型/输入边界如实区分 |
+| 同目录 `gtk-desktop` | 展开167→367→360通过，收起低至166<167 | 查动画/取整根因，保原尺寸和期限 |
+| 同目录 `gtk4-desktop` | 短内容42/44随状态变化，dirty修未解决 | 查状态样式/测量，不能重复每帧resize或放宽等式 |
 
 Notepad可信物理输入条件不足是重构前已明确的缺口，保原not-run；不当作新问题阻止其他远端工作，也不以软件注入冒充可信来源。
 
@@ -48,14 +48,14 @@ Notepad可信物理输入条件不足是重构前已明确的缺口，保原not-
 
 | 责任线 | 当前动作 | 完成依据 |
 | --- | --- | --- |
-| 集成 | guardian 窄修已发布并跟踪 CI553；CP13与后继字体/页面严格隔离；统一动态资源排程 | 实际step结论、包、结构化结果及独立审查 |
-| Windows设置 | S08/滚动条实际通过；后继应用glyph、T01模型/语言及字体角色候选 | 公开操作、保存失败/取消/重入、实际几何及同偏好原型图 |
-| Windows浮层 | O04 在 CI550 的 17 项与四图通过；O05 普通编辑态/O06 加载已有真实通过；后继 hover动效待编译 | 真实 UIA 与鼠标、旧 peer/IME/关闭负控；owned/source 确认键盘仍欠交付 |
-| Linux设置 | S01/S06 有效已验子项保留，G03 状态与导航已验证；当前 N01 四步真实教程与迟到启动守卫、永久真实流程验收；CI551 接入 selector 已存在但 grab_focus 失败待定位 | 真实 GTK/AT-SPI、revision 冲突及旧交互负控，不以静态 lint 代替 |
-| 合作浮层 | Idle/Paused 胶囊原型尺寸已实际 RED→GREEN 六项，图片正在对照；CI551 Qt 跨过旧空 runs 点后 claude/ja face 检查失败；GTK4 42→165→44几何待验证dirty修复 | 保原输入/租约/字形断言，真实端到端结果 |
-| 共享能力 | B01 固定双向 Glossary 已发布；ACK菜单投影已发布；当前Windows定时测试窄runner；B02 最终裁决关闭、不再调参 | 固定 profile、既有完整性、资格正反控与稳定 Tick 不重复展示 |
-| 字体 | SC600 真实 WPF 17 项已通过；Source Serif 16 角色候选/Pango 五项通过，各消费者接线前保现役锁 | 实际离线族/字重及消费者字形；独立 Chromium 比对被权限阻止，未产图 |
-| 独立审查 | N01 迟到启动、共享投影及后继菜单/滚动条/诊断，审查只覆盖精确冻结源码 | 工程标准与原型行为两面核验 |
+| 集成 | CP14双端终态，合入已独审后继并验证精确CP15树；修POSIX证据键和外层CI预算 | 实际case结论、包、源身份及独审 |
+| Windows设置 | S08、S07、S10有效实证保留；修T01退休时钟，实施S09完整模型页 | 公开动作、保存失败/取消/旧peer及实际图 |
+| Windows浮层 | 修CI554就绪观测与原生读取诊断；随后普通source确认与owned首纵向切片 | 原期限/一次输入/exact hit/负控，不能用新focus白名单 |
+| Linux设置 | S08统一名单完整页；host旧DTO不可回滚Managed/Customized；新教程与Combo永久链核验 | 真实host/GTK/AT-SPI与revision旧交互负控 |
+| 合作浮层 | G02合法host续显正控，GTK3收起1px、GTK4短高度和Qt区域字体分别定位 | 不改动画/尺寸/字形门；完整Browser90待验 |
+| 共享能力 | B01双向Glossary已发布；编辑移交一次源重验候选Runtime1454通过 | 固定profile、原源完整比较、旧500ms及零新授权 |
+| root支持 | 物理Tab当前manifest定位、字体7面metadata窄修；Windows原件核验 | 原Tab/F7唯一Passed及实际WPF角色 |
+| 独立审查 | 精确冻结差量的规范与安全双轴，不以编译代替页面交互 | 真实输入身份与明确未验边界 |
 
 ## 模型能力边界
 
@@ -67,6 +67,6 @@ B01采用已明确的前瞻feature-delta准入：术语兑现、非术语语义�
 
 输入来源、焦点、IME、租约、接受资格、写回及Undo不因重构放宽。动态桌面/浏览器验收与重CPU构建/模型采集统一单owner排程；READY不等于运行，先明确GO，收到后立即启动已准备脚本；若准备未完立刻退回READY而不空占窗口，终态先报END再分析图片。每次执行记录命令、独立cwd/源码身份、session、期限、日志与exit文件；不确定结果先查，不盲重跑。
 
-字体通过固定来源/校验和构建，最终产品完整离线，无运行时字体联网。18面包已发布，不把CJK和Source Serif未完成项当用户允许留空的第四类。GTK3语言菜单确无背景模糊能力，采用对应浅深实底保证可读，并明确这一材质不等同原型；不扩大为其他UI/交互降级。
+字体通过固定来源/校验和构建，最终产品完整离线，无运行时字体联网。32面包已发布，不把CJK和Source Serif未完成项当用户允许留空的第四类。GTK3语言菜单确无背景模糊能力，采用对应浅深实底保证可读，并明确这一材质不等同原型；不扩大为其他UI/交互降级。
 
 保留既有Argos/Hy显式选择及方向；新空库存默认Index，不自动下载/替换，失败保旧代。模型权重不进入源码。继续同开发分支，不更新main、稳定版或体验推荐；最终按精确head双端结果及同偏好页面/状态对照交付。

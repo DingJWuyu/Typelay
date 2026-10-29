@@ -108,6 +108,71 @@ public sealed partial class SessionController
     }
     private GlossaryEntrySession? _glossaryEntry;
     private long _sourceGlossaryReadRevision;
+    private sealed record EditorGlossaryHandoff(StyleObservation Observation, InputSnapshot Source,
+        SessionViewToken Token, long ConfigurationRevision, long SettingsRevision, Guid ConnectionId,
+        long WindowEpoch, long Until);
+    private EditorGlossaryHandoff? _editorGlossaryHandoff;
+
+    private void CheckEditorGlossaryHandoff()
+    {
+        var handoff = _editorGlossaryHandoff;
+        _editorGlossaryHandoff = null; // The first editor acknowledgement consumes this one attempt.
+        if (handoff is null || _capturing || handoff.Observation.SourceEpoch is < 0 or long.MaxValue
+            || _hook.SourceUserEpoch != handoff.Observation.SourceEpoch + 1)
+            return;
+        _ = RefreshEditorGlossarySourceAsync(handoff);
+    }
+
+    private async Task RefreshEditorGlossarySourceAsync(EditorGlossaryHandoff handoff)
+    {
+        bool Current() => !_disposed && _session.State == SessionState.EditingTranslation
+            && ReferenceEquals(_session.Current, handoff.Source) && _session.ManualSourceCurrent
+            && ReferenceEquals(_styleObservation, handoff.Observation)
+            && _configurationRevision == handoff.ConfigurationRevision && _settings.Revision == handoff.SettingsRevision
+            && !_settings.HasChanges(_settings.Value) && _hook.ConnectionId == handoff.ConnectionId
+            && _hook.WindowEpoch == handoff.WindowEpoch && _loop.NowMs <= handoff.Until
+            && GlossaryEntryTokenCurrent(handoff.Token) && ViewCommandIsCurrent(handoff.Token, true)
+            && _hook.GetFocus(handoff.Token.Target) == FocusMember.Overlay && !_overlay.EditingComposition
+            && _glossaryEntry is null && !TranslationSettingsBusy() && !_styleChangeRunning && !_glossaryChangeRunning;
+        if (!Current())
+            return;
+        var request = Context();
+        long content = _hook.ContentEpoch, requestedAt = _loop.NowMs;
+        string draft = _session.Draft;
+        _capturing = true;
+        try
+        {
+            var capture = await _broker.CaptureAsync(request);
+            long now = _loop.NowMs;
+            if (!Current() || _session.Draft != draft || content != _hook.ContentEpoch
+                || request.UserEpoch != _hook.UserEpoch || capture.UserEpoch != request.UserEpoch
+                || request.SourceUserEpoch != _hook.SourceUserEpoch
+                || request.ForegroundEpoch != _hook.ForegroundEpoch || capture.ForegroundEpoch != request.ForegroundEpoch
+                || capture.ForegroundExpired || capture.Focus != FocusMember.Overlay
+                || capture.OwnedSource is not null || capture.FencedPracticeRead is not null
+                || capture.Snapshot is not { IsUsable: true } source || source.Target != handoff.Source.Target
+                || source.Text != handoff.Source.Text || source.InputEpoch != handoff.Source.InputEpoch
+                || source.Selection != handoff.Source.Selection || source.TranslationScope != handoff.Source.TranslationScope
+                || source.Multiline != handoff.Source.Multiline || source.ObservedAtMs < requestedAt || now < source.ObservedAtMs
+                || source.ObservedAtMs < now - Limits.ObservationMaxAgeMs
+                || capture.SessionShortcuts is not { SourceReady: true, EditorReady: true } acknowledgement
+                || acknowledgement.Target != source.Target || acknowledgement.Generation != handoff.Token.CommandGeneration
+                || acknowledgement.Bindings != CurrentSessionBindings
+                || _settings.NormalizeStyleApplication(capture.Application) != handoff.Observation.Application)
+                return;
+            // A confirmed editor transfer may change the source-focus epoch, not
+            // its input revision. This rechecks settings management only: no Core
+            // observation, shortcut ACK, timestamp, lease or acceptance is renewed.
+            _styleObservation = handoff.Observation with
+            {
+                SourceEpoch = request.SourceUserEpoch
+            };
+            if (_renderedTranslationMenu != GetTranslationMenuState())
+                Render();
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { }
+        finally { _capturing = false; }
+    }
 
     private string? QualifyGlossaryEntry(SessionViewToken? token, bool existing = false)
     {

@@ -125,7 +125,9 @@ def glossary_painted_geometry(control, observed_at, *, toolkit="gtk4"):
     return all(control.get(key) == surface[key] for key in ("instance", "width", "height"))
 
 
-def glossary_hover_current(control, observed_at, before, point, moved_at):
+def glossary_hover_current(
+    control, observed_at, before, point, moved_at, pointer=None, origin=None, move_started=None
+):
     if not glossary_painted_geometry(control, observed_at) or observed_at < moved_at:
         return False
     surface, original = control["surfaceGeometry"], before["surfaceGeometry"]
@@ -137,10 +139,142 @@ def glossary_hover_current(control, observed_at, before, point, moved_at):
         == before["paintObservation"]["mapGeneration"]
         and surface["x"] <= point[0] / surface["scale"] < surface["x"] + surface["width"]
         and surface["y"] <= point[1] / surface["scale"] < surface["y"] + surface["height"]
-        and control.get("pointerInside") is True
-        and type(control.get("pointerEnteredAtMonoMs")) is int
-        and control["pointerEnteredAtMonoMs"] > 0
+        and (
+            (
+                control.get("pointerInside") is True
+                and type(control.get("pointerEnteredAtMonoMs")) is int
+                and control["pointerEnteredAtMonoMs"] > 0
+            )
+            or glossary_motion_at_fixed_point(
+                control, observed_at, before, point, moved_at, pointer, origin, move_started
+            )
+        )
     )
+
+
+def glossary_motion_at_fixed_point(
+    control, observed_at, before, point, moved_at, pointer, origin, move_started
+):
+    """Real post-move dispatch and current device/pick, not crossing history alone."""
+    if (
+        type(move_started) is not int
+        or not 0 < move_started <= moved_at <= observed_at
+        or not isinstance(pointer, dict)
+        or pointer.get("status") != "captured"
+        or any(
+            type(pointer.get(key)) is not int
+            for key in ("observedAtMonoMs", "ownedNiri", "WINDOW", "X", "Y")
+        )
+        or not moved_at <= pointer["observedAtMonoMs"] <= observed_at
+        or pointer["ownedNiri"] <= 0
+        or pointer["WINDOW"] != pointer["ownedNiri"]
+        or not isinstance(origin, (tuple, list))
+        or len(origin) != 2
+        or len(point) != 2
+        or any(type(value) is not int for value in (*origin, *point))
+        or (pointer["X"], pointer["Y"]) != tuple(a + b for a, b in zip(origin, point))
+        or control.get("enabled") is not True
+    ):
+        return False
+    surface, device = control["surfaceGeometry"], control.get("pointerObservation")
+    if (
+        not isinstance(device, dict)
+        or device.get("status") != "captured"
+        or device.get("surface") != "control-native"
+        or device.get("surfaceInstance") != surface["surfaceInstance"]
+        or type(device.get("nativeInstance")) is not int
+        or device["nativeInstance"] <= 0
+    ):
+        return False
+    # Callback coordinates are widget-local; GDK device coordinates are native
+    # surface-local. Both must identify the original one physical pixel.
+    local = (point[0] / surface["scale"] - surface["x"], point[1] / surface["scale"] - surface["y"])
+    native = (
+        local[0] + surface["nativeX"] - surface["transformX"],
+        local[1] + surface["nativeY"] - surface["transformY"],
+    )
+
+    def same_position(value, expected):
+        return all(
+            type(value.get(key)) in (int, float)
+            and math.isfinite(value[key])
+            and math.isclose(value[key], coordinate, rel_tol=0, abs_tol=0.000001)
+            for key, coordinate in zip(("x", "y"), expected)
+        )
+
+    if not same_position(device, native):
+        return False
+    ancestors = device.get("pickedAncestors")
+    if (
+        not isinstance(ancestors, list)
+        or len(ancestors) > 8
+        or not any(
+            item.get("instance") == control["instance"]
+            and item.get("isObservedControl") is True
+            and item.get("visible") is True
+            and item.get("mapped") is True
+            for item in ancestors
+            if isinstance(item, dict)
+        )
+    ):
+        return False
+    capture, old_capture = (
+        control.get("pointerCaptureObservation", {}),
+        before.get("pointerCaptureObservation", {}),
+    )
+    if not isinstance(capture, dict) or not isinstance(old_capture, dict):
+        return False
+    for current, old, attached, old_attached, left, phase in (
+        (
+            control.get("pointerDispatchObservation", {}),
+            before.get("pointerDispatchObservation", {}),
+            control.get("pointerObserverAttachedAtMonoMs"),
+            before.get("pointerObserverAttachedAtMonoMs"),
+            control.get("pointerLeftAtMonoMs"),
+            2,
+        ),
+        (
+            capture.get("dispatch", {}),
+            old_capture.get("dispatch", {}),
+            capture.get("attachedAtMonoMs"),
+            old_capture.get("attachedAtMonoMs"),
+            capture.get("leftAtMonoMs"),
+            1,
+        ),
+    ):
+        if not isinstance(current, dict) or not isinstance(old, dict):
+            return False
+        if (
+            type(attached) is not int
+            or not 0 < attached <= move_started
+            or attached != old_attached
+            or type(current.get("signalCount")) is not int
+            or type(old.get("signalCount")) is not int
+            or not 0 <= old["signalCount"] < current["signalCount"]
+            or current.get("lastSignal") != "motion"
+            or current.get("eventType") != 1
+            or current.get("phase") != phase
+            or current.get("limit") != 1
+            or current.get("pointerDevice") is not True
+            or current.get("hasPosition") is not True
+            or type(current.get("observedAtMonoMs")) is not int
+            or not moved_at <= current["observedAtMonoMs"] <= observed_at
+            or current["observedAtMonoMs"] < control["paintObservation"]["mappedAtMonoMs"]
+            or type(left) is not int
+            or not 0 <= left <= current["observedAtMonoMs"]
+            or type(current.get("controllerInstance")) is not int
+            or current["controllerInstance"] <= 0
+            or current["controllerInstance"] != old.get("controllerInstance")
+            or current.get("eventControllerInstance") != current["controllerInstance"]
+            or current.get("widgetInstance") != control["instance"]
+            or current.get("eventWidgetInstance") != control["instance"]
+            or current.get("eventSurfaceInstance") != surface["surfaceInstance"]
+            or current.get("nativeInstance") != device["nativeInstance"]
+            or current.get("eventNativeInstance") != device["nativeInstance"]
+            or not same_position(current, local)
+        ):
+            return False
+    return True
 
 
 def glossary_gtk3_hover_current(control, observed_at, before, point, moved_at, pointer, origin):
@@ -877,7 +1011,14 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 )
                                 or toolkit == "gtk4"
                                 and glossary_hover_current(
-                                    item, observed.get("observedAtMs"), control, pixel, moved_at
+                                    item,
+                                    observed.get("observedAtMs"),
+                                    control,
+                                    pixel,
+                                    moved_at,
+                                    evidence["xPointer"],
+                                    evidence["nestedOrigin"],
+                                    evidence["moveStartedAtMonoMs"],
                                 )
                                 else None
                             )

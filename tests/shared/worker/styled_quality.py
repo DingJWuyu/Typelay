@@ -72,6 +72,11 @@ def arguments(description=__doc__, *, allow_holdout=False, native="hy"):
     return args
 
 
+def source_key(path, root):
+    """Evidence/profile paths use the repository's POSIX spelling on every host."""
+    return path.relative_to(root).as_posix()
+
+
 def source_hashes(native="hy"):
     paths = [
         WORKER,
@@ -83,7 +88,7 @@ def source_hashes(native="hy"):
         ),
     ]
     return {
-        str(path.relative_to(WORKER.parent)): hashlib.sha256(path.read_bytes()).hexdigest()
+        source_key(path, WORKER.parent): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in paths
     }
 

@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
 
 import index_quality
@@ -52,6 +52,32 @@ def requests(process):
 
 
 class StyleAlternativeCaptureTests(unittest.IsolatedAsyncioTestCase):
+    def test_source_identity_keys_are_platform_independent(self):
+        for path_type, root in (
+            (PureWindowsPath, r"C:\checkout\worker"),
+            (PurePosixPath, "/checkout/worker"),
+        ):
+            base = path_type(root)
+            for relative in ("typelay_worker/index_cpu_windows.py", "native/index/model.lock.json"):
+                with self.subTest(platform=path_type.__name__, relative=relative):
+                    self.assertEqual(
+                        relative, capture.styled_quality.source_key(base / relative, base)
+                    )
+        actual = capture.styled_quality.source_hashes(native="index")
+        self.assertTrue(any(name.startswith("typelay_worker/") for name in actual))
+        self.assertFalse(any("\\" in name for name in actual))
+        self.assertEqual(
+            {
+                path.name
+                for path in (capture.styled_quality.WORKER.parent / "typelay_worker").glob("*.py")
+            },
+            {
+                name.removeprefix("typelay_worker/")
+                for name in actual
+                if name.startswith("typelay_worker/")
+            },
+        )
+
     def validate_changed_worker_files(self, *, extra):
         # Exercise the CLI against real files, without replacing the identity checker.
         with tempfile.TemporaryDirectory() as directory:

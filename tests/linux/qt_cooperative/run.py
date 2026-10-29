@@ -31,6 +31,8 @@ from eng.linux.cooperative.inputs import QT_PIN, hashes, sha256  # noqa: E402
 TEST_INPUTS = (
     "tests/linux/qt_cooperative/run.py",
     "tests/linux/qt_cooperative/fixture.cpp",
+    "tests/linux/qt_cooperative/font_order.cpp",
+    "src/linux/native/common/overlay-design.h",
     "tests/linux/qt_cooperative/qpa_ack.cpp",
     "tests/linux/fixtures/qt_native_fixture.cpp",
     "tests/linux/support/xtest.py",
@@ -174,6 +176,20 @@ def build(out, forced_sync_diagnostic=False):
             *flags,
         ]
     )
+    run(
+        [
+            "c++",
+            "-std=c++17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-fPIC",
+            HERE / "font_order.cpp",
+            "-o",
+            out / "font-order",
+            *flags,
+        ]
+    )
     qpa = shlex.split(run(["pkg-config", "--cflags", "--libs", "Qt6Widgets"]))
     qt = run(["pkg-config", "--modversion", "Qt6Gui"])
     headers = run(["pkg-config", "--variable=includedir", "Qt6Gui"])
@@ -203,7 +219,8 @@ def build(out, forced_sync_diagnostic=False):
             raise RuntimeError(f"Production Qt binary changed while building fixtures: {name}")
     versions["test_inputs"] = inputs
     versions["test_binary_sha256"] = {
-        name: sha256(out / name) for name in ("fixture", "qpa_ack", "native/qt-native-fixture")
+        name: sha256(out / name)
+        for name in ("fixture", "qpa_ack", "native/qt-native-fixture", "font-order")
     }
     versions["fixture_ldd"] = run(["ldd", out / "fixture"])
     (out / "versions.json").write_text(json.dumps(versions, indent=2) + "\n")
@@ -2494,6 +2511,72 @@ def ordered_controls(
     return result
 
 
+def observe_font_order(out, env):
+    """Two isolated public-layout diagnostics; never suppress the original suite."""
+    font_root = ROOT / "artifacts/ui-fonts"
+    observations = []
+    expected = {}
+    path = out / "font-order-result.json"
+    try:
+        verify_bundle(font_root)
+        expected = {
+            region: font_table_hashes(font_root / f"noto-serif/NotoSerif{region}-Regular.otf")
+            for region in ("SC", "JP")
+        }
+        # This observer does not load TypeLay/Fcitx plugins or change the parent
+        # process environment. Both children use the same actual Qt SDK/runtime.
+        clean = {
+            key: value
+            for key, value in env.items()
+            if key
+            not in (
+                "QT_PLUGIN_PATH",
+                "QT_QPA_PLATFORM_PLUGIN_PATH",
+                "QT_QPA_GENERIC_PLUGINS",
+                "TYPELAY_QT_PROBE",
+                "TYPELAY_QT_COOPERATIVE",
+            )
+        }
+        clean.update(QT_IM_MODULE="compose", QT_QPA_PLATFORM="xcb")
+        deadline = time.monotonic() + 8
+        for region in ("SC", "JP"):
+            record = {"firstRegion": region, "outcome": "not-started"}
+            observations.append(record)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                record["outcome"] = "total-deadline"
+                continue
+            try:
+                with (out / f"font-order-{region}.log").open("w") as log:
+                    result = subprocess.run(
+                        [
+                            str(out / "font-order"),
+                            str(font_root),
+                            region,
+                            str(out / f"font-order-{region}.json"),
+                        ],
+                        env=clean,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        timeout=min(4, remaining),
+                        check=False,
+                    )
+                record.update(outcome="exited", exitCode=result.returncode)
+            except subprocess.TimeoutExpired:
+                # subprocess.run kills and waits for only its own child.
+                record["outcome"] = "child-deadline"
+    except (OSError, ValueError) as error:
+        observations.append({"outcome": "infrastructure-error", "error": str(error)[:200]})
+    finally:
+        path.write_text(
+            json.dumps(
+                {"diagnosticOnly": True, "expectedTables": expected, "scenes": observations},
+                indent=2,
+            )
+            + "\n"
+        )
+
+
 def session(out, fcitx, forced_sync_diagnostic=False, language_options_only=False):
     children = []
     with tempfile.TemporaryDirectory(prefix="typelay-qt-research-") as temporary:
@@ -2508,6 +2591,8 @@ def session(out, fcitx, forced_sync_diagnostic=False, language_options_only=Fals
             path = Path(temporary) / key
             path.mkdir(mode=0o700)
             env[key] = str(path)
+        if not language_options_only:
+            observe_font_order(out, env)
         conf = Path(env["XDG_CONFIG_HOME"]) / "fcitx5"
         conf.mkdir()
         (conf / "profile").write_text(

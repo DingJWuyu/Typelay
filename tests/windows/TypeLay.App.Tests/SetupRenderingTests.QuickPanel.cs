@@ -97,11 +97,10 @@ public sealed partial class SetupRenderingTests
             var retiredProgress = TrayElement<ProgressBar>(scene.Panel, "QuickPanelModelProgress");
             var retiredPending = Assert.IsType<Border>(retiredProgress.Template.FindName("pending", retiredProgress));
             Assert.True(retiredPending.HasAnimatedProperties);
-            scene.Settings.Update(original with
+            await AssertAfterTrayAnimationTick(() => scene.Settings.Update(original with
             {
                 Motion = "reduce"
-            });
-            Assert.False(retiredPending.HasAnimatedProperties);
+            }), () => Assert.False(retiredPending.HasAnimatedProperties));
             progress = TrayElement<ProgressBar>(scene.Panel, "QuickPanelModelProgress");
             Assert.NotSame(retiredProgress, progress);
             Assert.Equal("static", progress.Tag);
@@ -115,15 +114,17 @@ public sealed partial class SetupRenderingTests
             Assert.Equal("animate", progress.Tag);
             pending = Assert.IsType<Border>(progress.Template.FindName("pending", progress));
             Assert.True(pending.HasAnimatedProperties);
-            scene.Panel.Hide();
-            Assert.False(pending.HasAnimatedProperties);
+            await AssertAfterTrayAnimationTick(scene.Panel.Hide, () => Assert.False(pending.HasAnimatedProperties));
+            Assert.False(retiredPending.HasAnimatedProperties);
             scene.Panel.OpenAtTray();
             progress = TrayElement<ProgressBar>(scene.Panel, "QuickPanelModelProgress");
             var reopenedPending = Assert.IsType<Border>(progress.Template.FindName("pending", progress));
             Assert.NotSame(pending, reopenedPending);
             Assert.True(reopenedPending.HasAnimatedProperties);
-            scene.Settings.Update(original);
-            Assert.False(reopenedPending.HasAnimatedProperties);
+            Assert.False(retiredPending.HasAnimatedProperties);
+            Assert.False(pending.HasAnimatedProperties);
+            await AssertAfterTrayAnimationTick(() => scene.Settings.Update(original),
+                () => Assert.False(reopenedPending.HasAnimatedProperties));
         }
         AssertTrayWithinWorkArea(scene.Panel);
         RenderTray(scene.Panel, $"tray-model-downloading-{(knownTotal ? "known" : "unknown")}.png");
@@ -272,6 +273,37 @@ public sealed partial class SetupRenderingTests
         open();
         await responder;
         await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+    }
+
+    // RemoveStoryboard retires its clocks at the next timing tick, before
+    // Rendering. Check that exact first frame, not "eventually stopped".
+    private static async Task AssertAfterTrayAnimationTick(Action retire, Action assertStopped)
+    {
+        var rendered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        EventHandler? frame = null;
+        frame = (_, _) =>
+        {
+            CompositionTarget.Rendering -= frame;
+            try
+            {
+                assertStopped();
+                rendered.TrySetResult();
+            }
+            catch (Exception error)
+            {
+                rendered.TrySetException(error);
+            }
+        };
+        CompositionTarget.Rendering += frame;
+        try
+        {
+            retire();
+            await rendered.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            CompositionTarget.Rendering -= frame;
+        }
     }
 
     [DllImport("user32.dll", EntryPoint = "GetWindowRect")]

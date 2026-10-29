@@ -201,6 +201,17 @@ def instantiate(source, output, item, version):
         raise ValueError("font-instance-is-still-variable")
     if not {"GSUB", "GPOS"}.issubset(font.keys()):
         raise ValueError("font-instance-layout-tables-missing")
+    if "opsz" in item["instance"] and "STAT" in font:
+        # Each TypeLay Serif size is its own static family. Its sole optical
+        # size is normal within that family, not an extra WWS family suffix.
+        # Keep the real optical coordinate and weight/italic style attributes.
+        stat = font["STAT"].table
+        optical_axes = {
+            index for index, axis in enumerate(stat.DesignAxisRecord.Axis) if axis.AxisTag == "opsz"
+        }
+        for value in stat.AxisValueArray.AxisValue:
+            if value.Format in (1, 2, 3) and value.AxisIndex in optical_axes:
+                value.Flags |= 0x0002  # ELIDABLE_AXIS_VALUE_NAME
     font.save(output)
     font.close()
 

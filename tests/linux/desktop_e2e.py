@@ -4547,6 +4547,7 @@ def run(arguments):
                 settings_page_row,
                 text,
             )
+            from support.gtk_settings_combo import SettingsComboMenu
 
             settings_window = wait_for(
                 lambda: next(
@@ -6308,14 +6309,10 @@ def run(arguments):
                     timeout=selection_deadline - time.monotonic(),
                 )
                 assert Atspi.Action.do_action(entry.get_action_iface(), 0)
-                selector = focus_settings_control(
-                    process.pid,
-                    settings_control(
-                        desktop_support["title"],
-                        timeout=selection_deadline - time.monotonic(),
-                        role=Atspi.Role.COMBO_BOX,
-                    ),
+                selector = settings_control(
+                    desktop_support["title"],
                     timeout=selection_deadline - time.monotonic(),
+                    role=Atspi.Role.COMBO_BOX,
                 )
                 assert selector.get_role() == Atspi.Role.COMBO_BOX
                 states = selector.get_state_set()
@@ -6327,9 +6324,11 @@ def run(arguments):
                         Atspi.StateType.SENSITIVE,
                     )
                 )
-                assert Atspi.Selection.select_child(
-                    selector.get_selection_iface(), choices.index(chromium)
-                )
+                # Native GTK menu selection is public MenuShell selection,
+                # not keyboard focus on the non-focusable outer ComboBox.
+                opening = SettingsComboMenu(process.pid, selector, selection_deadline)
+                assert opening.select(chromium["title"])
+                assert opening.item_actions == 1
                 selected = Atspi.Selection.get_selected_child(selector.get_selection_iface(), 0)
                 assert selected and selected.get_name() == chromium["title"]
                 activate_setting(support["labels"]["details"])
