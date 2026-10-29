@@ -199,11 +199,20 @@ public sealed record TranslationRelease(TranslationOperation Operation, string P
     string? InferenceProfileId = null);
 
 // A compiled product decision, not hello negotiation or a configurable flag system.
-// This release has no accepted quality rows. Constructor injection is for controlled tests.
+// Only these operation/direction/profile rows have accepted feature-delta evidence.
+// Constructor injection is for controlled tests.
 public sealed class TranslationReleasePolicy(IEnumerable<TranslationRelease> releases)
 {
     private readonly TranslationRelease[] _releases = releases.ToArray();
-    public static TranslationReleasePolicy Current { get; } = new([]);
+    public static TranslationReleasePolicy Current
+    {
+        get;
+    } = new([
+        new(TranslationOperation.Glossary, "index-translate-2b-q4-k-m", "3a0eca6ce931d88d00614d427ab3ed8ff0743902", "zh_en",
+            "index-v1-3b99612f3676f5ac8ef34c81e99bf8874a5ba5271207a15d39e947c9d42ef87d"),
+        new(TranslationOperation.Glossary, "index-translate-2b-q4-k-m", "3a0eca6ce931d88d00614d427ab3ed8ff0743902", "en_zh",
+            "index-v1-3b99612f3676f5ac8ef34c81e99bf8874a5ba5271207a15d39e947c9d42ef87d")
+    ]);
     public bool IsReleased(TranslationOperation operation) => _releases.Any(row => row.Operation == operation);
     public bool Allows(TranslationOperation operation, VerifiedModelIdentity identity, LanguageDirection direction)
     {

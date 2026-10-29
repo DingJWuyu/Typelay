@@ -1,4 +1,3 @@
-using TypeLay.Runtime;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -59,7 +58,7 @@ internal sealed partial class LanguagePicker
     {
         // A new opening or query retires existing item peers, including query
         // A -> B -> A. The separate search editor and its focus stay mounted.
-        var choices = Items.Cast<LanguageChoice>().Select(choice => new LanguageChoice(choice.Code, choice.Label, choice.Available)).ToArray();
+        var choices = Items.Cast<LanguagePickerChoice>().Select(choice => new LanguagePickerChoice(choice.Code, choice.Label, choice.Available)).ToArray();
         _synchronizing = true;
         try
         {
@@ -145,7 +144,7 @@ internal sealed partial class LanguagePicker
         // Tab follows native focus navigation; it never commits a highlighted row.
     }
 
-    private void ChooseCurrent(LanguageChoice choice)
+    private void ChooseCurrent(LanguagePickerChoice choice)
     {
         if (!IsVisible || !IsEnabled || !IsDropDownOpen || _popupIdentity is null || !choice.Available || !MatchingChoices().Contains(choice))
             return;
@@ -169,18 +168,15 @@ internal sealed partial class LanguagePicker
             // Native ComboBoxItem closes again after SelectionChanged, which
             // could close a new popup opened synchronously by the save callback.
             e.Handled = true;
-            if (IsMouseOver && owner.ItemContainerGenerator.ItemFromContainer(this) is LanguageChoice choice)
+            if (IsMouseOver && owner.ItemContainerGenerator.ItemFromContainer(this) is LanguagePickerChoice choice)
                 owner.ChooseCurrent(choice);
         }
     }
 
-    private IEnumerable<LanguageChoice> MatchingChoices()
+    private IEnumerable<LanguagePickerChoice> MatchingChoices()
     {
         string query = _search?.Text.Trim() ?? "";
-        return Items.Cast<LanguageChoice>().Where(choice => query.Length == 0
-            || choice.Label.Contains(query, StringComparison.OrdinalIgnoreCase)
-            || choice.NativeName.Contains(query, StringComparison.OrdinalIgnoreCase)
-            || choice.Code.Contains(query, StringComparison.OrdinalIgnoreCase));
+        return Items.Cast<LanguagePickerChoice>().Where(choice => choice.Matches(query));
     }
 
     private void RefreshPopoverOptions()
@@ -193,7 +189,7 @@ internal sealed partial class LanguagePicker
         var enabled = visible.Where(choice => choice.Available).ToArray();
         if (_highlight >= enabled.Length)
             _highlight = enabled.Length - 1;
-        foreach (var choice in Items.Cast<LanguageChoice>())
+        foreach (var choice in Items.Cast<LanguagePickerChoice>())
             if (ItemContainerGenerator.ContainerFromItem(choice) is ComboBoxItem container)
             {
                 container.Visibility = visible.Contains(choice) ? Visibility.Visible : Visibility.Collapsed;
@@ -203,7 +199,7 @@ internal sealed partial class LanguagePicker
             _empty.Visibility = visible.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private void PreparePopoverOption(ComboBoxItem container, LanguageChoice choice)
+    private void PreparePopoverOption(ComboBoxItem container, LanguagePickerChoice choice)
     {
         container.SetResourceReference(StyleProperty, "SettingsLanguageOption");
         container.ToolTip = choice.Available ? null : UiTheme.L("当前模型未提供此语言。", "This language is not available in the current model.");
@@ -215,14 +211,9 @@ internal sealed partial class LanguagePicker
         _synchronizing = true;
         try
         {
-            SelectedItem = Items.Cast<LanguageChoice>().Single(choice => choice.Code == _selectionCode);
+            SelectedItem = Items.Cast<LanguagePickerChoice>().Single(choice => choice.Code == _selectionCode);
         }
         finally { _synchronizing = false; }
     }
 
-    private static string PopoverLabel(string code, bool available = true)
-    {
-        var presentation = LanguageChoicePresentation.Create(code, available);
-        return UiTheme.English ? presentation.LabelEn : presentation.LabelZh;
-    }
 }

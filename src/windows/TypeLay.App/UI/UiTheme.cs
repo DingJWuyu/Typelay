@@ -205,32 +205,6 @@ internal static partial class UiTheme
         <Setter Property="Background" Value="{DynamicResource Panel}"/>
         <Setter Property="BorderThickness" Value="0.5"/>
       </Style>
-      <Style x:Key="SettingsShortcutRecorder" TargetType="TextBox">
-        <Setter Property="Background" Value="{DynamicResource SettingsControlFill}"/>
-        <Setter Property="Foreground" Value="{DynamicResource Text}"/>
-        <Setter Property="SelectionBrush" Value="{DynamicResource AccentSoft}"/>
-        <Setter Property="BorderBrush" Value="{DynamicResource SettingsControlLine}"/>
-        <Setter Property="BorderThickness" Value="0,0,0,1"/>
-        <Setter Property="VerticalContentAlignment" Value="Center"/>
-        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TextBox">
-          <Grid>
-            <Border x:Name="surface" CornerRadius="7" Background="{TemplateBinding Background}"/>
-            <ScrollViewer x:Name="PART_ContentHost" VerticalAlignment="Center" Focusable="False"
-              HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden"/>
-            <Border x:Name="outline" CornerRadius="7" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" IsHitTestVisible="False"/>
-          </Grid>
-          <ControlTemplate.Triggers>
-            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="surface" Property="Background" Value="{DynamicResource SettingsControlHover}"/></Trigger>
-            <Trigger Property="IsKeyboardFocusWithin" Value="True">
-              <Setter TargetName="surface" Property="Background" Value="{DynamicResource AccentSoft}"/>
-              <Setter TargetName="outline" Property="BorderBrush" Value="{DynamicResource Accent}"/>
-              <Setter TargetName="outline" Property="BorderThickness" Value="1.5"/>
-              <Setter Property="Foreground" Value="{DynamicResource AccentInk}"/>
-            </Trigger>
-            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
-          </ControlTemplate.Triggers>
-        </ControlTemplate></Setter.Value></Setter>
-      </Style>
       <Style x:Key="SettingsThemeChoice" TargetType="RadioButton">
         <Setter Property="Foreground" Value="{DynamicResource Text}"/>
         <Setter Property="FontSize" Value="13"/>

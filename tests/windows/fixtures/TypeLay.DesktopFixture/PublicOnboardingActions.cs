@@ -66,15 +66,24 @@ internal static class PublicOnboardingActions
             new PropertyCondition(AutomationElement.ProcessIdProperty, app.Id),
             new PropertyCondition(AutomationElement.AutomationIdProperty, "TypeLayOnboarding"),
             new PropertyCondition(AutomationElement.IsOffscreenProperty, false))) is null, ct), ct);
+        stage("validate-public-onboarding-preferences");
         var after = readSettings() ?? throw new InvalidOperationException("onboarding-settings-unreadable");
         // Compare the complete persisted preference contract, including newer
         // fields and preserved extension data. Only the public finish action's
-        // OnboardingComplete transition is allowed.
+        // OnboardingComplete transition and the existing legacy Motion
+        // migration are allowed. Normalize only the expected baseline: the
+        // actual file must still contain the canonical mode and legacy mirror,
+        // and all unrelated values (including extension data) must match.
+        var expected = before with
+        {
+            Motion = before.MotionPreference,
+            ReduceMotion = before.MotionPreference == "reduce"
+        };
         Require(JsonSerializer.Serialize(after with
         {
             OnboardingComplete = before.OnboardingComplete
         })
-            == JsonSerializer.Serialize(before), "onboarding-changed-unselected-preferences");
+            == JsonSerializer.Serialize(expected), "onboarding-changed-unselected-preferences");
     }
 
     private static void Require(bool condition, string code)

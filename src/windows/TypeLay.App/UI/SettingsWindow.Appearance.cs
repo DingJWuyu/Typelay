@@ -30,6 +30,7 @@ internal sealed partial class SettingsWindow
             return;
         object navigation = _navigationButtons = new();
         _nav.Children.Clear();
+        _setModelWarning = null;
         if (RenderSettingsSearch())
             return;
         foreach (var page in Pages)
@@ -42,6 +43,15 @@ internal sealed partial class SettingsWindow
             var label = UiTheme.Text(UiTheme.L(page.Chinese, page.English), 13, bold: page.Id == _page);
             label.Margin = new(9, 0, 0, 0);
             row.Children.Add(label);
+            if (page.Id == "model")
+            {
+                var warning = new Ellipse { Width = 6, Height = 6, Margin = new(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+                warning.SetResourceReference(Shape.FillProperty, "Warn");
+                AutomationProperties.SetAutomationId(warning, "SettingsModelNavigationWarning");
+                _setModelWarning = visible => warning.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+                _setModelWarning(!_model.Ready);
+                row.Children.Add(warning);
+            }
             var button = UiTheme.Button("", () =>
             {
                 if (IsVisible && ReferenceEquals(navigation, _navigationButtons))

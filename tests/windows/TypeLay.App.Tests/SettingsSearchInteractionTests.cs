@@ -351,7 +351,11 @@ public sealed partial class TranslationSettingsTests
     private static void SaveSearchImage(FrameworkElement surface, string name)
     {
         surface.UpdateLayout();
-        string directory = Path.Combine("artifacts", "test-results", "rendering");
+        var repository = new DirectoryInfo(AppContext.BaseDirectory);
+        while (repository is not null && !File.Exists(Path.Combine(repository.FullName, "TypeLay.slnx")))
+            repository = repository.Parent;
+        Assert.NotNull(repository);
+        string directory = Path.Combine(repository.FullName, "artifacts", "test-results", "rendering");
         Directory.CreateDirectory(directory);
         var bitmap = new RenderTargetBitmap((int)Math.Ceiling(surface.ActualWidth), (int)Math.Ceiling(surface.ActualHeight), 96, 96, PixelFormats.Pbgra32);
         bitmap.Render(surface);

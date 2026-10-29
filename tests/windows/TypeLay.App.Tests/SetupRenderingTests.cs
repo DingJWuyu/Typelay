@@ -613,6 +613,14 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             Assert.DoesNotContain(Buttons(window), button => Equals(button.Content, "试一试"));
             window.ShowPage("general");
             window.UpdateLayout();
+            var banner = Descendants(window).OfType<Border>().Single(control => AutomationProperties.GetAutomationId(control) == "SettingsModelBanner");
+            Assert.True(banner.IsVisible);
+            Assert.Contains(Descendants(banner).OfType<TextBlock>(), text => text.Text.Contains("下载连接失败", StringComparison.Ordinal));
+            Assert.True(model.Ready); // The old working model remains usable; the failed repair is still visible.
+            var view = Descendants(banner).OfType<Button>().Single();
+            var peer = System.Windows.Automation.Peers.UIElementAutomationPeer.CreatePeerForElement(view);
+            Assert.IsAssignableFrom<System.Windows.Automation.Provider.IInvokeProvider>(peer.GetPattern(System.Windows.Automation.Peers.PatternInterface.Invoke)).Invoke();
+            await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ContextIdle);
             Assert.Equal("重新准备", Named<Button>(window, "PreparationPrimaryAction").Content);
         }
         finally { await ClosePreparation(window, directory); }

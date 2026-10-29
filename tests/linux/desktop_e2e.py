@@ -4623,9 +4623,11 @@ def run(arguments):
                     snapshot[key] = (rect.x, rect.y, rect.width, rect.height)
                 return snapshot
 
-            def settings_control(name, timeout=15):
+            def settings_control(name, timeout=15, *, role=None):
                 return wait_for(
-                    lambda: named(process.pid, name),
+                    lambda: named(process.pid, name)
+                    if role is None
+                    else visible_setup_control(name, role=role),
                     f"settings control missing: {name}",
                     timeout=timeout,
                 )
@@ -4928,34 +4930,15 @@ def run(arguments):
                 assert Atspi.Selection.is_child_selected(current[0], index)
                 return row
 
-            def visible_setup_control(name, *, role=None):
-                desktop = Atspi.get_desktop(0)
-                pending = [
-                    app
-                    for index in range(desktop.get_child_count())
-                    if (app := desktop.get_child_at_index(index)) is not None
-                    and app.get_process_id() == process.pid
-                ]
-                matches = []
-                for _ in range(4096):
-                    if not pending:
-                        assert len(matches) <= 1, "ambiguous visible setup control: " + name
-                        return matches[0] if matches else None
-                    node = pending.pop()
-                    if node is None:
-                        continue
-                    node.clear_cache()
-                    if (
-                        node.get_name() == name
-                        and (role is None or node.get_role() == role)
-                        and node.get_state_set().contains(Atspi.StateType.SHOWING)
-                    ):
-                        assert node.get_process_id() == process.pid
-                        matches.append(node)
-                    pending.extend(
-                        node.get_child_at_index(index) for index in range(node.get_child_count())
-                    )
-                raise AssertionError("setup controls exceed their bounded accessibility tree")
+            def visible_setup_control(name, *, role=None, tutorial_content=False):
+                from support.gtk_accessibility import onboarding_content, visible_named
+
+                root = None
+                if tutorial_content:
+                    root = onboarding_content(process.pid, "欢迎使用 TypeLay", "稍后设置")
+                    if root is None:
+                        return None
+                return visible_named(process.pid, name, role=role, root=root)
 
             def tutorial_practice():
                 # Follow the four visible onboarding steps. Reopening may retain
@@ -4973,7 +4956,12 @@ def run(arguments):
                     visible_headings = [
                         item
                         for title in headings
-                        if (item := visible_setup_control(title, role=Atspi.Role.LABEL)) is not None
+                        if (
+                            item := visible_setup_control(
+                                title, role=Atspi.Role.LABEL, tutorial_content=True
+                            )
+                        )
+                        is not None
                     ]
                     assert len(visible_headings) == 1, (
                         "tutorial must expose exactly one visible current-step label"
@@ -6299,7 +6287,7 @@ def run(arguments):
                 # This does not load an extension or complete browser approval.
                 choices = [row for row in support["rows"] if not row["showInMore"]]
                 chromium = next(row for row in choices if row["id"] == "chromium")
-                selector = settings_control(desktop_support["title"])
+                selector = settings_control(desktop_support["title"], role=Atspi.Role.COMBO_BOX)
                 assert selector.get_role() == Atspi.Role.COMBO_BOX
                 states = selector.get_state_set()
                 assert all(

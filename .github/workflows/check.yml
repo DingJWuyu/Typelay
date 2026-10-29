@@ -990,6 +990,7 @@ jobs:
             artifacts/linux/qt-cooperative/unmodified-reentry-native-state.json
             artifacts/linux/qt-cooperative/unmodified-reentry-native.log
             artifacts/linux/qt-cooperative/ordered-result.json
+            artifacts/linux/qt-cooperative/font-preference-observations.json
             artifacts/linux/qt-cooperative/ordered-native-state.json
             artifacts/linux/qt-cooperative/ordered-native.log
             artifacts/linux/qt-cooperative/ordered-delayed-result.json

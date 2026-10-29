@@ -53,6 +53,11 @@ def build(
     owner.window.connect("style-updated", owner.update_palette)
     owner.localized = []
     owner.search_entries = []
+    owner.search_generation = object()
+    owner.search_signature = None
+    owner.search_buttons = []
+    owner.search_location = owner.search_highlight = owner.search_highlight_timer = None
+    owner.page_scrolls = {}
     owner.page_boxes = {}
     owner.nav_rows = {}
     owner.page_headings = {}
@@ -80,7 +85,15 @@ def build(
     owner.sidebar = style(Gtk.ListBox(), "settings-navigation")
     owner.sidebar.set_selection_mode(Gtk.SelectionMode.SINGLE)
     owner.sidebar.get_accessible().set_name("设置导航")
+    owner.sidebar.set_no_show_all(True)
     navigation.pack_start(owner.sidebar, True, True, 0)
+    owner.search_results = box(1)
+    owner.search_scroll = style(Gtk.ScrolledWindow(), "settings-search-results")
+    owner.search_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+    owner.search_scroll.set_no_show_all(True)
+    owner.search_scroll.add(owner.search_results)
+    owner.search_results.get_accessible().set_name("设置搜索结果")
+    navigation.pack_start(owner.search_scroll, True, True, 0)
     panel.pack_start(navigation, False, False, 0)
     outer = box(0)
     panel.pack_start(outer, True, True, 0)
@@ -122,12 +135,12 @@ def build(
         owner.localized.append((heading.set_text, chinese, english))
         owner.page_headings[name] = heading
         scroll.add(content)
+        owner.page_scrolls[name] = scroll
         page.pack_start(scroll, True, True, 0)
         owner.pages.add_titled(page, name, chinese)
         owner.page_boxes[name] = content
         nav_row = Gtk.ListBoxRow()
         nav_row.page_name = name
-        nav_row.search_text = chinese + " " + english
         line = Gtk.Box(spacing=9)
         image = design_icon(icon_name)
         style(image, "nav-icon")
@@ -143,15 +156,6 @@ def build(
             nav_row.set_margin_top(12)
         owner.nav_rows[name] = nav_row
         owner.sidebar.add(nav_row)
-    for page, keywords in {
-        "appearance": " theme 主题 字体 font 强调色 accent color 字号 text size language 界面 动效 motion 透明 transparency",
-        "language": " source target 源语言 目标语言 风格 tone style natural formal 简洁 concise 口语 casual 交换 swap",
-        "glossary": " glossary terminology 术语 词条 添加 搜索 search",
-        "application-support": " apps applications 应用 连接 排除 excluded browser 浏览器 enabled 停用",
-        "model": " model 模型 安装 install 修复 repair Index Argos Hy CPU GPU NPU 常驻 resident 更新 update",
-        "about": " privacy 隐私 软件更新 version 版本 历史 history account 账户",
-    }.items():
-        owner.nav_rows[page].search_text += keywords
     owner.sidebar.connect(
         "row-selected",
         lambda _list, selected: owner.pages.set_visible_child_name(selected.page_name)
@@ -164,11 +168,13 @@ def build(
             owner.nav_rows.get(owner.pages.get_visible_child_name())
         ),
     )
-    owner.sidebar.set_filter_func(
-        lambda item: not owner.search.get_text().strip()
-        or owner.search.get_text().strip().casefold() in item.search_text.casefold()
-    )
-    owner.search.connect("search-changed", lambda *_: owner.filter_settings())
+    owner.search.connect("changed", owner.filter_settings)
+    owner.search.connect("activate", owner.activate_first_search_result)
+    owner.search.connect("key-press-event", owner.search_key)
+    owner.window.connect("hide", owner.retire_search)
+    owner.window.connect("map", owner.filter_settings)
+    owner.pages.connect("notify::transition-running", owner.locate_search_result)
+    owner.pages.connect("notify::visible-child-name", owner.locate_search_result)
     owner.sidebar.select_row(owner.nav_rows["general"])
 
     def card(page):
@@ -188,7 +194,7 @@ def build(
             (name for name, body in owner.page_boxes.items() if parent.get_parent() is body), None
         )
         if page:
-            owner.nav_rows[page].search_text += " " + chinese + " " + english
+            owner.register_search_setting(page, key, chinese, english, widget)
         return widget
 
     def switch(key):
@@ -257,6 +263,7 @@ def build(
         widget, caption = row(chinese, button)
         tutorials.pack_start(widget, False, False, 0)
         owner.localized.append((caption.set_text, chinese, english))
+        owner.register_search_setting("general", chinese, chinese, english, widget)
     owner.page_boxes["about"].pack_start(
         label(
             "所有翻译均在本机运行。密码、敏感字段和无法确认的输入法状态始终受到保护。", muted=True
@@ -322,6 +329,7 @@ def build(
     )
     owner.theme_options = owner.preference_options["theme"]
     visual.pack_start(theme_row, False, False, 0)
+    owner.register_search_setting("appearance", "theme", "主题", "Theme", theme_row)
     owner.localized.append((caption.set_text, "主题", "Theme"))
     swatches = Gtk.Box(spacing=3)
     grouped = None
@@ -348,6 +356,7 @@ def build(
     widget, caption = row("强调色", swatches)
     owner.localized.append((caption.set_text, "强调色", "Accent colour"))
     visual.pack_start(widget, False, False, 0)
+    owner.register_search_setting("appearance", "accent", "强调色", "Accent colour", widget)
     typography = card("appearance")
     widget, caption = row(
         "译文字体",
@@ -355,6 +364,7 @@ def build(
     )
     owner.localized.append((caption.set_text, "译文字体", "Translation font"))
     typography.pack_start(widget, False, False, 0)
+    owner.register_search_setting("appearance", "font", "译文字体", "Translation font", widget)
     size = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 13, 19, 1)
     size.set_digits(0)
     size.set_size_request(180, -1)
@@ -429,6 +439,9 @@ def build(
             owner.language_swap.connect("clicked", lambda *_: owner.swap_languages())
             direction_row.pack_start(owner.language_swap, False, False, 0)
     direction.pack_start(direction_row, False, False, 0)
+    owner.register_search_setting(
+        "language", "direction", "源语言与目标语言", "Source and target languages", direction_row
+    )
     translation_grid = Gtk.Grid()
     owner.page_boxes["language"].pack_start(translation_grid, False, False, 0)
 
@@ -602,6 +615,30 @@ def build(
     owner.page_boxes["glossary"].pack_start(owner.translation.glossary_box, False, False, 0)
     owner.translation.box.set_hexpand(True)
     owner.translation.style_box.set_hexpand(True)
+    owner.register_search_setting(
+        "language", "style", "默认风格", "Default tone", owner.translation.style_card
+    )
+    owner.register_search_setting(
+        "glossary", "glossary", "术语表", "Glossary", owner.translation.glossary_card
+    )
+    owner.register_search_setting(
+        "application-support",
+        "connections",
+        "应用连接",
+        "App connections",
+        support.connection_cards,
+    )
+    owner.register_search_setting(
+        "application-support", "applications", "应用列表", "Applications", owner.applications_box
+    )
+    owner.register_search_setting("model", "model", "本地模型", "Local model", model_hero)
+    owner.register_search_setting(
+        "model",
+        "repair",
+        "模型与其他后端",
+        "Models and other backends",
+        support.preparation_details,
+    )
     future_model = card("model")
     for chinese, english, value in (
         ("推理设备", "Inference device", "CPU · 当前后端"),
@@ -613,6 +650,7 @@ def build(
         widget, caption = row(chinese, control)
         owner.localized.append((caption.set_text, chinese, english))
         future_model.pack_start(widget, False, False, 0)
+        owner.register_search_setting("model", chinese, chinese, english, widget)
     future_note = label(
         "GPU / NPU、常驻控制和模型更新尚未提供；不会开始下载或报告虚假的进度。", muted=True
     )
@@ -636,6 +674,7 @@ def build(
     widget, caption = row("软件更新", unavailable)
     owner.localized.append((caption.set_text, "软件更新", "Software updates"))
     updates.pack_start(widget, False, False, 0)
+    owner.register_search_setting("about", "updates", "软件更新", "Software updates", widget)
     privacy = card("about")
     for chinese, english, value, translated in (
         ("翻译在哪里运行", "Translation runs", "这台设备", "On this device"),
@@ -648,6 +687,7 @@ def build(
             ((caption.set_text, chinese, english), (detail.set_text, value, translated))
         )
         privacy.pack_start(widget, False, False, 0)
+        owner.register_search_setting("about", chinese, chinese, english, widget)
     quit_button = style(Gtk.Button(label="退出 TypeLay"), "flat")
     quit_button.connect("clicked", lambda *_: owner.dismiss(quit_requested=quit_requested))
     navigation.pack_end(quit_button, False, False, 0)

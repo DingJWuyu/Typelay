@@ -442,7 +442,8 @@ internal static partial class BrowserCooperationCheck
             }
             finally { await PageCallAsync("Runtime.releaseObject", new { objectId = id }, ct); }
         }
-        public async Task ClickOverlaySettingsAsync(CancellationToken ct)
+        public Task ClickOverlaySettingsAsync(CancellationToken ct) => ClickOverlayMenuActionAsync("设置", ct);
+        private async Task ClickOverlayMenuActionAsync(string label, CancellationToken ct)
         {
             string? id = await PreviewObjectAsync(ct);
             Require(id is not null, "preview-settings-unavailable");
@@ -457,8 +458,8 @@ internal static partial class BrowserCooperationCheck
                         {
                             objectId = id,
                             returnByValue = true,
-                            arguments = new[] { new { value = more } },
-                            functionDeclaration = "function(more){const root=this.getRootNode(),buttons=more?root.querySelectorAll('button[aria-controls=\"more-actions\"]'):[...root.querySelectorAll('[role=group][aria-label=\"更多操作\"]>button')].filter(b=>b.textContent==='设置');if(buttons.length!==1)return {visible:false};const b=buttons[0],r=b.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,visible:b.isConnected&&!b.hidden&&!b.disabled&&r.width>0&&r.height>0,painted:Number(getComputedStyle(b).opacity)>0};}"
+                            arguments = new object[] { new { value = more }, new { value = label } },
+                            functionDeclaration = "function(more,label){const root=this.getRootNode(),buttons=more?root.querySelectorAll('button[aria-controls=\"more-actions\"]'):[...root.querySelectorAll('[role=group][aria-label=\"更多操作\"]>button')].filter(b=>b.querySelector('span')?.textContent===label);if(buttons.length!==1)return {visible:false};const b=buttons[0],r=b.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,visible:b.isConnected&&!b.hidden&&!b.disabled&&r.width>0&&r.height>0,painted:Number(getComputedStyle(b).opacity)>0};}"
                         }, ct);
                         point = result.GetProperty("result").GetProperty("value");
                         Require(point.GetProperty("visible").GetBoolean(), more ? "preview-more-hidden" : "preview-settings-hidden");
@@ -478,6 +479,62 @@ internal static partial class BrowserCooperationCheck
                 }
             }
             finally { await PageCallAsync("Runtime.releaseObject", new { objectId = id }, ct); }
+        }
+        public async Task<string> OpenEditorGlossaryAsync(CancellationToken ct)
+        {
+            string? id = await PreviewObjectAsync(ct);
+            Require(id is not null, "glossary-preview-unavailable");
+            try
+            {
+                var point = await PageCallAsync("Runtime.callFunctionOn", new
+                {
+                    objectId = id,
+                    returnByValue = true,
+                    functionDeclaration = "function(){const r=this.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};}"
+                }, ct);
+                await ClickPointAsync(point.GetProperty("result").GetProperty("value"), ct);
+                while (true)
+                {
+                    var state = await PageCallAsync("Runtime.callFunctionOn", new
+                    {
+                        objectId = id,
+                        returnByValue = true,
+                        functionDeclaration = "function(){return this.isConnected&&!this.readOnly&&this.getRootNode().activeElement===this;}"
+                    }, ct);
+                    if (state.GetProperty("result").GetProperty("value").GetBoolean())
+                        break;
+                    await Task.Delay(20, ct);
+                }
+                await ClickOverlayMenuActionAsync("加入术语表", ct);
+                while (true)
+                {
+                    var form = await PageCallAsync("Runtime.callFunctionOn", new
+                    {
+                        objectId = id,
+                        returnByValue = false,
+                        functionDeclaration = "function(){return this.getRootNode().querySelector('[role=group][aria-label=\"加入术语表\"]');}"
+                    }, ct);
+                    if (form.GetProperty("result").TryGetProperty("objectId", out var objectId))
+                        return objectId.GetString() ?? throw new Failure("glossary-form-object-invalid");
+                    await Task.Delay(20, ct);
+                }
+            }
+            finally { await PageCallAsync("Runtime.releaseObject", new { objectId = id }, ct); }
+        }
+        public async Task<JsonElement> GlossaryStateAsync(string id, CancellationToken ct)
+        {
+            var result = await PageCallAsync("Runtime.callFunctionOn", new
+            {
+                objectId = id,
+                returnByValue = true,
+                functionDeclaration = "function(){const r=this.getBoundingClientRect(),root=this.getRootNode();return {connected:this.isConnected,visible:this.isConnected&&!this.hidden&&r.width>0&&r.height>0,focused:this.contains(root.activeElement),inputs:this.querySelectorAll('input').length};}"
+            }, ct);
+            return result.GetProperty("result").GetProperty("value").Clone();
+        }
+        public async Task ClickSourceAsync(CancellationToken ct)
+        {
+            var point = await EvaluateAsync("(()=>{const r=a.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()", ct);
+            await ClickPointAsync(point, ct);
         }
         public async Task ClickSubmitAsync(CancellationToken ct)
         {

@@ -851,6 +851,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                         "pointerLeftAtMonoMs",
                                         "pointerObserverAttachedAtMonoMs",
                                         "pointerCaptureObservation",
+                                        "pointerDispatchObservation",
                                         "pointerObservation",
                                         "canTarget",
                                         "canFocus",

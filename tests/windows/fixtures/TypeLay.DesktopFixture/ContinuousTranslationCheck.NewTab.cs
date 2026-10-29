@@ -139,6 +139,41 @@ internal static partial class ContinuousTranslationCheck
             {
                 InputSnapshot? captured = null;
                 bool reported = false;
+                bool PreviewMatches()
+                {
+                    // Keep the original short-circuit reads. These observations
+                    // do not request a capture, walk UIA or extend this wait.
+                    bool? visible = captured is not null ? VisibleTranslation(overlay, editor) : null;
+                    string? translated = visible == true ? editor.Text : null;
+                    bool? translationMatches = translated is not null ? translated == translations[index] : null;
+                    if (index is 1 or 3 && active is not null)
+                    {
+                        var latest = broker.LatestCapture;
+                        var snapshot = latest?.Snapshot;
+                        var observation = new
+                        {
+                            atMs = WindowsInterruptClock.NowMs,
+                            captures = broker.Captures,
+                            brokerProcessId = broker.ProcessId,
+                            focus = latest?.Focus.ToString(),
+                            targetMatches = snapshot is null ? (bool?)null : target == snapshot.Target,
+                            inputEpoch = snapshot?.InputEpoch,
+                            observedAtMs = snapshot?.ObservedAtMs,
+                            receivedAtMs = broker.LatestCaptureReceivedAtMs,
+                            sourceTextMatched = captured is not null,
+                            visible,
+                            translationMatches,
+                            outputUnits = translated?.Length,
+                            outputSha256 = translated is null ? null : Convert.ToHexString(
+                                System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(translated))),
+                            modelBusy = model.Busy
+                        };
+                        if (captured is not null)
+                            active.FirstMatchedRefreshObservation ??= observation;
+                        active.LastRefreshObservation = observation;
+                    }
+                    return captured is not null && visible == true && translationMatches == true;
+                }
                 await UntilObservedAsync(async () =>
                 {
                     captured = await CapturedAsync(sources[index], afterCapture);
@@ -147,7 +182,7 @@ internal static partial class ContinuousTranslationCheck
                         reported = true;
                         RecordSnapshot(result.Stage, captured);
                     }
-                    return captured is not null && VisibleTranslation(overlay, editor) && editor.Text == translations[index];
+                    return PreviewMatches();
                 });
                 previewSeen(elapsed.ElapsedMilliseconds);
                 // Confirm the original source again using the controller's next
@@ -156,7 +191,7 @@ internal static partial class ContinuousTranslationCheck
                 await UntilObservedAsync(async () =>
                 {
                     captured = await CapturedAsync(sources[index], atPreview);
-                    return captured is not null && VisibleTranslation(overlay, editor) && editor.Text == translations[index];
+                    return PreviewMatches();
                 });
                 return captured!;
             }
@@ -379,6 +414,14 @@ internal static partial class ContinuousTranslationCheck
     private sealed class NewTabModeFacts
     {
         public string Outcome { get; set; } = "not-run";
+        public object? FirstMatchedRefreshObservation
+        {
+            get; set;
+        }
+        public object? LastRefreshObservation
+        {
+            get; set;
+        }
         public long? FirstPreviewMs
         {
             get; set;

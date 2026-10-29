@@ -797,7 +797,7 @@ public sealed class InlineGlossaryTests
     [Fact]
     public void UnsupportedSourceViewsCannotOpenAuxiliaryFormEvenWhenRulesCanBeManaged()
     {
-        using var closed = new SessionScenario();
+        using var closed = new SessionScenario(translationRelease: new([]));
         closed.ReadyCandidate();
         Assert.False(closed.View.Context!.TranslationActions!.GlossaryReleased);
         Assert.Null(closed.View.BeginGlossaryRequested!(closed.View.Token));
@@ -810,7 +810,7 @@ public sealed class InlineGlossaryTests
     [Fact]
     public async Task ClosedReleaseSourceFormRejectsOldTokensAndSavesOnlyInactiveRulesAfterRevalidation()
     {
-        using var s = new SessionScenario(experimental: true);
+        using var s = new SessionScenario(experimental: true, translationRelease: new([]));
         s.View.SourceGlossarySupported = true;
         s.ReadyCandidate();
         var token = s.View.Token;
@@ -848,7 +848,7 @@ public sealed class InlineGlossaryTests
     [Fact]
     public async Task EditingCanStoreAnInactiveRuleWithoutReplacingItsDraftOrGrantingModelApplication()
     {
-        using var s = new SessionScenario(experimental: true);
+        using var s = new SessionScenario(experimental: true, translationRelease: new([]));
         s.ReadyCandidate();
         Assert.True(s.View.BeginEditing!(s.View.Token));
         s.Input.InEditor = true;

@@ -174,6 +174,8 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         && owned.AdmittedToken == token && _viewContext?.Token == token;
     public void Configure(UserSettings settings)
     {
+        if (_settings != settings)
+            RetireLanguageConfiguration(hide: true);
         _measurementKey = null;
         _settings = settings;
         UiTheme.Apply(settings);
@@ -274,7 +276,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         };
         _languageButton.ToolTip = UiTheme.L("翻译语言", "Translation Languages");
         AutomationProperties.SetName(_languageButton, (string)_languageButton.ToolTip);
-        _languageButton.Click += (_, _) => LanguageRequested?.Invoke();
+        _languageButton.Click += (_, _) => RequestLanguageConfiguration();
         bar.Children.Add(_languageButton);
         _status = UiTheme.Text("", 11.5, muted: true);
         _status.TextWrapping = TextWrapping.NoWrap;
@@ -293,7 +295,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         _moreButton = IconButton("M5 12h.01M12 12h.01M19 12h.01", new EditorMenuButton(this));
         _moreButton.ToolTip = UiTheme.L("更多翻译操作", "More Translation Actions");
         AutomationProperties.SetName(_moreButton, (string)_moreButton.ToolTip);
-        _moreButton.Click += (_, _) => OpenMenu(_moreButton);
+        _moreButton.Click += (_, _) => { if (_languageConfiguration is null && _moreButton.IsVisible) OpenMenu(_moreButton); };
         _retryButton = IconButton("M20 7v5h-5M20 12a8 8 0 1 0-2 5");
         _retryButton.ToolTip = UiTheme.L("重试", "Retry");
         AutomationProperties.SetName(_retryButton, (string)_retryButton.ToolTip);
@@ -578,6 +580,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             ResetAppearance();
         };
         new WindowInteropHelper(this).EnsureHandle();
+        InitializeLanguageConfiguration();
     }
     private static Border Keycap(string value)
     {
@@ -708,6 +711,22 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         }
         if (msg == 0x21) // Admit the intent before Windows changes foreground ownership.
         {
+            if (_languageConfiguration is { } configuration)
+            {
+                // Configuration has no source editor. In particular, never
+                // transform coordinates through the detached translation tree.
+                handled = true;
+                if (LanguageConfigurationCurrent(configuration))
+                    return 3; // MA_NOACTIVATE
+                RetireLanguageConfiguration(hide: true);
+                return 4; // A late configuration press cannot reacquire focus.
+            }
+            if (!IsVisible || PresentationSource.FromVisual(_editor) is not HwndSource editorSource
+                || editorSource.Handle != _hwnd)
+            {
+                handled = true;
+                return 4; // MA_NOACTIVATEANDEAT: no mounted editor can admit a handoff.
+            }
             bool ownedTarget = _ownedEditor is not null || _viewContext is { } context
                 && _ownedEditorHost?.IsOwnedEditorTarget(context.Token.Target) == true;
             Native.Point cursor;
@@ -1050,6 +1069,8 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     }
     public void Render(Session session, UserSettings settings, bool permit, string? statusOverride = null, SessionViewContext? context = null)
     {
+        if (session.Current is not null)
+            RetireLanguageConfigurationForNewView();
         if (_settings != settings)
             Configure(settings);
         _viewContext = context is not null && session.Current?.Target == context.Token.Target ? context : null;
@@ -1183,6 +1204,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     }
     public void RenderPaused(PauseAnchor anchor, long revision)
     {
+        RetireLanguageConfigurationForNewView();
         var display = Presentation.From(SessionState.Paused, false, hasPauseAnchor: true);
         if (!display.Visible || display.Kind != OverlayKind.Paused || !anchor.IsUsable
             || !WindowsTarget.TryDecode(anchor.Target, out var target) || target.RootHwnd == 0)
@@ -1461,6 +1483,9 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         _pressedPauseRevision = null;
         _resumeButton.Visibility = Visibility.Collapsed;
         ClearSessionContent();
+        if (PreserveLanguageConfiguration())
+            return;
+        RetireLanguageConfiguration(hide: false);
         HideImmediately();
     }
     private void ResetFade()
@@ -1483,12 +1508,16 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         if (_glossary is { } form)
             CloseGlossary(form, restoreEditor: false);
         _sourceAnchor = null;
+        _sourceGlossarySnapshot = null;
+        _sourceGlossaryOpeningToken = null;
+        _sourceGlossaryOpeningEntry = null;
         _glossaryEditorToken = null;
         _ordinaryInput?.SetOrdinaryEditor(null);
         InvalidateOwnedEditor(OwnedEditorReason.UiHidden);
         CancelHeightTransition();
         _heightAnchor = null;
         _viewContext = null;
+        _sessionState = SessionState.NoSession;
         _measurementKey = null;
         _editing = false;
         _composing = false;

@@ -109,9 +109,16 @@ internal sealed class WindowsSessionView : ISessionView
             HideQuietly();
             return;
         }
+        if (_native is OverlayWindow native)
+            native.RetireLanguageConfigurationForNewView();
         Select(source.Target).Render(session, settings, canAccept, statusOverride, context);
     }
-    public void RenderPaused(PauseAnchor anchor, long revision) => Select(anchor.Target).RenderPaused(anchor, revision);
+    public void RenderPaused(PauseAnchor anchor, long revision)
+    {
+        if (_native is OverlayWindow native)
+            native.RetireLanguageConfigurationForNewView();
+        Select(anchor.Target).RenderPaused(anchor, revision);
+    }
     public void HideQuietly()
     {
         _native.HideQuietly();

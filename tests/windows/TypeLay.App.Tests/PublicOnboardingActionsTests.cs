@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.IO;
+using System.Text.Json;
 using TypeLay.App;
 using TypeLay.Core;
+using TypeLay.Runtime;
 using Xunit;
 
 namespace TypeLay.App.Tests;
@@ -9,23 +11,30 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class PublicOnboardingActionsTests(WpfDesktopFixture desktop)
 {
-    [Fact]
-    public Task ShippedFixtureHelperCompletesAllFourPublicPagesWithoutChangingUnselectedPreferences() => desktop.RunAsync(async () =>
+    [Theory]
+    [InlineData(false, null)]
+    [InlineData(true, null)]
+    [InlineData(false, "full")]
+    public Task ShippedFixtureHelperCompletesAllFourPublicPagesWithoutChangingUnselectedPreferences(bool legacyReduceMotion, string? motion) => desktop.RunAsync(async () =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-public-onboarding-" + Guid.NewGuid().ToString("N"));
         try
         {
             string path = Path.Combine(directory, "settings.json");
-            var settings = WindowsRuntime.CreateSettings(path);
-            settings.Update(settings.Value with
+            Directory.CreateDirectory(directory);
+            // The shipped suites seed raw preferences before first launch. In
+            // particular a legacy file omits Motion; do not pre-canonicalize
+            // its baseline through SettingsStore as that hides the migration.
+            var initial = new UserSettings(Source: "zh", Target: "en", Mode: WorkMode.OnDemand,
+                UiLanguage: "zh-CN", OnboardingComplete: false, ExperimentalWriteback: false,
+                ReduceMotion: legacyReduceMotion, Motion: motion)
             {
-                Source = "zh",
-                Target = "en",
-                Mode = WorkMode.OnDemand,
-                UiLanguage = "zh-CN",
-                OnboardingComplete = false,
-                ExperimentalWriteback = false
-            });
+                ExtensionData = new() { ["future-onboarding-option"] = JsonSerializer.SerializeToElement(new { enabled = false, value = "unchanged" }) }
+            };
+            File.WriteAllText(path, JsonSerializer.Serialize(initial));
+            UserSettings? ReadRaw() => JsonSerializer.Deserialize<UserSettings>(File.ReadAllText(path));
+            Assert.Equal(motion, ReadRaw()!.Motion);
+            var settings = WindowsRuntime.CreateSettings(path);
             // Existing protocol fixture proves model readiness, not language quality.
             using var model = SetupRenderingTests.ProtocolModel(directory);
             var host = new SettingsWindow(settings, model, () => Assert.Fail("Completing the wizard must not launch optional practice."));
@@ -37,11 +46,14 @@ public sealed class PublicOnboardingActionsTests(WpfDesktopFixture desktop)
             using var process = Process.GetCurrentProcess();
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(30));
-            await PublicOnboardingActions.CompleteAsync(process, () => WindowsRuntime.CreateSettings(path).Value, stages.Add, timeout.Token);
+            await PublicOnboardingActions.CompleteAsync(process, ReadRaw, stages.Add, timeout.Token);
             Assert.Equal(new[] { "onboarding-step-1-visible", "onboarding-step-2-visible", "onboarding-step-3-visible", "onboarding-step-4-visible" },
                 stages.Where(stage => stage.EndsWith("-visible", StringComparison.Ordinal)));
+            Assert.Contains("validate-public-onboarding-preferences", stages);
             Assert.False(onboarding.IsVisible);
-            var saved = WindowsRuntime.CreateSettings(path).Value;
+            var saved = Assert.IsType<UserSettings>(ReadRaw());
+            Assert.Equal(initial.MotionPreference, saved.Motion);
+            Assert.Equal(initial.MotionPreference == "reduce", saved.ReduceMotion);
             Assert.True(saved.OnboardingComplete);
             Assert.False(saved.ExperimentalWriteback);
             Assert.Equal(WorkMode.OnDemand, saved.Mode);

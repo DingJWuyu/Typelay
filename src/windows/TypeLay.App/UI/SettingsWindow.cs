@@ -83,7 +83,7 @@ internal sealed partial class SettingsWindow : Window
     private bool HasOrdinaryDraft => _shortcutDraft is not null;
     private bool HasDraft => HasOrdinaryDraft || _glossaryDraft is not null;
     private TextBox? _wakeShortcutInput, _directShortcutInput, _pauseShortcutInput;
-    private ComboBox? _acceptShortcutInput, _exitShortcutInput;
+    private TextBox? _acceptShortcutInput, _exitShortcutInput;
     private LanguagePicker? _sourceLanguage, _targetLanguage;
     private Button? _swapLanguages;
     private TextBlock? _languageAvailability;
@@ -213,6 +213,7 @@ internal sealed partial class SettingsWindow : Window
         FontFamily = UiTheme.UiFont;
         Resources.MergedDictionaries.Add(UiTheme.SettingsResources());
         Resources.MergedDictionaries.Add(UiTheme.LanguageResources());
+        Resources.MergedDictionaries.Add(UiTheme.ShortcutResources());
         Resources.MergedDictionaries.Add(UiTheme.QuickPanelResources());
         var shell = new Grid();
         shell.RowDefinitions.Add(new()
@@ -338,19 +339,26 @@ internal sealed partial class SettingsWindow : Window
         _headerTitle.VerticalAlignment = VerticalAlignment.Center;
         _headerTitle.SetResourceReference(TextBlock.ForegroundProperty, "Text");
         AutomationProperties.SetAutomationId(_headerTitle, "SettingsPageHeading");
-        main.Children.Add(_headerTitle);
+        var heading = new DockPanel { LastChildFill = true };
+        _headerActions.HorizontalAlignment = HorizontalAlignment.Right;
+        _headerActions.VerticalAlignment = VerticalAlignment.Center;
+        _headerActions.Margin = new(0, 8, 28, 0);
+        DockPanel.SetDock(_headerActions, Dock.Right);
+        heading.Children.Add(_headerActions);
+        heading.Children.Add(_headerTitle);
+        main.Children.Add(heading);
         Grid.SetRow(_pageScroll, 1);
         main.Children.Add(_pageScroll);
-        var draftActions = new DockPanel { LastChildFill = true };
+        var draftActions = _draftActions;
         _saveDraftButton = UiTheme.Button(UiTheme.L("重试保存", "Retry Save"), async () => await SaveDraftAsync(), primary: true);
         _saveDraftButton.Margin = new(18, 0, 0, 0);
         DockPanel.SetDock(_saveDraftButton, Dock.Right);
         draftActions.Children.Add(_saveDraftButton);
-        _forceShortcutButton = UiTheme.Button("强制保存", async () => await SaveDraftAsync(forceShortcutSave: true));
+        _forceShortcutButton = UiTheme.Button(UiTheme.L("仍然使用", "Use Anyway"), async () => await SaveDraftAsync(forceShortcutSave: true));
         AutomationProperties.SetAutomationId(_forceShortcutButton, "ForceSaveShortcuts");
         DockPanel.SetDock(_forceShortcutButton, Dock.Right);
         draftActions.Children.Add(_forceShortcutButton);
-        _editShortcutButton = UiTheme.Button("继续编辑", () => { ClearShortcutConfirmation(); RefreshDraftBar(); _wakeShortcutInput?.Focus(); });
+        _editShortcutButton = UiTheme.Button(UiTheme.L("取消", "Cancel"), () => { });
         AutomationProperties.SetAutomationId(_editShortcutButton, "EditConflictingShortcuts");
         DockPanel.SetDock(_editShortcutButton, Dock.Right);
         draftActions.Children.Add(_editShortcutButton);
@@ -434,10 +442,15 @@ internal sealed partial class SettingsWindow : Window
             Dispatcher.BeginInvoke(new Action(RefreshModel));
             return;
         }
+        RefreshSettingsBanners();
         if (_page == "general")
             _refreshGeneralStatus?.Invoke();
-        if (_renderedPage == _page && (_page is "apps" or "model" or "translation" || _page == "general" && _preparationCard is not null))
+        if (_renderedPage == _page)
         {
+            if (_page == "language")
+                RefreshLanguages();
+            if (_page == "shortcuts")
+                RefreshShortcuts();
             RefreshPreparation();
             RefreshTranslationAvailability();
             if (_modelStatus is not null)
@@ -465,6 +478,8 @@ internal sealed partial class SettingsWindow : Window
         _glossarySelection = -1;
         _draftFeedback = null;
         _settingsError = null;
+        ClearSaveIssue();
+        RetireBannerRetry();
         _support?.CancelCheck();
         _undo = null;
         _undoIdentity = null;
@@ -480,6 +495,7 @@ internal sealed partial class SettingsWindow : Window
     public void PrepareForEmergencyShutdown()
     {
         _emergencyShutdown = true;
+        RetireBannerRetry();
         _pageNavigation = null;
         _translationRequest?.Cancel();
     }
@@ -538,6 +554,7 @@ internal sealed partial class SettingsWindow : Window
     {
         if (search is not null && (!IsVisible || _closeDialog is not null || !ReferenceEquals(search, _settingsQuery)))
             return;
+        RetireBannerRetry();
         ClearSearchLocation();
         object navigation = _pageNavigation = new();
         string next = page == "translation" ? "model" : page;
@@ -592,13 +609,14 @@ internal sealed partial class SettingsWindow : Window
             UiTheme.Apply(_settings.Value);
             _refreshChrome?.Invoke();
             _saveDraftButton.Content = UiTheme.L("重试保存", "Retry Save");
-            _forceShortcutButton.Content = UiTheme.L("强制保存", "Save Anyway");
-            _editShortcutButton.Content = UiTheme.L("继续编辑", "Keep Editing");
+            _forceShortcutButton.Content = UiTheme.L("仍然使用", "Use Anyway");
+            _editShortcutButton.Content = UiTheme.L("取消", "Cancel");
             _toastUndo.Content = UiTheme.L("撤销", "Undo");
             _headerTitle.FontFamily = UiTheme.DisplayFont;
             if (_page == "appearance")
                 _renderedPage = null;
         }
+        RefreshSettingsBanners();
         // Keep the actual editors mounted during background status refreshes so
         // neither unsaved text nor keyboard focus and selection are disturbed.
         if (_page == "shortcuts" && _renderedPage == _page)
@@ -631,6 +649,8 @@ internal sealed partial class SettingsWindow : Window
         ClearSearchLocation();
         _searchTargets.Clear();
         _content.Children.Clear();
+        _headerActions.Children.Clear();
+        _shortcutWarnings.Clear();
         _group = null;
         _sourceLanguage = _targetLanguage = null;
         _swapLanguages = null;
@@ -646,6 +666,7 @@ internal sealed partial class SettingsWindow : Window
         _modelChoice = null;
         _preparationSecondary = _preparationDiagnostics = _preparationDirections = null;
         _connectionChecks.Clear();
+        BuildSettingsBanners();
         switch (_page)
         {
             case "general":
@@ -806,17 +827,20 @@ internal sealed partial class SettingsWindow : Window
         RegisterSearchRow(title, panel);
         return body;
     }
-    private async Task<bool> SaveAsync(UserSettings value, long? draftSubmission = null)
+    private async Task<bool> SaveAsync(UserSettings value, long? draftSubmission = null, Func<bool>? callerCurrent = null)
     {
-        if (_savingSettings)
+        if (_savingSettings || callerCurrent?.Invoke() == false)
             return false;
+        ClearSaveIssue();
+        var failedShortcuts = _shortcutDraft;
+        var failedGlossary = _glossaryDraft?.ToArray();
         var expected = _settings.Value;
         long expectedRevision = _settings.Revision;
         _savingSettings = true;
         if (_draftFeedback is "已保存，请重新打开设置确认当前状态。" or SettingsDraftPresentation.UnknownSaveMessage)
             _draftFeedback = null;
         RefreshDraftBar();
-        bool IsCurrentSubmission() => draftSubmission is null || draftSubmission == _draftSubmissionGeneration;
+        bool IsCurrentSubmission() => callerCurrent?.Invoke() != false && (draftSubmission is null || draftSubmission == _draftSubmissionGeneration);
         string page = _page;
         string? focusedSetting = Keyboard.FocusedElement is Control focused && focused.IsDescendantOf(_content)
             ? AutomationProperties.GetName(focused) : null;
@@ -889,14 +913,26 @@ internal sealed partial class SettingsWindow : Window
             if (!IsCurrentSubmission())
                 return false;
             _settingsError = "请检查当前用户目录与组织策略。";
+            SetSaveIssue(false, current: () => ReferenceEquals(expected, _settings.Value)
+                && _shortcutDraft == failedShortcuts && (_glossaryDraft is null ? failedGlossary is null : failedGlossary is not null && _glossaryDraft.SequenceEqual(failedGlossary)),
+                retry: async current =>
+                {
+                    if (draftSubmission is not null)
+                        await SaveDraftAsync(callerCurrent: current);
+                    else
+                        await SaveAsync(value, callerCurrent: current);
+                }, page: page);
             Refresh();
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
             EnableContent();
+            if (!IsCurrentSubmission())
+                return false;
             bool committed = _settings.Revision > expectedRevision && !_settings.HasChanges(value);
             _settingsError = null;
             _draftFeedback = committed ? "已保存，请重新打开设置确认当前状态。" : SettingsDraftPresentation.UnknownSaveMessage;
+            SetSaveIssue(true, committed, page: page);
             Refresh();
             return committed;
         }
@@ -997,8 +1033,7 @@ internal sealed partial class SettingsWindow : Window
         _practiceStatus = UiTheme.Text("", 12, true);
         _content.Children.Add(_practiceStatus);
         RefreshPracticeProgress();
-        if (PreparationView().PrimaryAction.Id != TranslationPreparationAction.NextStep)
-            InstallCard(compact: true);
+
     }
     private static FrameworkElement ThemePreview(string theme)
     {
@@ -1232,305 +1267,10 @@ internal sealed partial class SettingsWindow : Window
         if (_swapLanguages is not null)
             _swapLanguages.IsEnabled = _settings.Value.Source != "auto";
     }
-    private void Shortcuts()
-    {
-        object identity = _pageIdentity;
-        void Changed()
-        {
-            if (IsVisible && ReferenceEquals(identity, _pageIdentity))
-                ShortcutDraftChanged();
-        }
-        var draft = _shortcutDraft ?? ShortcutSettingsDraft.From(_settings.Value);
-        var messages = SettingsDraftPresentation.SessionShortcuts(SessionShortcutBindings.Restore(draft.Accept, draft.Exit));
-        Heading(UiTheme.L("快捷键", "Shortcuts"));
-        BeginGroup(UiTheme.L("翻译", "Translation"));
-        var accept = _acceptShortcutInput = SessionShortcutInput(draft.Accept, "Tab", messages.AcceptLabel);
-        var exit = _exitShortcutInput = SessionShortcutInput(draft.Exit, "Esc", messages.ExitLabel);
-        accept.SelectionChanged += (_, _) => Changed();
-        exit.SelectionChanged += (_, _) => Changed();
-        accept.ToolTip = UiTheme.L("仅在译文与原文对应、焦点和输入法状态明确时尝试写回。", "Replaces text only when the candidate, focus and IME state are confirmed.");
-        exit.ToolTip = UiTheme.L("不修改原文，不发送、不提交。输入法组合中优先交还输入法。", "Does not change or send text. Composition keys remain with the IME.");
-        Row(UiTheme.L("接受译文", "Accept translation"), "", accept);
-        Row(UiTheme.L("退出当前翻译", "Exit translation"), "", exit);
-        _returnShortcutHint = UiTheme.Text("", 12, true);
-        _returnShortcutHint.Margin = new(4, 0, 4, 14);
-        _content.Children.Add(_returnShortcutHint);
-        BeginGroup(UiTheme.L("按需模式", "On demand"));
-        var wake = _wakeShortcutInput = ShortcutInput(draft.Wake, "唤醒翻译 UI 快捷键");
-        var direct = _directShortcutInput = ShortcutInput(draft.Direct, "直接翻译并替换快捷键");
-        wake.TextChanged += (_, _) => Changed();
-        direct.TextChanged += (_, _) => Changed();
-        Row(UiTheme.L("唤醒翻译", "Wake translation"), "", wake);
-        Row(UiTheme.L("直接翻译并替换", "Translate and replace"), "", direct);
-        BeginGroup(UiTheme.L("全局", "Global"));
-        var pause = _pauseShortcutInput = ShortcutInput(draft.Pause, "暂停或恢复 TypeLay 快捷键", allowEmpty: true);
-        pause.TextChanged += (_, _) => Changed();
-        Row(UiTheme.L("暂停或恢复 TypeLay", "Pause or resume TypeLay"), UiTheme.L("Backspace 清除", "Backspace clears"), pause);
-        _shortcutStatus = UiTheme.Text("", 12, true);
-        _shortcutStatus.Margin = new(4, 0, 4, 10);
-        _content.Children.Add(_shortcutStatus);
-        _pauseShortcutRetryButton = UiTheme.Button(UiTheme.L("重试全局暂停快捷键", "Retry Global Pause Shortcut"), () => { RetryPauseShortcut?.Invoke(); RefreshShortcutStatus(); });
-        AutomationProperties.SetAutomationId(_pauseShortcutRetryButton, "RetryGlobalPauseShortcut");
-        _pauseShortcutRetryButton.HorizontalAlignment = HorizontalAlignment.Left;
-        _pauseShortcutRetryButton.Margin = new(0, 0, 0, 10);
-        _content.Children.Add(_pauseShortcutRetryButton);
-        _shortcutRetryButton = UiTheme.Button(UiTheme.L("重试启用快捷键", "Retry Shortcut Registration"), () =>
-        {
-            if (_shortcutFailure is { } failure)
-                ShortcutRecovery?.Retry(failure.Generation);
-            RefreshShortcutStatus();
-        });
-        AutomationProperties.SetAutomationId(_shortcutRetryButton, "RetrySavedShortcuts");
-        _shortcutRetryButton.HorizontalAlignment = HorizontalAlignment.Left;
-        _shortcutRetryButton.Margin = new(0, 0, 0, 14);
-        _content.Children.Add(_shortcutRetryButton);
-        var details = new StackPanel { Margin = new(0, 8, 0, 0) };
-        _savedModeGuidance = UiTheme.Text("", 12, true);
-        _savedAcceptanceGuidance = UiTheme.Text("", 12, true);
-        _controlShortcutWarning = UiTheme.Text("", 12, true);
-        AutomationProperties.SetAutomationId(_savedModeGuidance, "ShortcutSavedModeGuidance");
-        AutomationProperties.SetAutomationId(_savedAcceptanceGuidance, "ShortcutSavedAcceptanceGuidance");
-        AutomationProperties.SetAutomationId(_controlShortcutWarning, "ShortcutControlKeyRestriction");
-        details.Children.Add(_savedModeGuidance);
-        details.Children.Add(_savedAcceptanceGuidance);
-        details.Children.Add(_controlShortcutWarning);
-        details.Children.Add(UiTheme.Text(UiTheme.L("点击键帽后按下组合键，Esc 取消。接受与退出支持 Tab / Esc、功能键或 Ctrl+功能键；唤醒、直接替换与暂停支持 Ctrl / Alt / Shift 组合；这些全局键不支持 F12。", "Click a keycap and press a chord; Esc cancels. Accept and exit support Tab / Esc, function keys or Ctrl+function keys. Wake, direct replacement and pause support Ctrl / Alt / Shift combinations; F12 is reserved for these global shortcuts."), 12, true));
-        details.Children.Add(UiTheme.Text(UiTheme.L("无法完整检测每个应用内部的快捷键。未发现冲突不代表没有冲突，实际启用状态以注册结果为准。直接替换仍绑定原输入框，不抢回焦点、不自动发送，输入法状态未知时拒绝。", "App-internal conflicts cannot be fully detected. Registration status is authoritative. Direct replacement stays bound to the original field, never takes focus or sends, and rejects unknown IME state."), 12, true));
-        _content.Children.Add(new Expander { Header = UiTheme.L("快捷键与安全范围", "Shortcut and safety details"), Content = details, Margin = new(4, 0, 4, 0) });
-        RefreshShortcuts();
-    }
-    private async void ShortcutDraftChanged()
-    {
-        if (_updatingShortcuts || _wakeShortcutInput is null || _directShortcutInput is null
-            || _acceptShortcutInput is null || _exitShortcutInput is null)
-            return;
-        var value = new ShortcutSettingsDraft(_wakeShortcutInput.Text, _directShortcutInput.Text,
-            _acceptShortcutInput.SelectedItem as string ?? "", _exitShortcutInput.SelectedItem as string ?? "", _pauseShortcutInput?.Text ?? _settings.Value.PauseShortcut);
-        ClearShortcutConfirmation();
-        _shortcutDraft = value == ShortcutSettingsDraft.From(_settings.Value) ? null : value;
-        _draftFeedback = null;
-        _settingsError = null;
-        RefreshShortcuts();
-        if (_shortcutDraft is not null)
-            await SaveDraftAsync();
-    }
-    private void RefreshShortcuts()
-    {
-        if (_wakeShortcutInput is null || _directShortcutInput is null || _acceptShortcutInput is null
-            || _exitShortcutInput is null || _shortcutStatus is null)
-            return;
-        if (_shortcutDraft is null)
-        {
-            _updatingShortcuts = true;
-            try
-            {
-                UpdateShortcutText(_wakeShortcutInput, _settings.Value.WakeShortcut);
-                UpdateShortcutText(_directShortcutInput, _settings.Value.DirectShortcut);
-                if (_pauseShortcutInput is not null)
-                    UpdateShortcutText(_pauseShortcutInput, _settings.Value.PauseShortcut);
-                UpdateSessionShortcutInput(_acceptShortcutInput, _settings.Value.AcceptShortcut, "Tab");
-                UpdateSessionShortcutInput(_exitShortcutInput, _settings.Value.ExitShortcut, "Esc");
-            }
-            finally { _updatingShortcuts = false; }
-        }
-        var saved = _settings.Value;
-        string accept = saved.AcceptShortcut;
-        bool controlKeys = accept.StartsWith("Ctrl+", StringComparison.Ordinal) || saved.ExitShortcut.StartsWith("Ctrl+", StringComparison.Ordinal);
-        if (_returnShortcutHint is not null)
-            _returnShortcutHint.Text = controlKeys ? accept + UiTheme.L(" 返回原输入框", " returns to the original field") : accept + " → " + accept;
-        var guidance = SettingsGuidancePresentation.Create(saved, exclusionsNeedSave: false);
-        if (_savedModeGuidance is not null)
-            _savedModeGuidance.Text = UiTheme.English
-                ? (saved.Enabled ? "" : "TypeLay is paused. ") + (saved.Mode == WorkMode.OnDemand
-                    ? $"On demand: {saved.WakeShortcut} starts translation in the current input field. After leaving that field, wake it again. {saved.DirectShortcut} translates the selection, or current field text if nothing is selected, and attempts safe replacement without preview or sending."
-                    : $"Automatic: supported input fields show the language capsule and translate as you type. {saved.WakeShortcut} and {saved.DirectShortcut} are inactive in this mode.")
-                : guidance.ModeDescription;
-        if (_savedAcceptanceGuidance is not null)
-            _savedAcceptanceGuidance.Text = UiTheme.English
-                ? $"In the original input field, {saved.AcceptShortcut} attempts to accept a valid candidate after safety checks. After editing, the first {saved.AcceptShortcut} only returns to the original field; press it again to attempt acceptance. {saved.ExitShortcut} exits translation. Acceptance never sends or submits text."
-                : guidance.AcceptanceDescription;
-        if (_controlShortcutWarning is not null)
-        {
-            _controlShortcutWarning.Text = UiTheme.L("使用 Ctrl 会话键时，普通输入框仅支持退出和编辑回源；源内接受写回暂不可用。", "With Ctrl session shortcuts, ordinary input fields support only exit and returning from editing; in-field acceptance is unavailable.");
-            _controlShortcutWarning.Visibility = controlKeys ? Visibility.Visible : Visibility.Collapsed;
-        }
-        RefreshDraftBar();
-        RefreshShortcutStatus();
-    }
-    private void ClearShortcutConfirmation()
-    {
-        _shortcutConfirmation = null;
-        _shortcutConflictDraft = null;
-        _shortcutConflictBaseline = null;
-        _shortcutConflictMessage = null;
-    }
-    private async Task SaveDraftAsync(bool forceShortcutSave = false, ShortcutSettingsDraft? confirmedDraft = null, ShortcutSettingsDraft? confirmedBaseline = null, object? confirmation = null)
-    {
-        if (_savingSettings || _savingTranslation || !HasDraft)
-            return;
-        if (forceShortcutSave && (confirmation is null || !ReferenceEquals(confirmation, _shortcutConfirmation)))
-            return;
-        if (!HasOrdinaryDraft)
-        {
-            await SaveGlossaryDraftAsync();
-            return;
-        }
-        var shortcuts = _shortcutDraft ?? ShortcutSettingsDraft.From(_settings.Value);
-        if (!shortcuts.TryApply(_settings.Value, out var latest, out var error))
-        {
-            _settingsError = SettingsDraftPresentation.ShortcutErrorMessage(error);
-            _draftFeedback = _draftMessages.InvalidMessage;
-            RefreshDraftBar();
-            return;
-        }
-        var canonical = ShortcutSettingsDraft.From(latest!);
-        var baseline = ShortcutSettingsDraft.From(_settings.Value);
-        if (canonical != baseline)
-        {
-            bool confirmed = forceShortcutSave && confirmedDraft == canonical && confirmedBaseline == baseline
-                && _shortcutConflictDraft == canonical && _shortcutConflictBaseline == baseline;
-            if (!confirmed)
-            {
-                IReadOnlyList<string> unavailable;
-                try
-                {
-                    unavailable = ShortcutRecovery?.InspectConflicts?.Invoke(canonical)
-                        ?? ShortcutConflictProbe.Inspect(canonical);
-                    unavailable = unavailable.Concat(PauseShortcutConflicts?.Invoke(canonical.Pause) ?? []).Distinct().ToArray();
-                }
-                catch (System.ComponentModel.Win32Exception)
-                {
-                    _settingsError = "无法完成快捷键注册检查，设置未保存。请稍后重试。";
-                    RefreshDraftBar();
-                    return;
-                }
-                var warning = SettingsDraftPresentation.ShortcutConflicts(canonical, unavailable);
-                if (warning.RequiresConfirmation)
-                {
-                    _shortcutConflictDraft = canonical;
-                    _shortcutConflictBaseline = baseline;
-                    _shortcutConflictMessage = warning.Message;
-                    // Replace the actual action peer for each review. A queued
-                    // invocation of an older peer cannot authorize a new chord.
-                    var reviewDraft = canonical;
-                    var reviewBaseline = baseline;
-                    var reviewIdentity = _shortcutConfirmation = new object();
-                    var oldButton = _forceShortcutButton;
-                    _forceShortcutButton = UiTheme.Button("强制保存", async () => await SaveDraftAsync(true, reviewDraft, reviewBaseline, reviewIdentity));
-                    AutomationProperties.SetAutomationId(_forceShortcutButton, "ForceSaveShortcuts");
-                    DockPanel.SetDock(_forceShortcutButton, Dock.Right);
-                    if (oldButton.Parent is Panel parent)
-                    {
-                        int index = parent.Children.IndexOf(oldButton);
-                        parent.Children.RemoveAt(index);
-                        parent.Children.Insert(index, _forceShortcutButton);
-                    }
-                    var oldEdit = _editShortcutButton;
-                    _editShortcutButton = UiTheme.Button("继续编辑", () =>
-                    {
-                        if (!ReferenceEquals(reviewIdentity, _shortcutConfirmation))
-                            return;
-                        ClearShortcutConfirmation();
-                        RefreshDraftBar();
-                        _wakeShortcutInput?.Focus();
-                    });
-                    AutomationProperties.SetAutomationId(_editShortcutButton, "EditConflictingShortcuts");
-                    DockPanel.SetDock(_editShortcutButton, Dock.Right);
-                    if (oldEdit.Parent is Panel editParent)
-                    {
-                        int index = editParent.Children.IndexOf(oldEdit);
-                        editParent.Children.RemoveAt(index);
-                        editParent.Children.Insert(index, _editShortcutButton);
-                    }
-                    _draftFeedback = null;
-                    _settingsError = null;
-                    RefreshDraftBar();
-                    return;
-                }
-            }
-        }
-        ClearShortcutConfirmation();
-        long submission = ++_draftSubmissionGeneration;
-        bool saved = await SaveAsync(latest!, submission);
-        if (submission != _draftSubmissionGeneration)
-            return;
-        if (saved)
-        {
-            ClearShortcutConfirmation();
-            // A newer recording may have arrived while session retirement was
-            // pending. Never replace it with the submitted chord after commit.
-            if (_shortcutDraft == shortcuts)
-                _shortcutDraft = null;
-            if (_draftFeedback != "已保存，请重新打开设置确认当前状态。")
-                _draftFeedback = null;
-        }
-        else
-            _draftFeedback = _draftMessages.InvalidMessage;
-        Refresh();
-        if (saved && _shortcutDraft is not null)
-            await SaveDraftAsync();
-    }
-    private void RefreshDraftBar()
-    {
-        _forceShortcutButton.Visibility = _shortcutConflictDraft is not null ? Visibility.Visible : Visibility.Collapsed;
-        _editShortcutButton.Visibility = _forceShortcutButton.Visibility;
-        _saveDraftButton.Visibility = _shortcutConflictDraft is null && HasDraft && _settingsError is not null ? Visibility.Visible : Visibility.Collapsed;
-        _forceShortcutButton.IsEnabled = !_savingSettings && !_savingTranslation;
-        _draftNotice.Text = _shortcutConflictMessage ?? (_settingsError is { } error
-            ? (_draftFeedback == _draftMessages.InvalidMessage ? _draftMessages.InvalidMessage : "设置未保存") + "\n" + error
-            : _draftFeedback ?? (HasDraft ? UiTheme.L("尚未保存，请完成有效内容。", "Not saved. Complete a valid value.") : ""));
-        _draftNotice.Text = UiStrings.Translate(_draftNotice.Text);
-        _draftBar.Visibility = HasDraft || _draftFeedback is not null || _settingsError is not null
-            ? Visibility.Visible : Visibility.Collapsed;
-        _saveDraftButton.IsEnabled = HasDraft && !_savingSettings && !_savingTranslation;
-    }
     private static string? SelectApplication(Window owner)
     {
         var dialog = new OpenFileDialog { Filter = "Windows 应用 (*.exe)|*.exe", CheckFileExists = true };
         return dialog.ShowDialog(owner) == true ? dialog.FileName : null;
-    }
-    private static void UpdateShortcutText(TextBox input, string value)
-    {
-        if (input.Text == value)
-            return;
-        int start = Math.Min(input.SelectionStart, value.Length);
-        int length = Math.Min(input.SelectionLength, value.Length - start);
-        input.Text = value;
-        input.Select(start, length);
-    }
-    private static ComboBox SessionShortcutInput(string value, string defaultKey, string label)
-    {
-        var input = new ComboBox
-        {
-            Width = 178,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        UpdateSessionShortcutInput(input, value, defaultKey);
-        System.Windows.Automation.AutomationProperties.SetName(input, label);
-        ShortcutRecorder.AttachSession(input, defaultKey);
-        return input;
-    }
-    private static void UpdateSessionShortcutInput(ComboBox input, string value, string defaultKey)
-    {
-        var choices = new[] { defaultKey }.Concat(SessionShortcutBindings.FunctionKeys)
-            .Concat(SessionShortcutBindings.FunctionKeys.Select(key => "Ctrl+" + key)).ToList();
-        if (!input.Items.Cast<string>().SequenceEqual(choices))
-            input.ItemsSource = choices;
-        input.SelectedItem = value;
-    }
-    private static TextBox ShortcutInput(string value, string label, bool allowEmpty = false)
-    {
-        var input = ShortcutRecorder.Create(value, label, allowEmpty);
-        input.SetResourceReference(StyleProperty, "SettingsShortcutRecorder");
-        input.Width = double.NaN;
-        input.MinWidth = 92;
-        input.MaxWidth = 178;
-        input.Height = 26;
-        input.Padding = new(10, 0, 10, 0);
-        input.FontSize = 12.5;
-        input.FontWeight = FontWeights.Medium;
-        input.TextAlignment = TextAlignment.Center;
-        return input;
     }
     private void Applications()
     {
@@ -2223,6 +1963,7 @@ internal sealed partial class SettingsWindow : Window
     private void RefreshPreparation()
     {
         PreparationChanged?.Invoke();
+        RefreshSettingsBanners();
         foreach (var check in _connectionChecks)
             check.IsEnabled = _settings.Value.Enabled && _model.Ready;
         if (_preparationStatus is null || _preparationGuidance is null || _preparationPrimary is null
@@ -2567,6 +2308,8 @@ internal sealed partial class SettingsWindow : Window
         using var request = new CancellationTokenSource();
         _translationRequest = request;
         _savingTranslation = true;
+        long saveRevision = _settings.Revision;
+        ClearSaveIssue();
         _settingsError = _draftFeedback = null;
         string page = _page;
         string? focusedSetting = Keyboard.FocusedElement is Control focused && focused.IsDescendantOf(_content)
@@ -2588,13 +2331,20 @@ internal sealed partial class SettingsWindow : Window
             _draftFeedback = confirmed ? result.Code == "style-saved-notification-failed"
                 ? "已保存，请重新打开设置确认当前状态。" : result.Code == "glossary-saved-inactive" ? UiTheme.L("已保存到术语表，当前模型方向尚未开放术语应用。", "Saved to the glossary. Application is not available for this model and direction.") : _draftMessages.SavedMessage : _draftMessages.InvalidMessage;
             _settingsError = confirmed ? null : TranslationSettingsError(result.Code);
+            if (result.Code == "style-save-failed")
+                SetSaveIssue(false, current: () => _settings.Revision == saveRevision, retry: async current => { if (current()) await SaveTranslationChangeAsync(save); }, page: page);
+            else if (result.Code == "style-saved-notification-failed")
+                SetSaveIssue(true, committed: true, page: page);
             if (confirmed && HasDraft)
                 _draftFeedback = _draftMessages.UnsavedNotice;
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
             if (!request.IsCancellationRequested)
+            {
                 _settingsError = "保存结果未确认，请重新打开设置检查当前值。";
+                SetSaveIssue(true, page: page);
+            }
         }
         finally
         {
@@ -2621,28 +2371,5 @@ internal sealed partial class SettingsWindow : Window
             or "style-application-unavailable" or "practice-retirement-unconfirmed" => "当前无法保存，请检查翻译设置后重试。",
         _ => "保存结果未确认，请检查当前值后重试。"
     };
-    private void About()
-    {
-        Heading(UiTheme.L("关于与隐私", "About & Privacy"));
-        var brand = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, Margin = new(0, 12, 0, 28) };
-        brand.Children.Add(UiTheme.Mark(76, appIcon: true));
-        var name = UiTheme.Text("TypeLay", 30);
-        name.FontFamily = UiTheme.DisplayFont;
-        name.HorizontalAlignment = HorizontalAlignment.Center;
-        name.Margin = new(0, 14, 0, 4);
-        brand.Children.Add(name);
-        var version = typeof(SettingsWindow).Assembly.GetName().Version?.ToString(3) ?? UiTheme.L("未知版本", "Unknown version");
-        var versionText = UiTheme.Text("Windows · " + version, 12, true);
-        versionText.HorizontalAlignment = HorizontalAlignment.Center;
-        brand.Children.Add(versionText);
-        _content.Children.Add(brand);
-        BeginGroup();
-        var update = UiTheme.Button(UiTheme.L("检查更新", "Check for Updates"), () => { });
-        update.IsEnabled = false;
-        Row(UiTheme.L("软件更新", "Software updates"), UiTheme.L("尚未提供自动更新检查。", "Automatic update checking is not available."), update);
-        Row(UiTheme.L("本地数据", "Local data"), UiTheme.L("设置、模型与下载缓存", "Settings, models and download cache"), UiTheme.Button(UiTheme.L("打开目录", "Open Folder"), () => Process.Start(new ProcessStartInfo(AppPaths.Data) { UseShellExecute = true })));
-        Note(UiTheme.L("完全本地的输入翻译", "Translation stays on your device"), UiTheme.L("实际输入与译文不上传云端，不建立翻译历史数据库。运行组件与模型下载使用 HTTPS；推理子进程没有网络下载路径。", "Source text and translations are not uploaded. No translation history is stored. Runtime and model downloads use HTTPS; the inference process does not download content."));
-        Note(UiTheme.L("开发版验证边界", "Development build validation"), UiTheme.L("原生输入框写回默认关闭。跨进程非原子写回、真实输入法与目标应用仍需 Windows 实机验证；界面重构不代表这些安全门已通过。", "Native input replacement is off by default. Cross-process writeback, real IMEs and target apps still require Windows desktop validation; this interface rebuild does not qualify those safety gates."));
-    }
     private static void OpenUri(string uri) => Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true });
 }

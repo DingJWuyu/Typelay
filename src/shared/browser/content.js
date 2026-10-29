@@ -863,14 +863,14 @@
   // Translate only product chrome, never source or translated text.
   const uiEnglish = new Map(Object.entries({
     "替换你修改过的译文？": "Replace your edited translation?", "保留": "Keep", "替换": "Replace",
-    "恢复": "Resume", "展开": "Expand", "缩小": "Collapse", "收起": "Dismiss",
+    "恢复": "Resume", "展开": "Expand", "缩小": "Collapse", "收起": "Dismiss", "暂时隐藏": "Hide for Now",
     "更多": "More", "更多操作": "More Actions", "语言和设置": "Language and Settings",
     "复制译文": "Copy Translation", "已复制译文": "Translation Copied",
     "复制失败，请选中译文手动复制": "Copy failed. Select the translation to copy manually.",
     "重试": "Retry", "未能更新": "Couldn’t update", "正在翻译": "Translating",
     "重新翻译": "Translate Again", "不要在这个应用中显示": "Disable for This App", "设置": "Settings",
     "当前应用风格": "Style for This App", "风格": "Style", "自然": "Natural", "正式": "Formal", "继承": "Inherit",
-    "简洁": "Concise", "口语": "Casual", "尚未提供": "Not Available",
+    "简洁": "Concise", "口语": "Casual", "尚未提供": "Not Available", "请先完成当前编辑": "Finish the current edit first.",
     "简洁 · 尚未提供": "Concise · Not Available", "口语 · 尚未提供": "Casual · Not Available",
     "换种说法": "Rephrase", "加入术语表": "Add to Glossary", "源词": "Source Term", "译词": "Translation",
     "术语作用范围": "Term Scope", "全局": "Global", "保存": "Save", "取消": "Cancel", "关闭": "Close",
@@ -1054,11 +1054,18 @@
         .more-popup>button{height:30px;min-height:30px;padding:0 10px;text-align:left;display:flex;align-items:center;gap:10px}
         .more-popup svg{width:15px;height:15px;flex:none;color:var(--muted)}
         .more-popup>button:hover:not(:disabled) svg{color:inherit}
+        .more-popup>button>kbd{margin-left:auto;color:var(--muted);font:400 11.5px var(--ui-font);white-space:nowrap}
+        .more-popup>button:hover:not(:disabled)>kbd{color:inherit;opacity:.8}
         .menu-separator{height:.5px;flex:none;margin:5px 10px;background:var(--line)}
         .more-popup>button:hover:not(:disabled){background:var(--accent-strong);color:#fff}
-        .more-popup>[role=group]{display:flex;align-items:center;flex-wrap:wrap;gap:2px;padding:6px 10px 8px}
-        .more-popup>[role=group]>span{margin-right:8px}
-        .more-popup>[role=group]>button{font-size:11.5px;padding:0 6px;min-height:22px}
+        .more-popup>.style-row{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:6px 10px 8px}
+        .style-row>span{display:inline-flex;align-items:center;gap:10px}
+        .style-segments{display:inline-flex;max-width:100%;margin-left:auto;padding:2px;border-radius:8px;background:var(--fill-2)}
+        .style-segments>button{flex:1;min-width:0;height:22px;min-height:22px;padding:0 8px;border-radius:6px;
+          font:500 11.5px/1 var(--ui-font);white-space:nowrap;color:var(--muted)}
+        .style-segments>button[aria-pressed=true]{color:var(--ink);background:light-dark(#fff,#3a3936);
+          box-shadow:0 1px 2px light-dark(#1414130f,#0005),0 0 0 .5px light-dark(#1414130f,#ffffff0f)}
+        .style-segments>button[aria-pressed=true]:disabled{opacity:1;color:var(--muted)}
         .more-popup>.hint{white-space:normal;padding:5px 10px;max-width:260px}
         section[data-material=solid] .more-popup{backdrop-filter:none}
         .more-actions input,.more-actions select{box-sizing:border-box;min-width:0;width:100%;font:inherit;
@@ -1148,6 +1155,7 @@
         if (kind === "input" && overlay.editing) {
           closeRegenerate(overlay);
           ui("draft", editor.value);
+          if (overlay?.editor === editor) refreshTextActions(overlay);
           sizeEditor(); position();
         }
       });
@@ -1206,7 +1214,7 @@
         } : null;
         menu.hidden = !open;
         more.setAttribute("aria-expanded", String(open));
-        if (open) positionMore(overlay);
+        if (open) { refreshTextActions(overlay); positionMore(overlay); }
         else position(previous);
       };
       // Disclosure controls retain source/editor focus just like the existing
@@ -1218,17 +1226,10 @@
       const copy = document.createElement("button");
       copy.textContent = "复制译文";
       copy.addEventListener("pointerdown", event => event.preventDefault());
-      copy.addEventListener("click", async event => {
+      copy.addEventListener("click", event => {
         const current = overlay, opened = current?.menuContext;
-        if (!event.isTrusted || current?.menu !== menu || !opened || !menuActionCurrent(current, opened)) return;
-        setMoreOpen(false);
-        try {
-          if (!navigator.clipboard?.writeText) throw new Error("clipboard-unavailable");
-          await navigator.clipboard.writeText(current.editor.value);
-          if (overlay === current) current.status.textContent = uiText("已复制译文");
-        } catch (_) {
-          if (overlay === current) current.status.textContent = uiText("复制失败，请选中译文手动复制");
-        }
+        if (!event.isTrusted || event.currentTarget.disabled || current?.menu !== menu || !opened || !menuActionCurrent(current, opened)) return;
+        copyTranslation(current, opened);
       });
       header.append(expand, more, hint);
       menu.append(copy, collapse);
@@ -1238,7 +1239,7 @@
         button.addEventListener("pointerdown", event => event.preventDefault());
         button.addEventListener("click", event => {
           const current = overlay, opened = current?.menuContext;
-          if (!event.isTrusted || !opened || !menuActionCurrent(current, opened)) return;
+          if (!event.isTrusted || event.currentTarget.disabled || !opened || !menuActionCurrent(current, opened)) return;
           setMoreOpen(false);
           if (operation === "regenerate" && ["EditingTranslation", "EditedTranslationPending", "ReturningToSource"].includes(current.state))
             confirmRegenerate(current, opened);
@@ -1246,10 +1247,12 @@
         }); menu.append(button); menuItems.set(operation, button);
       }
       const styleActions = document.createElement("div"), styleLabel = document.createElement("span");
+      const styleSegments = document.createElement("div");
+      styleActions.className = "style-row"; styleSegments.className = "style-segments";
       styleActions.setAttribute("role", "group");
       styleActions.setAttribute("aria-label", "当前应用风格");
       styleLabel.textContent = "风格";
-      styleActions.append(styleLabel);
+      styleActions.append(styleLabel, styleSegments);
       const styleButtons = new Map();
       const translationAction = (event, operation, selectedStyle = null) => {
         const current = overlay, opened = current?.menuContext, actions = current?.translationActions;
@@ -1270,13 +1273,14 @@
         const button = document.createElement("button");
         button.addEventListener("pointerdown", event => event.preventDefault());
         button.addEventListener("click", event => translationAction(event, "style", selectedStyle));
-        styleButtons.set(selectedStyle, button); styleActions.append(button);
+        styleButtons.set(selectedStyle, button);
+        if (selectedStyle !== null) styleSegments.append(button);
       }
       for (const text of ["简洁 · 尚未提供", "口语 · 尚未提供"]) {
         const button = document.createElement("button");
         button.textContent = text.split(" · ")[0]; button.disabled = true;
         button.setAttribute("aria-label", text); button.title = "尚未提供";
-        styleActions.append(button);
+        styleSegments.append(button);
       }
       const alternative = document.createElement("button");
       alternative.textContent = "换种说法";
@@ -1301,6 +1305,7 @@
         ui("sessionGlossaryBegin");
       });
       const glyphs = {
+        style: [["path", {d:"M4 19h4L19 8l-4-4L4 15ZM13 6l4 4"}]],
         refresh: [["path", {d:"M20 5v5h-5M4 19v-5h5M19.2 10A7.5 7.5 0 0 0 6 7.2M4.8 14A7.5 7.5 0 0 0 18 16.8"}]],
         sparkle: [["path", {d:"M12 3.5c.6 4.4 2.1 6 6.5 6.5-4.4.6-5.9 2.1-6.5 6.5-.6-4.4-2.1-5.9-6.5-6.5 4.4-.5 5.9-2.1 6.5-6.5ZM18.5 15.5c.2 1.6.8 2.2 2.4 2.4-1.6.2-2.2.8-2.4 2.4-.2-1.6-.8-2.2-2.4-2.4 1.6-.2 2.2-.8 2.4-2.4Z"}]],
         copy: [["rect", {x:8,y:8,width:12,height:12,rx:2.5}], ["path", {d:"M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"}]],
@@ -1324,10 +1329,18 @@
       menuIcon(menuItems.get("regenerate"), "refresh"); menuIcon(alternative, "sparkle");
       menuIcon(copy, "copy"); menuIcon(glossary, "book");
       const collapseLabel = menuIcon(collapse, "eye");
+      const copyKey = document.createElement("kbd"), collapseKey = document.createElement("kbd");
+      copyKey.textContent = /Mac/i.test(navigator.platform) ? "⌘C" : "Ctrl+C";
+      for (const key of [copyKey, collapseKey]) key.setAttribute("aria-hidden", "true");
+      copy.append(copyKey); collapse.append(collapseKey);
       menuIcon(menuItems.get("exclude"), "block"); menuIcon(menuItems.get("settings"), "gear");
+      menuIcon(styleLabel, "style");
+      const styleIcon = styleLabel.querySelector("svg");
       const separator = document.createElement("div"); separator.className = "menu-separator";
+      const additionalSeparator = document.createElement("div"); additionalSeparator.className = "menu-separator";
       menu.replaceChildren(menuItems.get("regenerate"), alternative, styleActions, copy, glossary,
-        separator, collapse, menuItems.get("exclude"), menuItems.get("settings"), translationFeedback);
+        separator, collapse, menuItems.get("exclude"), additionalSeparator,
+        styleButtons.get(null), menuItems.get("settings"), translationFeedback);
       // Decorations are siblings, never a cloned/replaced translation editor.
       const skeleton = document.createElement("div"), sweep = document.createElement("div");
       skeleton.id = "loading-skeleton"; skeleton.className = "skeleton";
@@ -1335,9 +1348,15 @@
       for (const decoration of [skeleton, sweep]) { decoration.hidden = true; decoration.setAttribute("aria-hidden", "true"); }
       skeleton.append(document.createElement("span"), document.createElement("span"));
       panel.append(skeleton, editor, sweep, header, menu); shadow.append(style, panel);
+      shadow.addEventListener("pointerdown", event => {
+        const current = overlay, opened = current?.menuContext;
+        if (event.isTrusted && current?.shadow === shadow && opened && menuOpeningCurrent(current, opened)
+          && !event.composedPath().includes(menu) && !event.composedPath().includes(more)) closeMore(current);
+      }, true);
       document.documentElement.append(host);
-      overlay = {field, host, shadow, panel, editor, skeleton, sweep, language, status, resume, hint, more, menu, expand, collapse, collapseLabel,
-        styleActions, styleButtons, alternative, glossaryButton: glossary, translationFeedback, editing: false, composing: false, expanded: false};
+      overlay = {field, host, shadow, panel, editor, skeleton, sweep, language, status, resume, hint, more, menu, expand, collapse, collapseLabel, collapseKey,
+        styleActions, styleButtons, styleIcon, copy, regenerate: menuItems.get("regenerate"),
+        alternative, glossaryButton: glossary, translationFeedback, editing: false, composing: false, expanded: false};
     }
     if (data.revision < (overlay.revision || 0)) return {visible: true, editing: overlay.editing};
     // A new view is authoritative immediately, including during a resize.
@@ -1377,7 +1396,9 @@
     overlay.translationActions = translationActions(view);
     renderTranslationActions(overlay);
     overlay.shortcuts = view.sessionShortcuts;
-    overlay.collapseLabel.textContent = view.sessionShortcuts?.exitHint || "收起";
+    overlay.collapseLabel.textContent = "暂时隐藏";
+    overlay.collapseKey.textContent = view.sessionShortcuts?.exitKey || "";
+    overlay.collapseKey.hidden = !overlay.collapseKey.textContent;
     overlay.paused = paused;
     overlay.authority = data.authority;
     overlay.resume.setAttribute("aria-disabled", String(!!overlay.resumePending));
@@ -1466,6 +1487,7 @@
       if (overlay.editor.value !== text) overlay.editor.value = text;
       overlay.editing = false; overlay.editor.readOnly = true;
     } else if (!overlay.editing) overlay.editor.value = view.text || "";
+    refreshTextActions(overlay);
     localizeChrome(overlay);
     sizeEditor(); position();
     return {visible: !!overlay, editing: !!overlay?.editing};
@@ -1479,6 +1501,18 @@
   }
   function menuActionCurrent(current, opened) {
     return menuOpeningCurrent(current, opened) && !current.composing && current.field.ime === "Clear";
+  }
+  async function copyTranslation(current, opened) {
+    if (!opened || current.menu.hidden || current.copy.disabled || !menuActionCurrent(current, opened)) return;
+    const text = current.editor.value;
+    closeMore(current);
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("clipboard-unavailable");
+      await navigator.clipboard.writeText(text);
+      if (menuOpeningCurrent(current, opened)) current.status.textContent = uiText("已复制译文");
+    } catch (_) {
+      if (menuOpeningCurrent(current, opened)) current.status.textContent = uiText("复制失败，请选中译文手动复制");
+    }
   }
   function closeRegenerate(current) {
     current?.regenerateConfirmation?.box.remove();
@@ -1515,20 +1549,40 @@
       || ["styleUnavailableReason", "inheritUnavailableReason", "alternativeUnavailableReason", "feedback"]
         .some(key => value[key] !== null && typeof value[key] !== "string")
       || ![null, "Natural", "Formal", 1, 2].includes(value.applicationStyle)
+      || value.effectiveStyle !== undefined && ![null, "Natural", "Formal", 1, 2].includes(value.effectiveStyle)
       || ["glossaryReleased", "canOpenGlossary", "glossaryUnavailableReason"].some(key => key in value)
         && (typeof value.glossaryReleased !== "boolean" || typeof value.canOpenGlossary !== "boolean"
           || value.glossaryUnavailableReason !== null && typeof value.glossaryUnavailableReason !== "string")) return null;
     // Windows serializes the enum numerically; Linux uses its exact names.
     const applicationStyle = ({1: "Natural", 2: "Formal"})[value.applicationStyle] ?? value.applicationStyle;
-    return {...value, applicationStyle};
+    const effectiveStyle = ({1: "Natural", 2: "Formal"})[value.effectiveStyle] ?? value.effectiveStyle ?? null;
+    return {...value, applicationStyle, effectiveStyle};
+  }
+  function refreshTextActions(current) {
+    // This reads only the current local editor, after its text is synchronized.
+    // It never changes the opening's identity, clock or action authority.
+    const hasText = !!current.editor.value;
+    current.copy.disabled = !hasText;
+    current.regenerate.disabled = current.state === "Translating" || !hasText && current.state !== "TranslationFailed";
   }
   function renderTranslationActions(current) {
     const actions = current.translationActions;
     current.styleActions.hidden = !actions;
+    current.styleButtons.get(null).hidden = !actions;
+    const manual = ["EditingTranslation", "EditedTranslationPending", "ReturningToSource"].includes(current.state);
+    const locked = manual && actions?.canChangeStyle === false;
+    current.styleActions.title = locked ? actions.styleUnavailableReason || "请先完成当前编辑" : "";
+    current.styleIcon.firstElementChild.setAttribute("d", locked
+      ? "M7.5 10.5h9a2.5 2.5 0 0 1 2.5 2.5v4.5a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 5 17.5V13a2.5 2.5 0 0 1 2.5-2.5ZM8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"
+      : "M4 19h4L19 8l-4-4L4 15ZM13 6l4 4");
     for (const [style, button] of current.styleButtons) {
       button.disabled = (style === null ? actions?.canInheritStyle : actions?.styleReleased && actions?.canChangeStyle) !== true;
-      button.setAttribute("aria-pressed", String(!!actions && actions.applicationStyle === style));
-      button.textContent = `${actions && actions.applicationStyle === style ? "✓ " : ""}${({Natural: "自然", Formal: "正式"})[style] || "继承"}`;
+      const selected = !!actions && (style === null ? actions.applicationStyle === null : actions.effectiveStyle === style);
+      button.setAttribute("aria-pressed", String(selected));
+      const text = ({Natural: "自然", Formal: "正式"})[style] || "继承";
+      const accessible = `${selected ? "✓ " : ""}${text}`;
+      button.textContent = style === null ? accessible : text;
+      button.setAttribute("aria-label", accessible);
       button.title = (style === null ? actions?.inheritUnavailableReason : actions?.styleUnavailableReason) || "";
     }
     current.alternative.hidden = !actions;
@@ -2312,6 +2366,15 @@
     const press = {consumed: false};
     observeHeld(press, event);
     held.set(event.code, press);
+    const menuOwner = overlay, openedMenu = menuOwner?.menuContext;
+    if (event.key.toLowerCase() === "c" && event.ctrlKey !== event.metaKey && !event.altKey && !event.shiftKey
+      && !event.isComposing && event.keyCode !== 229 && menuOwner && !menuOwner.menu.hidden
+      && !menuOwner.copy.disabled && openedMenu && menuActionCurrent(menuOwner, openedMenu)
+      && (menuOwner.editing ? event.target === menuOwner.host && menuOwner.shadow.activeElement === menuOwner.editor
+        : event.target === menuOwner.field.element && focused(menuOwner.field))) {
+      retireOrdered(); retireEditorControl(); consume(event); press.consumed = true;
+      copyTranslation(menuOwner, openedMenu); return;
+    }
     if (event.key === "Escape" && overlay && !overlay.menu.hidden
       && !event.isComposing && event.keyCode !== 229 && !overlay.composing
       && overlay.field.ime === "Clear" && liveDeadline(overlay)
@@ -2432,6 +2495,13 @@
     if (editorControl && event.code === editorControl.controlCode) retireEditorControl();
     if (held.get(event.code)?.consumed) { event.preventDefault(); event.stopImmediatePropagation(); }
     held.delete(event.code);
+  }, true);
+  window.addEventListener("pointerdown", event => {
+    const current = overlay, opened = current?.menuContext;
+    // A closed shadow retargets all internal input to its host. Its own
+    // listener handles editor/header clicks; this one never consumes a page click.
+    if (event.isTrusted && current && event.target !== current.host && opened
+      && menuOpeningCurrent(current, opened)) closeMore(current);
   }, true);
   window.addEventListener("scroll", () => position(), true);
   window.addEventListener("resize", () => position());

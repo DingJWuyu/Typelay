@@ -247,7 +247,13 @@ public sealed partial class TranslationSettingsTests
         Term(scene.Window, "源词 3").Text = "unsaved";
         GlossaryKey(Term(scene.Window, "源词 3"), Key.Escape);
         Assert.Equal(before, File.ReadAllText(scene.PathToSettings));
+        // Escape creates new native item containers. Observe the laid-out
+        // current rows just as the earlier selection/editor helpers do.
+        var restored = new[] { GlossaryRow(scene.Window, 1), GlossaryRow(scene.Window, 2) };
+        Assert.All(restored, row => Assert.True(row.IsVisible));
+        Assert.Equal(new[] { "A → alpha", "B → beta" }, restored.Select(AutomationProperties.GetName));
         Assert.Equal(2, Descendants(scene.Window).OfType<ListBoxItem>().Count());
+        Assert.DoesNotContain(Descendants(scene.Window).OfType<TextBox>(), box => AutomationProperties.GetName(box).StartsWith("源词 "));
     });
 
     [Fact]
@@ -367,6 +373,36 @@ public sealed partial class TranslationSettingsTests
     });
 
     [Theory]
+    [InlineData("zh-CN", "所有方向", "中文 → 英语")]
+    [InlineData("en", "All directions", "Chinese → English")]
+    public Task InlineScopeSelectionDisplaysTheLocalizedLabelInsteadOfTheRuleObject(string language, string global, string directed) => desktop.RunAsync(() =>
+    {
+        using var scene = new SettingsScene(new(UiLanguage: language, Glossary: new(1, [new("PR", "review"), new("项目方", "client team", "zh", "en")])));
+        scene.Window.ShowPage("glossary");
+        string before = File.ReadAllText(scene.PathToSettings);
+        for (int number = 1; number <= 2; number++)
+        {
+            var row = GlossaryRow(scene.Window, number);
+            SelectGlossaryRow(row);
+            GlossaryKey(row, Key.Enter);
+            var scope = Named<ComboBox>(scene.Window, (language == "en" ? "Term scope " : "术语范围 ") + number);
+            AssertGlossaryScopeLabel(scope, number == 1 ? global : directed);
+            var source = Term(scene.Window, (language == "en" ? "Source term " : "源词 ") + number);
+            GlossaryKey(source, Key.Escape);
+            Assert.Equal(before, File.ReadAllText(scene.PathToSettings));
+        }
+    });
+    private static void AssertGlossaryScopeLabel(ComboBox scope, string expected)
+    {
+        scope.UpdateLayout();
+        var selection = Assert.IsType<ContentPresenter>(scope.Template.FindName("selection", scope));
+        var text = Assert.Single(Descendants(selection).OfType<TextBlock>());
+        Assert.True(text.IsVisible);
+        Assert.Equal(expected, text.Text);
+        Assert.DoesNotContain("GlossaryScope", text.Text, StringComparison.Ordinal);
+    }
+
+    [Theory]
     [InlineData("zh-CN", "light", 920)]
     [InlineData("zh-CN", "dark", 920)]
     [InlineData("en", "light", 920)]
@@ -402,7 +438,9 @@ public sealed partial class TranslationSettingsTests
         Assert.Equal(source.Padding, host.Padding);
         Assert.True(host.ViewportHeight >= source.FontSize);
         Assert.Equal("项目方", source.Text);
-        Assert.Equal(24, Named<ComboBox>(scene.Window, language == "en" ? "Term scope 3" : "术语范围 3").ActualHeight);
+        var scope = Named<ComboBox>(scene.Window, language == "en" ? "Term scope 3" : "术语范围 3");
+        Assert.Equal(24, scope.ActualHeight);
+        AssertGlossaryScopeLabel(scope, language == "en" ? "Chinese → English" : "中文 → 英语");
         RenderGlossary(scene.Window, $"glossary-edit-{language}-{theme}-{width}.png");
         GlossaryKey(source, Key.Escape);
         Named<TextBox>(scene.Window, language == "en" ? "Search terms" : "搜索术语").Text = "no matches";

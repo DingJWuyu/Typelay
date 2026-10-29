@@ -110,6 +110,12 @@ internal static class Program
             }
             var quick = new QuickPanel(settings, model, session, () => window.ShowPage(), Quit);
             overlay.SettingsRequested = () => window.ShowPage();
+            overlay.NativeLanguageRequested = anchor =>
+            {
+                session.StopSession();
+                overlay.ShowLanguageConfiguration(anchor, settings, model,
+                    (source, target, current) => quick.SetLanguagesAsync(source, target, current));
+            };
             LanguageSelectionWindow? languageWindow = null;
             overlay.LanguageRequested = () =>
             {

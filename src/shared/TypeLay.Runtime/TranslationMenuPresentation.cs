@@ -7,7 +7,8 @@ public sealed record TranslationMenuState(long SettingsRevision, bool StyleRelea
     bool CanInheritStyle, TranslationStyle? ApplicationStyle, string? StyleUnavailableReason,
     string? InheritUnavailableReason, bool AlternativeReleased, bool CanRequestAlternative,
     string? AlternativeUnavailableReason, string? Feedback, bool GlossaryReleased = false,
-    bool CanOpenGlossary = false, string? GlossaryUnavailableReason = null);
+    bool CanOpenGlossary = false, string? GlossaryUnavailableReason = null,
+    TranslationStyle? EffectiveStyle = null);
 
 public static class TranslationMenuPresentation
 {
@@ -51,7 +52,7 @@ public sealed partial class SessionController
             TranslationMenuPresentation.Reason(inherit.UnavailableReason), alternative.IsReleased,
             alternative.IsReleased && alternative.CanRequest, TranslationMenuPresentation.Reason(alternative.UnavailableReason), feedback,
             _translationRelease.IsReleased(TranslationOperation.Glossary), glossaryReason is null,
-            GlossaryEntryPresentation.Message(glossaryReason));
+            GlossaryEntryPresentation.Message(glossaryReason), style.EffectiveStyle);
     }
 
     private async Task<StyleChangeResult> ChangeViewStyleAsync(SessionStyleRequest request)

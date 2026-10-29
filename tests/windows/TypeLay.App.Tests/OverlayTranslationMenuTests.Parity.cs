@@ -40,7 +40,10 @@ public sealed partial class OverlayTranslationMenuTests
                     StyleReleased = false,
                     AlternativeReleased = false
                 }
-                : Actions();
+                : Actions() with
+                {
+                    CanOpenGlossary = state == "manual"
+                };
             overlay.Render(session, settings, false, context: context with
             {
                 TranslationActions = actions
@@ -54,7 +57,10 @@ public sealed partial class OverlayTranslationMenuTests
                 {
                     RoutedEvent = Mouse.PreviewMouseDownEvent
                 });
-                overlay.Render(session, settings, false, context: context);
+                overlay.Render(session, settings, false, context: context with
+                {
+                    TranslationActions = actions
+                });
                 editor.AppendText(" - manually edited");
                 Assert.True(editor.IsKeyboardFocused);
                 Assert.False(editor.IsReadOnly);

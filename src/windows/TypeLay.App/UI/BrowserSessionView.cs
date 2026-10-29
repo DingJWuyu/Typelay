@@ -119,8 +119,7 @@ internal sealed class BrowserSessionView : ISessionView
         _record = record;
         _context = context;
         _state = session.State;
-        if (_glossary is { } entry && (entry.Token != context.Token || !GlossaryStateCurrent(entry)
-            || context.TranslationActions?.GlossaryReleased != true))
+        if (_glossary is { } entry && (entry.Token != context.Token || !GlossaryStateCurrent(entry)))
             CloseGlossary(entry.FormId);
         var view = new
         {

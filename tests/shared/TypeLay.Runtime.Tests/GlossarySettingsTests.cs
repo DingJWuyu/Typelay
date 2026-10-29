@@ -5,10 +5,101 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class GlossarySettingsTests
 {
+    [Theory]
+    [InlineData("argos")]
+    [InlineData("hy")]
+    [InlineData("legacy-index")]
+    public async Task CurrentGlossaryApplicationFollowsEachVerifiedConnectionWithoutLosingOfflineEdits(string replacement)
+    {
+        var original = ModelClientCapabilityTests.VerifyIndexTestIdentity();
+        using var s = new SessionScenario(modelIdentity: original, direction: new("zh", "en"),
+            glossaryAvailable: true, initialGlossary: new(4, [new("hello", "fixed")]));
+        s.ReadyCandidate();
+        Assert.True(s.Controller.GetGlossarySettingsState().CanApply);
+        Assert.Equal(4, Assert.Single(s.Model.Jobs).Glossary!.Version);
+
+        s.Model.Ready = false;
+        s.Tick();
+        Assert.False(s.Controller.GetGlossarySettingsState().CanApply);
+        s.Model.VerifiedIdentity = replacement switch
+        {
+            "argos" => SessionScenario.ArgosIdentity,
+            "hy" => SessionScenario.HyIdentity,
+            _ => ModelClientCapabilityTests.VerifyIndexTestIdentity(profileFiles: false)
+        };
+        s.Model.Ready = true;
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        Assert.Equal(2, s.Model.Jobs.Count);
+        Assert.Null(s.Model.Jobs[^1].Glossary);
+        Assert.False(s.Controller.GetGlossarySettingsState().CanApply);
+        s.CompleteTranslation("ordinary remains available");
+
+        var saved = await s.Controller.ChangeGlossaryAsync([new("hello", "offline edit")],
+            s.Settings.Revision, s.View.Token, TestContext.Current.CancellationToken);
+        Assert.True(saved.Saved);
+        Assert.Equal("glossary-saved-inactive", saved.Code);
+        Assert.Equal("offline edit", Assert.Single(s.ReloadSettings().Glossary!.Rules).TargetTerm);
+        Assert.Equal(2, s.Model.Jobs.Count);
+
+        var restored = ModelClientCapabilityTests.VerifyIndexTestIdentity();
+        Assert.NotEqual(original.ConnectionId, restored.ConnectionId);
+        s.Model.VerifiedIdentity = restored;
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        Assert.Equal(3, s.Model.Jobs.Count);
+        var job = s.Model.Jobs[^1];
+        Assert.Equal(s.ReloadSettings().Glossary!.Version, job.Glossary!.Version);
+        Assert.Equal("offline edit", Assert.Single(job.Glossary.Rules).TargetTerm);
+        Assert.True(s.Controller.GetGlossarySettingsState().CanApply);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void DirectTranslationUsesCurrentGlossaryQualificationWithoutBlockingOrdinaryOnAnOldWorker(bool qualified)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand,
+            modelIdentity: ModelClientCapabilityTests.VerifyIndexTestIdentity(profileFiles: qualified),
+            direction: new("zh", "en"), glossaryAvailable: true,
+            initialGlossary: new(7, [new("hello", "fixed")]));
+        s.Command("direct");
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        var job = Assert.Single(s.Model.Jobs);
+        Assert.Equal("hello", job.SourceText);
+        Assert.Equal(qualified, job.Glossary is not null);
+        if (qualified)
+        {
+            Assert.Equal(7, job.Glossary!.Version);
+            Assert.Equal("fixed", Assert.Single(job.Glossary.Rules).TargetTerm);
+        }
+        Assert.Equal("fixed", Assert.Single(s.ReloadSettings().Glossary!.Rules).TargetTerm);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void CurrentGlossaryApprovalNeverBorrowsApprovalForSavedStyleCombinations()
+    {
+        using var s = new SessionScenario(modelIdentity: ModelClientCapabilityTests.VerifyIndexTestIdentity(),
+            direction: new("zh", "en"), glossaryAvailable: true, initialStyles: new(TranslationStyle.Formal),
+            initialGlossary: new(1, [new("hello", "fixed")]));
+        s.Model.StyledTranslationCapability = new(1);
+        s.Model.StyledGlossaryTranslationCapability = new(1);
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        Assert.Empty(s.Model.Jobs);
+        Assert.False(s.Controller.GetGlossarySettingsState().CanApply);
+        Assert.Equal("glossary-combination-not-released", s.Controller.GetGlossarySettingsState().ApplyUnavailableReason);
+        Assert.Equal(TranslationStyle.Formal, s.ReloadSettings().Styles!.Default);
+        Assert.Equal("fixed", Assert.Single(s.ReloadSettings().Glossary!.Rules).TargetTerm);
+    }
+
     [Fact]
     public async Task ProductionManagementSavesOfflineWithoutClaimingModelApplication()
     {
-        using var s = new SessionScenario();
+        using var s = new SessionScenario(translationRelease: new([]));
         var state = s.Controller.GetGlossarySettingsState([new("hello", "fixed")]);
         Assert.False(state.IsReleased);
         Assert.True(state.CanSave);
@@ -26,7 +117,7 @@ public sealed class GlossarySettingsTests
     [InlineData(WorkMode.OnDemand)]
     public void StoredUnreleasedRulesDoNotBlockOrdinaryPreviewOrDirectTranslation(WorkMode mode)
     {
-        using var s = new SessionScenario(mode, initialGlossary: new(1, [new("hello", "fixed")]));
+        using var s = new SessionScenario(mode, translationRelease: new([]), initialGlossary: new(1, [new("hello", "fixed")]));
         if (mode == WorkMode.OnDemand)
             s.Command("direct");
         s.Tick();
@@ -175,7 +266,7 @@ public sealed class GlossarySettingsTests
     [Fact]
     public async Task ResetStyleNeverDropsRemainingGlossaryOrBypassesItsClosedApplicationGate()
     {
-        using var s = new SessionScenario(modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"),
+        using var s = new SessionScenario(translationRelease: new([]), modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"),
             glossaryAvailable: true, initialStyles: new(TranslationStyle.Formal),
             initialGlossary: new(2, [new("hello", "fixed")]));
         s.Model.StyledTranslationCapability = new(1);

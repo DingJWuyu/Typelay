@@ -18,6 +18,8 @@ public sealed class TranslationMenuTests
         Assert.False(menu.StyleReleased);
         Assert.True(menu.CanInheritStyle);
         Assert.False(menu.CanChangeStyle);
+        Assert.Equal(TranslationStyle.Natural, menu.ApplicationStyle);
+        Assert.Null(menu.EffectiveStyle);
         Assert.False(menu.AlternativeReleased);
         long revision = s.Settings.Revision;
         var result = await s.View.StyleRequested!(new(s.View.Token, revision, null));
@@ -83,16 +85,54 @@ public sealed class TranslationMenuTests
         Assert.True(menu.StyleReleased);
         Assert.True(menu.CanChangeStyle);
         Assert.Null(menu.ApplicationStyle);
+        Assert.Equal(TranslationStyle.Formal, menu.EffectiveStyle);
         var token = s.View.Token;
         var saved = await s.View.StyleRequested!(new(token, menu.SettingsRevision, TranslationStyle.Natural));
         Assert.True(saved.Saved);
         Assert.Equal(TranslationStyle.Formal, s.ReloadSettings().Styles!.Default);
         Assert.Equal(TranslationStyle.Natural, s.ReloadSettings().Styles!.Applications!["org.typelay.ControlledApp"]);
         Assert.Equal(TranslationStyle.Natural, s.View.Context!.TranslationActions!.ApplicationStyle);
+        Assert.Equal(TranslationStyle.Natural, s.View.Context!.TranslationActions!.EffectiveStyle);
         var stale = await s.View.StyleRequested!(new(token, menu.SettingsRevision, TranslationStyle.Formal));
         Assert.False(stale.Saved);
         Assert.Equal(TranslationStyle.Natural, s.ReloadSettings().Styles!.Applications!["org.typelay.ControlledApp"]);
         Assert.Null(s.View.Context!.TranslationActions!.Feedback);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void MenuDoesNotInventANaturalStyleWhenNoPreferenceIsApplied()
+    {
+        using var s = new SessionScenario(translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"));
+        s.Model.StyledTranslationCapability = new(1);
+        s.ReadyCandidate();
+        var menu = s.View.Context!.TranslationActions!;
+        Assert.True(menu.CanChangeStyle);
+        Assert.Null(menu.ApplicationStyle);
+        Assert.Null(menu.EffectiveStyle);
+        Assert.Null(Assert.Single(s.Model.Jobs).Style);
+    }
+
+    [Fact]
+    public void MenuLosesEffectiveStyleWhenTheModelCapabilityIsLostButRetainsTheSavedOverride()
+    {
+        using var s = new SessionScenario(translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"),
+            initialStyles: new(TranslationStyle.Formal,
+                new Dictionary<string, TranslationStyle> { ["org.typelay.ControlledApp"] = TranslationStyle.Natural }));
+        s.Model.StyledTranslationCapability = new(1);
+        s.ReadyCandidate();
+        Assert.Equal(TranslationStyle.Natural, s.View.Context!.TranslationActions!.EffectiveStyle);
+
+        s.Model.StyledTranslationCapability = null;
+        s.Tick();
+        var menu = s.View.Context!.TranslationActions!;
+        Assert.Null(menu.EffectiveStyle);
+        Assert.Equal(TranslationStyle.Natural, menu.ApplicationStyle);
+        Assert.False(menu.CanChangeStyle);
+        Assert.True(menu.CanInheritStyle);
+        Assert.Equal(TranslationStyle.Natural, s.ReloadSettings().Styles!.Applications!["org.typelay.ControlledApp"]);
         Assert.Empty(s.Service.Writes);
     }
 

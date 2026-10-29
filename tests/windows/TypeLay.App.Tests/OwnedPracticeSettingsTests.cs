@@ -29,7 +29,7 @@ public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
         string persisted = File.ReadAllText(fixture.Path);
         Assert.Equal(0, requests); // The warning itself cannot retire the input session.
         Assert.Equal(persisted, File.ReadAllText(fixture.Path));
-        Button("强制保存").RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        Button("仍然使用").RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
         Assert.Equal(1, requests);
         Assert.Equal(persisted, File.ReadAllText(fixture.Path));
         fixture.Window.ShowPage("general");
@@ -50,7 +50,7 @@ public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
         Assert.Equal("Ctrl+C", new SettingsStore(fixture.Path).Value.WakeShortcut);
         Assert.True(Wake().IsEnabled);
         Assert.Equal("Ctrl+C", Wake().Text);
-        Assert.False(Button("强制保存").IsVisible);
+        Assert.False(Button("仍然使用").IsVisible);
         TextBox Wake() => Descendants(fixture.Window).OfType<TextBox>()
             .Single(control => AutomationProperties.GetName(control) == "唤醒翻译 UI 快捷键");
         Button Button(string label) => Descendants(fixture.Window).OfType<Button>()

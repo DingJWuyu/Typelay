@@ -96,6 +96,18 @@ internal static partial class BrowserCooperationCheck
         {
             get; set;
         }
+        public long? GlossaryVisibleDurationMs
+        {
+            get; set;
+        }
+        public int GlossaryVisibleSamples
+        {
+            get; set;
+        }
+        public bool? OldGlossaryDisconnected
+        {
+            get; set;
+        }
     }
     private sealed record CommandPathEntry(long AtMs, string Stage, string Reason, string Kind,
         bool? CommandSent, bool? HasNative, long? AgeMs, double? PolicyAuthorityAgeMs,
@@ -180,12 +192,13 @@ internal static partial class BrowserCooperationCheck
     {
         var setup = new Scene("setup");
         var automatic = new Scene("automatic-preview-tab");
+        var glossary = new Scene("browser-editor-glossary-lifetime");
         var mode = new Scene("on-demand-settings");
         var direct = new Scene("direct-selection");
         var background = new Scene("direct-original-field-after-focus-switch");
         var disconnected = new Scene("removed-connection-before-command");
         var submitCounter = new Scene("submit-counter-positive-control");
-        Scene[] scenes = [setup, automatic, mode, direct, background, disconnected, submitCounter];
+        Scene[] scenes = [setup, automatic, glossary, mode, direct, background, disconnected, submitCounter];
         Scene active = setup;
         var cleanupErrors = new List<CleanupError>();
         using var all = new CancellationTokenSource(TimeSpan.FromMinutes(9));
@@ -398,6 +411,46 @@ internal static partial class BrowserCooperationCheck
                 var state = await WaitStateAsync(cdp!, s => ObserveDom(s, automatic, reference), ct);
                 CheckReplacement(state, automatic, reference, sourceFocus: true);
                 Require(await WaitTraceAsync(trace, "browser-accept-Verified", 0, ct) > 0, "tab-receipt-unconfirmed");
+            });
+            await Phase(glossary, "preview-editor-more-glossary", 30, async ct =>
+            {
+                await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
+                await WaitPreviewAsync(cdp!, ct);
+                string form = await cdp!.OpenEditorGlossaryAsync(ct);
+                try
+                {
+                    glossary.Stage = "same-form-through-real-host-renewal";
+                    var shown = Stopwatch.StartNew();
+                    // Cross the unchanged 800ms display lifetime using only the
+                    // shipped host's normal renewal, not a fixture heartbeat.
+                    // This proves public form liveness, not a Render call count.
+                    do
+                    {
+                        var observed = await cdp.GlossaryStateAsync(form, ct);
+                        Require(observed.GetProperty("connected").GetBoolean()
+                            && observed.GetProperty("visible").GetBoolean()
+                            && observed.GetProperty("focused").GetBoolean()
+                            && observed.GetProperty("inputs").GetInt32() == 2, "browser-glossary-retired-during-renewal");
+                        glossary.GlossaryVisibleSamples++;
+                        glossary.GlossaryVisibleDurationMs = shown.ElapsedMilliseconds;
+                        await Task.Delay(100, ct);
+                    } while (glossary.GlossaryVisibleDurationMs < 900);
+                    var unchanged = await cdp.StateAsync("", ct);
+                    Require(unchanged.A == Source && unchanged.B == Other
+                        && unchanged.Replacements == 0 && unchanged.Submits == 0, "glossary-mutated-source");
+                    glossary.Stage = "new-source-retires-old-glossary";
+                    await cdp.ClickSourceAsync(ct);
+                    SendChord([0x11, 0x23], cleanupErrors); // Ctrl+End in the actual source.
+                    BrowserWindows.TypeText("!");
+                    await WaitStateAsync(cdp, s => s.A == Source + "!" && s.Focus == "a" && s.PageFocused, ct);
+                    while ((await cdp.GlossaryStateAsync(form, ct)).GetProperty("connected").GetBoolean())
+                        await Task.Delay(20, ct);
+                    glossary.OldGlossaryDisconnected = true;
+                    var changed = await cdp.StateAsync("", ct);
+                    Require(changed.B == Other && changed.Replacements == 0 && changed.Submits == 0,
+                        "glossary-retirement-mutated-other-field");
+                }
+                finally { await cdp.PageCallAsync("Runtime.releaseObject", new { objectId = form }, ct); }
             });
             await Phase(mode, "open-real-settings", 30, async ct =>
             {

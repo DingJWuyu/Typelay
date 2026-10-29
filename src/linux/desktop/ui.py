@@ -1447,14 +1447,15 @@ class TranslationSettings:
         self.glossary_box.pack_start(self.search, False, False, 0)
         self.glossary_card = group()
         self.glossary_box.pack_start(self.glossary_card, False, False, 0)
-        self.headings = Gtk.Box(homogeneous=True)
+        self.column_groups = [Gtk.SizeGroup(mode=Gtk.SizeGroupMode.HORIZONTAL) for _ in range(3)]
+        self.headings = Gtk.Box()
         self.heading_labels = []
-        for title in ("源词", "指定译法", "作用范围"):
+        for column, title in enumerate(("源词", "指定译法", "作用范围")):
             heading = styled(label(title), "glossary-heading")
             line = Pango.AttrList()
             line.insert(Pango.attr_line_height_new_absolute(12 * Pango.SCALE))
             heading.set_attributes(line)
-            self.headings.pack_start(heading, True, True, 0)
+            self.pack_glossary_cell(self.headings, heading, column)
             self.heading_labels.append(heading)
         self.glossary_card.pack_start(self.headings, False, False, 0)
         self.rules = styled(Gtk.ListBox(), "glossary-table")
@@ -1503,7 +1504,11 @@ class TranslationSettings:
     def create_editor(self, token):
         from design import style as styled
 
-        self.editor = styled(Gtk.Box(homogeneous=True), "glossary-editor")
+        if hasattr(self, "editor"):
+            for column, cell in enumerate(self.editor.get_children()):
+                if cell in self.column_groups[column].get_widgets():
+                    self.column_groups[column].remove_widget(cell)
+        self.editor = styled(Gtk.Box(), "glossary-editor")
         self.editor.set_no_show_all(True)
         self.source_term, self.target_term = Gtk.Entry(), Gtk.Entry()
 
@@ -1515,7 +1520,9 @@ class TranslationSettings:
             if token is self.editor_token and control.get_mapped() and control.is_sensitive():
                 self.commit_editor(token=token)
 
-        for title, entry in (("源词", self.source_term), ("指定译法", self.target_term)):
+        for column, (title, entry) in enumerate(
+            (("源词", self.source_term), ("指定译法", self.target_term))
+        ):
             entry.get_accessible().set_name("术语：" + title)
             entry.set_width_chars(1)
             entry.set_max_length(128)
@@ -1524,15 +1531,27 @@ class TranslationSettings:
             entry.connect("key-press-event", self.editor_key, token)
             cell = styled(Gtk.Box(), "glossary-cell")
             cell.pack_start(entry, True, True, 0)
-            self.editor.pack_start(cell, True, True, 0)
+            self.pack_glossary_cell(self.editor, cell, column)
         self.scope = Gtk.ComboBoxText()
         self.scope.get_accessible().set_name("术语作用范围")
+        self.scope.connect(
+            "changed", lambda combo: combo.set_tooltip_text(combo.get_active_text() or "")
+        )
         self.scope.connect("changed", changed)
         self.scope.connect("key-press-event", self.editor_key, token)
         cell = styled(Gtk.Box(), "glossary-cell")
         cell.pack_start(self.scope, True, True, 0)
-        self.editor.pack_start(cell, True, True, 0)
+        self.pack_glossary_cell(self.editor, cell, 2)
         self.scope_choices = None
+
+    def pack_glossary_cell(self, row, cell, column):
+        # The prototype scope column starts at 150px, but an inline select
+        # may grow for complete option labels. Do not clip them to force 150.
+        # Size groups align all three columns across headings/rows/editor.
+        if column == 2:
+            cell.set_size_request(150, -1)
+        self.column_groups[column].add_widget(cell)
+        row.pack_start(cell, column != 2, True, 0)
 
     def unavailable_message(self, code):
         messages = {
@@ -1721,6 +1740,68 @@ class TranslationSettings:
         source, target = rule["sourceLanguage"], rule["targetLanguage"]
         return names.get(source, source) + " → " + names.get(target, target)
 
+    def glossary_application_notice(self):
+        state = self.glossary_state or {}
+        if not self.state_confirmed or type(state.get("canApply")) is not bool:
+            return self.owner.tr("正在确认术语应用状态…", "Checking glossary application status…")
+        if state["canApply"]:
+            return self.owner.tr(
+                "术语保存在本机，可应用于当前翻译。",
+                "Terms are saved locally and can apply to the current translation.",
+            )
+        messages = {
+            "glossary-not-applicable": (
+                "当前方向没有适用的术语规则。",
+                "No glossary rules apply to this direction.",
+            ),
+            "glossary-unavailable": (
+                "当前模型暂不支持应用术语；规则仍可保存。",
+                "This model cannot apply glossary rules; you can still save them.",
+            ),
+            "glossary-not-released": (
+                "当前模型方向尚未开放术语应用；规则仍可保存。",
+                "Glossary application is not released for this model direction; you can still save rules.",
+            ),
+            "glossary-combination-unavailable": (
+                "当前模型不支持同时应用风格与术语。",
+                "This model cannot apply tone and glossary together.",
+            ),
+            "glossary-combination-not-released": (
+                "当前模型方向尚未开放同时应用风格与术语。",
+                "Combined tone and glossary are not released for this model direction.",
+            ),
+            "glossary-source-unavailable": (
+                "术语已保存在本机；开始翻译时会检查当前模型与方向。",
+                "Terms are saved locally. The current model and direction will be checked when translation starts.",
+            ),
+            "manual-glossary-deferred": (
+                "当前手工草稿保持不变；下次机器译文再检查术语应用。",
+                "Your manual draft stays unchanged. Glossary application will be checked for the next machine translation.",
+            ),
+            "glossary-busy": (
+                "翻译操作进行中，暂不能应用术语。",
+                "A translation operation is in progress; glossary application is temporarily unavailable.",
+            ),
+            "glossary-stale": (
+                "翻译状态已变化，等待重新确认术语应用。",
+                "The translation state changed; glossary application needs to be checked again.",
+            ),
+            "glossary-canceled": ("术语应用已取消。", "Glossary application was canceled."),
+            "invalid-glossary": (
+                "请检查术语规则，当前规则无法应用。",
+                "Check the glossary rules; these rules cannot be applied.",
+            ),
+        }
+        return self.owner.tr(
+            *messages.get(
+                state.get("applyUnavailableReason"),
+                (
+                    "术语保存在本机；当前应用资格尚未确认，不影响普通翻译。",
+                    "Terms are saved locally. Application eligibility is unconfirmed; ordinary translation is unaffected.",
+                ),
+            )
+        )
+
     def render_glossary(self):
         from design import label, style
 
@@ -1741,14 +1822,7 @@ class TranslationSettings:
             strict=True,
         ):
             heading.set_text(self.owner.tr(chinese, english))
-        self.glossary_notice.set_text(
-            ""
-            if (self.glossary_state or {}).get("canApply")
-            else self.owner.tr(
-                "术语保存在本机；当前模型方向尚未开放应用，不影响普通翻译。",
-                "Terms are saved locally. Application is not released for this model direction; ordinary translation is unaffected.",
-            )
-        )
+        self.glossary_notice.set_text(self.glossary_application_notice())
         directions = (self.glossary_state or {}).get("directions", [])
         choices = [("global", self.owner.tr("所有方向", "All directions"))]
         for item in directions:
@@ -1790,6 +1864,13 @@ class TranslationSettings:
             parent = self.editor.get_parent()
             if parent:
                 parent.remove(self.editor)
+            retained_cells = self.heading_labels + (
+                self.editor.get_children() if self.editor_open else []
+            )
+            for group in self.column_groups:
+                for cell in group.get_widgets():
+                    if cell not in retained_cells:
+                        group.remove_widget(cell)
             for row in self.rules.get_children():
                 self.rules.remove(row)
             editing_inserted = False
@@ -1811,17 +1892,19 @@ class TranslationSettings:
                     item.add(self.editor)
                     editing_inserted = True
                 else:
-                    row = Gtk.Box(homogeneous=True)
-                    for text, kind in (
-                        (rule["sourceTerm"], "glossary-term"),
-                        (rule["targetTerm"], "glossary-term"),
-                        (self.scope_label(rule), "glossary-scope"),
+                    row = Gtk.Box()
+                    for column, (text, kind) in enumerate(
+                        (
+                            (rule["sourceTerm"], "glossary-term"),
+                            (rule["targetTerm"], "glossary-term"),
+                            (self.scope_label(rule), "glossary-scope"),
+                        )
                     ):
                         value = style(label(text), "glossary-cell", kind)
                         value.set_ellipsize(Pango.EllipsizeMode.END)
                         value.set_width_chars(1)
                         value.set_tooltip_text(text)
-                        row.pack_start(value, True, True, 0)
+                        self.pack_glossary_cell(row, value, column)
                     item.add(row)
                 item.connect("key-press-event", self.rule_key, generation, index, dict(rule))
                 self.rules.add(item)
@@ -2690,16 +2773,147 @@ class Settings:
                 dialog, preferences, dialog.typelay_style_provider
             )
 
-    def filter_settings(self):
-        self.sidebar.invalidate_filter()
-        query = self.search.get_text().strip().casefold()
-        if query:
-            match = next(
-                (item for item in self.nav_rows.values() if query in item.search_text.casefold()),
-                None,
+    def register_search_setting(self, page, key, chinese, english, widget):
+        self.search_entries.append((page, key, chinese, english, widget))
+        widget.connect("size-allocate", lambda *_: self.locate_search_result())
+
+    def filter_settings(self, *_):
+        from design import box, label, style
+
+        query = self.search.get_text()
+        needle = query.strip().casefold()
+        matches = (
+            [
+                (entry, self.tr(entry[2], entry[3]), self.page_headings[entry[0]].get_text())
+                for entry in self.search_entries
+                if entry[4].is_ancestor(self.page_boxes[entry[0]])
+                and (
+                    needle in self.tr(entry[2], entry[3]).casefold()
+                    or needle in self.page_headings[entry[0]].get_text().casefold()
+                )
+            ][:12]
+            if needle
+            else []
+        )
+        signature = (query, tuple((id(entry[4]), title, page) for entry, title, page in matches))
+        if signature == self.search_signature:
+            return
+        self.search_signature = signature
+        generation = self.search_generation = object()
+        self.cancel_search_location()
+        for child in self.search_results.get_children():
+            self.search_results.remove(child)
+        self.search_buttons = []
+        self.sidebar.set_visible(not needle)
+        self.search_scroll.set_visible(bool(needle))
+        if not needle:
+            return
+        for entry, title, page in matches:
+            button = style(Gtk.Button(), "settings-search-result")
+            lines = box(2)
+            lines.pack_start(label(title), False, False, 0)
+            lines.pack_start(style(label(page), "search-result-page"), False, False, 0)
+            button.add(lines)
+            button.get_accessible().set_name(title + " · " + page)
+            button.connect("clicked", self.activate_search_result, generation, entry)
+            self.search_results.pack_start(button, False, False, 0)
+            self.search_buttons.append(button)
+        if not matches:
+            self.search_results.pack_start(
+                style(label("—"), "settings-search-empty"), False, False, 0
             )
-            if match:
-                self.sidebar.select_row(match)
+        self.search_results.show_all()
+
+    def search_key(self, _entry, event):
+        if event.keyval == Gdk.KEY_Escape:
+            self.search.set_text("")
+            return True
+        return False
+
+    def activate_first_search_result(self, *_):
+        if self.search_buttons:
+            self.search_buttons[0].clicked()
+
+    def activate_search_result(self, button, generation, entry):
+        page, _key, _chinese, _english, target = entry
+        if (
+            generation is not self.search_generation
+            or button not in self.search_buttons
+            or button.get_parent() is not self.search_results
+            or not button.get_mapped()
+            or not button.is_sensitive()
+            or not self.window.is_active()
+            or not target.is_ancestor(self.page_boxes[page])
+        ):
+            return
+        self.cancel_search_location()
+        # Normal navigation retains the existing draft/leave-row save path.
+        self.pages.set_visible_child_name(page)
+        self.search_location = (generation, self.draft_session, page, target)
+        location = self.search_location
+        GLib.idle_add(lambda: self.locate_search_result(expected=location))
+
+    def locate_search_result(self, *_, expected=None):
+        location = self.search_location
+        if expected is not None and location is not expected:
+            return GLib.SOURCE_REMOVE
+        if location is None:
+            return GLib.SOURCE_REMOVE
+        generation, session, page, target = location
+        if (
+            generation is not self.search_generation
+            or session != self.draft_session
+            or not self.window.get_mapped()
+            or not self.window.is_active()
+            or self.pages.get_visible_child_name() != page
+            or not target.is_ancestor(self.page_boxes[page])
+        ):
+            self.cancel_search_location()
+            return GLib.SOURCE_REMOVE
+        if self.pages.get_transition_running() or not target.get_mapped():
+            return GLib.SOURCE_REMOVE
+        scroll = self.page_scrolls[page]
+        adjustment = scroll.get_vadjustment()
+        point = target.translate_coordinates(self.page_boxes[page], 0, 0)
+        if point is None or target.get_allocated_height() < 1 or adjustment.get_page_size() < 1:
+            return GLib.SOURCE_REMOVE
+        center = point[1] + target.get_allocated_height() / 2
+        adjustment.set_value(
+            max(
+                adjustment.get_lower(),
+                min(
+                    center - adjustment.get_page_size() / 2,
+                    adjustment.get_upper() - adjustment.get_page_size(),
+                ),
+            )
+        )
+        self.search_location = None
+        target.get_style_context().add_class("settings-search-highlight")
+        self.search_highlight = (target, generation)
+
+        def clear():
+            self.search_highlight_timer = None
+            if self.search_highlight == (target, generation):
+                target.get_style_context().remove_class("settings-search-highlight")
+                self.search_highlight = None
+            return GLib.SOURCE_REMOVE
+
+        self.search_highlight_timer = GLib.timeout_add(1400, clear)
+        return GLib.SOURCE_REMOVE
+
+    def cancel_search_location(self):
+        self.search_location = None
+        if self.search_highlight_timer:
+            GLib.source_remove(self.search_highlight_timer)
+            self.search_highlight_timer = None
+        if self.search_highlight:
+            self.search_highlight[0].get_style_context().remove_class("settings-search-highlight")
+            self.search_highlight = None
+
+    def retire_search(self, *_):
+        self.search_generation = object()
+        self.search_signature = None
+        self.cancel_search_location()
 
     def tr(self, chinese, english):
         language = (self.value or {}).get("uiLanguage", "system")
@@ -2765,6 +2979,11 @@ class Settings:
             picker.update_keyboard()
         if getattr(self, "guidance", None):
             self.render_guidance(self.guidance)
+        self.search_results.get_accessible().set_name(
+            self.tr("设置搜索结果", "Settings search results")
+        )
+        self.search.get_accessible().set_name(self.tr("搜索设置", "Search settings"))
+        self.filter_settings()
         self.enabled_status.set_text(
             ("Running" if english else "运行中")
             if (self.value or {}).get("enabled")

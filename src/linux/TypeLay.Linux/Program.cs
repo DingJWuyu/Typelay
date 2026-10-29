@@ -157,6 +157,7 @@ internal static class Program
                 state.SavedSnapshot,
                 state.IsReleased,
                 state.CanApply,
+                state.ApplyUnavailableReason,
                 directions = ModelCatalog.Packages.Packages.SelectMany(package => package.Directions)
                     .DistinctBy(direction => direction.Id).Select(direction => new
                     {

@@ -282,6 +282,123 @@ def main():
             )
             surface.pages.set_visible_child_name("general")
             assert not status.get("modelReady"), "No model may be simulated as ready"
+            # Searching lists matching settings without navigating until the user
+            # activates one. Use the real SearchEntry signal and native buttons.
+            searched = asyncio.Event()
+            search_handler = surface.search.connect("search-changed", lambda *_: searched.set())
+            surface.search.set_text("字号")
+            await asyncio.wait_for(searched.wait(), 8)
+            surface.search.disconnect(search_handler)
+            assert surface.pages.get_visible_child_name() == "general", (
+                "typing a settings query navigated before a result was activated"
+            )
+
+            def search_buttons():
+                pending = [surface.window]
+                matches = []
+                while pending:
+                    widget = pending.pop()
+                    if isinstance(widget, Gtk.Button) and widget.get_mapped():
+                        if widget.get_accessible().get_name() == "译文字号 · 外观":
+                            matches.append(widget)
+                    if isinstance(widget, Gtk.Container):
+                        pending.extend(widget.get_children())
+                return matches
+
+            await settle(lambda: len(search_buttons()) == 1)
+            retired_result = search_buttons()[0]
+            # Query A -> B -> A creates fresh peers, not reusable callbacks.
+            surface.search.set_text("工作")
+            surface.search.set_text("字号")
+            await settle(lambda: len(search_buttons()) == 1)
+            retired_result.clicked()
+            assert surface.pages.get_visible_child_name() == "general"
+            surface.search.emit("activate")
+            await settle(lambda: surface.pages.get_visible_child_name() == "appearance")
+            await settle(lambda: not surface.pages.get_transition_running())
+            await asyncio.sleep(0)
+            size_control = surface.controls["textSize"]
+            assert size_control.get_mapped()
+            scroll = surface.page_scrolls["appearance"]
+            position = size_control.translate_coordinates(scroll, 0, 0)
+            assert position is not None and position[1] >= 0
+            assert (
+                position[1] + size_control.get_allocated_height() <= scroll.get_allocated_height()
+            )
+            surface.search.set_text("nothing-matches-this-setting")
+            surface.search.emit("activate")
+            assert surface.pages.get_visible_child_name() == "appearance"
+            escape_search = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+            escape_search.window = surface.search.get_window()
+            escape_search.keyval = Gdk.KEY_Escape
+            escape_search.state = Gdk.ModifierType(0)
+            surface.search.emit("key-press-event", escape_search)
+            assert not surface.search.get_text() and surface.sidebar.get_visible()
+            surface.search.set_text("字号")
+            await settle(lambda: len(search_buttons()) == 1)
+            closing_result = search_buttons()[0]
+            surface.window.close()
+            await settle(lambda: not surface.window.get_visible())
+            surface.show()
+            await settle(lambda: surface.window.is_active() and not jobs)
+            surface.pages.set_visible_child_name("general")
+            closing_result.clicked()
+            assert surface.pages.get_visible_child_name() == "general"
+            await settle(lambda: len(search_buttons()) == 1)
+            search_buttons()[0].clicked()
+            await settle(lambda: surface.pages.get_visible_child_name() == "appearance")
+            surface.controls["uiLanguage"].set_active_id("en")
+            await settle(lambda: state.get("uiLanguage") == "en")
+            surface.search.set_text("size")
+            await settle(
+                lambda: any(
+                    button.get_accessible().get_name() == "Translation size · Appearance"
+                    for button in surface.search_results.get_children()
+                    if isinstance(button, Gtk.Button)
+                )
+            )
+            capture("settings-search-en")
+            surface.controls["uiLanguage"].set_active_id("zh-CN")
+            await settle(lambda: state.get("uiLanguage") == "zh-CN")
+            surface.search.set_text("字号")
+            await settle(lambda: len(search_buttons()) == 1)
+            capture("settings-search-zh")
+            surface.search.set_text("")
+            surface.pages.set_visible_child_name("glossary")
+            translation_for_search = surface.translation
+            await settle(lambda: translation_for_search.new_button.get_mapped() and not jobs)
+            settings_file = directory / "config/settings.json"
+            saved_before_search = settings_file.read_bytes()
+            blocker = settings_file.with_suffix(".json.tmp")
+            blocker.mkdir()
+            try:
+                translation_for_search.new_button.clicked()
+                translation_for_search.source_term.set_text("Search navigation")
+                translation_for_search.target_term.set_text("Must preserve draft")
+                surface.search.set_text("工作模式")
+                surface.search.emit("activate")
+                await settle(
+                    lambda: surface.pages.get_visible_child_name() == "general" and not jobs
+                )
+                assert translation_for_search.dirty
+                assert settings_file.read_bytes() == saved_before_search
+                assert surface.save_button.get_mapped() and surface.save_button.is_sensitive()
+            finally:
+                blocker.rmdir()
+            surface.save_button.clicked()
+            await settle(lambda: not translation_for_search.dirty and not jobs)
+            saved_rules = (await host.ask("getGlossarySettings"))["savedSnapshot"]["rules"]
+            assert len(saved_rules) == 1 and saved_rules[0]["targetTerm"] == "Must preserve draft"
+            surface.search.set_text("术语表")
+            surface.search.emit("activate")
+            await settle(lambda: translation_for_search.rules.get_mapped())
+            translation_for_search.rules.select_row(translation_for_search.rules.get_children()[0])
+            translation_for_search.remove_button.clicked()
+            await settle(lambda: not translation_for_search.dirty and not jobs)
+            assert not (await host.ask("getGlossarySettings"))["savedSnapshot"]["rules"]
+            surface.search.set_text("")
+            surface.pages.set_visible_child_name("general")
+
             # A system font preference uses this real GTK desktop's chosen
             # family in UI chrome as well as display/content, not fixed Inter.
             system_family = Pango.FontDescription.from_string(
@@ -532,6 +649,7 @@ def main():
             # pending public activation, even after query A -> B -> A.
             escape = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
             escape.keyval, escape.state = Gdk.KEY_Escape, Gdk.ModifierType(0)
+            escape.window = surface.window.get_window()
             replacement_row = translation.rules.get_children()[0]
             translation.rules.select_row(replacement_row)
             selected = translation.selected_rule
@@ -599,7 +717,13 @@ def main():
             await settle(lambda: not surface.window.get_visible())
             assert not translation.dirty and not translation.editor_open
             surface.show()
-            await settle(lambda: translation.glossary_box.get_mapped())
+            # show() starts asynchronous refresh and native activation. Mapped
+            # alone is not permission to act on a still-inactive window.
+            await settle(
+                lambda: translation.glossary_box.get_mapped()
+                and surface.window.is_active()
+                and not jobs
+            )
             translation.new_button.clicked()
             translation.source_term.set_text("Unsaved")
             translation.target_term.set_text("Keep exactly")
@@ -639,7 +763,13 @@ def main():
             await settle(lambda: not surface.window.get_visible())
             assert not translation.dirty and not translation.editor_open
             surface.show()
-            await settle(lambda: translation.glossary_box.get_mapped())
+            # show() starts asynchronous refresh and native activation. Mapped
+            # alone is not permission to act on a still-inactive window.
+            await settle(
+                lambda: translation.glossary_box.get_mapped()
+                and surface.window.is_active()
+                and not jobs
+            )
             current = translation.rules.get_children()[0]
             current.grab_focus()
             translation.rules.emit("row-activated", current)

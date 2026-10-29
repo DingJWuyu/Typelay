@@ -2820,6 +2820,7 @@ class BrowserContract(unittest.TestCase):
             "canChangeStyle": True,
             "canInheritStyle": True,
             "applicationStyle": None,
+            "effectiveStyle": None,
             "styleUnavailableReason": None,
             "inheritUnavailableReason": None,
             "alternativeReleased": True,
@@ -2842,6 +2843,399 @@ class BrowserContract(unittest.TestCase):
         }
         self.assertTrue(self.command("overlay-render", data)["visible"])
 
+    def test_more_menu_four_styles_separate_inheritance_and_real_state(self):
+        output = ROOT / "artifacts/linux/browser-native/overlay" / f"more-{uuid.uuid4().hex}"
+        output.mkdir(parents=True)
+        print(f"More menu screenshots: {output}", flush=True)
+        for theme, language in (("light", "zh-CN"), ("dark", "en")):
+            for phase in ("preview", "closed", "editing", "loading", "updating"):
+                with self.subTest(theme=theme, language=language, phase=phase):
+                    # Independent real captures, not renewal of a previous menu.
+                    self.page.reload()
+                    self.command(
+                        "configure-shortcuts",
+                        {
+                            "generation": "browser-default",
+                            "sessionEnabled": True,
+                            "enabled": False,
+                            "accept": "Tab",
+                            "exit": "Esc",
+                        },
+                    )
+                    self.page.locator("#source").focus()
+                    if phase == "editing":
+                        _, data = self.open_editor("Tab", "Esc")
+                    else:
+                        data = self.motion_view()
+                        data["view"].update(text="Current translation.", editable=False)
+                    data.update(
+                        theme=theme, appearance={"uiLanguage": language, "motion": "reduce"}
+                    )
+                    if phase in ("loading", "updating"):
+                        data["view"].update(
+                            state="Translating",
+                            text="" if phase == "loading" else "Previous translation.",
+                        )
+                    actions = self.translation_menu_state(
+                        styleReleased=phase != "closed",
+                        alternativeReleased=phase != "closed",
+                        canChangeStyle=phase == "preview",
+                        canInheritStyle=phase in ("preview", "closed"),
+                        canRequestAlternative=phase == "preview",
+                        applicationStyle=None if phase == "preview" else "Formal",
+                        effectiveStyle=None if phase == "closed" else "Formal",
+                        styleUnavailableReason="请先完成当前编辑" if phase == "editing" else None,
+                        glossaryReleased=False,
+                        canOpenGlossary=phase not in ("loading", "updating"),
+                        glossaryUnavailableReason=None,
+                    )
+                    self.set_translation_menu(data, actions)
+                    editor = (
+                        self.overlay_control(
+                            "TypeLay Translation" if language == "en" else "TypeLay 译文", "textbox"
+                        )
+                        if phase != "loading"
+                        else None
+                    )
+                    self.click_overlay_control("More" if language == "en" else "更多")
+                    menu = self.overlay_control(
+                        "More Actions" if language == "en" else "更多操作", "group"
+                    )
+                    actual = self.overlay_dom(
+                        menu,
+                        """function() {
+                      const style = this.querySelector('[role=group]');
+                      const observe = button => ({text:(button.querySelector(':scope > span')?.textContent || button.textContent).trim(), disabled:button.disabled,
+                        pressed:button.getAttribute('aria-pressed'), rect:button.getBoundingClientRect().toJSON(),
+                        background:getComputedStyle(button).backgroundColor});
+                      return {buttons:[...this.querySelectorAll(':scope > button')].map(observe),
+                        styles:[...style.querySelectorAll('button')].map(observe),
+                        styleRect:style.getBoundingClientRect().toJSON(), styleTitle:style.title,
+                        styleIcons:style.querySelectorAll('svg').length,
+                        rect:this.getBoundingClientRect().toJSON(),
+                        editorFocused:this.getRootNode().querySelector('textarea').matches(':focus'),
+                        sourceFocused:document.querySelector('#source').matches(':focus'),
+                        selection:[document.querySelector('#source').selectionStart,document.querySelector('#source').selectionEnd]};
+                    }""",
+                    )
+                    styles = actual["styles"]
+                    self.assertEqual(len(styles), 4, actual)
+                    self.assertEqual(
+                        [item["text"].removeprefix("✓ ") for item in styles],
+                        ["Natural", "Formal", "Concise", "Casual"]
+                        if language == "en"
+                        else ["自然", "正式", "简洁", "口语"],
+                    )
+                    self.assertEqual(
+                        [item["disabled"] for item in styles],
+                        [phase != "preview"] * 2 + [True, True],
+                    )
+                    self.assertEqual(
+                        [item["pressed"] == "true" for item in styles],
+                        [False, phase != "closed", False, False],
+                    )
+                    for item in styles:
+                        self.assertAlmostEqual(item["rect"]["y"], styles[0]["rect"]["y"], delta=1)
+                        self.assertEqual(item["rect"]["height"], 22)
+                    if phase != "closed":
+                        self.assertNotEqual(styles[1]["background"], styles[0]["background"])
+                    else:
+                        self.assertEqual(styles[1]["background"], styles[0]["background"])
+                    self.assertEqual(actual["styleIcons"], 1)
+                    if phase == "editing":
+                        self.assertTrue(actual["styleTitle"], actual)
+                    elif phase == "preview":
+                        self.assertEqual(actual["styleTitle"], "")
+                    buttons = actual["buttons"]
+                    expected = (
+                        [
+                            "Translate Again",
+                            "Rephrase",
+                            "Copy Translation",
+                            "Add to Glossary",
+                            "Hide for Now",
+                            "Disable for This App",
+                            "Inherit",
+                            "Settings",
+                        ]
+                        if language == "en"
+                        else [
+                            "重新翻译",
+                            "换种说法",
+                            "复制译文",
+                            "加入术语表",
+                            "暂时隐藏",
+                            "不要在这个应用中显示",
+                            "继承",
+                            "设置",
+                        ]
+                    )
+                    self.assertEqual(
+                        [item["text"].removeprefix("✓ ") for item in buttons], expected
+                    )
+                    self.assertGreater(actual["styleRect"]["y"], buttons[1]["rect"]["y"])
+                    self.assertLess(actual["styleRect"]["bottom"], buttons[2]["rect"]["bottom"])
+                    self.assertEqual(buttons[0]["disabled"], phase in ("loading", "updating"))
+                    self.assertEqual(buttons[2]["disabled"], phase == "loading")
+                    self.assertEqual(buttons[6]["disabled"], phase not in ("preview", "closed"))
+                    self.assertEqual(buttons[6]["pressed"] == "true", phase == "preview")
+                    self.assertEqual(actual["selection"], [5, 5])
+                    self.assertEqual(actual["editorFocused"], phase == "editing")
+                    self.assertEqual(actual["sourceFocused"], phase != "editing")
+                    if editor:
+                        self.assertTrue(
+                            self.overlay_dom(editor, "function() { return this.isConnected; }")
+                        )
+                    self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                    self.assertEqual(self.accepted(), [])
+                    self.page.screenshot(
+                        path=output / f"{theme}-{language}-{phase}.png", clip=actual["rect"]
+                    )
+                    if phase == "preview":
+                        # Losing qualification clears only the applied-style
+                        # highlight; this same opening does not gain authority.
+                        self.set_translation_menu(
+                            data,
+                            {
+                                **actions,
+                                "effectiveStyle": None,
+                                "styleReleased": False,
+                                "canChangeStyle": False,
+                            },
+                        )
+                        self.assertEqual(
+                            self.overlay_dom(
+                                menu,
+                                """function() {
+                              return {connected:this.isConnected, hidden:this.hidden,
+                                pressed:[...this.querySelector('[role=group]').querySelectorAll('button')]
+                                  .map(button=>button.getAttribute('aria-pressed') === 'true'),
+                                disabled:[...this.querySelector('[role=group]').querySelectorAll('button')]
+                                  .map(button=>button.disabled)};
+                            }""",
+                            ),
+                            {
+                                "connected": True,
+                                "hidden": False,
+                                "pressed": [False] * 4,
+                                "disabled": [True] * 4,
+                            },
+                        )
+                        self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+                        self.assertEqual(self.accepted(), [])
+
+    def test_more_menu_hide_hint_and_outside_pointer_dismissal(self):
+        for language, exit_key in (("zh-CN", "Esc"), ("en", "F7")):
+            with self.subTest(language=language):
+                self.page.reload()
+                self.command(
+                    "configure-shortcuts",
+                    {
+                        "generation": "browser-default",
+                        "sessionEnabled": True,
+                        "enabled": False,
+                        "accept": "Tab",
+                        "exit": exit_key,
+                    },
+                )
+                self.page.locator("#source").focus()
+                data = self.motion_view()
+                data["appearance"] = {"uiLanguage": language, "motion": "reduce"}
+                self.set_translation_menu(data, self.translation_menu_state(), exit_key=exit_key)
+                self.click_overlay_control("More" if language == "en" else "更多")
+                menu = self.overlay_control(
+                    "More Actions" if language == "en" else "更多操作", "group"
+                )
+                before = self.overlay_dom(
+                    menu,
+                    """function() {
+                  const buttons=[...this.querySelectorAll(':scope > button')];
+                  const button=buttons[4];
+                  return {label:button.querySelector('span').textContent,
+                    hint:button.querySelector('kbd')?.textContent,
+                    editor:this.getRootNode().querySelector('textarea').value};
+                }""",
+                )
+                with self.subTest(part="localized-hide-and-real-key"):
+                    self.assertEqual(
+                        before["label"], "Hide for Now" if language == "en" else "暂时隐藏"
+                    )
+                    self.assertEqual(before.get("hint"), exit_key)
+                # Clicking the current source outside the popup closes only the
+                # menu, without consuming the source pointer or ending a session.
+                self.page.locator("#source").click(position={"x": 450, "y": 10})
+                self.assertEqual(
+                    self.overlay_dom(
+                        menu,
+                        """function() {
+                  return {connected:this.isConnected, hidden:this.hidden,
+                    editor:this.getRootNode().querySelector('textarea').value};
+                }""",
+                    ),
+                    {"connected": True, "hidden": True, "editor": before["editor"]},
+                )
+                self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.accepted(), [])
+                self.assertFalse(
+                    self.page.evaluate("""fixtureMessages.some(m =>
+                  m.event === 'ui' && ['escape','return'].includes(m.data.operation))""")
+                )
+
+    def test_more_menu_copy_shortcut_uses_current_text_and_refuses_unknown_or_expired(self):
+        self.context.grant_permissions(
+            ["clipboard-read", "clipboard-write"], origin="http://127.0.0.1"
+        )
+        original_clipboard = self.page.evaluate("navigator.clipboard.readText()")
+        self.addCleanup(
+            lambda: self.page.evaluate(
+                "text => navigator.clipboard.writeText(text)", original_clipboard
+            )
+        )
+        for mode in ("control", "meta", "editor", "unknown-editor", "expired", "no-menu"):
+            with self.subTest(mode=mode):
+                self.page.reload()
+                self.command(
+                    "configure-shortcuts",
+                    {
+                        "generation": "browser-default",
+                        "sessionEnabled": True,
+                        "enabled": False,
+                        "accept": "Tab",
+                        "exit": "Esc",
+                    },
+                )
+                self.page.locator("#source").focus()
+                self.page.evaluate("navigator.clipboard.writeText('clipboard sentinel')")
+                if mode in ("editor", "unknown-editor"):
+                    _, data = self.open_editor("Tab", "Esc")
+                else:
+                    data = self.motion_view()
+                    data["view"]["text"] = "Current whole translation."
+                data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce"}
+                self.set_translation_menu(data, self.translation_menu_state())
+                editor = self.overlay_control("TypeLay 译文", "textbox")
+                before = self.overlay_dom(
+                    editor,
+                    "function() { return [this.value,this.selectionStart,this.selectionEnd]; }",
+                )
+                menu = None
+                if mode != "no-menu":
+                    self.click_overlay_control("更多")
+                    menu = self.overlay_control("更多操作", "group")
+                if mode == "unknown-editor":
+                    self.overlay_dom(
+                        editor,
+                        """function() {
+                      this.dispatchEvent(new CompositionEvent('compositionstart'));
+                    }""",
+                    )
+                elif mode == "expired":
+                    # Original display deadline, never renewed for this refusal.
+                    self.page.wait_for_timeout(850)
+                elif mode == "no-menu":
+                    # Ordinary selected-source copying belongs to the browser.
+                    self.page.keyboard.press("Control+A")
+                self.page.evaluate("""() => {
+                  window.menuCopyKeys=[];
+                  window.addEventListener('keydown', event => {
+                    if(event.code==='KeyC') menuCopyKeys.push({trusted:event.isTrusted,prevented:event.defaultPrevented});
+                  });
+                }""")
+                self.page.keyboard.press("Meta+c" if mode == "meta" else "Control+c")
+                if mode in ("control", "meta", "editor"):
+                    self.assertEqual(
+                        self.page.evaluate("navigator.clipboard.readText()"), before[0]
+                    )
+                    self.assertEqual(self.page.evaluate("menuCopyKeys"), [])
+                    self.assertTrue(
+                        self.overlay_dom(
+                            menu, "function() { return this.isConnected && this.hidden; }"
+                        )
+                    )
+                else:
+                    self.assertEqual(
+                        self.page.evaluate("menuCopyKeys"), [{"trusted": True, "prevented": False}]
+                    )
+                    self.assertEqual(
+                        self.page.evaluate("navigator.clipboard.readText()"),
+                        "Hello" if mode == "no-menu" else "clipboard sentinel",
+                    )
+                if mode in ("editor", "unknown-editor"):
+                    if mode == "unknown-editor":
+                        self.assertFalse(
+                            self.overlay_dom(menu, "function() { return this.hidden; }")
+                        )
+                    self.assertTrue(
+                        self.overlay_dom(editor, "function() { return this.matches(':focus'); }")
+                    )
+                    self.assertEqual(
+                        self.overlay_dom(
+                            editor,
+                            "function() { return [this.value,this.selectionStart,this.selectionEnd]; }",
+                        ),
+                        before,
+                    )
+                else:
+                    self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.accepted(), [])
+                self.assertFalse(
+                    self.page.evaluate("""fixtureMessages.some(m =>
+                  m.event === 'ui' && ['escape','return'].includes(m.data.operation))""")
+                )
+
+    def test_more_text_actions_follow_current_draft_without_host_render(self):
+        _, data = self.open_editor("Tab", "Esc")
+        data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce"}
+        self.set_translation_menu(
+            data, self.translation_menu_state(canChangeStyle=False, canInheritStyle=False)
+        )
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        self.click_overlay_control("更多")
+        copy = self.overlay_control("复制译文")
+        regenerate = self.overlay_control("重新翻译")
+        for control in (copy, regenerate):
+            self.assertFalse(self.overlay_dom(control, "function() { return this.disabled; }"))
+        self.click_overlay_control("更多")
+        self.page.keyboard.press("Control+A")
+        self.page.keyboard.press("Backspace")
+        self.assertEqual(self.overlay_dom(editor, "function() { return this.value; }"), "")
+        # No host render follows this input: opening reads the actual draft.
+        self.click_overlay_control("更多")
+        menu = self.overlay_control("更多操作", "group")
+        for control in (copy, regenerate):
+            self.assertTrue(
+                self.overlay_dom(
+                    control, "function() { return this.isConnected && this.disabled; }"
+                )
+            )
+        self.click_overlay_control("重新翻译")
+        self.assertFalse(self.overlay_dom(menu, "function() { return this.hidden; }"))
+        self.assertTrue(self.overlay_dom(editor, "function() { return this.matches(':focus'); }"))
+        # Typing while the same menu remains open must not leave stale disabled
+        # controls. This is a local edit, not a new capture or display renewal.
+        self.page.keyboard.insert_text("Draft after clearing")
+        for control in (copy, regenerate):
+            self.assertTrue(
+                self.overlay_dom(
+                    control, "function() { return this.isConnected && !this.disabled; }"
+                )
+            )
+        self.assertTrue(
+            self.overlay_dom(
+                editor,
+                "function() { return this.matches(':focus') && this.value === 'Draft after clearing'; }",
+            )
+        )
+        self.assertFalse(
+            self.page.evaluate(
+                "fixtureMessages.some(message => message.event === 'ui' && message.data.operation === 'regenerate')"
+            )
+        )
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
     def test_translation_menu_uses_shared_state_and_freezes_opened_settings_revision(self):
         data = self.motion_view()
         self.page.emulate_media(reduced_motion="reduce")
@@ -2849,6 +3243,7 @@ class BrowserContract(unittest.TestCase):
         for actions in (
             None,
             self.translation_menu_state(applicationStyle="unknown"),
+            self.translation_menu_state(effectiveStyle="unknown"),
         ):
             self.set_translation_menu(data, actions)
             self.click_overlay_control("更多")
@@ -3097,7 +3492,7 @@ class BrowserContract(unittest.TestCase):
         )
         # Keeping a menu visible does not give an unfinished editor action
         # authority. Each real pointer click must preserve this same opening.
-        for name in ("自然", "换种说法", "复制译文", "Esc 退出当前翻译"):
+        for name in ("自然", "换种说法", "复制译文", "暂时隐藏"):
             self.click_overlay_control(name)
             self.assertFalse(self.overlay_dom(menu, "function() { return this.hidden; }"))
             self.assertTrue(
@@ -3124,7 +3519,7 @@ class BrowserContract(unittest.TestCase):
             ),
         )
         self.click_overlay_control("更多")
-        for name in ("自然", "✓ 正式", "换种说法", "简洁 · 尚未提供", "口语 · 尚未提供"):
+        for name in ("自然", "正式", "换种说法", "简洁 · 尚未提供", "口语 · 尚未提供"):
             self.assertTrue(
                 self.overlay_dom(self.overlay_control(name), "function() { return this.disabled; }")
             )

@@ -73,6 +73,8 @@ public sealed class ModelClientCapabilityTests
             "index-translate-2b-q4-k-m", "3a0eca6ce931d88d00614d427ab3ed8ff0743902", "zh_en")]);
         Assert.Equal("ordinary remains available", (await peer.Client.TranslateTextAsync("你好", new("zh", "en"))).Text);
         Assert.False(release.Allows(TranslationOperation.Glossary, peer.Client.VerifiedIdentity!, new("zh", "en")));
+        Assert.False(TranslationReleasePolicy.Current.Allows(TranslationOperation.Glossary,
+            peer.Client.VerifiedIdentity!, new("zh", "en")));
     }
 
     [Theory]
@@ -107,6 +109,7 @@ public sealed class ModelClientCapabilityTests
         var release = new TranslationReleasePolicy([new(TranslationOperation.Glossary,
             "index-translate-2b-q4-k-m", "3a0eca6ce931d88d00614d427ab3ed8ff0743902", "zh_en", id)]);
         Assert.Equal(change == "known", release.Allows(TranslationOperation.Glossary, identity, new("zh", "en")));
+        Assert.Equal(change == "known", TranslationReleasePolicy.Current.Allows(TranslationOperation.Glossary, identity, new("zh", "en")));
         Assert.False(release.Allows(TranslationOperation.Style, identity, new("zh", "en")));
         Assert.False(release.Allows(TranslationOperation.StyledGlossary, identity, new("zh", "en")));
         Assert.False(release.Allows(TranslationOperation.Alternative, identity, new("zh", "en")));
@@ -129,11 +132,14 @@ public sealed class ModelClientCapabilityTests
             () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
         var old = peer.Client.VerifiedIdentity!;
         Assert.NotNull(old.InferenceProfileId);
+        Assert.True(TranslationReleasePolicy.Current.Allows(TranslationOperation.Glossary, old, new("zh", "en")));
         peer.ChangeProfileFiles("loader");
         var expected = recover ? ModelPublicationOutcome.Unchanged : ModelPublicationOutcome.Confirmed;
         Assert.Equal(expected, await peer.Client.ReloadAsync(plan, () => expected, _ => recover, TestContext.Current.CancellationToken));
         Assert.NotSame(old, peer.Client.VerifiedIdentity);
         Assert.Null(peer.Client.VerifiedIdentity!.InferenceProfileId);
+        Assert.False(TranslationReleasePolicy.Current.Allows(TranslationOperation.Glossary,
+            peer.Client.VerifiedIdentity, new("zh", "en")));
         Assert.Equal("not-ready", (await peer.Client.TranslateAsync(GlossaryJob("zh", "en"), old)).Code);
         Assert.Equal("ordinary", (await peer.Client.TranslateTextAsync("你好", new("zh", "en"))).Text);
     }
@@ -155,6 +161,25 @@ public sealed class ModelClientCapabilityTests
         Assert.True(release.Allows(TranslationOperation.Glossary, identity, new("auto", "en")));
         Assert.False(release.Allows(TranslationOperation.Glossary, identity, new("auto", "zh")));
         Assert.False(release.Allows(TranslationOperation.Glossary, identity, new("ja", "zh")));
+    }
+
+    [Fact]
+    public void ProductionGlossaryReleaseAllowsOnlyBothReviewedDirectionsAndNoOtherOperation()
+    {
+        var identity = VerifyIndexTestIdentity();
+        var release = TranslationReleasePolicy.Current;
+        foreach (var direction in identity.Packages.SelectMany(package => package.Directions))
+        {
+            var pair = new LanguageDirection(direction.Source, direction.Target);
+            Assert.Equal(direction.Id is "zh_en" or "en_zh", release.Allows(TranslationOperation.Glossary, identity, pair));
+            Assert.False(release.Allows(TranslationOperation.Style, identity, pair));
+            Assert.False(release.Allows(TranslationOperation.StyledGlossary, identity, pair));
+            Assert.False(release.Allows(TranslationOperation.Alternative, identity, pair));
+        }
+        Assert.True(release.Allows(TranslationOperation.Glossary, identity, new("auto", "en")));
+        Assert.False(release.Allows(TranslationOperation.Glossary, identity, new("auto", "zh")));
+        Assert.False(release.Allows(TranslationOperation.Glossary, VerifyTestIdentity(false), new("zh", "en")));
+        Assert.False(release.Allows(TranslationOperation.Glossary, VerifyTestIdentity(true), new("zh", "ja")));
     }
 
     [Fact]
@@ -1252,6 +1277,19 @@ public sealed class ModelClientCapabilityTests
         using var peer = new ProtocolPeer(HyHello.Replace("[\"zh_ja\"]", directions, StringComparison.Ordinal),
             inventory: HyInventory.Replace("[\"zh_ja\"]", directions, StringComparison.Ordinal));
         Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(catalog),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        return Assert.IsType<VerifiedModelIdentity>(peer.Client.VerifiedIdentity);
+    }).GetAwaiter().GetResult();
+
+    internal static VerifiedModelIdentity VerifyIndexTestIdentity(bool profileFiles = true) => Task.Run(async () =>
+    {
+        string directions = JsonSerializer.Serialize(ModelCatalog.Packages.Packages.Single(package => package.Id == "index-translate-2b-q4-k-m")
+            .Directions.Select(direction => direction.Id));
+        string hello = IndexIdentity(HyHello).Replace("[\"zh_en\"]", directions, StringComparison.Ordinal)
+            .Replace("\"status\":\"ready\"", "\"status\":\"ready\"," + AdvancedVersions, StringComparison.Ordinal);
+        using var peer = new ProtocolPeer(hello,
+            inventory: IndexIdentity(HyInventory).Replace("[\"zh_en\"]", directions, StringComparison.Ordinal), profileFiles: profileFiles);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(ModelCatalog.Packages),
             () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
         return Assert.IsType<VerifiedModelIdentity>(peer.Client.VerifiedIdentity);
     }).GetAwaiter().GetResult();

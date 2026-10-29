@@ -43,29 +43,6 @@ internal sealed partial class SettingsWindow
         if (_glossaryEdit is null)
             _glossarySelection = -1;
         var state = _controller?.GetGlossarySettingsState();
-        var modelMessage = UiTheme.Text("", 13);
-        var modelRow = new DockPanel { LastChildFill = true };
-        var viewModel = UiTheme.Button(UiTheme.L("查看", "View"), () => { if (IsVisible && ReferenceEquals(page, _pageIdentity)) ShowPage("model"); });
-        viewModel.Padding = new(10, 4, 10, 4);
-        DockPanel.SetDock(viewModel, Dock.Right);
-        modelRow.Children.Add(viewModel);
-        var warning = PrototypeGlyph("M12,4 L2.8,19.5 H21.2 Z M12,10 V14.5 M12,17 V17.01", "Warn");
-        warning.Width = warning.Height = 18;
-        warning.Margin = new(0, 0, 12, 0);
-        DockPanel.SetDock(warning, Dock.Left);
-        modelRow.Children.Add(warning);
-        modelRow.Children.Add(modelMessage);
-        var modelCard = UiTheme.Border(modelRow, 12);
-        modelCard.Padding = new(14, 12, 14, 12);
-        modelCard.BorderThickness = new(.5);
-        modelCard.Margin = new(0, 0, 0, 18);
-        _content.Children.Add(modelCard);
-        void RefreshModelBanner()
-        {
-            modelCard.Visibility = _model.Ready ? Visibility.Collapsed : Visibility.Visible;
-            modelMessage.Text = _model.Installed ? UiTheme.L("模型尚未就绪", "Model not ready") : UiTheme.L("需要下载本地翻译模型", "Download the local translation model");
-        }
-        RefreshModelBanner();
         var search = new TextBox { Text = _glossaryQuery, Margin = new(0, 0, 0, 12) };
         AutomationProperties.SetName(search, UiTheme.L("搜索术语", "Search terms"));
         AutomationProperties.SetAutomationId(search, "GlossarySearch");
@@ -212,6 +189,7 @@ internal sealed partial class SettingsWindow
             if (_glossarySelection >= Rules().Count)
                 _glossarySelection = -1;
             _settingsError = _draftFeedback = null;
+            ClearSaveIssue();
             RenderRows();
             RefreshDraftBar();
             (rows.SelectedItem as ListBoxItem)?.Focus();
@@ -368,6 +346,7 @@ internal sealed partial class SettingsWindow
                         _glossaryDraft![rowIndex] = rule;
                         mountedRules = _glossaryDraft.ToArray();
                         _draftFeedback = _settingsError = null;
+                        ClearSaveIssue();
                         RefreshDraftBar();
                         RenderToolbar();
                     }
@@ -458,7 +437,6 @@ internal sealed partial class SettingsWindow
             if (!Mounted())
                 return;
             var current = _controller!.GetGlossarySettingsState();
-            RefreshModelBanner();
             if (_glossaryDraft is null && _glossaryEdit is null)
             {
                 if (mountedEdit is null && !mountedRules.SequenceEqual(current.SavedSnapshot?.Rules ?? []))
@@ -523,7 +501,7 @@ internal sealed partial class SettingsWindow
                   </Border>
                 </ControlTemplate></ToggleButton.Template>
               </ToggleButton>
-              <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center" IsHitTestVisible="False" ClipToBounds="True" Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"/>
+              <ContentPresenter x:Name="selection" Margin="{TemplateBinding Padding}" VerticalAlignment="Center" IsHitTestVisible="False" ClipToBounds="True" Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}" ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"/>
               <Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True" Focusable="False">
                 <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness=".5" CornerRadius="8" Padding="4" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
                   <ScrollViewer MaxHeight="260" VerticalScrollBarVisibility="Auto"><ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/></ScrollViewer>
@@ -623,8 +601,10 @@ internal sealed partial class SettingsWindow
     private sealed record GlossaryScope(string Label, string? Source, string? Target);
     private async Task SaveGlossaryDraftAsync()
     {
-        if (_controller is null || _glossaryDraft is null || _savingTranslation)
+        if (_controller is null || _glossaryDraft is null || _savingTranslation || _saveIssue?.Unknown == true)
             return;
+        ClearSaveIssue();
+        string page = _page;
         var submitted = _glossaryDraft.ToArray();
         var rules = submitted.Select(rule => rule with { SourceTerm = rule.SourceTerm.Trim(), TargetTerm = rule.TargetTerm.Trim() }).ToArray();
         var completion = _glossarySaveCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -645,7 +625,8 @@ internal sealed partial class SettingsWindow
                 _glossaryDraftRevision = current.SettingsRevision;
                 _glossaryDraftBaseline = savedRules.ToArray();
             }
-            var result = await _controller.ChangeGlossaryAsync(rules, _glossaryDraftRevision, cancellationToken: request.Token);
+            long saveRevision = _glossaryDraftRevision;
+            var result = await _controller.ChangeGlossaryAsync(rules, saveRevision, cancellationToken: request.Token);
             if (request.IsCancellationRequested || !ReferenceEquals(_translationRequest, request))
                 return;
             bool confirmed = result.Saved && result.Code is "glossary-saved" or "glossary-saved-inactive" or "glossary-saved-notification-failed" or "glossary-saved-inactive-notification-failed";
@@ -669,13 +650,21 @@ internal sealed partial class SettingsWindow
             _draftFeedback = confirmed ? result.Code is "glossary-saved-notification-failed" or "glossary-saved-inactive-notification-failed"
                 ? "已保存，请重新打开设置确认当前状态。" : result.Code == "glossary-saved-inactive" ? UiTheme.L("已保存到术语表，当前模型方向尚未开放术语应用。", "Saved to the glossary. Application is not available for this model and direction.") : _draftMessages.SavedMessage : _draftMessages.InvalidMessage;
             _settingsError = confirmed ? null : TranslationSettingsError(result.Code);
+            if (result.Code == "glossary-save-failed")
+                SetSaveIssue(false, current: () => _settings.Revision == saveRevision && _glossaryDraft?.SequenceEqual(submitted) == true,
+                    retry: async current => { if (current()) await SaveGlossaryDraftAsync(); }, page: page);
+            else if (result.Code is "glossary-saved-notification-failed" or "glossary-saved-inactive-notification-failed")
+                SetSaveIssue(true, committed: true, page: page);
             if (confirmed && HasDraft)
                 _draftFeedback = _draftMessages.UnsavedNotice;
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
             if (!request.IsCancellationRequested)
+            {
                 _settingsError = "保存结果未确认，术语修改已保留。请重新打开设置检查当前值。";
+                SetSaveIssue(true, page: page);
+            }
         }
         finally
         {

@@ -19,7 +19,7 @@ public sealed class SessionAdvancedDirectionTests
         bool released = true)
     {
         var scenario = new SessionScenario(mode, modelIdentity: Identity, direction: new(source, target),
-            translationRelease: released ? Release : null,
+            translationRelease: released ? Release : new([]),
             initialStyles: operation is "style" or "combined" ? new(TranslationStyle.Formal) : null,
             initialGlossary: operation is "glossary" or "combined" ? new(2, [new("hello", "fixed")]) : null);
         var scope = Scope;

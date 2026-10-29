@@ -105,21 +105,22 @@ internal sealed class QuickPanel : Window
         Native.SetWindowPos(handle, (nint)(-1), x, y, width, height, 0x0040);
         Activate();
     }
-    public Task<bool> SetLanguagesAsync(string source, string target)
+    public Task<bool> SetLanguagesAsync(string source, string target) => SetLanguagesAsync(source, target, null);
+    public Task<bool> SetLanguagesAsync(string source, string target, Func<bool>? callerCurrent)
     {
-        if (!_sourceLanguage.CanChoose(source)
+        if (callerCurrent?.Invoke() == false || !_sourceLanguage.CanChoose(source)
             || !_targetLanguage.CanChoose(target))
             return Task.FromResult(false);
         return SaveAsync(_settings.Value with
         {
             Source = source,
             Target = target
-        });
+        }, callerCurrent);
     }
     public Task<bool> SetEnabledAsync(bool enabled) => SaveAsync(_settings.Value with { Enabled = enabled });
-    private async Task<bool> SaveAsync(UserSettings value)
+    private async Task<bool> SaveAsync(UserSettings value, Func<bool>? callerCurrent = null)
     {
-        if (_saving)
+        if (_saving || callerCurrent?.Invoke() == false)
             return false;
         _saving = true;
         var expected = _settings.Value;
@@ -159,6 +160,11 @@ internal sealed class QuickPanel : Window
                 Refresh();
                 return false;
             }
+            // Only the anchored configuration caller supplies this UI-lifetime
+            // guard. It cannot grant input rights; all ordinary saves keep their
+            // existing behavior. Check after preparation, immediately at commit.
+            if (callerCurrent?.Invoke() == false)
+                return false;
             _settings.Update(expectedRevision, value);
             // A confirmed write of the same settings does not publish Changed.
             _saveError = null;
@@ -200,7 +206,7 @@ internal sealed class QuickPanel : Window
             return;
         _statusRow.ToolTip = _session.ServiceStatus;
         _statusDot.SetResourceReference(Border.BackgroundProperty,
-            _settings.Value.Enabled && _model.Ready && _session.InputAvailable ? "Good" : "Muted");
+            !_settings.Value.Enabled ? "Tertiary" : !_model.Ready ? "Warn" : _session.InputAvailable ? "Good" : "Muted");
         _statusText.Text = !_settings.Value.Enabled ? UiTheme.L("TypeLay 已暂停", "TypeLay is paused") : !_model.Ready ? _model.Status
             : !_session.InputAvailable ? _session.ConnectionStatus
             : _settings.Value.Mode == WorkMode.OnDemand ? _session.ShortcutStatus
@@ -245,9 +251,11 @@ internal sealed class QuickPanel : Window
         header.Children.Add(logo);
         var title = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         title.Children.Add(UiTheme.Text("TypeLay", 14, bold: true));
-        var sub = UiTheme.Text(_settings.Value.Enabled ? UiTheme.L("已启用", "Enabled") : UiTheme.L("已暂停", "Paused"), 12, true);
+        var sub = UiTheme.Text(!_settings.Value.Enabled ? UiTheme.L("已暂停", "Paused") : !_model.Ready ? UiTheme.L("模型未就绪", "Model not ready") : UiTheme.L("已启用", "Enabled"), 12, true);
+        AutomationProperties.SetAutomationId(sub, "QuickPanelHeaderStatus");
         var stateLine = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 2, 0, 0) };
         var stateDot = new System.Windows.Shapes.Ellipse { Width = 7, Height = 7, Margin = new(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
+        AutomationProperties.SetAutomationId(stateDot, "QuickPanelHeaderStatusDot");
         stateDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, !_settings.Value.Enabled ? "Tertiary" : _model.Ready ? "Good" : "Warn");
         stateLine.Children.Add(stateDot);
         stateLine.Children.Add(sub);
@@ -342,6 +350,7 @@ internal sealed class QuickPanel : Window
             Width = GridLength.Auto
         });
         var dot = _statusDot = new Border { Width = 7, Height = 7, CornerRadius = new(4), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center };
+        AutomationProperties.SetAutomationId(dot, "QuickPanelModelStatusDot");
         status.Children.Add(dot);
         var model = _statusText = UiTheme.Text("", 11.5, true);
         Grid.SetColumn(model, 1);

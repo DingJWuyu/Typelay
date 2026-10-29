@@ -1247,6 +1247,7 @@ def ordered_controls(
                     translation_actions=None,
                     appearance=None,
                     target_language="zh-CN",
+                    observation=None,
                 ):
                     target = publication["target"]
                     identity = publication["permit"]["plan"]["expected"]["target"]
@@ -1268,19 +1269,27 @@ def ordered_controls(
                     }
                     if translation_actions is not None:
                         view["viewContext"]["translationActions"] = translation_actions
-                    return native.call(
+                    expires_at = now_ms() + 800
+                    if observation is not None:
+                        observation.update(renderStartedAtMs=now_ms(), expiresAtMs=expires_at)
+                    reply = native.call(
                         "overlay-render",
                         {
                             "target": target,
                             "authority": publication["authority"],
                             "generation": generation,
                             "revision": revision,
-                            "expiresAtMs": now_ms() + 800,
+                            "expiresAtMs": expires_at,
                             "theme": "light",
                             "appearance": {"uiLanguage": "zh-CN", **(appearance or {})},
                             "view": view,
                         },
                     )
+                    if observation is not None:
+                        observation.update(
+                            renderReturnedAtMs=now_ms(), visible=reply.get("visible")
+                        )
+                    return reply
 
                 prepare()
                 publication = publish()
@@ -1316,6 +1325,7 @@ def ordered_controls(
                 native.call("overlay-hide")
                 result["updating_translation_muted_and_manual_states_normal"] = True
                 fixture("observe-fonts", enabled=True)
+                font_observations = []
                 for revision, (font, size, family) in enumerate(
                     (
                         ("claude", 13, "Source Serif 4"),
@@ -1324,33 +1334,88 @@ def ordered_controls(
                     ),
                     30,
                 ):
-                    assert render_view(
-                        publication,
-                        "ValidTranslation",
-                        "Appearance stays read-only.",
-                        False,
-                        revision,
-                        appearance={
-                            "font": font,
-                            "textSize": size,
-                            "uiLanguage": "en",
-                            "reduceMotion": True,
-                            "reduceTransparency": True,
-                        },
-                    )["visible"]
-                    actual = wait(
-                        lambda: value
-                        if (value := state()).get("editorVisible")
-                        and value.get("editorFontPixels") == size
-                        and value.get("editorFontRuns")
-                        and (
-                            value.get("editorFontFamily") == value.get("applicationFontFamily")
-                            if font == "system"
-                            else family.lower() in value.get("editorFontFamily", "").lower()
+                    observation = {"revision": revision, "font": font, "size": size, "samples": 0}
+                    font_observations.append(observation)
+
+                    def rendered_font():
+                        value = state()
+                        runs = value.get("editorFontRuns") or []
+                        summary = {
+                            key: value.get(key)
+                            for key in (
+                                "observedAtMs",
+                                "editorVisible",
+                                "editorFontFamily",
+                                "editorFontPixels",
+                            )
+                        }
+                        summary["sampledAtMs"] = now_ms()
+                        summary["runs"] = [
+                            {
+                                key: run.get(key)
+                                for key in (
+                                    "family",
+                                    "weight",
+                                    "missingGlyphs",
+                                    "name",
+                                    "OS/2",
+                                    "cmap",
+                                )
+                            }
+                            for run in runs[:8]
+                        ]
+                        summary["runCount"] = len(runs)
+                        observation["samples"] += 1
+                        observation["last"] = summary
+                        observed_at = value.get("observedAtMs", 0)
+                        if (
+                            observation["renderStartedAtMs"]
+                            <= observed_at
+                            < observation["expiresAtMs"]
+                        ):
+                            observation.setdefault("firstPreExpiry", summary)
+                            observation["lastPreExpiry"] = summary
+                            if runs:
+                                observation.setdefault("firstGlyphsPreExpiry", summary)
+                        return (
+                            value
+                            if value.get("editorVisible")
+                            and value.get("editorFontPixels") == size
+                            and runs
+                            and (
+                                value.get("editorFontFamily") == value.get("applicationFontFamily")
+                                if font == "system"
+                                else family.lower() in value.get("editorFontFamily", "").lower()
+                            )
+                            else None
                         )
-                        else None,
-                        "actual Qt font preference did not reach the rendered editor",
-                    )
+
+                    try:
+                        assert render_view(
+                            publication,
+                            "ValidTranslation",
+                            "Appearance stays read-only.",
+                            False,
+                            revision,
+                            appearance={
+                                "font": font,
+                                "textSize": size,
+                                "uiLanguage": "en",
+                                "reduceMotion": True,
+                                "reduceTransparency": True,
+                            },
+                            observation=observation,
+                        )["visible"]
+                        actual = wait(
+                            rendered_font,
+                            "actual Qt font preference did not reach the rendered editor",
+                        )
+                    finally:
+                        # Three planned font scenes, fixed first/last summaries;
+                        # no retry, render, clock renewal, or layout simulation.
+                        (out / "font-preference-observations.json").write_text(
+                            json.dumps(font_observations, indent=2) + "\n"
+                        )
                     assert actual["first"] == source_before
                     assert not actual["editorFocused"] and actual["editorReadOnly"]
                     if font == "system":

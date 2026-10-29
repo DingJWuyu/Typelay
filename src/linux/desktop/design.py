@@ -40,6 +40,14 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface .settings-navigation row { border: 0; border-radius: 8px; padding: 0 8px; min-height: 32px; margin: 0 0 1px; }
 .typelay-surface .settings-navigation row:selected { background: rgba(20,20,19,.08); color: #141413; font-weight: 600; }
 .typelay-surface .settings-navigation row:hover { background: rgba(20,20,19,.045); }
+.typelay-surface .settings-search-results, .typelay-surface .settings-search-results viewport { background: transparent; }
+.typelay-surface button.settings-search-result { background: transparent; border: 0; box-shadow: none; border-radius: 8px; padding: 6px 8px; min-height: 32px; font-size: 13px; }
+.typelay-surface button.settings-search-result:hover { background: rgba(20,20,19,.045); }
+.typelay-surface .search-result-page { font-size: 11px; color: #74726c; }
+.typelay-surface .settings-search-empty { padding: 8px; color: #74726c; }
+.typelay-surface .settings-search-highlight { background-color: alpha(@accent,.14); }
+.typelay-surface.settings-dark button.settings-search-result:hover { background: rgba(255,255,255,.05); }
+.typelay-surface.settings-dark .search-result-page, .typelay-surface.settings-dark .settings-search-empty { color: #b5b3ab; }
 .typelay-surface .nav-icon { color: white; border-radius: 6px; padding: 4px; min-width: 14px; min-height: 14px; }
 .typelay-surface .settings-page, .typelay-surface .settings-page viewport { background: transparent; }
 .typelay-surface .settings-page-title { font-family: 'Source Serif 4', 'Noto Serif SC', serif; font-size: 22px; font-weight: 500; margin-bottom: 0; }
@@ -99,16 +107,18 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface .glossary-table row:hover { background: rgba(20,20,19,.045); }
 .typelay-surface .glossary-table row:selected { background: alpha(@accent,.14); color: inherit; }
 .typelay-surface .glossary-cell { padding: 0 14px; min-height: 38px; }
-.typelay-surface .glossary-term { font-family: 'Source Serif 4','Noto Serif SC',serif; font-size: 14px; }
+.typelay-surface .glossary-term { font-family: 'Source Serif 4','Noto Serif SC',serif; font-size: 14px; color: #141413; }
 .typelay-surface .glossary-scope { font-size: 12px; color: #74726c; }
-.typelay-surface .glossary-editor entry { min-height: 24px; margin: 6px 0; padding: 0 6px; font-size: 14px; }
-.typelay-surface .glossary-editor combobox button { min-height: 24px; padding: 0 4px; margin: 6px 0; font-size: 12px; }
+.typelay-surface .glossary-editor entry { min-height: 24px; margin: 6px 0; padding: 0 10px; font-size: 13px; }
+.typelay-surface .glossary-editor combobox button { min-height: 24px; padding: 0 9px 0 10px; margin: 7px 0; border: 0; font-size: 12.5px; font-weight: 500; }
+.typelay-surface .glossary-editor combobox arrow { -gtk-icon-source: url("__GLOSSARY_SCOPE_ARROWS__"); min-width: 10px; min-height: 12px; margin-left: 9px; -gtk-icon-shadow: none; }
 .typelay-surface .glossary-listbar { padding: 4px; box-shadow: inset 0 1px rgba(20,20,19,.085); }
 .typelay-surface button.glossary-action { min-width: 28px; min-height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; box-shadow: none; color: #74726c; }
 .typelay-surface button.glossary-action:hover { background: rgba(20,20,19,.08); color: #141413; }
 .typelay-surface button.glossary-action:disabled { opacity: .35; }
 .typelay-surface .glossary-empty { padding: 36px 20px; color: #74726c; }
 .typelay-surface.settings-dark .glossary-search { background: #2f2e2b; }
+.typelay-surface.settings-dark .glossary-term { color: #f4f3ee; }
 .typelay-surface.settings-dark .glossary-heading, .typelay-surface.settings-dark .glossary-scope, .typelay-surface.settings-dark button.glossary-action, .typelay-surface.settings-dark .glossary-empty { color: #b5b3ab; }
 .typelay-surface.settings-dark .glossary-table row, .typelay-surface.settings-dark .glossary-listbar { box-shadow: inset 0 1px rgba(255,255,255,.08); }
 .typelay-surface.settings-dark .glossary-table row:hover, .typelay-surface.settings-dark button.glossary-action:hover { background: rgba(255,255,255,.05); }
@@ -436,7 +446,10 @@ def apply_theme(window, preferences, provider=None):
     # unrelated surfaces at the same priority. Scope selectors and colors to
     # this exact owner, then remove its provider when that owner is destroyed.
     rules = (
-        CSS
+        CSS.replace(
+            "__GLOSSARY_SCOPE_ARROWS__",
+            (Path(__file__).parent / "icons/settings-scope-arrows.svg").resolve().as_uri(),
+        )
         + endonym_css
         + f"\n.typelay-surface {{ font-family: {ui_font}; }}"
         + f"\n.typelay-surface .glossary-term {{ font-family: {content_font}; }}"

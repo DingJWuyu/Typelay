@@ -23,7 +23,7 @@ using Xunit;
 namespace TypeLay.App.Tests;
 
 [Collection("Desktop")]
-public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutputHelper testOutput)
+public sealed partial class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutputHelper testOutput)
 {
     private readonly ConcurrentQueue<string> _stages = new();
     private readonly Stopwatch _elapsed = new();
@@ -49,24 +49,24 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
             ShortcutEditor(window).Text = "Ctrl+C";
             Assert.Equal(before, File.ReadAllText(path));
             Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text.Contains("Ctrl+C") && text.Text.Contains("可能"));
-            var oldConfirmation = FindButton("强制保存");
+            var oldConfirmation = FindButton("仍然使用");
             Assert.True(oldConfirmation.IsVisible);
-            FindButton("继续编辑").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            FindButton("取消").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Assert.False(oldConfirmation.IsVisible);
-            Assert.Equal("Ctrl+C", ShortcutEditor(window).Text);
+            Assert.Equal(settings.Value.WakeShortcut, ShortcutEditor(window).Text);
             Assert.Equal(before, File.ReadAllText(path));
             ShortcutEditor(window).Text = "Ctrl+V";
-            var newConfirmation = FindButton("强制保存");
+            var newConfirmation = FindButton("仍然使用");
             Assert.NotSame(oldConfirmation, newConfirmation);
             Assert.True(newConfirmation.IsVisible);
             // A queued invocation belongs to the old review, not the newly typed chord.
             oldConfirmation.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Assert.Equal(before, File.ReadAllText(path));
             Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text.Contains("Ctrl+V") && text.Text.Contains("可能"));
-            FindButton("强制保存").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            FindButton("仍然使用").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Assert.Equal("Ctrl+V", WindowsRuntime.CreateSettings(path).Value.WakeShortcut);
             Assert.Equal("dark", settings.Value.Theme);
-            Assert.False(FindButton("强制保存").IsVisible);
+            Assert.False(FindButton("仍然使用").IsVisible);
             InteractWithCloseDialog(window, window.Close, choice: null);
             Button FindButton(string label) => Descendants(window).OfType<Button>().Single(button => Equals(button.Content, label));
         }
@@ -259,8 +259,8 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                                 (ShortcutEditor(window), "唤醒翻译"),
                                 (ShortcutEditor(window, direct: true), "直接翻译并替换"),
                                 (SessionShortcutSelector(window, accept: true), "接受译文"),
-                                (SessionShortcutSelector(window, accept: false), "退出当前翻译"),
-                                (PauseShortcutEditor(window), "暂停或恢复 TypeLay")
+                                (SessionShortcutSelector(window, accept: false), "退出翻译"),
+                                (PauseShortcutEditor(window), "暂停或恢复")
                             ];
                             Assert.Equal(5, shortcutControls.Select(item => item.Input).Distinct().Count());
                             foreach (var (input, label) in shortcutControls)
@@ -586,7 +586,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                 window.ShowPage("shortcuts");
                 AssertSavedGuidance(window, settings.Value);
                 ShortcutEditor(window).Text = "Ctrl+Shift+"; // An incomplete recording is not a saved preference.
-                SessionShortcutSelector(window, accept: true).SelectedItem = "F2";
+                SessionShortcutSelector(window, accept: true).Text = "F2";
                 window.ShowPage();
                 ToggleProvider(SettingToggle(window, "启用 TypeLay")).Toggle();
                 window.ShowPage("shortcuts");
@@ -594,7 +594,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                 Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text.Contains("第一次 F8", StringComparison.Ordinal));
                 Assert.DoesNotContain(Descendants(window).OfType<TextBlock>(), text => text.Text.Contains("第一次 F2", StringComparison.Ordinal));
                 Assert.Equal("Ctrl+Shift+", ShortcutEditor(window).Text);
-                Assert.Equal("F2", SessionShortcutSelector(window, accept: true).SelectedItem);
+                Assert.Equal("F2", SessionShortcutSelector(window, accept: true).Text);
                 ShortcutEditor(window).Text = "Ctrl+Shift+K"; // Completing the draft saves all its valid chords immediately.
                 Assert.Equal("F2", settings.Value.AcceptShortcut);
                 AssertSavedGuidance(window, settings.Value);
@@ -1132,19 +1132,17 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                 var accept = SessionShortcutSelector(window, accept: true);
                 var exit = SessionShortcutSelector(window, accept: false);
                 var pause = PauseShortcutEditor(window);
-                Assert.Equal("Tab", accept.SelectedItem);
-                Assert.Equal("Esc", exit.SelectedItem);
-                Assert.Contains("F12", accept.Items.Cast<string>());
-                Assert.Contains("F24", exit.Items.Cast<string>());
+                Assert.Equal("Tab", accept.Text);
+                Assert.Equal("Esc", exit.Text);
                 wake.Text = "Ctrl+Shift+"; // Hold an invalid draft while completing the other controls.
                 direct.Text = "alt+f8";
-                accept.SelectedItem = "Ctrl+F8";
-                exit.SelectedItem = "F8";
+                accept.Text = "Ctrl+F8";
+                exit.Text = "F8";
                 wake.Text = "ctrl+shift+u";
                 Assert.Equal(original, WindowsRuntime.CreateSettings(path).Value);
                 Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text.Contains(
                     SettingsDraftPresentation.ShortcutErrorMessage(ShortcutDraftError.InvalidSessionBindings), StringComparison.Ordinal));
-                exit.SelectedItem = "Ctrl+F7"; // The now-valid group saves without a separate Save action.
+                exit.Text = "Ctrl+F7"; // The now-valid group saves without a separate Save action.
                 var valid = WindowsRuntime.CreateSettings(path).Value;
                 Assert.Equal("Ctrl+Shift+U", valid.WakeShortcut);
                 Assert.Equal("Alt+F8", valid.DirectShortcut);
@@ -1166,10 +1164,10 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                     SettingsDraftPresentation.ShortcutErrorMessage(ShortcutDraftError.ConflictingBindings), StringComparison.Ordinal));
                 Directory.CreateDirectory(path + ".tmp");
                 pause.Text = "Ctrl+Alt+F11";
-                accept.SelectedItem = "Ctrl+F12";
+                accept.Text = "Ctrl+F12";
                 Assert.Equal(valid, WindowsRuntime.CreateSettings(path).Value);
-                Assert.Equal("Ctrl+F12", accept.SelectedItem);
-                Assert.Equal("Ctrl+F7", exit.SelectedItem);
+                Assert.Equal("Ctrl+F12", accept.Text);
+                Assert.Equal("Ctrl+F7", exit.Text);
                 Assert.Equal("Ctrl+Alt+F11", pause.Text);
                 Assert.True(RetrySave(window).IsVisible);
                 Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text.Contains(SettingsDraftPresentation.Create().InvalidMessage, StringComparison.Ordinal));
@@ -1185,11 +1183,11 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                 window.UpdateLayout();
                 Assert.Same(wake, ShortcutEditor(window));
                 Assert.Same(accept, SessionShortcutSelector(window, accept: true));
-                Assert.Equal("Ctrl+F12", accept.SelectedItem);
+                Assert.Equal("Ctrl+F12", accept.Text);
                 window.ShowPage("apps");
                 window.ShowPage("shortcuts");
-                Assert.Equal("Ctrl+F12", SessionShortcutSelector(window, accept: true).SelectedItem);
-                Assert.Equal("Ctrl+F7", SessionShortcutSelector(window, accept: false).SelectedItem);
+                Assert.Equal("Ctrl+F12", SessionShortcutSelector(window, accept: true).Text);
+                Assert.Equal("Ctrl+F7", SessionShortcutSelector(window, accept: false).Text);
                 Assert.Equal("Ctrl+Alt+F11", PauseShortcutEditor(window).Text);
                 Assert.Equal(latest, WindowsRuntime.CreateSettings(path).Value);
                 RetrySave(window).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -1208,8 +1206,8 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                     AcceptShortcut = "F1",
                     ExitShortcut = "F24"
                 });
-                Assert.Equal("F1", SessionShortcutSelector(window, accept: true).SelectedItem);
-                Assert.Equal("F24", SessionShortcutSelector(window, accept: false).SelectedItem);
+                Assert.Equal("F1", SessionShortcutSelector(window, accept: true).Text);
+                Assert.Equal("F24", SessionShortcutSelector(window, accept: false).Text);
                 InteractWithCloseDialog(window, window.Close, choice: null);
             }
             finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
@@ -1217,7 +1215,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
     }
 
     [Fact]
-    public Task SessionShortcutMenusSelectSaveAndReopenControlChords() => desktop.RunAsync(() =>
+    public Task SessionShortcutKeycapsRecordSaveAndReopenControlChords() => desktop.RunAsync(async () =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-saved-control-" + Guid.NewGuid().ToString("N"));
         try
@@ -1235,27 +1233,13 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
             window.UpdateLayout();
             var accept = SessionShortcutSelector(window, accept: true);
             var exit = SessionShortcutSelector(window, accept: false);
-            Assert.Equal("Ctrl+F7", accept.SelectedItem);
-            Assert.Equal("Ctrl+F8", exit.SelectedItem);
-            foreach (var selector in new[] { accept, exit })
-            {
-                Assert.Equal(49, selector.Items.Count);
-                Assert.Equal(49, selector.Items.Cast<string>().Distinct().Count());
-                Assert.Contains("F1", selector.Items.Cast<string>());
-                Assert.Contains("F24", selector.Items.Cast<string>());
-                Assert.Contains("Ctrl+F1", selector.Items.Cast<string>());
-                Assert.Contains("Ctrl+F24", selector.Items.Cast<string>());
-            }
-            Assert.Contains("Tab", accept.Items.Cast<string>());
-            Assert.Contains("Esc", exit.Items.Cast<string>());
-            Assert.Contains(Descendants(window).OfType<TextBlock>(), value => value.Text == "Ctrl+F7 返回原输入框");
-            accept.IsDropDownOpen = true;
+            Assert.Equal("Ctrl+F7", accept.Text);
+            Assert.Equal("Ctrl+F8", exit.Text);
+            Descendants(window).OfType<Expander>().Single(expander => Equals(expander.Header, "快捷键与安全范围")).IsExpanded = true;
             window.UpdateLayout();
-            var saved = Assert.IsType<ComboBoxItem>(accept.ItemContainerGenerator.ContainerFromItem("Ctrl+F7"));
-            Assert.True(saved.IsEnabled);
-            accept.IsDropDownOpen = false;
-            Select(accept, "Ctrl+F24");
-            Select(exit, "Ctrl+F1");
+            Assert.Contains(Descendants(window).OfType<TextBlock>(), value => value.Text == "Ctrl+F7 返回原输入框");
+            await RecordShortcutAsync(window, accept, "Ctrl+F24");
+            await RecordShortcutAsync(window, exit, "Ctrl+F1");
             var reopenedSettings = WindowsRuntime.CreateSettings(path);
             Assert.Equal("Ctrl+F24", reopenedSettings.Value.AcceptShortcut);
             Assert.Equal("Ctrl+F1", reopenedSettings.Value.ExitShortcut);
@@ -1266,8 +1250,8 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
             window.UpdateLayout();
             accept = SessionShortcutSelector(window, accept: true);
             exit = SessionShortcutSelector(window, accept: false);
-            Assert.Equal("Ctrl+F24", accept.SelectedItem);
-            Assert.Equal("Ctrl+F1", exit.SelectedItem);
+            Assert.Equal("Ctrl+F24", accept.Text);
+            Assert.Equal("Ctrl+F1", exit.Text);
             var details = Descendants(window).OfType<Expander>().Single(expander => Equals(expander.Header, "快捷键与安全范围"));
             details.IsExpanded = true;
             window.UpdateLayout();
@@ -1276,31 +1260,13 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
             window.ShowPage("shortcuts");
             accept = SessionShortcutSelector(window, accept: true);
             exit = SessionShortcutSelector(window, accept: false);
-            Select(accept, "Tab");
-            Select(exit, "Esc");
+            await RecordShortcutAsync(window, accept, "Tab");
+            await RecordShortcutAsync(window, exit, "Esc");
             Assert.Equal("Tab", WindowsRuntime.CreateSettings(path).Value.AcceptShortcut);
             Assert.Equal("Esc", WindowsRuntime.CreateSettings(path).Value.ExitShortcut);
-            Assert.Contains("Ctrl+F24", accept.Items.Cast<string>());
             InteractWithCloseDialog(window, window.Close, choice: null);
             Assert.False(window.IsVisible);
-            void Select(ComboBox selector, string key)
-            {
-                Assert.Contains(key, selector.Items.Cast<string>());
-                window.UpdateLayout();
-                window.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
-                Assert.True(selector.IsLoaded, "The shortcut selector must be loaded before user interaction.");
-                selector.IsDropDownOpen = true;
-                window.UpdateLayout();
-                window.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
-                Assert.True(Assert.IsType<Popup>(selector.Template.FindName("PART_Popup", selector)).IsOpen);
-                var item = Assert.IsType<ComboBoxItem>(selector.ItemContainerGenerator.ContainerFromItem(key));
-                Assert.True(item.IsEnabled);
-                var peer = UIElementAutomationPeer.CreatePeerForElement(selector).GetChildren()
-                    .Single(child => child.GetName() == key);
-                Assert.IsAssignableFrom<ISelectionItemProvider>(peer.GetPattern(PatternInterface.SelectionItem)).Select();
-                selector.IsDropDownOpen = false;
-                Assert.Equal(key, selector.SelectedItem);
-            }
+
         }
         finally
         {
@@ -1396,14 +1362,14 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                 window.ShowPage("shortcuts");
                 window.UpdateLayout();
                 ShortcutEditor(window).Text = "Ctrl+Shift+";
-                SessionShortcutSelector(window, accept: true).SelectedItem = "F12";
-                SessionShortcutSelector(window, accept: false).SelectedItem = "F7";
+                SessionShortcutSelector(window, accept: true).Text = "F12";
+                SessionShortcutSelector(window, accept: false).Text = "F7";
                 InteractWithCloseDialog(window, () => Descendants(window).OfType<Button>().Single(button =>
                     AutomationProperties.GetName(button) == "关闭设置").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)),
                     SettingsDraftCloseChoice.KeepEditing);
                 Assert.True(window.IsVisible);
-                Assert.Equal("F12", SessionShortcutSelector(window, accept: true).SelectedItem);
-                Assert.Equal("F7", SessionShortcutSelector(window, accept: false).SelectedItem);
+                Assert.Equal("F12", SessionShortcutSelector(window, accept: true).Text);
+                Assert.Equal("F7", SessionShortcutSelector(window, accept: false).Text);
                 Assert.Equal("Ctrl+Shift+", ShortcutEditor(window).Text);
                 Assert.Equal("Ctrl+Shift+K", WindowsRuntime.CreateSettings(path).Value.WakeShortcut);
                 window.ShowPage("apps");
@@ -1537,10 +1503,10 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
         return 0.2126 * Linear(color.R) + 0.7152 * Linear(color.G) + 0.0722 * Linear(color.B);
     }
 
-    private static ComboBox SessionShortcutSelector(Window window, bool accept)
+    private static TextBox SessionShortcutSelector(Window window, bool accept)
     {
         var labels = SettingsDraftPresentation.SessionShortcuts(SessionShortcutBindings.Default);
-        return Descendants(window).OfType<ComboBox>().Single(control =>
+        return Descendants(window).OfType<TextBox>().Single(control =>
             AutomationProperties.GetName(control) == (accept ? labels.AcceptLabel : labels.ExitLabel));
     }
 

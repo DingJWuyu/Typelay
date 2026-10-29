@@ -52,6 +52,66 @@ def named(pid, name):
     return None
 
 
+def visible_named(pid, name, *, role=None, root=None):
+    """Return one actually showing owned control, rejecting same-role ambiguity."""
+    if root is None:
+        desktop = Atspi.get_desktop(0)
+        roots = [
+            app
+            for index in range(desktop.get_child_count())
+            if (app := desktop.get_child_at_index(index)) is not None
+            and app.get_process_id() == pid
+        ]
+    else:
+        roots = [root]
+    pending, matches = list(roots), []
+    for _ in range(4096):
+        if not pending:
+            break
+        node = pending.pop()
+        if node is None:
+            continue
+        node.clear_cache()
+        assert node.get_process_id() == pid, "visible GTK node changed owner"
+        if (
+            node.get_name() == name
+            and (role is None or node.get_role() == role)
+            and node.get_state_set().contains(Atspi.StateType.SHOWING)
+        ):
+            matches.append(node)
+        pending.extend(node.get_child_at_index(index) for index in range(node.get_child_count()))
+    else:
+        assert not pending, "owned GTK accessibility tree exceeds 4096 nodes"
+    assert len(matches) <= 1, "ambiguous visible GTK control: " + name
+    return matches[0] if matches else None
+
+
+def onboarding_content(pid, title, action_name):
+    """Resolve the owned frame's content by its real onboarding action.
+
+    GTK CSD adds a title LABEL outside this branch. Do not assume a child
+    index or accept the first of two identically named title labels.
+    """
+    frame = visible_named(pid, title, role=Atspi.Role.FRAME)
+    if frame is None:
+        return None
+    action = visible_named(pid, action_name, role=Atspi.Role.PUSH_BUTTON, root=frame)
+    if action is None:
+        return None
+    branch, seen = action, set()
+    for _ in range(16):
+        branch.clear_cache()
+        assert branch.get_process_id() == pid
+        assert branch not in seen, "cyclic onboarding content ancestry"
+        seen.add(branch)
+        parent = branch.get_parent()
+        assert parent is not None and parent.get_process_id() == pid
+        if parent == frame:
+            return branch
+        branch = parent
+    raise AssertionError("onboarding content exceeds bounded ancestry")
+
+
 def text(node):
     node.clear_cache()
     interface = node.get_text_iface()

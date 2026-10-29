@@ -21,6 +21,33 @@ namespace TypeLay.App.Tests;
 public sealed class QuickPanelRenderingTests(WpfDesktopFixture desktop)
 {
     [Fact]
+    public Task HeaderAndModelStatusShowNotReadyInAmberButPauseTakesPrecedence() => desktop.RunAsync(() =>
+    {
+        using var fixture = new PanelFixture();
+        fixture.Panel.OpenAtTray();
+        AssertStatus("模型未就绪", "Warn");
+        fixture.Settings.Update(fixture.Settings.Value with
+        {
+            Enabled = false
+        });
+        AssertStatus("已暂停", "Tertiary");
+        fixture.Settings.Update(fixture.Settings.Value with
+        {
+            Enabled = true
+        });
+        AssertStatus("模型未就绪", "Warn");
+        void AssertStatus(string expected, string color)
+        {
+            fixture.Panel.UpdateLayout();
+            T Find<T>(string id) where T : FrameworkElement => Descendants(fixture.Panel).OfType<T>().Single(control => AutomationProperties.GetAutomationId(control) == id);
+            Assert.Equal(expected, Find<TextBlock>("QuickPanelHeaderStatus").Text);
+            var brush = Assert.IsType<SolidColorBrush>(fixture.Panel.FindResource(color)).Color;
+            Assert.Equal(brush, Assert.IsType<SolidColorBrush>(Find<System.Windows.Shapes.Ellipse>("QuickPanelHeaderStatusDot").Fill).Color);
+            Assert.Equal(brush, Assert.IsType<SolidColorBrush>(Find<Border>("QuickPanelModelStatusDot").Background).Color);
+        }
+    });
+
+    [Fact]
     public Task ModeChoicesRenderWithoutSavingAndExposeThePersistedSelection() => desktop.RunAsync(async () =>
     {
         using var fixture = new PanelFixture();
