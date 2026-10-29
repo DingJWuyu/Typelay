@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Xunit;
 using TypeLay.Core;
 
@@ -58,6 +60,131 @@ public sealed class ModelClientCapabilityTests
     }
 
     private static ModelPackageCatalog CandidateCatalog() => ModelCatalog.Packages;
+
+    [Fact]
+    public async Task IndexPackageAndHelloAloneCannotBorrowAnAdvancedQualityRelease()
+    {
+        using var peer = new ProtocolPeer(IndexIdentity(HyHello).Replace("\"status\":\"ready\"",
+            "\"status\":\"ready\"," + AdvancedVersions, StringComparison.Ordinal),
+            """{"status":"translated","text":"ordinary remains available"}""", IndexIdentity(HyInventory));
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(ModelCatalog.Packages),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        var release = new TranslationReleasePolicy([new(TranslationOperation.Glossary,
+            "index-translate-2b-q4-k-m", "3a0eca6ce931d88d00614d427ab3ed8ff0743902", "zh_en")]);
+        Assert.Equal("ordinary remains available", (await peer.Client.TranslateTextAsync("你好", new("zh", "en"))).Text);
+        Assert.False(release.Allows(TranslationOperation.Glossary, peer.Client.VerifiedIdentity!, new("zh", "en")));
+    }
+
+    [Theory]
+    [InlineData("known")]
+    [InlineData("engine")]
+    [InlineData("loader")]
+    [InlineData("native-source")]
+    [InlineData("cpu-lock")]
+    [InlineData("cpu-size")]
+    [InlineData("cpu-unknown-field")]
+    [InlineData("compile-order")]
+    [InlineData("legacy-manifest")]
+    [InlineData("bytecode")]
+    [InlineData("shadow-directory")]
+    [InlineData("dependency-version")]
+    [InlineData("missing-dependencies")]
+    public async Task IndexProfileUsesRealLaunchFilesWithoutTakingOrdinaryReadinessAway(string change)
+    {
+        using var peer = new ProtocolPeer(IndexIdentity(HyHello).Replace("\"status\":\"ready\"",
+            "\"status\":\"ready\"," + AdvancedVersions, StringComparison.Ordinal),
+            """{"status":"translated","text":"ordinary"}""", IndexIdentity(HyInventory), profileFiles: true);
+        peer.ChangeProfileFiles(change);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(ModelCatalog.Packages),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        var identity = Assert.IsType<VerifiedModelIdentity>(peer.Client.VerifiedIdentity);
+        using var expected = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "IndexInferenceProfile.json")));
+        string id = expected.RootElement.GetProperty("id").GetString()!;
+        Assert.Equal(change == "known" ? id : null, identity.InferenceProfileId);
+        var release = new TranslationReleasePolicy([new(TranslationOperation.Glossary,
+            "index-translate-2b-q4-k-m", "3a0eca6ce931d88d00614d427ab3ed8ff0743902", "zh_en", id)]);
+        Assert.Equal(change == "known", release.Allows(TranslationOperation.Glossary, identity, new("zh", "en")));
+        Assert.False(release.Allows(TranslationOperation.Style, identity, new("zh", "en")));
+        Assert.False(release.Allows(TranslationOperation.StyledGlossary, identity, new("zh", "en")));
+        Assert.False(release.Allows(TranslationOperation.Alternative, identity, new("zh", "en")));
+        Assert.False(release.Allows(TranslationOperation.Glossary, identity, new("en", "zh")));
+        var unknown = new TranslationReleasePolicy([new(TranslationOperation.Glossary,
+            "index-translate-2b-q4-k-m", "3a0eca6ce931d88d00614d427ab3ed8ff0743902", "zh_en", "unknown-profile")]);
+        Assert.False(unknown.Allows(TranslationOperation.Glossary, identity, new("zh", "en")));
+        Assert.Equal("ordinary", (await peer.Client.TranslateTextAsync("你好", new("zh", "en"))).Text);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task IndexProfileIsRecheckedForReplacementAndRecovery(bool recover)
+    {
+        using var peer = new ProtocolPeer(IndexIdentity(HyHello), """{"status":"translated","text":"ordinary"}""",
+            IndexIdentity(HyInventory), profileFiles: true);
+        var plan = peer.CreateLoadPlan(ModelCatalog.Packages);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(plan,
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        var old = peer.Client.VerifiedIdentity!;
+        Assert.NotNull(old.InferenceProfileId);
+        peer.ChangeProfileFiles("loader");
+        var expected = recover ? ModelPublicationOutcome.Unchanged : ModelPublicationOutcome.Confirmed;
+        Assert.Equal(expected, await peer.Client.ReloadAsync(plan, () => expected, _ => recover, TestContext.Current.CancellationToken));
+        Assert.NotSame(old, peer.Client.VerifiedIdentity);
+        Assert.Null(peer.Client.VerifiedIdentity!.InferenceProfileId);
+        Assert.Equal("not-ready", (await peer.Client.TranslateAsync(GlossaryJob("zh", "en"), old)).Code);
+        Assert.Equal("ordinary", (await peer.Client.TranslateTextAsync("你好", new("zh", "en"))).Text);
+    }
+
+    [Fact]
+    public async Task IndexProfileCannotUseTwoReviewedDirectionsToQualifyOtherAutoSources()
+    {
+        string directions = JsonSerializer.Serialize(ModelCatalog.Packages.Packages.Single(p => p.Id == "index-translate-2b-q4-k-m").Directions.Select(d => d.Id));
+        using var peer = new ProtocolPeer(IndexIdentity(HyHello).Replace("[\"zh_en\"]", directions, StringComparison.Ordinal),
+            inventory: IndexIdentity(HyInventory).Replace("[\"zh_en\"]", directions, StringComparison.Ordinal), profileFiles: true);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(ModelCatalog.Packages),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        var identity = peer.Client.VerifiedIdentity!;
+        Assert.NotNull(identity.InferenceProfileId);
+        var release = new TranslationReleasePolicy(new[] { "zh_en", "en_zh" }.Select(direction => new TranslationRelease(
+            TranslationOperation.Glossary, "index-translate-2b-q4-k-m", "3a0eca6ce931d88d00614d427ab3ed8ff0743902", direction, identity.InferenceProfileId)));
+        Assert.True(release.Allows(TranslationOperation.Glossary, identity, new("zh", "en")));
+        Assert.True(release.Allows(TranslationOperation.Glossary, identity, new("en", "zh")));
+        Assert.True(release.Allows(TranslationOperation.Glossary, identity, new("auto", "en")));
+        Assert.False(release.Allows(TranslationOperation.Glossary, identity, new("auto", "zh")));
+        Assert.False(release.Allows(TranslationOperation.Glossary, identity, new("ja", "zh")));
+    }
+
+    [Fact]
+    public void IndexProfileCancellationDoesNotStartOrQualifyAWorker()
+    {
+        using var peer = new ProtocolPeer(IndexIdentity(HyHello), inventory: IndexIdentity(HyInventory), profileFiles: true);
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+        Assert.Throws<OperationCanceledException>(() =>
+        {
+            _ = peer.Client.ReloadAsync(peer.CreateLoadPlan(ModelCatalog.Packages),
+                () => throw new InvalidOperationException("must-not-publish"), _ => false, canceled.Token);
+        });
+        Assert.False(peer.Client.Ready);
+        Assert.Null(peer.Client.VerifiedIdentity);
+    }
+
+    [Theory]
+    [InlineData("internal-python-link", true)]
+    [InlineData("worker-link", false)]
+    [InlineData("generation-link", false)]
+    public async Task LinuxIndexProfileAcceptsOnlyTheExistingWithinRuntimeInterpreterLink(string layout, bool qualified)
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+        using var peer = new ProtocolPeer(IndexIdentity(HyHello), """{"status":"translated","text":"ordinary"}""",
+            IndexIdentity(HyInventory), profileFiles: true);
+        peer.ChangeProfileFiles(layout);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(ModelCatalog.Packages),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        Assert.Equal(qualified, peer.Client.VerifiedIdentity!.InferenceProfileId is not null);
+        Assert.Equal("ordinary", (await peer.Client.TranslateTextAsync("你好", new("zh", "en"))).Text);
+    }
 
     private const string MixedDirections = "[\"zh_ja\",\"ja_zh\",\"zh_en\",\"en_zh\"]";
     private const string AdvancedVersions = "\"styledTranslationVersion\":1,\"glossaryTranslationVersion\":1,\"styledGlossaryTranslationVersion\":1";
@@ -1143,7 +1270,7 @@ public sealed class ModelClientCapabilityTests
         }
         public ModelLoadPlan CreateLoadPlan(ModelPackageCatalog? catalog = null)
         {
-            using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(_directory, "installed.json")));
+            using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(_paths.Models, "installed.json")));
             return ModelLoadPlan.Create(_paths, document.RootElement, catalog);
         }
         public ModelClient Client
@@ -1152,7 +1279,7 @@ public sealed class ModelClientCapabilityTests
         }
 
         public ProtocolPeer(string response, string? translationResponse = null, string inventory = "{\"schema\":1}",
-            string? expectedRequest = null, bool holdAlternative = false, bool exitAfterHello = false)
+            string? expectedRequest = null, bool holdAlternative = false, bool exitAfterHello = false, bool profileFiles = false)
         {
             Directory.CreateDirectory(_directory);
             string python = Path.Combine(_directory, "python-marker");
@@ -1188,6 +1315,8 @@ public sealed class ModelClientCapabilityTests
                     if exit_after_hello and request["op"] == "hello": break
                 """);
             _paths = new(python, script, _directory);
+            if (profileFiles)
+                PrepareProfileFiles(inventory);
             Client = new(_paths, _ =>
             {
                 var start = new ProcessStartInfo(OperatingSystem.IsWindows() ? "python" : "python3")
@@ -1209,6 +1338,112 @@ public sealed class ModelClientCapabilityTests
                 _process = Process.Start(start)!;
                 return new OwnedProcess(_process);
             });
+        }
+
+        private void PrepareProfileFiles(string inventory)
+        {
+            string worker = Path.Combine(_directory, "worker");
+            string source = Path.Combine(AppContext.BaseDirectory, "ProfileWorker");
+            foreach (string file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+            {
+                string target = Path.Combine(worker, Path.GetRelativePath(source, file));
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                File.Copy(file, target);
+            }
+            string generation = Path.Combine(_directory, "components", Guid.NewGuid().ToString("N"));
+            string models = Path.Combine(generation, "models");
+            Directory.CreateDirectory(models);
+            string python = Path.Combine(generation, "runtime", OperatingSystem.IsWindows() ? "python/tools/python.exe" : "venv/bin/python");
+            Directory.CreateDirectory(Path.GetDirectoryName(python)!);
+            File.WriteAllText(python, "controlled process port, not an interpreter");
+            var installed = JsonNode.Parse(inventory)!;
+            string locked = "lingua-language-detector==2.1.1 \\\n    --hash=sha256:" + new string('0', 64) + "\n";
+            string requirements = Path.Combine(generation, "runtime", "requirements.lock");
+            File.WriteAllText(requirements, locked);
+            installed["pythonVersion"] = "3.13.16";
+            installed["requirementsSha256"] = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(requirements)));
+            File.WriteAllText(Path.Combine(models, "installed.json"), installed.ToJsonString());
+            File.WriteAllText(Path.Combine(generation, "dependency-lock.json"), JsonSerializer.Serialize(new[]
+            {
+                new { name = "python", version = "3.13.16", url = "https://example.test/python", sha256 = new string('0', 64) },
+                new { name = "lingua-language-detector", version = "2.1.1", url = "https://example.test/lingua", sha256 = new string('0', 64) }
+            }));
+            var profile = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "IndexInferenceProfile.json")))!;
+            string platform = OperatingSystem.IsWindows() ? "win-x64" : "linux-x86_64";
+            File.WriteAllText(Path.Combine(worker, "native", "index", "production-adapter.json"), new JsonObject
+            {
+                ["platform"] = platform,
+                ["abi"] = 1,
+                ["native_sources"] = profile["nativeSources"]!.DeepClone(),
+                ["compile_options"] = profile["compileOptions"]![platform]!.DeepClone()
+            }.ToJsonString());
+            _paths = new(python, Path.Combine(worker, "run_worker.py"), models);
+        }
+
+        public void ChangeProfileFiles(string change)
+        {
+            string worker = Path.GetDirectoryName(_paths.Worker)!;
+            string generation = Path.GetDirectoryName(_paths.Models)!;
+            if (change is "engine" or "loader")
+                File.AppendAllText(Path.Combine(worker, "typelay_worker", change == "engine" ? "engine.py" : "index_cpu.py"), "\n# changed\n");
+            else if (change == "bytecode")
+                File.WriteAllBytes(Path.Combine(worker, "typelay_worker", "engine.pyc"), [0]);
+            else if (change == "shadow-directory")
+                Directory.CreateDirectory(Path.Combine(worker, "json"));
+            else if (change is "native-source" or "legacy-manifest" or "compile-order")
+            {
+                string path = Path.Combine(worker, "native", "index", "production-adapter.json");
+                var value = JsonNode.Parse(File.ReadAllText(path))!;
+                if (change == "native-source")
+                    value["native_sources"]!["index_adapter.cpp"] = new string('0', 64);
+                else if (change == "compile-order")
+                    value["compile_options"] = new JsonArray(value["compile_options"]!.AsArray().Reverse().Select(item => item!.DeepClone()).ToArray());
+                else
+                    value.AsObject().Remove("native_sources");
+                File.WriteAllText(path, value.ToJsonString());
+            }
+            else if (change is "cpu-lock" or "cpu-size" or "cpu-unknown-field")
+            {
+                string path = Path.Combine(worker, "native", "index", OperatingSystem.IsWindows() ? "cpu-runtime.win-x64.lock.json" : "cpu-runtime.lock.json");
+                var value = JsonNode.Parse(File.ReadAllText(path))!;
+                if (change == "cpu-lock")
+                    value["files"]![0]!["sha256"] = new string('0', 64);
+                else if (change == "cpu-size")
+                    value["files"]![0]!["bytes"] = 1;
+                else
+                    value["unknownConstraint"] = 1;
+                File.WriteAllText(path, value.ToJsonString());
+            }
+            else if (change == "internal-python-link")
+            {
+                string target = Path.Combine(generation, "runtime", "python", "bin", "python3.13");
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                File.Move(_paths.Python, target);
+                File.CreateSymbolicLink(_paths.Python, target);
+            }
+            else if (change is "worker-link" or "generation-link")
+            {
+                string path = change == "worker-link" ? worker : generation;
+                Directory.Move(path, path + "-actual");
+                Directory.CreateSymbolicLink(path, path + "-actual");
+            }
+            else if (change is "dependency-version" or "missing-dependencies")
+            {
+                string path = OperatingSystem.IsWindows() ? Path.Combine(generation, "dependency-lock.json") : Path.Combine(_paths.Models, "installed.json");
+                var value = JsonNode.Parse(File.ReadAllText(path))!;
+                if (OperatingSystem.IsWindows())
+                {
+                    if (change == "dependency-version")
+                        value[0]!["version"] = "3.12.0";
+                    else
+                        value.AsArray().Clear();
+                }
+                else if (change == "dependency-version")
+                    value["pythonVersion"] = "3.12.0";
+                else
+                    value.AsObject().Remove("pythonVersion");
+                File.WriteAllText(path, value.ToJsonString());
+            }
         }
 
         public void Dispose()

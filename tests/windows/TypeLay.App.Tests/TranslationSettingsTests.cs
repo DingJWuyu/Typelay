@@ -16,7 +16,7 @@ using Xunit;
 namespace TypeLay.App.Tests;
 
 [Collection("Desktop")]
-public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
+public sealed partial class TranslationSettingsTests(WpfDesktopFixture desktop)
 {
     [Fact]
     public Task UnreleasedQualityStillAllowsLocalGlossaryManagementButNotStyleApplication() => desktop.RunAsync(() =>
@@ -65,8 +65,9 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         var second = new GlossaryRule("项目方", "client team", "zh", "en");
         using var scene = new SettingsScene(new(Glossary: new(1, [first, second])));
         scene.Window.ShowPage("glossary");
-        Assert.False(Term(scene.Window, "源词 1").IsReadOnly);
-        Named<Button>(scene.Window, "删除术语 1").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        SelectGlossaryRow(GlossaryRow(scene.Window, 1));
+        Assert.True(GlossaryButton(scene.Window, "GlossaryRemove").IsEnabled);
+        GlossaryButton(scene.Window, "GlossaryRemove").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.Equal(second, Assert.Single(scene.Reload().Glossary!.Rules));
         Click(scene.Window, "撤销");
         Assert.Equal(new[] { first, second }, scene.Reload().Glossary!.Rules);
@@ -81,7 +82,9 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         var second = new GlossaryRule("B", "beta");
         using var scene = new SettingsScene(new(Glossary: new(1, [first, second])));
         scene.Window.ShowPage("glossary");
-        var oldDelete = Named<Button>(scene.Window, "删除术语 1");
+        SelectGlossaryRow(GlossaryRow(scene.Window, 1));
+        GlossaryKey(GlossaryRow(scene.Window, 1), Key.Enter);
+        var oldDelete = GlossaryButton(scene.Window, "GlossaryRemove");
         var oldSource = Term(scene.Window, "源词 1");
         var oldTarget = Term(scene.Window, "译词 1");
         oldDelete.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -91,8 +94,9 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         oldTarget.RaiseEvent(new KeyboardFocusChangedEventArgs(Keyboard.PrimaryDevice, 0, oldTarget, null) { RoutedEvent = Keyboard.LostKeyboardFocusEvent });
         oldDelete.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.Equal(second, Assert.Single(scene.Reload().Glossary!.Rules));
-        Assert.Equal("B", Term(scene.Window, "源词 1").Text);
-        Named<Button>(scene.Window, "删除术语 1").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.Contains(Descendants(GlossaryRow(scene.Window, 1)).OfType<TextBlock>(), text => text.Text == "B");
+        SelectGlossaryRow(GlossaryRow(scene.Window, 1));
+        GlossaryButton(scene.Window, "GlossaryRemove").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.Empty(scene.Reload().Glossary!.Rules);
     });
 
@@ -196,7 +200,11 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         Click(scene.Window, "添加术语");
         Term(scene.Window, "源词 1").Text = "PR";
         Term(scene.Window, "译词 1").Text = "review";
+        Directory.CreateDirectory(scene.PathToSettings + ".tmp");
+        CommitGlossary(scene.Window);
+        Assert.Null(scene.Reload().Glossary);
         scene.Window.ShowPage("shortcuts");
+        Directory.Delete(scene.PathToSettings + ".tmp");
         scene.Settings.Changed += () => Assert.True(scene.Controller.ChangeGlossaryAsync([new("term", "saved by another editor")],
             scene.Settings.Revision, cancellationToken: TestContext.Current.CancellationToken).GetAwaiter().GetResult().Saved);
         Named<TextBox>(scene.Window, "唤醒翻译 UI 快捷键").Text = "Ctrl+Shift+U";
@@ -210,7 +218,7 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
             {
                 dialog.UpdateLayout();
                 Assert.Equal("术语表已更新", dialog.Title);
-                Assert.Contains(Descendants(dialog).OfType<TextBlock>(), text => text.Text == "term → saved by another editor · 全局");
+                Assert.Contains(Descendants(dialog).OfType<TextBlock>(), text => text.Text == "term → saved by another editor · 所有方向");
                 reviewed = true;
                 Click(dialog, "继续编辑");
             }
@@ -321,12 +329,14 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         {
             Theme = "dark"
         });
-        CommitGlossary(scene.Window);
-        Assert.Equal("review", Assert.Single(scene.Reload().Glossary!.Rules).TargetTerm);
-        Assert.Equal("dark", scene.Reload().Theme);
         Assert.Same(target, Term(scene.Window, "译词 1"));
         Assert.True(target.IsKeyboardFocused);
         Assert.Equal((1, 3), (target.SelectionStart, target.SelectionLength));
+        CommitGlossary(scene.Window);
+        Assert.Equal("review", Assert.Single(scene.Reload().Glossary!.Rules).TargetTerm);
+        Assert.Equal("dark", scene.Reload().Theme);
+        Assert.Contains(Descendants(GlossaryRow(scene.Window, 1)).OfType<TextBlock>(), text => text.Text == "review");
+        Assert.DoesNotContain(Descendants(scene.Window).OfType<TextBox>(), box => AutomationProperties.GetName(box).StartsWith("译词 "));
     });
 
     [Theory]
@@ -350,7 +360,7 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
             {
                 dialog.UpdateLayout();
                 Assert.Equal("术语表已更新", dialog.Title);
-                Assert.Contains(Descendants(dialog).OfType<TextBlock>(), text => text.Text == "term → new saved value · 全局");
+                Assert.Contains(Descendants(dialog).OfType<TextBlock>(), text => text.Text == "term → new saved value · 所有方向");
                 Assert.Equal("继续编辑", Descendants(dialog).OfType<Button>().Single(button => button.IsDefault).Content);
                 if (choice == "changed-again")
                     Assert.True(scene.Controller.ChangeGlossaryAsync([new("term", "newer saved value")], scene.Settings.Revision,
@@ -365,7 +375,10 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
             ExceptionDispatchInfo.Capture(failure).Throw();
         Assert.Equal(choice == "replace" ? "review" : choice == "changed-again" ? "newer saved value" : "new saved value",
             Assert.Single(scene.Reload().Glossary!.Rules).TargetTerm);
-        Assert.Equal("review", Term(scene.Window, "译词 1").Text);
+        if (choice == "replace")
+            Assert.Contains(Descendants(GlossaryRow(scene.Window, 1)).OfType<TextBlock>(), text => text.Text == "review");
+        else
+            Assert.Equal("review", Term(scene.Window, "译词 1").Text);
         Assert.Equal(choice != "replace", SaveButton(scene.Window).IsEnabled);
     });
 
@@ -383,7 +396,7 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         Assert.False(scene.Window.IsVisible);
         Assert.Equal("review", Assert.Single(scene.Reload().Glossary!.Rules).TargetTerm);
         scene.Window.ShowPage("glossary");
-        Assert.Equal("review", Term(scene.Window, "译词 1").Text);
+        Assert.Contains(Descendants(GlossaryRow(scene.Window, 1)).OfType<TextBlock>(), text => text.Text == "review");
         Assert.False(SaveButton(scene.Window).IsEnabled);
     });
 
@@ -516,7 +529,8 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
         ConfirmReset(scene.Window, confirm: true);
         Assert.Null(scene.Reload().Styles);
         scene.Window.ShowPage("glossary");
-        Named<Button>(scene.Window, "删除术语 1").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        SelectGlossaryRow(GlossaryRow(scene.Window, 1));
+        GlossaryButton(scene.Window, "GlossaryRemove").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.Empty(scene.Reload().Glossary!.Rules);
         Assert.Equal("en", scene.Reload().Target);
     });
@@ -561,7 +575,7 @@ public sealed class TranslationSettingsTests(WpfDesktopFixture desktop)
     private static void Click(Window window, string label)
     {
         window.UpdateLayout();
-        Descendants(window).OfType<Button>().Single(button => Equals(button.Content, label) || AutomationProperties.GetName(button) == label)
+        (label == "添加术语" ? GlossaryButton(window, "GlossaryAdd") : Descendants(window).OfType<Button>().Single(button => Equals(button.Content, label) || AutomationProperties.GetName(button) == label))
             .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     }
 

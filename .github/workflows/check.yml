@@ -1275,6 +1275,43 @@ jobs:
           if [ "$TYPELAY_COLLECT_TRANSLATION_QUALITY" = true ]; then
             printf '%s\n' 'Fixed translation responses collected: quality remains not-reviewed. This is not language-quality acceptance.' >> "$GITHUB_STEP_SUMMARY"
           fi
+      # Keep fixed synthetic desktop diagnostics separate from large offline packages.
+      - name: Preserve small Linux desktop diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: typelay-linux-desktop-diagnostics-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/linux/nested/*.json
+            artifacts/linux/nested/*.jsonl
+            artifacts/linux/nested/*.png
+            artifacts/linux/nested/*.log
+            artifacts/linux/desktop/*.json
+            artifacts/linux/desktop/*.jsonl
+            artifacts/linux/desktop/*.png
+            artifacts/linux/desktop/*.log
+            artifacts/linux/gtk-desktop/*.json
+            artifacts/linux/gtk-desktop/*.jsonl
+            artifacts/linux/gtk-desktop/*.png
+            artifacts/linux/gtk-desktop/*.log
+            artifacts/linux/gtk4-desktop/*.json
+            artifacts/linux/gtk4-desktop/*.jsonl
+            artifacts/linux/gtk4-desktop/*.png
+            artifacts/linux/gtk4-desktop/*.log
+            artifacts/linux/qt-desktop/*.json
+            artifacts/linux/qt-desktop/*.jsonl
+            artifacts/linux/qt-desktop/*.png
+            artifacts/linux/qt-desktop/*.log
+            artifacts/linux/setup-settings/*.json
+            artifacts/linux/setup-settings/*.jsonl
+            artifacts/linux/setup-settings/*.png
+            artifacts/linux/setup-settings/*.log
+            artifacts/linux/setup-tutorial/*.json
+            artifacts/linux/setup-tutorial/*.jsonl
+            artifacts/linux/setup-tutorial/*.png
+            artifacts/linux/setup-tutorial/*.log
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

@@ -76,11 +76,21 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface.settings-dark .language-chevron { color: #9a988f; }
 .typelay-surface .language-name { font-size: 15px; font-weight: 500; }
 .typelay-surface .model-warning-row { min-height: 34px; }
-.typelay-surface .language-popover { background: #fbfaf7; border-radius: 12px; padding: 0; }
+.typelay-surface .language-popover { background: transparent; border: 0; box-shadow: none; padding: 0; }
+/* GTK3 has no backdrop-filter. This native popover uses the matching opaque
+   material instead of exposing unblurred text; the saved preference is unchanged. */
+.typelay-surface .language-panel { padding: 6px; background: #fbfaf7; border-radius: 12px; box-shadow: 0 4px 12px rgba(20,20,19,.08), inset 0 0 0 1px rgba(255,255,255,.75); }
+.typelay-surface .language-search, .typelay-surface .language-search:focus { min-height: 30px; padding: 0 9px; border: 0; border-radius: 8px; outline: 0; box-shadow: none; background: rgba(20,20,19,.045); }
+.typelay-surface .language-search image { color: #74726c; -gtk-icon-shadow: none; -gtk-icon-transform: scale(.875); }
+.typelay-surface .language-panel > label { font-size: 12px; }
+.typelay-surface.reduce-transparency .language-panel { background: #fbfaf7; }
 .typelay-surface .language-popover button.language-option { border: 0; box-shadow: none; background: transparent; padding: 0 8px; min-height: 30px; border-radius: 7px; }
 .typelay-surface .language-popover button.language-option:hover, .typelay-surface .language-popover button.language-option.keyboard { background: @accent; color: white; }
 .typelay-surface.settings-dark button.language-button { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.10); }
-.typelay-surface.settings-dark .language-popover { background: #2c2b28; }
+.typelay-surface.settings-dark .language-panel { background: #2c2b28; box-shadow: 0 4px 14px rgba(0,0,0,.3), inset 0 0 0 1px rgba(255,255,255,.1); }
+.typelay-surface.settings-dark .language-search, .typelay-surface.settings-dark .language-search:focus { background: rgba(255,255,255,.05); }
+.typelay-surface.settings-dark .language-search image { color: #9a988f; }
+.typelay-surface.settings-dark.reduce-transparency .language-panel { background: #2c2b28; }
 .typelay-surface .tile { border: 2px solid transparent; background: transparent; box-shadow: none; padding: 4px; }
 .typelay-surface .tile:checked { border-color: @accent; }
 .typelay-surface .tile-art { border-radius: 9px; min-width: 68px; min-height: 44px; border: 1px solid rgba(20,20,19,.16); }

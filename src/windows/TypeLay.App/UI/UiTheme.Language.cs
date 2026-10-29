@@ -9,6 +9,20 @@ internal static partial class UiTheme
     // they do not replace the source/overlay editor or its focus contract.
     public static ResourceDictionary LanguageResources() => (ResourceDictionary)XamlReader.Parse("""
     <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+      <Style x:Key="SettingsLanguageSearch" TargetType="TextBox">
+        <Setter Property="Foreground" Value="{DynamicResource Text}"/>
+        <Setter Property="CaretBrush" Value="{DynamicResource Text}"/>
+        <Setter Property="SelectionBrush" Value="{DynamicResource AccentSoft}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TextBox">
+          <Border CornerRadius="7" Background="{TemplateBinding Background}">
+            <ScrollViewer x:Name="PART_ContentHost" VerticalAlignment="Center" Focusable="False"
+              HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden"/>
+          </Border>
+        </ControlTemplate></Setter.Value></Setter>
+      </Style>
       <Style x:Key="SettingsLanguageOption" TargetType="ComboBoxItem">
         <Setter Property="Focusable" Value="False"/><Setter Property="Height" Value="30"/><Setter Property="Padding" Value="8,0"/>
         <Setter Property="FontSize" Value="13"/><Setter Property="FontWeight" Value="Normal"/>
@@ -54,7 +68,7 @@ internal static partial class UiTheme
               <Border Width="280" CornerRadius="12" Padding="6" Background="{DynamicResource Panel}" BorderBrush="{DynamicResource SettingsControlLine}" BorderThickness="0.5">
                 <StackPanel>
                   <Grid Margin="0,0,0,6" Height="30">
-                    <TextBox x:Name="PART_LanguageSearch" Style="{DynamicResource SettingsSearchField}" Background="{DynamicResource SettingsLanguageFill}" FontFamily="{DynamicResource UiFont}" FontWeight="Normal" FontSize="13" Height="30" Padding="31,0,9,0"/>
+                    <TextBox x:Name="PART_LanguageSearch" Style="{DynamicResource SettingsLanguageSearch}" Background="{DynamicResource SettingsLanguageFill}" FontFamily="{DynamicResource UiFont}" FontWeight="Normal" FontSize="13" Height="30" Padding="31,0,9,0"/>
                     <Viewbox Width="14" Height="14" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="9,0,0,0" IsHitTestVisible="False"><Canvas Width="24" Height="24"><Path Data="M17,11 A6,6 0 1 1 5,11 A6,6 0 1 1 17,11 M20,20 L15.5,15.5" Stroke="{DynamicResource Tertiary}" StrokeThickness="1.6"/></Canvas></Viewbox>
                     <TextBlock x:Name="PART_LanguagePlaceholder" Margin="31,0,9,0" FontFamily="{DynamicResource UiFont}" FontWeight="Normal" FontSize="13" Foreground="{DynamicResource Tertiary}" VerticalAlignment="Center" IsHitTestVisible="False"/>
                   </Grid>

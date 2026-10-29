@@ -1342,6 +1342,7 @@ def ordered_controls(
                         lambda: value
                         if (value := state()).get("editorVisible")
                         and value.get("editorFontPixels") == size
+                        and value.get("editorFontRuns")
                         and (
                             value.get("editorFontFamily") == value.get("applicationFontFamily")
                             if font == "system"

@@ -2530,7 +2530,10 @@ class InputFeedbackTests(unittest.TestCase):
             self.assertEqual(render["theme"], "dark")
             self.assertEqual(
                 render["appearance"],
-                {key: value for key, value in preferences.items() if key != "theme"},
+                {
+                    **{key: value for key, value in preferences.items() if key != "theme"},
+                    "motion": "reduce",  # Legacy true remains an explicit reduced-motion profile.
+                },
             )
             self.assertEqual(overlay.session_token(), token)
             self.assertEqual(overlay.value, view)

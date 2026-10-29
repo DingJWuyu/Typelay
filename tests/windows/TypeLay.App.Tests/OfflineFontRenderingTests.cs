@@ -130,10 +130,57 @@ public sealed class OfflineFontRenderingTests(WpfDesktopFixture desktop)
     {
         string uri = run.GlyphTypeface.FontUri.AbsoluteUri.ToLowerInvariant();
         Assert.Contains("/ui/fonts/", uri);
+        if (filename == "TypeLayNotoSansSC-SemiBold.ttf"
+            && !uri.EndsWith(filename.ToLowerInvariant(), StringComparison.Ordinal))
+            Assert.Fail("SC600 exact face mismatch. Expected " + filename + "; actual " + uri
+                + ". Read-only font observations: " + ObserveSemiBoldFaces());
         Assert.EndsWith(filename.ToLowerInvariant(), uri);
         Assert.Equal(weight, run.GlyphTypeface.Weight.ToOpenTypeWeight());
         Assert.Equal(StyleSimulations.None, run.GlyphTypeface.StyleSimulations);
         Assert.All(run.GlyphIndices, glyph => Assert.NotEqual((ushort)0, glyph));
+    }
+
+    private static string ObserveSemiBoldFaces()
+    {
+        // Diagnose only this failed exact-face assertion. Do not install fonts,
+        // change the requested family/weight, or replace the rendered glyphs.
+        static object Observe(Func<object> read)
+        {
+            try
+            {
+                return read();
+            }
+            catch (Exception error) { return new { error = error.GetType().Name }; }
+        }
+        static object Face(GlyphTypeface face) => new
+        {
+            uri = face.FontUri.AbsoluteUri,
+            weight = face.Weight.ToOpenTypeWeight(),
+            style = face.Style.ToString(),
+            stretch = face.Stretch.ToString(),
+            simulation = face.StyleSimulations.ToString(),
+            chineseGlyphsPresent = "翻译设置".All(character =>
+                face.CharacterToGlyphMap.TryGetValue(character, out ushort glyph) && glyph != 0),
+            familyNames = face.FamilyNames.ToDictionary(pair => pair.Key.Name, pair => pair.Value),
+            faceNames = face.FaceNames.ToDictionary(pair => pair.Key.Name, pair => pair.Value)
+        };
+        static object Family(string name) => Observe(() =>
+            UiTheme.BundledFont(name).GetTypefaces().Take(32).Select(typeface => Observe(() =>
+                typeface.TryGetGlyphTypeface(out GlyphTypeface glyph)
+                    ? Face(glyph)
+                    : new
+                    {
+                        unresolved = true,
+                        requestedWeight = typeface.Weight.ToOpenTypeWeight()
+                    }
+            )).ToArray());
+        return System.Text.Json.JsonSerializer.Serialize(new
+        {
+            direct = Observe(() => Face(new GlyphTypeface(new Uri(
+                "pack://application:,,,/TypeLay.App;component/UI/Fonts/TypeLayNotoSansSC-SemiBold.ttf")))),
+            typographicFamily = Family("Noto Sans SC"),
+            legacyFamily = Family("Noto Sans SC SemiBold")
+        });
     }
 
     private static IEnumerable<GlyphRun> Glyphs(Drawing drawing)

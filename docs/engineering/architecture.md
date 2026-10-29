@@ -240,6 +240,10 @@ worker 没有网络调用路径不等于 OS 网络沙箱；无正文日志不代
 
 ## Index 默认与兼容边界
 
+Index 高级质量身份在既有受信发行包与不可变安装代边界内分两层验证。平台 loader 继续完整验证实际 adapter、CPU 库及模型字节，并核实际加载闭包；Host 在每次启动/恢复前独立核实际 worker 小源码集合、模型锁、平台 CPU 锁全部约束，以及与产物同清单的 native 构建来源和实际编译选项。来源指纹覆盖 cpp/header/template、固定头文件锁、参与编译的实际头文件，以及 Linux 导出 map 与 Windows 两个实际 import-library `.def` 输入，编译前取值、成功后复核，变化则不发布 manifest。固定支持材料由 `eng/index_profile.py` 显式生成并经独立评审登记，不在普通构建或运行时自动增加资格；发布行须固定已受审的 profile ID，不能动态引用最新生成值。质量键不含 UI、发布表、构建路径/时间或每次重编的二进制 SHA。小源码目录出现额外导入模块、bytecode 或链接时不授高级身份。
+
+同代既有安装 metadata 还须明确记录 CPython 3.13.16 和 lingua 2.1.1，Linux 核实际 requirements.lock 与库存摘要及规范化条目，Windows 核实际 dependency-lock 条目。复制 runtime 保留来源记录，不能把旧字节标为当前版本；缺失或未知保持普通 Ready、高级关闭。这依赖受信安装器的版本/下载校验和未在使用中改写的安装代，不声称逐字独立测量整个解释器或抵抗任意同用户篡改。只有该实际 owned child 严格 hello 成功后才把支持 profile 绑定到本连接 `VerifiedModelIdentity`；不接受 hello 自报 profile、不缓存路径资格，取消原样传播。对应发布行必须同时匹配操作、包、版本、方向与 profile；旧包、旧 manifest 或不匹配只能保留普通能力。Linux 语义评审不冒称 Windows 输出逐字复核，两端仍须各自实际安装执行与完整性验证。
+
 空且可信的库存只在用户确认准备后创建 Index 包事务；未知库存不当作空库存，schema1/2 的缺省方向仍固定为旧 Argos 中英。现有安装代、active 选择、语言偏好和方向子集不自动迁移，Repair 不补方向、不删除旧包。Index 与 Hy 不能同时 active；切换原生模型先确认旧 worker 退出，失败不并载。平台输入事务不因模型变化获得额外权限。
 
 Index 的 `index-translate-2b-q4-k-m` / `index-translate-llama-cpu` 独立于 Hy，ABI1 与 llama.cpp b11913 的官方 CPU 闭包由 `native/index` 固定锁验证；Hy ABI5/b11717 不变。仅真实载荷、模型文件、词表/模板和导出校验成功才发布 Index hello 及实际高级能力，不能用 Hy 的存在授权 Index。已知目录或下载完成都不是 Ready。

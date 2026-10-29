@@ -674,6 +674,15 @@ class PackageInstallationTests(unittest.TestCase):
             self.prepare(self.request("Repair", ["argos-zh-en"]), success=False)
             copy.assert_not_called()
 
+    def test_copied_runtime_keeps_recorded_python_version_instead_of_current_constant(self):
+        for recorded in ("3.12.0", None):
+            with self.subTest(recorded=recorded):
+                self.inventory["pythonVersion"] = recorded
+                self.save_inventory()
+                candidate = self.prepare(self.request("Select", [], ["argos-en-zh"]))
+                value = json.loads((candidate / "models/installed.json").read_text())
+                self.assertEqual(recorded, value["pythonVersion"])
+
     def test_native_closure_must_pass_before_any_hy_download_or_runtime_copy(self):
         self.prepare(
             self.request("Install", ["hy-mt2-1-8b-q4-k-m"], ["hy-mt2-1-8b-q4-k-m"]), success=False

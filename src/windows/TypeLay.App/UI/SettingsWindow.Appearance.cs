@@ -23,10 +23,12 @@ internal sealed partial class SettingsWindow
         ("about", "关于与隐私", "About & Privacy", "#8A8986", "M20.5,12 A8.5,8.5 0 1 1 3.5,12 A8.5,8.5 0 1 1 20.5,12 M12 11v5.5M12 7.8v.01", "关于 隐私 版本 软件 更新 数据 本地 about privacy version software update data local")
     ];
 
+    private object _navigationButtons = new();
     private void RefreshNavigation()
     {
         if (_nav is null)
             return;
+        object navigation = _navigationButtons = new();
         _nav.Children.Clear();
         string query = _settingsSearch.Text.Trim();
         var matches = Pages.Where(page => query.Length == 0 || (page.Chinese + " " + page.English + " " + page.Search)
@@ -43,10 +45,8 @@ internal sealed partial class SettingsWindow
             row.Children.Add(label);
             var button = UiTheme.Button("", () =>
             {
-                _page = page.Id;
-                _settingsSearch.Clear();
-                Refresh();
-                _pageScroll.ScrollToTop();
+                if (IsVisible && ReferenceEquals(navigation, _navigationButtons))
+                    NavigatePage(page.Id, clearSearch: true);
             });
             button.Content = row;
             button.Height = 32;

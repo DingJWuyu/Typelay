@@ -15,6 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 INDEX = "index-translate-2b-q4-k-m"
+PROFILE = "index-v1-3b99612f3676f5ac8ef34c81e99bf8874a5ba5271207a15d39e947c9d42ef87d"
 
 
 def digest(path):
@@ -36,6 +37,7 @@ class Check:
             "desktop": "not-run",
             "quality": "not-reviewed",
             "budgetSeconds": 600,
+            "inferenceProfiles": {},
             "stages": {
                 name: "not-run"
                 for name in (
@@ -173,6 +175,10 @@ class Check:
         )
         if active == [INDEX]:
             assert len(self.status["modelDirections"]) == 14
+            assert self.status.get("modelInferenceProfileId") == PROFILE, (
+                "index-profile-unqualified"
+            )
+            self.report["inferenceProfiles"][self.stage] = self.status["modelInferenceProfileId"]
 
     async def activate(self, generation, active):
         assert (

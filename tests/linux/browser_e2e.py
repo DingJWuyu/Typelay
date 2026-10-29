@@ -91,7 +91,7 @@ TRANSPORT = """(() => {
 })();"""
 
 
-# Failure evidence for the held-key contract only. Observe the existing fixture
+# Failure evidence for held-key and source-control lifetime contracts. Observe the existing fixture
 # transport and trusted event delivery before content.js; never issue a command,
 # refresh an authority clock, change a key, or extend the contract's deadline.
 HELD_KEY_OBSERVER = r"""(() => {
@@ -120,8 +120,13 @@ HELD_KEY_OBSERVER = r"""(() => {
       const replies=fixtureMessages.slice(first).filter(item=>item.event==='command-owner');
       const acks=replies.slice(0,16).map(item=>({
         state:item.data.state,rejectionReason:item.data.rejectionReason,grantSequence:item.data.grantSequence}));
+      const publications=fixtureMessages.slice(first).filter(item=>item.event==='publication');
       log({kind:'command-after',op:message.op,id:message.id,clock:message.clock,
         authorityObservedAtMs:result?.authority?.observedAtMs,diagnostics:result?.diagnostics,
+        permitExpiryAtPerformanceMs:message.data?.permit?.expiresAtMs === undefined ? null
+          : message.data.permit.expiresAtMs-1000000,
+        publication:publications.length ? {ready:publications.at(-1).data.ready,
+          readyUntilHostMs:publications.at(-1).data.readyUntilHostMs} : null,
         acks,omittedAcks:Math.max(0,replies.length-acks.length)});
       return result;
     } catch(error) {log({kind:'command-error',op:message.op,message:String(error).slice(0,400)});throw error;}
@@ -219,7 +224,10 @@ class BrowserContract(unittest.TestCase):
         held_key_observer = (
             HELD_KEY_OBSERVER
             if self._testMethodName
-            == "test_source_command_activation_requires_release_proof_frozen_when_keys_were_observed"
+            in (
+                "test_source_command_activation_requires_release_proof_frozen_when_keys_were_observed",
+                "test_control_postmutation_focus_roundtrip_is_unknown_and_consumed",
+            )
             else ""
         )
         font_setup = (
@@ -1185,6 +1193,22 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.evaluate("controlEvents"), [["keydown", "F7"], ["keyup", "F7"]])
 
     def test_control_postmutation_focus_roundtrip_is_unknown_and_consumed(self):
+        def save_lifetime():
+            evidence = self.page.evaluate("""() => ({rows: fixtureHeldAudit.rows,
+              omitted: fixtureHeldAudit.omitted, controlEvents: window.controlEvents ?? [],
+              sourceFocused: document.querySelector('#source').matches(':focus')})""")
+            output = Path(
+                os.environ.get(
+                    "TYPELAY_BROWSER_LIFETIME_OUTPUT",
+                    ROOT / "artifacts/linux/browser-native/overlay/lifetime",
+                )
+            )
+            output.mkdir(parents=True, exist_ok=True)
+            (output / (self._testMethodName + ".json")).write_text(
+                json.dumps(evidence, indent=2), encoding="utf-8"
+            )
+
+        self.addCleanup(save_lifetime)
         self.configure_control()
         self.page.keyboard.insert_text("Hello")
         self.page.locator(
@@ -2447,10 +2471,11 @@ class BrowserContract(unittest.TestCase):
         # Observe public transport and actual DOM only. No heartbeat, capture,
         # mutation of product state, or production deadline is introduced here.
         self.page.evaluate("""() => {
-          let editor = null, menu = null, host = null, expiry = null, omitted = 0;
+          let editor = null, menu = null, host = null, expiry = null, omitted = 0, phase = null;
           const rows = [];
           const state = () => ({
             documentFocused: document.hasFocus(), visibility: document.visibilityState,
+            sourceFocused: document.querySelector('#source').matches(':focus'), phase,
             hostConnected: !!(host || document.querySelector('html > div[role=region][aria-label=TypeLay]'))?.isConnected,
             editorConnected: editor?.isConnected ?? null, editorFocused: editor?.matches(':focus') ?? null,
             menuHidden: menu?.hidden ?? null,
@@ -2489,6 +2514,7 @@ class BrowserContract(unittest.TestCase):
             return result;
           };
           window.fixtureOverlayLifetime = {
+            phase(value) { phase = value; editor = menu = host = null; log('phase'); },
             watch(value) {
               editor = value; host = value.getRootNode().host;
               menu = value.getRootNode().querySelector('#more-actions');
@@ -2692,6 +2718,7 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.accepted(), [])
 
     def test_more_popup_clamps_to_viewport_and_escape_preserves_source(self):
+        self.observe_overlay_lifetime()
         data = self.motion_view()
         self.page.emulate_media(reduced_motion="reduce")
         for width, height, x, y in [
@@ -2701,6 +2728,10 @@ class BrowserContract(unittest.TestCase):
             (280, 220, 112, 160),
         ]:
             with self.subTest(width=width, height=height, x=x, y=y):
+                self.page.evaluate(
+                    "phase => fixtureOverlayLifetime.phase(phase)",
+                    {"width": width, "height": height, "x": x, "y": y},
+                )
                 self.command("overlay-hide")
                 self.page.set_viewport_size({"width": width, "height": height})
                 self.page.locator("#source").evaluate(
@@ -2721,7 +2752,11 @@ class BrowserContract(unittest.TestCase):
                 self.click_overlay_control("更多")
                 menu = self.overlay_control("更多操作", "group")
                 rect = self.overlay_dom(
-                    menu, "function() { return this.getBoundingClientRect().toJSON(); }"
+                    menu,
+                    """function() {
+                      fixtureOverlayLifetime.watch(this.getRootNode().querySelector('textarea'));
+                      return this.getBoundingClientRect().toJSON();
+                    }""",
                 )
                 self.assertEqual(host.bounding_box(), before)
                 self.assertGreaterEqual(rect["x"], 8)
@@ -3520,13 +3555,70 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(len({frame["host"]["height"] for frame in frames}), 1)
 
     def test_explicit_motion_mode_overrides_os_and_legacy_boolean(self):
+        # Read-only bounded observation of the public media event and actual
+        # panel attribute. Neither changes readiness, animation, or the lease.
+        self.page.evaluate("""() => {
+          const rows = [], media = matchMedia('(prefers-reduced-motion: reduce)');
+          let editor = null, panel = null, expiry = null, omitted = 0;
+          const log = kind => {
+            if (rows.length < 48) rows.push({kind, ms: performance.now(),
+              matches: media.matches, connected: editor?.isConnected ?? null,
+              motion: editor?.parentElement?.dataset.motion ?? null, expiry});
+            else omitted++;
+          };
+          const observer = new MutationObserver(() => log('panel-change'));
+          const changed = () => log('media-change');
+          media.addEventListener('change', changed);
+          const raw = fixtureRawCommand;
+          window.fixtureRawCommand = message => {
+            const result = raw(message);
+            if (message.op === 'overlay-render') {
+              expiry = message.data.expiresAtMs - 1000000;
+              log('render');
+            }
+            return result;
+          };
+          window.fixtureMotionAudit = {
+            read(value) {
+              if (!editor) {
+                editor = value; panel = value.parentElement;
+                observer.observe(panel, {attributes: true, attributeFilter: ['data-motion']});
+              }
+              log('assert-read');
+              return value.parentElement.dataset.motion;
+            },
+            ready() {
+              return editor?.isConnected && editor.parentElement === panel && panel.dataset.motion === 'reduce'
+                && Number.isFinite(expiry) && performance.now() < expiry;
+            },
+            finish() {
+              log('final'); observer.disconnect(); media.removeEventListener('change', changed);
+              return {rows, omitted};
+            }
+          };
+        }""")
+
+        def save_motion_audit():
+            output = Path(
+                os.environ.get(
+                    "TYPELAY_BROWSER_LIFETIME_OUTPUT",
+                    ROOT / "artifacts/linux/browser-native/overlay/lifetime",
+                )
+            )
+            output.mkdir(parents=True, exist_ok=True)
+            (output / (self._testMethodName + ".json")).write_text(
+                json.dumps(self.page.evaluate("fixtureMotionAudit.finish()"), indent=2),
+                encoding="utf-8",
+            )
+
+        self.addCleanup(save_motion_audit)
         data = self.motion_view()
         self.page.emulate_media(reduced_motion="reduce")
         data["appearance"] = {"uiLanguage": "zh-CN", "motion": "full", "reduceMotion": True}
         self.assertTrue(self.command("overlay-render", data)["visible"])
         editor = self.overlay_control("TypeLay 译文", "textbox")
         self.assertEqual(
-            self.overlay_dom(editor, "function() { return this.parentElement.dataset.motion; }"),
+            self.overlay_dom(editor, "function() { return fixtureMotionAudit.read(this); }"),
             "full",
         )
         self.observe_overlay_frames(start_on_click=True)
@@ -3535,7 +3627,7 @@ class BrowserContract(unittest.TestCase):
         self.assertGreater(len({frame["host"]["height"] for frame in frames}), 2)
         self.page.emulate_media(reduced_motion="no-preference")
         self.assertEqual(
-            self.overlay_dom(editor, "function() { return this.parentElement.dataset.motion; }"),
+            self.overlay_dom(editor, "function() { return fixtureMotionAudit.read(this); }"),
             "full",
         )
         data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce", "reduceMotion": False}
@@ -3547,13 +3639,17 @@ class BrowserContract(unittest.TestCase):
         data["appearance"] = {"uiLanguage": "zh-CN", "motion": "system", "reduceMotion": True}
         self.assertTrue(self.command("overlay-render", data)["visible"])
         self.assertEqual(
-            self.overlay_dom(editor, "function() { return this.parentElement.dataset.motion; }"),
+            self.overlay_dom(editor, "function() { return fixtureMotionAudit.read(this); }"),
             "full",
         )
         self.page.emulate_media(reduced_motion="reduce")
-        self.page.wait_for_function("matchMedia('(prefers-reduced-motion: reduce)').matches")
+        # A matching media query can precede the cached query's change event.
+        # Wait in the same budget for the original live panel to apply it.
+        self.page.wait_for_function(
+            "matchMedia('(prefers-reduced-motion: reduce)').matches && fixtureMotionAudit.ready()"
+        )
         self.assertEqual(
-            self.overlay_dom(editor, "function() { return this.parentElement.dataset.motion; }"),
+            self.overlay_dom(editor, "function() { return fixtureMotionAudit.read(this); }"),
             "reduce",
         )
         self.assertEqual(self.accepted(), [])

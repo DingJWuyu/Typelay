@@ -28,6 +28,8 @@ from typelay_worker.index_assets import (  # noqa: E402
     verify_cpu_runtime,
 )
 
+from eng.index_profile import COMPILE_OPTIONS, confirm_native_sources, native_sources  # noqa: E402
+
 
 def build(runtime, output):
     if platform.system() != "Linux" or platform.machine() != "x86_64":
@@ -43,19 +45,13 @@ def build(runtime, output):
         plain_path(output, directory=True)
     from eng.linux.index.prepare_assets import verify_build_inputs
 
+    sources = native_sources()
     verify_build_inputs(output)
     adapter = output / "libtypelay_index.so"
     subprocess.run(
         [
             "g++",
-            "-std=c++17",
-            "-O2",
-            "-fPIC",
-            "-fvisibility=hidden",
-            "-Wall",
-            "-Wextra",
-            "-Werror",
-            "-shared",
+            *COMPILE_OPTIONS["linux-x86_64"],
             "-I" + str(NATIVE_ROOT / "include"),
             "-I" + str(output),
             str(NATIVE_ROOT / "index_adapter.cpp"),
@@ -72,6 +68,7 @@ def build(runtime, output):
         check=True,
         timeout=120,
     )
+    confirm_native_sources(sources)
     (output / "index_template.h").unlink()
     symbols = subprocess.check_output(
         ["nm", "-D", "--defined-only", str(adapter)], text=True, timeout=30
@@ -102,6 +99,8 @@ def build(runtime, output):
         "schema": 1,
         "platform": "linux-x86_64",
         "abi": ABI,
+        "native_sources": sources,
+        "compile_options": COMPILE_OPTIONS["linux-x86_64"],
         "capabilities": CAPABILITIES,
         "exports": exports,
         "upstream_revision": UPSTREAM,

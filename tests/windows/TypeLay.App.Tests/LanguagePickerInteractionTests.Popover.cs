@@ -216,6 +216,9 @@ public sealed partial class LanguagePickerInteractionTests
             current.Select();
         }
         catch (ElementNotAvailableException) { }
+        // A detached native SelectorItem peer may reject selection as disabled
+        // before the retired page's handler runs. Both outcomes must be inert.
+        catch (ElementNotEnabledException) { }
         await DrainAsync(window);
         Assert.Equal(before, File.ReadAllText(fixture.Path));
         Assert.False(picker.IsDropDownOpen);
@@ -340,6 +343,12 @@ public sealed partial class LanguagePickerInteractionTests
         await DrainAsync(window);
         var popup = Assert.IsType<Popup>(source.Template.FindName("PART_Popup", source));
         var content = Assert.IsAssignableFrom<FrameworkElement>(popup.Child);
+        var search = PopupSearch(source);
+        Assert.Same(search, Keyboard.FocusedElement);
+        Assert.All(Descendants(search).OfType<Border>().Where(border => border.IsVisible),
+            border => Assert.Equal(new Thickness(0), border.BorderThickness));
+        Assert.Equal(Assert.IsType<SolidColorBrush>(search.FindResource("Text")).Color,
+            Assert.IsType<SolidColorBrush>(search.CaretBrush).Color);
         Assert.All(VisibleOptions(source), option => Assert.Equal(30, option.ActualHeight));
         RenderLanguageSurface(content, $"settings-language-popup-{language}-{theme}.png");
         await TypeTextAsync(window, PopupSearch(source), "zzzz");

@@ -244,6 +244,14 @@ public sealed class ModelInstallerTests
             .Single(item => item.GetProperty("path").GetString() == "model/model.bin");
         Assert.Equal(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(model))).ToLowerInvariant(), file.GetProperty("sha256").GetString());
         Assert.Equal(state.Generation, store.ReadInstallationState().Generation);
+        using var originalDependencies = JsonDocument.Parse(File.ReadAllText(Path.Combine(sourceRoot, "dependency-lock.json")));
+        using var copiedDependencies = JsonDocument.Parse(File.ReadAllText(Path.Combine(copied.Root, "dependency-lock.json")));
+        foreach (string dependency in new[] { "python", "lingua-language-detector" })
+        {
+            var original = originalDependencies.RootElement.EnumerateArray().Single(item => item.GetProperty("name").GetString() == dependency);
+            var retained = copiedDependencies.RootElement.EnumerateArray().Single(item => item.GetProperty("name").GetString() == dependency);
+            Assert.Equal(original.GetRawText(), retained.GetRawText());
+        }
     }
 
     [Fact]

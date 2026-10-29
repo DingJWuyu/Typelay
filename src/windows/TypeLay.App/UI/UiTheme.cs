@@ -20,6 +20,7 @@ internal static partial class UiTheme
         new(new Uri("pack://application:,,,/TypeLay.App;component/"), "./UI/Fonts/#" + family + (string.IsNullOrWhiteSpace(fallback) ? "" : ", " + fallback));
     private static string InterfaceLanguage => English ? "en" : "zh-CN";
     public static FontFamily UiFont => RoleFont(serif: false, InterfaceLanguage);
+    public static FontFamily UiFontForLanguage(string? language) => RoleFont(serif: false, language);
     public static FontFamily DisplayFont => ContentFontForLanguage(InterfaceLanguage);
     public static FontFamily ContentFont => ContentFontForLanguage(_preferences.Target);
     public static FontFamily ContentFontForLanguage(string? language) => RoleFont(_preferences.Font == "claude", language);

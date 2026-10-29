@@ -1,0 +1,303 @@
+{
+  "id": "index-v1-3b99612f3676f5ac8ef34c81e99bf8874a5ba5271207a15d39e947c9d42ef87d",
+  "schema": 1,
+  "workerFiles": {
+    "run_worker.py": "d1a89576fceb7fd53e42de5f472ac0b87346d9b277cdba8670fcfd8aca3c3a88",
+    "model-catalog.json": "b3fa73d7d15bfe174eadc304214ccfdbdb0242ddeacb62fb490d70137adbb815",
+    "requirements.txt": "2fbe011276a395eae9ea65b3a2a9037688f6058e13719f12818a21eef4c2fe65",
+    "typelay_worker/__init__.py": "67ac41b689a223f01f5d6858cae8b0dd48b993775b4cf0a95fb1cd259c041e73",
+    "typelay_worker/catalog.py": "4972287c1ade446d70f2101900f708bddde32a3bfcd9ebe9ede2c9f46dc06086",
+    "typelay_worker/engine.py": "06fab0522274b13a62afa15a0ef0abf3d1390a0247a03f10404e797ac8c33498",
+    "typelay_worker/glossary.py": "8fcf86941b1d13ce61d220d24d6a8b27b1ee02387dbcabe3e3a6b17867777966",
+    "typelay_worker/hy.py": "a25e376ca8372734d43feccac03f00f71768b18b8b469cdde5a7979e3124983d",
+    "typelay_worker/hy_assets.py": "d806d23388c8fefc3cb2e0e418a96713478f9e9e6b184e617617ca8a94a27b8d",
+    "typelay_worker/hy_cpu.py": "bad82b23e7e909e3053166f8676a28c870e24a86ec77c105c6eafe129f3e7f82",
+    "typelay_worker/hy_cpu_windows.py": "03b2b91f12807084270fc64f50909eaf6bb3e00ef2f078e7df12f9d4dc132075",
+    "typelay_worker/index.py": "a2ce6866a4bde9aa5c8af997652c5e8db53b665fcd3f6977dec692c21b51cbb6",
+    "typelay_worker/index_assets.py": "1a069cf35bf126d5c17e193a5b0b568ebfaa8862e9206035ade960d878667fbd",
+    "typelay_worker/index_cpu.py": "1482853bae91cd56c7bf48fab61e3cd191eb2b08de36ff1d0cdf147d726dea8c",
+    "typelay_worker/index_cpu_windows.py": "14b68708c1d19de4316f05b8a950ca71b789495e4de4bf6acb5c6b4fddde12f7",
+    "typelay_worker/inventory.py": "13c8f5750a7566825ea7d480a23a46f41fb5d7e79d4c6adbb1417e4e634e6b57",
+    "typelay_worker/protocol.py": "5a53798061923480c133412c54b11ced0dc99660cd9ef2b2d5e162ed5bc13791"
+  },
+  "nativeSources": {
+    "index_adapter.cpp": "ca5b6cef860296a9b3c89dfaee2e8bf3a8438921ab681699814438c46dace26e",
+    "index_adapter.h": "b3bff2aab200b5c6dde7fbd558793c43626c993fb77e6c0e50fc19d508e4301a",
+    "chat_template.jinja": "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80",
+    "headers.lock.json": "49871dc5f698923587b6260489b68bfd8ed4c25adb3c4e0b7771001a7b0ec40f",
+    "include/ggml-alloc.h": "d114067f9099c4a0e2bbc0625c676d4894d9cf0ea27168ee072c7de0e71bb51d",
+    "include/ggml-backend.h": "0e5e8e1f16d11ebbf501e38bc6705d79eee819b5f0b17476533f2100ed9674e2",
+    "include/ggml-cpu.h": "316279e004cdeb8e6ef78599acb602bf79a8abdf897fed9fd1914808c1518c6e",
+    "include/ggml-opt.h": "3586de1bc8a934b5c72339e2b6937b0641e8f149b512231e666f67de0736eea2",
+    "include/ggml.h": "2b4dd92fa992cb4ef484917a6c62fef5097698744160ccc09214fd0c459c92c7",
+    "include/gguf.h": "e56714aab702e5ce62ee587a409643c08f7e93e8fbb77f48ef7cc85075f96fa4",
+    "include/llama.h": "c0854771d3760a41642c4e59429c5b3b9fc774887c59d37eeadc4527681732cd",
+    "eng/linux/index/exports.map": "f37a73a79aeb40999954dd54271ca1f7ff0bab43e1598c46b40b88273eee11b7",
+    "eng/windows/index/llama.def": "cbd7712888a6e2e8d79d2a28edfeb361ac14281cab221cee03936715975a43d0",
+    "eng/windows/index/ggml.def": "079ba95f0cd7b20fb729e2841867896c58090cc20729b7cbe62711fd7d999565"
+  },
+  "modelLockSha256": "387aa37b5d8e76b3d3ef0e218d03873a4bdecb736b09eedfa0decf67be64cc09",
+  "compileOptions": {
+    "linux-x86_64": [
+      "-std=c++17",
+      "-O2",
+      "-fPIC",
+      "-fvisibility=hidden",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-shared"
+    ],
+    "win-x64": [
+      "/nologo",
+      "/LD",
+      "/MD",
+      "/std:c++17",
+      "/EHsc",
+      "/utf-8",
+      "/O2",
+      "/W4",
+      "/WX"
+    ]
+  },
+  "cpuLocks": {
+    "linux-x86_64": {
+      "schema": 1,
+      "platform": "linux-x86_64",
+      "upstream_tag": "b11913",
+      "upstream_revision": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50",
+      "runtime_archive_sha256": "c670ad826f59478db859c9d4a0d931ab9eb653f22b7e0adebd70816c4092aab5",
+      "files": [
+        {
+          "file": "libggml-base.so.0",
+          "bytes": 906112,
+          "sha256": "ed6b11e0499f53bcb417a50277b0fdeaaca2056431b36d19fc800964ade89ddd",
+          "kind": "dependency"
+        },
+        {
+          "file": "libggml-cpu-alderlake.so",
+          "bytes": 1420688,
+          "sha256": "2538c176d8662cdc680d5d712db5d088753e4a1c622ef2fad890fdfd20842bff",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "libggml-cpu-cannonlake.so",
+          "bytes": 1565976,
+          "sha256": "b3213c77c7e26b0e54571a9cec2efc397a93da2e8ec864d3fd6450dfa8498b52",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "libggml-cpu-cascadelake.so",
+          "bytes": 1582064,
+          "sha256": "9587923e876b0bf473afa557e570f5cc93486e9a04e36ae46201d7946f15f993",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "libggml-cpu-cooperlake.so",
+          "bytes": 1582136,
+          "sha256": "fc156bf850ca5ef586a281e0e66df4c285c074d3ef26801edc4aba2dfed8bb22",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "libggml-cpu-haswell.so",
+          "bytes": 1424784,
+          "sha256": "a5f800b10cca793ecd174cfd9c6848d978dbad584000d213a2a391039eb62b20",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "libggml-cpu-icelake.so",
+          "bytes": 1582064,
+          "sha256": "bcc3ec1ac7ca3f80ceef0f1b7541fb077617ba55a83b9d8a2df130be75710bd4",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "libggml-cpu-ivybridge.so",
+          "bytes": 1356344,
+          "sha256": "9d801e94e158ef753b8a9b6f832ec695b81615b26936e565ef4b1802fa26376e",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "libggml-cpu-piledriver.so",
+          "bytes": 1352248,
+          "sha256": "2de0ee6d6e6528858f49612e3924a39b17c80c207c35659071de724201d1baac",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "libggml-cpu-sandybridge.so",
+          "bytes": 1351200,
+          "sha256": "e7f7273a3d96edbc79c8c117925081bac81134b679bea10ed8548719edd9e77c",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "libggml-cpu-sapphirerapids.so",
+          "bytes": 1848464,
+          "sha256": "a5229694a87e953f332636412175cc14c2c82da9bcb90ed25de9fc153e0817e8",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "libggml-cpu-skylakex.so",
+          "bytes": 1565976,
+          "sha256": "5c2a150064a6144c093acb5d770313c37a2e83ed6e2bf5bae8bb8cad6d028369",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "libggml-cpu-sse42.so",
+          "bytes": 958840,
+          "sha256": "a816af4989d1ffbdcb15b56cb1c072defe125a1b36948ffa16b3d9771ca4ca7e",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "libggml-cpu-x64.so",
+          "bytes": 954888,
+          "sha256": "585012a4a0300d73b264cb9e7a5aff3ae286805129523dc991db003fa4fc3069",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "libggml-cpu-zen4.so",
+          "bytes": 1582136,
+          "sha256": "2f473ffc7d445ef35ccc80d193513259e878c15fa967b4d3c7953f79c5ca25a9",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "libggml.so.0",
+          "bytes": 51040,
+          "sha256": "8643a58bb37af6fb153e2ea98b48efa227855725ee51c05f4ca76b9867956463",
+          "kind": "dependency"
+        },
+        {
+          "file": "libllama.so.0",
+          "bytes": 5275808,
+          "sha256": "696c600b9029bd5202a2b70f2eca8f2fc81962eba8b1de1ebddb55af50a5288e",
+          "kind": "dependency"
+        }
+      ]
+    },
+    "win-x64": {
+      "schema": 1,
+      "platform": "win-x64",
+      "upstream_tag": "b11913",
+      "upstream_revision": "7aca0d2ea8d92b56911233b822db01f9fbb1ae50",
+      "runtime_archive_sha256": "55b31ccaf398e90457cfe28087297f5f3fdf1e3bfa7a28e1108f13d0af8e4621",
+      "files": [
+        {
+          "file": "LICENSE-LLVM-OpenMP",
+          "bytes": 19741,
+          "sha256": "fdad1758a9e1f9d5a81e18879b3406772115edc92c24bfa36b70c654f325e8e4",
+          "kind": "license"
+        },
+        {
+          "file": "ggml-base.dll",
+          "bytes": 805888,
+          "sha256": "d54b3a0724a9adf2e37cc1cc7da706ea1b03bcd0f9f80ffee314ae913523a62b",
+          "kind": "dependency"
+        },
+        {
+          "file": "ggml-cpu-alderlake.dll",
+          "bytes": 1415168,
+          "sha256": "041af134933adc4e3fff0d64382e715e237689fa6c8b88b3ef7ac7bfef7e8a47",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "ggml-cpu-cannonlake.dll",
+          "bytes": 1611264,
+          "sha256": "cdc87125fb8cbce12e366d47865eee6ad8315970e39c1f9180e5c5aeb94a85f7",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "ggml-cpu-cascadelake.dll",
+          "bytes": 1584128,
+          "sha256": "214246dfdc19b5c2ec73b5224f0dcf13585144c21b9e9e47b90887082bd4f242",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "ggml-cpu-cooperlake.dll",
+          "bytes": 1593856,
+          "sha256": "38d0b8eefa477258f1ef0fdbcd0ad8fdcb6bad028a9be2a9fe3a0c8c66f9f619",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "ggml-cpu-haswell.dll",
+          "bytes": 1420288,
+          "sha256": "e4eb4b2b5eb979bfc5ad01f394707993dd9e57f31889be0723a816216736a0aa",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "ggml-cpu-icelake.dll",
+          "bytes": 1591296,
+          "sha256": "dddb89d873d2276cd2cf37faaa09d08cbe4229480d178580a4190c1fe9792818",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "ggml-cpu-ivybridge.dll",
+          "bytes": 1302016,
+          "sha256": "7469e7f08acd821830c986ec143d35fd19fa6747eca5dc0273f5285e8f036be5",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "ggml-cpu-piledriver.dll",
+          "bytes": 1294848,
+          "sha256": "fff7d6a3413bb2105d458e1fb01524f2f22227edfaa9dec0a935e17311220037",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "ggml-cpu-sandybridge.dll",
+          "bytes": 1291776,
+          "sha256": "924ff6c46f7f67e8bcae6469b06c0a245bda3d109d07eec2efcf91d4beb7717c",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "ggml-cpu-sapphirerapids.dll",
+          "bytes": 1870848,
+          "sha256": "d984760cfc1df22479abf51e81178573537cc15f597883cbd185ef0417d47045",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "ggml-cpu-skylakex.dll",
+          "bytes": 1605120,
+          "sha256": "8fffe5380562191035e6e7ec8fb39f2687b0b89f6bbb44dc6e19590bb7ec70fb",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "ggml-cpu-sse42.dll",
+          "bytes": 916992,
+          "sha256": "1d77793da95726a1405e7d7500da71eaefdee1204d4a7a7e70afedfb26515754",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "ggml-cpu-x64.dll",
+          "bytes": 909824,
+          "sha256": "4d5f10fc971b27bb12b3b31eb2ff1612d8c09a6ab0d8e4276cbaa535175eddf0",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "ggml-cpu-zen4.dll",
+          "bytes": 1600512,
+          "sha256": "49effad252cec394749323ff7bfe31e69f0f290ae915733b78a734b1cde29805",
+          "kind": "cpu_variant"
+        },
+        {
+          "file": "ggml.dll",
+          "bytes": 78848,
+          "sha256": "bd70e69a96b80f13a0a76f4757276f75e94525aedc2b58a089343b43d9eb8314",
+          "kind": "dependency"
+        },
+        {
+          "file": "libomp.dll",
+          "bytes": 768000,
+          "sha256": "a12116ba72d1d6820407cf30be23da04ce79d6bb8a71a5ee71759c5a1faa6f1c",
+          "kind": "dependency"
+        },
+        {
+          "file": "llama.dll",
+          "bytes": 3685888,
+          "sha256": "67b88e5e31decb264a61bdd530d0d42e6f51801a7ae9e0c97d7dbd25f3161b68",
+          "kind": "dependency"
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "python": "3.13.16",
+    "lingua-language-detector": "2.1.1"
+  }
+}

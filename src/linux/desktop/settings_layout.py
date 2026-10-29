@@ -401,8 +401,10 @@ def build(
     direction_row.set_margin_bottom(16)
     direction_row.set_margin_start(14)
     direction_row.set_margin_end(14)
+    owner.direction_columns = Gtk.SizeGroup(mode=Gtk.SizeGroupMode.HORIZONTAL)
     for key, chinese, english in (("source", "源语言", "Source"), ("target", "目标语言", "Target")):
         column = box(7)
+        owner.direction_columns.add_widget(column)
         caption = label(chinese, muted=True)
         line = Pango.AttrList()
         line.insert(Pango.attr_line_height_new_absolute(12 * Pango.SCALE))

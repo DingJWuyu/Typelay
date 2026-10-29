@@ -1333,6 +1333,7 @@ def install_packages(home, data, cache, request):
         version = private_directory(components / uuid.uuid4().hex)
         stage = "runtime"
         requirements = None
+        python_version = None
         if runtime_plan is not None:
             try:
                 _, requirements = copy_runtime(
@@ -1341,6 +1342,9 @@ def install_packages(home, data, cache, request):
                     runtime_plan,
                     limit=max(copied_runtime_bytes, runtime_budget),
                 )
+                # A copied runtime keeps its recorded version. An old/missing
+                # record is unknown, not permission to assert today's constant.
+                python_version = old_inventory.get("pythonVersion")
             except Exception as error:
                 if not rebuildable(error):
                     raise
@@ -1385,6 +1389,7 @@ def install_packages(home, data, cache, request):
                 stage = value
 
             _, requirements = prepare_runtime(home, version, uv, set_stage)
+            python_version = PYTHON
         stage = "model-verify"
         models = private_directory(version / "models")
         packages = []
@@ -1504,7 +1509,7 @@ def install_packages(home, data, cache, request):
             "schema": 3,
             "packages": packages,
             "activePackages": request["activePackages"],
-            "pythonVersion": PYTHON,
+            "pythonVersion": python_version,
             "requirementsSha256": digest(requirements),
         }
         from typelay_worker.catalog import read_active_selection

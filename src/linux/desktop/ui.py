@@ -1121,11 +1121,10 @@ class LanguagePicker(Gtk.Button):
         self.add(body)
         self.popover = style(Gtk.Popover.new(self), "language-popover")
         self.popover.set_position(Gtk.PositionType.BOTTOM)
-        panel = box(6)
-        panel.set_border_width(6)
+        panel = style(box(6), "language-panel")
         panel.set_size_request(280, -1)
         self.popover.add(panel)
-        self.search = Gtk.SearchEntry()
+        self.search = style(Gtk.SearchEntry(), "language-search")
         self.search.set_placeholder_text("搜索语言")
         self.search.get_accessible().set_name("搜索语言")
         panel.pack_start(self.search, False, False, 0)
@@ -1150,6 +1149,18 @@ class LanguagePicker(Gtk.Button):
         self.connect("clicked", lambda *_: self.popup())
         self.popover.connect("closed", lambda *_: self.retire())
         self.connect("unmap", lambda *_: self.popdown())
+        self.connect("size-allocate", self.update_popup_anchor)
+
+    def update_popup_anchor(self, _widget, allocation):
+        # The transparent native tail leaves a 12px gap after its transition.
+        # Inset both vertical edges for the prototype's 6px gap, also above
+        # the anchor when GTK must flip the popover near the screen edge.
+        rectangle = Gdk.Rectangle()
+        inset = min(6, allocation.height // 2)
+        rectangle.x, rectangle.y = 0, inset
+        rectangle.width = allocation.width
+        rectangle.height = max(1, allocation.height - 2 * inset)
+        self.popover.set_pointing_to(rectangle)
 
     def popup(self):
         if not self.is_sensitive() or not self.get_mapped():

@@ -31,6 +31,7 @@ from typelay_worker.index_assets import (  # noqa: E402
     verify_cpu_runtime,
 )
 
+from eng.index_profile import COMPILE_OPTIONS, confirm_native_sources, native_sources  # noqa: E402
 from eng.linux.index.prepare_assets import verify_build_inputs  # noqa: E402
 from eng.windows.index.toolchain import sdk_environment  # noqa: E402
 
@@ -71,6 +72,7 @@ def build(runtime, output):
     plain_path(output.parent, directory=True)
     with tempfile.TemporaryDirectory(prefix=".index-build-", dir=output.parent) as temporary:
         work = Path(temporary)
+        sources = native_sources()
         verify_build_inputs(work)
         payload = work / "payload"
         payload.mkdir()
@@ -84,6 +86,9 @@ def build(runtime, output):
             ).stdout
 
         env = sdk_environment(command)
+        # These MSVC variables otherwise inject unrecorded compile options.
+        env.pop("CL", None)
+        env.pop("_CL_", None)
         lib = shutil.which("lib.exe", path=env["PATH"])
         for name in ("llama", "ggml"):
             command(
@@ -100,15 +105,7 @@ def build(runtime, output):
         command(
             [
                 shutil.which("cl.exe", path=env["PATH"]),
-                "/nologo",
-                "/LD",
-                "/MD",
-                "/std:c++17",
-                "/EHsc",
-                "/utf-8",
-                "/O2",
-                "/W4",
-                "/WX",
+                *COMPILE_OPTIONS["win-x64"],
                 f"/I{NATIVE_ROOT / 'include'}",
                 f"/I{work}",
                 str(NATIVE_ROOT / "index_adapter.cpp"),
@@ -126,6 +123,7 @@ def build(runtime, output):
             ],
             env=env,
         )
+        confirm_native_sources(sources)
         plain_path(adapter)
         exports = production_exports(
             command(
@@ -157,6 +155,8 @@ def build(runtime, output):
             "schema": 1,
             "platform": "win-x64",
             "abi": ABI,
+            "native_sources": sources,
+            "compile_options": COMPILE_OPTIONS["win-x64"],
             "capabilities": CAPABILITIES,
             "exports": exports,
             "upstream_revision": UPSTREAM,

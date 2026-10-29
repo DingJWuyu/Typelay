@@ -256,6 +256,7 @@ while True:
             "confirmed",
         )
         self.assertTrue(self.latest("status")["modelReady"])
+        self.assertIsNone(self.latest("status")["modelInferenceProfileId"])
         partial, partial_root = self.model_generation(previous=old, directions=["zh_en"])
         self.assertEqual(
             await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": partial}),

@@ -376,7 +376,7 @@ internal sealed class ModelInstaller
         }
         return copied;
     }
-    private static async Task<long> CopyRuntime(string source, string target, CancellationToken ct, long maxBytes)
+    private async Task<long> CopyRuntime(string source, string target, CancellationToken ct, long maxBytes)
     {
         string marker = Path.Combine(source, "runtime-inventory.json");
         if (!File.Exists(marker) || new FileInfo(marker).Length > 8 * 1024 * 1024
@@ -391,6 +391,23 @@ internal sealed class ModelInstaller
             throw new InvalidDataException("runtime-repair-required");
         long copied = await CopyVerified(Path.Combine(source, "runtime"), Path.Combine(target, "runtime"), files, ct, maxBytes);
         File.Copy(marker, Path.Combine(target, "runtime-inventory.json"));
+        // Keep provenance of the runtime actually copied. Missing legacy metadata
+        // leaves advanced qualification closed; never label old bytes with today's
+        // requested Python/dependency versions.
+        string dependencyLock = Path.Combine(source, "dependency-lock.json");
+        if (File.Exists(dependencyLock) && new FileInfo(dependencyLock).Length <= 1024 * 1024
+            && (File.GetAttributes(dependencyLock) & FileAttributes.ReparsePoint) == 0)
+        {
+            try
+            {
+                var records = JsonSerializer.Deserialize<DownloadLock[]>(await File.ReadAllTextAsync(dependencyLock, ct),
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                if (records is not null)
+                    _locks.AddRange(records.Where(item => item is not null
+                        && (item.Name == "python" || Wheels.Any(wheel => wheel.Name == item.Name))));
+            }
+            catch (JsonException) { }
+        }
         return copied;
     }
     private long Preflight(string sourceRoot, ModelInstallationStore.PreparedInstallation prepared)

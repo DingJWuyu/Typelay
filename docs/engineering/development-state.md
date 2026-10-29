@@ -10,6 +10,10 @@
 
 ## 验证状态与当前阻塞
 
+最新已发布修补候选为 [`7eb26eb`](https://github.com/DingJWuyu/Typelay/commit/7eb26eb0f3c03044790a1b7daef11218abf26e16)，[CI547](https://github.com/DingJWuyu/Typelay/actions/runs/40873559319) 尚未整链验收。两平台 Index 生命周期成功，Linux tray 焦点回归步骤通过。Windows App 执行1017、通过1012、失败5：原116项XAML错误已消失；4项SC600仍实际选择Medium，另1项退休UIA peer抛合法禁用异常，测试正做精确适配。真实66张PNG已取得，不能把图存在等同全页面一致。
+
+待发布的独立候选包括：经复审的WPF术语单行编辑/导航即时保存；Linux语言最终公开键盘/保存回归与同偏好图；推理行为profile的14项固定来源、正式构建与21合同（Current仍空，正式两平台profile附着尚待CI）；现有失败诊断和测试迁移。GTK3语言菜单无原型背景模糊能力，采用同色实底这一明确材质降级，不扩散到其他平台或交互缺口。
+
 完整原型审查确认部分页面此前仅更换样式，未完整复刻交互，属于范围执行与验收遗漏，不是单纯视觉细节。当前优先按[固定页面/状态差距清单](../design/prototype-parity.md)逐页完成界面、真实交互与同偏好对照，再进入下一页；不先打磨细字重而保留主要交互差异。两端先收敛语言与风格页，随后按独立审查表安排搜索结果定位、术语选中/行内编辑、快捷键恢复默认、隐私卡和教程完整流程。已通过的构建或旧页面测试不等于原型一致性通过。
 
 当前代码见 [work/linux-usability](https://github.com/DingJWuyu/Typelay/tree/work/linux-usability)。最近已结束完整回归的参考检查点为 [`2e2e747`](https://github.com/DingJWuyu/Typelay/commit/2e2e747f263c404f1cb57dfbbda300899929ecde)，[对应 CI544](https://github.com/DingJWuyu/Typelay/actions/runs/40849916681) 已终态失败。该批包括已审的原生自有草稿布局与有界诊断、Linux 公开导航与焦点滚动、浏览器独立菜单、Windows 加载态/动效观察及 Hy 公开定位修补。它不包含后续 CJK 字体、Source Serif 角色字重或共享模型能力开放。 CI544 已逐条确认前批加载态与两项真实动效修补通过，Hy 及两端 Index 生命周期通过；整体仍因 Windows 前台预检/菜单、浏览器与 Notepad，以及 Linux 公开 UI/合作模块路径失败而未验收。

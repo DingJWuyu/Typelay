@@ -25,6 +25,7 @@ internal sealed partial class SettingsWindow : Window
     private Button _toastUndo = new();
     private Button _toastDismiss = new();
     private object _pageIdentity = new();
+    private object? _pageNavigation;
     private object? _undoIdentity;
     private long _undoRevision;
     private Func<Task>? _undo;
@@ -445,10 +446,13 @@ internal sealed partial class SettingsWindow : Window
         if (HasDraft && !ConfirmDiscard())
             return false;
         _startupPresentationAllowed = false;
+        _pageNavigation = null;
         _translationRequest?.Cancel();
         ClearShortcutConfirmation();
         _shortcutDraft = null;
         _glossaryDraft = null;
+        _glossaryEdit = null;
+        _glossarySelection = -1;
         _draftFeedback = null;
         _settingsError = null;
         _support?.CancelCheck();
@@ -466,6 +470,7 @@ internal sealed partial class SettingsWindow : Window
     public void PrepareForEmergencyShutdown()
     {
         _emergencyShutdown = true;
+        _pageNavigation = null;
         _translationRequest?.Cancel();
     }
     private bool ConfirmDiscard()
@@ -518,12 +523,25 @@ internal sealed partial class SettingsWindow : Window
         if (_startupPresentationAllowed)
             ShowPage("model");
     }
-    public void ShowPage(string page = "general")
+    public void ShowPage(string page = "general") => NavigatePage(page, clearSearch: false);
+    private async void NavigatePage(string page, bool clearSearch)
     {
+        object navigation = _pageNavigation = new();
+        string next = page == "translation" ? "model" : page;
+        if (IsVisible && _page == "glossary" && next != _page)
+        {
+            // Commit while the row is still current. The deferred focus-loss
+            // event cannot authorize work after its page has been retired.
+            await CommitGlossaryBeforeNavigationAsync();
+            if (!ReferenceEquals(navigation, _pageNavigation) || !IsVisible || _closeDialog is not null)
+                return;
+        }
         _startupPresentationAllowed = false;
         _support?.CancelCheck();
         SessionMustEnd?.Invoke();
-        _page = page == "translation" ? "model" : page;
+        _page = next;
+        if (clearSearch)
+            _settingsSearch.Clear();
         Refresh();
         _pageScroll.ScrollToTop();
         if (!IsVisible)
@@ -2573,320 +2591,6 @@ internal sealed partial class SettingsWindow : Window
             or "style-application-unavailable" or "practice-retirement-unconfirmed" => "当前无法保存，请检查翻译设置后重试。",
         _ => "保存结果未确认，请检查当前值后重试。"
     };
-    private void Glossary()
-    {
-        Heading(UiTheme.L("术语表", "Glossary"));
-        var state = _controller?.GetGlossarySettingsState();
-        var search = new TextBox { Height = 30, Padding = new(9, 5, 9, 5), Margin = new(0, 0, 0, 12) };
-        AutomationProperties.SetName(search, "搜索术语");
-        search.ToolTip = UiTheme.L("搜索源词或译词", "Search source or target terms");
-        _content.Children.Add(SearchField(search, UiTheme.L("搜索源词或译词", "Search source or target terms")));
-        if (state is null)
-        {
-            Note(UiTheme.L("术语表不可用", "Glossary unavailable"), UiTheme.L("翻译服务尚未连接。", "The translation service is not connected."));
-            return;
-        }
-        var scopes = new[] { new GlossaryScope(UiTheme.L("全局", "All languages"), null, null) }.Concat(ModelCatalog.Packages.Packages
-            .SelectMany(package => package.Directions).DistinctBy(direction => direction.Id)
-            .Select(direction => new GlossaryScope(direction.SourceName + " → " + direction.TargetName, direction.Source, direction.Target))).ToArray();
-        GlossarySnapshot? displayed = state.SavedSnapshot;
-        long displayedRevision = state.SettingsRevision;
-        IReadOnlyList<GlossaryRule> mountedRules = [];
-        object rowsIdentity = new();
-        var table = new StackPanel();
-        var header = new Grid { Margin = new(14, 10, 14, 8) };
-        header.ColumnDefinitions.Add(new());
-        header.ColumnDefinitions.Add(new());
-        header.ColumnDefinitions.Add(new()
-        {
-            Width = new(150)
-        });
-        header.ColumnDefinitions.Add(new()
-        {
-            Width = new(30)
-        });
-        int column = 0;
-        foreach (string title in new[] { UiTheme.L("源词", "Source term"), UiTheme.L("译词", "Translation"), UiTheme.L("范围", "Scope") })
-        {
-            var label = UiTheme.Text(title, 11.5, true, true);
-            Grid.SetColumn(label, column++);
-            header.Children.Add(label);
-        }
-        table.Children.Add(header);
-        var rows = new StackPanel();
-        table.Children.Add(rows);
-        var empty = UiTheme.Text("", 13, true);
-        empty.Margin = new(20, 36, 20, 36);
-        empty.HorizontalAlignment = HorizontalAlignment.Center;
-        table.Children.Add(empty);
-        var listbar = new DockPanel { Margin = new(4) };
-        var card = UiTheme.Border(table, 12);
-        var add = UiTheme.Button("+", async () =>
-        {
-            if (_savingTranslation || !IsVisible || !_content.Children.Contains(card))
-                return;
-            await CommitIfComplete();
-            if (!IsVisible || !_content.Children.Contains(card))
-                return;
-            BeginGlossaryDraft();
-            _glossaryDraft!.Add(new("", ""));
-            search.Clear();
-            RenderRows();
-            RefreshDraftBar();
-            _ = Dispatcher.BeginInvoke(new Action(() => VisualControls(rows).OfType<TextBox>().LastOrDefault(box => AutomationProperties.GetName(box).StartsWith("源词 ", StringComparison.Ordinal))?.Focus()));
-        });
-        add.Width = 30;
-        add.Height = 26;
-        add.Padding = new(0);
-        add.BorderThickness = new(0);
-        add.ToolTip = UiTheme.L("添加术语", "Add Term");
-        AutomationProperties.SetName(add, "添加术语");
-        listbar.Children.Add(add);
-        table.Children.Add(listbar);
-        card.BorderThickness = new(.5);
-        card.Margin = new(0, 0, 0, 14);
-        _content.Children.Add(card);
-        var availability = UiTheme.Text("", 12, true);
-        availability.Margin = new(4, 0, 4, 8);
-        _content.Children.Add(availability);
-        IReadOnlyList<GlossaryRule> DisplayedRules() => _glossaryDraft ?? (IReadOnlyList<GlossaryRule>?)displayed?.Rules ?? [];
-        void BeginGlossaryDraft()
-        {
-            if (_glossaryDraft is not null)
-                return;
-            _glossaryDraft = DisplayedRules().ToList();
-            _glossaryDraftRevision = displayedRevision;
-            _glossaryDraftBaseline = displayed?.Rules.ToArray() ?? [];
-        }
-        async Task CommitIfComplete()
-        {
-            if (_glossaryDraft is null || _savingTranslation || _glossaryDraft.Any(rule => string.IsNullOrWhiteSpace(rule.SourceTerm) || string.IsNullOrWhiteSpace(rule.TargetTerm)))
-                return;
-            await SaveGlossaryDraftAsync();
-        }
-        void RenderRows()
-        {
-            var renderedIdentity = rowsIdentity = new object();
-            rows.Children.Clear();
-            var rules = DisplayedRules();
-            mountedRules = rules.ToArray();
-            int shown = 0;
-            string query = search.Text.Trim();
-            for (int index = 0; index < rules.Count; index++)
-            {
-                int selectedIndex = index;
-                var rule = rules[index];
-                bool IsCurrentRow() => IsVisible && _content.Children.Contains(card) && ReferenceEquals(renderedIdentity, rowsIdentity)
-                    && selectedIndex < DisplayedRules().Count && Equals(DisplayedRules()[selectedIndex], rule);
-                if (query.Length > 0 && !(rule.SourceTerm + " " + rule.TargetTerm).Contains(query, StringComparison.OrdinalIgnoreCase))
-                    continue;
-                shown++;
-                var row = new Grid { Margin = new(14, 0, 8, 0), MinHeight = 38 };
-                row.ColumnDefinitions.Add(new());
-                row.ColumnDefinitions.Add(new());
-                row.ColumnDefinitions.Add(new()
-                {
-                    Width = new(150)
-                });
-                row.ColumnDefinitions.Add(new()
-                {
-                    Width = new(30)
-                });
-                var source = new TextBox { Text = rule.SourceTerm, Height = 28, Margin = new(0, 4, 8, 4), Padding = new(4, 2, 4, 2), FontFamily = UiTheme.ContentFontForLanguage(rule.SourceLanguage ?? _settings.Value.Source), FontSize = 14, BorderThickness = new(0) };
-                var target = new TextBox { Text = rule.TargetTerm, Height = 28, Margin = new(0, 4, 8, 4), Padding = new(4, 2, 4, 2), FontFamily = UiTheme.ContentFontForLanguage(rule.TargetLanguage ?? _settings.Value.Target), FontSize = 14, BorderThickness = new(0) };
-                AutomationProperties.SetName(source, "源词 " + (index + 1));
-                AutomationProperties.SetName(target, "译词 " + (index + 1));
-                row.Children.Add(source);
-                Grid.SetColumn(target, 1);
-                row.Children.Add(target);
-                var selectedScope = scopes.SingleOrDefault(item => item.Source == rule.SourceLanguage && item.Target == rule.TargetLanguage)
-                    ?? new GlossaryScope(rule.SourceLanguage + " → " + rule.TargetLanguage, rule.SourceLanguage, rule.TargetLanguage);
-                var scope = new ComboBox { ItemsSource = scopes.Contains(selectedScope) ? scopes : scopes.Append(selectedScope).ToArray(), DisplayMemberPath = nameof(GlossaryScope.Label), SelectedItem = selectedScope, Height = 26, MinHeight = 26, Margin = new(0, 0, 8, 0), FontSize = 11.5 };
-                AutomationProperties.SetName(scope, "术语范围 " + (index + 1));
-                Grid.SetColumn(scope, 2);
-                row.Children.Add(scope);
-                var remove = UiTheme.Button("−", async () =>
-                {
-                    if (_savingTranslation || !IsCurrentRow())
-                        return;
-                    var before = DisplayedRules().ToArray();
-                    BeginGlossaryDraft();
-                    _glossaryDraft!.RemoveAt(selectedIndex);
-                    var after = _glossaryDraft.ToArray();
-                    RenderRows();
-                    await SaveGlossaryDraftAsync();
-                    if (_glossaryDraft is null)
-                        Toast(UiTheme.L("已删除术语", "Term deleted"), async () =>
-                    {
-                        if (_glossaryDraft is not null)
-                        {
-                            Toast(UiTheme.L("请先完成当前术语编辑。", "Finish the current term edit first."));
-                            return;
-                        }
-                        if (!after.SequenceEqual(_settings.Value.Glossary?.Rules ?? []))
-                        {
-                            Toast(UiTheme.L("术语表已变化，无法撤销。", "The glossary changed; undo is unavailable."));
-                            return;
-                        }
-                        var result = await _controller!.ChangeGlossaryAsync(before, _settings.Revision);
-                        Toast(result.Saved ? UiTheme.L("已恢复术语", "Term restored") : UiTheme.L("恢复未确认，请检查术语表。", "Restore was not confirmed. Review the glossary."));
-                    }, () => after.SequenceEqual(_settings.Value.Glossary?.Rules ?? []));
-                });
-                remove.Width = 26;
-                remove.Height = 26;
-                remove.Padding = new(0);
-                remove.BorderThickness = new(0);
-                AutomationProperties.SetName(remove, "删除术语 " + (index + 1));
-                Grid.SetColumn(remove, 3);
-                row.Children.Add(remove);
-                var line = new Border { BorderThickness = new(0, .5, 0, 0), Child = row };
-                line.SetResourceReference(Border.BorderBrushProperty, "Line");
-                rows.Children.Add(line);
-                void Edit()
-                {
-                    if (!IsCurrentRow() || scope.SelectedItem is not GlossaryScope selected)
-                        return;
-                    BeginGlossaryDraft();
-                    rule = new(source.Text, target.Text, selected.Source, selected.Target);
-                    _glossaryDraft![selectedIndex] = rule;
-                    mountedRules = _glossaryDraft.ToArray();
-                    _draftFeedback = _settingsError = null;
-                    RefreshDraftBar();
-                }
-                source.TextChanged += (_, _) => Edit();
-                target.TextChanged += (_, _) => Edit();
-                source.LostKeyboardFocus += async (_, _) => { if (IsCurrentRow()) await CommitIfComplete(); };
-                target.LostKeyboardFocus += async (_, _) => { if (IsCurrentRow()) await CommitIfComplete(); };
-                scope.SelectionChanged += async (_, _) => { if (!IsCurrentRow()) return; Edit(); await CommitIfComplete(); };
-                source.PreviewKeyDown += async (_, e) => { if (e.Key == Key.Enter && IsCurrentRow()) { e.Handled = true; await CommitIfComplete(); } };
-                target.PreviewKeyDown += async (_, e) => { if (e.Key == Key.Enter && IsCurrentRow()) { e.Handled = true; await CommitIfComplete(); } };
-            }
-            empty.Text = UiTheme.L(query.Length > 0 ? "没有找到术语" : "还没有术语", query.Length > 0 ? "No matching terms" : "No terms yet");
-            empty.Visibility = shown == 0 ? Visibility.Visible : Visibility.Collapsed;
-        }
-        search.TextChanged += (_, _) => RenderRows();
-        _refreshGlossarySettings = () =>
-        {
-            var current = _controller!.GetGlossarySettingsState();
-            if (_glossaryDraft is null && !ReferenceEquals(displayed, current.SavedSnapshot))
-            {
-                bool same = mountedRules.SequenceEqual(current.SavedSnapshot?.Rules ?? []);
-                displayed = current.SavedSnapshot;
-                if (!same)
-                    RenderRows();
-            }
-            if (_glossaryDraft is null)
-                displayedRevision = current.SettingsRevision;
-            bool writable = current.CanSave && !_savingTranslation;
-            add.IsEnabled = writable && DisplayedRules().Count < GlossarySnapshot.MaxRules;
-            foreach (var input in VisualControls(rows).OfType<TextBox>().Where(input => AutomationProperties.GetName(input).StartsWith("源词 ", StringComparison.Ordinal)
-                || AutomationProperties.GetName(input).StartsWith("译词 ", StringComparison.Ordinal)))
-                input.IsReadOnly = !writable;
-            foreach (var choice in VisualControls(rows).OfType<ComboBox>())
-                choice.IsEnabled = writable;
-            foreach (var button in VisualControls(rows).OfType<Button>())
-                button.IsEnabled = writable;
-            availability.Text = current.IsReleased
-                ? UiTheme.L("保存只更新本地术语表；实际应用仍由模型、方向与输入状态检查决定。", "Saving updates only the local glossary. Application still depends on model, direction and input-state checks.")
-                : UiTheme.L("术语保存在本机。当前模型方向尚未开放术语应用。", "Terms are stored on this device. Glossary application is not available for the current model and direction.");
-            availability.Visibility = availability.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
-        };
-        RenderRows();
-        _refreshGlossarySettings();
-    }
-    private bool ConfirmGlossaryReplacement(IReadOnlyList<GlossaryRule> savedRules)
-    {
-        var dialog = new Window
-        {
-            Owner = this,
-            Title = UiStrings.Translate("术语表已更新"),
-            Width = 460,
-            SizeToContent = SizeToContent.Height,
-            MaxHeight = 500,
-            ResizeMode = ResizeMode.NoResize,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            ShowInTaskbar = false
-        };
-        dialog.SetResourceReference(BackgroundProperty, "Panel");
-        var body = new StackPanel { Margin = new(22) };
-        body.Children.Add(UiTheme.Text("用当前修改替换最新的完整术语表？", 13));
-        var latest = new StackPanel { Margin = new(0, 12, 0, 12) };
-        latest.Children.Add(UiTheme.Text("最新已保存的术语", 12, bold: true));
-        if (savedRules.Count == 0)
-            latest.Children.Add(UiTheme.Text("无术语", 12, true));
-        foreach (var rule in savedRules)
-            latest.Children.Add(UiTheme.Text(rule.SourceTerm + " → " + rule.TargetTerm + " · "
-                + (rule.SourceLanguage is null ? "全局" : rule.SourceLanguage + " → " + rule.TargetLanguage), 12));
-        body.Children.Add(new ScrollViewer { Content = latest, MaxHeight = 260, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        var keep = UiTheme.Button("继续编辑", () => { if (ReferenceEquals(_closeDialog, dialog) && dialog.IsVisible) dialog.DialogResult = false; }, primary: true);
-        keep.IsCancel = keep.IsDefault = true;
-        keep.Margin = new(0, 0, 10, 0);
-        actions.Children.Add(keep);
-        actions.Children.Add(UiTheme.Button("替换并保存", () => { if (ReferenceEquals(_closeDialog, dialog) && dialog.IsVisible) dialog.DialogResult = true; }));
-        body.Children.Add(actions);
-        dialog.Content = body;
-        dialog.Loaded += (_, _) => keep.Focus();
-        _closeDialog = dialog;
-        try
-        {
-            return dialog.ShowDialog() == true;
-        }
-        finally { _closeDialog = null; }
-    }
-    private sealed record GlossaryScope(string Label, string? Source, string? Target);
-    private async Task SaveGlossaryDraftAsync()
-    {
-        if (_controller is null || _glossaryDraft is null || _savingTranslation)
-            return;
-        var rules = _glossaryDraft.ToArray();
-        using var request = new CancellationTokenSource();
-        _translationRequest = request;
-        _savingTranslation = true;
-        RefreshTranslationAvailability();
-        try
-        {
-            var current = _controller.GetGlossarySettingsState();
-            if (_glossaryDraftRevision != current.SettingsRevision)
-            {
-                // An unrelated ordinary setting can advance the revision. A
-                // changed glossary requires reviewing exactly what will be replaced.
-                var savedRules = current.SavedSnapshot?.Rules ?? [];
-                if (!_glossaryDraftBaseline.SequenceEqual(savedRules) && !ConfirmGlossaryReplacement(savedRules))
-                    return;
-                _glossaryDraftRevision = current.SettingsRevision;
-                _glossaryDraftBaseline = savedRules.ToArray();
-            }
-            var result = await _controller.ChangeGlossaryAsync(rules, _glossaryDraftRevision, cancellationToken: request.Token);
-            if (request.IsCancellationRequested || !ReferenceEquals(_translationRequest, request))
-                return;
-            bool confirmed = result.Saved && result.Code is "glossary-saved" or "glossary-saved-inactive" or "glossary-saved-notification-failed" or "glossary-saved-inactive-notification-failed";
-            if (confirmed)
-            {
-                if (_glossaryDraft?.SequenceEqual(rules) == true)
-                    _glossaryDraft = null;
-                else
-                    _glossaryDraftBaseline = rules;
-            }
-            _draftFeedback = confirmed ? result.Code is "glossary-saved-notification-failed" or "glossary-saved-inactive-notification-failed"
-                ? "已保存，请重新打开设置确认当前状态。" : result.Code == "glossary-saved-inactive" ? UiTheme.L("已保存到术语表，当前模型方向尚未开放术语应用。", "Saved to the glossary. Application is not available for this model and direction.") : _draftMessages.SavedMessage : _draftMessages.InvalidMessage;
-            _settingsError = confirmed ? null : TranslationSettingsError(result.Code);
-            if (confirmed && HasDraft)
-                _draftFeedback = _draftMessages.UnsavedNotice;
-        }
-        catch (Exception error) when (error is not OutOfMemoryException)
-        {
-            if (!request.IsCancellationRequested)
-                _settingsError = "保存结果未确认，术语修改已保留。请重新打开设置检查当前值。";
-        }
-        finally
-        {
-            if (ReferenceEquals(_translationRequest, request))
-                _translationRequest = null;
-            _savingTranslation = false;
-            RefreshTranslationAvailability();
-        }
-    }
     private void About()
     {
         Heading(UiTheme.L("关于与隐私", "About & Privacy"));

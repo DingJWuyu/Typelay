@@ -243,6 +243,7 @@ internal static class Program
         {
             model = model.Status,
             modelReady = model.Ready,
+            modelInferenceProfileId = model.VerifiedIdentity?.InferenceProfileId,
             modelInstalled = model.Installed,
             modelDirections = model.AvailableDirections,
             modelPackages = model.AvailablePackages.Select(item => new

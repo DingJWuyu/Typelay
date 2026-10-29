@@ -10,6 +10,7 @@ using TypeLay.Runtime;
 internal static class IndexPackageCheck
 {
     private const string Id = "index-translate-2b-q4-k-m";
+    private const string Profile = "index-v1-3b99612f3676f5ac8ef34c81e99bf8874a5ba5271207a15d39e947c9d42ef87d";
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
     private sealed class Owned(IChildProcess owner, ModelLoadPlan plan) : IChildProcess
     {
@@ -57,6 +58,7 @@ internal static class IndexPackageCheck
         var outcomes = stages.ToDictionary(stage => stage, _ => "not-run");
         var responses = new List<object>();
         var payloadHashes = new Dictionary<string, string>();
+        var inferenceProfiles = new Dictionary<string, string>();
         var children = new List<Owned>();
         var cleanup = new List<string>();
         string stage = stages[0], failure = "none";
@@ -93,6 +95,11 @@ internal static class IndexPackageCheck
             stage = name;
         }
         void Passed() => outcomes[stage] = "passed";
+        void RequireProfile()
+        {
+            Require(model?.VerifiedIdentity?.InferenceProfileId == Profile, "index-inference-profile-unqualified");
+            inferenceProfiles[stage] = model!.VerifiedIdentity!.InferenceProfileId!;
+        }
         try
         {
             foreach (var assembly in new[] { typeof(ModelClient).Assembly, typeof(ModelInstaller).Assembly,
@@ -152,6 +159,7 @@ internal static class IndexPackageCheck
             }
             Require(model.Ready && model.AvailablePackages.Count == 1 && model.AvailablePackages[0].Package.Id == Id
                 && model.AvailableDirections.Count == 14, "index-hello-identity");
+            RequireProfile();
             Passed();
             Begin("ordinary-and-structure");
             foreach (var input in new[]
@@ -187,6 +195,7 @@ internal static class IndexPackageCheck
             model = NewClient();
             await store.StartModelAsync(model, ct);
             Require(model.Ready && store.ReadInstallationState().Generation == generation, "cold-start-changed-generation");
+            RequireProfile();
             Passed();
             Begin("failed-repair-retains-current");
             var stale = new ModelPackageRequest(1, ModelPackageOperation.Repair, [Id], [Id], new string('0', 32));
@@ -224,6 +233,8 @@ internal static class IndexPackageCheck
                     "package-publication-unconfirmed");
                 Require(model.Ready && store.ReadInstallationState().CurrentPackages.Select(item => item.Package.Id).SequenceEqual(active),
                     "package-current-mismatch");
+                if (active.SequenceEqual(new[] { Id }))
+                    RequireProfile();
                 Passed();
             }
             await Change("repair", ModelPackageOperation.Repair, [Id], [Id], true);
@@ -256,6 +267,7 @@ internal static class IndexPackageCheck
                 failure,
                 responses,
                 payloadHashes,
+                inferenceProfiles,
                 cleanup,
                 allOwnedWorkersExited = !unknownOwner && children.All(child => child.Exited),
                 quality = "not-reviewed",

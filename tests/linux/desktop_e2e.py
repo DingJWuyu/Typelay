@@ -4532,6 +4532,7 @@ def run(arguments):
             from support.gtk_accessibility import (
                 Atspi,
                 bounds,
+                focus_settings_control,
                 focused,
                 language_label,
                 named,
@@ -4927,6 +4928,35 @@ def run(arguments):
                 assert Atspi.Selection.is_child_selected(current[0], index)
                 return row
 
+            def visible_setup_control(name, *, role=None):
+                desktop = Atspi.get_desktop(0)
+                pending = [
+                    app
+                    for index in range(desktop.get_child_count())
+                    if (app := desktop.get_child_at_index(index)) is not None
+                    and app.get_process_id() == process.pid
+                ]
+                matches = []
+                for _ in range(4096):
+                    if not pending:
+                        assert len(matches) <= 1, "ambiguous visible setup control: " + name
+                        return matches[0] if matches else None
+                    node = pending.pop()
+                    if node is None:
+                        continue
+                    node.clear_cache()
+                    if (
+                        node.get_name() == name
+                        and (role is None or node.get_role() == role)
+                        and node.get_state_set().contains(Atspi.StateType.SHOWING)
+                    ):
+                        assert node.get_process_id() == process.pid
+                        matches.append(node)
+                    pending.extend(
+                        node.get_child_at_index(index) for index in range(node.get_child_count())
+                    )
+                raise AssertionError("setup controls exceed their bounded accessibility tree")
+
             def tutorial_practice():
                 # Follow the four visible onboarding steps. Reopening may retain
                 # the current step, so no hidden-field action is accepted.
@@ -4937,22 +4967,93 @@ def run(arguments):
                     ):
                         return source
                     headings = ("欢迎使用 TypeLay", "从你熟悉的语言开始", "准备本地翻译")
-                    current = next(
-                        (
-                            named(process.pid, title)
-                            for title in headings
-                            if (item := named(process.pid, title)) is not None
-                            and item.get_state_set().contains(Atspi.StateType.SHOWING)
-                        ),
-                        None,
+                    # The welcome label shares the window's title. A title-only
+                    # tree search returns the FRAME and can never observe that
+                    # individual page retiring while the tutorial stays open.
+                    visible_headings = [
+                        item
+                        for title in headings
+                        if (item := visible_setup_control(title, role=Atspi.Role.LABEL)) is not None
+                    ]
+                    assert len(visible_headings) == 1, (
+                        "tutorial must expose exactly one visible current-step label"
                     )
-                    assert current is not None, "tutorial has no visible current step"
+                    current = visible_headings[0]
                     activate_setting("继续")
+
+                    def previous_step_hidden():
+                        current.clear_cache()
+                        assert current.get_process_id() == process.pid
+                        assert current.get_role() == Atspi.Role.LABEL
+                        return not current.get_state_set().contains(Atspi.StateType.SHOWING)
+
                     wait_for(
-                        lambda: not current.get_state_set().contains(Atspi.StateType.SHOWING),
+                        previous_step_hidden,
                         "tutorial did not retire its previous native step",
                     )
                 raise AssertionError("tutorial practice did not become visible in four steps")
+
+            def tutorial_focus(description):
+                # The current tutorial window title is fixed even when its
+                # child chrome is English. Bind the real compositor identity,
+                # not a title-only match or an AT-SPI focus claim.
+                title, pid = "欢迎使用 TypeLay", process.pid
+                window_id = None
+                observation = {}
+
+                def owned_window_focused():
+                    nonlocal window_id, observation
+                    owned = [
+                        window
+                        for window in contents(request("Windows"), "Windows")
+                        if window.get("pid") == pid
+                    ]
+                    front = contents(request("FocusedWindow"), "FocusedWindow") or {}
+
+                    def summary(window):
+                        return {
+                            "id": window.get("id"),
+                            "title": str(window.get("title", ""))[:256],
+                            "is_focused": window.get("is_focused"),
+                        }
+
+                    observation = {
+                        "expectedPid": pid,
+                        "expectedTitle": title,
+                        "expectedWindowId": window_id,
+                        "ownedWindowCount": len(owned),
+                        "ownedWindows": [summary(window) for window in owned[:16]],
+                        "ownedFocusedWindow": summary(front) if front.get("pid") == pid else None,
+                    }
+                    matches = [window for window in owned if window.get("title") == title]
+                    assert len(matches) <= 1, "multiple owned tutorial windows are visible"
+                    if not matches:
+                        return None
+                    candidate = matches[0]
+                    if window_id is None:
+                        window_id = candidate["id"]
+                    if (
+                        candidate["id"] == window_id
+                        and candidate.get("is_focused") is True
+                        and front.get("pid") == pid
+                        and front.get("id") == window_id
+                        and front.get("title") == title
+                    ):
+                        return front
+                    return None
+
+                try:
+                    return wait_for(owned_window_focused, description)
+                except Exception:
+                    # Keep only bounded metadata from this owned process. Never
+                    # record another application's window title or change focus.
+                    try:
+                        (arguments.output / "tutorial-focus-failure.json").write_text(
+                            json.dumps({"stage": description, **observation}, indent=2)
+                        )
+                    except Exception:
+                        pass
+                    raise
 
             navigation = wait_for(
                 lambda: settings_navigation(process.pid), "settings sidebar was not accessible"
@@ -5259,54 +5360,37 @@ def run(arguments):
                     "fixed source did not restore language swap",
                 )
 
-                def visible_language_choice(label):
-                    desktop = Atspi.get_desktop(0)
-                    pending = [
-                        app
-                        for index in range(desktop.get_child_count())
-                        if (app := desktop.get_child_at_index(index)) is not None
-                        and app.get_process_id() == process.pid
-                    ]
-                    for _ in range(256):
-                        if not pending:
-                            return None
-                        node = pending.pop()
-                        if node is None:
-                            continue
-                        node.clear_cache()
-                        if node.get_name() == label and node.get_state_set().contains(
-                            Atspi.StateType.SHOWING
-                        ):
-                            return node
-                        pending.extend(
-                            node.get_child_at_index(index)
-                            for index in range(node.get_child_count())
-                        )
-                    raise AssertionError("language completion exceeds its accessibility tree")
-
                 for name, field, prefix, label, code in (
                     ("源语言", "Source", "4e2d", "中文", "zh"),
                     ("目标语言", "Target", "82f1", "英语", "en"),
                 ):
-                    picker = settings_control("设置：" + name)
-                    pending = [picker]
-                    for _ in range(16):
-                        assert pending, "language picker has no editable search field"
-                        editor = pending.pop()
-                        if editor is None:
-                            continue
-                        if editor.get_editable_text_iface() is not None:
-                            break
-                        pending.extend(
-                            editor.get_child_at_index(index)
-                            for index in range(editor.get_child_count())
-                        )
-                    else:
-                        raise AssertionError("language picker exceeds its accessibility tree")
-                    assert Atspi.Component.grab_focus(editor.get_component_iface())
-                    wait_for(lambda: focused(editor), "language search did not receive focus")
-                    before_search = paths.settings.read_bytes()
                     search_deadline = time.monotonic() + 15
+                    picker = focus_settings_control(
+                        process.pid,
+                        settings_control("设置：" + name, search_deadline - time.monotonic()),
+                        timeout=search_deadline - time.monotonic(),
+                    )
+                    assert picker.get_role() == Atspi.Role.PUSH_BUTTON
+                    before_search = paths.settings.read_bytes()
+                    assert Atspi.Action.do_action(picker.get_action_iface(), 0)
+                    # The editable search belongs to the mapped popover, not
+                    # the direction button's retired ComboBox child tree.
+                    editor = wait_for(
+                        lambda: visible_setup_control("搜索语言"),
+                        "language popover did not expose its search field",
+                        timeout=search_deadline - time.monotonic(),
+                    )
+                    assert editor.get_editable_text_iface() is not None
+                    focus_settings_control(
+                        process.pid, editor, timeout=search_deadline - time.monotonic()
+                    )
+                    wait_for(
+                        lambda: focused(editor)
+                        and (contents(request("FocusedWindow"), "FocusedWindow") or {}).get("id")
+                        == settings_window["id"],
+                        "language search did not receive real settings-window focus",
+                        timeout=search_deadline - time.monotonic(),
+                    )
                     key("ctrl+a")
                     # Use GTK's native Unicode composition with ordinary keycodes.
                     # An xdotool Uxxxx keysym remaps only the outer X server; the
@@ -5323,44 +5407,61 @@ def run(arguments):
                         editor.get_text_iface(), 0, Atspi.CoordType.SCREEN
                     )
                     clips, ancestor = [], editor.get_parent()
-                    for _ in range(16):
+                    seen = {editor}
+                    for _ in range(24):
                         assert ancestor is not None and ancestor.get_process_id() == process.pid
+                        assert ancestor not in seen, "language search ancestry contains a cycle"
+                        seen.add(ancestor)
+                        ancestor.clear_cache()
                         role = ancestor.get_role()
-                        if role in (Atspi.Role.SCROLL_PANE, Atspi.Role.FRAME):
+                        if role in (
+                            Atspi.Role.VIEWPORT,
+                            Atspi.Role.SCROLL_PANE,
+                            Atspi.Role.FRAME,
+                        ):
                             area = Atspi.Component.get_extents(
                                 ancestor.get_component_iface(), Atspi.CoordType.SCREEN
                             )
                             clips.append((area.x, area.y, area.width, area.height))
                         if role == Atspi.Role.FRAME:
+                            assert ancestor.get_name() == "TypeLay 设置"
+                            assert ancestor.get_state_set().contains(Atspi.StateType.SHOWING)
                             break
                         ancestor = ancestor.get_parent()
                     else:
                         raise AssertionError("language search exceeds its bounded owned ancestry")
                     assert (
-                        len(clips) == 2
-                        and settings_text_visible_point(
+                        settings_text_visible_point(
                             (character.x, character.y, character.width, character.height), clips
                         )
                         is not None
                     ), "focused language-search text lies outside the actual page/frame"
                     wait_for(
-                        lambda: text(editor) == label[0] and visible_language_choice(label),
-                        "typing a language prefix did not expose its native completion",
+                        lambda: text(editor) == label[0]
+                        and visible_setup_control("语言选项：" + code),
+                        "typing a language prefix did not expose its native option",
                         timeout=search_deadline - time.monotonic(),
                     )
                     assert paths.settings.read_bytes() == before_search, (
                         "language search saved before choosing a match"
                     )
                     key("Down")
+                    assert focused(editor)
                     key("Return")
                     wait_for(
                         lambda: json.loads(paths.settings.read_text())[field] == code
-                        and text(editor) == label
-                        and focused(editor),
-                        "keyboard completion did not save its language and retain focus",
+                        and language_label(picker) == label
+                        and focused(picker)
+                        and visible_setup_control("搜索语言") is None,
+                        "keyboard selection did not save its language and return anchor focus",
+                        timeout=search_deadline - time.monotonic(),
                     )
                     key("Tab")
-                    wait_for(lambda: not focused(editor), "Tab did not leave the language editor")
+                    wait_for(
+                        lambda: not focused(picker),
+                        "Tab did not leave the language direction button",
+                        timeout=search_deadline - time.monotonic(),
+                    )
                 activate_setting("交换语言")
                 wait_for(
                     lambda: (value := json.loads(paths.settings.read_text()))["Source"] == "en"
@@ -6250,16 +6351,8 @@ def run(arguments):
                         "closed instructions retained their copy control",
                     )
                     assert control(paths, "tutorial") is True
-                    practice_window = wait_for(
-                        lambda: (
-                            window
-                            if (
-                                window := contents(request("FocusedWindow"), "FocusedWindow") or {}
-                            ).get("title")
-                            == "TypeLay 首次使用"
-                            else None
-                        ),
-                        "clipboard practice field did not gain compositor focus",
+                    practice_window = tutorial_focus(
+                        "clipboard practice field did not gain compositor focus"
                     )
                     source = tutorial_practice()
                     assert text(source) == ""
@@ -6647,11 +6740,7 @@ def run(arguments):
                     lambda: status().get("setup", {}).get("tutorialVisible"),
                     "explicit local-model trial did not open",
                 )
-                wait_for(
-                    lambda: (contents(request("FocusedWindow"), "FocusedWindow") or {}).get("title")
-                    == "TypeLay 首次使用",
-                    "tutorial did not gain real compositor focus before typing",
-                )
+                tutorial_focus("tutorial did not gain real compositor focus before typing")
                 assert not status()["setup"]["onboardingComplete"]
                 source = tutorial_practice()
                 assert Atspi.Component.grab_focus(source.get_component_iface())
@@ -6695,11 +6784,7 @@ def run(arguments):
                     lambda: status().get("setup", {}).get("tutorialVisible"),
                     "completed tutorial could not be reopened explicitly",
                 )
-                wait_for(
-                    lambda: (contents(request("FocusedWindow"), "FocusedWindow") or {}).get("title")
-                    == "TypeLay 首次使用",
-                    "reopened tutorial did not gain real compositor focus",
-                )
+                tutorial_focus("reopened tutorial did not gain real compositor focus")
                 tutorial_practice()
                 connection = settings_control(support["labels"]["connectApplications"])
                 assert Atspi.Component.grab_focus(connection.get_component_iface())
@@ -6728,11 +6813,7 @@ def run(arguments):
                 persisted = json.loads(paths.settings.read_text())
                 assert all(persisted[name] == value for name, value in trial_preferences.items())
                 assert control(paths, "tutorial") is True
-                wait_for(
-                    lambda: (contents(request("FocusedWindow"), "FocusedWindow") or {}).get("title")
-                    == "TypeLay 首次使用",
-                    "tutorial did not regain focus after opening application support",
-                )
+                tutorial_focus("tutorial did not regain focus after opening application support")
                 activate_setting("稍后设置")
                 wait_for(
                     lambda: not status().get("setup", {}).get("tutorialVisible"),

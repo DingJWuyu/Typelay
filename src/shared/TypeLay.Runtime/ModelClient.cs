@@ -529,6 +529,7 @@ public sealed class ModelClient : ITranslationService, IDisposable
         var paths = plan.Paths;
         if (!HasMarkers(paths))
             throw new InvalidDataException("model-inventory");
+        string? inferenceProfile = await IndexInferenceProfile.VerifyAsync(plan, ct);
         var info = new ProcessStartInfo(paths.Python)
         {
             UseShellExecute = false,
@@ -572,7 +573,7 @@ public sealed class ModelClient : ITranslationService, IDisposable
         // Identity requires exact packages from this worker connection. A legacy
         // worker may omit attestation and retain ordinary Ready only.
         if (hello.Packages is not null)
-            connection.VerifiedIdentity = new(plan, hello.AlternativeTranslationVersion == 1);
+            connection.VerifiedIdentity = new(plan, hello.AlternativeTranslationVersion == 1, inferenceProfile);
         connection.Directions = Array.AsReadOnly(hello.Directions!.ToArray());
         AdvancedTranslationScope? scope = hello.StyledTranslationVersion is not null || hello.GlossaryTranslationVersion is not null
             ? new(plan.ActivePackages.SelectMany(item => item.Directions), hello.AdvancedTranslationDirections ?? plan.Directions)

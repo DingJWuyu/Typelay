@@ -11,4 +11,10 @@
     <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="../../../src/shared/TypeLay.Worker/run_worker.py;../../../src/shared/TypeLay.Worker/model-catalog.json;../../../src/shared/TypeLay.Worker/requirements.txt" Link="ProfileWorker/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../../src/shared/TypeLay.Worker/typelay_worker/*.py" Link="ProfileWorker/typelay_worker/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../../src/shared/TypeLay.Worker/native/index/*.lock.json" Link="ProfileWorker/native/index/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../../src/shared/TypeLay.Runtime/IndexInferenceProfile.json" Link="IndexInferenceProfile.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

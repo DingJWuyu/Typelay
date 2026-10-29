@@ -143,8 +143,9 @@ public interface ITranslationService
 // A legacy hello without verified package versions grants no such projection.
 public sealed class VerifiedModelIdentity
 {
-    internal VerifiedModelIdentity(ModelLoadPlan plan, bool indexAlternative = false)
+    internal VerifiedModelIdentity(ModelLoadPlan plan, bool indexAlternative = false, string? inferenceProfileId = null)
     {
+        InferenceProfileId = inferenceProfileId;
         Packages = Array.AsReadOnly(plan.ActivePackages.Select(item => new VerifiedModelPackage(item)).ToArray());
         // Legacy alternative operation has no versioned hello feature. Its
         // compatibility rule belongs to the verified model projection, not UI
@@ -154,6 +155,12 @@ public sealed class VerifiedModelIdentity
                 package.Version == "1.9" && package.Id is "argos-zh-en" or "argos-en-zh");
     }
     public Guid ConnectionId { get; } = Guid.NewGuid();
+    // Independently checked launch inputs, then this owned connection's strict
+    // hello. Never copied from a worker-reported string or a previous connection.
+    public string? InferenceProfileId
+    {
+        get;
+    }
     public IReadOnlyList<VerifiedModelPackage> Packages
     {
         get;
@@ -188,7 +195,8 @@ public enum TranslationOperation
 {
     Style, Glossary, Alternative, StyledGlossary
 }
-public sealed record TranslationRelease(TranslationOperation Operation, string PackageId, string Version, string Direction);
+public sealed record TranslationRelease(TranslationOperation Operation, string PackageId, string Version, string Direction,
+    string? InferenceProfileId = null);
 
 // A compiled product decision, not hello negotiation or a configurable flag system.
 // This release has no accepted quality rows. Constructor injection is for controlled tests.
@@ -201,9 +209,11 @@ public sealed class TranslationReleasePolicy(IEnumerable<TranslationRelease> rel
     {
         var possible = identity.Packages.SelectMany(package => package.Directions
             .Where(pair => pair.Target == direction.Target && (direction.Source == "auto" || pair.Source == direction.Source))
-            .Select(pair => new TranslationRelease(operation, package.Id, package.Version, pair.Id))).ToArray();
+            .Select(pair => new TranslationRelease(operation, package.Id, package.Version, pair.Id,
+                package.Id == "index-translate-2b-q4-k-m" ? identity.InferenceProfileId : null))).ToArray();
         // Auto cannot borrow acceptance from a single direction. No new detection RPC.
-        return possible.Length > 0 && possible.All(row => _releases.Contains(row));
+        return possible.Length > 0 && possible.All(row =>
+            (row.PackageId != "index-translate-2b-q4-k-m" || row.InferenceProfileId is not null) && _releases.Contains(row));
     }
 }
 public sealed record AlternativeState(SessionViewToken? Session, bool CanRequest, string? UnavailableReason, bool IsReleased);
