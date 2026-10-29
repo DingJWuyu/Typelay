@@ -751,8 +751,25 @@ async def desktop(paths, background, lock, tutorial=False):
             }
 
         async def support_action(
-            identity, action, directory=None, *, startup_id=None, desktop_id=None
+            identity,
+            action,
+            directory=None,
+            *,
+            startup_id=None,
+            desktop_id=None,
+            lesson=None,
+            practice_current=None,
         ):
+            if practice_current is not None:
+                if (
+                    identity != "desktop-text"
+                    or action != "Connect"
+                    or lesson not in ("automatic", "onDemand")
+                    or not callable(practice_current)
+                ):
+                    raise ValueError("practice-request")
+                if not practice_current():
+                    return await support_view()
             if identity == "desktop-text" and action in (
                 "ListApplications",
                 "ListManagedApplications",
@@ -775,10 +792,18 @@ async def desktop(paths, background, lock, tutorial=False):
                 )
             if identity == "desktop-text" and action in ("Connect", "Remove"):
                 await practice.end(practice.pid)
+                if practice_current is not None and not practice_current():
+                    return await support_view()
             if identity in BROWSERS and action == "Remove":
                 components["input"].suspend_browser(identity)
             result = await support.execute(
-                identity, action, directory, startup_id=startup_id, desktop_id=desktop_id
+                identity,
+                action,
+                directory,
+                startup_id=startup_id,
+                desktop_id=desktop_id,
+                lesson=lesson,
+                practice_current=practice_current,
             )
             if identity in BROWSERS and action == "Remove" and result.get("ok"):
                 # Include any granted peer that connected while the installer

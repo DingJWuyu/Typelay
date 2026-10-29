@@ -2731,8 +2731,13 @@ def run(arguments):
                                 before = gtk_state()["motionFrames"][-1]
                                 started = time.monotonic_ns() // 1_000_000
                                 name = "gtk-overlay-" + label + ".png"
+                                # Keep the same lossless pixels while removing PNG
+                                # compression work from this midpoint measurement.
+                                compression = ["-l", "0"] if label == "expand-middle" else []
                                 subprocess.run(
-                                    ["grim", str(arguments.output / name)], check=True, timeout=3
+                                    ["grim", *compression, str(arguments.output / name)],
+                                    check=True,
+                                    timeout=3,
                                 )
                                 finished = time.monotonic_ns() // 1_000_000
                                 observed = wait_for(
@@ -4944,12 +4949,14 @@ def run(arguments):
                 # Follow the four visible onboarding steps. Reopening may retain
                 # the current step, so no hidden-field action is accepted.
                 for _ in range(4):
-                    source = named(process.pid, "教程练习原文")
+                    source = visible_setup_control(
+                        "自动翻译", role=Atspi.Role.PUSH_BUTTON, tutorial_content=True
+                    )
                     if source is not None and source.get_state_set().contains(
                         Atspi.StateType.SHOWING
                     ):
                         return source
-                    headings = ("欢迎使用 TypeLay", "从你熟悉的语言开始", "准备本地翻译")
+                    headings = ("欢迎使用 TypeLay", "你想译成什么语言？", "下载本地翻译模型")
                     # The welcome label shares the window's title. A title-only
                     # tree search returns the FRAME and can never observe that
                     # individual page retiring while the tutorial stays open.
@@ -4979,7 +4986,7 @@ def run(arguments):
                         previous_step_hidden,
                         "tutorial did not retire its previous native step",
                     )
-                raise AssertionError("tutorial practice did not become visible in four steps")
+                raise AssertionError("tutorial practice links did not become visible in four steps")
 
             def tutorial_focus(description):
                 # The current tutorial window title is fixed even when its
@@ -6283,7 +6290,7 @@ def run(arguments):
 
             if settings_scope:
                 # Use the real GTK selection/action interfaces and paste the system
-                # clipboard into the existing practice field after closing each dialog.
+                # clipboard into the existing owned GTK fixture after closing each dialog.
                 # This does not load an extension or complete browser approval.
                 choices = [row for row in support["rows"] if not row["showInMore"]]
                 chromium = next(row for row in choices if row["id"] == "chromium")
@@ -6359,24 +6366,101 @@ def run(arguments):
                         lambda: named(process.pid, copy_name) is None,
                         "closed instructions retained their copy control",
                     )
-                    assert control(paths, "tutorial") is True
-                    practice_window = tutorial_focus(
-                        "clipboard practice field did not gain compositor focus"
+                    before_clipboard_preferences = paths.settings.read_bytes()
+                    clipboard_process = subprocess.Popen(
+                        [str(arguments.native / "gtk-fixture")],
+                        env={
+                            **environment,
+                            "GTK_MODULES": "",
+                            "GTK3_MODULES": "",
+                            "TYPELAY_FIXTURE_INITIAL_TEXT": "TypeLay clipboard target",
+                        },
+                        stdout=sys.stdout,
+                        stderr=sys.stderr,
                     )
-                    source = tutorial_practice()
-                    assert text(source) == ""
-                    assert Atspi.Component.grab_focus(source.get_component_iface())
-                    key("ctrl+v")
-                    wait_for(
-                        lambda: text(source) == expected,
-                        "copy button did not place the exact address or folder on the clipboard",
-                    )
-                    request({"Action": {"CloseWindow": {"id": practice_window["id"]}}})
-                    wait_for(
-                        lambda: not status()["setup"]["tutorialVisible"],
-                        "closing clipboard practice did not dismiss the window",
-                    )
+                    try:
+
+                        def clipboard_window():
+                            assert clipboard_process.poll() is None
+                            matches = [
+                                item
+                                for item in contents(request("Windows"), "Windows")
+                                if item.get("pid") == clipboard_process.pid
+                                and item.get("title") == "TypeLay GTK contract fixture"
+                            ]
+                            assert len(matches) <= 1, "ambiguous owned clipboard window"
+                            return matches[0] if matches else None
+
+                        fixture_window = wait_for(
+                            clipboard_window, "owned clipboard GTK fixture did not map"
+                        )
+                        request({"Action": {"FocusWindow": {"id": fixture_window["id"]}}})
+
+                        def clipboard_field():
+                            root = named(clipboard_process.pid, "TypeLay GTK contract fixture")
+                            pending, found = [root] if root else [], []
+                            for _ in range(4096):
+                                if not pending:
+                                    break
+                                node = pending.pop()
+                                if node is None:
+                                    continue
+                                node.clear_cache()
+                                assert node.get_process_id() == clipboard_process.pid
+                                if (
+                                    node.get_role() in (Atspi.Role.ENTRY, Atspi.Role.TEXT)
+                                    and node.get_state_set().contains(Atspi.StateType.SHOWING)
+                                    and node.get_text_iface() is not None
+                                    and text(node) == "TypeLay clipboard target"
+                                ):
+                                    found.append(node)
+                                pending.extend(
+                                    node.get_child_at_index(child)
+                                    for child in range(node.get_child_count())
+                                )
+                            else:
+                                assert not pending, "clipboard fixture tree exceeds 4096 nodes"
+                            assert len(found) <= 1, "ambiguous clipboard text field"
+                            return found[0] if found else None
+
+                        source = wait_for(clipboard_field, "owned clipboard text field unavailable")
+                        assert Atspi.Component.grab_focus(source.get_component_iface())
+                        wait_for(
+                            lambda: focused(source) and clipboard_window().get("is_focused"),
+                            "clipboard source did not gain actual native focus",
+                        )
+                        current = clipboard_window()
+                        bounds(
+                            source,
+                            clipboard_process.pid,
+                            current["layout"]["window_size"],
+                            expected_name="TypeLay GTK contract fixture",
+                        )
+                        assert text(source) == "TypeLay clipboard target"
+                        key("ctrl+a")
+                        key("ctrl+v")
+                        wait_for(
+                            lambda: text(source) == expected,
+                            "copy button did not place the exact address or folder on the clipboard",
+                        )
+                        request({"Action": {"CloseWindow": {"id": fixture_window["id"]}}})
+                        clipboard_process.wait(timeout=5)
+                    finally:
+                        if clipboard_process.poll() is None:
+                            clipboard_process.terminate()
+                            clipboard_process.wait(timeout=5)
+                    assert paths.settings.read_bytes() == before_clipboard_preferences
                     assert not status()["setup"]["onboardingComplete"]
+                    request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
+                    wait_for(
+                        lambda: any(
+                            item.get("id") == settings_window["id"]
+                            and item.get("pid") == process.pid
+                            and item.get("is_focused")
+                            for item in contents(request("Windows"), "Windows")
+                        ),
+                        "settings did not regain focus after clipboard fixture closed",
+                    )
                 # The observed fixed layout belongs only to the browser-instructions
                 # interactions above, never later page edits or a reopened window.
                 settings_scroll_calibration = None
@@ -6384,7 +6468,7 @@ def run(arguments):
                 evidence.append(
                     "Real GTK browser instructions: both copy buttons paste the exact management "
                     "address and component folder after dialog dismissal; reopening works and "
-                    "closing practice does not complete onboarding"
+                    "closing the ordinary clipboard target does not change preferences or complete onboarding"
                 )
                 general_row = settings_page("通用")
                 # Native sidebar rows retain selection, keyboard focus, and page
@@ -6751,19 +6835,22 @@ def run(arguments):
                 )
                 tutorial_focus("tutorial did not gain real compositor focus before typing")
                 assert not status()["setup"]["onboardingComplete"]
-                source = tutorial_practice()
-                assert Atspi.Component.grab_focus(source.get_component_iface())
-                wait_for(lambda: focused(source), "tutorial source did not gain native focus")
-                key("ctrl+a")
-                typed("Please send me the final version.")
-                activate_setting("生成本地译文")
-                wait_for(
-                    lambda: status().get("setup", {}).get("tutorialState") == "preview",
-                    "explicit tutorial preview did not use the actual local model",
-                    125,
+                automatic = tutorial_practice()
+                assert automatic.get_role() == Atspi.Role.PUSH_BUTTON
+                assert automatic.get_state_set().contains(Atspi.StateType.SENSITIVE)
+                on_demand = visible_setup_control(
+                    "按需翻译", role=Atspi.Role.PUSH_BUTTON, tutorial_content=True
+                )
+                assert on_demand is not None and on_demand.get_state_set().contains(
+                    Atspi.StateType.SENSITIVE
+                )
+                assert status()["modelReady"] is True, (
+                    "tutorial advanced without the actual prepared model"
                 )
                 subprocess.run(
-                    ["grim", str(arguments.output / "tutorial-preview.png")], check=True, timeout=3
+                    ["grim", str(arguments.output / "tutorial-practice-links.png")],
+                    check=True,
+                    timeout=3,
                 )
                 assert not status()["setup"]["onboardingComplete"]
                 activate_setting("开始使用")
@@ -6794,18 +6881,12 @@ def run(arguments):
                     "completed tutorial could not be reopened explicitly",
                 )
                 tutorial_focus("reopened tutorial did not gain real compositor focus")
-                tutorial_practice()
-                connection = settings_control(support["labels"]["connectApplications"])
+                connection = tutorial_practice()
                 assert Atspi.Component.grab_focus(connection.get_component_iface())
-                for instruction in (
-                    "输入非敏感练习文字，先完成输入法候选，再生成本地译文。本窗只预览，不向其他应用写入。",
-                ):
-                    wait_for(
-                        lambda: (label := named(process.pid, instruction))
-                        and label.get_state_set().contains(Atspi.StateType.SHOWING),
-                        "local trial guidance was not visible: " + instruction,
-                    )
-                activate_setting(support["labels"]["connectApplications"])
+                assert not any(action["id"] == "Connect" for action in desktop_row()["actions"]), (
+                    "fresh client unexpectedly retained original-input-method recovery consent"
+                )
+                activate_setting("自动翻译")
                 wait_for(
                     lambda: settings_control("设置页：应用")
                     .get_state_set()
@@ -6831,7 +6912,7 @@ def run(arguments):
                 persisted = json.loads(paths.settings.read_text())
                 assert all(persisted[name] == value for name, value in trial_preferences.items())
                 evidence.append(
-                    "First-run application support stays separate from model readiness; explicit local-model trial, prompt dismissal, persisted restart and reopening; visible managed-practice guidance, connection routing and skip preserve mode, custom acceptance key and writeback preference"
+                    "First-run application support stays separate from model readiness; four actual setup steps gated by prepared-model readiness, prompt dismissal, persisted restart and reopening; two owned-practice links, connection routing and skip preserve mode, custom acceptance key and writeback preference"
                 )
                 if bundled_component:
                     # Keep the earlier explicit tutorial-dismissal coverage, then

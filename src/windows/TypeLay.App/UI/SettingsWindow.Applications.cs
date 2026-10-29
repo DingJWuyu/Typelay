@@ -131,55 +131,37 @@ internal sealed partial class SettingsWindow
                 AutomationProperties.SetAutomationId(enabled, "ApplicationEnabled_" + application);
                 Grid.SetColumn(enabled, 3);
                 row.Children.Add(enabled);
-                var menu = new ContextMenu();
-                menu.Items.Add(new MenuItem { Header = UiTheme.L("移除", "Remove"), IsEnabled = false });
-                object? opening = null;
-                menu.Opened += (_, _) =>
+                row.Background = Brushes.Transparent;
+                // WPF routes both right-click and the keyboard context-menu key
+                // here. The prototype opens confirmation directly, without a menu.
+                row.ContextMenuOpening += async (_, args) =>
                 {
+                    args.Handled = true;
                     if (!CurrentRows())
-                    {
-                        menu.IsOpen = false;
                         return;
-                    }
-                    object opened = opening = new object();
-                    menu.Items.Clear();
-                    // Keep WPF's deferred Click inside this opening until the handler
-                    // retires it, rather than accepting a click after arbitrary closure.
-                    var remove = new ApplicationMenuItem(() => ReferenceEquals(opened, opening) && menu.IsOpen && CurrentRows()) { Header = UiTheme.L("移除", "Remove"), StaysOpenOnClick = true };
-                    AutomationProperties.SetAutomationId(remove, "ApplicationRemove_" + application);
-                    remove.Click += async (_, _) =>
+                    long revision = _settings.Revision;
+                    if (!ConfirmApplicationRemoval(application, CurrentPage) || !CurrentRows() || _settings.Revision != revision)
+                        return;
+                    var members = _settings.Value.VisibleApplications(KnownApplicationIds).Where(app => !StringComparer.OrdinalIgnoreCase.Equals(app, application)).ToArray();
+                    if (await SaveAsync(_settings.Value with
                     {
-                        if (!ReferenceEquals(opened, opening) || !menu.IsOpen || !CurrentRows())
-                            return;
-                        opening = null;
-                        menu.IsOpen = false;
-                        long revision = _settings.Revision;
-                        if (!ConfirmApplicationRemoval(application, CurrentPage) || !CurrentRows() || _settings.Revision != revision)
-                            return;
-                        var members = _settings.Value.VisibleApplications(KnownApplicationIds).Where(app => !StringComparer.OrdinalIgnoreCase.Equals(app, application)).ToArray();
-                        if (await SaveAsync(_settings.Value with
+                        ApplicationListCustomized = true,
+                        ManagedApplications = members
+                    }, callerCurrent: CurrentRows))
+                        Toast(UiTheme.L("已从列表移除", "Removed from the list"), async () =>
                         {
-                            ApplicationListCustomized = true,
-                            ManagedApplications = members
-                        }, callerCurrent: CurrentRows))
-                            Toast(UiTheme.L("已从列表移除", "Removed from the list"), async () =>
+                            var undoCurrent = CaptureApplicationUndo();
+                            var current = _settings.Value.VisibleApplications(KnownApplicationIds);
+                            if (current.Contains(application, StringComparer.OrdinalIgnoreCase))
+                                return;
+                            if (await SaveAsync(_settings.Value with
                             {
-                                var undoCurrent = CaptureApplicationUndo();
-                                var current = _settings.Value.VisibleApplications(KnownApplicationIds);
-                                if (current.Contains(application, StringComparer.OrdinalIgnoreCase))
-                                    return;
-                                if (await SaveAsync(_settings.Value with
-                                {
-                                    ApplicationListCustomized = true,
-                                    ManagedApplications = current.Append(application).ToArray()
-                                }, callerCurrent: undoCurrent))
-                                    Toast(UiTheme.L("已恢复到列表", "Restored to the list"));
-                            }, () => !_settings.Value.VisibleApplications(KnownApplicationIds).Contains(application, StringComparer.OrdinalIgnoreCase));
-                    };
-                    menu.Items.Add(remove);
+                                ApplicationListCustomized = true,
+                                ManagedApplications = current.Append(application).ToArray()
+                            }, callerCurrent: undoCurrent))
+                                Toast(UiTheme.L("已恢复到列表", "Restored to the list"));
+                        }, () => !_settings.Value.VisibleApplications(KnownApplicationIds).Contains(application, StringComparer.OrdinalIgnoreCase));
                 };
-                menu.Closed += (_, _) => opening = null;
-                row.ContextMenu = menu;
                 if (list.Children.Count > 0)
                     list.Children.Add(ApplicationDivider());
                 list.Children.Add(row);
@@ -252,17 +234,6 @@ internal sealed partial class SettingsWindow
         }
         UpdateLayout();
         return Find(_content);
-    }
-
-    // UIA uses OnClick too. Retire before MenuItem can move focus or close a
-    // newer context menu, not merely before our eventual Click handler writes.
-    private sealed class ApplicationMenuItem(Func<bool> current) : MenuItem
-    {
-        protected override void OnClick()
-        {
-            if (current())
-                base.OnClick();
-        }
     }
 
     private static Grid ApplicationGrid()

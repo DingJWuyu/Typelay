@@ -3029,6 +3029,137 @@ class BrowserContract(unittest.TestCase):
                         self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
                         self.assertEqual(self.accepted(), [])
 
+    def test_idle_and_paused_capsules_fit_visible_content_and_keep_source_anchor(self):
+        output = ROOT / "artifacts/linux/browser-native/overlay" / f"capsule-{uuid.uuid4().hex}"
+        output.mkdir(parents=True)
+        print(f"Capsule screenshots and geometry: {output}", flush=True)
+        observations = []
+        for theme, language in (("light", "zh-CN"), ("dark", "en")):
+            for phase in ("idle", "paused"):
+                self.page.reload()
+                self.command(
+                    "configure-shortcuts",
+                    {
+                        "generation": "browser-default",
+                        "sessionEnabled": True,
+                        "enabled": False,
+                        "accept": "Tab",
+                        "exit": "Esc",
+                    },
+                )
+                self.page.locator("#source").evaluate("""element => {
+                  element.style.cssText = 'display:block;margin-top:500px;margin-left:160px;width:480px;box-sizing:border-box';
+                }""")
+                self.page.locator("#source").focus()
+                appearance = {
+                    "font": "claude",
+                    "textSize": 15,
+                    "uiLanguage": language,
+                    "motion": "reduce",
+                }
+                if phase == "paused":
+                    self.page.keyboard.insert_text("Hello")
+                    self.assertTrue(
+                        self.render_paused(theme=theme, appearance=appearance)["rendered"][
+                            "visible"
+                        ]
+                    )
+                    control = self.overlay_control("Resume" if language == "en" else "恢复")
+                else:
+                    snapshot = self.type_source()
+                    self.assertTrue(
+                        self.command(
+                            "overlay-render",
+                            {
+                                "target": snapshot["target"],
+                                "authority": snapshot["authority"],
+                                "revision": 1,
+                                "theme": theme,
+                                "appearance": appearance,
+                                "view": {
+                                    "presentation": {
+                                        "visible": True,
+                                        "editorOwnsText": False,
+                                        "tabHint": "",
+                                    },
+                                    "state": "IdleCapsule",
+                                    "text": "",
+                                    "editable": False,
+                                    "sourceLanguage": "auto",
+                                    "targetLanguage": "en",
+                                    "status": "",
+                                },
+                            },
+                        )["visible"]
+                    )
+                    control = self.overlay_control("Auto → EN")
+                actual = self.overlay_dom(
+                    control,
+                    """function() {
+                  const root = this.getRootNode(), panel = root.querySelector('section');
+                  const header = panel.querySelector('header'), source = document.querySelector('#source');
+                  const language = header.querySelector('.language'), status = header.querySelector('.status');
+                  const resume = [...header.children].find(e => e.tagName === 'BUTTON' && e !== language);
+                  const range = document.createRange(); range.selectNodeContents(status);
+                  const rect = e => e.getBoundingClientRect().toJSON();
+                  return {host: rect(root.host), source: rect(source), language: rect(language),
+                    status: rect(status), statusContents: range.getBoundingClientRect().toJSON(), resume: rect(resume),
+                    paused: panel.classList.contains('paused'), pauseIcon: status.querySelector('svg')?.getAttribute('aria-hidden') ?? null,
+                    statusDisplay: getComputedStyle(status).display, statusGrow: getComputedStyle(status).flexGrow,
+                    actionsDisplay: getComputedStyle(header.querySelector('.footer-actions')).display,
+                    editorHidden: panel.querySelector('textarea').hidden, editorReadonly: panel.querySelector('textarea').readOnly,
+                    sourceFocused: document.activeElement === source, selection: [source.selectionStart, source.selectionEnd],
+                    sourceText: source.value, connected: root.host.isConnected};
+                }""",
+                )
+                observations.append(
+                    {"theme": theme, "language": language, "phase": phase, **actual}
+                )
+                (output / "geometry.json").write_text(
+                    json.dumps(observations, indent=2), encoding="utf-8"
+                )
+                self.page.screenshot(path=str(output / f"{theme}-{language}-{phase}.png"))
+                with self.subTest(theme=theme, phase=phase, part="intrinsic-shell"):
+                    self.assertEqual(actual["host"]["height"], 34)
+                    if phase == "idle":
+                        self.assertAlmostEqual(
+                            actual["host"]["width"], actual["language"]["width"] + 8, delta=0.1
+                        )
+                        self.assertEqual(actual["statusDisplay"], "none")
+                    else:
+                        # Prototype pause label has 9/10px padding, then a 6px
+                        # gap and the real Resume button; no fixed shell width.
+                        expected = (
+                            actual["statusContents"]["width"]
+                            + 19
+                            + 6
+                            + actual["resume"]["width"]
+                            + 8
+                        )
+                        self.assertAlmostEqual(actual["host"]["width"], expected, delta=0.1)
+                        self.assertEqual(actual["statusGrow"], "0")
+                    self.assertEqual(actual["actionsDisplay"], "none")
+                with self.subTest(theme=theme, phase=phase, part="source-and-controls"):
+                    self.assertTrue(actual["connected"] and actual["sourceFocused"])
+                    self.assertTrue(actual["editorHidden"] and actual["editorReadonly"])
+                    self.assertEqual(actual["selection"], [5, 5])
+                    self.assertEqual(actual["sourceText"], "Hello")
+                    self.assertAlmostEqual(
+                        actual["host"]["right"], actual["source"]["right"], delta=0.1
+                    )
+                    self.assertAlmostEqual(
+                        actual["host"]["bottom"], actual["source"]["top"] - 6, delta=0.1
+                    )
+                    if phase == "paused":
+                        self.assertEqual(actual["pauseIcon"], "true")
+                        self.assertEqual(actual["resume"]["height"], 26)
+                        self.assertGreater(actual["resume"]["width"], 0)
+                        self.assertGreaterEqual(
+                            actual["resume"]["left"], actual["host"]["left"] + 4
+                        )
+                        self.assertLessEqual(actual["resume"]["right"], actual["host"]["right"] - 4)
+                    self.assertEqual(self.accepted(), [])
+
     def test_overlay_footer_compact_direction_and_icon_controls_preserve_source(self):
         output = ROOT / "artifacts/linux/browser-native/overlay" / f"footer-{uuid.uuid4().hex}"
         output.mkdir(parents=True)
@@ -4377,104 +4508,162 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(len({frame["host"]["height"] for frame in frames}), 1)
 
     def test_explicit_motion_mode_overrides_os_and_legacy_boolean(self):
-        # Read-only bounded observation of the public media event and actual
-        # panel attribute. Neither changes readiness, animation, or the lease.
-        self.page.evaluate("""() => {
-          const rows = [], media = matchMedia('(prefers-reduced-motion: reduce)');
-          let editor = null, panel = null, expiry = null, omitted = 0;
-          const log = kind => {
-            if (rows.length < 48) rows.push({kind, ms: performance.now(),
-              matches: media.matches, connected: editor?.isConnected ?? null,
-              motion: editor?.parentElement?.dataset.motion ?? null, expiry});
-            else omitted++;
-          };
-          const observer = new MutationObserver(() => log('panel-change'));
-          const changed = () => log('media-change');
-          media.addEventListener('change', changed);
-          const raw = fixtureRawCommand;
-          window.fixtureRawCommand = message => {
-            const result = raw(message);
-            if (message.op === 'overlay-render') {
-              expiry = message.data.expiresAtMs - 1000000;
-              log('render');
-            }
-            return result;
-          };
-          window.fixtureMotionAudit = {
-            read(value) {
-              if (!editor) {
-                editor = value; panel = value.parentElement;
-                observer.observe(panel, {attributes: true, attributeFilter: ['data-motion']});
-              }
-              log('assert-read');
-              return value.parentElement.dataset.motion;
-            },
-            ready() {
-              return editor?.isConnected && editor.parentElement === panel && panel.dataset.motion === 'reduce'
-                && Number.isFinite(expiry) && performance.now() < expiry;
-            },
-            finish() {
-              log('final'); observer.disconnect(); media.removeEventListener('change', changed);
-              return {rows, omitted};
-            }
-          };
-        }""")
-
-        def save_motion_audit():
-            output = Path(
-                os.environ.get(
-                    "TYPELAY_BROWSER_LIFETIME_OUTPUT",
-                    ROOT / "artifacts/linux/browser-native/overlay/lifetime",
+        # Long animation samples are separate preference scenes, not one
+        # synthetic host session without its normal fresh source observations.
+        # Never recapture on failure or extend the original 1500/800ms clocks.
+        observations = []
+        output = Path(
+            os.environ.get(
+                "TYPELAY_BROWSER_LIFETIME_OUTPUT",
+                ROOT / "artifacts/linux/browser-native/overlay/lifetime",
+            )
+        )
+        output.mkdir(parents=True, exist_ok=True)
+        for mode in ("full", "reduce", "system"):
+            with self.subTest(mode=mode):
+                self.page.reload()
+                self.command(
+                    "configure-shortcuts",
+                    {
+                        "generation": "browser-default",
+                        "sessionEnabled": True,
+                        "enabled": False,
+                        "accept": "Tab",
+                        "exit": "Esc",
+                    },
                 )
-            )
-            output.mkdir(parents=True, exist_ok=True)
-            (output / (self._testMethodName + ".json")).write_text(
-                json.dumps(self.page.evaluate("fixtureMotionAudit.finish()"), indent=2),
-                encoding="utf-8",
-            )
+                self.page.locator("#source").focus()
+                self.page.evaluate("""() => {
+                  const rows = [], media = matchMedia('(prefers-reduced-motion: reduce)');
+                  let editor = null, panel = null, expiry = null, omitted = 0, viewProof = null, sameView = true;
+                  const log = kind => {
+                    if (rows.length < 48) rows.push({kind, ms: performance.now(),
+                      matches: media.matches, connected: editor?.isConnected ?? null,
+                      motion: editor?.parentElement?.dataset.motion ?? null, expiry, sameView, wall: Date.now(),
+                      documentFocused: document.hasFocus(), sourceFocused: document.activeElement?.id === 'source'});
+                    else omitted++;
+                  };
+                  const observer = new MutationObserver(() => log('panel-change'));
+                  const changed = () => log('media-change');
+                  media.addEventListener('change', changed);
+                  const raw = fixtureRawCommand;
+                  window.fixtureRawCommand = message => {
+                    const result = raw(message);
+                    if (message.op === 'overlay-render') {
+                      expiry = message.data.expiresAtMs - 1000000;
+                      const proof = JSON.stringify([message.data.target, message.data.generation,
+                        message.data.revision, message.data.view.viewContext?.token]);
+                      sameView = viewProof === null || viewProof === proof; viewProof ??= proof;
+                      log('render');
+                    }
+                    if (message.op === 'capture') log('capture-return');
+                    return result;
+                  };
+                  window.fixtureMotionAudit = {
+                    read(value) {
+                      if (!editor) {
+                        editor = value; panel = value.parentElement;
+                        observer.observe(panel, {attributes: true, attributeFilter: ['data-motion']});
+                      }
+                      if (!sameView || value !== editor || !editor.isConnected || editor.parentElement !== panel)
+                        throw new Error('motion scene changed its original editor/view');
+                      log('assert-read');
+                      return value.parentElement.dataset.motion;
+                    },
+                    ready() {
+                      return editor?.isConnected && editor.parentElement === panel && panel.dataset.motion === 'reduce'
+                        && Number.isFinite(expiry) && performance.now() < expiry;
+                    },
+                    finish() {
+                      log('final'); observer.disconnect(); media.removeEventListener('change', changed);
+                      return {rows, omitted};
+                    }
+                  };
+                }""")
+                try:
+                    data = self.motion_view()
+                    if mode == "full":
+                        self.page.emulate_media(reduced_motion="reduce")
+                    data["appearance"] = {
+                        "uiLanguage": "zh-CN",
+                        "motion": mode,
+                        "reduceMotion": mode != "reduce",
+                    }
+                    self.assertTrue(self.command("overlay-render", data)["visible"])
+                    editor = self.overlay_control("TypeLay 译文", "textbox")
 
-        self.addCleanup(save_motion_audit)
-        data = self.motion_view()
-        self.page.emulate_media(reduced_motion="reduce")
-        data["appearance"] = {"uiLanguage": "zh-CN", "motion": "full", "reduceMotion": True}
-        self.assertTrue(self.command("overlay-render", data)["visible"])
-        editor = self.overlay_control("TypeLay 译文", "textbox")
-        self.assertEqual(
-            self.overlay_dom(editor, "function() { return fixtureMotionAudit.read(this); }"),
-            "full",
-        )
-        self.observe_overlay_frames(start_on_click=True)
-        self.click_overlay_control("展开")
-        frames = self.motion_frames()
-        self.assertGreater(len({frame["host"]["height"] for frame in frames}), 2)
-        self.page.emulate_media(reduced_motion="no-preference")
-        self.assertEqual(
-            self.overlay_dom(editor, "function() { return fixtureMotionAudit.read(this); }"),
-            "full",
-        )
-        data["appearance"] = {"uiLanguage": "zh-CN", "motion": "reduce", "reduceMotion": False}
-        self.assertTrue(self.command("overlay-render", data)["visible"])
-        self.click_overlay_control("缩小")
-        self.observe_overlay_frames()
-        frames = self.motion_frames()
-        self.assertEqual(len({frame["host"]["height"] for frame in frames}), 1)
-        data["appearance"] = {"uiLanguage": "zh-CN", "motion": "system", "reduceMotion": True}
-        self.assertTrue(self.command("overlay-render", data)["visible"])
-        self.assertEqual(
-            self.overlay_dom(editor, "function() { return fixtureMotionAudit.read(this); }"),
-            "full",
-        )
-        self.page.emulate_media(reduced_motion="reduce")
-        # A matching media query can precede the cached query's change event.
-        # Wait in the same budget for the original live panel to apply it.
-        self.page.wait_for_function(
-            "matchMedia('(prefers-reduced-motion: reduce)').matches && fixtureMotionAudit.ready()"
-        )
-        self.assertEqual(
-            self.overlay_dom(editor, "function() { return fixtureMotionAudit.read(this); }"),
-            "reduce",
-        )
-        self.assertEqual(self.accepted(), [])
+                    def actual_mode():
+                        return self.overlay_dom(
+                            editor, "function() { return fixtureMotionAudit.read(this); }"
+                        )
+
+                    self.assertEqual(actual_mode(), "reduce" if mode == "reduce" else "full")
+                    selection = self.overlay_dom(
+                        editor,
+                        "function() { return [this.selectionStart, this.selectionEnd]; }",
+                    )
+                    if mode == "full":
+                        self.observe_overlay_frames(start_on_click=True)
+                        self.click_overlay_control("展开")
+                        frames = self.motion_frames()
+                        self.assertGreater(len({frame["host"]["height"] for frame in frames}), 2)
+                        self.page.emulate_media(reduced_motion="no-preference")
+                        self.assertEqual(actual_mode(), "full")
+                    elif mode == "reduce":
+                        self.click_overlay_control("展开")
+                        self.click_overlay_control("缩小")
+                        self.observe_overlay_frames()
+                        frames = self.motion_frames()
+                        self.assertEqual(len({frame["host"]["height"] for frame in frames}), 1)
+                    else:
+                        # Preserve immediate three-mode changes on this same
+                        # live editor/token, without three long frame samples.
+                        for changed_mode in ("full", "reduce", "system"):
+                            data["appearance"] = {
+                                "uiLanguage": "zh-CN",
+                                "motion": changed_mode,
+                                "reduceMotion": changed_mode != "reduce",
+                            }
+                            self.assertTrue(self.command("overlay-render", data)["visible"])
+                            self.assertEqual(
+                                actual_mode(), "reduce" if changed_mode == "reduce" else "full"
+                            )
+                            self.assertEqual(
+                                self.overlay_dom(
+                                    editor,
+                                    "function() { return [this.selectionStart, this.selectionEnd]; }",
+                                ),
+                                selection,
+                            )
+                            self.assertEqual(self.accepted(), [])
+                        self.page.emulate_media(reduced_motion="reduce")
+                        # The new query can match before the cached query's
+                        # change event. Keep the original live-panel budget.
+                        self.page.wait_for_function(
+                            "matchMedia('(prefers-reduced-motion: reduce)').matches && fixtureMotionAudit.ready()"
+                        )
+                        self.assertEqual(actual_mode(), "reduce")
+                    self.assertEqual(
+                        self.overlay_dom(
+                            editor,
+                            "function() { return [this.readOnly, this.selectionStart, this.selectionEnd]; }",
+                        ),
+                        [True, *selection],
+                    )
+                    self.assertEqual(
+                        self.page.locator("#source").evaluate(
+                            "element => [element.value, element.selectionStart, element.selectionEnd, document.activeElement === element]"
+                        ),
+                        ["Hello", 5, 5, True],
+                    )
+                    self.assertEqual(self.accepted(), [])
+                finally:
+                    observations.append(
+                        {"mode": mode, **self.page.evaluate("fixtureMotionAudit.finish()")}
+                    )
+                    (output / (self._testMethodName + ".json")).write_text(
+                        json.dumps(observations, indent=2), encoding="utf-8"
+                    )
 
     def test_hint_preserves_unchanged_text_and_updates_on_revocation(self):
         snapshot = self.type_source()

@@ -1,9 +1,12 @@
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Automation.Peers;
 using System.Windows.Automation.Provider;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Threading;
 using TypeLay.App;
 using TypeLay.Core;
@@ -122,29 +125,28 @@ public sealed partial class SettingsRenderingTests
     });
 
     [Fact]
-    public Task ApplicationRemovalConfirmationRejectsExternalRevisionAndRetiredMenuPeers() => desktop.RunAsync(() =>
+    public Task ApplicationRemovalConfirmationRejectsExternalRevisionAndRetiredConfirmationPeers() => desktop.RunAsync(() =>
     {
         using var scene = new ApplicationPageScene(new(ApplicationListCustomized: true, ManagedApplications: ["writer"]));
-        var row = ApplicationElement(scene.Window, "ApplicationRow_writer");
-        var menu = Assert.IsType<ContextMenu>(row.ContextMenu);
-        menu.PlacementTarget = row;
-        menu.IsOpen = true;
-        scene.Window.UpdateLayout();
-        var old = Assert.IsAssignableFrom<MenuItem>(Assert.Single(menu.Items));
-        var peer = UIElementAutomationPeer.CreatePeerForElement(old);
-        var previous = Assert.IsAssignableFrom<IInvokeProvider>(peer.GetPattern(PatternInterface.Invoke));
-        menu.IsOpen = false;
-        menu.IsOpen = true;
+        IInvokeProvider? retired = null;
         string before = File.ReadAllText(scene.Path);
-        previous.Invoke();
-        scene.Window.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
-        Assert.True(menu.IsOpen);
-        Assert.Empty(scene.Window.OwnedWindows.Cast<Window>());
-        Assert.Equal(before, File.ReadAllText(scene.Path));
-        var current = Assert.IsAssignableFrom<MenuItem>(Assert.Single(menu.Items));
-        Assert.NotSame(old, current);
-        ApplicationDialogAction(scene.Window, () => Assert.IsAssignableFrom<IInvokeProvider>(UIElementAutomationPeer.CreatePeerForElement(current).GetPattern(PatternInterface.Invoke)).Invoke(), "ApplicationRemovalConfirmation", dialog =>
+        ApplicationRemovalDialog(scene.Window, "writer", dialog =>
         {
+            retired = ApplicationInvokeProvider(ApplicationButton(dialog, "ApplicationRemovalConfirm"));
+            InvokeApplicationButton(ApplicationButton(dialog, "ApplicationRemovalCancel"));
+        });
+        Assert.Equal(before, File.ReadAllText(scene.Path));
+        ApplicationRemovalDialog(scene.Window, "writer", dialog =>
+        {
+            try
+            {
+                retired!.Invoke();
+            }
+            catch (ElementNotAvailableException) { }
+            catch (ElementNotEnabledException) { }
+            dialog.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
+            Assert.True(dialog.IsVisible);
+            Assert.Equal(before, File.ReadAllText(scene.Path));
             scene.Settings.Update(scene.Settings.Value with
             {
                 Target = "zh"
@@ -153,6 +155,38 @@ public sealed partial class SettingsRenderingTests
         });
         Assert.Equal("zh", scene.Reload().Target);
         Assert.Equal(["writer"], scene.Reload().VisibleApplications([]));
+    });
+
+    [Fact]
+    public Task ApplicationRowContextOpeningCannotReviveAfterQueryAbaAndKeyboardEntryStillWorks() => desktop.RunAsync(() =>
+    {
+        using var scene = new ApplicationPageScene(new(ApplicationListCustomized: true, ManagedApplications: ["writer"]));
+        var oldRow = ApplicationElement(scene.Window, "ApplicationRow_writer");
+        Assert.Null(oldRow.ContextMenu);
+        ContextMenuEventArgs? retired = null;
+        oldRow.AddHandler(ContextMenuService.ContextMenuOpeningEvent,
+            new ContextMenuEventHandler((_, args) => retired = args), handledEventsToo: true);
+        RemoveApplication(scene.Window, "writer", confirm: false);
+        Assert.NotNull(retired);
+        string before = File.ReadAllText(scene.Path);
+        var search = Assert.IsType<TextBox>(ApplicationElement(scene.Window, "ApplicationSearch"));
+        search.Text = "not-found";
+        search.Clear();
+        var currentRow = ApplicationElement(scene.Window, "ApplicationRow_writer");
+        Assert.NotSame(oldRow, currentRow);
+        retired.Handled = false;
+        oldRow.RaiseEvent(retired);
+        scene.Window.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
+        Assert.DoesNotContain(scene.Window.OwnedWindows.Cast<Window>(), window => window.IsVisible);
+        Assert.Equal(before, File.ReadAllText(scene.Path));
+        var toggle = Assert.IsType<CheckBox>(ApplicationElement(scene.Window, "ApplicationEnabled_writer"));
+        toggle.BringIntoView();
+        scene.Window.UpdateLayout();
+        Assert.True(toggle.Focus());
+        ApplicationDialogAction(scene.Window, () => SendOwnedKey(scene.Window, toggle, 0x5D), "ApplicationRemovalConfirmation",
+            dialog => InvokeApplicationButton(ApplicationButton(dialog, "ApplicationRemovalConfirm")));
+        Assert.Empty(scene.Reload().VisibleApplications([]));
+        Assert.False(scene.Reload().ExperimentalWriteback);
     });
 
     [Theory]
@@ -296,17 +330,40 @@ public sealed partial class SettingsRenderingTests
     }
     private static IInvokeProvider ApplicationInvokeProvider(Button button) => Assert.IsAssignableFrom<IInvokeProvider>(UIElementAutomationPeer.CreatePeerForElement(button).GetPattern(PatternInterface.Invoke));
     private static void InvokeApplicationButton(Button button) => ApplicationInvokeProvider(button).Invoke();
-    private static void RemoveApplication(SettingsWindow window, string application, bool confirm)
+    private static void RemoveApplication(SettingsWindow window, string application, bool confirm) =>
+        ApplicationRemovalDialog(window, application,
+            dialog => InvokeApplicationButton(ApplicationButton(dialog, confirm ? "ApplicationRemovalConfirm" : "ApplicationRemovalCancel")));
+
+    private static void ApplicationRemovalDialog(SettingsWindow window, string application, Action<Window> interact)
     {
         var row = ApplicationElement(window, "ApplicationRow_" + application);
-        var menu = Assert.IsType<ContextMenu>(row.ContextMenu);
-        menu.PlacementTarget = row;
-        menu.IsOpen = true;
-        window.UpdateLayout();
-        var remove = Assert.IsAssignableFrom<MenuItem>(Assert.Single(menu.Items));
-        ApplicationDialogAction(window, () => Assert.IsAssignableFrom<IInvokeProvider>(UIElementAutomationPeer.CreatePeerForElement(remove).GetPattern(PatternInterface.Invoke)).Invoke(), "ApplicationRemovalConfirmation",
-            dialog => InvokeApplicationButton(ApplicationButton(dialog, confirm ? "ApplicationRemovalConfirm" : "ApplicationRemovalCancel")));
+        Assert.Null(row.ContextMenu);
+        Assert.True(Native.GetCursorPos(out var previous));
+        try
+        {
+            ApplicationDialogAction(window, () => RightClickApplicationRow(window, row), "ApplicationRemovalConfirmation", interact);
+        }
+        finally { SetCursorPos(previous.X, previous.Y); }
     }
+
+    private static void RightClickApplicationRow(Window window, FrameworkElement row)
+    {
+        row.BringIntoView();
+        window.UpdateLayout();
+        var point = row.PointToScreen(new Point(60, row.ActualHeight / 2));
+        var pixel = new NativePoint { X = (int)point.X, Y = (int)point.Y };
+        Assert.Equal(new WindowInteropHelper(window).Handle, WindowFromPoint(pixel));
+        Assert.Equal(0, Native.GetAsyncKeyState(2) & 0x8000);
+        Assert.True(SetCursorPos(pixel.X, pixel.Y));
+        // Actual native right-click routes directly to the confirmation; there is
+        // no internal removal callback or intermediate menu invocation here.
+        Input[] input = [new() { MouseFlags = 8 }, new() { MouseFlags = 16 }];
+        uint sent = SendInput(2, input, Marshal.SizeOf<Input>());
+        if (sent == 1)
+            SendInput(1, [input[1]], Marshal.SizeOf<Input>());
+        Assert.Equal(2u, sent);
+    }
+
     private static void ApplicationDialogAction(SettingsWindow owner, Action open, string id, Action<Window> interact)
     {
         Exception? failure = null;
@@ -362,8 +419,11 @@ public sealed partial class SettingsRenderingTests
         }
         public ApplicationPageScene(UserSettings initial)
         {
+            // These are previously saved user preferences, not a new style
+            // mutation. Public Update must continue requiring the controller.
+            Directory.CreateDirectory(_directory);
+            File.WriteAllText(Path, JsonSerializer.Serialize(initial));
             Settings = WindowsRuntime.CreateSettings(Path);
-            Settings.Update(initial);
             Window = new(Settings, Model, () => { }, new WindowsApplicationSupport(), selectApplication: _ => @"C:\Applications\Selected.exe");
             Window.ShowPage("apps");
             Window.UpdateLayout();

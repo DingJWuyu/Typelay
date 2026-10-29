@@ -16,229 +16,560 @@ from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 
 class Tutorial:
-    """Explicit local-model preview; the external app keeps ownership of Tab/IME."""
+    """Four native setup steps; practice remains an owned, ordinary source window."""
 
-    def __init__(self, owner, preview):
-        from design import app_icon, box, label, style
-
-        self.owner, self.preview = owner, preview
-        self.pending = None
+    def __init__(self, owner, _preview):
+        self.owner = owner
+        self.opening = None
         self.revision = 0
-        self.state = "idle"
         self.step = 0
+        self.state = "idle"
+        self.pending = None
+        self.confirmation = None
+        self.updating = False
         self.window = Gtk.Window(title="欢迎使用 TypeLay")
         self.window.set_transient_for(owner.window)
-        self.window.set_default_size(560, 490)
-        self.window.set_border_width(24)
+        self.window.set_default_size(560, 460)
+        self.window.set_border_width(16)
         self.style_provider = apply_theme(self.window, {})
+        self.window.get_style_context().add_class("tutorial")
         self.window.connect("delete-event", self.dismiss)
-        outer = box(20)
+        self.window.connect("destroy", self.retire)
+        self.build(None)
+
+    def build(self, opening):
+        from design import app_icon, box, design_icon, group, label, style
+
+        previous = self.window.get_child()
+        if previous is not None:
+            previous.destroy()
+        outer = box(0)
         self.window.add(outer)
         self.steps = Gtk.Stack()
         self.steps.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
         self.steps.set_transition_duration(320)
+        self.steps.set_hhomogeneous(True)
+        self.steps.set_vhomogeneous(True)
         outer.pack_start(self.steps, True, True, 0)
-        pages = []
+        self.pages, self.headings = [], []
         for index in range(4):
             page = box(16)
             page.set_valign(Gtk.Align.CENTER)
-            page.set_margin_start(20)
-            page.set_margin_end(20)
+            page.set_margin_start(36)
+            page.set_margin_end(36)
+            page.set_margin_top(8)
             self.steps.add_named(page, str(index))
-            pages.append(page)
-        welcome = pages[0]
+            self.pages.append(page)
+            heading = style(label(), "welcome-title")
+            heading.set_xalign(0.5)
+            heading.set_justify(Gtk.Justification.CENTER)
+            self.headings.append(heading)
+            page.pack_start(heading, False, False, 0)
+        welcome = self.pages[0]
         icon = app_icon(76)
         icon.set_halign(Gtk.Align.CENTER)
         welcome.pack_start(icon, False, False, 0)
-        welcome.pack_start(
-            style(Gtk.Label(label="欢迎使用 TypeLay"), "welcome-title"), False, False, 0
-        )
-        welcome.pack_start(Gtk.Label(label="让每一次表达，都自然跨越语言。"), False, False, 0)
-        welcome.pack_start(
-            label("所有翻译均在本机运行。\n不上传输入内容，不保存翻译历史。", muted=True),
-            False,
-            False,
-            0,
-        )
-        direction = pages[1]
-        direction.pack_start(style(label("从你熟悉的语言开始"), "welcome-title"), False, False, 0)
-        direction.pack_start(
-            label("选择源语言和目标语言。之后可随时在设置或快捷面板中更改。", muted=True),
-            False,
-            False,
-            0,
-        )
-        self.direction_summary = label()
-        direction.pack_start(self.direction_summary, False, False, 0)
-        choose = Gtk.Button(label="选择语言…")
-        choose.connect("clicked", lambda *_: self.open_page("language"))
-        direction.pack_start(choose, False, False, 0)
-        model = pages[2]
-        model.pack_start(style(label("准备本地翻译"), "welcome-title"), False, False, 0)
-        self.model_summary = label("正在读取模型状态…")
-        model.pack_start(self.model_summary, False, False, 0)
-        model.pack_start(
-            label(
-                "模型安装需要你明确确认。Index、Argos 与 Hy 的可用性以当前实际安装为准。",
-                muted=True,
-            ),
-            False,
-            False,
-            0,
-        )
-        prepare = Gtk.Button(label="管理本地模型…")
-        prepare.connect("clicked", lambda *_: self.open_page("model"))
-        model.pack_start(prepare, False, False, 0)
-        practice = pages[3]
-        practice.pack_start(style(label("试着说一句"), "welcome-title"), False, False, 0)
-        practice.pack_start(
-            label(
-                "输入非敏感练习文字，先完成输入法候选，再生成本地译文。本窗只预览，不向其他应用写入。",
-                muted=True,
-            ),
-            False,
-            False,
-            0,
-        )
-        self.source = Gtk.Entry()
-        self.source.set_max_length(2048)
-        self.source.set_placeholder_text("例如：你好，我们明天下午见。")
-        self.source.get_accessible().set_name("教程练习原文")
-        self.source.connect("changed", self.changed)
-        practice.pack_start(self.source, False, False, 0)
-        self.generate = Gtk.Button(label="生成本地译文")
-        self.generate.set_sensitive(False)
-        self.generate.connect("clicked", lambda *_: self.start())
-        practice.pack_start(self.generate, False, False, 0)
-        self.result = style(
-            Gtk.TextView(editable=False, cursor_visible=False), "translation-content"
-        )
-        self.result.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        self.result.get_accessible().set_name("教程本地译文")
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_min_content_height(85)
-        scroll.add(self.result)
-        practice.pack_start(scroll, True, True, 0)
-        self.message = label(muted=True)
-        practice.pack_start(self.message, False, False, 0)
-        self.connection_button = Gtk.Button(label="连接应用并开始练习")
-        self.connection_button.connect("clicked", lambda *_: self.open_connection())
-        practice.pack_start(self.connection_button, False, False, 0)
-        actions = Gtk.Box(spacing=8)
-        outer.pack_end(actions, False, False, 0)
-        self.progress = label("●  ○  ○  ○", muted=True)
-        actions.pack_start(self.progress, True, True, 0)
-        self.skip = Gtk.Button(label="稍后设置")
-        self.skip.connect("clicked", lambda *_: owner.tasks(self.finish()))
-        actions.pack_start(self.skip, False, False, 0)
-        self.back = Gtk.Button(label="返回")
-        self.back.connect("clicked", lambda *_: self.go(self.step - 1))
-        actions.pack_start(self.back, False, False, 0)
-        self.next = Gtk.Button(label="继续")
-        self.next.get_style_context().add_class("suggested-action")
-        self.next.connect("clicked", lambda *_: self.go(self.step + 1))
-        actions.pack_start(self.next, False, False, 0)
-        self.complete = Gtk.Button(label="开始使用")
-        self.complete.set_no_show_all(True)
-        self.complete.connect("clicked", lambda *_: owner.tasks(self.finish()))
-        actions.pack_start(self.complete, False, False, 0)
+        welcome.reorder_child(icon, 0)
+        local = Gtk.Box(spacing=7)
+        local.set_halign(Gtk.Align.CENTER)
+        local.pack_start(design_icon("shield", 16, symbolic=True), False, False, 0)
+        self.local_note = style(label(), "tutorial-local")
+        local.pack_start(self.local_note, False, False, 0)
+        welcome.pack_start(local, False, False, 0)
 
-    def open_page(self, page):
-        self.window.hide()
+        direction = Gtk.Box(spacing=8)
+        self.pickers, self.direction_labels = {}, {}
+        sizes = Gtk.SizeGroup(mode=Gtk.SizeGroupMode.HORIZONTAL)
+        for key in ("source", "target"):
+            column = box(6)
+            caption = style(label(), "dim-label")
+            picker = LanguagePicker(
+                lambda code, field=key: self.change_preference(field, code, opening)
+            )
+            picker.get_accessible().set_name("教程：" + key)
+            self.pickers[key], self.direction_labels[key] = picker, caption
+            column.pack_start(caption, False, False, 0)
+            column.pack_start(picker, False, False, 0)
+            sizes.add_widget(column)
+            direction.pack_start(column, True, True, 0)
+            if key == "source":
+                self.swap = style(Gtk.Button(), "language-swap")
+                self.swap.add(design_icon("swap", 16, symbolic=True))
+                self.swap.set_valign(Gtk.Align.END)
+                self.swap.set_margin_bottom(4)
+                self.swap.connect("clicked", lambda *_: self.swap_languages(opening))
+                direction.pack_start(self.swap, False, False, 0)
+        self.pages[1].pack_start(direction, False, False, 0)
+        self.tone = Segments(
+            [("Natural", "自然"), ("Formal", "正式"), ("Concise", "简洁"), ("Casual", "口语")],
+            lambda value: self.change_tone(value, opening),
+        )
+        self.pages[1].pack_start(self.tone, False, False, 0)
+        self.tone_notice = label(muted=True)
+        self.pages[1].pack_start(self.tone_notice, False, False, 0)
+
+        model_card = style(box(12), "tutorial-model", "settings-group")
+        top = Gtk.Box(spacing=12)
+        top.pack_start(design_icon("chip", 26), False, False, 0)
+        top.pack_start(style(label("TypeLay Translate"), "headline"), True, True, 0)
+        self.prepare = Gtk.Button()
+        self.prepare.set_no_show_all(True)
+        self.prepare.connect("clicked", lambda *_: self.prepare_model(opening))
+        top.pack_end(self.prepare, False, False, 0)
+        model_card.pack_start(top, False, False, 0)
+        self.model_summary = label(muted=True)
+        self.model_summary.set_max_width_chars(40)
+        model_card.pack_start(self.model_summary, False, False, 0)
+        self.model_detail = label(muted=True)
+        self.model_detail.set_no_show_all(True)
+        model_card.pack_start(self.model_detail, False, False, 0)
+        self.pages[2].pack_start(model_card, False, False, 0)
+        self.model_more = style(Gtk.Button(), "flat")
+        self.model_more.connect(
+            "clicked", lambda button: self.open_page("model", opening, 2, button)
+        )
+        self.pages[2].pack_start(self.model_more, False, False, 0)
+
+        cards = Gtk.Box(spacing=10)
+        self.practice_buttons, self.practice_titles, self.practice_keys = {}, {}, {}
+        for lesson in ("automatic", "onDemand"):
+            button = style(Gtk.Button(), "tutorial-practice")
+            content = box(12)
+            title = style(label(), "headline")
+            title.set_xalign(0)
+            keys = style(label(), "tutorial-keys")
+            keys.set_xalign(0)
+            content.pack_start(title, False, False, 0)
+            content.pack_start(keys, False, False, 0)
+            button.add(content)
+            button.connect(
+                "clicked", lambda widget, key=lesson: self.open_practice(key, opening, widget)
+            )
+            cards.pack_start(button, True, True, 0)
+            self.practice_buttons[lesson] = button
+            self.practice_titles[lesson], self.practice_keys[lesson] = title, keys
+        self.pages[3].pack_start(cards, False, False, 0)
+        startup = group()
+        self.startup = Gtk.Switch()
+        self.startup.connect(
+            "notify::active",
+            lambda widget, _prop: self.change_preference("startup", widget.get_active(), opening),
+        )
+        startup_row, self.startup_label = design_row("", self.startup)
+        startup.pack_start(startup_row, False, False, 0)
+        self.pages[3].pack_start(startup, False, False, 0)
+        self.message = label(muted=True)
+        self.message.set_no_show_all(True)
+        self.message.connect(
+            "notify::label", lambda *_: self.message.set_visible(bool(self.message.get_text()))
+        )
+        outer.pack_start(self.message, False, False, 8)
+        self.actions = style(Gtk.Box(spacing=10), "tutorial-foot")
+        outer.pack_end(self.actions, False, False, 0)
+        self.progress = Gtk.Box(spacing=5)
+        self.progress.set_valign(Gtk.Align.CENTER)
+        self.dots = []
+        for _index in range(4):
+            dot = style(Gtk.Box(), "tutorial-dot")
+            self.progress.pack_start(dot, False, False, 0)
+            self.dots.append(dot)
+        self.actions.pack_start(self.progress, True, True, 0)
+        self.skip = self.back = self.next = self.complete = None
+        self.render_navigation()
+
+    def current(self, opening, revision=None):
+        return (
+            opening is not None
+            and opening is self.opening
+            and self.window.get_visible()
+            and (revision is None or revision == self.revision)
+        )
+
+    def eligible(self, widget, opening, step):
+        return (
+            self.current(opening)
+            and self.step == step
+            and self.pending is None
+            and widget.get_mapped()
+            and widget.is_sensitive()
+            and self.window.is_active()
+        )
+
+    def render_navigation(self):
+        opening, revision, step = self.opening, self.revision, self.step
+        for button in (self.skip, self.back, self.next, self.complete):
+            if button is not None:
+                button.destroy()
+        tr = self.owner.tr
+        self.skip = Gtk.Button(label=tr("稍后设置", "Set up later"))
+        self.back = Gtk.Button(label=tr("返回", "Back"))
+        self.next = Gtk.Button(label=tr("继续", "Continue"))
+        self.complete = Gtk.Button(label=tr("开始使用", "Get started"))
+        for button in (self.skip, self.back, self.next, self.complete):
+            button.set_no_show_all(True)
+            self.actions.pack_start(button, False, False, 0)
+        self.next.get_style_context().add_class("suggested-action")
+        self.complete.get_style_context().add_class("suggested-action")
+        self.skip.connect("clicked", lambda widget: self.begin_finish(widget, opening, revision))
+        self.complete.connect(
+            "clicked", lambda widget: self.begin_finish(widget, opening, revision)
+        )
+        self.back.connect(
+            "clicked", lambda widget: self.navigate(widget, step - 1, opening, revision)
+        )
+        self.next.connect(
+            "clicked", lambda widget: self.navigate(widget, step + 1, opening, revision)
+        )
+        self.render()
+
+    def navigate(self, widget, step, opening, revision):
+        if self.current(opening, revision) and self.eligible(widget, opening, self.step):
+            self.go(step)
+
+    def go(self, step):
+        step = max(0, min(3, step))
+        if self.pending is not None or step == 3 and not self.owner.model_ready:
+            return
+        self.revision += 1
+        self.close_confirmation()
+        for picker in self.pickers.values():
+            picker.popover.popdown()
+        self.step = step
+        self.steps.set_visible_child_name(str(step))
+        self.render_navigation()
+
+    def render(self):
+        if not hasattr(self, "message"):
+            return
+        tr = self.owner.tr
+        value = self.owner.value or {}
+        self.updating = True
+        try:
+            self.window.set_title(tr("欢迎使用 TypeLay", "Welcome to TypeLay"))
+            for heading, chinese, english in zip(
+                self.headings,
+                ("欢迎使用 TypeLay", "你想译成什么语言？", "下载本地翻译模型", "试一试"),
+                (
+                    "Welcome to TypeLay",
+                    "What do you want to write in?",
+                    "Download the translation model",
+                    "Try it",
+                ),
+            ):
+                heading.set_text(tr(chinese, english))
+            self.local_note.set_text(
+                tr("翻译全部在这台电脑上完成", "Everything is translated on this computer")
+            )
+            mode = value.get("motion", "reduce" if value.get("reduceMotion") else "system")
+            reduced = (
+                mode == "reduce"
+                or mode == "system"
+                and not self.window.get_settings().get_property("gtk-enable-animations")
+            )
+            self.steps.set_transition_duration(0 if reduced else 320)
+            for key, chinese, english in (
+                ("source", "源语言", "From"),
+                ("target", "目标语言", "To"),
+            ):
+                self.direction_labels[key].set_text(tr(chinese, english))
+                picker = self.pickers[key]
+                picker.search.set_placeholder_text(tr("搜索语言", "Search languages"))
+                picker.search.get_accessible().set_name(tr("搜索语言", "Search languages"))
+                picker.more.set_text(tr("更多语言 · 尚未提供", "More languages · Not available"))
+                picker.no_results.set_text(tr("没有匹配的语言", "No matching languages"))
+                if self.owner.language_choices:
+                    picker.configure_choices(
+                        self.owner.localized_languages(self.owner.language_choices[key]),
+                        value.get(key),
+                    )
+                picker.set_sensitive(
+                    bool(self.owner.language_choices and value) and self.pending is None
+                )
+            self.swap.set_sensitive(
+                bool(self.owner.language_choices and value)
+                and value.get("source") != "auto"
+                and self.pending is None
+            )
+            self.swap.get_accessible().set_name(tr("交换语言", "Swap languages"))
+            translation = getattr(self.owner, "translation", None)
+            style_state = (translation.style_state if translation else None) or {}
+            can_change = bool(
+                style_state.get("isReleased")
+                and style_state.get("canChange")
+                and translation.state_confirmed
+                and not translation.saving
+                and translation.pending is None
+                and self.pending is None
+            )
+            self.tone.set_active_id(
+                (style_state.get("savedPreferences") or {}).get("default") or "Natural"
+            )
+            for key, chinese, english in (
+                ("Natural", "自然", "Natural"),
+                ("Formal", "正式", "Formal"),
+                ("Concise", "简洁", "Concise"),
+                ("Casual", "口语", "Casual"),
+            ):
+                button = self.tone.buttons[key]
+                button.get_child().set_text(tr(chinese, english))
+                button.set_sensitive(can_change and key in ("Natural", "Formal"))
+                button.set_tooltip_text(
+                    tr("尚未提供", "Not available") if key in ("Concise", "Casual") else None
+                )
+            self.tone_notice.set_text(
+                tr(
+                    "当前模型方向尚未开放风格应用；语言设置仍可保存。",
+                    "Tone application is not released for this model direction; languages can still be saved.",
+                )
+                if not can_change
+                else ""
+            )
+            self.tone_notice.set_visible(bool(self.tone_notice.get_text()))
+            self.startup.set_active(bool(value.get("startup")))
+            self.startup.set_sensitive(bool(value) and self.pending is None)
+            self.startup_label.set_text(tr("登录 niri 时启动", "Open at niri login"))
+            for lesson, chinese, english in (
+                ("automatic", "自动翻译", "Automatic"),
+                ("onDemand", "按需翻译", "On demand"),
+            ):
+                self.practice_titles[lesson].set_text(tr(chinese, english))
+                self.practice_buttons[lesson].get_accessible().set_name(tr(chinese, english))
+                self.practice_buttons[lesson].set_sensitive(
+                    self.owner.model_ready and self.pending is None
+                )
+            self.practice_keys["automatic"].set_text(value.get("acceptShortcut", "Tab"))
+            self.practice_keys["onDemand"].set_text(
+                value.get("wakeShortcut", "Ctrl+Shift+F9")
+                + "  "
+                + value.get("directShortcut", "Ctrl+Shift+F10")
+            )
+            self.render_model()
+            for index, dot in enumerate(self.dots):
+                context = dot.get_style_context()
+                (context.add_class if index == self.step else context.remove_class)("current")
+            for button, chinese, english in (
+                (self.skip, "稍后设置", "Set up later"),
+                (self.back, "返回", "Back"),
+                (self.next, "继续", "Continue"),
+                (self.complete, "开始使用", "Get started"),
+            ):
+                if button is not None:
+                    button.set_label(tr(chinese, english))
+                    button.set_sensitive(self.pending is None and bool(value))
+            if self.next:
+                self.next.set_sensitive(
+                    self.pending is None
+                    and bool(value)
+                    and (self.step != 2 or self.owner.model_ready)
+                )
+                self.skip.set_visible(True)
+                self.back.set_visible(self.step > 0)
+                self.next.set_visible(self.step < 3)
+                self.complete.set_visible(self.step == 3)
+        finally:
+            self.updating = False
+
+    def render_model(self):
+        owner, tr = self.owner, self.owner.tr
+        view = owner.preparation_view
+        current = view is not None and owner.preparation_view_revision == owner.preparation_revision
+        ready = owner.model_ready if owner.model_readiness_known else None
+        _tone, chinese, english = model_notice(
+            ready, owner.model_installed, owner.installation_state
+        )
+        self.model_summary.set_text(tr(chinese, english))
+        detail = owner.preparation_error or owner.installation_message
+        self.model_detail.set_text(detail)
+        self.model_detail.set_visible(bool(detail))
+        actions = [view["primaryAction"], *view["secondaryActions"]] if view else []
+        action = next(
+            (item for item in actions if item["id"] not in ("NextStep", "CompleteDirections")), None
+        )
+        self.prepare.set_visible(action is not None)
+        self.prepare.set_sensitive(
+            bool(current and action and action["enabled"] and self.pending is None)
+        )
+        if action:
+            self.prepare.set_label(
+                owner.localizer.text(action["label"])
+                if hasattr(owner, "localizer")
+                else action["label"]
+            )
+        self.model_more.set_label(tr("模型与其他后端…", "Models and other backends…"))
+
+    def change_preference(self, key, value, opening):
+        widget = self.startup if key == "startup" else self.pickers[key]
+        if self.updating or not self.eligible(widget, opening, 3 if key == "startup" else 1):
+            return
+        self.begin_save({key: value}, opening)
+
+    def swap_languages(self, opening):
+        if self.eligible(self.swap, opening, 1) and self.owner.value["source"] != "auto":
+            self.begin_save(
+                {"source": self.owner.value["target"], "target": self.owner.value["source"]},
+                opening,
+            )
+
+    def begin_save(self, patch, opening):
+        revision, token = self.revision, object()
+        self.pending = token
+        self.message.set_text("")
+        self.render()
+        self.owner.tasks(self.save(patch, opening, revision, token))
+
+    async def save(self, patch, opening, revision, token):
+        try:
+            async with self.owner.settings_lock:
+                if not self.current(opening, revision) or self.pending is not token:
+                    return
+                saved = await self.owner.host.ask("settingsPatch", patch)
+            if self.current(opening, revision) and self.pending is token and saved is not True:
+                self.message.set_text(
+                    self.owner.tr(
+                        "未保存，已恢复原设置。请检查权限或磁盘空间。",
+                        "Not saved; the previous setting was restored. Check permissions or disk space.",
+                    )
+                )
+        except (OSError, ValueError, EOFError, TimeoutError):
+            if self.current(opening, revision) and self.pending is token:
+                self.message.set_text(
+                    self.owner.tr(
+                        "保存结果未确认，请检查当前设置后重试。",
+                        "Save was not confirmed. Check the current settings and retry.",
+                    )
+                )
+        finally:
+            if self.current(opening, revision) and self.pending is token:
+                self.pending = None
+                self.render()
+
+    def change_tone(self, value, opening):
+        button = self.tone.buttons[value]
+        if self.updating or not self.eligible(button, opening, 1):
+            return
+        translation = self.owner.translation
+        if value not in ("Natural", "Formal") or not translation.style.is_sensitive():
+            self.render()
+            return
+        translation.style.set_active_id(value)
+        translation.style_changed()
+
+    def prepare_model(self, opening):
+        if not self.eligible(self.prepare, opening, 2):
+            return
+        revision, preparation = self.revision, self.owner.preparation_revision
+
+        def valid():
+            return (
+                self.current(opening, revision)
+                and self.step == 2
+                and preparation == self.owner.preparation_revision
+            )
+
+        self.confirmation = self.owner.install_clicked(guard=valid, parent=self.window)
+
+    def close_confirmation(self):
+        if self.confirmation is not None:
+            self.confirmation.destroy()
+            self.confirmation = None
+
+    def open_page(self, page, opening, step, button):
+        if not self.eligible(button, opening, step):
+            return
+        self.dismiss()
         self.owner.show()
         self.owner.pages.set_visible_child_name(page)
 
-    def go(self, step):
-        self.step = max(0, min(3, step))
-        self.steps.set_visible_child_name(str(self.step))
-        self.progress.set_text("  ".join("●" if index == self.step else "○" for index in range(4)))
-        self.back.set_visible(self.step > 0)
-        self.next.set_visible(self.step < 3)
-        self.complete.set_visible(self.step == 3)
-        if self.step == 3:
-            self.source.grab_focus()
-
-    def changed(self, *_):
-        self.revision += 1
-        if self.pending and not self.pending.done():
-            self.pending.cancel()
-        self.result.get_buffer().set_text("")
-        self.state = "idle"
-        self.message.set_text("原文改变后请重新生成。")
-        self.generate.set_sensitive(self.owner.model_ready and bool(self.source.get_text().strip()))
-
-    def start(self):
-        if self.pending and not self.pending.done():
+    def open_practice(self, lesson, opening, button):
+        if not self.eligible(button, opening, 3) or not self.owner.model_ready:
             return
-        if not self.owner.model_ready or not self.source.get_text().strip():
+        pane = self.owner.application_support
+        row = pane.rows.get("desktop-text")
+        actions = [row.get("primaryAction"), *row.get("secondaryActions", [])] if row else []
+        action = next((item for item in actions if item and item["id"] == "Connect"), None)
+        if action is None:
+            self.open_page("application-support", opening, 3, button)
+            pane.selector.set_active_id("desktop-text")
+            pane.connection_details.set_expanded(True)
             return
-        self.pending = self.owner.tasks(self.translate())
+        revision = self.revision
 
-    async def translate(self):
-        revision, source = self.revision, self.source.get_text()
-        self.state = "translating"
-        self.generate.set_sensitive(False)
-        self.message.set_text("正在使用本机模型生成译文…")
-        try:
-            translation = await self.preview(source)
-            if revision == self.revision and self.window.get_visible():
-                self.result.get_buffer().set_text(translation)
-                self.state = "preview"
-                self.message.set_text("本地译文已生成，请确认含义。继续练习请从下方进入应用支持。")
-        except (OSError, ValueError, EOFError, TimeoutError):
-            if revision == self.revision:
-                self.state = "failed"
-                self.message.set_text(
-                    "本地试译未完成。请检查模型已就绪、TypeLay 已启用，以及原文不是目标语言。"
-                )
-        finally:
-            self.generate.set_sensitive(
-                self.owner.model_ready and bool(self.source.get_text().strip())
+        def valid():
+            latest = pane.rows.get("desktop-text")
+            return (
+                self.current(opening, revision)
+                and self.step == 3
+                and self.owner.model_ready
+                and latest is not None
+                and action in latest.get("actions", [])
             )
 
-    async def finish(self):
-        if self.owner.value is None:
+        self.confirmation = pane.activate(
+            row, action, lesson=lesson, guard=valid, parent=self.window
+        )
+
+    def begin_finish(self, widget, opening, revision):
+        if not self.current(opening, revision) or not self.eligible(widget, opening, self.step):
             return
-        self.complete.set_sensitive(False)
-        self.skip.set_sensitive(False)
+        token = object()
+        self.pending = token
+        self.render()
+        self.owner.tasks(self.finish(opening, revision, token))
+
+    async def finish(self, opening, revision, token):
         try:
-            if await self.owner.host.ask("dismissOnboarding"):
-                self.dismiss()
-                self.owner.message.set_text("教程选择已保存；可随时重新打开。")
-            else:
-                self.message.set_text("教程提示偏好未保存，请重试。")
+            async with self.owner.settings_lock:
+                if not self.current(opening, revision) or self.pending is not token:
+                    return
+                saved = await self.owner.host.ask("dismissOnboarding")
+            if self.current(opening, revision) and self.pending is token:
+                if saved is True:
+                    self.dismiss()
+                else:
+                    self.message.set_text(
+                        self.owner.tr(
+                            "教程提示偏好未保存，请重试。",
+                            "The tutorial preference was not saved. Try again.",
+                        )
+                    )
+        except (OSError, ValueError, EOFError, TimeoutError):
+            if self.current(opening, revision) and self.pending is token:
+                self.message.set_text(
+                    self.owner.tr(
+                        "教程提示偏好保存结果未确认，请重试。",
+                        "The tutorial preference save was not confirmed. Try again.",
+                    )
+                )
         finally:
-            self.complete.set_sensitive(True)
-            self.skip.set_sensitive(True)
+            if self.current(opening, revision) and self.pending is token:
+                self.pending = None
+                self.render()
+
+    def retire(self, *_):
+        self.opening = None
+        self.revision += 1
+        self.pending = None
+        self.close_confirmation()
+        for picker in self.pickers.values():
+            picker.popover.popdown()
 
     def dismiss(self, *_):
+        self.retire()
         self.window.hide()
-        self.source.set_text("")
-        self.changed()
         return True
 
-    def open_connection(self):
-        self.dismiss()
-        self.owner.show()
-        self.owner.pages.set_visible_child_name("application-support")
-
     def show(self):
+        self.retire()
+        self.opening = object()
+        if self.step == 3 and not self.owner.model_ready:
+            self.step = 2
+        self.build(self.opening)
         self.owner.tasks(self.owner.application_support.refresh())
+        self.owner.translation.refresh()
         self.window.show_all()
+        self.steps.set_visible_child_name(str(self.step))
+        self.render()
         self.window.present()
-        self.direction_summary.set_text(
-            f"{(self.owner.value or {}).get('source', 'auto')}  →  {(self.owner.value or {}).get('target', 'en')}"
-        )
-        self.model_summary.set_text(
-            "本地模型已就绪" if self.owner.model_ready else "本地模型尚未就绪。请在模型页确认准备。"
-        )
-        self.steps.set_transition_duration(
-            0 if (self.owner.value or {}).get("reduceMotion") else 320
-        )
-        self.go(self.step)
-        self.generate.set_sensitive(self.owner.model_ready and bool(self.source.get_text().strip()))
-        if not self.owner.model_ready:
-            self.message.set_text("请先在设置中明确同意安装本地翻译组件，完成自检后再试译。")
 
 
 class ApplicationSupportPane:
@@ -416,7 +747,7 @@ class ApplicationSupportPane:
         self.owner.pages.child_set_property(self.widget, "title", value["title"])
         self.summary.set_text(value["summary"])
         self.render_connection()
-        self.owner.tutorial.connection_button.set_label(labels["connectApplications"])
+        self.owner.tutorial.render()
         self.more.set_label(labels["moreApplications"])
         self.details.set_label(labels["details"])
         self.rows = {row["id"]: row for row in value["rows"]}
@@ -884,8 +1215,8 @@ class ApplicationSupportPane:
         button.connect("clicked", lambda *_: self.activate(self.rows[row["id"]], action))
         box.pack_start(button, False, False, 0)
 
-    def activate(self, row, action):
-        if self.busy:
+    def activate(self, row, action, *, lesson=None, guard=None, parent=None):
+        if self.busy or guard is not None and not guard():
             return
         if action["id"] == "OpenInstructions":
             self.details.set_expanded(True)
@@ -893,13 +1224,14 @@ class ApplicationSupportPane:
             return
         self.busy = True
         self.action_revision += 1
+        action_revision = self.action_revision
         self.render_selected()
         if action["id"] == "CheckComponent":
             self.choose_component(row, action)
         elif action["requiresConfirmation"]:
             labels = self.value["labels"]
             dialog = Gtk.MessageDialog(
-                transient_for=self.owner.window,
+                transient_for=parent or self.owner.window,
                 modal=True,
                 message_type=Gtk.MessageType.QUESTION,
                 text=row["title"] + "：" + action["label"],
@@ -916,25 +1248,42 @@ class ApplicationSupportPane:
                 labels["cancel"], Gtk.ResponseType.CANCEL, labels["confirm"], Gtk.ResponseType.OK
             )
 
+            answered = False
+
             def confirmed(widget, response):
+                nonlocal answered
+                if answered or not widget.get_visible():
+                    return
+                answered = True
+                valid = guard is None or guard()
                 startup_id = (
                     self.practice_startup_id(widget, action.get("desktopId"))
-                    if response == Gtk.ResponseType.OK
+                    if valid
+                    and response == Gtk.ResponseType.OK
                     and row["id"] == "desktop-text"
                     and action["id"] in ("Connect", "OpenApplication")
                     else None
                 )
                 widget.destroy()
-                if response == Gtk.ResponseType.OK:
-                    self.owner.tasks(self.execute(row, action, startup_id=startup_id))
+                if valid and response == Gtk.ResponseType.OK:
+                    self.owner.tasks(
+                        self.execute(row, action, startup_id=startup_id, lesson=lesson, guard=guard)
+                    )
                 else:
                     self.busy = False
                     self.render_selected()
 
+            def abandoned(*_):
+                if not answered and action_revision == self.action_revision:
+                    self.busy = False
+                    self.render_selected()
+
+            dialog.connect("destroy", abandoned)
             dialog.connect("response", confirmed)
             dialog.show_all()
+            return dialog
         else:
-            self.owner.tasks(self.execute(row, action))
+            self.owner.tasks(self.execute(row, action, lesson=lesson, guard=guard))
 
     @staticmethod
     def practice_startup_id(window, desktop_id=None):
@@ -1076,13 +1425,18 @@ class ApplicationSupportPane:
         dialog.connect("response", opened)
         dialog.show_all()
 
-    async def execute(self, row, action, directory=None, *, startup_id=None):
+    async def execute(
+        self, row, action, directory=None, *, startup_id=None, lesson=None, guard=None
+    ):
         try:
+            if guard is not None and not guard():
+                return
             value = await self.action_requested(
                 row["id"],
                 action["id"],
                 directory,
                 startup_id=startup_id,
+                **({"lesson": lesson, "practice_current": guard} if lesson is not None else {}),
                 **({"desktop_id": action["desktopId"]} if "desktopId" in action else {}),
             )
             if value:
@@ -1662,6 +2016,7 @@ class TranslationSettings:
             self.state_confirmed = True
             self.render()
             self.owner.render_applications()
+            self.owner.tutorial.render()
             return True
         except (OSError, ValueError, EOFError, TimeoutError):
             if revision == self.load_revision and session == self.owner.draft_session:
@@ -2985,6 +3340,7 @@ class Settings:
         )
         self.search.get_accessible().set_name(self.tr("搜索设置", "Search settings"))
         self.filter_settings()
+        self.tutorial.render()
 
     def schedule_autosave(self):
         if self.auto_save_source:
@@ -3782,11 +4138,7 @@ class Settings:
         self.model_status = value.get("model") or ""
         self.render_language_status()
         self.render_preparation_notice()
-        self.tutorial.generate.set_sensitive(
-            self.model_ready
-            and self.tutorial.state != "translating"
-            and bool(self.tutorial.source.get_text().strip())
-        )
+        self.tutorial.render()
         model_facts = (
             self.model_ready,
             value.get("modelInstalled", False),
@@ -3817,7 +4169,9 @@ class Settings:
     def open_tutorial(self):
         self.tutorial.show()
 
-    def install_clicked(self, *_, action=None):
+    def install_clicked(self, *_, action=None, guard=None, parent=None):
+        if guard is not None and not guard():
+            return
         view = self.preparation_view
         if not view or self.preparation_view_revision != self.preparation_revision:
             return
@@ -3842,14 +4196,22 @@ class Settings:
         elif self.installation_state not in ("pausing", "starting"):
             default = view.get("defaultPackageAction")
             if selected_action["id"] == "Prepare" and default is not None:
-                self.package_clicked(default["request"]["packageIds"][0], "Install")
-                return
+                return self.package_clicked(
+                    default["request"]["packageIds"][0], "Install", guard=guard, parent=parent
+                )
             directions = self.application_support.selected_directions()
             if self.installation_state == "failed":
                 if self.package_confirmation is not None:
-                    self.confirm_package(self.package_confirmation, self.install_requested)
+                    return self.confirm_package(
+                        self.package_confirmation,
+                        self.install_requested,
+                        guard=guard,
+                        parent=parent,
+                    )
                 else:
-                    self.confirm_install(self.install_requested, directions)
+                    return self.confirm_install(
+                        self.install_requested, directions, guard=guard, parent=parent
+                    )
                 return
             repair = selected_action["id"] in ("Repair", "Retry")
             if repair:
@@ -3864,10 +4226,10 @@ class Settings:
                         choice.set_active(identity in directions)
                     self.install_requested(directions, repair=repair)
 
-                self.confirm_install(prepare, directions)
+                return self.confirm_install(prepare, directions, guard=guard, parent=parent)
 
-    def package_clicked(self, identity, operation):
-        if self.package_requested is None:
+    def package_clicked(self, identity, operation, *, guard=None, parent=None):
+        if self.package_requested is None or guard is not None and not guard():
             return
         action = self.package_action(identity, operation)
         if action is None:
@@ -3875,6 +4237,8 @@ class Settings:
         frozen = deepcopy(action)
 
         def run():
+            if guard is not None and not guard():
+                return
             latest = self.package_action(identity, operation)
             if latest is None or latest["request"] != frozen["request"]:
                 self.preparation_error = "模型状态已变化，请重新选择操作。"
@@ -3884,7 +4248,7 @@ class Settings:
             self.package_requested(deepcopy(frozen["request"]))
 
         if action["requiresConfirmation"]:
-            self.confirm_package(frozen, run)
+            return self.confirm_package(frozen, run, guard=guard, parent=parent)
         else:
             run()
 
@@ -3902,9 +4266,9 @@ class Settings:
             None,
         )
 
-    def confirm_package(self, action, proceed):
+    def confirm_package(self, action, proceed, *, guard=None, parent=None):
         dialog = Gtk.MessageDialog(
-            transient_for=self.window,
+            transient_for=parent or self.window,
             modal=True,
             message_type=Gtk.MessageType.QUESTION,
             buttons=Gtk.ButtonsType.OK_CANCEL,
@@ -3913,8 +4277,17 @@ class Settings:
         dialog.format_secondary_text(action["confirmationText"])
         dialog.set_default_response(Gtk.ResponseType.CANCEL)
 
+        answered = False
+
         def response(widget, result):
+            nonlocal answered
+            if answered or not widget.get_visible():
+                return
+            answered = True
+            valid = guard is None or guard()
             widget.destroy()
+            if not valid:
+                return
             if result == Gtk.ResponseType.OK:
                 proceed()
             else:
@@ -3923,6 +4296,7 @@ class Settings:
         dialog.connect("response", response)
         dialog.show_all()
         dialog.get_widget_for_response(Gtk.ResponseType.CANCEL).grab_focus()
+        return dialog
 
     def cancel_preparation_request(self):
         self.package_confirmation = None
@@ -3943,6 +4317,7 @@ class Settings:
         self.installation_message = message
         self.render_preparation_notice()
         self.render_language_status()
+        self.tutorial.render()
 
     def render_preparation_notice(self):
         notice = self.application_support.preparation_notice
@@ -3964,6 +4339,7 @@ class Settings:
         for row in self.application_support.package_widgets.values():
             for button in row["buttons"].values():
                 button.set_sensitive(False)
+        self.tutorial.render()
         if not self.preparation_pending:
             self.preparation_pending = True
             self.tasks(self.load_preparation())
@@ -4002,6 +4378,7 @@ class Settings:
                 self.preparation_error = ""
                 self.application_support.render_preparation()
                 self.render_preparation_notice()
+                self.tutorial.render()
                 break
         except (OSError, ValueError, EOFError, TimeoutError):
             self.preparation_error = "暂时无法读取准备状态，请重新打开设置。"
@@ -4174,9 +4551,9 @@ class Settings:
         self.tasks(self.load_applications())
         self.refresh_preparation()
 
-    def confirm_install(self, install, directions):
+    def confirm_install(self, install, directions, *, guard=None, parent=None):
         dialog = Gtk.MessageDialog(
-            transient_for=self.window,
+            transient_for=parent or self.window,
             modal=True,
             message_type=Gtk.MessageType.QUESTION,
             buttons=Gtk.ButtonsType.OK_CANCEL,
@@ -4193,8 +4570,17 @@ class Settings:
             "翻译在本机运行，输入内容不会上传。"
         )
 
+        answered = False
+
         def response(widget, result):
+            nonlocal answered
+            if answered or not widget.get_visible():
+                return
+            answered = True
+            valid = guard is None or guard()
             widget.destroy()
+            if not valid:
+                return
             if result == Gtk.ResponseType.OK:
                 install()
             else:
@@ -4202,3 +4588,4 @@ class Settings:
 
         dialog.connect("response", response)
         dialog.show_all()
+        return dialog

@@ -101,7 +101,8 @@ public sealed partial class OverlayTranslationMenuTests
                     right = position.X + tone.ActualWidth;
                 }
                 Assert.All(items.Except(tones), item => Assert.Equal(30, item.ActualHeight));
-                await SaveMoreScreenshot(menu, $"overlay-more-{language}-{theme}-{state}.png");
+                var rendered = await SaveMoreScreenshot(menu, $"overlay-more-{language}-{theme}-{state}.png");
+                AssertMoreShellPixels(rendered, Assert.IsType<SolidColorBrush>(Application.Current.FindResource("Glass")).Color);
                 Assert.Equal(original, source.Text);
             }
             finally
@@ -354,7 +355,33 @@ public sealed partial class OverlayTranslationMenuTests
     [DllImport("user32.dll", EntryPoint = "GetAsyncKeyState")]
     private static extern short MoreAsyncKeyState(int key);
 
-    private static async Task SaveMoreScreenshot(ContextMenu menu, string name)
+    private static void AssertMoreShellPixels(BitmapSource image, Color glass)
+    {
+        byte[] Pixel(int x, int y)
+        {
+            byte[] pixel = new byte[4];
+            image.CopyPixels(new Int32Rect(x, y, 1, 1), pixel, 4, 0);
+            return pixel;
+        }
+        void GlassAt(int x, int y)
+        {
+            byte[] pixel = Pixel(x, y); // RenderTargetBitmap is premultiplied BGRA.
+            Assert.InRange(Math.Abs(pixel[3] - glass.A), 0, 1);
+            Assert.InRange(Math.Abs(pixel[0] - glass.B * glass.A / 255d), 0, 1);
+            Assert.InRange(Math.Abs(pixel[1] - glass.G * glass.A / 255d), 0, 1);
+            Assert.InRange(Math.Abs(pixel[2] - glass.R * glass.A / 255d), 0, 1);
+        }
+        // Sample the real empty padding, not a Style/Template object. The left
+        // inset must be the same glass rather than the system icon-column gutter.
+        GlassAt(image.PixelWidth / 2, 2);
+        GlassAt(3, 20);
+        GlassAt(image.PixelWidth - 4, 20);
+        foreach (var (x, y) in new[] { (0, 0), (image.PixelWidth - 1, 0),
+            (0, image.PixelHeight - 1), (image.PixelWidth - 1, image.PixelHeight - 1) })
+            Assert.Equal(0, Pixel(x, y)[3]);
+    }
+
+    private static async Task<BitmapSource> SaveMoreScreenshot(ContextMenu menu, string name)
     {
         var drawn = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         EventHandler frame = (_, _) =>
@@ -381,5 +408,6 @@ public sealed partial class OverlayTranslationMenuTests
         encoder.Frames.Add(BitmapFrame.Create(image));
         using var output = File.Create(Path.Combine(directory, name));
         encoder.Save(output);
+        return image;
     }
 }

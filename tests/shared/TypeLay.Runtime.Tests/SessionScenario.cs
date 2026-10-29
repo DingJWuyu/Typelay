@@ -627,8 +627,13 @@ internal sealed class SessionScenario : IDisposable
             get; private set;
         }
         public SessionViewToken Token => Context?.Token ?? new(new("none", "none", Guid.Empty), Guid.Empty, -1);
+        public int Renders
+        {
+            get; private set;
+        }
         public void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null, SessionViewContext? context = null)
         {
+            Renders++;
             Context = context;
             Status = statusOverride ?? Presentation.From(session.State, canAccept, session.Preview.Length > 0,
                 shortcuts: context?.Bindings).Status;

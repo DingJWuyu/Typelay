@@ -22,7 +22,7 @@ from gi.repository import GLib, Gtk  # noqa: E402
 
 
 class Practice:
-    def __init__(self, paths):
+    def __init__(self, paths, lesson="automatic"):
         self.paths = paths
         self.closed = False
         self.pending_outcome = None
@@ -40,7 +40,9 @@ class Practice:
         self.restarting = False
         self.awaiting_binding = False
         self.start_error = None
-        self.lesson = "automatic"
+        if lesson not in ("automatic", "onDemand"):
+            raise ValueError("practice-lesson")
+        self.lesson = lesson
         self.window = Gtk.Window(title="TypeLay 实操练习")
         self.window.set_default_size(680, 500)
         self.window.set_border_width(24)
@@ -484,14 +486,14 @@ class Practice:
 
 
 def main():
-    if len(sys.argv) != 1:
+    if len(sys.argv) > 2 or len(sys.argv) == 2 and sys.argv[1] not in ("automatic", "onDemand"):
         raise ValueError("practice-arguments")
     if not os.environ.get("WAYLAND_DISPLAY") or not os.environ.get("NIRI_SOCKET"):
         raise RuntimeError("practice-wayland-session-required")
     initialized, _ = Gtk.init_check([])
     if not initialized:
         raise RuntimeError("practice-display-unavailable")
-    Practice(Paths()).run()
+    Practice(Paths(), sys.argv[1] if len(sys.argv) == 2 else "automatic").run()
     return 0
 
 

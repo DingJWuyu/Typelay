@@ -39,6 +39,7 @@ public sealed partial class SessionController : IDisposable
     private long _generation, _nextCapture, _permitUntil, _editTransitionUntil, _retryBrokerAt;
     private AcceptancePermit? _presentationPermit;
     private bool _renderedAcceptanceReady;
+    private TranslationMenuState? _renderedTranslationMenu;
     private bool _capturing, _writing, _translationRunning, _startingBroker, _disposed;
     private SessionViewToken? _sourceReturn;
     private bool _returningToSource => _sourceReturn is not null;
@@ -568,6 +569,10 @@ public sealed partial class SessionController : IDisposable
         {
             RevokeInput("editing-translation");
             _permitUntil = 0;
+            // Editor focus/composition arrives after BeginEdit's synchronous render.
+            // Refresh only changed read-only qualifications, never a source lease.
+            if (_renderedTranslationMenu != GetTranslationMenuState())
+                Render();
             return;
         }
         // UI independently expires observations while a broker call is blocked.
@@ -604,7 +609,9 @@ public sealed partial class SessionController : IDisposable
             _permitUntil = 0;
             Render();
         }
-        else if (_renderedAcceptanceReady != CanPresentAcceptance(now))
+        else if (_renderedAcceptanceReady != CanPresentAcceptance(now)
+            || _session.State == SessionState.EditingTranslation
+                && _renderedTranslationMenu != GetTranslationMenuState())
             Render();
     }
     private SessionShortcutBindings CurrentSessionBindings =>
@@ -2104,6 +2111,7 @@ public sealed partial class SessionController : IDisposable
         SessionViewContext? context = _session.Current is { } source
             ? new(new(source.Target, _hook.CommandGeneration, _generation), CurrentSessionBindings,
                 SessionBindingsReady(source.Target, true), GetTranslationMenuState()) : null;
+        _renderedTranslationMenu = context?.TranslationActions;
         _renderedAcceptanceReady = CanPresentAcceptance(_loop.NowMs);
         _overlay.Render(_session, _settings.Value, _renderedAcceptanceReady, status, context);
     }

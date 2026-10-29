@@ -298,6 +298,9 @@ internal sealed partial class OverlayWindow
               <Style TargetType="Separator"><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Separator"><Border Height="0.5" Margin="10,5" Background="{DynamicResource Line}"/></ControlTemplate></Setter.Value></Setter></Style>
             </ResourceDictionary>
             """));
+        // MoreContextMenu is a lifecycle-preserving subclass. Implicit styles
+        // are looked up by its exact type, so apply the existing base-type key.
+        menu.SetResourceReference(StyleProperty, typeof(ContextMenu));
         menu.ItemsPanel = new ItemsPanelTemplate(new FrameworkElementFactory(typeof(MoreMenuPanel)));
         foreach (var child in menu.Items.OfType<FrameworkElement>())
         {

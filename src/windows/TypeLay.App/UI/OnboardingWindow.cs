@@ -45,6 +45,7 @@ internal sealed class OnboardingWindow : Window
         ResizeMode = ResizeMode.NoResize;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         FontFamily = UiTheme.UiFont;
+        Resources.MergedDictionaries.Add(UiTheme.ConfigurationScrollResources());
         AutomationProperties.SetAutomationId(this, "TypeLayOnboarding");
         _root = new Grid { Margin = new(16, 16, 16, 20) };
         _root.RowDefinitions.Add(new()

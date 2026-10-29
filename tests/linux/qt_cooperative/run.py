@@ -1450,19 +1450,64 @@ def ordered_controls(
                     40,
                 ):
                     expected = font_table_hashes(font_root / file)
-                    assert render_view(
-                        publication,
-                        "ValidTranslation",
-                        text,
-                        False,
-                        revision,
-                        appearance={"font": font, "reduceMotion": True},
-                        target_language=language,
-                    )["visible"]
+                    observation = {
+                        "revision": revision,
+                        "font": font,
+                        "target": language,
+                        "file": file,
+                        "expectedTables": expected,
+                        "samples": 0,
+                    }
+                    font_observations.append(observation)
 
                     def correct_face():
                         value = state()
                         runs = value.get("editorFontRuns") or []
+                        observed_text = value.get("editorText", "")
+                        summary = {
+                            key: value.get(key)
+                            for key in (
+                                "observedAtMs",
+                                "editorVisible",
+                                "editorFontFamily",
+                                "editorFontPixels",
+                            )
+                        }
+                        summary.update(
+                            sampledAtMs=now_ms(),
+                            textLength=len(observed_text),
+                            textSha256=hashlib.sha256(observed_text.encode("utf-8")).hexdigest(),
+                            textMatches=observed_text == text,
+                            runCount=len(runs),
+                            runs=[
+                                {
+                                    key: run.get(key)
+                                    for key in (
+                                        "family",
+                                        "weight",
+                                        "missingGlyphs",
+                                        "name",
+                                        "OS/2",
+                                        "cmap",
+                                        "CFF ",
+                                        "glyf",
+                                    )
+                                }
+                                for run in runs[:8]
+                            ],
+                        )
+                        observation["samples"] += 1
+                        observation["last"] = summary
+                        observed_at = value.get("observedAtMs", 0)
+                        if (
+                            observation["renderStartedAtMs"]
+                            <= observed_at
+                            < observation["expiresAtMs"]
+                        ):
+                            observation.setdefault("firstPreExpiry", summary)
+                            observation["lastPreExpiry"] = summary
+                            if runs:
+                                observation.setdefault("firstGlyphsPreExpiry", summary)
                         if value.get("editorText") != text or not runs:
                             return None
                         if any(
@@ -1473,7 +1518,26 @@ def ordered_controls(
                             return None
                         return value
 
-                    actual = wait(correct_face, f"{font}/{language}: offline Qt face not observed")
+                    try:
+                        assert render_view(
+                            publication,
+                            "ValidTranslation",
+                            text,
+                            False,
+                            revision,
+                            appearance={"font": font, "reduceMotion": True},
+                            target_language=language,
+                            observation=observation,
+                        )["visible"]
+                        actual = wait(
+                            correct_face, f"{font}/{language}: offline Qt face not observed"
+                        )
+                    finally:
+                        # Fixed first/last samples from this same wait/read;
+                        # preserve the original display deadline and face gate.
+                        (out / "font-preference-observations.json").write_text(
+                            json.dumps(font_observations, indent=2) + "\n"
+                        )
                     assert actual["first"] == source_before
                     assert not actual["editorFocused"] and actual["editorReadOnly"]
                     faces.append(

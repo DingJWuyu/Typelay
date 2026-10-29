@@ -442,9 +442,16 @@ internal static partial class BrowserCooperationCheck
             }
             finally { await PageCallAsync("Runtime.releaseObject", new { objectId = id }, ct); }
         }
+        // Last owned-control observation only; no labels, user text, retry or new input.
+        public JsonElement? LastOverlayMenuObservation
+        {
+            get; private set;
+        }
         public Task ClickOverlaySettingsAsync(CancellationToken ct) => ClickOverlayMenuActionAsync("设置", ct);
         private async Task ClickOverlayMenuActionAsync(string label, CancellationToken ct)
         {
+            LastOverlayMenuObservation = null;
+            JsonElement? observation = null;
             string? id = await PreviewObjectAsync(ct);
             Require(id is not null, "preview-settings-unavailable");
             try
@@ -459,9 +466,19 @@ internal static partial class BrowserCooperationCheck
                             objectId = id,
                             returnByValue = true,
                             arguments = new object[] { new { value = more }, new { value = label } },
-                            functionDeclaration = "function(more,label){const root=this.getRootNode(),buttons=more?root.querySelectorAll('button[aria-controls=\"more-actions\"]'):[...root.querySelectorAll('[role=group][aria-label=\"更多操作\"]>button')].filter(b=>b.querySelector('span')?.textContent===label);if(buttons.length!==1)return {visible:false};const b=buttons[0],r=b.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,visible:b.isConnected&&!b.hidden&&!b.disabled&&r.width>0&&r.height>0,painted:Number(getComputedStyle(b).opacity)>0};}"
+                            functionDeclaration = """
+                                function(more,label){
+                                 const root=this.getRootNode(),menus=root.querySelectorAll('[role=group][aria-label="更多操作"]');
+                                 const buttons=more?root.querySelectorAll('button[aria-controls="more-actions"]'):[...root.querySelectorAll('[role=group][aria-label="更多操作"]>button')].filter(b=>b.querySelector('span')?.textContent===label);
+                                 const observation={more,action:label==='加入术语表'?'glossary':'settings',editorConnected:this.isConnected,editorReadOnly:this.readOnly,editorFocused:root.activeElement===this,documentFocused:document.hasFocus(),menuCount:menus.length,menuHidden:menus.length===1?menus[0].hidden:null,matchedCount:buttons.length};
+                                 if(buttons.length!==1)return {...observation,visible:false,reason:!this.isConnected?'editor-retired':buttons.length===0?'action-missing':'action-ambiguous'};
+                                 const b=buttons[0],r=b.getBoundingClientRect();
+                                 return {...observation,x:r.x+r.width/2,y:r.y+r.height/2,visible:b.isConnected&&!b.hidden&&!b.disabled&&r.width>0&&r.height>0,painted:Number(getComputedStyle(b).opacity)>0,buttonConnected:b.isConnected,buttonHidden:b.hidden,buttonDisabled:b.disabled,width:r.width,height:r.height,reason:!this.isConnected?'editor-retired':!b.isConnected?'button-retired':b.hidden?'button-hidden':b.disabled?'button-disabled':r.width<=0||r.height<=0?'button-not-laid-out':'visible'};
+                                }
+                                """
                         }, ct);
                         point = result.GetProperty("result").GetProperty("value");
+                        observation = point.Clone();
                         Require(point.GetProperty("visible").GetBoolean(), more ? "preview-more-hidden" : "preview-settings-hidden");
                         // Reveal the real hover-only More control with a trusted pointer
                         // movement, never by mutating its style or calling its handler.
@@ -477,6 +494,11 @@ internal static partial class BrowserCooperationCheck
                     }
                     await ClickPointAsync(point, ct);
                 }
+            }
+            catch
+            {
+                LastOverlayMenuObservation = observation;
+                throw;
             }
             finally { await PageCallAsync("Runtime.releaseObject", new { objectId = id }, ct); }
         }

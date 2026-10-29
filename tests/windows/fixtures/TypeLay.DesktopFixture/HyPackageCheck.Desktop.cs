@@ -71,11 +71,54 @@ internal static partial class HyPackageCheck
             scene.Stage = "navigate-public-model";
             await NavigateAsync(settings, "model", "本地模型", ct);
             scene.Stage = "await-public-model-ready";
-            await WaitAsync(async () =>
+            var readiness = new StartupReadinessObservation();
+            scene.Facts = new
             {
-                workers!.Check();
-                return (await PublicStatusAsync(settings, ct)).StartsWith("本地翻译已就绪", StringComparison.Ordinal);
-            }, ct);
+                navigation = scene.Facts,
+                readiness
+            };
+            var waiting = Stopwatch.StartNew();
+            try
+            {
+                await WaitAsync(async () =>
+                {
+                    workers!.Check();
+                    var status = await PublicStatusObservationAsync(settings, ct);
+                    bool ready = status.Text.StartsWith("本地翻译已就绪", StringComparison.Ordinal);
+                    var observation = new
+                    {
+                        elapsedMs = waiting.ElapsedMilliseconds,
+                        controlFound = status.Found,
+                        statusCode = !status.Found ? "missing-control" : ready ? "ready" : status.Text switch
+                        {
+                            "" => "empty",
+                            "本地翻译尚未就绪" => "not-ready",
+                            "本地翻译组件已就绪" => "components-ready",
+                            "本地组件安装记录无法读取" => "inventory-unreadable",
+                            "本地翻译组件尚未准备" => "not-prepared",
+                            "尚未准备本地翻译 · 默认 Index Translate 2B" => "default-not-prepared",
+                            _ => "other"
+                        },
+                        statusUnits = status.Text.Length,
+                        statusSha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                            System.Text.Encoding.UTF8.GetBytes(status.Text))),
+                        workerStarts = workers.Starts,
+                        maximumLiveWorkers = workers.MaximumLive
+                    };
+                    readiness.Samples++;
+                    readiness.First ??= observation;
+                    readiness.Last = observation;
+                    return ready;
+                }, ct);
+                readiness.Completion = "ready";
+            }
+            finally
+            {
+                if (readiness.Completion != "ready")
+                    readiness.Completion = ct.IsCancellationRequested ? "operation-canceled" : "interrupted";
+                // Do not start another UIA read after the operation deadline,
+                // or spend the owned-process cleanup reserve on diagnostics.
+            }
             lastWorker = workers.RequireCurrent(new ModelInstallationStore(data, worker).InitialPaths().Python);
             Require(workers.Starts == 1, "unexpected-initial-worker-restart");
         }
@@ -936,8 +979,29 @@ internal static partial class HyPackageCheck
         }, ct);
         return result!;
     }
-    private static Task<string> PublicStatusAsync(AutomationElement settings, CancellationToken ct) => UiAsync(() =>
-        Find(settings, AutomationElement.AutomationIdProperty, "PreparationStatus")?.Current.Name ?? "", ct);
+    private sealed class StartupReadinessObservation
+    {
+        public int Samples
+        {
+            get; set;
+        }
+        public string Completion { get; set; } = "waiting";
+        public object? First
+        {
+            get; set;
+        }
+        public object? Last
+        {
+            get; set;
+        }
+    }
+    private static async Task<string> PublicStatusAsync(AutomationElement settings, CancellationToken ct) =>
+        (await PublicStatusObservationAsync(settings, ct)).Text;
+    private static Task<(bool Found, string Text)> PublicStatusObservationAsync(AutomationElement settings, CancellationToken ct) => UiAsync(() =>
+    {
+        var status = Find(settings, AutomationElement.AutomationIdProperty, "PreparationStatus");
+        return (status is not null, status?.Current.Name ?? "");
+    }, ct);
     private static PreparationDiagnostic ReadPreparationDiagnostic(AutomationElement settings)
     {
         var diagnostic = Find(settings, AutomationElement.AutomationIdProperty, "PreparationDiagnostics");

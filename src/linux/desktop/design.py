@@ -166,6 +166,18 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface .model-details { padding: 10px 0; }
 .typelay-surface .model-package { border: 1px solid rgba(20,20,19,.085); border-radius: 12px; padding: 12px 14px; background: #fff; }
 .typelay-surface.settings-dark .connection-card, .typelay-surface.settings-dark .model-package { background: #2c2b28; border-color: rgba(255,255,255,.10); }
+/* Native setup uses the prototype's 560px card and finite four-step layout. */
+.typelay-surface.tutorial .tutorial-local { font-size: 14px; }
+.typelay-surface.tutorial .tutorial-model { padding: 16px; border-radius: 14px; }
+.typelay-surface.tutorial .tutorial-foot { padding: 18px 8px 4px; }
+.typelay-surface.tutorial .tutorial-dot { min-width: 6px; min-height: 6px; border-radius: 3px; background: rgba(20,20,19,.12); }
+.typelay-surface.tutorial .tutorial-dot.current { min-width: 18px; background: @accent; }
+.typelay-surface.tutorial.settings-dark .tutorial-dot { background: rgba(255,255,255,.14); }
+.typelay-surface.tutorial.settings-dark .tutorial-dot.current { background: @accent; }
+.typelay-surface.tutorial button.tutorial-practice { padding: 16px; border-radius: 14px; background: #fff; border: 0; box-shadow: inset 0 0 0 1px rgba(20,20,19,.085), 0 1px 2px rgba(20,20,19,.04); }
+.typelay-surface.tutorial button.tutorial-practice .headline { font-size: 14px; }
+.typelay-surface.tutorial button.tutorial-practice .tutorial-keys { font-size: 11px; }
+.typelay-surface.tutorial.settings-dark button.tutorial-practice { background: #2c2b28; box-shadow: inset 0 0 0 1px rgba(255,255,255,.1); }
 .typelay-surface .welcome-title { font-family: 'Source Serif 4','Noto Serif SC',serif; font-size: 30px; font-weight: 500; }
 .typelay-surface.settings-dark { background: #262624; color: #f4f3ee; }
 .typelay-surface.settings-dark .settings-sidebar { background: #2c2b28; border-color: rgba(255,255,255,.08); }

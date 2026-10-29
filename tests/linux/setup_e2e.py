@@ -2449,16 +2449,65 @@ class ApplicationSupportTests(unittest.TestCase):
                         "ok"
                     ]
                 )
+
+                async def retired_opening_during_start():
+                    started, release = asyncio.Event(), asyncio.Event()
+                    original_start = self.support.desktop_session.start_session
+                    opening = object()
+                    current = opening
+
+                    async def held_start():
+                        result = await original_start()
+                        self.assertTrue(result["ok"], result)
+                        started.set()
+                        await release.wait()
+                        return result
+
+                    with patch.object(self.support.desktop_session, "start_session", held_start):
+                        pending = asyncio.create_task(
+                            self.support.execute(
+                                "desktop-text",
+                                "Connect",
+                                lesson="onDemand",
+                                practice_current=lambda: current is opening,
+                            )
+                        )
+                        async with asyncio.timeout(5):
+                            await started.wait()
+                            current = object()  # The caller closed/reopened while awaiting start.
+                            release.set()
+                            result = await pending
+                    self.assertFalse(result["ok"])
+                    self.assertEqual(result["reason"], "practice-opening-retired")
+                    self.assertFalse(application_observation.exists())
+                    self.assertFalse(
+                        any(
+                            item["kind"] == "application"
+                            for item in receipts(self.support.paths.data)
+                        )
+                    )
+                    self.assertTrue(
+                        daemon_pid.exists(), "a potentially reused session was stopped blindly"
+                    )
+                    self.assertIn("结束本次连接", result["detail"])
+
+                asyncio.run(retired_opening_during_start())
                 selection = {
                     "id": "org.typelay.Fixture.desktop",
                     "name": "Fixture",
                     "toolkit": "gtk3",
                 }
-                for startup_id in ("synthetic-new-click", None):
+                for startup_id, lesson in (("synthetic-new-click", None), (None, "onDemand")):
                     self.support.selected_application = selection
                     self.support.application_result = "已选择，尚未打开或连接。"
                     result = asyncio.run(
-                        self.support.execute("desktop-text", "Connect", startup_id=startup_id)
+                        self.support.execute(
+                            "desktop-text",
+                            "Connect",
+                            startup_id=startup_id,
+                            lesson=lesson,
+                            practice_current=(lambda: True) if lesson else None,
+                        )
                     )
                     self.assertTrue(result["ok"], result)
                     self.assertIsNone(
@@ -2494,7 +2543,7 @@ class ApplicationSupportTests(unittest.TestCase):
                                 "DESKTOP_STARTUP_ID": startup_id,
                                 "XDG_ACTIVATION_TOKEN": None,
                             },
-                            "arguments": [],
+                            "arguments": [lesson] if lesson else [],
                         },
                     )
                     self.assertEqual(

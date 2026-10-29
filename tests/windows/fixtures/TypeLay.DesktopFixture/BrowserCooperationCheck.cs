@@ -96,6 +96,10 @@ internal static partial class BrowserCooperationCheck
         {
             get; set;
         }
+        public JsonElement? OverlayMenuObservation
+        {
+            get; set;
+        }
         public long? GlossaryVisibleDurationMs
         {
             get; set;
@@ -416,7 +420,12 @@ internal static partial class BrowserCooperationCheck
             {
                 await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
                 await WaitPreviewAsync(cdp!, ct);
-                string form = await cdp!.OpenEditorGlossaryAsync(ct);
+                string form;
+                try
+                {
+                    form = await cdp!.OpenEditorGlossaryAsync(ct);
+                }
+                finally { glossary.OverlayMenuObservation = cdp!.LastOverlayMenuObservation; }
                 try
                 {
                     glossary.Stage = "same-form-through-real-host-renewal";

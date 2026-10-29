@@ -1,6 +1,8 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Automation;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Interop;
 using TypeLay.Windows.Testing;
 using TypeLay.Runtime;
@@ -35,8 +37,28 @@ public sealed partial class LanguagePickerInteractionTests
             AutomationProperties.GetAutomationId(button) == "ApplicationSupport_desktop-text_Refresh");
         Assert.True(desktopAction.IsVisible);
         Assert.Single(Descendants(window).OfType<Button>(), button => AutomationProperties.GetAutomationId(button) == "ApplicationSupport_desktop-text_Refresh");
+        var connectionBody = Descendants(window).OfType<FrameworkElement>().Single(element => AutomationProperties.GetAutomationId(element) == "ApplicationConnectionBody_desktop");
+        Assert.False(connectionBody.IsVisible);
+        var more = Descendants(window).OfType<Button>().Single(button => AutomationProperties.GetAutomationId(button) == "ApplicationConnectionDetails_desktop");
+        var moreProvider = Assert.IsAssignableFrom<IInvokeProvider>(UIElementAutomationPeer.CreatePeerForElement(more).GetPattern(PatternInterface.Invoke));
+        moreProvider.Invoke();
+        await DrainAsync(window);
+        var ordinary = Descendants(connectionBody).OfType<Expander>().Single(expander => Equals(expander.Header, "其他普通输入框"));
+        var ordinaryProvider = Assert.IsAssignableFrom<IExpandCollapseProvider>(UIElementAutomationPeer.CreatePeerForElement(ordinary).GetPattern(PatternInterface.ExpandCollapse));
+        ordinaryProvider.Expand();
+        await DrainAsync(window);
+        var details = Assert.Single(Descendants(ordinary).OfType<Expander>());
+        Assert.IsAssignableFrom<IExpandCollapseProvider>(UIElementAutomationPeer.CreatePeerForElement(details).GetPattern(PatternInterface.ExpandCollapse)).Expand();
+        await DrainAsync(window);
+        // Collapsed Expander content has no visual descendants until the public
+        // expansion route instantiates it. Both primary/secondary layouts must
+        // retain instructions without duplicating the summary's Refresh action.
         Assert.Single(Descendants(window).OfType<Button>(), button => AutomationProperties.GetAutomationId(button) == "ApplicationSupport_desktop-text_OpenInstructions");
-        Assert.False(Descendants(window).OfType<FrameworkElement>().Single(element => AutomationProperties.GetAutomationId(element) == "ApplicationConnectionBody_desktop").IsVisible);
+        Assert.Single(Descendants(window).OfType<Button>(), button => AutomationProperties.GetAutomationId(button) == "ApplicationSupport_desktop-text_Refresh");
+        ordinaryProvider.Collapse();
+        moreProvider.Invoke();
+        await DrainAsync(window);
+        Assert.False(connectionBody.IsVisible);
         desktopAction.BringIntoView();
         await DrainAsync(window);
         // Page navigation cancels older checks and advances the generation too.

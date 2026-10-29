@@ -212,6 +212,7 @@ internal sealed partial class SettingsWindow : Window
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         FontFamily = UiTheme.UiFont;
         Resources.MergedDictionaries.Add(UiTheme.SettingsResources());
+        Resources.MergedDictionaries.Add(UiTheme.ConfigurationScrollResources());
         Resources.MergedDictionaries.Add(UiTheme.LanguageResources());
         Resources.MergedDictionaries.Add(UiTheme.ShortcutResources());
         Resources.MergedDictionaries.Add(UiTheme.QuickPanelResources());

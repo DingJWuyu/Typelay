@@ -921,7 +921,39 @@ class ApplicationSupport:
                 "detail": limitation + "\n" + str(error),
             }
 
-    async def execute(self, identity, action, directory=None, *, startup_id=None, desktop_id=None):
+    async def execute(
+        self,
+        identity,
+        action,
+        directory=None,
+        *,
+        startup_id=None,
+        desktop_id=None,
+        lesson=None,
+        practice_current=None,
+    ):
+        if lesson is not None and (
+            identity != "desktop-text"
+            or action != "Connect"
+            or lesson not in ("automatic", "onDemand")
+        ):
+            raise ValueError("practice-lesson")
+        if practice_current is not None and (lesson is None or not callable(practice_current)):
+            raise ValueError("practice-request")
+
+        def cancelled_practice():
+            result = {
+                "ok": False,
+                "reason": "practice-opening-retired",
+                "detail": "练习请求已取消，未继续打开练习。私有输入法会话可能已经启动；"
+                "请在应用页检查，关闭自有应用后用“结束本次连接”明确结束。"
+                "这不表示原输入法已恢复。",
+            }
+            self.last_results[identity] = result
+            return result
+
+        if practice_current is not None and not practice_current():
+            return cancelled_practice()
         if identity == "desktop-text" and action == "SelectApplication":
             return await self.select_application(desktop_id)
         if identity == "desktop-text" and action == "OpenApplication":
@@ -955,8 +987,21 @@ class ApplicationSupport:
                 self.practice_session_started = True
                 self.practice_component_removed = False
                 self.practice_session_stopped = False
+                # Setup consent may have awaited a cold private-session start.
+                # Retiring that tutorial never authorizes a later practice launch.
+                # The session may be reused, so do not blindly stop it here.
+                if practice_current is not None and not practice_current():
+                    result = cancelled_practice()
+                    await self.refresh()
+                    return result
                 result = await self.desktop_session.launch_application(
-                    ["/usr/bin/python3", "-I", "-B", str(self.paths.home / "desktop/practice.py")],
+                    [
+                        "/usr/bin/python3",
+                        "-I",
+                        "-B",
+                        str(self.paths.home / "desktop/practice.py"),
+                        *([lesson] if lesson else []),
+                    ],
                     toolkit="gtk3",
                     startup_id=startup_id,
                 )

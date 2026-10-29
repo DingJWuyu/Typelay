@@ -39,6 +39,7 @@ def main():
     parser.add_argument("--host", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--inspect", action="store_true")
+    parser.add_argument("--tutorial-only", action="store_true")
     options = parser.parse_args()
     assert Gtk.init_check([])[0], "GTK display unavailable"
     options.output.mkdir(parents=True, exist_ok=True)
@@ -116,10 +117,17 @@ def main():
         ipc_trace = deque(maxlen=512)
 
         class ObservedLink(Link):
+            hold_operation = None
+            held_id = None
+            held_frame = None
+
             # Diagnostic metadata only. Preserve the real transport, replies and
             # original request deadlines; never log content or replay a request.
             async def ask(self, operation, *args, **kwargs):
                 started = time.monotonic()
+                if operation == self.hold_operation:
+                    self.held_id = self.sequence + 1
+                    self.hold_operation = None
                 identity = self.sequence + 1
                 outcome = "returned"
                 ipc_trace.append(
@@ -154,6 +162,10 @@ def main():
                     }
                 )
                 try:
+                    if self.held_id is not None and frame.get("reply") == self.held_id:
+                        self.held_frame = frame
+                        self.held_id = None
+                        return
                     return super().receive(frame)
                 finally:
                     ipc_trace.append(
@@ -202,6 +214,164 @@ def main():
                 str(options.output / (name + ".png")), "png", [], []
             )
 
+        async def exercise_tutorial():
+            tutorial = surface.tutorial
+            original_preferences = {
+                key: state[key] for key in ("source", "target", "uiLanguage", "theme")
+            }
+            # Actual empty inventory is the negative readiness proof. The final
+            # ready-frame below is explicitly a renderer input, not a model.
+            assert status.get("modelReady") is False
+            assert await host.ask("traySettings", {"source": "auto", "target": "en"}) is True
+            surface.open_tutorial()
+            await settle(lambda: tutorial.window.is_active())
+            tutorial.window.unmaximize()
+            tutorial.window.resize(560, 460)
+            await settle(
+                lambda: not (tutorial.window.get_window().get_state() & Gdk.WindowState.MAXIMIZED)
+            )
+
+            async def picture(name):
+                await paint(tutorial.window)
+                area = tutorial.window.get_window()
+                width, height = tutorial.window.get_size()
+                Gdk.pixbuf_get_from_window(area, 0, 0, width, height).savev(
+                    str(options.output / (name + ".png")), "png", [], []
+                )
+
+            await picture("tutorial-welcome")
+            assert tutorial.headings[0].get_text() == "欢迎使用 TypeLay"
+            assert tutorial.local_note.get_text() == "翻译全部在这台电脑上完成"
+            old_next = tutorial.next
+            old_next.clicked()
+            await settle(lambda: tutorial.step == 1 and not tutorial.steps.get_transition_running())
+            old_next.clicked()
+            assert tutorial.step == 1, "retired Next advanced another step"
+            assert all(not button.is_sensitive() for button in tutorial.tone.buttons.values()), (
+                "closed tone gate became available"
+            )
+            source_picker = tutorial.pickers["source"]
+            source_picker.clicked()
+            await settle(
+                lambda: source_picker.popover.get_mapped() and source_picker.search.is_focus()
+            )
+            source_picker.search.set_text("中文")
+            await settle(
+                lambda: any(
+                    item.get_accessible().get_name() == "语言选项：zh"
+                    for item in source_picker.options
+                )
+            )
+            option = next(
+                item
+                for item in source_picker.options
+                if item.get_accessible().get_name() == "语言选项：zh"
+            )
+            option.clicked()
+            await settle(lambda: state.get("source") == "zh" and tutorial.pending is None)
+            assert json.loads((directory / "config/settings.json").read_text())["Source"] == "zh"
+            await picture("tutorial-language")
+            before = (directory / "config/settings.json").read_bytes()
+            blocker = directory / "config/settings.json.tmp"
+            blocker.mkdir()
+            try:
+                tutorial.swap.clicked()
+                await settle(lambda: tutorial.pending is None)
+                assert tutorial.message.get_text(), "failed language save was hidden"
+                assert state["source"] == "zh" and state["target"] == "en"
+                assert (directory / "config/settings.json").read_bytes() == before
+            finally:
+                blocker.rmdir()
+            tutorial.swap.clicked()
+            await settle(
+                lambda: tutorial.pending is None
+                and state["source"] == "en"
+                and state["target"] == "zh"
+            )
+            tutorial.next.clicked()
+            await settle(lambda: tutorial.step == 2 and not tutorial.steps.get_transition_running())
+            assert not tutorial.next.is_sensitive()
+            tutorial.next.clicked()
+            assert tutorial.step == 2, "disabled Next signal bypassed actual readiness"
+            assert (
+                "下载" in tutorial.model_summary.get_text()
+                or "未就绪" in tutorial.model_summary.get_text()
+            )
+            await picture("tutorial-model-unavailable")
+            old_model_button = tutorial.model_more
+            tutorial.dismiss()
+            surface.open_tutorial()
+            await settle(lambda: tutorial.window.is_active())
+            old_model_button.clicked()
+            assert tutorial.window.get_visible(), "retired model-page link closed a new tutorial"
+            assert tutorial.step == 2
+
+            # Hold one real host ACK within its unchanged request deadline.
+            # Closing/reopening retires the previous prompt, not the saved fact.
+            host.hold_operation = "dismissOnboarding"
+            tutorial.skip.clicked()
+            async with asyncio.timeout(0.4):
+                while host.held_frame is None:
+                    await asyncio.sleep(0.001)
+            assert host.held_frame["data"] is True
+            tutorial.dismiss()
+            surface.open_tutorial()
+            new_skip = tutorial.skip
+            frame, host.held_frame = host.held_frame, None
+            Link.receive(host, frame)
+            await settle(lambda: not jobs and tutorial.window.is_active())
+            assert (
+                tutorial.window.get_visible()
+                and tutorial.skip is new_skip
+                and tutorial.skip.is_sensitive()
+            )
+            assert state["onboardingComplete"] is True
+            assert tutorial.step == 2, "late finish changed the reopened page"
+
+            # Explicit presentation-only ready input exposes the fourth page.
+            # No lesson, model, capture or accept operation is issued here.
+            surface.report({**status, "modelReady": True})
+            assert tutorial.next.is_sensitive()
+            tutorial.next.clicked()
+            await settle(lambda: tutorial.step == 3 and not tutorial.steps.get_transition_running())
+            assert tutorial.practice_buttons["automatic"].get_mapped()
+            assert tutorial.practice_buttons["onDemand"].get_mapped()
+            await picture("tutorial-practice-renderer-ready")
+            original_startup = state["startup"]
+            tutorial.startup.set_active(not original_startup)
+            await settle(
+                lambda: state["startup"] is not original_startup and tutorial.pending is None
+            )
+            assert (
+                json.loads((directory / "config/settings.json").read_text())["Startup"]
+                is not original_startup
+            )
+            tutorial.startup.set_active(original_startup)
+            await settle(lambda: state["startup"] is original_startup and tutorial.pending is None)
+            surface.report(status)
+            assert all(not button.is_sensitive() for button in tutorial.practice_buttons.values())
+            tutorial.dismiss()
+            assert await host.ask("settingsPatch", {"uiLanguage": "en", "theme": "dark"}) is True
+            surface.open_tutorial()
+            await settle(lambda: tutorial.window.is_active())
+            assert tutorial.step == 2, (
+                "reopened unavailable inventory retained a usable practice step"
+            )
+            assert tutorial.next.get_label() == "Continue"
+            assert tutorial.headings[2].get_text() == "Download the translation model"
+            await picture("tutorial-model-en-dark")
+            tutorial.skip.clicked()
+            await settle(lambda: not tutorial.window.get_visible())
+            assert state["onboardingComplete"] is True
+            assert await host.ask("settingsPatch", original_preferences) is True
+            await settle(
+                lambda: all(state.get(key) == value for key, value in original_preferences.items())
+            )
+            print(
+                "TUTORIAL UI PASS: real empty gate, language persistence/failure, old peers, late ACK, startup; ready frame is rendering only",
+                flush=True,
+            )
+
         try:
             (options.output / "result.json").unlink(missing_ok=True)
             assert await host.ask("start", timeout=5) is True
@@ -237,6 +407,11 @@ def main():
             await settle(
                 lambda: not (surface.window.get_window().get_state() & Gdk.WindowState.MAXIMIZED)
             )
+            if options.tutorial_only:
+                surface.window.present()
+                await settle(lambda: surface.window.is_active())
+                await exercise_tutorial()
+                return
             surface.pages.set_transition_duration(0)
             for name in (
                 "general",
@@ -989,14 +1164,7 @@ def main():
             tray.hide_panel()
             surface.preference_options["theme"]["light"].set_active(True)
             await settle(lambda: state.get("theme") == "light")
-            surface.tutorial.show()
-            await asyncio.sleep(0.15)
-            window = surface.tutorial.window.get_window()
-            width, height = surface.tutorial.window.get_size()
-            Gdk.pixbuf_get_from_window(window, 0, 0, width, height).savev(
-                str(options.output / "tutorial.png"), "png", [], []
-            )
-            surface.tutorial.dismiss()
+            await exercise_tutorial()
             # Switching product chrome never translates user-provided terms.
             surface.pages.set_visible_child_name("glossary")
             await settle(lambda: translation.glossary_box.get_mapped())
@@ -1088,13 +1256,18 @@ def main():
                 surface.show_language_picker()
                 await capture_visible(surface.language_dialog, "visual-language-picker-" + theme)
                 surface.language_dialog.destroy()
+                # This image matrix is presentation-only. The real empty
+                # inventory and disabled Next path were asserted above.
+                surface.report({**status, "modelReady": True})
                 surface.tutorial.show()
                 for step in range(4):
                     surface.tutorial.go(step)
                     await capture_visible(
-                        surface.tutorial.window, f"visual-tutorial-{step + 1}-{theme}"
+                        surface.tutorial.window,
+                        f"visual-tutorial-renderer-ready-{step + 1}-{theme}",
                     )
                 surface.tutorial.dismiss()
+                surface.report(status)
             (options.output / "visual-state.json").write_text(
                 json.dumps({"preferences": canonical, "gtkSystemFamily": system_family}, indent=2)
             )

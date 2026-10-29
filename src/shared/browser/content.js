@@ -965,7 +965,10 @@
       positionMore(current); return; // Renewal must not restart a running resize.
     }
     cancelMotion(current);
-    const width = overlay.paused ? Math.min(innerWidth - 16, 160)
+    // A capsule wraps this live bar's actual content. Do not carry the source
+    // width or a fixed paused width into its empty/paused presentation.
+    const width = current.panel.classList.contains("capsule")
+      ? Math.min(innerWidth - 16, current.panel.querySelector("header").getBoundingClientRect().width)
       : Math.min(innerWidth - 16, Math.max(180, Math.min(overlay.expanded ? 720 : 520, overlay.expanded ? Math.max(520, bounds.width) : bounds.width)));
     host.style.width = `${width}px`;
     sizeEditor();
@@ -1109,11 +1112,16 @@
         .disclosure:hover,.disclosure[aria-expanded=true]{background:var(--fill-2);color:var(--ink)}
         section:hover .disclosure,section:focus-within .disclosure,
         .footer-actions:has([aria-expanded=true]) .disclosure{opacity:1}
-        section.capsule{border-radius:999px}
-        section.capsule header{padding:4px;min-height:26px;flex-wrap:nowrap}
-        section.paused{color:var(--muted);box-shadow:0 2px 8px #0001}
-        section.paused header{justify-content:space-between}
-        section.paused .status{text-align:left;padding-left:8px}
+        section.capsule{border:0;border-radius:999px;box-shadow:0 8px 24px #1414131a,0 1px 3px #14141314,inset 0 0 0 .5px var(--line)}
+        section.capsule header{width:max-content;padding:4px;min-height:26px;flex-wrap:nowrap}
+        section.capsule .footer-actions,section.capsule:not(.paused) .status{display:none}
+        section.paused{color:var(--muted);opacity:.78}
+        section.paused .status{flex:none;display:inline-flex;align-items:center;text-align:left;
+          height:26px;padding:0 10px 0 9px;font:500 12px/1 var(--ui-font);white-space:nowrap;color:var(--ink-2)}
+        section.paused .status svg{width:13px;height:13px;flex:none}
+        section.paused .resume{height:26px;padding:0 11px;border-radius:999px;
+          font:600 12px/1 var(--ui-font);color:var(--accent-ink)}
+        section.paused .resume:hover{background:var(--accent-soft)}
         section[data-motion=reduce] *,section[data-motion=reduce] *::before,section[data-motion=reduce] *::after{animation:none!important;transition:none!important}
         section[data-motion=reduce] .status.live{background:none;color:var(--muted)}
         section[data-motion=reduce] .updating-sweep{display:none}
@@ -1125,7 +1133,14 @@
       language.className = "language";
       status.className = "status";
       language.addEventListener("click", event => { if (event.isTrusted) ui("languagesPicker"); });
+      const pauseIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      for (const [name, value] of Object.entries({viewBox:"0 0 24 24",fill:"none",stroke:"currentColor","stroke-width":1.6,"stroke-linecap":"round","aria-hidden":"true"}))
+        pauseIcon.setAttribute(name, value);
+      const pausePath = document.createElementNS(pauseIcon.namespaceURI, "path");
+      pausePath.setAttribute("d", "M9 6v12M15 6v12"); pauseIcon.append(pausePath);
+      const pauseLabel = document.createElement("span"); pauseLabel.textContent = "已暂停";
       const resume = document.createElement("button");
+      resume.className = "resume";
       resume.textContent = "恢复";
       resume.tabIndex = -1;
       resume.hidden = true;
@@ -1373,7 +1388,7 @@
           && !event.composedPath().includes(menu) && !event.composedPath().includes(more)) closeMore(current);
       }, true);
       document.documentElement.append(host);
-      overlay = {field, host, shadow, panel, editor, skeleton, sweep, language, status, resume, hint, more, menu, expand, collapse, collapseLabel, collapseKey,
+      overlay = {field, host, shadow, panel, editor, skeleton, sweep, language, status, pauseIcon, pauseLabel, resume, hint, more, menu, expand, collapse, collapseLabel, collapseKey,
         styleActions, styleButtons, styleIcon, copy, regenerate: menuItems.get("regenerate"),
         alternative, glossaryButton: glossary, translationFeedback, editing: false, composing: false, expanded: false};
     }
@@ -1446,6 +1461,9 @@
       system: 'system-ui,"Microsoft YaHei UI",sans-serif'};
     overlay.host.style.setProperty("--accent", accents[appearance.accent] || accents.clay);
     overlay.host.style.setProperty("--accent-strong", strongAccents[appearance.accent] || strongAccents.clay);
+    const inkAccents = {clay:"#ad4f2d,#ec9a7c",ocean:"#1f63bb,#7ab4ff",sage:"#3c7650,#8fcc9f",iris:"#6a4cbc,#b9a4f5",graphite:"#55534e,#c4c2bb"};
+    overlay.host.style.setProperty("--accent-ink", `light-dark(${inkAccents[appearance.accent] || inkAccents.clay})`);
+    overlay.host.style.setProperty("--accent-soft", `color-mix(in srgb,var(--accent) ${{ocean:13,sage:15,graphite:16}[appearance.accent] || 14}%,transparent)`);
     overlay.host.style.setProperty("--content-font", fonts[appearance.font] || fonts.claude);
     overlay.host.style.setProperty("--ui-font", appearance.font === "system" ? fonts.system
       : '"TypeLay Inter","TypeLay Noto Sans SC","Segoe UI","Microsoft YaHei UI",sans-serif');
@@ -1472,6 +1490,7 @@
     const failed = view.state === "TranslationFailed";
     overlay.status.textContent = paused ? "已暂停" : failed ? "未能更新"
       : view.status === "译文就绪" ? "" : view.status || overlay.translationActions?.feedback || "";
+    if (paused) overlay.status.replaceChildren(overlay.pauseIcon, overlay.pauseLabel);
     overlay.status.title = failed ? view.status || "" : "";
     overlay.status.classList.toggle("live", busy);
     overlay.status.classList.toggle("warn", failed);

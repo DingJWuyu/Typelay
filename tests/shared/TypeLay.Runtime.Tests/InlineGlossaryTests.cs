@@ -5,6 +5,94 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class InlineGlossaryTests
 {
+    [Fact]
+    public void AcknowledgedEditorFocusReprojectsGlossaryEntryWithoutGrantingAcceptance()
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: new([]));
+        s.ReadyCandidate();
+        var previous = s.View.Token;
+        Assert.True(s.View.BeginEditing!(previous));
+        var editing = s.View.Token;
+        Assert.False(s.View.Context!.TranslationActions!.CanOpenGlossary);
+        string draft = s.View.Draft;
+        int captures = s.Service.Captures;
+        int publications = s.Input.PublishedLeases.Count;
+
+        // The platform has now acknowledged this editor's focus. No command,
+        // draft mutation or explicit refresh stands in for the next ordinary tick.
+        s.Input.InEditor = true;
+        s.Tick();
+
+        Assert.True(s.View.Context!.TranslationActions!.CanOpenGlossary);
+        Assert.False(s.View.Context.TranslationActions.GlossaryReleased);
+        Assert.Equal(editing, s.View.Token);
+        Assert.NotEqual(previous, editing);
+        Assert.Equal(draft, s.View.Draft);
+        Assert.Equal(captures, s.Service.Captures);
+        Assert.Equal(publications, s.Input.PublishedLeases.Count);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.View.CanAccept);
+        Assert.Empty(s.Service.Writes);
+
+        int renders = s.View.Renders;
+        s.Tick();
+        s.Tick();
+        Assert.Equal(renders, s.View.Renders);
+        Assert.Equal(editing, s.View.Token);
+        Assert.True(s.View.Context.TranslationActions.CanOpenGlossary);
+        Assert.Equal(publications, s.Input.PublishedLeases.Count);
+        Assert.Null(s.Input.Permit);
+    }
+
+    [Theory]
+    [InlineData("composition")]
+    [InlineData("source-focus")]
+    [InlineData("input-unavailable")]
+    [InlineData("new-document")]
+    public void EditorMenuProjectionCannotRetainEntryAfterItsQualificationChanges(string change)
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: new([]));
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        var editing = s.View.Token;
+        s.Input.InEditor = true;
+        s.Tick();
+        Assert.True(s.View.Context!.TranslationActions!.CanOpenGlossary);
+
+        switch (change)
+        {
+            case "composition":
+                s.View.EditingComposition = true;
+                break;
+            case "source-focus":
+                s.Input.InEditor = false;
+                break;
+            case "input-unavailable":
+                s.Input.Ready = false;
+                break;
+            case "new-document":
+                s.Input.InEditor = false;
+                s.FocusAnotherField();
+                break;
+        }
+        s.Tick();
+        Assert.NotEqual(true, s.View.Context?.TranslationActions?.CanOpenGlossary);
+        Assert.Null(s.View.BeginGlossaryRequested!(editing));
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+        Assert.Null(s.ReloadSettings().Glossary);
+
+        if (change == "new-document")
+        {
+            s.Input.InEditor = true; // A late old focus observation cannot revive its view.
+            s.Tick();
+            Assert.NotEqual(editing, s.View.Token);
+            Assert.NotEqual(true, s.View.Context?.TranslationActions?.CanOpenGlossary);
+            Assert.Null(s.View.BeginGlossaryRequested!(editing));
+            Assert.Null(s.Input.Permit);
+        }
+    }
+
     private static SessionScenario Editing(GlossarySnapshot? initial = null)
     {
         var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,

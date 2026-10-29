@@ -295,6 +295,7 @@ internal static partial class UiTheme
         r["Good"] = Brush(dark ? "#63C48C" : "#2F8A57");
         r["Warn"] = Brush(dark ? "#E5AD55" : "#A5670E");
         r["Danger"] = Brush(dark ? "#F0806C" : "#C2412D");
+        r["ConfigurationScrollThumb"] = Brush(dark ? "#9F9F9F" : "#8B8B8B");
         r["UiFont"] = UiFont;
         r["ContentFont"] = ContentFont;
         r["DisplayFont"] = DisplayFont;
