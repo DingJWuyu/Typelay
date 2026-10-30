@@ -10,7 +10,13 @@
 
 ## 验证状态与当前阻塞
 
-CP27已发布为 [`ee7f249f`](https://github.com/DingJWuyu/Typelay/commit/ee7f249f2ff03504bbdd26287012855da0c5ecf5)，[CI568](https://github.com/DingJWuyu/Typelay/actions/runs/41067990474) 双端已终态失败。16文件精确树经独审、共同编译与远端回读，main/trunk未改；本地同步保966文件原字节并核clean。以下CI567是前一精确head已终态原件，不冒新头结果；不为微批取消本轮。
+CP28已发布为 [`af03071c`](https://github.com/DingJWuyu/Typelay/commit/af03071cc686ab4228b54bee622a1e2dfbdf7f37)，[CI569](https://github.com/DingJWuyu/Typelay/actions/runs/41077943229) 已双端终态失败。31文件精确树91bb经独审、共同编译与远端回读，main/trunk未改；本地同步保971文件原字节并核clean。以下CI568是前一精确head终态原件，不冒新头结果；不为后继微批取消本轮。
+
+### CI569 已取得的子项
+
+精确头 af03071c 的 CI569 已双端终态，以下按实际原件保留通过与失败，不把子项绿色当完整交付。Windows原件已核：App1422执行1414通过8失败，Runtime1507/Core310/Protocol28/WinContracts210及独立2全部通过。Appearance15/15、sheet8/8、按钮120ms六例全部通过；步骤480ms为10/11，剩首次Show重入隐藏后目标窗口未active，未证明旧尾重新显示。五个owned初始mouse例统一缺对应up receipt，另普通source返回和FirstWake各一红。FirstWake真实capture102.89ms（managed-focus58.58ms），响应后15ms取出，原150ms期限超8ms安全拒；不延期限或预热。正式format/Python、native、continuous步骤已成功；Browser实际2通过/1失败/5未跑，术语按钮在当前复核未完成时disabled；fixture失败后16ms同身份复核确认，后继只按公开enabled等待评审，不改资格。Notepad五可执行通过/两可信物理输入未跑，Hy15/15、continuous14个子结果通过。Windows Index实际12/12、固定profile及cleanup均通过，不代表桌面或质量认证。
+
+新头Linux严格构建成功；小artifact的完整托盘、S07公开录制、三处真实HTTP 5/11进度通过，圆端0/1/3/5/6/中值/满值、真实Atk、6px/400ms显示与退休合同也通过。Browser/routing/VSCode/rich/Firefox/Fcitx请求探针及隔离GTK步骤成功。GTK3完整21条实际通过，GTK3/GTK4各40合作合同通过（非真实模型质量）；原GTK3 OS减少动效属性不可用的子项仍not-run。Linux主剩六红：Quit、Settings、教程、GIMP、GTK4配置入口与Qt。Settings本次已显示明确保存失败，旧consumer误要求未知状态“未确认”，后继仅迁当前精确公开全文；教程隐藏scrollbar状态仍需与零range合法no-op分开。Qt新父子合成色已过，下一light偏好card高度89→99需定位；GTK4仍首layout内unmap、begin0，不冒配置完成。T02 page退休后dialog/intent/jobs均清理，但旧fixture在新用户请求前要求Settings自动active而失败；后继仅测试沿新一次公开show，原共享3秒不变，本机完整20秒合同已通过、127无漂，bare Xvfb仍待下一CI。生产不抢焦。
 
 ### CI568 当前结果
 
@@ -24,9 +30,11 @@ Windows早期实际App1405执行1400通过5失败，Runtime1501/Core310/Protocol
 
 ### 当前后继批边界
 
-CP28主并集已于14:55:37 UTC终态0：1009源码/字体逐SHA无漂，App/Tests/真实NativeFixture/DesktopFixture/Practice/LinuxHost全0警告/错误；Runtime1507、Core310零skip，全部Python Ruff/format、32字体校验、滚动12及预算7个CLI边界通过。11份C#实际扫描，2份机械格式经Roslyn token与非布局trivia等价核验后才同步。随后三份continuous失败标量观察单独加入新最终快照，14:57:43终态0，真实NativeFixture与DesktopFixture再次编译通过，1009身份无漂；与主并集差集恰这三份fixture，未重复或冒称再次运行共享套件。正式solution格式、C/Qt严格SDK及实际平台行为仍由下一CI判断。
+CP29独立并集于15:47:15 UTC终态0，原210+5秒限内完成：1009源码/字体输入前后及终态重核无漂，App/Tests/真实NativeFixture/DesktopFixture/Practice/LinuxHost均0警告/错误；Runtime1507、Core310零skip，全部Python Ruff/format、32字体、滚动13与预算7个CLI边界通过。6份C#实际扫描，3份机械格式经Roslyn token与非布局trivia逐字等价后才同步live。正式solution格式与实际平台行为仍须下一精确head CI。
 
-本批包含已审Windows步骤/按下局部动效、sheet重开等待及有限Appearance/源返回/continuous诊断，Linux进度显示、公开应用列表前置/角色与合法零range滚动，以及GTK3中帧早窗、Qt真实父子合成采样、GTK4诊断selector修正。既有小artifact只增加13个固定已产文件，不新增执行或期限。未把B浏览器键盘确认、未验证shader资源或未知O04产品修复混入。诊断与fixture观察修正不称生产缺陷已关闭。
+本批只含成熟13文件差量：既有S08 A/B/C真实组合截图取证、owned up有限观察、Source返回完整原生身份谓词、步骤首次Show重入诊断、Browser同一公开术语按钮在原scene期限内等待enabled后唯一点击；Linux新用户退出请求前置、当前已知保存失败文案消费者、可见零range只读no-op及快捷键失败分类可选字段。Browser不等待私有ACK/不续票，零range没有scroll setter；所有源许可、IME、原期限与模型行为保持。最后三类诊断不称产品修复。
+
+新shader资源/渲染、Linux录制pulse、Qt固定宽HFW候选、O03新公开RED及B完整键盘确认均独立未入，不为其阻本批已完成子项继续真实验收。双端完整稳定交付尚未完成。
 
 ### Linux 最近真实桌面证据与编排边界
 
@@ -38,7 +46,7 @@ Windows外层85分钟=前段25分钟+后链60分钟，本头准入和pack实际�
 
 保留已通过页面子项，双端完整25项尚未验收。S08整体模态材质与入场实际组合像素、owned初始mouse/普通source返回及Replace、Browser完整键盘确认、GTK4 O04和其他页面Full动效均未关闭。B02风格/另述有界评估失败属于未交付功能，不混入第四类前端范围；Notepad两项可信物理输入仍不能用软件注入冒充。
 
-Shader为非阻塞研究：CI568已真正调用固定FXC，但ps_2_0合法legacy sampler2D与可选strict语言模式冲突，首编X3086、无输出字节码，cleanup正常。后续仅评审编译模式兼容，不接未验证生产资源，不声称180%饱和度已交付。Browser确认专用aux/Keep/Replace/pending已有Linux Host和受控DOM各自公开RED→GREEN；Windows真实seam还有跨Begin异步返回边界待闭，整个候选独立，不发布半套功能。
+Shader为非阻塞研究：CI568固定FXC曾因ps_2_0合法legacy sampler2D与可选strict模式冲突而无输出；CI569仅去不兼容可选模式后首次双编逐字一致352字节，status generated-twice-identical-not-rendered。尚未实际渲染/生产接线，不声称180%饱和度已交付。Browser确认专用aux/Keep/Replace/pending已有Linux Host和受控DOM各自公开RED→GREEN；Windows真实seam还有跨Begin异步返回边界待闭，整个候选独立，不发布半套功能。
 
 ## 当前负责人及下一动作
 
@@ -46,8 +54,8 @@ Shader为非阻塞研究：CI568已真正调用固定FXC，但ps_2_0合法legacy
 
 | 责任线 | 当前动作 | 完成依据 |
 | --- | --- | --- |
-| 集成 | CP27 ee7f/CI568双端终态已取原件，CP28最终并集编译已通过，准备独审发布；不把诊断当修复 | 新源身份、独审、本地适用检查与精确head CI |
-| Windows设置 | Sheet7/8，hide后重开等待原3秒内公开就绪；Appearance14/15，retarget需已有Rendering/布局有限观察；步骤480与按钮120ms新片已审待实际WPF | 公开操作、实际组合像素与同偏好页面图 |
+| 集成 | CP27 ee7f/CI568双端终态已取原件，CP28 af03071c已发布，CI569已双端终态，CP29成熟修正共同验证通过待发布；不把诊断当修复 | 新源身份、独审、本地适用检查与精确head CI |
+| Windows设置 | CI569 Sheet8/8、Appearance15/15、Button6/6；Step10/11，Show重入失活需精确阶段诊断；实际中帧合成仍待 A/B/C 后继 | 公开操作、实际组合像素与同偏好页面图 |
 | Linux设置 | CI568托盘/三面真实进度/快捷键通过；caps-v4显示14场+7宽通过且174无漂已合；Settings公开TEXT角色与零range滚动合同已审合，继续catalog前置与Quit实际阶段 | 真实Host/GTK/AT-SPI、实际字体与交互图 |
 | Windows浮层 | 本轮owned初始mouse及普通source返回两红，原pair dispatch receipt和失败身份诊断优先；保持原3秒/源身份/零误写门 | fresh source/Core/Bind、原down500期限与零误写负控 |
 | 合作浮层 | 原生构建与隔离GTK事务已过；按本头GTK3中帧捕获/GTK4首次layout退出/Qt透明合成采样逐项收敛，不猜旧根因 | 实际case、正反控与未改产品安全门 |

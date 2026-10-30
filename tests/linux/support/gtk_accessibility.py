@@ -388,25 +388,23 @@ def scroll_settings_control(pid, node, *, deadline, at_start=False):
         assert lower <= position <= upper
         return clip, lower, upper, position
 
-    if at_start:
-        # An AUTOMATIC scrollbar is legitimately hidden when this collapsed
-        # page fits. Reading its exact zero range is not a scroll/input grant.
-        clip, lower, upper, position = current(require_bar=False)
-        if lower == upper == position:
-            node.clear_cache()
-            assert node.get_state_set().contains(Atspi.StateType.SHOWING)
-            area = rectangle(node)
-            for peer in (viewport, pane, frame):
-                peer.clear_cache()
-                assert peer.get_state_set().contains(Atspi.StateType.SHOWING)
-                observed = rectangle(peer)
-                assert observed.x <= area.x <= observed.x + observed.width - area.width
-                assert observed.y <= area.y <= observed.y + observed.height - area.height
-            _, low, high, actual = current(require_bar=False)
-            assert (low, high, actual) == (lower, upper, position)
-            assert time.monotonic() < deadline
-            return node
-
+    # An AUTOMATIC scrollbar is legitimately hidden when this collapsed
+    # page fits. Reading its exact zero range is not a scroll/input grant.
+    clip, lower, upper, position = current(require_bar=False)
+    if lower == upper == position:
+        node.clear_cache()
+        assert node.get_state_set().contains(Atspi.StateType.SHOWING)
+        area = rectangle(node)
+        for peer in (viewport, pane, frame):
+            peer.clear_cache()
+            assert peer.get_state_set().contains(Atspi.StateType.SHOWING)
+            observed = rectangle(peer)
+            assert observed.x <= area.x <= observed.x + observed.width - area.width
+            assert observed.y <= area.y <= observed.y + observed.height - area.height
+        _, low, high, actual = current(require_bar=False)
+        assert (low, high, actual) == (lower, upper, position)
+        assert time.monotonic() < deadline
+        return node
     clip, lower, upper, position = current()
     page_size = clip.height
     steps = math.ceil((upper - lower) / page_size)

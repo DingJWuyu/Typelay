@@ -660,6 +660,7 @@ internal static class Program
                         return new
                         {
                             saved = false,
+                            shortcutError = error.ToString(),
                             message = SettingsDraftPresentation.ShortcutErrorMessage(error)
                         };
                     if (draft.Exclusions is { } exclusions && !exclusions.TryApply(updated!, out updated))

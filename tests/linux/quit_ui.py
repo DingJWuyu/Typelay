@@ -149,6 +149,30 @@ async def complete(
         assert settings_file.read_bytes() == before
         assert not failures, failures
 
+    async def open_after_retirement(count, before, *, old=None):
+        # Retirement is not a request to steal foreground focus. In particular,
+        # bare Xvfb has no WM to reactivate the owner after a modal is destroyed.
+        # Prove A retired before a separate, normal user request opens Settings B.
+        deadline = asyncio.get_running_loop().time() + 3
+        async with asyncio.timeout_at(deadline):
+            await until(
+                lambda: not jobs
+                and surface.quit_dialog is None
+                and surface.quit_intent is None
+                and (old is None or not old.get_visible())
+            )
+            unchanged(count, before)
+            if old is not None:
+                old.response(Gtk.ResponseType.OK)
+                unchanged(count, before)
+                assert not old.get_visible()
+                assert surface.quit_dialog is None and surface.quit_intent is None
+            assert asyncio.get_running_loop().time() < deadline
+            surface.show()
+            await until(lambda: not jobs and surface.window.is_active())
+            assert asyncio.get_running_loop().time() < deadline
+            unchanged(count, before)
+
     async def consume_while_showing(title, trigger, mode):
         armed, consumed = True, False
         watched, errors = [], []
@@ -233,7 +257,7 @@ async def complete(
             surface.pages.set_visible_child_name(page)
         elif retire == "hide":
             surface.window.hide()
-            surface.show()
+            # The one reopen follows the independent retirement proof below.
         else:
             assert await host.ask("settingsPatch", {"accent": "sage"}, timeout=3) is True
             before = settings_file.read_bytes()
@@ -268,7 +292,7 @@ async def complete(
         except Exception:
             pass
         try:
-            await until(lambda: not jobs and surface.window.is_active())
+            await open_after_retirement(1, before, old=old)
         except TimeoutError:
             try:
                 print(
@@ -311,7 +335,9 @@ async def complete(
     assert translation.source_term.get_text() == "Retained draft"
 
     for mode in ("cancel", "destroy"):
-        await until(lambda: surface.window.is_active())
+        # This is the next user Quit request, not an auto-focus assertion about
+        # the preceding second-stage Cancel or controlled show-time retirement.
+        await open_after_retirement(1, before)
         first = await ask_quit()
         await consume_while_showing(
             surface.tr(surface.draft_messages["closeTitle"], "Discard unsaved changes?"),
@@ -322,7 +348,7 @@ async def complete(
         assert translation.dirty and translation.source_term.get_text() == "Retained draft"
     print("QUIT SECOND SHOW CONSUMED PASS: draft retained; closed A never re-presented", flush=True)
 
-    await until(lambda: surface.window.is_active())
+    await open_after_retirement(1, before)
     first = await ask_quit()
     await answer(first, Gtk.ResponseType.OK)
     second = await ready_question(

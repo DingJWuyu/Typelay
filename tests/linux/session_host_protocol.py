@@ -2033,6 +2033,70 @@ while True:
             },
         }
 
+    async def test_shortcut_validation_returns_finite_error_without_saving(self):
+        self.assertTrue(await self.ask("settings", {"theme": "dark"}))
+        before = (self.home / "config/settings.json").read_bytes()
+        cases = (
+            ({"wake": "F7"}, "InvalidOnDemandBindings"),
+            ({"accept": "A"}, "InvalidSessionBindings"),
+            ({"pause": "Ctrl+Shift+F9"}, "ConflictingBindings"),
+            ({"pause": "F7"}, "InvalidPauseBinding"),
+        )
+        for changes, expected in cases:
+            with self.subTest(error=expected):
+                draft = self.draft()
+                draft["shortcuts"].update(changes)
+                response = await self.ask("saveSettingsDraft", draft)
+                self.assertIs(response["saved"], False)
+                self.assertEqual((self.home / "config/settings.json").read_bytes(), before)
+                self.assertEqual(response.get("shortcutError"), expected)
+                self.assertIsNot(response.get("confirmationRequired"), True)
+
+    async def test_non_shortcut_outcomes_do_not_emit_shortcut_error(self):
+        self.assertTrue(await self.ask("settings", {"theme": "dark"}))
+        settings_file = self.home / "config/settings.json"
+        before = settings_file.read_bytes()
+        malformed = self.draft()
+        malformed["session"] = str(uuid.UUID(int=0))
+        response = await self.ask("saveSettingsDraft", malformed)
+        self.assertIs(response["saved"], False)
+        self.assertNotIn("shortcutError", response)
+        self.assertEqual(settings_file.read_bytes(), before)
+
+        warning = self.draft()
+        warning["shortcuts"]["wake"] = "Ctrl+C"
+        response = await self.ask("saveSettingsDraft", warning)
+        self.assertIs(response["saved"], False)
+        self.assertIs(response["confirmationRequired"], True)
+        self.assertNotIn("shortcutError", response)
+        self.assertEqual(settings_file.read_bytes(), before)
+
+        obstruction = self.home / "config/settings.json.tmp"
+        obstruction.mkdir()
+        try:
+            response = await self.ask("saveSettingsDraft", self.draft())
+            self.assertIs(response["saved"], False)
+            self.assertNotIn("shortcutError", response)
+            self.assertEqual(settings_file.read_bytes(), before)
+        finally:
+            obstruction.rmdir()
+        response = await self.ask("saveSettingsDraft", self.draft())
+        self.assertIs(response["saved"], True)
+        self.assertNotIn("shortcutError", response)
+        saved = settings_file.read_bytes()
+        self.assertNotEqual(saved, before)
+
+        self.assertTrue(
+            await self.ask("settings", {"excludedApplications": [f"app-{n}" for n in range(256)]})
+        )
+        before_exclusions = settings_file.read_bytes()
+        exclusion = self.draft()
+        exclusion["exclusions"] = {"baseline": [], "values": ["overflow"]}
+        response = await self.ask("saveSettingsDraft", exclusion)
+        self.assertIs(response["saved"], False)
+        self.assertNotIn("shortcutError", response)
+        self.assertEqual(settings_file.read_bytes(), before_exclusions)
+
     async def test_common_shortcut_conflict_keeps_settings_until_exact_draft_is_confirmed(self):
         await self.ask("settings", {"theme": "dark"})
         before = (self.home / "config/settings.json").read_bytes()

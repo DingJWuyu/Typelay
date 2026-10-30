@@ -88,9 +88,22 @@ public sealed partial class NativeSourceControllerTests
             await Until(() => returns == 1 && N.Focused() == (native.Root, native.A) && editor.IsReadOnly, native.Token);
             await Until(() => AutomationProperties.GetItemStatus(editor) == "当前译文" && captures.TryPeek(out _), native.Token);
             int requests = translation.Calls;
-            // Freeze identity for a failure-only observation, not a replacement focus gate.
+            // Freeze the original native identity before entering the confirmation.
             nint originalCookie = N.GetProp(native.A, "TypeLay.NativeInput.Lifetime.v2");
             uint sourceThread = N.GetWindowThreadProcessId(native.A, out uint sourceProcess);
+            bool OriginalSourceFocused()
+            {
+                // Ordinary native return may report the exact original Edit as
+                // raw foreground. Keep the full existing native identity proof.
+                var focus = N.ReadFocus();
+                return (focus.Root == native.Root || focus.Root == native.A)
+                    && N.GetAncestor(focus.Root, 2) == native.Root
+                    && sourceProcess != 0 && focus.ProcessId == sourceProcess
+                    && sourceThread != 0 && focus.ThreadId == sourceThread
+                    && focus.GuiThreadInfoSucceeded == true && focus.Control == native.A
+                    && originalCookie != 0
+                    && N.GetProp(native.A, "TypeLay.NativeInput.Lifetime.v2") == originalCookie;
+            }
             var token = Assert.IsType<SessionViewToken>(controller.GetAlternativeState().Session);
             var read = Assert.IsType<Func<WindowsRuntime.SourceObservation>>(observe);
             var sourceVersion = read();
@@ -316,7 +329,7 @@ public sealed partial class NativeSourceControllerTests
                         releaseAt = WindowsInterruptClock.NowMs;
                         Key(key, true);
                         held = false;
-                        await Until(() => returns == beforeReturn + 1 && N.Focused() == (native.Root, native.A)
+                        await Until(() => returns == beforeReturn + 1 && OriginalSourceFocused()
                             && AutomationProperties.GetItemStatus(editor) == "当前译文", deadline.Token);
                         Assert.False(keep.IsVisible);
                     }

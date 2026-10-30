@@ -6386,8 +6386,9 @@ def run(arguments):
                     try:
                         activate_scrolled_setting(app_switch)
                         wait_for(
-                            lambda: "未确认" in text(settings_control("设置反馈")),
-                            "failed app setting did not report unconfirmed persistence",
+                            lambda: text(settings_control("设置反馈"))
+                            == "设置已变化或保存失败，请检查当前列表后重试。",
+                            "failed app setting did not report rejected persistence",
                         )
                         assert paths.settings.read_bytes() == before_disable
                         wait_for(

@@ -452,12 +452,38 @@ internal static partial class BrowserCooperationCheck
         {
             LastOverlayMenuObservation = null;
             JsonElement? observation = null;
+            var retained = new List<string>();
+            bool failed = false;
             string? id = await PreviewObjectAsync(ct);
             Require(id is not null, "preview-settings-unavailable");
             try
             {
                 foreach (bool more in new[] { true, false })
                 {
+                    string? actionId = null, menuId = null;
+                    if (!more && label == "加入术语表")
+                    {
+                        // Bind this publicly displayed action once. Waiting for its
+                        // asynchronous qualification must not follow a replacement menu.
+                        var action = await PageCallAsync("Runtime.callFunctionOn", new
+                        {
+                            objectId = id,
+                            returnByValue = false,
+                            functionDeclaration = "function(){const m=this.getRootNode().querySelectorAll('[role=group][aria-label=\"更多操作\"]');if(m.length!==1)return null;const b=[...m[0].querySelectorAll(':scope>button')].filter(x=>x.querySelector('span')?.textContent==='加入术语表');return b.length===1?b[0]:null;}"
+                        }, ct);
+                        Require(action.GetProperty("result").TryGetProperty("objectId", out var actionObject), "preview-glossary-action-missing");
+                        actionId = actionObject.GetString()!;
+                        retained.Add(actionId);
+                        var menu = await PageCallAsync("Runtime.callFunctionOn", new
+                        {
+                            objectId = actionId,
+                            returnByValue = false,
+                            functionDeclaration = "function(){return this.parentElement;}"
+                        }, ct);
+                        Require(menu.GetProperty("result").TryGetProperty("objectId", out var menuObject), "preview-glossary-menu-missing");
+                        menuId = menuObject.GetString()!;
+                        retained.Add(menuId);
+                    }
                     JsonElement point;
                     while (true)
                     {
@@ -465,14 +491,17 @@ internal static partial class BrowserCooperationCheck
                         {
                             objectId = id,
                             returnByValue = true,
-                            arguments = new object[] { new { value = more }, new { value = label } },
+                            arguments = new object[] { new { value = more }, new { value = label },
+                                actionId is null ? (object)new { value = (string?)null } : new { objectId = actionId },
+                                menuId is null ? (object)new { value = (string?)null } : new { objectId = menuId } },
                             functionDeclaration = """
-                                function(more,label){
+                                function(more,label,expectedAction,expectedMenu){
                                  const root=this.getRootNode(),menus=root.querySelectorAll('[role=group][aria-label="更多操作"]');
                                  const buttons=more?root.querySelectorAll('button[aria-controls="more-actions"]'):[...root.querySelectorAll('[role=group][aria-label="更多操作"]>button')].filter(b=>b.querySelector('span')?.textContent===label);
                                  const observation={more,action:label==='加入术语表'?'glossary':'settings',editorConnected:this.isConnected,editorReadOnly:this.readOnly,editorFocused:root.activeElement===this,documentFocused:document.hasFocus(),menuCount:menus.length,menuHidden:menus.length===1?menus[0].hidden:null,matchedCount:buttons.length};
                                  if(buttons.length!==1)return {...observation,visible:false,reason:!this.isConnected?'editor-retired':buttons.length===0?'action-missing':'action-ambiguous'};
                                  const b=buttons[0],r=b.getBoundingClientRect();
+                                 if(expectedAction&&(b!==expectedAction||menus.length!==1||menus[0]!==expectedMenu||b.parentElement!==expectedMenu))return {...observation,visible:false,reason:'action-replaced'};
                                  // These exact product messages are unchanged by current uiText in both UI languages.
                                  // Never return arbitrary title text, user content or an inferred authority.
                                  const qualificationReasons={'术语功能尚未开放':'not-released','当前模型不支持同时应用风格与术语表':'combination-unavailable','当前模型方向尚未开放风格与术语同时应用':'combination-not-released','当前译文无法加入术语表':'editing-required','请先完成或取消当前输入':'ime','请回到当前术语表单':'focus','请先完成当前术语表单':'already-open','请等待当前操作完成':'busy','操作已取消':'cancelled','内容或设置已变化，请重新打开表单':'stale','请检查词语、方向、冲突规则及容量限制':'invalid-glossary','当前无法加入术语表':'unavailable'};
@@ -483,7 +512,32 @@ internal static partial class BrowserCooperationCheck
                         }, ct);
                         point = result.GetProperty("result").GetProperty("value");
                         observation = point.Clone();
+                        if (actionId is not null && point.GetProperty("reason").GetString() == "button-disabled")
+                        {
+                            Require(point.GetProperty("editorConnected").GetBoolean()
+                                && !point.GetProperty("editorReadOnly").GetBoolean()
+                                && point.GetProperty("editorFocused").GetBoolean()
+                                && point.GetProperty("documentFocused").GetBoolean()
+                                && !point.GetProperty("menuHidden").GetBoolean()
+                                && point.GetProperty("buttonConnected").GetBoolean()
+                                && !point.GetProperty("buttonHidden").GetBoolean()
+                                && point.GetProperty("painted").GetBoolean()
+                                && point.GetProperty("width").GetDouble() > 0
+                                && point.GetProperty("height").GetDouble() > 0,
+                                "preview-glossary-action-retired");
+                            // Same scene deadline; no click, re-open, lease renewal or
+                            // private handoff acknowledgement while the public item is disabled.
+                            await Task.Delay(40, ct);
+                            continue;
+                        }
                         Require(point.GetProperty("visible").GetBoolean(), more ? "preview-more-hidden" : "preview-settings-hidden");
+                        if (actionId is not null)
+                            Require(point.GetProperty("editorConnected").GetBoolean()
+                                && !point.GetProperty("editorReadOnly").GetBoolean()
+                                && point.GetProperty("editorFocused").GetBoolean()
+                                && point.GetProperty("documentFocused").GetBoolean()
+                                && !point.GetProperty("menuHidden").GetBoolean(),
+                                "preview-glossary-action-retired");
                         // Reveal the real hover-only More control with a trusted pointer
                         // movement, never by mutating its style or calling its handler.
                         if (point.GetProperty("painted").GetBoolean())
@@ -501,10 +555,28 @@ internal static partial class BrowserCooperationCheck
             }
             catch
             {
+                failed = true;
                 LastOverlayMenuObservation = observation;
                 throw;
             }
-            finally { await PageCallAsync("Runtime.releaseObject", new { objectId = id }, ct); }
+            finally
+            {
+                Exception? cleanupFailure = null;
+                foreach (string retainedId in retained.Append(id!))
+                {
+                    try
+                    {
+                        await PageCallAsync("Runtime.releaseObject", new
+                        {
+                            objectId = retainedId
+                        }, ct);
+                    }
+                    catch (OutOfMemoryException) { throw; }
+                    catch (Exception error) { cleanupFailure ??= error; }
+                }
+                if (!failed && cleanupFailure is not null)
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(cleanupFailure).Throw();
+            }
         }
         public async Task<string> OpenEditorGlossaryAsync(CancellationToken ct)
         {

@@ -140,12 +140,19 @@ class SettingsScrollTests(unittest.TestCase):
         self.assertIs(scene.run(at_start=True), scene.target)
         self.assertEqual([], scene.moves)
 
+    def test_visible_fitting_target_needs_no_hidden_scrollbar_action(self):
+        scene = ScrollScene(offset=20, upper=0)
+        scene.bar_showing = False
+        self.assertIs(scene.run(), scene.target)
+        self.assertEqual([], scene.moves)
+
     def test_hidden_scrollbar_with_nonzero_range_is_not_authorized(self):
         scene = ScrollScene(offset=20)
         scene.bar_showing = False
-        with self.assertRaises(AssertionError):
-            scene.run(at_start=True)
-        self.assertEqual([], scene.moves)
+        for at_start in (False, True):
+            with self.assertRaises(AssertionError):
+                scene.run(at_start=at_start)
+            self.assertEqual([], scene.moves)
 
     def test_no_scroll_branch_still_requires_current_visible_full_clip(self):
         for change in (
@@ -159,9 +166,10 @@ class SettingsScrollTests(unittest.TestCase):
             scene = ScrollScene(offset=20, upper=0)
             scene.bar_showing = False
             change(scene)
-            with self.assertRaises(AssertionError):
-                scene.run(at_start=True)
-            self.assertEqual([], scene.moves)
+            for at_start in (False, True):
+                with self.assertRaises(AssertionError):
+                    scene.run(at_start=at_start)
+                self.assertEqual([], scene.moves)
 
     def test_partially_showing_target_gets_one_exact_clip_adjustment(self):
         scene = ScrollScene(offset=90)

@@ -512,6 +512,8 @@ public sealed partial class OverlayTranslationMenuTests
         nuint extraInfo = checked((nuint)(0x544c000000000000UL | (ulong)nonce));
         var dispatchedUp = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         bool sentPair = false, matchingUpObserved = false;
+        int upMessageCount = 0;
+        var upMessages = new List<object>(2);
         int? activateTrigger = null, activateX = null, activateY = null, upX = null, upY = null;
         HwndSourceHook observeDispatch = (nint hwnd, int message, nint wParam, nint lParam, ref bool handled) =>
         {
@@ -524,18 +526,36 @@ public sealed partial class OverlayTranslationMenuTests
                 activateX = (short)(position & 0xffff);
                 activateY = (short)(position >> 16);
             }
-            if (message == 0x0202 && unchecked((nuint)OwnedEditorMessageExtraInfo()) == extraInfo)
+            if (message == 0x0202)
             {
-                matchingUpObserved = true;
+                nuint observedExtra = unchecked((nuint)OwnedEditorMessageExtraInfo()); // Original single read.
+                bool matches = observedExtra == extraInfo;
+                upMessageCount++;
                 uint position = OwnedEditorMessagePos();
-                upX = (short)(position & 0xffff);
-                upY = (short)(position >> 16);
-                if (cancellation.IsCancellationRequested)
-                    dispatchedUp.TrySetCanceled(cancellation);
-                else if (upX != pixel.X || upY != pixel.Y)
-                    dispatchedUp.TrySetException(new InvalidOperationException("owned-editor-up-point-changed"));
+                var observed = new
+                {
+                    observedExtra = (ulong)observedExtra,
+                    expectedExtra = (ulong)extraInfo,
+                    x = (short)(position & 0xffff),
+                    y = (short)(position >> 16),
+                    matches
+                };
+                if (upMessages.Count < 2)
+                    upMessages.Add(observed);
                 else
-                    dispatchedUp.TrySetResult();
+                    upMessages[1] = observed; // Fixed first/last pair, not an unbounded message log.
+                if (matches)
+                {
+                    matchingUpObserved = true;
+                    upX = (short)(position & 0xffff);
+                    upY = (short)(position >> 16);
+                    if (cancellation.IsCancellationRequested)
+                        dispatchedUp.TrySetCanceled(cancellation);
+                    else if (upX != pixel.X || upY != pixel.Y)
+                        dispatchedUp.TrySetException(new InvalidOperationException("owned-editor-up-point-changed"));
+                    else
+                        dispatchedUp.TrySetResult();
+                }
             }
             return 0; // Observation only: never handle or synthesize another message.
         };
@@ -624,6 +644,9 @@ public sealed partial class OverlayTranslationMenuTests
                     activateX,
                     activateY,
                     matchingUpObserved,
+                    upMessageCount,
+                    upMessages,
+                    upMessagesDropped = Math.Max(0, upMessageCount - upMessages.Count),
                     upX,
                     upY,
                     retired,

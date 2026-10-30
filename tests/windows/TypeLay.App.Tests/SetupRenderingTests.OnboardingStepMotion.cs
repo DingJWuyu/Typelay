@@ -1,5 +1,8 @@
 using System.ComponentModel;
 using System.IO;
+using System.Diagnostics;
+using System.Text.Json;
+using System.Windows.Interop;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -9,6 +12,7 @@ using System.Windows.Media.Effects;
 using System.Windows.Threading;
 using TypeLay.App;
 using Xunit;
+using N = TypeLay.Platform.Windows.NativeMethods;
 
 namespace TypeLay.App.Tests;
 
@@ -231,6 +235,51 @@ public sealed partial class SetupRenderingTests
         var destination = new Window { Width = 300, Height = 200, Content = new TextBox { Text = "controlled destination" } };
         var fault = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         bool acted = false;
+        bool succeeded = false;
+        bool diagnosticFailed = false;
+        var phases = new List<object>(5);
+        long began = Stopwatch.GetTimestamp();
+        nint onboardingHandle = 0;
+        nint destinationHandle = 0;
+        void Observe(string phase, bool? activated = null)
+        {
+            try
+            {
+                if (phases.Count == 5)
+                    return;
+                // Handle only reads existing HWNDs; do not EnsureHandle or
+                // pre-show either window and change this first-Show boundary.
+                nint currentOnboarding = new WindowInteropHelper(window).Handle;
+                nint currentDestination = new WindowInteropHelper(destination).Handle;
+                if (onboardingHandle == 0)
+                    onboardingHandle = currentOnboarding;
+                if (destinationHandle == 0)
+                    destinationHandle = currentDestination;
+                nint foreground = N.GetForegroundWindow();
+                phases.Add(new
+                {
+                    phase,
+                    elapsedMs = Stopwatch.GetElapsedTime(began).TotalMilliseconds,
+                    onboardingHandle = onboardingHandle.ToInt64(),
+                    destinationHandle = destinationHandle.ToInt64(),
+                    onboardingIdentityCurrent = currentOnboarding == onboardingHandle,
+                    destinationIdentityCurrent = currentDestination == destinationHandle,
+                    onboardingNativeVisible = onboardingHandle != 0 && N.IsWindowVisible(onboardingHandle),
+                    destinationNativeVisible = destinationHandle != 0 && N.IsWindowVisible(destinationHandle),
+                    onboardingVisible = window.IsVisible,
+                    onboardingActive = window.IsActive,
+                    destinationVisible = destination.IsVisible,
+                    destinationActive = destination.IsActive,
+                    foreground = foreground == 0 ? "none" : foreground == onboardingHandle ? "onboarding"
+                        : foreground == destinationHandle ? "destination" : "other",
+                    activated
+                });
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                diagnosticFailed = true;
+            }
+        }
         void Visible(object sender, DependencyPropertyChangedEventArgs args)
         {
             if (!(bool)args.NewValue || acted)
@@ -238,9 +287,13 @@ public sealed partial class SetupRenderingTests
             acted = true;
             try
             {
+                Observe("visibility-callback-before-hide");
                 window.Hide();
+                Observe("visibility-callback-after-hide");
                 destination.Show();
-                Assert.True(destination.Activate());
+                bool activated = destination.Activate();
+                Observe("visibility-callback-after-destination-activate", activated);
+                Assert.True(activated);
             }
             catch (Exception error) { fault.TrySetException(error); }
         }
@@ -248,17 +301,32 @@ public sealed partial class SetupRenderingTests
         try
         {
             window.ShowOrActivate();
+            Observe("show-or-activate-returned");
             await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+            Observe("existing-context-idle-resumed");
             if (fault.Task.IsFaulted)
                 await fault.Task;
             Assert.True(acted);
             Assert.False(window.IsVisible);
             Assert.True(destination.IsActive);
             Assert.Equal(0, scene.Attempts);
+            succeeded = true;
         }
         finally
         {
             window.IsVisibleChanged -= Visible;
+            if (!succeeded)
+            {
+                try
+                {
+                    Console.WriteLine("Onboarding show lifecycle: " + JsonSerializer.Serialize(new
+                    {
+                        phases,
+                        diagnosticFailed
+                    }));
+                }
+                catch (Exception error) when (error is not OutOfMemoryException) { }
+            }
             window.Close();
             destination.Close();
         }

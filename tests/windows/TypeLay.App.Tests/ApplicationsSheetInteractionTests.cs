@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -25,6 +26,8 @@ public sealed partial class SettingsRenderingTests
         string before = File.ReadAllText(scene.Path);
         System.Windows.Automation.Provider.IInvokeProvider? retired = null;
         VisualBrush? backdrop = null;
+        using var screens = motion == "full"
+            ? new ApplicationSheetScreenSamples($"application-sheet-{language}-{theme}-{motion}") : null;
         ApplicationRemovalDialogAsync(scene.Window, "writer", async (dialog, ct) =>
         {
             nint modal = new WindowInteropHelper(dialog).Handle;
@@ -62,6 +65,18 @@ public sealed partial class SettingsRenderingTests
                 Assert.Equal(modal, WindowFromPoint(point));
                 Assert.Equal(1, dialog.Opacity);
             }
+            TimeSpan? latestRendering = null, observedRendering = null;
+            void RenderingObserved(object? sender, EventArgs args) => latestRendering = ((RenderingEventArgs)args).RenderingTime;
+            ApplicationSheetPaint ReadPaint()
+            {
+                var transforms = Assert.IsType<TransformGroup>(layer.RenderTransform);
+                var scale = Assert.IsType<ScaleTransform>(transforms.Children[0]);
+                var translation = Assert.IsType<TranslateTransform>(transforms.Children[1]);
+                return new(Stopwatch.GetTimestamp(), latestRendering, layer.Opacity, scale.ScaleX, scale.ScaleY,
+                    translation.Y, Assert.IsType<SolidColorBrush>(scrim.Background).Color.A);
+            }
+            if (screens is not null)
+                CompositionTarget.Rendering += RenderingObserved;
             try
             {
                 var alphas = new List<byte>();
@@ -75,11 +90,28 @@ public sealed partial class SettingsRenderingTests
                     var transform = Assert.IsType<TransformGroup>(layer.RenderTransform);
                     scales.Add(Assert.IsType<ScaleTransform>(transform.Children[0]).ScaleX);
                     return motion == "reduce" || layer.Opacity is > .15 and < .95;
-                });
+                }, time => observedRendering = time);
                 await Dispatcher.Yield(DispatcherPriority.Background);
                 Current();
-                CaptureApplicationSheetScreen(scene.Window, dialog, $"application-sheet-{language}-{theme}-{motion}-middle-screen.png", ct);
-                await AwaitApplicationSheetSettled(scene.Window, dialog, ct);
+                if (screens is null)
+                    CaptureApplicationSheetScreen(scene.Window, dialog, $"application-sheet-{language}-{theme}-{motion}-middle-screen.png", ct);
+                else
+                {
+                    screens.Capture(scene.Window, dialog, "middle", observedRendering, ct, Current, ReadPaint);
+                    var afterFirst = latestRendering ?? observedRendering;
+                    Assert.NotNull(afterFirst);
+                    // Exactly one later natural Rendering opportunity. It may
+                    // already be settled; never retry until a better image appears.
+                    await ObserveApplicationSheet(scene.Window, dialog, ct, () =>
+                    {
+                        Current();
+                        return observedRendering > afterFirst;
+                    }, time => observedRendering = time);
+                    await Dispatcher.Yield(DispatcherPriority.Background);
+                    Current();
+                    screens.Capture(scene.Window, dialog, "next", observedRendering, ct, Current, ReadPaint);
+                }
+                await AwaitApplicationSheetSettled(scene.Window, dialog, ct, time => observedRendering = time);
                 Current();
                 Assert.Equal(theme == "dark" ? 115 : 56, Assert.IsType<SolidColorBrush>(scrim.Background).Color.A);
                 if (motion == "full")
@@ -95,7 +127,11 @@ public sealed partial class SettingsRenderingTests
                 Assert.NotEqual(modal, WindowFromPoint(new NativePoint { X = bounds.Right + 1, Y = (bounds.Top + bounds.Bottom) / 2 }));
                 await Dispatcher.Yield(DispatcherPriority.Background);
                 Current();
-                CaptureApplicationSheetScreen(scene.Window, dialog, $"application-sheet-{language}-{theme}-{motion}-end-screen.png", ct);
+                if (screens is null)
+                    CaptureApplicationSheetScreen(scene.Window, dialog, $"application-sheet-{language}-{theme}-{motion}-end-screen.png", ct);
+                else
+                    screens.Capture(scene.Window, dialog, "end", observedRendering, ct, Current, ReadPaint);
+                CompositionTarget.Rendering -= RenderingObserved;
                 var cancel = ApplicationButton(dialog, "ApplicationRemovalCancel");
                 var confirm = ApplicationButton(dialog, "ApplicationRemovalConfirm");
                 Assert.True(cancel.IsKeyboardFocused);
@@ -236,6 +272,7 @@ public sealed partial class SettingsRenderingTests
             }
             finally
             {
+                CompositionTarget.Rendering -= RenderingObserved;
                 dialog.Deactivated -= Deactivated;
                 dialog.IsVisibleChanged -= Visibility;
                 dialog.LocationChanged -= Geometry;
@@ -255,6 +292,7 @@ public sealed partial class SettingsRenderingTests
         Assert.Equal(before, File.ReadAllText(scene.Path));
         Assert.Equal(["writer"], scene.Reload().Managed);
         Assert.Equal(["writer"], scene.Reload().Excluded);
+        screens?.Complete();
     });
 
     [Theory]
@@ -365,7 +403,8 @@ public sealed partial class SettingsRenderingTests
     private static Grid ApplicationSheetLayer(Window dialog) => Assert.Single(Descendants(dialog).OfType<Grid>(),
         element => AutomationProperties.GetAutomationId(element) == "ApplicationSheetLayer");
 
-    private static Task AwaitApplicationSheetSettled(SettingsWindow owner, Window dialog, CancellationToken ct) =>
+    private static Task AwaitApplicationSheetSettled(SettingsWindow owner, Window dialog, CancellationToken ct,
+        Action<TimeSpan>? renderingObserved = null) =>
         ObserveApplicationSheet(owner, dialog, ct, () =>
         {
             var layer = ApplicationSheetLayer(dialog);
@@ -373,9 +412,10 @@ public sealed partial class SettingsRenderingTests
             var scale = Assert.IsType<ScaleTransform>(transform.Children[0]);
             var translation = Assert.IsType<TranslateTransform>(transform.Children[1]);
             return layer.Opacity == 1 && scale.ScaleX == 1 && scale.ScaleY == 1 && translation.Y == 0;
-        });
+        }, renderingObserved);
 
-    private static async Task ObserveApplicationSheet(SettingsWindow owner, Window dialog, CancellationToken ct, Func<bool> observed)
+    private static async Task ObserveApplicationSheet(SettingsWindow owner, Window dialog, CancellationToken ct, Func<bool> observed,
+        Action<TimeSpan>? renderingObserved = null)
     {
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         bool inside = false;
@@ -390,6 +430,7 @@ public sealed partial class SettingsRenderingTests
                 Assert.True(owner.IsVisible && dialog.IsVisible);
                 Assert.Same(owner, dialog.Owner);
                 Assert.Contains(dialog, owner.OwnedWindows.Cast<Window>());
+                renderingObserved?.Invoke(((RenderingEventArgs)args).RenderingTime);
                 if (observed())
                     done.TrySetResult();
             }
@@ -416,51 +457,199 @@ public sealed partial class SettingsRenderingTests
         finally { SetCursorPos(previous.X, previous.Y); }
     }
 
+    private sealed record ApplicationSheetPaint(long Timestamp, TimeSpan? LastObservedRenderingTime,
+        double Opacity, double ScaleX, double ScaleY, double TranslationY, byte ScrimAlpha);
+
+    private sealed record ApplicationSheetCaptureTiming(long Started, long FlushStarted, long FlushFinished,
+        long CopyStarted, long CopyFinished, long Finished, int Left, int Top, int Width, int Height, long Modal);
+
+    // This bounded collector belongs to the two Full cases only. Properties and
+    // Rendering timestamps are observations, not GPU/presentation acknowledgments.
+    private sealed class ApplicationSheetScreenSamples(string prefix) : IDisposable
+    {
+        private readonly List<(string Name, System.Drawing.Bitmap Bitmap, object Facts)> _samples = [];
+        private bool _outputAttempted;
+
+        public void Capture(SettingsWindow owner, Window dialog, string phase, TimeSpan? observedRendering,
+            CancellationToken ct, Action current, Func<ApplicationSheetPaint> paint)
+        {
+            Assert.True(_samples.Count < 3);
+            current();
+            var before = paint();
+            var bitmap = ReadApplicationSheetScreen(owner, dialog, ct, out var timing);
+            try
+            {
+                current();
+                var after = paint();
+                _samples.Add(($"{prefix}-{phase}-screen.png", bitmap,
+                    new
+                    {
+                        Phase = phase,
+                        PropertyObservedRenderingTime = observedRendering,
+                        Before = before,
+                        After = after,
+                        Capture = timing
+                    }));
+            }
+            catch
+            {
+                try
+                {
+                    bitmap.Dispose();
+                }
+                catch (Exception error) when (error is not OutOfMemoryException) { }
+                throw;
+            }
+        }
+
+        public void Complete()
+        {
+            _outputAttempted = true;
+            string folder = ApplicationSheetRenderingFolder();
+            // The existing successful middle/end artifacts remain mandatory.
+            // Only the new next-opportunity image and diagnostic JSON are optional.
+            foreach (string phase in new[] { "middle", "end" })
+            {
+                string name = $"{prefix}-{phase}-screen.png";
+                var sample = Assert.Single(_samples, item => item.Name == name);
+                sample.Bitmap.Save(Path.Combine(folder, name), System.Drawing.Imaging.ImageFormat.Png);
+            }
+            try
+            {
+                var next = Assert.Single(_samples, item => item.Name == prefix + "-next-screen.png");
+                next.Bitmap.Save(Path.Combine(folder, next.Name), System.Drawing.Imaging.ImageFormat.Png);
+                WriteObservations(folder);
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+        }
+
+        private void WriteObservations(string folder) => File.WriteAllText(
+            Path.Combine(folder, prefix + "-screen-observations.json"),
+            System.Text.Json.JsonSerializer.Serialize(new
+            {
+                StopwatchFrequency = Stopwatch.Frequency,
+                Samples = _samples.Select(sample => sample.Facts).ToArray()
+            }));
+
+        public void Dispose()
+        {
+            // Failure cleanup only encodes bytes already captured. It never
+            // captures through a retired dialog or masks the original failure.
+            try
+            {
+                if (!_outputAttempted)
+                {
+                    _outputAttempted = true;
+                    string folder = ApplicationSheetRenderingFolder();
+                    foreach (var sample in _samples)
+                        sample.Bitmap.Save(Path.Combine(folder, sample.Name), System.Drawing.Imaging.ImageFormat.Png);
+                    WriteObservations(folder);
+                }
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+            finally
+            {
+                foreach (var sample in _samples)
+                {
+                    try
+                    {
+                        sample.Bitmap.Dispose();
+                    }
+                    catch (Exception error) when (error is not OutOfMemoryException) { }
+                }
+                _samples.Clear();
+            }
+        }
+    }
+
     // This is a test-only screen-region capture, not a product backdrop input.
     // PrintWindow cannot prove the composition of a layered modal and its owner.
+    private static System.Drawing.Bitmap ReadApplicationSheetScreen(SettingsWindow owner, Window dialog,
+        CancellationToken ct, out ApplicationSheetCaptureTiming timing)
+    {
+        long started = Stopwatch.GetTimestamp();
+        System.Drawing.Bitmap? bitmap = null;
+        try
+        {
+            nint previousDpi = SheetScreen.SetThreadDpiAwarenessContext(-4);
+            Assert.NotEqual(0, previousDpi);
+            try
+            {
+                var before = ApplicationSheetBounds(owner, dialog, ct);
+                long flushStarted = Stopwatch.GetTimestamp();
+                Assert.Equal(0, SheetScreen.DwmFlush());
+                long flushFinished = Stopwatch.GetTimestamp();
+                Assert.Equal(before, ApplicationSheetBounds(owner, dialog, ct));
+                int width = before.Right - before.Left, height = before.Bottom - before.Top;
+                Assert.InRange(width, 1, 4096);
+                Assert.InRange(height, 1, 4096);
+                Assert.InRange((long)width * height, 1, 16_000_000);
+                bitmap = new System.Drawing.Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+                using var graphics = System.Drawing.Graphics.FromImage(bitmap);
+                nint screen = SheetScreen.GetDC(0);
+                Assert.NotEqual(0, screen);
+                long copyStarted, copyFinished;
+                try
+                {
+                    nint output = graphics.GetHdc();
+                    try
+                    {
+                        Assert.Equal(before, ApplicationSheetBounds(owner, dialog, ct));
+                        // SRCCOPY | CAPTUREBLT includes the existing layered modal.
+                        copyStarted = Stopwatch.GetTimestamp();
+                        Assert.True(SheetScreen.BitBlt(output, 0, 0, width, height, screen, before.Left, before.Top, 0x00CC0020 | 0x40000000));
+                        copyFinished = Stopwatch.GetTimestamp();
+                    }
+                    finally { graphics.ReleaseHdc(output); }
+                }
+                finally { Assert.Equal(1, SheetScreen.ReleaseDC(0, screen)); }
+                Assert.Equal(before, ApplicationSheetBounds(owner, dialog, ct));
+                timing = new(started, flushStarted, flushFinished, copyStarted, copyFinished, Stopwatch.GetTimestamp(),
+                    before.Left, before.Top, width, height, new WindowInteropHelper(dialog).Handle.ToInt64());
+            }
+            finally { Assert.NotEqual(0, SheetScreen.SetThreadDpiAwarenessContext(previousDpi)); }
+            return bitmap;
+        }
+        catch
+        {
+            try
+            {
+                bitmap?.Dispose();
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+            throw;
+        }
+    }
+
     private static void CaptureApplicationSheetScreen(SettingsWindow owner, Window dialog, string name, CancellationToken ct)
     {
+        // Keep the original Reduce/other-case capture scope in the same DPI
+        // context, including both geometry checks, PNG encoding and the write.
         nint previousDpi = SheetScreen.SetThreadDpiAwarenessContext(-4);
         Assert.NotEqual(0, previousDpi);
         try
         {
             var before = ApplicationSheetBounds(owner, dialog, ct);
-            Assert.Equal(0, SheetScreen.DwmFlush());
-            Assert.Equal(before, ApplicationSheetBounds(owner, dialog, ct));
-            int width = before.Right - before.Left, height = before.Bottom - before.Top;
-            Assert.InRange(width, 1, 4096);
-            Assert.InRange(height, 1, 4096);
-            Assert.InRange((long)width * height, 1, 16_000_000);
-            using var bitmap = new System.Drawing.Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
-            using var graphics = System.Drawing.Graphics.FromImage(bitmap);
-            nint screen = SheetScreen.GetDC(0);
-            Assert.NotEqual(0, screen);
-            try
-            {
-                nint output = graphics.GetHdc();
-                try
-                {
-                    Assert.Equal(before, ApplicationSheetBounds(owner, dialog, ct));
-                    // SRCCOPY | CAPTUREBLT includes the existing layered modal.
-                    Assert.True(SheetScreen.BitBlt(output, 0, 0, width, height, screen, before.Left, before.Top, 0x00CC0020 | 0x40000000));
-                }
-                finally { graphics.ReleaseHdc(output); }
-            }
-            finally { Assert.Equal(1, SheetScreen.ReleaseDC(0, screen)); }
-            Assert.Equal(before, ApplicationSheetBounds(owner, dialog, ct));
+            using var bitmap = ReadApplicationSheetScreen(owner, dialog, ct, out _);
             using var encoded = new MemoryStream();
             bitmap.Save(encoded, System.Drawing.Imaging.ImageFormat.Png);
             Assert.Equal(before, ApplicationSheetBounds(owner, dialog, ct));
-            var repository = new DirectoryInfo(AppContext.BaseDirectory);
-            while (repository is not null && !File.Exists(Path.Combine(repository.FullName, "TypeLay.slnx")))
-                repository = repository.Parent;
-            Assert.NotNull(repository);
-            string folder = Path.Combine(repository.FullName, "artifacts", "test-results", "rendering");
-            Directory.CreateDirectory(folder);
+            string folder = ApplicationSheetRenderingFolder();
             ct.ThrowIfCancellationRequested();
             File.WriteAllBytes(Path.Combine(folder, name), encoded.ToArray());
         }
         finally { Assert.NotEqual(0, SheetScreen.SetThreadDpiAwarenessContext(previousDpi)); }
+    }
+
+    private static string ApplicationSheetRenderingFolder()
+    {
+        var repository = new DirectoryInfo(AppContext.BaseDirectory);
+        while (repository is not null && !File.Exists(Path.Combine(repository.FullName, "TypeLay.slnx")))
+            repository = repository.Parent;
+        Assert.NotNull(repository);
+        string folder = Path.Combine(repository.FullName, "artifacts", "test-results", "rendering");
+        Directory.CreateDirectory(folder);
+        return folder;
     }
 
     private static SheetRect ApplicationSheetBounds(SettingsWindow owner, Window dialog, CancellationToken ct)
