@@ -202,27 +202,37 @@ public sealed partial class SettingsRenderingTests
                 await Dispatcher.Yield(DispatcherPriority.ContextIdle);
                 Current();
                 Assert.True(cancel.IsKeyboardFocused);
-                if (dismissal == "cancel")
-                    InvokeApplicationButton(cancel);
-                else if (dismissal == "escape")
+                var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                void Closed(object? sender, EventArgs args) => closed.TrySetResult();
+                dialog.Closed += Closed;
+                try
                 {
+                    using var cancelled = ct.Register(() => closed.TrySetCanceled(ct));
                     Current();
-                    SendOwnedKey(dialog, cancel, 0x1B);
+                    if (dismissal == "cancel")
+                        InvokeApplicationButton(cancel);
+                    else if (dismissal == "escape")
+                    {
+                        Current();
+                        SendOwnedKey(dialog, cancel, 0x1B);
+                    }
+                    else
+                    {
+                        Assert.Equal(System.Windows.Input.ModifierKeys.None, System.Windows.Input.Keyboard.Modifiers);
+                        Input[] keys = [new() { Type = 1, Key = 0x12 }, new() { Type = 1, Key = 0x73 },
+                            new() { Type = 1, Key = 0x73, KeyboardFlags = 2 }, new() { Type = 1, Key = 0x12, KeyboardFlags = 2 }];
+                        Current();
+                        uint count = SendInput(4, keys, Marshal.SizeOf<Input>());
+                        if (count < 4)
+                            SendInput(2, [keys[2], keys[3]], Marshal.SizeOf<Input>());
+                        Assert.Equal(4u, count);
+                    }
+                    // ShowDialog returning cancels the shared input lease. An
+                    // already observed close is success, not a late input.
+                    await closed.Task;
+                    Assert.False(dialog.IsVisible);
                 }
-                else
-                {
-                    Assert.Equal(System.Windows.Input.ModifierKeys.None, System.Windows.Input.Keyboard.Modifiers);
-                    Input[] keys = [new() { Type = 1, Key = 0x12 }, new() { Type = 1, Key = 0x73 },
-                        new() { Type = 1, Key = 0x73, KeyboardFlags = 2 }, new() { Type = 1, Key = 0x12, KeyboardFlags = 2 }];
-                    Current();
-                    uint count = SendInput(4, keys, Marshal.SizeOf<Input>());
-                    if (count < 4)
-                        SendInput(2, [keys[2], keys[3]], Marshal.SizeOf<Input>());
-                    Assert.Equal(4u, count);
-                }
-                await Dispatcher.Yield(DispatcherPriority.ContextIdle);
-                ct.ThrowIfCancellationRequested();
-                Assert.False(dialog.IsVisible);
+                finally { dialog.Closed -= Closed; }
             }
             finally
             {

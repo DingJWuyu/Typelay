@@ -95,6 +95,7 @@ def run_qt(
         assert path.is_file(), f"required real Qt/Fcitx artifact missing: {path}"
     assert send_tab is not None
     evidence = []
+    theme_observations = []
     state_path = arguments.output / "qt-desktop-state.json"
     state_path.unlink(missing_ok=True)
     click_trace = arguments.output / "qt-overlay-clicks.jsonl"
@@ -1283,11 +1284,24 @@ def run_qt(
                 candidate = enter_source(original)
                 if state()["overlayControls"]["typelay-expand"]["visible"]:
                     click_overlay("typelay-expand")
-                wait_for(
-                    lambda: 36 <= state()["editorGeometry"]["height"] <= 167,
-                    "Qt did not restore its natural compact height",
+                # The short-candidate baseline is a complete compact public
+                # state, not any height visited during an outstanding resize.
+                # Keep the existing one optional click and original wait budget.
+                initial_application = wait_for(
+                    lambda: value
+                    if (value := state())["first"]["text"] == original
+                    and value["first"]["focused"]
+                    and value["overlayVisible"]
+                    and value["editorVisible"]
+                    and value["editorReadOnly"]
+                    and value["editorText"] == candidate
+                    and not value["overlayMenuVisible"]
+                    and not value["overlayControls"]["typelay-expand"]["visible"]
+                    and 300 <= value["overlayGeometry"]["width"] <= 440
+                    and 36 <= value["editorGeometry"]["height"] <= 167
+                    else None,
+                    "Qt did not restore the current short candidate's compact state",
                 )
-                initial_application = state()
                 evidence.append(
                     "Qt6 finite live-widget resize frames retain anchor, footer and source focus; "
                     "repeated resize, host renewals, safety-hide cancellation and real style reduced motion"
@@ -1297,7 +1311,28 @@ def run_qt(
                 original_theme = json.loads(Paths(arguments.package).settings.read_text()).get(
                     "Theme", "system"
                 )
-                theme_observations = []
+
+                def theme_geometry(value):
+                    expand = value["overlayControls"]["typelay-expand"]
+                    return {
+                        "observedAtMs": value["observedAtMs"],
+                        "overlayGeometry": value["overlayGeometry"],
+                        "editorGeometry": value["editorGeometry"],
+                        "overlayVisible": value["overlayVisible"],
+                        "editorVisible": value["editorVisible"],
+                        "editorReadOnly": value["editorReadOnly"],
+                        "expand": {key: expand[key] for key in ("instance", "visible", "enabled")},
+                        "motionArmed": value["motionArmed"],
+                        "motionRecording": value["motionRecording"],
+                        "motionRecordings": value["motionRecordings"],
+                    }
+
+                theme_observations.append(
+                    {
+                        "observation": "compact-baseline",
+                        "geometry": theme_geometry(initial_application),
+                    }
+                )
                 theme_trace = trace_checkpoint()
                 for preference in ("dark", "light", "system"):
                     before_preference = state()
@@ -1310,6 +1345,17 @@ def run_qt(
                         and ready_to_accept()
                         else None,
                         "theme settings did not restore the same real candidate",
+                    )
+                    # Preserve these already-read snapshots even when an
+                    # unchanged strict geometry/palette assertion fails. No
+                    # extra state read, input, renewal, or frame is requested.
+                    theme_observations.append(
+                        {
+                            "observation": "preference-geometry",
+                            "preference": preference,
+                            "before": theme_geometry(before_preference),
+                            "after": theme_geometry(after_preference),
+                        }
                     )
                     for name in ("applicationColorScheme", "applicationPalette"):
                         assert after_preference[name] == before_preference[name], (
@@ -2569,11 +2615,22 @@ def run_qt(
                 )
                 return evidence
             finally:
-                for child in (fixture, daemon):
-                    if child is not None and child.poll() is None:
-                        child.terminate()
-                        try:
-                            child.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            child.kill()
-                            child.wait(timeout=5)
+                try:
+                    if theme_observations:
+                        (arguments.output / "qt-theme-observations.json").write_text(
+                            json.dumps(theme_observations, indent=2) + "\n"
+                        )
+                except MemoryError:
+                    raise
+                except Exception:
+                    # Failure evidence must not replace the original assertion.
+                    pass
+                finally:
+                    for child in (fixture, daemon):
+                        if child is not None and child.poll() is None:
+                            child.terminate()
+                            try:
+                                child.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                child.kill()
+                                child.wait(timeout=5)

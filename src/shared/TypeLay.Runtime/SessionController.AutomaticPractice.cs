@@ -634,13 +634,15 @@ public sealed partial class SessionController
         _nextCapture = 0;
     }
 
-    private void UpdateAutomaticPractice(AutomaticPracticeProgress progress)
+    private AutomaticPracticeProgress UpdateAutomaticPractice(AutomaticPracticeProgress progress)
     {
-        AutomaticPracticeProgress = progress with
+        var next = progress with
         {
             Revision = ++_automaticProgressRevision
         };
-        AutomaticPracticeProgressChanged?.Invoke(AutomaticPracticeProgress);
+        AutomaticPracticeProgress = next;
+        AutomaticPracticeProgressChanged?.Invoke(next);
+        return next;
     }
 
     private void CompleteAutomaticPreview(OwnedPracticeBinding? binding, TranslationJob job)

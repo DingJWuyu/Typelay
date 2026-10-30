@@ -683,7 +683,73 @@ typedef struct {
     JsonNode *geometry;
     char *label;
     guint64 label_revision, painted_label_revision;
+    JsonObject *last_map, *last_unmap;
 } ControlPaint;
+
+/* Only the owned preview trigger of the configuration fixture. Two fixed
+ * records reuse its existing map/unmap callbacks; no measure, phase request or
+ * extra callback is installed. Explicit size requests are NOT CSS minima. */
+static void control_map_observation(GtkWidget *widget, ControlPaint *paint, gboolean mapped) {
+    const char *stage = g_getenv("TYPELAY_FIXTURE_REENTRY_STAGE");
+    if (!stage || !(g_str_equal(stage, "language-options")
+            || g_str_has_prefix(stage, "language-retention-")
+            || g_str_has_prefix(stage, "language-configuration-"))
+        || g_strcmp0(gtk_widget_get_name(widget), "typelay-menu-trigger") != 0) return;
+    GtkNative *native = gtk_widget_get_native(widget);
+    if (!GTK_IS_POPOVER(native)
+        || g_strcmp0(gtk_widget_get_name(GTK_WIDGET(native)), "typelay-overlay") != 0) return;
+    GtkWidget *popup = GTK_WIDGET(native), *card = gtk_popover_get_child(GTK_POPOVER(native));
+    GtkWidget *scroll = NULL;
+    GtkWidget *child = card ? gtk_widget_get_first_child(card) : NULL;
+    for (guint count = 0; child && count < 4; count++, child = gtk_widget_get_next_sibling(child)) {
+        if (GTK_IS_OVERLAY(child) && g_strcmp0(gtk_widget_get_name(child), "typelay-body") == 0) {
+            scroll = gtk_overlay_get_child(GTK_OVERLAY(child));
+            break;
+        }
+    }
+    GdkSurface *surface = gtk_native_get_surface(native);
+    GdkFrameClock *clock = paint->clock ? paint->clock : gtk_widget_get_frame_clock(widget);
+    GSignalInvocationHint *hint = clock ? g_signal_get_invocation_hint(clock) : NULL;
+    JsonObject *value = json_object_new();
+    json_object_set_int_member(value, "atMonoMs", g_get_monotonic_time() / 1000);
+    json_object_set_int_member(value, "mapGeneration", paint->map_generation);
+    json_object_set_int_member(value, "control", language_instance(G_OBJECT(widget)));
+    json_object_set_int_member(value, "native", language_instance(G_OBJECT(native)));
+    json_object_set_int_member(value, "surface", language_instance(G_OBJECT(surface)));
+    json_object_set_int_member(value, "clock", language_instance(G_OBJECT(clock)));
+    json_object_set_int_member(value, "frame", clock ? gdk_frame_clock_get_frame_counter(clock) : -1);
+    json_object_set_int_member(value, "observedLayoutFrame", paint->layout_frame);
+    json_object_set_int_member(value, "observedPaintFrame", paint->paint_frame);
+    json_object_set_boolean_member(value, "insideClockLayout", hint
+        && hint->signal_id == g_signal_lookup("layout", GDK_TYPE_FRAME_CLOCK));
+    json_object_set_boolean_member(value, "controlMapped", gtk_widget_get_mapped(widget));
+    json_object_set_boolean_member(value, "controlVisible", gtk_widget_get_visible(widget));
+    json_object_set_boolean_member(value, "popupMapped", gtk_widget_get_mapped(popup));
+    json_object_set_boolean_member(value, "popupVisible", gtk_widget_get_visible(popup));
+    json_object_set_boolean_member(value, "surfaceMapped", surface && gdk_surface_get_mapped(surface));
+    json_object_set_int_member(value, "surfaceWidth", surface ? gdk_surface_get_width(surface) : 0);
+    json_object_set_int_member(value, "surfaceHeight", surface ? gdk_surface_get_height(surface) : 0);
+    GtkWidget *widgets[] = {popup, card, scroll};
+    const char *names[] = {"popup", "card", "scroll"};
+    for (guint i = 0; i < G_N_ELEMENTS(widgets); i++) {
+        JsonObject *item = json_object_new();
+        json_object_set_boolean_member(item, "present", widgets[i] != NULL);
+        if (widgets[i]) {
+            gint width, height;
+            GtkAllocation allocation;
+            gtk_widget_get_size_request(widgets[i], &width, &height);
+            gtk_widget_get_allocation(widgets[i], &allocation);
+            json_object_set_int_member(item, "requestedWidth", width);
+            json_object_set_int_member(item, "requestedHeight", height);
+            json_object_set_int_member(item, "allocatedWidth", allocation.width);
+            json_object_set_int_member(item, "allocatedHeight", allocation.height);
+        }
+        json_object_set_object_member(value, names[i], item);
+    }
+    JsonObject **slot = mapped ? &paint->last_map : &paint->last_unmap;
+    g_clear_pointer(slot, json_object_unref);
+    *slot = value;
+}
 
 static void control_paint_clear(ControlPaint *paint) {
     if (paint->request_source) {
@@ -705,6 +771,8 @@ static void control_paint_clear(ControlPaint *paint) {
 static void control_paint_free(gpointer data) {
     ControlPaint *paint = data;
     control_paint_clear(paint);
+    g_clear_pointer(&paint->last_map, json_object_unref);
+    g_clear_pointer(&paint->last_unmap, json_object_unref);
     g_free(paint);
 }
 static void control_layout(GdkFrameClock *clock, gpointer data) {
@@ -793,6 +861,7 @@ static void control_paint_map(GtkWidget *widget, gpointer unused) {
     GtkNative *native = gtk_widget_get_native(widget);
     GdkSurface *surface = native ? gtk_native_get_surface(native) : NULL;
     paint->surface_instance = surface ? language_instance(G_OBJECT(surface)) : 0;
+    control_map_observation(widget, paint, TRUE);
     if (!clock || !surface) return;
     paint->clock = g_object_ref(clock);
     paint->requested_frame = gdk_frame_clock_get_frame_counter(clock);
@@ -811,6 +880,7 @@ static void control_paint_map(GtkWidget *widget, gpointer unused) {
 static void control_paint_unmap(GtkWidget *widget, gpointer unused) {
     (void)unused;
     ControlPaint *paint = g_object_get_data(G_OBJECT(widget), "fixture-control-paint");
+    control_map_observation(widget, paint, FALSE);
     control_paint_clear(paint);
 }
 static void report_control_paint(JsonBuilder *builder, GtkWidget *widget, JsonNode *geometry) {
@@ -854,6 +924,21 @@ static void report_control_paint(JsonBuilder *builder, GtkWidget *widget, JsonNo
     json_builder_set_member_name(builder, "geometry");
     if (paint->geometry) json_builder_add_value(builder, json_node_copy(paint->geometry));
     else json_builder_add_null_value(builder);
+    if (paint->last_map || paint->last_unmap) {
+        json_builder_set_member_name(builder, "mapLifecycle");
+        json_builder_begin_object(builder);
+        const char *names[] = {"lastMapObserved", "lastUnmap"};
+        JsonObject *records[] = {paint->last_map, paint->last_unmap};
+        for (guint i = 0; i < G_N_ELEMENTS(records); i++) {
+            json_builder_set_member_name(builder, names[i]);
+            if (records[i]) {
+                JsonNode *node = json_node_new(JSON_NODE_OBJECT);
+                json_node_set_object(node, records[i]);
+                json_builder_add_value(builder, node);
+            } else json_builder_add_null_value(builder);
+        }
+        json_builder_end_object(builder);
+    }
     json_builder_end_object(builder);
 }
 
@@ -1021,7 +1106,8 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         name = "fixture-language-feedback";
     if (expand || language_control(name) || g_str_equal(name, "fixture-language-feedback")
         || g_str_equal(name, "fixture-glossary-feedback")
-        || g_str_equal(name, "typelay-dot") || g_str_equal(name, "typelay-skeleton")) {
+        || g_str_equal(name, "typelay-dot") || g_str_equal(name, "typelay-skeleton")
+        || (g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND") && g_str_equal(name, "typelay-status"))) {
         json_builder_set_member_name(builder, name);
         json_builder_begin_object(builder);
         const char *stage = g_getenv("TYPELAY_FIXTURE_REENTRY_STAGE");
@@ -1069,6 +1155,11 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         if (GTK_IS_LABEL(widget)) {
             json_builder_set_member_name(builder, "text");
             json_builder_add_string_value(builder, gtk_label_get_text(GTK_LABEL(widget)));
+            if (g_str_equal(name, "typelay-status")) {
+                const char *tooltip = gtk_widget_get_tooltip_text(widget);
+                json_builder_set_member_name(builder, "tooltip");
+                json_builder_add_string_value(builder, tooltip ? tooltip : "");
+            }
         }
         if (GTK_IS_EDITABLE(widget)) {
             json_builder_set_member_name(builder, "text");

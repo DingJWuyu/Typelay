@@ -17,13 +17,54 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 
 
+async def wait_cancel(dialog, until):
+    from gi.repository import Gtk
+
+    cancel = dialog.get_widget_for_response(Gtk.ResponseType.CANCEL)
+    first = []
+
+    def sample():
+        return {
+            "visible": dialog.get_visible(),
+            "mapped": dialog.get_mapped(),
+            "active": dialog.is_active(),
+            "dialogHasFocus": dialog.has_toplevel_focus(),
+            "focusIsCancel": dialog.get_focus() is cancel,
+            "cancelIsFocus": cancel.is_focus(),
+            "cancelHasFocus": cancel.has_focus(),
+            "cancelMapped": cancel.get_mapped(),
+        }
+
+    def focused():
+        if not first:
+            first.append(None)
+            try:
+                first[0] = sample()
+            except MemoryError:
+                raise
+            except Exception:
+                pass
+        return dialog.is_active() and cancel.is_focus()
+
+    try:
+        await until(focused)
+    except TimeoutError:
+        try:
+            print("QUIT FOCUS TIMEOUT", {"first": first[0], "last": sample()}, flush=True)
+        except MemoryError:
+            raise
+        except Exception:
+            pass
+        raise
+
+
 async def complete(
     surface, host, state, jobs, failures, quits, settings_file, package, directory, tasks, until
 ):
     """Normal GTK actions and explicitly controlled synchronous retirement callbacks."""
     from types import SimpleNamespace
 
-    from gi.repository import Gdk, Gtk
+    from gi.repository import Gdk, GObject, Gtk
     from tray import Tray
 
     def visible(control, window):
@@ -72,7 +113,7 @@ async def complete(
     async def ready_question(title):
         dialog = question(title)
         cancel = dialog.get_widget_for_response(Gtk.ResponseType.CANCEL)
-        await until(lambda: dialog.is_active() and cancel.is_focus())
+        await wait_cancel(dialog, until)
         assert dialog.get_modal() and dialog.get_default_widget() is cancel
         return dialog
 
@@ -108,7 +149,63 @@ async def complete(
         assert settings_file.read_bytes() == before
         assert not failures, failures
 
+    async def consume_while_showing(title, trigger, mode):
+        armed, consumed = True, False
+        watched, errors = [], []
+
+        def visible(widget, _property):
+            nonlocal consumed
+            if consumed or not widget.get_visible():
+                return
+            consumed = True
+            try:
+                if mode == "cancel":
+                    widget.response(Gtk.ResponseType.CANCEL)
+                else:
+                    widget.destroy()
+            except Exception as error:
+                errors.append(error)
+
+        def mapped(_hint, _count, parameters):
+            nonlocal armed
+            widget = parameters[0]
+            if not (
+                armed
+                and isinstance(widget, Gtk.MessageDialog)
+                and widget is surface.quit_dialog
+                and widget.get_transient_for() is surface.window
+                and widget.get_modal()
+                and widget.get_property("text") == title
+            ):
+                return True
+            armed = False
+            watched.append((widget, widget.connect("notify::visible", visible)))
+            return True
+
+        signal = GObject.signal_lookup("map", Gtk.Widget)
+        hook = GObject.signal_add_emission_hook(signal, 0, mapped)
+        try:
+            await trigger()
+        finally:
+            GObject.signal_remove_emission_hook(signal, hook)
+            for widget, handler in watched:
+                if widget.handler_is_connected(handler):
+                    widget.disconnect(handler)
+        if errors:
+            raise errors[0]
+        assert consumed and len(watched) == 1 and not watched[0][0].get_visible()
+        assert surface.quit_dialog is None
+
     before = settings_file.read_bytes()
+    for mode in ("cancel", "destroy"):
+        await open_settings()
+        await consume_while_showing(
+            surface.tr("退出 TypeLay？", "Quit TypeLay?"),
+            lambda: click(settings_quit(), surface.window),
+            mode,
+        )
+        unchanged(0, before)
+    print("QUIT FIRST SHOW CONSUMED PASS: Cancel/destroy never re-present A", flush=True)
     for cancel_kind in ("escape", "close"):
         await open_settings()
         dialog = await ask_quit()
@@ -169,6 +266,18 @@ async def complete(
     await answer(second, Gtk.ResponseType.CANCEL)
     unchanged(1, before)
     assert translation.source_term.get_text() == "Retained draft"
+
+    for mode in ("cancel", "destroy"):
+        await until(lambda: surface.window.is_active())
+        first = await ask_quit()
+        await consume_while_showing(
+            surface.tr(surface.draft_messages["closeTitle"], "Discard unsaved changes?"),
+            lambda: answer(first, Gtk.ResponseType.OK),
+            mode,
+        )
+        unchanged(1, before)
+        assert translation.dirty and translation.source_term.get_text() == "Retained draft"
+    print("QUIT SECOND SHOW CONSUMED PASS: draft retained; closed A never re-presented", flush=True)
 
     await until(lambda: surface.window.is_active())
     first = await ask_quit()
@@ -482,7 +591,7 @@ def main():
                 dialog = dialogs[0]
                 assert dialog.get_modal() and dialog.get_transient_for() is surface.window
                 cancel = dialog.get_widget_for_response(Gtk.ResponseType.CANCEL)
-                await until(lambda: dialog.is_active() and cancel.is_focus())
+                await wait_cancel(dialog, until)
                 assert dialog.get_default_widget() is cancel
                 dialog.response(Gtk.ResponseType.CANCEL)
                 assert not quits and settings_file.read_bytes() == before

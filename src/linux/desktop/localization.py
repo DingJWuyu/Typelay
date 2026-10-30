@@ -16,6 +16,8 @@ ENGLISH = {
     "重试": "Retry",
     "下载": "Download",
     "暂停": "Pause",
+    "暂停下载": "Pause download",
+    "可暂停并保留已验证的下载进度。": "You can pause and keep verified download progress.",
     "继续下载": "Resume",
     "修复": "Repair",
     "正在准备；总量和剩余时间尚不确定。": "Preparing; total size and remaining time are unknown.",

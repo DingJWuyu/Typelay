@@ -100,7 +100,7 @@ public sealed partial class SettingsRenderingTests
     [Theory]
     [InlineData("light")]
     [InlineData("dark")]
-    public Task SetupUsesTheSameThinScrollbarWithoutRestylingOtherWindows(string theme) => desktop.RunAsync(() =>
+    public Task SetupKeepsTheCompactModelCardVisibleWithoutRestylingOtherWindows(string theme) => desktop.RunAsync(() =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-setup-scrollbars-" + Guid.NewGuid().ToString("N"));
         SettingsWindow? settingsWindow = null;
@@ -126,10 +126,31 @@ public sealed partial class SettingsRenderingTests
             }
             setup.UpdateLayout();
             var viewport = Assert.Single(Descendants(setup).OfType<ScrollViewer>(), view => Descendants(view).OfType<ProgressBar>().Any());
-            // The supported minimum window size must still expose the real model
-            // actions through scrolling, rather than clipping or substituting content.
-            Assert.True(viewport.ScrollableHeight > 0);
-            var setupBar = ConfigurationScrollbar(viewport, theme);
+            // The compact real model card fits at the supported minimum. Do not
+            // demand overflow by shrinking the window or adding fake content.
+            Assert.Equal(0, viewport.ScrollableHeight);
+            var peer = Assert.IsType<ScrollViewerAutomationPeer>(UIElementAutomationPeer.CreatePeerForElement(viewport));
+            var scroll = Assert.IsAssignableFrom<IScrollProvider>(peer.GetPattern(PatternInterface.Scroll));
+            Assert.False(scroll.VerticallyScrollable);
+            var card = Assert.Single(Descendants(viewport).OfType<Border>(),
+                item => AutomationProperties.GetAutomationId(item) == "OnboardingModelCard");
+            var cardBounds = card.TransformToAncestor(viewport).TransformBounds(new Rect(card.RenderSize));
+            Assert.InRange(cardBounds.Top, 0, viewport.ActualHeight);
+            Assert.InRange(cardBounds.Bottom, 0, viewport.ActualHeight + .1);
+            var action = Assert.Single(Descendants(card).OfType<Button>(),
+                item => AutomationProperties.GetAutomationId(item) == "OnboardingModelAction");
+            Assert.True(action.IsVisible);
+            Assert.True(cardBounds.Contains(action.TransformToAncestor(viewport).TransformBounds(new Rect(action.RenderSize))));
+            var setupBar = Assert.IsType<ScrollBar>(viewport.Template.FindName("PART_VerticalScrollBar", viewport));
+            Assert.False(setupBar.IsVisible);
+            Assert.Equal(8, setupBar.Width);
+            Assert.Equal(Colors.Transparent, Assert.IsType<SolidColorBrush>(setupBar.Background).Color);
+            setupBar.ApplyTemplate();
+            var track = Assert.IsType<Track>(setupBar.Template.FindName("PART_Track", setupBar));
+            Assert.NotNull(track.Thumb);
+            Assert.Equal(ScrollBar.PageUpCommand, track.DecreaseRepeatButton.Command);
+            Assert.Equal(ScrollBar.PageDownCommand, track.IncreaseRepeatButton.Command);
+            Assert.Empty(Descendants(setupBar).OfType<System.Windows.Shapes.Path>());
             Render(setup, $"setup-thin-scrollbar-en-{theme}.png");
             Assert.False(settings.Value.OnboardingComplete);
             Assert.False(model.Ready);
@@ -140,7 +161,7 @@ public sealed partial class SettingsRenderingTests
             outside.UpdateLayout();
             var ordinaryBar = Assert.IsType<ScrollBar>(ordinary.Template.FindName("PART_VerticalScrollBar", ordinary));
             Assert.NotSame(setupBar.Template, ordinaryBar.Template);
-            Assert.True(ordinaryBar.ActualWidth > setupBar.ActualWidth);
+            Assert.True(ordinaryBar.ActualWidth > setupBar.Width);
         }
         finally
         {

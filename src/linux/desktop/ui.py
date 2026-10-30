@@ -16,7 +16,8 @@ from design import (
     reduced_motion,
 )
 from design import row as design_row
-from model_status import activity_status, model_notice, set_status_tone
+from model_status import activity_status, model_notice, render_download, set_status_tone
+from setup import InstallationProgress
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
@@ -139,6 +140,12 @@ class Tutorial:
         self.model_detail = label(muted=True)
         self.model_detail.set_no_show_all(True)
         model_card.pack_start(self.model_detail, False, False, 0)
+        progress_label = label(muted=True)
+        progress_bar = Gtk.ProgressBar()
+        for widget in (progress_label, progress_bar):
+            widget.set_no_show_all(True)
+            model_card.pack_start(widget, False, False, 0)
+        self.model_progress = (progress_label, progress_bar)
         self.pages[2].pack_start(model_card, False, False, 0)
         self.model_more = style(Gtk.Button(), "flat")
         self.model_more.connect(
@@ -422,6 +429,23 @@ class Tutorial:
                 else action["label"]
             )
         self.model_more.set_label(tr("模型与其他后端…", "Models and other backends…"))
+        self.render_download_progress()
+
+    def render_download_progress(self):
+        render = self.download_render = object()
+        owner, opening, widgets = self.owner, self.opening, self.model_progress
+        snapshot, state = owner.download_progress.snapshot, owner.installation_state
+        render_download(
+            widgets,
+            snapshot,
+            state,
+            owner.tr,
+            lambda: self.download_render is render
+            and self.opening is opening
+            and self.model_progress is widgets
+            and owner.download_progress.snapshot is snapshot
+            and owner.installation_state == state,
+        )
 
     def change_preference(self, key, value, opening):
         widget = self.startup if key == "startup" else self.pickers[key]
@@ -3232,6 +3256,8 @@ class Settings:
         self.installation_state = "idle"
         self.installation_failure = None
         self.installation_message = ""
+        self.download_progress = InstallationProgress()
+        self.download_changed = None
         self.preparation_view = None
         self.preparation_view_revision = -1
         self.preparation_model_facts = None
@@ -3293,6 +3319,7 @@ class Settings:
         )
 
     def request_quit(self, *_, guard=None, parent=None):
+        timestamp = Gtk.get_current_event_time()
         if self.quit_closed or guard is not None and not guard():
             return None
         if guard is None and not (self.window.get_mapped() and self.window.is_active()):
@@ -3356,14 +3383,23 @@ class Settings:
                 self.quit_dialog = None
                 self.retire_quit(expected=intent)
 
+        def showing():
+            return (
+                eligible() and self.quit_dialog is dialog and not answered and dialog.get_visible()
+            )
+
         dialog.connect("response", response)
         dialog.connect("destroy", destroyed)
         dialog.show_all()
-        if not eligible():
+        if not showing():
+            dialog.destroy()
+            return None
+        dialog.present_with_time(timestamp)
+        if not showing():
             dialog.destroy()
             return None
         dialog.get_widget_for_response(Gtk.ResponseType.CANCEL).grab_focus()
-        if not eligible():
+        if not showing():
             dialog.destroy()
             return None
         return dialog
@@ -3682,6 +3718,7 @@ class Settings:
 
     def localize(self):
         self.localizer.refresh()
+        self.render_download_progress()
         was_configuring = self.configuring
         self.configuring = True
         try:
@@ -4027,11 +4064,17 @@ class Settings:
             self.render_language_swap()
         saved = self.value
         if saved and saved["mode"] == "OnDemand":
-            summary = f"按 {saved['wakeShortcut']} 唤醒当前输入框翻译。"
+            summary = self.tr(
+                f"按 {saved['wakeShortcut']} 唤醒当前输入框翻译。",
+                f"Press {saved['wakeShortcut']} to translate the current field.",
+            )
         else:
-            summary = "聚焦受支持的输入框后自动翻译，由你决定是否接受。"
+            summary = self.tr(
+                "聚焦受支持的输入框后自动翻译，由你决定是否接受。",
+                "Translate supported fields automatically when focused. You choose whether to accept.",
+            )
         if saved and not saved["enabled"]:
-            summary = "已暂停；启用后，" + summary
+            summary = self.tr("已暂停；启用后，", "Paused. When enabled: ") + summary
         self.mode_description.set_text(summary)
         self.mode_description.set_tooltip_text(value["modeDescription"])
         self.mode_description.get_accessible().set_description(value["modeDescription"])
@@ -4436,6 +4479,7 @@ class Settings:
                 self.render_draft()
 
     def dismiss(self, *_, quit_requested=None, quit_guard=None, parent=None):
+        timestamp = Gtk.get_current_event_time() if quit_guard is not None else None
         if quit_guard is None:
             self.retire_quit()
         elif not quit_guard():
@@ -4549,13 +4593,28 @@ class Settings:
                     self.retire_quit(expected=intent)
 
             dialog.connect("destroy", destroyed)
+
+        def showing():
+            return (
+                quit_guard()
+                and self.quit_dialog is dialog
+                and self.quit_snapshot() == snapshot
+                and not answered
+                and dialog.get_visible()
+            )
+
         dialog.connect("response", response)
         dialog.show_all()
-        if quit_guard is not None and not quit_guard():
-            dialog.destroy()
-            return True
+        if quit_guard is not None:
+            if not showing():
+                dialog.destroy()
+                return True
+            dialog.present_with_time(timestamp)
+            if not showing():
+                dialog.destroy()
+                return True
         dialog.get_widget_for_response(default_response).grab_focus()
-        if quit_guard is not None and not quit_guard():
+        if quit_guard is not None and not showing():
             dialog.destroy()
         return True
 
@@ -4770,7 +4829,30 @@ class Settings:
         self.render_language_status()
         self.tutorial.render()
 
+    def render_download_progress(self):
+        render = self.download_render = object()
+        snapshot, state, widgets = (
+            self.download_progress.snapshot,
+            self.installation_state,
+            self.model_progress,
+        )
+
+        def current():
+            return (
+                self.download_render is render
+                and self.download_progress.snapshot is snapshot
+                and self.installation_state == state
+            )
+
+        render_download(widgets, snapshot, state, self.tr, current)
+        if not current():
+            return
+        self.tutorial.render_download_progress()
+        if current() and self.download_changed is not None:
+            self.download_changed()
+
     def render_preparation_notice(self):
+        self.render_download_progress()
         notice = self.application_support.preparation_notice
         message = self.preparation_error or self.installation_message
         if not message and self.installation_state in ("idle", "ready") and not self.model_ready:

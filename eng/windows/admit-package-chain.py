@@ -12,9 +12,9 @@ def main():
     args = parser.parse_args()
     # Preparation, browser, ordinary Notepad, Hy production, Settings,
     # cache/artifact tail, and packaging. Preserve this 60-minute chain;
-    # allow 20 minutes for the preceding build and contracts in an 80-minute job.
+    # allow 25 minutes for the preceding build and contracts in an 85-minute job.
     required = (10 + 10 + 10 + 6 + 16 + 7 + 1) * 60
-    remaining = 80 * 60 - args.elapsed_seconds
+    remaining = 85 * 60 - args.elapsed_seconds
     admitted = args.elapsed_seconds >= 0 and remaining >= required
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(
@@ -31,7 +31,7 @@ def main():
         encoding="utf-8",
     )
     if not admitted:
-        raise SystemExit("Insufficient or invalid 80-minute Windows package-chain budget")
+        raise SystemExit("Insufficient or invalid 85-minute Windows package-chain budget")
 
 
 if __name__ == "__main__":

@@ -349,6 +349,82 @@ public sealed partial class SetupRenderingTests
         }
     });
 
+    [Fact]
+    public Task ReplacingTheCurrentTileTemplateDuringPaintDoesNotContinueWritingItsOldLayers() => desktop.RunAsync(async () =>
+    {
+        await using var scene = new GeneralScene("en", "light");
+        scene.Settings.Update(scene.Settings.Value with
+        {
+            Motion = "full"
+        });
+        scene.Window.ShowPage("appearance");
+        Border? retired = null;
+        Control? tile = null;
+        bool replaced = false;
+        var failure = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var properties = new[] { Border.CornerRadiusProperty, UIElement.VisibilityProperty, Border.BorderThicknessProperty,
+            Border.BorderBrushProperty, Border.BackgroundProperty, UIElement.RenderTransformProperty, UIElement.EffectProperty };
+        object[]? afterReplacement = null;
+        var descriptor = Assert.IsType<System.ComponentModel.DependencyPropertyDescriptor>(
+            System.ComponentModel.DependencyPropertyDescriptor.FromProperty(FrameworkElement.MarginProperty, typeof(Border)));
+        EventHandler? replace = null;
+        void AfterCommit()
+        {
+            if (scene.Settings.Value.Font != "sans" || tile is not null)
+                return;
+            try
+            {
+                var current = Assert.Single(Descendants(scene.Window).OfType<Button>(), button =>
+                    AutomationProperties.GetAutomationId(button) == "AppearanceFont_sans");
+                tile = current;
+                current.ApplyTemplate();
+                var oldLayer = AppearanceLayer(current, "selection");
+                retired = oldLayer;
+                replace = (_, _) =>
+                {
+                    descriptor.RemoveValueChanged(oldLayer, replace);
+                    try
+                    {
+                        var template = current.Template;
+                        current.Template = null;
+                        current.Template = template;
+                        current.ApplyTemplate();
+                        afterReplacement = properties.Select(oldLayer.ReadLocalValue).ToArray();
+                        replaced = true;
+                        Assert.NotSame(oldLayer, AppearanceLayer(current, "selection"));
+                    }
+                    catch (Exception error) { failure.TrySetException(error); }
+                };
+                descriptor.AddValueChanged(oldLayer, replace);
+            }
+            catch (Exception error) { failure.TrySetException(error); }
+        }
+        scene.Settings.Changed += AfterCommit;
+        try
+        {
+            await WatchAppearanceRings(() => SelectAppearanceTile(AppearanceTile(scene.Window, "font", "sans")), () =>
+            {
+                if (!replaced)
+                    return;
+                Assert.NotNull(retired);
+                Assert.NotNull(tile);
+                Assert.NotNull(afterReplacement);
+                Assert.False(retired.IsDescendantOf(tile));
+                for (int index = 0; index < properties.Length; index++)
+                    Assert.Equal(afterReplacement[index], retired.ReadLocalValue(properties[index]));
+            }, failure.Task, presentation: () => scene.Settings.Value.Font == "sans" ? scene.Settings.Value : null);
+            Assert.True(replaced);
+            Assert.Equal("sans", WindowsRuntime.CreateSettings(scene.Path).Value.Font);
+            Assert.Equal(2.5, AppearanceLayer(AppearancePaintedTile(scene.Window, "font", "sans"), "selection").BorderThickness.Left);
+        }
+        finally
+        {
+            scene.Settings.Changed -= AfterCommit;
+            if (retired is not null && replace is not null)
+                descriptor.RemoveValueChanged(retired, replace);
+        }
+    });
+
     [Theory]
     [InlineData("reduce")]
     [InlineData("system")]

@@ -56,3 +56,73 @@ def set_status_tone(widget, tone):
     context = widget.get_style_context()
     for candidate in ("paused", "checking", "warn", "bad"):
         (context.add_class if candidate == tone else context.remove_class)(candidate)
+
+
+def download_presentation(snapshot, state, tr):
+    """Truthful current-file progress; no aggregate percentage or ETA."""
+    if snapshot is None or state not in ("running", "pausing", "paused", "failed"):
+        return "", None
+    stage = snapshot["stage"]
+    state_label = {
+        "paused": ("已暂停", "Paused"),
+        "pausing": ("正在暂停", "Pausing"),
+        "failed": ("准备失败", "Setup failed"),
+    }.get(state)
+    stages = {
+        "prepare": ("正在准备…", "Preparing…"),
+        "runtime": ("正在准备运行环境…", "Preparing runtime…"),
+        "dependencies": ("正在准备依赖…", "Preparing dependencies…"),
+        "model-extract": ("正在解包…", "Extracting…"),
+        "model-verify": ("正在校验模型…", "Verifying model…"),
+        "self-check": ("正在检查模型…", "Checking model…"),
+        "activate": ("正在等待启用确认…", "Awaiting activation…"),
+    }
+    if stage != "model-download":
+        return tr(*(state_label or stages[stage])), None
+    resource = {
+        "argos-zh-en": "Argos ZH→EN",
+        "argos-en-zh": "Argos EN→ZH",
+        "hy-model": "HY-MT",
+        "hy-license": "HY-MT LICENSE",
+        "index-model": "Index Translate",
+        "index-license": "Index LICENSE",
+        "unknown": tr("模型文件", "Model file"),
+    }[snapshot["resource"]]
+    count, total = snapshot["downloaded"], snapshot["total"]
+
+    def size(value):
+        if value < 1024:
+            return f"{value} B"
+        if value < 1024 * 1024:
+            return f"{value / 1024:.1f} KiB"
+        return f"{value / (1024 * 1024):.1f} MiB"
+
+    amount = size(count)
+    amount += " / " + size(total) if total is not None else tr(" / 总量未知", " / total unknown")
+    phase = (
+        state_label
+        or {
+            "Headers": ("正在连接", "Connecting"),
+            "Body": ("正在下载", "Downloading"),
+            "Verify": ("正在校验文件", "Verifying file"),
+            "Complete": ("文件已下载，尚未启用", "File downloaded, not activated"),
+        }[snapshot["downloadPhase"]]
+    )
+    label = tr("当前文件", "Current file") + f": {resource} · {amount} · " + tr(*phase)
+    return label, count / total if total is not None else None
+
+
+def render_download(widgets, snapshot, state, tr, current):
+    """Render only while this exact read-only snapshot still owns the view."""
+    message, fraction = download_presentation(snapshot, state, tr)
+    caption, bar = widgets
+    for action in (
+        lambda: caption.set_text(message),
+        lambda: caption.set_visible(bool(message)),
+        lambda: bar.set_fraction(fraction if fraction is not None else 0),
+        lambda: bar.set_visible(bool(message) and fraction is not None),
+        lambda: bar.get_accessible().set_name(message),
+    ):
+        if not current():
+            return
+        action()

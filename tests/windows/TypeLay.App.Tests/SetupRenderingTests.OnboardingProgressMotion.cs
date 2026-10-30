@@ -38,16 +38,32 @@ public sealed partial class SetupRenderingTests
             var range = Assert.IsAssignableFrom<IRangeValueProvider>(UIElementAutomationPeer.CreatePeerForElement(bar).GetPattern(PatternInterface.RangeValue));
             double width = track.ActualWidth;
             var original = bar.RenderSize;
-            Assert.InRange(fill.Width, width * .5 - .01, width * .5 + .01);
+            Assert.Equal(50, range.Value);
+            Assert.InRange(native.Width, width * .5 - .01, width * .5 + .01);
             byte[] before = File.ReadAllBytes(scene.SettingsPath);
-            await Task.Delay(80, TestContext.Current.CancellationToken);
+            using var observation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            observation.CancelAfter(TimeSpan.FromSeconds(3));
+            // The real installer publishes known-total zero before the first
+            // body report. Its legitimate 0 -> 50 paint may still be running.
+            // Both this phase and the controlled 50 -> 75 share the same 3 s.
+            var initial = await ObserveOnboardingFill(bar, () => { }, 50, deadline: observation.Token);
+            Assert.All(initial, sample =>
+            {
+                Assert.Equal(50, sample.Value);
+                Assert.Equal(50, sample.RangeValue);
+                Assert.Equal(original, sample.Size);
+                Assert.Equal(width, sample.TrackWidth);
+                Assert.InRange(sample.NativeWidth, width * .5 - .01, width * .5 + .01);
+                Assert.InRange(sample.PaintedWidth, 0, width * .5 + .01);
+            });
+            Assert.InRange(fill.Width, width * .5 - .01, width * .5 + .01);
             RenderTray(window, $"onboarding-progress-start-{motion}.png");
             var middle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var watch = ObserveOnboardingFill(bar, () => transfers[0].Body.Continue.TrySetResult(), 75, sample =>
             {
                 if (sample.Value == 75 && sample.PaintedWidth > width * .52 && sample.PaintedWidth < width * .73)
                     middle.TrySetResult();
-            });
+            }, deadline: observation.Token);
             try
             {
                 if (motion == "full")
@@ -209,7 +225,7 @@ public sealed partial class SetupRenderingTests
     // Observe genuine rendering opportunities without inducing layout in a frame.
     // The one outer 3 s deadline also covers waiting for the actual report.
     private static async Task<List<FillFrame>> ObserveOnboardingFill(ProgressBar bar, Action update, double observedValue,
-        Action<FillFrame>? each = null, bool retiredAllowed = false)
+        Action<FillFrame>? each = null, bool retiredAllowed = false, CancellationToken? deadline = null)
     {
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var samples = new List<FillFrame>();
@@ -246,7 +262,10 @@ public sealed partial class SetupRenderingTests
         try
         {
             update();
-            await done.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+            if (deadline is { } token)
+                await done.Task.WaitAsync(token);
+            else
+                await done.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
             return samples;
         }
         finally { CompositionTarget.Rendering -= frame; }

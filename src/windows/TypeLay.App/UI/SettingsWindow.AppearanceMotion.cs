@@ -81,6 +81,20 @@ internal sealed partial class SettingsWindow
         private long _revision;
         private TimeSpan? _lastFrame, _presented;
         private bool _disposed;
+        private long _paintVersion;
+        private readonly Dictionary<(string Key, string Name), LayerPaint> _layers = [];
+        private sealed class LayerPaint(ControlTemplate template, Border border)
+        {
+            internal ControlTemplate Template { get; } = template;
+            internal Border Border { get; } = border;
+            internal SolidColorBrush Brush { get; } = new();
+            internal TranslateTransform Offset { get; } = new();
+            internal BlurEffect Blur { get; } = new() { KernelType = KernelType.Gaussian };
+            internal AppearanceShadow? Shown
+            {
+                get; set;
+            }
+        }
         private static readonly KeySpline Ease = new(.25, .1, .25, 1);
 
         static AppearanceTileRings() => Ease.Freeze();
@@ -123,8 +137,10 @@ internal sealed partial class SettingsWindow
             if (_travel is null)
             {
                 _shown.Clear();
+                long version = ++_paintVersion;
                 foreach (var (key, look) in SavedLooks())
-                    Paint(key, look);
+                    if (!Paint(key, look, version))
+                        return null;
             }
             var travel = new AppearanceRingTravel(new Dictionary<string, AppearanceTileLook>(_shown), _themes.ActualWidth, _fonts.ActualWidth);
             Stop();
@@ -183,11 +199,13 @@ internal sealed partial class SettingsWindow
                 return;
             double time = Math.Clamp(elapsedMilliseconds / 200, 0, 1);
             double progress = Ease.GetSplineProgress(time);
+            long version = ++_paintVersion;
             foreach (var (key, destination) in _destination)
             {
                 var start = travel.Looks[key];
-                Paint(key, new(Interpolate(start.Outline, destination.Outline, progress),
-                    Interpolate(start.Soft, destination.Soft, progress), Interpolate(start.Edge, destination.Edge, progress)));
+                if (!Paint(key, new(Interpolate(start.Outline, destination.Outline, progress),
+                    Interpolate(start.Soft, destination.Soft, progress), Interpolate(start.Edge, destination.Edge, progress)), version))
+                    return;
             }
             if (time >= 1)
                 Settle();
@@ -203,33 +221,64 @@ internal sealed partial class SettingsWindow
             return new(Mix(from.Spread, to.Spread), Mix(from.Blur, to.Blur), Mix(from.Offset, to.Offset), color);
         }
 
-        private void Paint(string key, AppearanceTileLook look)
+        private bool Paint(string key, AppearanceTileLook look, long version)
         {
+            bool Current() => !_disposed && version == _paintVersion && _current();
+            if (!Current())
+                return false;
             var choice = _choices[key];
-            choice.ApplyTemplate();
-            void Layer(string name, AppearanceShadow shadow, bool fill)
+            bool Layer(string name, AppearanceShadow shadow, bool fill)
             {
-                if (choice.Template.FindName(name, choice) is not Border border)
-                    return;
-                border.Margin = new(-shadow.Spread);
-                border.CornerRadius = new(9 + shadow.Spread);
-                border.Visibility = Visibility.Visible;
-                var brush = new SolidColorBrush(shadow.Color);
-                brush.Freeze();
-                border.BorderThickness = fill ? new(0) : new(shadow.Spread);
-                border.BorderBrush = brush;
-                border.Background = fill ? brush : Brushes.Transparent;
-                border.RenderTransform = new TranslateTransform(0, shadow.Offset);
-                border.Effect = shadow.Blur > 0 ? new BlurEffect { Radius = shadow.Blur, KernelType = KernelType.Gaussian } : null;
+                if (!Current())
+                    return false;
+                var id = (key, name);
+                if (!_layers.TryGetValue(id, out var layer) || !ReferenceEquals(layer.Template, choice.Template)
+                    || !layer.Border.IsDescendantOf(choice))
+                {
+                    choice.ApplyTemplate();
+                    if (!Current() || choice.Template.FindName(name, choice) is not Border border)
+                        return false;
+                    layer = new(choice.Template, border);
+                    _layers[id] = layer;
+                }
+                bool LayerCurrent() => Current() && ReferenceEquals(layer.Template, choice.Template)
+                    && layer.Border.IsDescendantOf(choice);
+                if (layer.Shown == shadow)
+                    return LayerCurrent();
+                bool Set(DependencyObject target, DependencyProperty property, object? value)
+                {
+                    if (!LayerCurrent())
+                        return false;
+                    if (!Equals(target.GetValue(property), value))
+                        target.SetValue(property, value);
+                    // A public DP notification may synchronously retire or
+                    // retarget this painter; it must not resume on the old tree.
+                    return LayerCurrent();
+                }
+                if (!Set(layer.Border, MarginProperty, new Thickness(-shadow.Spread))
+                    || !Set(layer.Border, Border.CornerRadiusProperty, new CornerRadius(9 + shadow.Spread))
+                    || !Set(layer.Border, VisibilityProperty, Visibility.Visible)
+                    || !Set(layer.Brush, SolidColorBrush.ColorProperty, shadow.Color)
+                    || !Set(layer.Border, Border.BorderThicknessProperty, fill ? new Thickness(0) : new Thickness(shadow.Spread))
+                    || !Set(layer.Border, Border.BorderBrushProperty, layer.Brush)
+                    || !Set(layer.Border, Border.BackgroundProperty, fill ? layer.Brush : Brushes.Transparent)
+                    || !Set(layer.Offset, TranslateTransform.YProperty, shadow.Offset)
+                    || !Set(layer.Border, RenderTransformProperty, layer.Offset)
+                    || !Set(layer.Blur, BlurEffect.RadiusProperty, shadow.Blur)
+                    || !Set(layer.Border, EffectProperty, shadow.Blur > 0 ? layer.Blur : null))
+                    return false;
+                layer.Shown = shadow;
+                return true;
             }
-            Layer("edge", look.Edge, false);
-            Layer("selectionSoft", look.Soft, true);
-            Layer("selection", look.Outline, false);
+            if (!Layer("edge", look.Edge, false) || !Layer("selectionSoft", look.Soft, true) || !Layer("selection", look.Outline, false))
+                return false;
             _shown[key] = look;
+            return true;
         }
 
         private void Stop()
         {
+            _paintVersion++;
             CompositionTarget.Rendering -= Frame;
             _travel = null;
             _destination = null;
@@ -243,9 +292,13 @@ internal sealed partial class SettingsWindow
             Stop();
             if (_disposed)
                 return;
+            long version = _paintVersion;
+            _layers.Clear();
             foreach (var choice in _choices.Values)
             {
                 choice.ApplyTemplate();
+                if (_disposed || version != _paintVersion)
+                    return;
                 foreach (string name in new[] { "edge", "selectionSoft", "selection" })
                 {
                     if (choice.Template.FindName(name, choice) is not Border border)
@@ -255,7 +308,11 @@ internal sealed partial class SettingsWindow
                     foreach (var property in new[] { MarginProperty, Border.CornerRadiusProperty, VisibilityProperty,
                         Border.BorderThicknessProperty, Border.BorderBrushProperty, Border.BackgroundProperty,
                         RenderTransformProperty, EffectProperty })
+                    {
                         border.ClearValue(property);
+                        if (_disposed || version != _paintVersion)
+                            return;
+                    }
                 }
             }
             _shown.Clear();

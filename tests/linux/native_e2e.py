@@ -1312,6 +1312,15 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             "rendered candidate",
                         )
                         original = state()
+                        if toolkit == "gtk4":
+                            status = original["overlayControls"]["typelay-status"]
+                            expected_phase = status["text"]
+                            assert expected_phase in (
+                                ("Edited", "已修改")
+                                if view_state == "EditedTranslationPending"
+                                else ("",)
+                            ), (view_state, status)
+                            assert status["tooltip"] == ""
                         before = len(native.events)
 
                         def renew():
@@ -1438,6 +1447,17 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 actual["candidate"],
                             )
                             assert actual["focus"] == original["focus"]
+                            if toolkit == "gtk4":
+                                # Reuse this already-read public report. In the
+                                # no-click-replay case, two actions-only renders
+                                # must retain the same full-render phase/tooltip.
+                                status = actual["overlayControls"]["typelay-status"]
+                                assert (
+                                    status["instance"]
+                                    == original["overlayControls"]["typelay-status"]["instance"]
+                                )
+                                assert status["visible"] and status["text"] == expected_phase
+                                assert status["tooltip"] == ""
                             assert all(
                                 actual["overlayControls"][name]["visible"]
                                 and not actual["overlayControls"][name]["enabled"]

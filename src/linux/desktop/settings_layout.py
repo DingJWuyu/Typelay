@@ -768,6 +768,15 @@ def build(
         note.set_margin_end(14)
         note.set_margin_bottom(12)
         model_hero.pack_start(note, False, False, 0)
+    progress_label = label(muted=True)
+    progress_bar = Gtk.ProgressBar()
+    for widget in (progress_label, progress_bar):
+        widget.set_no_show_all(True)
+        widget.set_margin_start(14)
+        widget.set_margin_end(14)
+        widget.set_margin_bottom(12)
+        model_hero.pack_start(widget, False, False, 0)
+    owner.model_progress = (progress_label, progress_bar)
     owner.page_boxes["model"].pack_start(support.preparation_details, False, False, 0)
     style(support.preparation_details, "model-details")
     # Connection management keeps its existing authority and detail dialogs,

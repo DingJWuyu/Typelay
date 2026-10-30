@@ -12,7 +12,7 @@ from design import (
     reduced_motion,
     style,
 )
-from model_status import activity_status, model_notice, set_status_tone
+from model_status import activity_status, model_notice, render_download, set_status_tone
 from status_notifier import StatusNotifier
 
 gi.require_version("Gtk", "3.0")
@@ -185,6 +185,15 @@ class Tray:
         self.model_detail.set_max_width_chars(40)
         self.model_detail.set_no_show_all(True)
         self.model_card.pack_start(self.model_detail, False, False, 0)
+        progress_label = ModelDetailLabel(xalign=0)
+        progress_label.set_line_wrap(True)
+        progress_label.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        style(progress_label, "muted")
+        progress_bar = Gtk.ProgressBar()
+        for widget in (progress_label, progress_bar):
+            widget.set_no_show_all(True)
+            self.model_card.pack_start(widget, False, False, 0)
+        self.model_progress = (progress_label, progress_bar)
         self.model_activity = Gtk.Spinner()
         self.model_activity.set_halign(Gtk.Align.START)
         self.model_activity.set_no_show_all(True)
@@ -320,6 +329,11 @@ class Tray:
             and self.model_owner.preparation_changed is self.model_listener
         ):
             self.model_owner.preparation_changed = None
+        if (
+            self.model_owner is not None
+            and self.model_owner.download_changed == self.refresh_download
+        ):
+            self.model_owner.download_changed = None
         self.model_owner = owner
 
         def changed():
@@ -328,7 +342,29 @@ class Tray:
 
         self.model_listener = changed
         owner.preparation_changed = changed
+        owner.download_changed = self.refresh_download
         self.refresh_model()
+
+    def refresh_download(self):
+        render = self.download_render = object()
+        owner, opening, widgets = self.model_owner, self.opening, self.model_progress
+        snapshot = owner.download_progress.snapshot if owner is not None else None
+        state = owner.installation_state if owner is not None else "idle"
+        render_download(
+            widgets,
+            snapshot,
+            state,
+            lambda zh, en: en if self.localizer.text("取消") != "取消" else zh,
+            lambda: not self.closed
+            and self.download_render is render
+            and self.opening is opening
+            and self.model_owner is owner
+            and (
+                owner is None
+                or owner.download_progress.snapshot is snapshot
+                and owner.installation_state == state
+            ),
+        )
 
     def refresh_model(self):
         if self.closed:
@@ -443,6 +479,9 @@ class Tray:
         if not rendering_current():
             return
         self.model_detail.set_visible(bool(detail))
+        if not rendering_current():
+            return
+        self.refresh_download()
         if not rendering_current():
             return
         running = bool(owner is not None and owner.installation_state in ("running", "starting"))
@@ -925,6 +964,11 @@ class Tray:
             and self.model_owner.preparation_changed is self.model_listener
         ):
             self.model_owner.preparation_changed = None
+        if (
+            self.model_owner is not None
+            and self.model_owner.download_changed == self.refresh_download
+        ):
+            self.model_owner.download_changed = None
         self.model_owner = self.model_listener = None
         self.connected = False
         if self.indicator is not None:

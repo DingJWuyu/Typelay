@@ -59,6 +59,213 @@ class Response(io.BytesIO):
         return super().read(size)
 
 
+class InstallationProgressTests(unittest.TestCase):
+    def record(self, **overrides):
+        value = {
+            "schema": 1,
+            "sequence": 1,
+            "stage": "model-download",
+            "resource": "argos-zh-en",
+            "attempt": 1,
+            "downloadPhase": "Body",
+            "downloaded": 5,
+            "total": 11,
+        }
+        value.update(overrides)
+        return setup.PROGRESS_PREFIX + json.dumps(value, separators=(",", ":"))
+
+    def test_strict_bounded_records_and_unknown_total(self):
+        self.assertEqual(setup.progress_record(self.record())["downloaded"], 5)
+        self.assertIsNone(setup.progress_record(self.record(total=None))["total"])
+        for fields in (
+            {"schema": True},
+            {"schema": 2},
+            {"sequence": True},
+            {"sequence": 0},
+            {"sequence": 2**31},
+            {"attempt": True},
+            {"attempt": 0},
+            {"attempt": 2**31},
+            {"downloaded": True},
+            {"downloaded": -1},
+            {"downloaded": 2**63},
+            {"total": True},
+            {"total": 0},
+            {"total": 2**63},
+            {"total": 4},
+            {"stage": "private/path"},
+            {"resource": "https://private.invalid/token"},
+            {"downloadPhase": "Ready"},
+            {"downloadPhase": "Complete"},
+            {"unknown": "token"},
+            {"stage": []},
+            {"resource": {}},
+        ):
+            with self.subTest(fields=fields):
+                self.assertIsNone(setup.progress_record(self.record(**fields)))
+        for line in (
+            setup.PROGRESS_PREFIX + "{",
+            setup.PROGRESS_PREFIX + "[1]",
+            setup.PROGRESS_PREFIX + " " * 1025,
+            setup.PROGRESS_PREFIX + "\ud800",
+        ):
+            self.assertIsNone(setup.progress_record(line))
+        stage = self.record(
+            stage="model-extract", attempt=0, downloadPhase=None, downloaded=0, total=None
+        )
+        self.assertEqual(setup.progress_record(stage)["stage"], "model-extract")
+        with self.assertRaises(TypeError):
+            setup.progress_record(self.record())["downloaded"] = 99
+
+    def test_task_sequence_resource_attempt_and_decreasing_bytes(self):
+        stream = setup.InstallationProgress()
+        a, b = object(), object()
+        stream.begin(a)
+        self.assertTrue(stream.accept(a, self.record()))
+        first = stream.snapshot
+        for line in (
+            self.record(),
+            self.record(sequence=0),
+            self.record(sequence=2, downloaded=4),
+            self.record(sequence=2, resource="hy-license"),
+            self.record(sequence=2, total=None),
+        ):
+            self.assertFalse(stream.accept(a, line))
+            self.assertIs(stream.snapshot, first)
+        self.assertTrue(stream.accept(a, self.record(sequence=2, attempt=2, downloaded=0)))
+        self.assertFalse(stream.accept(a, self.record(sequence=3, attempt=1)))
+        self.assertTrue(
+            stream.accept(
+                a, self.record(sequence=3, attempt=3, resource="hy-license", downloaded=0)
+            )
+        )
+        stream.retire(a)
+        self.assertFalse(stream.accept(a, self.record(sequence=4, attempt=4)))
+        stream.begin(b)
+        self.assertFalse(stream.accept(a, self.record(sequence=100, attempt=100)))
+        self.assertTrue(stream.accept(b, self.record()))
+        stream.retire(a)
+        self.assertIs(stream.owner, b)
+        self.assertTrue(
+            stream.accept(b, self.record(sequence=2, downloaded=11, downloadPhase="Complete"))
+        )
+        self.assertEqual(stream.snapshot["downloadPhase"], "Complete")
+        self.assertNotIn("ready", stream.snapshot)
+        self.assertTrue(
+            stream.accept(
+                b,
+                self.record(
+                    sequence=3,
+                    stage="model-extract",
+                    attempt=0,
+                    downloadPhase=None,
+                    downloaded=0,
+                    total=None,
+                ),
+            )
+        )
+        self.assertFalse(
+            stream.accept(b, self.record(sequence=4, downloaded=11, downloadPhase="Complete"))
+        )
+        self.assertTrue(stream.accept(b, self.record(sequence=4, attempt=2, downloaded=0)))
+
+    def test_complete_file_and_unknown_total_never_present_model_ready(self):
+        from model_status import download_presentation
+
+        def english(_zh, en):
+            return en
+
+        complete = setup.progress_record(self.record(downloaded=11, downloadPhase="Complete"))
+        text, fraction = download_presentation(complete, "running", english)
+        self.assertEqual(fraction, 1)
+        self.assertIn("Current file", text)
+        self.assertIn("not activated", text)
+        text, fraction = download_presentation(
+            setup.progress_record(self.record(total=None)), "paused", english
+        )
+        self.assertIsNone(fraction)
+        self.assertIn("total unknown", text)
+        self.assertTrue(text.endswith(" · Paused"), text)
+        for state, expected in (
+            ("paused", "Paused"),
+            ("pausing", "Pausing"),
+            ("failed", "Setup failed"),
+        ):
+            with self.subTest(state=state):
+                text, fraction = download_presentation(
+                    setup.progress_record(self.record()), state, english
+                )
+                self.assertEqual(text, f"Current file: Argos ZH→EN · 5 B / 11 B · {expected}")
+                self.assertEqual(fraction, 5 / 11)
+                text, fraction = download_presentation({"stage": "model-verify"}, state, english)
+                self.assertEqual((text, fraction), (expected, None))
+        self.assertEqual(download_presentation(complete, "ready", english), ("", None))
+
+    def test_progress_write_failure_keeps_original_installer_cleanup(self):
+        for package in (False, True):
+            with self.subTest(package=package), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                opened = []
+                original_open = os.open
+
+                def track_open(path, *args, **kwargs):
+                    descriptor = original_open(path, *args, **kwargs)
+                    if Path(path).name == "install.lock":
+                        opened.append(descriptor)
+                    return descriptor
+
+                with (
+                    patch.object(setup.os, "open", side_effect=track_open),
+                    patch.object(setup, "report_progress", side_effect=OSError("stdout closed")),
+                    patch.object(setup, "package_catalog", return_value=object()),
+                    patch.object(setup, "validate_package_request"),
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    result = (
+                        setup.install_packages(home, home / "data", home / "cache", {})
+                        if package
+                        else setup.install(home, home / "data", home / "cache", ["zh_en"])
+                    )
+                self.assertEqual(result, 1)
+                self.assertEqual(len(opened), 1)
+                with self.assertRaises(OSError) as closed:
+                    os.fstat(opened[0])
+                self.assertEqual(closed.exception.errno, errno.EBADF)
+                self.assertEqual(
+                    [entry.name for entry in (home / "data/components").iterdir()], ["install.lock"]
+                )
+
+    def test_actual_cli_filters_reserved_records_and_accepts_legacy_prepared_marker(self):
+        import main
+
+        generation = "a" * 32
+        marker = setup.PREPARED_PREFIX + generation
+        self.assertEqual(main.prepared_generation(marker, None), generation)
+        for lines in (
+            ["human status", marker],
+            [
+                self.record(),
+                setup.PROGRESS_PREFIX + "{",
+                self.record(schema=2),
+                "human status",
+                marker,
+            ],
+        ):
+            with tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                (home / "desktop").mkdir()
+                (home / "desktop/setup.py").write_text(
+                    "import sys\n"
+                    + "\n".join(f"print({line!r}, flush=True)" for line in lines)
+                    + "\nsys.exit(75)\n"
+                )
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    code = main.install_models(SimpleNamespace(home=home, data=home, cache=home))
+                self.assertEqual(code, 75)
+                self.assertEqual(output.getvalue(), "human status\n")
+
+
 class CatalogTests(unittest.TestCase):
     def test_relocated_setup_reads_the_selected_distribution_catalog(self):
         with tempfile.TemporaryDirectory(prefix="typelay-catalog-搬迁 ") as directory:
@@ -1477,6 +1684,8 @@ class DownloadTests(unittest.TestCase):
 
 
 class HTTPDownloadTests(unittest.TestCase):
+    progress_output = None
+
     """Optional CI transport check, with a real loopback HTTP server, no model."""
 
     def test_socket_interruption_range_and_changed_resource(self):
@@ -1517,9 +1726,11 @@ class HTTPDownloadTests(unittest.TestCase):
                 )
                 return transport.open(local, timeout=timeout)
 
+        progress_output = io.StringIO()
         with (
             tempfile.TemporaryDirectory(prefix="typelay-http-") as directory,
             patch.object(setup.urllib.request, "build_opener", return_value=LocalTransport()),
+            contextlib.redirect_stdout(progress_output),
         ):
             cache = Path(directory)
             responses.append((200, {"Content-Length": 11, "ETag": '"v1"'}, b"first"))
@@ -1536,6 +1747,23 @@ class HTTPDownloadTests(unittest.TestCase):
             self.assertEqual(archive.read_bytes(), b"firstsecond")
             self.assertEqual(requests[-1]["Range"], "bytes=5-")
             self.assertEqual(requests[-1]["If-Range"], '"v1"')
+            prefix = "TYPELAY_SETUP_PROGRESS="
+            records = [
+                json.loads(line[len(prefix) :])
+                for line in progress_output.getvalue().splitlines()
+                if line.startswith(prefix)
+            ]
+            self.assertTrue(
+                records,
+                "actual resumed download exposes no structured current-file progress",
+            )
+            bodies = [record for record in records if record["downloadPhase"] == "Body"]
+            self.assertIn((5, 11), [(item["downloaded"], item["total"]) for item in bodies])
+            self.assertIn((11, 11), [(item["downloaded"], item["total"]) for item in bodies])
+            self.assertTrue(all(item["resource"] == "argos-zh-en" for item in records))
+            self.assertEqual(records[-1]["downloadPhase"], "Complete")
+            self.assertEqual((records[-1]["downloaded"], records[-1]["total"]), (11, 11))
+            self.assertNotIn(setup.PREPARED_PREFIX, progress_output.getvalue())
             archive.unlink()
             responses.append((200, {"Content-Length": 11, "ETag": '"v1"'}, b"first"))
             with self.assertRaises(OSError):
@@ -1544,6 +1772,25 @@ class HTTPDownloadTests(unittest.TestCase):
             archive, _ = setup.download(DIRECTIONS["zh_en"], cache)
             self.assertEqual(archive.read_bytes(), b"new model")
             self.assertEqual(requests[-1]["Range"], "bytes=5-")
+            stream = setup.InstallationProgress()
+            owner = object()
+            stream.begin(owner)
+            for line in progress_output.getvalue().splitlines():
+                if line.startswith(setup.PROGRESS_PREFIX):
+                    self.assertTrue(stream.accept(owner, line), line)
+            self.assertEqual(stream.snapshot["downloaded"], 9)
+            self.assertEqual(stream.snapshot["total"], 9)
+            self.assertEqual(stream.snapshot["downloadPhase"], "Complete")
+            if self.progress_output is not None:
+                self.progress_output.write_text(
+                    json.dumps(
+                        [
+                            line
+                            for line in progress_output.getvalue().splitlines()
+                            if line.startswith(setup.PROGRESS_PREFIX)
+                        ]
+                    )
+                )
 
 
 class ApplicationSupportTests(unittest.TestCase):
@@ -3507,8 +3754,12 @@ if __name__ == "__main__":
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--http", action="store_true")
     mode.add_argument("--supervisor", type=Path)
+    parser.add_argument("--progress-output", type=Path)
     options, remaining = parser.parse_known_args()
+    if options.progress_output is not None and not options.http:
+        parser.error("--progress-output requires --http")
     suite = [
+        "InstallationProgressTests",
         "CatalogTests",
         "PackageInstallationTests",
         "DownloadTests",
@@ -3518,6 +3769,7 @@ if __name__ == "__main__":
         "PresentationProcessTests",
     ]
     if options.http:
+        HTTPDownloadTests.progress_output = options.progress_output
         suite = "HTTPDownloadTests"
     elif options.supervisor:
         InstallationProcessTests.supervisor = options.supervisor.resolve(strict=True)

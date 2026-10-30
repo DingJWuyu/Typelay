@@ -578,6 +578,229 @@ async def exercise_quick_panel(
     print("TRAY SHOW RETIREMENT PASS: reentrant opening kept; close never resurrected", flush=True)
 
 
+async def exercise_download_progress(tray, owner, host, settled, calls, requests, output, records):
+    """Actual loopback producer records, controlled task projection, no installation."""
+    from gi.repository import Gdk
+    from model_status import download_presentation
+    from setup import PROGRESS_PREFIX, progress_record
+
+    assert records and all(progress_record(line) is not None for line in records)
+    first = next(
+        line
+        for line in records
+        if progress_record(line)["downloadPhase"] == "Body"
+        and progress_record(line)["downloaded"] == 5
+    )
+    complete = next(
+        line for line in records if progress_record(line)["downloadPhase"] == "Complete"
+    )
+    token = object()
+    owner.download_progress.begin(token)
+    owner.installation("running")
+    await settled()
+    revision, view, action = owner.preparation_revision, owner.preparation_view, tray.model_action
+
+    def publish(line, identity=token):
+        accepted = owner.download_progress.accept(identity, line)
+        if accepted:
+            owner.render_download_progress()
+        return accepted
+
+    def match(fraction):
+        expected, value = download_presentation(
+            owner.download_progress.snapshot, owner.installation_state, owner.tr
+        )
+        assert value == fraction
+        for caption, bar in (
+            owner.model_progress,
+            owner.tutorial.model_progress,
+            tray.model_progress,
+        ):
+            assert caption.get_text() == expected and caption.get_visible()
+            assert bar.get_visible() == (fraction is not None)
+            if fraction is not None:
+                assert abs(bar.get_fraction() - fraction) < 1e-9
+        assert owner.preparation_revision == revision and owner.preparation_view is view
+        assert tray.model_action is action and not owner.model_ready
+        assert not any(calls.values())
+        assert not any(item["operation"] in ("prepareModel", "activateModel") for item in requests)
+
+    async def picture(window, widgets, name):
+        stack = (
+            owner.pages
+            if window is owner.window
+            else owner.tutorial.steps
+            if window is owner.tutorial.window
+            else None
+        )
+        page = stack.get_visible_child() if stack is not None else None
+        async with asyncio.timeout(3):
+            event, failure = asyncio.Event(), []
+            clock = window.get_frame_clock()
+
+            def painted(*_):
+                if event.is_set():
+                    return
+                try:
+                    if stack is not None:
+                        assert stack.get_visible_child() is page, "progress picture page retired"
+                        if stack.get_transition_running():
+                            return
+                    for control in widgets:
+                        if not control.get_visible():
+                            continue
+                        if not control.get_mapped() or control.get_allocated_width() <= 1:
+                            return
+                        ancestor = control.get_parent()
+                        for _ in range(24):
+                            assert ancestor is not None
+                            point = control.translate_coordinates(ancestor, 0, 0)
+                            assert point is not None
+                            x, y = point
+                            if (
+                                x < 0
+                                or y < 0
+                                or x + control.get_allocated_width()
+                                > ancestor.get_allocated_width()
+                                or y + control.get_allocated_height()
+                                > ancestor.get_allocated_height()
+                            ):
+                                return
+                            if ancestor is window:
+                                break
+                            ancestor = ancestor.get_parent()
+                        else:
+                            raise AssertionError("progress is outside owned window")
+                except Exception as error:
+                    failure.append(error)
+                event.set()
+
+            watcher = clock.connect("after-paint", painted)
+            try:
+                window.queue_draw()
+                await event.wait()
+            finally:
+                if clock.handler_is_connected(watcher):
+                    clock.disconnect(watcher)
+        if failure:
+            raise failure[0]
+        shot = Gdk.pixbuf_get_from_window(window.get_window(), 0, 0, *window.get_size())
+        assert shot is not None
+        shot.savev(str(output / (name + ".png")), "png", [], [])
+
+    assert publish(first)
+    match(5 / 11)
+    assert not publish(first)
+    for language, theme in (("zh-CN", "light"), ("en", "dark")):
+        assert await host.ask("settingsPatch", {"uiLanguage": language, "theme": theme}, timeout=3)
+        await settled()
+        # Configuration may legitimately refresh other model facts. Capture the
+        # new view once; the following progress record itself must not mutate it.
+        revision, view, action = (
+            owner.preparation_revision,
+            owner.preparation_view,
+            tray.model_action,
+        )
+        owner.render_download_progress()
+        match(5 / 11)
+        expected_action = "Pause download" if language == "en" else "暂停下载"
+        expected_guidance = (
+            "You can pause and keep verified download progress."
+            if language == "en"
+            else "可暂停并保留已验证的下载进度。"
+        )
+        assert owner.install_button.get_label() == expected_action
+        assert owner.application_support.preparation_guidance.get_text() == expected_guidance
+        tray.show_panel()
+        await settled()
+        action = tray.model_action
+        await picture(
+            tray.window, (*tray.model_progress, *tray.actions.values()), "progress-tray-" + language
+        )
+        tray.hide_panel()
+        owner.show()
+        owner.pages.set_visible_child_name("model")
+        await settled()
+        revision, view, action = (
+            owner.preparation_revision,
+            owner.preparation_view,
+            tray.model_action,
+        )
+        await picture(owner.window, owner.model_progress, "progress-model-" + language)
+        owner.open_tutorial()
+        owner.tutorial.go(2)
+        owner.tutorial.render()
+        assert owner.tutorial.prepare.get_label() == expected_action
+        await picture(
+            owner.tutorial.window, owner.tutorial.model_progress, "progress-tutorial-" + language
+        )
+        assert tuple(owner.tutorial.window.get_size()) == (560, 460)
+        owner.tutorial.dismiss()
+        owner.window.hide()
+    revision, view, action = owner.preparation_revision, owner.preparation_view, tray.model_action
+    assert publish(complete)
+    match(1)
+    assert "not activated" in owner.model_progress[0].get_text()
+    snapshot = dict(owner.download_progress.snapshot)
+    snapshot.update(
+        sequence=snapshot["sequence"] + 1,
+        attempt=snapshot["attempt"] + 1,
+        downloadPhase="Body",
+        downloaded=5,
+        total=None,
+    )
+    assert publish(PROGRESS_PREFIX + json.dumps(snapshot))
+    match(None)
+    owner.installation("paused")
+    await settled()
+    revision, view, action = owner.preparation_revision, owner.preparation_view, tray.model_action
+    match(None)
+    b = object()
+    owner.download_progress.begin(b)
+    assert not publish(complete)
+    assert publish(first, b)
+    owner.render_download_progress()
+    revision, view, action = owner.preparation_revision, owner.preparation_view, tray.model_action
+    match(5 / 11)
+    owner.download_progress.retire(token)
+    assert owner.download_progress.owner is b
+    owner.download_progress.retire(b)
+    assert not publish(complete, b)
+    c, d = object(), object()
+    owner.download_progress.begin(c)
+    assert publish(first, c)
+    label = owner.model_progress[0]
+    reentered = False
+    reentry_failure = []
+
+    def replace_during_notify(*_):
+        nonlocal reentered
+        if reentered:
+            return
+        reentered = True
+        try:
+            owner.download_progress.begin(d)
+            assert publish(first, d)
+        except Exception as error:
+            reentry_failure.append(error)
+
+    watcher = label.connect("notify::label", replace_during_notify)
+    try:
+        assert publish(complete, c)
+    finally:
+        if label.handler_is_connected(watcher):
+            label.disconnect(watcher)
+    if reentry_failure:
+        raise reentry_failure[0]
+    assert reentered and owner.download_progress.owner is d
+    match(5 / 11)
+    owner.download_progress.retire(d)
+    print(
+        "PROGRESS THREE SURFACES PASS: actual 5/11 file; unknown total; no Ready; old task rejected",
+        flush=True,
+    )
+
+
 def main():
     import gi
 
@@ -593,6 +816,8 @@ def main():
     parser.add_argument("--package", type=Path, required=True)
     parser.add_argument("--model-action-only", action="store_true")
     parser.add_argument("--panel-only", action="store_true")
+    parser.add_argument("--progress-only", action="store_true")
+    parser.add_argument("--progress-records", type=Path)
     parser.add_argument("--output", type=Path)
     options = parser.parse_args()
     package = options.package.resolve()
@@ -894,7 +1119,7 @@ def main():
             }
             assert await host.ask("settings", initial, timeout=3) is True
             assert not jobs, "rendering acknowledged settings wrote settings again"
-            if options.model_action_only or options.panel_only:
+            if options.model_action_only or options.panel_only or options.progress_only:
                 preparation_calls = {"install": [], "pause": [], "package": []}
 
                 def record_preparation(kind, *args, **kwargs):
@@ -1016,6 +1241,18 @@ def main():
                     raise AssertionError(panel_failure)
                 print("PASS: current quick panel exposes the real unavailable Index action")
                 assert not any(preparation_calls.values())
+                if options.progress_only:
+                    assert options.output is not None and options.progress_records is not None
+                    await exercise_download_progress(
+                        tray,
+                        settings_surface,
+                        host,
+                        settled,
+                        preparation_calls,
+                        request_results,
+                        options.output,
+                        json.loads(options.progress_records.read_text()),
+                    )
                 if options.panel_only:
                     await exercise_quick_panel(
                         tray,

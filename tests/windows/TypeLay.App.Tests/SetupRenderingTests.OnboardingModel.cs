@@ -146,8 +146,41 @@ public sealed partial class SetupRenderingTests
             var bytes = OnboardingModelElement<TextBlock>(window, "OnboardingModelBytes");
             var oldPause = TrayProvider(OnboardingModelElement<Button>(window, "OnboardingModelAction"));
             Assert.True(pending.HasAnimatedProperties);
-            await AssertAfterTrayAnimationTick(() => TrayInvoke(OnboardingModelElement<Button>(window, "OnboardingBack")),
-                () => Assert.False(pending.HasAnimatedProperties));
+            // Public Invoke queues the button handler. Observe the actual old
+            // subtree leaving before checking its very next animation tick.
+            var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var retirement = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            retirement.CancelAfter(TimeSpan.FromSeconds(3));
+            EventHandler? frame = null;
+            RoutedEventHandler? unloaded = null;
+            frame = (_, _) =>
+            {
+                CompositionTarget.Rendering -= frame;
+                try
+                {
+                    Assert.False(progress.IsLoaded);
+                    Assert.False(pending.HasAnimatedProperties);
+                    stopped.TrySetResult();
+                }
+                catch (Exception error) { stopped.TrySetException(error); }
+            };
+            unloaded = (_, _) =>
+            {
+                progress.Unloaded -= unloaded;
+                CompositionTarget.Rendering += frame;
+            };
+            progress.Unloaded += unloaded;
+            try
+            {
+                retirement.Token.ThrowIfCancellationRequested();
+                TrayInvoke(OnboardingModelElement<Button>(window, "OnboardingBack"));
+                await stopped.Task.WaitAsync(retirement.Token);
+            }
+            finally
+            {
+                progress.Unloaded -= unloaded;
+                CompositionTarget.Rendering -= frame;
+            }
             AssertRetiredTrayAction(scene, oldPause);
             Assert.False(transfers[0].Body.Cancelled);
             await Task.Delay(80, TestContext.Current.CancellationToken);

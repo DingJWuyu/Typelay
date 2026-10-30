@@ -288,6 +288,158 @@ def select_work_mode(pid, mode):
     return node
 
 
+def scroll_settings_control(pid, node, *, deadline, at_start=False):
+    """Navigate the owned Apps pane's real scrollbar, never activate a hidden peer.
+
+    GTK3 cannot expose offscreen child coordinates. Walk the finite public
+    scrollbar range once; final callers still prove focus and every clip.
+    """
+    import math
+
+    name = node.get_name()
+    path = []
+    peer = node
+    for _ in range(24):
+        assert peer is not None and peer not in path
+        peer.clear_cache()
+        assert peer.get_process_id() == pid
+        assert not peer.get_state_set().contains(Atspi.StateType.DEFUNCT)
+        path.append(peer)
+        if peer.get_role() == Atspi.Role.FRAME:
+            break
+        peer = peer.get_parent()
+    else:
+        raise AssertionError("settings scroll ancestry exceeds its bound")
+    viewports = [index for index, peer in enumerate(path) if peer.get_role() == Atspi.Role.VIEWPORT]
+    assert len(viewports) == 1
+    index = viewports[0]
+    assert index + 1 < len(path)
+    viewport, pane, frame = path[index], path[index + 1], path[-1]
+    assert pane.get_role() == Atspi.Role.SCROLL_PANE and pane.get_name() == "设置页：应用"
+    assert frame.get_name() == "TypeLay 设置"
+    assert not any(
+        peer.get_role() in (Atspi.Role.SCROLL_PANE, Atspi.Role.FRAME)
+        for peer in path[:index] + path[index + 2 : -1]
+    )
+    assert viewport.get_child_count() == 1
+    content = viewport.get_child_at_index(0)
+    assert (
+        content is not None and content.get_parent() == viewport and content.get_process_id() == pid
+    )
+    count = pane.get_child_count()
+    assert 0 < count <= 8
+    bars = []
+    for child_index in range(count):
+        child = pane.get_child_at_index(child_index)
+        assert child is not None and child.get_parent() == pane and child.get_process_id() == pid
+        child.clear_cache()
+        if child.get_role() == Atspi.Role.SCROLL_BAR and child.get_state_set().contains(
+            Atspi.StateType.VERTICAL
+        ):
+            bars.append(child)
+    assert len(bars) == 1, "Apps pane has no unique public vertical scrollbar"
+    bar = bars[0]
+    value = bar.get_value_iface()
+    assert value is not None
+
+    def rectangle(peer):
+        area = Atspi.Component.get_extents(peer.get_component_iface(), Atspi.CoordType.SCREEN)
+        assert area.x != -(2**31) and area.y != -(2**31) and area.width > 0 and area.height > 0
+        return area
+
+    def current():
+        assert time.monotonic() < deadline, "settings scrolling exhausted the original deadline"
+        assert node.get_name() == name
+        for child, parent in zip(path, path[1:]):
+            child.clear_cache()
+            assert child.get_process_id() == pid and child.get_parent() == parent
+            assert not child.get_state_set().contains(Atspi.StateType.DEFUNCT)
+        frame.clear_cache()
+        assert frame.get_state_set().contains(Atspi.StateType.ACTIVE)
+        for peer in (pane, bar):
+            peer.clear_cache()
+            states = peer.get_state_set()
+            assert all(
+                states.contains(state)
+                for state in (
+                    Atspi.StateType.SHOWING,
+                    Atspi.StateType.SENSITIVE,
+                    Atspi.StateType.ENABLED,
+                )
+            )
+        assert bar.get_parent() == pane and content.get_parent() == viewport
+        clip, outer = rectangle(pane), rectangle(frame)
+        native_viewport = Atspi.Component.get_extents(
+            viewport.get_component_iface(), Atspi.CoordType.SCREEN
+        )
+        assert (native_viewport.width, native_viewport.height) == (clip.width, clip.height)
+        assert outer.x <= clip.x <= outer.x + outer.width - clip.width
+        assert outer.y <= clip.y <= outer.y + outer.height - clip.height
+        lower = Atspi.Value.get_minimum_value(value)
+        upper = Atspi.Value.get_maximum_value(value)
+        position = Atspi.Value.get_current_value(value)
+        assert all(math.isfinite(number) for number in (lower, upper, position))
+        assert lower <= position <= upper
+        return clip, lower, upper, position
+
+    clip, lower, upper, position = current()
+    page_size = clip.height
+    steps = math.ceil((upper - lower) / page_size)
+    assert steps <= 32, "Apps pane exceeds the bounded public scroll range"
+
+    def move(requested):
+        before, low, high, old = current()
+        assert (low, high, before.height) == (lower, upper, page_size)
+        assert lower <= requested <= upper
+        if requested == old:
+            return
+        old_content = rectangle(content)
+        # A Value setter is public navigation, not a button action or input grant.
+        assert time.monotonic() < deadline
+        assert Atspi.Value.set_current_value(value, requested)
+        assert Atspi.Value.get_current_value(value) == requested
+        while time.monotonic() < deadline:
+            _, _, _, actual = current()
+            assert actual == requested, "Apps scrollbar changed during this navigation"
+            moved = rectangle(content)
+            if moved.y == old_content.y + old - requested:
+                return
+            time.sleep(0.05)
+        raise AssertionError("Apps content did not follow its public scrollbar")
+
+    move(lower)
+    if at_start:
+        return node
+    for step in range(steps + 1):
+        current()
+        node.clear_cache()
+        if node.get_state_set().contains(Atspi.StateType.SHOWING):
+            area = rectangle(node)
+            _, _, _, position = current()
+            observed = Atspi.Component.get_extents(
+                viewport.get_component_iface(), Atspi.CoordType.SCREEN
+            )
+            # GTK3 can hide the viewport's screen origin after scrolling. This
+            # helper never invents that origin or replaces the caller's original
+            # calibrated ancestry/full-clip gate.
+            if observed.x != -(2**31) and observed.y != -(2**31):
+                assert observed.width > 0 and observed.height > 0
+                assert observed.x <= area.x <= observed.x + observed.width - area.width
+                assert area.height <= observed.height
+                delta = (
+                    area.y - observed.y
+                    if area.y < observed.y
+                    else max(0, area.y + area.height - observed.y - observed.height)
+                )
+                move(max(lower, min(upper, position + delta)))
+            return node
+        if step < steps:
+            move(min(upper, lower + (step + 1) * page_size))
+    raise AssertionError(
+        "Settings target is not visible at the end of its public scroll range: " + name
+    )
+
+
 def focus_settings_control(pid, node, timeout=15):
     """Reveal an exact settings peer through GTK focus, then prove all clips.
 

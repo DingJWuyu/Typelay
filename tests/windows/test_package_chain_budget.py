@@ -15,9 +15,10 @@ class PackageChainBudgetTests(unittest.TestCase):
         for elapsed, admitted in (
             (425, True),
             (979, True),
-            (1200, True),
-            (1201, False),
-            (4801, False),
+            (1307, True),
+            (1500, True),
+            (1501, False),
+            (5101, False),
             (-1, False),
         ):
             with self.subTest(elapsed=elapsed), tempfile.TemporaryDirectory() as directory:
@@ -42,7 +43,7 @@ class PackageChainBudgetTests(unittest.TestCase):
                     dict(
                         admitted=admitted,
                         elapsedSeconds=elapsed,
-                        remainingSeconds=4800 - elapsed,
+                        remainingSeconds=5100 - elapsed,
                         requiredSeconds=3600,
                     ),
                 )

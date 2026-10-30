@@ -276,10 +276,15 @@ internal sealed class SessionScenario : IDisposable
         {
             get; private set;
         }
+        public Func<TargetId, FocusMember>? FocusObservation
+        {
+            get; set;
+        }
         public FocusMember GetFocus(TargetId target)
         {
             FocusChecks++;
-            return InEditor ? FocusMember.Overlay : target == FocusedTarget ? FocusMember.Source : FocusMember.Other;
+            return FocusObservation?.Invoke(target)
+                ?? (InEditor ? FocusMember.Overlay : target == FocusedTarget ? FocusMember.Source : FocusMember.Other);
         }
         public Func<TargetId, bool>? SourceReturnRetention
         {

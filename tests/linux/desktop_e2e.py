@@ -4738,6 +4738,25 @@ def run(arguments):
                     ), "practice entry is clipped before initial settings calibration"
                 settings_scroll_calibration = measured
 
+            def calibrate_reopened_settings_scroll():
+                from support.gtk_accessibility import scroll_settings_control
+
+                deadline = time.monotonic() + 15
+                trial = wait_for(
+                    lambda: named(process.pid, "应用连接：桌面应用"),
+                    "reopened Apps page has no connection control",
+                    timeout=deadline - time.monotonic(),
+                )
+                assert trial.get_role() == Atspi.Role.PUSH_BUTTON
+                scroll_settings_control(process.pid, trial, deadline=deadline, at_start=True)
+                wait_for(
+                    lambda: visible_setup_control("应用连接：桌面应用", role=Atspi.Role.PUSH_BUTTON)
+                    == trial,
+                    "reopened Apps page did not return to its first public action",
+                    timeout=deadline - time.monotonic(),
+                )
+                calibrate_settings_scroll(trial)
+
             def activate_setting(name, timeout=15):
                 node = settings_control(name, timeout)
                 assert node.get_state_set().contains(Atspi.StateType.SHOWING), name
@@ -4754,9 +4773,14 @@ def run(arguments):
                 node = (
                     exact_node
                     if exact_node is not None
-                    else settings_control(name, timeout=deadline - time.monotonic(), role=role)
+                    else wait_for(
+                        lambda: named(process.pid, name),
+                        "public settings peer missing: " + name,
+                        timeout=deadline - time.monotonic(),
+                    )
                 )
                 assert node.get_process_id() == process.pid and node.get_name() == name
+                assert role is None or node.get_role() == role
                 # Connection details are intentionally collapsed after reopening.
                 # Expand the actual native ancestor before asking its child to
                 # scroll/focus; never activate a hidden child as a substitute.
@@ -4768,12 +4792,18 @@ def run(arguments):
                     if ancestor.get_name() == "连接详情" and not ancestor.get_state_set().contains(
                         Atspi.StateType.EXPANDED
                     ):
-                        assert Atspi.Component.grab_focus(ancestor.get_component_iface())
+                        activate_scrolled_setting(
+                            "连接详情",
+                            exact_node=ancestor,
+                            activate=False,
+                            timeout=deadline - time.monotonic(),
+                        )
                         wait_for(
                             lambda: focused(ancestor),
                             "connection expander did not take focus",
                             timeout=deadline - time.monotonic(),
                         )
+                        assert time.monotonic() < deadline
                         assert Atspi.Action.do_action(ancestor.get_action_iface(), 0)
                         wait_for(
                             lambda: ancestor.get_state_set().contains(Atspi.StateType.EXPANDED),
@@ -4796,6 +4826,9 @@ def run(arguments):
                     "scrolled settings control did not become interactive: " + name,
                     timeout=deadline - time.monotonic(),
                 )
+                from support.gtk_accessibility import scroll_settings_control
+
+                scroll_settings_control(process.pid, node, deadline=deadline)
                 before_scroll = Atspi.Component.get_extents(
                     node.get_component_iface(), Atspi.CoordType.SCREEN
                 )
@@ -5734,9 +5767,7 @@ def run(arguments):
                     and not any(a["id"] == "Connect" for a in row["actions"]),
                     "fresh client must require the user's original input-method acknowledgement",
                 )
-                calibrate_settings_scroll(
-                    settings_control("应用连接：桌面应用", role=Atspi.Role.PUSH_BUTTON)
-                )
+                calibrate_reopened_settings_scroll()
                 # The chooser is below the unified app cards. Prove its actual
                 # focused, fully clipped allocation without opening it yet.
                 activate_scrolled_setting("选择应用…", activate=False)
@@ -7157,9 +7188,7 @@ def run(arguments):
                         and not any(a["id"] == "Connect" for a in row["actions"]),
                         "fresh client must require the user's original input-method acknowledgement",
                     )
-                    calibrate_settings_scroll(
-                        settings_control("应用连接：桌面应用", role=Atspi.Role.PUSH_BUTTON)
-                    )
+                    calibrate_reopened_settings_scroll()
                     activate_scrolled_setting(
                         "我已记下原输入法的启动方式，并知道如何恢复",
                         evidence_name="application-support-recovery-acknowledgement-scroll",
@@ -7530,9 +7559,7 @@ def run(arguments):
                     # the mode and outlived the practice window. Calibrate this
                     # final, still-unscrolled layout before the first details
                     # scroll, not the earlier layout while practice was open.
-                    calibrate_settings_scroll(
-                        settings_control("应用连接：桌面应用", role=Atspi.Role.PUSH_BUTTON)
-                    )
+                    calibrate_reopened_settings_scroll()
                     # End the owned session without uninstalling its components.
                     # Cancellation must leave the actual daemon untouched, not
                     # merely retain a stale Connected label.

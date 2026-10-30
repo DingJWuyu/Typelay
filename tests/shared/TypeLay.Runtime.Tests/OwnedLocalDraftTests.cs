@@ -31,6 +31,7 @@ public sealed class OwnedLocalDraftTests
 
     [Theory]
     [InlineData("begin")]
+    [InlineData("return")]
     [InlineData("bind")]
     public void AcceptanceRepaintDuringLocalRetirementDoesNotReplaceTheEditorProjection(string stage)
     {
@@ -61,7 +62,25 @@ public sealed class OwnedLocalDraftTests
             s.Input.Revoked = null;
         }
         var (request, receipt) = Arrive(s, opening);
+        if (stage == "return")
+        {
+            ObserveRevoke();
+            // The actual Windows return-focus classifier checks this same
+            // runtime identity before reading the source's native descriptor.
+            s.Input.FocusObservation = target => target == opening.Binding.Target
+                && s.Controller.OwnedLocalDraftCurrent(opening) ? FocusMember.Source : FocusMember.Other;
+        }
         Assert.True(s.Controller.CompleteOwnedLocalReturn(request, receipt));
+        if (stage == "return")
+        {
+            Assert.Equal(renders, s.View.Renders);
+            Assert.True(s.Controller.OwnedLocalDraftCurrent(opening));
+            Assert.True(s.View.Visible);
+            Assert.Equal(SessionState.EditingTranslation, s.View.State);
+            Assert.Equal(projectedDraft, s.View.Draft);
+            s.Input.Revoked = null;
+            s.Input.FocusObservation = null;
+        }
         var binding = opening.Binding with
         {
             CommandGeneration = s.Input.CommandGeneration,
@@ -83,6 +102,43 @@ public sealed class OwnedLocalDraftTests
         Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
         Assert.Equal("manual draft", s.View.Preview);
         Assert.False(s.Controller.OwnedLocalDraftCurrent(opening));
+        Assert.Single(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+    }
+
+    [Theory]
+    [InlineData("connection")]
+    [InlineData("stop")]
+    [InlineData("settings")]
+    public void ARealInvalidationDuringReturnRotationStillRetiresTheLocalProjection(string change)
+    {
+        using var s = new SessionScenario();
+        var opening = Open(s);
+        var (request, receipt) = Arrive(s, opening);
+        int repaints = 0;
+        s.Input.Revoked = () =>
+        {
+            s.Input.Revoked = null;
+            if (change == "connection")
+                s.Input.ConnectionId = Guid.NewGuid();
+            else if (change == "stop")
+                s.Controller.StopSession();
+            else
+                s.Settings.Update(s.Settings.Value with
+                {
+                    Motion = "reduce"
+                });
+            int before = s.View.Renders;
+            s.Controller.RefreshAcceptancePresentation();
+            repaints = s.View.Renders - before;
+        };
+        Assert.False(s.Controller.CompleteOwnedLocalReturn(request, receipt));
+        Assert.Equal(1, repaints);
+        Assert.False(s.Controller.OwnedLocalDraftCurrent(opening));
+        Assert.False(s.View.Visible);
+        Assert.Null(s.Input.Permit);
+        Assert.Null(s.Input.Shortcut);
         Assert.Single(s.Model.Jobs);
         Assert.Empty(s.Service.Writes);
         Assert.Empty(s.Service.DirectWrites);

@@ -2154,7 +2154,8 @@ public sealed partial class SessionController : IDisposable
         // the same local editor is being detached or its fresh return is being
         // bound. It has no executable binding or permit to repaint. A real
         // Render/Hide/configuration change still retires that local presentation.
-        if (_ownedLocalDraft is { } local && OwnedLocalDraftCurrent(local.Opening)
+        if (_ownedLocalDraft is { } local
+            && (OwnedLocalDraftCurrent(local.Opening) || LocalReturnRepaintIsCurrent(local))
             && ReferenceEquals(_ownedLocalDraft, local) && _ownedPractice is null
             && _presentationPermit is null && _permitUntil == 0)
         {

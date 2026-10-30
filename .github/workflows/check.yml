@@ -107,7 +107,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.windows == 'true'
     runs-on: windows-latest
-    timeout-minutes: 80
+    timeout-minutes: 85
     steps:
       - name: Record the Windows check budget start
         shell: pwsh
@@ -115,12 +115,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Optional tool inventory for the bounded sheet material follow-up, not a product gate.
-      - name: Observe the existing Windows shader compiler
+      # Bounded material candidate only, not a product or rendering gate.
+      - name: Observe and compile the pinned sheet shader candidate
         continue-on-error: true
         timeout-minutes: 1
         shell: pwsh
-        run: ./eng/windows/observe-shader-compiler.ps1 -OutputPath artifacts/shader-compiler/inventory.json
+        run: |
+          ./eng/windows/observe-shader-compiler.ps1 -OutputPath artifacts/shader-compiler/inventory.json
+          ./eng/windows/build-sheet-shader.ps1 -OutputDirectory artifacts/shader-compiler/compiled
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
@@ -524,7 +526,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $elapsed = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [long]$env:TYPELAY_WINDOWS_CHECK_START
           python eng/windows/admit-package-chain.py --elapsed-seconds $elapsed --report artifacts/hy-results/admission.json
-          if ($LASTEXITCODE -ne 0) { throw 'Insufficient 80-minute job budget for the bounded ordinary-app and Hy chain.' }
+          if ($LASTEXITCODE -ne 0) { throw 'Insufficient 85-minute job budget for the bounded ordinary-app and Hy chain.' }
           $pin = Get-Content src/shared/TypeLay.Worker/native/hy/assets.lock.json -Raw | ConvertFrom-Json
           "cache-key=typelay-hy-win-$($pin.model.sha256)-$($pin.runtime_archive.sha256)" >> $env:GITHUB_OUTPUT
       - name: Restore the fixed Hy model and CPU archive cache
@@ -652,7 +654,7 @@ jobs:
           name: typelay-windows-${{ github.sha }}
           path: |
             artifacts/test-results/
-            artifacts/shader-compiler/inventory.json
+            artifacts/shader-compiler/
             artifacts/source-ll-timeout/
             artifacts/source-keyboard-boundary/
             artifacts/source-synchronous-acceptance/
@@ -852,6 +854,7 @@ jobs:
           python tests/linux/test_input_notifications.py -v
           python tests/linux/test_gtk_geometry.py -v
           python tests/linux/test_gtk_accessibility_bounds.py -v
+          python tests/linux/test_gtk_settings_scroll.py -v
           python tests/linux/test_gtk_settings_focus.py -v
           python tests/linux/test_gtk_shortcut_input.py -v
           python tests/linux/test_ordinary_desktop_lifecycle.py -v
@@ -862,7 +865,8 @@ jobs:
       - name: Verify resumable model downloads over isolated HTTP
         if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
-          python tests/linux/setup_e2e.py --http -v
+          mkdir -p artifacts/linux/installation-progress
+          python tests/linux/setup_e2e.py --http --progress-output artifacts/linux/installation-progress/records.json -v
           python tests/linux/setup_e2e.py --supervisor artifacts/linux/package/native/typelay-supervise -v
       - name: Verify nonblocking IPC and GTK unknown-IME refusal
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
@@ -884,6 +888,12 @@ jobs:
           export DISPLAY=:99
           mkdir -p artifacts/linux/tray-panel
           GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package --panel-only --output artifacts/linux/tray-panel > artifacts/linux/tray-panel/inside.log 2>&1
+      - name: Verify real download progress across three native surfaces
+        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 1
+        run: |
+          export DISPLAY=:99
+          GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package --progress-only --progress-records artifacts/linux/installation-progress/records.json --output artifacts/linux/installation-progress > artifacts/linux/installation-progress/inside.log 2>&1
       - name: Verify explicit quit confirmation without downloading models
         if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 1
@@ -907,6 +917,9 @@ jobs:
             artifacts/linux/tray-panel/*.json
             artifacts/linux/tray-panel/*.png
             artifacts/linux/tray-panel/*.log
+            artifacts/linux/installation-progress/*.json
+            artifacts/linux/installation-progress/*.png
+            artifacts/linux/installation-progress/*.log
             artifacts/linux/quit-ui/*.json
             artifacts/linux/quit-ui/*.png
             artifacts/linux/quit-ui/*.log
@@ -1357,6 +1370,9 @@ jobs:
             artifacts/linux/qt-desktop/*.jsonl
             artifacts/linux/qt-desktop/*.png
             artifacts/linux/qt-desktop/*.log
+            artifacts/linux/installation-progress/*.json
+            artifacts/linux/installation-progress/*.png
+            artifacts/linux/installation-progress/*.log
             artifacts/linux/quit-ui/*.json
             artifacts/linux/quit-ui/*.png
             artifacts/linux/quit-ui/*.log

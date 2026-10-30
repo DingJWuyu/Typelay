@@ -493,6 +493,54 @@ def main(arguments=None):
                         assert not automatic.get_active()
                         assert requests == (host.patch_submissions, host.draft_submissions)
                         assert settings_path.read_bytes() == before
+                    for mode in ("Automatic", "OnDemand"):
+                        for enabled in (True, False):
+                            assert (
+                                await host.ask("settingsPatch", {"mode": mode, "enabled": enabled})
+                                is True
+                            )
+                            await settle(
+                                lambda: state.get("mode") == mode
+                                and state.get("enabled") is enabled
+                                and not jobs
+                            )
+                            expected = (
+                                (
+                                    f"按 {state['wakeShortcut']} 唤醒当前输入框翻译。"
+                                    if language == "zh-CN"
+                                    else f"Press {state['wakeShortcut']} to translate the current field."
+                                )
+                                if mode == "OnDemand"
+                                else (
+                                    "聚焦受支持的输入框后自动翻译，由你决定是否接受。"
+                                    if language == "zh-CN"
+                                    else "Translate supported fields automatically when focused. You choose whether to accept."
+                                )
+                            )
+                            if not enabled:
+                                expected = (
+                                    "已暂停；启用后，"
+                                    if language == "zh-CN"
+                                    else "Paused. When enabled: "
+                                ) + expected
+                            description = surface.mode_description
+                            assert description.get_text() == expected, (
+                                language,
+                                theme,
+                                mode,
+                                enabled,
+                                description.get_text(),
+                                expected,
+                            )
+                    assert (
+                        await host.ask("settingsPatch", {"mode": "Automatic", "enabled": True})
+                        is True
+                    )
+                    await settle(
+                        lambda: state.get("mode") == "Automatic"
+                        and state.get("enabled") is True
+                        and not jobs
+                    )
                     capture(f"about-update-controls-{language}-{theme}")
             print("ABOUT UPDATE FRONTEND PASS", flush=True)
 

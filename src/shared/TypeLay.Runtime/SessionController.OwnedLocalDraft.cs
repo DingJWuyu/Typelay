@@ -53,6 +53,21 @@ public sealed partial class SessionController
         public bool CoreConfirmed;
     }
     private LocalDraftIntent? _ownedLocalDraft;
+    private (LocalDraftIntent Intent, AutomaticPracticeProgress Progress)? _rotatingOwnedLocalReturn;
+
+    // Only the acceptance-only paint callback may cross this synchronous
+    // command rotation. This does not make the opening current for any action.
+    private bool LocalReturnRepaintIsCurrent(LocalDraftIntent intent) => !_disposed
+        && _rotatingOwnedLocalReturn is { } rotation && ReferenceEquals(rotation.Intent, intent)
+        && ReferenceEquals(AutomaticPracticeProgress, rotation.Progress) && ReferenceEquals(_ownedLocalDraft, intent)
+        && intent.Configuration == _configurationRevision && intent.SettingsRevision == _settings.Revision
+        && (_generation == intent.Generation || _generation == intent.Generation + 1)
+        && _settings.Value.Enabled && _settings.Value.Mode == WorkMode.Automatic
+        && _hook.Ready && _broker.Available && intent.Opening.Binding.ConnectionId == _hook.ConnectionId
+        && AutomaticPracticeProgress?.RunId == intent.Opening.Binding.RunId
+        && intent.Return is { } request && _loop.NowMs >= request.PressedAtMs && _loop.NowMs < request.ExpiresAtMs
+        && _session.DormantEditIsCurrent(intent.Edit) && LocalDraftSourceEpochsCurrent(intent);
+
     public event Action<OwnedLocalDraft>? OwnedLocalDraftRetired;
 
     public OwnedLocalDraft? BeginOwnedLocalDraft(SessionViewToken token)
@@ -130,25 +145,40 @@ public sealed partial class SessionController
         intent.SourceEpoch = _hook.SourceUserEpoch;
         intent.ContentEpoch = _hook.ContentEpoch;
         var progress = AutomaticPracticeProgress!;
-        RotatePracticeConfiguration();
-        if (!ReferenceEquals(_ownedLocalDraft, intent) || !ReferenceEquals(AutomaticPracticeProgress, progress)
-            || intent.Configuration != _configurationRevision || intent.SettingsRevision != _settings.Revision
-            || !_session.DormantEditIsCurrent(intent.Edit) || !_hook.Ready || !_broker.Available
-            || _hook.ConnectionId != receipt.Binding.ConnectionId || !LocalDraftSourceCurrent(intent))
+        _rotatingOwnedLocalReturn = (intent, progress);
+        try
         {
-            if (ReferenceEquals(_ownedLocalDraft, intent))
-                StopSession("owned-local-return-rotated");
-            return false;
+            RotatePracticeConfiguration();
+            // The host's real focus classifier depends on the current command
+            // generation. Check unchanged identity first, then make our own
+            // generation/progress coherent before querying it again.
+            if (!LocalReturnRepaintIsCurrent(intent))
+            {
+                if (ReferenceEquals(_ownedLocalDraft, intent))
+                    StopSession("owned-local-return-rotated");
+                return false;
+            }
+            intent.Generation = _generation;
+            var nextProgress = UpdateAutomaticPractice(progress with
+            {
+                CommandGeneration = _hook.CommandGeneration,
+                AwaitingFreshSource = true
+            });
+            if (!ReferenceEquals(_ownedLocalDraft, intent) || !ReferenceEquals(AutomaticPracticeProgress, nextProgress)
+                || !OwnedLocalDraftCurrent(request.Opening) || !LocalDraftSourceCurrent(intent))
+            {
+                if (ReferenceEquals(_ownedLocalDraft, intent))
+                    StopSession("owned-local-return-rotated");
+                return false;
+            }
+            _nextCapture = 0;
+            return true;
         }
-        intent.Generation = _generation;
-        UpdateAutomaticPractice(progress with
+        finally
         {
-            CommandGeneration = _hook.CommandGeneration,
-            AwaitingFreshSource = true
-        });
-        _nextCapture = 0;
-        return ReferenceEquals(_ownedLocalDraft, intent) && OwnedLocalDraftCurrent(request.Opening)
-            && LocalDraftSourceCurrent(intent);
+            if (_rotatingOwnedLocalReturn is { } rotation && ReferenceEquals(rotation.Intent, intent))
+                _rotatingOwnedLocalReturn = null;
+        }
     }
 
     public void ExcludeOwnedLocalDraft(OwnedLocalDraft opening)
@@ -195,10 +225,12 @@ public sealed partial class SessionController
         return true;
     }
 
-    private bool LocalDraftSourceCurrent(LocalDraftIntent intent) => intent.Receipt is { } receipt
+    private bool LocalDraftSourceEpochsCurrent(LocalDraftIntent intent) => intent.Receipt is not null
         && _hook.WindowEpoch == intent.WindowEpoch && _hook.ForegroundEpoch == intent.ForegroundEpoch
-        && _hook.SourceUserEpoch == intent.SourceEpoch && _hook.ContentEpoch == intent.ContentEpoch
-        && _hook.GetFocus(receipt.Binding.Target) == FocusMember.Source;
+        && _hook.SourceUserEpoch == intent.SourceEpoch && _hook.ContentEpoch == intent.ContentEpoch;
+
+    private bool LocalDraftSourceCurrent(LocalDraftIntent intent) => LocalDraftSourceEpochsCurrent(intent)
+        && _hook.GetFocus(intent.Receipt!.Binding.Target) == FocusMember.Source;
 
     private OwnedPracticeBinding? LocalDraftReturnRead() => _ownedLocalDraft is { Receipt: { } receipt } intent
         && OwnedLocalDraftCurrent(intent.Opening) && LocalDraftSourceCurrent(intent)

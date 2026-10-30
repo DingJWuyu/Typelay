@@ -28,6 +28,7 @@ import uuid
 import zipfile
 from email.utils import parsedate_to_datetime
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from paths import private_directory  # noqa: E402
@@ -62,6 +63,151 @@ FAILURE_STAGES = {
     "self-check",
     "activate",
 }
+
+
+# Private installer stdout. These records describe one current file, never the
+# complete model plan or activation readiness. All labels are fixed enums.
+PROGRESS_PREFIX = "TYPELAY_SETUP_PROGRESS="
+PROGRESS_LIMIT = 1024
+PROGRESS_COUNTER_LIMIT = 2**31 - 1
+PROGRESS_BYTE_LIMIT = 2**63 - 1
+DOWNLOAD_PHASES = ("Headers", "Body", "Verify", "Complete")
+_progress_sequence = 0
+_progress_attempt = 0
+
+
+def progress_record(message):
+    if (
+        not isinstance(message, str)
+        or len(message) > PROGRESS_LIMIT
+        or not message.startswith(PROGRESS_PREFIX)
+        or not message.isascii()
+    ):
+        return None
+    try:
+        value = json.loads(message[len(PROGRESS_PREFIX) :])
+        if not isinstance(value, dict) or set(value) != {
+            "schema",
+            "sequence",
+            "stage",
+            "resource",
+            "attempt",
+            "downloadPhase",
+            "downloaded",
+            "total",
+        }:
+            return None
+        if (
+            type(value["schema"]) is not int
+            or value["schema"] != 1
+            or type(value["sequence"]) is not int
+            or not 1 <= value["sequence"] <= PROGRESS_COUNTER_LIMIT
+            or type(value["stage"]) is not str
+            or value["stage"] not in FAILURE_STAGES
+            or type(value["resource"]) is not str
+            or value["resource"] not in DOWNLOAD_RESOURCES
+            or type(value["attempt"]) is not int
+            or not 0 <= value["attempt"] <= PROGRESS_COUNTER_LIMIT
+            or type(value["downloaded"]) is not int
+            or not 0 <= value["downloaded"] <= PROGRESS_BYTE_LIMIT
+            or value["total"] is not None
+            and (
+                type(value["total"]) is not int
+                or not 0 < value["total"] <= PROGRESS_BYTE_LIMIT
+                or value["downloaded"] > value["total"]
+            )
+        ):
+            return None
+        if value["stage"] == "model-download":
+            if (
+                value["downloadPhase"] not in DOWNLOAD_PHASES
+                or not value["attempt"]
+                or value["downloadPhase"] in ("Verify", "Complete")
+                and value["total"] is not None
+                and value["downloaded"] != value["total"]
+            ):
+                return None
+        elif (
+            value["downloadPhase"] is not None
+            or value["attempt"] != 0
+            or value["downloaded"] != 0
+            or value["total"] is not None
+        ):
+            return None
+        return MappingProxyType(value)
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        return None
+
+
+class InstallationProgress:
+    """One install task's read-only projection; no installation authority."""
+
+    def __init__(self):
+        self.owner = None
+        self.snapshot = None
+        self.sequence = 0
+        self.download = None
+        self.download_closed = False
+
+    def begin(self, owner):
+        self.owner = owner
+        self.snapshot = self.download = None
+        self.download_closed = False
+        self.sequence = 0
+
+    def retire(self, owner):
+        if self.owner is owner:
+            self.owner = None
+
+    def accept(self, owner, message):
+        if owner is None or self.owner is not owner:
+            return False
+        value = progress_record(message)
+        if value is None or value["sequence"] <= self.sequence:
+            return False
+        previous = self.download
+        if value["stage"] == "model-download":
+            if previous is not None and (
+                value["attempt"] < previous["attempt"]
+                or value["attempt"] == previous["attempt"]
+                and (
+                    self.download_closed
+                    or value["resource"] != previous["resource"]
+                    or value["downloaded"] < previous["downloaded"]
+                    or previous["total"] is not None
+                    and value["total"] != previous["total"]
+                    or DOWNLOAD_PHASES.index(value["downloadPhase"])
+                    < DOWNLOAD_PHASES.index(previous["downloadPhase"])
+                )
+            ):
+                return False
+            self.download = value
+            self.download_closed = False
+        else:
+            self.download_closed = True
+        self.sequence, self.snapshot = value["sequence"], value
+        return True
+
+
+def report_progress(stage, resource="unknown", *, attempt=0, phase=None, count=0, total=None):
+    global _progress_sequence
+    if _progress_sequence >= PROGRESS_COUNTER_LIMIT:
+        return
+    value = {
+        "schema": 1,
+        "sequence": _progress_sequence + 1,
+        "stage": stage,
+        "resource": resource,
+        "attempt": attempt,
+        "downloadPhase": phase,
+        "downloaded": count,
+        "total": total,
+    }
+    message = PROGRESS_PREFIX + json.dumps(value, separators=(",", ":"))
+    if progress_record(message) is None:
+        raise ValueError("setup-progress-schema")
+    _progress_sequence += 1
+    print(message, flush=True)
 
 
 def setup_presentation(home, code=None):
@@ -318,10 +464,15 @@ def download(direction, cache):
         cache / f"{direction.id}-{direction.version}.argosmodel",
         pin.bytes if pin is not None else MAX_ARCHIVE,
         expected={"bytes": pin.bytes, "sha256": pin.sha256} if pin is not None else None,
+        resource=ARGOS_RESOURCES.get(direction.id, "unknown"),
     )
 
 
-def download_resource(pair, url, archive, limit, *, expected=None, hosts=("argos-net.com",)):
+def download_resource(
+    pair, url, archive, limit, *, expected=None, hosts=("argos-net.com",), resource=None
+):
+    global _progress_attempt
+    resource = resource or ARGOS_RESOURCES.get(pair, "unknown")
     if (
         archive.is_file()
         and not archive.is_symlink()
@@ -384,6 +535,10 @@ def download_resource(pair, url, archive, limit, *, expected=None, hosts=("argos
     started = time.monotonic()
     # One fresh retry is sufficient for an ignored Range, stale validator or 416.
     for attempt in range(2):
+        if _progress_attempt >= PROGRESS_COUNTER_LIMIT:
+            raise ValueError("setup-progress-attempt")
+        _progress_attempt += 1
+        progress_attempt = _progress_attempt
         headers = {"User-Agent": "TypeLay/0.2.0", "Accept-Encoding": "identity"}
         if offset:
             headers.update(
@@ -443,6 +598,18 @@ def download_resource(pair, url, archive, limit, *, expected=None, hosts=("argos
                 if key in response.headers
             }
             count = offset
+
+            def progress(phase):
+                report_progress(
+                    "model-download",
+                    resource,
+                    attempt=progress_attempt,
+                    phase=phase,
+                    count=count,
+                    total=total or None,
+                )
+
+            progress("Headers")
             last_progress = 0.0
             descriptor = os.open(partial, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
             with os.fdopen(descriptor, "r+b") as output:
@@ -486,6 +653,7 @@ def download_resource(pair, url, archive, limit, *, expected=None, hosts=("argos
                         if time.monotonic() - last_progress > 2:
                             last_progress = time.monotonic()
                             checkpoint()
+                            progress("Body")
                             print(f"正在下载 {pair} 模型：{count // (1024 * 1024)} MiB", flush=True)
                     if (total and count != total) or not count:
                         raise OSError("model-download-incomplete")
@@ -497,6 +665,8 @@ def download_resource(pair, url, archive, limit, *, expected=None, hosts=("argos
                 except ValueError:
                     metadata.unlink(missing_ok=True)
                     raise
+            progress("Body")
+            progress("Verify")
             if expected is not None and (
                 count != expected["bytes"] or checksum.hexdigest() != expected["sha256"]
             ):
@@ -504,6 +674,7 @@ def download_resource(pair, url, archive, limit, *, expected=None, hosts=("argos
                 raise ValueError("model-fixed-hash")
             partial.replace(archive)
             metadata.unlink(missing_ok=True)
+            progress("Complete")
             return archive, url
     raise OSError("model-download-retry")
 
@@ -1195,6 +1366,7 @@ def install_packages(home, data, cache, request):
     version, prepared, stage = None, False, "prepare"
     resource = "unknown"
     try:
+        report_progress(stage)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         previous = current_generation(components)
         if previous != request["expectedCurrent"]:
@@ -1332,6 +1504,7 @@ def install_packages(home, data, cache, request):
         )
         version = private_directory(components / uuid.uuid4().hex)
         stage = "runtime"
+        report_progress(stage, resource)
         requirements = None
         python_version = None
         if runtime_plan is not None:
@@ -1387,10 +1560,12 @@ def install_packages(home, data, cache, request):
             def set_stage(value):
                 nonlocal stage
                 stage = value
+                report_progress(stage)
 
             _, requirements = prepare_runtime(home, version, uv, set_stage)
             python_version = PYTHON
         stage = "model-verify"
+        report_progress(stage, resource)
         models = private_directory(version / "models")
         packages = []
         from typelay_worker.catalog import ModelFile, read_file_manifest
@@ -1415,6 +1590,7 @@ def install_packages(home, data, cache, request):
                     resource = ARGOS_RESOURCES.get(package.directions[0].id, "unknown")
                     archive, _ = download(package.directions[0], download_cache)
                     stage = "model-extract"
+                    report_progress(stage, resource)
                     try:
                         sizes = extract_model(archive, destination, package.directions[0])
                         observation = argos_archive_observation(package.directions[0], sizes)
@@ -1444,6 +1620,7 @@ def install_packages(home, data, cache, request):
                             package_cache / record["file"],
                             record["bytes"] + 65536,
                             expected=record,
+                            resource=resource,
                             hosts=(
                                 "huggingface.co",
                                 "raw.githubusercontent.com",
@@ -1458,6 +1635,7 @@ def install_packages(home, data, cache, request):
                         )
                         shutil.copyfile(archive, destination / record["file"])
                     stage = "model-verify"
+                    report_progress(stage, resource)
                     for kind in ("model", "model_license"):
                         record = fixed[kind]
                         native_assets(home, package.backend).verify_file(
@@ -1487,6 +1665,7 @@ def install_packages(home, data, cache, request):
                         if file.path.startswith(direction + "/")
                     )
                 stage = "model-verify"
+                report_progress(stage, resource)
                 copy_package(source, destination, files, copy_limits[package.id])
                 identity = package_identity(item)
                 if supplement and package.id in ids:
@@ -1700,6 +1879,7 @@ def install(home, data, cache, requested_directions=None, repair=False):
     stage = "prepare"
     resource = "unknown"
     try:
+        report_progress(stage)
         current = components / "current"
         previous = os.readlink(current) if current.is_symlink() else None
         if (previous is not None and not re.fullmatch(r"[0-9a-f]{32}", previous)) or (
@@ -1717,6 +1897,7 @@ def install(home, data, cache, requested_directions=None, repair=False):
         ):
             raise ValueError("model-directions")
         stage = "model-verify"
+        report_progress(stage, resource)
         committed = ()
         if previous is not None:
             try:
@@ -1769,6 +1950,7 @@ def install(home, data, cache, requested_directions=None, repair=False):
         def set_stage(value):
             nonlocal stage
             stage = value
+            report_progress(stage)
 
         executable, requirements = prepare_runtime(home, version, uv, set_stage)
         models = private_directory(version / "models")
@@ -1779,12 +1961,14 @@ def install(home, data, cache, requested_directions=None, repair=False):
             resource = ARGOS_RESOURCES.get(direction.id, "unknown")
             archive, url = download(direction, download_cache)
             stage = "model-extract"
+            report_progress(stage, resource)
             try:
                 sizes = extract_model(archive, models / pair, direction)
             except (ValueError, zipfile.BadZipFile):
                 archive.unlink(missing_ok=True)
                 raise
             stage = "model-verify"
+            report_progress(stage, resource)
             # Catalog URL names the requested artifact, not proven cache origin.
             # Existing archive bytes are observed, never publisher-verified.
             dependencies.append(
@@ -1809,6 +1993,7 @@ def install(home, data, cache, requested_directions=None, repair=False):
         }
         (models / "installed.json").write_text(json.dumps(inventory, indent=2), encoding="utf-8")
         stage = "self-check"
+        report_progress(stage, resource)
         print("正在校验所选模型并执行真实 CPU 翻译自检", flush=True)
         result = run(
             [

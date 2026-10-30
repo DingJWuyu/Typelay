@@ -16,7 +16,7 @@ import time
 import uuid
 
 from paths import Paths, connect_private, peer_credentials
-from setup import FAILURE_PREFIX, PREPARED_PREFIX, failure_code
+from setup import FAILURE_PREFIX, PREPARED_PREFIX, PROGRESS_PREFIX, failure_code
 from wire import MAX_FRAME, Decoder, encode, now_ms, receive_sync
 
 ACTIVATION_TIMEOUT = 225
@@ -149,6 +149,10 @@ def install_models(paths, package="default"):
             if len(line) > 1024:
                 raise ValueError("setup-output-size")
             message = line.decode("utf-8", errors="replace").strip()
+            if message.startswith(PROGRESS_PREFIX):
+                # Reserved even when malformed or from a future installer.
+                # Human CLI output must never expose private protocol JSON.
+                continue
             generation = prepared_generation(message, generation)
             failure = failure_code(message, failure)
             if not message.startswith(PREPARED_PREFIX):
@@ -576,6 +580,10 @@ async def desktop(paths, background, lock, tutorial=False):
 
     async def install(request):
         nonlocal installer, installation_request
+        progress_owner = asyncio.current_task()
+        progress = components["settings"].download_progress
+        progress.begin(progress_owner)
+        owned_installer = None
         publish_installation(
             "running", "正在准备组件，文件校验并成功加载后才会启用；可暂停并保留已验证的下载进度。"
         )
@@ -584,7 +592,7 @@ async def desktop(paths, background, lock, tutorial=False):
         committed = False
         generation = None
         try:
-            installer = await asyncio.create_subprocess_exec(
+            owned_installer = await asyncio.create_subprocess_exec(
                 "/usr/bin/python3",
                 "-I",
                 "-B",
@@ -596,12 +604,17 @@ async def desktop(paths, background, lock, tutorial=False):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
+            installer = owned_installer
             if pause_installation:
-                installer.terminate()
-            while line := await installer.stdout.readline():
+                owned_installer.terminate()
+            while line := await owned_installer.stdout.readline():
                 if len(line) > 1024:
                     raise ValueError("setup-output-size")
                 message = line.decode("utf-8", errors="replace").strip()
+                if message.startswith(PROGRESS_PREFIX):
+                    if progress.accept(progress_owner, message):
+                        components["settings"].render_download_progress()
+                    continue
                 generation = prepared_generation(message, generation)
                 if message.startswith(PREPARED_PREFIX):
                     continue
@@ -609,7 +622,7 @@ async def desktop(paths, background, lock, tutorial=False):
                     failure = failure_code(message, failure)
                 else:
                     publish_installation_progress(message)
-            code = await installer.wait()
+            code = await owned_installer.wait()
             if failure is None and (code == 75 or pause_installation):
                 installation_result("paused")
             elif code != 0 or failure is not None or generation is None:
@@ -656,10 +669,12 @@ async def desktop(paths, background, lock, tutorial=False):
                     "failed", "runtime" if reload_started else failure, activated=reload_started
                 )
         finally:
-            if installer and installer.returncode is None:
-                installer.terminate()
-                await installer.wait()
-            installer = None
+            progress.retire(progress_owner)
+            if owned_installer and owned_installer.returncode is None:
+                owned_installer.terminate()
+                await owned_installer.wait()
+            if installer is owned_installer:
+                installer = None
 
     def install_requested(directions=None, repair=False):
         nonlocal install_task, pause_installation, installation_request
