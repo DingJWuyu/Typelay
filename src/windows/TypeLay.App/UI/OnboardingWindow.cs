@@ -14,7 +14,7 @@ namespace TypeLay.App;
 
 // A presentation of the existing settings/model transactions. Advancing a page
 // never downloads a model, changes a mode, or records practice completion.
-internal sealed class OnboardingWindow : Window
+internal sealed partial class OnboardingWindow : Window
 {
     private readonly SettingsStore _settings;
     private readonly ModelClient _model;
@@ -120,13 +120,26 @@ internal sealed class OnboardingWindow : Window
         shell.Margin = new(10);
         shell.BorderThickness = new(.5);
         Content = shell;
-        IsVisibleChanged += (_, _) => _navigationVersion++;
+        IsVisibleChanged += (_, _) =>
+        {
+            _navigationVersion++;
+            if (_step != 3)
+                return;
+            if (IsVisible)
+                Refresh();
+            else
+            {
+                _pageIdentity = new();
+                RetireOnboardingModel();
+            }
+        };
         _settings.Changed += Refresh;
         _model.Changed += Refresh;
         _settingsWindow.PreparationChanged += Refresh;
         Closed += (_, _) =>
         {
             _closed = true;
+            RetireOnboardingModel();
             _settings.Changed -= Refresh;
             _model.Changed -= Refresh;
             _settingsWindow.PreparationChanged -= Refresh;
@@ -162,6 +175,7 @@ internal sealed class OnboardingWindow : Window
         _rendering = true;
         try
         {
+            RetireOnboardingModel();
             UiTheme.Apply(_settings.Value);
             AutomationProperties.SetName(_close, UiTheme.L("关闭首次设置", "Close Setup"));
             _pageIdentity = new();
@@ -178,7 +192,8 @@ internal sealed class OnboardingWindow : Window
             _back.IsEnabled = !_busy;
             _back.Content = UiTheme.L("返回", "Back");
             _next.Content = UiTheme.L(_step == 4 ? "开始使用" : "继续", _step == 4 ? "Get started" : "Continue");
-            _next.IsEnabled = !_busy && (_step < 3 || _model.Ready);
+            _next.IsEnabled = !_busy && (_step < 3 || _model.Ready)
+                && (_step != 3 || _settingsWindow.ModelSelectionIsReady(_settingsWindow.ReadQuickPanelPreparation()));
             switch (_step)
             {
                 case 1:
@@ -311,43 +326,6 @@ internal sealed class OnboardingWindow : Window
         _body.Children.Add(styles);
     }
 
-    private void Model()
-    {
-        object page = _pageIdentity;
-        Heading(UiTheme.L("下载本地翻译模型", "Download the translation model"));
-        var view = _settingsWindow.OnboardingPreparation;
-        var card = new StackPanel { Margin = new(16) };
-        card.Children.Add(UiTheme.Text(view.CurrentModelText, 14, bold: true));
-        var status = UiTheme.Text(view.StatusText, 13, true);
-        status.Margin = new(0, 12, 0, 0);
-        card.Children.Add(status);
-        bool preparing = view.PrimaryAction.Id == TranslationPreparationAction.Pause;
-        var progress = new ProgressBar
-        {
-            Height = 5,
-            Minimum = 0,
-            Maximum = 1,
-            Value = _model.Ready ? 1 : 0,
-            IsIndeterminate = preparing,
-            Margin = new(0, 14, 0, 12)
-        };
-        progress.SetResourceReference(Control.ForegroundProperty, "Accent");
-        AutomationProperties.SetName(progress, UiTheme.L("本地模型准备状态", "Local Model Preparation Status"));
-        card.Children.Add(progress);
-        if (view.Guidance.Length > 0)
-            card.Children.Add(UiTheme.Text(view.Guidance, 12, true));
-        var actions = new WrapPanel { Margin = new(0, 14, 0, 0), HorizontalAlignment = HorizontalAlignment.Right };
-        foreach (var action in new[] { view.PrimaryAction }.Concat(view.SecondaryActions).Where(action => action.Id != TranslationPreparationAction.NextStep))
-        {
-            var button = UiTheme.Button(action.Label, () => { if (CurrentPage(page)) _settingsWindow.RunOnboardingPreparation(action); }, primary: action == view.PrimaryAction);
-            button.IsEnabled = action.Enabled;
-            button.Margin = new(6, 0, 0, 0);
-            actions.Children.Add(button);
-        }
-        card.Children.Add(actions);
-        _body.Children.Add(UiTheme.Border(card, 14));
-    }
-
     private void Practice()
     {
         object page = _pageIdentity;
@@ -436,7 +414,8 @@ internal sealed class OnboardingWindow : Window
 
     private async Task NextAsync()
     {
-        if (!IsVisible || _busy || _step >= 3 && !_model.Ready)
+        if (!IsVisible || _busy || _step >= 3 && !_model.Ready
+            || _step == 3 && !_settingsWindow.ModelSelectionIsReady(_settingsWindow.ReadQuickPanelPreparation()))
             return;
         if (_step == 4)
         {

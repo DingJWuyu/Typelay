@@ -1014,9 +1014,7 @@ def run_gimp(
         offset = trace_checkpoint()
         # Real pointer events in the source app provide Wayland input serials.
         # Copy is a user feature, not a production writeback implementation.
-        menu = wait_for(
-            lambda: find(application["pid"], "英语 → 中文"), "candidate language menu missing"
-        )
+        menu = wait_for(lambda: find(application["pid"], "更多"), "candidate More menu missing")
         click_in_properties(menu)
         copy = wait_for(
             lambda: find(application["pid"], "复制译文"), "candidate copy action missing"

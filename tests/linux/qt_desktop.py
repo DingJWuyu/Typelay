@@ -361,6 +361,15 @@ def run_qt(
                         if value.get("observedAtMs", 0) <= after:
                             return None
                         control = value.get("overlayControls", {}).get("typelay-expand", {})
+                        if expected_instance is not None:
+                            assert value.get("motionArmedCurrent") is True, (
+                                "Qt armed motion control retired before its single click"
+                            )
+                            assert (
+                                value.get("motionArmedInstance")
+                                == expected_instance
+                                == control.get("instance")
+                            ), "Qt armed/published motion control identity changed"
                         if tail_recording is not None:
                             # This is a pre-registered late-collapse reversal,
                             # not a retry of an earlier missed high-speed click.
@@ -784,19 +793,34 @@ def run_qt(
                         "observe-motion",
                         directory=str(arguments.output / name) if screenshots else "",
                     )
-                    wait_for(
-                        lambda: state()["motionArmed"] == before["motionArmed"] + 1,
+                    armed = wait_for(
+                        lambda: value
+                        if (value := state())["motionArmed"] == before["motionArmed"] + 1
+                        else None,
                         "Qt fixture did not arm the finite widget-frame observation",
                     )
-                    planned = click_motion_control()
+                    instance = armed.get("motionArmedInstance")
+                    assert type(instance) is int and instance > 0
+                    assert armed.get("motionArmedCurrent") is True
+                    planned = click_motion_control(expected_instance=instance)
                     return before["motionRecordings"], [planned]
 
                 def finish_motion(recording, name, *, clicks=1):
                     recording, planned = recording
+
+                    def completed():
+                        value = state()
+                        if value["motionRecordings"] == recording + 1:
+                            return value
+                        if not value["motionRecording"]:
+                            assert (
+                                value.get("motionArmedCurrent") is True
+                                and value.get("motionArmedInstance") == planned[0]
+                            ), "Qt armed motion control retired without starting its recording"
+                        return None
+
                     actual = wait_for(
-                        lambda: value
-                        if (value := state())["motionRecordings"] == recording + 1
-                        else None,
+                        completed,
                         "Qt widget frames did not reach the bounded spring observation deadline",
                     )
                     frames = actual["motionFrames"]

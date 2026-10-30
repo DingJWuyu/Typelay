@@ -842,7 +842,7 @@ async def desktop(paths, background, lock, tutorial=False):
             host,
             task,
             components["settings"].show,
-            lambda: components["settings"].dismiss(quit_requested=stopping.set),
+            components["settings"].request_quit,
             components["settings"].report_tray,
         )
         components["tray"].bind_model_owner(components["settings"])

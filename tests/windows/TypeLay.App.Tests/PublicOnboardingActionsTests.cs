@@ -37,7 +37,8 @@ public sealed class PublicOnboardingActionsTests(WpfDesktopFixture desktop)
             var settings = WindowsRuntime.CreateSettings(path);
             // Existing protocol fixture proves model readiness, not language quality.
             using var model = SetupRenderingTests.ProtocolModel(directory);
-            var host = new SettingsWindow(settings, model, () => Assert.Fail("Completing the wizard must not launch optional practice."));
+            var host = new SettingsWindow(settings, model, () => Assert.Fail("Completing the wizard must not launch optional practice."),
+                installations: new ModelInstallationStore(directory, Path.Combine(directory, "worker.py")));
             var onboarding = new OnboardingWindow(settings, model, host);
             onboarding.ShowOrActivate();
             await model.StartAsync().WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);

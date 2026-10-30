@@ -5288,6 +5288,8 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertNotIn("source", event)
         for key in (
             "eventToTabCheckMs",
+            "eventToKeyEntryMs",
+            "keyEntryToTabCheckMs",
             "tabCheckToWriteMs",
             "eventHostLowerMs",
             "eventHostUpperMs",
@@ -5314,6 +5316,8 @@ class InputFeedbackTests(unittest.TestCase):
         peer = self.connect_peer("browser")
         keys = (
             "eventToTabCheckMs",
+            "eventToKeyEntryMs",
+            "keyEntryToTabCheckMs",
             "tabCheckToWriteMs",
             "eventHostLowerMs",
             "eventHostUpperMs",
@@ -5334,11 +5338,65 @@ class InputFeedbackTests(unittest.TestCase):
                 event = json.loads(output.getvalue().removeprefix("typelay-tab "))
                 self.assertTrue(all(event[key] is None for key in keys))
         output = io.StringIO()
-        values = dict(zip(keys, (41.5, 2, 1000, 1008, 1041.5, 1049.5), strict=True))
+        values = dict(zip(keys, (41.5, 40, 1.5, 2, 1000, 1008, 1041.5, 1049.5), strict=True))
         with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}), contextlib.redirect_stderr(output):
             peer.event("tab-diagnostic", {"reason": "None", **values})
         event = json.loads(output.getvalue().removeprefix("typelay-tab "))
         self.assertEqual({key: event[key] for key in keys}, values)
+
+    def test_tab_command_trace_keeps_only_four_fixed_enum_numeric_records(self):
+        peer = self.connect_peer("browser")
+        record = {
+            "sequence": 1,
+            "operation": "capture",
+            "outcome": "null",
+            "startFromEventMs": -10,
+            "endFromEventMs": 20,
+            "durationMs": 30,
+        }
+
+        def observe(records, trace=True):
+            output = io.StringIO()
+            with (
+                patch.dict(os.environ, {"TYPELAY_TRACE": "1" if trace else ""}),
+                contextlib.redirect_stderr(output),
+            ):
+                peer.event(
+                    "tab-diagnostic", {"reason": "StaleObservation", "recentCommands": records}
+                )
+            return (
+                json.loads(output.getvalue().removeprefix("typelay-tab "))
+                if output.getvalue()
+                else None
+            )
+
+        for outcome in ("returned", "null", "exception"):
+            expected = {**record, "outcome": outcome}
+            self.assertEqual(
+                observe([{**expected, "source": "not logged"}])["recentCommands"], [expected]
+            )
+        for changed in (
+            {"sequence": True},
+            {"sequence": 0},
+            {"sequence": 1000001},
+            {"operation": "source text"},
+            {"operation": []},
+            {"outcome": "source text"},
+            {"outcome": {}},
+            {"startFromEventMs": -10001},
+            {"endFromEventMs": 10001},
+            {"durationMs": -1},
+            {"durationMs": True},
+            {"durationMs": float("nan")},
+            {"endFromEventMs": float("inf")},
+            {"startFromEventMs": 21},
+        ):
+            with self.subTest(changed=changed):
+                self.assertEqual(observe([{**record, **changed}])["recentCommands"], [])
+        for invalid in (None, {}, [record] * 5, [None, "text"]):
+            self.assertEqual(observe(invalid)["recentCommands"], [])
+        self.assertEqual(len(observe([record] * 4)["recentCommands"]), 4)
+        self.assertIsNone(observe([record], trace=False))
 
     def test_current_cli_without_an_approved_field_reports_a_source_free_refusal(self):
         self.focus(self.peer)

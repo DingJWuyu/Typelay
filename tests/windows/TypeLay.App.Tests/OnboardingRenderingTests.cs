@@ -230,7 +230,8 @@ public sealed class OnboardingRenderingTests(WpfDesktopFixture desktop)
             await model.StartAsync().WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
             Assert.True(model.Ready);
             int launches = 0;
-            var host = new SettingsWindow(settings, model, () => launches++);
+            var host = new SettingsWindow(settings, model, () => launches++,
+                installations: new ModelInstallationStore(directory, Path.Combine(directory, "worker.py")));
             var window = new OnboardingWindow(settings, model, host);
             window.ShowOrActivate();
             Click(window, "OnboardingNext");

@@ -1347,8 +1347,14 @@ internal sealed partial class SettingsWindow : Window
         if (current is { IsReleased: true, CanChange: true, Session: null })
             await SaveTranslationChangeAsync(ct => _controller!.ChangeStyleAsync(StyleScope.Global, style, current.SettingsRevision, cancellationToken: ct));
     }
-    internal TranslationPreparationView OnboardingPreparation => PreparationView();
-    internal void RunOnboardingPreparation(TranslationPreparationActionView action) => RunPreparationAction(action);
+    internal void RunOnboardingPreparation(QuickPanelPreparationState state, TranslationPreparationActionView action, Func<bool> callerCurrent)
+    {
+        bool Current() => callerCurrent() && IsCurrentQuickPanelPreparation(state);
+        if (!Current() || action.Id == TranslationPreparationAction.NextStep
+            || !new[] { state.View.PrimaryAction }.Concat(state.View.SecondaryActions).Any(item => ReferenceEquals(item, action)))
+            return;
+        RunPreparationAction(action, Current);
+    }
     internal Task<bool> SaveOnboardingSettingsAsync(UserSettings settings) => SaveAsync(settings);
     internal event Action? PreparationChanged;
     public Action? ShowOnboarding

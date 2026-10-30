@@ -93,11 +93,19 @@ public sealed partial class NativeSourceControllerTests
                     : returnObserved ? "not-observed" : "return-not-observed";
                 TestContext.Current.TestOutputHelper?.WriteLine($"{_scope} Broker return trace: observedReturns={outcomes}, omittedReturns={omitted}, observedCaptures={captures}, omittedCaptures={omittedCaptures}, firstCaptureNotObservedNative={captureResult}, firstCaptureNotObservedNativeAfterReturn={afterReturnResult}, readBytes={count}, scannedLines={scannedLines}, truncated={truncated}");
             }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
+            catch (Exception error) when (error is not OutOfMemoryException)
             {
-                TestContext.Current.TestOutputHelper?.WriteLine(_scope + " Broker return trace unavailable: " + error.GetType().Name);
+                // Optional diagnostics, including their output sink, must not
+                // replace the scenario's original result or revocation failure.
             }
-            finally { Directory.Delete(_directory, true); }
+            finally
+            {
+                try
+                {
+                    Directory.Delete(_directory, true);
+                }
+                catch (Exception error) when (error is not OutOfMemoryException) { }
+            }
         }
     }
 

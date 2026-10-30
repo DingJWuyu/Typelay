@@ -147,26 +147,83 @@ public sealed partial class SetupRenderingTests
         bool changed = false;
         double? firstAfterSecond = null;
         var samples = new List<double>();
-        await WatchAppearanceRings(() => SelectAppearanceTile(AppearancePaintedTile(scene.Window, "theme", "dark")), () =>
+        var frames = new List<object>();
+        object? lastFrame = null;
+        long invoked = 0;
+        double? returned = null;
+        int frameCount = 0;
+        void Record(Control tile, double spread)
         {
-            if (!changed && scene.Settings.Value.Theme == "dark")
+            var frame = new
             {
-                var currentDark = AppearancePaintedTile(scene.Window, "theme", "dark");
-                double before = AppearanceLayer(currentDark, "selection").BorderThickness.Left;
-                if (before is not (> .7 and < 1.7))
-                    return;
-                changed = true;
-                // SelectionItem.Select is the public, synchronous RadioButton operation.
-                SelectAppearanceTile(AppearancePaintedTile(scene.Window, "theme", "light"));
-                Assert.Equal("light", WindowsRuntime.CreateSettings(scene.Path).Value.Theme);
-                var newDark = AppearancePaintedTile(scene.Window, "theme", "dark");
-                Assert.NotSame(currentDark, newDark);
-                firstAfterSecond = AppearanceLayer(newDark, "selection").BorderThickness.Left;
-                Assert.InRange(firstAfterSecond.Value, .5001, before + .25);
+                ElapsedMs = Stopwatch.GetElapsedTime(invoked).TotalMilliseconds,
+                Spread = spread,
+                AfterRetarget = changed,
+                HasLocalPaint = AppearanceLayer(tile, "selection").ReadLocalValue(Border.BorderThicknessProperty) != DependencyProperty.UnsetValue,
+                TileWidth = tile.ActualWidth,
+                PanelWidth = (tile.Parent as FrameworkElement)?.ActualWidth,
+                WindowWidth = scene.Window.ActualWidth,
+                WindowHeight = scene.Window.ActualHeight,
+                Reduced = UiTheme.ReduceMotion
+            };
+            frameCount++;
+            if (frames.Count < 24)
+                frames.Add(frame);
+            lastFrame = frame;
+        }
+        try
+        {
+            await WatchAppearanceRings(() =>
+            {
+                invoked = Stopwatch.GetTimestamp();
+                SelectAppearanceTile(AppearancePaintedTile(scene.Window, "theme", "dark"));
+                returned = Stopwatch.GetElapsedTime(invoked).TotalMilliseconds;
+            }, () =>
+            {
+                if (!changed && scene.Settings.Value.Theme == "dark")
+                {
+                    var currentDark = AppearancePaintedTile(scene.Window, "theme", "dark");
+                    double before = AppearanceLayer(currentDark, "selection").BorderThickness.Left;
+                    Record(currentDark, before);
+                    if (before is not (> .7 and < 1.7))
+                        return;
+                    changed = true;
+                    // SelectionItem.Select is the public, synchronous RadioButton operation.
+                    SelectAppearanceTile(AppearancePaintedTile(scene.Window, "theme", "light"));
+                    Assert.Equal("light", WindowsRuntime.CreateSettings(scene.Path).Value.Theme);
+                    var newDark = AppearancePaintedTile(scene.Window, "theme", "dark");
+                    Assert.NotSame(currentDark, newDark);
+                    firstAfterSecond = AppearanceLayer(newDark, "selection").BorderThickness.Left;
+                    Assert.InRange(firstAfterSecond.Value, .5001, before + .25);
+                }
+                else if (changed)
+                {
+                    var currentDark = AppearancePaintedTile(scene.Window, "theme", "dark");
+                    double spread = AppearanceLayer(currentDark, "selection").BorderThickness.Left;
+                    samples.Add(spread);
+                    Record(currentDark, spread);
+                }
+            }, presentation: () => changed || scene.Settings.Value.Theme == "dark" ? scene.Settings.Value : null);
+        }
+        finally
+        {
+            // The watcher has already unsubscribed. No frame callback performs
+            // output, screenshots, layout, or an extra dispatcher operation.
+            try
+            {
+                TestContext.Current.TestOutputHelper?.WriteLine("Appearance retarget boundary: " + System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    InvocationReturnedMs = returned,
+                    FrameCount = frameCount,
+                    Frames = frames.ToArray(),
+                    LastFrame = lastFrame
+                }));
             }
-            else if (changed)
-                samples.Add(AppearanceLayer(AppearancePaintedTile(scene.Window, "theme", "dark"), "selection").BorderThickness.Left);
-        }, presentation: () => changed || scene.Settings.Value.Theme == "dark" ? scene.Settings.Value : null);
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                // Optional evidence must not replace the original test result.
+            }
+        }
         Assert.True(changed);
         Assert.NotNull(firstAfterSecond);
         Assert.Contains(samples, value => value > .5 && value < firstAfterSecond.Value);

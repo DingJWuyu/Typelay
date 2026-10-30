@@ -242,7 +242,7 @@ internal sealed partial class SettingsWindow
         return chip;
     }
 
-    private bool ModelSelectionIsReady(QuickPanelPreparationState state)
+    internal bool ModelSelectionIsReady(QuickPanelPreparationState state)
     {
         if (!state.Ready || !state.InventoryKnown || state.Phase != TranslationPreparationPhase.Idle)
             return false;
@@ -366,15 +366,15 @@ internal sealed partial class SettingsWindow
         AutomationProperties.SetHelpText(_progressLabel, exact);
     }
 
-    private static string ExactBytes(long bytes) => bytes.ToString(CultureInfo.InvariantCulture) + " bytes";
+    internal static string ExactBytes(long bytes) => bytes.ToString(CultureInfo.InvariantCulture) + " bytes";
     private static (double Divisor, string Unit) ModelDownloadUnit(long bytes) => bytes >= 1_000_000_000 ? (1_000_000_000, "GB")
         : bytes >= 1_000_000 ? (1_000_000, "MB") : bytes >= 1_000 ? (1_000, "KB") : (1, "bytes");
-    private static string ModelDownloadSize(long bytes)
+    internal static string ModelDownloadSize(long bytes)
     {
         var (divisor, unit) = ModelDownloadUnit(bytes);
         return (divisor == 1 ? bytes.ToString(CultureInfo.InvariantCulture) : (bytes / divisor).ToString(divisor >= 1_000_000_000 ? "0.00" : "0.0", CultureInfo.InvariantCulture)) + " " + unit;
     }
-    private static string ModelDownloadCount(long downloaded, long total)
+    internal static string ModelDownloadCount(long downloaded, long total)
     {
         var (divisor, unit) = ModelDownloadUnit(total);
         string format = divisor == 1 ? "0" : "0.0";
@@ -383,7 +383,7 @@ internal sealed partial class SettingsWindow
 
     // Only product-owned catalogue/status copy reaches this function, never a
     // user's source, translation, glossary rule or model output.
-    private static string ModelCopy(string value)
+    internal static string ModelCopy(string value)
     {
         if (!UiTheme.English)
             return value;

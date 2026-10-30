@@ -2261,7 +2261,9 @@ def run_owned_language_options(
                     "uiLanguage": "zh-CN",
                 }
             )
-            fixture = await asyncio.create_subprocess_exec(*command, env=environment)
+            fixture = await asyncio.create_subprocess_exec(
+                *command, env=environment, stdout=sys.stdout, stderr=sys.stderr
+            )
 
             def state():
                 assert fixture.returncode is None, "language fixture exited"

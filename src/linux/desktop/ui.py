@@ -2111,6 +2111,7 @@ class TranslationSettings:
     def changed(self):
         if self.configuring:
             return
+        self.owner.retire_quit()
         if self.baseline is None and self.style_state is not None:
             self.baseline = self.style_state["settingsRevision"]
             self.baseline_styles = self.style_state.get("savedPreferences")
@@ -2665,6 +2666,7 @@ class TranslationSettings:
         self.begin_editor(None, None)
 
     def begin_editor(self, index, original):
+        self.owner.retire_quit()
         self.editor_open = True
         self.editor_token = object()
         self.create_editor(self.editor_token)
@@ -2685,17 +2687,27 @@ class TranslationSettings:
         self.changed()
         (self.target_term if original else self.source_term).grab_focus()
 
-    def close_editor(self):
+    def close_editor(self, *, quit_guard=None):
+        if quit_guard is not None and not quit_guard():
+            return False
         self.editor_request = None
         self.editor_token = None
         self.editor_open = False
         self.editor_index = self.editor_original = None
         configuring = self.configuring
         self.configuring = True
-        self.source_term.set_text("")
-        self.target_term.set_text("")
-        self.configuring = configuring
+        try:
+            self.source_term.set_text("")
+            if quit_guard is not None and not quit_guard():
+                return False
+            self.target_term.set_text("")
+            if quit_guard is not None and not quit_guard():
+                return False
+        finally:
+            if quit_guard is None or self.editor_token is None:
+                self.configuring = configuring
         self.glossary_rows = None
+        return True
 
     def cancel_editor(self):
         self.close_editor()
@@ -3143,17 +3155,25 @@ class TranslationSettings:
         dialog.connect("response", response)
         dialog.show_all()
 
-    def discard(self):
+    def discard(self, *, quit_guard=None):
+        if quit_guard is not None and not quit_guard():
+            return False
         if self.pending is not None:
             self.owner.host.send("cancelTranslationSettings", self.pending)
+        if quit_guard is not None and not quit_guard():
+            return False
         self.pending = None
         self.load_revision += 1
         self.style_draft = self.rules_draft = self.baseline = None
         self.baseline_styles = self.baseline_rules = None
-        self.configuring = True
-        self.close_editor()
-        self.configuring = False
+        if quit_guard is None:
+            self.configuring = True
+            self.close_editor()
+            self.configuring = False
+        elif not self.close_editor(quit_guard=quit_guard):
+            return False
         self.render()
+        return quit_guard is None or quit_guard()
 
 
 class Settings:
@@ -3183,6 +3203,10 @@ class Settings:
         preparation_refresh=None,
     ):
         self.host, self.tasks = host, tasks
+        self.quit_requested = quit_requested
+        self.quit_intent = self.quit_dialog = None
+        self.quit_closed = False
+        self.configuration_token = None
         self.value = None
         self.configuring = False
         self.dirty_controls = set()
@@ -3233,6 +3257,116 @@ class Settings:
             TranslationSettings,
             LanguagePicker,
         )
+        self.window.connect("unmap", lambda *_: self.retire_quit())
+        self.window.connect("destroy", self.close_quit)
+        self.pages.connect("notify::visible-child-name", lambda *_: self.retire_quit())
+
+    def close_quit(self, *_):
+        self.quit_closed = True
+        self.retire_quit()
+
+    def retire_quit(self, *, expected=None):
+        if expected is not None and self.quit_intent is not expected:
+            return False
+        self.quit_intent = None
+        dialog, self.quit_dialog = self.quit_dialog, None
+        if dialog is not None:
+            dialog.destroy()
+        return self.quit_intent is None
+
+    def quit_snapshot(self):
+        translation = self.translation
+        return (
+            id(self.value),
+            self.draft_session,
+            self.draft_request,
+            deepcopy(self.pending_draft),
+            tuple((key, self.draft_value(key)) for key in sorted(self.dirty_controls)),
+            translation.editor_token,
+            translation.source_term.get_text(),
+            translation.target_term.get_text(),
+            deepcopy(translation.style_draft),
+            deepcopy(translation.rules_draft),
+            deepcopy(translation.pending),
+            (translation.style_state or {}).get("settingsRevision"),
+            (translation.glossary_state or {}).get("settingsRevision"),
+        )
+
+    def request_quit(self, *_, guard=None, parent=None):
+        if self.quit_closed or guard is not None and not guard():
+            return None
+        if guard is None and not (self.window.get_mapped() and self.window.is_active()):
+            return None
+        if not self.retire_quit() or self.quit_closed or guard is not None and not guard():
+            return None
+        intent = self.quit_intent = object()
+        page = self.pages.get_visible_child_name()
+        snapshot = self.quit_snapshot()
+
+        def current():
+            return (
+                self.quit_intent is intent
+                and not self.quit_closed
+                and self.pages.get_visible_child_name() == page
+                and (guard is None or guard())
+            )
+
+        def eligible():
+            return current() and self.quit_snapshot() == snapshot
+
+        def finish():
+            if current():
+                self.quit_intent = self.quit_dialog = None
+                self.quit_requested()
+
+        dialog = Gtk.MessageDialog(
+            transient_for=parent or self.window,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE,
+            text=self.tr("退出 TypeLay？", "Quit TypeLay?"),
+        )
+        dialog.add_button(self.tr("取消", "Cancel"), Gtk.ResponseType.CANCEL)
+        dialog.add_button(self.tr("退出", "Quit"), Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.CANCEL)
+        if not eligible():
+            dialog.destroy()
+            return None
+        self.quit_dialog = dialog
+        answered = False
+
+        def response(widget, result):
+            nonlocal answered
+            if answered:
+                return
+            answered = True
+            valid = eligible()
+            if self.quit_dialog is widget:
+                self.quit_dialog = None
+            widget.destroy()
+            if not valid or not eligible():
+                return
+            if result == Gtk.ResponseType.OK:
+                self.dismiss(quit_requested=finish, quit_guard=current, parent=parent)
+            else:
+                self.retire_quit(expected=intent)
+
+        def destroyed(widget):
+            if self.quit_dialog is widget:
+                self.quit_dialog = None
+                self.retire_quit(expected=intent)
+
+        dialog.connect("response", response)
+        dialog.connect("destroy", destroyed)
+        dialog.show_all()
+        if not eligible():
+            dialog.destroy()
+            return None
+        dialog.get_widget_for_response(Gtk.ResponseType.CANCEL).grab_focus()
+        if not eligible():
+            dialog.destroy()
+            return None
+        return dialog
 
     def settle_appearance_entry(self, *_):
         # Property notifications can synchronously unmap/remap this same page.
@@ -3909,7 +4043,12 @@ class Settings:
             )
         )
 
-    def configure(self, value):
+    def configure(self, value, *, quit_guard=None):
+        if quit_guard is None:
+            self.retire_quit()
+        elif not quit_guard():
+            return
+        configuration = self.configuration_token = object()
         defaults = {
             "font": "claude",
             "textSize": 15,
@@ -3931,6 +4070,8 @@ class Settings:
             for key, options in self.preference_options.items():
                 if key not in self.pending_settings and value[key] in options:
                     options[value[key]].set_active(True)
+                    if quit_guard is not None and not quit_guard():
+                        return
             for key, widget in self.controls.items():
                 if key in self.dirty_controls or key in self.pending_settings:
                     continue
@@ -3944,10 +4085,17 @@ class Settings:
                     widget.set_value(value[key])
                 else:
                     widget.set_text(value[key])
+                if quit_guard is not None and not quit_guard():
+                    return
         finally:
-            self.configuring = False
+            if self.configuration_token is configuration:
+                self.configuring = False
         self.update_palette()
+        if quit_guard is not None and not quit_guard():
+            return
         self.localize()
+        if quit_guard is not None and not quit_guard():
+            return
         shortcut = value.get("pauseShortcut")
         self.pause_binding.set_text(
             self.tr(
@@ -3964,8 +4112,14 @@ class Settings:
             if shortcut
             else self.tr("尚未设置全局暂停快捷键。", "No global pause shortcut is set.")
         )
+        if quit_guard is not None and not quit_guard():
+            return
         self.render_language_swap()
+        if quit_guard is not None and not quit_guard():
+            return
         self.render_applications()
+        if quit_guard is not None and not quit_guard():
+            return
         if first and not value["onboardingComplete"]:
             self.pages.set_visible_child_name("model")
         if direction_changed:
@@ -4054,6 +4208,7 @@ class Settings:
     def draft_changed(self, key, *, schedule=True):
         if self.configuring or self.value is None:
             return
+        self.retire_quit()
         if key in (
             "wakeShortcut",
             "directShortcut",
@@ -4280,7 +4435,11 @@ class Settings:
                     self.shortcut_confirmation = confirmation
                 self.render_draft()
 
-    def dismiss(self, *_, quit_requested=None):
+    def dismiss(self, *_, quit_requested=None, quit_guard=None, parent=None):
+        if quit_guard is None:
+            self.retire_quit()
+        elif not quit_guard():
+            return True
         if (
             not self.dirty_controls
             and not self.translation.dirty
@@ -4294,7 +4453,7 @@ class Settings:
         if self.draft_messages is None:
             return True
         dialog = Gtk.MessageDialog(
-            transient_for=self.window,
+            transient_for=parent or self.window,
             modal=True,
             message_type=Gtk.MessageType.QUESTION,
             buttons=Gtk.ButtonsType.NONE,
@@ -4318,10 +4477,32 @@ class Settings:
             if self.draft_messages["defaultCloseChoice"] == "Discard"
             else Gtk.ResponseType.CANCEL
         )
+        if quit_guard is not None:
+            default_response = Gtk.ResponseType.CANCEL
         dialog.set_default_response(default_response)
+        snapshot = self.quit_snapshot() if quit_guard is not None else None
+        if quit_guard is not None:
+            if not quit_guard():
+                dialog.destroy()
+                return True
+            self.quit_dialog = dialog
+        answered = False
 
         def response(widget, result):
+            nonlocal answered
+            if answered:
+                return
+            answered = True
+            valid = quit_guard is None or (quit_guard() and self.quit_snapshot() == snapshot)
+            if self.quit_dialog is widget:
+                self.quit_dialog = None
             widget.destroy()
+            if (
+                not valid
+                or quit_guard is not None
+                and (not quit_guard() or self.quit_snapshot() != snapshot)
+            ):
+                return
             if result == Gtk.ResponseType.OK:
                 if self.pending_draft is not None:
                     try:
@@ -4329,26 +4510,53 @@ class Settings:
                     except (OSError, ValueError, EOFError):
                         self.report_save_result(False, "保存结果未确认。草稿仍保留，请检查设置。")
                         return
+                if quit_guard is not None and not quit_guard():
+                    return
                 try:
-                    self.translation.discard()
+                    if quit_guard is None:
+                        self.translation.discard()
+                    elif not self.translation.discard(quit_guard=quit_guard):
+                        return
                 except (OSError, ValueError, EOFError):
                     self.report_save_result(False, "保存结果未确认。草稿仍保留，请检查设置。")
+                    return
+                if quit_guard is not None and not quit_guard():
                     return
                 self.draft_session = str(uuid.uuid4())
                 self.pending_draft = None
                 self.submitted_draft = {}
                 self.dirty_controls.clear()
                 self.shortcut_confirmation = None
-                self.configure(self.value)
+                self.configure(self.value, quit_guard=quit_guard)
+                if quit_guard is not None and not quit_guard():
+                    return
                 self.render_draft()
+                if quit_guard is not None and not quit_guard():
+                    return
                 if quit_requested:
                     quit_requested()
                 else:
                     self.window.hide()
+            elif quit_guard is not None and quit_guard():
+                self.retire_quit()
 
+        if quit_guard is not None:
+            intent = self.quit_intent
+
+            def destroyed(widget):
+                if self.quit_dialog is widget:
+                    self.quit_dialog = None
+                    self.retire_quit(expected=intent)
+
+            dialog.connect("destroy", destroyed)
         dialog.connect("response", response)
         dialog.show_all()
+        if quit_guard is not None and not quit_guard():
+            dialog.destroy()
+            return True
         dialog.get_widget_for_response(default_response).grab_focus()
+        if quit_guard is not None and not quit_guard():
+            dialog.destroy()
         return True
 
     def report(self, value):
@@ -4492,6 +4700,7 @@ class Settings:
         )
 
     def confirm_package(self, action, proceed, *, guard=None, parent=None):
+        requested_at = Gtk.get_current_event_time()
         dialog = Gtk.MessageDialog(
             transient_for=parent or self.window,
             modal=True,
@@ -4518,12 +4727,26 @@ class Settings:
             else:
                 self.cancel_preparation_request()
 
+        def current():
+            if guard is not None and not guard():
+                return False
+            return not answered and dialog.get_visible()
+
         dialog.connect("response", response)
         dialog.show_all()
-        if guard is not None and not guard():
+        if not current():
+            dialog.destroy()
+            return None
+        # This modal belongs to the synchronous user request. Child focus
+        # alone does not give its native top-level keyboard focus on X11.
+        dialog.present_with_time(requested_at)
+        if not current():
             dialog.destroy()
             return None
         dialog.get_widget_for_response(Gtk.ResponseType.CANCEL).grab_focus()
+        if not current():
+            dialog.destroy()
+            return None
         return dialog
 
     def cancel_preparation_request(self):
@@ -4765,6 +4988,7 @@ class Settings:
         search.grab_focus()
 
     def show(self):
+        self.retire_quit()
         first_show = self.first_show
         self.window.show_all()
         if self.first_show:
@@ -4784,6 +5008,7 @@ class Settings:
         self.refresh_preparation()
 
     def confirm_install(self, install, directions, *, guard=None, parent=None):
+        requested_at = Gtk.get_current_event_time()
         dialog = Gtk.MessageDialog(
             transient_for=parent or self.window,
             modal=True,
@@ -4819,10 +5044,24 @@ class Settings:
             else:
                 self.cancel_preparation_request()
 
+        def current():
+            if guard is not None and not guard():
+                return False
+            return not answered and dialog.get_visible()
+
         dialog.connect("response", response)
         dialog.show_all()
-        if guard is not None and not guard():
+        if not current():
+            dialog.destroy()
+            return None
+        # This modal belongs to the synchronous user request. Child focus
+        # alone does not give its native top-level keyboard focus on X11.
+        dialog.present_with_time(requested_at)
+        if not current():
             dialog.destroy()
             return None
         dialog.get_widget_for_response(Gtk.ResponseType.CANCEL).grab_focus()
+        if not current():
+            dialog.destroy()
+            return None
         return dialog

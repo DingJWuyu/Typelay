@@ -24,8 +24,9 @@ public sealed class FirstWakeCaptureTests(WpfDesktopFixture desktop)
     [InlineData(true)]
     public Task OneWakeWithoutALeaseCapturesTheExactStockFieldWithoutWriteAuthority(bool orderedSharedAcceptanceKey) => desktop.RunAsync(async () =>
     {
+        using var trace = new NativeSourceControllerTests.BrokerReturnTraceFile("Cold first Wake capture");
         await using var source = await ProductionForegroundWriteTests.Desktop.Start(
-            orderedSourceMessageWitness: orderedSharedAcceptanceKey);
+            orderedSourceMessageWitness: orderedSharedAcceptanceKey, returnTrace: trace.Path);
         await source.Prepare(source.A, "First wake source", new(0, 5));
         using var hook = new KeyboardHook(allowInjectedInput: true);
         await Until(() => hook.ShortcutsReady, source.Token);

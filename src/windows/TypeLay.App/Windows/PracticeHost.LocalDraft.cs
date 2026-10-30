@@ -18,6 +18,8 @@ internal sealed partial class PracticeHost
         public long Sequence { get; } = sequence;
         public bool FenceSent, Fenced, Cancelled, ReturnFenceSent, ReturnFenced, SourceReturned, OverlayLeft, Delivered, Bound;
         public long SourceBaseline;
+        public int TraceCount, TraceDropped;
+        public bool TraceCancelled;
         public KeyboardHook.LocalDraftTap? Tap;
         public OwnedLocalDraftReturnRequest? Request;
         public OwnedLocalReturnControl? Returning;
@@ -26,6 +28,62 @@ internal sealed partial class PracticeHost
         public OwnedSourceEvidence? Capture;
     }
     private LocalDraftAttempt? _localDraftAttempt;
+    internal enum LocalDraftTraceEvent
+    {
+        Prepared, FenceQueued, FenceAck, InvalidAck, SourceAck, Armed, ForegroundReturned,
+        UiMessage, UiFocus, UiRetire, OverlayLeft, CompleteAttempt, Cancelled
+    }
+
+    internal void TraceLocalDraft(OwnedLocalDraft opening, LocalDraftTraceEvent stage,
+        int? message = null, nint peer = 0, bool? active = null,
+        bool? appLeft = null, bool? rootLeft = null, bool? focusLeft = null,
+        bool? oldEditor = null, bool? nextNull = null)
+    {
+        if (_monitor is not { OwnedEditorTraceEnabled: true } monitor
+            || _localDraftAttempt is not { } local || !ReferenceEquals(local.Opening, opening))
+            return;
+        // Reserve one of the sixteen rows for the first cancellation. Only
+        // existing metadata is queued; no native query or I/O on this path.
+        if (stage == LocalDraftTraceEvent.Cancelled)
+        {
+            if (local.TraceCancelled)
+                return;
+            local.TraceCancelled = true;
+        }
+        else if (local.TraceCount++ >= 15)
+        {
+            local.TraceDropped++;
+            return;
+        }
+        long now = WindowsInterruptClock.NowMs;
+        monitor.QueueOwnedEditorTrace(new
+        {
+            operation = "owned-local-return",
+            atMs = now,
+            stage = stage.ToString(),
+            ageMs = local.Tap is { } tap ? now - tap.Press.ReceivedAtMs : (long?)null,
+            local.Fenced,
+            local.ReturnFenceSent,
+            local.ReturnFenced,
+            local.SourceReturned,
+            local.OverlayLeft,
+            local.Delivered,
+            local.Bound,
+            local.Cancelled,
+            sourceSequence = local.SourceBaseline,
+            dropped = local.TraceDropped,
+            message,
+            active,
+            appLeft,
+            rootLeft,
+            focusLeft,
+            oldEditor,
+            nextNull,
+            peer = peer == 0 ? "none" : message == 0x1c && peer == (nint)local.Control.Previous.Descriptor.ThreadId
+                ? "source-thread" : message == 6 && peer == (nint)local.Control.Previous.Descriptor.RootHwnd
+                ? "source-root" : "other"
+        });
+    }
 
     internal OwnedLocalDraft? BeginOwnedLocalDraft(OwnedEditorControl control)
     {
@@ -132,6 +190,7 @@ internal sealed partial class PracticeHost
         }
         local.Tap = tap;
         local.Request = request;
+        TraceLocalDraft(opening, LocalDraftTraceEvent.Prepared);
         local.Returning = new(opening.Id, request.Id, press.ReceivedAtMs, press.ExpiresAtMs, press.Sequence, press.Key,
             new(tap.UpSequence, tap.ReleasedAtMs, press.NativeTime, tap.NativeUpTime));
         PollOwnedLocalDraft();
@@ -147,6 +206,7 @@ internal sealed partial class PracticeHost
             return;
         }
         local.OverlayLeft = true;
+        TraceLocalDraft(opening, LocalDraftTraceEvent.OverlayLeft);
         CompleteLocalDraftReturn(local);
     }
 
@@ -177,6 +237,7 @@ internal sealed partial class PracticeHost
             }
             local.Replacement = replacement;
             local.ReturnFenceSent = true;
+            TraceLocalDraft(local.Opening, LocalDraftTraceEvent.FenceQueued);
             Enqueue(new("local-return-fence", local.Connection, local.Run, local.Sequence, LocalReturn: local.Returning,
                 Acceptance: new(WitnessHandle: replacement.RemoteHandle, WitnessBytes: replacement.Length)));
         }
@@ -227,6 +288,9 @@ internal sealed partial class PracticeHost
             throw new InvalidDataException("practice-local-ack-identity");
         if (local.Cancelled)
             return true;
+        if (returning)
+            TraceLocalDraft(local.Opening, message.Kind == "local-return-fenced" ? LocalDraftTraceEvent.FenceAck
+                : message.Kind == "local-source-returned" ? LocalDraftTraceEvent.SourceAck : LocalDraftTraceEvent.InvalidAck);
         if (!LocalDraftIdentityCurrent(local) || message.Kind is "draft-invalid" or "local-return-invalid")
         {
             CancelOwnedLocalDraft(local.Opening);
@@ -262,7 +326,9 @@ internal sealed partial class PracticeHost
                 CancelOwnedLocalDraft(local.Opening);
                 return true;
             }
-            Native.SetForegroundWindow((nint)local.Control.Previous.Descriptor.RootHwnd);
+            TraceLocalDraft(local.Opening, LocalDraftTraceEvent.Armed);
+            bool activated = Native.SetForegroundWindow((nint)local.Control.Previous.Descriptor.RootHwnd);
+            TraceLocalDraft(local.Opening, LocalDraftTraceEvent.ForegroundReturned, active: activated);
             if (!LocalDraftIdentityCurrent(local) || !_monitor.LocalDraftTapCurrent(local.Tap!))
             {
                 CancelOwnedLocalDraft(local.Opening);
@@ -298,6 +364,7 @@ internal sealed partial class PracticeHost
         if (local.Delivered || !local.SourceReturned || !local.OverlayLeft || local.Request is not { } request
             || local.Descriptor is not { } descriptor)
             return;
+        TraceLocalDraft(local.Opening, LocalDraftTraceEvent.CompleteAttempt);
         if (!LocalDraftIdentityCurrent(local) || !_monitor!.LocalDraftTapCurrent(local.Tap!)
             || !DescriptorCurrent(descriptor) || !KeyboardHook.OwnedFocus(descriptor))
         {
@@ -345,6 +412,7 @@ internal sealed partial class PracticeHost
     {
         if (_localDraftAttempt is not { Cancelled: false } local || !ReferenceEquals(local.Opening, opening))
             return;
+        TraceLocalDraft(opening, LocalDraftTraceEvent.Cancelled);
         local.Cancelled = true;
         _monitor?.EndLocalDraftAnchor(opening.Id);
         _witnessWriter?.Stop();

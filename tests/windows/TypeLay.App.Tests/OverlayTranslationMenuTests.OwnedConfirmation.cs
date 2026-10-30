@@ -52,6 +52,7 @@ public sealed partial class OverlayTranslationMenuTests
             info.Environment.Remove("TYPELAY_TRACE"); // Keep this bounded parent-hook trace separate from the child.
             return child = new ChildProcess(info);
         });
+        long? traceOffset = null;
         string? previousTrace = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
         string tracePath = Path.Combine(directory, "owned-key-trace.jsonl");
         Action? finishKeyboardObservation = null;
@@ -152,6 +153,7 @@ public sealed partial class OverlayTranslationMenuTests
             Assert.True(editor.IsReadOnly);
             Assert.False(settings.Value.ExperimentalWriteback);
 
+            traceOffset = OwnedTraceOffset(tracePath); // Before this original editor click, never after its admission.
             using (var action = ActionDeadline())
                 await ClickOwnedConfirmationEditor(editor, overlay, () =>
                 {
@@ -350,7 +352,7 @@ public sealed partial class OverlayTranslationMenuTests
                 Environment.SetEnvironmentVariable("TYPELAY_TRACE", previousTrace);
             }
             catch (Exception error) when (error is not OutOfMemoryException) { }
-            ObserveOwnedKeyTrace(tracePath);
+            ObserveOwnedKeyTrace(tracePath, traceOffset);
             try
             {
                 controller?.Dispose();

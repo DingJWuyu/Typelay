@@ -117,59 +117,107 @@ public sealed partial class OverlayTranslationMenuTests
         };
     }
 
-    private static void ObserveOwnedKeyTrace(string path)
+    private static long? OwnedTraceOffset(string path)
     {
         try
         {
-            if (!File.Exists(path))
+            return File.Exists(path) ? new FileInfo(path).Length : 0;
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { return null; }
+    }
+
+    private static void ObserveOwnedKeyTrace(string path, long? offset)
+    {
+        try
+        {
+            if (!File.Exists(path) || offset is null)
             {
                 TestContext.Current.TestOutputHelper?.WriteLine("{\"operation\":\"owned-confirmation-hook-trace\",\"observation\":\"unavailable\"}");
                 return;
             }
-            var records = new List<object>();
-            int lines = 0, dropped = 0;
-            foreach (string line in File.ReadLines(path).Take(256))
+            var first = new List<object>();
+            var last = new Queue<object>();
+            int lines = 0, dropped = 0, malformedLines = 0;
+            void Retain(object record)
+            {
+                if (first.Count < 8)
+                    first.Add(record);
+                else
+                {
+                    if (last.Count == 8)
+                    {
+                        last.Dequeue();
+                        dropped++;
+                    }
+                    last.Enqueue(record);
+                }
+            }
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (offset.Value < 0 || offset.Value > stream.Length)
+            {
+                TestContext.Current.TestOutputHelper?.WriteLine("{\"operation\":\"owned-confirmation-hook-trace\",\"observation\":\"offset-unavailable\"}");
+                return; // An invalid/truncated observation is never a replacement start.
+            }
+            stream.Position = offset.Value;
+            using var reader = new StreamReader(stream);
+            while (lines < 256 && reader.ReadLine() is { } line)
             {
                 lines++;
-                using var document = JsonDocument.Parse(line);
-                var row = document.RootElement;
-                if (!row.TryGetProperty("operation", out var operation))
-                    continue;
-                if (operation.GetString() == "owned-local-key")
+                JsonDocument document;
+                try
                 {
-                    if (records.Count == 16)
-                    {
-                        dropped++;
-                        continue;
-                    }
-                    records.Add(row.Clone()); // This operation contains only the fixed hook metadata below.
+                    document = JsonDocument.Parse(line);
                 }
-                else if (operation.GetString() == "input-revoked" && row.TryGetProperty("detail", out var detail)
-                    && detail.TryGetProperty("reason", out var reason) && reason.GetString() is { } text
-                    && text is "owned-local-draft" or "owned-local-return-rotated" or "owned-local-retired"
-                        or "owned-local-identity-lost" or "owned-local-fresh-source-refused" or "owned-local-bind-proof-refused"
-                        or "owned-local-fresh-bound" or "owned-local-bind-retired" or "owned-local-bind-callback-retired")
+                catch (JsonException)
                 {
-                    if (records.Count == 16)
-                    {
-                        dropped++;
+                    malformedLines++;
+                    continue; // A concurrent partial line is unknown, never a complete event.
+                }
+                using (document)
+                {
+                    var row = document.RootElement;
+                    if (!row.TryGetProperty("operation", out var operation))
                         continue;
-                    }
-                    records.Add(new
+                    if (operation.GetString() is "owned-local-key" or "owned-local-return" or "owned-editor")
                     {
-                        operation = "local-revoked",
-                        reason = text
-                    });
+                        // Explicit scalar allowlist: never project source/draft text,
+                        // arbitrary detail, process/window identifiers or exception strings.
+                        string[] names = operation.GetString() == "owned-editor"
+                            ? ["operation", "atMs", "transportAtMs", "stage", "reason", "peer", "nextPeer", "active", "eventSequence",
+                            "sourceSequence", "Fenced", "Activated", "AppActivated", "SourceLeft", "Cancelled"]
+                            : operation.GetString() == "owned-local-return"
+                            ? ["operation", "atMs", "stage", "ageMs", "Fenced", "ReturnFenceSent", "ReturnFenced", "SourceReturned",
+                            "OverlayLeft", "Delivered", "Bound", "Cancelled", "sourceSequence", "dropped", "message", "active",
+                            "appLeft", "rootLeft", "focusLeft", "oldEditor", "nextNull", "peer"]
+                            : ["operation", "stage", "sample", "atMs", "inputSequence", "pressSequence", "released", "ageMs", "droppedAtLeast"];
+                        Retain(names.Where(name => row.TryGetProperty(name, out _))
+                            .ToDictionary(name => name, name => row.GetProperty(name).Clone()));
+                    }
+                    else if (operation.GetString() == "input-revoked" && row.TryGetProperty("detail", out var detail)
+                        && detail.TryGetProperty("reason", out var reason) && reason.GetString() is { } text
+                        && text is "owned-local-draft" or "owned-local-return-rotated" or "owned-local-retired"
+                            or "owned-local-identity-lost" or "owned-local-fresh-source-refused" or "owned-local-bind-proof-refused"
+                            or "owned-local-fresh-bound" or "owned-local-bind-retired" or "owned-local-bind-callback-retired")
+                    {
+                        Retain(new
+                        {
+                            operation = "local-revoked",
+                            reason = text
+                        });
+                    }
                 }
             }
             TestContext.Current.TestOutputHelper?.WriteLine(JsonSerializer.Serialize(new
             {
                 operation = "owned-confirmation-hook-trace",
-                records,
+                records = first.Concat(last).ToArray(),
                 dropped,
-                lineLimitReached = lines == 256
+                malformedLines,
+                retained = "first-eight-last-eight",
+                lineLimitReached = lines == 256,
+                offsetCapturedBeforeEditorClick = true
             }));
         }
-        catch { /* Diagnostics do not replace a timeout, gate refusal or cleanup error. */ }
+        catch (Exception error) when (error is not OutOfMemoryException) { /* Preserve the original failure and cleanup. */ }
     }
 }

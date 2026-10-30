@@ -1640,6 +1640,49 @@ class BrowserContract(unittest.TestCase):
         self.assertIsNotNone(diagnostic)
         self.assertEqual(diagnostic["publicationRound"], 53)
         self.assertGreaterEqual(diagnostic["eventToTabCheckMs"], 0)
+        self.assertGreaterEqual(diagnostic["eventToKeyEntryMs"], 0)
+        self.assertGreaterEqual(diagnostic["keyEntryToTabCheckMs"], 0)
+        self.assertAlmostEqual(
+            diagnostic["eventToKeyEntryMs"] + diagnostic["keyEntryToTabCheckMs"],
+            diagnostic["eventToTabCheckMs"],
+            delta=0.2,
+        )
+        commands = diagnostic["recentCommands"]
+        self.assertGreater(len(commands), 0)
+        self.assertLessEqual(len(commands), 4)
+        self.assertIn("capture", [item["operation"] for item in commands])
+        self.assertIn("publish", [item["operation"] for item in commands])
+        self.assertEqual(
+            [item["sequence"] for item in commands], sorted(item["sequence"] for item in commands)
+        )
+        for item in commands:
+            self.assertEqual(
+                set(item),
+                {
+                    "sequence",
+                    "operation",
+                    "outcome",
+                    "startFromEventMs",
+                    "endFromEventMs",
+                    "durationMs",
+                },
+            )
+            self.assertIn(
+                item["operation"],
+                {
+                    "capture",
+                    "publish",
+                    "describe",
+                    "overlay-render",
+                    "overlay-renew",
+                    "configure-shortcuts",
+                    "other",
+                },
+            )
+            self.assertIn(item["outcome"], {"returned", "null", "exception"})
+            self.assertLessEqual(item["startFromEventMs"], item["endFromEventMs"])
+            self.assertGreaterEqual(item["durationMs"], 0)
+            self.assertLessEqual(item["durationMs"], 10000)
         self.assertGreaterEqual(diagnostic["tabCheckToWriteMs"], 0)
         for prefix in ("event", "tabCheck"):
             self.assertLessEqual(
@@ -1647,6 +1690,7 @@ class BrowserContract(unittest.TestCase):
             )
         if busy_ms:
             self.assertGreaterEqual(diagnostic["eventToTabCheckMs"], busy_ms - 2)
+            self.assertGreaterEqual(diagnostic["eventToKeyEntryMs"], busy_ms - 2)
             self.assertLess(diagnostic["remainingMs"], 0)
             self.assertEqual(diagnostic["reason"], "StaleObservation")
             self.assertEqual(self.page.locator("#source").input_value(), "Hello")

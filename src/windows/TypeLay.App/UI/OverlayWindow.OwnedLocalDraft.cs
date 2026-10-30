@@ -84,6 +84,8 @@ internal sealed partial class OverlayWindow
     {
         if (!ReferenceEquals(_ownedLocalOpening, opening))
             return;
+        _ownedEditorHost?.TraceLocalDraft(opening, PracticeHost.LocalDraftTraceEvent.UiRetire,
+            appLeft: _localDraftAppLeft, rootLeft: _localDraftRootLeft, focusLeft: _localDraftFocusLeft);
         _localDraftTab = null;
         _ownedLocalOpening = null; // Reentrant Stop/Hide cannot act on a newer opening.
         _localDraftReturning = _localDraftPrompt = _localDraftRestoring = false;
@@ -143,6 +145,9 @@ internal sealed partial class OverlayWindow
             }
             if (_localDraftReturning)
             {
+                _ownedEditorHost?.TraceLocalDraft(opening, PracticeHost.LocalDraftTraceEvent.UiFocus,
+                    appLeft: _localDraftAppLeft, rootLeft: _localDraftRootLeft, focusLeft: _localDraftFocusLeft,
+                    oldEditor: ReferenceEquals(e.OldFocus, _editor), nextNull: e.NewFocus is null);
                 if (_localDraftRootLeft && !_localDraftFocusLeft && ReferenceEquals(e.OldFocus, _editor) && e.NewFocus is null)
                 {
                     _localDraftFocusLeft = true;
@@ -467,6 +472,9 @@ internal sealed partial class OverlayWindow
                 RetireLocalDraft(opening);
             return;
         }
+        _ownedEditorHost?.TraceLocalDraft(opening, PracticeHost.LocalDraftTraceEvent.UiMessage,
+            message, lp, message == 0x1c ? wp != 0 : (wp.ToInt64() & 0xffff) != 0,
+            _localDraftAppLeft, _localDraftRootLeft, _localDraftFocusLeft);
         // Provenance is used only for this one departure, never to classify a
         // local editor as a source or to preserve an acceptance lease.
         if (message == 0x1c && !_localDraftAppLeft && wp == 0 && _ownedEditorHost?.LocalDraftSourceThread(opening, lp) == true)

@@ -102,20 +102,64 @@ async def exercise_quick_panel(
         control.clicked()
 
     async def paint(name):
+        opening = tray.opening
+        action = tray.model_action
+        controls = [tray.enabled, *tray.actions.values()]
+        if action is not None:
+            controls.append(action)
+        if tray.model_detail.get_visible():
+            controls.append(tray.model_detail)
+        failure = []
+        frame_size = []
         async with asyncio.timeout(3):
             painted = asyncio.Event()
             clock = tray.window.get_frame_clock()
-            watch = clock.connect("after-paint", lambda *_: painted.set())
+
+            def complete_frame(*_):
+                if painted.is_set():
+                    return
+                try:
+                    assert tray.current(opening) and tray.model_action is action, (
+                        "quick panel picture opening retired"
+                    )
+                    width, height = tray.window.get_size()
+                    # A first draw can precede the native resize needed by a
+                    # longer model explanation. Wait for the same current
+                    # controls inside both GTK clips and the captured window.
+                    try:
+                        for control in controls:
+                            visible(control)
+                            assert control.get_allocated_width() > 1
+                            assert control.get_allocated_height() > 1
+                            point = control.translate_coordinates(tray.window, 0, 0)
+                            assert point is not None
+                            x, y = point
+                            assert (
+                                0 <= x
+                                and 0 <= y
+                                and x + control.get_allocated_width() <= width
+                                and y + control.get_allocated_height() <= height
+                            )
+                    except AssertionError:
+                        return
+                    frame_size[:] = [width, height]
+                except Exception as error:
+                    failure.append(error)
+                painted.set()
+
+            watch = clock.connect("after-paint", complete_frame)
             try:
                 tray.window.queue_draw()
                 await painted.wait()
             finally:
                 if clock.handler_is_connected(watch):
                     clock.disconnect(watch)
+        if failure:
+            raise failure[0]
+        assert tray.current(opening) and tray.model_action is action
+        assert tuple(tray.window.get_size()) == tuple(frame_size)
         if output:
-            shot = Gdk.pixbuf_get_from_window(
-                tray.window.get_window(), 0, 0, *tray.window.get_size()
-            )
+            shot = Gdk.pixbuf_get_from_window(tray.window.get_window(), 0, 0, *frame_size)
             assert shot is not None
             shot.savev(str(output / (name + ".png")), "png", [], [])
 
@@ -159,7 +203,52 @@ async def exercise_quick_panel(
     question = dialog()
     cancel = question.get_widget_for_response(Gtk.ResponseType.CANCEL)
     assert question.get_default_widget() is cancel
-    await until(cancel.has_focus)
+
+    def confirmation_focus():
+        return {
+            "dialogMapped": question.get_mapped(),
+            "dialogActive": question.is_active(),
+            "dialogTopFocus": question.has_toplevel_focus(),
+            "internalCancel": question.get_focus() is cancel,
+            "defaultCancel": question.get_default_widget() is cancel,
+            "cancelMapped": cancel.get_mapped(),
+            "cancelSensitive": cancel.is_sensitive(),
+            "cancelCanFocus": cancel.get_can_focus(),
+            "cancelHasFocus": cancel.has_focus(),
+            "cancelIsFocus": cancel.is_focus(),
+            "parentActive": tray.window.is_active(),
+            "ownedTransient": question.get_transient_for() is tray.window,
+        }
+
+    first_focus = None
+    sampled = False
+
+    def cancel_focused():
+        nonlocal first_focus, sampled
+        if not sampled:
+            sampled = True
+            try:
+                first_focus = confirmation_focus()
+            except MemoryError:
+                raise
+            except Exception:
+                pass
+        return cancel.has_focus()
+
+    try:
+        await until(cancel_focused)
+    except TimeoutError:
+        try:
+            print(
+                "TRAY CONFIRMATION FOCUS",
+                json.dumps({"first": first_focus, "last": confirmation_focus()}),
+                flush=True,
+            )
+        except MemoryError:
+            raise
+        except Exception:
+            pass
+        raise
     question.response(Gtk.ResponseType.CANCEL)
     assert len(calls["package"]) == before["package"] + 1
     assert calls["package"][-1] == ((None,), {})
@@ -232,6 +321,63 @@ async def exercise_quick_panel(
     assert counts() == before
     print("TRAY OWNED MODAL MAP RETURNED: stale dialog refused", flush=True)
     await settled()
+
+    # GTK finishes map/focus/modal-grab before notifying visible, still
+    # within show_all. Consuming A there must not let present resurrect it.
+    # Destroying in map itself would invalidate GTK's remaining show work.
+    for result in (Gtk.ResponseType.CANCEL, None):
+        before = counts()
+        retired_dialogs = []
+        visibility_handlers = []
+        armed = True
+        consumed = False
+
+        def retire_visible(widget, _property):
+            nonlocal consumed
+            if consumed or not widget.get_visible():
+                return
+            consumed = True
+            try:
+                if result is None:
+                    widget.destroy()
+                else:
+                    widget.response(result)
+                retired_dialogs.append(widget)
+            except Exception as error:
+                errors.append(error)
+
+        def watch_mapped(_hint, _count, parameters):
+            nonlocal armed
+            widget = parameters[0]
+            if not (
+                armed
+                and isinstance(widget, Gtk.MessageDialog)
+                and widget.get_transient_for() is tray.window
+                and widget.get_modal()
+            ):
+                return True
+            armed = False
+            try:
+                watch = widget.connect("notify::visible", retire_visible)
+                visibility_handlers.append((widget, watch))
+            except Exception as error:
+                errors.append(error)
+            return True
+
+        hook = GObject.signal_add_emission_hook(signal, 0, watch_mapped)
+        try:
+            await click(tray.model_action)
+        finally:
+            GObject.signal_remove_emission_hook(signal, hook)
+            for widget, watch in visibility_handlers:
+                if widget.handler_is_connected(watch):
+                    widget.disconnect(watch)
+        if errors:
+            raise errors[0]
+        assert len(retired_dialogs) == 1 and not retired_dialogs[0].get_visible()
+        assert tray.model_confirmation is None
+        assert len(calls["install"]) == before["install"]
+        assert len(calls["package"]) == before["package"] + (result is not None)
 
     # A view retirement destroys A's confirmation. Its destroy callback may
     # open B while the original renderer is still on the stack.
@@ -718,7 +864,7 @@ def main():
                 host,
                 tasks,
                 lambda: actions.append("settings"),
-                lambda: actions.append("quit"),
+                lambda **_kwargs: actions.append("quit"),
                 availability,
             )
             assert tray.indicator is not None, "StatusNotifier adapter unavailable"
@@ -1670,7 +1816,16 @@ def main():
             assert tray.operation.get_label() == feedback["message"]
             assert tray.operation.get_visible() and not actions
             items["设置…"].clicked()
-            items["退出 TypeLay"].clicked()
+            # Quit now requires a current public panel entry. This callback is
+            # only the dispatch boundary; quit_ui covers the real confirmation.
+            tray.show_panel()
+            await settled()
+            quit_button = items["退出 TypeLay"]
+            async with asyncio.timeout(3):
+                while not tray.window.is_active() or not quit_button.get_mapped():
+                    await asyncio.sleep(0.01)
+                assert quit_button.is_sensitive()
+                quit_button.clicked()
             assert actions == ["settings", "quit"]
             saved = json.loads((directory / "config/settings.json").read_text())
             assert saved["Mode"] == 1 and saved["Source"] == "en" and saved["Target"] == "zh"

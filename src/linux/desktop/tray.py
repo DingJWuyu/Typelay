@@ -45,6 +45,8 @@ class Tray:
         self.style_load_revision = 0
         self.language_choices = None
         self.opening = None
+        self.opening_revision = 0
+        self.quit_intent = self.quit_owner_intent = None
         self.model_owner = self.model_listener = self.model_confirmation = None
         self.model_intent = None
         self.model_render = None
@@ -204,7 +206,14 @@ class Tray:
             button.add(caption)
             button.set_halign(Gtk.Align.FILL)
             button.get_accessible().set_name(title)
-            button.connect("clicked", lambda _button, callback=action: self.panel_action(callback))
+            if title == "退出 TypeLay":
+                button.connect(
+                    "clicked", lambda control: self.request_quit(control, quit_requested)
+                )
+            else:
+                button.connect(
+                    "clicked", lambda _button, callback=action: self.panel_action(callback)
+                )
             self.panel.pack_start(button, False, False, 0)
             self.actions[title] = button
         from localization import Localizer
@@ -220,14 +229,48 @@ class Tray:
         self.hide_panel()
         callback()
 
+    def request_quit(self, control, callback):
+        if not (
+            self.current(self.opening)
+            and self.window.is_active()
+            and control is self.actions["退出 TypeLay"]
+            and control.get_mapped()
+            and control.is_sensitive()
+        ):
+            return
+        revision = self.opening_revision
+        self.hide_panel()
+        if self.closed or self.opening_revision != revision or self.opening is not None:
+            return
+        intent = self.quit_intent = object()
+
+        def current():
+            return (
+                self.quit_intent is intent
+                and not self.closed
+                and self.opening_revision == revision
+                and self.opening is None
+                and not self.window.get_visible()
+            )
+
+        dialog = callback(guard=current, parent=self.window)
+        owner = self.model_owner
+        if current() and owner is not None and dialog is not None and owner.quit_dialog is dialog:
+            self.quit_owner_intent = owner.quit_intent
+
     def retire_opening(self):
+        self.quit_intent = None
+        owner_intent, self.quit_owner_intent = self.quit_owner_intent, None
+        owner = self.model_owner
         self.opening = None
         self.model_intent = None
         confirmation, self.model_confirmation = self.model_confirmation, None
+        if owner is not None and owner_intent is not None:
+            owner.retire_quit(expected=owner_intent)
         for picker in self.parents.values():
-            picker.popdown()
             if self.opening is not None:
                 break
+            picker.popdown()
         if confirmation is not None:
             confirmation.destroy()
         return self.opening is None
@@ -417,6 +460,7 @@ class Tray:
     def show_panel(self, _x=None, _y=None):
         if self.closed:
             return
+        self.opening_revision += 1
         if not self.retire_opening() or self.closed:
             return
         opening = self.opening = object()

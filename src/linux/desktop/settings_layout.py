@@ -852,12 +852,38 @@ def build(
     about.pack_start(Gtk.Label(label="Linux preview 0.2.0"), False, False, 0)
     owner.page_boxes["about"].pack_start(about, False, False, 0)
     updates = card("about")
-    unavailable = Gtk.Button(label="尚未提供")
-    unavailable.set_sensitive(False)
-    widget, caption = row("软件更新", unavailable)
-    owner.localized.append((caption.set_text, "软件更新", "Software updates"))
-    updates.pack_start(widget, False, False, 0)
-    owner.register_search_setting("about", "updates", "软件更新", "Software updates", widget)
+    update_note = "软件更新功能尚未提供。此控件仅用于展示，不会检查或下载更新。"
+    update_note_en = "Software updates are not available. This control is for display only and will not check for or download updates."
+    automatic = style(Gtk.Switch(), "about-update-switch")
+    automatic.set_active(False)
+    check = style(Gtk.Button(label="检查更新"), "about-update-action")
+    owner.localized.append((check.set_label, "检查更新", "Check now"))
+    for key, chinese, english, control, accessible_zh, accessible_en in (
+        (
+            "autoUpdate",
+            "自动检查更新",
+            "Check for updates automatically",
+            automatic,
+            "自动检查更新",
+            "Check for updates automatically",
+        ),
+        ("updates", "软件更新", "Software update", check, "检查更新", "Check now"),
+    ):
+        # These category-four controls have no action or persistence binding.
+        control.set_sensitive(False)
+        control.set_can_focus(False)
+        widget, caption = row(chinese, control)
+        owner.localized.extend(
+            (
+                (caption.set_text, chinese, english),
+                (control.get_accessible().set_name, accessible_zh, accessible_en),
+                (control.get_accessible().set_description, update_note, update_note_en),
+                (control.set_tooltip_text, update_note, update_note_en),
+                (widget.set_tooltip_text, update_note, update_note_en),
+            )
+        )
+        updates.pack_start(widget, False, False, 0)
+        owner.register_search_setting("about", key, chinese, english, widget)
     privacy = card("about")
     for chinese, english, value, translated in (
         ("翻译在哪里运行", "Translation runs", "这台设备", "On this device"),
@@ -871,8 +897,9 @@ def build(
         )
         privacy.pack_start(widget, False, False, 0)
         owner.register_search_setting("about", chinese, chinese, english, widget)
+    owner.page_boxes["about"].reorder_child(updates, -1)
     quit_button = style(Gtk.Button(label="退出 TypeLay"), "flat")
-    quit_button.connect("clicked", lambda *_: owner.dismiss(quit_requested=quit_requested))
+    quit_button.connect("clicked", owner.request_quit)
     navigation.pack_end(quit_button, False, False, 0)
     from localization import Localizer
 

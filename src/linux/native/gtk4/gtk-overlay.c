@@ -1439,6 +1439,31 @@ static gboolean glossary_editor_ready(void) {
     json_object_unref(view); g_object_unref(editor);
     return current;
 }
+/* Fixed, bounded rejection evidence on the existing opt-in trace. No input,
+ * provider query, metadata recomputation, source text or opaque identity. */
+static void trace_glossary_action(const char *stage, JsonObject *basis, gint clear, gint metadata) {
+    static guint count;
+    if (!g_getenv("TYPELAY_TRACE") || count >= 32) return;
+    count++;
+    Target *target = overlay.target;
+    gboolean live = target && !target->dead;
+    GtkWidget *focus = overlay.top ? gtk_window_get_focus(GTK_WINDOW(overlay.top)) : NULL;
+    const char *focus_kind = !focus ? "none" : live && focus == target->client ? "source"
+        : focus == overlay.text ? "editor" : "other";
+    g_printerr("TypeLay GTK4 glossary-action stage=%s atMs=%" G_GINT64_FORMAT
+        " expiresAtMs=%" G_GINT64_FORMAT " revision=%" G_GINT64_FORMAT
+        " sourceLive=%d focus=%s popupMapped=%d pending=%d form=%d clear=%d metadata=%d"
+        " context=%" G_GINT64_FORMAT " basisContext=%" G_GINT64_FORMAT
+        " input=%" G_GINT64_FORMAT " basisInput=%" G_GINT64_FORMAT
+        " content=%" G_GINT64_FORMAT " basisContent=%" G_GINT64_FORMAT "\n",
+        stage, tl_now(), overlay.expires, overlay.revision, live, focus_kind,
+        overlay.more_popup && gtk_widget_get_mapped(overlay.more_popup),
+        overlay.pending_glossary, overlay.glossary != NULL, clear, metadata,
+        live ? (gint64)target->im_state.context_generation : -1,
+        tl_integer(tl_object(basis, "contextStamp"), "context", -1),
+        live ? (gint64)target->input_revision : -1, tl_integer(basis, "inputRevision", -1),
+        live ? (gint64)target->content_revision : -1, tl_integer(basis, "contentRevision", -1));
+}
 static gboolean glossary_source_ready(void) {
     Target *target = overlay.target;
     const char *state = tl_string(overlay.view, "state");
@@ -1448,16 +1473,22 @@ static gboolean glossary_source_ready(void) {
         || gtk_window_get_focus(GTK_WINDOW(overlay.top)) != target->client || tl_focused() != target
         || !translation_menu_current()
         || (overlay.pending_glossary && (!overlay.text || !overlay.glossary_draft_buffer
-            || gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text)) != overlay.glossary_draft_buffer))) return FALSE;
+            || gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text)) != overlay.glossary_draft_buffer))) {
+        trace_glossary_action("reject-source-entry", overlay.authority, -1, -1);
+        return FALSE;
+    }
     JsonObject *view = json_object_ref(overlay.view), *basis = tl_copy(overlay.authority);
-    gboolean current = tl_ime_clear(target) && overlay.target == target && overlay.view == view && active()
+    gboolean clear = tl_ime_clear(target);
+    gint metadata = -1; /* Unknown if the original short-circuit never reaches it. */
+    gboolean current = clear && overlay.target == target && overlay.view == view && active()
         && tl_focused() == target && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == target->client
-        && tl_metadata_matches(target, basis)
+        && (metadata = tl_metadata_matches(target, basis))
         && (gint64)target->im_state.context_generation == tl_integer(tl_object(basis, "contextStamp"), "context", -1)
         && (gint64)target->input_revision == tl_integer(basis, "inputRevision", -1)
         && (gint64)target->content_revision == tl_integer(basis, "contentRevision", -1)
         && overlay.view == view && translation_menu_current() && active() && tl_focused() == target
         && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == target->client;
+    if (!current) trace_glossary_action("reject-source-proof", basis, clear, metadata);
     json_object_unref(view); json_object_unref(basis);
     return current;
 }
@@ -1891,14 +1922,21 @@ static gboolean key_event(GtkEventControllerLegacy *controller, GdkEvent *event,
     return tl_dispatch_key(event);
 }
 static void translation_action_clicked(const char *operation, JsonObject *view) {
-    if (!more_current() || !gtk_widget_get_mapped(overlay.more_popup) || !translation_menu_current()) return;
+    if (!more_current() || !gtk_widget_get_mapped(overlay.more_popup) || !translation_menu_current()) {
+        if (strcmp(operation, "glossary") == 0)
+            trace_glossary_action("reject-translation-current", overlay.authority, -1, -1);
+        return;
+    }
     GtkWidget *popup = g_object_ref(overlay.more_popup);
     JsonObject *token = json_object_ref(overlay.menu_token);
     JsonObject *context = json_object_ref(tl_object(view, "viewContext"));
     gboolean glossary = strcmp(operation, "glossary") == 0;
     if (glossary && (!glossary_origin_ready() || !more_render_current(view, context, popup)
         || overlay.menu_token != token || !gtk_widget_get_mapped(popup)
-        || !translation_menu_current())) goto done;
+        || !translation_menu_current())) {
+        trace_glossary_action("reject-origin-or-opening", overlay.authority, -1, -1);
+        goto done;
+    }
     JsonObject *state = translation_actions(view);
     gboolean alternative = strcmp(operation, "alternative") == 0;
     gboolean inherit = strcmp(operation, "style-inherit") == 0;
@@ -1906,7 +1944,10 @@ static void translation_action_clicked(const char *operation, JsonObject *view) 
         || overlay.pending_glossary || overlay.glossary
         : alternative ? !boolean(state, "alternativeReleased") || !boolean(state, "canRequestAlternative")
         : (!inherit && !boolean(state, "styleReleased"))
-            || !boolean(state, inherit ? "canInheritStyle" : "canChangeStyle")) goto done;
+            || !boolean(state, inherit ? "canInheritStyle" : "canChangeStyle")) {
+        if (glossary) trace_glossary_action("reject-qualified-state", overlay.authority, -1, -1);
+        goto done;
+    }
     /* The bridge resolves this exact transport record to its original complete
      * session token. Never emit() here: it reads the latest overlay identity. */
     JsonObject *event = json_object_new();
@@ -1935,9 +1976,14 @@ static void translation_action_clicked(const char *operation, JsonObject *view) 
     }
 
     close_more(TRUE);
-    if (translation_render_current(view, context) && overlay.menu_token == token && active() && translation_menu_current())
+    if (translation_render_current(view, context) && overlay.menu_token == token && active() && translation_menu_current()) {
         tl_send_event("ui", event);
-    else json_object_unref(event);
+        /* Post-send state only, not the frozen authorization snapshot. */
+        if (glossary) trace_glossary_action("sent", overlay.authority, -1, -1);
+    } else {
+        if (glossary) trace_glossary_action("reject-postclose", overlay.authority, -1, -1);
+        json_object_unref(event);
+    }
     if (!glossary && overlay.menu_token == token && !overlay.more_popup) clear_translation_menu();
 done:
     json_object_unref(context); json_object_unref(token); g_object_unref(popup);
@@ -1958,12 +2004,18 @@ static void trace_resume(GtkWidget *widget, gpointer data) {
 }
 /* Display may remain open during preedit. An action requires one real
  * current observation and cannot borrow a replacement opening after reentry. */
-static gboolean more_action_ready(GtkWidget *popup, JsonObject *view, JsonObject *token) {
+static gboolean more_action_ready(GtkWidget *popup, JsonObject *view, JsonObject *token, gboolean trace) {
     if (!more_current() || overlay.more_popup != popup || overlay.view != view
-        || overlay.menu_token != token || !translation_menu_current()) return FALSE;
+        || overlay.menu_token != token || !translation_menu_current()) {
+        if (trace) trace_glossary_action("reject-more-current", overlay.authority, -1, -1);
+        return FALSE;
+    }
     Target *target = overlay.target;
     GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(overlay.top));
-    if (!focus) return FALSE;
+    if (!focus) {
+        if (trace) trace_glossary_action("reject-more-focus", overlay.authority, -1, -1);
+        return FALSE;
+    }
     g_object_ref(focus);
     gboolean clear = focus == overlay.text ? !overlay.composing && tl_widget_ime_clear(focus)
         : target && !target->dead && focus == target->client && tl_focused() == target && tl_ime_clear(target);
@@ -1971,16 +2023,20 @@ static gboolean more_action_ready(GtkWidget *popup, JsonObject *view, JsonObject
         && overlay.menu_token == token && overlay.target == target && translation_menu_current()
         && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == focus
         && (focus != overlay.text || !overlay.composing);
+    if (trace && !current) trace_glossary_action("reject-more-proof", overlay.authority, clear, -1);
     g_object_unref(focus);
     return current;
 }
 static void toggle_more(JsonObject *view);
 static void button_clicked(GtkButton *button, gpointer data) {
     const char *operation = data;
+    gboolean glossary_action = strcmp(operation, "glossary") == 0;
+    if (glossary_action) trace_glossary_action("clicked", overlay.authority, -1, -1);
     if (strcmp(operation, "resume") == 0) trace_resume(GTK_WIDGET(button), "clicked");
     gboolean from_more = overlay.more_popup && gtk_widget_is_ancestor(GTK_WIDGET(button), overlay.more_popup);
     if (!overlay.popover || (!from_more && !gtk_widget_is_ancestor(GTK_WIDGET(button), overlay.popover))) {
         if (strcmp(operation, "resume") == 0) trace_resume(GTK_WIDGET(button), "reject-owner");
+        if (glossary_action) trace_glossary_action("reject-owner", overlay.authority, -1, -1);
         return;
     }
     if (strcmp(operation, "resume") == 0) {
@@ -2005,9 +2061,15 @@ static void button_clicked(GtkButton *button, gpointer data) {
         emit("resume", NULL);
         return;
     }
-    if (paused() || overlay.glossary || !tl_configuration_current(overlay.generation)) return;
+    if (paused() || overlay.glossary || !tl_configuration_current(overlay.generation)) {
+        if (glossary_action) trace_glossary_action("reject-view", overlay.authority, -1, -1);
+        return;
+    }
     if (from_more && (!more_current() || !gtk_widget_get_mapped(GTK_WIDGET(button))
-        || !gtk_widget_is_sensitive(GTK_WIDGET(button)))) return;
+        || !gtk_widget_is_sensitive(GTK_WIDGET(button)))) {
+        if (glossary_action) trace_glossary_action("reject-control", overlay.authority, -1, -1);
+        return;
+    }
     /* Source view/configuration changes replace this identity. The menu-only
        projection preserves it without changing the original token or revision. */
     JsonObject *clicked_view = json_object_ref(overlay.view);
@@ -2017,7 +2079,7 @@ static void button_clicked(GtkButton *button, gpointer data) {
     gint64 clicked_revision = overlay.revision;
     GtkWidget *clicked_focus = from_more ? gtk_window_get_focus(GTK_WINDOW(overlay.top)) : NULL;
     if (clicked_focus) g_object_ref(clicked_focus);
-    if (from_more && !more_action_ready(clicked_popup, clicked_view, clicked_token)) goto done;
+    if (from_more && !more_action_ready(clicked_popup, clicked_view, clicked_token, glossary_action)) goto done;
     if (strcmp(operation, "more") == 0) {
         if (GTK_WIDGET(button) == overlay.more) toggle_more(clicked_view);
     } else if (strcmp(operation, "menu") == 0) {

@@ -489,9 +489,9 @@ public sealed partial class SetupRenderingTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => throw new HttpRequestException("controlled-network-failure");
     }
 
-    private sealed class TrayProgressHttp(bool knownTotal, bool allowRemainder = false) : HttpMessageHandler
+    private sealed class TrayProgressHttp(bool knownTotal, bool allowRemainder = false, bool allowFinalSegment = false) : HttpMessageHandler
     {
-        public TrayProgressStream Body { get; } = new(allowRemainder);
+        public TrayProgressStream Body { get; } = new(allowRemainder, allowFinalSegment);
         public Uri? BodyUri
         {
             get; private set;
@@ -516,15 +516,16 @@ public sealed partial class SetupRenderingTests
         }
     }
 
-    private sealed class TrayProgressStream(bool allowRemainder = false) : Stream
+    private sealed class TrayProgressStream(bool allowRemainder = false, bool allowFinalSegment = false) : Stream
     {
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool Cancelled
         {
             get; private set;
         }
-        private bool _sent, _remainderSent;
+        private bool _sent, _remainderSent, _finalSent;
         public TaskCompletionSource Continue { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource FinalSegment { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public override bool CanRead => true;
         public override bool CanSeek => false;
         public override bool CanWrite => false;
@@ -552,6 +553,14 @@ public sealed partial class SetupRenderingTests
                     Assert.True(buffer.Length >= 32768);
                     buffer.Span[..32768].Clear();
                     return 32768;
+                }
+                if (allowFinalSegment && !_finalSent)
+                {
+                    await FinalSegment.Task.WaitAsync(cancellationToken);
+                    _finalSent = true;
+                    Assert.True(buffer.Length >= 16384);
+                    buffer.Span[..16384].Clear();
+                    return 16384;
                 }
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             }

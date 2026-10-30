@@ -393,8 +393,8 @@ internal sealed partial class SettingsWindow
             <Setter Property="BorderBrush" Value="{DynamicResource ApplicationSheetButtonEdge}"/><Setter Property="BorderThickness" Value="0.5"/>
             <Setter Property="Cursor" Value="Hand"/><Setter Property="FontFamily" Value="{DynamicResource UiFont}"/>
             <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
-              <Grid Background="Transparent" RenderTransformOrigin="0.5,0.5">
-                <Grid.RenderTransform><ScaleTransform x:Name="pressScale"/></Grid.RenderTransform>
+              <Grid x:Name="pressSurface" Background="Transparent" RenderTransformOrigin="0.5,0.5">
+                <Grid.RenderTransform><ScaleTransform/></Grid.RenderTransform>
                 <Border x:Name="surface" CornerRadius="7" Background="{TemplateBinding Background}" IsHitTestVisible="False">
                   <Border.Effect><DropShadowEffect BlurRadius="2" ShadowDepth="1" Direction="270" Opacity="{DynamicResource ApplicationSheetButtonShadowOpacity}" Color="{DynamicResource ApplicationSheetButtonShadowColor}"/></Border.Effect>
                 </Border>
@@ -404,7 +404,7 @@ internal sealed partial class SettingsWindow
               </Grid>
               <ControlTemplate.Triggers>
                 <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="focus" Property="Visibility" Value="Visible"/></Trigger>
-                <Trigger Property="IsPressed" Value="True"><Setter TargetName="surface" Property="Background" Value="{DynamicResource Fill2}"/><Setter TargetName="pressScale" Property="ScaleTransform.ScaleX" Value="0.97"/><Setter TargetName="pressScale" Property="ScaleTransform.ScaleY" Value="0.97"/></Trigger>
+                <Trigger Property="IsPressed" Value="True"><Setter TargetName="surface" Property="Background" Value="{DynamicResource Fill2}"/><Setter TargetName="pressSurface" Property="RenderTransform"><Setter.Value><ScaleTransform ScaleX="0.97" ScaleY="0.97"/></Setter.Value></Setter></Trigger>
                 <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
               </ControlTemplate.Triggers>
             </ControlTemplate></Setter.Value></Setter>

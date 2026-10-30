@@ -63,6 +63,9 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface button { background-image: none; background-color: #ffffff; color: #141413; border: 1px solid rgba(20,20,19,.16); border-radius: 8px; padding: 3px 12px; min-height: 18px; font-size: 12.5px; box-shadow: 0 1px 2px rgba(20,20,19,.04); }
 .typelay-surface button:hover { background-color: #f2f0e9; }
 .typelay-surface button:disabled { opacity: .5; }
+.typelay-surface button.about-update-action { min-height: 26px; padding: 0 12px; border: 0; border-radius: 7px; font-weight: 500; background: #fff; box-shadow: 0 1px 2px rgba(20,20,19,.06), inset 0 0 0 .5px rgba(20,20,19,.06); }
+.typelay-surface.settings-dark button.about-update-action { background: #3a3936; box-shadow: 0 1px 2px rgba(0,0,0,.3), inset 0 0 0 .5px rgba(255,255,255,.06); }
+.typelay-surface button.about-update-action:disabled, .typelay-surface switch.about-update-switch:disabled { opacity: .45; }
 .typelay-surface .flat { background: transparent; border-color: transparent; box-shadow: none; }
 .typelay-surface .flat:hover { background: rgba(20,20,19,.08); }
 .typelay-surface entry { background: #fff; color: #141413; border: 1px solid rgba(20,20,19,.16); border-radius: 8px; padding: 4px 8px; min-height: 22px; box-shadow: none; }

@@ -459,6 +459,8 @@ int main(int argc, char **argv) {
     QString editorProviderAction;
     QJsonArray motionFrames;
     int motionRecordings = 0, motionArmed = 0;
+    QPointer<QAbstractButton> motionTrigger;
+    qint64 motionTriggerInstance = 0;
     bool motionRecording = false, observeFonts = false;
     const auto initialStyleSheet = app.styleSheet();
     auto publish = [&] {
@@ -534,9 +536,17 @@ int main(int argc, char **argv) {
         observer.observeOverlay(overlay);
         observer.observeOverlay(menu);
         QJsonObject overlayControls;
+        QAbstractButton *visibleExpand = nullptr;
+        QJsonObject visibleExpandControl;
+        int visibleExpandCount = 0;
         for (auto *button : window.findChildren<QAbstractButton *>()) {
             const auto name = button->objectName();
             if (!name.startsWith(QStringLiteral("typelay-"))) continue;
+            if (name == QStringLiteral("typelay-expand") && button->window() == &window
+                && button->isVisible() && button->isEnabled()) {
+                visibleExpand = button;
+                ++visibleExpandCount;
+            }
             observer.observeOverlay(button);
             QJsonObject control{
                 {"text", button->text()}, {"description", button->accessibleName()}, {"focused", button->hasFocus()},
@@ -557,8 +567,13 @@ int main(int argc, char **argv) {
                 control.insert("styleClickGeometry", QJsonObject{{"x", origin.x()}, {"y", origin.y()},
                     {"width", local.width()}, {"height", local.height()}});
             }
+            if (button == visibleExpand) visibleExpandControl = control;
             overlayControls.insert(name, control);
         }
+        // A hidden retired namesake must not overwrite the one current
+        // control selected by the same ownership/visibility predicate.
+        if (visibleExpandCount == 1)
+            overlayControls.insert(QStringLiteral("typelay-expand"), visibleExpandControl);
         auto *clipboard = QApplication::clipboard();
         QJsonObject state{{"pid", qint64(getpid())}, {"qtVersion", QString::fromLatin1(qVersion())},
             {"observedAtMs", observedAtMs()}, {"overlayEventCount", qint64(observer.overlayEventCount)},
@@ -567,6 +582,8 @@ int main(int argc, char **argv) {
             {"applicationThemeChanges", applicationThemeChanges},
             {"themeSampleCount", themeSampleCount}, {"themeSamples", themeSamples},
             { "motionArmed", motionArmed }, {"motionFrames", motionFrames}, {"motionRecordings", motionRecordings}, {"motionRecording", motionRecording},
+            {"motionArmedInstance", motionTriggerInstance},
+            {"motionArmedCurrent", motionTrigger && visibleExpandCount == 1 && visibleExpand == motionTrigger},
             {"motionInputs", observer.motionInputs},
             {"animationDuration", overlay ? overlay->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, overlay) : -1},
             {"fullscreen", window.isFullScreen()}, {"width", window.width()}, {"height", window.height()},
@@ -671,8 +688,19 @@ int main(int argc, char **argv) {
                     ? initialStyleSheet + QStringLiteral("\n* { widget-animation-duration: 0; }") : initialStyleSheet);
             }
             else if (op == "observe-motion") {
-                auto *expand = window.findChild<QAbstractButton *>(QStringLiteral("typelay-expand"));
+                // Hidden deleteLater children may still share the public name.
+                // Arm only the same unique visible, enabled owned control that
+                // the state publication and subsequent real click must identify.
+                QAbstractButton *expand = nullptr;
+                for (auto *button : window.findChildren<QAbstractButton *>(QStringLiteral("typelay-expand"))) {
+                    if (button->window() != &window || !button->isVisible() || !button->isEnabled()) continue;
+                    if (expand) qFatal("Multiple current overlay motion controls");
+                    expand = button;
+                }
                 if (!expand || motionRecording) qFatal("Overlay motion observation unavailable");
+                observer.observeOverlay(expand);
+                motionTrigger = expand;
+                motionTriggerInstance = qint64(observer.overlayObjects.value(expand).instance);
                 const auto directory = command.value("directory").toString();
                 if (!directory.isEmpty() && !QDir().mkpath(directory)) qFatal("Motion output directory unavailable");
                 observer.motionInputs = {};

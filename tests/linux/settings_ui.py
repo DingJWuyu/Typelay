@@ -41,6 +41,7 @@ def main(arguments=None):
     parser.add_argument("--applications-only", action="store_true")
     parser.add_argument("--applications-empty-only", action="store_true")
     parser.add_argument("--toast-only", action="store_true")
+    parser.add_argument("--about-only", action="store_true")
     parser.add_argument("--shortcuts-reset-only", action="store_true")
     parser.add_argument("--shortcuts-only", action="store_true")
     parser.add_argument("--appearance-only", action="store_true")
@@ -396,6 +397,104 @@ def main(arguments=None):
                 await settle(
                     lambda: state.get(key) == value and not jobs and not surface.pending_settings
                 )
+
+        async def exercise_about_updates():
+            from gi.repository import Atk
+
+            def update_control(kind, name):
+                pending, found = [surface.page_boxes["about"]], []
+                for _ in range(256):
+                    if not pending:
+                        break
+                    widget = pending.pop()
+                    if isinstance(widget, kind) and widget.get_accessible().get_name() == name:
+                        found.append(widget)
+                    if isinstance(widget, Gtk.Container):
+                        pending.extend(widget.get_children())
+                else:
+                    raise AssertionError("About subtree exceeded its finite observation bound")
+                assert len(found) == 1, ("missing or ambiguous About control", name, len(found))
+                return found[0]
+
+            settings_path = directory / "config/settings.json"
+            for language in ("zh-CN", "en"):
+                for theme in ("light", "dark"):
+                    assert (
+                        await host.ask("settingsPatch", {"uiLanguage": language, "theme": theme})
+                        is True
+                    )
+                    await settle(
+                        lambda: state.get("uiLanguage") == language
+                        and state.get("theme") == theme
+                        and not jobs
+                    )
+                    surface.window.present()
+                    surface.sidebar.select_row(surface.nav_rows["about"])
+                    await settle(
+                        lambda: surface.window.is_active()
+                        and surface.pages.get_visible_child_name() == "about"
+                        and not surface.pages.get_transition_running()
+                    )
+                    automatic = update_control(
+                        Gtk.Switch,
+                        "自动检查更新"
+                        if language == "zh-CN"
+                        else "Check for updates automatically",
+                    )
+                    check = update_control(
+                        Gtk.Button, "检查更新" if language == "zh-CN" else "Check now"
+                    )
+                    before = settings_path.read_bytes()
+                    requests = (host.patch_submissions, host.draft_submissions)
+                    assert not automatic.get_active()
+                    assert check.get_label() == ("检查更新" if language == "zh-CN" else "Check now")
+                    for control in (automatic, check):
+                        assert control.get_toplevel() is surface.window and control.get_mapped()
+                        assert not control.is_sensitive() and not control.get_can_focus()
+                        description = control.get_accessible().get_description() or ""
+                        assert (
+                            "尚未提供" if language == "zh-CN" else "not available"
+                        ) in description
+                        assert control.get_tooltip_text() == description
+                        assert not Atk.Action.do_action(control.get_accessible(), 0)
+                        scroll = surface.page_scrolls["about"]
+                        adjustment = scroll.get_vadjustment()
+                        point = control.translate_coordinates(surface.page_boxes["about"], 0, 0)
+                        adjustment.set_value(
+                            max(
+                                adjustment.get_lower(),
+                                min(
+                                    point[1] - 30,
+                                    adjustment.get_upper() - adjustment.get_page_size(),
+                                ),
+                            )
+                        )
+                        await asyncio.sleep(0.05)
+                        ancestor = control.get_parent()
+                        clips = 0
+                        while ancestor is not None:
+                            if isinstance(ancestor, (Gtk.Viewport, Gtk.ScrolledWindow)):
+                                position = control.translate_coordinates(ancestor, 0, 0)
+                                assert (
+                                    0
+                                    <= position[0]
+                                    <= ancestor.get_allocated_width()
+                                    - control.get_allocated_width()
+                                )
+                                assert (
+                                    0
+                                    <= position[1]
+                                    <= ancestor.get_allocated_height()
+                                    - control.get_allocated_height()
+                                )
+                                clips += 1
+                            ancestor = ancestor.get_parent()
+                        assert clips >= 2
+                        assert not automatic.get_active()
+                        assert requests == (host.patch_submissions, host.draft_submissions)
+                        assert settings_path.read_bytes() == before
+                    capture(f"about-update-controls-{language}-{theme}")
+            print("ABOUT UPDATE FRONTEND PASS", flush=True)
 
         async def exercise_appearance_entry():
             import hashlib
@@ -2599,6 +2698,9 @@ def main(arguments=None):
             if options.shortcuts_reset_only:
                 await exercise_shortcut_reset()
                 return
+            if options.about_only:
+                await exercise_about_updates()
+                return
             if options.toast_only:
                 await exercise_toast()
                 return
@@ -3344,7 +3446,7 @@ def main(arguments=None):
                 host,
                 tasks,
                 surface.show,
-                closed.set,
+                surface.request_quit,
                 lambda *_: None,
             )
             tray.configure(state)

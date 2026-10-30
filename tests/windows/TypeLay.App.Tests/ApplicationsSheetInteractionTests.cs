@@ -118,6 +118,68 @@ public sealed partial class SettingsRenderingTests
                 Assert.False(edge.IsHitTestVisible);
                 Assert.Equal(new Thickness(0, .5, 0, 0), edge.BorderThickness);
                 retired = ApplicationInvokeProvider(confirm);
+                // A real held press must scale both button styles without
+                // invoking either action when released over the inert scrim.
+                foreach (var button in new[] { confirm, cancel })
+                {
+                    var visual = Assert.IsType<Grid>(button.Template.FindName("pressSurface", button));
+                    var buttonCenter = button.PointToScreen(new Point(button.ActualWidth / 2, button.ActualHeight / 2));
+                    var pressPoint = new NativePoint { X = (int)buttonCenter.X, Y = (int)buttonCenter.Y };
+                    Input[] down = [new() { MouseFlags = 2 }];
+                    Input[] up = [new() { MouseFlags = 4 }];
+                    bool pressed = false;
+                    void CurrentButton()
+                    {
+                        Current();
+                        Assert.Same(button, ApplicationButton(dialog, AutomationProperties.GetAutomationId(button)));
+                        Assert.Equal(buttonCenter, button.PointToScreen(new Point(button.ActualWidth / 2, button.ActualHeight / 2)));
+                        Assert.Equal(modal, WindowFromPoint(pressPoint));
+                        var hit = Assert.IsAssignableFrom<DependencyObject>(dialog.InputHitTest(dialog.PointFromScreen(buttonCenter)));
+                        Assert.True(ReferenceEquals(hit, button) || button.IsAncestorOf(hit));
+                    }
+                    try
+                    {
+                        CurrentButton();
+                        Assert.Equal(0, Native.GetAsyncKeyState(1) & 0x8000);
+                        Assert.True(SetCursorPos(pressPoint.X, pressPoint.Y));
+                        CurrentButton();
+                        pressed = SendInput(1, down, Marshal.SizeOf<Input>()) == 1;
+                        Assert.True(pressed);
+                        await ObserveApplicationSheet(scene.Window, dialog, ct, () => button.IsPressed);
+                        CurrentButton();
+                        Assert.Same(button, System.Windows.Input.Mouse.Captured);
+                        var scale = Assert.IsType<ScaleTransform>(visual.RenderTransform);
+                        Assert.Equal(.97, scale.ScaleX);
+                        Assert.Equal(.97, scale.ScaleY);
+                        Assert.Equal(before, File.ReadAllText(scene.Path));
+                        Current();
+                        Assert.True(SetCursorPos(point.X, point.Y));
+                        await ObserveApplicationSheet(scene.Window, dialog, ct, () => !button.IsPressed);
+                        Current();
+                        Assert.Same(button, System.Windows.Input.Mouse.Captured);
+                        Assert.False(new Rect(surface.PointToScreen(new Point()),
+                            surface.PointToScreen(new Point(surface.ActualWidth, surface.ActualHeight))).Contains(blank));
+                        Assert.True(Native.GetCursorPos(out var releasePoint));
+                        Assert.Equal(point.X, releasePoint.X);
+                        Assert.Equal(point.Y, releasePoint.Y);
+                        ct.ThrowIfCancellationRequested();
+                        Assert.Equal(1u, SendInput(1, up, Marshal.SizeOf<Input>()));
+                        pressed = false;
+                        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+                        Current();
+                        Assert.False(button.IsPressed);
+                        Assert.NotSame(button, System.Windows.Input.Mouse.Captured);
+                        scale = Assert.IsType<ScaleTransform>(visual.RenderTransform);
+                        Assert.Equal(1, scale.ScaleX);
+                        Assert.Equal(1, scale.ScaleY);
+                        Assert.Equal(before, File.ReadAllText(scene.Path));
+                    }
+                    finally
+                    {
+                        if (pressed)
+                            SendInput(1, up, Marshal.SizeOf<Input>());
+                    }
+                }
                 Assert.Equal(0, Native.GetAsyncKeyState(1) & 0x8000);
                 Current();
                 Assert.True(SetCursorPos(point.X, point.Y));

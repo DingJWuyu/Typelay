@@ -2852,9 +2852,50 @@ class Input:
                 if self.browser_round_owners.get(id(item)) is peer
             ]
             self.tab_capture_rounds = peer_rounds[-2:]
+            recent_commands = []
+            commands = value.get("recentCommands")
+            if isinstance(commands, list) and len(commands) <= 4:
+                for item in commands:
+                    if not isinstance(item, dict):
+                        continue
+                    sequence = item.get("sequence")
+                    operation, outcome = item.get("operation"), item.get("outcome")
+                    timing = {
+                        key: item.get(key)
+                        for key in ("startFromEventMs", "endFromEventMs", "durationMs")
+                    }
+                    if (
+                        type(sequence) is not int
+                        or not 0 < sequence <= 1000000
+                        or not isinstance(operation, str)
+                        or operation
+                        not in {
+                            "capture",
+                            "publish",
+                            "describe",
+                            "overlay-render",
+                            "overlay-renew",
+                            "configure-shortcuts",
+                            "other",
+                        }
+                        or not isinstance(outcome, str)
+                        or outcome not in {"returned", "null", "exception"}
+                        or any(
+                            type(number) not in (int, float)
+                            or not math.isfinite(number)
+                            or not (-10000 if key != "durationMs" else 0) <= number <= 10000
+                            for key, number in timing.items()
+                        )
+                        or timing["startFromEventMs"] > timing["endFromEventMs"]
+                    ):
+                        continue
+                    recent_commands.append(
+                        {"sequence": sequence, "operation": operation, "outcome": outcome, **timing}
+                    )
             detail = {
                 "receivedAtMs": now_ms(),
                 "reason": reason if isinstance(reason, str) and reason in reasons else "unknown",
+                "recentCommands": recent_commands,
                 "remainingMs": max(-1000, min(1000, remaining))
                 if type(remaining) in (int, float) and math.isfinite(remaining)
                 else None,
@@ -2866,6 +2907,8 @@ class Input:
                     else None
                     for key in (
                         "eventToTabCheckMs",
+                        "eventToKeyEntryMs",
+                        "keyEntryToTabCheckMs",
                         "tabCheckToWriteMs",
                         "eventHostLowerMs",
                         "eventHostUpperMs",

@@ -2113,6 +2113,36 @@
       default: return null;
     }
   }
+  // Trace only the existing command body, including null/exception outcomes.
+  // Four completed spans are diagnostic context, never a clock or permission.
+  let commandTraceSequence = 0;
+  const recentCommandTrace = [];
+  function startCommandTrace(operation) {
+    if (!configuration?.trace || commandTraceSequence >= 1000000) return null;
+    try {
+      const known = ["capture", "publish", "describe", "overlay-render", "overlay-renew", "configure-shortcuts"];
+      return {sequence: ++commandTraceSequence, operation: known.includes(operation) ? operation : "other",
+        started: monoNow()};
+    } catch (_) { return null; }
+  }
+  function finishCommandTrace(trace, outcome) {
+    if (!trace) return;
+    try {
+      const ended = monoNow();
+      if (!Number.isFinite(trace.started) || !Number.isFinite(ended) || ended < trace.started) return;
+      recentCommandTrace.push({...trace, ended, outcome});
+      if (recentCommandTrace.length > 4) recentCommandTrace.shift();
+    } catch (_) { /* Observation cannot replace the command result or exception. */ }
+  }
+  function tabCommandTrace(eventStamp) {
+    if (!Number.isFinite(eventStamp) || eventStamp < 0) return [];
+    try {
+      return recentCommandTrace.map(item => ({sequence: item.sequence, operation: item.operation,
+        outcome: item.outcome, startFromEventMs: boundedMetric(item.started - eventStamp),
+        endFromEventMs: boundedMetric(item.ended - eventStamp),
+        durationMs: boundedMetric(item.ended - item.started)}));
+    } catch (_) { return []; }
+  }
   port.onMessage.addListener(message => {
     if (message.op === "disconnect") { observationInterrupted(); return; }
     const value = message.clock;
@@ -2130,15 +2160,20 @@
       && Number.isInteger(traceRound) && traceRound > 0 && traceRound < 2147483648 ? monoNow() : null;
     let result = null;
     ownerDiagnostic = null;
+    const commandTrace = startCommandTrace(message.op);
+    let commandOutcome = "null";
     try {
       if (synced || message.op === "configure-shortcuts") result = command(message);
       else {
         if (message.op === "capture") noteCapture(lastClockReason);
         retireCommandOwner(); retireOrdered(); publication = shortcut = null; hide();
       }
+      commandOutcome = result === null ? "null" : "returned";
     }
-    catch (_) { retireCommandOwner(); retireOrdered(); publication = shortcut = null; hide();
+    catch (_) { commandOutcome = "exception";
+      retireCommandOwner(); retireOrdered(); publication = shortcut = null; hide();
       ownerCheck(false, "Exception"); }
+    finally { finishCommandTrace(commandTrace, commandOutcome); }
     commandClock = null;
     ownerDiagnostic = null;
     if (captureStarted !== null && result) {
@@ -2366,13 +2401,18 @@
     return !event.metaKey && binding && binding.keyval === keyval && binding.modifiers === modifiers;
   }
   let tabDiagnosticCount = 0;
-  function tabDiagnostic(event, field) {
+  function tabDiagnostic(event, field, keyEnteredMono) {
     if (!configuration?.trace || event.key !== "Tab" || event.ctrlKey || event.altKey
       || event.shiftKey || event.metaKey || tabDiagnosticCount >= 32) return () => {};
     tabDiagnosticCount++;
     const current = publication, basis = current?.authority, mono = monoNow();
     const validEvent = Number.isFinite(event.timeStamp) && event.timeStamp >= 0 && event.timeStamp <= mono;
+    const validEntry = validEvent && Number.isFinite(keyEnteredMono)
+      && keyEnteredMono >= event.timeStamp && keyEnteredMono <= mono;
     const detail = {eventToTabCheckMs: validEvent ? boundedMetric(mono - event.timeStamp) : null,
+      eventToKeyEntryMs: validEntry ? boundedMetric(keyEnteredMono - event.timeStamp) : null,
+      keyEntryToTabCheckMs: validEntry ? boundedMetric(mono - keyEnteredMono) : null,
+      recentCommands: tabCommandTrace(validEvent ? event.timeStamp : NaN),
       tabCheckToWriteMs: null, eventHostLowerMs: null, eventHostUpperMs: null,
       tabCheckHostLowerMs: null, tabCheckHostUpperMs: null,
       publication: !!current, imeClear: field?.ime === "Clear",
@@ -2407,17 +2447,17 @@
       && event.timeStamp <= monoNow() ? Math.ceil(clock.upper + event.timeStamp) : NaN;
     press.latestObservedUpperMs = Number.isSafeInteger(upper) ? upper : null;
   }
-  function sourceKeydown(event, diagnostic) {
+  function sourceKeydown(event, diagnostic, keyEnteredMono) {
     if (held.has(event.code)) {
       commandCheck(false, diagnostic, "Held");
       observeHeld(held.get(event.code), event);
       retireEditorControl();
       if (ordered && !ordered.claimed) retireOrdered();
-      tabDiagnostic(event, fields.get(event.target))("held");
+      tabDiagnostic(event, fields.get(event.target), keyEnteredMono)("held");
       if (held.get(event.code).consumed) consume(event);
       return;
     }
-    if (event.repeat) { retireOrdered(); retireEditorControl(); tabDiagnostic(event, fields.get(event.target))("repeat"); return; }
+    if (event.repeat) { retireOrdered(); retireEditorControl(); tabDiagnostic(event, fields.get(event.target), keyEnteredMono)("repeat"); return; }
     const press = {consumed: false};
     observeHeld(press, event);
     held.set(event.code, press);
@@ -2501,7 +2541,7 @@
     retireEditorControl();
     const field = fieldFor(event.target);
     if (shortcutDispatch() === "source-local" && sourceCommand(event, field, diagnostic)) return;
-    const reportTab = tabDiagnostic(event, field);
+    const reportTab = tabDiagnostic(event, field, keyEnteredMono);
     if (!field || !focused(field)) { retireOrdered(); reportTab("target-unfocused"); return; }
     if (event.isComposing || event.keyCode === 229) { retireOrdered(); reportTab("composing"); field.ime = "Composing"; publication = shortcut = null; refreshHint(); return; }
     // A trusted non-composing keyboard event provides positive state evidence;
@@ -2556,10 +2596,14 @@
   }
   window.addEventListener("keydown", event => {
     if (!event.isTrusted) return;
-    let diagnostic = null;
-    try { diagnostic = commandKeyDiagnostic(event); }
+    let diagnostic = null, keyEnteredMono = null;
+    try {
+      if (configuration?.trace && event.key === "Tab" && !event.ctrlKey && !event.altKey
+        && !event.shiftKey && !event.metaKey && tabDiagnosticCount < 32) keyEnteredMono = monoNow();
+      diagnostic = commandKeyDiagnostic(event);
+    }
     catch (_) { /* Diagnostic preparation cannot prevent the original key. */ }
-    try { sourceKeydown(event, diagnostic); }
+    try { sourceKeydown(event, diagnostic, keyEnteredMono); }
     finally { finishCommandDiagnostic(diagnostic); }
   }, true);
   window.addEventListener("keyup", event => {

@@ -5734,7 +5734,9 @@ def run(arguments):
                     and not any(a["id"] == "Connect" for a in row["actions"]),
                     "fresh client must require the user's original input-method acknowledgement",
                 )
-                calibrate_settings_scroll(settings_control(next_step_label))
+                calibrate_settings_scroll(
+                    settings_control("应用连接：桌面应用", role=Atspi.Role.PUSH_BUTTON)
+                )
                 # The chooser is below the unified app cards. Prove its actual
                 # focused, fully clipped allocation without opening it yet.
                 activate_scrolled_setting("选择应用…", activate=False)
@@ -6140,7 +6142,7 @@ def run(arguments):
                         lambda: settings_navigation(process.pid),
                         "restored settings sidebar missing",
                     )
-                    trial = settings_control(next_step_label)
+                    trial = settings_control("应用连接：桌面应用", role=Atspi.Role.PUSH_BUTTON)
                     calibrate_settings_scroll(trial)
                     # Restart does not retain the user's per-client recovery confirmation.
                     activate_scrolled_setting("我已记下原输入法的启动方式，并知道如何恢复")
@@ -7155,7 +7157,9 @@ def run(arguments):
                         and not any(a["id"] == "Connect" for a in row["actions"]),
                         "fresh client must require the user's original input-method acknowledgement",
                     )
-                    calibrate_settings_scroll(settings_control(next_step_label))
+                    calibrate_settings_scroll(
+                        settings_control("应用连接：桌面应用", role=Atspi.Role.PUSH_BUTTON)
+                    )
                     activate_scrolled_setting(
                         "我已记下原输入法的启动方式，并知道如何恢复",
                         evidence_name="application-support-recovery-acknowledgement-scroll",
@@ -7526,7 +7530,9 @@ def run(arguments):
                     # the mode and outlived the practice window. Calibrate this
                     # final, still-unscrolled layout before the first details
                     # scroll, not the earlier layout while practice was open.
-                    calibrate_settings_scroll(settings_control(next_step_label))
+                    calibrate_settings_scroll(
+                        settings_control("应用连接：桌面应用", role=Atspi.Role.PUSH_BUTTON)
+                    )
                     # End the owned session without uninstalling its components.
                     # Cancellation must leave the actual daemon untouched, not
                     # merely retain a stale Connected label.
