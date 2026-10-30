@@ -2,6 +2,8 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Automation;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -22,7 +24,12 @@ public sealed partial class OverlayTranslationMenuTests
     // exact-hit More input did not produce Click. Its internal focus/reader
     // cause is not yet established by that run; this same full chain must pass.
     [Fact]
-    public Task OwnedKeepPreservesTheSameEditorUndoAndReturnsThroughAFreshSourceBinding() => desktop.RunAsync(async () =>
+    public Task OwnedKeepPreservesTheSameEditorUndoAndReturnsThroughAFreshSourceBinding() => OwnedKeepCase(false);
+
+    [Fact]
+    public Task AnExpandedOwnedDraftFromANarrowFieldShowsTheFullSheetAndRestoresItsOriginalFrame() => OwnedKeepCase(true);
+
+    private Task OwnedKeepCase(bool expandedNarrow) => desktop.RunAsync(async () =>
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(25));
@@ -47,7 +54,17 @@ public sealed partial class OverlayTranslationMenuTests
                 Mode = WorkMode.Automatic,
                 ExperimentalWriteback = false
             });
-            var model = new OwnedConfirmationTranslation();
+            if (expandedNarrow)
+                settings.Update(settings.Value with
+                {
+                    Theme = "light",
+                    Font = "claude",
+                    Motion = "reduce"
+                });
+            string translation = expandedNarrow
+                ? string.Join(" ", Enumerable.Repeat("An expanded translated draft remains local until its fresh source return.", 14))
+                : "Hello";
+            var model = new OwnedConfirmationTranslation(translation);
             controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true, practice: host);
             host.Bind(controller);
             await controller.StartAsync().WaitAsync(deadline.Token);
@@ -64,13 +81,32 @@ public sealed partial class OverlayTranslationMenuTests
             Assert.NotEqual(0u, N.GetWindowThreadProcessId(root, out uint process));
             Assert.Equal((uint)child!.Process.Id, process);
             Assert.Equal(root, N.GetAncestor(field, 2));
+            if (expandedNarrow)
+            {
+                Assert.True(N.GetWindowRect(field, out var fieldRect));
+                Assert.True(Native.SetWindowPos(field, 0, 0, 0, 180, fieldRect.Bottom - fieldRect.Top, 0x0016));
+            }
             // Public setup on this owned child only. No focus repair is allowed
             // after the initial preview, More, confirmation or return actions.
             deadline.Token.ThrowIfCancellationRequested();
             Assert.True(N.SetForegroundWindow(root));
             AutomationElement.FromHandle(field).SetFocus();
             await Until(() => N.Focused() == (root, field) && host.CaptureDescriptor is not null
-                && overlay.IsVisible && Descendants(overlay).OfType<TextBox>().Single().Text == "Hello");
+                && overlay.IsVisible && Descendants(overlay).OfType<TextBox>().Single().Text == translation);
+            if (expandedNarrow)
+            {
+                await Until(() => N.GetWindowRect(overlay.Handle, out var compact)
+                    && compact.Right - compact.Left == (int)(324 * VisualTreeHelper.GetDpi(overlay).DpiScaleX));
+                var expand = Descendants(overlay).OfType<Button>().Single(button => AutomationProperties.GetName(button) == "展开译文");
+                Assert.True(expand.IsEnabled);
+                var expandAction = Assert.IsAssignableFrom<IInvokeProvider>(new ButtonAutomationPeer(expand).GetPattern(PatternInterface.Invoke));
+                Assert.Same(expand, Descendants(overlay).OfType<Button>().Single(button => AutomationProperties.GetName(button) == "展开译文"));
+                Assert.Equal((root, field), N.Focused());
+                deadline.Token.ThrowIfCancellationRequested();
+                expandAction.Invoke();
+                await Until(() => AutomationProperties.GetName(expand) == "收起译文");
+                Assert.Equal((root, field), N.Focused());
+            }
             var before = Assert.IsType<OwnedCaptureDescriptor>(host.CaptureDescriptor);
             var initialToken = Assert.IsType<SessionViewToken>(controller.GetStyleSettingsState().Session);
             Guid run = controller.AutomaticPracticeProgress!.RunId;
@@ -98,6 +134,9 @@ public sealed partial class OverlayTranslationMenuTests
             editor.Select(1, 2);
             Assert.True(editor.CanUndo);
             int modelCalls = model.Calls;
+            Assert.True(N.GetWindowRect(overlay.Handle, out var originalFrame));
+            if (expandedNarrow)
+                Assert.InRange((originalFrame.Right - originalFrame.Left) / VisualTreeHelper.GetDpi(overlay).DpiScaleX, 323, 325);
             var more = Descendants(overlay).OfType<Button>().Single(button =>
                 AutomationProperties.GetName(button) == "更多翻译操作");
             using (var action = ActionDeadline())
@@ -115,6 +154,18 @@ public sealed partial class OverlayTranslationMenuTests
             Assert.Equal(draft, editor.Text);
             Assert.True(editor.CanUndo);
             Assert.Null(host.CaptureDescriptor);
+            if (expandedNarrow)
+            {
+                using var picture = ActionDeadline();
+                await RegenerateSheetRendering.AssertAndCapture(overlay, "zh-CN", "light", "owned-expanded-narrow", picture.Token, replacementAvailable: false);
+                Assert.True(N.GetWindowRect(overlay.Handle, out var promptFrame));
+                Assert.Equal(originalFrame.Right, promptFrame.Right);
+                Assert.True(promptFrame.Right - promptFrame.Left > originalFrame.Right - originalFrame.Left);
+                Assert.Same(editor, Descendants(overlay).OfType<TextBox>().Single());
+                Assert.Equal(draft, editor.Text);
+                Assert.True(editor.CanUndo);
+                Assert.Null(host.CaptureDescriptor);
+            }
             using (var action = ActionDeadline())
                 await SendOwnedConfirmationKey(overlay, Key.Enter, RegenerateButton(overlay, "RegenerateKeep"), action.Token);
             await Until(() => editor.IsKeyboardFocused && !editor.IsReadOnly
@@ -124,6 +175,12 @@ public sealed partial class OverlayTranslationMenuTests
             Assert.Equal((1, 2), (editor.SelectionStart, editor.SelectionLength));
             Assert.Equal(draft, editor.Text);
             Assert.True(editor.CanUndo);
+            if (expandedNarrow)
+            {
+                Assert.True(N.GetWindowRect(overlay.Handle, out var restoredFrame));
+                Assert.Equal(originalFrame.Left, restoredFrame.Left);
+                Assert.Equal(originalFrame.Right, restoredFrame.Right);
+            }
             editor.AppendText(" - temporary local edit");
             Assert.NotEqual(draft, editor.Text);
             editor.Undo();
@@ -429,7 +486,7 @@ public sealed partial class OverlayTranslationMenuTests
         }
     }
 
-    private sealed class OwnedConfirmationTranslation : ITranslationService
+    private sealed class OwnedConfirmationTranslation(string translation = "Hello") : ITranslationService
     {
         public bool Ready => true;
         public bool Busy => false;
@@ -440,7 +497,7 @@ public sealed partial class OverlayTranslationMenuTests
         public Task<ModelResponse> TranslateAsync(TranslationJob job)
         {
             Calls++;
-            return Task.FromResult(new ModelResponse(1, "translated", "Hello"));
+            return Task.FromResult(new ModelResponse(1, "translated", translation));
         }
     }
     [DllImport("user32.dll", EntryPoint = "GetDlgItem")]

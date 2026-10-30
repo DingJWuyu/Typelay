@@ -151,7 +151,7 @@ internal sealed partial class PracticeHost
 
     // This is an actual exact-field focus observation for family classification,
     // not a new binding, capture permission, or write grant.
-    private bool OwnsReturnedFocus(TargetId target) => _returnAttempt is { } pending
+    private bool OwnsReturnedFocus(TargetId target) => OwnsLocalReturnedFocus(target) || _returnAttempt is { } pending
         && target == pending.Binding.Target && ReturnIdentityCurrent(pending)
         && KeyboardHook.CurrentOwnedFocusRevision(pending.Editor.Control.Descriptor) is var revision
         && (pending.Descriptor is { } returned ? revision == returned.NativeFocusRevision : revision > pending.Binding.NativeFocusRevision);

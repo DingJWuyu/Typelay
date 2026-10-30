@@ -373,6 +373,11 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         _editor.IsKeyboardFocusWithinChanged += (_, _) => UpdateEditorAffordance();
         _editor.PreviewMouseDown += (_, e) =>
         {
+            if (_ownedLocalOpening is not null)
+            {
+                e.Handled = !LocalDraftCurrent() || _localDraftReturning;
+                return; // Local editing never calls StartEdit/Activate.
+            }
             // Only the original WM_MOUSEACTIVATE press can start an owned
             // handoff. In particular, do not activate through this second route
             // while its source GUI fence is still outstanding.
@@ -401,7 +406,12 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             {
                 DismissRegenerateConfirmation(reposition: false);
                 _ordinaryInput?.InvalidateOrdinaryEditorInput();
-                if (_viewContext?.CanEdit == true || PreservesGlossaryEditor)
+                if (_ownedLocalOpening is { } opening)
+                {
+                    if (_ownedEditorHost?.ChangeOwnedLocalDraft(opening, _editor.Text) != true)
+                        RetireLocalDraft(opening);
+                }
+                else if (_viewContext?.CanEdit == true || PreservesGlossaryEditor)
                     DraftChanged?.Invoke(_editor.Text);
                 UpdateExpansionAffordance();
             }
@@ -409,7 +419,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         _editor.LostKeyboardFocus += (_, e) =>
         {
             _ordinaryInput?.SetOrdinaryEditor(null);
-            if (!PreserveRegenerateButtonFocus(e.NewFocus))
+            if (!PreserveRegenerateButtonFocus(e.NewFocus) && !PreserveLocalDraftPromptFocus(e.NewFocus))
                 DismissRegenerateConfirmation(reposition: true);
         };
         _editor.GotKeyboardFocus += (_, _) =>
@@ -425,7 +435,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         };
         _editor.PreviewKeyDown += (_, e) =>
         {
-            if (_glossary is not null || _regenerateKeyboard)
+            if (_ownedLocalOpening is not null || _glossary is not null || _regenerateKeyboard)
                 return;
             Key key = ShortcutEventKey(e);
             if (key is not (Key.Tab or Key.Escape) && (key < Key.F1 || key > Key.F24))
@@ -584,6 +594,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             ResetAppearance();
         };
         new WindowInteropHelper(this).EnsureHandle();
+        InitializeOwnedLocalDraft();
         InitializeLanguageConfiguration();
         InitializeRegenerateKeyboard();
         InitializeSourceRegenerate();
@@ -654,6 +665,15 @@ internal sealed partial class OverlayWindow : Window, ISessionView
 
     private nint WindowMessage(nint hwnd, int msg, nint wp, nint lp, ref bool handled)
     {
+        if (_ownedLocalOpening is not null)
+        {
+            ObserveLocalDraftWindowMessage(msg, wp, lp);
+            if (msg == 0x21)
+            {
+                handled = true;
+                return LocalDraftCurrent() && Native.GetForegroundWindow() == _hwnd ? 3 : 4;
+            }
+        }
         if (msg == 0x001c && _ownedEditor is { } appAttempt) // WM_ACTIVATEAPP
         {
             bool active = wp != 0;
@@ -1043,6 +1063,8 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         UpdateExpansionAffordance();
         if (_sourceAnchor is { } source)
             Position(source.Target, source.Bounds, false, false);
+        else if (_ownedLocalOpening is not null)
+            PositionLocalDraft();
     }
     private void UpdateExpansionAffordance()
     {
@@ -1066,6 +1088,8 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     }
     public void ResumeEditor()
     {
+        if (_ownedLocalOpening is not null)
+            return; // Local return failure never reactivates a retired editor.
         if (_glossary is not null)
             return;
         if (_ownedEditor is not null)
@@ -1078,6 +1102,8 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     }
     public void Render(Session session, UserSettings settings, bool permit, string? statusOverride = null, SessionViewContext? context = null)
     {
+        if (_ownedLocalOpening is { } local)
+            RetireLocalDraft(local);
         if (session.Current is not null)
             RetireLanguageConfigurationForNewView();
         if (_settings != settings)
@@ -1258,6 +1284,16 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         else
             _panelWidth = _expanded ? Math.Min(available, 560)
                 : Math.Clamp(_editing ? Math.Max(400, available * .72) : available * .66, 300, 440);
+        if (!idle && _regeneratePrompt is { } sheet)
+        {
+            // The prototype's 340 DIP sheet is border-box, independent of the
+            // source field width. Its own 22 DIP padding is already inside it.
+            // The native shell adds 24 DIP outside; viewport - 32 leaves room
+            // for that shell even on a narrow monitor. Existing placement and
+            // its spring still own all movement, focus and input stay unchanged.
+            sheet.Width = Math.Min(340, Math.Max(0, work.Width / scale - 32));
+            _panelWidth = Math.Max(_panelWidth, sheet.Width);
+        }
         _panelWidth = Math.Min(_panelWidth, work.Width / scale - 24);
         if (_panelWidth <= 0)
         {
@@ -1515,6 +1551,8 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     }
     private void ClearSessionContent()
     {
+        if (_ownedLocalOpening is { } local)
+            RetireLocalDraft(local);
         CancelSourceRegenerateQueue();
         StopBusyMotion();
         DismissRegenerateConfirmation(reposition: false);
@@ -1744,6 +1782,11 @@ internal sealed partial class OverlayWindow : Window, ISessionView
 
     private void OpenMenu(Button anchor)
     {
+        if (_ownedLocalOpening is not null)
+        {
+            OpenLocalDraftMenu(anchor);
+            return;
+        }
         CancelSourceRegenerateQueue();
         var viewToken = _viewContext?.Token;
         var sourceTarget = _sourceAnchor?.Target;

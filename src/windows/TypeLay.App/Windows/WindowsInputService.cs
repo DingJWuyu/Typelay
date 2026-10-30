@@ -73,7 +73,8 @@ internal sealed class WindowsInputService : IInputService
             long startedAt = WindowsInterruptClock.NowMs;
             long checkGeneration = support?.CheckGeneration ?? 0;
             bool owned = practice?.CapturesAutomaticForeground == true;
-            var returnedDescriptor = owned ? practice!.ReturnDescriptor(context) : null;
+            var localDescriptor = owned ? practice!.LocalReturnDescriptor(context) : null;
+            var returnedDescriptor = owned ? localDescriptor ?? practice!.ReturnDescriptor(context) : null;
             var descriptor = owned ? returnedDescriptor ?? practice!.CaptureDescriptor : null;
             if (owned && descriptor is null)
                 return new(null);
@@ -91,7 +92,8 @@ internal sealed class WindowsInputService : IInputService
                 await monitor.WaitForStockAcceptanceDeliveryAsync();
             if (practice?.SuppressOwnedCapture(context) == true)
                 return new(null); // An in-flight pre-admission read cannot publish a new basis.
-            var evidence = owned ? returnedDescriptor is not null
+            var evidence = owned ? localDescriptor is not null
+                ? practice!.ObserveLocalReturnCapture(context, result.Snapshot, result.Focus, startedAt) : returnedDescriptor is not null
                 ? practice!.ObserveReturnCapture(context, result.Snapshot, result.Focus, startedAt)
                 : practice!.ObserveAutomaticTarget(result.Snapshot, result.Focus, startedAt) : null;
             bool ordinaryCanIntercept = monitor is { CanInterceptAcceptance: true }

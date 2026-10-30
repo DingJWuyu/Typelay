@@ -14,7 +14,8 @@ internal sealed record PracticeMessage(string Kind, Guid Connection, Guid Run, l
     AutomaticPracticeProgress? AutomaticProgress = null, PracticeInputCompletion? InputCompletion = null,
     OwnedEditorControl? Editing = null, OwnedReturnControl? Returning = null,
     OwnedReturnMouse? MouseReturn = null, OwnedPracticeCompletion? Completion = null,
-    OwnedExitControl? Exit = null, OwnedExitResult? ExitResult = null, OwnedPrefixResult? PrefixResult = null);
+    OwnedExitControl? Exit = null, OwnedExitResult? ExitResult = null, OwnedPrefixResult? PrefixResult = null,
+    OwnedLocalDraftControl? LocalDraft = null, OwnedLocalReturnControl? LocalReturn = null);
 
 // This acknowledges dispatch of an original Ctrl. It carries no grant and
 // cannot change the plan/exit lease or either original expiry.
@@ -33,6 +34,11 @@ internal sealed record OwnedExitResult(long LeaseSequence, long WitnessSequence,
 internal sealed record OwnedEditorControl(Guid Intent, OwnedCaptureDescriptor Descriptor,
     SessionViewToken DisplayedToken, SessionViewToken AdmittedToken, long OverlayHwnd,
     long ExpiresAtMs, long InputSequence, long SourceEventSequence = 0);
+
+// Old editor identity is retained only as provenance for its one reader-close fence.
+internal sealed record OwnedLocalDraftControl(Guid Opening, OwnedEditorControl Previous, long SourceEventSequence = 0);
+internal sealed record OwnedLocalReturnControl(Guid Opening, Guid Intent, long PressedAtMs, long ExpiresAtMs,
+    long InputSequence, OwnedReturnKeyPress KeyPress, long SourceEventSequence = 0, OwnedCaptureDescriptor? Descriptor = null);
 
 internal enum OwnedReturnKind
 {
@@ -92,6 +98,47 @@ internal static class PracticeProgressPipe
 
     private static void Validate(PracticeMessage message)
     {
+        bool localDraft = message.Kind is "draft-fence" or "draft-fenced" or "draft-cancel" or "draft-invalid";
+        bool localReturn = message.Kind is "local-return-fence" or "local-return-fenced" or "local-return-resume"
+            or "local-source-returned" or "local-return-invalid" or "local-return-cancel";
+        if (localDraft || localReturn)
+        {
+            if (message.Connection == Guid.Empty || message.Run == Guid.Empty || message.Sequence <= 0
+                || message.Progress is not null || message.AutomaticProgress is not null || message.InputCompletion is not null
+                || message.Editing is not null || message.Returning is not null || message.MouseReturn is not null
+                || message.Completion is not null || message.Exit is not null || message.ExitResult is not null || message.PrefixResult is not null)
+                throw new InvalidDataException("practice-local-fields");
+            if (localDraft)
+            {
+                if (message.LocalDraft is not { } draft || draft.Opening == Guid.Empty || message.LocalReturn is not null
+                    || message.Acceptance is not null
+                    || (message.Kind is "draft-fence" or "draft-cancel" ? draft.SourceEventSequence != 0 : draft.SourceEventSequence <= 0))
+                    throw new InvalidDataException("practice-local-draft");
+                Validate(new("edit-cancel", message.Connection, message.Run, message.Sequence, Editing: draft.Previous));
+            }
+            else
+            {
+                if (message.LocalDraft is not null || message.LocalReturn is not { } returned
+                    || returned.Opening == Guid.Empty || returned.Intent == Guid.Empty || returned.InputSequence <= 0
+                    || returned.PressedAtMs <= 0 || returned.ExpiresAtMs - returned.PressedAtMs != 500
+                    || returned.KeyPress is not { VirtualKey: 9, Modifiers: ShortcutModifiers.None, ScanCode: > 0 and <= 255 }
+                    || (message.Kind is "local-return-fence" or "local-return-resume" or "local-return-cancel"
+                        ? returned.SourceEventSequence != 0 : returned.SourceEventSequence <= 0)
+                    || (message.Kind == "local-source-returned" ? returned.Descriptor is not { IsValid: true } : returned.Descriptor is not null)
+                    || (message.Kind == "local-return-fence" ? message.Acceptance is not
+                    { WitnessHandle: not 0, WitnessBytes: OwnedPracticeAcceptanceProtocol.WitnessBytes }
+                        || message.Acceptance with
+                        {
+                            WitnessHandle = 0,
+                            WitnessBytes = 0
+                        } != new OwnedAcceptanceControl()
+                        : message.Acceptance is not null))
+                    throw new InvalidDataException("practice-local-return");
+            }
+            return;
+        }
+        if (message.LocalDraft is not null || message.LocalReturn is not null)
+            throw new InvalidDataException("practice-local-kind");
         bool prefixDispatch = message.Kind is "test-prefix-root-hover-dispatched" or "test-prefix-root-drag-dispatched"
             or "test-prefix-root-nonclient-hover-dispatched" or "test-prefix-root-button-dispatched"
             or "test-prefix-source-hover-dispatched" or "test-prefix-source-selection-dispatched"

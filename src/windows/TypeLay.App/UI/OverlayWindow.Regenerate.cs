@@ -37,9 +37,6 @@ internal sealed partial class OverlayWindow
         _regenerateToken = token;
         _regenerateDraft = draft;
         _regenerateState = state;
-        var panel = new StackPanel { Margin = new(14, 10, 14, 12) };
-        panel.Children.Add(UiTheme.Text(UiTheme.L("替换你修改过的译文？", "Replace your edited translation?"), 12));
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 8, 0, 0) };
         var keep = UiTheme.Button(UiTheme.L("保留", "Keep"), () =>
         {
             if (!ReferenceEquals(_regenerateConfirmation, confirmation))
@@ -83,12 +80,8 @@ internal sealed partial class OverlayWindow
             // and source-confirmation paths enable only their own two buttons.
             button.Focusable = false;
             button.IsTabStop = false;
-            button.Padding = new(12, 5, 12, 5);
-            button.Margin = new(8, 0, 0, 0);
-            actions.Children.Add(button);
         }
-        panel.Children.Add(actions);
-        _regeneratePrompt = new Border { Child = panel };
+        _regeneratePrompt = CreateRegenerateSheet(keep, replace);
         AutomationProperties.SetAutomationId(_regeneratePrompt, "RegenerateConfirmation");
         AutomationProperties.SetName(_regeneratePrompt, UiTheme.L("确认重新翻译", "Confirm Translation Replacement"));
         Grid.SetRow(_regeneratePrompt, 2);
@@ -106,6 +99,7 @@ internal sealed partial class OverlayWindow
         if (_regeneratePrompt is null)
             return;
         var previous = _regeneratePrompt;
+        ResetLocalDraftPrompt();
         _regeneratePrompt = null;
         _regenerateKeyboard = _regenerateInitialFocusPending = _regenerateInitialFocusQueued = false;
         _regenerateKeep = _regenerateReplace = null;

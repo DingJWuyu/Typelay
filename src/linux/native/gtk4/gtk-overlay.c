@@ -2329,7 +2329,16 @@ static gboolean theme(JsonObject *data, gboolean stale_preview, gboolean capsule
     int contents_count = snprintf(css + count, sizeof css - (gsize)count,
         "#typelay-more-popup { background:transparent; border:0; box-shadow:none; padding:0; }"
         "#typelay-more-popup > contents { background:%s; color:%s; border:1px solid %s;"
-        " border-radius:12px; padding:5px; box-shadow:0 12px 32px rgba(20,20,19,0.18); }",
+        " border-radius:12px; padding:5px; box-shadow:0 12px 32px rgba(20,20,19,0.18); }"
+        /* Default's all-property scrollbar transition interpolates border and
+         * margin independently. Even an unmapped AUTOMATIC scrollbar contributes
+         * its minimum height to this body, making the same text change height.
+         * Keep its colour/fade transitions, but apply its current geometry at
+         * once. This is only the owned candidate scroll, not the host's theme. */
+        "#typelay-overlay #typelay-body scrollbar,"
+        "#typelay-overlay #typelay-body scrollbar slider {"
+        " transition-property:background-color,border-top-color,border-right-color,"
+        "border-bottom-color,border-left-color,opacity; }",
         palette.surface, palette.ink, palette.line);
     if (contents_count < 0 || (gsize)contents_count >= sizeof css - (gsize)count) return FALSE;
     JsonObject *view = json_object_ref(overlay.view);

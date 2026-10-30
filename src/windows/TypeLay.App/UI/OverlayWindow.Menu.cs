@@ -18,8 +18,14 @@ internal sealed partial class OverlayWindow
             // ButtonBase normally focuses itself on mouse-down. Keep an already
             // focused ordinary editor as the menu's natural restoration target;
             // keyboard navigation and every owned-source handoff stay unchanged.
+            if (owner._ownedEditor is not null && !owner.BeginOwnedLocalMenu())
+            {
+                e.Handled = true;
+                return;
+            }
             bool focusable = Focusable;
-            bool preserve = owner._editing && owner._editor.IsKeyboardFocused && !owner.EditingComposition
+            bool preserve = owner._ownedLocalOpening is not null && owner.LocalDraftEditorFocused(owner._ownedLocalOpening)
+                || owner._editing && owner._editor.IsKeyboardFocused && !owner.EditingComposition
                 && owner._ownedEditor is null && owner._viewContext is { CanEdit: true } context
                 && owner._ownedEditorHost?.IsOwnedEditorTarget(context.Token.Target) != true;
             try

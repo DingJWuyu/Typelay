@@ -2,6 +2,7 @@
 // field access and presentation. Session/model/acceptance policy stays in Runtime.
 #include "../fcitx5/typelay-fcitx-qt-v1.h"
 #include "../common/overlay-design.h"
+#include "overlay-regional-display.h"
 #include <QApplication>
 #include <QAbstractItemView>
 #include <QButtonGroup>
@@ -1690,7 +1691,8 @@ private:
         if (composing_) ui("composition", false);
         ui("visible", false);
         auto *card = card_.data();
-        card_ = nullptr; editor_ = nullptr; hint_ = nullptr; status_ = nullptr;
+        card_ = nullptr; editor_ = nullptr; regionalDisplay_ = nullptr; overlayFontPolicy_.clear();
+        hint_ = nullptr; status_ = nullptr;
         language_ = nullptr; exit_ = nullptr; footer_ = nullptr; menu_ = nullptr; tools_ = nullptr; swap_ = nullptr; resume_ = nullptr;
         styleOptions_ = nullptr; applicationStyles_ = nullptr; alternative_ = nullptr; translationFeedback_ = nullptr; glossaryAction_ = nullptr;
         translationActionMenu_.reset();
@@ -1712,6 +1714,70 @@ private:
     }
     QString overlayUi(const char *text) const { return QString::fromUtf8(tl_overlay_ui(text, overlayEnglish())); }
     int overlayTextSize() const { return qBound(13, overlayAppearance_.value("textSize").toInt(15), 19); }
+    bool prepareOverlayFontPolicy(const QJsonObject &view, const QJsonObject &appearance) {
+        if (!card_ || !editor_ || !regionalDisplay_ || regionalDisplay_->document() != editor_->document()) return false;
+        const auto choice = appearance.value("font").toString();
+        const auto language = view.value("targetLanguage").toString();
+        const int size = qBound(13, appearance.value("textSize").toInt(15), 19);
+        const bool system = choice == QStringLiteral("system");
+        const bool sans = choice == QStringLiteral("sans");
+        const auto region = language.startsWith(QStringLiteral("ja")) ? QStringLiteral("JP")
+            : language.startsWith(QStringLiteral("ko")) ? QStringLiteral("KR")
+            : language == QStringLiteral("zh-TW") || language == QStringLiteral("zh-HK")
+                || language == QStringLiteral("zh-Hant") ? QStringLiteral("TC") : QStringLiteral("SC");
+        // Only the three locked regional faces have a display override. TC
+        // keeps the existing QSS/system fallback; it is not a bundled face.
+        const auto family = system || region == QStringLiteral("TC") ? QString()
+            : (sans ? QStringLiteral("Noto Sans ") : QStringLiteral("Noto Serif ")) + region;
+        // The role also retires old input/motion stamps when only Latin optical
+        // size changes. The family-only formatter itself then remains a no-op.
+        const auto policy = (system ? QStringLiteral("system")
+            : (sans ? QStringLiteral("sans/") : QStringLiteral("serif/")) + region)
+            + QLatin1Char('/') + QString::number(size);
+        if (overlayFontPolicy_ == policy) return true;
+        const QPointer<QFrame> card = card_;
+        const QPointer<QPlainTextEdit> editor = editor_;
+        const QPointer<QTextDocument> document = editor_->document();
+        const QPointer<OverlayRegionalDisplay> display = regionalDisplay_;
+        const auto *target = overlayTarget_;
+        const QPointer<QWidget> source = target ? target->field : QPointer<QWidget>();
+        const auto input = target ? target->input : 0;
+        const auto content = target ? target->content : 0;
+        const auto oldView = overlayView_;
+        const auto oldAuthority = overlayAuthority_;
+        const auto oldAppearance = overlayAppearance_;
+        const auto oldTheme = overlayTheme_;
+        const auto generation = overlayGeneration_;
+        const auto revision = overlayRevision_;
+        const auto documentRevision = document->revision();
+        const auto oldPolicy = overlayFontPolicy_;
+        const auto current = [&] {
+            return card && card_ == card && editor && editor_ == editor && document
+                && editor->document() == document && display && regionalDisplay_ == display
+                && target && overlayTarget_ == target && source && target->field == source
+                && target->input == input && target->content == content
+                && overlayView_ == oldView && overlayAuthority_ == oldAuthority
+                && overlayAppearance_ == oldAppearance && overlayTheme_ == oldTheme
+                && overlayGeneration_ == generation && overlayRevision_ == revision;
+        };
+        revokeEditorOrdered();
+        if (!current() || document->revision() != documentRevision || overlayFontPolicy_ != oldPolicy) return false;
+        stopOverlayMotion("font-policy-stop");
+        glossaryOpening_.reset();
+        glossaryOpeningSource_.reset();
+        if (glossary_) closeGlossary(glossary_, false, true);
+        if (!current() || document->revision() != documentRevision || overlayFontPolicy_ != oldPolicy
+            || editorOrdered_ || glossary_ || glossaryOpening_) return false;
+        // Keep the existing manual-buffer ownership marker, not an old form or
+        // write ticket. This scoped presentation cannot publish a user draft.
+        // Never adjust a stored ticket's documentRevision to the new revision.
+        overlayFontPolicy_ = policy;
+        {
+            QScopedValueRollback<bool> setting(settingText_, true);
+            display->choose(family);
+        }
+        return current() && overlayFontPolicy_ == policy;
+    }
     void applyOverlayTheme() {
         if (!card_) return;
         bool dark = overlayTheme_ == QStringLiteral("dark");
@@ -2782,6 +2848,9 @@ private:
         resume_->hide();
         auto *translationEditor = new TranslationEditor(frame);
         editor_ = translationEditor;
+        // Attach to the empty owned document, before text or any input/glossary
+        // stamp exists. No delayed initial rehighlight of an already live draft.
+        regionalDisplay_ = new OverlayRegionalDisplay(editor_->document());
         connect(translationEditor, &TranslationEditor::inputRejected, this, [this] {
             if (hint_) hint_->setText(QStringLiteral("译文超过 8192 字符限制，此次插入未生效"));
         });
@@ -2976,6 +3045,9 @@ private:
                         editor_ && editor_->document()->revision() == motionDocumentRevision_, geometry(target) == motionGeometry_);
                 }
                 if (!card_ || overlayTarget_ != target) { hideOverlay(); createOverlay(target); }
+                if (!prepareOverlayFontPolicy(view, data.value("appearance").toObject())
+                    || !viewCurrent(target, data) || now() > until)
+                    return {{"visible", overlayActive()}, {"editing", editor_ && !editor_->isReadOnly()}};
                 const auto nextToken = view.value("viewContext").toObject().value("token").toObject();
                 if (glossary_ && (glossary_->context.token != nextToken
                     || glossary_->context.generation != data.value("generation")
@@ -3496,6 +3568,8 @@ private:
     bool dispatching_ = false, handlingKey_ = false, advancingShortcut_ = false;
     QPointer<QFrame> card_;
     QPointer<QPlainTextEdit> editor_;
+    QPointer<OverlayRegionalDisplay> regionalDisplay_;
+    QString overlayFontPolicy_;
     QPointer<QObject> overlaySourceProvider_;
     QPointer<QLabel> hint_, status_, translationFeedback_;
     QPointer<QPushButton> language_, swap_, resume_, exit_, alternative_, glossaryAction_;

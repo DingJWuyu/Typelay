@@ -38,11 +38,11 @@ public sealed class AppearanceUiTests(WpfDesktopFixture desktop)
             using var model = WindowsRuntime.CreateModel();
             var window = new SettingsWindow(settings, model, () => { });
             window.ShowPage("appearance");
-            Click("Font_sans");
-            Click("sage");
+            Click("AppearanceFont_sans");
+            Click("AppearanceAccent_sage");
             Named<Slider>("译文字号").Value = 19;
             Named<CheckBox>("降低透明度").IsChecked = true;
-            Named<CheckBox>("减少动态效果").IsChecked = true;
+            Named<ComboBox>("动态效果").SelectedIndex = 2;
             Named<ComboBox>("界面语言").SelectedIndex = 2;
             var saved = WindowsRuntime.CreateSettings(path).Value;
             Assert.Equal("sans", saved.Font);
@@ -68,13 +68,18 @@ public sealed class AppearanceUiTests(WpfDesktopFixture desktop)
                 window.UpdateLayout();
                 return Descendants(window).OfType<T>().Single(control => AutomationProperties.GetName(control) == name);
             }
-            void Click(string name) => Named<Button>(name).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            void Click(string id)
+            {
+                window.UpdateLayout();
+                Descendants(window).OfType<Button>().Single(control => AutomationProperties.GetAutomationId(control) == id)
+                    .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            }
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
     });
 
     [Fact]
-    public Task LegacyMotionControlUpdatesTheCanonicalPreferenceWithoutOverwritingFullDuringOtherEdits() => desktop.RunAsync(() =>
+    public Task MotionPickerUpdatesAllThreeCanonicalPreferencesWithoutOverwritingFullDuringOtherEdits() => desktop.RunAsync(() =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-motion-ui-" + Guid.NewGuid().ToString("N"));
         try
@@ -92,10 +97,10 @@ public sealed class AppearanceUiTests(WpfDesktopFixture desktop)
             Assert.False(UiTheme.ReduceMotion);
             Descendants(window).OfType<Slider>().Single(control => AutomationProperties.GetName(control) == "译文字号").Value = 19;
             Assert.Equal("full", WindowsRuntime.CreateSettings(path).Value.MotionPreference);
-            MotionControl().IsChecked = true;
+            MotionControl().SelectedIndex = 2;
             Assert.Equal("reduce", WindowsRuntime.CreateSettings(path).Value.MotionPreference);
             Assert.True(UiTheme.ReduceMotion);
-            MotionControl().IsChecked = false;
+            MotionControl().SelectedIndex = 0;
             Assert.Equal("system", WindowsRuntime.CreateSettings(path).Value.MotionPreference);
             Assert.Equal(!SystemParameters.ClientAreaAnimation, UiTheme.ReduceMotion);
             settings.Update(settings.Value with
@@ -104,10 +109,10 @@ public sealed class AppearanceUiTests(WpfDesktopFixture desktop)
             });
             Assert.False(UiTheme.ReduceMotion);
             window.Close();
-            CheckBox MotionControl()
+            ComboBox MotionControl()
             {
                 window.UpdateLayout();
-                return Descendants(window).OfType<CheckBox>().Single(control => AutomationProperties.GetName(control) == "减少动态效果");
+                return Descendants(window).OfType<ComboBox>().Single(control => AutomationProperties.GetAutomationId(control) == "AppearanceMotion");
             }
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }

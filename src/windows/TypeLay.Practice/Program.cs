@@ -215,7 +215,9 @@ internal static partial class Program
                         while (_inputCompletions?.TryDequeue(out var completion) == true)
                             WriteReply(completion);
                     inputBurst = 0;
-                    uint wait = _returnState is SourceReturnState.Armed or SourceReturnState.RootActive or SourceReturnState.FieldFocused
+                    uint wait = _localDraft is { Invalid: false, Returning: { } localReturn }
+                        ? (uint)Math.Clamp(localReturn.ExpiresAtMs - WindowsInterruptClock.NowMs, 0, 500)
+                        : _returnState is SourceReturnState.Armed or SourceReturnState.RootActive or SourceReturnState.FieldFocused
                         ? (uint)Math.Clamp(_returnExpiresAt - WindowsInterruptClock.NowMs, 0, 500)
                         : _editorFence is { } pendingEditor && _editorHandoff is EditorHandoff.Armed or EditorHandoff.RootLeft or EditorHandoff.FieldLeft
                         ? (uint)Math.Clamp(pendingEditor.ExpiresAtMs - WindowsInterruptClock.NowMs, 0, 500)
@@ -535,6 +537,8 @@ internal static partial class Program
                 else if (message.Run == _run && message.Sequence == _sequence
                     && (!_retired || message.Kind is "revoke-plan" or "release-plan" or "exit-clear"))
                 {
+                    if (HandleLocalDraftControl(message))
+                        continue;
                     switch (message.Kind)
                     {
                         case "progress" when !_automatic:
@@ -633,6 +637,7 @@ internal static partial class Program
                 && WindowsInterruptClock.NowMs >= _returnExpiresAt)
                 InvalidateSourceReturn(EditorReason.Deadline);
             CompleteSourceReturn();
+            PollLocalDraftReturn();
             if (_returnNotice is { } returnNotice && _returnControl is { } returned)
             {
                 _returnNotice = null;
@@ -649,7 +654,7 @@ internal static partial class Program
                     _sourceReadyRevision = descriptor.NativeFocusRevision;
                 }
             }
-            if (_automatic && !_retired && !_witnessFailed && _editorFence is null && SourceFocused())
+            if (_automatic && !_retired && !_witnessFailed && _editorFence is null && _localDraft is null && SourceFocused())
             {
                 long revision = _owned.FocusRevision;
                 if (revision > 0 && revision != _sourceReadyRevision)
@@ -722,6 +727,7 @@ internal static partial class Program
             throw new InvalidDataException("practice-editor-fence");
         }
         ClearPrefixProof();
+        _localReturnedSeal = null; // A newly admitted source editor retires the prior local receipt.
         _planActive = false;
         // Each admitted editor intent has its own bounded evidence budget.
         // Already queued records retain their original intent and order.
@@ -743,6 +749,11 @@ internal static partial class Program
 
     private static void ObserveEditorApp(nuint activation, nint peerThread)
     {
+        if (_localDraft is not null)
+        {
+            ObserveLocalDraftApp(activation, peerThread);
+            return;
+        }
         if (_returnState != SourceReturnState.None)
         {
             ObserveReturnApp(activation, peerThread);
@@ -772,6 +783,11 @@ internal static partial class Program
 
     private static void ObserveEditorRoot(nuint activation, nint peer)
     {
+        if (_localDraft is not null)
+        {
+            ObserveLocalDraftRoot(activation, peer);
+            return;
+        }
         if (_returnState != SourceReturnState.None)
         {
             ObserveReturnRoot(activation, peer);
@@ -797,6 +813,11 @@ internal static partial class Program
 
     private static void ObserveEditorField(int notification)
     {
+        if (_localDraft is not null)
+        {
+            ObserveLocalDraftField(notification);
+            return;
+        }
         if (_returnState != SourceReturnState.None)
         {
             ObserveReturnField(notification);
@@ -1140,6 +1161,10 @@ internal static partial class Program
                 || _returnedSeal is { } returned && (plan.Descriptor != returned.Descriptor
                     || plan.CommandGeneration == returned.Control.ReturningToken.CommandGeneration
                     || plan.SessionRevision <= returned.Control.ReturningToken.Revision)
+                || _localReturnedSeal is { } localReturned && (plan.Descriptor != localReturned.Descriptor
+                    || plan.CommandGeneration == localReturned.PreviousToken.CommandGeneration
+                    || plan.SessionRevision <= localReturned.PreviousToken.Revision)
+                || _localDraft is not null
                 || !SourceFocused() || plan.InstallWitnessSequence > _witness.Sequence
                 || !WindowsTarget.TryDecode(plan.Permit.Plan.Expected.Target, out var target)
                 || target.ProcessId != Environment.ProcessId || target.ProcessStartUtcTicks != ProcessStartUtcTicks
@@ -1219,6 +1244,8 @@ internal static partial class Program
 
     private static void ClearEditorHandoff()
     {
+        _localDraft = null;
+        _localReturnedSeal = null;
         ClearPrefixProof();
         _editorFence = null;
         _editorHandoff = EditorHandoff.None;

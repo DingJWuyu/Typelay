@@ -181,34 +181,6 @@ internal static partial class UiTheme
         <Setter Property="Background" Value="{DynamicResource Panel}"/>
         <Setter Property="BorderThickness" Value="0.5"/>
       </Style>
-      <Style x:Key="SettingsThemeChoice" TargetType="RadioButton">
-        <Setter Property="Foreground" Value="{DynamicResource Text}"/>
-        <Setter Property="FontSize" Value="13"/>
-        <Setter Property="Cursor" Value="Hand"/>
-        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
-        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RadioButton">
-          <Grid>
-            <Grid.RowDefinitions><RowDefinition Height="50"/><RowDefinition Height="24"/></Grid.RowDefinitions>
-            <Border x:Name="preview" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="3">
-              <ContentPresenter/>
-            </Border>
-            <DockPanel Grid.Row="1" Margin="0,5,0,0">
-              <TextBlock x:Name="selected" DockPanel.Dock="Right" Text="✓" Foreground="{DynamicResource SettingsLink}" Visibility="Hidden" Margin="8,0,0,0"/>
-              <TextBlock Text="{TemplateBinding Tag}" Foreground="{TemplateBinding Foreground}"/>
-            </DockPanel>
-            <Border x:Name="focus" Grid.RowSpan="2" BorderBrush="Transparent" BorderThickness="2" CornerRadius="10" Margin="-3" IsHitTestVisible="False"/>
-          </Grid>
-          <ControlTemplate.Triggers>
-            <Trigger Property="IsChecked" Value="True">
-              <Setter TargetName="preview" Property="BorderBrush" Value="{DynamicResource SettingsLink}"/>
-              <Setter TargetName="preview" Property="BorderThickness" Value="2"/>
-              <Setter TargetName="preview" Property="Padding" Value="2"/>
-              <Setter TargetName="selected" Property="Visibility" Value="Visible"/>
-            </Trigger>
-            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="focus" Property="BorderBrush" Value="{DynamicResource Text}"/></Trigger>
-          </ControlTemplate.Triggers>
-        </ControlTemplate></Setter.Value></Setter>
-      </Style>
     </ResourceDictionary>
     """);
 
@@ -264,6 +236,24 @@ internal static partial class UiTheme
         };
         modeShadow.Freeze();
         r["SettingsModeThumbShadow"] = modeShadow;
+        r["AppearanceSceneryBase"] = Brush(dark ? "#171614" : "#ECE6DB");
+        r["AppearanceWarmColor"] = Brush(dark ? "#66A05032" : "#61D97757").Color;
+        r["AppearanceGreenColor"] = Brush(dark ? "#73465F46" : "#668AA078").Color;
+        r["AppearanceGoldColor"] = Brush(dark ? "#596E5A3C" : "#8CE8D2AA").Color;
+        var previewShadow = new System.Windows.Media.Effects.DropShadowEffect
+        {
+            Color = Colors.Black,
+            BlurRadius = dark ? 28 : 24,
+            ShadowDepth = dark ? 10 : 8,
+            Direction = 270,
+            Opacity = dark ? .35 : .10
+        };
+        previewShadow.Freeze();
+        r["AppearancePreviewShadow"] = previewShadow;
+        r["AppearancePaper"] = Brush(dark ? "#1F1E1C" : "#FAF9F5");
+        r["AppearanceGlass"] = Brush(preferences.ReduceTransparency ? dark ? "#EB2C2B28" : "#E6FBFAF7" : dark ? "#B3282724" : "#BDFBFAF7");
+        r["AppearanceFill2"] = Brush(dark ? "#17FFFFFF" : "#14141413");
+        r["AppearanceFill3"] = Brush(dark ? "#26FFFFFF" : "#24141413");
         r["Panel"] = Brush(card);
         r["Panel2"] = Brush(dark ? "#383733" : "#F1F0EB");
         r["Window"] = Brush(window);
@@ -280,6 +270,10 @@ internal static partial class UiTheme
         r["AccentSoft"] = Brush((dark ? "#30" : "#24") + accent.Item1[1..]);
         r["SwitchOff"] = Brush(dark ? "#5C5B57" : "#D2D1CC");
         r["Glass"] = Brush(preferences.ReduceTransparency ? dark ? "#2C2B28" : "#FBFAF7" : dark ? "#EB282724" : "#E6FBFAF7");
+        r["Control"] = Brush(dark ? "#3A3936" : "#FFFFFF");
+        r["GlassStrong"] = Brush(preferences.ReduceTransparency ? dark ? "#2C2B28" : "#FBFAF7" : dark ? "#EB2C2B28" : "#E6FBFAF7");
+        r["GlassEdge"] = Brush(dark ? "#1AFFFFFF" : "#BFFFFFFF");
+        r["Fill2"] = Brush(dark ? "#17FFFFFF" : "#14141413");
         r["Good"] = Brush(dark ? "#63C48C" : "#2F8A57");
         r["Warn"] = Brush(dark ? "#E5AD55" : "#A5670E");
         r["Danger"] = Brush(dark ? "#F0806C" : "#C2412D");

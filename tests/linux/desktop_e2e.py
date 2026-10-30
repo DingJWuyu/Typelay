@@ -6530,7 +6530,7 @@ def run(arguments):
                             matches = [
                                 item
                                 for item in owned_windows
-                                if item.get("title") == "TypeLay GTK contract fixture"
+                                if item.get("title") == "TypeLay input contracts"
                             ]
                             observation.update(
                                 ownedCount=len(owned_windows),
@@ -6538,7 +6538,7 @@ def run(arguments):
                                 owned=[
                                     {
                                         "expectedTitle": item.get("title")
-                                        == "TypeLay GTK contract fixture",
+                                        == "TypeLay input contracts",
                                         "appIdCategory": "unset"
                                         if item.get("app_id") is None
                                         else "fixture"
@@ -6572,7 +6572,7 @@ def run(arguments):
                         request({"Action": {"FocusWindow": {"id": fixture_window["id"]}}})
 
                         def clipboard_field():
-                            root = named(clipboard_process.pid, "TypeLay GTK contract fixture")
+                            root = named(clipboard_process.pid, "TypeLay input contracts")
                             pending, found = [root] if root else [], []
                             for _ in range(4096):
                                 if not pending:
@@ -6609,7 +6609,7 @@ def run(arguments):
                             source,
                             clipboard_process.pid,
                             current["layout"]["window_size"],
-                            expected_name="TypeLay GTK contract fixture",
+                            expected_name="TypeLay input contracts",
                         )
                         assert text(source) == "TypeLay clipboard target"
                         key("ctrl+a")

@@ -133,8 +133,10 @@ public sealed partial class OverlayTranslationMenuTests
         return scene;
     }
 
-    private static async Task SendRegenerateKey(OverlayWindow overlay, Key key, bool shift = false)
+    private static async Task SendRegenerateKey(OverlayWindow overlay, Key key, bool shift = false, CancellationToken cancellation = default)
     {
+        if (!cancellation.CanBeCanceled)
+            cancellation = TestContext.Current.CancellationToken;
         Assert.Equal(overlay.Handle, Native.GetForegroundWindow());
         Assert.Equal(ModifierKeys.None, Keyboard.Modifiers);
         ushort code = checked((ushort)KeyInterop.VirtualKeyFromKey(key));
@@ -148,6 +150,7 @@ public sealed partial class OverlayTranslationMenuTests
             MoreKeyInput[] sequence = shift
                 ? [new() { Type = 1, Key = 0x10 }, new() { Type = 1, Key = code }, new() { Type = 1, Key = code, Flags = 2 }, new() { Type = 1, Key = 0x10, Flags = 2 }]
                 : [new() { Type = 1, Key = code }, new() { Type = 1, Key = code, Flags = 2 }];
+            cancellation.ThrowIfCancellationRequested();
             uint sent = SendMoreInput((uint)sequence.Length, sequence, Marshal.SizeOf<MoreKeyInput>());
             if (sent < sequence.Length)
             {
@@ -164,7 +167,7 @@ public sealed partial class OverlayTranslationMenuTests
                     SendMoreInput((uint)release.Length, release, Marshal.SizeOf<MoreKeyInput>());
             }
             Assert.Equal((uint)sequence.Length, sent);
-            await received.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+            await received.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellation);
             await MenuDispatcherDrained();
         }
         finally { overlay.RemoveHandler(Keyboard.PreviewKeyDownEvent, observed); }

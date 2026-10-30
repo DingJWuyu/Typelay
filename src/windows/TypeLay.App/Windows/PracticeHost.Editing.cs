@@ -78,7 +78,7 @@ internal sealed partial class PracticeHost
     internal bool EditorReady(TargetId target) => _editorOverlay is not null && SourceReady(target);
     internal bool SuppressOwnedWrite(InputContext context) => _editorSealed
         && (context.BoundTarget is { } target && OwnsAutomaticTarget(target) || CapturesAutomaticForeground);
-    internal bool SuppressOwnedCapture(InputContext context) => SuppressOwnedWrite(context) && ReturnDescriptor(context) is null;
+    internal bool SuppressOwnedCapture(InputContext context) => SuppressOwnedWrite(context) && ReturnDescriptor(context) is null && LocalReturnDescriptor(context) is null;
 
     internal void TraceOwnedEditorAdmission(OwnedEditorAdmissionReason reason, object? detail = null)
     {

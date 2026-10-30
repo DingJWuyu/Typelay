@@ -46,6 +46,7 @@ internal sealed partial class PracticeHost : IDisposable
             throw new InvalidOperationException("practice-already-bound");
         _session = session;
         BindCompletion(session);
+        session.OwnedLocalDraftRetired += RuntimeLocalDraftRetired;
         session.PracticeProgressChanged += ProgressChanged;
         session.AutomaticPracticeProgressChanged += AutomaticProgressChanged;
     }
@@ -608,6 +609,7 @@ internal sealed partial class PracticeHost : IDisposable
         Retire();
         if (_session is not null)
         {
+            _session.OwnedLocalDraftRetired -= RuntimeLocalDraftRetired;
             _session.PracticeProgressChanged -= ProgressChanged;
             _session.AutomaticPracticeProgressChanged -= AutomaticProgressChanged;
         }

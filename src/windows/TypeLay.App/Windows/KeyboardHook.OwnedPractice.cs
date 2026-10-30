@@ -524,6 +524,8 @@ internal sealed partial class KeyboardHook
     }
     internal void ClearOwnedChannel()
     {
+        if (Volatile.Read(ref _localDraftAnchor) is { } local)
+            EndLocalDraftAnchor(local.Opening);
         Interlocked.Exchange(ref _editorForeground, null);
         RevokeOwnedPlan();
         RevokeOwnedExit();

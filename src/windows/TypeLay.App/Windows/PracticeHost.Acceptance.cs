@@ -518,6 +518,7 @@ internal sealed partial class PracticeHost
                         WindowsInterruptClock.NowMs));
         }
         PollOwnedReturn();
+        PollOwnedLocalDraft();
         _ = _monitor?.OwnedPrefixPending; // Settle a prefix-only timeout even without a write plan.
         if (_latestExit is { } exit && !ExitBasisCurrent(exit))
             RevokeExit();
@@ -677,7 +678,7 @@ internal sealed partial class PracticeHost
             _monitor?.ObserveOwnedPrefixResult(message.PrefixResult!);
             return true;
         }
-        if (HandleExitMessage(message) || HandleReturnMessage(message) || HandleEditingMessage(message))
+        if (HandleLocalDraftMessage(message) || HandleExitMessage(message) || HandleReturnMessage(message) || HandleEditingMessage(message))
             return true;
         if (message.Kind == "source-ready")
         {

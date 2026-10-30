@@ -17,10 +17,9 @@ from collections import deque
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 
 
-def main():
+def main(arguments=None):
     import gi
 
     gi.require_version("Gtk", "3.0")
@@ -29,14 +28,11 @@ def main():
 
     from gi.events import GLibEventLoop
     from gi.repository import Gdk, GLib, Gtk, Pango
-    from link import Link
-    from registered_applications import list_managed_applications
-    from tray import Tray
-    from ui import Settings
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dotnet", type=Path, required=True)
-    parser.add_argument("--host", type=Path, required=True)
+    parser.add_argument("--dotnet", type=Path)
+    parser.add_argument("--host", type=Path)
+    parser.add_argument("--package", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--inspect", action="store_true")
     parser.add_argument("--tutorial-only", action="store_true")
@@ -47,9 +43,54 @@ def main():
     parser.add_argument("--shortcuts-reset-only", action="store_true")
     parser.add_argument("--shortcuts-only", action="store_true")
     parser.add_argument("--shortcuts-recording-only", action="store_true")
-    options = parser.parse_args()
+    options = parser.parse_args(arguments)
+    if options.package:
+        if options.dotnet or options.host or not options.shortcuts_only:
+            parser.error(
+                "--package is the standalone shortcuts contract; do not supply --dotnet/--host"
+            )
+        home = options.package.resolve(strict=True)
+        options.host = home / "app/TypeLay.Linux"
+        if not options.host.is_file() or not os.access(options.host, os.X_OK):
+            parser.error("the package apphost is missing or not executable")
+        sys.path.insert(0, str(home / "desktop"))
+        os.environ["TYPELAY_UI_FONT_ROOT"] = str(home / "fonts")
+        host_command = [str(options.host)]
+        host_environment = dict(os.environ)
+    else:
+        if options.dotnet is None or options.host is None:
+            parser.error("supply --package, or both --dotnet and --host")
+        home = ROOT
+        sys.path.insert(0, str(ROOT / "src/linux/desktop"))
+        host_command = [str(options.dotnet), str(options.host)]
+        host_environment = {**os.environ, "DOTNET_ROOT": str(options.dotnet.parent)}
+    from link import Link
+    from registered_applications import list_managed_applications
+    from tray import Tray
+    from ui import Settings
+
     assert Gtk.init_check([])[0], "GTK display unavailable"
     options.output.mkdir(parents=True, exist_ok=True)
+
+    def record_package_modules():
+        if not options.package:
+            return
+        desktop = (home / "desktop").resolve(strict=True)
+        sources = {}
+        # Check every loaded module whose top-level name is a shipped desktop
+        # module, including transitive/lazy imports. Never delete sys.modules.
+        for name, module in tuple(sys.modules.items()):
+            head = name.split(".")[0]
+            if not (
+                (desktop / (head + ".py")).is_file() or (desktop / head / "__init__.py").is_file()
+            ):
+                continue
+            origin = Path(module.__file__).resolve(strict=True)
+            assert origin.is_relative_to(desktop), (name, str(origin), str(desktop))
+            sources[name] = str(origin)
+        for name in ("wire", "paths", "link", "tray", "ui", "design", "settings_layout"):
+            assert name in sources, f"missing production module identity: {name}"
+        (options.output / "package-modules.json").write_text(json.dumps(sources, indent=2))
 
     async def run():
         temporary = tempfile.TemporaryDirectory(prefix="typelay-settings-ui-")
@@ -84,17 +125,16 @@ def main():
         parent, child = socket.socketpair()
         log = (options.output / "host.log").open("w")
         process = subprocess.Popen(
-            [
-                str(options.dotnet),
-                str(options.host),
-                str(ROOT),
+            host_command
+            + [
+                str(home),
                 str(directory / "config"),
                 str(directory / "data"),
             ],
             stdin=child,
             stdout=child,
             stderr=log,
-            env={**os.environ, "DOTNET_ROOT": str(options.dotnet.parent)},
+            env=host_environment,
         )
         child.close()
         surface = tray = None
@@ -1352,6 +1392,7 @@ def main():
                 lambda: None,
             )
             surface.configure(state)
+            record_package_modules()
             surface.render_guidance(guidance)
             surface.report(status)
             surface.window.connect("destroy", lambda *_: closed.set())
@@ -2344,14 +2385,18 @@ def main():
                 await asyncio.to_thread(process.wait, 5)
             log.close()
             temporary.cleanup()
+            record_package_modules()
 
     try:
         with asyncio.Runner(
             loop_factory=lambda: GLibEventLoop(GLib.MainContext.default())
         ) as runner:
-            runner.run(run())
+            # CI's independent owned-niri scope has a 40s outer budget.
+            # Reserve its final portion for the existing host/window cleanup.
+            runner.run(asyncio.wait_for(run(), 30) if options.package else run())
     except KeyboardInterrupt:
-        pass
+        if options.package:
+            raise
 
 
 if __name__ == "__main__":

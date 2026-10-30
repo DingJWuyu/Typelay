@@ -3,6 +3,8 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Documents;
+using System.Windows.Media.Animation;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using TypeLay.Runtime;
@@ -92,172 +94,485 @@ internal sealed partial class SettingsWindow
         return new Viewbox { Width = 14, Height = 14, Child = canvas, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false };
     }
 
+    private bool _appearancePageHidden;
+    private AppearanceSizeCommit? _appearanceSizeCommit;
+
+    private sealed record AppearanceSizeCommit(Slider Slider, TextBlock Preview, object Page, object? Navigation,
+        UserSettings Expected, long Revision, UserSettings Proposed)
+    {
+        public bool ActiveUpdate
+        {
+            get; set;
+        }
+    }
+
+    private AppearanceSizeCommit? BeginAppearanceSizeUpdate(UserSettings value, UserSettings expected, long revision)
+    {
+        var commit = _appearanceSizeCommit;
+        if (commit is null || !ReferenceEquals(commit.Proposed, value) || !ReferenceEquals(commit.Expected, expected)
+            || commit.Revision != revision)
+            return null;
+        commit.ActiveUpdate = true;
+        return commit;
+    }
+
+    private bool RefreshAppearanceSize()
+    {
+        var commit = _appearanceSizeCommit;
+        if (commit is not { ActiveUpdate: true } || _page != "appearance" || _appearancePageHidden || !IsVisible
+            || !ReferenceEquals(commit.Page, _pageIdentity) || !ReferenceEquals(commit.Navigation, _pageNavigation)
+            || !commit.Slider.IsDescendantOf(_content) || _settings.Revision != commit.Revision + 1
+            || _settings.HasChanges(commit.Proposed))
+            return false;
+        commit.Preview.FontSize = _settings.Value.TextSize;
+        commit.Preview.LineHeight = _settings.Value.TextSize * 1.55;
+        commit.Preview.FontFamily = UiTheme.ContentFontForLanguage("en", _settings.Value.TextSize);
+        _renderedPage = "appearance";
+        RefreshDraftBar();
+        return true;
+    }
+
+    private void AppearanceVisibilityChanged(object sender, DependencyPropertyChangedEventArgs args)
+    {
+        if (!IsVisible)
+        {
+            _appearancePageHidden = true;
+            _appearanceSizeCommit = null;
+        }
+        else if (_appearancePageHidden && _page == "appearance")
+            Refresh();
+    }
+
     private void Appearance()
     {
-        object identity = _pageIdentity;
-        Task<bool> SaveAppearanceAsync(UserSettings value) => IsVisible && ReferenceEquals(identity, _pageIdentity) ? SaveAsync(value) : Task.FromResult(false);
+        object page = _pageIdentity;
+        _appearancePageHidden = false;
+        IsVisibleChanged -= AppearanceVisibilityChanged;
+        IsVisibleChanged += AppearanceVisibilityChanged;
+        bool CurrentPage() => IsVisible && !_appearancePageHidden && ReferenceEquals(page, _pageIdentity)
+            && _page == "appearance" && !_emergencyShutdown && _closeDialog is null;
+        // The current control authorizes entry. Once accepted, an ordinary
+        // preference uses the existing prepared/expected/revision transaction;
+        // navigation must not silently discard the user's immediate save.
+        Task<bool> SaveAppearanceAsync(UserSettings value) => CurrentPage() ? SaveAsync(value) : Task.FromResult(false);
         Heading(UiTheme.L("外观", "Appearance"));
-        var preview = new Grid { Height = 188 };
-        preview.Background = new LinearGradientBrush(UiTheme.Brush("#F1E3D3").Color, UiTheme.Brush("#DFE5D6").Color, 25);
-        var source = UiTheme.Text("我们明天下午再聊细节，可以吗？", 15);
-        source.FontFamily = UiTheme.ContentFontForLanguage("zh-CN", 15);
-        var sourceCard = UiTheme.Border(source, 21, "Panel", 14);
-        sourceCard.Height = 42;
-        sourceCard.Padding = new(14, 8, 14, 8);
-        AutomationProperties.SetAutomationId(sourceCard, "AppearanceSourcePreview");
-        sourceCard.Margin = new(28, 0, 28, 26);
-        sourceCard.VerticalAlignment = VerticalAlignment.Bottom;
-        preview.Children.Add(sourceCard);
-        var translation = new StackPanel();
-        var sample = UiTheme.Text("Could we go over the details tomorrow afternoon?", UiTheme.ContentSize);
-        sample.FontFamily = UiTheme.ContentFontForLanguage("en", UiTheme.ContentSize);
-        sample.LineHeight = UiTheme.ContentSize * 1.55;
-        sample.Margin = new(0, 0, 0, 9);
-        translation.Children.Add(sample);
-        var bar = new DockPanel();
-        var hint = UiTheme.Text(_settings.Value.AcceptShortcut + "  " + UiTheme.L("接受", "Accept"), 11, true);
-        DockPanel.SetDock(hint, Dock.Right);
-        bar.Children.Add(hint);
-        var language = UiTheme.Text("●  Auto → EN", 12, true);
-        bar.Children.Add(language);
-        translation.Children.Add(bar);
-        var overlay = UiTheme.Border(translation, 18, "Glass", 14);
-        overlay.Width = 330;
-        overlay.Margin = new(0, 0, 40, 80);
-        overlay.HorizontalAlignment = HorizontalAlignment.Right;
-        overlay.VerticalAlignment = VerticalAlignment.Bottom;
-        preview.Children.Add(overlay);
-        var previewCard = UiTheme.Border(preview, 12);
-        previewCard.ClipToBounds = true;
-        previewCard.Margin = new(0, 0, 0, 18);
-        _content.Children.Add(previewCard);
+        var previewText = AppearancePreview();
         BeginGroup();
-        var themes = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 10, 0, 10) };
-        foreach (var (value, zh, en) in new[] { ("system", "跟随系统", "System"), ("light", "浅色", "Light"), ("dark", "深色", "Dark") })
+        AutomationProperties.SetAutomationId(_group!, "AppearanceColorGroup");
+        var themes = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 8, 0, 8) };
+        var themeChoices = new List<RadioButton>();
+        foreach (var (value, zh, en) in new[] { ("system", "自动", "Auto"), ("light", "浅色", "Light"), ("dark", "深色", "Dark") })
         {
             var choice = new RadioButton
             {
-                Content = ThemePreview(value),
+                Content = AppearanceThemeArt(value),
                 Tag = UiTheme.L(zh, en),
                 Width = 76,
-                Margin = new(7, 0, 7, 0),
+                Margin = new(0, 0, value == "dark" ? 0 : 14, 0),
                 GroupName = "OverlayTheme",
                 IsChecked = _settings.Value.Theme == value,
                 IsTabStop = _settings.Value.Theme == value
             };
             choice.SetResourceReference(StyleProperty, "SettingsThemeChoice");
-            AutomationProperties.SetName(choice, zh);
-            choice.Checked += async (_, _) => await SaveAppearanceAsync(_settings.Value with { Theme = value });
-            choice.PreviewKeyDown += (_, e) =>
+            AutomationProperties.SetName(choice, UiTheme.L(zh, en));
+            AutomationProperties.SetAutomationId(choice, "AppearanceTheme_" + value);
+            choice.Checked += async (_, _) => await SaveAppearanceAsync(_settings.Value with
             {
-                if (e.Key is not (Key.Left or Key.Right or Key.Up or Key.Down))
-                    return;
-                e.Handled = true;
-                int offset = e.Key is Key.Left or Key.Up ? -1 : 1;
-                int index = (_themeChoices.IndexOf(choice) + offset + _themeChoices.Count) % _themeChoices.Count;
-                var next = _themeChoices[index];
-                next.Focus();
-                next.IsChecked = true;
-            };
-            _themeChoices.Add(choice);
+                Theme = value
+            });
+            themeChoices.Add(choice);
             themes.Children.Add(choice);
         }
-        Row(UiTheme.L("主题", "Theme"), "", themes);
+        themes.PreviewKeyDown += (_, e) =>
+        {
+            if (!CurrentPage() || Keyboard.Modifiers != ModifierKeys.None || Keyboard.FocusedElement is not RadioButton focused)
+                return;
+            int offset = e.Key is Key.Left or Key.Up ? -1 : e.Key is Key.Right or Key.Down ? 1 : 0;
+            int index = themeChoices.IndexOf(focused);
+            if (offset == 0 || index < 0)
+                return;
+            e.Handled = true;
+            var next = themeChoices[(index + offset + themeChoices.Count) % themeChoices.Count];
+            if (next.Focus())
+                next.IsChecked = true;
+        };
+        Row(UiTheme.L("外观", "Appearance"), "", themes);
         var swatches = new StackPanel { Orientation = Orientation.Horizontal };
-        foreach (var (value, color) in new[] { ("clay", "#D97757"), ("ocean", "#2F7FE0"), ("sage", "#5D9A6E"), ("iris", "#8A6CD8"), ("graphite", "#77756F") })
+        foreach (var (value, name, color) in new[] { ("clay", "Clay", "#D97757"), ("ocean", "Ocean", "#2F7FE0"), ("sage", "Sage", "#5D9A6E"), ("iris", "Iris", "#8A6CD8"), ("graphite", "Graphite", "#77756F") })
         {
             bool selected = _settings.Value.Accent == value;
-            var visual = new Grid { Width = 22, Height = 22 };
-            visual.Children.Add(new Ellipse { Width = 20, Height = 20, Fill = UiTheme.Brush(color) });
-            if (selected)
-                visual.Children.Add(new System.Windows.Shapes.Path
-                {
-                    Data = Geometry.Parse("M1,5 L4,8 L10,1"),
-                    Stroke = Brushes.White,
-                    StrokeThickness = 1.7,
-                    StrokeStartLineCap = PenLineCap.Round,
-                    StrokeEndLineCap = PenLineCap.Round,
-                    StrokeLineJoin = PenLineJoin.Round,
-                    Width = 11,
-                    Height = 9,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                    VerticalAlignment = VerticalAlignment.Center
-                });
-            var swatch = UiTheme.Button("", async () => await SaveAppearanceAsync(_settings.Value with { Accent = value }));
-            swatch.Content = visual;
-            swatch.Width = 28;
-            swatch.Height = 28;
-            swatch.Padding = new(1);
-            swatch.Margin = new(3);
-            swatch.Background = Brushes.Transparent;
-            swatch.BorderBrush = Brushes.Transparent;
-            AutomationProperties.SetName(swatch, value);
+            var swatch = UiTheme.Button("", async () => await SaveAppearanceAsync(_settings.Value with
+            {
+                Accent = value
+            }));
+            swatch.SetResourceReference(StyleProperty, "AppearanceSwatch");
+            swatch.Background = UiTheme.Brush(color);
+            AppearanceSwatchMotion(swatch);
+            swatch.Margin = new(0, 0, value == "graphite" ? 0 : 9, 0);
+            swatch.Tag = selected ? "selected" : "";
+            AutomationProperties.SetName(swatch, name);
+            AutomationProperties.SetAutomationId(swatch, "AppearanceAccent_" + value);
             AutomationProperties.SetItemStatus(swatch, selected ? "selected" : "");
             swatches.Children.Add(swatch);
         }
         Row(UiTheme.L("强调色", "Accent color"), "", swatches);
         BeginGroup();
+        AutomationProperties.SetAutomationId(_group!, "AppearanceTextGroup");
         var fonts = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 8, 0, 8) };
-        foreach (var (value, name, family) in new[] { ("claude", "Claude", UiTheme.BundledSerifFont(20, display: true, "zh-CN")), ("sans", UiTheme.L("无衬线", "Sans serif"), UiTheme.BundledFont("Inter", "./UI/Fonts/#Noto Sans SC")), ("system", UiTheme.L("系统", "System"), new FontFamily("Segoe UI, Microsoft YaHei UI")) })
+        foreach (var (value, name, family) in new[]
         {
-            var body = new StackPanel();
-            var sampleText = UiTheme.Text("Aa 文", 20);
-            sampleText.FontFamily = family;
-            sampleText.FontWeight = FontWeights.Medium;
-            sampleText.HorizontalAlignment = HorizontalAlignment.Center;
-            body.Children.Add(sampleText);
-            var nameText = UiTheme.Text(name, 11, true);
-            nameText.HorizontalAlignment = HorizontalAlignment.Center;
-            nameText.Margin = new(0, 6, 0, 0);
-            body.Children.Add(nameText);
-            var font = UiTheme.Button("", async () => await SaveAppearanceAsync(_settings.Value with { Font = value }));
+            ("claude", "Claude", UiTheme.BundledSerifFont(20, display: true, "zh-CN")),
+            ("sans", UiTheme.L("无衬线", "Sans"), UiTheme.BundledFont("Inter", "./UI/Fonts/#Noto Sans SC")),
+            ("system", UiTheme.L("系统", "System"), new FontFamily("Segoe UI, Microsoft YaHei UI"))
+        })
+        {
+            bool selected = _settings.Value.Font == value;
+            var body = new Grid();
+            body.RowDefinitions.Add(new()
+            {
+                Height = new(50)
+            });
+            body.RowDefinitions.Add(new()
+            {
+                Height = new(7)
+            });
+            body.RowDefinitions.Add(new()
+            {
+                Height = new(12)
+            });
+            var sample = UiTheme.Text("Aa 文", 20);
+            sample.FontFamily = family;
+            sample.FontWeight = FontWeights.Medium;
+            sample.HorizontalAlignment = HorizontalAlignment.Center;
+            var art = new Border { Width = 76, Height = 50, CornerRadius = new(9), Child = sample };
+            art.SetResourceReference(Border.BackgroundProperty, "AppearancePaper");
+            AutomationProperties.SetAutomationId(art, "AppearanceFontArt_" + value);
+            body.Children.Add(art);
+            var label = UiTheme.Text(name, 12, muted: !selected);
+            label.FontWeight = FontWeights.Medium;
+            label.LineHeight = 12;
+            label.LineStackingStrategy = LineStackingStrategy.BlockLineHeight;
+            label.HorizontalAlignment = HorizontalAlignment.Center;
+            Grid.SetRow(label, 2);
+            body.Children.Add(label);
+            var font = UiTheme.Button("", async () => await SaveAppearanceAsync(_settings.Value with
+            {
+                Font = value
+            }));
             font.Content = body;
-            font.Width = 76;
-            font.Height = 65;
-            font.Margin = new(7, 0, 7, 0);
-            if (_settings.Value.Font == value)
-                font.SetResourceReference(Control.BorderBrushProperty, "Accent");
-            AutomationProperties.SetName(font, "Font_" + value);
+            font.Tag = selected ? "selected" : "";
+            font.Margin = new(0, 0, value == "system" ? 0 : 14, 0);
+            font.SetResourceReference(StyleProperty, "AppearanceFontChoice");
+            AutomationProperties.SetName(font, UiTheme.L("字体 " + name, "Font " + name));
+            AutomationProperties.SetAutomationId(font, "AppearanceFont_" + value);
+            AutomationProperties.SetItemStatus(font, selected ? "selected" : "");
             fonts.Children.Add(font);
         }
         Row(UiTheme.L("字体", "Font"), "", fonts);
-        var size = new Slider { Minimum = 13, Maximum = 19, TickFrequency = 1, IsSnapToTickEnabled = true, Value = _settings.Value.TextSize, Width = 180, VerticalAlignment = VerticalAlignment.Center };
-        AutomationProperties.SetName(size, "译文字号");
-        var sizeControl = new DockPanel();
-        var sizeValue = UiTheme.Text(_settings.Value.TextSize.ToString(System.Globalization.CultureInfo.InvariantCulture), 12, true);
-        sizeValue.Width = 26;
-        sizeValue.TextAlignment = TextAlignment.Right;
-        DockPanel.SetDock(sizeValue, Dock.Right);
-        sizeControl.Children.Add(sizeValue);
-        sizeControl.Children.Add(size);
-        size.ValueChanged += async (_, _) => { sizeValue.Text = ((int)size.Value).ToString(System.Globalization.CultureInfo.InvariantCulture); if (!size.IsMouseCaptureWithin) await SaveAppearanceAsync(_settings.Value with { TextSize = (int)size.Value }); };
-        size.AddHandler(Thumb.DragCompletedEvent, new DragCompletedEventHandler(async (_, _) => await SaveAppearanceAsync(_settings.Value with { TextSize = (int)size.Value })));
-        Row(UiTheme.L("译文字号", "Text size"), "", sizeControl);
-        Row(UiTheme.L("界面语言", "Interface language"), "", PreferenceChoice(
-            [("system", UiTheme.L("跟随系统", "System")), ("zh-CN", "简体中文"), ("en", "English")], _settings.Value.UiLanguage,
-            async value => await SaveAppearanceAsync(_settings.Value with { UiLanguage = value }), "界面语言"));
+        var size = new Slider
+        {
+            Minimum = 13,
+            Maximum = 19,
+            TickFrequency = 1,
+            SmallChange = 1,
+            LargeChange = 1,
+            IsSnapToTickEnabled = true,
+            IsMoveToPointEnabled = true,
+            Value = _settings.Value.TextSize,
+            Width = 150,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        size.SetResourceReference(StyleProperty, "AppearanceSizeSlider");
+        AutomationProperties.SetName(size, UiTheme.L("译文字号", "Translation size"));
+        AutomationProperties.SetAutomationId(size, "AppearanceTextSize");
+        var sizeControl = new StackPanel { Orientation = Orientation.Horizontal };
+        foreach (double captionSize in new[] { 11d, 17d })
+        {
+            var caption = UiTheme.Text("A", captionSize);
+            caption.FontWeight = FontWeights.Medium;
+            caption.FontFamily = UiTheme.DisplayFontForSize(captionSize);
+            caption.SetResourceReference(TextBlock.ForegroundProperty, "Tertiary");
+            caption.Margin = captionSize == 11 ? new(0, 0, 10, 0) : new(10, 0, 0, 0);
+            sizeControl.Children.Add(caption);
+            if (captionSize == 11)
+                sizeControl.Children.Add(size);
+        }
+        size.ValueChanged += async (_, _) =>
+        {
+            if (!CurrentPage() || _savingSettings)
+                return;
+            var expected = _settings.Value;
+            var proposed = expected with
+            {
+                TextSize = (int)size.Value
+            };
+            var commit = new AppearanceSizeCommit(size, previewText, page, _pageNavigation, expected, _settings.Revision, proposed);
+            _appearanceSizeCommit = commit;
+            try
+            {
+                await SaveAsync(proposed);
+            }
+            finally
+            {
+                if (ReferenceEquals(commit, _appearanceSizeCommit))
+                    _appearanceSizeCommit = null;
+            }
+        };
+        Row(UiTheme.L("译文字号", "Translation size"), "", sizeControl);
+        Row(UiTheme.L("界面语言", "Interface language"), "", Choice(
+            [("system", UiTheme.L("跟随系统", "Match system")), ("zh-CN", "简体中文"), ("en", "English")],
+            _settings.Value.UiLanguage, "AppearanceInterfaceLanguage", UiTheme.L("界面语言", "Interface language"),
+            async value => await SaveAppearanceAsync(_settings.Value with
+            {
+                UiLanguage = value
+            })));
         BeginGroup();
-        Row(UiTheme.L("降低透明度", "Reduce transparency"), "", UiTheme.Toggle("降低透明度", () => _settings.Value.ReduceTransparency,
-            async value => await SaveAppearanceAsync(_settings.Value with { ReduceTransparency = value })));
-        Row(UiTheme.L("减少动态效果", "Reduce motion"), "", UiTheme.Toggle("减少动态效果", () => _settings.Value.ReduceMotion,
-            async value => await SaveAppearanceAsync(_settings.Value.WithLegacyReduceMotion(value))));
+        AutomationProperties.SetAutomationId(_group!, "AppearanceAccessibilityGroup");
+        var transparency = UiTheme.Toggle(UiTheme.L("降低透明度", "Reduce transparency"), () => _settings.Value.ReduceTransparency,
+            async value => await SaveAppearanceAsync(_settings.Value with
+            {
+                ReduceTransparency = value
+            }));
+        AutomationProperties.SetAutomationId(transparency, "AppearanceTransparency");
+        Row(UiTheme.L("降低透明度", "Reduce transparency"), "", transparency);
+        Row(UiTheme.L("动态效果", "Motion"), "", Choice(
+            [("system", UiTheme.L("跟随系统", "Match system")), ("full", UiTheme.L("完整", "Full")), ("reduce", UiTheme.L("减少", "Reduced"))],
+            _settings.Value.MotionPreference, "AppearanceMotion", UiTheme.L("动态效果", "Motion"),
+            async value => await SaveAppearanceAsync(_settings.Value with
+            {
+                Motion = value
+            })));
+
+        ComboBox Choice((string Value, string Label)[] choices, string selected, string id, string name, Action<string> save)
+        {
+            var values = choices.Select(choice => new PreferenceOption(choice.Value, choice.Label)).ToArray();
+            var input = new ComboBox
+            {
+                ItemsSource = values,
+                DisplayMemberPath = nameof(PreferenceOption.Label),
+                MinWidth = 130,
+                SelectedItem = values.Single(choice => choice.Value == selected)
+            };
+            input.SetResourceReference(StyleProperty, "AppearancePopup");
+            AutomationProperties.SetName(input, name);
+            AutomationProperties.SetAutomationId(input, id);
+            input.Unloaded += (_, _) => input.IsDropDownOpen = false;
+            input.IsVisibleChanged += (_, _) =>
+            {
+                if (!input.IsVisible)
+                    input.IsDropDownOpen = false;
+            };
+            input.SelectionChanged += (_, args) =>
+            {
+                if (!CurrentPage() || args.AddedItems.Count != 1 || args.AddedItems[0] is not PreferenceOption choice
+                    || !ReferenceEquals(choice, input.SelectedItem) || !values.Contains(choice))
+                    return;
+                input.IsDropDownOpen = false;
+                save(choice.Value);
+            };
+            return input;
+        }
     }
 
-    private static ComboBox PreferenceChoice((string Value, string Label)[] choices, string selected, Action<string> save, string name)
-    {
-        var values = choices.Select(choice => new PreferenceOption(choice.Value, choice.Label)).ToArray();
-        var input = new ComboBox
-        {
-            ItemsSource = values,
-            DisplayMemberPath = nameof(PreferenceOption.Label),
-            MinWidth = 150,
-            SelectedItem = values.SingleOrDefault(choice => choice.Value == selected)
-        };
-        AutomationProperties.SetName(input, name);
-        input.SelectionChanged += (_, _) => { if (input.SelectedItem is PreferenceOption choice) save(choice.Value); };
-        return input;
-    }
     private sealed record PreferenceOption(string Value, string Label);
+
+    private static void AppearanceSwatchMotion(Button swatch)
+    {
+        var scale = new ScaleTransform(1, 1);
+        swatch.RenderTransformOrigin = new(.5, .5);
+        swatch.RenderTransform = scale;
+        object? transition = null;
+        void Settle()
+        {
+            transition = null;
+            scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            scale.ScaleX = scale.ScaleY = swatch.IsLoaded && swatch.IsVisible && swatch.IsMouseOver ? 1.1 : 1;
+        }
+        void Hover(object sender, MouseEventArgs args)
+        {
+            double from = scale.ScaleX;
+            Settle();
+            if (!swatch.IsLoaded || !swatch.IsVisible || UiTheme.ReduceMotion)
+                return;
+            object current = transition = new object();
+            var animation = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromMilliseconds(120), FillBehavior = FillBehavior.Stop };
+            animation.KeyFrames.Add(new DiscreteDoubleKeyFrame(from, KeyTime.FromTimeSpan(TimeSpan.Zero)));
+            animation.KeyFrames.Add(new SplineDoubleKeyFrame(scale.ScaleX, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(120)), new KeySpline(.25, .1, .25, 1)));
+            animation.Completed += (_, _) =>
+            {
+                if (ReferenceEquals(current, transition))
+                    Settle();
+            };
+            scale.BeginAnimation(ScaleTransform.ScaleXProperty, animation);
+            scale.BeginAnimation(ScaleTransform.ScaleYProperty, animation);
+        }
+        void MotionChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs args)
+        {
+            if (args.PropertyName == nameof(SystemParameters.ClientAreaAnimation))
+                swatch.Dispatcher.BeginInvoke(new Action(Settle));
+        }
+        swatch.MouseEnter += Hover;
+        swatch.MouseLeave += Hover;
+        swatch.Loaded += (_, _) =>
+        {
+            SystemParameters.StaticPropertyChanged += MotionChanged;
+            Settle();
+        };
+        swatch.Unloaded += (_, _) =>
+        {
+            SystemParameters.StaticPropertyChanged -= MotionChanged;
+            Settle();
+        };
+        swatch.IsVisibleChanged += (_, _) => Settle();
+    }
+
+    private static FrameworkElement AppearanceThemeArt(string theme)
+    {
+        bool dark = theme == "dark";
+        var art = new Grid { Width = 76, Height = 50, Clip = new RectangleGeometry(new Rect(0, 0, 76, 50), 9, 9) };
+        art.Background = theme == "system" ? new LinearGradientBrush(new GradientStopCollection
+        {
+            new(UiTheme.Brush("#F1E3D3").Color, 0), new(UiTheme.Brush("#F1E3D3").Color, .5),
+            new(UiTheme.Brush("#2A221D").Color, .5), new(UiTheme.Brush("#2A221D").Color, 1)
+        }, 0) : new LinearGradientBrush(UiTheme.Brush(dark ? "#3B2A22" : "#F1E3D3").Color, UiTheme.Brush(dark ? "#1E2620" : "#DFE5D6").Color, 45);
+        var surface = new Border
+        {
+            Height = 20,
+            Margin = new(12, 0, 12, 9),
+            CornerRadius = new(6),
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Background = UiTheme.Brush(dark ? "#F232312E" : "#E0FFFFFF"),
+            Effect = new System.Windows.Media.Effects.DropShadowEffect { Color = Colors.Black, BlurRadius = 3, ShadowDepth = 1, Direction = 270, Opacity = .12 }
+        };
+        if (theme == "system")
+            surface.Background = new LinearGradientBrush(new GradientStopCollection
+            {
+                new(UiTheme.Brush("#E6FFFFFF").Color, 0), new(UiTheme.Brush("#E6FFFFFF").Color, .5),
+                new(UiTheme.Brush("#F232312E").Color, .5), new(UiTheme.Brush("#F232312E").Color, 1)
+            }, 0);
+        art.Children.Add(surface);
+        var line = new Border { Width = 30, Height = 4, CornerRadius = new(2), Margin = new(18, 0, 0, 17), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Bottom };
+        line.SetResourceReference(Border.BackgroundProperty, "Accent");
+        art.Children.Add(line);
+        AutomationProperties.SetAutomationId(art, "AppearanceThemeArt_" + theme);
+        return art;
+    }
+
+    private TextBlock AppearancePreview()
+    {
+        var preview = new Grid { Height = 188, IsHitTestVisible = false };
+        preview.SetResourceReference(Panel.BackgroundProperty, "AppearanceSceneryBase");
+        foreach (var (sceneryKey, x, y) in new[]
+        {
+            ("AppearanceSceneryGold", .70, .10),
+            ("AppearanceSceneryGreen", 1.05, 1.10),
+            ("AppearanceSceneryWarm", .12, -.10)
+        })
+        {
+            var brush = (RadialGradientBrush)FindResource(sceneryKey);
+            var layer = new Border();
+            layer.SetResourceReference(Border.BackgroundProperty, sceneryKey);
+            preview.Children.Add(layer);
+            preview.SizeChanged += (_, _) => brush.Center = brush.GradientOrigin = new(preview.ActualWidth * x, preview.ActualHeight * y);
+        }
+        preview.SizeChanged += (_, _) => preview.Clip = new RectangleGeometry(new Rect(preview.RenderSize), 12, 12);
+        var source = UiTheme.Text("我们明天下午再聊细节，可以吗？", 15);
+        source.FontFamily = UiTheme.ContentFontForLanguage("zh-CN", 15);
+        source.TextWrapping = TextWrapping.NoWrap;
+        var caret = new Border { Width = 1.5, Height = 18, Margin = new(1, 0, 0, 0), IsHitTestVisible = false };
+        caret.SetResourceReference(Border.BackgroundProperty, "Accent");
+        AutomationProperties.SetAutomationId(caret, "AppearancePreviewCaret");
+        source.Inlines.Add(new InlineUIContainer(caret) { BaselineAlignment = BaselineAlignment.Center });
+        void UpdateCaret()
+        {
+            caret.BeginAnimation(OpacityProperty, null);
+            if (!caret.IsLoaded || !caret.IsVisible || UiTheme.ReduceMotion)
+                return;
+            var blink = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromSeconds(1), RepeatBehavior = RepeatBehavior.Forever };
+            blink.KeyFrames.Add(new DiscreteDoubleKeyFrame(1, KeyTime.FromTimeSpan(TimeSpan.Zero)));
+            blink.KeyFrames.Add(new DiscreteDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(.5))));
+            blink.KeyFrames.Add(new DiscreteDoubleKeyFrame(1, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(1))));
+            caret.BeginAnimation(OpacityProperty, blink);
+        }
+        void MotionChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs args)
+        {
+            if (args.PropertyName == nameof(SystemParameters.ClientAreaAnimation))
+                caret.Dispatcher.BeginInvoke(new Action(UpdateCaret));
+        }
+        caret.Loaded += (_, _) =>
+        {
+            SystemParameters.StaticPropertyChanged += MotionChanged;
+            UpdateCaret();
+        };
+        caret.Unloaded += (_, _) =>
+        {
+            SystemParameters.StaticPropertyChanged -= MotionChanged;
+            caret.BeginAnimation(OpacityProperty, null);
+        };
+        caret.IsVisibleChanged += (_, _) => UpdateCaret();
+        var sourceCard = UiTheme.Border(source, 21, "Panel");
+        sourceCard.Height = 42;
+        sourceCard.Padding = new(16, 0, 16, 0);
+        sourceCard.BorderThickness = new(0);
+        AutomationProperties.SetAutomationId(sourceCard, "AppearanceSourcePreview");
+        sourceCard.Margin = new(28, 0, 28, 26);
+        sourceCard.VerticalAlignment = VerticalAlignment.Bottom;
+        sourceCard.SetResourceReference(EffectProperty, "AppearancePreviewShadow");
+        preview.Children.Add(sourceCard);
+        var translation = new StackPanel();
+        var sample = UiTheme.Text("Could we go over the details tomorrow afternoon?", UiTheme.ContentSize);
+        sample.FontFamily = UiTheme.ContentFontForLanguage("en", UiTheme.ContentSize);
+        AutomationProperties.SetAutomationId(sample, "AppearanceTranslationPreview");
+        sample.LineHeight = UiTheme.ContentSize * 1.55;
+        sample.Margin = new(0, 0, 0, 9);
+        translation.Children.Add(sample);
+        var bar = new DockPanel();
+        var hint = new StackPanel { Orientation = Orientation.Horizontal };
+        var key = UiTheme.Text(_settings.Value.AcceptShortcut, 11, true);
+        var cap = UiTheme.Border(key, 4, "Panel", 3);
+        key.FontWeight = FontWeights.Medium;
+        cap.Height = 20;
+        cap.MinWidth = 22;
+        AutomationProperties.SetAutomationId(cap, "AppearancePreviewAcceptKey");
+        cap.CornerRadius = new(5);
+        cap.Padding = new(6, 0, 6, 0);
+        cap.BorderThickness = new(0, 0, 0, .5);
+        cap.SetResourceReference(Border.BackgroundProperty, "AppearanceFill2");
+        cap.SetResourceReference(Border.BorderBrushProperty, "SettingsControlLine");
+        hint.Children.Add(cap);
+        var accept = UiTheme.Text(UiTheme.L("接受", "Accept"), 12, true);
+        accept.Margin = new(7, 0, 0, 0);
+        hint.Children.Add(accept);
+        DockPanel.SetDock(hint, Dock.Right);
+        bar.Children.Add(hint);
+        var language = new StackPanel { Orientation = Orientation.Horizontal };
+        var dot = new Ellipse { Width = 7, Height = 7, VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 0, 7, 0) };
+        dot.SetResourceReference(Shape.FillProperty, "Accent");
+        language.Children.Add(dot);
+        var label = UiTheme.Text("Auto → EN", 12, true);
+        label.FontWeight = FontWeights.Medium;
+        language.Children.Add(label);
+        bar.Children.Add(language);
+        translation.Children.Add(bar);
+        var overlay = UiTheme.Border(translation, 18, "AppearanceGlass");
+        overlay.Padding = new(14, 13, 12, 8);
+        overlay.Width = 330;
+        overlay.Margin = new(0, 0, 40, 80);
+        overlay.HorizontalAlignment = HorizontalAlignment.Right;
+        overlay.VerticalAlignment = VerticalAlignment.Bottom;
+        preview.Children.Add(overlay);
+        var card = UiTheme.Border(preview, 12);
+        card.BorderThickness = new(0);
+        card.SetResourceReference(EffectProperty, "SettingsModeThumbShadow");
+        var edge = new Border { BorderThickness = new(.5), CornerRadius = new(12), IsHitTestVisible = false };
+        edge.SetResourceReference(Border.BorderBrushProperty, "Line");
+        preview.Children.Add(edge);
+        card.Margin = new(0, 0, 0, 18);
+        AutomationProperties.SetAutomationId(card, "AppearancePreview");
+        _content.Children.Add(card);
+        return sample;
+    }
 
     private void Toast(string text, Func<Task>? undo = null, Func<bool>? stillValid = null)
     {

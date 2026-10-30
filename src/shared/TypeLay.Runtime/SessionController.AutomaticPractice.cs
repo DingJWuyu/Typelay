@@ -81,6 +81,8 @@ public sealed partial class SessionController
 
     public bool BindAutomaticPractice(OwnedPracticeBinding binding)
     {
+        if (_ownedLocalDraft is not null)
+            return BindOwnedLocalDraftReturn(binding);
         if (_disposed || _pendingPracticeCompletion is not null
             || _automaticRetirementUnconfirmed || _automaticRetirement is { IsCompleted: false }
             || _retireOwnedPractice is null || AutomaticPracticeProgress is not { } progress || progress.RunId != binding.RunId
@@ -328,7 +330,7 @@ public sealed partial class SessionController
         if (AutomaticPracticeProgress is not { } progress)
             return;
         _lastRetiredAutomaticRun = progress.RunId;
-        var binding = _ownedPractice ?? _awaitingPractice ?? _awaitingPracticeReturn?.Binding;
+        var binding = _ownedPractice ?? _awaitingPractice ?? _awaitingPracticeReturn?.Binding ?? _ownedLocalDraft?.Opening.Binding;
         if (binding is not null)
         {
             _automaticRetirementUnconfirmed = true;
@@ -337,6 +339,7 @@ public sealed partial class SessionController
         _ownedPractice = null;
         _awaitingPractice = null;
         _awaitingPracticeReturn = null;
+        RetireOwnedLocalDraft();
         _freshPracticeEvidence = null;
         _automaticPlans.Clear();
         _automaticEditSeed = null;

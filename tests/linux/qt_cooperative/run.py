@@ -33,6 +33,7 @@ TEST_INPUTS = (
     "tests/linux/qt_cooperative/fixture.cpp",
     "tests/linux/qt_cooperative/font_order.cpp",
     "src/linux/native/common/overlay-design.h",
+    "src/linux/native/qt6/overlay-regional-display.h",
     "tests/linux/qt_cooperative/qpa_ack.cpp",
     "tests/linux/fixtures/qt_native_fixture.cpp",
     "tests/linux/support/xtest.py",
@@ -1794,6 +1795,25 @@ def ordered_controls(
                         "revision": event["revision"],
                         "entry": entry,
                     }
+                    if finish == "font-policy-pending":
+                        # The current source has not moved. A new presentation
+                        # family still retires the exact pending glossary stamp.
+                        assert render_view(
+                            publication,
+                            view_state,
+                            "Kept candidate",
+                            False,
+                            1,
+                            actions,
+                            appearance={"font": "sans"},
+                        )["visible"]
+                        assert native.call("overlay-glossary-open", request)["opened"] is False
+                        fixture("observe")
+                        assert not state().get("glossary", {}).get("visible")
+                        assert not events("sessionGlossaryAdd")
+                        unchanged()
+                        native.call("overlay-hide")
+                        return
                     if finish == "stale":
                         request["entry"] = {**entry, "token": {**token, "revision": 2}}
                         assert native.call("overlay-glossary-open", request)["opened"] is False
@@ -1807,6 +1827,24 @@ def ordered_controls(
                         "real source-word focus without translation editing",
                     )
                     unchanged()
+                    if finish == "font-policy-open":
+                        # Retire, never restamp, the actual open source form.
+                        render_view(
+                            publication,
+                            view_state,
+                            "Kept candidate",
+                            False,
+                            1,
+                            actions,
+                            appearance={"font": "sans"},
+                        )
+                        fixture("observe")
+                        assert not state().get("glossary", {}).get("visible")
+                        assert native.call("overlay-glossary-open", request)["opened"] is False
+                        assert not events("sessionGlossaryAdd")
+                        unchanged()
+                        native.call("overlay-hide")
+                        return
                     if finish == "cancel":
                         click("typelay-glossary-cancel")
                         observe(
@@ -2008,6 +2046,9 @@ def ordered_controls(
                     ):
                         glossary_source(glossary_state, glossary_finish)
                 result["qlineedit_explicit_source_glossary_zero_write_return_and_refusals"] = True
+                for font_form in ("font-policy-pending", "font-policy-open"):
+                    glossary_source("ValidTranslation", font_form)
+                result["font_policy_retires_pending_and_open_source_glossary"] = True
                 for glossary_state in ("ValidTranslation", "EditedTranslationPending"):
                     for glossary_finish in (
                         "cancel",
@@ -2028,12 +2069,17 @@ def ordered_controls(
                     True
                 )
 
-                def editor_view():
+                def editor_view(observation=None):
                     prepare()
                     publication = publish()
                     target = publication["target"]
                     assert render_view(
-                        publication, "EditingTranslation", "Exact manual translation", True, 1
+                        publication,
+                        "EditingTranslation",
+                        "Exact manual translation",
+                        True,
+                        1,
+                        observation=observation,
                     )["editing"]
                     assert native.call(
                         "overlay-resume",
@@ -2095,6 +2141,152 @@ def ordered_controls(
                     run(["xdotool", "keyup", "F7", "Control_L"], env=environment)
                 native.call("overlay-hide")
                 result["menu_feedback_preserves_original_editor_control_ticket"] = True
+
+                # A same-view full render must not format an unchanged policy.
+                # A real family or Latin role change must retire the original
+                # Ctrl ticket, even though token and transport revision match.
+                for policy_case, appearance in (
+                    ("same", {"font": "claude", "textSize": 15}),
+                    ("family", {"font": "sans", "textSize": 15}),
+                    ("role", {"font": "claude", "textSize": 17}),
+                    ("system", {"font": "system", "textSize": 15}),
+                ):
+                    original_display = {}
+                    publication = editor_view(original_display)
+                    fixture("observe")
+                    before = state()
+                    initial_returns = len(returns())
+                    event_start = len(native.events)
+                    controls = before["keys"].get("controlPress", 0)
+                    releases = before["keys"].get("editorF7Release", 0)
+                    control_started = now_ms()
+                    control_deadline = min(control_started + 150, original_display["expiresAtMs"])
+                    run(["xdotool", "keydown", "--delay", "0", "Control_L"], env=environment)
+                    try:
+                        wait(
+                            lambda: state()["keys"].get("controlPress", 0) > controls and settled(),
+                            "original Ctrl before presentation font policy",
+                        )
+                        assert render_view(
+                            publication,
+                            "EditingTranslation",
+                            "Exact manual translation",
+                            True,
+                            1,
+                            appearance=appearance,
+                        )["editing"]
+                        # A rejected old chord must still be within its original
+                        # 150ms, not merely denied by natural expiry. This starts
+                        # conservatively before the real Ctrl reaches the IM.
+                        assert now_ms() < control_deadline, policy_case
+                        run(["xdotool", "keydown", "--delay", "0", "F7"], env=environment)
+                        if policy_case == "same":
+                            wait(
+                                lambda: len(returns()) == initial_returns + 1 and settled(),
+                                "same policy preserves original editor command",
+                            )
+                    finally:
+                        run(["xdotool", "keyup", "Control_L", "F7"], env=environment)
+                    if policy_case != "same":
+                        wait(
+                            lambda: state()["keys"].get("editorF7Release", 0) == releases + 1
+                            and settled(),
+                            "changed presentation policy refuses the old Ctrl ticket",
+                        )
+                        assert len(returns()) == initial_returns
+                    fixture("observe")
+                    after = state()
+                    if policy_case != "same":
+                        # Use the existing raw-widget key callback timestamp,
+                        # not only the earlier subprocess launch. This exact
+                        # press reached Qt before the original ticket deadline.
+                        assert (
+                            after["keys"].get("editorF7Press", 0)
+                            == before["keys"].get("editorF7Press", 0) + 1
+                        )
+                        assert (
+                            control_started
+                            <= after["keys"]["editorF7PressObservedAtMs"]
+                            < control_deadline
+                        )
+                    for key in (
+                        "editorInstance",
+                        "editorDocument",
+                        "editorText",
+                        "editorCursor",
+                        "editorAnchor",
+                        "editorUndoSteps",
+                        "editorUndoAvailable",
+                        "editorRedoAvailable",
+                        "editorPreedit",
+                    ):
+                        assert after[key] == before[key], (
+                            policy_case,
+                            key,
+                            before[key],
+                            after[key],
+                        )
+                    assert after["editorFocused"] and after["first"] == before["first"]
+                    if policy_case == "same":
+                        assert after["editorDocumentRevision"] == before["editorDocumentRevision"]
+                    elif policy_case in ("family", "system"):
+                        assert after["editorDocumentRevision"] > before["editorDocumentRevision"]
+                    assert not [
+                        event
+                        for event in native.events[event_start:]
+                        if event.get("event") == "accepted"
+                        or (
+                            event.get("event") == "ui" and event["data"].get("operation") == "draft"
+                        )
+                    ]
+                    if policy_case == "family":
+                        # The rejected old chord is fully released above. A new
+                        # XTest Ctrl through the real IM path begins a new ticket on this same
+                        # editor's actual post-format revision, not the old one.
+                        controls = after["keys"].get("controlPress", 0)
+                        run(["xdotool", "keydown", "--delay", "0", "Control_L"], env=environment)
+                        try:
+                            wait(
+                                lambda: state()["keys"].get("controlPress", 0) > controls
+                                and settled(),
+                                "new Ctrl observes the current formatted draft",
+                            )
+                            run(["xdotool", "keydown", "--delay", "0", "F7"], env=environment)
+                            wait(
+                                lambda: len(returns()) == initial_returns + 1 and settled(),
+                                "new editor ticket succeeds after the old font-policy ticket retired",
+                            )
+                        finally:
+                            run(["xdotool", "keyup", "Control_L", "F7"], env=environment)
+                        assert state()["editorInstance"] == before["editorInstance"]
+                        assert state()["first"] == before["first"]
+                        # Real input after the display change still follows the
+                        # ordinary draft/Undo path. No formatter-only mutation
+                        # above was allowed to synthesize this user event.
+                        cursor = before["editorCursor"]
+                        expected = (
+                            before["editorText"][:cursor] + "x" + before["editorText"][cursor:]
+                        )
+                        run(["xdotool", "type", "--delay", "0", "x"], env=environment)
+                        wait(
+                            lambda: state().get("editorText") == expected and settled(),
+                            "real editor input after font policy change",
+                        )
+                        native.call("describe")
+                        assert any(
+                            event.get("event") == "ui"
+                            and event["data"].get("operation") == "draft"
+                            and event["data"].get("value") == expected
+                            for event in native.events[event_start:]
+                        )
+                        run(["xdotool", "key", "--delay", "0", "ctrl+z"], env=environment)
+                        wait(
+                            lambda: state().get("editorText") == before["editorText"] and settled(),
+                            "native Undo preserves the manual draft after display formatting",
+                        )
+                        assert state()["first"] == before["first"]
+                    native.call("overlay-hide")
+                result["font_policy_same_view_original_editor_ticket_and_draft"] = True
 
                 publication = editor_view()
                 initial_returns = len(returns())
@@ -2533,13 +2725,27 @@ def display_font_experiment_errors(result, expected, first_region):
         for key in ("editorInstance", "documentInstance")
     ):
         errors.append("changed-owned-document")
-    if any(
-        frame.get("unchanged") is not True
-        or frame.get("before") != frame.get("after")
-        or frame.get("hostRunsUnchanged") is not True
-        for frame in frames
-    ):
-        errors.append("draft-selection-undo-preedit-or-host-changed")
+    # Qt's public rehighlight advances the real document revision. Compare
+    # all other draft state exactly, and separately require the explicit cost;
+    # old document-stamped input/glossary tickets must still be retired by the
+    # production consumer. The raw `unchanged` observation remains in the JSON.
+    for index, frame in enumerate(frames):
+        before, after = frame.get("before", {}), frame.get("after", {})
+        delta = 0 if index == 0 else 1
+        if {key: value for key, value in before.items() if key != "revision"} != {
+            key: value for key, value in after.items() if key != "revision"
+        } or frame.get("hostRunsUnchanged") is not True:
+            errors.append("draft-selection-undo-preedit-or-host-changed")
+        if (
+            type(before.get("revision")) is not int
+            or type(after.get("revision")) is not int
+            or after["revision"] - before["revision"] != delta
+            or frame.get("presentationRevisionDelta") != delta
+            or frame.get("presentationChanged") is not bool(delta)
+            or frame.get("samePolicyStable") is not True
+            or frame.get("unchanged") is not (delta == 0)
+        ):
+            errors.append("unexpected-presentation-revision-or-repeated-policy-edit")
     for key in ("paintCount", "hostPaintCount"):
         paints = [frame.get(key, 0) for frame in frames]
         if not all(type(value) is int and value > 0 for value in paints) or any(

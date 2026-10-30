@@ -55,7 +55,6 @@ internal sealed partial class SettingsWindow : Window
     private string? _shortcutConflictMessage;
     private readonly TextBlock _draftNotice;
     private readonly Func<Window, string?> _selectApplication;
-    private readonly List<RadioButton> _themeChoices = [];
     private readonly Action _openPractice;
     private readonly WindowsApplicationSupport? _support;
     private readonly Func<ModelInstaller> _createInstaller;
@@ -212,6 +211,7 @@ internal sealed partial class SettingsWindow : Window
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         FontFamily = UiTheme.UiFont;
         Resources.MergedDictionaries.Add(UiTheme.SettingsResources());
+        Resources.MergedDictionaries.Add(UiTheme.AppearanceResources());
         Resources.MergedDictionaries.Add(UiTheme.ConfigurationScrollResources());
         Resources.MergedDictionaries.Add(UiTheme.LanguageResources());
         Resources.MergedDictionaries.Add(UiTheme.ShortcutResources());
@@ -617,6 +617,8 @@ internal sealed partial class SettingsWindow : Window
                 _renderedPage = null;
         }
         RefreshSettingsBanners();
+        if (RefreshAppearanceSize())
+            return;
         // Keep the actual editors mounted during background status refreshes so
         // neither unsaved text nor keyboard focus and selection are disturbed.
         if (_page == "shortcuts" && _renderedPage == _page)
@@ -647,6 +649,7 @@ internal sealed partial class SettingsWindow : Window
             ? AutomationProperties.GetName(focused) : null;
         RetireModelPage();
         RetireGeneralModeThumb();
+        _appearanceSizeCommit = null;
         _pageIdentity = new object();
         ClearSearchLocation();
         _searchTargets.Clear();
@@ -658,7 +661,6 @@ internal sealed partial class SettingsWindow : Window
         _swapLanguages = null;
         _languageAvailability = null;
         _languageStatusCard = null;
-        _themeChoices.Clear();
         _progress = null;
         _progressLabel = null;
         _practiceStatus = null;
@@ -910,7 +912,16 @@ internal sealed partial class SettingsWindow : Window
             }
             _settingsError = null;
             updateEntered = true;
-            _settings.Update(expectedRevision, value);
+            var appearanceSizeUpdate = BeginAppearanceSizeUpdate(value, expected, expectedRevision);
+            try
+            {
+                _settings.Update(expectedRevision, value);
+            }
+            finally
+            {
+                if (appearanceSizeUpdate is not null)
+                    appearanceSizeUpdate.ActiveUpdate = false;
+            }
             UiTheme.Apply(_settings.Value);
             return true;
         }
@@ -974,43 +985,6 @@ internal sealed partial class SettingsWindow : Window
                 RestoreSettingFocus(focusedSetting);
         }
         return false;
-    }
-    private static FrameworkElement ThemePreview(string theme)
-    {
-        var backdrop = new Grid();
-        backdrop.ColumnDefinitions.Add(new());
-        backdrop.ColumnDefinitions.Add(new());
-        bool dark = theme == "dark";
-        backdrop.Background = UiTheme.Brush(dark ? "#27282D" : "#F4F4F6");
-        if (theme == "system")
-        {
-            var half = new Border { Background = UiTheme.Brush("#27282D") };
-            Grid.SetColumn(half, 1);
-            backdrop.Children.Add(half);
-        }
-        var lines = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new(4) };
-        foreach (double width in new[] { 18d, 38d, 29d })
-            lines.Children.Add(new Border
-            {
-                Width = width,
-                Height = 3,
-                Margin = new(0, 2, 0, 2),
-                HorizontalAlignment = HorizontalAlignment.Left,
-                CornerRadius = new(1.5),
-                Background = UiTheme.Brush(dark ? "#B5B5BF" : "#62636B")
-            });
-        var overlay = new Border
-        {
-            Child = lines,
-            Margin = new(6, 8, 6, 8),
-            CornerRadius = new(6),
-            BorderThickness = new(1),
-            BorderBrush = UiTheme.Brush(dark ? "#51525A" : "#DCDCE1"),
-            Background = UiTheme.Brush(dark ? "#34353B" : "#FFFFFF")
-        };
-        Grid.SetColumnSpan(overlay, 2);
-        backdrop.Children.Add(overlay);
-        return new Border { Child = backdrop, CornerRadius = new(5), ClipToBounds = true };
     }
     public async void StartPractice()
     {

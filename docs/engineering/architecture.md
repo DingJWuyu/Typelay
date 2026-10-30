@@ -127,6 +127,8 @@ Windows/Linux 在 trunk 共用 src/shared/ 下的一份 Core、Runtime、Protoco
 
 `TypeLay.Runtime` 引用 Core/Protocol，拥有 SessionController 的时序编排、设置持久化及 ModelClient 的本地模型协议。宿主注入输入服务/输入观察、串行事件循环、视图、数据路径和进程所有权。这里没有 WPF、Win32、UIA、Registry、Windows Broker DTO 或 provider 名称判定。模型、设置、平台事件通过公开端口进入同一会话所有者，不另建线程、服务容器或消息总线。
 
+Windows 自有练习源的人工稿进入 More 时，旧编辑 attempt 永久退休、旧 reader 立即停用，独立 ACK 证明其已关闭后才允许新的返回；同一 TextBox 的文字、选区与 Undo 转入本地-only 呈现，不再是源字段、`FocusMember.Overlay`、输入镜像或接受许可。[Core 的单会话 opaque dormant edit](../../src/shared/TypeLay.Core/Session.DormantEdit.cs) 仅保存原编辑基准，空稿仍锁定风格，配置/会话退休后不能复用。Keep 后真实 Tab 的原始按键期限绑定[独立返回 receipt](../../src/shared/TypeLay.Runtime/SessionController.OwnedLocalDraft.cs)；Windows Host/Practice 分别核对新 reader、真实源焦点到达与新鲜捕获，Core 共用原回源基准校验通过后才建立新 binding。绑定前不发布许可或模型任务；本次失败同步清理，旧回执不能作用于新会话。该身份不是持久草稿恢复或通用辅助焦点授权，完整交互与未完成子项见[原型对照](../design/prototype-parity.md)。
+
 GTK、Qt 和共享浏览器沿用现有视图状态，在 `Translating`、正文非空且 `editorOwnsText=false` 时以现有弱化文字色显示旧译文，与 Windows 更新态对齐；新结果恢复正常色，编辑与回源人工稿保持原色，不增加协议字段或接受资格。
 
 [本轮呈现检查](https://github.com/DingJWuyu/Typelay/actions/runs/39097718674)已通过 GTK3、GTK4 和 Qt 的实际控件颜色状态断言，以及浏览器浅深色、320/520 像素四个场景的状态序列；Qt 真实模型编辑与回源链也通过。浏览器测试已明确传入当前视图代次，并在实际进入编辑后才输入人工稿，保留原源文字不变断言。双端搬迁后发行包也已验证扩展图标；整套平台检查仍有其它失败，不能将这些检查作为完整输入验收。

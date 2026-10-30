@@ -526,7 +526,7 @@ public sealed partial class SettingsRenderingTests(WpfDesktopFixture desktop, IT
                     Assert.True(peer.IsKeyboardFocusable());
                     return Assert.IsAssignableFrom<ISelectionItemProvider>(peer.GetPattern(PatternInterface.SelectionItem));
                 }
-                Assert.True(Selection("跟随系统").IsSelected);
+                Assert.True(Selection("自动").IsSelected);
                 Assert.False(Selection("浅色").IsSelected);
                 Assert.False(Selection("深色").IsSelected);
                 Assert.Equal(0, saved);
@@ -543,16 +543,16 @@ public sealed partial class SettingsRenderingTests(WpfDesktopFixture desktop, IT
                 Assert.True(Selection("深色").IsSelected);
                 Assert.True(Choice("深色").IsKeyboardFocused);
                 Assert.Equal(2, saved);
-                Assert.True(Choice("跟随系统").Focus());
-                await AwaitSettingsSave(settings, () => SendOwnedKey(window, Choice("跟随系统"), 0x20));
+                Assert.True(Choice("自动").Focus());
+                await AwaitSettingsSave(settings, () => SendOwnedKey(window, Choice("自动"), 0x20));
                 await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
                 Assert.Equal("system", WindowsRuntime.CreateSettings(path).Value.Theme);
-                Assert.True(Selection("跟随系统").IsSelected);
+                Assert.True(Selection("自动").IsSelected);
                 Assert.Equal(3, saved);
                 using var blocked = new FileStream(path + ".tmp", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
                 Selection("浅色").Select();
                 Assert.Equal("system", WindowsRuntime.CreateSettings(path).Value.Theme);
-                Assert.True(Selection("跟随系统").IsSelected);
+                Assert.True(Selection("自动").IsSelected);
                 Assert.False(Selection("浅色").IsSelected);
                 Assert.Equal(3, saved);
                 Assert.Contains(Descendants(window).OfType<TextBlock>(), text =>

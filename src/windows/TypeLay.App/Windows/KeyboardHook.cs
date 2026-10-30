@@ -242,6 +242,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             {
                 ObserveSourceReturnForeground(window);
                 ObserveEditorForeground(window);
+                ObserveLocalDraftForeground(window);
             }
         };
         _thread = new Thread(Run) { IsBackground = true, Name = "TypeLay.Input" };
@@ -791,6 +792,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             if (_acceptancePressTarget is { } pressTarget && !IsSourceForeground(pressTarget))
                 _acceptancePressTarget = null;
             ObserveReturnKey(data, down, repeated, injected, now);
+            ObserveLocalDraftKey(data, down, repeated, injected, now);
             var sessionKeys = Volatile.Read(ref _sessionKeys);
             // Retain the original short-circuit reads and first failed gate.
             // A later source-exit diagnostic must not reobserve changed state.

@@ -116,24 +116,38 @@ public sealed partial class SessionController
     private void CheckEditorGlossaryHandoff()
     {
         var handoff = _editorGlossaryHandoff;
-        _editorGlossaryHandoff = null; // The first editor acknowledgement consumes this one attempt.
-        if (handoff is null || _capturing || handoff.Observation.SourceEpoch is < 0 or long.MaxValue
-            || _hook.SourceUserEpoch != handoff.Observation.SourceEpoch + 1)
+        if (handoff is null)
             return;
+        if (handoff.Observation.SourceEpoch is < 0 or long.MaxValue
+            || _hook.SourceUserEpoch != handoff.Observation.SourceEpoch + 1
+            || !EditorGlossaryHandoffCurrent(handoff))
+        {
+            _editorGlossaryHandoff = null;
+            return;
+        }
+        // An older ordinary read can still be in flight when editor focus is
+        // acknowledged. It is not this recheck's attempt. Wait for it without
+        // adding a timer, extending the original deadline or renewing authority.
+        if (_capturing)
+            return;
+        _editorGlossaryHandoff = null; // Consume once, immediately before the only recheck.
         _ = RefreshEditorGlossarySourceAsync(handoff);
     }
 
+    private bool EditorGlossaryHandoffCurrent(EditorGlossaryHandoff handoff) => !_disposed
+        && _session.State == SessionState.EditingTranslation
+        && ReferenceEquals(_session.Current, handoff.Source) && _session.ManualSourceCurrent
+        && ReferenceEquals(_styleObservation, handoff.Observation)
+        && _configurationRevision == handoff.ConfigurationRevision && _settings.Revision == handoff.SettingsRevision
+        && !_settings.HasChanges(_settings.Value) && _hook.ConnectionId == handoff.ConnectionId
+        && _hook.WindowEpoch == handoff.WindowEpoch && _loop.NowMs <= handoff.Until
+        && GlossaryEntryTokenCurrent(handoff.Token) && ViewCommandIsCurrent(handoff.Token, true)
+        && _hook.GetFocus(handoff.Token.Target) == FocusMember.Overlay && !_overlay.EditingComposition
+        && _glossaryEntry is null && !TranslationSettingsBusy() && !_styleChangeRunning && !_glossaryChangeRunning;
+
     private async Task RefreshEditorGlossarySourceAsync(EditorGlossaryHandoff handoff)
     {
-        bool Current() => !_disposed && _session.State == SessionState.EditingTranslation
-            && ReferenceEquals(_session.Current, handoff.Source) && _session.ManualSourceCurrent
-            && ReferenceEquals(_styleObservation, handoff.Observation)
-            && _configurationRevision == handoff.ConfigurationRevision && _settings.Revision == handoff.SettingsRevision
-            && !_settings.HasChanges(_settings.Value) && _hook.ConnectionId == handoff.ConnectionId
-            && _hook.WindowEpoch == handoff.WindowEpoch && _loop.NowMs <= handoff.Until
-            && GlossaryEntryTokenCurrent(handoff.Token) && ViewCommandIsCurrent(handoff.Token, true)
-            && _hook.GetFocus(handoff.Token.Target) == FocusMember.Overlay && !_overlay.EditingComposition
-            && _glossaryEntry is null && !TranslationSettingsBusy() && !_styleChangeRunning && !_glossaryChangeRunning;
+        bool Current() => EditorGlossaryHandoffCurrent(handoff);
         if (!Current())
             return;
         var request = Context();

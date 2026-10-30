@@ -4,7 +4,7 @@ namespace TypeLay.Core;
 /// Single-owner reducer. Call on the session actor, never from the low-level hook.
 /// The UI owns its persistent text editor; it pushes edits here without rebuilding the control.
 /// </summary>
-public sealed class Session
+public sealed partial class Session
 {
     private Guid _id = Guid.NewGuid();
     private long _revision, _configurationRevision, _changedAt;
@@ -46,7 +46,7 @@ public sealed class Session
     public string Draft => _draft;
     public long Revision => _revision;
     public TranslationStyle? Style => _style;
-    public bool ManualStyleLocked => State is SessionState.EditingTranslation or SessionState.ReturningToSource
+    public bool ManualStyleLocked => _dormantEdit is not null || State is SessionState.EditingTranslation or SessionState.ReturningToSource
         or SessionState.EditedTranslationPending || _manualSeed is not null || _manualBasis is not null || _draft.Length != 0;
 
     public bool ManualSourceCurrent => State is not (SessionState.EditingTranslation or SessionState.ReturningToSource)
@@ -58,6 +58,11 @@ public sealed class Session
 
     public void Observe(InputSnapshot next, FocusMember focus, long nowMs)
     {
+        if (_dormantEdit is not null)
+        {
+            LeaveFamily();
+            return; // Only the exact dormant-return operation may consume its saved basis.
+        }
         if (State == SessionState.Paused)
             return;
         if (focus == FocusMember.Other)
@@ -437,13 +442,8 @@ public sealed class Session
     {
         if (State is not (SessionState.EditingTranslation or SessionState.ReturningToSource))
             return false;
-        bool valid = !_editInvalid && _editBasis is { } basis && source.Target == basis.Target
-            && source.Text == basis.Text && source.InputEpoch == basis.InputEpoch && _configurationRevision == _editConfiguration
-            && WriteSafety.CheckSnapshot(source, nowMs) == Denial.None
-            && WriteSafety.ValidReplacement(_draft)
-            // Mouse return may collapse the original selection. Retain the exact saved range
-            // only while the whole source is identical. A different nonempty selection cancels it.
-            && (source.TranslationScope is null || source.TranslationScope == _scope);
+        bool valid = EditSourceReturnValid(_editBasis, _scope, _draft, !_editInvalid
+            && _configurationRevision == _editConfiguration, source, nowMs);
         _current = source;
         _focus = FocusMember.Source;
         _editBasis = null;
@@ -459,14 +459,7 @@ public sealed class Session
                 ? SessionState.Translating : SessionState.Invalid;
             return false;
         }
-        _candidate = _draft;
-        _preview = _draft;
-        _previewRevision = _revision;
-        _translationPending = false;
-        _manualSeed = _draft;
-        _manualBasis = source.Text;
-        _draft = "";
-        State = SessionState.EditedTranslationPending;
+        CommitEditedSourceReturn(source, _draft);
         return true;
     }
 
@@ -560,6 +553,8 @@ public sealed class Session
         direction.Validate();
         if (direction == _direction)
             return;
+        if (_dormantEdit is not null)
+            LeaveFamily();
         _direction = direction;
         _configurationRevision++;
         _job = null;
@@ -669,6 +664,7 @@ public sealed class Session
 
     public void LeaveFamily()
     {
+        _dormantEdit = null;
         if (_pendingWrite is { } outstanding)
             _quarantined.Add(outstanding.Expected.Target);
         _id = Guid.NewGuid();

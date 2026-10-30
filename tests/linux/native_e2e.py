@@ -2682,6 +2682,7 @@ def outer(arguments, script=None):
         "setup-settings",
         "setup-tutorial",
         "ordinary-gimp",
+        "settings-ui",
     ):
         return run_outer(arguments, script)
     arguments.output.mkdir(parents=True, exist_ok=True)
@@ -2706,6 +2707,49 @@ def outer(arguments, script=None):
     # The inside success receipt and the existing compositor cleanup have both
     # completed. This separate report is never an inside completion signal.
     record("passed")
+
+
+def inside_settings_ui(arguments):
+    """Mature settings controls in the owned compositor, not source input."""
+    sys.stdout = sys.stderr = (arguments.output / "inside.log").open("w", buffering=1)
+    sys.path.insert(0, str(ROOT))
+    from eng.fonts.prepare import verify_bundle
+
+    # The package's complete bytes must match the same checkout lock; do not
+    # accept its self-declared manifest or repair/download missing assets here.
+    verify_bundle(arguments.package / "fonts")
+    # This process already imported the checkout's native observer helpers.
+    # A fresh interpreter prevents sys.modules from mixing them into the
+    # package's production desktop imports. Inherit the existing owned process
+    # group and outer 40s budget; do not create another session or host fallback.
+    subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            str(Path(__file__).with_name("settings_ui.py")),
+            "--package",
+            str(arguments.package),
+            "--shortcuts-only",
+            "--output",
+            str(arguments.output),
+        ],
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+        check=True,
+    )
+    # The child returns only after the isolated settings Host, tasks and windows
+    # have completed cleanup. Outer records success after compositor cleanup.
+    (arguments.output / "desktop-result.json").write_text(
+        json.dumps(
+            {
+                "scope": "settings-ui",
+                "shortcuts": "passed",
+                "evidence": "GTK controls and persistence, not physical source input",
+            },
+            indent=2,
+        )
+    )
 
 
 def run_outer(arguments, script=None):
@@ -2780,6 +2824,11 @@ def run_outer(arguments, script=None):
             if getattr(arguments, "desktop_scope", None) == "ordinary-gimp"
             else ""
         )
+        + (
+            'window-rule { match title="^TypeLay (Settings|设置)$"; open-floating true; }\n'
+            if arguments.desktop and arguments.desktop_scope == "settings-ui"
+            else ""
+        )
         + "spawn-at-startup "
         + " ".join(json.dumps(item, ensure_ascii=False) for item in command)
         + "\n"
@@ -2811,6 +2860,8 @@ def run_outer(arguments, script=None):
                 if arguments.desktop and arguments.desktop_scope in ("setup", "setup-settings")
                 else 240
             )
+            if arguments.desktop and arguments.desktop_scope == "settings-ui":
+                timeout = 40  # Separate page contract; other desktop budgets are unchanged.
             if arguments.desktop and arguments.desktop_scope == "model-packages":
                 timeout = 260  # 240 seconds of work, then owned-process cleanup.
             deadline = time.monotonic() + (timeout if arguments.desktop else 45)
@@ -2881,6 +2932,7 @@ if __name__ == "__main__":
             "setup-tutorial",
             "ordinary-gimp",
             "model-packages",
+            "settings-ui",
         ),
         default="all",
         help="setup combines settings and tutorial; split full acceptance requires both setup-settings and setup-tutorial",
@@ -2956,7 +3008,9 @@ if __name__ == "__main__":
         try:
             if args.desktop:
                 sys.path.insert(0, str(Path(__file__).parent))
-                if args.desktop_scope == "model-packages":
+                if args.desktop_scope == "settings-ui":
+                    run = inside_settings_ui
+                elif args.desktop_scope == "model-packages":
                     from hy_package_e2e import run
                 else:
                     from desktop_e2e import run

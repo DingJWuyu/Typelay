@@ -260,12 +260,10 @@ def record_shortcut(pid, title, chord, send_key, timeout=15):
     else:
         raise AssertionError("shortcut recorder did not take focus: " + title)
     assert time.monotonic() < deadline, "shortcut recording exhausted its interaction budget"
-    send_key(
-        chord.replace("Ctrl", "ctrl")
-        .replace("Shift", "shift")
-        .replace("Alt", "alt")
-        .replace("Super", "super")
-    )
+    # Stored/product spelling is Esc; the X11 keysym is Escape. xdotool
+    # silently ignores an unknown symbol, so do not send the display spelling.
+    key_names = {"Ctrl": "ctrl", "Shift": "shift", "Alt": "alt", "Super": "super", "Esc": "Escape"}
+    send_key("+".join(key_names.get(part, part) for part in chord.split("+")))
     return node
 
 

@@ -451,6 +451,8 @@ public sealed partial class SessionController : IDisposable
         if (!ReferenceEquals(_configuredGlossary, GlossaryForTranslation()))
             ApplyGlossarySettings();
         DrainInputNotices();
+        if (TickOwnedLocalDraft())
+            return;
         if (_awaitingPractice is not null && (_automaticRetirementUnconfirmed || _automaticRetirement is { IsCompleted: false }))
             return;
         long now = _loop.NowMs;
@@ -630,7 +632,7 @@ public sealed partial class SessionController : IDisposable
     private InputContext Context() => new(_hook.UserEpoch, _hook.ForegroundEpoch,
         _hook.SourceUserEpoch, _session.Current?.Target, _settings.Value.Excluded,
         _settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand,
-        new(_hook.CommandGeneration, CurrentSessionBindings), PracticeReturnRead() ?? ContinuousPracticeRead());
+        new(_hook.CommandGeneration, CurrentSessionBindings), LocalDraftReturnRead() ?? PracticeReturnRead() ?? ContinuousPracticeRead());
     private bool PauseAnchorIsCurrent(long now) => _pauseAnchor is { IsUsable: true } anchor
         && _pauseWindowEpoch == _hook.WindowEpoch && _pauseForegroundEpoch == _hook.ForegroundEpoch
         && anchor.FocusEpoch == _hook.ForegroundEpoch && _hook.GetFocus(anchor.Target) == FocusMember.Source
@@ -893,6 +895,11 @@ public sealed partial class SessionController : IDisposable
             {
                 _inputReadFailed = false;
                 RefreshConnectionStatus();
+            }
+            if (ObserveOwnedLocalDraftReturn(result, request, windowEpoch, configurationRevision, now))
+            {
+                captureExit = "local-draft-return";
+                return;
             }
             if (SuspendAutomaticRead(request, result, now))
             {
@@ -2076,7 +2083,7 @@ public sealed partial class SessionController : IDisposable
         _manualObservation = null;
         _styleObservation = null;
         _editorGlossaryHandoff = null;
-        if (_ownedPractice is not null || _awaitingPractice is not null || _awaitingPracticeReturn is not null)
+        if (_ownedPractice is not null || _awaitingPractice is not null || _awaitingPracticeReturn is not null || _ownedLocalDraft is not null)
             RetireAutomaticPractice();
         if (_session.Current is not null)
             Trace(reason);
@@ -2089,6 +2096,7 @@ public sealed partial class SessionController : IDisposable
         _generation++;
         RevokeInput(reason);
         _permitUntil = 0;
+        RetireOwnedLocalDraft();
         _session.LeaveFamily();
         _statusOverride = null;
         _overlay.HideQuietly();
