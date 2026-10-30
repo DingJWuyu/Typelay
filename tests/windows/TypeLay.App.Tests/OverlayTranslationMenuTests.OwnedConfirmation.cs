@@ -521,6 +521,10 @@ public sealed partial class OverlayTranslationMenuTests
         IInputElement expectedFocus, CancellationToken cancellation)
     {
         ushort code = checked((ushort)KeyInterop.VirtualKeyFromKey(key));
+        Assert.True(key is Key.Enter or Key.Tab);
+        uint mapped = MapOwnedConfirmationKey(code, 4); // MAPVK_VK_TO_VSC_EX, no invented scan identity.
+        Assert.InRange(mapped, 1u, 255u); // Both actions are non-extended keys.
+        ushort scan = checked((ushort)mapped);
         var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         KeyEventHandler observed = (_, e) => { if (e.Key == key) received.TrySetResult(); };
         overlay.AddHandler(Keyboard.PreviewKeyDownEvent, observed, true);
@@ -533,12 +537,13 @@ public sealed partial class OverlayTranslationMenuTests
             MoreKeyInput[] sequence = [new()
         {
             Type = 1,
-            Key = code
+            Scan = scan,
+            Flags = 8
         }, new()
         {
             Type = 1,
-            Key = code,
-            Flags = 2
+            Scan = scan,
+            Flags = 10
         }];
             cancellation.ThrowIfCancellationRequested();
             uint sent = SendMoreInput(2, sequence, Marshal.SizeOf<MoreKeyInput>());
@@ -567,6 +572,8 @@ public sealed partial class OverlayTranslationMenuTests
             return Task.FromResult(new ModelResponse(1, "translated", translation));
         }
     }
+    [DllImport("user32.dll", EntryPoint = "MapVirtualKeyW", ExactSpelling = true)]
+    private static extern uint MapOwnedConfirmationKey(uint key, uint mapType);
     [DllImport("user32.dll", EntryPoint = "GetDlgItem")]
     private static extern nint OwnedConfirmationField(nint root, int id);
 }

@@ -533,7 +533,7 @@ def run_qt(
                         select_settings_page(host_pid, "外观")
                         label = {"system": "自动", "light": "浅色", "dark": "深色"}[theme]
                         option = wait_for(
-                            lambda: named(host_pid, "theme: " + label),
+                            lambda: named(host_pid, "外观：" + label),
                             "real overlay-theme radio was not accessible",
                         )
                         assert option.get_role() == Atspi.Role.RADIO_BUTTON

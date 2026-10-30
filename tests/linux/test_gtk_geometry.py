@@ -38,6 +38,7 @@ from native_e2e import (  # noqa: E402
     glossary_menu_scroll_advanced,
     glossary_menu_scroll_direction,
     glossary_menu_scroll_observation,
+    glossary_more_render_observation,
     glossary_painted_geometry,
     glossary_popup_fits,
     glossary_save_outcome,
@@ -534,6 +535,104 @@ class GlossaryPaintGeometryTests(unittest.TestCase):
             self.assertTrue(glossary_painted_geometry(c, 120))
             self.assertFalse(glossary_hover_current(c, 120, before, (976, 432), 108))
         self.assertFalse(glossary_hover_current(self.control(), 107, before, (976, 432), 108))
+
+
+class GlossaryMoreRenderTests(unittest.TestCase):
+    """Pure current-render evidence, not a replay of the old CI click or GTK paint."""
+
+    def setUp(self):
+        self.candidate = dict(
+            width=422,
+            height=44,
+            naturalFrames=dict(
+                candidate=30,
+                buffer=31,
+                clock=32,
+                mapGeneration=1,
+                bufferSequence=5,
+                attachedAtMs=1152887,
+                completedCount=30,
+                layoutFrame=50,
+                paintFrame=50,
+                frames=[
+                    dict(
+                        candidate=30,
+                        buffer=31,
+                        clock=32,
+                        mapGeneration=1,
+                        bufferSequence=5,
+                        sequence=30,
+                        frame=50,
+                        atMonoMs=1153709,
+                        width=422,
+                        height=44,
+                    )
+                ],
+            ),
+        )
+        self.control = dict(paintObservation=dict(clockInstance=32, paintedFrame=50))
+        self.observed_at = 1153710
+
+    def observation(self):
+        return glossary_more_render_observation(self.candidate, self.control, self.observed_at)
+
+    def test_current_complete_natural_frame_and_same_clock_control_allow_first_point(self):
+        result = self.observation()
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["current"]["bufferSequence"], 5)
+        self.assertEqual(result["completed"]["frame"], 50)
+        self.control["paintObservation"]["paintedFrame"] = 53
+        self.candidate["naturalFrames"]["paintFrame"] = 53
+        self.assertTrue(self.observation()["ready"])
+
+    def test_previous_full_render_cannot_supply_the_current_more_point(self):
+        last = self.candidate["naturalFrames"]["frames"][-1]
+        last.update(bufferSequence=3, frame=47, atMonoMs=1153676)
+        self.control["paintObservation"]["paintedFrame"] = 47
+        result = self.observation()
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["current"]["bufferSequence"], 5)
+        self.assertEqual(result["completed"]["bufferSequence"], 3)
+        # A current body frame cannot lend readiness to an older control paint.
+        last.update(bufferSequence=5, frame=50, atMonoMs=1153709)
+        self.assertFalse(self.observation()["ready"])
+
+    def test_changed_candidate_buffer_map_or_clock_rejects_old_completed_frame(self):
+        for key in ("candidate", "buffer", "clock", "mapGeneration", "bufferSequence"):
+            with self.subTest(key=key):
+                self.setUp()
+                self.candidate["naturalFrames"][key] += 1
+                self.assertFalse(self.observation()["ready"])
+        self.setUp()
+        self.control["paintObservation"]["clockInstance"] = 33
+        self.assertFalse(self.observation()["ready"])
+
+    def test_missing_future_or_malformed_frame_cannot_authorize_a_point(self):
+        mutations = (
+            lambda n: n.update(frames=[]),
+            lambda n: n.update(clock=0),
+            lambda n: n.update(bufferSequence=True),
+            lambda n: n.update(attachedAtMs=1153710),
+            lambda n: n.update(completedCount=31),
+            lambda n: n["frames"][-1].update(atMonoMs=1153711),
+            lambda n: n["frames"][-1].update(frame=-1),
+            lambda n: n["frames"][-1].update(width=421),
+            lambda n: n["frames"][-1].update(mapGeneration=True),
+        )
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                self.setUp()
+                mutate(self.candidate["naturalFrames"])
+                self.assertFalse(self.observation()["ready"])
+        self.setUp()
+        self.control["paintObservation"].pop("clockInstance")
+        self.assertFalse(self.observation()["ready"])
+
+    def test_old_matching_ring_entry_does_not_override_latest_incompatible_frame(self):
+        frames = self.candidate["naturalFrames"]["frames"]
+        frames.append({**frames[-1], "sequence": 31, "mapGeneration": 2})
+        self.candidate["naturalFrames"]["completedCount"] = 31
+        self.assertFalse(self.observation()["ready"])
 
 
 class GlossaryMotionGeometryTests(unittest.TestCase):

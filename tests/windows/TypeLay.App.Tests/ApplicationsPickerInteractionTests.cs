@@ -135,6 +135,10 @@ public sealed partial class SettingsRenderingTests
                     Assert.Same(option, Keyboard.FocusedElement);
                     AssertPickerSelectionPaint(dialog, surface, label);
                     Assert.Equal(before, File.ReadAllText(scene.Path));
+                    await Dispatcher.Yield(DispatcherPriority.Background);
+                    Current(center, hitOption: true);
+                    Assert.Same(option, Keyboard.FocusedElement);
+                    AssertPickerSelectionPaint(dialog, surface, label);
                     Render(dialog, $"application-picker-keyboard-{language}-{theme}.png", clientOnly: true);
                     CurrentDialog();
                     Assert.Same(search, ApplicationElement(dialog, "ApplicationPickerSearch"));

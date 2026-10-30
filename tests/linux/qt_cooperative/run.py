@@ -26,18 +26,9 @@ ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT))
 from eng.fonts.prepare import verify_bundle  # noqa: E402
 from eng.linux.cooperative import qt as qt_build  # noqa: E402
-from eng.linux.cooperative.inputs import QT_PIN, hashes, sha256  # noqa: E402
+from eng.linux.cooperative.inputs import QT_PIN, QT_TEST_INPUTS, hashes, sha256  # noqa: E402
 
-TEST_INPUTS = (
-    "tests/linux/qt_cooperative/run.py",
-    "tests/linux/qt_cooperative/fixture.cpp",
-    "tests/linux/qt_cooperative/font_order.cpp",
-    "src/linux/native/common/overlay-design.h",
-    "src/linux/native/qt6/overlay-regional-display.h",
-    "tests/linux/qt_cooperative/qpa_ack.cpp",
-    "tests/linux/fixtures/qt_native_fixture.cpp",
-    "tests/linux/support/xtest.py",
-)
+TEST_INPUTS = QT_TEST_INPUTS
 
 
 def verify_fcitx_inputs(fcitx):

@@ -841,6 +841,7 @@ static void report_control_paint(JsonBuilder *builder, GtkWidget *widget, JsonNo
     json_builder_set_member_name(builder, "ready"); json_builder_add_boolean_value(builder, ready);
     json_builder_set_member_name(builder, "labelRevision"); json_builder_add_int_value(builder, paint->label_revision);
     json_builder_set_member_name(builder, "paintedLabelRevision"); json_builder_add_int_value(builder, paint->painted_label_revision);
+    json_builder_set_member_name(builder, "clockInstance"); json_builder_add_int_value(builder, language_instance(G_OBJECT(paint->clock)));
     json_builder_set_member_name(builder, "mapGeneration"); json_builder_add_int_value(builder, paint->map_generation);
     json_builder_set_member_name(builder, "paintedMapGeneration"); json_builder_add_int_value(builder, paint->painted_map_generation);
     json_builder_set_member_name(builder, "requestedFrame"); json_builder_add_int_value(builder, paint->requested_frame);

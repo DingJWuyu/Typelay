@@ -126,6 +126,54 @@ def glossary_painted_geometry(control, observed_at, *, toolkit="gtk4"):
     return all(control.get(key) == surface[key] for key in ("instance", "width", "height"))
 
 
+def glossary_more_render_observation(candidate, control, observed_at):
+    """Fence the first More point on the current full render, without requesting a frame."""
+    candidate = candidate if isinstance(candidate, dict) else {}
+    control = control if isinstance(control, dict) else {}
+    natural = candidate.get("naturalFrames") or {}
+    paint = control.get("paintObservation") or {}
+    identities = ("candidate", "buffer", "clock", "mapGeneration", "bufferSequence")
+    current = {key: natural.get(key) for key in identities}
+    current.update({key: candidate.get(key) for key in ("width", "height")})
+    records = natural.get("frames") or []
+    last = records[-1] if records and isinstance(records[-1], dict) else {}
+    completed = {
+        key: last.get(key)
+        for key in (*identities, "sequence", "frame", "atMonoMs", "width", "height")
+    }
+    observation = {
+        "ready": False,
+        "current": current,
+        "completed": completed if last else None,
+        "controlClock": paint.get("clockInstance"),
+        "controlFrame": paint.get("paintedFrame"),
+    }
+    if (
+        not all(type(value) is int and value > 0 for value in current.values())
+        or not all(
+            type(completed[key]) is int and completed[key] == current[key] for key in current
+        )
+        or type(observed_at) is not int
+        or type(natural.get("attachedAtMs")) is not int
+        or type(completed["atMonoMs"]) is not int
+        or not 0 < natural["attachedAtMs"] <= completed["atMonoMs"] <= observed_at
+        or type(completed["sequence"]) is not int
+        or not 0 < completed["sequence"] == natural.get("completedCount")
+        or type(completed["frame"]) is not int
+        or completed["frame"] < 0
+        or type(paint.get("clockInstance")) is not int
+        or paint["clockInstance"] != current["clock"]
+        or type(paint.get("paintedFrame")) is not int
+        or paint["paintedFrame"] < completed["frame"]
+    ):
+        return observation
+    # A ring entry is emitted only after this clock's same-frame layout AND
+    # paint, both at this map and buffer sequence. Later unrelated paint-only
+    # frames need not invalidate that completed current-content layout.
+    observation["ready"] = True
+    return observation
+
+
 def glossary_hover_current(
     control, observed_at, before, point, moved_at, pointer=None, origin=None, move_started=None
 ):
@@ -836,6 +884,12 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             if control
                             else None,
                         }
+                        render_observation = None
+                        if overlay_control and toolkit == "gtk4" and name == "typelay-more":
+                            render_observation = glossary_more_render_observation(
+                                actual.get("candidate"), control, actual.get("observedAtMs")
+                            )
+                            metadata["renderReadiness"] = render_observation
                         observations.setdefault("first", metadata)
                         observations["last"] = metadata
                         lost = glossary_interaction_loss(
@@ -885,6 +939,12 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             return None
                         if overlay_control and not glossary_painted_geometry(
                             control, actual.get("observedAtMs"), toolkit=toolkit
+                        ):
+                            return None
+                        if (
+                            evidence is None
+                            and render_observation is not None
+                            and not render_observation["ready"]
                         ):
                             return None
                         surface = (

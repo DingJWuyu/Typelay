@@ -25,20 +25,32 @@ public sealed partial class NativeSourceControllerTests
     public Task SourceConfirmationRendersThePrototypeSheetWithoutWritingOrRegenerating(string language, string theme, bool animate) => desktop.RunAsync(async () =>
     {
         await using var native = await ProductionForegroundWriteTests.Desktop.Start();
+        // Resize only this fixture-owned field, before capture/editing starts.
+        // A narrow source is not a small viewport: it must not truncate a sheet.
+        Assert.True(N.GetWindowRect(native.A, out var field));
+        Assert.True(Native.SetWindowPos(native.A, 0, 0, 0, 180, field.Bottom - field.Top, 0x0016));
         if (animate)
         {
             Assert.True(N.GetWindowRect(native.Root, out var originalRoot));
             var rootRect = new Native.Rect { Left = originalRoot.Left, Top = originalRoot.Top, Right = originalRoot.Right, Bottom = originalRoot.Bottom };
             var monitor = new Native.MonitorInfo { Size = Marshal.SizeOf<Native.MonitorInfo>() };
             Assert.True(Native.GetMonitorInfoW(Native.MonitorFromRect(ref rootRect, 2), ref monitor));
-            int width = originalRoot.Right - originalRoot.Left, height = originalRoot.Bottom - originalRoot.Top;
-            Assert.True(width <= monitor.Work.Right - monitor.Work.Left && height <= monitor.Work.Bottom - monitor.Work.Top,
-                "The owned fixture must fit inside the current work area before testing same-side resize.");
-            int x = Math.Clamp(originalRoot.Left, monitor.Work.Left, monitor.Work.Right - width);
+            Assert.True(N.GetWindowRect(native.A, out var narrowField));
+            double fixtureScale = Math.Max(1, Native.GetDpiForWindow(native.Root) / 96.0);
+            int fieldRightOffset = narrowField.Right - originalRoot.Left;
+            int sheetRightSpace = (int)Math.Ceiling((340 + 24 + 4) * fixtureScale);
+            int x = Math.Max(originalRoot.Left, monitor.Work.Left + sheetRightSpace - fieldRightOffset);
+            x = Math.Max(x, monitor.Work.Left);
+            int width = Math.Min(originalRoot.Right - originalRoot.Left, monitor.Work.Right - x);
+            int height = originalRoot.Bottom - originalRoot.Top;
+            Assert.True(width > fieldRightOffset && height <= monitor.Work.Bottom - monitor.Work.Top,
+                "The owned fixture and narrow field must fit with room for the full sheet's trailing anchor.");
             // Near the work area's top, both the compact preview and the sheet
             // fit below the field. Changing sides intentionally does not spring
             // across the source, and is not this same-side animation scenario.
-            Assert.True(Native.SetWindowPos(native.Root, 0, x, monitor.Work.Top, 0, 0, 0x0015));
+            // Give the trailing source edge enough room for both widths without
+            // viewport clamping; resize only this test-owned resizable host once.
+            Assert.True(Native.SetWindowPos(native.Root, 0, x, monitor.Work.Top, width, height, 0x0014));
             Assert.True(N.GetWindowRect(native.Root, out var placedRoot));
             Assert.True(N.GetWindowRect(native.A, out var placedField));
             foreach (var rect in new[] { placedRoot, placedField })
@@ -50,11 +62,13 @@ public sealed partial class NativeSourceControllerTests
             }
             Assert.Equal(width, placedRoot.Right - placedRoot.Left);
             Assert.Equal(height, placedRoot.Bottom - placedRoot.Top);
+            Assert.InRange(placedField.Left, placedRoot.Left, placedRoot.Right);
+            Assert.InRange(placedField.Right, placedField.Left, placedRoot.Right);
+            Assert.InRange(placedField.Top, placedRoot.Top, placedRoot.Bottom);
+            Assert.InRange(placedField.Bottom, placedField.Top, placedRoot.Bottom);
+            Assert.Equal(180, placedField.Right - placedField.Left);
+            Assert.True(placedField.Right - 4 * fixtureScale >= monitor.Work.Left + 364 * fixtureScale);
         }
-        // Resize only this fixture-owned field, before capture/editing starts.
-        // A narrow source is not a small viewport: it must not truncate a sheet.
-        Assert.True(N.GetWindowRect(native.A, out var field));
-        Assert.True(Native.SetWindowPos(native.A, 0, 0, 0, 180, field.Bottom - field.Top, 0x0016));
         await native.Prepare(native.A, "你好", new(0, 2));
         using var broker = new FixtureBroker(native);
         var overlay = new OverlayWindow(clientAreaAnimation: () => animate);

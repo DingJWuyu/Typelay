@@ -6701,7 +6701,7 @@ def run(arguments):
                 )
                 settings_page("外观")
                 themes = {
-                    value: settings_control("theme: " + label)
+                    value: settings_control("外观：" + label)
                     for value, label in (
                         ("system", "自动"),
                         ("light", "浅色"),

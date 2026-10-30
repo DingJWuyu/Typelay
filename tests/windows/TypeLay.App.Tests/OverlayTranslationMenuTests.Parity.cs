@@ -154,7 +154,45 @@ public sealed partial class OverlayTranslationMenuTests
             menu = OpenMenu(overlay);
             var formal = MoreItem(menu, "MoreToneFormal");
             new MenuItemAutomationPeer(formal).SetFocus();
-            await ObserveMoreClick(formal, () => { Assert.Same(formal, Keyboard.FocusedElement); Assert.True(menu.IsKeyboardFocusWithin); InjectMoreKey(Key.Enter); });
+            // A click can retire the popup before its paired up reaches the
+            // owned source window. Keep this test's windows alive until that
+            // original release is actually routed; do not inject another up.
+            using var action = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            action.CancelAfter(TimeSpan.FromSeconds(3));
+            var released = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var sourceWindow = Assert.IsAssignableFrom<Window>(Window.GetWindow(source));
+            var menuSource = Assert.IsType<HwndSource>(PresentationSource.FromVisual(menu));
+            nint sourceHandle = new WindowInteropHelper(sourceWindow).Handle;
+            nint menuHandle = menuSource.Handle;
+            KeyEventHandler up = (_, e) =>
+            {
+                if (e.Key != Key.Enter)
+                    return;
+                var message = ComponentDispatcher.CurrentKeyboardMessage;
+                if (message.message == 0x101 && message.wParam == (nint)13
+                    && (message.hwnd == menuHandle || message.hwnd == overlay.Handle || message.hwnd == sourceHandle))
+                    released.TrySetResult();
+            };
+            UIElement[] owners = [menu, overlay, sourceWindow];
+            foreach (var owner in owners)
+                owner.AddHandler(Keyboard.PreviewKeyUpEvent, up, true);
+            try
+            {
+                action.Token.ThrowIfCancellationRequested();
+                await ObserveMoreClick(formal, () =>
+                {
+                    Assert.Same(formal, Keyboard.FocusedElement);
+                    Assert.True(menu.IsKeyboardFocusWithin);
+                    action.Token.ThrowIfCancellationRequested();
+                    InjectMoreKey(Key.Enter);
+                }, action.Token);
+                await released.Task.WaitAsync(action.Token);
+            }
+            finally
+            {
+                foreach (var owner in owners)
+                    owner.RemoveHandler(Keyboard.PreviewKeyUpEvent, up);
+            }
             Assert.False(menu.IsOpen);
             Assert.Equal(1, requested);
             Assert.Equal(original, source.Text);
@@ -300,15 +338,17 @@ public sealed partial class OverlayTranslationMenuTests
     private static IInvokeProvider MoreProvider(MenuItem item) => Assert.IsAssignableFrom<IInvokeProvider>(
         new MenuItemAutomationPeer(item).GetPattern(PatternInterface.Invoke));
     private static Task InvokeMoreCommand(MenuItem item) => ObserveMoreClick(item, () => MoreProvider(item).Invoke());
-    private static async Task ObserveMoreClick(MenuItem item, Action invoke)
+    private static async Task ObserveMoreClick(MenuItem item, Action invoke, CancellationToken cancellation = default)
     {
+        if (!cancellation.CanBeCanceled)
+            cancellation = TestContext.Current.CancellationToken;
         var clicked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         RoutedEventHandler observed = (_, _) => clicked.TrySetResult();
         item.Click += observed;
         try
         {
             invoke();
-            await clicked.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+            await clicked.Task.WaitAsync(TimeSpan.FromSeconds(3), cancellation);
         }
         finally { item.Click -= observed; }
     }
@@ -348,6 +388,7 @@ public sealed partial class OverlayTranslationMenuTests
     {
         [FieldOffset(0)] public uint Type;
         [FieldOffset(8)] public ushort Key;
+        [FieldOffset(10)] public ushort Scan;
         [FieldOffset(12)] public uint Flags;
     }
     [DllImport("user32.dll", EntryPoint = "SendInput", SetLastError = true)]

@@ -34,6 +34,7 @@ from eng.linux.cooperative.inputs import (  # noqa: E402
     QT_PIN,
     QT_SHA256,
     QT_SOURCE_VERSION,
+    QT_TEST_INPUTS,
     QT_VERSION,
     SOURCE_VERSIONS,
     hashes,
@@ -73,13 +74,6 @@ CHINESE_ADDONS = (
 )
 TABLE_DATA = ("db", "erbi", "qxm", "wanfeng", "wbpy", "wbx", "zrm", "cj")
 RUNTIME_DIRS = {"bin", "lib", "libexec", "share", "etc"}
-QT_TEST_INPUTS = (
-    "tests/linux/qt_cooperative/run.py",
-    "tests/linux/qt_cooperative/fixture.cpp",
-    "tests/linux/qt_cooperative/qpa_ack.cpp",
-    "tests/linux/fixtures/qt_native_fixture.cpp",
-    "tests/linux/support/xtest.py",
-)
 SOURCE_CACHE_DIRS = {
     ".git",
     ".cache",
@@ -458,7 +452,7 @@ def copy_qt(qt, bundle):
     if test_inputs != hashes(QT_TEST_INPUTS):
         raise ValueError("Qt regression fixture inputs differ from this checkout")
     test_binaries = versions.get("test_binary_sha256", {})
-    for name in ("fixture", "qpa_ack", "native/qt-native-fixture"):
+    for name in ("fixture", "qpa_ack", "native/qt-native-fixture", "font-order"):
         if test_binaries.get(name) != sha256(qt / name):
             raise ValueError(f"Qt regression binary changed after its build: {name}")
     probe = read_object(qt / "result.json")

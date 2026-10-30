@@ -24,13 +24,6 @@ FONT_FILES = tuple(
     ]
 ) + ("fonts/manifest.json",)
 FONT_LOCK_SOURCE = "source/eng/fonts/fonts.lock.json"
-QT_TEST_INPUTS = (
-    "tests/linux/qt_cooperative/run.py",
-    "tests/linux/qt_cooperative/fixture.cpp",
-    "tests/linux/qt_cooperative/qpa_ack.cpp",
-    "tests/linux/fixtures/qt_native_fixture.cpp",
-    "tests/linux/support/xtest.py",
-)
 sys.path.insert(0, str(ROOT))
 
 from support.font_bundle_fixture import inert_font_payload  # noqa: E402
@@ -38,6 +31,8 @@ from support.font_bundle_fixture import inert_font_payload  # noqa: E402
 from eng.fonts import prepare as fonts  # noqa: E402
 from eng.linux import build  # noqa: E402
 from eng.linux.cooperative import inputs  # noqa: E402
+
+QT_TEST_INPUTS = inputs.QT_TEST_INPUTS
 
 
 def digest(content):
@@ -810,6 +805,28 @@ class MainBundleTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         descriptor = json.loads((self.package / "support/desktop/component.json").read_text())
         self.assertEqual(descriptor["qtVersion"], inputs.QT_VERSION)
+
+    def test_qt_display_fixture_inputs_remain_exactly_bound(self):
+        self.add_qt()
+        original = dict(self.metadata["qt6"]["testInputs"])
+        for relative in (
+            "tests/linux/qt_cooperative/font_order.cpp",
+            "src/linux/native/common/overlay-design.h",
+            "src/linux/native/qt6/overlay-regional-display.h",
+        ):
+            for changed in (False, True):
+                with self.subTest(relative=relative, changed=changed):
+                    current = dict(original)
+                    if changed:
+                        current[relative] = "0" * 64
+                    else:
+                        current.pop(relative)
+                    self.metadata["qt6"]["testInputs"] = current
+                    self.write_archive()
+                    self.assert_rejected("Cooperation Qt inputs differ")
+        self.metadata["qt6"]["testInputs"] = {**original, "unexpected-fixture.cpp": "0" * 64}
+        self.write_archive()
+        self.assert_rejected("Cooperation Qt inputs differ")
 
     def test_qt_input_revision_mismatch_is_rejected(self):
         self.add_qt()

@@ -128,6 +128,18 @@ FCITX_TEST_INPUTS = (
 )
 
 
+QT_TEST_INPUTS = (
+    "tests/linux/qt_cooperative/run.py",
+    "tests/linux/qt_cooperative/fixture.cpp",
+    "tests/linux/qt_cooperative/font_order.cpp",
+    "src/linux/native/common/overlay-design.h",
+    "src/linux/native/qt6/overlay-regional-display.h",
+    "tests/linux/qt_cooperative/qpa_ack.cpp",
+    "tests/linux/fixtures/qt_native_fixture.cpp",
+    "tests/linux/support/xtest.py",
+)
+
+
 def sha256(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
