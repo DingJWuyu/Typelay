@@ -255,6 +255,7 @@ def run_gimp(
         focus_settings_control,
         focused,
         named,
+        scroll_settings_control,
         select_settings_page,
         text,
         visible_named,
@@ -319,7 +320,7 @@ def run_gimp(
         node = named(pid, name)
         return node if showing(node) else None
 
-    def action(pid, name, *, dialog_title=None, role=None):
+    def action(pid, name, *, dialog_title=None, role=None, apps_detail=False):
         deadline = time.monotonic() + 15
         node = wait_for(
             lambda: named(pid, name) if role is None else visible_named(pid, name, role=role),
@@ -327,6 +328,11 @@ def run_gimp(
             timeout=deadline - time.monotonic(),
         )
         if pid == host_pid:
+            if apps_detail:
+                # Navigate the existing owned Apps scrollbar before attempting
+                # focus; do not activate a clipped details action. The original
+                # focus/ancestry/full-clip check and shared 15 seconds remain.
+                scroll_settings_control(pid, node, deadline=deadline)
             focus_settings_control(pid, node, timeout=deadline - time.monotonic())
         else:
             if not showing(node):
@@ -393,6 +399,7 @@ def run_gimp(
             host_pid,
             "应用连接：桌面应用" if primary and primary["id"] == identity else row_action["label"],
             role=Atspi.Role.PUSH_BUTTON if primary and primary["id"] == identity else None,
+            apps_detail=not (primary and primary["id"] == identity),
         )
         action(host_pid, support()["labels"]["cancel" if cancel else "confirm"])
 

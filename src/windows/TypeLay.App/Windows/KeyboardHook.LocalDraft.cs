@@ -101,21 +101,55 @@ internal sealed partial class KeyboardHook
             && ReferenceEquals(Volatile.Read(ref _localDraftPress), press) && Volatile.Read(ref anchor.Invalid) == 0 ? press : null;
     }
 
-    internal LocalDraftTap? ClaimLocalDraftTap(LocalDraftPress press, uint scan, bool extended, uint nativeUpTime)
+    internal enum LocalDraftTapClaimResult
+    {
+        Success, AnchorMissing, OpeningMismatch, AnchorInvalid, AlreadyReturning, EditorFocusMissing,
+        TapMissing, PressMismatch, NativeUpTimeMismatch, ScanMismatch, ExtendedMismatch,
+        ShortcutsUnavailable, SessionDisabled, InjectionRefused, ForegroundMismatch,
+        TapCurrentRefused, ReturnAlreadyClaimed, AnchorReplaced, FinalTapCurrentRefused
+    }
+    internal readonly record struct LocalDraftTapClaimObservation(LocalDraftTapClaimResult Result,
+        long EvaluatedAtMs, long? UpSequence, long? ReleasedAtMs, uint? NativeUpTime);
+
+    internal LocalDraftTap? ClaimLocalDraftTap(LocalDraftPress press, uint scan, bool extended, uint nativeUpTime) =>
+        ClaimLocalDraftTap(press, scan, extended, nativeUpTime, out _);
+
+    internal LocalDraftTap? ClaimLocalDraftTap(LocalDraftPress press, uint scan, bool extended, uint nativeUpTime,
+        out LocalDraftTapClaimObservation observation)
     {
         var anchor = Volatile.Read(ref _localDraftAnchor);
         var tap = Volatile.Read(ref _localDraftTap);
         long now = WindowsInterruptClock.NowMs;
         TraceLocalDraftKey("claim-tap", press, now);
-        if (anchor is null || anchor.Opening != press.Opening || Volatile.Read(ref anchor.Invalid) != 0
-            || Volatile.Read(ref anchor.Returning) != 0 || Volatile.Read(ref anchor.EditorFocus) is null || tap is null || !ReferenceEquals(tap.Press, press)
-            || tap.NativeUpTime != nativeUpTime || press.Key.ScanCode != scan || press.Key.Extended != extended
-            || !ShortcutsReady || !_sessionEnabled || press.Key.Injected && !_allowInjectedInput
-            || Native.GetForegroundWindow() != anchor.Overlay || !LocalDraftTapCurrent(tap))
-            return null;
-        if (Interlocked.CompareExchange(ref anchor.Returning, 1, 0) != 0)
-            return null;
-        return ReferenceEquals(Volatile.Read(ref _localDraftAnchor), anchor) && LocalDraftTapCurrent(tap) ? tap : null;
+        // Preserve the original short-circuit order and number of observations.
+        // The diagnostic is a result of this one claim, never a second proof.
+        var result = anchor is null ? LocalDraftTapClaimResult.AnchorMissing
+            : anchor.Opening != press.Opening ? LocalDraftTapClaimResult.OpeningMismatch
+            : Volatile.Read(ref anchor.Invalid) != 0 ? LocalDraftTapClaimResult.AnchorInvalid
+            : Volatile.Read(ref anchor.Returning) != 0 ? LocalDraftTapClaimResult.AlreadyReturning
+            : Volatile.Read(ref anchor.EditorFocus) is null ? LocalDraftTapClaimResult.EditorFocusMissing
+            : tap is null ? LocalDraftTapClaimResult.TapMissing
+            : !ReferenceEquals(tap.Press, press) ? LocalDraftTapClaimResult.PressMismatch
+            : tap.NativeUpTime != nativeUpTime ? LocalDraftTapClaimResult.NativeUpTimeMismatch
+            : press.Key.ScanCode != scan ? LocalDraftTapClaimResult.ScanMismatch
+            : press.Key.Extended != extended ? LocalDraftTapClaimResult.ExtendedMismatch
+            : !ShortcutsReady ? LocalDraftTapClaimResult.ShortcutsUnavailable
+            : !_sessionEnabled ? LocalDraftTapClaimResult.SessionDisabled
+            : press.Key.Injected && !_allowInjectedInput ? LocalDraftTapClaimResult.InjectionRefused
+            : Native.GetForegroundWindow() != anchor.Overlay ? LocalDraftTapClaimResult.ForegroundMismatch
+            : !LocalDraftTapCurrent(tap) ? LocalDraftTapClaimResult.TapCurrentRefused
+            : LocalDraftTapClaimResult.Success;
+        if (result == LocalDraftTapClaimResult.Success)
+        {
+            if (Interlocked.CompareExchange(ref anchor!.Returning, 1, 0) != 0)
+                result = LocalDraftTapClaimResult.ReturnAlreadyClaimed;
+            else if (!ReferenceEquals(Volatile.Read(ref _localDraftAnchor), anchor))
+                result = LocalDraftTapClaimResult.AnchorReplaced;
+            else if (!LocalDraftTapCurrent(tap!))
+                result = LocalDraftTapClaimResult.FinalTapCurrentRefused;
+        }
+        observation = new(result, now, tap?.UpSequence, tap?.ReleasedAtMs, tap?.NativeUpTime);
+        return result == LocalDraftTapClaimResult.Success ? tap : null;
     }
     internal bool LocalDraftTapCurrent(LocalDraftTap expected) => LocalDraftAnchorCurrent(expected.Press.Opening)
         && ReferenceEquals(Volatile.Read(ref _localDraftTap), expected)

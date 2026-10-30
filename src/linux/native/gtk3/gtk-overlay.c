@@ -2433,12 +2433,22 @@ static gboolean refresh_translation_actions(JsonObject *value, JsonObject *autho
     /* This refresh extends the display lease only. editor_control.expires is
      * frozen at key-down and is neither replaced nor renewed here. */
     gboolean current = render_translation_actions(view) && translation_render_current(view, context);
-    if (current && g_strcmp0(tl_string(value, "state"), "Paused") != 0 && !*text_or_empty(value, "status")) {
-        char *feedback = g_strdup(text_or_empty(translation_actions(value), "feedback"));
+    if (current && g_strcmp0(tl_string(value, "state"), "Paused") != 0) {
+        /* Menu-only updates project the same visible phase as a full render.
+         * Empty feedback must not erase Edited/Updating and move the header. */
+        const char *diagnostic = text_or_empty(value, "status");
+        if (!*diagnostic) diagnostic = text_or_empty(translation_actions(value), "feedback");
+        char *tooltip = g_strdup(diagnostic);
+        char *phase = g_strdup(tl_overlay_phase(tl_string(value, "state"),
+            tl_string(value, "text"), diagnostic, overlay.english));
         GtkWidget *status = g_object_ref(overlay.status);
-        gtk_label_set_text(GTK_LABEL(status), feedback);
+        gtk_widget_set_tooltip_text(status, tooltip);
         current = translation_render_current(view, context) && overlay.status == status;
-        g_object_unref(status); g_free(feedback);
+        if (current) {
+            gtk_label_set_text(GTK_LABEL(status), phase);
+            current = translation_render_current(view, context) && overlay.status == status;
+        }
+        g_object_unref(status); g_free(phase); g_free(tooltip);
     }
     json_object_unref(context); json_object_unref(view);
     return current;

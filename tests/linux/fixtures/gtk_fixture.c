@@ -555,7 +555,8 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         name = "fixture-glossary-feedback";
     if (expand || language_control(name) || g_str_has_prefix(name, "typelay-glossary-")
         || g_str_equal(name, "fixture-glossary-feedback") || g_str_equal(name, "typelay-dot")
-        || g_str_equal(name, "typelay-skeleton")) {
+        || g_str_equal(name, "typelay-skeleton")
+        || (g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND") && g_str_equal(name, "typelay-status"))) {
         json_builder_set_member_name(builder, name);
         json_builder_begin_object(builder);
         if (g_strcmp0(name, "typelay-menu-trigger") == 0
@@ -624,6 +625,12 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         } else if (GTK_IS_LABEL(widget)) {
             json_builder_set_member_name(builder, "text");
             json_builder_add_string_value(builder, gtk_label_get_text(GTK_LABEL(widget)));
+            if (g_str_equal(name, "typelay-status")) {
+                char *tooltip = gtk_widget_get_tooltip_text(widget);
+                json_builder_set_member_name(builder, "tooltip");
+                json_builder_add_string_value(builder, tooltip ? tooltip : "");
+                g_free(tooltip);
+            }
         }
         gint x, y;
         if (gtk_widget_translate_coordinates(widget, report_window, 0, 0, &x, &y)) {

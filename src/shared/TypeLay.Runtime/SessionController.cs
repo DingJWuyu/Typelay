@@ -754,6 +754,7 @@ public sealed partial class SessionController : IDisposable
         long windowEpoch = _hook.WindowEpoch;
         long contentEpoch = _hook.ContentEpoch;
         long sourceGlossaryReadRevision = _sourceGlossaryReadRevision;
+        var pendingEditorHandoff = _editorGlossaryHandoff;
         var request = Context();
         var freshWake = _pendingWakeCapture is { Intent: not null } intent ? intent : null;
         bool traceCapture = false;
@@ -925,7 +926,8 @@ public sealed partial class SessionController : IDisposable
                 && request.BoundTarget == editingSource.Target
                 && configurationRevision == _configurationRevision && connectionId == _hook.ConnectionId
                 && request.SessionShortcuts?.Generation == _hook.CommandGeneration
-                && request.ForegroundEpoch == _hook.ForegroundEpoch && contentEpoch == _hook.ContentEpoch
+                && (request.ForegroundEpoch == _hook.ForegroundEpoch || PendingEditorHandoffOwnsEmptyRead(request, pendingEditorHandoff))
+                && contentEpoch == _hook.ContentEpoch
                 && _hook.Ready && _broker.Available && _hook.GetFocus(editingSource.Target) == FocusMember.Overlay)
             {
                 captureExit = "editor-owns-focus";

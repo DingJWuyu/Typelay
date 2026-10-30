@@ -116,8 +116,8 @@ try {
         $arguments = @('/nologo', '/T', 'ps_2_0', '/E', 'main', '/Ges', '/WX', '/O1', '/Fo', $target, $hlslInput)
         $null = Invoke-Compiler $compiler $arguments (Join-Path $output ($name + '-compile.log'))
         $bytes = [IO.File]::ReadAllBytes($target)
-        if ($bytes.Length -lt 8 -or [BitConverter]::ToUInt32($bytes, 0) -ne 4294902272
-            -or [BitConverter]::ToUInt32($bytes, $bytes.Length - 4) -ne 65535) {
+        if ($bytes.Length -lt 8 -or [BitConverter]::ToUInt32($bytes, 0) -ne 4294902272 -or
+            [BitConverter]::ToUInt32($bytes, $bytes.Length - 4) -ne 65535) {
             throw 'Generated output is not a complete ps_2_0 program.'
         }
         $hash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()

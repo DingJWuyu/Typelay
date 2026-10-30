@@ -402,9 +402,14 @@ internal sealed class SessionScenario : IDisposable
         }
         public string? Application { get; set; } = "org.typelay.ControlledApp";
         public Func<SessionShortcutAcknowledgement, SessionShortcutAcknowledgement?> TransformAcknowledgement { get; set; } = value => value;
+        public Action<InputContext>? CaptureObserved
+        {
+            get; set;
+        }
         public Task<InputCapture> CaptureAsync(InputContext context)
         {
             Captures++;
+            CaptureObserved?.Invoke(context);
             return PendingCapture?.Task ?? Task.FromResult(new InputCapture(host.Fresh,
                 host.Input.GetFocus(host.Source.Target), Application, context.UserEpoch, context.ForegroundEpoch,
                 TransformAcknowledgement(new(host.Source.Target, host.Input.CommandGeneration, host.Input.SessionBindings,

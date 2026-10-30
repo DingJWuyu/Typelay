@@ -153,8 +153,41 @@ public sealed class LocalDraftTapInputTests(WpfDesktopFixture desktop)
             Assert.Equal(hwnd, Native.GetForegroundWindow());
             Assert.Same(editor, Keyboard.FocusedElement);
             deadline.Token.ThrowIfCancellationRequested();
-            var tap = press is null ? null : hook.ClaimLocalDraftTap(press, tab, false,
-                change == "wrong-up-message" ? unchecked(upTimes[0] + 1) : upTimes[0]);
+            KeyboardHook.LocalDraftTap? tap = null;
+            KeyboardHook.LocalDraftTapClaimObservation? claim = null;
+            if (press is not null)
+            {
+                tap = hook.ClaimLocalDraftTap(press, tab, false,
+                    change == "wrong-up-message" ? unchecked(upTimes[0] + 1) : upTimes[0], out var observed);
+                claim = observed;
+            }
+            if ((change is "current" or "unarmed-prefix") && (press is null || tap is null))
+            {
+                try
+                {
+                    TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        operation = "local-draft-tap-claim-refused",
+                        change,
+                        reason = claim?.Result.ToString(),
+                        evaluatedAtMs = claim?.EvaluatedAtMs,
+                        upSequence = claim?.UpSequence,
+                        releasedAtMs = claim?.ReleasedAtMs,
+                        nativeUpTime = claim?.NativeUpTime,
+                        pressSequence = press?.Sequence,
+                        pressReceivedAtMs = press?.ReceivedAtMs,
+                        pressNativeTime = press?.NativeTime,
+                        pressScan = press?.Key.ScanCode,
+                        pressExtended = press?.Key.Extended,
+                        messageScan = tab,
+                        downTimes = downTimes.Take(2).ToArray(),
+                        upTimes = upTimes.Take(2).ToArray(),
+                        downDropped = Math.Max(0, downTimes.Count - 2),
+                        upDropped = Math.Max(0, upTimes.Count - 2)
+                    }));
+                }
+                catch (Exception error) when (error is not OutOfMemoryException) { }
+            }
             if (change is "current" or "unarmed-prefix")
             {
                 Assert.NotNull(press);

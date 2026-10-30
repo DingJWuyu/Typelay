@@ -736,13 +736,19 @@ static void control_map_observation(GtkWidget *widget, ControlPaint *paint, gboo
         json_object_set_boolean_member(item, "present", widgets[i] != NULL);
         if (widgets[i]) {
             gint width, height;
-            GtkAllocation allocation;
+            graphene_rect_t bounds;
             gtk_widget_get_size_request(widgets[i], &width, &height);
-            gtk_widget_get_allocation(widgets[i], &allocation);
             json_object_set_int_member(item, "requestedWidth", width);
             json_object_set_int_member(item, "requestedHeight", height);
-            json_object_set_int_member(item, "allocatedWidth", allocation.width);
-            json_object_set_int_member(item, "allocatedHeight", allocation.height);
+            /* Border bounds in this widget's own coordinates, not the former
+             * margin allocation or a CSS minimum; no layout is requested. */
+            if (gtk_widget_compute_bounds(widgets[i], widgets[i], &bounds)) {
+                json_object_set_double_member(item, "boundsWidth", bounds.size.width);
+                json_object_set_double_member(item, "boundsHeight", bounds.size.height);
+            } else {
+                json_object_set_null_member(item, "boundsWidth");
+                json_object_set_null_member(item, "boundsHeight");
+            }
         }
         json_object_set_object_member(value, names[i], item);
     }

@@ -193,6 +193,24 @@ public sealed partial class OverlayTranslationMenuTests
                         Retain(names.Where(name => row.TryGetProperty(name, out _))
                             .ToDictionary(name => name, name => row.GetProperty(name).Clone()));
                     }
+                    else if (operation.GetString() == "owned-editor-admission")
+                    {
+                        // Existing first-refusal diagnostics, not a fresh probe.
+                        // Do not project arbitrary detail or run/window identifiers.
+                        string[] names = ["operation", "atMs", "order", "reason"];
+                        var admission = names.Where(name => row.TryGetProperty(name, out _))
+                            .ToDictionary(name => name, name => row.GetProperty(name).Clone());
+                        if (row.TryGetProperty("detail", out var admissionDetail) && admissionDetail.ValueKind == JsonValueKind.Object)
+                        {
+                            string[] scalars = ["gate", "cursorX", "cursorY", "localX", "localY", "editorVisible", "editorWidth", "editorHeight",
+                                "triggeringMessage", "pressSequence", "inputSequence", "pressTime", "pressReceivedAtMs", "evaluatedAtMs",
+                                "pressX", "pressY", "messageX", "messageY", "injected", "released"];
+                            foreach (string name in scalars)
+                                if (admissionDetail.TryGetProperty(name, out var value))
+                                    admission[name] = value.Clone();
+                        }
+                        Retain(admission);
+                    }
                     else if (operation.GetString() == "input-revoked" && row.TryGetProperty("detail", out var detail)
                         && detail.TryGetProperty("reason", out var reason) && reason.GetString() is { } text
                         && text is "owned-local-draft" or "owned-local-return-rotated" or "owned-local-retired"
