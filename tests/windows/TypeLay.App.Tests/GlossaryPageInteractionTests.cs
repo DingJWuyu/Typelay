@@ -63,7 +63,7 @@ public sealed partial class TranslationSettingsTests
         var root = AutomationElement.FromHandle(new WindowInteropHelper(scene.Window).Handle);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(5));
-        await SettingsPageActions.OpenAsync(root, "general", "常规", deadline.Token);
+        await SettingsPageActions.OpenAsync(root, "general", "通用", deadline.Token);
         Assert.Equal(failSave ? new GlossaryRule("PR", "review") : new GlossaryRule("MR", "merge request"), Assert.Single(scene.Reload().Glossary!.Rules));
         await SettingsPageActions.OpenAsync(root, "glossary", "术语表", deadline.Token);
         if (failSave)

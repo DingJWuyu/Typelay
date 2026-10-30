@@ -2511,6 +2511,99 @@ def ordered_controls(
     return result
 
 
+def display_font_experiment_errors(result, expected, first_region):
+    """Interpret a finite experiment; never substitute it for the production suite."""
+    errors = []
+    entries = result.get("displayExperiment", [])
+    if len(entries) != 7 or [item.get("phase") for item in entries] != [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        "undo-redo",
+    ]:
+        return ["incomplete-phase-sequence"]
+    frames, undo = entries[:6], entries[6]
+    if not result.get("complete"):
+        errors.append("incomplete-child")
+    if any(
+        not frames[0].get(key) or any(frame.get(key) != frames[0][key] for frame in frames)
+        for key in ("editorInstance", "documentInstance")
+    ):
+        errors.append("changed-owned-document")
+    if any(
+        frame.get("unchanged") is not True
+        or frame.get("before") != frame.get("after")
+        or frame.get("hostRunsUnchanged") is not True
+        for frame in frames
+    ):
+        errors.append("draft-selection-undo-preedit-or-host-changed")
+    for key in ("paintCount", "hostPaintCount"):
+        paints = [frame.get(key, 0) for frame in frames]
+        if not all(type(value) is int and value > 0 for value in paints) or any(
+            left >= right for left, right in zip(paints, paints[1:])
+        ):
+            errors.append("missing-new-" + key)
+    regions = [first_region, "JP" if first_region == "SC" else "SC", "KR"]
+    for frame, region in zip(frames[1:4], regions):
+        if frame.get("region") != region:
+            errors.append("wrong-region-sequence")
+        for key, family, tables in (
+            ("latinRuns", "TypeLay Serif 15", expected["Latin"]),
+            ("regionalRuns", f"Noto Serif {region}", expected[region]),
+        ):
+            runs = frame.get(key, [])
+            if not runs or any(
+                run.get("family") != family
+                or run.get("weight") != 400
+                or run.get("glyphCount", 0) <= 0
+                or run.get("missingGlyphs") != 0
+                or any(run.get(tag) != digest for tag, digest in tables.items())
+                for run in runs
+            ):
+                errors.append(f"{region}-{key}-actual-face-mismatch")
+        rules = frame.get("rules", {})
+        if any(
+            rules.get(key) is not True
+            for key in (
+                "graphemeBoundariesOnly",
+                "familyPropertyOnly",
+                "latinUntouched",
+                "emojiUntouched",
+                "standaloneLongMarkUntouched",
+                "kanaCombiningAndLongMarkWhole",
+                "supplementaryHanAndSelectorWhole",
+            )
+        ):
+            errors.append(f"{region}-cluster-or-format-rule")
+    preedit = frames[4]
+    import hashlib
+
+    if (
+        preedit.get("syntheticPreeditOnly") is not True
+        or preedit.get("inputMethodEventCount") != 1
+        or preedit["before"].get("preeditPosition", -1) < 0
+        or preedit["before"].get("preeditHash") != hashlib.sha256("か\u3099".encode()).hexdigest()
+        or preedit["after"].get("commits") != 0
+    ):
+        errors.append("synthetic-preedit-not-preserved")
+    if (
+        frames[5].get("systemRunsRestored") is not True
+        or frames[5].get("rangesCleared") is not True
+        or frames[5].get("runs") != frames[0].get("runs")
+    ):
+        errors.append("system-fallback-not-restored")
+    if (
+        undo.get("undoExact") is not True
+        or undo.get("redoExact") is not True
+        or undo.get("commits") != 0
+    ):
+        errors.append("undo-redo-or-unexpected-commit")
+    return errors
+
+
 def observe_font_order(out, env):
     """Two isolated public-layout diagnostics; never suppress the original suite."""
     font_root = ROOT / "artifacts/ui-fonts"
@@ -2521,8 +2614,11 @@ def observe_font_order(out, env):
         verify_bundle(font_root)
         expected = {
             region: font_table_hashes(font_root / f"noto-serif/NotoSerif{region}-Regular.otf")
-            for region in ("SC", "JP")
+            for region in ("SC", "JP", "KR")
         }
+        expected["Latin"] = font_table_hashes(
+            font_root / "source-serif/TypeLaySerif-15-Regular.ttf"
+        )
         # This observer does not load TypeLay/Fcitx plugins or change the parent
         # process environment. Both children use the same actual Qt SDK/runtime.
         clean = {
@@ -2562,10 +2658,19 @@ def observe_font_order(out, env):
                         check=False,
                     )
                 record.update(outcome="exited", exitCode=result.returncode)
+                try:
+                    evidence = json.loads((out / f"font-order-{region}.json").read_text())
+                    errors = display_font_experiment_errors(evidence, expected, region)
+                except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                    errors = ["missing-or-invalid-child-evidence"]
+                record.update(
+                    displayExperimentPassed=result.returncode == 0 and not errors,
+                    displayExperimentErrors=errors,
+                )
             except subprocess.TimeoutExpired:
                 # subprocess.run kills and waits for only its own child.
                 record["outcome"] = "child-deadline"
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, KeyError, TypeError) as error:
         observations.append({"outcome": "infrastructure-error", "error": str(error)[:200]})
     finally:
         path.write_text(

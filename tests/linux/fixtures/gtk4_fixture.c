@@ -185,6 +185,178 @@ static guint language_instance(GObject *object) {
     }
     return instance;
 }
+/* Candidate-only natural frame observation. Unlike ControlPaint below, this
+ * never measures, queues allocation, requests a phase or begins clock updates.
+ * The eight-entry ring describes public clock phases, not compositor pixels. */
+typedef struct {
+    GdkFrameClock *clock;
+    GtkTextBuffer *buffer;
+    gulong layout_handler, paint_handler, after_handler, changed_handler;
+    gboolean mapped;
+    guint64 map_generation, buffer_sequence, sequence;
+    guint64 layout_map, paint_map, layout_buffer, paint_buffer;
+    gint64 attached_at, layout_frame, paint_frame;
+    JsonObject *frames[8];
+} CandidateFrames;
+
+static void candidate_frames_clear_clock(CandidateFrames *frames) {
+    gulong handlers[] = {frames->layout_handler, frames->paint_handler, frames->after_handler};
+    for (guint i = 0; i < G_N_ELEMENTS(handlers); i++)
+        if (frames->clock && handlers[i] && g_signal_handler_is_connected(frames->clock, handlers[i]))
+            g_signal_handler_disconnect(frames->clock, handlers[i]);
+    frames->layout_handler = frames->paint_handler = frames->after_handler = 0;
+    frames->layout_frame = frames->paint_frame = -1;
+    g_clear_object(&frames->clock);
+}
+static void candidate_frames_free(gpointer data) {
+    CandidateFrames *frames = data;
+    candidate_frames_clear_clock(frames);
+    if (frames->buffer && frames->changed_handler)
+        g_signal_handler_disconnect(frames->buffer, frames->changed_handler);
+    g_clear_object(&frames->buffer);
+    for (guint i = 0; i < G_N_ELEMENTS(frames->frames); i++)
+        if (frames->frames[i]) json_object_unref(frames->frames[i]);
+    g_free(frames);
+}
+static gboolean candidate_frame_current(GtkWidget *widget, CandidateFrames *frames, GdkFrameClock *clock) {
+    return frames && frames->clock == clock && gtk_widget_get_mapped(widget)
+        && gtk_widget_get_frame_clock(widget) == clock
+        && gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget)) == frames->buffer;
+}
+static void candidate_natural_layout(GdkFrameClock *clock, gpointer data) {
+    GtkWidget *widget = data;
+    CandidateFrames *frames = g_object_get_data(G_OBJECT(widget), "fixture-candidate-natural-frames");
+    if (!candidate_frame_current(widget, frames, clock)) return;
+    frames->layout_frame = gdk_frame_clock_get_frame_counter(clock);
+    frames->layout_map = frames->map_generation;
+    frames->layout_buffer = frames->buffer_sequence;
+}
+static void candidate_natural_paint(GdkFrameClock *clock, gpointer data) {
+    GtkWidget *widget = data;
+    CandidateFrames *frames = g_object_get_data(G_OBJECT(widget), "fixture-candidate-natural-frames");
+    if (!candidate_frame_current(widget, frames, clock)) return;
+    frames->paint_frame = gdk_frame_clock_get_frame_counter(clock);
+    frames->paint_map = frames->map_generation;
+    frames->paint_buffer = frames->buffer_sequence;
+}
+static void candidate_natural_after_paint(GdkFrameClock *clock, gpointer data) {
+    GtkWidget *widget = data;
+    CandidateFrames *frames = g_object_get_data(G_OBJECT(widget), "fixture-candidate-natural-frames");
+    if (!candidate_frame_current(widget, frames, clock)) return;
+    gint64 frame = gdk_frame_clock_get_frame_counter(clock);
+    if (frame < 0 || frames->layout_frame != frame || frames->paint_frame != frame
+        || frames->layout_map != frames->map_generation || frames->paint_map != frames->map_generation
+        || frames->layout_buffer != frames->buffer_sequence || frames->paint_buffer != frames->buffer_sequence) return;
+    guint index = frames->sequence++ % G_N_ELEMENTS(frames->frames);
+    if (frames->frames[index]) json_object_unref(frames->frames[index]);
+    JsonObject *value = frames->frames[index] = json_object_new();
+    json_object_set_int_member(value, "sequence", frames->sequence);
+    json_object_set_int_member(value, "atMonoMs", g_get_monotonic_time() / 1000);
+    json_object_set_int_member(value, "frame", frame);
+    json_object_set_int_member(value, "clock", language_instance(G_OBJECT(clock)));
+    json_object_set_int_member(value, "candidate", language_instance(G_OBJECT(widget)));
+    json_object_set_int_member(value, "buffer", language_instance(G_OBJECT(frames->buffer)));
+    json_object_set_int_member(value, "mapGeneration", frames->map_generation);
+    json_object_set_int_member(value, "bufferSequence", frames->buffer_sequence);
+    json_object_set_int_member(value, "width", gtk_widget_get_width(widget));
+    json_object_set_int_member(value, "height", gtk_widget_get_height(widget));
+    GtkWidget *scroll = gtk_widget_get_ancestor(widget, GTK_TYPE_SCROLLED_WINDOW);
+    if (scroll) {
+        gint requested_width, requested_height;
+        gtk_widget_get_size_request(scroll, &requested_width, &requested_height);
+        json_object_set_int_member(value, "scrollHeight", gtk_widget_get_height(scroll));
+        json_object_set_int_member(value, "scrollRequestedHeight", requested_height);
+    }
+    GdkRGBA foreground;
+#if GTK_CHECK_VERSION(4, 10, 0)
+    gtk_widget_get_color(widget, &foreground);
+#else
+    gtk_style_context_get_color(gtk_widget_get_style_context(widget), &foreground);
+#endif
+    char *color = gdk_rgba_to_string(&foreground);
+    json_object_set_string_member(value, "foreground", color);
+    g_free(color);
+    GtkTextIter start, end;
+    gtk_text_buffer_get_bounds(frames->buffer, &start, &end);
+    char *text = gtk_text_buffer_get_text(frames->buffer, &start, &end, TRUE);
+    char *digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, text, -1);
+    json_object_set_string_member(value, "textSha256", digest);
+    json_object_set_int_member(value, "textCharacters", gtk_text_buffer_get_char_count(frames->buffer));
+    g_free(digest); g_free(text);
+}
+static void candidate_buffer_changed(GtkTextBuffer *buffer, gpointer data) {
+    CandidateFrames *frames = data;
+    if (frames->buffer == buffer) frames->buffer_sequence++;
+}
+static void candidate_frames_sync(GtkWidget *widget) {
+    CandidateFrames *frames = g_object_get_data(G_OBJECT(widget), "fixture-candidate-natural-frames");
+    if (!frames) return;
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget));
+    if (buffer != frames->buffer) {
+        if (frames->buffer && frames->changed_handler)
+            g_signal_handler_disconnect(frames->buffer, frames->changed_handler);
+        g_set_object(&frames->buffer, buffer);
+        frames->changed_handler = g_signal_connect(buffer, "changed", G_CALLBACK(candidate_buffer_changed), frames);
+        frames->buffer_sequence++;
+        frames->layout_frame = frames->paint_frame = -1;
+    }
+    gboolean mapped = gtk_widget_get_mapped(widget);
+    if (mapped != frames->mapped) {
+        frames->mapped = mapped;
+        frames->map_generation++;
+        frames->layout_frame = frames->paint_frame = -1;
+    }
+    GdkFrameClock *clock = mapped ? gtk_widget_get_frame_clock(widget) : NULL;
+    if (clock == frames->clock) return;
+    candidate_frames_clear_clock(frames);
+    if (!clock) return;
+    frames->clock = g_object_ref(clock);
+    frames->attached_at = g_get_monotonic_time() / 1000;
+    frames->layout_handler = g_signal_connect_after(clock, "layout", G_CALLBACK(candidate_natural_layout), widget);
+    frames->paint_handler = g_signal_connect_after(clock, "paint", G_CALLBACK(candidate_natural_paint), widget);
+    frames->after_handler = g_signal_connect_after(clock, "after-paint", G_CALLBACK(candidate_natural_after_paint), widget);
+}
+static void candidate_mapped(GtkWidget *widget, gpointer unused) {
+    (void)unused;
+    candidate_frames_sync(widget);
+}
+static void candidate_buffer_replaced(GObject *object, GParamSpec *property, gpointer unused) {
+    (void)property; (void)unused;
+    candidate_frames_sync(GTK_WIDGET(object));
+}
+static void report_candidate_natural_frames(JsonBuilder *builder, GtkWidget *widget) {
+    CandidateFrames *frames = g_object_get_data(G_OBJECT(widget), "fixture-candidate-natural-frames");
+    if (!frames) {
+        frames = g_new0(CandidateFrames, 1);
+        frames->layout_frame = frames->paint_frame = -1;
+        g_object_set_data_full(G_OBJECT(widget), "fixture-candidate-natural-frames", frames, candidate_frames_free);
+        g_signal_connect_after(widget, "map", G_CALLBACK(candidate_mapped), NULL);
+        g_signal_connect_after(widget, "unmap", G_CALLBACK(candidate_mapped), NULL);
+        g_signal_connect(widget, "notify::buffer", G_CALLBACK(candidate_buffer_replaced), NULL);
+    }
+    candidate_frames_sync(widget);
+    json_builder_set_member_name(builder, "naturalFrames");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "candidate"); json_builder_add_int_value(builder, language_instance(G_OBJECT(widget)));
+    json_builder_set_member_name(builder, "buffer"); json_builder_add_int_value(builder, language_instance(G_OBJECT(frames->buffer)));
+    json_builder_set_member_name(builder, "clock"); json_builder_add_int_value(builder, language_instance(G_OBJECT(frames->clock)));
+    json_builder_set_member_name(builder, "attachedAtMs"); json_builder_add_int_value(builder, frames->attached_at);
+    json_builder_set_member_name(builder, "mapGeneration"); json_builder_add_int_value(builder, frames->map_generation);
+    json_builder_set_member_name(builder, "bufferSequence"); json_builder_add_int_value(builder, frames->buffer_sequence);
+    json_builder_set_member_name(builder, "layoutFrame"); json_builder_add_int_value(builder, frames->layout_frame);
+    json_builder_set_member_name(builder, "paintFrame"); json_builder_add_int_value(builder, frames->paint_frame);
+    json_builder_set_member_name(builder, "completedCount"); json_builder_add_int_value(builder, frames->sequence);
+    json_builder_set_member_name(builder, "frames"); json_builder_begin_array(builder);
+    guint64 first = frames->sequence > G_N_ELEMENTS(frames->frames) ? frames->sequence - G_N_ELEMENTS(frames->frames) : 0;
+    for (guint64 i = first; i < frames->sequence; i++) {
+        JsonNode *node = json_node_new(JSON_NODE_OBJECT);
+        json_node_set_object(node, frames->frames[i % G_N_ELEMENTS(frames->frames)]);
+        json_builder_add_value(builder, node);
+    }
+    json_builder_end_array(builder);
+    json_builder_end_object(builder);
+}
+
 /* Bounded diagnostic for the first language popup transitions. Signals only
  * sample public state: no measure, focus operation or event-loop iteration. */
 static JsonObject *language_transitions[16];
@@ -227,6 +399,10 @@ static void watch_language_popup(GtkWidget *button, GtkPopover *popup) {
 }
 static gboolean language_control(const char *name) {
     return g_strcmp0(name, "typelay-menu-trigger") == 0
+        || g_str_has_prefix(name, "typelay-more")
+        || g_strcmp0(name, "typelay-regenerate") == 0 || g_strcmp0(name, "typelay-copy") == 0
+        || g_strcmp0(name, "typelay-hide") == 0 || g_strcmp0(name, "typelay-exclude") == 0
+        || g_strcmp0(name, "typelay-settings") == 0 || g_strcmp0(name, "typelay-alternative") == 0
         || g_strcmp0(name, "typelay-source-language") == 0
         || g_strcmp0(name, "typelay-target-language") == 0
         || g_strcmp0(name, "typelay-apply-languages") == 0
@@ -721,6 +897,12 @@ static void report_control_surface(JsonBuilder *builder, GtkWidget *widget) {
         json_builder_set_member_name(builder, "scrollValue");
         json_builder_add_double_value(builder, gtk_adjustment_get_value(adjustment));
     }
+    if (GTK_IS_POPOVER(widget) && g_strcmp0(gtk_widget_get_name(widget), "typelay-more-popup") == 0) {
+        json_builder_set_member_name(builder, "autohide");
+        json_builder_add_boolean_value(builder, gtk_popover_get_autohide(GTK_POPOVER(widget)));
+        json_builder_set_member_name(builder, "hasArrow");
+        json_builder_add_boolean_value(builder, gtk_popover_get_has_arrow(GTK_POPOVER(widget)));
+    }
     report_control_paint(builder, widget, geometry);
     g_clear_pointer(&geometry, json_node_unref);
 }
@@ -987,6 +1169,7 @@ static gboolean report_state(gpointer unused) {
             json_builder_add_int_value(builder, gtk_widget_get_width(candidate));
             json_builder_set_member_name(builder, "height");
             json_builder_add_int_value(builder, gtk_widget_get_height(candidate));
+            report_candidate_natural_frames(builder, candidate);
             json_builder_set_member_name(builder, "editable");
             json_builder_add_boolean_value(builder, gtk_text_view_get_editable(GTK_TEXT_VIEW(candidate)));
             json_builder_set_member_name(builder, "focused");

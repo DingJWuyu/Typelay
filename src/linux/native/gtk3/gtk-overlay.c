@@ -1855,8 +1855,13 @@ static gboolean begin_edit(GtkWidget *widget, GdkEventButton *event, gpointer da
 }
 static void translation_action_clicked(const char *operation, JsonObject *view) {
     if (!more_current() || !gtk_widget_get_visible(overlay.more_popup) || !translation_menu_current()) return;
+    GtkWidget *popup = g_object_ref(overlay.more_popup);
+    JsonObject *token = json_object_ref(overlay.menu_token);
+    JsonObject *context = json_object_ref(tl_object(view, "viewContext"));
     gboolean glossary = strcmp(operation, "glossary") == 0;
-    if (glossary && (!glossary_origin_ready() || overlay.view != view)) return;
+    if (glossary && (!glossary_origin_ready() || !more_render_current(view, context, popup)
+        || overlay.menu_token != token || !gtk_widget_get_mapped(popup)
+        || !translation_menu_current())) goto done;
     JsonObject *state = translation_actions(view);
     gboolean alternative = strcmp(operation, "alternative") == 0;
     gboolean inherit = strcmp(operation, "style-inherit") == 0;
@@ -1864,11 +1869,10 @@ static void translation_action_clicked(const char *operation, JsonObject *view) 
         || overlay.pending_glossary || overlay.glossary
         : alternative ? !boolean(state, "alternativeReleased") || !boolean(state, "canRequestAlternative")
         : (!inherit && !boolean(state, "styleReleased"))
-            || !boolean(state, inherit ? "canInheritStyle" : "canChangeStyle")) return;
+            || !boolean(state, inherit ? "canInheritStyle" : "canChangeStyle")) goto done;
     /* The bridge resolves this exact transport record to its original complete
      * session token. Never emit() here: it reads the latest overlay identity. */
-    JsonObject *event = json_object_new(), *token = json_object_ref(overlay.menu_token);
-    JsonObject *context = json_object_ref(tl_object(view, "viewContext"));
+    JsonObject *event = json_object_new();
     json_object_set_string_member(event, "target", overlay.menu_target);
     json_object_set_string_member(event, "operation", glossary ? "sessionGlossaryBegin" : alternative ? "alternative" : "style");
     json_object_set_string_member(event, "generation", overlay.menu_generation);
@@ -1897,7 +1901,26 @@ static void translation_action_clicked(const char *operation, JsonObject *view) 
         tl_send_event("ui", event);
     else json_object_unref(event);
     if (!glossary && overlay.menu_token == token && !overlay.more_popup) clear_translation_menu();
-    json_object_unref(context); json_object_unref(token);
+done:
+    json_object_unref(context); json_object_unref(token); g_object_unref(popup);
+}
+/* Display may remain open during preedit. An action requires one real
+ * current observation and cannot borrow a replacement opening after reentry. */
+static gboolean more_action_ready(GtkWidget *popup, JsonObject *view, JsonObject *token) {
+    if (!more_current() || overlay.more_popup != popup || overlay.view != view
+        || overlay.menu_token != token || !translation_menu_current()) return FALSE;
+    Target *target = overlay.target;
+    GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(overlay.top));
+    if (!focus) return FALSE;
+    g_object_ref(focus);
+    gboolean clear = focus == overlay.text ? !overlay.composing && tl_widget_ime_clear(focus)
+        : target && !target->dead && focus == target->widget && tl_focused() == target && tl_ime_clear(target);
+    gboolean current = clear && more_current() && overlay.more_popup == popup && overlay.view == view
+        && overlay.menu_token == token && overlay.target == target && translation_menu_current()
+        && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == focus
+        && (focus != overlay.text || !overlay.composing);
+    g_object_unref(focus);
+    return current;
 }
 static void toggle_more(JsonObject *view);
 static void button_clicked(GtkButton *button, gpointer data) {
@@ -1923,6 +1946,13 @@ static void button_clicked(GtkButton *button, gpointer data) {
     /* Source view/configuration changes replace this identity. The menu-only
        projection preserves it without changing the original token or revision. */
     JsonObject *clicked_view = json_object_ref(overlay.view);
+    GtkWidget *clicked_popup = from_more ? g_object_ref(overlay.more_popup) : NULL;
+    JsonObject *clicked_token = from_more && overlay.menu_token ? json_object_ref(overlay.menu_token) : NULL;
+    Target *clicked_target = overlay.target;
+    gint64 clicked_revision = overlay.revision;
+    GtkWidget *clicked_focus = from_more ? gtk_window_get_focus(GTK_WINDOW(overlay.top)) : NULL;
+    if (clicked_focus) g_object_ref(clicked_focus);
+    if (from_more && !more_action_ready(clicked_popup, clicked_view, clicked_token)) goto done;
     if (strcmp(operation, "more") == 0) {
         if (GTK_WIDGET(button) == overlay.more) toggle_more(clicked_view);
     } else if (strcmp(operation, "menu") == 0) {
@@ -1959,12 +1989,13 @@ static void button_clicked(GtkButton *button, gpointer data) {
         char *text = candidate();
         gtk_clipboard_set_text(gtk_widget_get_clipboard(overlay.text, GDK_SELECTION_CLIPBOARD), text, -1);
         g_free(text);
-        if (overlay.view == clicked_view) close_more(FALSE);
+        if (overlay.view == clicked_view && overlay.more_popup == clicked_popup
+            && overlay.menu_token == clicked_token) close_more(FALSE);
     } else if (strcmp(operation, "languages") == 0) {
         const char *source = selected_language(overlay.source, &overlay.source_languages);
         const char *target = selected_language(overlay.destination, &overlay.target_languages);
         if (overlay.setting_languages || !overlay.source_languages.choices || !overlay.target_languages.choices || !source || !target) {
-            json_object_unref(clicked_view); return;
+            goto done;
         }
         JsonObject *value = json_object_new();
         json_object_set_string_member(value, "source", source);
@@ -1974,11 +2005,22 @@ static void button_clicked(GtkButton *button, gpointer data) {
         emit(operation, node);
         if (overlay.view == clicked_view) close_language_menu(clicked_view);
     } else {
-        if (from_more) close_more(FALSE);
+        /* Preserve only this opening's ticket across popdown callbacks. A new
+         * opening replaces it, even if its view/token values happen to match. */
+        if (from_more) close_more(TRUE);
         else gtk_widget_hide(overlay.menu);
-        if (overlay.view == clicked_view && tl_configuration_current(overlay.generation))
-            emit(operation, NULL);
+        if (overlay.view == clicked_view && overlay.target == clicked_target
+            && overlay.revision == clicked_revision && tl_configuration_current(overlay.generation)
+            && (!from_more || (!overlay.more_popup && overlay.menu_token == clicked_token
+                && translation_menu_current() && active()
+                && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == clicked_focus
+                && (clicked_focus != overlay.text || !overlay.composing)))) emit(operation, NULL);
+        if (from_more && !overlay.more_popup && overlay.menu_token == clicked_token) clear_translation_menu();
     }
+done:
+    if (clicked_focus) g_object_unref(clicked_focus);
+    if (clicked_token) json_object_unref(clicked_token);
+    if (clicked_popup) g_object_unref(clicked_popup);
     json_object_unref(clicked_view);
 }
 static GtkWidget *button(GtkWidget *box, const char *label, const char *operation) {

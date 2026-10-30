@@ -79,7 +79,7 @@ internal static partial class Program
             "正在保存…" => "Saving…",
             "重试保存" => "Retry Save",
             SettingsUnavailable => "Couldn’t read current settings. Check TypeLay Settings before practising.",
-            "TypeLay 已暂停，请在常规设置启用后练习。" => "TypeLay is paused. Enable it in General Settings to practise.",
+            "TypeLay 已暂停，请在通用设置启用后练习。" => "TypeLay is paused. Enable it in General Settings to practise.",
             "源语言和目标语言相同，请在语言设置选择不同的目标语言后练习。" => "Source and target are the same. Choose a different target language to practise.",
             "当前为按需模式。开始完整练习前，需要确认切换为自动模式。" => "Currently in on-demand mode. Confirm a switch to automatic mode before this practice.",
             "当前为自动模式。开始按需练习前，需要确认切换工作模式。" => "Currently in automatic mode. Confirm a switch before on-demand practice.",

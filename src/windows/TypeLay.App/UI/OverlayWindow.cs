@@ -168,7 +168,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     {
         get; set;
     }
-    public bool EditingComposition => _composing || _glossary?.Composing == true;
+    public bool EditingComposition => _composing || _sourceRegenerateComposing || _glossary?.Composing == true;
     public bool IsEditorExitPrearmed(SessionViewToken token) => _ownedExitInvoking && _ownedReturnInvoking
         && _ownedReturning && !_composing && _ownedEditor is { } owned
         && owned.AdmittedToken == token && _viewContext?.Token == token;
@@ -396,6 +396,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         AddHandler(Keyboard.LostKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OwnedKeyboardFocusLost), handledEventsToo: true);
         _editor.TextChanged += (_, _) =>
         {
+            CancelSourceRegenerateQueue();
             if (_editing && !_rendering)
             {
                 DismissRegenerateConfirmation(reposition: false);
@@ -585,6 +586,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
         new WindowInteropHelper(this).EnsureHandle();
         InitializeLanguageConfiguration();
         InitializeRegenerateKeyboard();
+        InitializeSourceRegenerate();
         InitializeBusyMotion();
         InitializeActionMotion();
     }
@@ -998,6 +1000,8 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     }
     private bool StartEdit()
     {
+        if (_sourceRegenerateOpening is not null)
+            return false;
         if (_pausedRevision is not null || _viewContext is not { CanEdit: true } context)
             return false;
         if (_editing)
@@ -1205,6 +1209,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             PublishOrdinaryEditor();
             RefreshBusyMotion();
         }
+        _sourceRegenerateContinue?.Invoke();
         if (trace)
             TraceRender(atMs, Stopwatch.GetElapsedTime(started).TotalMilliseconds, uiMs, textMs, positionTiming);
     }
@@ -1510,6 +1515,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
     }
     private void ClearSessionContent()
     {
+        CancelSourceRegenerateQueue();
         StopBusyMotion();
         DismissRegenerateConfirmation(reposition: false);
         if (_glossary is { } form)
@@ -1738,6 +1744,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
 
     private void OpenMenu(Button anchor)
     {
+        CancelSourceRegenerateQueue();
         var viewToken = _viewContext?.Token;
         var sourceTarget = _sourceAnchor?.Target;
         string menuDraft = _editor.Text;
@@ -1747,6 +1754,8 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             || translation?.ApplicationStyle is { } applicationStyle && !Enum.IsDefined(applicationStyle))
             translation = null;
         var menu = new MoreContextMenu();
+        bool menuClosed = false;
+        menu.Closed += (_, _) => menuClosed = true;
         bool ContextCurrent() => !menu.Reopened && IsVisible && ReferenceEquals(anchor.ContextMenu, menu)
             && _viewContext?.Token == viewToken && _sourceAnchor?.Target == sourceTarget
             && _editor.Text == menuDraft && _sessionState == menuState
@@ -1769,7 +1778,7 @@ internal sealed partial class OverlayWindow : Window, ISessionView
             return item;
         }
         var regenerate = Add("MoreRegenerate", UiTheme.L("重新翻译", "Translate Again"), MoreRefresh,
-            () => RequestRegenerate(viewToken), viewToken is not null && !EditingComposition);
+            () => RegenerateFromMenu(menu, viewToken, () => menuClosed), viewToken is not null && !EditingComposition);
         var alternative = Add("MoreAlternative", UiTheme.L("换种说法", "Rephrase"), MoreSparkle, () =>
         {
             AlternativeRequested?.Invoke(viewToken!);

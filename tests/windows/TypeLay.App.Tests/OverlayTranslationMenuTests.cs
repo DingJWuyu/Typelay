@@ -479,7 +479,7 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
     }
 
     private static async Task ClickMouse(FrameworkElement target, RoutedEvent clickEvent, string role, CancellationToken cancellation,
-        MenuMouseContext? menuContext = null)
+        MenuMouseContext? menuContext = null, Action? verifySource = null)
     {
         // Let WPF mount a just-opened Popup and process pending layout/input
         // before observing its real HWND; this does not repair focus or retry a click.
@@ -499,6 +499,7 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
         {
             cancellation.ThrowIfCancellationRequested();
             validate?.Invoke();
+            verifySource?.Invoke();
             RequireHit("before-pointer-move");
             Assert.True(Native.GetCursorPos(out var original));
             Assert.False(Native.GetAsyncKeyState(1) < 0);
@@ -507,8 +508,13 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
             target.AddHandler(clickEvent, onClick);
             try
             {
+                cancellation.ThrowIfCancellationRequested();
+                validate?.Invoke();
+                verifySource?.Invoke();
+                cancellation.ThrowIfCancellationRequested();
                 Assert.True(SetCursorPos(pixel.X, pixel.Y));
                 validate?.Invoke();
+                verifySource?.Invoke();
                 RequireHit("after-pointer-move");
                 // Actual software pointer input exercises ButtonBase focus/capture
                 // and MenuItem closing. It is not physical-input evidence.
@@ -517,6 +523,8 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
                 validate?.Invoke();
                 menuContext?.InputAttempted?.Invoke();
                 validate?.Invoke();
+                verifySource?.Invoke();
+                cancellation.ThrowIfCancellationRequested();
                 uint inserted = SendInput(2, input, Marshal.SizeOf<MouseInput>());
                 if (inserted == 1)
                     Assert.Equal(1u, SendInput(1, [input[1]], Marshal.SizeOf<MouseInput>()));

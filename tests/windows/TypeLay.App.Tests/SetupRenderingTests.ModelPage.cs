@@ -151,7 +151,10 @@ public sealed partial class SetupRenderingTests
         var transfers = new List<TrayProgressHttp>();
         await using var scene = new TrayPreparationScene("zh-CN", "light", nativePresence: true,
             handler: () => { var transfer = new TrayProgressHttp(knownTotal, allowRemainder: true); transfers.Add(transfer); return transfer; });
-        scene.Settings.Update(scene.Settings.Value with { Motion = "full" });
+        scene.Settings.Update(scene.Settings.Value with
+        {
+            Motion = "full"
+        });
         var before = File.ReadAllBytes(scene.SettingsPath);
         var cancelled = TrayProvider(Named<Button>(scene.Host, "PreparationPrimaryAction"));
         await TrayConsent(scene.Host, cancelled.Invoke, accept: false);
@@ -270,13 +273,22 @@ public sealed partial class SetupRenderingTests
     {
         await using var scene = new TrayPreparationScene("zh-CN", "light");
         var oldChoice = ModelElement<ComboBox>(scene.Host, "LocalModelSelection");
-        ISelectionItemProvider Choice(ComboBox combo)
+        async Task<ISelectionItemProvider> ChoiceAsync(ComboBox combo)
         {
             var peer = Assert.IsAssignableFrom<ComboBoxAutomationPeer>(UIElementAutomationPeer.CreatePeerForElement(combo));
-            return Assert.IsAssignableFrom<ISelectionItemProvider>(Assert.Single(peer.GetChildren(), item =>
-                item.GetName().StartsWith("Argos · English → 中文", StringComparison.Ordinal)).GetPattern(PatternInterface.SelectionItem));
+            var expansion = Assert.IsAssignableFrom<IExpandCollapseProvider>(peer.GetPattern(PatternInterface.ExpandCollapse));
+            expansion.Expand();
+            await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+            combo.UpdateLayout();
+            Assert.Equal(ExpandCollapseState.Expanded, expansion.ExpandCollapseState);
+            // A closed editable Combo exposes only its text box. Open the actual
+            // popup before requesting the public item provider, as a user would.
+            var item = Assert.Single(peer.GetChildren(), item =>
+                item.GetName().StartsWith("Argos · English → 中文", StringComparison.Ordinal));
+            Assert.True(item.IsEnabled());
+            return Assert.IsAssignableFrom<ISelectionItemProvider>(item.GetPattern(PatternInterface.SelectionItem));
         }
-        var old = Choice(oldChoice);
+        var old = await ChoiceAsync(oldChoice);
         var before = File.ReadAllBytes(scene.SettingsPath);
         scene.Host.ShowPage("general");
         scene.Host.ShowPage("model");
@@ -284,7 +296,8 @@ public sealed partial class SetupRenderingTests
         AssertRetiredTrayAction(scene, old.Select);
         Assert.Equal(0, scene.Attempts);
         Assert.Equal(before, File.ReadAllBytes(scene.SettingsPath));
-        await TrayConsent(scene.Host, Choice(ModelElement<ComboBox>(scene.Host, "LocalModelSelection")).Select, accept: false);
+        var current = await ChoiceAsync(ModelElement<ComboBox>(scene.Host, "LocalModelSelection"));
+        await TrayConsent(scene.Host, current.Select, accept: false);
         Assert.Equal(0, scene.Attempts);
         Assert.Equal(before, File.ReadAllBytes(scene.SettingsPath));
         Assert.False(scene.Model.Ready);
@@ -338,20 +351,36 @@ public sealed partial class SetupRenderingTests
             "ggml-cpu-x64.dll", "ggml-cpu-zen4.dll"];
         foreach (string name in names)
             File.WriteAllText(Path.Combine(cpu, name), "component-presence");
-        object Record(string folder, string name) => new { file = name, bytes = new FileInfo(Path.Combine(folder, name)).Length, sha256 = Hash(Path.Combine(folder, name)) };
+        object Record(string folder, string name) => new
+        {
+            file = name,
+            bytes = new FileInfo(Path.Combine(folder, name)).Length,
+            sha256 = Hash(Path.Combine(folder, name))
+        };
         File.WriteAllText(Path.Combine(root, "cpu-runtime.win-x64.lock.json"), JsonSerializer.Serialize(new
         {
-            schema = 1, platform = "win-x64", files = names.Select(name => Record(cpu, name))
+            schema = 1,
+            platform = "win-x64",
+            files = names.Select(name => Record(cpu, name))
         }));
         const string template = "b7491ec0e9c869dfce20f2176758099bf248d979dd05530ede99deb21698acee";
-        File.WriteAllText(Path.Combine(root, "model.lock.json"), JsonSerializer.Serialize(new { schema = 1, abi = 5, template_sha256 = template }));
+        File.WriteAllText(Path.Combine(root, "model.lock.json"), JsonSerializer.Serialize(new
+        {
+            schema = 1,
+            abi = 5,
+            template_sha256 = template
+        }));
         File.WriteAllText(Path.Combine(root, "typelay_hy.dll"), "component-presence");
         File.WriteAllText(Path.Combine(root, "LICENSE.llama.cpp"), "component-presence");
         File.WriteAllText(Path.Combine(root, "production-adapter.json"), JsonSerializer.Serialize(new
         {
-            schema = 1, platform = "win-x64", abi = 5, template_sha256 = template,
+            schema = 1,
+            platform = "win-x64",
+            abi = 5,
+            template_sha256 = template,
             exports = new[] { "hy_close", "hy_open_v5", "hy_translate", "hy_translate_glossary_v5", "hy_translate_styled_v5" },
-            adapter = Record(root, "typelay_hy.dll"), license = Record(root, "LICENSE.llama.cpp")
+            adapter = Record(root, "typelay_hy.dll"),
+            license = Record(root, "LICENSE.llama.cpp")
         }));
         Assert.True(WindowsHyPayload.CanPrepare(Path.Combine(directory, "worker.py")));
     }

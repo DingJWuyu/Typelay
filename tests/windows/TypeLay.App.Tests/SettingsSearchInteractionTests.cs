@@ -52,8 +52,8 @@ public sealed partial class TranslationSettingsTests
     });
 
     [Theory]
-    [InlineData("zh-CN", "更新", "模型更新 · 本地模型", "软件更新 · 关于与隐私")]
-    [InlineData("en", "updates", "Model updates · Local Model", "Software updates · About & Privacy")]
+    [InlineData("zh-CN", "更新", "模型更新 · 本地模型", "软件更新 · 关于")]
+    [InlineData("en", "updates", "Model updates · Local Model", "Software updates · About")]
     public Task SearchUpdateResultsKeepUnavailableActionsDisabled(string language, string query, string model, string app) => desktop.RunAsync(async () =>
     {
         using var scene = new SettingsScene(new(UiLanguage: language, Motion: "reduce"));
@@ -62,7 +62,7 @@ public sealed partial class TranslationSettingsTests
         Assert.Equal(new[] { model, app }, SearchResults(scene.Window).Select(AutomationProperties.GetName));
         string before = File.ReadAllText(scene.PathToSettings);
         await InvokeSearchAsync(SearchResults(scene.Window)[1]);
-        var row = AssertSearchLocation(scene.Window, "about", "checkupdate", language == "en" ? "About & Privacy" : "关于与隐私");
+        var row = AssertSearchLocation(scene.Window, "about", "checkupdate", language == "en" ? "About" : "关于");
         Assert.False(Assert.Single(Descendants(row).OfType<Button>()).IsEnabled);
         Assert.Equal(before, File.ReadAllText(scene.PathToSettings));
         SetSettingsQuery(scene.Window, language == "en" ? "pause" : "暂停");
@@ -78,7 +78,7 @@ public sealed partial class TranslationSettingsTests
         scene.Window.ShowPage();
         SetSettingsQuery(scene.Window, "e");
         Assert.Equal(12, SearchResults(scene.Window).Length);
-        Assert.Equal("常规", SearchHeading(scene.Window).Text);
+        Assert.Equal("通用", SearchHeading(scene.Window).Text);
         SetSettingsQuery(scene.Window, "透明");
         var old = Assert.Single(SearchResults(scene.Window));
         SetSettingsQuery(scene.Window, "nothing matches this setting");
@@ -86,16 +86,16 @@ public sealed partial class TranslationSettingsTests
         Assert.Single(Descendants(scene.Window).OfType<TextBlock>(), text => AutomationProperties.GetAutomationId(text) == "SettingsSearchEmpty" && text.Text == "—");
         Assert.True(SettingsSearch(scene.Window).Focus());
         SearchKey(SettingsSearch(scene.Window), Key.Enter);
-        Assert.Equal("常规", SearchHeading(scene.Window).Text);
+        Assert.Equal("通用", SearchHeading(scene.Window).Text);
         SetSettingsQuery(scene.Window, "透明");
         Assert.NotSame(old, Assert.Single(SearchResults(scene.Window)));
         await InvokeRetiredSearchAsync(old);
-        Assert.Equal("常规", SearchHeading(scene.Window).Text);
+        Assert.Equal("通用", SearchHeading(scene.Window).Text);
         var beforeClose = Assert.Single(SearchResults(scene.Window));
         Assert.True(scene.Window.RequestClose());
         scene.Window.ShowPage();
         await InvokeRetiredSearchAsync(beforeClose);
-        Assert.Equal("常规", SearchHeading(scene.Window).Text);
+        Assert.Equal("通用", SearchHeading(scene.Window).Text);
         await InvokeSearchAsync(Assert.Single(SearchResults(scene.Window)));
         AssertSearchLocation(scene.Window, "appearance", "transparency", "外观");
         Assert.True(SettingsSearch(scene.Window).Focus());
@@ -203,10 +203,10 @@ public sealed partial class TranslationSettingsTests
         string before = File.ReadAllText(scene.PathToSettings);
         foreach (var (page, chinese, english, count) in new[]
         {
-            ("general", "常规", "General", 6), ("appearance", "外观", "Appearance", 7),
+            ("general", "通用", "General", 6), ("appearance", "外观", "Appearance", 7),
             ("language", "语言与风格", "Language & Tone", 2), ("glossary", "术语表", "Glossary", 1),
             ("shortcuts", "快捷键", "Shortcuts", 5), ("apps", "应用", "Applications", 3),
-            ("model", "本地模型", "Local Model", 6), ("about", "关于与隐私", "About & Privacy", 3)
+            ("model", "本地模型", "Local Model", 6), ("about", "关于", "About", 3)
         })
         {
             string pageName = language == "en" ? english : chinese;

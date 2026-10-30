@@ -557,8 +557,14 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
                         dialog.Close();
                 }
             }), DispatcherPriority.ContextIdle);
-            try { Click(window, "打开"); }
-            finally { confirmation.Abort(); }
+            try
+            {
+                Click(window, "打开");
+            }
+            finally
+            {
+                confirmation.Abort();
+            }
             if (confirmationFailure is not null)
                 ExceptionDispatchInfo.Capture(confirmationFailure).Throw();
             Assert.False(sawConfirmation);
@@ -722,7 +728,12 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
             start.ArgumentList.Add(worker);
             start.ArgumentList.Add(JsonSerializer.Serialize(selected));
             if (exactPackages)
-                start.ArgumentList.Add(JsonSerializer.Serialize(selected.Select(id => new { id = "argos-" + id.Replace('_', '-'), version = "1.9", directions = new[] { id } })));
+                start.ArgumentList.Add(JsonSerializer.Serialize(selected.Select(id => new
+        {
+            id = "argos-" + id.Replace('_', '-'),
+            version = "1.9",
+            directions = new[] { id }
+        })));
             return new ChildProcess(start);
         });
     }

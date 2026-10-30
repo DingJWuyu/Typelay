@@ -513,7 +513,7 @@ public static class ApplicationSupportPresentation
         ApplicationSupportReason.RestartRequired => "接入配置已更新。请保存工作并重新打开应用，然后检查连接。",
         ApplicationSupportReason.AwaitingConnection => "接入配置已注册，但尚未收到实际连接。请打开应用或浏览器的普通输入框后重新检查。",
         ApplicationSupportReason.NotImplemented => "此平台尚未实现这项接入，不能通过安装模型或反复检查启用。",
-        ApplicationSupportReason.Paused => "TypeLay 已暂停，请先在常规设置中启用后再检查。",
+        ApplicationSupportReason.Paused => "TypeLay 已暂停，请先在通用设置中启用后再检查。",
         ApplicationSupportReason.NoFocusedField => "尚未检查目标输入框。请切回需要翻译的普通文本框试一试，再查看检查结果。",
         ApplicationSupportReason.FieldUnobserved => "尚未取得目标输入框的可靠观察结果，不能确认预览或替换能力。",
         ApplicationSupportReason.PreviewOnly => "目前仅确认显示译文；Tab 接受和直接替换尚不可用。",

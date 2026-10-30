@@ -308,6 +308,7 @@ public sealed partial class SessionController : IDisposable
     }
     private void Configure()
     {
+        _sourceRegenerate = null;
         _styleObservation = null;
         _editorGlossaryHandoff = null;
         _pendingPracticeCompletion = null;
@@ -1028,7 +1029,13 @@ public sealed partial class SessionController : IDisposable
                 if (_session.RebaseManualCandidate(_session.Current!, snapshot, now))
                     _generation++;
             }
+            // A capture may finish between the platform return and its awaiting
+            // continuation. It cannot publish before that return has been verified.
+            if (_sourceRegenerate is { ReturningRevision: > 0, AwaitingCapture: false })
+                return;
             _session.Observe(snapshot, result.Focus, now);
+            if (CompleteSourceRegenerateCapture(result, request, now))
+                return;
             bool styled = _settings.Value.Styles is not null && (_model.StyledTranslationCapability is not null
                 || GlossaryForTranslation()?.CouldApply(_settings.Value.Direction) == true);
             TranslationStyle? effectiveStyle = styled ? _settings.Value.Styles!.Resolve(styleApplication) : null;
@@ -1812,11 +1819,15 @@ public sealed partial class SessionController : IDisposable
         Render();
         return true;
     }
-    private async Task<bool> ReturnFromEditor(PendingEditorExit? exit = null)
+    private async Task<bool> ReturnFromEditor(PendingEditorExit? exit = null,
+        SourceRegenerateConfirmation? sourceConfirmation = null, bool resumeEditorOnFailure = true)
     {
-        if (_returningToSource || _overlay.EditingComposition || !_session.RequestSourceReturn() || _session.Current is not { } source)
+        if (_sourceRegenerate is not null && !ReferenceEquals(_sourceRegenerate.Opening, sourceConfirmation)
+            || _returningToSource || _overlay.EditingComposition || !_session.RequestSourceReturn() || _session.Current is not { } source)
             return false;
         long generation = ++_generation;
+        if (_sourceRegenerate is { } confirmation)
+            confirmation.ReturningRevision = generation;
         RevokeInput("return-from-editor");
         _permitUntil = 0;
         Render();
@@ -1875,7 +1886,8 @@ public sealed partial class SessionController : IDisposable
             return true;
         }
         _session.CancelSourceReturn();
-        _overlay.ResumeEditor();
+        if (resumeEditorOnFailure)
+            _overlay.ResumeEditor();
         Render();
         return false;
     }
@@ -1950,7 +1962,7 @@ public sealed partial class SessionController : IDisposable
     }
     private async Task Escape()
     {
-        if (_disposed || !_settings.Value.Enabled || _overlay.EditingComposition)
+        if (_disposed || _sourceRegenerate is not null || !_settings.Value.Enabled || _overlay.EditingComposition)
             return;
         if (_session.State == SessionState.EditingTranslation)
         {
@@ -1980,7 +1992,7 @@ public sealed partial class SessionController : IDisposable
     }
     private async Task Regenerate()
     {
-        if (_disposed || !_settings.Value.Enabled || _overlay.EditingComposition)
+        if (_disposed || _sourceRegenerate is not null || !_settings.Value.Enabled || _overlay.EditingComposition)
             return;
         if (_session.State == SessionState.EditingTranslation)
         {
@@ -2059,6 +2071,7 @@ public sealed partial class SessionController : IDisposable
     public void StopSession() => StopSession("stop-session");
     private void StopSession(string reason)
     {
+        _sourceRegenerate = null;
         CancelGlossaryEntry();
         _manualObservation = null;
         _styleObservation = null;
@@ -2196,6 +2209,7 @@ public sealed partial class SessionController : IDisposable
     }
     public void Dispose()
     {
+        _sourceRegenerate = null;
         CancelGlossaryEntry();
         _pendingPracticeCompletion = null;
         RetireAutomaticPractice(false);

@@ -60,34 +60,60 @@ public sealed partial class LanguagePickerInteractionTests(WpfDesktopFixture des
         var window = Assert.IsType<SettingsWindow>(fixture.Window);
         window.ShowPage("model");
         await DrainAsync(window);
-        var heading = Descendants(window).OfType<TextBlock>().Single(text => text.Text == "本地翻译模型");
-        var labels = Assert.IsType<StackPanel>(heading.Parent).Children.OfType<TextBlock>().ToArray();
-        var description = Assert.Single(labels, text => !ReferenceEquals(text, heading));
-        var row = Assert.IsType<Grid>(VisualTreeHelper.GetParent(heading.Parent));
-        var status = Assert.Single(row.Children.OfType<TextBlock>());
-        Assert.Equal("当前模型无法确认", description.Text); // The fixture's legacy marker is not a valid inventory.
-        Assert.DoesNotContain("已就绪", status.Text);
-        const string longText = "输入长度限制因模型而异；超过限制时会停止，请缩短选区后重试。不会在后台截断原文后给出可接受候选。换行、URL、mention 和编号采用显式结构保护。";
-        Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == longText);
+        var hero = ModelElement<Grid>("SettingsRow_model_model");
+        var heading = Assert.Single(Descendants(hero).OfType<TextBlock>(), text => text.FontSize == 15);
+        var status = Assert.Single(Descendants(hero).OfType<TextBlock>(), text => text.Name == "PreparationStatus");
+        var selection = ModelElement<ComboBox>("LocalModelSelection");
+        Assert.Equal("当前模型无法确认", heading.Text); // The legacy marker is not a valid inventory.
+        Assert.Equal("本地组件安装记录无法读取", status.Text);
+        Assert.False(Assert.Single(Descendants(hero).OfType<Button>(), button => button.Name == "PreparationPrimaryAction").IsEnabled);
+        const string longText = "较长文本：输入长度限制因模型而异；超过限制时会停止，请缩短选区后重试。不会在后台截断原文后给出可接受候选。换行、URL、mention 和编号采用显式结构保护。";
+        await OpenDetailsAsync();
+        Assert.Equal(longText, ModelElement<TextBlock>("ModelLongTextGuidance").Text);
+        Assert.True(ModelElement<TextBlock>("ModelLongTextGuidance").IsVisible);
+        byte[] before = File.ReadAllBytes(fixture.Path);
 
         foreach (var (package, expected) in new[]
         {
-            ("argos-zh-en", "当前选择：Argos · 中文 → English"),
-            ("hy-mt2-1-8b-q4-k-m", "当前选择：Hy-MT2 1.8B · 中文多语"),
-            ("argos-zh-en", "当前选择：Argos · 中文 → English")
+            ("argos-zh-en", "Argos · 中文 → English"),
+            ("hy-mt2-1-8b-q4-k-m", "Hy-MT2 1.8B · 中文多语"),
+            ("argos-zh-en", "Argos · 中文 → English")
         })
         {
             await fixture.SwitchModelAsync([package], ["zh_en"]);
-            Assert.Equal(expected, description.Text);
-            Assert.Equal("本地翻译已就绪", status.Text);
-            Assert.Same(heading, Descendants(window).OfType<TextBlock>().Single(text => text.Text == "本地翻译模型"));
-            Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == longText);
+            Assert.Equal(expected, heading.Text);
+            Assert.Equal(expected, Assert.IsType<ComboBoxItem>(selection.SelectedItem).Content);
+            Assert.Equal("本地翻译已就绪 · 中文 → English", AutomationProperties.GetName(status));
+            Assert.StartsWith("就绪 · ", status.Text, StringComparison.Ordinal);
+            Assert.Contains(ModelCatalog.Packages.Packages.Single(item => item.Id == package).Version, status.Text, StringComparison.Ordinal);
+            Assert.Same(hero, ModelElement<Grid>("SettingsRow_model_model"));
+            Assert.Same(heading, Assert.Single(Descendants(hero).OfType<TextBlock>(), text => text.FontSize == 15));
+            Assert.Same(selection, ModelElement<ComboBox>("LocalModelSelection"));
+            Assert.Equal(longText, ModelElement<TextBlock>("ModelLongTextGuidance").Text);
+            Assert.True(ModelElement<TextBlock>("ModelLongTextGuidance").IsVisible);
+            Assert.Equal(before, File.ReadAllBytes(fixture.Path));
         }
         window.ShowPage("language");
         window.ShowPage("model");
         await DrainAsync(window);
-        Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "当前选择：Argos · 中文 → English");
-        Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == longText);
+        var reopened = ModelElement<Grid>("SettingsRow_model_model");
+        Assert.NotSame(hero, reopened);
+        Assert.Contains(Descendants(reopened).OfType<TextBlock>(), text => text.Text == "Argos · 中文 → English");
+        await OpenDetailsAsync();
+        Assert.Equal(longText, ModelElement<TextBlock>("ModelLongTextGuidance").Text);
+        Assert.True(ModelElement<TextBlock>("ModelLongTextGuidance").IsVisible);
+        Assert.Equal(before, File.ReadAllBytes(fixture.Path));
+
+        T ModelElement<T>(string id) where T : FrameworkElement => Assert.Single(Descendants(window).OfType<T>(), control => AutomationProperties.GetAutomationId(control) == id);
+        async Task OpenDetailsAsync()
+        {
+            var details = ModelElement<Expander>("ModelComponentDetails");
+            var peer = UIElementAutomationPeer.CreatePeerForElement(details);
+            var expand = Assert.IsAssignableFrom<System.Windows.Automation.Provider.IExpandCollapseProvider>(peer.GetPattern(PatternInterface.ExpandCollapse));
+            expand.Expand();
+            await DrainAsync(window);
+            Assert.Equal(ExpandCollapseState.Expanded, expand.ExpandCollapseState);
+        }
     });
 
     [Fact]

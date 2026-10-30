@@ -18,7 +18,7 @@ internal static partial class HyPackageCheck
                 Check(root.ProcessId == processId && root.NativeWindowHandle != 0 && !root.IsOffscreen,
                     "writeback-settings-unavailable");
                 var matches = settings.FindAll(TreeScope.Descendants, new AndCondition(
-                    new PropertyCondition(AutomationElement.NameProperty, "开发版实验：允许 Tab 写回"),
+                    new PropertyCondition(AutomationElement.NameProperty, "原生输入框替换"),
                     new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.CheckBox)));
                 Check(matches.Count == 1, "writeback-checkbox-ambiguous");
                 var checkbox = matches[0];

@@ -257,6 +257,7 @@ def run_gimp(
         named,
         select_settings_page,
         text,
+        visible_named,
     )
 
     report = {"schema": 1, "status": "running", "stage": "registered-application", "passed": []}
@@ -318,9 +319,13 @@ def run_gimp(
         node = named(pid, name)
         return node if showing(node) else None
 
-    def action(pid, name, *, dialog_title=None):
+    def action(pid, name, *, dialog_title=None, role=None):
         deadline = time.monotonic() + 15
-        node = wait_for(lambda: named(pid, name), "public control missing: " + name)
+        node = wait_for(
+            lambda: named(pid, name) if role is None else visible_named(pid, name, role=role),
+            "public control missing: " + name,
+            timeout=deadline - time.monotonic(),
+        )
         if pid == host_pid:
             focus_settings_control(pid, node, timeout=deadline - time.monotonic())
         else:
@@ -346,6 +351,7 @@ def run_gimp(
             else:
                 raise AssertionError("new-image button has no owned dialog")
         interface = node.get_action_iface()
+        assert time.monotonic() < deadline, "public action exhausted its interaction budget"
         assert interface and Atspi.Action.do_action(interface, 0), name
         return node
 
@@ -385,9 +391,8 @@ def run_gimp(
         primary = desktop_row().get("primaryAction")
         action(
             host_pid,
-            "应用连接：" + desktop_row()["title"]
-            if primary and primary["id"] == identity
-            else row_action["label"],
+            "应用连接：桌面应用" if primary and primary["id"] == identity else row_action["label"],
+            role=Atspi.Role.PUSH_BUTTON if primary and primary["id"] == identity else None,
         )
         action(host_pid, support()["labels"]["cancel" if cancel else "confirm"])
 

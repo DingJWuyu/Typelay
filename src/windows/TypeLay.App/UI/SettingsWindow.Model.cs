@@ -70,7 +70,10 @@ internal sealed partial class SettingsWindow
             return;
         object intent = _modelPageIntent = new();
         bool Current() => ReferenceEquals(intent, _modelPageIntent) && CurrentModelPage(epoch, state);
-        try { action(Current); }
+        try
+        {
+            action(Current);
+        }
         finally
         {
             // The native consent pumps the dispatcher. A hidden/reopened page
@@ -90,15 +93,24 @@ internal sealed partial class SettingsWindow
         _preparationCard.Name = "TranslationPreparationCard";
         AutomationProperties.SetName(_preparationCard, UiTheme.L("准备翻译", "Prepare Translation"));
         var hero = new Grid { MinHeight = 72, Margin = new(14, 0, 14, 0) };
-        hero.ColumnDefinitions.Add(new() { Width = new(58) });
+        hero.ColumnDefinitions.Add(new()
+        {
+            Width = new(58)
+        });
         hero.ColumnDefinitions.Add(new());
-        hero.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        hero.ColumnDefinitions.Add(new()
+        {
+            Width = GridLength.Auto
+        });
         hero.Children.Add(ModelChip());
         var labels = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 8, 14, 8) };
         _modelTitle = UiTheme.Text("", 15, bold: true);
         labels.Children.Add(_modelTitle);
         var status = new Grid { Margin = new(0, 3, 0, 0) };
-        status.ColumnDefinitions.Add(new() { Width = new(13) });
+        status.ColumnDefinitions.Add(new()
+        {
+            Width = new(13)
+        });
         status.ColumnDefinitions.Add(new());
         _modelDot = new Border { Width = 7, Height = 7, CornerRadius = new(4), Margin = new(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
         AutomationProperties.SetAutomationId(_modelDot, "ModelStatusDot");
@@ -215,9 +227,17 @@ internal sealed partial class SettingsWindow
         glyph.Width = glyph.Height = 26.4;
         grid.Children.Add(glyph);
         grid.Children.Add(new Border { BorderBrush = new SolidColorBrush(Color.FromArgb(89, 255, 255, 255)), BorderThickness = new(0, 1, 0, 0), CornerRadius = new(11), IsHitTestVisible = false });
-        var chip = new Border { Width = 44, Height = 44, CornerRadius = new(11), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center,
-            Background = new LinearGradientBrush(Color.FromRgb(79, 174, 119), Color.FromRgb(42, 122, 75), 70), Child = grid,
-            Effect = new DropShadowEffect { Color = Color.FromRgb(30, 100, 60), Opacity = .3, BlurRadius = 6, ShadowDepth = 2, Direction = 270 } };
+        var chip = new Border
+        {
+            Width = 44,
+            Height = 44,
+            CornerRadius = new(11),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+            Background = new LinearGradientBrush(Color.FromRgb(79, 174, 119), Color.FromRgb(42, 122, 75), 70),
+            Child = grid,
+            Effect = new DropShadowEffect { Color = Color.FromRgb(30, 100, 60), Opacity = .3, BlurRadius = 6, ShadowDepth = 2, Direction = 270 }
+        };
         AutomationProperties.SetAutomationId(chip, "ModelHeroChip");
         return chip;
     }

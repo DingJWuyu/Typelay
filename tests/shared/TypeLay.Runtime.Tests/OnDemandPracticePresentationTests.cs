@@ -57,6 +57,8 @@ public sealed class OnDemandPracticePresentationTests
         Assert.Equal("切换为按需模式并开始练习", view.StartLabel);
         Assert.Contains("所有应用", view.ConfirmationText);
         Assert.Contains("不会自动恢复", view.ConfirmationText);
+        Assert.Contains("通用设置切回自动模式", view.ConfirmationText);
+        Assert.Contains("当前工作模式已保留，可在通用设置中查看或更改", view.LaunchFailedMessage);
         Assert.Contains("Ctrl+Shift+F9", view.PreviewStep);
         Assert.Contains("Ctrl+Shift+F10", view.ReplaceStep);
         Assert.Contains("人工草稿", view.CapabilityNote);
@@ -86,7 +88,7 @@ public sealed class OnDemandPracticePresentationTests
     {
         var paused = OnDemandPracticePresentation.Create(new(Enabled: false, Mode: WorkMode.OnDemand));
         Assert.Contains("暂停", paused.CurrentStateNotice);
-        Assert.Contains("常规", paused.CurrentStateNotice);
+        Assert.Contains("通用设置", paused.CurrentStateNotice);
         var changed = OnDemandPracticePresentation.Create(new(Mode: WorkMode.Automatic));
         Assert.Contains("自动模式", changed.CurrentStateNotice);
     }

@@ -61,7 +61,7 @@ public sealed class AppearanceUiTests(WpfDesktopFixture desktop)
             Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "On-device · No history");
             Assert.DoesNotContain(Descendants(window).OfType<Button>(), button => button.IsVisible && Equals(button.Content, "Save Changes"));
             window.ShowPage("about");
-            Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "About & Privacy");
+            Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "About");
 
             T Named<T>(string name) where T : FrameworkElement
             {
@@ -187,7 +187,7 @@ public sealed class AppearanceUiTests(WpfDesktopFixture desktop)
             window.UpdateLayout();
             Assert.Same(original, Dot());
             Assert.Same(window.FindResource("Good"), original.Fill);
-            Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "本地翻译已就绪");
+            Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "运行中");
             System.Windows.Shapes.Ellipse Dot() => Descendants(window).OfType<System.Windows.Shapes.Ellipse>()
                 .Single(shape => AutomationProperties.GetAutomationId(shape) == "GeneralTranslationStatusDot");
         }

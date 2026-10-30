@@ -682,7 +682,10 @@ class Toast(Gtk.Revealer):
         self.set_transition_type(Gtk.RevealerTransitionType.SLIDE_UP)
         self.set_halign(Gtk.Align.CENTER)
         self.set_valign(Gtk.Align.END)
-        self.set_margin_bottom(28)
+        # GTK's 18px CSS blur uses a 51px triple-box kernel. Keep its halo
+        # inside Revealer's bin window; the owner's bottom edge still clips
+        # the lower tail naturally because the pill stays 28px above it.
+        self.set_margin_bottom(0)
         self.timer = None
         self.action = None
         self.identity = None
@@ -690,11 +693,30 @@ class Toast(Gtk.Revealer):
         # GTK3 has no native backdrop blur. Use the matching opaque glass-strong
         # surface; the saved reduce-transparency preference is not rewritten.
         self.content = style(Gtk.Box(spacing=12), "toast")
+        # An input-only pill preserves its old hit rectangle while allowing
+        # the surrounding shadow's drawing windows to pass pointer events.
+        self.pill = Gtk.EventBox()
+        self.pill.set_visible_window(False)
+        self.pill.set_margin_start(51)
+        self.pill.set_margin_end(51)
+        self.pill.set_margin_top(45)
+        self.pill.set_margin_bottom(28)
+        self.pill.add(self.content)
         self.text = label()
         self.undo = Gtk.Button(label="撤销")
         self.content.pack_start(self.text, True, True, 0)
         self.content.pack_end(self.undo, False, False, 0)
-        self.add(self.content)
+        self.add(self.pill)
+        self.connect("realize", self.pass_shadow_input)
+
+    def pass_shadow_input(self, *_):
+        # Only Toast's three rendering windows pass through. Its input-only
+        # pill and Undo's own child window remain normal input destinations.
+        parent = self.get_parent()
+        if isinstance(parent, Gtk.Overlay):
+            parent.set_overlay_pass_through(self, True)
+        self.get_window().set_pass_through(True)
+        self.pill.get_parent_window().set_pass_through(True)
 
     def show_message(self, text, undo=None):
         self.expire()

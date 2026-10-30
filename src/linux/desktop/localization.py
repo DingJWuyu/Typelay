@@ -268,7 +268,7 @@ ENGLISH.update(
         "接入配置已更新。请保存工作并重新打开应用，然后检查连接。": "Configuration updated. Save your work, reopen the app, then check its connection.",
         "接入配置已注册，但尚未收到实际连接。请打开应用或浏览器的普通输入框后重新检查。": "Configuration is registered, but no actual connection was received. Open a regular text field and check again.",
         "此平台尚未实现这项接入，不能通过安装模型或反复检查启用。": "This connection is not implemented on this platform. Installing models or repeating the check cannot enable it.",
-        "TypeLay 已暂停，请先在常规设置中启用后再检查。": "TypeLay is paused. Enable it in General, then check again.",
+        "TypeLay 已暂停，请先在通用设置中启用后再检查。": "TypeLay is paused. Enable it in General, then check again.",
         "尚未检查目标输入框。请切回需要翻译的普通文本框试一试，再查看检查结果。": "The target field has not been checked. Try the intended regular text field, then review the result.",
         "尚未取得目标输入框的可靠观察结果，不能确认预览或替换能力。": "No reliable field observation is available. Preview and replacement capabilities cannot be confirmed.",
         "目前仅确认显示译文；Tab 接受和直接替换尚不可用。": "Only translation preview is confirmed. Tab acceptance and direct replacement are unavailable.",

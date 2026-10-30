@@ -43,6 +43,7 @@ def main():
     parser.add_argument("--connection-only", action="store_true")
     parser.add_argument("--applications-only", action="store_true")
     parser.add_argument("--applications-empty-only", action="store_true")
+    parser.add_argument("--toast-only", action="store_true")
     options = parser.parse_args()
     assert Gtk.init_check([])[0], "GTK display unavailable"
     options.output.mkdir(parents=True, exist_ok=True)
@@ -269,6 +270,101 @@ def main():
             width, height = surface.window.get_size()
             Gdk.pixbuf_get_from_window(window, 0, 0, width, height).savev(
                 str(options.output / (name + ".png")), "png", [], []
+            )
+
+        async def exercise_toast():
+            """Shared production toast: painted extent, placement and peer ownership."""
+            surface.sidebar.select_row(surface.nav_rows["general"])
+            surface.window.present()
+            await settle(
+                lambda: surface.window.is_active() and not surface.pages.get_transition_running()
+            )
+            toast = surface.toast
+            measurements = []
+            actions = []
+            for theme in ("light", "dark"):
+                assert await host.ask("settingsPatch", {"theme": theme, "uiLanguage": "en"}) is True
+                await settle(lambda: state.get("theme") == theme and not jobs)
+                surface.search.grab_focus()
+                before_focus = surface.window.get_focus()
+                for with_undo in (False, True):
+                    began = GLib.get_monotonic_time()
+                    toast.show_message(
+                        "App tone saved", (lambda: actions.append("current")) if with_undo else None
+                    )
+                    identity, timer = toast.identity, toast.timer
+                    source = GLib.MainContext.default().find_source_by_id(timer)
+                    assert source is not None
+                    deadline = source.get_ready_time()
+                    assert began + 6_000_000 <= deadline <= GLib.get_monotonic_time() + 6_000_000
+                    await settle(lambda: toast.get_child_revealed())
+                    await paint(surface.window)
+                    assert surface.window.get_focus() is before_focus
+                    assert toast.identity is identity and toast.timer == timer
+                    assert source.get_ready_time() == deadline, (
+                        "painting renewed the toast lifetime"
+                    )
+                    point = toast.content.translate_coordinates(surface.window, 0, 0)
+                    assert point is not None
+                    x, y = point
+                    width, height = (
+                        toast.content.get_allocated_width(),
+                        toast.content.get_allocated_height(),
+                    )
+                    owner_width, owner_height = surface.window.get_size()
+                    assert owner_height - (y + height) == 28, (
+                        "toast pill moved from the prototype bottom gap"
+                    )
+                    assert abs(x + width / 2 - owner_width / 2) <= 0.5
+                    pixbuf = Gdk.pixbuf_get_from_window(
+                        surface.window.get_window(), 0, 0, owner_width, owner_height
+                    )
+                    name = "toast-" + theme + ("-undo" if with_undo else "-message")
+                    pixbuf.savev(str(options.output / (name + ".png")), "png", [], [])
+                    pixels, stride, channels = (
+                        pixbuf.get_pixels(),
+                        pixbuf.get_rowstride(),
+                        pixbuf.get_n_channels(),
+                    )
+
+                    def pixel(px, py):
+                        offset = py * stride + px * channels
+                        return tuple(pixels[offset : offset + 3])
+
+                    shadow = pixel(x + width // 2, y + height + 4)
+                    background = pixel(owner_width - 30, y + height + 4)
+                    measurements.append(
+                        {
+                            "name": name,
+                            "pill": [x, y, width, height],
+                            "shadow": shadow,
+                            "background": background,
+                            "deadline": deadline,
+                        }
+                    )
+                    (options.output / "toast-geometry.json").write_text(
+                        json.dumps(measurements, indent=2)
+                    )
+                    assert sum(shadow) < sum(background), (
+                        "toast outer shadow is clipped at the pill boundary"
+                    )
+                    toast.expire(identity)
+                    assert GLib.MainContext.default().find_source_by_id(timer) is None
+                    await settle(lambda: not toast.get_child_revealed())
+            # Replacing a message does not reuse its actionable peer or timer.
+            toast.show_message("A", lambda: actions.append("retired"))
+            old_peer, old_timer = toast.undo, toast.timer
+            toast.show_message("B", lambda: actions.append("current"))
+            current_peer, current_timer = toast.undo, toast.timer
+            old_peer.clicked()
+            assert actions == [] and toast.undo is current_peer and toast.get_reveal_child()
+            current_peer.clicked()
+            assert actions == ["current"]
+            assert GLib.MainContext.default().find_source_by_id(old_timer) is None
+            assert GLib.MainContext.default().find_source_by_id(current_timer) is None
+            print(
+                "TOAST UI PASS: real painted shadow, bottom28, unchanged deadline/focus, retired peer rejection",
+                flush=True,
             )
 
         async def exercise_applications():
@@ -941,6 +1037,9 @@ def main():
                     is True
                 )
                 print("APPLICATIONS EMPTY PASS", flush=True)
+                return
+            if options.toast_only:
+                await exercise_toast()
                 return
             if options.applications_only:
                 await exercise_applications()

@@ -11,6 +11,9 @@ internal sealed record ShortcutRegistrationRecovery(Func<ShortcutRegistrationFai
 // Composition and native side effects only. Product sequencing lives in TypeLay.Runtime.
 internal static class WindowsRuntime
 {
+    internal readonly record struct SourceObservation(long SourceEpoch, long ContentEpoch, long ForegroundEpoch,
+        long WindowEpoch, Guid CommandGeneration, Guid ConnectionId);
+
     public static SettingsStore CreateSettings(string? path = null) => new(
         path ?? Path.Combine(AppPaths.Data, "settings.json"), SetStartup,
         app => Path.GetFileNameWithoutExtension(app).Trim().ToLowerInvariant());
@@ -23,7 +26,8 @@ internal static class WindowsRuntime
 
     public static SessionController CreateSession(SettingsStore settings, ITranslationService model, OverlayWindow overlay,
         bool automationTest = false, IInputBroker? broker = null, WindowsApplicationSupport? support = null,
-        PracticeHost? practice = null, Action<ShortcutRegistrationRecovery>? bindShortcutRecovery = null)
+        PracticeHost? practice = null, Action<ShortcutRegistrationRecovery>? bindShortcutRecovery = null,
+        Action<Func<SourceObservation>>? bindSourceObservation = null)
     {
         var monitor = new KeyboardHook(automationTest, overlay.Handle);
         overlay.ConfigureOrdinaryInput(monitor);
@@ -47,11 +51,14 @@ internal static class WindowsRuntime
             sourceMessageAcceptance: true, orderedSourceMessageWitness: true);
         overlay.ConfigureSourceGlossary(nativeInput, settings);
         var input = new WindowsInputRouter(nativeInput, monitor, browser, () => settings.Value.Excluded.ToArray());
+        bindSourceObservation?.Invoke(() => new(input.SourceUserEpoch, input.ContentEpoch, input.ForegroundEpoch,
+            input.WindowEpoch, input.CommandGeneration, input.ConnectionId));
         loop.Tick += browser.Poll;
         loop.Tick += browserView.Poll;
         var controller = new SessionController(settings, model, view, input, input, loop,
             practice is null ? null : practice.RetireAutomaticAsync,
             practice is null ? null : practice.ConfirmRetiredAutomaticAsync);
+        overlay.ConfigureSourceRegenerate(controller);
         controller.OperationFeedback += browser.ObserveFeedback;
         if (practice is not null)
             loop.Tick += practice.PollAcceptance;

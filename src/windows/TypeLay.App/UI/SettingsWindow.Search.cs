@@ -20,11 +20,11 @@ internal sealed partial class SettingsWindow
     private static readonly SearchSetting[] SearchSettings =
     [
         new("general", "enable", "TypeLay", "TypeLay", "启用 enable"),
-        new("general", "mode", "工作模式", "Work mode", "自动 按需 automatic on demand"),
-        new("general", "startup", "登录 Windows 后自动启动", "Open at Windows login", "startup"),
-        new("general", "writeback", "原生输入框替换", "Native input replacement", "beta"),
-        new("general", "tutorial", "翻译练习", "Translation practice", "使用教程 tutorial"),
-        new("general", "setup", "重新设置", "Run setup again", "首次设置 onboarding"),
+        new("general", "mode", "工作模式", "Mode", "自动 按需 automatic on demand"),
+        new("general", "startup", "登录时启动", "Open at login", "Windows startup 自动启动"),
+        new("general", "writeback", "原生输入框替换", "Native field replacement", "beta"),
+        new("general", "tutorial", "使用教程", "Tutorial", "翻译练习 Translation practice"),
+        new("general", "setup", "首次设置", "First-run setup", "重新设置 重新运行 Run again onboarding"),
         new("appearance", "theme", "主题", "Theme"),
         new("appearance", "accent", "强调色", "Accent color"),
         new("appearance", "font", "字体", "Font"),

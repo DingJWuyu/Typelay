@@ -4719,7 +4719,7 @@ def run(arguments):
                 return node
 
             def activate_scrolled_setting(
-                name, *, evidence_name=None, timeout=15, activate=True, exact_node=None
+                name, *, evidence_name=None, timeout=15, activate=True, exact_node=None, role=None
             ):
                 # Continued interactions may follow an earlier page scroll. The
                 # initial primary actions retain their unscrolled screen checks.
@@ -4727,7 +4727,7 @@ def run(arguments):
                 node = (
                     exact_node
                     if exact_node is not None
-                    else settings_control(name, timeout=deadline - time.monotonic())
+                    else settings_control(name, timeout=deadline - time.monotonic(), role=role)
                 )
                 assert node.get_process_id() == process.pid and node.get_name() == name
                 # Connection details are intentionally collapsed after reopening.
@@ -5107,7 +5107,7 @@ def run(arguments):
             # Drive actual GTK actions; the model being ready never completes an
             # application connection or a canceled component selection.
             desktop_support = next(row for row in support["rows"] if row["id"] == "desktop-text")
-            primary = settings_control("应用连接：" + desktop_support["title"])
+            primary = settings_control("应用连接：桌面应用", role=Atspi.Role.PUSH_BUTTON)
             application_choice = named(process.pid, "选择应用…")
             assert application_choice is None or not application_choice.get_state_set().contains(
                 Atspi.StateType.SHOWING
@@ -5522,7 +5522,7 @@ def run(arguments):
                     "native language search saves only the keyboard-selected match and preserves Tab navigation"
                 )
             settings_page("应用")
-            activate_setting("应用连接：" + desktop_support["title"])
+            activate_scrolled_setting("应用连接：桌面应用", role=Atspi.Role.PUSH_BUTTON)
             bundled_component = (package / "support/desktop/component.json").is_file()
             if bundled_component:
                 assert desktop_support["primaryAction"]["id"] == "Install"
@@ -5538,7 +5538,7 @@ def run(arguments):
                     if row["id"] == "desktop-text"
                 )
                 assert row["state"] == "NeedsInstall"
-                activate_scrolled_setting("应用连接：" + row["title"])
+                activate_scrolled_setting("应用连接：桌面应用", role=Atspi.Role.PUSH_BUTTON)
                 activate_setting(support["labels"]["confirm"])
 
                 def prepared_component():
@@ -6150,13 +6150,58 @@ def run(arguments):
                         "ExcludedApplications"
                     )
                     before_management = paths.settings.read_bytes()
-                    activate_scrolled_setting("添加应用…")
-                    settings_control("搜索已安装的本机应用")
-                    activate_setting("取消")
+
+                    def managed_picker(*, cancel):
+                        from support.gtk_accessibility import visible_named
+
+                        deadline = time.monotonic() + 15
+                        activate_scrolled_setting(
+                            "添加应用",
+                            role=Atspi.Role.PUSH_BUTTON,
+                            timeout=deadline - time.monotonic(),
+                        )
+                        dialog = settings_control(
+                            "添加应用",
+                            role=Atspi.Role.DIALOG,
+                            timeout=deadline - time.monotonic(),
+                        )
+
+                        def control(name, role):
+                            return wait_for(
+                                lambda: visible_named(process.pid, name, role=role, root=dialog),
+                                "managed application picker control missing: " + name,
+                                timeout=deadline - time.monotonic(),
+                            )
+
+                        search = control("搜索应用", Atspi.Role.ENTRY)
+                        focus_settings_control(
+                            process.pid, search, timeout=deadline - time.monotonic()
+                        )
+                        if not cancel:
+                            assert time.monotonic() < deadline
+                            assert Atspi.EditableText.set_text_contents(
+                                search.get_editable_text_iface(), "TypeLay Registered Fixture"
+                            )
+                        target = control(
+                            "取消" if cancel else "TypeLay Registered Fixture",
+                            Atspi.Role.PUSH_BUTTON,
+                        )
+                        focus_settings_control(
+                            process.pid, target, timeout=deadline - time.monotonic()
+                        )
+                        action = target.get_action_iface()
+                        assert time.monotonic() < deadline
+                        assert action is not None and Atspi.Action.do_action(action, 0)
+                        wait_for(
+                            lambda: visible_named(process.pid, "添加应用", role=Atspi.Role.DIALOG)
+                            is None,
+                            "managed application picker did not close",
+                            timeout=deadline - time.monotonic(),
+                        )
+
+                    managed_picker(cancel=True)
                     assert paths.settings.read_bytes() == before_management
-                    activate_scrolled_setting("添加应用…")
-                    select_registered_fixture()
-                    activate_setting("选择")
+                    managed_picker(cancel=False)
                     wait_for(
                         lambda: "gtk-fixture"
                         in json.loads(paths.settings.read_text()).get("ManagedApplications", []),

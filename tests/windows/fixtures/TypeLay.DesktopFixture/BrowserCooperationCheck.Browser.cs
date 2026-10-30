@@ -560,18 +560,28 @@ internal static partial class BrowserCooperationCheck
         public async Task ClickSourceAsync(CancellationToken ct)
         {
             LastSourceClickObservation = null;
-            // Keep the original point and single click. Read its actual hit in the
-            // same original evaluation, without selecting a different exposed point.
+            // One point and one real click. The fixture page has no overlays of
+            // its own: choose the largest exposed source interior around the
+            // one public TypeLay host, then verify its actual hit before input.
             var point = await EvaluateAsync("""
-                (()=>{const r=a.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;
-                  const hit=document.elementFromPoint(x,y),selector='[role="region"][aria-label="TypeLay"]';
-                  const hosts=document.querySelectorAll(selector),rect=e=>{const b=e.getBoundingClientRect();return [b.left,b.top,b.width,b.height];};
-                  const sourceHit=hit===a||a.contains(hit),overlayHit=!!hit?.closest(selector);
-                  return {x,y,observation:{hit:sourceHit?'source':overlayHit?'overlay':hit?'other':'none',
+                (()=>{const r=a.getBoundingClientRect(),selector='[role="region"][aria-label="TypeLay"]';
+                  const hosts=[...document.querySelectorAll(selector)],rect=e=>{const b=e.getBoundingClientRect();return [b.left,b.top,b.width,b.height];};
+                  const base={l:Math.max(0,r.left+4),t:Math.max(0,r.top+4),r:Math.min(innerWidth,r.right-4),b:Math.min(innerHeight,r.bottom-4)};
+                  let areas=[base];
+                  if(hosts.length===1){const o=hosts[0].getBoundingClientRect();
+                    const l=Math.max(base.l,o.left),t=Math.max(base.t,o.top),right=Math.min(base.r,o.right),bottom=Math.min(base.b,o.bottom);
+                    if(l<right&&t<bottom)areas=[{...base,b:t},{...base,t:bottom},{l:base.l,t,r:l,b:bottom},{l:right,t,r:base.r,b:bottom}];}
+                  areas=areas.filter(q=>q.r-q.l>=16&&q.b-q.t>=16).sort((a,b)=>(b.r-b.l)*(b.b-b.t)-(a.r-a.l)*(a.b-a.t));
+                  const q=a.isConnected&&hosts.length<=1?areas[0]:null,x=q?(q.l+q.r)/2:0,y=q?(q.t+q.b)/2:0;
+                  const hit=q?document.elementFromPoint(x,y):null,sourceHit=!!hit&&(hit===a||a.contains(hit)),overlayHit=!!hit?.closest(selector);
+                  return {x,y,sourcePointReady:sourceHit,observation:{hit:sourceHit?'source':overlayHit?'overlay':hit?'other':'none',
+                    reason:!a.isConnected?'source-detached':hosts.length>1?'ambiguous-overlay':!q?'no-exposed-interior':!sourceHit?'point-not-source':'exposed-source',
                     sourceConnected:a.isConnected,sourceFocused:document.activeElement===a,pageFocused:document.hasFocus(),
-                    sourceRect:[r.left,r.top,r.width,r.height],overlayCount:hosts.length,overlayRect:hosts.length===1?rect(hosts[0]):null}};})()
+                    sourceRect:[r.left,r.top,r.width,r.height],selectedRect:q?[q.l,q.t,q.r-q.l,q.b-q.t]:null,
+                    overlayCount:hosts.length,overlayRect:hosts.length===1?rect(hosts[0]):null}};})()
                 """, ct);
             LastSourceClickObservation = point.GetProperty("observation").Clone();
+            Require(point.GetProperty("sourcePointReady").GetBoolean(), "source-click-no-exposed-interior");
             await ClickPointAsync(point, ct);
         }
         public async Task ClickSubmitAsync(CancellationToken ct)

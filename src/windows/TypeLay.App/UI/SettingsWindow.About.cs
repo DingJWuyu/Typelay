@@ -10,7 +10,7 @@ internal sealed partial class SettingsWindow
 {
     private void About()
     {
-        Heading(UiTheme.L("关于与隐私", "About & Privacy"));
+        Heading(UiTheme.L("关于", "About"));
         object identity = _pageIdentity;
         var brand = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, Margin = new(0, 8, 0, 24) };
         brand.Children.Add(UiTheme.Mark(76, appIcon: true));

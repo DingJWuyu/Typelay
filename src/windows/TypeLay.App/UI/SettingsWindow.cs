@@ -176,8 +176,8 @@ internal sealed partial class SettingsWindow : Window
         {
             var progress = PracticeProgress?.Invoke();
             var automatic = AutomaticPracticeProgress?.Invoke();
-            _practiceStatus.Text = automatic is not null ? AutomaticPracticeEntryView().ProgressNotice
-                : progress is null ? "" : OnDemandPracticePresentation.Create(_settings.Value, progress).ProgressNotice;
+            _practiceStatus.Text = GeneralPracticeNotice(automatic is not null ? AutomaticPracticeEntryView().ProgressNotice
+                : progress is null ? "" : OnDemandPracticePresentation.Create(_settings.Value, progress).ProgressNotice);
             _practiceStatus.Visibility = progress is null && automatic is null ? Visibility.Collapsed : Visibility.Visible;
         }
     }
@@ -946,95 +946,6 @@ internal sealed partial class SettingsWindow : Window
                 RestoreSettingFocus(focusedSetting);
         }
         return false;
-    }
-    private void General()
-    {
-        Heading(UiTheme.L("常规", "General"));
-        BeginGroup();
-        var hero = new Grid { Margin = new(14, 12, 14, 12), MinHeight = 48 };
-        hero.ColumnDefinitions.Add(new()
-        {
-            Width = new(58)
-        });
-        hero.ColumnDefinitions.Add(new());
-        hero.ColumnDefinitions.Add(new()
-        {
-            Width = GridLength.Auto
-        });
-        hero.Children.Add(UiTheme.Mark(44, appIcon: true));
-        var identity = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        identity.Children.Add(UiTheme.Text("TypeLay", 15, bold: true));
-        var statusLine = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 3, 0, 0) };
-        var statusDot = new System.Windows.Shapes.Ellipse { Width = 7, Height = 7, Margin = new(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
-        statusDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, !_settings.Value.Enabled ? "Tertiary" : _model.Ready ? "Good" : "Warn");
-        AutomationProperties.SetAutomationId(statusDot, "GeneralTranslationStatusDot");
-        statusLine.Children.Add(statusDot);
-        var status = UiTheme.Text(_settings.Value.Enabled ? _model.Ready ? UiTheme.L("本地翻译已就绪", "Ready on this device") : _model.Status : UiTheme.L("已暂停", "Paused"), 12, true);
-        _refreshGeneralStatus = () =>
-        {
-            statusDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, !_settings.Value.Enabled ? "Tertiary" : _model.Ready ? "Good" : "Warn");
-            status.Text = UiStrings.Translate(_settings.Value.Enabled ? _model.Ready ? UiTheme.L("本地翻译已就绪", "Ready on this device") : _model.Status : UiTheme.L("已暂停", "Paused"));
-        };
-        statusLine.Children.Add(status);
-        identity.Children.Add(statusLine);
-        Grid.SetColumn(identity, 1);
-        hero.Children.Add(identity);
-        var enabled = UiTheme.Toggle("启用 TypeLay", () => _settings.Value.Enabled, async value => await SaveAsync(_settings.Value with { Enabled = value }));
-        Grid.SetColumn(enabled, 2);
-        hero.Children.Add(enabled);
-        _group!.Children.Add(hero);
-        RegisterSearchTarget("enable", hero);
-        BeginGroup();
-        var modes = new UniformGrid { Columns = 2, Width = 180 };
-        var modeChoices = new List<RadioButton>();
-        foreach (var (mode, zh, en) in new[] { (WorkMode.Automatic, "自动", "Automatic"), (WorkMode.OnDemand, "按需", "On demand") })
-        {
-            var choice = new RadioButton { Content = UiTheme.L(zh, en), GroupName = "SettingsWorkMode", IsChecked = _settings.Value.Mode == mode, IsTabStop = _settings.Value.Mode == mode };
-            choice.SetResourceReference(StyleProperty, "QuickPanelModeChoice");
-            AutomationProperties.SetName(choice, "工作模式 " + zh);
-            choice.Checked += async (_, _) => await SaveAsync(_settings.Value with { Mode = mode });
-            modeChoices.Add(choice);
-            modes.Children.Add(choice);
-        }
-        modes.PreviewKeyDown += (_, e) =>
-        {
-            if (Keyboard.Modifiers != ModifierKeys.None || Keyboard.FocusedElement is not RadioButton focused)
-                return;
-            int step = e.Key is Key.Right or Key.Down ? 1 : e.Key is Key.Left or Key.Up ? -1 : 0;
-            int index = modeChoices.IndexOf(focused);
-            if (step == 0 || index < 0)
-                return;
-            e.Handled = true;
-            var next = modeChoices[(index + step + modeChoices.Count) % modeChoices.Count];
-            if (next.Focus())
-                next.IsChecked = true;
-        };
-        Row(UiTheme.L("工作模式", "Work mode"), "", UiTheme.Border(modes, 8, "Panel2", 2));
-        Row(UiTheme.L("登录 Windows 后自动启动", "Open at Windows login"), "", UiTheme.Toggle("登录 Windows 后自动启动", () => _settings.Value.Startup, async value => await SaveAsync(_settings.Value with { Startup = value })));
-        Row(UiTheme.L("原生输入框替换", "Native input replacement"), "", UiTheme.Toggle("开发版实验：允许 Tab 写回", () => _settings.Value.ExperimentalWriteback, async enabled =>
-        {
-            if (!enabled)
-            {
-                await SaveAsync(_settings.Value with
-                {
-                    ExperimentalWriteback = false
-                });
-                return;
-            }
-            var answer = MessageBox.Show(this, "此构建未完成 Windows 实机与真实输入法验收。\n\nUIA 校验与写回之间仍有竞态：极端情况下可能覆盖最新原文，或拒写后消耗一次 Tab。该开关仅用于受控测试，不代表安全验收通过。\n\n请只用已备份的测试文本。是否允许实验性 Tab 写回？", "TypeLay · 实验性写回", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
-            if (answer == MessageBoxResult.Yes)
-                await SaveAsync(_settings.Value with
-                {
-                    ExperimentalWriteback = true
-                });
-        }), badge: "Beta");
-        BeginGroup();
-        Row(UiTheme.L("翻译练习", "Translation practice"), "", UiTheme.Button(UiTheme.L("打开", "Open"), StartPractice));
-        Row(UiTheme.L("重新设置", "Run setup again"), "", UiTheme.Button(UiTheme.L("开始", "Start"), () => { if (ShowOnboarding is { } show) show(); else ShowPage("model"); }));
-        _practiceStatus = UiTheme.Text("", 12, true);
-        _content.Children.Add(_practiceStatus);
-        RefreshPracticeProgress();
-
     }
     private static FrameworkElement ThemePreview(string theme)
     {

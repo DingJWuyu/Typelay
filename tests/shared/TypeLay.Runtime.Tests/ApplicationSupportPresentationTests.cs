@@ -769,7 +769,7 @@ public sealed class ApplicationSupportPresentationTests
         ]);
         var row = view.Rows.Single(row => row.Id == "desktop-text");
         Assert.Equal(new ApplicationSupportCapabilities(), row.Capabilities);
-        Assert.Contains("常规设置", row.ReasonText);
+        Assert.Contains("通用设置", row.ReasonText);
         Assert.Contains("启用", row.ReasonText);
     }
 

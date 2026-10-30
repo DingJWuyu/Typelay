@@ -1,5 +1,6 @@
 /* Shared host operations/observations for real GTK3/GTK4 source glossary tests.
- * These touch only fixture widgets; no provider authority or IME state injection. */
+ * Commands touch fixture widgets. The synchronous More reentry case wraps the
+ * real provider observation without altering its return value or IME state. */
 static guint glossary_command, glossary_insertions, glossary_deletions;
 static gboolean glossary_multiline;
 static void glossary_inserted(GtkTextBuffer *buffer, GtkTextIter *position, gchar *text, gint length, gpointer data) {
@@ -19,8 +20,8 @@ static char *glossary_body(GtkTextBuffer *buffer) {
     gtk_text_buffer_get_bounds(buffer, &start, &end);
     return gtk_text_buffer_get_text(buffer, &start, &end, TRUE);
 }
-#if GTK_MAJOR_VERSION == 3
 static GtkWidget *saved_more_button;
+#if GTK_MAJOR_VERSION == 3
 /* event-after is emitted after the specific button handler, even when that
  * handler consumes the event. This observes only the real fixture TextView;
  * it neither consumes input nor changes focus, selection or provider state. */
@@ -68,6 +69,79 @@ static void glossary_find_child(GtkWidget *widget, gpointer data) {
     if (!search[1]) search[1] = find_named_widget(widget, search[0]);
 }
 #endif
+/* Synchronous fixture-only dependency reentry: delegate the real provider,
+ * never manufacture Clear. Install/restore in one public button command; no
+ * timeout or later observation may consume the selected probe. */
+typedef struct {
+    GtkIMContext *context;
+    GtkWidget *client, *trigger;
+    const TlFcitxCapabilityV1 *original;
+    TlFcitxCapabilityV1 wrapper;
+    guint probes, fire_at;
+    gboolean inspecting, armed, fired, refuse;
+} MoreProbeReentry;
+static MoreProbeReentry *more_probe_active;
+static guint more_probe_count, more_probe_expected, more_probe_before, more_probe_after;
+static gboolean more_probe_fired, more_probe_visible;
+static gboolean more_probe_inspect(GtkIMContext *context, GtkWidget *widget, TlFcitxStateV1 *state) {
+    MoreProbeReentry *probe = more_probe_active;
+    if (!probe) return FALSE;
+    if (probe->inspecting) return probe->original->inspect(context, widget, state);
+    probe->inspecting = TRUE;
+    gboolean valid = probe->original->inspect(context, widget, state);
+    probe->inspecting = FALSE;
+    probe->probes++;
+    if (probe->armed && probe->probes == probe->fire_at && valid && ime_clear(state)
+        && context == probe->context && widget == probe->client
+        && g_object_get_data(G_OBJECT(context), TL_FCITX_CAPABILITY_V1) == &probe->wrapper) {
+        probe->armed = FALSE;
+        probe->fired = TRUE;
+        if (probe->refuse) return FALSE; /* Withdraw, never manufacture Clear. */
+        /* Restore before public close/reopen so reentrant observers always use
+         * the real provider. These buttons do not focus another input widget. */
+        g_object_set_data(G_OBJECT(context), TL_FCITX_CAPABILITY_V1, (gpointer)probe->original);
+        g_signal_emit_by_name(probe->trigger, "clicked");
+        g_signal_emit_by_name(probe->trigger, "clicked");
+    }
+    return valid;
+}
+static void probe_more_action(const char *name, guint fire_at, gboolean refuse) {
+    GtkWidget *button = find_named_widget(report_window, name);
+    GtkWidget *trigger = find_named_widget(report_window, "typelay-more");
+    GtkWidget *popup = find_named_widget(report_window, "typelay-more-popup");
+    GtkWidget *client = glossary_multiline ? report_multiline : entry_client(report_first);
+    GtkIMContext *context = g_object_get_data(G_OBJECT(client), TL_FCITX_CONTEXT_V1);
+    if (more_probe_active || !button || !trigger || !popup || !GTK_IS_BUTTON(button)
+        || !GTK_IS_BUTTON(trigger) || !gtk_widget_get_mapped(button)
+        || !GTK_IS_IM_CONTEXT(context)) g_error("Expected current More and real source IM context");
+    const TlFcitxCapabilityV1 *cap = g_object_get_data(G_OBJECT(context), TL_FCITX_CAPABILITY_V1);
+    if (!cap || cap->size != sizeof(*cap) || cap->version != TL_FCITX_ABI_V1 || !cap->inspect)
+        g_error("Expected real source IM capability");
+    g_object_ref(button); g_object_ref(popup); g_object_ref(trigger);
+    g_object_ref(client); g_object_ref(context);
+    MoreProbeReentry probe = {
+        .context = context, .client = client, .trigger = trigger, .original = cap,
+        .wrapper = *cap, .fire_at = fire_at, .armed = TRUE, .refuse = refuse
+    };
+    probe.wrapper.inspect = more_probe_inspect;
+    more_probe_before = language_instance(G_OBJECT(popup));
+    more_probe_active = &probe;
+    g_object_set_data(G_OBJECT(context), TL_FCITX_CAPABILITY_V1, &probe.wrapper);
+    g_signal_emit_by_name(button, "clicked");
+    if (g_object_get_data(G_OBJECT(context), TL_FCITX_CAPABILITY_V1) == &probe.wrapper)
+        g_object_set_data(G_OBJECT(context), TL_FCITX_CAPABILITY_V1, (gpointer)cap);
+    more_probe_active = NULL;
+    GtkWidget *replacement = find_named_widget(report_window, "typelay-more-popup");
+    more_probe_count = probe.probes; more_probe_expected = probe.fire_at;
+    more_probe_fired = probe.fired;
+    more_probe_after = replacement ? language_instance(G_OBJECT(replacement)) : 0;
+    more_probe_visible = replacement && gtk_widget_get_visible(replacement);
+    g_object_unref(context); g_object_unref(client); g_object_unref(trigger);
+    g_object_unref(popup); g_object_unref(button);
+    if (!probe.fired || probe.probes != probe.fire_at)
+        g_error("The selected real Clear More probe did not execute");
+}
+
 static void glossary_host_command(void) {
     const char *path = g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND");
     char *body = NULL;
@@ -87,7 +161,12 @@ static void glossary_host_command(void) {
         } else if (g_str_equal(action, "prepare-entry")) {
             glossary_multiline = FALSE;
             gtk_editable_set_position(GTK_EDITABLE(report_first), -1);
-#if GTK_MAJOR_VERSION == 3
+        } else if (g_str_equal(action, "probe-more-reopen")) {
+            probe_more_action("typelay-glossary-add", 2u, FALSE);
+        } else if (g_str_equal(action, "probe-more-refused")) {
+            probe_more_action("typelay-regenerate", 1u, TRUE);
+        } else if (g_str_equal(action, "probe-more-action-reopen")) {
+            probe_more_action("typelay-regenerate", 1u, FALSE);
         } else if (g_str_equal(action, "retain-more-button")) {
             GtkWidget *button = find_named_widget(report_window, "typelay-glossary-add");
             if (!button || !GTK_IS_BUTTON(button) || !gtk_widget_get_mapped(button))
@@ -98,10 +177,15 @@ static void glossary_host_command(void) {
                 g_error("Expected a retired more-menu button");
             /* Public widget activation is deliberately NOT pointer evidence.
              * This negative checks a retained old instance cannot act anew. */
+#if GTK_MAJOR_VERSION == 3
             gtk_button_clicked(GTK_BUTTON(saved_more_button));
+#else
+            g_signal_emit_by_name(saved_more_button, "clicked");
+#endif
             g_clear_object(&saved_more_button);
         } else if (g_str_equal(action, "capture-more")) {
             GtkWidget *popup = find_named_widget(report_window, "typelay-more-popup");
+#if GTK_MAJOR_VERSION == 3
             if (!popup || !gtk_widget_is_drawable(popup)) g_error("Expected a mapped more popup");
             gint width = gtk_widget_get_allocated_width(popup), height = gtk_widget_get_allocated_height(popup);
             if (width <= 0 || height <= 0) g_error("More popup allocation missing");
@@ -115,6 +199,24 @@ static void glossary_host_command(void) {
             cairo_status_t status = cairo_surface_write_to_png(surface, image);
             cairo_surface_destroy(surface); g_free(image);
             if (status != CAIRO_STATUS_SUCCESS) g_error("Cannot capture the current more popup");
+#else
+            if (!popup || !gtk_widget_get_mapped(popup)) g_error("Expected a mapped more popup");
+            gint width = gtk_widget_get_width(popup), height = gtk_widget_get_height(popup);
+            if (width <= 0 || height <= 0) g_error("More popup allocation missing");
+            GdkPaintable *paintable = gtk_widget_paintable_new(popup);
+            GtkSnapshot *snapshot = gtk_snapshot_new();
+            /* Public snapshot of this real mapped widget, not a compositor
+             * screenshot or proof of physical input delivery. */
+            gdk_paintable_snapshot(paintable, GDK_SNAPSHOT(snapshot), width, height);
+            GskRenderNode *node = gtk_snapshot_free_to_node(snapshot);
+            GskRenderer *renderer = gtk_native_get_renderer(gtk_widget_get_native(popup));
+            if (!node || !renderer) g_error("More popup snapshot missing");
+            GdkTexture *texture = gsk_renderer_render_texture(renderer, node, NULL);
+            char *image = g_strdup_printf("%s.more.png", path);
+            gboolean saved = texture && gdk_texture_save_to_png(texture, image);
+            g_free(image); g_clear_object(&texture);
+            gsk_render_node_unref(node); g_object_unref(paintable);
+            if (!saved) g_error("Cannot capture the current more popup");
 #endif
         } else if (g_str_equal(action, "reset-inactive-term")) {
             GtkWidget *term = find_named_widget(report_window, "typelay-glossary-source");
@@ -177,6 +279,14 @@ static void glossary_host_command(void) {
 }
 static void glossary_report(JsonBuilder *builder) {
     if (!g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND")) return;
+    json_builder_set_member_name(builder, "moreProbeReentry"); json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "probes"); json_builder_add_int_value(builder, more_probe_count);
+    json_builder_set_member_name(builder, "expected"); json_builder_add_int_value(builder, more_probe_expected);
+    json_builder_set_member_name(builder, "fired"); json_builder_add_boolean_value(builder, more_probe_fired);
+    json_builder_set_member_name(builder, "before"); json_builder_add_int_value(builder, more_probe_before);
+    json_builder_set_member_name(builder, "after"); json_builder_add_int_value(builder, more_probe_after);
+    json_builder_set_member_name(builder, "visible"); json_builder_add_boolean_value(builder, more_probe_visible);
+    json_builder_end_object(builder);
     json_builder_set_member_name(builder, "glossaryCommand");
     json_builder_add_int_value(builder, glossary_command);
     json_builder_set_member_name(builder, "glossarySource");

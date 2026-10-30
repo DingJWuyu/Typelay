@@ -295,7 +295,7 @@ internal static partial class HyPackageCheck
                 scene.Stage = "await-public-model-ready";
                 await WaitAsync(async () => (await PublicStatusAsync(settings, ct)).StartsWith("本地翻译已就绪", StringComparison.Ordinal), ct);
                 scene.Stage = "navigate-public-general";
-                await NavigateAsync(settings, "general", "常规", ct);
+                await NavigateAsync(settings, "general", "通用", ct);
                 await EnableNotepadWriteback(settings, app.Process.Id, stage => scene.Stage = stage, ct);
                 scene.Stage = "await-public-writeback-setting-saved";
                 await WaitAsync(() => Task.FromResult(ReadSettings(data)?.ExperimentalWriteback == true), ct);
@@ -359,7 +359,7 @@ internal static partial class HyPackageCheck
                 scene.Stage = "set-public-on-demand-mode";
                 await ShowNotepadSettings(app!.Process, scene, ct);
                 settings = await SettingsAsync(app.Process, ct);
-                await NavigateAsync(settings!, "general", "常规", ct);
+                await NavigateAsync(settings!, "general", "通用", ct);
                 await UiAsync(() =>
                 {
                     var choice = Find(settings!, AutomationElement.NameProperty, "工作模式 按需", ControlType.RadioButton);

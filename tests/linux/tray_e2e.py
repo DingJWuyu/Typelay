@@ -112,10 +112,14 @@ def main():
             await asyncio.wait_for(notice_owned.wait(), 3)
             directory = Path(temporary.name)
             (directory / "config").mkdir()
+            # Real persisted management entries, not capabilities or fake Ready.
+            # A long list must not push the existing connection entry offscreen.
+            managed_names = [f"typelay-layout-entry-{index:02}" for index in range(24)]
             (directory / "config/settings.json").write_text(
                 json.dumps(
                     {
                         "UiLanguage": "zh-CN",
+                        "ManagedApplications": managed_names,
                         "Styles": {
                             "Default": "formal",
                             "Applications": {"editor": "natural", "mail": "formal"},
@@ -611,6 +615,9 @@ def main():
             assert preparation.preparation_details.get_visible()
             assert preparation.next_button.get_visible()
             assert preparation.next_button.get_sensitive()
+            assert set(managed_names).issubset(settings_surface.application_controls), (
+                "the real saved long application list was not rendered"
+            )
 
             def entry_inside_viewports():
                 entry = preparation.next_button

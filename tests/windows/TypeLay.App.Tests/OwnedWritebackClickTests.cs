@@ -20,7 +20,7 @@ public sealed class OwnedWritebackClickTests(WpfDesktopFixture desktop)
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(10));
-            var checkbox = new CheckBox { Content = "开发版实验：允许 Tab 写回", Margin = new Thickness(20), IsChecked = alreadyOn };
+            var checkbox = new CheckBox { Content = "原生输入框替换", Margin = new Thickness(20), IsChecked = alreadyOn };
             var settings = new Window
             {
                 Title = "TypeLay owned checkbox test",

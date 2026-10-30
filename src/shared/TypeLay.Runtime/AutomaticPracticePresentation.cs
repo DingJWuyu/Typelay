@@ -31,7 +31,7 @@ public static class AutomaticPracticePresentation
         bool changeMode = settings.Mode != WorkMode.Automatic;
         bool sameLanguage = settings.Source != "auto" && settings.Source == settings.Target;
         bool english = settings.Source == "en" || settings.Source == "auto" && settings.Target == "zh";
-        string notice = !settings.Enabled ? "TypeLay 已暂停，请在常规设置启用后练习。"
+        string notice = !settings.Enabled ? "TypeLay 已暂停，请在通用设置启用后练习。"
             : sameLanguage ? "源语言和目标语言相同，请在语言设置选择不同的目标语言后练习。"
             : changeMode ? "当前为按需模式。开始完整练习前，需要确认切换为自动模式。" : "";
         string state = progress is null ? "开始练习后，这里会显示进度。"
@@ -49,9 +49,9 @@ public static class AutomaticPracticePresentation
             $"2. 输入新的原文，等待译文后进入编辑并实际修改；第一次 {settings.AcceptShortcut} 只回源，再按一次才接受。",
             "接受资格仅限本次受管练习输入框，不启用全局实验写回。每次接受仍需输入法、焦点、字段和新鲜观察通过校验。关闭、重启、离开焦点家族、断连、暂停或更改设置都会结束本次资格。重新开始保留输入。",
             changeMode ? "切换为自动模式并开始练习" : "开始完整练习",
-            changeMode ? "将为所有应用切换为自动翻译。关闭练习不会自动恢复；需要时可在常规设置改回按需模式。" : null,
+            changeMode ? "将为所有应用切换为自动翻译。关闭练习不会自动恢复；需要时可在通用设置改回按需模式。" : null,
             "取消", "关闭练习", notice, sameLanguage,
-            "练习窗口未能打开，请重新启动 TypeLay 后再试。当前工作模式已保留，可在常规设置中查看或更改。",
+            "练习窗口未能打开，请重新启动 TypeLay 后再试。当前工作模式已保留，可在通用设置中查看或更改。",
             state, "重新开始练习", progress?.PreviewCompleted == true, progress?.AcceptanceCompleted == true,
             progress?.EditingStarted == true, progress?.DraftChanged == true, progress?.ReturnedToSource == true,
             progress?.EditedAcceptanceCompleted == true, progress?.Completed == true);

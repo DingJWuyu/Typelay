@@ -294,7 +294,7 @@ public sealed partial class SettingsRenderingTests(WpfDesktopFixture desktop, IT
                             window.ShowPage();
                             window.UpdateLayout();
                             AssertReadableSettingsText(window);
-                            AssertReadableSelectedNavigation(window, "general", "常规");
+                            AssertReadableSelectedNavigation(window, "general", "通用");
                             AssertWithinSettingsViewport(window, SettingToggle(window, "启用 TypeLay"));
                             foreach (var mode in Descendants(window).OfType<RadioButton>())
                                 AssertWithinSettingsViewport(window, mode);
@@ -335,7 +335,7 @@ public sealed partial class SettingsRenderingTests(WpfDesktopFixture desktop, IT
                             AssertReadableSettingsText(window);
                             AssertReadableSelectedNavigation(window, "language", "语言与风格");
                             Render(window, $"settings-language-{theme}-{width}.png");
-                            foreach (var (page, title) in new[] { ("glossary", "术语表"), ("model", "本地模型"), ("about", "关于与隐私") })
+                            foreach (var (page, title) in new[] { ("glossary", "术语表"), ("model", "本地模型"), ("about", "关于") })
                             {
                                 window.ShowPage(page);
                                 window.UpdateLayout();
@@ -397,7 +397,7 @@ public sealed partial class SettingsRenderingTests(WpfDesktopFixture desktop, IT
                 window.UpdateLayout();
                 int saved = 0;
                 settings.Changed += () => saved++;
-                foreach (string name in new[] { "启用 TypeLay", "开发版实验：允许 Tab 写回", "登录 Windows 后自动启动" })
+                foreach (string name in new[] { "启用 TypeLay", "原生输入框替换", "登录时启动" })
                 {
                     var toggle = SettingToggle(window, name);
                     var peer = Assert.IsType<CheckBoxAutomationPeer>(UIElementAutomationPeer.CreatePeerForElement(toggle));
@@ -485,7 +485,7 @@ public sealed partial class SettingsRenderingTests(WpfDesktopFixture desktop, IT
                 AssertWithinSettingsViewport(window, label);
             }
             AssertReadableSettingsText(window);
-            AssertReadableSelectedNavigation(window, "general", "常规");
+            AssertReadableSelectedNavigation(window, "general", "通用");
         }
         finally
         {

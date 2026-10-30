@@ -15,10 +15,15 @@ internal sealed partial class OverlayWindow
     private string? _regenerateDraft;
     private SessionState _regenerateState;
 
-    private void RequestRegenerate(SessionViewToken? token)
+    private void RequestRegenerate(SessionViewToken? token, SourceRegenerateConfirmation? sourceOpening = null,
+        MoreContextMenu? sourceMenu = null, long queuedAt = 0)
     {
         if (token is null || _viewContext?.Token != token || EditingComposition || _glossary is not null)
+        {
+            if (sourceOpening is not null)
+                _sourceRegenerateController?.CancelSourceRegenerateConfirmation(sourceOpening);
             return;
+        }
         if (_sessionState is not (SessionState.EditingTranslation or SessionState.EditedTranslationPending or SessionState.ReturningToSource))
         {
             RegenerateRequested?.Invoke();
@@ -39,7 +44,9 @@ internal sealed partial class OverlayWindow
         {
             if (!ReferenceEquals(_regenerateConfirmation, confirmation))
                 return;
-            if (_regenerateKeyboard)
+            if (_sourceRegenerateOpening is not null)
+                CompleteSourceRegenerate(confirmation, replace: false);
+            else if (_regenerateKeyboard)
                 CompleteKeyboardRegenerate(confirmation, replace: false);
             else
                 DismissRegenerateConfirmation(reposition: true);
@@ -50,6 +57,11 @@ internal sealed partial class OverlayWindow
             // confirmation that happens to share the same session token.
             if (!ReferenceEquals(_regenerateConfirmation, confirmation))
                 return;
+            if (_sourceRegenerateOpening is not null)
+            {
+                CompleteSourceRegenerate(confirmation, replace: true);
+                return;
+            }
             if (_regenerateKeyboard)
             {
                 CompleteKeyboardRegenerate(confirmation, replace: true);
@@ -67,8 +79,8 @@ internal sealed partial class OverlayWindow
         AutomationProperties.SetAutomationId(replace, "RegenerateReplace");
         foreach (var button in new[] { keep, replace })
         {
-            // Source-focused and owned paths keep their existing focus fence.
-            // Only the ordinary-editor configuration below enables local button focus.
+            // Owned paths retain their exact-editor fence. Ordinary editor
+            // and source-confirmation paths enable only their own two buttons.
             button.Focusable = false;
             button.IsTabStop = false;
             button.Padding = new(12, 5, 12, 5);
@@ -83,7 +95,10 @@ internal sealed partial class OverlayWindow
         _surface.Children.Add(_regeneratePrompt);
         if (_sourceAnchor is { } source)
             Position(source.Target, source.Bounds, false, false);
-        ConfigureRegenerateKeyboard(confirmation, keep, replace);
+        if (sourceOpening is not null && sourceMenu is not null)
+            ConfigureSourceRegenerateFocus(confirmation, sourceOpening, sourceMenu, queuedAt, keep, replace);
+        else
+            ConfigureRegenerateKeyboard(confirmation, keep, replace);
     }
 
     private void DismissRegenerateConfirmation(bool reposition)
@@ -98,6 +113,7 @@ internal sealed partial class OverlayWindow
         _regenerateToken = null;
         _regenerateDraft = null;
         _surface.Children.Remove(previous);
+        RetireSourceRegenerate();
         if (reposition && IsVisible && _sourceAnchor is { } source)
             Position(source.Target, source.Bounds, false, false);
     }

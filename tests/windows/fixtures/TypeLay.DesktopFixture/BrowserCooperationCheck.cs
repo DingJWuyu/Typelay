@@ -482,7 +482,10 @@ internal static partial class BrowserCooperationCheck
                     {
                         await cdp.ClickSourceAsync(ct);
                     }
-                    finally { glossary.GlossarySourceClick = cdp.LastSourceClickObservation; }
+                    finally
+                    {
+                        glossary.GlossarySourceClick = cdp.LastSourceClickObservation;
+                    }
                     glossary.Stage = "new-source-type";
                     SendChord([0x11, 0x23], cleanupErrors); // Ctrl+End in the actual source.
                     BrowserWindows.TypeText("!");

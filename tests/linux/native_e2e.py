@@ -7,6 +7,7 @@ import math
 import os
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import time
@@ -194,13 +195,34 @@ def glossary_motion_at_fixed_point(
         local[1] + surface["nativeY"] - surface["transformY"],
     )
 
-    def same_position(value, expected):
-        return all(
-            type(value.get(key)) in (int, float)
-            and math.isfinite(value[key])
-            and math.isclose(value[key], coordinate, rel_tol=0, abs_tol=0.000001)
-            for key, coordinate in zip(("x", "y"), expected)
-        )
+    def same_position(value, expected, *, graphene=False):
+        for key, coordinate in zip(("x", "y"), expected):
+            actual = value.get(key)
+            if type(actual) not in (int, float) or not math.isfinite(actual):
+                return False
+            if not graphene:
+                if not math.isclose(actual, coordinate, rel_tol=0, abs_tol=0.000001):
+                    return False
+                continue
+            # GTK's translate_event_coordinates uses graphene_point_t before
+            # emitting the double-valued motion signal. Compare only this
+            # widget-local conversion to the adjacent binary32 values, not a
+            # pixel tolerance; native device and physical X coordinates retain
+            # their independent strict comparisons. The original point is
+            # inside the widget, so its local coordinates are nonnegative.
+            if not math.isfinite(coordinate) or coordinate < 0:
+                return False
+            try:
+                bits = struct.unpack("!I", struct.pack("!f", coordinate))[0]
+            except OverflowError:
+                return False
+            if bits >= 0x7F7FFFFF:
+                return False
+            lower = struct.unpack("!f", struct.pack("!I", bits - 1))[0] if bits else -(2**-149)
+            upper = struct.unpack("!f", struct.pack("!I", bits + 1))[0]
+            if (upper - lower) * surface["scale"] >= 1 or not lower <= actual <= upper:
+                return False
+        return True
 
     if not same_position(device, native):
         return False
@@ -271,7 +293,7 @@ def glossary_motion_at_fixed_point(
             or current.get("eventSurfaceInstance") != surface["surfaceInstance"]
             or current.get("nativeInstance") != device["nativeInstance"]
             or current.get("eventNativeInstance") != device["nativeInstance"]
-            or not same_position(current, local)
+            or not same_position(current, local, graphene=True)
         ):
             return False
     return True
@@ -1243,15 +1265,12 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             )
                             assert control["enabled"]
                             while toolkit == "gtk4":
-                                # Form controls and the menu trigger are outside the menu viewport.
+                                # The independent More popup and form controls do not
+                                # belong to the direction menu's scroll viewport.
                                 if name not in (
                                     "typelay-source-language",
                                     "typelay-target-language",
                                     "typelay-apply-languages",
-                                    "typelay-glossary-add",
-                                    "typelay-style-inherit",
-                                    "typelay-style-natural",
-                                    "typelay-style-formal",
                                 ):
                                     break
                                 menu, direction = observe(
@@ -1326,9 +1345,7 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             )
 
                         def open_more():
-                            click("typelay-more" if toolkit == "gtk3" else "typelay-menu-trigger")
-                            if toolkit != "gtk3":
-                                return
+                            click("typelay-more")
                             baseline = clicks[-1]["geometryReadiness"]["last"]["layout"][
                                 "candidate"
                             ]
@@ -1353,6 +1370,12 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 and not actual["overlayControls"][name]["enabled"]
                                 for name in ("typelay-style-concise", "typelay-style-casual")
                             )
+                            if toolkit == "gtk4":
+                                popup = actual["overlayControls"]["typelay-more-popup"]
+                                assert popup["autohide"] is False and popup["hasArrow"] is False
+                                assert not actual["overlayControls"]["typelay-language-menu"][
+                                    "visible"
+                                ]
                             unchanged()
 
                         entry = {
@@ -1387,52 +1410,51 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                             )["visible"]
                         open_more()
                         if check_inherit:
-                            if toolkit == "gtk3":
-                                previous = state()["overlayControls"]["typelay-glossary-add"][
-                                    "instance"
-                                ]
-                                host("capture-more")
-                                host("retain-more-button")
-                                execute("xdotool", "key", "Escape")
-                                observe(
-                                    lambda value: not value.get("overlayControls", {})
-                                    .get("typelay-more-popup", {})
-                                    .get("visible"),
-                                    "Escape retired only the current more popup",
-                                    require_visible=True,
-                                )
-                                assert not events("escape")
-                                open_more()
-                                assert (
-                                    state()["overlayControls"]["typelay-glossary-add"]["instance"]
-                                    != previous
-                                )
-                                host("activate-retired-more")
-                                assert not events("sessionGlossaryBegin")
-                                unchanged()
-                                host("retain-more-button")
-                                assert call(
-                                    "overlay-render",
-                                    {
-                                        **base,
-                                        "expiresAtMs": now_ms() + 800,
-                                        "view": {**view, "status": "Updated preview"},
-                                    },
-                                )["visible"]
-                                observe(
-                                    lambda value: not value.get("overlayControls", {})
-                                    .get("typelay-more-popup", {})
-                                    .get("visible"),
-                                    "new rendered view retired the old more opening",
-                                    require_visible=True,
-                                )
-                                host("activate-retired-more")
-                                assert not events("sessionGlossaryBegin")
-                                assert call(
-                                    "overlay-render",
-                                    {**base, "expiresAtMs": now_ms() + 800, "view": view},
-                                )["visible"]
-                                open_more()
+                            previous = state()["overlayControls"]["typelay-glossary-add"][
+                                "instance"
+                            ]
+                            host("capture-more")
+                            host("retain-more-button")
+                            execute("xdotool", "key", "Escape")
+                            observe(
+                                lambda value: not value.get("overlayControls", {})
+                                .get("typelay-more-popup", {})
+                                .get("visible"),
+                                "Escape retired only the current more popup",
+                                require_visible=True,
+                            )
+                            assert not events("escape")
+                            open_more()
+                            assert (
+                                state()["overlayControls"]["typelay-glossary-add"]["instance"]
+                                != previous
+                            )
+                            host("activate-retired-more")
+                            assert not events("sessionGlossaryBegin")
+                            unchanged()
+                            host("retain-more-button")
+                            assert call(
+                                "overlay-render",
+                                {
+                                    **base,
+                                    "expiresAtMs": now_ms() + 800,
+                                    "view": {**view, "status": "Updated preview"},
+                                },
+                            )["visible"]
+                            observe(
+                                lambda value: not value.get("overlayControls", {})
+                                .get("typelay-more-popup", {})
+                                .get("visible"),
+                                "new rendered view retired the old more opening",
+                                require_visible=True,
+                            )
+                            host("activate-retired-more")
+                            assert not events("sessionGlossaryBegin")
+                            assert call(
+                                "overlay-render",
+                                {**base, "expiresAtMs": now_ms() + 800, "view": view},
+                            )["visible"]
+                            open_more()
                             actual = observe(
                                 lambda value: value.get("overlayControls", {})
                                 .get("typelay-style-inherit", {})
@@ -1470,6 +1492,45 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                                 {**base, "expiresAtMs": now_ms() + 800, "view": view},
                             )["visible"]
                             open_more()
+                            if toolkit == "gtk3":
+                                for command_name, replaced in (
+                                    ("probe-more-refused", False),
+                                    ("probe-more-action-reopen", True),
+                                ):
+                                    host(command_name)
+                                    boundary = state()["moreProbeReentry"]
+                                    assert boundary["fired"] is True
+                                    assert boundary["probes"] == boundary["expected"] == 1
+                                    assert boundary["before"] > 0 and boundary["after"] > 0
+                                    assert (boundary["before"] != boundary["after"]) == replaced
+                                    assert boundary["visible"] is True
+                                    assert not any(
+                                        events(operation)
+                                        for operation in (
+                                            "regenerate",
+                                            "exclude",
+                                            "escape",
+                                            "settings",
+                                        )
+                                    )
+                                    unchanged()
+                            # One synchronous real-provider callback closes A and
+                            # opens B without changing the source/view. This is a
+                            # controlled dependency boundary, not physical input.
+                            host("probe-more-reopen")
+                            reopened = state()["moreProbeReentry"]
+                            assert reopened["fired"] is True
+                            assert reopened["probes"] == reopened["expected"] == 2
+                            assert 0 < reopened["before"] != reopened["after"] > 0
+                            assert reopened["visible"] is True
+                            assert not events("sessionGlossaryBegin")
+                            unchanged()
+                            assert (
+                                state()["overlayControls"]["typelay-more-popup"]["instance"]
+                                == reopened["after"]
+                            )
+                        # The replacement B is then activated by the original
+                        # fixed-point physical click, not by the dependency probe.
                         click("typelay-glossary-add")
                         observe(lambda _: events("sessionGlossaryBegin"), "explicit glossary click")
                         if finish in ("save", "pointer-save", "cancel"):

@@ -725,6 +725,7 @@ def check_preview_colors(client, source, generation, state, initial, evidence):
                     "fontFamily": candidate.get("fontFamily") if candidate else None,
                     "fontPixels": candidate.get("fontPixels") if candidate else None,
                     "layoutGeometry": candidate.get("layoutGeometry") if candidate else None,
+                    "naturalFrames": candidate.get("naturalFrames") if candidate else None,
                 }
                 if candidate and value.get("observedAtMs", 0) > rendered_at:
                     phase.setdefault("firstLiveObservation", phase["lastObservation"])
@@ -2262,9 +2263,38 @@ def expand_hover_current(actual, evidence, dimensions, now, instance, point, mov
 
 
 def check_expand(client, source, generation, runtime, state, initial, nested, dimensions, evidence):
-    assert render_preview(client, source, generation, 1, "fixture exit", evidence=evidence)[
-        "visible"
-    ]
+    # Pre-register two presentation states of this captured source. A short
+    # preview must not expose Expand; the reentry action needs a genuinely long
+    # preview. Neither stage retries, captures again, or renews an expired view.
+    short = evidence["shortPreview"] = {}
+    assert render_preview(client, source, generation, 1, "fixture exit", evidence=short)["visible"]
+
+    def short_hidden():
+        assert now_ms() <= short["expiresAtMs"], "short preview expired before hidden observation"
+        actual = state()
+        assert now_ms() <= short["expiresAtMs"], "short preview expired during hidden observation"
+        assert actual["observedAtMs"] <= short["expiresAtMs"]
+        control = actual.get("overlayControls", {}).get("fixture-expand")
+        candidate = actual.get("candidate")
+        if (
+            actual.get("observedAtMs", 0) <= short["renderReturnedAtMonoMs"]
+            or not candidate
+            or candidate.get("text") != "Read-only fixture preview."
+            or not control
+        ):
+            return None
+        assert control["visible"] is False, "short preview exposed Expand"
+        assert actual["focus"] == "fixture-first"
+        assert actual["first"] == initial["first"] and actual["second"] == initial["second"]
+        return actual
+
+    hidden = wait_for(short_hidden, "current short preview/hidden Expand not observed")
+    short["observedAtMonoMs"] = hidden["observedAtMs"]
+    short["expandVisible"] = hidden["overlayControls"]["fixture-expand"]["visible"]
+    long_text = "\n".join(["A longer translated line for the expand callback."] * 8)
+    assert render_preview(
+        client, source, generation, 2, "fixture exit", evidence=evidence, text=long_text
+    )["visible"]
     ready = runtime / "expand-ready"
 
     def allocated_button():
@@ -2329,7 +2359,7 @@ def check_expand(client, source, generation, runtime, state, initial, nested, di
     # Retained editor ownership legitimately skips a new IME RPC while the
     # source observation is unchanged. Same generation, newer transport view.
     assert render_preview(
-        client, source, generation, 2, "fixture exit", view_state="ReturningToSource"
+        client, source, generation, 3, "fixture exit", view_state="ReturningToSource"
     )["visible"]
     (runtime / "release").touch()
     wait_for((runtime / "expand-returned").exists, "expand notify did not return")

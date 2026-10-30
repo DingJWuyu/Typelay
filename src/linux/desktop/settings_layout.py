@@ -599,12 +599,14 @@ def build(
     support.box.remove(connection_heading)
     page = owner.page_boxes["application-support"]
     page.remove(support.box)
-    page.pack_start(connection_heading, False, False, 0)
     from applications import ApplicationsPane
 
     owner.applications = ApplicationsPane(owner)
     page.pack_start(owner.applications.box, False, False, 0)
-    page.reorder_child(owner.applications.box, page.get_children().index(connection_heading))
+    # Keep the real next-connection action beside the two summaries, not
+    # below an unbounded management list. Reuse its existing callback/identity.
+    owner.applications.box.pack_start(connection_heading, False, False, 0)
+    owner.applications.box.reorder_child(connection_heading, 1)
     support.connection_cards = owner.applications.summary
     support.connection_cards_signature = None
     support.connection_details = Gtk.Expander(label="连接详情")

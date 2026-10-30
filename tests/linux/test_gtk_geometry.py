@@ -606,6 +606,42 @@ class GlossaryMotionGeometryTests(unittest.TestCase):
         self.assertFalse(self.control["pointerInside"])
         self.assertEqual(self.control["pointerEnteredAtMonoMs"], 0)
 
+    def test_graphene_single_precision_neighbor_is_not_a_different_pointer_pixel(self):
+        # Both phases traverse GTK's float32 coordinate conversion. CI557
+        # recorded exactly one ULP of error in each local component.
+        self.point = (943, 437)
+        self.pointer.update(X=953, Y=457)
+        self.control["pointerObservation"].update(x=219.0, y=339.0)
+        for dispatch in (
+            self.control["pointerDispatchObservation"],
+            self.control["pointerCaptureObservation"]["dispatch"],
+        ):
+            dispatch.update(x=198.99998474121094, y=16.000001907348633)
+        self.assertTrue(self.admitted())
+
+    def test_graphene_more_than_one_ulp_and_nonfinite_remain_rejected(self):
+        original = copy.deepcopy(self.control)
+        for phase in ("pointerDispatchObservation", "pointerCaptureObservation"):
+            for change in (
+                dict(x=232.0 - 2 * 2**-16),
+                dict(x=232.0 + 2 * 2**-16),
+                dict(y=11.0 - 2 * 2**-20),
+                dict(y=11.0 + 2 * 2**-20),
+                dict(x=float("inf")),
+                dict(y=float("nan")),
+            ):
+                with self.subTest(phase=phase, change=change):
+                    self.control = copy.deepcopy(original)
+                    dispatch = self.control[phase]
+                    if phase == "pointerCaptureObservation":
+                        dispatch = dispatch["dispatch"]
+                    dispatch.update(change)
+                    self.assertFalse(self.admitted())
+
+    def test_device_coordinates_do_not_inherit_graphene_tolerance(self):
+        self.control["pointerObservation"]["x"] += 2**-16
+        self.assertFalse(self.admitted())
+
     def test_old_foreign_or_unpositioned_dispatch_cannot_replace_crossing(self):
         original = copy.deepcopy(self.control)
         for phase in ("pointerDispatchObservation", "pointerCaptureObservation"):

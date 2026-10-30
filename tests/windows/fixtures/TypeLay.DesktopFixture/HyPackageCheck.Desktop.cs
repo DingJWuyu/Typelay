@@ -496,9 +496,25 @@ internal static partial class HyPackageCheck
                     var current = new ModelInstallationStore(data, worker).ReadInstallationState();
                     Require(current.CurrentPackages.Single().Directions.Select(item => item.Id).ToHashSet(StringComparer.Ordinal)
                         .SetEquals(expectedHyDirections), "cold-directions-changed");
-                    await NavigateAsync(settings!, "language", "语言与风格", ct);
-                    await WaitAsync(async () => await UiAsync(() => Find(settings!, AutomationElement.NameProperty,
-                        "当前模型支持 14 个翻译方向", ControlType.Text) is not null, ct), ct);
+                    // StartApplicationAsync leaves the public model page open.
+                    // Its accessible Ready status lists the actual loaded directions;
+                    // the language page's missing-model banner is hidden when ready.
+                    scene.Stage = "await-public-cold-directions";
+                    var expectedLabels = ModelCatalog.Packages.Packages.Single(package => package.Id == HyId)
+                        .Directions.Where(direction => expectedHyDirections.Contains(direction.Id, StringComparer.Ordinal))
+                        .Select(direction => direction.SourceName + " → " + direction.TargetName)
+                        .ToHashSet(StringComparer.Ordinal);
+                    Require(expectedLabels.Count == 14, "cold-expected-directions-invalid");
+                    await WaitAsync(async () =>
+                    {
+                        const string prefix = "本地翻译已就绪 · ";
+                        string status = await PublicStatusAsync(settings!, ct);
+                        if (!status.StartsWith(prefix, StringComparison.Ordinal))
+                            return false;
+                        string[] labels = status[prefix.Length..].Split('、');
+                        return labels.Length == expectedLabels.Count
+                            && labels.ToHashSet(StringComparer.Ordinal).SetEquals(expectedLabels);
+                    }, ct);
                     scene.Facts = new
                     {
                         generation = current.Generation,

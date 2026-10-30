@@ -60,6 +60,8 @@ static struct {
     Target *target;
     GtkWidget *popover, *top, *card, *header, *language, *status, *scroll, *text;
     GtkWidget *body, *skeleton, *skeleton_short, *dot;
+    GtkWidget *more, *more_popup;
+    JsonObject *more_view;
     GtkWidget *footer, *hint, *actions, *expand, *menu, *source, *destination, *resume, *exit, *apply_languages;
     GtkWidget *style_label, *style_inherit, *style_natural, *style_formal, *alternative, *action_feedback, *glossary_action;
     GlossaryForm *glossary;
@@ -169,6 +171,26 @@ static void clear_translation_menu(void) {
     overlay.menu_target = overlay.menu_generation = NULL;
     overlay.menu_revision = overlay.menu_settings_revision = 0;
 }
+static void close_more(gboolean awaiting_glossary) {
+    GtkWidget *popup = overlay.more_popup;
+    JsonObject *view = overlay.more_view;
+    /* Retire this interaction before GTK destroy callbacks. A retained old
+     * button can never dispatch against a later opening's view or token. */
+    overlay.more_popup = NULL;
+    overlay.more_view = NULL;
+    overlay.style_label = overlay.style_inherit = overlay.style_natural = overlay.style_formal = NULL;
+    overlay.alternative = overlay.glossary_action = overlay.action_feedback = NULL;
+    if (!awaiting_glossary) {
+        overlay.pending_glossary = FALSE;
+        clear_translation_menu();
+    }
+    if (popup) {
+        gtk_popover_popdown(GTK_POPOVER(popup));
+        if (gtk_widget_get_parent(popup)) gtk_widget_unparent(popup);
+        g_object_unref(popup);
+    }
+    if (view) json_object_unref(view);
+}
 static void freeze_translation_menu(JsonObject *view) {
     overlay.pending_glossary = FALSE;
     clear_translation_menu();
@@ -211,22 +233,33 @@ static gboolean translation_actions_only(JsonObject *previous, JsonObject *next)
     json_object_unref(old_view); json_object_unref(new_view);
     return equal;
 }
+static void more_button_label(GtkWidget *button, const char *label) {
+    GtkWidget *child = g_object_get_data(G_OBJECT(button), "typelay-more-label");
+    const char *current = child ? gtk_label_get_text(GTK_LABEL(child)) : gtk_button_get_label(GTK_BUTTON(button));
+    if (g_strcmp0(current, label) == 0) return;
+    if (child) gtk_label_set_text(GTK_LABEL(child), label);
+    else gtk_button_set_label(GTK_BUTTON(button), label);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(button), GTK_ACCESSIBLE_PROPERTY_LABEL, label, -1);
+}
+static gboolean more_render_current(JsonObject *view, JsonObject *context, GtkWidget *popup) {
+    return translation_render_current(view, context) && overlay.more_popup == popup && overlay.more_view == view;
+}
 static gboolean render_translation_actions(JsonObject *view) {
+    if (!overlay.more_popup) return overlay.view == view;
+    GtkWidget *popup = g_object_ref(overlay.more_popup);
     JsonObject *state = translation_actions(view), *context = tl_object(view, "viewContext");
     if (state) json_object_ref(state);
     if (context) json_object_ref(context);
     const char *style = tl_string(state, "applicationStyle"), *feedback = text_or_empty(state, "feedback");
     gboolean released = boolean(state, "styleReleased"), current = translation_menu_current();
-    gboolean show_style = released || boolean(state, "canInheritStyle");
     gboolean change = current && released && boolean(state, "canChangeStyle");
     GtkWidget *widgets[] = {overlay.style_label, overlay.style_inherit, overlay.style_natural,
         overlay.style_formal, overlay.alternative, overlay.glossary_action, overlay.action_feedback};
-    const char *labels[] = {NULL, !style ? "✓ 继承" : "继承",
-        g_strcmp0(style, "Natural") == 0 ? "✓ 自然" : "自然",
-        g_strcmp0(style, "Formal") == 0 ? "✓ 正式" : "正式", "换种说法", "加入术语表", feedback};
-    gboolean visible[] = {show_style, show_style, show_style, show_style, boolean(state, "alternativeReleased"), state && json_object_has_member(state, "canOpenGlossary"), *feedback != '\0'};
+    const char *labels[] = {NULL, state && !style ? "✓ 继承" : "继承", "自然", "正式", "换种说法", "加入术语表", feedback};
+    gboolean visible[] = {TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, *feedback != '\0'};
     gboolean enabled[] = {TRUE, current && boolean(state, "canInheritStyle"), change, change,
-        current && boolean(state, "canRequestAlternative"), current && boolean(state, "canOpenGlossary"), TRUE};
+        current && boolean(state, "alternativeReleased") && boolean(state, "canRequestAlternative"),
+        current && boolean(state, "canOpenGlossary"), TRUE};
     const char *reasons[] = {NULL, tl_string(state, "inheritUnavailableReason"),
         tl_string(state, "styleUnavailableReason"), tl_string(state, "styleUnavailableReason"),
         tl_string(state, "alternativeUnavailableReason"), tl_string(state, "glossaryUnavailableReason"), NULL};
@@ -234,24 +267,37 @@ static gboolean render_translation_actions(JsonObject *view) {
      * stop immediately if a callback replaces this rendered view. */
     json_object_ref(view);
     for (guint index = 0; index < G_N_ELEMENTS(widgets); index++) g_object_ref(widgets[index]);
-    for (guint index = 0; index < G_N_ELEMENTS(widgets) && translation_render_current(view, context); index++) {
+    for (guint index = 0; index < G_N_ELEMENTS(widgets) && more_render_current(view, context, popup); index++) {
         GtkWidget *widget = widgets[index];
         if (labels[index]) {
-            if (GTK_IS_LABEL(widget)) gtk_label_set_text(GTK_LABEL(widget), labels[index]);
-            else gtk_button_set_label(GTK_BUTTON(widget), labels[index]);
+            const char *label = tl_overlay_ui(labels[index], overlay.english);
+            if (GTK_IS_LABEL(widget)) gtk_label_set_text(GTK_LABEL(widget), label);
+            else more_button_label(widget, label);
         }
-        if (!translation_render_current(view, context)) break;
+        if (!more_render_current(view, context, popup)) break;
         gtk_widget_set_sensitive(widget, enabled[index]);
-        if (!translation_render_current(view, context)) break;
-        gtk_widget_set_tooltip_text(widget, enabled[index] ? NULL : reasons[index]);
-        if (!translation_render_current(view, context)) break;
+        if (!more_render_current(view, context, popup)) break;
+        gtk_widget_set_tooltip_text(widget, enabled[index] ? NULL : reasons[index] ? reasons[index]
+            : overlay.english ? "Not available yet" : "暂不可用");
+        if (!more_render_current(view, context, popup)) break;
         gtk_widget_set_visible(widget, visible[index]);
     }
-    gboolean retained = translation_render_current(view, context);
+    gboolean retained = more_render_current(view, context, popup);
+    if (retained) {
+        GtkWidget *styles[] = {widgets[2], widgets[3]};
+        const char *names[] = {"Natural", "Formal"};
+        for (guint index = 0; index < G_N_ELEMENTS(styles) && more_render_current(view, context, popup); index++) {
+            const char *effective = tl_string(state, "effectiveStyle");
+            if (g_strcmp0(effective, names[index]) == 0) gtk_widget_add_css_class(styles[index], "selected");
+            else gtk_widget_remove_css_class(styles[index], "selected");
+        }
+        retained = more_render_current(view, context, popup);
+    }
     for (guint index = 0; index < G_N_ELEMENTS(widgets); index++) g_object_unref(widgets[index]);
     json_object_unref(view);
     if (context) json_object_unref(context);
     if (state) json_object_unref(state);
+    g_object_unref(popup);
     return retained;
 }
 static gboolean language_text(const char *text, glong maximum) {
@@ -633,6 +679,13 @@ static gboolean active(void) {
     return overlay.target && !overlay.target->dead && overlay.top
         && gtk_window_is_active(GTK_WINDOW(overlay.top));
 }
+static gboolean more_current(void) {
+    return overlay.more_popup && overlay.more_view && overlay.view == overlay.more_view
+        && active() && overlay.popover && gtk_widget_get_mapped(overlay.popover)
+        && !overlay.glossary && tl_now() <= overlay.expires
+        && tl_configuration_current(overlay.generation)
+        && tl_view_context_matches(overlay.target, overlay.view);
+}
 static void close_language_popups_outside(GtkWidget *widget, gboolean trigger_click) {
     if (widget) g_object_ref(widget);
     for (guint index = 0; index < 2; index++) {
@@ -664,7 +717,13 @@ static gboolean language_pointer_event(GtkEventControllerLegacy *controller, Gdk
     gtk_native_get_surface_transform(native, &offset_x, &offset_y);
     GtkWidget *receiver = gtk_widget_pick(GTK_WIDGET(native), x + offset_x, y + offset_y, GTK_PICK_DEFAULT);
     g_object_ref(controller);
+    if (receiver) g_object_ref(receiver);
+    if (overlay.more_popup && (!receiver || (receiver != overlay.more
+        && !gtk_widget_is_ancestor(receiver, overlay.more)
+        && receiver != overlay.more_popup && !gtk_widget_is_ancestor(receiver, overlay.more_popup))))
+        close_more(FALSE);
     close_language_popups_outside(receiver, TRUE);
+    if (receiver) g_object_unref(receiver);
     g_object_unref(controller);
     return FALSE; /* Preserve the original click and its destination. */
 }
@@ -1118,11 +1177,13 @@ static void glossary_close(gboolean restore, gboolean notify) {
     if (editor) g_object_unref(editor);
     glossary_unref(form);
 }
+static gboolean close_more_escape(void);
 gboolean tl_overlay_auxiliary_key(guint keyval, GdkModifierType modifiers) {
     /* Match the dispatcher's effective modifiers; lock states are not chords. */
     modifiers &= GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_ALT_MASK
         | GDK_SUPER_MASK | GDK_HYPER_MASK | GDK_META_MASK;
     if (keyval != GDK_KEY_Escape || modifiers) return FALSE;
+    if (close_more_escape()) return TRUE;
     GlossaryForm *form = glossary_ref(overlay.glossary);
     gboolean consumed = FALSE;
     if (!glossary_current(form) || form->reported_ime != 1) goto done;
@@ -1413,6 +1474,24 @@ static gboolean glossary_origin_ready(void) {
     return g_strcmp0(tl_string(overlay.view, "state"), "EditingTranslation") == 0
         ? glossary_editor_ready() : glossary_source_ready();
 }
+static gboolean close_more_escape(void) {
+    if (!more_current() || !gtk_widget_get_mapped(overlay.more_popup)) return FALSE;
+    GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(overlay.top));
+    Target *target = overlay.target;
+    GtkWidget *popup = g_object_ref(overlay.more_popup);
+    JsonObject *view = json_object_ref(overlay.view);
+    gboolean clear = focus == overlay.text ? !overlay.composing && tl_widget_ime_clear(focus)
+        : target && !target->dead && focus == target->client && tl_focused() == target && tl_ime_clear(target);
+    /* The IM observation can dispatch callbacks. A retired opening consumes
+     * its original press without closing or dispatching against a replacement.
+     * Only an unchanged opening's unknown/preedit goes to the original IME. */
+    gboolean same_interaction = more_current() && overlay.more_popup == popup
+        && overlay.view == view && overlay.target == target
+        && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == focus;
+    if (same_interaction && clear) close_more(FALSE);
+    json_object_unref(view); g_object_unref(popup);
+    return !same_interaction || clear;
+}
 static void glossary_reject_open(Target *target, JsonObject *data, const char *id) {
     if (!target || !id || !*id || !tl_string(data, "generation")) return;
     JsonObject *event = json_object_new();
@@ -1658,6 +1737,7 @@ static void clear_layout_request(void) {
     if (popover) g_object_unref(popover);
 }
 static void hide_overlay(const char *reason) {
+    close_more(FALSE);
     clear_layout_request();
     /* Branch-local evidence only: no new focus/IME probe and no user text. */
     static unsigned trace_count;
@@ -1820,9 +1900,14 @@ static gboolean key_event(GtkEventControllerLegacy *controller, GdkEvent *event,
     return tl_dispatch_key(event);
 }
 static void translation_action_clicked(const char *operation, JsonObject *view) {
-    if (!active() || !gtk_widget_get_visible(overlay.menu) || !translation_menu_current()) return;
+    if (!more_current() || !gtk_widget_get_mapped(overlay.more_popup) || !translation_menu_current()) return;
+    GtkWidget *popup = g_object_ref(overlay.more_popup);
+    JsonObject *token = json_object_ref(overlay.menu_token);
+    JsonObject *context = json_object_ref(tl_object(view, "viewContext"));
     gboolean glossary = strcmp(operation, "glossary") == 0;
-    if (glossary && (!glossary_origin_ready() || overlay.view != view)) return;
+    if (glossary && (!glossary_origin_ready() || !more_render_current(view, context, popup)
+        || overlay.menu_token != token || !gtk_widget_get_mapped(popup)
+        || !translation_menu_current())) goto done;
     JsonObject *state = translation_actions(view);
     gboolean alternative = strcmp(operation, "alternative") == 0;
     gboolean inherit = strcmp(operation, "style-inherit") == 0;
@@ -1830,11 +1915,10 @@ static void translation_action_clicked(const char *operation, JsonObject *view) 
         || overlay.pending_glossary || overlay.glossary
         : alternative ? !boolean(state, "alternativeReleased") || !boolean(state, "canRequestAlternative")
         : (!inherit && !boolean(state, "styleReleased"))
-            || !boolean(state, inherit ? "canInheritStyle" : "canChangeStyle")) return;
+            || !boolean(state, inherit ? "canInheritStyle" : "canChangeStyle")) goto done;
     /* The bridge resolves this exact transport record to its original complete
      * session token. Never emit() here: it reads the latest overlay identity. */
-    JsonObject *event = json_object_new(), *token = json_object_ref(overlay.menu_token);
-    JsonObject *context = json_object_ref(tl_object(view, "viewContext"));
+    JsonObject *event = json_object_new();
     json_object_set_string_member(event, "target", overlay.menu_target);
     json_object_set_string_member(event, "operation", glossary ? "sessionGlossaryBegin" : alternative ? "alternative" : "style");
     json_object_set_string_member(event, "generation", overlay.menu_generation);
@@ -1859,11 +1943,13 @@ static void translation_action_clicked(const char *operation, JsonObject *view) 
         }
     }
 
-    gtk_widget_set_visible(overlay.menu, FALSE);
+    close_more(TRUE);
     if (translation_render_current(view, context) && overlay.menu_token == token && active() && translation_menu_current())
         tl_send_event("ui", event);
     else json_object_unref(event);
-    json_object_unref(context); json_object_unref(token);
+    if (!glossary && overlay.menu_token == token && !overlay.more_popup) clear_translation_menu();
+done:
+    json_object_unref(context); json_object_unref(token); g_object_unref(popup);
 }
 /* Observe only an attempted resume, not every paused-view renewal. */
 static void trace_resume(GtkWidget *widget, gpointer data) {
@@ -1879,10 +1965,30 @@ static void trace_resume(GtkWidget *widget, gpointer data) {
         " current=%d mapped=%d revision=%" G_GINT64_FORMAT "\n",
         stage, tl_now(), widget == overlay.resume, gtk_widget_get_mapped(widget), overlay.revision);
 }
+/* Display may remain open during preedit. An action requires one real
+ * current observation and cannot borrow a replacement opening after reentry. */
+static gboolean more_action_ready(GtkWidget *popup, JsonObject *view, JsonObject *token) {
+    if (!more_current() || overlay.more_popup != popup || overlay.view != view
+        || overlay.menu_token != token || !translation_menu_current()) return FALSE;
+    Target *target = overlay.target;
+    GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(overlay.top));
+    if (!focus) return FALSE;
+    g_object_ref(focus);
+    gboolean clear = focus == overlay.text ? !overlay.composing && tl_widget_ime_clear(focus)
+        : target && !target->dead && focus == target->client && tl_focused() == target && tl_ime_clear(target);
+    gboolean current = clear && more_current() && overlay.more_popup == popup && overlay.view == view
+        && overlay.menu_token == token && overlay.target == target && translation_menu_current()
+        && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == focus
+        && (focus != overlay.text || !overlay.composing);
+    g_object_unref(focus);
+    return current;
+}
+static void toggle_more(JsonObject *view);
 static void button_clicked(GtkButton *button, gpointer data) {
     const char *operation = data;
     if (strcmp(operation, "resume") == 0) trace_resume(GTK_WIDGET(button), "clicked");
-    if (!overlay.popover || !gtk_widget_is_ancestor(GTK_WIDGET(button), overlay.popover)) {
+    gboolean from_more = overlay.more_popup && gtk_widget_is_ancestor(GTK_WIDGET(button), overlay.more_popup);
+    if (!overlay.popover || (!from_more && !gtk_widget_is_ancestor(GTK_WIDGET(button), overlay.popover))) {
         if (strcmp(operation, "resume") == 0) trace_resume(GTK_WIDGET(button), "reject-owner");
         return;
     }
@@ -1909,10 +2015,22 @@ static void button_clicked(GtkButton *button, gpointer data) {
         return;
     }
     if (paused() || overlay.glossary || !tl_configuration_current(overlay.generation)) return;
+    if (from_more && (!more_current() || !gtk_widget_get_mapped(GTK_WIDGET(button))
+        || !gtk_widget_is_sensitive(GTK_WIDGET(button)))) return;
     /* Source view/configuration changes replace this identity. The menu-only
        projection preserves it without changing the original token or revision. */
     JsonObject *clicked_view = json_object_ref(overlay.view);
-    if (strcmp(operation, "menu") == 0) {
+    GtkWidget *clicked_popup = from_more ? g_object_ref(overlay.more_popup) : NULL;
+    JsonObject *clicked_token = from_more && overlay.menu_token ? json_object_ref(overlay.menu_token) : NULL;
+    Target *clicked_target = overlay.target;
+    gint64 clicked_revision = overlay.revision;
+    GtkWidget *clicked_focus = from_more ? gtk_window_get_focus(GTK_WINDOW(overlay.top)) : NULL;
+    if (clicked_focus) g_object_ref(clicked_focus);
+    if (from_more && !more_action_ready(clicked_popup, clicked_view, clicked_token)) goto done;
+    if (strcmp(operation, "more") == 0) {
+        if (GTK_WIDGET(button) == overlay.more) toggle_more(clicked_view);
+    } else if (strcmp(operation, "menu") == 0) {
+        close_more(FALSE);
         gboolean current = TRUE;
         if (!gtk_widget_get_visible(overlay.menu)) {
             freeze_translation_menu(clicked_view);
@@ -1943,12 +2061,13 @@ static void button_clicked(GtkButton *button, gpointer data) {
         char *text = candidate();
         gdk_clipboard_set_text(gtk_widget_get_clipboard(overlay.text), text);
         g_free(text);
-        if (overlay.view == clicked_view) gtk_widget_set_visible(overlay.menu, FALSE);
+        if (overlay.view == clicked_view && overlay.more_popup == clicked_popup
+            && overlay.menu_token == clicked_token) close_more(FALSE);
     } else if (strcmp(operation, "languages") == 0) {
         const char *source = selected_language(overlay.source, &overlay.source_languages);
         const char *target = selected_language(overlay.destination, &overlay.target_languages);
         if (overlay.setting_languages || !overlay.source_languages.choices || !overlay.target_languages.choices || !source || !target) {
-            json_object_unref(clicked_view); return;
+            goto done;
         }
         JsonObject *value = json_object_new();
         json_object_set_string_member(value, "source", source);
@@ -1958,10 +2077,22 @@ static void button_clicked(GtkButton *button, gpointer data) {
         emit(operation, node);
         if (overlay.view == clicked_view) close_language_menu(clicked_view);
     } else {
-        gtk_widget_set_visible(overlay.menu, FALSE);
-        if (overlay.view == clicked_view && tl_configuration_current(overlay.generation))
-            emit(operation, NULL);
+        /* Preserve only this opening's ticket across popdown callbacks. A new
+         * opening replaces it, even if its view/token values happen to match. */
+        if (from_more) close_more(TRUE);
+        else gtk_widget_set_visible(overlay.menu, FALSE);
+        if (overlay.view == clicked_view && overlay.target == clicked_target
+            && overlay.revision == clicked_revision && tl_configuration_current(overlay.generation)
+            && (!from_more || (!overlay.more_popup && overlay.menu_token == clicked_token
+                && translation_menu_current() && active()
+                && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == clicked_focus
+                && (clicked_focus != overlay.text || !overlay.composing)))) emit(operation, NULL);
+        if (from_more && !overlay.more_popup && overlay.menu_token == clicked_token) clear_translation_menu();
     }
+done:
+    if (clicked_focus) g_object_unref(clicked_focus);
+    if (clicked_token) json_object_unref(clicked_token);
+    if (clicked_popup) g_object_unref(clicked_popup);
     json_object_unref(clicked_view);
 }
 static GtkWidget *button(GtkWidget *box, const char *label, const char *operation) {
@@ -1985,6 +2116,11 @@ static gboolean localize_widgets(GtkWidget *card, JsonObject *view) {
         GtkWidget *widget = g_ptr_array_index(widgets, i);
         const char *label = GTK_IS_BUTTON(widget) ? gtk_button_get_label(GTK_BUTTON(widget))
             : GTK_IS_LABEL(widget) ? gtk_label_get_text(GTK_LABEL(widget)) : NULL;
+        if (widget == overlay.more) {
+            const char *name = tl_overlay_ui("更多", overlay.english);
+            gtk_widget_set_tooltip_text(widget, name);
+            gtk_accessible_update_property(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_PROPERTY_LABEL, name, -1);
+        }
         if (!label) continue;
         const char *translated = tl_overlay_ui(label, overlay.english);
         if (strcmp(label, translated) == 0) continue;
@@ -1997,6 +2133,173 @@ static gboolean localize_widgets(GtkWidget *card, JsonObject *view) {
     g_ptr_array_unref(widgets);
     return current;
 }
+typedef struct { const char *paths; GdkRGBA color; GdkPixbuf *pixels; } MoreIcon;
+static void free_more_icon(gpointer data) {
+    MoreIcon *icon = data;
+    g_clear_object(&icon->pixels);
+    g_free(icon);
+}
+static void draw_more_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer data) {
+    (void)width; (void)height;
+    GtkWidget *widget = GTK_WIDGET(area);
+    MoreIcon *icon = data;
+    GtkWidget *button = gtk_widget_get_ancestor(widget, GTK_TYPE_BUTTON);
+    GtkWidget *owner = button ? button : widget;
+    GdkRGBA color;
+#if GTK_CHECK_VERSION(4, 10, 0)
+    gtk_widget_get_color(owner, &color);
+#else
+    gtk_style_context_get_color(gtk_widget_get_style_context(owner), &color);
+#endif
+    if (!icon->pixels || !gdk_rgba_equal(&icon->color, &color)) {
+        /* Exact prototype paths, embedded and bounded. Cache each current
+         * foreground instead of parsing SVG on every natural paint frame. */
+        char *svg = g_strdup_printf("<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' "
+            "fill='none' stroke='#%02x%02x%02x' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'>%s</svg>",
+            (guint)(color.red * 255 + .5), (guint)(color.green * 255 + .5), (guint)(color.blue * 255 + .5), icon->paths);
+        GdkPixbufLoader *loader = gdk_pixbuf_loader_new_with_type("svg", NULL);
+        if (loader && gdk_pixbuf_loader_write(loader, (const guchar *)svg, strlen(svg), NULL)
+            && gdk_pixbuf_loader_close(loader, NULL)) {
+            g_set_object(&icon->pixels, gdk_pixbuf_loader_get_pixbuf(loader));
+            icon->color = color;
+        }
+        g_clear_object(&loader); g_free(svg);
+    }
+    if (icon->pixels) { gdk_cairo_set_source_pixbuf(cr, icon->pixels, 0, 0); cairo_paint(cr); }
+}
+static GtkWidget *more_icon(const char *operation) {
+    static const struct { const char *operation, *paths; } icons[] = {
+        {"regenerate", "<path d='M20 5v5h-5M4 19v-5h5'/><path d='M19.2 10A7.5 7.5 0 0 0 6 7.2M4.8 14A7.5 7.5 0 0 0 18 16.8'/>"},
+        {"alternative", "<path d='M12 3.5c.6 4.4 2.1 6 6.5 6.5-4.4.6-5.9 2.1-6.5 6.5-.6-4.4-2.1-5.9-6.5-6.5 4.4-.5 5.9-2.1 6.5-6.5Z'/><path d='M18.5 15.5c.2 1.6.8 2.2 2.4 2.4-1.6.2-2.2.8-2.4 2.4-.2-1.6-.8-2.2-2.4-2.4 1.6-.2 2.2-.8 2.4-2.4Z'/>"},
+        {"copy", "<rect x='8' y='8' width='12' height='12' rx='2.5'/><path d='M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2'/>"},
+        {"glossary", "<path d='M5 4.5h10.5A2.5 2.5 0 0 1 18 7v12.5H7.5A2.5 2.5 0 0 1 5 17Z'/><path d='M5 17a2.5 2.5 0 0 1 2.5-2.5H18M9 8.5h5'/>"},
+        {"escape", "<path d='M3 3l18 18M10.6 5.2A9.6 9.6 0 0 1 12 5c5 0 8.5 4.5 9.5 7a13 13 0 0 1-2.9 4M6.4 6.5C4.4 7.8 3.1 9.8 2.5 12c1 2.5 4.5 7 9.5 7a9.4 9.4 0 0 0 4.6-1.2M9.9 9.9a3 3 0 0 0 4.2 4.2'/>"},
+        {"exclude", "<circle cx='12' cy='12' r='8.5'/><path d='m6 6 12 12'/>"},
+        {"lock", "<rect x='5' y='10.5' width='14' height='9.5' rx='2.5'/><path d='M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5'/>"},
+        {"style", "<path d='M4 19h4L19 8l-4-4L4 15Z'/><path d='m13 6 4 4'/>"}
+    };
+    for (guint index = 0; index < G_N_ELEMENTS(icons); index++) if (strcmp(operation, icons[index].operation) == 0) {
+        GtkWidget *widget = gtk_drawing_area_new();
+        gtk_widget_set_name(widget, "typelay-menu-icon");
+        gtk_widget_set_size_request(widget, 16, 16);
+        gtk_widget_set_valign(widget, GTK_ALIGN_CENTER);
+        MoreIcon *icon = g_new0(MoreIcon, 1);
+        icon->paths = icons[index].paths;
+        gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(widget), draw_more_icon, icon, free_more_icon);
+        gtk_widget_set_can_target(widget, FALSE);
+        return widget;
+    }
+    return NULL;
+}
+static GtkWidget *more_item(GtkWidget *box, const char *label, const char *operation, const char *name) {
+    const char *translated = tl_overlay_ui(label, overlay.english);
+    GtkWidget *item = button(box, translated, operation);
+    gtk_widget_set_name(item, name);
+    GtkWidget *icon = more_icon(operation);
+    if (icon) {
+        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+        GtkWidget *text = gtk_label_new(translated);
+        gtk_label_set_xalign(GTK_LABEL(text), 0);
+        gtk_widget_set_hexpand(text, TRUE);
+        gtk_box_append(GTK_BOX(row), icon);
+        gtk_box_append(GTK_BOX(row), text);
+        gtk_button_set_child(GTK_BUTTON(item), row);
+        g_object_set_data(G_OBJECT(item), "typelay-more-label", text);
+    }
+    gtk_accessible_update_property(GTK_ACCESSIBLE(item), GTK_ACCESSIBLE_PROPERTY_LABEL, translated, -1);
+    return item;
+}
+static void more_unmapped(GtkWidget *popup, gpointer unused) {
+    (void)unused;
+    if (overlay.more_popup == popup) close_more(FALSE);
+}
+static void toggle_more(JsonObject *view) {
+    if (overlay.more_popup) { close_more(FALSE); return; }
+    if (overlay.view != view || !active() || !overlay.more || !gtk_widget_get_mapped(overlay.more)
+        || !tl_view_context_matches(overlay.target, view) || tl_now() > overlay.expires) return;
+    close_language_menu(view);
+    if (overlay.view != view || !overlay.more || !tl_configuration_current(overlay.generation)) return;
+    freeze_translation_menu(view);
+    GtkWidget *trigger = g_object_ref(overlay.more), *card = g_object_ref(overlay.card);
+    /* Publish a complete, source-bound opening. Never enable autohide: its
+     * native focus grab would change the source/editor's input ownership. */
+    GtkWidget *popup = gtk_popover_new();
+    g_object_ref_sink(popup);
+    gtk_widget_set_name(popup, "typelay-more-popup");
+    g_object_set_data(G_OBJECT(popup), "typelay-overlay", GINT_TO_POINTER(1));
+    gtk_popover_set_autohide(GTK_POPOVER(popup), FALSE);
+    gtk_popover_set_has_arrow(GTK_POPOVER(popup), FALSE);
+    gtk_popover_set_position(GTK_POPOVER(popup), GTK_POS_BOTTOM);
+    gtk_widget_set_focusable(popup, FALSE);
+    g_signal_connect(popup, "unmap", G_CALLBACK(more_unmapped), NULL);
+    gtk_widget_set_font_map(popup, gtk_widget_get_font_map(card));
+    GtkWidget *items = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_name(items, "typelay-more-items");
+    gtk_widget_set_size_request(items, 224, -1);
+    gtk_popover_set_child(GTK_POPOVER(popup), items);
+    GtkWidget *regenerate = more_item(items, "重新翻译", "regenerate", "typelay-regenerate");
+    char *text = candidate();
+    gboolean has_text = *text != '\0';
+    g_free(text);
+    gtk_widget_set_sensitive(regenerate, has_text
+        || g_strcmp0(tl_string(view, "state"), "TranslationFailed") == 0);
+    GtkWidget *alternative = more_item(items, "换种说法", "alternative", "typelay-alternative");
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    gtk_widget_set_name(row, "typelay-style-row");
+    gtk_box_append(GTK_BOX(items), row);
+    const char *state = tl_string(view, "state");
+    gboolean draft = g_strcmp0(state, "EditingTranslation") == 0
+        || g_strcmp0(state, "ReturningToSource") == 0 || g_strcmp0(state, "EditedTranslationPending") == 0;
+    gtk_box_append(GTK_BOX(row), more_icon(draft ? "lock" : "style"));
+    GtkWidget *style_label = gtk_label_new(overlay.english ? "Style" : "风格");
+    gtk_box_append(GTK_BOX(row), style_label);
+    GtkWidget *segments = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_name(segments, "typelay-style-segments");
+    gtk_widget_set_hexpand(segments, TRUE);
+    gtk_widget_set_halign(segments, GTK_ALIGN_END);
+    gtk_box_append(GTK_BOX(row), segments);
+    GtkWidget *style_natural = more_item(segments, "自然", "style-natural", "typelay-style-natural");
+    GtkWidget *style_formal = more_item(segments, "正式", "style-formal", "typelay-style-formal");
+    for (guint index = 0; index < 2; index++) {
+        GtkWidget *unsupported = gtk_button_new_with_label(overlay.english
+            ? (index ? "Casual" : "Concise") : (index ? "口语" : "简洁"));
+        gtk_widget_set_name(unsupported, index ? "typelay-style-casual" : "typelay-style-concise");
+        gtk_widget_set_sensitive(unsupported, FALSE);
+        gtk_widget_set_focusable(unsupported, FALSE);
+        gtk_widget_set_tooltip_text(unsupported, overlay.english ? "Not available yet" : "暂不可用");
+        gtk_box_append(GTK_BOX(segments), unsupported);
+    }
+    GtkWidget *style_inherit = more_item(items, "继承", "style-inherit", "typelay-style-inherit");
+    GtkWidget *copy = more_item(items, "复制译文", "copy", "typelay-copy");
+    gtk_widget_set_sensitive(copy, has_text);
+    GtkWidget *glossary_action = more_item(items, "加入术语表", "glossary", "typelay-glossary-add");
+    GtkWidget *feedback = gtk_label_new("");
+    gtk_widget_set_name(feedback, "typelay-action-feedback");
+    gtk_label_set_xalign(GTK_LABEL(feedback), 0);
+    gtk_label_set_wrap(GTK_LABEL(feedback), TRUE);
+    gtk_label_set_wrap_mode(GTK_LABEL(feedback), PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_max_width_chars(GTK_LABEL(feedback), 32);
+    gtk_box_append(GTK_BOX(items), feedback);
+    gtk_box_append(GTK_BOX(items), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+    more_item(items, overlay.english ? "Hide for now" : "暂时隐藏", "escape", "typelay-hide");
+    more_item(items, "不要在这个应用中显示", "exclude", "typelay-exclude");
+    more_item(items, "设置…", "settings", "typelay-settings");
+    if (overlay.view == view && overlay.more == trigger && overlay.card == card
+        && active() && tl_configuration_current(overlay.generation) && tl_now() <= overlay.expires) {
+        overlay.more_popup = g_object_ref(popup);
+        overlay.more_view = json_object_ref(view);
+        overlay.style_label = style_label; overlay.style_inherit = style_inherit;
+        overlay.style_natural = style_natural; overlay.style_formal = style_formal;
+        overlay.alternative = alternative; overlay.glossary_action = glossary_action;
+        overlay.action_feedback = feedback;
+        gtk_widget_set_parent(popup, trigger);
+        if (overlay.more_popup == popup && overlay.view == view && render_translation_actions(view)
+            && overlay.more_popup == popup && more_current()) gtk_popover_popup(GTK_POPOVER(popup));
+        else if (overlay.more_popup == popup) close_more(FALSE);
+    }
+    g_object_unref(popup); g_object_unref(card); g_object_unref(trigger);
+}
+
 static gboolean theme(JsonObject *data, gboolean stale_preview, gboolean capsule) {
     JsonObject *appearance = tl_object(data, "appearance");
     const char *choice = text_or_empty(data, "theme"), *language = text_or_empty(appearance, "uiLanguage");
@@ -2019,6 +2322,16 @@ static gboolean theme(JsonObject *data, gboolean stale_preview, gboolean capsule
             overlay.text_size, content_font, sizeof content_font),
         tl_overlay_ui_font(tl_string(appearance, "font")), overlay.text_size, capsule, stale_preview, overlay.reduce_motion, GTK_MAJOR_VERSION == 4);
     if (count < 0 || (gsize)count >= sizeof css) return FALSE;
+    int more_count = tl_overlay_gtk_more_css(css + count, sizeof css - (gsize)count, palette,
+        tl_overlay_ui_font(tl_string(appearance, "font")), tl_string(appearance, "accent"));
+    if (more_count < 0 || (gsize)more_count >= sizeof css - (gsize)count) return FALSE;
+    count += more_count;
+    int contents_count = snprintf(css + count, sizeof css - (gsize)count,
+        "#typelay-more-popup { background:transparent; border:0; box-shadow:none; padding:0; }"
+        "#typelay-more-popup > contents { background:%s; color:%s; border:1px solid %s;"
+        " border-radius:12px; padding:5px; box-shadow:0 12px 32px rgba(20,20,19,0.18); }",
+        palette.surface, palette.ink, palette.line);
+    if (contents_count < 0 || (gsize)contents_count >= sizeof css - (gsize)count) return FALSE;
     JsonObject *view = json_object_ref(overlay.view);
     GtkWidget *card = g_object_ref(overlay.card);
     GtkCssProvider *provider = g_object_ref(overlay.css);
@@ -2087,6 +2400,12 @@ static void update_popup_layout(GdkFrameClock *clock, gpointer unused) {
     }
     if (popup_layout_current(popover, view, target, revision))
         gtk_popover_present(GTK_POPOVER(popover));
+    if (popup_layout_current(popover, view, target, revision) && more_current()
+        && gtk_widget_get_mapped(overlay.more_popup)) {
+        GtkWidget *more = g_object_ref(overlay.more_popup);
+        gtk_popover_present(GTK_POPOVER(more));
+        g_object_unref(more);
+    }
 done:
     json_object_unref(view); g_object_unref(popover);
 }
@@ -2124,7 +2443,10 @@ static void create(Target *target) {
     overlay.actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
     gtk_widget_set_name(overlay.actions, "typelay-actions");
     gtk_box_append(GTK_BOX(overlay.header), overlay.actions);
-    button(overlay.actions, "⋯", "menu");
+    overlay.more = button(overlay.actions, "⋯", "more");
+    gtk_widget_set_name(overlay.more, "typelay-more");
+    gtk_widget_set_tooltip_text(overlay.more, "更多");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(overlay.more), GTK_ACCESSIBLE_PROPERTY_LABEL, "更多", -1);
     overlay.expand = button(overlay.actions, "展开", "expand");
     overlay.resume = button(overlay.header, "恢复", "resume");
     gtk_widget_set_name(overlay.resume, "typelay-resume");
@@ -2221,30 +2543,6 @@ static void create(Target *target) {
     gtk_box_append(GTK_BOX(menu_content), overlay.destination);
     overlay.apply_languages = button(menu_content, "应用语言方向", "languages");
     gtk_widget_set_name(overlay.apply_languages, "typelay-apply-languages");
-    overlay.style_label = gtk_label_new("当前应用风格");
-    gtk_box_append(GTK_BOX(menu_content), overlay.style_label);
-    overlay.style_inherit = button(menu_content, "继承", "style-inherit");
-    overlay.style_natural = button(menu_content, "自然", "style-natural");
-    overlay.style_formal = button(menu_content, "正式", "style-formal");
-    overlay.alternative = button(menu_content, "换种说法", "alternative");
-    overlay.glossary_action = button(menu_content, "加入术语表", "glossary");
-    gtk_widget_set_name(overlay.glossary_action, "typelay-glossary-add");
-    gtk_widget_set_name(overlay.style_inherit, "typelay-style-inherit");
-    gtk_widget_set_name(overlay.style_natural, "typelay-style-natural");
-    gtk_widget_set_name(overlay.style_formal, "typelay-style-formal");
-    gtk_widget_set_name(overlay.alternative, "typelay-alternative");
-    overlay.action_feedback = gtk_label_new("");
-    gtk_widget_set_name(overlay.action_feedback, "typelay-action-feedback");
-    gtk_label_set_xalign(GTK_LABEL(overlay.action_feedback), 0);
-    gtk_label_set_wrap(GTK_LABEL(overlay.action_feedback), TRUE);
-    gtk_label_set_wrap_mode(GTK_LABEL(overlay.action_feedback), PANGO_WRAP_WORD_CHAR);
-    gtk_label_set_max_width_chars(GTK_LABEL(overlay.action_feedback), 40);
-    gtk_widget_add_css_class(overlay.action_feedback, "dim-label");
-    gtk_box_append(GTK_BOX(menu_content), overlay.action_feedback);
-    button(menu_content, "重新翻译", "regenerate");
-    button(menu_content, "复制译文", "copy");
-    button(menu_content, "排除此应用", "exclude");
-    button(menu_content, "设置…", "settings");
     gtk_box_append(GTK_BOX(overlay.card), overlay.menu);
     overlay.css = gtk_css_provider_new();
     overlay.display = g_object_ref(gtk_widget_get_display(overlay.popover));
@@ -2403,6 +2701,10 @@ static gboolean render(Target *target, JsonObject *data) {
         return refreshed;
     }
     clear_layout_request();
+    if (overlay.more_popup && overlay.target == target && overlay.top == top) {
+        close_more(overlay.pending_glossary);
+        if (!tl_configuration_current(generation)) { json_object_unref(geometry); return FALSE; }
+    }
     GtkWidget *old_popover = overlay.popover, *old_editor = overlay.text;
     tl_overlay_control_cancel();
     if (overlay.glossary && (overlay.target != target || overlay.top != top
