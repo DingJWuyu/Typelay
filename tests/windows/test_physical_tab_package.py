@@ -216,7 +216,8 @@ class PhysicalTabPackageTests(unittest.TestCase):
         }
         (run / "result.json").write_text(json.dumps(report))
         selected = package.current_main_results(results)
-        self.assertEqual(primary, selected)
+        # Windows temporary directories can use an 8.3 alias for the same path.
+        self.assertEqual(primary.resolve(), selected)
         package.verify_original_suite(selected)
         (primary / "main.trx").unlink()
         with self.assertRaises(ValueError):
