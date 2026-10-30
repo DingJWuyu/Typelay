@@ -50,7 +50,7 @@ class Tutorial:
         self.build(None)
 
     def build(self, opening):
-        from design import app_icon, box, design_icon, group, label, style
+        from design import ModelProgressBar, app_icon, box, design_icon, group, label, style
 
         previous = self.window.get_child()
         if previous is not None:
@@ -141,7 +141,7 @@ class Tutorial:
         self.model_detail.set_no_show_all(True)
         model_card.pack_start(self.model_detail, False, False, 0)
         progress_label = label(muted=True)
-        progress_bar = Gtk.ProgressBar()
+        progress_bar = ModelProgressBar(self.window, lambda: self.owner.value or {})
         for widget in (progress_label, progress_bar):
             widget.set_no_show_all(True)
             model_card.pack_start(widget, False, False, 0)
@@ -445,6 +445,7 @@ class Tutorial:
             and self.model_progress is widgets
             and owner.download_progress.snapshot is snapshot
             and owner.installation_state == state,
+            owner.download_progress.owner,
         )
 
     def change_preference(self, key, value, opening):
@@ -3533,6 +3534,8 @@ class Settings:
             return
         self.palette_signature = signature
         self.style_provider = apply_theme(self.window, preferences, self.style_provider)
+        if hasattr(self, "model_progress"):
+            self.render_download_progress()
         if hasattr(self, "pages"):
             reduced = reduced_motion(self.window, preferences)
             self.pages.set_transition_duration(0 if reduced else 200)
@@ -4844,7 +4847,7 @@ class Settings:
                 and self.installation_state == state
             )
 
-        render_download(widgets, snapshot, state, self.tr, current)
+        render_download(widgets, snapshot, state, self.tr, current, self.download_progress.owner)
         if not current():
             return
         self.tutorial.render_download_progress()

@@ -801,6 +801,474 @@ async def exercise_download_progress(tray, owner, host, settled, calls, requests
     )
 
 
+async def exercise_progress_display(tray, owner, host, settled, output):
+    """Controlled display reports only; real GTK paint/Atk, never an installation."""
+    from gi.repository import Atk, Gdk
+    from setup import PROGRESS_PREFIX
+
+    gtk_settings = owner.window.get_settings()
+    original_os_motion = gtk_settings.get_property("gtk-enable-animations")
+    task, sequence = None, 0
+    results = {}
+
+    def publish(count, *, total=100, attempt=1, new_task=False):
+        nonlocal task, sequence
+        if new_task:
+            task, sequence = object(), 0
+            owner.download_progress.begin(task)
+        sequence += 1
+        record = {
+            "schema": 1,
+            "sequence": sequence,
+            "stage": "model-download",
+            "resource": "argos-zh-en",
+            "attempt": attempt,
+            "downloadPhase": "Body",
+            "downloaded": count,
+            "total": total,
+        }
+        assert owner.download_progress.accept(task, PROGRESS_PREFIX + json.dumps(record))
+        owner.render_download_progress()
+
+    def geometry(bar, window):
+        assert bar.get_mapped() and window.get_visible()
+        width, height = bar.get_allocated_width(), bar.get_allocated_height()
+        assert width > 1 and height == 6, ("progress dimensions", width, height)
+        ancestor = bar.get_parent()
+        for _ in range(24):
+            assert ancestor is not None and ancestor.get_mapped()
+            point = bar.translate_coordinates(ancestor, 0, 0)
+            assert point is not None
+            x, y = point
+            assert 0 <= x and 0 <= y
+            assert x + width <= ancestor.get_allocated_width()
+            assert y + height <= ancestor.get_allocated_height()
+            if ancestor is window:
+                return x, y, width, height
+            ancestor = ancestor.get_parent()
+        raise AssertionError("progress outside owned window")
+
+    def coverage(picture, color):
+        data = picture.get_pixels()
+        channels, stride = picture.get_n_channels(), picture.get_rowstride()
+        row = (picture.get_height() // 2) * stride
+        matching = [
+            x
+            for x in range(picture.get_width())
+            if all(abs(data[row + x * channels + c] - color[c]) <= 3 for c in range(3))
+        ]
+        return (max(matching) + 1) if matching else 0
+
+    async def capture(bar, window, *, padding=0):
+        event, failures, captured = asyncio.Event(), [], []
+        clock = window.get_frame_clock()
+
+        def painted(*_):
+            if event.is_set():
+                return
+            try:
+                if window is owner.window and owner.pages.get_transition_running():
+                    return
+                if (
+                    window is owner.tutorial.window
+                    and owner.tutorial.steps.get_transition_running()
+                ):
+                    return
+                bounds = geometry(bar, window)
+                x, y, width, height = bounds
+                assert 0 <= x - padding and 0 <= y - padding
+                assert x + width + padding <= window.get_allocated_width()
+                assert y + height + padding <= window.get_allocated_height()
+                image = Gdk.pixbuf_get_from_window(
+                    window.get_window(),
+                    x - padding,
+                    y - padding,
+                    width + padding * 2,
+                    height + padding * 2,
+                )
+                assert image is not None
+                captured.append((bounds, image))
+            except Exception as error:
+                failures.append(error)
+            event.set()
+
+        watch = clock.connect("after-paint", painted)
+        try:
+            async with asyncio.timeout(3):
+                window.queue_draw()
+                await event.wait()
+        finally:
+            if clock.handler_is_connected(watch):
+                clock.disconnect(watch)
+        if failures:
+            raise failures[0]
+        return captured[0]
+
+    async def observe(name, bar, window, *, animate, interrupt=None):
+        baseline, first = await capture(bar, window)
+        first_pixels = coverage(first, (217, 119, 87))
+        assert abs(first_pixels - baseline[2] * 0.25) <= 2, (
+            name,
+            "initial 25% paint",
+            first_pixels,
+            baseline[2] * 0.25,
+            baseline,
+        )
+        event, middle, failures = asyncio.Event(), asyncio.Event(), []
+        expected = {"fraction": 0.75, "color": (217, 119, 87), "interrupted": False}
+        samples, images = [], {"first": first}
+        clock = window.get_frame_clock()
+        started = clock.get_frame_time()
+        interrupted_job = None
+
+        async def interrupt_after_middle():
+            await middle.wait()
+            expected["interrupted"] = True
+            try:
+                await interrupt(expected)
+            except Exception as error:
+                failures.append(error)
+                event.set()
+
+        def painted(*_):
+            if event.is_set():
+                return
+            try:
+                if not bar.get_mapped():
+                    return
+                bounds = geometry(bar, window)
+                if expected.get("resizing"):
+                    if bounds[2] == baseline[2]:
+                        return
+                    assert bounds[2:] == (baseline[2] + 40, 6), (name, baseline, bounds)
+                else:
+                    assert bounds[2:] == baseline[2:], (name, "layout changed", baseline, bounds)
+                assert abs(bar.get_fraction() - expected["fraction"]) < 1e-9
+                native, _text = Atk.Value.get_value_and_text(bar.get_accessible())
+                assert abs(native - expected["fraction"]) < 1e-9, (name, "delayed Atk", native)
+                image = Gdk.pixbuf_get_from_window(window.get_window(), *bounds)
+                assert image is not None
+                filled = coverage(image, expected["color"])
+                elapsed = (clock.get_frame_time() - started) / 1000
+                if len(samples) < 64:
+                    samples.append({"ms": elapsed, "paintedPixels": filled, "value": native})
+                target = bounds[2] * expected["fraction"]
+                if baseline[2] * 0.25 + 2 < filled < baseline[2] * 0.75 - 2:
+                    if name != "same-target" or elapsed >= 120:
+                        middle.set()
+                    images.setdefault("middle", image)
+                if interrupt is not None:
+                    done = (
+                        expected["interrupted"]
+                        and expected.get("ready", lambda: True)()
+                        and abs(filled - target) <= 2
+                        and (name != "same-target" or elapsed >= 390)
+                    )
+                elif animate:
+                    done = elapsed >= 390 and abs(filled - target) <= 2
+                else:
+                    assert abs(filled - target) <= 2, (name, "nonanimated paint", filled, target)
+                    done = True
+                if done:
+                    images["last"] = image
+                    event.set()
+            except Exception as error:
+                failures.append(error)
+                event.set()
+
+        watch = clock.connect("after-paint", painted)
+        try:
+            async with asyncio.timeout(3):
+                if interrupt is not None:
+                    interrupted_job = asyncio.create_task(interrupt_after_middle())
+                publish(75)
+                assert bar.get_fraction() == 0.75
+                assert Atk.Value.get_value_and_text(bar.get_accessible())[0] == 0.75
+                await event.wait()
+                if failures:
+                    raise failures[0]
+                if interrupted_job is not None:
+                    await interrupted_job
+        finally:
+            if clock.handler_is_connected(watch):
+                clock.disconnect(watch)
+            if interrupted_job is not None and not interrupted_job.done():
+                interrupted_job.cancel()
+                await asyncio.gather(interrupted_job, return_exceptions=True)
+            results[name] = samples
+        if failures:
+            raise failures[0]
+        if animate:
+            assert middle.is_set(), (name, "no intermediate paint", samples)
+        if interrupt is None and animate:
+            assert samples[-1]["ms"] < 650, (name, "transition restarted", samples)
+        if name == "full-os-off":
+            for suffix, image in images.items():
+                image.savev(str(output / f"progress-motion-{suffix}.png"), "png", [], [])
+
+    async def model_page(mode, os_motion):
+        gtk_settings.set_property("gtk-enable-animations", os_motion)
+        assert await host.ask(
+            "settingsPatch", {"motion": mode, "theme": "light", "accent": "clay"}, timeout=3
+        )
+        await settled()
+        tray.hide_panel()
+        owner.tutorial.dismiss()
+        owner.show()
+        owner.pages.set_visible_child_name("model")
+        owner.installation("running")
+        await settled()
+        publish(25, new_task=True)
+        return owner.model_progress[1], owner.window
+
+    try:
+        # The actual r3 paint must remain inside the true fraction, including
+        # the CSS-normalized radii of fills narrower than the 6px track.
+        bar, window = await model_page("reduce", False)
+        await capture(bar, window)
+        width = bar.get_allocated_width()
+        empty, stable_bounds = None, None
+        cap_results = results["rounded-caps"] = []
+        for pixels in (0, 1, 3, 5, 6, width // 2, width):
+            publish(pixels, total=width, new_task=True)
+            assert bar.get_fraction() == pixels / width
+            native, _text = Atk.Value.get_value_and_text(bar.get_accessible())
+            assert abs(native - pixels / width) < 1e-9
+            bounds, image = await capture(bar, window, padding=2)
+            assert bounds[2:] == (width, 6)
+            if stable_bounds is None:
+                stable_bounds = bounds
+            assert bounds == stable_bounds, ("rounded fill changed layout", bounds, stable_bounds)
+            data, stride, channels = (
+                image.get_pixels(),
+                image.get_rowstride(),
+                image.get_n_channels(),
+            )
+
+            def rgb(x, y):
+                start = y * stride + x * channels
+                return tuple(data[start : start + 3])
+
+            rows = [
+                [rgb(x, y) for x in range(image.get_width())] for y in range(image.get_height())
+            ]
+            image.savev(str(output / f"progress-cap-{pixels}.png"), "png", [], [])
+            if empty is None:
+                empty = rows
+                assert coverage(image, (217, 119, 87)) == 0, "zero progress painted a fill"
+                continue
+            changed = [
+                (x, y)
+                for y, row in enumerate(rows)
+                for x, color in enumerate(row)
+                if max(abs(color[c] - empty[y][x][c]) for c in range(3)) > 3
+            ]
+            assert changed, ("positive fraction has no visible fill", pixels)
+            assert all(2 <= x < pixels + 2 and 2 <= y < 8 for x, y in changed), (
+                "fill escaped its true fraction or track",
+                pixels,
+                changed[:16],
+            )
+            assert max(x for x, _y in changed) == pixels + 1, (
+                "fill is shorter than its fraction",
+                pixels,
+            )
+            if pixels == 6:
+                center = rows[5][5]
+                assert all(abs(center[c] - (217, 119, 87)[c]) <= 3 for c in range(3)), (
+                    "symbolic cap changed the real accent color",
+                    center,
+                )
+            # A 6px circle has softer terminal corners than its middle. The
+            # old linear gradient fills this right edge uniformly and fails.
+            if pixels >= 6:
+                right, middle = pixels + 1, 5
+                for edge in (2, 7):
+                    corner_ink = max(
+                        abs(rows[edge][right][c] - empty[edge][right][c]) for c in range(3)
+                    )
+                    center_ink = max(
+                        abs(rows[middle][right][c] - empty[middle][right][c]) for c in range(3)
+                    )
+                    assert center_ink - corner_ink >= 20, (
+                        "fill terminal is not rounded",
+                        pixels,
+                        edge,
+                        corner_ink,
+                        center_ink,
+                    )
+            cap_results.append(
+                {
+                    "pixels": pixels,
+                    "value": native,
+                    "bounds": bounds,
+                    "paintedBounds": [
+                        min(x for x, _y in changed) - 2,
+                        min(y for _x, y in changed) - 2,
+                        max(x for x, _y in changed) - 1,
+                        max(y for _x, y in changed) - 1,
+                    ],
+                }
+            )
+        print(
+            "PROGRESS ROUNDED CAPS PASS: 0/1/3/5/6/middle/full; no overflow; real Atk", flush=True
+        )
+
+        for name, mode, os_motion, animate in (
+            ("full-os-off", "full", False, True),
+            ("full-os-on", "full", True, True),
+            ("system-os-off", "system", False, False),
+            ("system-os-on", "system", True, True),
+            ("reduced", "reduce", True, False),
+        ):
+            bar, window = await model_page(mode, os_motion)
+            await observe(name, bar, window, animate=animate)
+
+        async def repeated(_expected):
+            publish(75)
+
+        bar, window = await model_page("full", False)
+        # A same-target receipt must not start a second 400ms transition.
+        await observe("same-target", bar, window, animate=True, interrupt=repeated)
+        samples = results["same-target"]
+        assert samples[-1]["ms"] < 650
+        width = bar.get_allocated_width()
+        assert abs(samples[0]["paintedPixels"] - width * 0.25) <= 2
+        # Independently solve the canonical .22,1,.36,1 curve from the first
+        # actually painted 25% frame. Repeating at >=120ms must preserve the
+        # original remaining trajectory, not start another 400ms segment.
+        for sample in samples:
+            elapsed = min(1, (sample["ms"] - samples[0]["ms"]) / 400)
+            low, high = 0.0, 1.0
+            for _ in range(40):
+                t = (low + high) / 2
+                x = (0.66 * (1 - t) ** 2 + 1.08 * (1 - t) * t + t * t) * t
+                if x < elapsed:
+                    low = t
+                else:
+                    high = t
+            expected_pixels = width * (0.25 + 0.5 * (1 - (1 - (low + high) / 2) ** 3))
+            assert abs(sample["paintedPixels"] - expected_pixels) <= 3, (
+                "same-target restarted its visible trajectory",
+                sample,
+                expected_pixels,
+            )
+
+        async def next_attempt(expected):
+            expected["fraction"] = 0.35
+            publish(35, attempt=2)
+
+        async def new_task(expected):
+            expected["fraction"] = 0.35
+            publish(35, new_task=True)
+
+        async def reduce(expected):
+            expected["ready"] = lambda: owner.value["motion"] == "reduce"
+            assert await host.ask("settingsPatch", {"motion": "reduce"}, timeout=3)
+            await settled()
+
+        async def pause(expected):
+            expected["color"] = (116, 114, 108)
+            owner.installation("paused")
+            await settled()
+
+        async def reopen(expected):
+            owner.window.hide()
+            assert not owner.model_progress[1].get_mapped()
+            expected["fraction"] = 0.35
+            publish(35, new_task=True)
+            owner.show()
+
+        async def resize(expected):
+            expected["resizing"] = True
+            width, height = owner.window.get_size()
+            owner.window.resize(width + 40, height)
+
+        for name, action in (
+            ("new-attempt", next_attempt),
+            ("new-task", new_task),
+            ("reduce-midway", reduce),
+            ("paused", pause),
+            ("unmap-remap", reopen),
+            ("resize", resize),
+        ):
+            bar, window = await model_page("full", False)
+            await observe(name, bar, window, animate=True, interrupt=action)
+
+        for signal in ("notify::fraction",):
+            bar, window = await model_page("full", False)
+            await capture(bar, window)
+            fired, callback_failures = asyncio.Event(), []
+
+            def replace_during_signal(*_):
+                if fired.is_set():
+                    return
+                fired.set()
+                try:
+                    publish(35, new_task=True)
+                except Exception as error:
+                    callback_failures.append(error)
+
+            listener = bar.connect(signal, replace_during_signal)
+            try:
+                async with asyncio.timeout(3):
+                    publish(75)
+                    await fired.wait()
+            finally:
+                if bar.handler_is_connected(listener):
+                    bar.disconnect(listener)
+            if callback_failures:
+                raise callback_failures[0]
+            assert bar.get_fraction() == 0.35
+            assert Atk.Value.get_value_and_text(bar.get_accessible())[0] == 0.35
+            bounds, image = await capture(bar, window)
+            assert abs(coverage(image, (217, 119, 87)) - bounds[2] * 0.35) <= 2
+
+        publish(35, total=None, attempt=2)
+        assert not bar.get_visible(), "unknown total retained a fabricated fraction bar"
+        # Theme-only updates must recolor this bar without a new bytes record.
+        bar, window = await model_page("reduce", False)
+        assert await host.ask("settingsPatch", {"theme": "dark"}, timeout=3)
+        await settled()
+        bounds, image = await capture(bar, window)
+        assert abs(coverage(image, (217, 119, 87)) - bounds[2] * 0.25) <= 2
+        owner.installation("paused")
+        await settled()
+        bounds, image = await capture(bar, window)
+        assert abs(coverage(image, (154, 152, 143)) - bounds[2] * 0.25) <= 2
+        image.savev(str(output / "progress-paused-dark.png"), "png", [], [])
+
+        # The same primitive must remain 6px and actually animate on the other
+        # two production surfaces, not merely on the Settings model page.
+        await model_page("full", False)
+        owner.window.hide()
+        tray.show_panel()
+        await settled()
+        publish(25, new_task=True)
+        await observe("tray-full", tray.model_progress[1], tray.window, animate=True)
+        tray.hide_panel()
+        owner.open_tutorial()
+        owner.tutorial.go(2)
+        owner.tutorial.render()
+        publish(25, new_task=True)
+        await observe(
+            "tutorial-full", owner.tutorial.model_progress[1], owner.tutorial.window, animate=True
+        )
+        owner.tutorial.dismiss()
+        print(
+            "PROGRESS DISPLAY PASS: real Atk immediate; 6px; 400ms paint; retirement; no install",
+            flush=True,
+        )
+    finally:
+        gtk_settings.set_property("gtk-enable-animations", original_os_motion)
+        try:
+            (output / "progress-display.json").write_text(json.dumps(results, indent=2) + "\n")
+        except MemoryError:
+            raise
+        except Exception:
+            pass
+
+
 def main():
     import gi
 
@@ -1252,6 +1720,9 @@ def main():
                         request_results,
                         options.output,
                         json.loads(options.progress_records.read_text()),
+                    )
+                    await exercise_progress_display(
+                        tray, settings_surface, host, settled, options.output
                     )
                 if options.panel_only:
                     await exercise_quick_panel(

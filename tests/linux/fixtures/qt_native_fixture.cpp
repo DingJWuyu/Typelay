@@ -747,16 +747,52 @@ int main(int argc, char **argv) {
             else if (op == "sample-theme") {
                 // Render only two fixed blank surface points on demand. Do not
                 // add painting to the fixture's periodic state observations.
-                auto *overlay = window.findChild<QWidget *>(QStringLiteral("typelay-overlay"));
-                auto *editor = window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"));
+                const auto visibleOverlay = [&window]() -> QWidget * {
+                    QWidget *found = nullptr;
+                    for (auto *widget : window.findChildren<QWidget *>(QStringLiteral("typelay-overlay"))) {
+                        if (!widget->isVisible() || widget->window() != &window) continue;
+                        if (found) return nullptr;
+                        found = widget;
+                    }
+                    return found;
+                };
+                const QPointer<QWidget> overlay = visibleOverlay();
+                const QPointer<QPlainTextEdit> editor = overlay
+                    ? overlay->findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor")) : nullptr;
+                const QPointer<QWidget> viewport = editor ? editor->viewport() : nullptr;
+                const QRect overlayRect = overlay ? overlay->rect() : QRect();
+                const QRect viewportRect = viewport ? viewport->rect() : QRect();
+                const QPoint viewportOrigin = viewport && overlay ? viewport->mapTo(overlay, QPoint()) : QPoint();
+                const bool editorVisible = editor && editor->isVisible();
+                const bool viewportVisible = viewport && viewport->isVisible();
+                const auto current = [&] {
+                    return overlay && visibleOverlay() == overlay && overlay->rect() == overlayRect
+                        && editor && overlay->findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor")) == editor
+                        && overlay->isAncestorOf(editor) && editor->window() == &window
+                        && viewport && editor->viewport() == viewport && editor->isAncestorOf(viewport)
+                        && editor->isVisible() == editorVisible && viewport->isVisible() == viewportVisible
+                        && viewport->rect() == viewportRect && viewport->mapTo(overlay, QPoint()) == viewportOrigin;
+                };
                 const auto sample = [](QWidget *surface, const QPoint &point) {
                     if (!surface || !surface->isVisible() || !surface->rect().contains(point)) return QString();
                     const auto color = surface->grab(QRect(point, QSize(1, 1))).toImage().pixelColor(0, 0);
                     return color.alpha() == 255 ? color.name() : QString();
                 };
-                auto *viewport = editor ? editor->viewport() : nullptr;
-                themeSamples = {{"overlay", sample(overlay, QPoint(6, overlay ? overlay->height() / 2 : 0))},
-                    {"editor", sample(viewport, viewport ? QPoint(viewport->width() - 2, viewport->height() - 2) : QPoint())}};
+                QString background, editorBackground;
+                if (current()) {
+                    background = sample(overlay, QPoint(6, overlayRect.height() / 2));
+                    if (current() && editor->isVisible() && viewport->isVisible()) {
+                        const QPoint blank(viewportRect.width() - 2, viewportRect.height() - 2);
+                        const QPoint composed = viewport->mapTo(overlay, blank);
+                        // A read-only viewport is deliberately transparent. Grab
+                        // its actual composition with the owned parent, not the
+                        // isolated transparent layer or a substituted CSS colour.
+                        if (viewportRect.contains(blank) && overlayRect.contains(composed))
+                            editorBackground = sample(overlay, composed);
+                    }
+                    if (!current()) { background.clear(); editorBackground.clear(); }
+                }
+                themeSamples = {{"overlay", background}, {"editor", editorBackground}};
                 ++themeSampleCount;
             }
             else if (op == "application-theme") {

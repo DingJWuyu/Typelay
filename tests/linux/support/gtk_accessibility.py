@@ -347,7 +347,7 @@ def scroll_settings_control(pid, node, *, deadline, at_start=False):
         assert area.x != -(2**31) and area.y != -(2**31) and area.width > 0 and area.height > 0
         return area
 
-    def current():
+    def current(*, require_bar=True):
         assert time.monotonic() < deadline, "settings scrolling exhausted the original deadline"
         assert node.get_name() == name
         for child, parent in zip(path, path[1:]):
@@ -356,7 +356,13 @@ def scroll_settings_control(pid, node, *, deadline, at_start=False):
             assert not child.get_state_set().contains(Atspi.StateType.DEFUNCT)
         frame.clear_cache()
         assert frame.get_state_set().contains(Atspi.StateType.ACTIVE)
-        for peer in (pane, bar):
+        bar.clear_cache()
+        assert bar.get_process_id() == pid and bar.get_parent() == pane
+        assert bar.get_role() == Atspi.Role.SCROLL_BAR
+        bar_states = bar.get_state_set()
+        assert bar_states.contains(Atspi.StateType.VERTICAL)
+        assert not bar_states.contains(Atspi.StateType.DEFUNCT)
+        for peer in (pane, bar) if require_bar else (pane,):
             peer.clear_cache()
             states = peer.get_state_set()
             assert all(
@@ -381,6 +387,25 @@ def scroll_settings_control(pid, node, *, deadline, at_start=False):
         assert all(math.isfinite(number) for number in (lower, upper, position))
         assert lower <= position <= upper
         return clip, lower, upper, position
+
+    if at_start:
+        # An AUTOMATIC scrollbar is legitimately hidden when this collapsed
+        # page fits. Reading its exact zero range is not a scroll/input grant.
+        clip, lower, upper, position = current(require_bar=False)
+        if lower == upper == position:
+            node.clear_cache()
+            assert node.get_state_set().contains(Atspi.StateType.SHOWING)
+            area = rectangle(node)
+            for peer in (viewport, pane, frame):
+                peer.clear_cache()
+                assert peer.get_state_set().contains(Atspi.StateType.SHOWING)
+                observed = rectangle(peer)
+                assert observed.x <= area.x <= observed.x + observed.width - area.width
+                assert observed.y <= area.y <= observed.y + observed.height - area.height
+            _, low, high, actual = current(require_bar=False)
+            assert (low, high, actual) == (lower, upper, position)
+            assert time.monotonic() < deadline
+            return node
 
     clip, lower, upper, position = current()
     page_size = clip.height
@@ -424,7 +449,12 @@ def scroll_settings_control(pid, node, *, deadline, at_start=False):
             # calibrated ancestry/full-clip gate.
             if observed.x != -(2**31) and observed.y != -(2**31):
                 assert observed.width > 0 and observed.height > 0
-                assert observed.x <= area.x <= observed.x + observed.width - area.width
+                assert observed.x <= area.x <= observed.x + observed.width - area.width, (
+                    "Settings target exceeds its observed horizontal viewport: "
+                    f"viewport={(observed.x, observed.y, observed.width, observed.height)}, "
+                    f"target={(area.x, area.y, area.width, area.height)}, "
+                    f"position={position}, step={step}"
+                )
                 assert area.height <= observed.height
                 delta = (
                     area.y - observed.y

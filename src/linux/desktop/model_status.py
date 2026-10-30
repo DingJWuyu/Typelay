@@ -112,14 +112,15 @@ def download_presentation(snapshot, state, tr):
     return label, count / total if total is not None else None
 
 
-def render_download(widgets, snapshot, state, tr, current):
+def render_download(widgets, snapshot, state, tr, current, task):
     """Render only while this exact read-only snapshot still owns the view."""
     message, fraction = download_presentation(snapshot, state, tr)
     caption, bar = widgets
+    identity = (task, snapshot["resource"], snapshot["attempt"]) if snapshot else None
     for action in (
         lambda: caption.set_text(message),
         lambda: caption.set_visible(bool(message)),
-        lambda: bar.set_fraction(fraction if fraction is not None else 0),
+        lambda: bar.present_progress(fraction, identity, state, current),
         lambda: bar.set_visible(bool(message) and fraction is not None),
         lambda: bar.get_accessible().set_name(message),
     ):

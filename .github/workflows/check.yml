@@ -1350,6 +1350,19 @@ jobs:
         with:
           name: typelay-linux-desktop-diagnostics-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            artifacts/linux/fcitx-probe/client.log
+            artifacts/linux/fcitx-probe/field.json
+            artifacts/linux/fcitx-probe/versions.json
+            artifacts/linux/fcitx-probe/framework.log
+            artifacts/linux/fcitx-cooperative-5.1.22/result.json
+            artifacts/linux/fcitx-cooperative-5.1.22/gtk3-glossary-result.json
+            artifacts/linux/fcitx-cooperative-5.1.22/gtk4-glossary-result.json
+            artifacts/linux/fcitx-cooperative-5.1.22/gtk3-glossary-session/result.json
+            artifacts/linux/fcitx-cooperative-5.1.22/gtk4-glossary-session/result.json
+            artifacts/linux/ordinary-gimp/ordinary-gimp-result.json
+            artifacts/linux/ordinary-gimp/failure-status.json
+            artifacts/linux/ordinary-gimp/ordinary-gimp-before-cleanup.png
+            artifacts/linux/ordinary-gimp/failure.png
             artifacts/linux/nested/*.json
             artifacts/linux/nested/*.jsonl
             artifacts/linux/nested/*.png

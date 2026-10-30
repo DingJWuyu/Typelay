@@ -76,6 +76,7 @@ internal sealed partial class OnboardingWindow : Window
         AutomationProperties.SetAutomationId(close, "OnboardingClose");
         caption.Children.Add(close);
         _root.Children.Add(caption);
+        AutomationProperties.SetAutomationId(_body, "OnboardingStepBody");
         var scroll = new ScrollViewer
         {
             Content = _body,
@@ -99,7 +100,7 @@ internal sealed partial class OnboardingWindow : Window
             Width = GridLength.Auto
         });
         footer.Children.Add(_dots);
-        _back = UiTheme.Button(UiTheme.L("返回", "Back"), () => { if (IsVisible && !_busy && _step > 1) { _step--; _feedback.Text = ""; Refresh(); } });
+        _back = UiTheme.Button(UiTheme.L("返回", "Back"), () => { if (IsVisible && !_busy && _step > 1) { _step--; _feedback.Text = ""; RequestStepEntrance(); Refresh(); } });
         _back.Margin = new(0, 0, 10, 0);
         _back.MinWidth = 64;
         _back.Height = 34;
@@ -120,18 +121,27 @@ internal sealed partial class OnboardingWindow : Window
         shell.Margin = new(10);
         shell.BorderThickness = new(.5);
         Content = shell;
-        IsVisibleChanged += (_, _) =>
+        IsVisibleChanged += (_, args) =>
         {
+            bool visible = (bool)args.NewValue;
             _navigationVersion++;
-            if (_step != 3)
-                return;
-            if (IsVisible)
-                Refresh();
-            else
+            object opening = _stepOpening = new();
+            _stepEntrance = null;
+            if (!visible)
             {
+                _showRequest = null;
                 _pageIdentity = new();
-                RetireOnboardingModel();
             }
+            RetireStepMotion();
+            if (!ReferenceEquals(_stepOpening, opening) || IsVisible != visible)
+                return;
+            if (visible)
+            {
+                RequestStepEntrance();
+                Refresh();
+            }
+            else
+                RetireOnboardingModel();
         };
         _settings.Changed += Refresh;
         _model.Changed += Refresh;
@@ -139,6 +149,9 @@ internal sealed partial class OnboardingWindow : Window
         Closed += (_, _) =>
         {
             _closed = true;
+            _showRequest = null;
+            _stepEntrance = null;
+            RetireStepMotion();
             RetireOnboardingModel();
             _settings.Changed -= Refresh;
             _model.Changed -= Refresh;
@@ -151,19 +164,29 @@ internal sealed partial class OnboardingWindow : Window
     {
         if (_closed)
             return;
+        object request = new();
+        _showRequest = request;
         if (restart)
         {
             _navigationVersion++;
             _step = 1;
             _feedback.Text = "";
+            RequestStepEntrance();
         }
         Refresh();
+        if (_closed || !ReferenceEquals(_showRequest, request))
+            return;
         if (!IsVisible)
             Show();
-        Activate();
+        // Public layout/visibility callbacks may have hidden this opening or
+        // accepted another Show. The old tail must not activate either one.
+        if (!_closed && IsVisible && ReferenceEquals(_showRequest, request))
+            Activate();
     }
 
-    private void Refresh()
+    private void Refresh() => RefreshStep(null);
+
+    private void RefreshStep(StepEntranceRequest? accepted)
     {
         if (_closed || _rendering)
             return;
@@ -173,28 +196,33 @@ internal sealed partial class OnboardingWindow : Window
             return;
         }
         _rendering = true;
+        object opening = _stepOpening;
+        int step = _step;
+        object? page = null;
+        bool complete = false;
         try
         {
+            RetireStepMotion();
             RetireOnboardingModel();
             UiTheme.Apply(_settings.Value);
             AutomationProperties.SetName(_close, UiTheme.L("关闭首次设置", "Close Setup"));
-            _pageIdentity = new();
+            page = _pageIdentity = new();
             _body.Children.Clear();
             _dots.Children.Clear();
-            for (int step = 1; step <= 4; step++)
+            for (int dotStep = 1; dotStep <= 4; dotStep++)
             {
-                var dot = new Border { Width = step == _step ? 18 : 6, Height = 6, CornerRadius = new(3), Margin = new(0, 0, 5, 0) };
-                dot.SetResourceReference(Border.BackgroundProperty, step == _step ? "Accent" : "Line");
+                var dot = new Border { Width = dotStep == step ? 18 : 6, Height = 6, CornerRadius = new(3), Margin = new(0, 0, 5, 0) };
+                dot.SetResourceReference(Border.BackgroundProperty, dotStep == step ? "Accent" : "Line");
                 _dots.Children.Add(dot);
             }
-            AutomationProperties.SetName(_dots, UiTheme.L($"第 {_step} 步，共 4 步", $"Step {_step} of 4"));
-            _back.Visibility = _step > 1 ? Visibility.Visible : Visibility.Collapsed;
+            AutomationProperties.SetName(_dots, UiTheme.L($"第 {step} 步，共 4 步", $"Step {step} of 4"));
+            _back.Visibility = step > 1 ? Visibility.Visible : Visibility.Collapsed;
             _back.IsEnabled = !_busy;
             _back.Content = UiTheme.L("返回", "Back");
-            _next.Content = UiTheme.L(_step == 4 ? "开始使用" : "继续", _step == 4 ? "Get started" : "Continue");
-            _next.IsEnabled = !_busy && (_step < 3 || _model.Ready)
-                && (_step != 3 || _settingsWindow.ModelSelectionIsReady(_settingsWindow.ReadQuickPanelPreparation()));
-            switch (_step)
+            _next.Content = UiTheme.L(step == 4 ? "开始使用" : "继续", step == 4 ? "Get started" : "Continue");
+            _next.IsEnabled = !_busy && (step < 3 || _model.Ready)
+                && (step != 3 || _settingsWindow.ModelSelectionIsReady(_settingsWindow.ReadQuickPanelPreparation()));
+            switch (step)
             {
                 case 1:
                     var mark = UiTheme.Mark(76, appIcon: true);
@@ -214,8 +242,11 @@ internal sealed partial class OnboardingWindow : Window
                     Practice();
                     break;
             }
+            complete = true;
         }
         finally { _rendering = false; }
+        if (complete && page is not null)
+            CompleteStepEntrance(opening, page, step, accepted);
     }
 
     private void Heading(string value)
@@ -425,6 +456,7 @@ internal sealed partial class OnboardingWindow : Window
         }
         _step++;
         _feedback.Text = "";
+        RequestStepEntrance();
         Refresh();
     }
 }

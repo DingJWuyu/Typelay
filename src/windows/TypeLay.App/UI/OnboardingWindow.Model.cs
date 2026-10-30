@@ -32,6 +32,7 @@ internal sealed partial class OnboardingWindow
         var state = _settingsWindow.ReadQuickPanelPreparation();
         var view = state.View;
         bool retired = false;
+        var buttonPaints = new List<OnboardingButtonPress>();
         bool Current() => !retired && CurrentPage(page) && navigation == _navigationVersion && _step == 3 && !_busy;
         bool ready = _settingsWindow.ModelSelectionIsReady(state);
         Heading(UiTheme.L("下载本地翻译模型", "Download the translation model"));
@@ -90,7 +91,7 @@ internal sealed partial class OnboardingWindow
             TranslationPreparationAction.Retry => UiTheme.L("重试", "Retry"),
             _ => SettingsWindow.ModelCopy(view.PrimaryAction.Label)
         };
-        var primary = OnboardingModelButton(primaryLabel, () => Run(view.PrimaryAction));
+        var primary = OnboardingModelButton(primaryLabel, () => Run(view.PrimaryAction), Current, buttonPaints);
         primary.IsEnabled = view.PrimaryAction.Enabled && view.PrimaryAction.Id != TranslationPreparationAction.NextStep;
         primary.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
         primary.ToolTip = SettingsWindow.ModelCopy(view.Guidance);
@@ -158,7 +159,7 @@ internal sealed partial class OnboardingWindow
         var secondary = new WrapPanel { Margin = new(0, 12, 0, 0), HorizontalAlignment = HorizontalAlignment.Right };
         foreach (var action in view.SecondaryActions.Where(action => action.Id != TranslationPreparationAction.NextStep))
         {
-            var button = OnboardingModelButton(SettingsWindow.ModelCopy(action.Label), () => Run(action));
+            var button = OnboardingModelButton(SettingsWindow.ModelCopy(action.Label), () => Run(action), Current, buttonPaints);
             button.IsEnabled = action.Enabled;
             button.Margin = new(6, 0, 0, 0);
             AutomationProperties.SetAutomationId(button, "OnboardingModel_" + action.Id);
@@ -239,13 +240,15 @@ internal sealed partial class OnboardingWindow
             retired = true;
             _settingsWindow.QuickPanelProgressChanged -= UpdateProgress;
             SystemParameters.StaticPropertyChanged -= MotionChanged;
+            foreach (var paint in buttonPaints)
+                paint.Dispose();
             fill.Dispose();
             progress.Tag = "static";
         };
         UpdateProgress();
     }
 
-    private static Button OnboardingModelButton(string label, Action action)
+    private static Button OnboardingModelButton(string label, Action action, Func<bool> current, List<OnboardingButtonPress> paints)
     {
         var button = UiTheme.Button(label, action);
         button.Height = 26;
@@ -256,18 +259,23 @@ internal sealed partial class OnboardingWindow
         button.SetResourceReference(Control.BackgroundProperty, "Control");
         button.Template = (ControlTemplate)XamlReader.Parse("""
             <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
-              <Grid>
+              <Grid x:Name="pressSurface" RenderTransformOrigin=".5,.5">
                 <Border x:Name="surface" CornerRadius="7" Background="{TemplateBinding Background}" Effect="{DynamicResource SettingsModeThumbShadow}"/>
                 <Border x:Name="edge" CornerRadius="7" BorderThickness=".5" BorderBrush="{DynamicResource SettingsModeThumbEdge}" IsHitTestVisible="False"/>
                 <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
               </Grid>
               <ControlTemplate.Triggers>
-                <Trigger Property="IsPressed" Value="True"><Setter TargetName="surface" Property="Background" Value="{DynamicResource Fill2}"/></Trigger>
+                <MultiTrigger>
+                  <MultiTrigger.Conditions><Condition Property="IsPressed" Value="True"/><Condition Property="IsEnabled" Value="True"/></MultiTrigger.Conditions>
+                  <Setter TargetName="surface" Property="Background" Value="{DynamicResource Fill2}"/>
+                  <Setter TargetName="pressSurface" Property="RenderTransform"><Setter.Value><ScaleTransform ScaleX=".97" ScaleY=".97"/></Setter.Value></Setter>
+                </MultiTrigger>
                 <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="edge" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
                 <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value=".45"/></Trigger>
               </ControlTemplate.Triggers>
             </ControlTemplate>
             """);
+        paints.Add(new OnboardingButtonPress(button, current));
         return button;
     }
 

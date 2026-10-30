@@ -429,7 +429,7 @@ internal static partial class ContinuousTranslationCheck
             await UntilAsync(() => { Require(model.Ready, "ordinary-model-unavailable"); return !model.Busy; }, cancellation);
             const string source = "你好我想确认明天下午的会议时间";
             result.Stage = "ordinary-start-source";
-            native = StartSource(nativeFixture);
+            native = StartSource(nativeFixture, observeSetup: true);
             using var setupDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
             setupDeadline.CancelAfter(TimeSpan.FromSeconds(15));
             readyStartedAtMs = WindowsInterruptClock.NowMs;
@@ -698,6 +698,27 @@ internal static partial class ContinuousTranslationCheck
                         var gui = new N.GuiThreadInfo { Size = (uint)Marshal.SizeOf<N.GuiThreadInfo>() };
                         bool? guiRead = rootIdentityMatches ? N.GetGUIThreadInfo(rootThread, ref gui) : null;
                         int? guiError = guiRead == false ? Marshal.GetLastPInvokeError() : null;
+                        object? setupDispatch = null;
+                        if (rootIdentityMatches && fieldIdentityMatches && sameThread && fieldRootMatches)
+                        {
+                            // Failure-only, non-atomic best-effort snapshot. Missing properties
+                            // mean unknown, not that the original message was never dispatched.
+                            nint observedField = N.GetProp(root, "TypeLay.Test.SourceSetup.Field.v1");
+                            long? ReadScalar(string property)
+                            {
+                                nint value = N.GetProp(root, property);
+                                return value == 0 ? null : (long)value;
+                            }
+                            setupDispatch = new
+                            {
+                                observedFieldMatches = observedField == 0 ? (bool?)null : observedField == field,
+                                focusCountCappedAtEight = ReadScalar("TypeLay.Test.SourceSetup.FocusCount.v1"),
+                                focusEnteredAtMs = ReadScalar("TypeLay.Test.SourceSetup.FocusEnteredAt.v1"),
+                                focusReturnedAtMs = ReadScalar("TypeLay.Test.SourceSetup.FocusReturnedAt.v1"),
+                                selectionCountCappedAtEight = ReadScalar("TypeLay.Test.SourceSetup.SelectionCount.v1"),
+                                selectionDispatchAtMs = ReadScalar("TypeLay.Test.SourceSetup.SelectionDispatchAt.v1")
+                            };
+                        }
                         initializationFailure = new
                         {
                             observedAtMs,
@@ -709,6 +730,7 @@ internal static partial class ContinuousTranslationCheck
                             fieldIdentityMatches,
                             sameThread,
                             fieldRootMatches,
+                            setupDispatch,
                             rootLookupError,
                             fieldLookupError,
                             guiRead,
@@ -1493,7 +1515,7 @@ internal static partial class ContinuousTranslationCheck
     [DllImport("user32.dll")]
     private static extern nint GetDlgItem(nint window, int id);
 
-    private static ChildProcess StartSource(string nativeFixture)
+    private static ChildProcess StartSource(string nativeFixture, bool observeSetup = false)
     {
         var start = new ProcessStartInfo("dotnet")
         {
@@ -1504,6 +1526,8 @@ internal static partial class ContinuousTranslationCheck
         };
         start.ArgumentList.Add(nativeFixture);
         start.ArgumentList.Add("--stock-controls");
+        if (observeSetup)
+            start.Environment["TYPELAY_FIXTURE_OBSERVE_SOURCE_SETUP"] = "1";
         return new ChildProcess(start);
     }
 

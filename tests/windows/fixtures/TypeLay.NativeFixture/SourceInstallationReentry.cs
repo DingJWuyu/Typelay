@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
+using TypeLay.Windows;
 using N = TypeLay.Platform.Windows.NativeMethods;
 
 // A downstream hook in the controlled fixture, installed before the production
@@ -32,6 +33,15 @@ internal sealed class SourceInstallationReentry : IDisposable
     // hook observations, not synthetic input authority or a general queue log.
     private N.MessageStruct? _dispatchDown, _dispatchUp;
     private bool _dispatchDownCompleted, _dispatchUpCompleted;
+    private nint _setupField;
+    private int _setupSelectionCount;
+
+    internal void ObserveSetupField(nint field)
+    {
+        // Opt-in only for the single controlled stock field, before readiness.
+        _setupField = field;
+        N.SetProp(_root, "TypeLay.Test.SourceSetup.Field.v1", field);
+    }
 
     internal SourceInstallationReentry(nint root, EventWaitHandle entered, EventWaitHandle release)
     {
@@ -146,6 +156,13 @@ internal sealed class SourceInstallationReentry : IDisposable
         if (code >= 0)
         {
             var message = Marshal.PtrToStructure<CallMessage>(lp);
+            if (_setupField != 0 && message.Hwnd == _setupField && message.Message == N.EM_SETSEL)
+            {
+                // This existing WH_CALLWNDPROC observes entry, not stock Edit completion.
+                _setupSelectionCount = Math.Min(8, _setupSelectionCount + 1);
+                N.SetProp(_root, "TypeLay.Test.SourceSetup.SelectionCount.v1", _setupSelectionCount);
+                N.SetProp(_root, "TypeLay.Test.SourceSetup.SelectionDispatchAt.v1", (nint)WindowsInterruptClock.NowMs);
+            }
             if (message.Hwnd == _root && message.Message == ArmMessage)
             {
                 _first = message.WParam;

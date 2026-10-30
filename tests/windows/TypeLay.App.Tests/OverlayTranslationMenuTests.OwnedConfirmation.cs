@@ -489,6 +489,8 @@ public sealed partial class OverlayTranslationMenuTests
         }
     }
 
+    private static long _ownedEditorMouseNonce;
+
     private static async Task ClickOwnedConfirmationEditor(TextBox editor, OverlayWindow overlay,
         Action verifySource, CancellationToken cancellation)
     {
@@ -505,6 +507,38 @@ public sealed partial class OverlayTranslationMenuTests
         var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         nint? firstMiss = null, readyHit = null;
         int observations = 0;
+        long nonce = Interlocked.Increment(ref _ownedEditorMouseNonce);
+        Assert.InRange(nonce, 1L, (long)uint.MaxValue);
+        nuint extraInfo = checked((nuint)(0x544c000000000000UL | (ulong)nonce));
+        var dispatchedUp = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool sentPair = false, matchingUpObserved = false;
+        int? activateTrigger = null, activateX = null, activateY = null, upX = null, upY = null;
+        HwndSourceHook observeDispatch = (nint hwnd, int message, nint wParam, nint lParam, ref bool handled) =>
+        {
+            if (hwnd != host.Handle || !sentPair)
+                return 0;
+            if (message == 0x0021 && activateTrigger is null) // WM_MOUSEACTIVATE is sent, not a queue-time receipt.
+            {
+                activateTrigger = (int)((long)lParam >> 16) & 0xffff;
+                uint position = OwnedEditorMessagePos();
+                activateX = (short)(position & 0xffff);
+                activateY = (short)(position >> 16);
+            }
+            if (message == 0x0202 && unchecked((nuint)OwnedEditorMessageExtraInfo()) == extraInfo)
+            {
+                matchingUpObserved = true;
+                uint position = OwnedEditorMessagePos();
+                upX = (short)(position & 0xffff);
+                upY = (short)(position >> 16);
+                if (cancellation.IsCancellationRequested)
+                    dispatchedUp.TrySetCanceled(cancellation);
+                else if (upX != pixel.X || upY != pixel.Y)
+                    dispatchedUp.TrySetException(new InvalidOperationException("owned-editor-up-point-changed"));
+                else
+                    dispatchedUp.TrySetResult();
+            }
+            return 0; // Observation only: never handle or synthesize another message.
+        };
         EventHandler retire = (_, _) =>
         {
             retired = true;
@@ -512,16 +546,25 @@ public sealed partial class OverlayTranslationMenuTests
         };
         DependencyPropertyChangedEventHandler visible = (_, _) => { if (!editor.IsVisible) retire(null, EventArgs.Empty); };
         SourceChangedEventHandler changed = (_, e) => { if (!ReferenceEquals(e.NewSource, host)) retire(null, EventArgs.Empty); };
+        EventHandler windowRetired = (_, _) =>
+        {
+            retire(null, EventArgs.Empty);
+            dispatchedUp.TrySetException(new InvalidOperationException("owned-editor-window-retired-before-up"));
+        };
         EventHandler rendering = (_, _) => Sample();
         editor.IsVisibleChanged += visible;
         PresentationSource.AddSourceChangedHandler(editor, changed);
-        overlay.Closed += retire;
-        host.Disposed += retire;
+        overlay.Closed += windowRetired;
+        host.Disposed += windowRetired;
         CompositionTarget.Rendering += rendering;
+        bool hookInstalled = false;
         try
         {
+            host.AddHook(observeDispatch);
+            hookInstalled = true;
             Sample();
             await ready.Task.WaitAsync(cancellation);
+            CompositionTarget.Rendering -= rendering; // No preview validation during a successful handoff.
             Verify();
             Assert.Equal(host.Handle, WindowFromPoint(pixel));
             Verify();
@@ -529,26 +572,40 @@ public sealed partial class OverlayTranslationMenuTests
             Assert.Equal(host.Handle, WindowFromPoint(pixel));
             MouseInput[] sequence = [new()
         {
-            Flags = 2
+            Flags = 2,
+            ExtraInfo = extraInfo
         }, new()
         {
-            Flags = 4
+            Flags = 4,
+            ExtraInfo = extraInfo
         }];
             Verify();
+            sentPair = true;
             uint sent = SendInput(2, sequence, Marshal.SizeOf<MouseInput>());
             if (sent == 1)
                 Assert.Equal(1u, SendInput(1, [sequence[1]], Marshal.SizeOf<MouseInput>()));
             Assert.Equal(2u, sent); // The original WM_MOUSEACTIVATE press may be eaten by owned admission.
+            // SendInput queues the pair. Keep the cursor at the original point until
+            // its exact tagged up is dispatched; this does not prove admission succeeded.
             // No post-click Validate: the successful handoff itself retires the preview.
+            await dispatchedUp.Task.WaitAsync(cancellation);
         }
         finally
         {
-            CompositionTarget.Rendering -= rendering;
-            host.Disposed -= retire;
-            overlay.Closed -= retire;
-            PresentationSource.RemoveSourceChangedHandler(editor, changed);
-            editor.IsVisibleChanged -= visible;
-            Assert.True(SetCursorPos(previous.X, previous.Y));
+            try
+            {
+                if (hookInstalled)
+                    host.RemoveHook(observeDispatch);
+            }
+            finally
+            {
+                CompositionTarget.Rendering -= rendering;
+                host.Disposed -= windowRetired;
+                overlay.Closed -= windowRetired;
+                PresentationSource.RemoveSourceChangedHandler(editor, changed);
+                editor.IsVisibleChanged -= visible;
+                Assert.True(SetCursorPos(previous.X, previous.Y));
+            }
             try
             {
                 TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
@@ -558,11 +615,24 @@ public sealed partial class OverlayTranslationMenuTests
                     firstMiss = firstMiss is { } first ? (long?)first : null,
                     readyHit = readyHit is { } hit ? (long?)hit : null,
                     expected = (long)host.Handle,
+                    plannedX = pixel.X,
+                    plannedY = pixel.Y,
+                    previousX = previous.X,
+                    previousY = previous.Y,
+                    sentPair,
+                    activateTrigger,
+                    activateX,
+                    activateY,
+                    matchingUpObserved,
+                    upX,
+                    upY,
                     retired,
                     cancellationRequested = cancellation.IsCancellationRequested
                 }));
             }
-            catch { /* Observation cannot change the original action result. */ }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            { /* Observation cannot change the original action result. */
+            }
         }
         void Sample()
         {
@@ -655,6 +725,10 @@ public sealed partial class OverlayTranslationMenuTests
             return Task.FromResult(new ModelResponse(1, "translated", translation));
         }
     }
+    [DllImport("user32.dll", EntryPoint = "GetMessagePos")]
+    private static extern uint OwnedEditorMessagePos();
+    [DllImport("user32.dll", EntryPoint = "GetMessageExtraInfo")]
+    private static extern nint OwnedEditorMessageExtraInfo();
     [DllImport("user32.dll", EntryPoint = "MapVirtualKeyW", ExactSpelling = true)]
     private static extern uint MapOwnedConfirmationKey(uint key, uint mapType);
     [DllImport("user32.dll", EntryPoint = "GetDlgItem")]

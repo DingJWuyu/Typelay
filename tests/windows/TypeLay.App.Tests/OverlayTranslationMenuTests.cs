@@ -609,6 +609,7 @@ public sealed partial class OverlayTranslationMenuTests(WpfDesktopFixture deskto
     {
         [FieldOffset(0)] public uint Type;
         [FieldOffset(20)] public uint Flags;
+        [FieldOffset(32)] public nuint ExtraInfo;
     }
     [DllImport("user32.dll")]
     private static extern nint WindowFromPoint(Native.Point point);

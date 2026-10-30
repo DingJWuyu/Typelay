@@ -430,13 +430,58 @@ public sealed partial class SettingsRenderingTests
         Exception? failure = null;
         bool observed = false, completed = false;
         Task? interaction = null;
+        object? firstReadiness = null;
+        int readinessObservations = 0, lastCandidateCount = 0;
+        var previousOwned = owner.OwnedWindows.Cast<Window>().ToArray();
+        object? ReadReadiness()
+        {
+            try
+            {
+                return new
+                {
+                    Candidates = owner.OwnedWindows.Cast<Window>().Count(window => ReferenceEquals(window.Owner, owner)
+                        && window.IsVisible && AutomationProperties.GetAutomationId(window) == id),
+                    OwnerVisible = owner.IsVisible,
+                    OwnerActive = owner.IsActive,
+                    OwnerEnabled = owner.IsEnabled,
+                    Foreground = Native.GetForegroundWindow().ToInt64(),
+                    Owner = new WindowInteropHelper(owner).Handle.ToInt64()
+                };
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                return null;
+            }
+        }
         async Task InteractAsync()
         {
             Window? dialog = null;
             try
             {
                 ct.ThrowIfCancellationRequested();
-                dialog = owner.OwnedWindows.Cast<Window>().Single(window => window.IsVisible && AutomationProperties.GetAutomationId(window) == id);
+                // SendInput queues a real right-click. ApplicationIdle is not
+                // a receipt that its owned modal has already become visible.
+                // Keep the original deadline and send the input only once.
+                while (dialog is null)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var candidates = owner.OwnedWindows.Cast<Window>().Where(window =>
+                        ReferenceEquals(window.Owner, owner) && window.IsVisible && AutomationProperties.GetAutomationId(window) == id).ToArray();
+                    lastCandidateCount = candidates.Length;
+                    if (readinessObservations++ == 0)
+                        firstReadiness = ReadReadiness();
+                    Assert.True(candidates.Length <= 1, "application-dialog-is-not-unique");
+                    if (candidates.Length == 1)
+                    {
+                        var candidate = candidates[0];
+                        Assert.DoesNotContain(candidate, previousOwned);
+                        ct.ThrowIfCancellationRequested();
+                        dialog = candidate;
+                        break;
+                    }
+                    await Dispatcher.Yield(DispatcherPriority.Background);
+                }
+                ct.ThrowIfCancellationRequested();
                 observed = true;
                 dialog.UpdateLayout();
                 var title = Assert.IsType<TextBlock>(ApplicationElement(dialog, "ApplicationDialogTitle"));
@@ -490,6 +535,26 @@ public sealed partial class SettingsRenderingTests
         }
         if (action.Status == DispatcherOperationStatus.Pending)
             action.Abort();
+        if (failure is not null)
+        {
+            try
+            {
+                TestContext.Current.TestOutputHelper?.WriteLine("Application dialog readiness: " + JsonSerializer.Serialize(new
+                {
+                    Id = id,
+                    Observations = readinessObservations,
+                    First = firstReadiness,
+                    LastObservedCandidateCount = lastCandidateCount,
+                    AfterCleanup = ReadReadiness(),
+                    Observed = observed,
+                    Cancelled = ct.IsCancellationRequested
+                }));
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                // Bounded optional evidence cannot replace the original failure.
+            }
+        }
         Assert.Null(failure);
         Assert.True(observed);
         Assert.True(completed);

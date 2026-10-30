@@ -13,9 +13,12 @@ class ScrollScene:
     def __init__(self, *, offset=240, initial=0, upper=300, active=True):
         self.position, self.upper, self.active = initial, upper, active
         self.moves = []
+        self.bar_showing = True
+        self.pane_showing = True
         self.offset = offset
         self.reject = False
         self.stale = False
+        self.bar_stale = False
         self.freeze_layout = False
         self.external_scroll = False
         self.viewport_height = 100
@@ -47,11 +50,15 @@ class ScrollScene:
 
     def state(self, node, state):
         if state == "defunct":
-            return self.stale and node is self.target
+            return (self.stale and node is self.target) or (self.bar_stale and node is self.bar)
         if state == "active":
             return self.active and node is self.frame
         if state == "vertical":
             return node is self.bar
+        if state == "showing" and node is self.bar:
+            return self.bar_showing
+        if state == "showing" and node is self.pane:
+            return self.pane_showing
         if state == "showing" and node is self.target:
             y = self.offset - self.layout_position
             return y < 100 and y + 20 > 0
@@ -126,6 +133,35 @@ class SettingsScrollTests(unittest.TestCase):
         scene = ScrollScene(initial=200)
         scene.run(at_start=True)
         self.assertEqual([0], scene.moves)
+
+    def test_fitting_reopened_page_needs_no_hidden_scrollbar_action(self):
+        scene = ScrollScene(offset=20, upper=0)
+        scene.bar_showing = False
+        self.assertIs(scene.run(at_start=True), scene.target)
+        self.assertEqual([], scene.moves)
+
+    def test_hidden_scrollbar_with_nonzero_range_is_not_authorized(self):
+        scene = ScrollScene(offset=20)
+        scene.bar_showing = False
+        with self.assertRaises(AssertionError):
+            scene.run(at_start=True)
+        self.assertEqual([], scene.moves)
+
+    def test_no_scroll_branch_still_requires_current_visible_full_clip(self):
+        for change in (
+            lambda scene: setattr(scene, "active", False),
+            lambda scene: setattr(scene, "stale", True),
+            lambda scene: setattr(scene, "bar_stale", True),
+            lambda scene: setattr(scene, "pane_showing", False),
+            lambda scene: setattr(scene, "offset", 90),
+            lambda scene: setattr(scene, "position", 1),
+        ):
+            scene = ScrollScene(offset=20, upper=0)
+            scene.bar_showing = False
+            change(scene)
+            with self.assertRaises(AssertionError):
+                scene.run(at_start=True)
+            self.assertEqual([], scene.moves)
 
     def test_partially_showing_target_gets_one_exact_clip_adjustment(self):
         scene = ScrollScene(offset=90)

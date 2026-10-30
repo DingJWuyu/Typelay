@@ -113,7 +113,9 @@ try {
         $target = Join-Path $output ($name + '.ps')
         Copy-Item -LiteralPath $source -Destination $hlslInput
         $null = Require-Hash $hlslInput $result.sourceHash
-        $arguments = @('/nologo', '/T', 'ps_2_0', '/E', 'main', '/Ges', '/WX', '/O1', '/Fo', $target, $hlslInput)
+        # /Ges rejects the legacy sampler2D syntax required by this SM2 source.
+        # Keep ps_2_0 validation and /WX; do not upgrade the software-capable target.
+        $arguments = @('/nologo', '/T', 'ps_2_0', '/E', 'main', '/WX', '/O1', '/Fo', $target, $hlslInput)
         $null = Invoke-Compiler $compiler $arguments (Join-Path $output ($name + '-compile.log'))
         $bytes = [IO.File]::ReadAllBytes($target)
         if ($bytes.Length -lt 8 -or [BitConverter]::ToUInt32($bytes, 0) -ne 4294902272 -or

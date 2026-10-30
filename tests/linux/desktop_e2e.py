@@ -2782,6 +2782,11 @@ def run(arguments):
                                 # grim samples actual compositor output and may perturb timing.
                                 # The midpoint must remain between two observed intermediate allocations.
                                 before = gtk_state()["motionFrames"][-1]
+                                if label == "expand-middle":
+                                    assert 167 < before["height"] <= 250, (
+                                        "GTK expand left the early window before PNG capture",
+                                        before["height"],
+                                    )
                                 started = time.monotonic_ns() // 1_000_000
                                 name = "gtk-overlay-" + label + ".png"
                                 # Keep the same lossless pixels while removing PNG
@@ -2900,12 +2905,42 @@ def run(arguments):
                                         baseline = identity
                                     assert identity == baseline
                                     if mode == "animate-expand":
+
+                                        def early_intermediate():
+                                            frame = gtk_state()["motionFrames"][-1]
+                                            assert (
+                                                tuple(
+                                                    frame[name]
+                                                    for name in (
+                                                        "editor",
+                                                        "buffer",
+                                                        "scroll",
+                                                        "shell",
+                                                    )
+                                                )
+                                                == identity
+                                            )
+                                            assert frame["focused"] and frame["textMatches"]
+                                            assert (frame["start"], frame["end"]) == (
+                                                before["start"],
+                                                before["end"],
+                                            )
+                                            if frame["atMonoMs"] < started:
+                                                return False
+                                            # Only the first, early part of this expansion
+                                            # leaves room for the existing whole PNG capture.
+                                            # Missing it is a failure, never a later retry.
+                                            assert frame["height"] <= 250, (
+                                                "GTK expand missed the early screenshot window",
+                                                frame["height"],
+                                            )
+                                            return 167 < frame["height"]
+
                                         wait_for(
-                                            lambda: before["height"]
-                                            < gtk_state()["motionFrames"][-1].get("height", 0)
-                                            < 360,
+                                            early_intermediate,
                                             "GTK expand had no intermediate allocation for its screenshot",
                                             timeout=3,
+                                            poll_interval=0.005,
                                         )
                                         shot = capture("expand-middle")
                                         records[-1]["screenshots"].append(shot)
@@ -6219,8 +6254,72 @@ def run(arguments):
                         assert listing is not None
                         assert Atspi.Selection.select_child(listing, chosen.get_index_in_parent())
 
-                    before_exclusions = json.loads(paths.settings.read_text()).get(
-                        "ExcludedApplications"
+                    from support.gtk_accessibility import visible_named
+
+                    # Registration happened after this page's first catalogue.
+                    # Reenter through the actual sidebar, then remove the new
+                    # default member through its normal context-menu confirmation.
+                    # Only that public save creates the customized Add precondition.
+                    membership_deadline = time.monotonic() + 15
+                    initial_membership = json.loads(paths.settings.read_text())
+                    assert not initial_membership.get("ApplicationListCustomized", False)
+                    before_exclusions = initial_membership.get("ExcludedApplications")
+                    for title in ("通用", "应用"):
+                        select_settings_page(
+                            process.pid, title, timeout=membership_deadline - time.monotonic()
+                        )
+                    row_name = "应用：TypeLay Registered Fixture"
+                    row = activate_scrolled_setting(
+                        row_name,
+                        role=Atspi.Role.PANEL,
+                        activate=False,
+                        timeout=membership_deadline - time.monotonic(),
+                    )
+                    assert visible_named(process.pid, row_name, role=Atspi.Role.PANEL) == row
+                    assert focused(row)
+                    assert any(
+                        window["id"] == settings_window["id"]
+                        and window.get("pid") == process.pid
+                        and window.get("is_focused") is True
+                        for window in contents(request("Windows"), "Windows")
+                    ), "application context menu requires the current owned Settings window"
+                    assert time.monotonic() < membership_deadline
+                    key("Menu")
+                    remove_title = "移除「TypeLay Registered Fixture」？"
+                    remove_dialog = wait_for(
+                        lambda: visible_named(process.pid, remove_title, role=Atspi.Role.DIALOG),
+                        "registered application removal confirmation missing",
+                        timeout=membership_deadline - time.monotonic(),
+                    )
+                    remove = wait_for(
+                        lambda: visible_named(
+                            process.pid, "移除", role=Atspi.Role.PUSH_BUTTON, root=remove_dialog
+                        ),
+                        "registered application removal action missing",
+                        timeout=membership_deadline - time.monotonic(),
+                    )
+                    focus_settings_control(
+                        process.pid, remove, timeout=membership_deadline - time.monotonic()
+                    )
+                    remove_action = remove.get_action_iface()
+                    assert time.monotonic() < membership_deadline
+                    assert remove_action is not None and Atspi.Action.do_action(remove_action, 0)
+                    wait_for(
+                        lambda: (
+                            (value := json.loads(paths.settings.read_text())).get(
+                                "ApplicationListCustomized"
+                            )
+                            is True
+                            and "gtk-fixture" not in value.get("ManagedApplications", [])
+                            and visible_named(process.pid, remove_title, role=Atspi.Role.DIALOG)
+                            is None
+                        ),
+                        "public removal did not establish the managed Add precondition",
+                        timeout=membership_deadline - time.monotonic(),
+                    )
+                    assert (
+                        json.loads(paths.settings.read_text()).get("ExcludedApplications")
+                        == before_exclusions
                     )
                     before_management = paths.settings.read_bytes()
 
@@ -6246,7 +6345,7 @@ def run(arguments):
                                 timeout=deadline - time.monotonic(),
                             )
 
-                        search = control("搜索应用", Atspi.Role.ENTRY)
+                        search = control("搜索应用", Atspi.Role.TEXT)
                         focus_settings_control(
                             process.pid, search, timeout=deadline - time.monotonic()
                         )

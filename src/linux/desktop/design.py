@@ -16,7 +16,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("PangoCairo", "1.0")
-from gi.repository import Gdk, GLib, Gtk, Pango, PangoCairo  # noqa: E402
+from gi.repository import Gdk, GLib, GObject, Gtk, Pango, PangoCairo  # noqa: E402
 
 ACCENTS = {
     "clay": ("#d97757", "#ad4f2d", "#ec9a7c"),
@@ -635,6 +635,276 @@ def apply_theme(window, preferences, provider=None):
         provider.load_from_data(payload)
         provider.typelay_payload = payload
     return provider
+
+
+class ModelProgressBar(Gtk.ProgressBar):
+    """Real accessible fraction with one local, display-only progress transition."""
+
+    def __init__(self, window, preferences):
+        super().__init__()
+        self.window, self.preferences = window, preferences
+        self.cap_uri = (
+            (Path(__file__).parent / "icons/progress-cap-symbolic.svg").resolve().as_uri()
+        )
+        style(self, "model-progress")
+        self.provider = Gtk.CssProvider()
+        self.get_style_context().add_provider(
+            self.provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1
+        )
+        self.generation = self.identity = self.animation = None
+        self.tick = self.paint_watch = self.paint_clock = None
+        self.target = self.painted = self.pending_paint = None
+        self.width = None
+        self.paused = self.destroyed = False
+        self.current = lambda: False
+        self.connect("map", self.mapped)
+        self.connect("unmap", self.unmapped)
+        self.connect("destroy", self.destroyed_bar)
+        self.connect("size-allocate", self.allocated)
+
+    def valid(self, generation):
+        return not self.destroyed and self.generation is generation and self.current()
+
+    def stop(self, animation):
+        if self.animation is not animation:
+            return
+        self.animation = None
+        tick, self.tick = self.tick, None
+        if tick is not None:
+            self.remove_tick_callback(tick)
+
+    def paint_fraction(self, fraction, generation, from_tick=False):
+        if not self.valid(generation):
+            return False
+        # Only this widget's context owns the display provider. No screen or
+        # application provider is reloaded as the fraction moves.
+        accent = "@" + self.window.typelay_theme_scope + "-accent"
+        light, dark = ("#74726c", "#9a988f") if self.paused else (accent, accent)
+        rules = """
+            progressbar.model-progress, progressbar.model-progress trough,
+            progressbar.model-progress progress { transition: none; animation: none; }
+            progressbar.model-progress { min-height: 6px; padding: 0; margin: 0; border: 0; }
+            progressbar.model-progress trough {
+                min-height: 6px; padding: 0; margin: 0; border: 0;
+                border-radius: 3px; box-shadow: none; background-image: none;
+                background-color: rgba(20,20,19,.08);
+            }
+            .settings-dark progressbar.model-progress trough {
+                background-color: rgba(255,255,255,.09);
+            }
+        """
+        if self.target is not None:
+            filled = min(1, max(0, fraction)) * self.get_allocated_width()
+            rules += """
+                progressbar.model-progress progress {
+                    min-width: 0; min-height: 6px; padding: 0; margin: 0;
+                    border: 0; border-radius: 3px; box-shadow: none;
+                    background: transparent;
+                }
+            """
+            for selector, color in (
+                ("progressbar.model-progress trough", light),
+                (".settings-dark progressbar.model-progress trough", dark),
+            ):
+                if filled <= 0:
+                    continue
+                # Reuse one native symbolic circle. Below 6px the CSS corner
+                # radii normalize to width/2, so the capsule becomes vertical;
+                # no minimum fill width or native fraction is introduced.
+                diameter = min(6, filled)
+                if filled >= 6:
+                    caps = [(0, 0), (filled - 6, 0)]
+                    rectangle = (3, 0, filled - 6, 6)
+                else:
+                    caps = [(0, 0), (0, 6 - filled)]
+                    rectangle = (0, filled / 2, filled, 6 - filled)
+                images, sizes, positions = [], [], []
+                x, y, width, height = rectangle
+                if width > 0 and height > 0:
+                    images.append(f"linear-gradient(to right, {color}, {color})")
+                    sizes.append(f"{width:.5f}px {height:.5f}px")
+                    positions.append(f"{x:.5f}px {y:.5f}px")
+                # At exactly 6px the two caps coincide; draw the circle once,
+                # rather than compositing its antialiased edge twice.
+                for x, y in dict.fromkeys(caps):
+                    images.append(f'-gtk-recolor(url("{self.cap_uri}"), success {color})')
+                    sizes.append(f"{diameter:.5f}px {diameter:.5f}px")
+                    positions.append(f"{x:.5f}px {y:.5f}px")
+                rules += (
+                    selector
+                    + f" {{ color: {color}; background-image: "
+                    + ", ".join(images)
+                    + "; background-size: "
+                    + ", ".join(sizes)
+                    + "; background-position: "
+                    + ", ".join(positions)
+                    + "; background-repeat: no-repeat; }"
+                )
+        payload = rules.encode()
+        queued_paint = False
+        if getattr(self.provider, "typelay_payload", None) != payload:
+            self.provider.load_from_data(payload)
+            if not self.valid(generation):
+                return False
+            self.provider.typelay_payload = payload
+            if self.get_mapped():
+                # A provider invalidation schedules CSS validation; it does not
+                # guarantee that this animation UPDATE also requests a PAINT.
+                self.queue_draw()
+                if not self.valid(generation):
+                    return False
+                queued_paint = True
+        clock = self.get_frame_clock()
+        # A first allocation may update pixel-sized caps during LAYOUT, before
+        # this frame's requested PAINT. Only that exact clock emission permits
+        # same-frame confirmation; late after-paint/outside writes do not.
+        hint = GObject.signal_get_invocation_hint(clock) if clock and queued_paint else None
+        pre_paint = from_tick or (
+            hint is not None and hint.signal_id == GObject.signal_lookup("layout", Gdk.FrameClock)
+        )
+        # Frame time may coalesce between distinct frames. The real counter
+        # distinguishes a new paint from a late write in this after-paint.
+        changed_frame = clock.get_frame_counter() if clock else -1
+        self.pending_paint = (
+            (generation, fraction, changed_frame, pre_paint) if self.target is not None else None
+        )
+        return True
+
+    def mapped(self, *_):
+        clock = self.get_frame_clock()
+        self.paint_clock = clock
+        self.paint_watch = clock.connect("after-paint", self.after_paint)
+        self.paint_fraction(self.target or 0, self.generation)
+
+    def after_paint(self, clock):
+        pending = self.pending_paint
+        if (
+            clock is self.paint_clock
+            and pending is not None
+            and self.get_mapped()
+            and self.valid(pending[0])
+            and (
+                clock.get_frame_counter() > pending[2]
+                or pending[3]
+                and clock.get_frame_counter() == pending[2]
+            )
+        ):
+            # A public callback can retarget during after-paint itself. That
+            # new CSS is not this completed paint; wait for its next frame.
+            # Retarget from the last completed paint, not a tick whose new CSS
+            # has not been presented by GTK yet.
+            self.painted = pending[1]
+
+    def unmapped(self, *_):
+        self.generation = object()
+        tick, clock, watch = self.tick, self.paint_clock, self.paint_watch
+        self.animation = self.tick = self.paint_clock = self.paint_watch = None
+        self.identity = self.painted = self.pending_paint = None
+        if tick is not None:
+            self.remove_tick_callback(tick)
+        if clock is not None and watch is not None and clock.handler_is_connected(watch):
+            clock.disconnect(watch)
+
+    def destroyed_bar(self, *_):
+        self.destroyed = True
+        self.unmapped()
+
+    def allocated(self, _widget, allocation):
+        changed = self.width != allocation.width
+        self.width = allocation.width
+        if changed:
+            generation = self.generation
+            self.stop(self.animation)
+            if self.valid(generation):
+                self.painted = None
+                self.paint_fraction(self.target or 0, generation)
+
+    def present_progress(self, fraction, identity, state, current):
+        if self.destroyed or not current():
+            return
+        previous_identity, previous_target, painted = self.identity, self.target, self.painted
+        was_paused = self.paused
+        generation = self.generation = object()
+        self.current, self.identity, self.target = current, identity, fraction
+        self.paused = state != "running"
+        if not self.valid(generation):
+            return
+        # This remains the real GTK/Atk value. CSS alone interpolates its paint.
+        Gtk.ProgressBar.set_fraction(self, fraction if fraction is not None else 0)
+        if not self.valid(generation):
+            return
+        animate = (
+            fraction is not None
+            and previous_target is not None
+            and not was_paused
+            and previous_identity == identity
+            and self.get_mapped()
+            and state == "running"
+            and not reduced_motion(self.window, self.preferences())
+        )
+        if animate and self.animation is not None and previous_target == fraction:
+            pending = self.pending_paint
+            self.paint_fraction(pending[1] if pending is not None else painted, generation)
+            return
+        self.stop(self.animation)
+        if not self.valid(generation):
+            return
+        if not animate or painted is None or fraction <= painted:
+            if not self.get_mapped() or previous_identity != identity or fraction is None:
+                self.painted = None
+            self.paint_fraction(fraction or 0, generation)
+            return
+        animation = self.animation = object()
+        if not self.paint_fraction(painted, generation):
+            if self.animation is animation:
+                self.animation = None
+            return
+        started = None
+
+        def frame(_widget, clock):
+            nonlocal started
+            if self.animation is not animation:
+                return False
+            if not self.get_mapped() or not self.valid(self.generation):
+                self.tick = self.animation = None
+                return False
+            if reduced_motion(self.window, self.preferences()):
+                self.tick = self.animation = None
+                self.paint_fraction(self.target, self.generation, from_tick=True)
+                return False
+            now = clock.get_frame_time()
+            if started is None:
+                started = now
+            elapsed = min(1, max(0, (now - started) / 400000))
+            lower, upper = 0.0, 1.0
+            for _ in range(12):
+                t = (lower + upper) / 2
+                x = 3 * (1 - t) ** 2 * t * 0.22 + 3 * (1 - t) * t * t * 0.36 + t**3
+                if x < elapsed:
+                    lower = t
+                else:
+                    upper = t
+            eased = 1 - (1 - (lower + upper) / 2) ** 3 if elapsed < 1 else 1
+            if not self.paint_fraction(
+                painted + (fraction - painted) * eased, self.generation, from_tick=True
+            ):
+                if self.animation is animation:
+                    self.tick = self.animation = None
+                return False
+            if self.animation is not animation:
+                return False
+            if elapsed == 1:
+                self.tick = self.animation = None
+                return False
+            return True
+
+        tick = self.add_tick_callback(frame)
+        if self.animation is animation and self.valid(generation):
+            self.tick = tick
+        else:
+            if self.animation is animation:
+                self.animation = None
+            self.remove_tick_callback(tick)
 
 
 class Segments(Gtk.Box):

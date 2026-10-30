@@ -2,6 +2,7 @@
 
 import gi
 from design import (
+    ModelProgressBar,
     Segments,
     Toast,
     app_icon,
@@ -189,7 +190,7 @@ class Tray:
         progress_label.set_line_wrap(True)
         progress_label.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
         style(progress_label, "muted")
-        progress_bar = Gtk.ProgressBar()
+        progress_bar = ModelProgressBar(self.window, lambda: self.value or {})
         for widget in (progress_label, progress_bar):
             widget.set_no_show_all(True)
             self.model_card.pack_start(widget, False, False, 0)
@@ -364,6 +365,7 @@ class Tray:
                 or owner.download_progress.snapshot is snapshot
                 and owner.installation_state == state
             ),
+            owner.download_progress.owner if owner is not None else None,
         )
 
     def refresh_model(self):

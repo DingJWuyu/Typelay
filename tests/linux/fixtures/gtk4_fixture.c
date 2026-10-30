@@ -702,8 +702,9 @@ static void control_map_observation(GtkWidget *widget, ControlPaint *paint, gboo
     GtkWidget *scroll = NULL;
     GtkWidget *child = card ? gtk_widget_get_first_child(card) : NULL;
     for (guint count = 0; child && count < 4; count++, child = gtk_widget_get_next_sibling(child)) {
-        if (GTK_IS_OVERLAY(child) && g_strcmp0(gtk_widget_get_name(child), "typelay-body") == 0) {
-            scroll = gtk_overlay_get_child(GTK_OVERLAY(child));
+        GtkWidget *content = GTK_IS_OVERLAY(child) ? gtk_overlay_get_child(GTK_OVERLAY(child)) : NULL;
+        if (GTK_IS_SCROLLED_WINDOW(content) && g_strcmp0(gtk_widget_get_name(content), "typelay-body") == 0) {
+            scroll = content;
             break;
         }
     }

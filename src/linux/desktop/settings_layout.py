@@ -3,6 +3,7 @@
 import gi
 from design import (
     ACCENTS,
+    ModelProgressBar,
     Segments,
     ShortcutRecorder,
     Toast,
@@ -769,7 +770,7 @@ def build(
         note.set_margin_bottom(12)
         model_hero.pack_start(note, False, False, 0)
     progress_label = label(muted=True)
-    progress_bar = Gtk.ProgressBar()
+    progress_bar = ModelProgressBar(owner.window, lambda: owner.value or {})
     for widget in (progress_label, progress_bar):
         widget.set_no_show_all(True)
         widget.set_margin_start(14)

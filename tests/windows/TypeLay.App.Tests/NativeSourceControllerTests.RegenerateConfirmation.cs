@@ -88,6 +88,9 @@ public sealed partial class NativeSourceControllerTests
             await Until(() => returns == 1 && N.Focused() == (native.Root, native.A) && editor.IsReadOnly, native.Token);
             await Until(() => AutomationProperties.GetItemStatus(editor) == "当前译文" && captures.TryPeek(out _), native.Token);
             int requests = translation.Calls;
+            // Freeze identity for a failure-only observation, not a replacement focus gate.
+            nint originalCookie = N.GetProp(native.A, "TypeLay.NativeInput.Lifetime.v2");
+            uint sourceThread = N.GetWindowThreadProcessId(native.A, out uint sourceProcess);
             var token = Assert.IsType<SessionViewToken>(controller.GetAlternativeState().Session);
             var read = Assert.IsType<Func<WindowsRuntime.SourceObservation>>(observe);
             var sourceVersion = read();
@@ -321,12 +324,20 @@ public sealed partial class NativeSourceControllerTests
                     {
                         try
                         {
-                            var focus = N.Focused();
+                            var focus = N.ReadFocus(); // Same single observation used by Focused().
                             TestContext.Current.TestOutputHelper?.WriteLine("Source confirmation key failure: "
                                 + $"press={pressAt}, repeat={repeatAt}, release={releaseAt}, now={WindowsInterruptClock.NowMs}, "
                                 + $"downTimes={string.Join(";", downTimes)}, ups={string.Join(";", ups)}, "
                                 + $"returns={returns}, beforeReturn={beforeReturn}, captures={captureResponses}, "
-                                + $"sourceFocused={focus == (native.Root, native.A)}, overlayVisible={overlay.IsVisible}, "
+                                + $"sourceFocused={(focus.Root, focus.Control) == (native.Root, native.A)}, overlayVisible={overlay.IsVisible}, "
+                                + $"foregroundIsRoot={focus.Root == native.Root}, foregroundIsField={focus.Root == native.A}, "
+                                + $"foregroundIsOverlay={focus.Root == overlay.Handle}, foregroundIsNone={focus.Root == 0}, "
+                                + $"foregroundRootIsSource={N.GetAncestor(focus.Root, 2) == native.Root}, "
+                                + $"foregroundProcessIsSource={sourceProcess != 0 && focus.ProcessId == sourceProcess}, "
+                                + $"foregroundThreadIsSource={sourceThread != 0 && focus.ThreadId == sourceThread}, "
+                                + $"guiThreadInfoSucceeded={focus.GuiThreadInfoSucceeded}, focusIsField={focus.Control == native.A}, "
+                                + $"originalCookiePresent={originalCookie != 0}, "
+                                + $"cookieIsOriginal={originalCookie != 0 && N.GetProp(native.A, "TypeLay.NativeInput.Lifetime.v2") == originalCookie}, "
                                 + $"keepVisible={keep.IsVisible}, actionFocused={action.IsKeyboardFocused}, "
                                 + $"editorFocused={editor.IsKeyboardFocused}, editorReadOnly={editor.IsReadOnly}, "
                                 + $"previewStatus={AutomationProperties.GetItemStatus(editor)}");

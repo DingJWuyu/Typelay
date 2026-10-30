@@ -98,7 +98,7 @@ public sealed partial class SetupRenderingTests
                 }
             }, presentation: () => AppearanceSavedValue(scene, kind) == value ? scene.Settings.Value : null,
                 diagnostic: kind == "theme" && value == "dark" ? () => ReadAppearancePaint(scene.Window, kind, value) : null,
-                diagnosticName: "theme-dark");
+                diagnosticName: "theme-dark", diagnosticWindow: scene.Window);
         }
         finally
         {
@@ -206,7 +206,7 @@ public sealed partial class SetupRenderingTests
                     Record(currentDark, spread);
                 }
             }, presentation: () => changed || scene.Settings.Value.Theme == "dark" ? scene.Settings.Value : null,
-                diagnostic: () => ReadAppearancePaint(scene.Window, "theme", "dark"), diagnosticName: "retarget");
+                diagnostic: () => ReadAppearancePaint(scene.Window, "theme", "dark"), diagnosticName: "retarget", diagnosticWindow: scene.Window);
         }
         finally
         {
@@ -505,7 +505,7 @@ public sealed partial class SetupRenderingTests
                 Assert.Equal(stopped!.Value, retired!.BorderThickness.Left);
         }, presentation: () => scene.Settings.Value.Font == "sans" ? scene.Settings.Value : null,
             diagnostic: change == "resize" ? () => ReadAppearancePaint(scene.Window, "font", "sans") : null,
-            diagnosticName: "retire-resize");
+            diagnosticName: "retire-resize", diagnosticWindow: scene.Window);
         Assert.True(changed);
         Assert.Equal("sans", WindowsRuntime.CreateSettings(scene.Path).Value.Font);
         scene.Window.ShowPage("appearance");
@@ -569,7 +569,8 @@ public sealed partial class SetupRenderingTests
         else
             Assert.IsAssignableFrom<IInvokeProvider>(peer.GetPattern(PatternInterface.Invoke)).Invoke();
     }
-    private sealed record AppearancePaintProbe(double Spread, bool LocalPaint, double TileWidth, double PanelWidth, bool Reduced);
+    private sealed record AppearancePaintProbe(double Spread, bool LocalPaint, double TileWidth, double PanelWidth, bool Reduced,
+        bool TileMeasureValid, bool TileArrangeValid, bool WindowMeasureValid, bool WindowArrangeValid);
     private sealed class AppearanceRenderProbe
     {
         public double RenderingMs
@@ -608,6 +609,26 @@ public sealed partial class SetupRenderingTests
         {
             get; set;
         }
+        public int DispatcherLayoutNotificationsAfterTail
+        {
+            get; set;
+        }
+        public double? FirstDispatcherLayoutNotificationMs
+        {
+            get; set;
+        }
+        public double? FirstDispatcherLayoutProbeFinishedMs
+        {
+            get; set;
+        }
+        public double? LastDispatcherLayoutNotificationMs
+        {
+            get; set;
+        }
+        public AppearancePaintProbe? AtFirstDispatcherLayoutNotification
+        {
+            get; set;
+        }
     }
     private static AppearancePaintProbe? ReadAppearancePaint(Window window, string kind, string value)
     {
@@ -616,10 +637,11 @@ public sealed partial class SetupRenderingTests
         if (tile?.Template.FindName("selection", tile) is not Border layer)
             return null;
         return new(layer.BorderThickness.Left, layer.ReadLocalValue(Border.BorderThicknessProperty) != DependencyProperty.UnsetValue,
-            tile.ActualWidth, (tile.Parent as FrameworkElement)?.ActualWidth ?? 0, UiTheme.ReduceMotion);
+            tile.ActualWidth, (tile.Parent as FrameworkElement)?.ActualWidth ?? 0, UiTheme.ReduceMotion,
+            tile.IsMeasureValid, tile.IsArrangeValid, window.IsMeasureValid, window.IsArrangeValid);
     }
     private static async Task WatchAppearanceRings(Action begin, Action observe, Task? callbackFailure = null, Func<object?>? presentation = null,
-        Func<AppearancePaintProbe?>? diagnostic = null, string? diagnosticName = null)
+        Func<AppearancePaintProbe?>? diagnostic = null, string? diagnosticName = null, Window? diagnosticWindow = null)
     {
         TimeSpan? first = null;
         object? observedPresentation = null;
@@ -631,6 +653,7 @@ public sealed partial class SetupRenderingTests
         object? tailPresentation = null;
         bool tailAttached = false, diagnosticFailed = false;
         int pendingFrames = 0, omittedFrames = 0;
+        object? renderEnvironment = null;
         double Elapsed() => Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         void Tail(object? sender, EventArgs args)
         {
@@ -642,6 +665,28 @@ public sealed partial class SetupRenderingTests
                 probe.TailStartedMs = Elapsed();
                 probe.PostProductHandler = diagnostic!();
                 probe.TailFinishedMs = Elapsed();
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { diagnosticFailed = true; }
+        }
+        void DispatcherLayoutChanged(object? sender, EventArgs args)
+        {
+            if (diagnosticFailed || activeProbe is not { TailOrderedPostProductHandler: true, TailFinishedMs: not null } probe)
+                return;
+            try
+            {
+                if (!ReferenceEquals(presentation?.Invoke(), tailPresentation))
+                    return;
+                // LayoutUpdated is dispatcher-wide and has no reliable source.
+                // This is a notification time, not this tile's layout duration
+                // or evidence that any pixels have reached the display.
+                probe.DispatcherLayoutNotificationsAfterTail++;
+                probe.LastDispatcherLayoutNotificationMs = Elapsed();
+                if (probe.FirstDispatcherLayoutNotificationMs is null)
+                {
+                    probe.FirstDispatcherLayoutNotificationMs = probe.LastDispatcherLayoutNotificationMs;
+                    probe.AtFirstDispatcherLayoutNotification = diagnostic!();
+                    probe.FirstDispatcherLayoutProbeFinishedMs = Elapsed();
+                }
             }
             catch (Exception error) when (error is not OutOfMemoryException) { diagnosticFailed = true; }
         }
@@ -711,6 +756,20 @@ public sealed partial class SetupRenderingTests
             catch (Exception error) { done.TrySetException(error); }
             finally { inCallback = false; }
         }
+        if (diagnostic is not null && diagnosticWindow is not null)
+        {
+            try
+            {
+                renderEnvironment = new
+                {
+                    CapabilityTier = RenderCapability.Tier >> 16,
+                    RequestedWindowRenderMode = (PresentationSource.FromVisual(diagnosticWindow)?.CompositionTarget
+                        as System.Windows.Interop.HwndTarget)?.RenderMode.ToString()
+                };
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { diagnosticFailed = true; }
+            diagnosticWindow.LayoutUpdated += DispatcherLayoutChanged;
+        }
         CompositionTarget.Rendering += Frame;
         try
         {
@@ -722,6 +781,8 @@ public sealed partial class SetupRenderingTests
         {
             CompositionTarget.Rendering -= Frame;
             CompositionTarget.Rendering -= Tail;
+            if (diagnostic is not null && diagnosticWindow is not null)
+                diagnosticWindow.LayoutUpdated -= DispatcherLayoutChanged;
             if (diagnostic is not null)
             {
                 try
@@ -729,6 +790,7 @@ public sealed partial class SetupRenderingTests
                     TestContext.Current.TestOutputHelper?.WriteLine("Appearance rendering phases: " + System.Text.Json.JsonSerializer.Serialize(new
                     {
                         Case = diagnosticName,
+                        RenderEnvironment = renderEnvironment,
                         DiagnosticFailed = diagnosticFailed,
                         PendingFrameCount = pendingFrames,
                         OmittedFrameCount = omittedFrames,

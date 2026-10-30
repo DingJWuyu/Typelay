@@ -93,6 +93,8 @@ internal static class Program
         return RunWindows(hookTest, args.Contains("--hook-test-automation", StringComparer.Ordinal), stockControls);
     }
 
+    private static nint _setupObservationField;
+    private static int _setupFocusCount;
     private static string? _sourceSynchronousPath, _sourceMessagePath;
     private static bool _tsfContextAdmission;
     private static int _tsfFocusVersion, _tsfObservations;
@@ -235,6 +237,11 @@ internal static class Program
             30, 515, 300, 34, _root, (nint)200, instance, 0);
         _replayField = (nint)fields[0].Hwnd;
         _secondField = (nint)fields[1].Hwnd;
+        if (sourceReentry is not null && Environment.GetEnvironmentVariable("TYPELAY_FIXTURE_OBSERVE_SOURCE_SETUP") == "1")
+        {
+            _setupObservationField = _replayField;
+            sourceReentry.ObserveSetupField(_setupObservationField);
+        }
         if (_sourceKeyboardProbeEnabled)
             _sourceKeyboardProbe = new(_root, _replayField, _sourceSynchronousPath, _sourceMessagePath, _sourceOriginProbeEnabled);
         if (_sourceClaimProbe is not null)
@@ -627,8 +634,18 @@ internal static class Program
         }
         if (message == N.FixtureFocus && (PreviousProcedures.ContainsKey((nint)wParam) || StockFields.Contains((nint)wParam)))
         {
+            bool observe = _setupObservationField != 0 && hwnd == _root && (nint)wParam == _setupObservationField;
+            if (observe)
+            {
+                // Best-effort scalar observations only, never a completion ACK or wait.
+                _setupFocusCount = Math.Min(8, _setupFocusCount + 1);
+                N.SetProp(_root, "TypeLay.Test.SourceSetup.FocusCount.v1", _setupFocusCount);
+                N.SetProp(_root, "TypeLay.Test.SourceSetup.FocusEnteredAt.v1", (nint)WindowsInterruptClock.NowMs);
+            }
             N.SetForegroundWindow(hwnd);
             N.SetFocus((nint)wParam);
+            if (observe)
+                N.SetProp(_root, "TypeLay.Test.SourceSetup.FocusReturnedAt.v1", (nint)WindowsInterruptClock.NowMs);
             return 0;
         }
         if (message == 0x0111 && (wParam & 0xffff) == 200 && ((wParam >> 16) & 0xffff) == 0)

@@ -237,7 +237,50 @@ async def complete(
         else:
             assert await host.ask("settingsPatch", {"accent": "sage"}, timeout=3) is True
             before = settings_file.read_bytes()
-        await until(lambda: not jobs and surface.window.is_active())
+
+        def retirement_facts():
+            current = surface.quit_dialog
+            # Only the known old/current dialogs owned by this Settings are
+            # observed, once at entry and once on the original timeout.
+            dialogs = tuple(dict.fromkeys(item for item in (old, current) if item is not None))
+            return {
+                "retire": retire,
+                "jobs": len(jobs),
+                "unfinishedJobs": sum(not job.done() for job in jobs),
+                "ownerVisible": surface.window.get_visible(),
+                "ownerMapped": surface.window.get_mapped(),
+                "ownerActive": surface.window.is_active(),
+                "oldVisible": old.get_visible(),
+                "currentIsOld": current is old,
+                "currentExists": current is not None,
+                "intentExists": surface.quit_intent is not None,
+                "knownVisibleTransientCount": sum(
+                    item.get_visible() and item.get_transient_for() is surface.window
+                    for item in dialogs
+                ),
+            }
+
+        first = None
+        try:
+            first = retirement_facts()
+        except MemoryError:
+            raise
+        except Exception:
+            pass
+        try:
+            await until(lambda: not jobs and surface.window.is_active())
+        except TimeoutError:
+            try:
+                print(
+                    "QUIT RETIREMENT TIMEOUT",
+                    {"first": first, "last": retirement_facts()},
+                    flush=True,
+                )
+            except MemoryError:
+                raise
+            except Exception:
+                pass
+            raise
         new = await ask_quit()
         old.response(Gtk.ResponseType.OK)
         assert new.get_visible() and new.get_widget_for_response(Gtk.ResponseType.CANCEL).is_focus()
