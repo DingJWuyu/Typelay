@@ -368,7 +368,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
                 Assert.Contains(Descendants(window).OfType<Border>(), card =>
                     card.IsVisible && card.Name == "TranslationPreparationCard");
                 var prepare = Descendants(window).OfType<Button>().Single(button => button.Name == "PreparationPrimaryAction");
-                Assert.Equal("准备 Index 本地翻译…", prepare.Content);
+                Assert.Equal("下载", prepare.Content);
                 Assert.False(prepare.IsEnabled); // No Index native payload; never fall back implicitly.
                 var details = Descendants(window).OfType<Expander>().Single(expander => Equals(expander.Header, "组件与安装说明"));
                 details.IsExpanded = true;

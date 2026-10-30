@@ -1,7 +1,6 @@
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
-using System.Windows.Markup;
 using TypeLay.Runtime;
 
 namespace TypeLay.App;
@@ -52,26 +51,7 @@ internal sealed partial class QuickPanel
                 Height = 4,
                 Margin = new(0, 7, 0, 0),
                 Visibility = Visibility.Collapsed,
-                Template = (ControlTemplate)XamlReader.Parse("""
-                <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="ProgressBar">
-                  <Grid><Border x:Name="PART_Track" CornerRadius="2" Background="{DynamicResource Panel2}"/>
-                    <Border x:Name="PART_Indicator" CornerRadius="2" HorizontalAlignment="Left" Background="{TemplateBinding Foreground}"/>
-                    <Border x:Name="pending" CornerRadius="2" Width="64" HorizontalAlignment="Left" Opacity="0.5" Background="{TemplateBinding Foreground}" Visibility="Collapsed"/>
-                  </Grid>
-                  <ControlTemplate.Triggers>
-                    <Trigger Property="IsIndeterminate" Value="True">
-                      <Setter TargetName="PART_Indicator" Property="Visibility" Value="Collapsed"/>
-                      <Setter TargetName="pending" Property="Visibility" Value="Visible"/>
-                    </Trigger>
-                    <MultiTrigger><MultiTrigger.Conditions><Condition Property="IsIndeterminate" Value="True"/><Condition Property="Tag" Value="animate"/></MultiTrigger.Conditions>
-                      <MultiTrigger.EnterActions><BeginStoryboard x:Name="pulse"><Storyboard>
-                        <DoubleAnimation Storyboard.TargetName="pending" Storyboard.TargetProperty="Opacity" From="0.35" To="0.8" Duration="0:0:0.8" AutoReverse="True" RepeatBehavior="Forever"/>
-                      </Storyboard></BeginStoryboard></MultiTrigger.EnterActions>
-                      <MultiTrigger.ExitActions><RemoveStoryboard BeginStoryboardName="pulse"/></MultiTrigger.ExitActions>
-                    </MultiTrigger>
-                  </ControlTemplate.Triggers>
-                </ControlTemplate>
-                """)
+                Template = UiTheme.ModelProgressTemplate()
             };
             AutomationProperties.SetAutomationId(_modelProgress, "QuickPanelModelProgress");
             AutomationProperties.SetName(_modelProgress, UiTheme.L("本地模型准备进度", "Local model preparation progress"));

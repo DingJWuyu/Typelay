@@ -553,9 +553,25 @@ internal static partial class BrowserCooperationCheck
             }, ct);
             return result.GetProperty("result").GetProperty("value").Clone();
         }
+        public JsonElement? LastSourceClickObservation
+        {
+            get; private set;
+        }
         public async Task ClickSourceAsync(CancellationToken ct)
         {
-            var point = await EvaluateAsync("(()=>{const r=a.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()", ct);
+            LastSourceClickObservation = null;
+            // Keep the original point and single click. Read its actual hit in the
+            // same original evaluation, without selecting a different exposed point.
+            var point = await EvaluateAsync("""
+                (()=>{const r=a.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;
+                  const hit=document.elementFromPoint(x,y),selector='[role="region"][aria-label="TypeLay"]';
+                  const hosts=document.querySelectorAll(selector),rect=e=>{const b=e.getBoundingClientRect();return [b.left,b.top,b.width,b.height];};
+                  const sourceHit=hit===a||a.contains(hit),overlayHit=!!hit?.closest(selector);
+                  return {x,y,observation:{hit:sourceHit?'source':overlayHit?'overlay':hit?'other':'none',
+                    sourceConnected:a.isConnected,sourceFocused:document.activeElement===a,pageFocused:document.hasFocus(),
+                    sourceRect:[r.left,r.top,r.width,r.height],overlayCount:hosts.length,overlayRect:hosts.length===1?rect(hosts[0]):null}};})()
+                """, ct);
+            LastSourceClickObservation = point.GetProperty("observation").Clone();
             await ClickPointAsync(point, ct);
         }
         public async Task ClickSubmitAsync(CancellationToken ct)

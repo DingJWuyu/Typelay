@@ -558,11 +558,6 @@ def build(
     owner.install_button.set_no_show_all(True)
     owner.install_button.set_sensitive(False)
     owner.install_button.connect("clicked", owner.install_clicked)
-    owner.add_application = Gtk.Button(label="添加应用…")
-    owner.add_application.set_sensitive(False)
-    owner.add_application.connect(
-        "clicked", lambda *_: owner.application_support.pick_application(for_management=True)
-    )
     owner.tutorial = tutorial_type(owner, preview)
     owner.application_support = support_type(owner, support_refresh, support_action, support_folder)
     support = owner.application_support
@@ -605,25 +600,16 @@ def build(
     page = owner.page_boxes["application-support"]
     page.remove(support.box)
     page.pack_start(connection_heading, False, False, 0)
-    support.connection_cards = group()
+    from applications import ApplicationsPane
+
+    owner.applications = ApplicationsPane(owner)
+    page.pack_start(owner.applications.box, False, False, 0)
+    page.reorder_child(owner.applications.box, page.get_children().index(connection_heading))
+    support.connection_cards = owner.applications.summary
     support.connection_cards_signature = None
-    page.pack_start(support.connection_cards, False, False, 0)
     support.connection_details = Gtk.Expander(label="连接详情")
     support.connection_details.add(support.box)
     page.pack_start(support.connection_details, False, False, 0)
-    owner.applications_box = group()
-    owner.page_boxes["application-support"].pack_start(owner.applications_box, False, False, 0)
-    owner.applications_search = Gtk.SearchEntry(placeholder_text="搜索应用")
-    owner.page_boxes["application-support"].pack_start(owner.applications_search, False, False, 0)
-    owner.page_boxes["application-support"].reorder_child(
-        owner.applications_search,
-        owner.page_boxes["application-support"].get_children().index(owner.applications_box),
-    )
-    owner.applications_search.connect("search-changed", lambda *_: owner.render_applications())
-    owner.application_catalog = None
-    owner.application_catalog_pending = False
-    owner.applications_signature = None
-    owner.page_boxes["application-support"].pack_start(owner.add_application, False, False, 0)
     owner.translation = translation_type(owner, translation_grid, 0)
     owner.translation.glossary_box.get_parent().remove(owner.translation.glossary_box)
     owner.page_boxes["glossary"].pack_start(owner.translation.glossary_box, False, False, 0)

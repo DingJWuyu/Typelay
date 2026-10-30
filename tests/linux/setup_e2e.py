@@ -2450,7 +2450,7 @@ class ApplicationSupportTests(unittest.TestCase):
                     ]
                 )
 
-                async def retired_opening_during_start():
+                async def retired_opening_during_start(lesson):
                     started, release = asyncio.Event(), asyncio.Event()
                     original_start = self.support.desktop_session.start_session
                     opening = object()
@@ -2468,7 +2468,7 @@ class ApplicationSupportTests(unittest.TestCase):
                             self.support.execute(
                                 "desktop-text",
                                 "Connect",
-                                lesson="onDemand",
+                                lesson=lesson,
                                 practice_current=lambda: current is opening,
                             )
                         )
@@ -2491,7 +2491,8 @@ class ApplicationSupportTests(unittest.TestCase):
                     )
                     self.assertIn("结束本次连接", result["detail"])
 
-                asyncio.run(retired_opening_during_start())
+                for lesson in (None, "onDemand"):
+                    asyncio.run(retired_opening_during_start(lesson))
                 selection = {
                     "id": "org.typelay.Fixture.desktop",
                     "name": "Fixture",
@@ -2506,7 +2507,7 @@ class ApplicationSupportTests(unittest.TestCase):
                             "Connect",
                             startup_id=startup_id,
                             lesson=lesson,
-                            practice_current=(lambda: True) if lesson else None,
+                            practice_current=lambda: True,
                         )
                     )
                     self.assertTrue(result["ok"], result)

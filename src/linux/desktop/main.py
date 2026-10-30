@@ -764,7 +764,7 @@ async def desktop(paths, background, lock, tutorial=False):
                 if (
                     identity != "desktop-text"
                     or action != "Connect"
-                    or lesson not in ("automatic", "onDemand")
+                    or lesson not in (None, "automatic", "onDemand")
                     or not callable(practice_current)
                 ):
                     raise ValueError("practice-request")

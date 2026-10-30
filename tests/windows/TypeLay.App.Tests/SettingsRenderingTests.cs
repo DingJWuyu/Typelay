@@ -718,7 +718,7 @@ public sealed partial class SettingsRenderingTests(WpfDesktopFixture desktop, IT
                     AutomationProperties.GetAutomationId(text) == "SettingsPageHeading" && text.Text == "本地模型");
                 var prepare = Descendants(window).OfType<Button>().Single(button =>
                     button.Name == "PreparationPrimaryAction");
-                Assert.Equal("准备 Index 本地翻译…", prepare.Content);
+                Assert.Equal("下载", prepare.Content);
                 Assert.False(prepare.IsEnabled); // No Index native payload in this fresh private fixture.
                 Assert.True(prepare.IsVisible);
                 var details = Descendants(window).OfType<Expander>().Single(expander => Equals(expander.Header, "组件与安装说明"));

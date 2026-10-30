@@ -114,10 +114,10 @@ internal sealed partial class SettingsWindow : Window
     private CancellationTokenSource? _install;
     private ProgressBar? _progress;
     private TextBlock? _progressLabel, _practiceStatus;
-    private TextBlock? _preparationStatus, _preparationGuidance, _modelStatus, _modelDescription;
+    private TextBlock? _preparationStatus, _preparationGuidance;
     private Button? _preparationPrimary;
     private Border? _preparationCard;
-    private StackPanel? _preparationSecondary, _preparationDiagnostics, _preparationDirections;
+    private StackPanel? _preparationDiagnostics, _preparationDirections;
     private readonly List<Button> _connectionChecks = [];
     private Action? _refreshBrowserRow;
     private void RefreshBrowserConnection()
@@ -216,6 +216,7 @@ internal sealed partial class SettingsWindow : Window
         Resources.MergedDictionaries.Add(UiTheme.LanguageResources());
         Resources.MergedDictionaries.Add(UiTheme.ShortcutResources());
         Resources.MergedDictionaries.Add(UiTheme.QuickPanelResources());
+        InitializeModelPageLifetime();
         var shell = new Grid();
         shell.RowDefinitions.Add(new()
         {
@@ -454,8 +455,6 @@ internal sealed partial class SettingsWindow : Window
                 RefreshShortcuts();
             RefreshPreparation();
             RefreshTranslationAvailability();
-            if (_modelStatus is not null)
-                _modelStatus.Text = UiStrings.Translate(_model.Status);
             return;
         }
         Refresh();
@@ -646,6 +645,7 @@ internal sealed partial class SettingsWindow : Window
         RefreshNavigation();
         string? focusedToggle = Keyboard.FocusedElement is Control focused && focused.IsDescendantOf(this)
             ? AutomationProperties.GetName(focused) : null;
+        RetireModelPage();
         _pageIdentity = new object();
         ClearSearchLocation();
         _searchTargets.Clear();
@@ -661,11 +661,11 @@ internal sealed partial class SettingsWindow : Window
         _progress = null;
         _progressLabel = null;
         _practiceStatus = null;
-        _preparationStatus = _preparationGuidance = _modelStatus = _modelDescription = null;
+        _preparationStatus = _preparationGuidance = null;
         _preparationPrimary = null;
         _preparationCard = null;
         _modelChoice = null;
-        _preparationSecondary = _preparationDiagnostics = _preparationDirections = null;
+        _preparationPackages = _preparationDiagnostics = _preparationDirections = null;
         _connectionChecks.Clear();
         BuildSettingsBanners();
         switch (_page)
@@ -1273,105 +1273,6 @@ internal sealed partial class SettingsWindow : Window
         var dialog = new OpenFileDialog { Filter = UiTheme.L("Windows 应用 (*.exe)|*.exe", "Windows applications (*.exe)|*.exe"), CheckFileExists = true };
         return dialog.ShowDialog(owner) == true ? dialog.FileName : null;
     }
-    private void Translation()
-    {
-        Heading(UiTheme.L("本地模型", "Local Model"));
-        BeginGroup();
-        _modelDescription = Row("本地翻译模型", PreparationView().CurrentModelText, _modelStatus = UiTheme.Text(_model.Status, 12, true));
-        _modelChoice = new ComboBox { MinWidth = 230, MaxWidth = 280 };
-        AutomationProperties.SetName(_modelChoice, UiTheme.L("选择本地模型", "Choose local model"));
-        AutomationProperties.SetAutomationId(_modelChoice, "LocalModelSelection");
-        _modelChoice.SelectionChanged += (_, _) =>
-        {
-            if (_updatingModelChoice || _modelChoice.SelectedItem is not ComboBoxItem { Tag: ModelPackageActionView action })
-                return;
-            // Selecting an entry is only a request. The displayed selection
-            // remains the confirmed inventory until the existing transaction wins.
-            RefreshModelChoices(PreparationView());
-            RunPackageAction(action);
-        };
-        RefreshModelChoices(PreparationView());
-        Row(UiTheme.L("选择模型", "Select model"), "", _modelChoice);
-        InstallCard();
-        BeginGroup();
-        var devices = new ComboBox { ItemsSource = new[] { "CPU", "GPU", "NPU" }, Text = UiTheme.L("尚未提供", "Not available"), IsEditable = true, IsReadOnly = true, IsEnabled = false, MinWidth = 140 };
-        Row(UiTheme.L("计算设备", "Compute device"), UiTheme.L("尚未提供设备选择；由当前运行组件管理。", "Device selection is not available; managed by the current runtime."), devices);
-        var resident = UiTheme.Toggle("模型常驻", () => false, _ => { });
-        resident.IsEnabled = false;
-        Row(UiTheme.L("模型常驻", "Keep model in memory"), UiTheme.L("尚未提供；不会改变模型生命周期。", "Not available; model lifetime is unchanged."), resident);
-        var updates = UiTheme.Button(UiTheme.L("检查更新", "Check for Updates"), () => { });
-        updates.IsEnabled = false;
-        Row(UiTheme.L("模型更新", "Model updates"), UiTheme.L("尚未提供自动更新检查。", "Automatic update checking is not available."), updates);
-        Rule();
-        Note("较长文本", "输入长度限制因模型而异；超过限制时会停止，请缩短选区后重试。不会在后台截断原文后给出可接受候选。换行、URL、mention 和编号采用显式结构保护。");
-    }
-    private void InstallCard(bool compact = false)
-    {
-        var panel = new StackPanel();
-        if (_page is "model" or "translation")
-            RegisterSearchTarget("preparation", panel);
-        if (!compact)
-            panel.Children.Add(UiTheme.Text(ApplicationSupportPresentation.Create([]).Labels.PrepareTranslation, 12, true));
-        _preparationStatus = UiTheme.Text("", compact ? 13 : 15, bold: true);
-        _preparationStatus.Name = "PreparationStatus";
-        _preparationStatus.Margin = new(0, 6, 0, 0);
-        var header = new DockPanel();
-        if (compact)
-            panel.Children.Add(header);
-        else
-            panel.Children.Add(_preparationStatus);
-        _preparationGuidance = UiTheme.Text("", 12, true);
-        _preparationGuidance.Name = "PreparationGuidance";
-        _preparationGuidance.Margin = new(0, 6, 0, 12);
-        panel.Children.Add(_preparationGuidance);
-        _progressLabel = UiTheme.Text("", 12, true);
-        _progressLabel.Name = "PreparationProgress";
-        panel.Children.Add(_progressLabel);
-        _progress = new ProgressBar { Minimum = 0, Maximum = 100, Height = 5, Margin = new(0, 9, 0, 12) };
-        AutomationProperties.SetName(_progress, "本地组件准备进度");
-        panel.Children.Add(_progress);
-        var actions = new WrapPanel();
-        _preparationPrimary = UiTheme.Button("", () => RunPreparationAction(PreparationView().PrimaryAction), primary: true);
-        _preparationPrimary.Name = "PreparationPrimaryAction";
-        if (compact)
-        {
-            _preparationPrimary.Margin = new(12, 0, 0, 0);
-            DockPanel.SetDock(_preparationPrimary, Dock.Right);
-            header.Children.Add(_preparationPrimary);
-            header.Children.Add(_preparationStatus);
-        }
-        else
-            actions.Children.Add(_preparationPrimary);
-        _preparationSecondary = new StackPanel { Orientation = Orientation.Horizontal };
-        actions.Children.Add(_preparationSecondary);
-        if (!compact)
-            panel.Children.Add(actions);
-
-        var detailsBody = new StackPanel();
-        if (compact)
-            detailsBody.Children.Add(actions);
-        var intro = UiTheme.Text(ModelInstaller.HasReusableLocalModels
-            ? "已找到本机中英双向 Argos 模型。可另行明确选择 Argos 组件；发现本机权重不代表该选择无需下载，默认准备 Index 不使用这些权重；输入文字不会上传。"
-            : "新安装默认准备 Index Translate 2B；旧模型与明确选择保留。仅在本机推理，无需自行安装 Python，也不上传输入文字。", 12, true);
-        intro.Margin = new(0, 8, 0, 8);
-        detailsBody.Children.Add(intro);
-        _preparationPackages = new StackPanel();
-        detailsBody.Children.Add(_preparationPackages);
-        _preparationDirections = new StackPanel { Margin = new(0, 0, 0, 8) };
-        detailsBody.Children.Add(_preparationDirections);
-        var runtime = UiTheme.Button("微软运行库说明", () => OpenUri("https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist"));
-        runtime.HorizontalAlignment = HorizontalAlignment.Left;
-        detailsBody.Children.Add(runtime);
-        panel.Children.Add(new Expander { Header = UiStrings.Translate("组件与安装说明"), Content = detailsBody, Margin = new(0, 12, 0, 0) });
-        _preparationDiagnostics = new StackPanel();
-        panel.Children.Add(_preparationDiagnostics);
-        var border = _preparationCard = UiTheme.Border(panel, compact ? 6 : 8, "Panel2", compact ? 12 : 14);
-        border.Name = "TranslationPreparationCard";
-        AutomationProperties.SetName(border, "准备翻译");
-        border.Margin = new(0, 0, 0, 16);
-        _content.Children.Add(border);
-        RefreshPreparation();
-    }
     private TranslationPreparationView PreparationView()
     {
         var phase = QuickPanelPreparationPhase;
@@ -1410,19 +1311,19 @@ internal sealed partial class SettingsWindow : Window
                     ?? row.Actions.FirstOrDefault(action => action.Request.Operation == ModelPackageOperation.Install);
                 var item = new ComboBoxItem
                 {
-                    Content = row.Title + (row.Current ? "" : " · " + UiStrings.Translate(row.AvailabilityText)),
+                    Content = ModelCopy(row.Title + (row.Current ? "" : " · " + row.AvailabilityText)),
                     Tag = row.Current ? null : action,
                     IsEnabled = row.Current || action?.Enabled == true && _install is null && _packageRequest is null
                 };
                 ToolTipService.SetShowOnDisabled(item, true);
-                item.ToolTip = UiStrings.Translate(row.AvailabilityText);
+                item.ToolTip = ModelCopy(row.AvailabilityText);
                 _modelChoice.Items.Add(item);
                 if (row.Current)
                     selected = item;
             }
             if (selected is null)
             {
-                selected = new ComboBoxItem { Content = UiStrings.Translate(view.CurrentModelText), IsEnabled = false };
+                selected = new ComboBoxItem { Content = ModelCopy(view.CurrentModelText), IsEnabled = false };
                 _modelChoice.Items.Insert(0, selected);
             }
             _modelChoice.SelectedItem = selected;
@@ -1434,30 +1335,37 @@ internal sealed partial class SettingsWindow : Window
     {
         if (_preparationPackages is null)
             return;
+        var pageState = _modelPageState;
+        object epoch = _modelPageEpoch;
         _preparationPackages.Children.Clear();
-        _preparationPackages.Children.Add(UiTheme.Text(view.CurrentModelText, 12, true));
+        _preparationPackages.Children.Add(UiTheme.Text(ModelCopy(view.CurrentModelText), 12, true));
         if (_cleanupPending || _installations.CleanupPending)
-            _preparationPackages.Children.Add(UiTheme.Text("旧组件退出或清理尚未确认，暂保留旧副本，未释放对应磁盘空间。", 12, true));
+            _preparationPackages.Children.Add(UiTheme.Text(ModelCopy("旧组件退出或清理尚未确认，暂保留旧副本，未释放对应磁盘空间。"), 12, true));
         foreach (var row in view.PackageRows)
         {
             var body = new StackPanel { Margin = new(0, 8, 0, 12) };
             AutomationProperties.SetAutomationId(body, "ModelPackage_" + row.Id);
-            body.Children.Add(UiTheme.Text(row.Title + (row.Preview ? " · 预览" : ""), 13, bold: true));
-            body.Children.Add(UiTheme.Text(row.CoverageText + (row.DownloadText.Length > 0 ? " · " + row.DownloadText : ""), 12, true));
-            var status = UiTheme.Text(row.AvailabilityText, 12, true);
+            body.Children.Add(UiTheme.Text(ModelCopy(row.Title + (row.Preview ? " · 预览" : "")), 13, bold: true));
+            body.Children.Add(UiTheme.Text(ModelCopy(row.CoverageText) + (row.DownloadBytes is { } bytes ? " · " + UiTheme.L("下载大小 ", "Download size ") + ModelDownloadSize(bytes) : ""), 12, true));
+            var status = UiTheme.Text(ModelCopy(row.AvailabilityText), 12, true);
             AutomationProperties.SetAutomationId(status, "ModelPackage_" + row.Id + "_Status");
             body.Children.Add(status);
             var actions = new WrapPanel();
             foreach (var action in row.Actions)
             {
-                var button = UiTheme.Button(action.Label, () => RunPackageAction(action));
+                var button = UiTheme.Button(ModelCopy(action.Label), () =>
+                {
+                    if (pageState is null || !CurrentModelPage(epoch, pageState))
+                        return;
+                    RunModelPageIntent(pageState, current => RunPackageAction(action, current));
+                });
                 button.IsEnabled = action.Enabled && _packageRequest is null;
                 AutomationProperties.SetAutomationId(button, "ModelPackage_" + row.Id + "_" + action.Request.Operation);
                 actions.Children.Add(button);
             }
             body.Children.Add(actions);
             var details = new StackPanel();
-            details.Children.Add(UiTheme.Text(row.Details, 12, true));
+            details.Children.Add(UiTheme.Text(ModelCopy(row.Details), 12, true));
             if (row.LicenseUrl.Length > 0)
             {
                 var license = new Hyperlink(new Run(UiStrings.Translate("模型许可证")));
@@ -1481,7 +1389,7 @@ internal sealed partial class SettingsWindow : Window
             AddDirections = action.Request.AddDirections?.ToArray()
         };
         string confirmation = action.ConfirmationText + "\n\n本次操作需要复制保留的模型和运行组件。旧副本未确认退出时会继续保留，不会立即释放磁盘空间。";
-        if (MessageBox.Show(this, confirmation, "本地模型", MessageBoxButton.OKCancel,
+        if (MessageBox.Show(this, ModelCopy(confirmation), UiTheme.L("本地模型", "Local model"), MessageBoxButton.OKCancel,
                 MessageBoxImage.Question, MessageBoxResult.Cancel) != MessageBoxResult.OK)
             return;
         if (callerCurrent?.Invoke() == false)
@@ -1539,49 +1447,9 @@ internal sealed partial class SettingsWindow : Window
         RefreshSettingsBanners();
         foreach (var check in _connectionChecks)
             check.IsEnabled = _settings.Value.Enabled && _model.Ready;
-        if (_preparationStatus is null || _preparationGuidance is null || _preparationPrimary is null
-            || _preparationSecondary is null || _preparationDiagnostics is null || _progress is null || _progressLabel is null)
+        RefreshModelPage();
+        if (_preparationDiagnostics is null)
             return;
-        var view = PreparationView();
-        RefreshModelChoices(view);
-        if (_modelDescription is not null)
-            _modelDescription.Text = UiStrings.Translate(view.CurrentModelText);
-        RefreshPreparationDirections(view);
-        RefreshPackageRows(view);
-        if (_preparationCard is not null)
-            _preparationCard.Visibility = _page == "general" && view.PrimaryAction.Id == TranslationPreparationAction.NextStep
-                ? Visibility.Collapsed : Visibility.Visible;
-        _preparationStatus.Text = UiStrings.Translate(view.StatusText);
-        _preparationGuidance.Text = UiStrings.Translate(view.Guidance);
-        _preparationGuidance.Visibility = view.Guidance.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
-        _preparationPrimary.Content = UiStrings.Translate(view.PrimaryAction.Label);
-        AutomationProperties.SetName(_preparationPrimary, view.PrimaryAction.Label);
-        _preparationPrimary.IsEnabled = view.PrimaryAction.Enabled;
-        _progressLabel.Text = UiStrings.Translate(_setupStatus);
-        _progressLabel.Visibility = _setupStatus.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
-        _progress.Visibility = _install is not null ? Visibility.Visible : Visibility.Collapsed;
-        _progress.IsIndeterminate = _install is not null;
-        if (!_preparationSecondary.Children.OfType<Button>().Select(button => button.Tag)
-            .SequenceEqual(view.SecondaryActions.Select(action => (object)action.Id)))
-        {
-            bool moveFocus = _preparationSecondary.IsKeyboardFocusWithin;
-            _preparationSecondary.Children.Clear();
-            foreach (var secondary in view.SecondaryActions)
-            {
-                var button = UiTheme.Button(secondary.Label, () => RunPreparationAction(secondary));
-                button.Name = "Preparation" + secondary.Id + "Action";
-                button.Tag = secondary.Id;
-                button.Margin = new(8, 0, 0, 0);
-                _preparationSecondary.Children.Add(button);
-            }
-            if (moveFocus && _preparationPrimary.IsEnabled)
-                _preparationPrimary.Focus();
-        }
-        foreach (var (button, action) in _preparationSecondary.Children.OfType<Button>().Zip(view.SecondaryActions))
-        {
-            button.Content = action.Label;
-            button.IsEnabled = action.Enabled;
-        }
         if (_setupFailure is { } failure)
         {
             var details = _preparationDiagnostics.Children.OfType<Expander>().SingleOrDefault();
@@ -1599,8 +1467,8 @@ internal sealed partial class SettingsWindow : Window
                     + $"\n切换原因：{DiagnosticValue(replacement.FailureCode)}\n发布确认：{DiagnosticValue(replacement.Outcome)}";
             if (_setupPublicationFailure is { } publication)
                 diagnostic += $"\n发布操作：{DiagnosticValue(publication.Operation)}\n发布错误：{DiagnosticValue(publication.Error)}";
-            ((TextBlock)details.Content).Text = diagnostic;
-            AutomationProperties.SetHelpText(details, diagnostic);
+            ((TextBlock)details.Content).Text = ModelCopy(diagnostic);
+            AutomationProperties.SetHelpText(details, ModelCopy(diagnostic));
         }
         else
             _preparationDiagnostics.Children.Clear();
@@ -1635,8 +1503,8 @@ internal sealed partial class SettingsWindow : Window
             foreach (var (choice, direction) in _preparationDirections.Children.OfType<CheckBox>().Zip(view.Directions))
             {
                 string label = direction.Label + (direction.Installed ? " · 已安装" : "");
-                choice.Content = label;
-                AutomationProperties.SetName(choice, label);
+                choice.Content = ModelCopy(label);
+                AutomationProperties.SetName(choice, ModelCopy(label));
                 choice.IsChecked = direction.Installed || selected.Contains(direction.Id, StringComparer.Ordinal);
                 choice.IsEnabled = view.CanSelectDirections && _preparationRequest is null && !direction.Installed;
             }
@@ -1697,14 +1565,7 @@ internal sealed partial class SettingsWindow : Window
                 _quickPanelProgress = update;
                 QuickPanelProgressChanged?.Invoke();
                 _setupStatus = update.Label + (update.Downloaded > 0 ? $" · {update.Downloaded / 1048576.0:F1} MB" : "");
-                if (_progressLabel is not null)
-                    _progressLabel.Text = UiStrings.Translate(_setupStatus);
-                if (_progress is not null)
-                {
-                    _progress.IsIndeterminate = update.Total is null;
-                    if (update.Total is > 0)
-                        _progress.Value = 100.0 * update.Downloaded / update.Total.Value;
-                }
+                RefreshModelPageProgress();
             });
             installer = _createInstaller();
             prepared = _packageRequest is { } request

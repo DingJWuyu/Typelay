@@ -139,8 +139,31 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface .translation-preview { font-size: 15px; }
 .typelay-surface .preview-source { background: #fff; padding: 10px 16px; border-radius: 21px; font-family: 'Noto Serif SC',serif; }
 .typelay-surface .settings-footer { padding: 8px 28px 12px; }
-.typelay-surface .toast { background: #262624; color: #f4f3ee; border-radius: 18px; padding: 8px 14px; }
-.typelay-surface .toast button { background: transparent; color: #ec9a7c; border: 0; box-shadow: none; }
+.typelay-surface .toast { background: #fbfaf7; color: #141413; border: 1px solid rgba(20,20,19,.12); border-radius: 999px; padding: 9px 10px 9px 16px; font-size: 13px; font-weight: 500; box-shadow: 0 6px 18px rgba(20,20,19,.16); }
+.typelay-surface .toast button { background: transparent; color: @accent_ink; border: 0; box-shadow: none; min-height: 24px; padding: 0 9px; }
+.typelay-surface.settings-dark .toast { background: #2c2b28; color: #f4f3ee; border-color: rgba(255,255,255,.13); }
+.typelay-surface.settings-dark .toast button { background: transparent; color: @accent_ink; }
+.typelay-surface .applications-state-dot { min-width: 6px; min-height: 6px; border-radius: 50%; background: #8b8984; }
+.typelay-surface .applications-state-dot.connected { background: #3f9b63; }
+.typelay-surface .applications-state-dot.attention { background: #b7842f; }
+.typelay-surface .application-connection-icon { min-width: 24px; min-height: 24px; border-radius: 6px; color: white; }
+.typelay-surface .application-connection-icon.desktop-icon { background: #5f5e5a; }
+.typelay-surface .application-connection-icon.browser-icon { background: #3478f6; }
+.typelay-surface .application-line { min-height: 28px; padding: 8px 14px; box-shadow: inset 0 -1px rgba(20,20,19,.06); }
+.typelay-surface.settings-dark .application-line { box-shadow: inset 0 -1px rgba(255,255,255,.07); }
+.typelay-surface .application-tone button { min-height: 24px; padding: 0 9px; font-size: 12px; }
+.typelay-surface .application-tone arrow { -gtk-icon-source: url("__GLOSSARY_SCOPE_ARROWS__"); min-width: 10px; min-height: 12px; }
+.typelay-surface .applications-listbar { padding: 4px; }
+.typelay-surface .applications-listbar button { min-width: 28px; min-height: 24px; padding: 0; border: 0; box-shadow: none; }
+.typelay-surface .applications-empty { padding: 36px 20px; }
+.typelay-surface.applications-dialog { background: #fbfaf7; }
+.typelay-surface.applications-dialog.settings-dark { background: #2c2b28; }
+.typelay-surface .applications-dialog-title { font-size: 18px; font-weight: 500; }
+.typelay-surface entry.applications-find { min-height: 30px; padding: 0 9px; border: 0; box-shadow: none; background: rgba(20,20,19,.045); }
+.typelay-surface.settings-dark entry.applications-find { background: rgba(255,255,255,.05); }
+.typelay-surface button.apps-option, .typelay-surface.settings-dark button.apps-option { min-height: 30px; padding: 0 8px; background: transparent; border: 0; box-shadow: none; border-radius: 7px; font-size: 13px; }
+.typelay-surface button.apps-option:hover, .typelay-surface button.apps-option:focus, .typelay-surface.settings-dark button.apps-option:hover, .typelay-surface.settings-dark button.apps-option:focus { background: @accent; color: #fff; }
+
 .typelay-surface .status-dot { color: #3a8e62; font-size: 8px; min-width: 7px; }
 .typelay-surface .status-dot.paused, .typelay-surface .status-dot.checking, .typelay-surface .model-warning-row image.checking { color: #74726c; }
 .typelay-surface .status-dot.warn, .typelay-surface .model-warning-row image { color: #a5670e; }
@@ -481,6 +504,7 @@ def apply_theme(window, preferences, provider=None):
         "settings-page-title": 22,
         "welcome-title": 30,
         "language-name": 15,
+        "applications-dialog-title": 18,
     }
     display_css = "".join(
         f"\n.typelay-surface .{name} {{ font-family: "
@@ -658,12 +682,14 @@ class Toast(Gtk.Revealer):
         self.set_transition_type(Gtk.RevealerTransitionType.SLIDE_UP)
         self.set_halign(Gtk.Align.CENTER)
         self.set_valign(Gtk.Align.END)
-        self.set_margin_bottom(18)
+        self.set_margin_bottom(28)
         self.timer = None
         self.action = None
         self.identity = None
         self.translate = lambda value: value
-        self.content = style(Gtk.Box(spacing=10), "toast")
+        # GTK3 has no native backdrop blur. Use the matching opaque glass-strong
+        # surface; the saved reduce-transparency preference is not rewritten.
+        self.content = style(Gtk.Box(spacing=12), "toast")
         self.text = label()
         self.undo = Gtk.Button(label="撤销")
         self.content.pack_start(self.text, True, True, 0)

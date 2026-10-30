@@ -9,11 +9,15 @@ import os
 import shutil
 import signal
 import struct
+import sys
 import time
 import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "src/linux/desktop"))
+from setup import FAILURE_PREFIX, failure_code  # noqa: E402
+
 INDEX = "index-translate-2b-q4-k-m"
 PROFILE = "index-v1-3b99612f3676f5ac8ef34c81e99bf8874a5ba5271207a15d39e947c9d42ef87d"
 
@@ -21,6 +25,14 @@ PROFILE = "index-v1-3b99612f3676f5ac8ef34c81e99bf8874a5ba5271207a15d39e947c9d42e
 def digest(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def preparation_failure(output):
+    """Report only an existing validated, bounded setup diagnostic, never raw output."""
+    for line in output.decode(errors="replace").splitlines():
+        if failure_code(line) is not None:
+            return json.loads(line[len(FAILURE_PREFIX) :])
+    return None
 
 
 class Check:
@@ -102,6 +114,11 @@ class Check:
         process = await self.process(command)
         output, _ = await process.communicate()
         (self.output / f"prepare-{len(self.children)}.txt").write_bytes(output)
+        if process.returncode != 0:
+            self.report.setdefault("preparationFailures", {})[self.stage] = {
+                "exitCode": process.returncode,
+                "diagnostic": preparation_failure(output),
+            }
         if expect_failure:
             assert process.returncode != 0, "stale-prepare-not-refused"
             return None

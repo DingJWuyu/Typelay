@@ -4,64 +4,60 @@
 
 ## 当前开发范围
 
-截至 **2026-10-29**，正在 `work/linux-usability` 重构原生 Windows WPF、Linux GTK 设置与合作浮层。`trunk` 已合入重构前的 `438c497`；`main` 未改。此开发候选不是稳定发布或已验收体验包。
+截至 **2026-10-30**，正在 `work/linux-usability` 重构原生 Windows WPF、Linux GTK 设置与合作浮层。`trunk` 已合入重构前的 `438c497`；`main` 未改。此开发候选不是稳定发布或已验收体验包。
 
 既有功能、新术语管理、按应用设置、即时保存、外观、中英界面、搜索、快捷键录制与撤销均属于实现范围。更多语言、新风格、设备选择、模型常驻与更新只提供真实标明不可用的前端，见[能力缺口](../design/implementation-gaps.md)。原型中的模拟桌面和定时译文不进入产品。用户已取消两小时目标，按实际依赖持续开发到稳定交付，不以时间目标替代验收。
 
 ## 验证状态与当前阻塞
 
-最新开发候选 [`e68c4e4`](https://github.com/DingJWuyu/Typelay/commit/e68c4e47cb22e920892146cb48690d7737b37635) 已发布，[CI554](https://github.com/DingJWuyu/Typelay/actions/runs/40930927256) 已双端终态失败。main/trunk 未改。本批包含离线32面与角色消费者、真实托盘模型和方向、应用图标、教程布局、退出确认UIA查找及下载计时隔离；不推荐为稳定体验包。前一仅guardian修复的CI553已终态，后继不得用微批中断本head双端完整验收。
+最新开发头为 [`4141180`](https://github.com/DingJWuyu/Typelay/commit/414118081307489724941881dc37da5aed4314a0)，[CI556](https://github.com/DingJWuyu/Typelay/actions/runs/40993693469) 已终态，Windows Index 与共享检查通过，主 Windows 因两条实际应用链失败；Linux 本轮按实际改动范围跳过。Index 包生命周期成功不等同桌面验收。此提交只修 Windows 临时目录 8.3 别名的测试期望，生产路径校验不变；不得把尚未完成的 CI 当作通过，或以微批发布中断本轮。main/trunk 未改。
 
-独立后继：首次合法编辑移交只重验原源一次的菜单资格候选已真实RED→380/380 GREEN，102输入无漂移；不是新grant/lease，Windows真实链仍待。Linux原生Combo公开current/closed两例通过，外窗present未取得ACTIVE前置不算通过；永久fixture已独审，后继CI验证。Linux S08完整显式应用名单与O05普通源确认仍在独立实现，不混本批已发布事实。
+前一完整候选 `07c9d986` 的 [CI555](https://github.com/DingJWuyu/Typelay/actions/runs/40939725370) 已终态失败：
 
-CI554：共享与两平台 Index 生命周期成功。Windows App 主批1227执行、1211通过、16失败；独立100ms原两case均通过，未改变其期限/64-byte前缀合同。16红分为8个Source Serif角色选脸、T01旧动画时钟、1个owned原生读取、2个展开就绪和4个hover窗口命中，均按原件独立处理。退出确认UIA有owner/无owner两态与原五项已通过，但本轮未运行Notepad实际退出链，不宣称已完全解决旧超时。
+- Windows 主合同 1231 执行全部通过，另有 22 未执行；独立下载计时原两例通过。Runtime1454、Core302、Protocol28、WindowsContracts210 全部通过。离线字体实际渲染 36/36，包括 16 光学角色及页面/退出标题；该七面 STAT 问题已取得 Windows 实证，不继续重开字体研究。
+- Windows 连续翻译、Python 检查、80分钟外层准入及物理 Tab 包 smoke 通过。主打包与 Windows Index 构建入口均被同一测试的未规范化路径期望阻塞；正式 helper 返回规范路径，测试直接比较 Windows 8.3 别名。`4141180` 只改期望为 `primary.resolve()`，恢复环境中该文件9/9通过，CI556 Windows Index和主打包均已成功；两个原入口阻塞已关闭。shipped browser、Notepad、Hy 后链在 CI555 为 skipped，不算通过。
+- Linux 浏览器生产 DOM 完整90/90、128.979秒（含旧More/resize/motion/CJK失败方法），路由、GTK术语链、完整首次设置、真实浏览器输入及VS Code阶段通过。旧本地浏览器87/90、88/90原失败保留，不据一次远端绿声称偶发根因全部解释。Qt probe、真实设置、GTK3 与 GTK4 desktop 阶段失败，按下面小型 artifact 的实际 case 定位，不从旧阶段名推断根因；Qt 后链及 Hy 为 skipped。
+- Linux Index 已完成默认准备、激活、推理、冷启与修复等前八阶段，失败在后续 `install-argos` 的 `production-prepare-failed`；原报告未保存固定分类，尚不能判具体原因。需要仅补既有受限 setup failure 分类，不新增真实安装或重试求绿。
 
-Windows Python的9个错误已定位证据路径分隔符：采集报告用平台路径字符串，而固定profile要求POSIX键；后继只规范键拼写，不改文件集合、字节SHA或质量门，不重跑模型。物理Tab包因新runner将TRX置于唯一run/main子目录、旧打包仍查顶层而失败，后继使用本轮明确manifest定位，不泛扫历史结果。后续真实应用链因前置979秒、75分钟job剩3521秒不足既定3600秒而未运行；现已批准外层80分钟（前置20+原链60）校准，所有模型、场景与清理期限不变，尚待后继CI。
+CI556 的最新实际应用结果：Windows 主合同再次1231/1231、独立2/2全部通过；连续翻译与正式Hy worker五场景通过。Notepad普通退出938ms通过，预览与direct流程通过，自动接受/依赖编辑仍为已知可信物理输入条件的两项not-run。Browser已跨过旧禁用菜单，当前失败在源返回/新源观察/旧Glossary退休的联合30秒阶段；trace未出现后继源capture，尚不能断言新源已到而旧表单未退休；Hy UI失败为install-hy的公开package action不可见（5721ms），不是模型加载/下载失败。root负责Hy公开导航定位，合作浮层owner负责Browser退休链；均按已恢复原件，不重跑模型或放宽期限。完整产品仍未验收。
 
-Linux CI554：原GTK4术语40例阶段通过；设置已跨旧Combo点，当前源语言auto选项在focus后资格复核被拒，通用错误尚不能区分焦点或几何；后继原生菜单current/closed两例已有实际证据。教程scope-result与desktop-result已真实通过，包含四步Ready门、两owned练习链接、关闭重开及跳过保偏好；模型/输入证明边界仍按原件区分。Qt新Latin13角色实际选脸通过，但日文仍选SC面；GTK3展开已通过、收起有166低于167下界的一帧；GTK4同短内容仍42/44差异，dirty候选未解决。保留全部失败，不放宽字形、尺寸或原时间断言。
+### 环境恢复与证据边界
 
-后继独立树已真实Runtime1454/1454通过。Browser新32面完整90此前87/90、3方法5子例失败；固定诊断3方法通过未复现，不当作修复。合法host单次续显下的360ms动效正控及原不续按键资格合同focused2实际通过，完整90仍待。More外点和ko场景原红保留。Root字体7面仅静态STAT opsz值可省略标志变更，逐表证明其它字形/布局不变，单面官方recipe重生字节一致、Pango5通过；实际Windows角色仍待下批，不称本地即修复。
+2026-10-30 已实核命令环境与公开桌面终端：原项目目录、工具缓存和 ignored 候选不再存在，未观察到原 dotnet/python 构建进程。已从远端正常 clone `4141180` 到原工作目录并核 HEAD 与干净工作树。已发布源码完整恢复；未提交候选与本地原始图、日志没有恢复，摘要及旧 SHA 不能代替其字节或验证结果。
 
-完整原型审查曾发现部分页面仅更换样式而缺少原型交互，属于范围执行和验收遗漏，不是细节。现按[固定25项页面/状态表](../design/prototype-parity.md)逐页收敛；等待外部CI时可推进下一独立切片，但未验证项不标完成。双端尚未达成完整一比一验收。
+Windows S09 最终编译 session80867 的终态无法核实；此前两个编译失败有已知修法，但最终编译不能标过。Linux S08 v4 曾有真实公开交互通过，v5 的新字体完整页尚未执行；两版源均需从现役基线重建并重新审查、验证。O05 普通 source 候选亦重新核实现有状态边界，不能将设计批准当代码已完成。旧失败或未测不会因环境替换被抹去。
 
-### 当前失败的原件定位
+恢复后的新证据：正式 SDK10.0.401、锁定Python工具与32面字体已重新准备，原资产锁未变；Linux Host真实构建通过。S08新公开回归在原4141180上实际失败，准确复现显式空名单被重新填充；新八源审查发现停用tone、迟到Resolve、新页面外文件选择器三个生命周期缺口，修完后再跑GREEN。S09新十源首冻通过官方格式与App构建，测试C#编译产物已生成，但Linux AfterBuild缺原生Windows DLL导致完整测试构建失败；不补假DLL，最终仅Compile检查与真实Windows完整构建分别报告。S09后继已完成四入口单次intent及严格同意框重入/旧Combo合同，最终冻结918输入不变，官方格式、App构建、App.Tests及DesktopFixture Compile均通过；真实WPF行为和图仍待下一CI。S08先后缺plus资产名和错误读取风格ACK字段已窄修，v4真实GTK+Host完整UI通过，字体校验和10图齐；随后完整邻近合同暴露默认nullable配置崩溃，v5仅归一两个正式可空字段并已通过原完整设置、连接焦点和教程合同；浅色toast阴影裁剪仍是未完视觉项，不称全像素一致。两者不是旧丢失候选直接恢复通过。
 
-路径相对于被忽略的 `artifacts/ui-rebuild/`。以实际case、stage与结构化结果判断，不以步骤名、包名或日志推进推断通过。
+CI 原件可由对应运行重新下载并核 digest；只读合成诊断，不执行下载包中的二进制。当前需要的 Linux 小型 artifact：
 
-| 原件 | 实际情况 | 下一动作 |
-| --- | --- | --- |
-| `ci554/contracts/` | App16红按字体8、T01时钟1、owned原生读取1、展开2/hover4分组；独立计时2通过 | 精确metadata/就绪候选与原读取失败诊断；原门不变 |
-| `ci552/windows-full/` browser | 菜单可见但buttonDisabled，编辑移交SourceEpoch变化 | 一次原源重验候选本地380及整合Runtime1454通过，真实Windows待验 |
-| `ci552/windows-full/` Notepad | ordinary-exit确认查找deadline；自动接受仍物理条件not-run | CI554窗口UIA两态过，真实应用链尚未因预算准入 |
-| CI550 Hy / CI554 admission | 旧cold等待Ready未知；本轮前置979超15min | 外层80min明确前置20min，原后链60min保持，不重跑求运气 |
-| `ci554/qt-early/` | Latin新角色通过；ja在有效期实际SC face | 双顺序新进程诊断及源码缓存机制定位，不放宽glyph |
-| `ci554/linux-diagnostics/setup-settings` | 源语言auto选项focus后可见/焦点/clip联合复核失败 | 只读定位真实同实例布局，不降点击/可见门 |
-| 同目录 `setup-tutorial` | scope及四项desktop结果passed | 保有效子项；不同renderer/模型/输入边界如实区分 |
-| 同目录 `gtk-desktop` | 展开167→367→360通过，收起低至166<167 | 查动画/取整根因，保原尺寸和期限 |
-| 同目录 `gtk4-desktop` | 短内容42/44随状态变化，dirty修未解决 | 查状态样式/测量，不能重复每帧resize或放宽等式 |
+| 原件 | 当前证据与下一动作 |
+| --- | --- |
+| CI555 `12926144591` desktop diagnostics | SHA256 `1ba5b5aff8746da2bf5d22bd679a1e652a5ef153c7017c93e3cd9e40bf55d2d5`；核设置、GTK3/GTK4 的实际 case、状态和窗口身份 |
+| CI555 `12928160183` Qt probe | SHA256 `05a0c456e77675f21839d6b1438239a978a6ac197e9c8707f2ec6893ab28fe59`；读实际区域字体/顺序诊断，不放宽 glyph 门 |
+| CI555 `12925663790` Linux Index | SHA256 `1a63ac2e1cf6c3e583ebf28bbff2bbdaafc1794f79d34a72207f7e1c8d9d67f0`；区分 Index 已过阶段与后继 Argos 准备失败 |
 
-Notepad可信物理输入条件不足是重构前已明确的缺口，保原not-run；不当作新问题阻止其他远端工作，也不以软件注入冒充可信来源。
+Notepad可信物理输入不足是重构前已明确的缺口，保原 not-run；不当新问题阻止其他工作，不以软件注入冒充可信来源。此前部分页面只有样式而缺原型交互，属于范围遗漏，不是只剩测试或细节；继续按[固定25项](../design/prototype-parity.md)逐页完成。
 
 ## 当前负责人及下一动作
 
-执行优先级：先收口完整页面和真实用户流程。独立字体校准、模型能力研究不得阻塞无依赖的界面实现与验收；已通过子项保留有效证据，最终精确提交的双端全回归不降门。B02本轮裁决后停止调参，不把未交付能力藏入第四类；本优先级也适用于任务恢复后的安排。
+优先完整页面与真实用户流程。独立字体校准和模型研究不阻无依赖 UI；已通过子项保留，最终精确 head 的双端验收不降门。所有责任线目标配置为 `gpt-6-astra` / `xhigh`；恢复时沿原代理继续，当前工具没有重新报告实际配置，实际值标记未核实。
 
 | 责任线 | 当前动作 | 完成依据 |
 | --- | --- | --- |
-| 集成 | CP14双端终态，合入已独审后继并验证精确CP15树；修POSIX证据键和外层CI预算 | 实际case结论、包、源身份及独审 |
-| Windows设置 | S08、S07、S10有效实证保留；修T01退休时钟，实施S09完整模型页 | 公开动作、保存失败/取消/旧peer及实际图 |
-| Windows浮层 | 修CI554就绪观测与原生读取诊断；随后普通source确认与owned首纵向切片 | 原期限/一次输入/exact hit/负控，不能用新focus白名单 |
-| Linux设置 | S08统一名单完整页；host旧DTO不可回滚Managed/Customized；新教程与Combo永久链核验 | 真实host/GTK/AT-SPI与revision旧交互负控 |
-| 合作浮层 | G02合法host续显正控，GTK3收起1px、GTK4短高度和Qt区域字体分别定位 | 不改动画/尺寸/字形门；完整Browser90待验 |
-| 共享能力 | B01双向Glossary已发布；编辑移交一次源重验候选Runtime1454通过 | 固定profile、原源完整比较、旧500ms及零新授权 |
-| root支持 | 物理Tab当前manifest定位、字体7面metadata窄修；Windows原件核验 | 原Tab/F7唯一Passed及实际WPF角色 |
-| 独立审查 | 精确冻结差量的规范与安全双轴，不以编译代替页面交互 | 真实输入身份与明确未验边界 |
+| 集成 | 已恢复正式源码，恢复工具和现役状态；统一合入精确候选，CI556 已终态，发布已审成熟页面完整批 | 新源身份、独审、本地适用检查与精确 head CI |
+| Windows设置 | S09 完整模型页及 P2/SI 单位已审并编译，待下一 Windows 真实验收；独立推进 S02 通用页 | 官方编译、公开操作和真实同偏好页面图 |
+| Linux设置 | S08 新单页与完整邻近合同已通过；继续浅色 toast 裁剪视觉缺口，保排除/风格与旧回调安全 | 真实 host/GTK/AT-SPI、完整新锁字体与交互图 |
+| Windows浮层 | O05 普通 source 确认先独立切片；owned 首纵向链后继，旧授权永久退役 | fresh source/Core/Bind、原期限与零误写负控 |
+| 合作浮层 | 重新取 CI555 小原件；GTK3 物理弹簧包络仅修 fixture，GTK4/Qt 先真实定位 | 实际 case、正反控与未改产品安全门 |
+| root支持 | 已发布唯一 Windows 路径期望修，核 CI556 Windows 与 Index 原件并修 Hy 公开导航 | 终态结构化结果，不能以阶段推进代通过 |
+| 独立审查 | 对重建后实际 diff 做规范与安全双轴审查；旧候选审查不自动继承 | 新输入身份、实际源码及明确未验边界 |
 
 ## 模型能力边界
 
 B01采用已明确的前瞻feature-delta准入：术语兑现、非术语语义不劣化，任何新增或加重的主体/授权/否定/数值重大错误拒绝；共同默认基线错误保留披露。固定证据中术语有真实收益，G07源锚定窄格式修复的18译文独立评审未见新增重大退化；G08两模式均安全结构拒绝，仍是可用性缺口，旧超时未解释。不是同新bits一次40全绿或所有方向质量认证。
 
-正式执行profile绑定已通过；Current两行候选及切旧模型消费合同已独审，focused四类293/293与正常构建后的全Runtime1425/1425通过，相关源码前后无变化。项目模式formatter因BuildHost socket权限失败、源码未改；无需该IPC的官方folder格式/verify与Python采集合同11项分别通过，不绕过权限；实际UI仍待。只登记已审的固定模型/行为profile中英双向Glossary，不扩散到style、combined、alternate或其他方向。缺失/未知profile保持普通Ready支持、高级closed。B02风格与换种说法仍未完成，不以门禁关闭或前端存在替代交付；无收益的额外保义提示已淘汰。最终预注册16源采集已终态：62实际业务请求、2项因普通结果失败而未发送Alternative；46译文、8次无替代表达、6次结构拒绝、2次预期alternative-unavailable，另2项依赖未发送，owned worker正常退出。总456.6秒、原2CPU/2.5GiB预算，无超时、重试或追加轮次。双方语义评审及解盲裁决完成：两方向Style/Alternative均未达到预注册效用标准，en-zh Natural还出现新增接收者任务重大退化。Current不加行，不追加prompt/配置试验。B02仍是未可靠交付的功能债，不归入第四类已允许仅前端项目；B01独立资格不变。业务拒绝与共同默认基线错误保留，不以采集终态自动开放能力。
+正式执行profile绑定已通过；Current中英双向Glossary两行及切旧模型消费合同已发布并独审，focused四类293/293与正常构建后的全Runtime1425/1425通过，相关源码前后无变化。项目模式formatter因BuildHost socket权限失败、源码未改；无需该IPC的官方folder格式/verify与Python采集合同11项分别通过，不绕过权限；实际UI仍待。只登记已审的固定模型/行为profile中英双向Glossary，不扩散到style、combined、alternate或其他方向。缺失/未知profile保持普通Ready支持、高级closed。B02风格与换种说法仍未完成，不以门禁关闭或前端存在替代交付；无收益的额外保义提示已淘汰。最终预注册16源采集已终态：62实际业务请求、2项因普通结果失败而未发送Alternative；46译文、8次无替代表达、6次结构拒绝、2次预期alternative-unavailable，另2项依赖未发送，owned worker正常退出。总456.6秒、原2CPU/2.5GiB预算，无超时、重试或追加轮次。双方语义评审及解盲裁决完成：两方向Style/Alternative均未达到预注册效用标准，en-zh Natural还出现新增接收者任务重大退化。Current不加行，不追加prompt/配置试验。B02仍是未可靠交付的功能债，不归入第四类已允许仅前端项目；B01独立资格不变。业务拒绝与共同默认基线错误保留，不以采集终态自动开放能力。
 
 ## 持续约束
 

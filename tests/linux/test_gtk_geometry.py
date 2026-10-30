@@ -13,7 +13,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
-from desktop_e2e import settings_text_visible_point, settings_viewport_from_pane  # noqa: E402
+from desktop_e2e import (  # noqa: E402
+    collapse_spring_path_bounded,
+    settings_text_visible_point,
+    settings_viewport_from_pane,
+)
 from gtk_session_reentry import (  # noqa: E402
     check_preview_colors,
     click_point,
@@ -39,6 +43,43 @@ from native_e2e import (  # noqa: E402
     glossary_save_outcome,
     glossary_source_click_ready,
 )
+
+
+class GtkCollapseSpringPathTests(unittest.TestCase):
+    def test_monotonic_or_one_small_valley_can_settle_at_the_exact_target(self):
+        for heights in (
+            [360, 310, 250, 190, 167],
+            [360, 310, 250, 190, 167, 166, 166, 167],
+            [360, 310, 250, 190, 167, 165, 166, 167],
+        ):
+            with self.subTest(heights=heights):
+                self.assertTrue(collapse_spring_path_bounded(heights, 360, 167))
+
+    def test_excursion_beyond_the_step_derived_envelope_is_rejected(self):
+        self.assertFalse(collapse_spring_path_bounded([360, 250, 190, 164, 167], 360, 167))
+        self.assertFalse(collapse_spring_path_bounded([361, 250, 190, 167], 360, 167))
+        # Different steps use the same formula, not a blanket 2px allowance.
+        self.assertTrue(collapse_spring_path_bounded([177, 173, 169, 166, 167], 177, 167))
+        self.assertFalse(collapse_spring_path_bounded([177, 173, 169, 165, 167], 177, 167))
+        self.assertTrue(collapse_spring_path_bounded([480, 310, 190, 164, 167], 480, 167))
+        self.assertFalse(collapse_spring_path_bounded([480, 310, 190, 163, 167], 480, 167))
+
+    def test_extra_reversal_or_recovery_overshoot_is_rejected(self):
+        for heights in (
+            [360, 310, 320, 250, 167],
+            [360, 250, 166, 167, 166, 167],
+            [360, 250, 165, 166, 165, 166, 167],
+            [360, 250, 166, 168, 167],
+        ):
+            with self.subTest(heights=heights):
+                self.assertFalse(collapse_spring_path_bounded(heights, 360, 167))
+
+    def test_unsettled_wrong_target_and_invalid_observations_are_rejected(self):
+        for heights in ([], [360, 250, 166], [360, 250, 168], [360, 250, 167.0], [True, 167]):
+            with self.subTest(heights=heights):
+                self.assertFalse(collapse_spring_path_bounded(heights, 360, 167))
+        self.assertFalse(collapse_spring_path_bounded([167, 250, 360], 167, 360))
+        self.assertFalse(collapse_spring_path_bounded([167, 167], 167, 167))
 
 
 class GtkFixtureStatePublicationTests(unittest.TestCase):

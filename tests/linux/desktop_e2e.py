@@ -36,6 +36,32 @@ from support.xtest import prepare_key, prepare_xtest
 from wire import Decoder, encode, now_ms
 
 
+def collapse_spring_path_bounded(heights, initial, target):
+    """Observe one bounded shrink valley, not an assumed monotonic easing curve."""
+    if (
+        type(initial) is not int
+        or type(target) is not int
+        or initial <= target
+        or not heights
+        or any(type(height) is not int for height in heights)
+        or heights[-1] != target
+    ):
+        return False
+    # Prototype snappy 560/40 has damping ratio ~.845 and continuous peak
+    # ratio .00696. Round up to .007 of the step plus .5px native rounding.
+    # Thus 360 -> 167 permits at most 2px, not a general fixed 2px tolerance.
+    undershoot = math.ceil(0.007 * (initial - target) + 0.5)
+    if any(height < target - undershoot or height > initial for height in heights):
+        return False
+    valley = heights.index(min(heights))
+    falling, recovering = heights[: valley + 1], heights[valley:]
+    return (
+        all(b <= a for a, b in zip(falling, falling[1:]))
+        and all(b >= a for a, b in zip(recovering, recovering[1:]))
+        and all(height <= target for height in recovering)
+    )
+
+
 def gtk_candidate_observation_current(snapshot, source, not_before_ms):
     """Freeze a fresh rendered candidate and its source evidence from one fixture report."""
     candidate = snapshot.get("candidate") or {}
@@ -2888,12 +2914,17 @@ def run(arguments):
                                             if mode.startswith("animate")
                                             else not middle
                                         )
+                                    if mode == "animate-collapse":
+                                        assert collapse_spring_path_bounded(
+                                            heights, before["height"], expected
+                                        ), heights
                                     for frame in frames:
-                                        assert (
-                                            low
-                                            <= frame["height"]
-                                            <= high + (8 if mode == "animate-expand" else 0)
-                                        )
+                                        if mode != "animate-collapse":
+                                            assert (
+                                                low
+                                                <= frame["height"]
+                                                <= high + (8 if mode == "animate-expand" else 0)
+                                            )
                                         assert frame["textMatches"] and frame["focused"]
                                         assert frame["start"] != frame["end"]
                                         assert frame["header"] and frame["footer"]
@@ -2912,7 +2943,7 @@ def run(arguments):
                                             )
                                         assert frame["shellHeight"] > frame["height"]
                                     direction = 1 if expected > before["height"] else -1
-                                    if mode != "animate-expand":
+                                    if mode not in ("animate-expand", "animate-collapse"):
                                         assert all(
                                             direction * (b - a) >= 0
                                             for a, b in zip(heights, heights[1:])
@@ -4687,11 +4718,17 @@ def run(arguments):
                 assert action is not None and Atspi.Action.do_action(action, 0), name
                 return node
 
-            def activate_scrolled_setting(name, *, evidence_name=None, timeout=15, activate=True):
+            def activate_scrolled_setting(
+                name, *, evidence_name=None, timeout=15, activate=True, exact_node=None
+            ):
                 # Continued interactions may follow an earlier page scroll. The
                 # initial primary actions retain their unscrolled screen checks.
                 deadline = time.monotonic() + timeout
-                node = settings_control(name, timeout=deadline - time.monotonic())
+                node = (
+                    exact_node
+                    if exact_node is not None
+                    else settings_control(name, timeout=deadline - time.monotonic())
+                )
                 assert node.get_process_id() == process.pid and node.get_name() == name
                 # Connection details are intentionally collapsed after reopening.
                 # Expand the actual native ancestor before asking its child to
@@ -4920,6 +4957,9 @@ def run(arguments):
                 )
                 if activate:
                     action = node.get_action_iface()
+                    assert time.monotonic() < deadline, (
+                        "scrolled settings action exhausted its interaction budget"
+                    )
                     assert action is not None and Atspi.Action.do_action(action, 0), name
                 return node
 
@@ -6331,7 +6371,53 @@ def run(arguments):
                 assert opening.item_actions == 1
                 selected = Atspi.Selection.get_selected_child(selector.get_selection_iface(), 0)
                 assert selected and selected.get_name() == chromium["title"]
-                activate_setting(support["labels"]["details"])
+                # GtkExpanderAccessible is TOGGLE_BUTTON + EXPANDABLE. A
+                # browser summary has a same-named PUSH_BUTTON elsewhere;
+                # name-only process lookup can select that hidden old peer.
+                # https://github.com/GNOME/gtk/blob/gtk-3-24/gtk/a11y/gtkexpanderaccessible.c
+                details_deadline = time.monotonic() + 15
+                connection = wait_for(
+                    lambda: visible_setup_control("连接详情", role=Atspi.Role.TOGGLE_BUTTON),
+                    "current owned connection-details expander missing",
+                    timeout=details_deadline - time.monotonic(),
+                )
+                assert connection.get_state_set().contains(Atspi.StateType.EXPANDED)
+                pending, matches = [connection], []
+                for _ in range(4096):
+                    assert time.monotonic() < details_deadline, (
+                        "connection details exhausted their interaction budget"
+                    )
+                    if not pending:
+                        break
+                    node = pending.pop()
+                    if node is None:
+                        continue
+                    node.clear_cache()
+                    assert node.get_process_id() == process.pid
+                    if (
+                        node.get_name() == support["labels"]["details"]
+                        and node.get_role() == Atspi.Role.TOGGLE_BUTTON
+                        and node.get_state_set().contains(Atspi.StateType.EXPANDABLE)
+                    ):
+                        matches.append(node)
+                    pending.extend(
+                        node.get_child_at_index(index) for index in range(node.get_child_count())
+                    )
+                else:
+                    assert not pending, "owned connection subtree exceeds 4096 nodes"
+                assert len(matches) == 1, "connection detail expander is not unique"
+                details = matches[0]
+                if not details.get_state_set().contains(Atspi.StateType.EXPANDED):
+                    activate_scrolled_setting(
+                        support["labels"]["details"],
+                        exact_node=details,
+                        timeout=details_deadline - time.monotonic(),
+                    )
+                wait_for(
+                    lambda: details.get_state_set().contains(Atspi.StateType.EXPANDED),
+                    "connection detail expander did not open",
+                    timeout=details_deadline - time.monotonic(),
+                )
                 instructions = next(
                     action
                     for action in [chromium["primaryAction"], *chromium["secondaryActions"]]

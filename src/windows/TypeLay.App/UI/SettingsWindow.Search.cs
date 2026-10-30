@@ -47,7 +47,7 @@ internal sealed partial class SettingsWindow
         new("model", "selection", "选择模型", "Select model", "Index Argos Hy"),
         new("model", "preparation", "准备翻译", "Prepare Translation", "下载 修复 download repair"),
         new("model", "device", "计算设备", "Compute device", "CPU GPU NPU"),
-        new("model", "resident", "模型常驻", "Keep model in memory"),
+        new("model", "resident", "常驻内存", "Keep in memory", "模型常驻 Keep model in memory"),
         new("model", "update", "模型更新", "Model updates"),
         new("about", "checkupdate", "软件更新", "Software updates"),
         new("about", "data", "本地数据", "Local data"),

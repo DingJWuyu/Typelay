@@ -41,6 +41,8 @@ def main():
     parser.add_argument("--inspect", action="store_true")
     parser.add_argument("--tutorial-only", action="store_true")
     parser.add_argument("--connection-only", action="store_true")
+    parser.add_argument("--applications-only", action="store_true")
+    parser.add_argument("--applications-empty-only", action="store_true")
     options = parser.parse_args()
     assert Gtk.init_check([])[0], "GTK display unavailable"
     options.output.mkdir(parents=True, exist_ok=True)
@@ -51,8 +53,29 @@ def main():
         (directory / "config").mkdir()
         (directory / "data").mkdir()
         (directory / "config/settings.json").write_text(
-            json.dumps({"UiLanguage": "zh-CN", "OnboardingComplete": True, "Startup": False})
+            json.dumps(
+                {
+                    "UiLanguage": "zh-CN",
+                    "OnboardingComplete": True,
+                    "Startup": False,
+                    **(
+                        {
+                            "ExcludedApplications": ["private-editor"],
+                            "Styles": {
+                                "Default": "natural",
+                                "Applications": {"editor": "natural", "mail": "formal"},
+                            },
+                        }
+                        if options.applications_only or options.applications_empty_only
+                        else {}
+                    ),
+                }
+            )
         )
+        if options.applications_empty_only:
+            initial = json.loads((directory / "config/settings.json").read_text())
+            initial.update(ApplicationListCustomized=True, ManagedApplications=[])
+            (directory / "config/settings.json").write_text(json.dumps(initial))
         parent, child = socket.socketpair()
         log = (options.output / "host.log").open("w")
         process = subprocess.Popen(
@@ -180,12 +203,42 @@ def main():
         host = ObservedLink(GLib, parent.fileno(), parent.fileno(), notification, None, closed.set)
 
         connection_support = None
+        resolve_started, resolve_release = asyncio.Event(), asyncio.Event()
+        hold_resolve = False
 
         async def support_refresh():
             facts = [connection_support.desktop_fact()] if connection_support is not None else []
             return await host.ask("applicationSupport", {"facts": facts}, timeout=2)
 
         async def support_action(identity, action, *args, **kwargs):
+            nonlocal hold_resolve
+            if action == "CheckComponent" and connection_support is not None:
+                await connection_support.execute(identity, action, *args, **kwargs)
+                return await support_refresh()
+            if options.applications_only or options.applications_empty_only:
+                catalogue = [
+                    {"id": "test.Editor.desktop", "name": "Editor", "application": "editor"},
+                    {"id": "test.Mail.desktop", "name": "Mail", "application": "mail"},
+                    {"id": "test.Terminal.desktop", "name": "Terminal", "application": "terminal"},
+                    {
+                        "id": "test.Wrapper.desktop",
+                        "name": "Wrapped app",
+                        "application": "",
+                        "unavailableReason": "无法确认包装启动器的应用进程，请在高级编辑中填写可执行文件名。",
+                    },
+                ]
+                if action == "ListManagedApplications":
+                    return catalogue
+                if action == "ResolveApplicationExclusion":
+                    if hold_resolve:
+                        hold_resolve = False
+                        resolve_started.set()
+                        await resolve_release.wait()
+                    return next(
+                        item["application"]
+                        for item in catalogue
+                        if item["id"] == kwargs["desktop_id"]
+                    )
             if action == "ListManagedApplications":
                 return list_managed_applications()
             raise ValueError("No desktop connection is available in this presentation test.")
@@ -217,6 +270,356 @@ def main():
             Gdk.pixbuf_get_from_window(window, 0, 0, width, height).savev(
                 str(options.output / (name + ".png")), "png", [], []
             )
+
+        async def exercise_applications():
+            """Real GTK controls + production Host; catalogue is a controlled system port."""
+            nonlocal hold_resolve, connection_support
+            surface.sidebar.select_row(surface.nav_rows["application-support"])
+            surface.window.present()
+            pane = surface.applications
+            settings_path = directory / "config/settings.json"
+
+            async def ready():
+                await settle(
+                    lambda: surface.window.is_active()
+                    and not jobs
+                    and not pane.loading
+                    and pane.pending is None
+                    and pane.projection is not None
+                    and not surface.pages.get_transition_running()
+                )
+                await paint(surface.window)
+
+            def disk():
+                return json.loads(settings_path.read_text())
+
+            async def interact(widget):
+                assert widget.get_mapped() and widget.is_sensitive()
+                widget.grab_focus()
+                await paint(widget.get_toplevel())
+                assert widget.is_focus() or widget.get_toplevel().get_focus() is widget
+                viewport = surface.page_scrolls["application-support"].get_child()
+                if widget.get_toplevel() is surface.window:
+                    point = widget.translate_coordinates(viewport, 0, 0)
+                    assert point is not None
+                    assert (
+                        0
+                        <= point[0]
+                        <= viewport.get_allocated_width() - widget.get_allocated_width()
+                    )
+                    assert (
+                        0
+                        <= point[1]
+                        <= viewport.get_allocated_height() - widget.get_allocated_height()
+                    )
+
+            async def question(application):
+                row = pane.rows[application]
+                await interact(row)
+                assert row.emit("popup-menu")
+                await settle(lambda: pane.dialog is not None and pane.dialog.is_active())
+                return pane.dialog
+
+            async def remove(application, response=Gtk.ResponseType.OK):
+                dialog = await question(application)
+                dialog.response(response)
+                await ready()
+
+            def descendants(widget):
+                yield widget
+                if isinstance(widget, Gtk.Container):
+                    for child in widget.get_children():
+                        yield from descendants(child)
+
+            async def picker():
+                await interact(pane.add)
+                pane.add.clicked()
+                await settle(lambda: pane.dialog is not None and pane.dialog.is_active())
+                dialog = pane.dialog
+                search = next(
+                    widget for widget in descendants(dialog) if isinstance(widget, Gtk.SearchEntry)
+                )
+
+                def choices():
+                    return [
+                        widget
+                        for widget in descendants(dialog)
+                        if isinstance(widget, Gtk.Button)
+                        and widget.get_style_context().has_class("apps-option")
+                    ]
+
+                return dialog, search, choices
+
+            async def image(window, name):
+                await settle(lambda: window.is_active())
+                await paint(window)
+                width, height = window.get_size()
+                Gdk.pixbuf_get_from_window(window.get_window(), 0, 0, width, height).savev(
+                    str(options.output / (name + ".png")), "png", [], []
+                )
+                print("APPLICATION GEOMETRY", name, width, height, flush=True)
+
+            await ready()
+            assert set(pane.rows) == {"editor", "mail", "terminal", "private-editor"}
+            assert surface.application_controls["editor"][1].get_active_id() == "Natural"
+            assert surface.application_controls["mail"][1].get_active_id() == "Formal"
+            assert len(pane.summary.get_children()) == 2
+            assert surface.window.get_size() == (900, 660)
+            assert all(row.get_allocated_height() == 44 for row in pane.rows.values())
+            assert (pane.add.get_allocated_width(), pane.add.get_allocated_height()) == (28, 24)
+            await image(surface.window, "apps-zh-light")
+
+            # Remapping must rebuild actionable current peers without reviving old ones.
+            old_switch, old_tone = surface.application_controls["editor"]
+            surface.sidebar.select_row(surface.nav_rows["general"])
+            await settle(lambda: not surface.pages.get_transition_running())
+            surface.sidebar.select_row(surface.nav_rows["application-support"])
+            await ready()
+            before = settings_path.read_bytes()
+            old_switch.set_active(False)
+            old_tone.emit("changed")
+            await settle()
+            assert settings_path.read_bytes() == before
+            switch = surface.application_controls["editor"][0]
+            await interact(switch)
+            switch.set_active(False)
+            await ready()
+            assert "editor" in disk()["ExcludedApplications"]
+            disabled_tone = surface.application_controls["editor"][1]
+            assert not disabled_tone.is_sensitive()
+            before = settings_path.read_bytes()
+            disabled_tone.set_active_id("inherit")
+            await settle()
+            assert settings_path.read_bytes() == before
+            assert disk()["Styles"]["Applications"]["editor"] == "natural"
+            surface.toast.undo.clicked()
+            await ready()
+            assert "editor" not in disk()["ExcludedApplications"]
+
+            before = settings_path.read_bytes()
+            await remove("mail", Gtk.ResponseType.CANCEL)
+            assert settings_path.read_bytes() == before
+            dialog = await question("mail")
+            await image(dialog, "apps-confirm-zh-light")
+            dialog.response(Gtk.ResponseType.OK)
+            await ready()
+            assert "mail" not in pane.rows
+            assert disk()["Styles"]["Applications"]["mail"] == "formal"
+            assert disk()["ApplicationListCustomized"] is True
+            surface.toast.undo.clicked()
+            await ready()
+            assert "mail" in pane.rows
+
+            # A stale modal and stale Undo cannot overwrite a newer real save.
+            retired = await question("mail")
+            assert await host.ask("settingsPatch", {"accent": "sage"}) is True
+            await ready()
+            retired.response(Gtk.ResponseType.OK)
+            await ready()
+            assert "mail" in pane.rows
+            await remove("mail")
+            undo = surface.toast.undo
+            assert await host.ask("settingsPatch", {"textSize": 16}) is True
+            await ready()
+            undo.clicked()
+            await ready()
+            assert "mail" not in pane.rows and disk()["TextSize"] == 16
+
+            # Real persistence failure retains membership; retry is a fresh public action.
+            obstruction = settings_path.with_suffix(".json.tmp")
+            obstruction.mkdir()
+            await remove("terminal")
+            assert "terminal" in pane.rows
+            obstruction.rmdir()
+            await remove("terminal")
+            assert "terminal" not in pane.rows
+
+            # Resolving an actual registry identity is an asynchronous system
+            # port. A new picker retires A before that resolution may commit.
+            dialog, search, choices = await picker()
+            hold_resolve = True
+            before = settings_path.read_bytes()
+            next(
+                button for button in choices() if button.get_accessible().get_name() == "Terminal"
+            ).clicked()
+            await settle(lambda: resolve_started.is_set() and surface.window.is_active())
+            dialog_b, search_b, choices_b = await picker()
+            resolve_release.set()
+            await settle()
+            assert settings_path.read_bytes() == before and dialog_b.get_visible()
+            next(
+                button for button in choices_b() if button.get_accessible().get_name() == "Terminal"
+            ).clicked()
+            await ready()
+            assert "terminal" in pane.rows
+            await remove("terminal")
+
+            dialog, search, choices = await picker()
+            unresolved = next(
+                button
+                for button in choices()
+                if button.get_accessible().get_name() == "Wrapped app"
+            )
+            assert not unresolved.is_sensitive() and unresolved.get_tooltip_text()
+            old_choice = next(
+                button for button in choices() if button.get_accessible().get_name() == "Mail"
+            )
+            search.set_text("no-match-984")
+            await settle()
+            assert not choices()
+            await image(dialog, "apps-picker-no-match")
+            search.set_text("Mail")
+            await settle()
+            before = settings_path.read_bytes()
+            old_choice.clicked()
+            await settle()
+            assert settings_path.read_bytes() == before and dialog.get_visible()
+            search.set_text("")
+            await settle()
+            assert search.get_allocated_height() == 30
+            assert any(
+                isinstance(widget, Gtk.Label)
+                and widget.get_text() == "搜索"
+                and widget.get_visible()
+                for widget in descendants(dialog)
+            )
+            await image(dialog, "apps-picker-zh-light")
+            next(
+                button for button in choices() if button.get_accessible().get_name() == "Mail"
+            ).clicked()
+            await ready()
+            assert "mail" in pane.rows and disk()["Styles"]["Applications"]["mail"] == "formal"
+
+            # Explicit empty survives reopening; policy and style remain independent.
+            for application in list(pane.rows):
+                await remove(application)
+            assert pane.projection["customized"] is True and disk()["ManagedApplications"] == []
+            assert disk()["ExcludedApplications"] == ["private-editor"]
+            assert disk()["Styles"]["Applications"]["editor"] == "natural"
+            surface.window.hide()
+            surface.show()
+            surface.sidebar.select_row(surface.nav_rows["application-support"])
+            await ready()
+            assert not pane.rows
+            await image(surface.window, "apps-empty")
+            dialog, search, choices = await picker()
+            old_choice = choices()[0]
+            surface.sidebar.select_row(surface.nav_rows["general"])
+            await settle(lambda: not surface.pages.get_transition_running())
+            surface.sidebar.select_row(surface.nav_rows["application-support"])
+            await ready()
+            old_choice.clicked()
+            await ready()
+            assert not pane.rows
+            dialog, search, choices = await picker()
+            next(
+                button for button in choices() if button.get_accessible().get_name() == "Editor"
+            ).clicked()
+            await ready()
+            assert set(pane.rows) == {"editor"}
+            toast_peer = surface.toast.undo
+            toast_identity = surface.toast.identity
+            assert (
+                await host.ask(
+                    "settingsPatch",
+                    {"uiLanguage": "en", "theme": "dark", "accent": "clay", "textSize": 15},
+                )
+                is True
+            )
+            await ready()
+            assert surface.toast.identity is toast_identity and surface.toast.undo is toast_peer
+            assert surface.toast.text.get_text() == "App added; existing settings retained"
+            text = [
+                widget.get_text()
+                for widget in descendants(pane.summary)
+                if isinstance(widget, Gtk.Label)
+            ]
+            assert "Desktop apps" in text and "Browser extension" in text and "Not checked" in text
+            await image(surface.window, "apps-en-dark")
+            dialog, search, choices = await picker()
+            assert search.get_accessible().get_name() == "Search apps"
+            assert any(
+                isinstance(widget, Gtk.Label)
+                and widget.get_text() == "Search"
+                and widget.get_visible()
+                for widget in descendants(dialog)
+            )
+            await image(dialog, "apps-picker-en-dark")
+            dialog.response(Gtk.ResponseType.CANCEL)
+            await ready()
+            dialog = await question("editor")
+            await image(dialog, "apps-confirm-en-dark")
+            dialog.response(Gtk.ResponseType.CANCEL)
+            await ready()
+            tone = surface.application_controls["editor"][1]
+            assert (
+                tone.is_sensitive()
+            )  # Clearing an existing override is permitted while quality is closed.
+            assert all(not row[2] for row in tone.get_model() if row[0] != "inherit")
+            tone.set_active_id("inherit")
+            await ready()
+            assert "editor" not in disk()["Styles"]["Applications"]
+            assert disk()["Styles"]["Applications"]["mail"] == "formal"
+            # The global pill is also captured over another page, not inferred from app-only pixels.
+            surface.sidebar.select_row(surface.nav_rows["general"])
+            await settle(lambda: not surface.pages.get_transition_running())
+            await image(surface.window, "apps-toast-general-dark")
+            assert await host.ask("settingsPatch", {"theme": "light"}) is True
+            await settle()
+            await image(surface.window, "apps-toast-general-light")
+            # The summary's actual missing-component action owns its chooser.
+            # Retiring the page must reject its old response, not alter the
+            # selected component directory. A later current chooser still works.
+            from application_support import ApplicationSupport
+
+            connection_support = ApplicationSupport(
+                SimpleNamespace(home=options.host.parent.parent, data=directory / "data")
+            )
+            support = surface.application_support
+            support.render(await support_refresh())
+            assert support.rows["desktop-text"]["primaryAction"]["id"] == "CheckComponent"
+            surface.sidebar.select_row(surface.nav_rows["application-support"])
+            await ready()
+
+            async def component_chooser():
+                button = next(
+                    widget
+                    for widget in descendants(pane.summary)
+                    if isinstance(widget, Gtk.Button)
+                    and widget.get_accessible().get_name() == "App connection: Desktop apps"
+                )
+                await interact(button)
+                button.clicked()
+                await settle(
+                    lambda: any(
+                        isinstance(window, Gtk.FileChooserDialog) and window.is_active()
+                        for window in Gtk.Window.list_toplevels()
+                    )
+                )
+                chooser = next(
+                    window
+                    for window in Gtk.Window.list_toplevels()
+                    if isinstance(window, Gtk.FileChooserDialog) and window.is_active()
+                )
+                assert chooser.set_current_folder(str(directory))
+                await settle(lambda: chooser.get_filename() == str(directory))
+                return chooser
+
+            original = connection_support.cooperative_directory
+            chooser = await component_chooser()
+            surface.sidebar.select_row(surface.nav_rows["general"])
+            await settle(lambda: not surface.pages.get_transition_running())
+            chooser.response(Gtk.ResponseType.OK)
+            await settle()
+            assert connection_support.cooperative_directory == original
+            surface.sidebar.select_row(surface.nav_rows["application-support"])
+            await ready()
+            chooser = await component_chooser()
+            chooser.response(Gtk.ResponseType.OK)
+            await ready()
+            assert connection_support.cooperative_directory == directory
+            connection_support = None
+            print("APPLICATIONS UI PASS", flush=True)
 
         async def exercise_connection_focus():
             from application_support import ApplicationSupport
@@ -525,6 +928,23 @@ def main():
             await settle(
                 lambda: not (surface.window.get_window().get_state() & Gdk.WindowState.MAXIMIZED)
             )
+            if options.applications_empty_only:
+                surface.sidebar.select_row(surface.nav_rows["application-support"])
+                await settle()
+                assert not surface.application_controls, (
+                    "explicit empty application list was repopulated"
+                )
+                assert (
+                    json.loads((directory / "config/settings.json").read_text())[
+                        "ApplicationListCustomized"
+                    ]
+                    is True
+                )
+                print("APPLICATIONS EMPTY PASS", flush=True)
+                return
+            if options.applications_only:
+                await exercise_applications()
+                return
             if options.connection_only:
                 await exercise_connection_focus()
                 return
@@ -1186,8 +1606,24 @@ def main():
             surface.controls["wakeShortcut"].set_text("Ctrl+Shift+F9")
             surface.draft_changed("wakeShortcut")
             await settle(lambda: state["wakeShortcut"] == "Ctrl+Shift+F9")
+
+            async def toggle_fixture_application(enabled):
+                assert await host.ask("manageApplication", "fixture-editor") is True
+                surface.sidebar.select_row(surface.nav_rows["application-support"])
+                surface.window.present()
+                await settle(
+                    lambda: surface.window.is_active()
+                    and not jobs
+                    and not surface.applications.loading
+                    and "fixture-editor" in surface.application_controls
+                )
+                switch = surface.application_controls["fixture-editor"][0]
+                assert switch.get_mapped() and switch.is_sensitive()
+                switch.grab_focus()
+                switch.set_active(enabled)
+
             # An app exclusion and its toast undo only change that app's policy.
-            surface.toggle_application("fixture-editor", False)
+            await toggle_fixture_application(False)
             await settle(lambda: "fixture-editor" in (state.get("excludedApplications") or []))
             await settle()
             surface.toast.undo.clicked()
@@ -1212,7 +1648,7 @@ def main():
             recorder.emit("key-press-event", event)
             assert recorder.get_text() == "Ctrl+Shift+F11" and not recorder.recording
             # A stale toast must not overwrite a later explicit settings change.
-            surface.toggle_application("fixture-editor", False)
+            await toggle_fixture_application(False)
             await settle(lambda: "fixture-editor" in (state.get("excludedApplications") or []))
             await settle()
             assert await host.ask("settingsPatch", {"font": "sans"}) is True
@@ -1227,7 +1663,7 @@ def main():
                 .get_font(Gtk.StateFlags.NORMAL)
                 .get_family()
             )
-            surface.toggle_application("fixture-editor", True)
+            await toggle_fixture_application(True)
             await settle(lambda: "fixture-editor" not in (state.get("excludedApplications") or []))
             # A renderer must never silently save fallback values on reopen.
             surface.dismiss()

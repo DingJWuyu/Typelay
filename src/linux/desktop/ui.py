@@ -1057,6 +1057,9 @@ class ApplicationSupportPane:
                 widget.disconnect(signal)
 
     def render_connection_cards(self):
+        if hasattr(self.owner, "applications"):
+            self.owner.applications.render_summary()
+            return
         if not self.value or not hasattr(self, "connection_cards"):
             return
         rows = self.value["rows"]
@@ -1119,9 +1122,8 @@ class ApplicationSupportPane:
         self.render_selected()
 
     def render_selected(self):
-        self.owner.add_application.set_sensitive(
-            self.owner.draft_messages is not None and not self.busy
-        )
+        if hasattr(self.owner, "applications"):
+            self.owner.applications.render()
         row = self.rows.get(self.selector.get_active_id())
         if not row or not self.value:
             return
@@ -1182,14 +1184,14 @@ class ApplicationSupportPane:
         self.selector.set_sensitive(not self.busy)
         self.render_connection_cards()
 
-    def pick_application(self, *, for_management=False):
+    def pick_application(self):
         if self.busy:
             return
         self.busy = True
         self.action_revision += 1
         self.render_selected()
         dialog = Gtk.Dialog(
-            title="添加应用" if for_management else "选择应用",
+            title="选择应用",
             transient_for=self.owner.window,
             modal=True,
             destroy_with_parent=True,
@@ -1227,9 +1229,7 @@ class ApplicationSupportPane:
                 self.busy = True
                 self.render_selected()
                 self.owner.tasks(
-                    self.owner.add_managed_application(identity)
-                    if for_management
-                    else self.execute(
+                    self.execute(
                         {"id": "desktop-text"}, {"id": "SelectApplication", "desktopId": identity}
                     )
                 )
@@ -1244,7 +1244,7 @@ class ApplicationSupportPane:
             try:
                 entries = await self.action_requested(
                     "desktop-text",
-                    "ListExclusionApplications" if for_management else "ListApplications",
+                    "ListApplications",
                 )
                 if not alive:
                     return
@@ -1324,7 +1324,7 @@ class ApplicationSupportPane:
         action_revision = self.action_revision
         self.render_selected()
         if action["id"] == "CheckComponent":
-            self.choose_component(row, action)
+            self.choose_component(row, action, guard=guard)
         elif action["requiresConfirmation"]:
             labels = self.value["labels"]
             dialog = Gtk.MessageDialog(
@@ -1408,26 +1408,43 @@ class ApplicationSupportPane:
             # the existing explicit launch. The compositor decides activation.
             return None
 
-    def choose_component(self, row, action):
+    def choose_component(self, row, action, *, guard=None):
         labels = self.value["labels"]
+        revision = self.action_revision
         dialog = Gtk.FileChooserDialog(
             title=labels["chooseComponent"],
             transient_for=self.owner.window,
+            modal=True,
             action=Gtk.FileChooserAction.SELECT_FOLDER,
         )
         dialog.add_buttons(
             labels["cancel"], Gtk.ResponseType.CANCEL, labels["confirm"], Gtk.ResponseType.OK
         )
+        dialog.set_default_response(Gtk.ResponseType.CANCEL)
+        answered = False
 
         def selected(widget, response):
-            directory = widget.get_filename() if response == Gtk.ResponseType.OK else None
+            nonlocal answered
+            if answered or not widget.get_mapped():
+                return
+            answered = True
+            current = revision == self.action_revision and (guard is None or guard())
+            directory = (
+                widget.get_filename() if current and response == Gtk.ResponseType.OK else None
+            )
             widget.destroy()
             if directory:
-                self.owner.tasks(self.execute(row, action, directory))
-            else:
+                self.owner.tasks(self.execute(row, action, directory, guard=guard))
+            elif revision == self.action_revision:
                 self.busy = False
                 self.render_selected()
 
+        def abandoned(_widget):
+            if not answered and revision == self.action_revision:
+                self.busy = False
+                self.render_selected()
+
+        dialog.connect("destroy", abandoned)
         dialog.connect("response", selected)
         dialog.show_all()
 
@@ -1533,7 +1550,14 @@ class ApplicationSupportPane:
                 action["id"],
                 directory,
                 startup_id=startup_id,
-                **({"lesson": lesson, "practice_current": guard} if lesson is not None else {}),
+                **({"lesson": lesson} if lesson is not None else {}),
+                **(
+                    {"practice_current": guard}
+                    if guard is not None
+                    and row["id"] == "desktop-text"
+                    and action["id"] == "Connect"
+                    else {}
+                ),
                 **({"desktop_id": action["desktopId"]} if "desktopId" in action else {}),
             )
             if value:
@@ -3421,6 +3445,7 @@ class Settings:
         self.window.set_title("TypeLay Settings" if english else "TypeLay 设置")
         self.search.set_placeholder_text("Search" if english else "搜索")
         self.application_support.render_preparation()
+        self.render_applications()
         self.translation.render()
         self.render_language_status()
         for key in ("source", "target"):
@@ -3456,225 +3481,11 @@ class Settings:
         self.auto_save_source = GLib.timeout_add(250, save)
 
     async def load_applications(self):
-        if self.application_catalog_pending:
-            return
-        self.application_catalog_pending = True
-        try:
-            entries = await self.application_support.action_requested(
-                "desktop-text", "ListManagedApplications"
-            )
-            if not isinstance(entries, list):
-                raise ValueError("applications-unavailable")
-            self.application_catalog = entries
-            self.render_applications()
-        except (OSError, ValueError, EOFError, TimeoutError):
-            self.message.set_text("暂时无法读取应用列表，请重新打开设置。")
-        finally:
-            self.application_catalog_pending = False
+        await self.applications.refresh()
 
     def render_applications(self):
-        if not hasattr(self, "applications_box"):
-            return
-        excluded = (self.value or {}).get("excludedApplications") or []
-        translation = getattr(self, "translation", None)
-        style_state = translation.style_state if translation and translation.style_state else {}
-        styles = (style_state.get("savedPreferences") or {}).get("applications") or {}
-        managed = (self.value or {}).get("managedApplications") or []
-        entries = list(self.application_catalog or [])
-        known = {item.get("application", "").casefold() for item in entries}
-        observed = [self.last_application] if getattr(self, "last_application", None) else []
-        for application in [*managed, *excluded, *styles, *observed]:
-            if application.casefold() not in known:
-                known.add(application.casefold())
-                entries.append({"name": application, "application": application, "id": None})
-        query = self.applications_search.get_text().strip().casefold()
-        entries = [
-            item
-            for item in entries
-            if query in (item["name"] + " " + item.get("application", "")).casefold()
-        ]
-        signature = (
-            repr(entries),
-            tuple(excluded),
-            repr(styles),
-            style_state.get("canChange"),
-            self.pending_draft is not None,
-            tuple(sorted(getattr(self, "applications_pending", set()))),
-            (self.value or {}).get("uiLanguage"),
-        )
-        if signature == self.applications_signature:
-            return
-        self.applications_signature = signature
-        self.application_controls = {}
-        for child in self.applications_box.get_children():
-            child.destroy()
-        if not entries:
-            empty, _ = design_row(
-                "正在读取应用…" if self.application_catalog is None else "没有匹配的应用"
-            )
-            self.applications_box.pack_start(empty, False, False, 0)
-        for item in entries:
-            application = item.get("application")
-            enabled = Gtk.Switch()
-            enabled.set_active(
-                not application
-                or application.casefold() not in {value.casefold() for value in excluded}
-            )
-            enabled.set_sensitive(
-                bool(application)
-                and application not in getattr(self, "applications_pending", set())
-            )
-            enabled.get_accessible().set_name("在应用中启用：" + item["name"])
-            enabled.set_tooltip_text(
-                item.get("unavailableReason") or "即时保存；不改变应用连接权限"
-            )
-            enabled.connect(
-                "notify::active",
-                lambda control, _property, app=application: self.toggle_application(
-                    app, control.get_active()
-                ),
-            )
-            controls = Gtk.Box(spacing=10)
-            saved_style = next(
-                (
-                    value
-                    for key, value in styles.items()
-                    if application and key.casefold() == application.casefold()
-                ),
-                "inherit",
-            )
-            removal = next(
-                (
-                    item.get("removal", {}).get("canRemove")
-                    for item in style_state.get("applications", [])
-                    if application and item["application"].casefold() == application.casefold()
-                ),
-                False,
-            )
-            can_change = bool(
-                application and style_state.get("isReleased") and style_state.get("canChange")
-            )
-            choices = Gtk.ListStore(str, str, bool)
-            for identity, title in (
-                ("inherit", self.tr("继承全局风格", "Inherit global tone")),
-                ("Natural", self.tr("自然", "Natural")),
-                ("Formal", self.tr("正式", "Formal")),
-            ):
-                choices.append((identity, title, can_change or identity == "inherit" and removal))
-            inherited = Gtk.ComboBox.new_with_model(choices)
-            inherited.set_id_column(0)
-            renderer = Gtk.CellRendererText()
-            inherited.pack_start(renderer, True)
-            inherited.add_attribute(renderer, "text", 1)
-            inherited.add_attribute(renderer, "sensitive", 2)
-            inherited.set_active_id(saved_style)
-            inherited.set_sensitive(can_change or bool(removal))
-            inherited.set_tooltip_text("已保存的覆盖仍显示；当前未开放的风格不可选择。")
-            inherited.connect(
-                "changed",
-                lambda control, app=application: self.tasks(
-                    self.change_application_style(app, control.get_active_id())
-                ),
-            )
-            if application:
-                self.application_controls[application.casefold()] = (enabled, inherited)
-            controls.pack_start(inherited, False, False, 0)
-            controls.pack_end(enabled, False, False, 0)
-            reason = item.get("unavailableReason")
-            widget, _ = design_row(
-                item["name"], controls, self.localizer.text(reason) if reason else None
-            )
-            icon = Gtk.Image.new_from_icon_name(
-                "application-x-executable", Gtk.IconSize.LARGE_TOOLBAR
-            )
-            if item.get("id"):
-                try:
-                    registered = Gio.DesktopAppInfo.new(item["id"])
-                except TypeError:
-                    registered = None
-                if registered and registered.get_icon():
-                    icon.set_from_gicon(registered.get_icon(), Gtk.IconSize.LARGE_TOOLBAR)
-            icon.set_size_request(28, 28)
-            widget.pack_start(icon, False, False, 0)
-            widget.reorder_child(icon, 0)
-            self.applications_box.pack_start(widget, False, False, 0)
-        self.applications_box.show_all()
-
-    async def change_application_style(self, application, style):
-        if not application or style not in ("inherit", "Natural", "Formal"):
-            return
-        try:
-            state = await self.host.ask("getApplicationStyleSettings", application, timeout=2)
-            if not isinstance(state, dict) or type(state.get("settingsRevision")) is not int:
-                raise ValueError("style-state-unavailable")
-            result = await self.host.ask(
-                "changeApplicationStyle",
-                {
-                    "application": application,
-                    "style": None if style == "inherit" else style,
-                    "expectedSettingsRevision": state["settingsRevision"],
-                },
-                timeout=3,
-            )
-            saved = isinstance(result, dict) and result.get("saved") is True
-            self.report_save_result(
-                saved,
-                self.translation.unavailable_message(
-                    result.get("code") if isinstance(result, dict) else None
-                ),
-            )
-        except (OSError, ValueError, EOFError, TimeoutError):
-            self.report_save_result(False, "应用风格保存结果未确认，请重新打开设置检查。")
-        finally:
-            self.translation.refresh()
-
-    def toggle_application(self, application, enabled):
-        if self.configuring or not application or self.value is None:
-            return
-        self.tasks(self.set_application_enabled(application, enabled))
-
-    async def set_application_enabled(self, application, enabled, expected_revision=None):
-        if not hasattr(self, "applications_pending"):
-            self.applications_pending = set()
-        if application in self.applications_pending:
-            return
-        self.applications_pending.add(application)
-        self.render_applications()
-        try:
-            result = await self.host.ask(
-                "applicationEnabled",
-                {
-                    "application": application,
-                    "enabled": enabled,
-                    "expectedSettingsRevision": expected_revision,
-                },
-                timeout=3,
-            )
-            saved = isinstance(result, dict) and result.get("saved") is True
-            self.report_save_result(
-                saved,
-                self.tr(
-                    "设置已变化或保存未确认，请检查当前应用状态。",
-                    "Settings changed or the save was not confirmed. Check the app's current state.",
-                ),
-            )
-            if saved and expected_revision is None and not enabled:
-                revision = result["settingsRevision"]
-                self.toast.show_message(
-                    self.tr("已停用此应用", "App disabled"),
-                    lambda: self.tasks(self.set_application_enabled(application, True, revision)),
-                )
-        except (OSError, ValueError, EOFError, TimeoutError):
-            self.report_save_result(
-                False,
-                self.tr(
-                    "保存结果未确认，请重新打开设置检查。",
-                    "Save was not confirmed. Reopen Settings to check.",
-                ),
-            )
-        finally:
-            self.applications_pending.discard(application)
-            self.render_applications()
+        if hasattr(self, "applications"):
+            self.applications.update()
 
     def render_footer(self):
         # The footer is no-show-all: showing a retry button alone does not map
@@ -3720,7 +3531,7 @@ class Settings:
             for widget in self.controls.values():
                 if isinstance(widget, (Gtk.Entry, ShortcutRecorder)):
                     widget.set_sensitive(True)
-            self.add_application.set_sensitive(not self.application_support.busy)
+            self.render_applications()
             self.render_draft()
         except (OSError, ValueError, EOFError, TimeoutError):
             self.draft_notice.set_text("无法加载设置操作，请重新打开设置后重试。")
@@ -3949,26 +3760,6 @@ class Settings:
 
     def draft_value(self, key):
         return self.controls[key].get_text()
-
-    async def add_managed_application(self, identity):
-        try:
-            name = await self.application_support.action_requested(
-                "desktop-text", "ResolveApplicationExclusion", desktop_id=identity
-            )
-            saved = await self.host.ask("manageApplication", name, timeout=3)
-            self.report_save_result(saved is True, "添加应用的保存结果未确认，请重新打开设置检查。")
-            if saved is True:
-                self.toast.show_message("已添加应用 · 默认启用，继承全局风格")
-                await self.load_applications()
-        except (OSError, ValueError, EOFError, TimeoutError) as error:
-            self.message.set_text(
-                str(error)
-                if isinstance(error, ValueError)
-                else "无法读取应用，请重新打开选择器重试。"
-            )
-        finally:
-            self.application_support.busy = False
-            self.application_support.render_selected()
 
     def keep_editing_shortcuts(self, confirmation, baseline):
         if confirmation is not self.shortcut_confirmation or baseline is not self.value:

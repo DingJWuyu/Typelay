@@ -938,7 +938,9 @@ class ApplicationSupport:
             or lesson not in ("automatic", "onDemand")
         ):
             raise ValueError("practice-lesson")
-        if practice_current is not None and (lesson is None or not callable(practice_current)):
+        if practice_current is not None and (
+            identity != "desktop-text" or action != "Connect" or not callable(practice_current)
+        ):
             raise ValueError("practice-request")
 
         def cancelled_practice():

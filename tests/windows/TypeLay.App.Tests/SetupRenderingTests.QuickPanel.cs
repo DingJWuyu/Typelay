@@ -211,7 +211,9 @@ public sealed partial class SetupRenderingTests
         UIElementAutomationPeer.CreatePeerForElement(button).GetPattern(PatternInterface.Invoke));
     private static void TrayInvoke(Button button) => TrayProvider(button).Invoke();
 
-    private static void AssertRetiredTrayAction(TrayPreparationScene scene, IInvokeProvider old)
+    private static void AssertRetiredTrayAction(TrayPreparationScene scene, IInvokeProvider old) => AssertRetiredTrayAction(scene, old.Invoke);
+
+    private static void AssertRetiredTrayAction(TrayPreparationScene scene, Action old, bool allowNativeRejection = true)
     {
         bool unexpectedDialog = false;
         nint owner = new WindowInteropHelper(scene.Host).Handle;
@@ -230,19 +232,20 @@ public sealed partial class SetupRenderingTests
         {
             try
             {
-                old.Invoke();
+                old();
             }
-            catch (ElementNotAvailableException) { }
-            catch (ElementNotEnabledException) { }
+            catch (ElementNotAvailableException) when (allowNativeRejection) { }
+            catch (ElementNotEnabledException) when (allowNativeRejection) { }
             scene.Panel.Dispatcher.Invoke(() => { }, DispatcherPriority.SystemIdle);
         }
         finally { guard.Stop(); }
         Assert.False(unexpectedDialog);
     }
 
-    private static async Task TrayConsent(SettingsWindow ownerWindow, Action open, bool accept)
+    private static async Task TrayConsent(SettingsWindow ownerWindow, Action open, bool accept, Action<string>? inspect = null, Func<nint, Task>? beforeResponse = null)
     {
         nint owner = new WindowInteropHelper(ownerWindow).Handle;
+        string expectedTitle = UiTheme.L("本地模型", "Local model");
         var responder = Task.Run(async () =>
         {
             var elapsed = Stopwatch.StartNew();
@@ -257,9 +260,29 @@ public sealed partial class SetupRenderingTests
                     {
                         var title = new StringBuilder(128);
                         GetWindowText(dialog, title, title.Capacity);
-                        bool expected = title.ToString() == "本地模型";
-                        Assert.True(PostMessage(dialog, 0x0111, expected && accept ? 1 : 2, 0));
+                        bool expected = title.ToString() == expectedTitle;
+                        var lines = new List<string>();
+                        for (nint child = GetWindow(dialog, 5); child != 0; child = GetWindow(child, 2))
+                        {
+                            var kind = new StringBuilder(64);
+                            GetClassName(child, kind, kind.Capacity);
+                            if (kind.ToString() != "Static")
+                                continue;
+                            var message = new StringBuilder(8192);
+                            GetWindowText(child, message, message.Capacity);
+                            lines.Add(message.ToString());
+                        }
+                        try
+                        {
+                            if (expected && beforeResponse is not null)
+                                await beforeResponse(dialog);
+                        }
+                        finally
+                        {
+                            Assert.True(PostMessage(dialog, 0x0111, expected && accept ? 1 : 2, 0));
+                        }
                         Assert.True(expected);
+                        inspect?.Invoke(string.Join("\n", lines));
                         return;
                     }
                 }
@@ -366,7 +389,7 @@ public sealed partial class SetupRenderingTests
         {
             get; private set;
         }
-        public TrayPreparationScene(string language, string theme, bool protocolModel = false, bool nativePresence = false, Func<HttpMessageHandler>? handler = null)
+        public TrayPreparationScene(string language, string theme, bool protocolModel = false, bool nativePresence = false, Func<HttpMessageHandler>? handler = null, string[]? directions = null, bool exactPackages = false)
         {
             Settings = WindowsRuntime.CreateSettings(SettingsPath);
             Settings.Update(Settings.Value with
@@ -374,7 +397,7 @@ public sealed partial class SetupRenderingTests
                 UiLanguage = language,
                 Theme = theme
             });
-            Model = protocolModel ? ProtocolModel(Directory) : SetupRenderingTests.Model(Directory);
+            Model = protocolModel ? ProtocolModel(Directory, directions, exactPackages) : SetupRenderingTests.Model(Directory);
             if (nativePresence)
                 WriteTrayNativePresence(Directory);
             Host = new(Settings, Model, () => Assert.Fail("Tray model actions must not start practice."),
@@ -466,9 +489,9 @@ public sealed partial class SetupRenderingTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => throw new HttpRequestException("controlled-network-failure");
     }
 
-    private sealed class TrayProgressHttp(bool knownTotal) : HttpMessageHandler
+    private sealed class TrayProgressHttp(bool knownTotal, bool allowRemainder = false) : HttpMessageHandler
     {
-        public TrayProgressStream Body { get; } = new();
+        public TrayProgressStream Body { get; } = new(allowRemainder);
         public Uri? BodyUri
         {
             get; private set;
@@ -493,14 +516,15 @@ public sealed partial class SetupRenderingTests
         }
     }
 
-    private sealed class TrayProgressStream : Stream
+    private sealed class TrayProgressStream(bool allowRemainder = false) : Stream
     {
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool Cancelled
         {
             get; private set;
         }
-        private bool _sent;
+        private bool _sent, _remainderSent;
+        public TaskCompletionSource Continue { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public override bool CanRead => true;
         public override bool CanSeek => false;
         public override bool CanWrite => false;
@@ -521,6 +545,14 @@ public sealed partial class SetupRenderingTests
             }
             try
             {
+                if (allowRemainder && !_remainderSent)
+                {
+                    await Continue.Task.WaitAsync(cancellationToken);
+                    _remainderSent = true;
+                    Assert.True(buffer.Length >= 32768);
+                    buffer.Span[..32768].Clear();
+                    return 32768;
+                }
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { Cancelled = true; throw; }

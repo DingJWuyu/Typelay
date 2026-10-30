@@ -1042,7 +1042,21 @@ internal static partial class HyPackageCheck
     private static async Task PackageActionAsync(Process app, AutomationElement settings, string package,
         ModelPackageOperation operation, Scene scene, CancellationToken ct, bool confirm = true, string? expectedLabel = null)
     {
-        var button = await SettingsPackageActions.FindAsync(settings, package, operation, stage => scene.Stage = stage, ct);
+        AutomationElement button;
+        try
+        {
+            button = await SettingsPackageActions.FindAsync(settings, package, operation, stage => scene.Stage = stage, ct);
+        }
+        catch (SettingsPackageActions.ActionDeadlineException error)
+        {
+            scene.Facts = new
+            {
+                error.FirstVisibility,
+                error.LastVisibility,
+                error.VisibilitySamples
+            };
+            throw;
+        }
         if (expectedLabel is not null)
             Require(await UiAsync(() => button.Current.Name == expectedLabel, ct), "package-action-label-mismatch");
         scene.Stage = "invoke-package-action";

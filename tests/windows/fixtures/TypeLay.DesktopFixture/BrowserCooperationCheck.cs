@@ -100,6 +100,34 @@ internal static partial class BrowserCooperationCheck
         {
             get; set;
         }
+        public JsonElement? GlossarySourceClick
+        {
+            get; set;
+        }
+        public SourceRetirementObservation? FirstGlossarySourceObservation
+        {
+            get; set;
+        }
+        public SourceRetirementObservation? LastGlossarySourceObservation
+        {
+            get; set;
+        }
+        public int GlossarySourceObservationCount
+        {
+            get; set;
+        }
+        public JsonElement? FirstGlossaryRetirementObservation
+        {
+            get; set;
+        }
+        public JsonElement? LastGlossaryRetirementObservation
+        {
+            get; set;
+        }
+        public int GlossaryRetirementObservationCount
+        {
+            get; set;
+        }
         public long? GlossaryVisibleDurationMs
         {
             get; set;
@@ -113,6 +141,8 @@ internal static partial class BrowserCooperationCheck
             get; set;
         }
     }
+    private sealed record SourceRetirementObservation(bool SourceChanged, bool ExactNewSource, int SourceLength,
+        bool SourceFocused, bool PageFocused, int SelectionStart, int SelectionEnd, int Replacements, int Submits);
     private sealed record CommandPathEntry(long AtMs, string Stage, string Reason, string Kind,
         bool? CommandSent, bool? HasNative, long? AgeMs, double? PolicyAuthorityAgeMs,
         string? PolicyCheckPhase, string? PolicyRenewalPhase, long? PolicyRenewalCycleAgeMs,
@@ -447,13 +477,38 @@ internal static partial class BrowserCooperationCheck
                     var unchanged = await cdp.StateAsync("", ct);
                     Require(unchanged.A == Source && unchanged.B == Other
                         && unchanged.Replacements == 0 && unchanged.Submits == 0, "glossary-mutated-source");
-                    glossary.Stage = "new-source-retires-old-glossary";
-                    await cdp.ClickSourceAsync(ct);
+                    glossary.Stage = "new-source-click";
+                    try
+                    {
+                        await cdp.ClickSourceAsync(ct);
+                    }
+                    finally { glossary.GlossarySourceClick = cdp.LastSourceClickObservation; }
+                    glossary.Stage = "new-source-type";
                     SendChord([0x11, 0x23], cleanupErrors); // Ctrl+End in the actual source.
                     BrowserWindows.TypeText("!");
-                    await WaitStateAsync(cdp, s => s.A == Source + "!" && s.Focus == "a" && s.PageFocused, ct);
-                    while ((await cdp.GlossaryStateAsync(form, ct)).GetProperty("connected").GetBoolean())
+                    glossary.Stage = "new-source-text-and-focus";
+                    await WaitStateAsync(cdp, s =>
+                    {
+                        // Only the already-read public state: constant-space first/last
+                        // facts, without source text, another read, input or lease.
+                        var observed = new SourceRetirementObservation(s.A != Source, s.A == Source + "!", s.A.Length,
+                            s.Focus == "a", s.PageFocused, s.AStart, s.AEnd, s.Replacements, s.Submits);
+                        glossary.FirstGlossarySourceObservation ??= observed;
+                        glossary.LastGlossarySourceObservation = observed;
+                        glossary.GlossarySourceObservationCount++;
+                        return observed.ExactNewSource && observed.SourceFocused && observed.PageFocused;
+                    }, ct);
+                    glossary.Stage = "old-glossary-disconnect";
+                    while (true)
+                    {
+                        var observed = await cdp.GlossaryStateAsync(form, ct);
+                        glossary.FirstGlossaryRetirementObservation ??= observed;
+                        glossary.LastGlossaryRetirementObservation = observed;
+                        glossary.GlossaryRetirementObservationCount++;
+                        if (!observed.GetProperty("connected").GetBoolean())
+                            break;
                         await Task.Delay(20, ct);
+                    }
                     glossary.OldGlossaryDisconnected = true;
                     var changed = await cdp.StateAsync("", ct);
                     Require(changed.B == Other && changed.Replacements == 0 && changed.Submits == 0,

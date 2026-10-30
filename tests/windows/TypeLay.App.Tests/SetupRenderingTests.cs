@@ -214,7 +214,7 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
             AssertWithinViewport(window, Named<TextBlock>(window, "PreparationGuidance"));
             // This fixture has no native Index payload. The recommended default
             // must stay unavailable; the user can explicitly choose legacy Argos.
-            Assert.Equal("准备 Index 本地翻译…", primary.Content);
+            Assert.Equal("下载", primary.Content);
             Assert.False(primary.IsEnabled);
             Assert.All(DirectionChoices(window), choice =>
             {
@@ -223,7 +223,7 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
             });
             await ConfirmPackageAction(window, PackageAction(window, "argos-en-zh", ModelPackageOperation.Install));
             var failure = SetupFailurePresentation.Create(SetupFailureCategory.Network);
-            await Until(() => Buttons(window).Any(button => Equals(button.Content, failure.RetryLabel)));
+            await Until(() => Buttons(window).Any(button => Equals(button.Content, "重试")));
             window.UpdateLayout();
             Assert.Equal(failure.Message, Named<TextBlock>(window, "PreparationStatus").Text);
             Assert.Equal(failure.NextStep, Named<TextBlock>(window, "PreparationGuidance").Text);
@@ -262,8 +262,8 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
                 Assert.False(choice.IsChecked);
                 Assert.False(choice.IsEnabled);
             });
-            Click(window, failure.RetryLabel);
-            await Until(() => attempts == 2 && Buttons(window).Any(button => Equals(button.Content, failure.RetryLabel)));
+            Click(window, "重试");
+            await Until(() => attempts == 2 && Buttons(window).Any(button => Equals(button.Content, "重试")));
             Assert.False(model.Ready);
         }
         finally { await ClosePreparation(window, directory); }
@@ -333,7 +333,7 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
                 Assert.False(choice.IsChecked);
                 Assert.False(choice.IsEnabled);
             });
-            Assert.Equal("准备 Index 本地翻译…", Named<Button>(window, "PreparationPrimaryAction").Content);
+            Assert.Equal("下载", Named<Button>(window, "PreparationPrimaryAction").Content);
             Assert.False(Named<Button>(window, "PreparationPrimaryAction").IsEnabled);
             await ConfirmPackageAction(window, PackageAction(window, packageId, ModelPackageOperation.Install));
             await attempts[0].Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -346,20 +346,21 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
             });
             var primary = Named<Button>(window, "PreparationPrimaryAction");
             Assert.True(primary.Focus());
-            Click(window, "暂停下载");
-            Assert.Same(primary, Named<Button>(window, "PreparationPrimaryAction"));
-            Assert.False(primary.IsEnabled);
-            Assert.Equal("正在暂停…", primary.Content);
+            Click(window, "暂停");
+            var pausing = Named<Button>(window, "PreparationPrimaryAction");
+            Assert.NotSame(primary, pausing);
+            Assert.False(pausing.IsEnabled);
+            Assert.Equal("暂停中…", pausing.Content);
             primary.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Assert.Single(attempts);
-            await Until(() => Buttons(window).Any(button => Equals(button.Content, SetupFailurePresentation.ResumeLabel)));
+            await Until(() => Buttons(window).Any(button => Equals(button.Content, "继续")));
             window.UpdateLayout();
             Assert.Contains(Descendants(window).OfType<TextBlock>(), block => block.Text == SetupFailurePresentation.PausedMessage);
             Assert.DoesNotContain(Descendants(window).OfType<Expander>(), expander => Equals(expander.Header, "安装诊断"));
             Assert.False(settings.Value.OnboardingComplete);
             Assert.False(model.Ready);
-            Assert.Same(primary, Named<Button>(window, "PreparationPrimaryAction"));
-            Assert.True(primary.IsEnabled);
+            Assert.NotSame(primary, Named<Button>(window, "PreparationPrimaryAction"));
+            Assert.True(Named<Button>(window, "PreparationPrimaryAction").IsEnabled);
             window.ShowPage("translation");
             directions = DirectionChoices(window);
             Assert.All(directions, choice =>
@@ -368,12 +369,14 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
                 Assert.False(choice.IsEnabled);
             });
             primary = Named<Button>(window, "PreparationPrimaryAction");
-            Click(window, SetupFailurePresentation.ResumeLabel);
+            Click(window, "继续");
             Assert.Equal(2, attempts.Count);
             await attempts[1].Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(attempts[0].RequestedUri, attempts[1].RequestedUri);
-            Assert.Same(primary, Named<Button>(window, "PreparationPrimaryAction"));
-            Assert.Equal("暂停下载", primary.Content);
+            Assert.NotSame(primary, Named<Button>(window, "PreparationPrimaryAction"));
+            Assert.Equal("暂停", Named<Button>(window, "PreparationPrimaryAction").Content);
+            primary.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(2, attempts.Count);
         }
         finally { await ClosePreparation(window, directory); }
     });
@@ -417,8 +420,8 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
             AssertPackageDownloadScope(directory, attempts[0], installed, requested, complete);
             // A pending download is not an installed direction, including after pause.
             Assert.All(directions, choice => Assert.Equal(Equals(choice.Tag, installed), choice.IsChecked == true));
-            Click(window, "暂停下载");
-            await Until(() => Buttons(window).Any(button => Equals(button.Content, SetupFailurePresentation.ResumeLabel)));
+            Click(window, "暂停");
+            await Until(() => Buttons(window).Any(button => Equals(button.Content, "继续")));
             window.ShowPage("model");
             directions = DirectionChoices(window);
             Assert.All(directions, choice =>
@@ -426,7 +429,7 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
                 Assert.Equal(Equals(choice.Tag, installed), choice.IsChecked == true);
                 Assert.False(choice.IsEnabled);
             });
-            Click(window, SetupFailurePresentation.ResumeLabel);
+            Click(window, "继续");
             await attempts[1].Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
             AssertPackageDownloadScope(directory, attempts[1], installed, requested, complete);
             Assert.Equal(inventory, File.ReadAllText(Path.Combine(directory, "models", "installed.json")));
@@ -505,25 +508,20 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
             window.UpdateLayout();
             Assert.True(model.Installed);
             Assert.False(model.Ready);
-            var primary = Named<Button>(window, "PreparationPrimaryAction");
-            Assert.DoesNotContain("已就绪", Named<TextBlock>(window, "PreparationStatus").Text);
-            Assert.Equal("试一试", primary.Content);
-            Assert.False(primary.IsEnabled);
+            var notReady = Named<Button>(window, "PreparationPrimaryAction");
+            Assert.Equal("本地翻译尚未就绪", Named<TextBlock>(window, "PreparationStatus").Text);
+            Assert.Equal("尚未就绪", notReady.Content);
+            Assert.False(notReady.IsEnabled);
             await model.StartAsync().WaitAsync(TimeSpan.FromSeconds(5));
             Assert.True(model.Ready);
-            Assert.True(primary.IsEnabled);
-            Assert.True(primary.Focus());
-            Assert.Same(primary, Keyboard.FocusedElement);
             foreach (string theme in new[] { "light", "dark" })
             {
                 UiTheme.Apply(theme);
                 window.UpdateLayout();
-                Assert.Same(primary, Named<Button>(window, "PreparationPrimaryAction"));
-                Assert.Same(primary, Keyboard.FocusedElement);
-                Assert.Equal("试一试", primary.Content);
-                AssertPrimary(window, primary);
-                AssertWithinViewport(window, primary);
-                AssertWithinViewport(window, Named<TextBlock>(window, "PreparationGuidance"));
+                Assert.Equal("就绪", Named<TextBlock>(window, "PreparationStatus").Text);
+                Assert.False(Named<Button>(window, "PreparationPrimaryAction").IsVisible);
+                notReady.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.Equal(0, launches);
                 Assert.DoesNotContain(Descendants(window).OfType<TextBlock>(), text => text.Text == "已连接");
             }
             window.ShowPage("apps");
@@ -539,13 +537,11 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
             Assert.Contains(Descendants(details).OfType<TextBlock>(), text => text.IsVisible
                 && text.Text == ApplicationSupportPresentation.ReasonText(ApplicationSupportReason.NoFocusedField));
             Assert.DoesNotContain(Descendants(ordinary).OfType<TextBlock>(), text => text.IsVisible && text.Text == "已连接");
-            window.ShowPage("model");
+            window.ShowPage("general");
             window.UpdateLayout();
             Assert.Equal(acceptKey, settings.Value.AcceptShortcut);
             bool sawConfirmation = false;
             Exception? confirmationFailure = null;
-            // Close an unexpected mode-switch modal so this regression fails
-            // at the entry behavior rather than hanging in its nested dispatcher.
             var confirmation = window.Dispatcher.BeginInvoke(new Action(() =>
             {
                 Window[] dialogs = [];
@@ -561,10 +557,7 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
                         dialog.Close();
                 }
             }), DispatcherPriority.ContextIdle);
-            try
-            {
-                Click(window, "试一试");
-            }
+            try { Click(window, "打开"); }
             finally { confirmation.Abort(); }
             if (confirmationFailure is not null)
                 ExceptionDispatchInfo.Capture(confirmationFailure).Throw();
@@ -581,8 +574,7 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
             var repair = PackageAction(window, "argos-zh-en", ModelPackageOperation.Repair);
             Assert.True(repair.IsEnabled);
             Assert.Equal("修复…", repair.Content);
-            Assert.NotEqual(Assert.IsType<SolidColorBrush>(Named<Button>(window, "PreparationPrimaryAction").Background).Color,
-                Assert.IsType<SolidColorBrush>(repair.Background).Color);
+            Assert.Empty(window.OwnedWindows.Cast<Window>());
             repair.BringIntoView();
             await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ContextIdle);
             window.UpdateLayout();
@@ -610,7 +602,7 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
             await model.StartAsync().WaitAsync(TimeSpan.FromSeconds(5));
             Assert.True(model.Ready);
             window.UpdateLayout();
-            Assert.Equal("重新准备", Named<Button>(window, "PreparationPrimaryAction").Content);
+            Assert.Equal("重试", Named<Button>(window, "PreparationPrimaryAction").Content);
             Assert.Contains("下载连接失败", Named<TextBlock>(window, "PreparationStatus").Text);
             Assert.DoesNotContain(Buttons(window), button => Equals(button.Content, "试一试"));
             window.ShowPage("general");
@@ -623,7 +615,7 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
             var peer = System.Windows.Automation.Peers.UIElementAutomationPeer.CreatePeerForElement(view);
             Assert.IsAssignableFrom<System.Windows.Automation.Provider.IInvokeProvider>(peer.GetPattern(System.Windows.Automation.Peers.PatternInterface.Invoke)).Invoke();
             await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ContextIdle);
-            Assert.Equal("重新准备", Named<Button>(window, "PreparationPrimaryAction").Content);
+            Assert.Equal("重试", Named<Button>(window, "PreparationPrimaryAction").Content);
         }
         finally { await ClosePreparation(window, directory); }
     });
@@ -660,7 +652,7 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
     // A controlled worker protocol reply drives the real ModelClient and real WPF
     // controls. Controlled inventoried bytes also exercise package copy/download
     // scope; they do not demonstrate real model loading or inference.
-    internal static ModelClient ProtocolModel(string directory, string[]? directions = null)
+    internal static ModelClient ProtocolModel(string directory, string[]? directions = null, bool exactPackages = false)
     {
         string[] selected = directions ?? ["zh_en", "en_zh"];
         string python = Path.Combine(directory, "runtime", "python", "tools", "python.exe");
@@ -707,7 +699,10 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
             import json, struct, sys
             size = struct.unpack("<i", sys.stdin.buffer.read(4))[0]
             request = json.loads(sys.stdin.buffer.read(size))
-            reply = json.dumps({"id": request["id"], "status": "ready", "directions": json.loads(sys.argv[1])}).encode()
+            value = {"id": request["id"], "status": "ready", "directions": json.loads(sys.argv[1])}
+            if len(sys.argv) > 2:
+                value["packages"] = json.loads(sys.argv[2])
+            reply = json.dumps(value).encode()
             sys.stdout.buffer.write(struct.pack("<i", len(reply)) + reply)
             sys.stdout.buffer.flush()
             sys.stdin.buffer.read()
@@ -725,7 +720,9 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
             start.ArgumentList.Add("-I");
             start.ArgumentList.Add("-B");
             start.ArgumentList.Add(worker);
-            start.ArgumentList.Add(JsonSerializer.Serialize(directions ?? ["zh_en", "en_zh"]));
+            start.ArgumentList.Add(JsonSerializer.Serialize(selected));
+            if (exactPackages)
+                start.ArgumentList.Add(JsonSerializer.Serialize(selected.Select(id => new { id = "argos-" + id.Replace('_', '-'), version = "1.9", directions = new[] { id } })));
             return new ChildProcess(start);
         });
     }
@@ -808,11 +805,12 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
 
     private static void AssertPrimary(Window window, Button button)
     {
-        var accent = Assert.IsType<SolidColorBrush>(window.FindResource("AccentStrong")).Color;
-        Assert.Equal(accent, Assert.IsType<SolidColorBrush>(button.Background).Color);
-        Assert.Equal(Colors.White, Assert.IsType<SolidColorBrush>(button.Foreground).Color);
+        Assert.Equal(26, button.ActualHeight);
+        Assert.Equal(12.5, button.FontSize);
+        Assert.Equal(FontWeights.Medium, button.FontWeight);
+        Assert.Equal(new Thickness(12, 0, 12, 0), button.Padding);
         Assert.Same(button, Assert.Single(Buttons(Named<Border>(window, "TranslationPreparationCard")),
-            control => Assert.IsType<SolidColorBrush>(control.Background).Color == accent));
+            control => control.Name == "PreparationPrimaryAction"));
     }
 
     private static void AssertWithinViewport(Window window, FrameworkElement control)
@@ -853,11 +851,9 @@ public sealed partial class SetupRenderingTests(WpfDesktopFixture desktop)
         {
             if (window is not null)
             {
-                if (Buttons(window).Any(button => Equals(button.Content, "暂停下载")))
-                    Click(window, "暂停下载");
-                if (Buttons(window).Any(button => Equals(button.Content, "正在暂停…")))
-                    await Until(() => Buttons(window).Any(button =>
-                        Equals(button.Content, SetupFailurePresentation.ResumeLabel) && button.IsEnabled));
+                window.CancelPreparation();
+                await Until(() => window.ReadQuickPanelPreparation().Phase is not
+                    (TranslationPreparationPhase.Preparing or TranslationPreparationPhase.Pausing or TranslationPreparationPhase.StartingModel));
                 window.PrepareForEmergencyShutdown();
                 window.Close();
             }

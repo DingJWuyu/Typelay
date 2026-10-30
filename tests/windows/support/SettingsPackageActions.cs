@@ -9,9 +9,23 @@ namespace TypeLay.Windows.Testing;
 internal static class SettingsPackageActions
 {
     internal sealed record PreparationStatus(string State, bool Ready, string? FailureCode);
+    internal sealed record VisibilityObservation(double[]? ButtonBounds, double[]? ViewportBounds,
+        bool Offscreen, bool? HasClickablePoint, bool? PointInsideViewport);
     internal sealed class ActionDeadlineException() : TimeoutException("The package action did not become available through the settings controls.")
     {
         public string FailureCode => "local-action-deadline";
+        public VisibilityObservation? FirstVisibility
+        {
+            get; init;
+        }
+        public VisibilityObservation? LastVisibility
+        {
+            get; init;
+        }
+        public int VisibilitySamples
+        {
+            get; init;
+        }
     }
 
     public static PreparationStatus ReadPreparationStatus(AutomationElement settings)
@@ -88,6 +102,8 @@ internal static class SettingsPackageActions
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
         limit.CancelAfter(TimeSpan.FromSeconds(5));
         var token = limit.Token;
+        VisibilityObservation? first = null, last = null;
+        int samples = 0;
         try
         {
             var details = await OpenDetailsCoreAsync(settings, stage, token);
@@ -113,8 +129,25 @@ internal static class SettingsPackageActions
             {
                 Rect bounds = button.Current.BoundingRectangle;
                 Rect frame = viewport.Current.BoundingRectangle;
-                return !button.Current.IsOffscreen && !bounds.IsEmpty && bounds.Width > 0 && bounds.Height > 0
-                    && button.TryGetClickablePoint(out Point point) && frame.Contains(point);
+                bool offscreen = button.Current.IsOffscreen;
+                bool? hasPoint = null, inside = null;
+                bool visible = !offscreen && !bounds.IsEmpty && bounds.Width > 0 && bounds.Height > 0;
+                if (visible)
+                {
+                    hasPoint = button.TryGetClickablePoint(out Point point);
+                    visible = hasPoint.Value;
+                    if (visible)
+                    {
+                        inside = frame.Contains(point);
+                        visible = inside.Value;
+                    }
+                }
+                // Retain only the original predicate's first/last finite observations.
+                // No extra UIA queries, retries, text capture or visibility relaxation.
+                last = new(FiniteBounds(bounds), FiniteBounds(frame), offscreen, hasPoint, inside);
+                first ??= last;
+                samples++;
+                return visible;
             }
             if (!Visible())
             {
@@ -143,9 +176,14 @@ internal static class SettingsPackageActions
         }
         catch (OperationCanceledException) when (limit.IsCancellationRequested && !ct.IsCancellationRequested)
         {
-            throw new ActionDeadlineException();
+            throw new ActionDeadlineException { FirstVisibility = first, LastVisibility = last, VisibilitySamples = samples };
         }
     }, ct).WaitAsync(ct);
+
+    private static double[]? FiniteBounds(Rect value) => !value.IsEmpty
+        && double.IsFinite(value.X) && double.IsFinite(value.Y)
+        && double.IsFinite(value.Width) && double.IsFinite(value.Height)
+        ? [value.X, value.Y, value.Width, value.Height] : null;
 
     private static AutomationElement FindViewport(AutomationElement button, AutomationElement settings, CancellationToken ct)
     {
