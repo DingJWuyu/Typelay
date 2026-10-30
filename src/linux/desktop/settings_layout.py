@@ -31,6 +31,53 @@ PAGES = (
 )
 
 
+class AppearancePage(Gtk.Overlay):
+    """Only this page's entry moves, without resizing its measured content."""
+
+    def __init__(self, page):
+        super().__init__()
+        self.page = page
+        self.entry_offset = 0
+        page.set_halign(Gtk.Align.FILL)
+        page.set_valign(Gtk.Align.FILL)
+        self.add_overlay(page)
+        self.connect("get-child-position", self.position_page)
+
+    # Overlay children do not normally participate in measurement. Delegate
+    # every request to the same real page, never an empty main-child proxy.
+    def do_get_request_mode(self):
+        return self.page.get_request_mode()
+
+    def do_get_preferred_width(self):
+        return self.page.get_preferred_width()
+
+    def do_get_preferred_height(self):
+        return self.page.get_preferred_height()
+
+    def do_get_preferred_height_for_width(self, width):
+        return self.page.get_preferred_height_for_width(width)
+
+    def do_get_preferred_width_for_height(self, height):
+        return self.page.get_preferred_width_for_height(height)
+
+    def do_get_preferred_height_and_baseline_for_width(self, width):
+        return self.page.get_preferred_height_and_baseline_for_width(width)
+
+    def position_page(self, _overlay, child, allocation):
+        if child is not self.page:
+            return False
+        allocation.x = 0
+        allocation.y = self.entry_offset
+        allocation.width = self.get_allocated_width()
+        allocation.height = self.get_allocated_height()
+        return True
+
+    def set_entry_offset(self, offset):
+        if self.entry_offset != offset:
+            self.entry_offset = offset
+            self.queue_allocate()
+
+
 def build(
     owner,
     quit_requested,
@@ -140,6 +187,13 @@ def build(
         scroll.add(content)
         owner.page_scrolls[name] = scroll
         page.pack_start(scroll, True, True, 0)
+        if name == "appearance":
+            owner.appearance_page = page
+            page.connect("map", owner.begin_appearance_entry)
+            page.connect("unmap", owner.settle_appearance_entry)
+            page.connect("destroy", owner.settle_appearance_entry)
+            owner.appearance_entry_layer = AppearancePage(page)
+            page = owner.appearance_entry_layer
         owner.pages.add_titled(page, name, chinese)
         owner.page_boxes[name] = content
         nav_row = Gtk.ListBoxRow()
@@ -184,6 +238,12 @@ def build(
     owner.window.connect("map", owner.filter_settings)
     owner.pages.connect("notify::transition-running", owner.locate_search_result)
     owner.pages.connect("notify::visible-child-name", owner.locate_search_result)
+    owner.pages.connect(
+        "notify::visible-child-name",
+        lambda *_: owner.settle_appearance_entry()
+        if owner.pages.get_visible_child_name() != "appearance"
+        else None,
+    )
     owner.sidebar.select_row(owner.nav_rows["general"])
 
     def card(page):

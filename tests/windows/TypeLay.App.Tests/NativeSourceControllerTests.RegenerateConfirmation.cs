@@ -31,7 +31,8 @@ public sealed partial class NativeSourceControllerTests
     public Task SourcePendingConfirmationKeepsItsDraftAndReturnsOnlyOnTheOriginalKeyUp(
         bool escape, bool mouse, bool delayedDispatch, string? retirement, bool replace) => desktop.RunAsync(async () =>
     {
-        await using var native = await ProductionForegroundWriteTests.Desktop.Start();
+        using var returnTrace = new BrokerReturnTraceFile("Source confirmation key return");
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start(returnTrace: returnTrace.Path);
         await native.Prepare(native.A, "你好", new(0, 2));
         using var broker = new FixtureBroker(native);
         var captures = new ConcurrentQueue<InputSnapshot>();
@@ -275,34 +276,71 @@ public sealed partial class NativeSourceControllerTests
                     var action = replace ? replacement : keep;
                     int beforeReturn = returns;
                     var downs = new ConcurrentQueue<(bool Handled, bool Repeat)>();
+                    var downTimes = new List<long>();
+                    var ups = new List<(long AtMs, bool Handled)>();
+                    long? pressAt = null, repeatAt = null, releaseAt = null;
                     KeyEventHandler down = (_, e) =>
                     {
                         if (e.Key == (escape ? WpfKey.Escape : WpfKey.Enter))
+                        {
                             downs.Enqueue((e.Handled, e.IsRepeat));
+                            if (downTimes.Count < 4)
+                                downTimes.Add(WindowsInterruptClock.NowMs);
+                        }
+                    };
+                    KeyEventHandler up = (_, e) =>
+                    {
+                        if (e.Key == (escape ? WpfKey.Escape : WpfKey.Enter) && ups.Count < 4)
+                            ups.Add((WindowsInterruptClock.NowMs, e.Handled));
                     };
                     overlay.AddHandler(Keyboard.PreviewKeyDownEvent, down, true);
+                    overlay.AddHandler(Keyboard.PreviewKeyUpEvent, up, true);
                     try
                     {
                         held = true;
+                        pressAt = WindowsInterruptClock.NowMs;
                         Key(key, false);
                         await Until(() => downs.Count == 1, deadline.Token);
                         Assert.Equal((true, false), downs.ToArray()[0]);
                         Assert.Equal(beforeReturn, returns);
                         Assert.True(action.IsKeyboardFocused);
+                        repeatAt = WindowsInterruptClock.NowMs;
                         Key(key, false);
                         await Until(() => downs.Count == 2, deadline.Token);
                         Assert.Equal((true, true), downs.ToArray()[1]);
                         Assert.Equal(beforeReturn, returns);
                         Assert.Equal(overlay.Handle, Native.GetForegroundWindow());
+                        releaseAt = WindowsInterruptClock.NowMs;
                         Key(key, true);
                         held = false;
                         await Until(() => returns == beforeReturn + 1 && N.Focused() == (native.Root, native.A)
                             && AutomationProperties.GetItemStatus(editor) == "当前译文", deadline.Token);
                         Assert.False(keep.IsVisible);
                     }
+                    catch
+                    {
+                        try
+                        {
+                            var focus = N.Focused();
+                            TestContext.Current.TestOutputHelper?.WriteLine("Source confirmation key failure: "
+                                + $"press={pressAt}, repeat={repeatAt}, release={releaseAt}, now={WindowsInterruptClock.NowMs}, "
+                                + $"downTimes={string.Join(";", downTimes)}, ups={string.Join(";", ups)}, "
+                                + $"returns={returns}, beforeReturn={beforeReturn}, captures={captureResponses}, "
+                                + $"sourceFocused={focus == (native.Root, native.A)}, overlayVisible={overlay.IsVisible}, "
+                                + $"keepVisible={keep.IsVisible}, actionFocused={action.IsKeyboardFocused}, "
+                                + $"editorFocused={editor.IsKeyboardFocused}, editorReadOnly={editor.IsReadOnly}, "
+                                + $"previewStatus={AutomationProperties.GetItemStatus(editor)}");
+                        }
+                        catch (Exception error) when (error is not OutOfMemoryException)
+                        {
+                            // Diagnostics must not replace the original test failure.
+                        }
+                        throw;
+                    }
                     finally
                     {
                         overlay.RemoveHandler(Keyboard.PreviewKeyDownEvent, down);
+                        overlay.RemoveHandler(Keyboard.PreviewKeyUpEvent, up);
                     }
                 }
                 if (retirement is null)

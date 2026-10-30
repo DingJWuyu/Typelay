@@ -200,7 +200,7 @@ public sealed partial class ProductionForegroundWriteTests
         string elsewhereText = N.ReadText(elsewhere.A, Limits.MaxTextUnits);
         using var entered = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(desktop.FixtureProcessId, "entered"));
         using var release = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(desktop.FixtureProcessId, "release"));
-        Assert.Equal((nuint)1, N.Send(desktop.Root, N.FixtureArmNullBarrier));
+        Assert.Equal((nuint)1, N.Send(desktop.Root, N.FixtureArmNullBarrier, 2, desktop.A));
         long expiresAt = WindowsInterruptClock.NowMs + 800;
         elsewhere.AllowBrokerForeground(desktop.BrokerProcessId, desktop.Token);
         var pending = desktop.Call(new(BrokerProtocol.Version, 0, "return", "", BoundTarget: source.Target,
@@ -251,7 +251,20 @@ public sealed partial class ProductionForegroundWriteTests
                 Assert.Equal(change == "success" ? "focused" : "denied", (await pending).Status);
             }
         }
-        finally { release.Set(); await ObserveReturnCleanup(pending); }
+        finally
+        {
+            release.Set();
+            await ObserveReturnCleanup(pending);
+            try
+            {
+                TestContext.Current.TestOutputHelper?.WriteLine("Native return early pre-activation WM_NULL count: "
+                    + N.Send(desktop.Root, N.FixtureBarrierStatus, 1));
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                // Optional diagnostics cannot replace the original assertion.
+            }
+        }
         Assert.Equal((nuint)1, N.Send(desktop.Root, N.FixtureBarrierStatus));
         Assert.Equal((desktop.Root, desktop.A), N.Focused());
         Assert.Equal(source.Text, N.ReadText(desktop.A, Limits.MaxTextUnits));

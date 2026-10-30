@@ -372,6 +372,9 @@ internal static class Program
     private static EventWaitHandle? _barrierEntered, _barrierRelease, _barrierDrained;
     private static int _barrierStatus;
     private static bool _blockNextNull;
+    private static bool _awaitReturnActivation, _returnActivationSeen;
+    private static nint _returnActivationField;
+    private static int _earlyReturnNulls;
     private static bool _changeAfterNull;
     private static nint _preparationClickBarrierField;
     private static readonly Dictionary<nint, nint> PreviousProcedures = new();
@@ -456,6 +459,8 @@ internal static class Program
                 N.DestroyWindow(_root);
             return 0;
         }
+        if (message == 0x0006 && _awaitReturnActivation) // WM_ACTIVATE, before DefWindowProc restores focus.
+            _returnActivationSeen = (wParam & 0xffff) != 0;
         if (message == 0x0007 && _lastFocusedField != 0 && N.IsWindow(_lastFocusedField))
         {
             // Controlled host policies exercise activation that does not restore
@@ -463,6 +468,12 @@ internal static class Program
             // ordinary explicit return may correct field focus.
             if (_returnFocusCase != "root")
                 N.SetFocus(_returnFocusCase == "second" ? _secondField : _lastFocusedField);
+            if (_awaitReturnActivation && _returnActivationSeen && N.GetForegroundWindow() == _root
+                && GetFocus() == _returnActivationField)
+            {
+                _awaitReturnActivation = false;
+                _blockNextNull = true;
+            }
             return 0;
         }
         if (message == 0x0113 && wParam == 1)
@@ -515,10 +526,19 @@ internal static class Program
             return (nint)WinEventStackProbe.FinishSourceClaim(_root);
         if (message == N.FixtureArmNullBarrier && _barrierEntered is not null && _barrierRelease is not null)
         {
+            if (wParam == 2 && !StockFields.Contains(lParam))
+                return 0;
             _barrierEntered.Reset();
             _barrierRelease.Reset();
             _barrierStatus = 0;
-            _blockNextNull = true;
+            // Mode 2 observes only the completion barrier after this root's
+            // real activation restored its original field. Earlier UIA probes
+            // may also send WM_NULL and must not impersonate that boundary.
+            _awaitReturnActivation = wParam == 2;
+            _returnActivationSeen = false;
+            _returnActivationField = _awaitReturnActivation ? lParam : 0;
+            _earlyReturnNulls = 0;
+            _blockNextNull = !_awaitReturnActivation;
             _changeAfterNull = wParam == 1;
             return 1;
         }
@@ -531,6 +551,8 @@ internal static class Program
             _preparationClickBarrierField = (nint)wParam;
             return 1;
         }
+        if (message == 0 && _awaitReturnActivation)
+            _earlyReturnNulls = Math.Min(255, _earlyReturnNulls + 1);
         if ((message == N.FixtureBlockGui || (message == 0 && _blockNextNull))
             && _barrierEntered is not null && _barrierRelease is not null)
         {
@@ -552,7 +574,7 @@ internal static class Program
             return 0;
         }
         if (message == N.FixtureBarrierStatus)
-            return _barrierStatus;
+            return wParam == 1 ? _earlyReturnNulls : _barrierStatus;
         if (message == N.FixtureClearPassword)
         {
             // Only this fixture's own unmodified single-line Edit may leave the

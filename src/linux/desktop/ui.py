@@ -3187,6 +3187,8 @@ class Settings:
         self.draft_messages = None
         self.loading_draft_messages = False
         self.pending_settings = {}
+        self.appearance_entry_token = None
+        self.appearance_entry_tick = None
         self.language_choices = None
         self.swapping_languages = False
         self.settings_lock = asyncio.Lock()
@@ -3223,6 +3225,86 @@ class Settings:
             TranslationSettings,
             LanguagePicker,
         )
+
+    def settle_appearance_entry(self, *_):
+        # Property notifications can synchronously unmap/remap this same page.
+        # A retired cleanup must not finish writing over that newer opening.
+        cleanup = self.appearance_entry_token = object()
+        tick, self.appearance_entry_tick = self.appearance_entry_tick, None
+        if tick is not None:
+            self.appearance_page.remove_tick_callback(tick)
+        if self.appearance_entry_token is not cleanup:
+            return False
+        self.appearance_page.set_opacity(1)
+        if self.appearance_entry_token is not cleanup:
+            return False
+        self.appearance_entry_layer.set_entry_offset(0)
+        if self.appearance_entry_token is not cleanup:
+            return False
+        self.appearance_entry_token = None
+        return True
+
+    def begin_appearance_entry(self, page):
+        if not self.settle_appearance_entry():
+            return
+        if not (
+            motion_preference(self.value or {}) == "full"
+            and not self.window.get_settings().get_property("gtk-enable-animations")
+            and self.pages.get_visible_child_name() == "appearance"
+            and page.get_mapped()
+        ):
+            return
+        # GTK suppresses its own Stack transition when the OS disables
+        # animations. Only this explicit Full override has a local entry tick;
+        # other pages and all native System transitions remain untouched.
+        token = self.appearance_entry_token = object()
+        started = None
+        page.set_opacity(0)
+        if self.appearance_entry_token is not token:
+            return
+        self.appearance_entry_layer.set_entry_offset(6)
+        if self.appearance_entry_token is not token:
+            return
+
+        def frame(_page, clock):
+            nonlocal started
+            if self.appearance_entry_token is not token:
+                return False
+            if not (
+                page.get_mapped()
+                and self.pages.get_visible_child_name() == "appearance"
+                and motion_preference(self.value or {}) == "full"
+                and not self.window.get_settings().get_property("gtk-enable-animations")
+            ):
+                self.appearance_entry_tick = None
+                self.settle_appearance_entry()
+                return False
+            now = clock.get_frame_time()
+            if started is None:
+                started = now
+            progress = min(1, max(0, (now - started) / 360000))
+            # Invert x for the prototype's cubic-bezier(.22,1,.36,1).
+            lower, upper = 0.0, 1.0
+            for _ in range(12):
+                t = (lower + upper) / 2
+                x = 3 * (1 - t) ** 2 * t * 0.22 + 3 * (1 - t) * t * t * 0.36 + t**3
+                if x < progress:
+                    lower = t
+                else:
+                    upper = t
+            eased = 1 - (1 - (lower + upper) / 2) ** 3 if progress < 1 else 1
+            page.set_opacity(eased)
+            if self.appearance_entry_token is not token:
+                return False
+            self.appearance_entry_layer.set_entry_offset(round(6 * (1 - eased)))
+            if self.appearance_entry_token is not token:
+                return False
+            if progress == 1:
+                self.appearance_entry_token = self.appearance_entry_tick = None
+                return False
+            return True
+
+        self.appearance_entry_tick = page.add_tick_callback(frame)
 
     def update_appearance_preview(self):
         if not hasattr(self, "preview_text"):
@@ -3277,6 +3359,11 @@ class Settings:
             reduced = reduced_motion(self.window, preferences)
             self.pages.set_transition_duration(0 if reduced else 200)
             self.toast.set_transition_duration(0 if reduced else 200)
+            if hasattr(self, "appearance_page") and not (
+                motion_preference(preferences) == "full"
+                and not gtk_settings.get_property("gtk-enable-animations")
+            ):
+                self.settle_appearance_entry()
         if hasattr(self, "tutorial"):
             self.tutorial.render()
             self.tutorial.style_provider = apply_theme(

@@ -206,7 +206,9 @@ def run_case(
     session.mkdir(mode=0o700)
     socket_path = session / "native.sock"
     assert len(os.fsencode(socket_path)) < 108
-    if language_configuration and stage.startswith("language-retention-"):
+    if language_configuration and stage.startswith(
+        ("language-retention-", "language-configuration-")
+    ):
         run_owned_language_options(
             command,
             child_environment,
@@ -1742,10 +1744,15 @@ async def check_language_configuration(
         config_current()
         evidence.setdefault("screenshots", []).append(path.name)
 
+    automatic_source = stage == "language-configuration-swap-auto"
     overlay.render_guidance(
         {
             "languageChoices": {
-                "source": [{"code": "en", "label": "English"}, {"code": "ja", "label": "日本語"}],
+                "source": [
+                    *([{"code": "auto", "label": "自动"}] if automatic_source else []),
+                    {"code": "en", "label": "English"},
+                    {"code": "ja", "label": "日本語"},
+                ],
                 "target": [
                     {"code": "en", "label": "English"},
                     {"code": "ja", "label": "日本語"},
@@ -1843,7 +1850,78 @@ async def check_language_configuration(
     )
     assert not calls["save"]
 
-    if stage == "language-options":
+    if stage in ("language-configuration-swap", "language-configuration-swap-auto"):
+        swap = controls["typelay-language-swap"]
+        assert swap["visible"] is True and swap["enabled"] is (not automatic_source)
+        if automatic_source:
+            # Actual GTK sensitivity is the negative here, not a manufactured
+            # activation of a disabled peer. Escape uses the same focused search.
+            assert not calls["save"]
+            await config_key("Escape")
+            await closed()
+            assert not calls["save"] and calls["cancel"]
+        else:
+            await click("typelay-language-swap")
+            await language_wait_for(lambda: len(calls["save"]) == 1, "real swap was not sent")
+            await closed()
+            assert [(item["source"], item["target"]) for item in calls["save"]] == [("ja", "en")]
+    elif stage in ("language-configuration-enter", "language-configuration-empty-recovery"):
+        if stage.endswith("empty-recovery"):
+            # These queries/keys are pre-registered, not a retry after a failed
+            # Enter. Neither an unavailable row nor an empty list may save.
+            for query, visible in (("fr", {"fr"}), ("not-a-language", set())):
+                await search_type(query)
+                filtered = await language_wait_for(
+                    lambda: (value := config_current())
+                    and value["overlayControls"][search_name].get("text") == query
+                    and all(
+                        value["overlayControls"][f"typelay-language-choice-{code}"]["visible"]
+                        == (code in visible)
+                        for code in ("en", "ja", "ko", "fr")
+                    )
+                    and value,
+                    "search did not show its exact unavailable/empty result",
+                )
+                assert filtered["overlayControls"]["typelay-language-choice-fr"]["enabled"] is False
+                if not visible:
+                    assert filtered["overlayControls"]["fixture-language-feedback"].get("text")
+                await config_key("Return")
+                await peer.link.ask("describe")
+                assert (
+                    config_current()["overlayControls"][popup_name]["instance"] == opening_instance
+                )
+                assert not calls["save"] and not calls["cancel"]
+                await config_key("ctrl+a")
+                await config_key("BackSpace")
+                restored = await language_wait_for(
+                    lambda: (value := config_current())
+                    and value["overlayControls"][search_name].get("text") == ""
+                    and all(
+                        value["overlayControls"][f"typelay-language-choice-{code}"]["visible"]
+                        for code in ("en", "ja", "ko", "fr")
+                    )
+                    and value,
+                    "clearing the same search did not restore its real catalog",
+                )
+                assert restored["overlayControls"][popup_name]["instance"] == opening_instance
+                assert not restored["overlayControls"]["fixture-language-feedback"].get("text")
+                assert not calls["save"] and not calls["cancel"]
+        await search_type("ko")
+        await language_wait_for(
+            lambda: (value := config_current())
+            and value["overlayControls"][search_name].get("text") == "ko"
+            and value["overlayControls"]["typelay-language-choice-ko"]["visible"]
+            and all(
+                not value["overlayControls"][f"typelay-language-choice-{code}"]["visible"]
+                for code in ("en", "ja", "fr")
+            ),
+            "search did not isolate the actual selectable target before Enter",
+        )
+        await config_key("Return")  # Real Entry key path, never direct activate/click.
+        await language_wait_for(lambda: len(calls["save"]) == 1, "real search Enter did not save")
+        await closed()
+        assert [(item["source"], item["target"]) for item in calls["save"]] == [("en", "ko")]
+    elif stage == "language-options":
         actual = await language_wait_for(
             lambda: (value := observe())
             and geometry(value, "typelay-language-choice-en")
@@ -1997,7 +2075,19 @@ async def check_language_configuration(
         await closed()
     assert observe().get("candidate") is None
     assert not any(event.get("operation") in ("accept", "beginEdit") for event in native_events)
-    assert len(calls["save"]) == (2 if stage == "language-options" else 0)
+    expected_saves = (
+        2
+        if stage == "language-options"
+        else 1
+        if stage
+        in (
+            "language-configuration-swap",
+            "language-configuration-enter",
+            "language-configuration-empty-recovery",
+        )
+        else 0
+    )
+    assert len(calls["save"]) == expected_saves
     evidence["elapsedMs"] = time.monotonic_ns() // 1_000_000 - started
 
 
@@ -2015,6 +2105,7 @@ def run_owned_language_options(
 
     async def exercise():
         jobs, native_events, saves = [], [], []
+        automatic_source = configuration_stage == "language-configuration-swap-auto"
         begin_release = asyncio.Event()
         pending_case = configuration_stage in (
             "language-retention-trigger-external-focus",
@@ -2066,11 +2157,11 @@ def run_owned_language_options(
                         "connectionId": data["connectionId"],
                         "openingId": data["openingId"],
                         "settingsRevision": 9,
-                        "source": "en",
+                        "source": "auto" if automatic_source else "en",
                         "target": "ja",
-                        "sourceLabel": "English",
+                        "sourceLabel": "自动" if automatic_source else "English",
                         "targetLabel": "日本語",
-                        "swapAllowed": True,
+                        "swapAllowed": not automatic_source,
                         "choices": [
                             {
                                 "code": code,
@@ -2093,7 +2184,16 @@ def run_owned_language_options(
                     assert data["expectedRevision"] == 9
                     saves.append(dict(data))
                     assert len(saves) <= 2
-                    return {"saved": len(saves) == 2, "reason": "save-unconfirmed"}
+                    return {
+                        "saved": len(saves) == 2
+                        or configuration_stage
+                        in (
+                            "language-configuration-swap",
+                            "language-configuration-enter",
+                            "language-configuration-empty-recovery",
+                        ),
+                        "reason": "save-unconfirmed",
+                    }
                 if operation != "traySettings":
                     evidence["unexpectedOperation"] = f"host request: {operation}"
                     raise AssertionError(evidence["unexpectedOperation"])
@@ -2122,7 +2222,13 @@ def run_owned_language_options(
                     "direct": "F10",
                 },
             )
-            overlay.configure({"source": "en", "target": "ja", "uiLanguage": "zh-CN"})
+            overlay.configure(
+                {
+                    "source": "auto" if automatic_source else "en",
+                    "target": "ja",
+                    "uiLanguage": "zh-CN",
+                }
+            )
             fixture = await asyncio.create_subprocess_exec(*command, env=environment)
 
             def state():
@@ -2194,6 +2300,8 @@ def run_owned_language_options(
             preview = (
                 language_configuration_preview(source, generation) if configuration_stage else None
             )
+            if automatic_source:
+                preview["sourceLanguage"] = "auto"
             # Observe the single production sender without decoding, handling
             # replies, or changing frames. A send is not a native acknowledgement.
             send = peer.link.channel.send

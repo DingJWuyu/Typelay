@@ -185,13 +185,17 @@ internal sealed partial class SettingsWindow
         if (!IsVisible || !ReferenceEquals(navigation, _pageNavigation) || !ReferenceEquals(query, _settingsQuery)
             || !_searchTargets.TryGetValue(key, out var row))
             return;
+        object page = _pageIdentity;
+        bool Current() => IsVisible && ReferenceEquals(page, _pageIdentity) && ReferenceEquals(navigation, _pageNavigation)
+            && ReferenceEquals(query, _settingsQuery) && _searchTargets.TryGetValue(key, out var current)
+            && ReferenceEquals(current, row) && row.IsVisible && row.IsDescendantOf(_content);
         // Reveal an existing connection-detail ancestor, never invoke its
         // connect, check, download, or other action to make a result visible.
         for (DependencyObject? parent = row.Parent; parent is not null; parent = LogicalTreeHelper.GetParent(parent))
             if (parent is Expander details)
                 details.IsExpanded = true;
         UpdateLayout();
-        if (!row.IsVisible || !row.IsDescendantOf(_content))
+        if (!Current())
             return;
         double top = row.TranslatePoint(new Point(), _pageScroll).Y;
         double center = Math.Max(0, (_pageScroll.ViewportHeight - row.ActualHeight) / 2);
@@ -200,10 +204,13 @@ internal sealed partial class SettingsWindow
         {
             _pageScroll.ScrollToVerticalOffset(destination);
             UpdateLayout();
+            if (!Current())
+                return;
         }
         else
             ScrollToSearchRow(row, key, destination, navigation, query);
-        FlashSearchRow(row);
+        if (Current())
+            FlashSearchRow(row);
     }
 
     private void ScrollToSearchRow(Panel row, string key, double destination, object navigation, object query)

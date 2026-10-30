@@ -44,6 +44,7 @@ def main(arguments=None):
     parser.add_argument("--shortcuts-reset-only", action="store_true")
     parser.add_argument("--shortcuts-only", action="store_true")
     parser.add_argument("--appearance-only", action="store_true")
+    parser.add_argument("--appearance-entry-only", action="store_true")
     parser.add_argument("--appearance-slider-only", action="store_true")
     parser.add_argument("--appearance-retired-only", action="store_true")
     parser.add_argument("--shortcuts-recording-only", action="store_true")
@@ -395,6 +396,352 @@ def main(arguments=None):
                 await settle(
                     lambda: state.get(key) == value and not jobs and not surface.pending_settings
                 )
+
+        async def exercise_appearance_entry():
+            import hashlib
+
+            window = surface.window
+            layer = surface.pages.get_child_by_name("appearance")
+            content = surface.page_boxes["appearance"]
+            scroll = surface.page_scrolls["appearance"]
+            page = scroll.get_parent()
+            adjustment = scroll.get_vadjustment()
+            gtk_settings = window.get_settings()
+            original_animations = gtk_settings.get_property("gtk-enable-animations")
+            clock = window.get_frame_clock()
+            records = []
+
+            def layout():
+                return (
+                    content.get_allocated_width(),
+                    surface.preview_text.get_allocated_width(),
+                    surface.preview_text.get_layout().get_line_count(),
+                    adjustment.get_lower(),
+                    adjustment.get_upper(),
+                    adjustment.get_value(),
+                    page.get_allocated_width(),
+                    page.get_allocated_height(),
+                    scroll.get_allocated_width(),
+                    scroll.get_allocated_height(),
+                    layer.get_allocated_width(),
+                    layer.get_allocated_height(),
+                )
+
+            def requests(widget, width, height):
+                return (
+                    int(widget.get_request_mode()),
+                    tuple(widget.get_preferred_width()),
+                    tuple(widget.get_preferred_height()),
+                    tuple(widget.get_preferred_height_for_width(width)),
+                    tuple(widget.get_preferred_width_for_height(height)),
+                    tuple(widget.get_preferred_height_and_baseline_for_width(width)),
+                )
+
+            async def prepare(mode, animations):
+                # A real saved choice, then the isolated process's OS input.
+                gtk_settings.set_property("gtk-enable-animations", True)
+                surface.sidebar.select_row(surface.nav_rows["appearance"])
+                await settle(
+                    lambda: window.is_active()
+                    and not jobs
+                    and not surface.pages.get_transition_running()
+                )
+                surface.controls["motion"].set_active_id(mode)
+                await settle(lambda: state.get("motion") == mode and not jobs)
+                gtk_settings.set_property("gtk-enable-animations", animations)
+                adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+                await paint(window)
+                baseline = layout()
+                baseline_y = content.translate_coordinates(window, 0, 0)[1]
+                viewport = adjustment.get_page_size()
+                assert viewport == 600, ("Appearance viewport changed", viewport)
+                size = (layer.get_allocated_width(), layer.get_allocated_height())
+                measurement = requests(page, *size)
+                assert requests(layer, *size) == measurement
+                assert page.get_margin_top() == 0
+                border = layer.get_style_context().get_border(Gtk.StateFlags.NORMAL)
+                padding = layer.get_style_context().get_padding(Gtk.StateFlags.NORMAL)
+                assert (border.top, border.right, border.bottom, border.left) == (0, 0, 0, 0)
+                assert (padding.top, padding.right, padding.bottom, padding.left) == (0, 0, 0, 0)
+                native = page.get_parent_window()
+                native_origin = native.get_origin()[1:]
+                native_size = tuple(native.get_geometry()[2:4])
+                surface.sidebar.select_row(surface.nav_rows["general"])
+                await settle(lambda: not surface.pages.get_transition_running() and not jobs)
+                surface.nav_rows["general"].grab_focus()
+                assert window.is_active() and window.get_focus() is surface.nav_rows["general"]
+                return (
+                    baseline,
+                    baseline_y,
+                    viewport,
+                    measurement,
+                    native,
+                    native_origin,
+                    native_size,
+                )
+
+            async def observe(name, mode, animations, *, cancel=None, configure=False):
+                (
+                    baseline,
+                    baseline_y,
+                    viewport,
+                    measurement,
+                    native,
+                    native_origin,
+                    native_size,
+                ) = await prepare(mode, animations)
+                focus = window.get_focus()
+                before = (directory / "config/settings.json").read_bytes()
+                count = host.patch_submissions
+                samples, errors = [], []
+                snapshots = {}
+                notification = None
+                reentered = False
+                done = asyncio.Event()
+                mid_action_done = False
+                context = "entry"
+
+                def frame(_clock):
+                    nonlocal mid_action_done, context, notification
+                    try:
+                        assert len(samples) < 64, "page entry did not settle in bounded frames"
+                        mapped = page.get_mapped()
+                        opacity = page.get_opacity()
+                        displacement = None
+                        current_layout = layout() if mapped else None
+                        pixel = None
+                        if mapped:
+                            assert current_layout == baseline, (name, current_layout, baseline)
+                            position = content.translate_coordinates(window, 0, 0)
+                            displacement = position[1] - baseline_y
+                            assert 0 <= displacement <= 6
+                            assert adjustment.get_page_size() == viewport
+                            assert page.get_margin_top() == 0
+                            assert page.get_parent_window() == native and native.is_viewable()
+                            origin = native.get_origin()[1:]
+                            assert origin == (native_origin[0], native_origin[1] + displacement)
+                            assert tuple(native.get_geometry()[2:4]) == native_size
+                            # Overlay's real child window is clipped by the same
+                            # Stack window, not by a resized content viewport.
+                            parent_window = native.get_parent()
+                            assert parent_window == layer.get_window()
+                            assert tuple(parent_window.get_geometry()[2:4]) == (
+                                surface.pages.get_allocated_width(),
+                                surface.pages.get_allocated_height(),
+                            )
+                            x, y = surface.pages.translate_coordinates(window, 0, 0)
+                            image = Gdk.pixbuf_get_from_window(
+                                window.get_window(),
+                                x,
+                                y,
+                                surface.pages.get_allocated_width(),
+                                surface.pages.get_allocated_height(),
+                            )
+                            pixel = hashlib.sha256(image.get_pixels()).hexdigest()
+                            suffix = (
+                                "first"
+                                if not samples
+                                else "final"
+                                if opacity == 1 and not surface.pages.get_transition_running()
+                                else "middle"
+                            )
+                            if suffix != "middle" or not any(0 < item[1] < 1 for item in samples):
+                                # Retain three painted frames, without PNG encoding or
+                                # filesystem work inside the 360 ms frame sequence.
+                                snapshots[suffix] = (context, image)
+                        samples.append(
+                            (
+                                clock.get_frame_time(),
+                                opacity,
+                                displacement,
+                                mapped,
+                                current_layout,
+                                adjustment.get_page_size(),
+                                pixel,
+                            )
+                        )
+                        if not mid_action_done and mapped and 0 < opacity < 1:
+                            mid_action_done = True
+                            if configure:
+                                surface.configure(dict(state))
+                            if cancel == "page":
+                                surface.sidebar.select_row(surface.nav_rows["general"])
+                            elif cancel == "os":
+                                gtk_settings.set_property("gtk-enable-animations", True)
+                            elif cancel == "reduce":
+                                surface.controls["motion"].set_active_id("reduce")
+                            elif cancel == "reentrant":
+
+                                def remap_on_settle(_page, _property):
+                                    nonlocal reentered, context
+                                    if reentered or page.get_opacity() != 1:
+                                        return
+                                    reentered = True
+                                    try:
+                                        gtk_settings.set_property("gtk-enable-animations", False)
+                                        window.hide()
+                                        assert not page.get_mapped()
+                                        assert page.get_opacity() == 1 and not native.is_viewable()
+                                        context = "reentered"
+                                        samples.clear()
+                                        snapshots.clear()
+                                        surface.show()
+                                        assert page.get_mapped()
+                                        assert page.get_opacity() == 0
+                                    except Exception as error:
+                                        errors.append(error)
+                                        done.set()
+
+                                notification = page.connect("notify::opacity", remap_on_settle)
+                                gtk_settings.set_property("gtk-enable-animations", True)
+                                assert reentered
+                                assert page.get_opacity() == 0, (
+                                    "retired cleanup changed the new mapped opening"
+                                )
+                                return
+                            elif cancel == "reopen":
+                                window.hide()
+                                assert not page.get_mapped()
+                                assert page.get_opacity() == 1
+                                assert native.is_destroyed() or not native.is_viewable()
+                                context = "reopened"
+                                samples.clear()
+                                snapshots.clear()
+                                surface.show()
+                                return
+                            elif cancel == "destroy":
+                                window.destroy()
+                            if cancel in ("page", "destroy"):
+                                assert not page.get_mapped()
+                                assert page.get_opacity() == 1
+                                assert native.is_destroyed() or not native.is_viewable()
+                                done.set()
+                                return
+                        # GtkWidget opacity is rounded to 8-bit alpha: a 1.0
+                        # reading can precede the end of the 360 ms curve.
+                        natural_full = (
+                            mode == "full"
+                            and not animations
+                            and cancel in (None, "reopen", "reentrant")
+                            and any(0 < item[1] < 1 for item in samples)
+                        )
+                        elapsed = clock.get_frame_time() - samples[0][0]
+                        if (
+                            mapped
+                            and opacity == 1
+                            and not surface.pages.get_transition_running()
+                            and (not natural_full or elapsed >= 360000)
+                        ):
+                            done.set()
+                    except Exception as error:
+                        errors.append(error)
+                        done.set()
+
+                signal = clock.connect("after-paint", frame)
+                primary_error = None
+                try:
+                    surface.sidebar.select_row(surface.nav_rows["appearance"])
+                    window.queue_draw()
+                    async with asyncio.timeout(3):
+                        await done.wait()
+                    if errors:
+                        raise errors[0]
+                except BaseException as error:
+                    primary_error = error
+                    raise
+                finally:
+                    # Destroying the owner also disposes its frame clock and
+                    # removes our signal. Do not disconnect that retired id.
+                    observer_connected = clock.handler_is_connected(signal)
+                    if observer_connected:
+                        clock.disconnect(signal)
+                    if notification is not None:
+                        page.disconnect(notification)
+                    records.append(
+                        {
+                            "name": name,
+                            "samples": samples,
+                            "baseline": baseline,
+                            "viewport": viewport,
+                            "requests": measurement,
+                            "nativeSize": native_size,
+                            "nativeOrigin": native_origin,
+                            "reentered": reentered,
+                            "observerConnectedAtCleanup": observer_connected,
+                        }
+                    )
+                    try:
+                        (options.output / "appearance-entry-frames.json").write_text(
+                            json.dumps(records, indent=2)
+                        )
+                        for suffix, (opening, image) in snapshots.items():
+                            image.savev(
+                                str(options.output / f"entry-{name}-{opening}-{suffix}.png"),
+                                "png",
+                                [],
+                                [],
+                            )
+                    except Exception:
+                        if primary_error is None:
+                            raise
+                        print(
+                            "APPEARANCE ENTRY artifact write failed after primary error", flush=True
+                        )
+                assert samples
+                animated = mode == "full" or mode == "system" and animations
+                if mode == "full" and not animations:
+                    assert any(0 < item[1] < 1 for item in samples), (
+                        "Full/OS-false had no actual intermediate painted Appearance frame",
+                        samples,
+                    )
+                    if cancel not in ("page", "destroy"):
+                        assert samples[-1][1:3] == (1.0, 0)
+                    if cancel is None or cancel in ("reopen", "reentrant"):
+                        assert samples[0][1:3] == (0.0, 6)
+                        assert samples[-1][0] - samples[0][0] >= 350000
+                        assert all(a[1] <= b[1] for a, b in zip(samples, samples[1:]))
+                        assert samples[0][6] != samples[-1][6], "pixels did not change"
+                elif animated:
+                    assert len(samples) > 1 and samples[0][6] != samples[-1][6]
+                    assert all(item[1:3] == (1.0, 0) for item in samples)
+                else:
+                    assert all(item[1:3] == (1.0, 0) for item in samples)
+                    assert not surface.pages.get_transition_running()
+                if cancel not in ("page", "destroy", "reopen", "reentrant"):
+                    assert window.get_focus() is focus, "decorative entry moved focus"
+                if cancel == "reduce":
+                    await settle(lambda: state["motion"] == "reduce" and not jobs)
+                    assert host.patch_submissions == count + 1
+                else:
+                    assert host.patch_submissions == count
+                    assert (directory / "config/settings.json").read_bytes() == before
+                print(
+                    "APPEARANCE ENTRY",
+                    name,
+                    len(samples),
+                    [samples[0][1:3], samples[-1][1:3]],
+                    flush=True,
+                )
+
+            try:
+                # The first old-source case is the real Full/OS-false RED.
+                await observe("full-os-off", "full", False, configure=True)
+                for mode, animations in (
+                    ("system", False),
+                    ("system", True),
+                    ("full", True),
+                    ("reduce", False),
+                    ("reduce", True),
+                ):
+                    await observe(f"{mode}-os-{animations}", mode, animations)
+                for action in ("page", "os", "reduce", "reopen", "reentrant", "destroy"):
+                    await observe("cancel-" + action, "full", False, cancel=action)
+                print(
+                    "APPEARANCE ENTRY PASS: real frames, fixed viewport/layout, native displacement, cancellation",
+                    flush=True,
+                )
+            finally:
+                gtk_settings.set_property("gtk-enable-animations", original_animations)
 
         async def exercise_appearance_retired():
             surface.sidebar.select_row(surface.nav_rows["appearance"])
@@ -2235,6 +2582,9 @@ def main(arguments=None):
                 return
             if options.appearance_retired_only:
                 await exercise_appearance_retired()
+                return
+            if options.appearance_entry_only:
+                await exercise_appearance_entry()
                 return
             if options.appearance_only or options.appearance_slider_only:
                 await exercise_appearance()

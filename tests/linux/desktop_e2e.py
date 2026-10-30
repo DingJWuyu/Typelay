@@ -2107,6 +2107,27 @@ def run(arguments):
                             if gtk4
                             else "GTK renderer: catalog language choices preserve menu drafts and focus"
                         )
+                        if gtk4:
+                            # Independent, pre-registered configuration openings.
+                            # No retry, old-source renewal or private activation.
+                            for action in ("swap", "swap-auto", "enter", "empty-recovery"):
+                                with tempfile.TemporaryDirectory(
+                                    prefix="tl-gtk-language-action-"
+                                ) as directory:
+                                    run_case(
+                                        fixture_command,
+                                        gtk_environment,
+                                        arguments.output,
+                                        None,
+                                        Path(directory),
+                                        "language-configuration-" + action,
+                                        False,
+                                        nested[0],
+                                        language_configuration=True,
+                                    )
+                            evidence.append(
+                                "GTK4 configuration: real swap/search Enter, disabled Auto swap and empty/unavailable search recovery"
+                            )
                         refusals = [
                             "body",
                             "host-token",

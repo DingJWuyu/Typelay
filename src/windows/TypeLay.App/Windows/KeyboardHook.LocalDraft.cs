@@ -23,9 +23,34 @@ internal sealed partial class KeyboardHook
     }
     private LocalDraftAnchor? _localDraftAnchor;
     private LocalDraftPress? _localDraftPress;
+    private int _localDraftTraceSamples;
+
+    private void TraceLocalDraftKey(string stage, LocalDraftPress? press, long now)
+    {
+        if (!OwnedEditorTraceEnabled)
+            return;
+        int sample = Interlocked.Increment(ref _localDraftTraceSamples);
+        if (sample > 8)
+            return;
+        // Seven metadata samples and one explicit lower-bound overflow row.
+        // No native queries, text, input decisions or I/O run on the hook here.
+        QueueOwnedEditorTrace(new
+        {
+            operation = "owned-local-key",
+            stage = sample == 8 ? "overflow" : stage,
+            sample,
+            atMs = now,
+            inputSequence = EditorInputSequence,
+            pressSequence = press?.Sequence,
+            released = press?.Released,
+            ageMs = press is null ? (long?)null : now - press.ReceivedAtMs,
+            droppedAtLeast = sample == 8 ? 1 : 0
+        });
+    }
 
     internal void BeginLocalDraftAnchor(Guid opening, nint overlay, nint source, Action<Guid> cancel)
     {
+        Interlocked.Exchange(ref _localDraftTraceSamples, 0);
         Interlocked.Exchange(ref _localDraftPress, null);
         Interlocked.Exchange(ref _localDraftAnchor, new(opening, overlay, source, cancel));
     }
@@ -44,6 +69,7 @@ internal sealed partial class KeyboardHook
         var anchor = Volatile.Read(ref _localDraftAnchor);
         var press = Volatile.Read(ref _localDraftPress);
         long now = WindowsInterruptClock.NowMs;
+        TraceLocalDraftKey("begin-return", press, now);
         if (anchor is null || anchor.Opening != opening || Volatile.Read(ref anchor.Invalid) != 0
             || Volatile.Read(ref anchor.Returning) != 0 || press is null || press.Opening != opening || press.Released
             || press.Sequence != EditorInputSequence || press.Key.ScanCode != scan || press.Key.Extended != extended
@@ -70,10 +96,14 @@ internal sealed partial class KeyboardHook
             && current.Key.Extended == ((data.Flags & 1) != 0) && current.Key.Injected == injected && (!down || repeated))
         {
             if (!down)
-                Interlocked.Exchange(ref _localDraftPress, current with
+            {
+                var released = current with
                 {
                     Released = true
-                });
+                };
+                Interlocked.Exchange(ref _localDraftPress, released);
+                TraceLocalDraftKey("tab-up", released, now);
+            }
             return;
         }
         var keys = Volatile.Read(ref _sessionKeys);
@@ -83,6 +113,8 @@ internal sealed partial class KeyboardHook
             && Volatile.Read(ref anchor.Returning) == 0 && Native.GetForegroundWindow() == anchor.Overlay;
         Interlocked.Exchange(ref _localDraftPress, admit
             ? new(anchor.Opening, EditorInputSequence, now, new(data.Scan, (data.Flags & 1) != 0, injected, 9), false) : null);
+        if (data.Key == 9)
+            TraceLocalDraftKey(down ? "tab-down" : "unmatched-tab-up", Volatile.Read(ref _localDraftPress), now);
     }
     private void ObserveLocalDraftForeground(nint foreground)
     {

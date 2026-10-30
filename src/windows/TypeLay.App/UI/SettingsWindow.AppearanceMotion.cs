@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -29,7 +28,6 @@ internal sealed partial class SettingsWindow
     {
         if (!current() || _savingSettings)
             return;
-        long started = Stopwatch.GetTimestamp();
         var proposed = kind == "theme" ? _settings.Value with
         {
             Theme = value
@@ -40,22 +38,33 @@ internal sealed partial class SettingsWindow
         long revision = _settings.Revision, visibility = _appearanceVisibility, geometry = _appearanceGeometry;
         object? navigation = _pageNavigation;
         var previous = _appearanceTileRings;
-        var travel = previous?.Begin(started);
-        bool saved = await SaveAsync(proposed);
+        var travel = previous?.Begin();
+        var preparation = new AppearancePreparationTiming();
+        bool saved = await SaveAsync(proposed, appearancePreparation: preparation);
         // SaveAsync proves this synchronous Update committed (including a failed
-        // observer). Only pure shadow values and the original start cross Refresh.
+        // observer). Only pure displayed shadow values cross Refresh.
         if (saved && travel is not null && IsVisible && _page == "appearance" && !_emergencyShutdown && _closeDialog is null
             && visibility == _appearanceVisibility && geometry == _appearanceGeometry
             && ReferenceEquals(navigation, _pageNavigation) && _settings.Revision == revision + 1
             && !_settings.HasChanges(proposed))
-            _appearanceTileRings?.Continue(travel, _settings.Value, _settings.Revision);
+            _appearanceTileRings?.Continue(travel, _settings.Value, _settings.Revision, preparation.WaitMilliseconds >= 200);
         else if (ReferenceEquals(previous, _appearanceTileRings))
             previous?.Settle();
     }
 
+    // Observation only: SaveAsync fills this within its existing ACK await.
+    // It cannot authorize a save or preserve an old interactive control.
+    private sealed class AppearancePreparationTiming
+    {
+        public double WaitMilliseconds
+        {
+            get; set;
+        }
+    }
+
     private sealed record AppearanceShadow(double Spread, double Blur, double Offset, Color Color);
     private sealed record AppearanceTileLook(AppearanceShadow Outline, AppearanceShadow Soft, AppearanceShadow Edge);
-    private sealed record AppearanceRingTravel(long Started, IReadOnlyDictionary<string, AppearanceTileLook> Looks, double ThemeWidth, double FontWidth);
+    private sealed record AppearanceRingTravel(IReadOnlyDictionary<string, AppearanceTileLook> Looks, double ThemeWidth, double FontWidth);
 
     // The two CSS box-shadow lists are interpolated on this page only. These
     // borders never own focus, hit testing, selection, or permission to save.
@@ -70,7 +79,7 @@ internal sealed partial class SettingsWindow
         private Dictionary<string, AppearanceTileLook>? _destination;
         private UserSettings? _committed;
         private long _revision;
-        private TimeSpan? _lastFrame;
+        private TimeSpan? _lastFrame, _presented;
         private bool _disposed;
         private static readonly KeySpline Ease = new(.25, .1, .25, 1);
 
@@ -102,27 +111,27 @@ internal sealed partial class SettingsWindow
             return _choices.Keys.ToDictionary(key => key, key => key == theme || key == font ? selected : normal);
         }
 
-        public AppearanceRingTravel? Begin(long started)
+        public AppearanceRingTravel? Begin()
         {
             if (_disposed || !_current())
                 return null;
             _owner.UpdateLayout();
             if (_disposed || !_current())
                 return null;
-            if (_travel is { } active)
-                Draw(active);
-            else
+            // Retarget from what was actually painted. Advancing the old clock
+            // here would capture a value that no frame has presented.
+            if (_travel is null)
             {
                 _shown.Clear();
                 foreach (var (key, look) in SavedLooks())
                     Paint(key, look);
             }
-            var travel = new AppearanceRingTravel(started, new Dictionary<string, AppearanceTileLook>(_shown), _themes.ActualWidth, _fonts.ActualWidth);
+            var travel = new AppearanceRingTravel(new Dictionary<string, AppearanceTileLook>(_shown), _themes.ActualWidth, _fonts.ActualWidth);
             Stop();
             return travel;
         }
 
-        public void Continue(AppearanceRingTravel travel, UserSettings committed, long revision)
+        public void Continue(AppearanceRingTravel travel, UserSettings committed, long revision, bool latePreparation)
         {
             Stop();
             if (_disposed || !_current())
@@ -130,7 +139,7 @@ internal sealed partial class SettingsWindow
             _owner.UpdateLayout();
             if (_disposed || !_current())
                 return;
-            if (UiTheme.ReduceMotion || Stopwatch.GetElapsedTime(travel.Started).TotalMilliseconds >= 200
+            if (UiTheme.ReduceMotion || latePreparation
                 || !SameGeometry(travel))
             {
                 Settle();
@@ -141,7 +150,9 @@ internal sealed partial class SettingsWindow
             _destination = SavedLooks();
             _travel = travel;
             CompositionTarget.Rendering += Frame;
-            Draw(travel);
+            // Hold the old displayed look until the first real rendering frame.
+            // Only that frame starts the one 200 ms presentation interval.
+            Draw(travel, 0);
         }
 
         private bool SameGeometry(AppearanceRingTravel travel) => Math.Abs(_themes.ActualWidth - travel.ThemeWidth) < .01
@@ -162,14 +173,15 @@ internal sealed partial class SettingsWindow
             if (_lastFrame == frame)
                 return;
             _lastFrame = frame;
-            Draw(travel);
+            _presented ??= frame;
+            Draw(travel, (frame - _presented.Value).TotalMilliseconds);
         }
 
-        private void Draw(AppearanceRingTravel travel)
+        private void Draw(AppearanceRingTravel travel, double elapsedMilliseconds)
         {
             if (_destination is null)
                 return;
-            double time = Math.Clamp(Stopwatch.GetElapsedTime(travel.Started).TotalMilliseconds / 200, 0, 1);
+            double time = Math.Clamp(elapsedMilliseconds / 200, 0, 1);
             double progress = Ease.GetSplineProgress(time);
             foreach (var (key, destination) in _destination)
             {
@@ -223,6 +235,7 @@ internal sealed partial class SettingsWindow
             _destination = null;
             _committed = null;
             _lastFrame = null;
+            _presented = null;
         }
 
         public void Settle()

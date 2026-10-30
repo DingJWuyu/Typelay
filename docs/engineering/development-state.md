@@ -10,7 +10,7 @@
 
 ## 验证状态与当前阻塞
 
-当前远端开发头为 [`feb81c6`](https://github.com/DingJWuyu/Typelay/commit/feb81c607161ada7fbb17c017dc7f56e6888158c)，[CI561](https://github.com/DingJWuyu/Typelay/actions/runs/41019414267) 已启动。21文件与5树逐SHA核验、提交/ref及本地fetch读回一致，main/trunk未改，不以微批取消本轮。本轮Windows已终态：App1338执行/1323通过/15失败，Runtime1491、Core310、Protocol28、WindowsContracts210及独立计时2例通过。真实Keep与Appearance仍有新失败，按原TRX逐组修，不推进Replace实现；Keep同步Revoke→接受许可刷新多Render已取得两阶段公开RED，exact local无写许可刷新出口窄修后全Runtime1497通过，仍待真实WPF；正式format/Python与continuous通过。pack及Index入口由旧严格reply字典漏LocalDraft/LocalReturn两null字段阻断，消费者补齐候选已落本地，Browser/Notepad/Hy依赖链本轮未运行。Linux也已终态，S07/教程/真实GTK3和Browser继续通过；tray在1177语言保存断言失败，实际旧测试从glossary页操作隐藏Appearance控件，仅迁公开Appearance导航的消费者修已取得完整tray本地通过（原40s总界、136输入无漂）；同类默认settings四处旧隐藏调用已按原8s公开路径迁移，默认完整套件通过、81输入无漂及64张图产出，不冒全部图片像素审。GTK4旧More截图与旧语言控件失败由未发布O04/截图后继处理；Qt已越严格编译，实际same-policy原editor命令保持失败已定位同值setReadOnly仍发ReadOnlyChange撤票，单源窄修已独审合本地待SDK；settings新原件证实FRAME668×820与niri616×768为不同几何，保精确输入与身份门做坐标语义修，不硬减26。
+当前远端开发头为 [`fb10f3a`](https://github.com/DingJWuyu/Typelay/commit/fb10f3a530137cda5de1900418b4a23ab438f7ce)，[CI562](https://github.com/DingJWuyu/Typelay/actions/runs/41024351834) 已启动。31文件与15树逐SHA核验、提交/ref及本地fetch读回一致，main/trunk未改，不以微批取消本轮。CI562 Linux已在严格GTK4编译终态失败：新增reset_language_selection未使用触发-Werror，后继桌面/Qt/O04场景均未运行；保原门，最小死函数退役待审。两Index完整生命周期原件均通过。Windows早期contracts实际App1338执行/1330通过/8失败，Runtime1497/Core310/Protocol28/WindowsContracts210及独立2均通过：剩选环动效3、owned2后继阶段、source确认/回源2和sheet宽动画1。旧公开名称等大部分红已消除；按新原件继续修，Windows亦已终态；正式格式/continuous/physicalTab通过，但80分钟job已耗尽前置20分钟额度，固定60分钟发行包后链准入拒绝，因此pack/Browser/Notepad/Hy均未运行。先收口真实失败与无效等待，再评容量，不降低60分钟及各场景期限。上一CI561的实证与本轮尚待验证分开。CI561 Windows已终态：App1338执行/1323通过/15失败，Runtime1491、Core310、Protocol28、WindowsContracts210及独立计时2例通过。真实Keep与Appearance仍有新失败，按原TRX逐组修，不推进Replace实现；Keep同步Revoke→接受许可刷新多Render已取得两阶段公开RED，exact local无写许可刷新出口窄修后全Runtime1497通过，仍待真实WPF；正式format/Python与continuous通过。pack及Index入口由旧严格reply字典漏LocalDraft/LocalReturn两null字段阻断，消费者补齐候选已落本地，Browser/Notepad/Hy依赖链本轮未运行。Linux也已终态，S07/教程/真实GTK3和Browser继续通过；tray在1177语言保存断言失败，实际旧测试从glossary页操作隐藏Appearance控件，仅迁公开Appearance导航的消费者修已取得完整tray本地通过（原40s总界、136输入无漂）；同类默认settings四处旧隐藏调用已按原8s公开路径迁移，默认完整套件通过、81输入无漂及64张图产出，不冒全部图片像素审。GTK4旧More截图与旧语言控件失败由本轮已发布O04/截图候选处理；Qt已越严格编译，实际same-policy原editor命令保持失败已定位同值setReadOnly仍发ReadOnlyChange撤票，单源窄修已独审合本地待SDK；settings新原件证实FRAME668×820与niri616×768为不同几何，保精确输入与身份门做坐标语义修，不硬减26。
 
 上一CI560已全部终态。两Windows入口因NativeFixture显式链接遗漏LocalDraft partial而构建失败，所有实际WPF/桌面行为未运行；该一行闭包修已取得独立实际NativeFixture Release Build及本批聚合通过。Linux Index12项/cleanup通过，S07正式包/niri公开合同与九图、教程、真实GTK3/Browser通过。尚未关闭的是GTK4首More截图节点缺失、settings窗口尺寸比较、Qt严格probe转换编译错误；本批纳Qt窄修和settings有限诊断，GTK4截图候选独立后继。不得把这些通过子项概括为完整双端验收。
 
@@ -28,14 +28,16 @@
 
 ### 当前本地后继与证据边界
 
+当前成熟后继已完成独立991输入验证，08:54:13 UTC终态0且输入前后无漂：Windows App/Tests、真实NativeFixture Release、DesktopFixture、Practice与LinuxHost均零警告错误，Runtime1497与Core310全部通过零跳过；15份C#实际folder验证0/15，三份机械排版已由token/非布局trivia等价与独审确认，Python Ruff及32字体锁通过。WPF真实行为、GTK4/Qt SDK仍由下一精确头CI判断，不借本地编译放行。包含S08 picker完整内容、Appearance首可绘帧动效时序窄修、source前置与有界诊断、owned后阶段按键有限诊断，以及GTK4遗留死函数退役/语言图标与四个真实公开动作合同。Linux Appearance单页Full×OSfalse显示层wrapper已真实12场/固定viewport600/81输入无漂与单次slider拖动邻近通过，原margin近似未合；不泛化其他页或物理输入。新完整Linux T01托盘已取得首层模型动作缺失公开RED，整体Windows确认sheet仍独立实现，不混此成熟批。
+
 前一批已合入：Windows owned Keep首纵向、完整Appearance页、术语编辑handoff重叠窄修；Linux精确Esc键名与clipboard标题消费、GTK4局部scrollbar几何过渡修、Qt地区显示层候选和S07正式CI入口。各来源均按独审后的精确文件身份合并，本批独立986输入聚合已完成：App/Tests/Fixture/Practice编译通过、Runtime1491与Core310全部通过且零跳过、全Python Ruff通过；40份C#真实folder扫描仅两份机械排版且token/非布局trivia等价，输入前后无漂。新head双端真实验收仍待，不能以本机托管通过替WPF或原生SDK运行。
 
 本次成熟后继独立988输入聚合已在08:02:02 UTC结束，输入前后无漂且合入源一致：App、Tests、NativeFixture实际Release Build、DesktopFixture、Practice及LinuxHost全部零警告/错误；Runtime1497/1497、Core310/310零跳过，Python Ruff与字体锁验证通过。11份C# folder实际扫描3份机械排版，Roslyn三对token与非布局trivia完全相同；不代替下轮正式solution格式和平台运行。包含O04/截图候选、Qt同策略窄修、真实滑轨与公开Appearance消费者修、owned接受重绘窄修、Windows公开名称和实际测试消费者，以及有界几何/动画诊断。新Full动效和picker新视觉未混本批。
 
-owned候选已通过Core310/Runtime1486及App/Tests/Fixture/Practice托管编译；后来术语窄修在相同共享候选上公开5项与全Runtime1491项通过。Keep保同TextBox本地稿和Undo，真实Tab重新取得源/Core/Bind；旧owned授权永久退休。同壳340px确认sheet的尺寸/字号/按钮与窄字段呈现候选已独审并随本批托管编译通过，仍待Windows实际图/交互；中心modal/backdrop、真实模糊及完整sheet动画未完成。真实WPF首链尚待，Replace未实现。WPF完整Appearance页已编译，实时Slider保存、三态动效选择与20项真实UI合同仍待Windows运行。Linux完整Appearance后继已真实通过：六组字体preview330宽/正文ink、三态偏好×OS矩阵、即时拖动按住16→19与原0.4秒held ACK、最终磁盘19、保存失败/恢复/旧peer以及15张图。原失败保留：GtkRange观察坐标错误、1ms轮询饿死GDK低优先级motion，以及关闭数值标签后round_digits被重置的离散化缺口分别窄修；没有延时或更换期望求绿。实跑59个runtime输入无漂，正式包入口的并集合并已随feb81c6发布。slider端点后继已取得八张正常帧及原真实单手势回归通过：150px轨道、13/16/19对应thumb端点、A间隔10、clay/ocean及同字号换theme均符合；67输入无漂，三源已合未发布。thumb遮挡处不作像素断点声明。Full×OS减少时真实局部动画仍未完，不称整页全像素1:1。
+owned候选已通过Core310/Runtime1486及App/Tests/Fixture/Practice托管编译；后来术语窄修在相同共享候选上公开5项与全Runtime1491项通过。Keep保同TextBox本地稿和Undo，真实Tab重新取得源/Core/Bind；旧owned授权永久退休。同壳340px确认sheet的尺寸/字号/按钮与窄字段呈现候选已独审并随本批托管编译通过，仍待Windows实际图/交互；中心modal/backdrop、真实模糊及完整sheet动画未完成。真实WPF首链尚待，成功后才推进Replace。后继不能仅收敛零碎tokens：S08 picker完整切片之后继续确认sheet整体原型呈现，包括本应用内定位/背景/材质与入场；不使用全桌面置顶遮罩或抓屏模糊绕原生焦点边界。WPF完整Appearance页已编译，实时Slider保存、三态动效选择与20项真实UI合同仍待Windows运行。Linux完整Appearance后继已真实通过：六组字体preview330宽/正文ink、三态偏好×OS矩阵、即时拖动按住16→19与原0.4秒held ACK、最终磁盘19、保存失败/恢复/旧peer以及15张图。原失败保留：GtkRange观察坐标错误、1ms轮询饿死GDK低优先级motion，以及关闭数值标签后round_digits被重置的离散化缺口分别窄修；没有延时或更换期望求绿。实跑59个runtime输入无漂，正式包入口的并集合并已随feb81c6发布。slider端点后继已取得八张正常帧及原真实单手势回归通过：150px轨道、13/16/19对应thumb端点、A间隔10、clay/ocean及同字号换theme均符合；67输入无漂，三源已随CP21发布。thumb遮挡处不作像素断点声明。Full×OS减少时真实局部动画仍未完，不称整页全像素1:1。
 
 
-S07专用公开合同和九图已在CI560正式发行包/既有niri scope实际通过，模块来源与原预算保持；受控输入不是物理输入验证。Qt候选保持真实document revision与旧票退休，同policy不重复格式化。CI560更严格probe目标在两个qsizetype转int以-Werror失败，尚未执行字形；已独审长度上界与显式转换窄修，本机无Qt SDK，下一正式门验证，不禁warning。GTK4局部CSS同样待正式原生验证，不放宽44px尺寸门。GTK4语言配置与More截图自然帧修13源后继已合本地未发布。最终950输入前后无漂、locked Host Build、Host7/7和bridge10/10通过；folder实际两源机械排版已由Roslyn证明token及非布局trivia等价。project格式工具受IPC权限阻未验，不重复提升，正式门留CI。native12真实场景与原More40场仍待SDK，不称整链完成。
+S07专用公开合同和九图已在CI560正式发行包/既有niri scope实际通过，模块来源与原预算保持；受控输入不是物理输入验证。Qt候选保持真实document revision与旧票退休，同policy不重复格式化。CI560更严格probe目标在两个qsizetype转int以-Werror失败，尚未执行字形；已独审长度上界与显式转换窄修，本机无Qt SDK，下一正式门验证，不禁warning。GTK4局部CSS同样待正式原生验证，不放宽44px尺寸门。GTK4语言配置与More截图自然帧修13源已随CP21发布。最终950输入前后无漂、locked Host Build、Host7/7和bridge10/10通过；folder实际两源机械排版已由Roslyn证明token及非布局trivia等价。project格式工具受IPC权限阻未验，不重复提升，正式门留CI。native12真实场景与原More40场仍待SDK，不称整链完成。
 
 continuous固定stock Edit场景的既有公开快捷键就绪cue已在CI559通过；仍唯一按键、原150ms与原截止，不修复译文可见到源控制资格发布的160ms间隙。正式solution格式门本轮通过；后继本地folder必须记录实际扫描数，不能替代下轮正式门。
 
@@ -43,7 +45,7 @@ Linux toast容器裁影已取得真实RED→修复证据：仅扩留白会吞底
 
 2026-10-30环境替换后，旧未提交候选/图片/日志丢失；不能拿摘要或旧SHA冒充原件。当前源码从远端恢复，SDK10.0.401、锁定工具与32面字体已重新准备；旧session80867终态仍未知。新S08单页与默认nullable配置的完整邻近合同已实际通过，新S09按实际源重新审编译/取得CI图；不把它们说成丢失旧候选直接恢复通过。
 
-最新已完成CI合成原件在 `artifacts/ui-rebuild/ci560/`（早期Windows行为原件仍沿ci559），已按GitHub digest核验：`contracts`由root解析，完整旧场景原件另保`ci558/windows-full`，`linux-diagnostics`、`gtk4-glossary`、`qt-early`及`index-linux`用于Linux定位；不执行下载包中的二进制。原失败保留，不靠重复运行或降低期限求绿。原型全量逐页状态与剩余实现缺口仍以[固定25项](../design/prototype-parity.md)为准，不把范围遗漏包装成只差测试。
+最新已完成CI合成原件在 `artifacts/ui-rebuild/ci561/`，已按GitHub digest核验：`contracts`由root解析，完整旧场景原件另保`ci558/windows-full`，`linux-diagnostics`、`gtk4-glossary`、`qt-early`及`index-linux`用于Linux定位；不执行下载包中的二进制。原失败保留，不靠重复运行或降低期限求绿。原型全量逐页状态与剩余实现缺口仍以[固定25项](../design/prototype-parity.md)为准，不把范围遗漏包装成只差测试。
 
 ## 当前负责人及下一动作
 
@@ -51,13 +53,15 @@ Linux toast容器裁影已取得真实RED→修复证据：仅扩留白会吞底
 
 | 责任线 | 当前动作 | 完成依据 |
 | --- | --- | --- |
-| 集成 | CI561精确feb81c6已发布，跟踪双端终态；后继O04/GTK4截图、Linux端点/Full动效、owned Replace独立推进，不混运行头 | 新源身份、独审、本地适用检查与精确 head CI |
-| Windows设置 | S09已有真实图；S02页面/300ms动效23项CI559通过；完整S03与200ms选环/S08 tokens已随CI561发布，13项真实选环及页面交互等待本轮WPF；CI560未运行 | 官方编译、公开操作和真实同偏好页面图 |
-| Linux设置 | S08名单布局/完整tray及toast四图已通过；S07 v5完整合同与九图通过，pulse/shake仍未完；S03完整15图/真实单手势/失败恢复本地已通过；slider端点八图及原drag回归已合未发布；Full×OSfalse局部动效独立后继 | 真实 host/GTK/AT-SPI、完整新锁字体与交互图 |
+| 集成 | CI562精确fb10f3a已发布，跟踪双端终态；O04/GTK4截图及端点已在本轮；后继O04视觉、Linux Full动效、owned Replace独立推进，不混运行头 | 新源身份、独审、本地适用检查与精确 head CI |
+| Windows设置 | S09已有真实图；S02页面/300ms动效23项CI559通过；完整S03与200ms选环/S08 tokens已随CI561发布，CI561实际页面/选环失败已按原件修或补有限诊断，等待CI562实际WPF；后继S08 picker五源已编译合本地，完整sheet首纵向待实现 | 官方编译、公开操作和真实同偏好页面图 |
+| Linux设置 | S08名单布局/完整tray及toast四图已通过；S07 v5完整合同与九图通过，pulse/shake仍未完；S03完整15图/真实单手势/失败恢复本地已通过；slider端点八图及原drag回归已随CP21发布；Appearance Full×OSfalse局部显示层wrapper与既有真实slider邻近均通过，原margin版本未合；下一完整T01托盘方向搜索/模型首层合法动作先公开RED，旧tray合同不等新原型完整 | 真实 host/GTK/AT-SPI、完整新锁字体与交互图 |
 | Windows浮层 | 普通source九项CI559通过；owned已据真实失焦清稿RED实现Keep→Tab→fresh Bind并托管编译，等待真实同条转绿；确认sheet呈现独立补齐 | fresh source/Core/Bind、原期限与零误写负控 |
-| 合作浮层 | GTK4几何/Qt实验生命周期与Browser资格按558原件收敛；GTK4语言搜索Host首公开RED已成立，纯配置退休ACK单纵向在独立候选中，不改三端通用框架 | 实际 case、正反控与未改产品安全门 |
-| root支持 | 跟踪CI561 Windows实际结果；既有Hy15真通过；公开held-capture窄修5项与全Runtime1491通过，支持下轮Browser实际验证 | 终态结构化结果，不能以阶段推进代通过 |
+| 合作浮层 | GTK4几何/Qt实验生命周期与Browser资格按558原件收敛；GTK4语言搜索Host首公开RED已成立，纯配置退休ACK单纵向已随CP21发布，待首原生SDK实测，不改三端通用框架 | 实际 case、正反控与未改产品安全门 |
+| root支持 | 跟踪CI562 Windows实际结果；既有Hy15真通过；公开held-capture窄修5项与全Runtime1491通过，支持本轮Browser实际验证 | 终态结构化结果，不能以阶段推进代通过 |
 | 独立审查 | 对重建后实际 diff 做规范与安全双轴审查；旧候选审查不自动继承 | 新输入身份、实际源码及明确未验边界 |
+
+合作浮层 O04 后继限定于 GTK4：CI562在严格构建入口失败，原12场尚未运行；已独审的死函数退役、语言 tokens 与4个公开Swap/Enter/空搜索恢复场景只待正常SDK，不能用Host7/bridge10代替原生结果。首实际图先核264宽、冻结trigger左−4及上下gap6/底缘8/列表232上限，目前未证几何偏差；随后补当前确未消费的配置壳三态300ms入场（scale .94、Y−4、opacity），关闭保持原型即时，600ms握手与旧源永久退休不动。材质的surface/边/双阴影及真实backdrop仍未齐，局部呈现可继续收口，不抓屏伪造模糊、不改宿主全局设置，不横铺GTK3/Qt配置协议。
 
 ## 模型能力边界
 

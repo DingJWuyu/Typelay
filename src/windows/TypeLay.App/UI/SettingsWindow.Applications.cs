@@ -185,23 +185,38 @@ internal sealed partial class SettingsWindow
             if (!CurrentPage() || _closeDialog is not null)
                 return;
             long revision = _settings.Revision;
+            object? navigation = _pageNavigation;
+            object query = _settingsQuery;
             string? application = PickApplication(CurrentPage);
             if (application is null || !CurrentPage() || _settings.Revision != revision)
                 return;
             var members = _settings.Value.VisibleApplications(KnownApplicationIds);
-            if (!members.Contains(application, StringComparer.OrdinalIgnoreCase)
-                && !await SaveAsync(_settings.Value with
-                {
-                    ApplicationListCustomized = true,
-                    ManagedApplications = members.Append(application).ToArray()
-                }, callerCurrent: CurrentPage))
+            bool added = !members.Contains(application, StringComparer.OrdinalIgnoreCase);
+            var proposal = _settings.Value with
+            {
+                ApplicationListCustomized = true,
+                ManagedApplications = members.Append(application).ToArray()
+            };
+            if (added && !await SaveAsync(proposal, callerCurrent: CurrentPage))
                 return;
             // Save can redraw the page. Find only its current row, never retain an old control.
             _applicationQuery = "";
             Refresh();
             if (_page == "apps" && IsVisible)
             {
-                FindApplicationRow(application)?.BringIntoView();
+                object page = _pageIdentity;
+                if (added && navigation is not null && ReferenceEquals(navigation, _pageNavigation)
+                    && ReferenceEquals(query, _settingsQuery) && _settings.Revision == revision + 1 && !_settings.HasChanges(proposal)
+                    && FindApplicationRow(application) is Panel row && ReferenceEquals(page, _pageIdentity)
+                    && ReferenceEquals(navigation, _pageNavigation) && ReferenceEquals(query, _settingsQuery)
+                    && row.IsDescendantOf(_content))
+                {
+                    // A current row is a location target only, not another searchable
+                    // setting or an action. Reuse the existing bounded decoration.
+                    string key = "app-" + application;
+                    _searchTargets[key] = row;
+                    LocateSearchRow(key, navigation, _settingsQuery);
+                }
                 Toast(UiTheme.L("已添加应用", "Application added"));
             }
         });
@@ -398,17 +413,21 @@ internal sealed partial class SettingsWindow
             .Concat(_settings.Value.Styles?.Applications?.Keys ?? []).Distinct(StringComparer.OrdinalIgnoreCase)
             .Where(app => !visible.Contains(app, StringComparer.OrdinalIgnoreCase)).Order(StringComparer.OrdinalIgnoreCase).ToArray();
         var dialog = ApplicationDialog(UiTheme.L("添加应用", "Add app"), "ApplicationPicker", 320);
+        dialog.Resources.MergedDictionaries.Add(UiTheme.ConfigurationScrollResources());
+        dialog.Resources.MergedDictionaries.Add(ApplicationPickerResources());
         bool Current() => pageCurrent() && _settings.Revision == revision && ReferenceEquals(_closeDialog, dialog) && dialog.IsVisible;
         string? result = null;
         bool chooseFile = false;
         var body = new StackPanel();
         body.Children.Add(ApplicationDialogTitle(UiTheme.L("添加应用", "Add app")));
-        var search = new TextBox { Margin = new(0, 12, 0, 8) };
+        var search = new TextBox();
         AutomationProperties.SetAutomationId(search, "ApplicationPickerSearch");
         AutomationProperties.SetName(search, UiTheme.L("搜索应用", "Search apps"));
-        body.Children.Add(SearchField(search, UiTheme.L("搜索应用", "Search apps")));
+        body.Children.Add(ApplicationPickerSearch(search, UiTheme.L("搜索", "Search")));
         var list = new StackPanel();
-        body.Children.Add(new ScrollViewer { Content = list, MaxHeight = 220, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
+        var viewport = new ScrollViewer { Content = list, MaxHeight = 260, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        AutomationProperties.SetAutomationId(viewport, "ApplicationPickerList");
+        body.Children.Add(viewport);
         object choicesIdentity = new();
         void Draw()
         {
@@ -428,22 +447,26 @@ internal sealed partial class SettingsWindow
                 var tile = ApplicationTile(application);
                 tile.Width = tile.Height = 20;
                 tile.CornerRadius = new(5);
-                tile.Margin = new(0, 0, 10, 0);
+                tile.Margin = new(0, 0, 8, 0);
                 ((TextBlock)tile.Child).FontSize = 10;
                 content.Children.Add(tile);
-                content.Children.Add(UiTheme.Text(ApplicationTitle(application), 13));
+                var label = UiTheme.Text(ApplicationTitle(application), 13);
+                label.SetBinding(TextBlock.ForegroundProperty, new System.Windows.Data.Binding(nameof(Control.Foreground)) { Source = option });
+                content.Children.Add(label);
                 option.Content = content;
                 AutomationProperties.SetName(option, ApplicationTitle(application));
-                option.Height = 30;
+                option.SetResourceReference(StyleProperty, "ApplicationPickerOption");
                 option.HorizontalContentAlignment = HorizontalAlignment.Left;
-                option.BorderThickness = new(0);
                 AutomationProperties.SetAutomationId(option, "ApplicationPickerChoice_" + application);
                 list.Children.Add(option);
             }
             if (list.Children.Count == 0)
             {
-                var empty = UiTheme.Text(UiTheme.L("没有匹配的应用", "No matching apps"), 13, true);
-                empty.Margin = new(0, 12, 0, 12);
+                var empty = UiTheme.Text("—", 13, true);
+                AutomationProperties.SetName(empty, UiTheme.L("没有匹配的应用", "No matching apps"));
+                empty.Padding = new(10);
+                empty.SetResourceReference(TextBlock.ForegroundProperty, "Tertiary");
+                AutomationProperties.SetAutomationId(empty, "ApplicationPickerEmpty");
                 list.Children.Add(empty);
             }
         }

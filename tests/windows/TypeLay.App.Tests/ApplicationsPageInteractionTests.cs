@@ -412,15 +412,28 @@ public sealed partial class SettingsRenderingTests
         Assert.Equal(2u, sent);
     }
 
-    private static void ApplicationDialogAction(SettingsWindow owner, Action open, string id, Action<Window> interact)
+    private static void ApplicationDialogAction(SettingsWindow owner, Action open, string id, Action<Window> interact) =>
+        ApplicationDialogActionAsync(owner, open, id, (dialog, ct) =>
+        {
+            ct.ThrowIfCancellationRequested();
+            interact(dialog);
+            return Task.CompletedTask;
+        });
+
+    private static void ApplicationDialogActionAsync(SettingsWindow owner, Action open, string id, Func<Window, CancellationToken, Task> interact)
     {
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        limit.CancelAfter(TimeSpan.FromSeconds(3));
+        var ct = limit.Token;
         Exception? failure = null;
-        bool observed = false;
-        var action = owner.Dispatcher.BeginInvoke(new Action(() =>
+        bool observed = false, completed = false;
+        Task? interaction = null;
+        async Task InteractAsync()
         {
             Window? dialog = null;
             try
             {
+                ct.ThrowIfCancellationRequested();
                 dialog = owner.OwnedWindows.Cast<Window>().Single(window => window.IsVisible && AutomationProperties.GetAutomationId(window) == id);
                 observed = true;
                 dialog.UpdateLayout();
@@ -438,28 +451,42 @@ public sealed partial class SettingsRenderingTests
                 foreach (var button in Descendants(dialog).OfType<Button>().Where(button => AutomationProperties.GetAutomationId(button) is
                     "ApplicationPickerBrowse" or "ApplicationPickerCancel" or "ApplicationRemovalCancel" or "ApplicationRemovalConfirm"))
                     AssertApplicationActionSize(button);
-                interact(dialog);
+                ct.ThrowIfCancellationRequested();
+                await interact(dialog, ct);
             }
-            catch (Exception error) { failure = error; dialog?.Close(); }
-        }), DispatcherPriority.ApplicationIdle);
+            catch (Exception error) { failure ??= error; dialog?.Close(); }
+            finally { completed = true; }
+        }
+        var action = owner.Dispatcher.BeginInvoke(new Action(() => interaction = InteractAsync()), DispatcherPriority.ApplicationIdle);
         var timeout = new DispatcherTimer(DispatcherPriority.Send, owner.Dispatcher) { Interval = TimeSpan.FromSeconds(3) };
         timeout.Tick += (_, _) =>
         {
             failure ??= new TimeoutException("application-dialog-did-not-close");
+            limit.Cancel();
             foreach (var dialog in owner.OwnedWindows.Cast<Window>().ToArray())
                 dialog.Close();
         };
         timeout.Start();
         try
         {
+            ct.ThrowIfCancellationRequested();
             open();
             owner.Dispatcher.Invoke(() => { }, DispatcherPriority.SystemIdle);
         }
-        finally { timeout.Stop(); }
+        finally
+        {
+            limit.Cancel();
+            // Drain the already-cancelled callback on this same dispatcher;
+            // never grant it a fresh input deadline after the modal returns.
+            owner.Dispatcher.Invoke(() => { }, DispatcherPriority.SystemIdle);
+            timeout.Stop();
+        }
         if (action.Status == DispatcherOperationStatus.Pending)
             action.Abort();
         Assert.Null(failure);
         Assert.True(observed);
+        Assert.True(completed);
+        Assert.True(interaction?.IsCompleted);
     }
 
     private sealed class ApplicationPageScene : IDisposable

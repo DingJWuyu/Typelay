@@ -38,13 +38,22 @@ public sealed partial class OverlayTranslationMenuTests
         var overlay = new OverlayWindow(automationTest: true, clientAreaAnimation: () => false);
         ChildProcess? child = null;
         SessionController? controller = null;
-        var host = new PracticeHost(info => child = new ChildProcess(info));
+        var host = new PracticeHost(info =>
+        {
+            info.Environment.Remove("TYPELAY_TRACE"); // Keep this bounded parent-hook trace separate from the child.
+            return child = new ChildProcess(info);
+        });
+        string? previousTrace = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
+        string tracePath = Path.Combine(directory, "owned-key-trace.jsonl");
+        Action? finishKeyboardObservation = null;
         Exception? failure = null;
         var cleanupErrors = new List<Exception>();
         nint root = 0;
         bool exited = false;
         try
         {
+            Directory.CreateDirectory(directory);
+            Environment.SetEnvironmentVariable("TYPELAY_TRACE", tracePath);
             var settings = WindowsRuntime.CreateSettings(path);
             settings.Update(settings.Value with
             {
@@ -184,6 +193,8 @@ public sealed partial class OverlayTranslationMenuTests
                 Assert.True(editor.CanUndo);
                 Assert.Null(host.CaptureDescriptor);
             }
+            finishKeyboardObservation = ObserveOwnedKeyboardFlow(overlay, editor,
+                RegenerateButton(overlay, "RegenerateKeep"), controller, draft);
             using (var action = ActionDeadline())
                 await SendOwnedConfirmationKey(overlay, Key.Enter, RegenerateButton(overlay, "RegenerateKeep"), action.Token);
             await Until(() => editor.IsKeyboardFocused && !editor.IsReadOnly
@@ -248,6 +259,17 @@ public sealed partial class OverlayTranslationMenuTests
         catch (Exception error) { failure = error; }
         finally
         {
+            try
+            {
+                finishKeyboardObservation?.Invoke();
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+            try
+            {
+                Environment.SetEnvironmentVariable("TYPELAY_TRACE", previousTrace);
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
+            ObserveOwnedKeyTrace(tracePath);
             try
             {
                 controller?.Dispose();

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Automation.Peers;
@@ -24,6 +25,32 @@ public sealed partial class NativeSourceControllerTests
     public Task SourceConfirmationRendersThePrototypeSheetWithoutWritingOrRegenerating(string language, string theme, bool animate) => desktop.RunAsync(async () =>
     {
         await using var native = await ProductionForegroundWriteTests.Desktop.Start();
+        if (animate)
+        {
+            Assert.True(N.GetWindowRect(native.Root, out var originalRoot));
+            var rootRect = new Native.Rect { Left = originalRoot.Left, Top = originalRoot.Top, Right = originalRoot.Right, Bottom = originalRoot.Bottom };
+            var monitor = new Native.MonitorInfo { Size = Marshal.SizeOf<Native.MonitorInfo>() };
+            Assert.True(Native.GetMonitorInfoW(Native.MonitorFromRect(ref rootRect, 2), ref monitor));
+            int width = originalRoot.Right - originalRoot.Left, height = originalRoot.Bottom - originalRoot.Top;
+            Assert.True(width <= monitor.Work.Right - monitor.Work.Left && height <= monitor.Work.Bottom - monitor.Work.Top,
+                "The owned fixture must fit inside the current work area before testing same-side resize.");
+            int x = Math.Clamp(originalRoot.Left, monitor.Work.Left, monitor.Work.Right - width);
+            // Near the work area's top, both the compact preview and the sheet
+            // fit below the field. Changing sides intentionally does not spring
+            // across the source, and is not this same-side animation scenario.
+            Assert.True(Native.SetWindowPos(native.Root, 0, x, monitor.Work.Top, 0, 0, 0x0015));
+            Assert.True(N.GetWindowRect(native.Root, out var placedRoot));
+            Assert.True(N.GetWindowRect(native.A, out var placedField));
+            foreach (var rect in new[] { placedRoot, placedField })
+            {
+                Assert.InRange(rect.Left, monitor.Work.Left, monitor.Work.Right);
+                Assert.InRange(rect.Right, rect.Left, monitor.Work.Right);
+                Assert.InRange(rect.Top, monitor.Work.Top, monitor.Work.Bottom);
+                Assert.InRange(rect.Bottom, rect.Top, monitor.Work.Bottom);
+            }
+            Assert.Equal(width, placedRoot.Right - placedRoot.Left);
+            Assert.Equal(height, placedRoot.Bottom - placedRoot.Top);
+        }
         // Resize only this fixture-owned field, before capture/editing starts.
         // A narrow source is not a small viewport: it must not truncate a sheet.
         Assert.True(N.GetWindowRect(native.A, out var field));
@@ -69,13 +96,16 @@ public sealed partial class NativeSourceControllerTests
                 && AutomationProperties.GetItemStatus(editor) == UiTheme.L("当前译文", "Current translation"), native.Token);
             double scale = VisualTreeHelper.GetDpi(overlay).DpiScaleX;
             int compactWidth = (int)(324 * scale), sheetWidth = (int)(364 * scale);
-            (int Left, int Right, int Width) Bounds()
+            (int Left, int Right, int Width, int Top, int Bottom) Bounds()
             {
                 Assert.True(N.GetWindowRect(overlay.Handle, out var rect));
-                return (rect.Left, rect.Right, rect.Right - rect.Left);
+                return (rect.Left, rect.Right, rect.Right - rect.Left, rect.Top, rect.Bottom);
             }
             await Until(() => Bounds().Width == compactWidth && overlay.Opacity == 1, native.Token);
             int anchor = Bounds().Right;
+            Assert.True(N.GetWindowRect(native.A, out var sourceRect));
+            if (animate)
+                Assert.True(Bounds().Top >= sourceRect.Bottom, "The compact preview must be below this owned field.");
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(native.Token);
             deadline.CancelAfter(TimeSpan.FromSeconds(3));
             var more = RuntimeDescendants(overlay).OfType<Button>().Single(button => AutomationProperties.GetName(button) == UiTheme.L("更多翻译操作", "More Translation Actions"));
@@ -83,12 +113,12 @@ public sealed partial class NativeSourceControllerTests
             await Until(() => more.ContextMenu?.IsOpen == true, deadline.Token);
             var menu = Assert.IsAssignableFrom<ContextMenu>(more.ContextMenu);
             var regenerate = menu.Items.OfType<MenuItem>().Single(item => AutomationProperties.GetAutomationId(item) == "MoreRegenerate");
-            var widths = new List<(int Left, int Right, int Width)>();
+            var widths = new List<(int Left, int Right, int Width, int Top, int Bottom)>();
             bool windowReadFailed = false;
             sampled = (_, _) =>
             {
                 if (N.GetWindowRect(overlay.Handle, out var rect))
-                    widths.Add((rect.Left, rect.Right, rect.Right - rect.Left));
+                    widths.Add((rect.Left, rect.Right, rect.Right - rect.Left, rect.Top, rect.Bottom));
                 else
                     windowReadFailed = true;
             };
@@ -104,6 +134,8 @@ public sealed partial class NativeSourceControllerTests
             {
                 await Until(() => widths.Count >= 4 && widths.TakeLast(4).All(frame => frame.Width == sheetWidth), deadline.Token);
                 Assert.False(windowReadFailed);
+                Assert.All(widths, frame => Assert.True(frame.Top >= sourceRect.Bottom,
+                    "The resize must stay below its source instead of crossing the field."));
                 Assert.True(widths.Count(frame => frame.Width > compactWidth && frame.Width < sheetWidth) >= 2,
                     $"Expected intermediate widths between {compactWidth} and {sheetWidth}; "
                     + $"anchor={anchor}, samples={widths.Count}, "
@@ -137,6 +169,8 @@ public sealed partial class NativeSourceControllerTests
             {
                 await Until(() => widths.Count >= 4 && widths.TakeLast(4).All(frame => frame.Width == compactWidth), deadline.Token);
                 Assert.False(windowReadFailed);
+                Assert.All(widths, frame => Assert.True(frame.Top >= sourceRect.Bottom,
+                    "The resize must stay below its source instead of crossing the field."));
                 Assert.True(widths.Count(frame => frame.Width > compactWidth && frame.Width < sheetWidth) >= 2,
                     $"Expected intermediate widths between {compactWidth} and {sheetWidth}; "
                     + $"anchor={anchor}, samples={widths.Count}, "

@@ -588,18 +588,6 @@ done:
     g_free(selection);
     return language_menu_current(widget, menu, view);
 }
-static gboolean reset_language_selection(JsonObject *view) {
-    GtkWidget *source = g_object_ref(overlay.source), *target = g_object_ref(overlay.destination);
-    char *source_code = g_strdup(overlay.source_languages.saved), *target_code = g_strdup(overlay.target_languages.saved);
-    overlay.setting_languages = TRUE;
-    select_language(source, &overlay.source_languages, source_code);
-    if (overlay.view == view && overlay.destination == target)
-        select_language(target, &overlay.target_languages, target_code);
-    gboolean current = overlay.view == view && overlay.source == source && overlay.destination == target;
-    if (current) { overlay.setting_languages = FALSE; refresh_language_apply(); current = overlay.view == view; }
-    g_object_unref(source); g_object_unref(target); g_free(source_code); g_free(target_code);
-    return current;
-}
 static gboolean render_languages(JsonObject *view) {
     JsonArray *source_choices = language_choices(view, "source"), *target_choices = language_choices(view, "target");
     const char *source = text_or_empty(view, "sourceLanguage"), *target = text_or_empty(view, "targetLanguage");
@@ -2119,7 +2107,7 @@ static gboolean localize_widgets(GtkWidget *card, JsonObject *view) {
     g_ptr_array_unref(widgets);
     return current;
 }
-typedef struct { const char *paths; GdkRGBA color; GdkPixbuf *pixels; } MoreIcon;
+typedef struct { const char *paths; GdkRGBA color; GdkPixbuf *pixels; int size; gboolean own_color; } MoreIcon;
 static void free_more_icon(gpointer data) {
     MoreIcon *icon = data;
     g_clear_object(&icon->pixels);
@@ -2130,7 +2118,7 @@ static void draw_more_icon(GtkDrawingArea *area, cairo_t *cr, int width, int hei
     GtkWidget *widget = GTK_WIDGET(area);
     MoreIcon *icon = data;
     GtkWidget *button = gtk_widget_get_ancestor(widget, GTK_TYPE_BUTTON);
-    GtkWidget *owner = button ? button : widget;
+    GtkWidget *owner = icon->own_color ? widget : (button ? button : widget);
     GdkRGBA color;
 #if GTK_CHECK_VERSION(4, 10, 0)
     gtk_widget_get_color(owner, &color);
@@ -2140,9 +2128,10 @@ static void draw_more_icon(GtkDrawingArea *area, cairo_t *cr, int width, int hei
     if (!icon->pixels || !gdk_rgba_equal(&icon->color, &color)) {
         /* Exact prototype paths, embedded and bounded. Cache each current
          * foreground instead of parsing SVG on every natural paint frame. */
-        char *svg = g_strdup_printf("<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' "
+        char *svg = g_strdup_printf("<svg xmlns='http://www.w3.org/2000/svg' width='%d' height='%d' viewBox='0 0 24 24' "
             "fill='none' stroke='#%02x%02x%02x' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'>%s</svg>",
-            (guint)(color.red * 255 + .5), (guint)(color.green * 255 + .5), (guint)(color.blue * 255 + .5), icon->paths);
+            icon->size, icon->size, (guint)(color.red * 255 + .5),
+            (guint)(color.green * 255 + .5), (guint)(color.blue * 255 + .5), icon->paths);
         GdkPixbufLoader *loader = gdk_pixbuf_loader_new_with_type("svg", NULL);
         if (loader && gdk_pixbuf_loader_write(loader, (const guchar *)svg, strlen(svg), NULL)
             && gdk_pixbuf_loader_close(loader, NULL)) {
@@ -2170,10 +2159,20 @@ static GtkWidget *more_icon(const char *operation) {
     for (guint index = 0; index < G_N_ELEMENTS(icons); index++) if (strcmp(operation, icons[index].operation) == 0) {
         GtkWidget *widget = gtk_drawing_area_new();
         gtk_widget_set_name(widget, "typelay-menu-icon");
-        gtk_widget_set_size_request(widget, 16, 16);
+        const char *icon_class = strcmp(operation, "language-swap") == 0 ? "language-swap-icon"
+            : strcmp(operation, "language-check") == 0 ? "language-check-icon"
+            : strcmp(operation, "language-search") == 0 ? "language-search-icon" : NULL;
+        int size = icon_class ? (strcmp(operation, "language-swap") == 0 ? 15 : 14) : 16;
+        gtk_widget_set_size_request(widget, size, size);
         gtk_widget_set_valign(widget, GTK_ALIGN_CENTER);
+        if (icon_class) {
+            gtk_widget_add_css_class(widget, icon_class);
+            gtk_widget_set_halign(widget, GTK_ALIGN_CENTER);
+        }
         MoreIcon *icon = g_new0(MoreIcon, 1);
         icon->paths = icons[index].paths;
+        icon->size = size;
+        icon->own_color = icon_class != NULL;
         gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(widget), draw_more_icon, icon, free_more_icon);
         gtk_widget_set_can_target(widget, FALSE);
         return widget;
@@ -2502,23 +2501,37 @@ static gboolean language_configuration_show(LanguageConfiguration *configuration
     if (*theme_name && strcmp(theme_name, "system") != 0) dark = strcmp(theme_name, "dark") == 0;
     else if (name) { char *lower = g_ascii_strdown(name, -1); dark |= strstr(lower, "dark") != NULL; g_free(lower); }
     g_free(name);
-    TlOverlayPalette palette = tl_overlay_palette(dark, tl_string(appearance, "accent"), boolean(appearance, "reduceTransparency"));
+    const char *accent = text_or_empty(appearance, "accent");
+    TlOverlayPalette palette = tl_overlay_palette(dark, accent, boolean(appearance, "reduceTransparency"));
+    /* The configuration menu uses the prototype's strong row fill, not the
+     * brighter accent used by standalone controls. These five fills are the
+     * same in both themes; tick ink still follows the theme-aware palette. */
+    const char *accent_strong = strcmp(accent, "ocean") == 0 ? "#1f63bb"
+        : strcmp(accent, "sage") == 0 ? "#3c7650" : strcmp(accent, "iris") == 0 ? "#6a4cbc"
+        : strcmp(accent, "graphite") == 0 ? "#55534e" : "#b5552f";
+    const char *search_fill = dark ? "rgba(255,255,255,.05)" : "rgba(20,20,19,.045)";
     const char *font = tl_overlay_ui_font(tl_string(appearance, "font"));
     char *font_css = font ? g_strdup_printf("font-family:%s;", font) : g_strdup("");
     char *css = g_strdup_printf(
         "#typelay-language-configuration {background:none;}"
         "#typelay-language-configuration > contents {background:%s;color:%s;border:1px solid %s;border-radius:12px;padding:5px;box-shadow:0 8px 28px rgba(0,0,0,.18);%sfont-size:13px;}"
         "#typelay-language-configuration button {background:none;background-image:none;box-shadow:none;border:0;min-height:30px;padding:0 10px;border-radius:7px;color:inherit;font-weight:400;}"
-        "#typelay-language-configuration button:hover:not(:disabled),#typelay-language-configuration button:focus-visible {background:%s;color:white;}"
-        "#typelay-language-configuration button:disabled {color:%s;}"
+        "#typelay-language-configuration .language-choices button:hover:not(:disabled),#typelay-language-configuration .language-choices button:focus-visible {background:%s;color:white;}"
+        "#typelay-language-configuration .language-choices button:disabled {color:%s;}"
         "#typelay-language-configuration .language-head {padding:6px 8px 8px 10px;font-weight:600;}"
-        "#typelay-language-configuration .language-swap {min-width:28px;min-height:28px;padding:0;}"
+        "#typelay-language-configuration .language-swap {min-width:28px;min-height:28px;padding:0;color:%s;}"
+        "#typelay-language-configuration .language-swap:hover:not(:disabled) {background:%s;color:%s;}"
+        "#typelay-language-configuration .language-swap:disabled {opacity:.35;}"
+        "#typelay-language-configuration .language-search-icon {color:%s;}"
+        "#typelay-language-configuration .language-check-icon {color:%s;}"
+        "#typelay-language-configuration .language-choices button:hover:not(:disabled) .language-check-icon {color:white;}"
         "#typelay-language-configuration .language-search {min-height:30px;border-radius:8px;background:%s;margin:2px 2px 6px;padding:0 8px;}"
-        "#typelay-language-configuration entry {background:none;border:0;box-shadow:none;min-height:30px;padding:0;font-size:13.5px;}"
+        "#typelay-language-configuration entry {background:none;border:0;box-shadow:none;min-height:30px;padding:0;font-size:13px;line-height:18px;font-weight:400;}"
         "#typelay-language-configuration .language-native {font-size:12px;opacity:.55;}"
         "#typelay-language-configuration.saving .language-choices {opacity:.55;}"
         "#typelay-language-configuration .language-feedback {color:%s;font-size:12px;}",
-        palette.surface, palette.ink, palette.line, font_css, palette.accent, palette.tertiary, palette.hover, palette.secondary);
+        palette.surface, palette.ink, palette.line, font_css, accent_strong, palette.tertiary,
+        palette.secondary, palette.hover, palette.ink, palette.tertiary, palette.accent_ink, search_fill, palette.secondary);
     g_free(font_css);
     configuration->css = gtk_css_provider_new();
     gtk_css_provider_load_from_data(configuration->css, css, -1); g_free(css);

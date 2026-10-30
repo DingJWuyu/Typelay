@@ -832,7 +832,7 @@ internal sealed partial class SettingsWindow : Window
         RegisterSearchRow(title, panel);
         return body;
     }
-    private async Task<bool> SaveAsync(UserSettings value, long? draftSubmission = null, Func<bool>? callerCurrent = null)
+    private async Task<bool> SaveAsync(UserSettings value, long? draftSubmission = null, Func<bool>? callerCurrent = null, AppearancePreparationTiming? appearancePreparation = null)
     {
         if (_savingSettings || callerCurrent?.Invoke() == false)
             return false;
@@ -886,7 +886,10 @@ internal sealed partial class SettingsWindow : Window
                 GotKeyboardFocus += FocusMoved;
                 PreviewMouseDown += PointerUsed;
             }
+            long preparationStarted = appearancePreparation is not null && !preparation.IsCompleted ? Stopwatch.GetTimestamp() : 0;
             bool prepared = await preparation;
+            if (preparationStarted != 0)
+                appearancePreparation!.WaitMilliseconds = Stopwatch.GetElapsedTime(preparationStarted).TotalMilliseconds;
             EnableContent(); // Refresh must rebuild enabled, focusable controls.
             // A background settings notification can retire the initiating
             // controls. Report the conflict in the same visible navigation,
