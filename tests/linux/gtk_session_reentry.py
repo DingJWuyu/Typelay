@@ -2127,9 +2127,41 @@ def run_owned_language_options(
             )
         observing = True
 
+        def configuration_note(stage, opening_id=None, **fields):
+            if not configuration_stage or not observing:
+                return
+            try:
+                rows = evidence.setdefault("configurationTimeline", [])
+                if len(rows) >= 32:
+                    evidence["configurationTimelineOmitted"] = (
+                        evidence.get("configurationTimelineOmitted", 0) + 1
+                    )
+                    return
+                current = overlay.language_configuration
+                phase = current.get("phase") if current else None
+                rows.append(
+                    {
+                        "stage": stage,
+                        "atMs": now_ms(),
+                        "openingMatches": bool(current and current["openingId"] == opening_id),
+                        "phase": phase
+                        if phase in ("Pending", "Open", "Saving", "Retired")
+                        else None,
+                        "peerAlive": peer.link.channel.alive,
+                        "peerFocused": input_service.focused_peer() is peer,
+                        "compositorFresh": input_service.fresh(),
+                        **fields,
+                    }
+                )
+            except MemoryError:
+                raise
+            except Exception:
+                pass  # Diagnostics cannot replace the original send, result or UI event.
+
         class Host:
             def send(self, operation, data=None):
                 if configuration_stage and operation == "cancelLanguageConfiguration":
+                    configuration_note("host-cancel", data.get("openingId"))
                     configuration_calls["cancel"].append(dict(data))
                     assert len(configuration_calls["cancel"]) <= 4
                     return
@@ -2305,6 +2337,26 @@ def run_owned_language_options(
             # Observe the single production sender without decoding, handling
             # replies, or changing frames. A send is not a native acknowledgement.
             send = peer.link.channel.send
+            ask = peer.link.ask
+
+            async def observed_ask(operation, data=None, *arguments, **options):
+                if not configuration_stage or operation != "overlay-language-configuration-open":
+                    return await ask(operation, data, *arguments, **options)
+                opening_id = data.get("openingId")
+                configuration_note("native-open-dispatch", opening_id)
+                try:
+                    reply = await ask(operation, data, *arguments, **options)
+                except (OSError, EOFError, TimeoutError):
+                    configuration_note("native-open-transport-failed", opening_id)
+                    raise
+                configuration_note(
+                    "native-open-return",
+                    opening_id,
+                    opened=isinstance(reply, dict) and reply.get("opened") is True,
+                    replyOpeningMatches=isinstance(reply, dict)
+                    and reply.get("openingId") == opening_id,
+                )
+                return reply
 
             def observed_send(frame):
                 operation = frame.get("op")
@@ -2349,6 +2401,10 @@ def run_owned_language_options(
                         )
                 elif observing and operation == "overlay-hide":
                     evidence.setdefault("retired", {"reason": "owner-hide", "atMs": now_ms()})
+                if operation == "overlay-language-configuration-close":
+                    configuration_note(
+                        "native-close-dispatch", frame.get("data", {}).get("openingId")
+                    )
                 return send(frame)
 
             def ui_event(owner, event):
@@ -2372,8 +2428,17 @@ def run_owned_language_options(
                 ):
                     native_events.append(dict(event))
                     assert len(native_events) <= 12
+                    if event.get("operation") in (
+                        "languageConfigurationBegin",
+                        "languageConfigurationSave",
+                        "languageConfigurationCancel",
+                    ):
+                        configuration_note(
+                            event["operation"], event.get("value", {}).get("openingId")
+                        )
                 overlay.event(owner, event)
 
+            peer.link.ask = observed_ask
             peer.link.channel.send = observed_send
             input_service.ui_event = ui_event
             if configuration_stage:

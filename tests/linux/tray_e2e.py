@@ -20,19 +20,436 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 
 
+async def exercise_quick_panel(
+    tray, owner, host, state, model_state, settled, calls, requests, output
+):
+    """GTK/real-Host settings and controlled installer boundary, never a download."""
+    from gi.repository import Gdk, GObject, Gtk
+
+    async def until(predicate):
+        async with asyncio.timeout(3):
+            while not predicate():
+                await asyncio.sleep(0.02)
+
+    async def show():
+        tray.show_panel()
+        await settled()
+
+    def visible(control):
+        assert tray.window.is_active() and control.get_mapped(), (
+            "mapping",
+            tray.window.is_active(),
+            control.get_mapped(),
+            control.get_allocated_width(),
+            control.get_allocated_height(),
+        )
+        ancestor = control.get_parent()
+        for _ in range(24):
+            assert ancestor is not None and ancestor.get_mapped()
+            position = control.translate_coordinates(ancestor, 0, 0)
+            assert position is not None
+            x, y = position
+            assert (
+                0 <= x
+                and 0 <= y
+                and x + control.get_allocated_width() <= ancestor.get_allocated_width()
+                and y + control.get_allocated_height() <= ancestor.get_allocated_height()
+            ), (
+                "clip",
+                type(ancestor).__name__,
+                x,
+                y,
+                control.get_allocated_width(),
+                control.get_allocated_height(),
+                ancestor.get_allocated_width(),
+                ancestor.get_allocated_height(),
+            )
+            if ancestor is tray.window:
+                return
+            ancestor = ancestor.get_parent()
+        raise AssertionError("quick panel control is not in the owned window")
+
+    async def click(control):
+        # One original 3s readiness deadline per public action, including
+        # actions reached after native dialog/popover reentry. Do not reopen
+        # or borrow a replacement control while waiting for GTK allocation.
+        opening = tray.opening
+        reported = False
+
+        def allocated():
+            nonlocal reported
+            assert opening is not None and tray.opening is opening and not tray.closed, (
+                "action opening retired before input"
+            )
+            try:
+                visible(control)
+                assert control.get_allocated_width() > 1 and control.get_allocated_height() > 1, (
+                    "allocation",
+                    control.get_allocated_width(),
+                    control.get_allocated_height(),
+                )
+            except AssertionError as error:
+                if not reported:
+                    print("TRAY ACTION WAIT", error.args, flush=True)
+                    reported = True
+                return False
+            return True
+
+        await until(allocated)
+        assert tray.current(opening)
+        visible(control)
+        assert control.is_sensitive()
+        control.clicked()
+
+    async def paint(name):
+        async with asyncio.timeout(3):
+            painted = asyncio.Event()
+            clock = tray.window.get_frame_clock()
+            watch = clock.connect("after-paint", lambda *_: painted.set())
+            try:
+                tray.window.queue_draw()
+                await painted.wait()
+            finally:
+                if clock.handler_is_connected(watch):
+                    clock.disconnect(watch)
+        if output:
+            shot = Gdk.pixbuf_get_from_window(
+                tray.window.get_window(), 0, 0, *tray.window.get_size()
+            )
+            assert shot is not None
+            shot.savev(str(output / (name + ".png")), "png", [], [])
+
+    async def phase(value):
+        # Explicit renderer/installer phase inputs. Inventory and native
+        # capability still come from the real empty Host, not fake Ready.
+        owner.installation(value, failure="network" if value == "failed" else None)
+        tray.installation(value)
+        await settled()
+        await show()
+        await paint("tray-phase-" + value)
+
+    def counts():
+        return {key: len(value) for key, value in calls.items()}
+
+    def dialog():
+        matches = [
+            widget
+            for widget in Gtk.Window.list_toplevels()
+            if isinstance(widget, Gtk.MessageDialog)
+            and widget.get_visible()
+            and widget.get_transient_for() is tray.window
+            and widget.get_modal()
+        ]
+        assert len(matches) == 1
+        return matches[0]
+
+    await phase("running")
+    before = counts()
+    await click(tray.model_action)
+    assert len(calls["pause"]) == before["pause"] + 1
+    await phase("paused")
+    before = counts()
+    await click(tray.model_action)
+    assert len(calls["install"]) == before["install"] + 1
+    assert calls["install"][-1] == ((), {})
+
+    await phase("failed")
+    before = counts()
+    await click(tray.model_action)
+    question = dialog()
+    cancel = question.get_widget_for_response(Gtk.ResponseType.CANCEL)
+    assert question.get_default_widget() is cancel
+    await until(cancel.has_focus)
+    question.response(Gtk.ResponseType.CANCEL)
+    assert len(calls["package"]) == before["package"] + 1
+    assert calls["package"][-1] == ((None,), {})
+    assert len(calls["install"]) == before["install"]
+
+    # Destroy is synchronous and can reopen the surface before response
+    # returns. Neither OK nor Cancel may continue A's side effect into B.
+    for response in (Gtk.ResponseType.OK, Gtk.ResponseType.CANCEL):
+        await show()
+        await click(tray.model_action)
+        question = dialog()
+        before = counts()
+        old = tray.opening
+        reopened = []
+
+        def reopen(*_):
+            tray.hide_panel()
+            tray.show_panel()
+            reopened.append((tray.opening, tray.model_action))
+
+        question.connect("destroy", reopen)
+        question.response(response)
+        assert len(reopened) == 1 and reopened[0][0] is not old
+        assert tray.opening is reopened[0][0] and tray.model_action is reopened[0][1]
+        assert tray.model_confirmation is None and counts() == before
+        await settled()
+
+    # Map is emitted inside show_all, after native dialog construction and
+    # child parenting, but before install_clicked returns or focuses Cancel.
+    # A global show hook also marshals floating template children in their
+    # constructors. Do not observe that construction boundary through PyGI.
+    # Never replace or stop the owned modal's default handler.
+    before = counts()
+    observed, errors = [], []
+    armed = True
+
+    def mapped(_hint, _count, parameters):
+        nonlocal armed
+        widget = parameters[0]
+        if not (
+            armed
+            and isinstance(widget, Gtk.MessageDialog)
+            and widget.get_transient_for() is tray.window
+            and widget.get_modal()
+        ):
+            return True
+        armed = False
+        try:
+            tray.hide_panel()
+            tray.show_panel()
+            observed.append((widget, tray.opening, tray.model_action, tray.window.get_focus()))
+        except Exception as error:
+            errors.append(error)
+        return True
+
+    signal = GObject.signal_lookup("map", Gtk.Widget)
+    hook = GObject.signal_add_emission_hook(signal, 0, mapped)
+    try:
+        print("TRAY OWNED MODAL MAP BEGIN", flush=True)
+        await click(tray.model_action)
+    finally:
+        GObject.signal_remove_emission_hook(signal, hook)
+    if errors:
+        raise errors[0]
+    assert len(observed) == 1
+    stale, opening, button, focus = observed[0]
+    assert not stale.get_visible() and tray.model_confirmation is None
+    assert tray.opening is opening and tray.model_action is button
+    assert tray.window.get_focus() is focus is tray.enabled
+    assert counts() == before
+    print("TRAY OWNED MODAL MAP RETURNED: stale dialog refused", flush=True)
+    await settled()
+
+    # A view retirement destroys A's confirmation. Its destroy callback may
+    # open B while the original renderer is still on the stack.
+    await click(tray.model_action)
+    question = dialog()
+    reopened = []
+    question.connect("destroy", reopen)
+    owner.refresh_preparation()
+    assert len(reopened) == 1 and tray.model_action is reopened[0][1]
+    assert tray.model_action.get_parent() is not None
+    await settled()
+    assert counts() == before
+    print(
+        "TRAY CONTROLLED CONFIRMATION PASS: pause/resume, default Cancel, destroy/show/view reentry; no download",
+        flush=True,
+    )
+
+    # The existing explicit Argos management action supplies a real frozen
+    # request. Its callback is recorded, not executed: this proves the modal
+    # boundary, not Index availability or a successful network installation.
+    await show()
+    opening = tray.opening
+    before = counts()
+    owner.package_clicked(
+        "argos-zh-en",
+        "Install",
+        guard=lambda: tray.current(opening),
+        parent=tray.window,
+    )
+    question = dialog()
+    assert "Argos" in question.get_property("secondary-text")
+    question.response(Gtk.ResponseType.OK)
+    assert len(calls["package"]) == before["package"] + 1
+    assert calls["package"][-1][0][0]["packageIds"] == ["argos-zh-en"]
+    await phase("failed")
+    for response in (Gtk.ResponseType.OK, Gtk.ResponseType.CANCEL):
+        await show()
+        before = counts()
+        await click(tray.model_action)
+        question = dialog()
+        assert "Argos" in question.get_property("secondary-text")
+        reopened = []
+        question.connect("destroy", reopen)
+        question.response(response)
+        assert len(reopened) == 1 and tray.opening is reopened[0][0]
+        assert tray.model_action is reopened[0][1] and counts() == before
+        await settled()
+    await click(tray.model_action)
+    question = dialog()
+    before = counts()
+    question.response(Gtk.ResponseType.OK)
+    assert len(calls["install"]) == before["install"] + 1
+    assert calls["install"][-1] == ((), {})
+    print(
+        "TRAY CONTROLLED PACKAGE CONFIRMATION PASS: explicit Argos request and guarded retry; no download",
+        flush=True,
+    )
+
+    await phase("idle")
+    await show()
+    picker = tray.parents["source"]
+    await click(picker)
+    await until(lambda: picker.popover.get_mapped() and picker.search.has_focus())
+    picker.search.set_text("zh")
+    options = [row.get_child() for row in picker.listing.get_children()]
+    assert len(options) == 1
+    stale_option = options[0]
+    picker.search.set_text("no-language-matches")
+    assert not picker.listing.get_children() and picker.no_results.get_visible()
+    before_requests = len(requests)
+    stale_option.clicked()
+    assert len(requests) == before_requests
+    picker.search.set_text("zh")
+    option = picker.listing.get_children()[0].get_child()
+    reentered = []
+
+    def reopen_language(*_):
+        if reentered:
+            return
+        reentered.append(True)
+        tray.hide_panel()
+        tray.show_panel()
+
+    watch = picker.popover.connect("closed", reopen_language)
+    try:
+        option.clicked()
+    finally:
+        picker.popover.disconnect(watch)
+    await settled()
+    assert reentered and state["source"] == "auto"
+    assert not any(item["operation"] == "traySettings" for item in requests[before_requests:])
+    await click(picker)
+    await until(lambda: picker.popover.get_mapped() and picker.search.has_focus())
+    picker.search.set_text("zh")
+    picker.search.emit("activate")
+    await settled()
+    assert state["source"] == "zh" and picker.get_active_id() == "zh"
+    await click(tray.swap)
+    await settled()
+    assert (state["source"], state["target"]) == ("en", "zh")
+    for key, code in (("source", "auto"), ("target", "en")):
+        picker = tray.parents[key]
+        await click(picker)
+        await until(lambda: picker.popover.get_mapped() and picker.search.has_focus())
+        picker.search.set_text(code)
+        assert len(picker.listing.get_children()) == 1
+        picker.search.emit("activate")
+        await settled()
+        assert state[key] == code and picker.get_active_id() == code
+    assert not tray.swap.is_sensitive()
+    print(
+        "TRAY LANGUAGE PASS: real search/empty/Enter/swap; old query and popdown opening refused",
+        flush=True,
+    )
+
+    for locale in ("zh-CN", "en"):
+        for theme in ("light", "dark"):
+            assert await host.ask("settingsPatch", {"uiLanguage": locale, "theme": theme}) is True
+            await settled()
+            await show()
+            tray.report({**model_state, "lastApplication": "editor"})
+            await settled()
+            await paint("tray-" + locale + "-" + theme)
+            assert all(button.get_child().get_xalign() == 0 for button in tray.actions.values())
+            assert tray.window.get_size().width == 320, tray.window.get_size()
+            detail = tray.model_detail
+            assert detail.get_visible() and detail.get_allocated_width() == 288
+            layout = detail.get_layout()
+            assert not layout.is_ellipsized()
+            ink, _logical = layout.get_pixel_extents()
+            layout_x, layout_y = detail.get_layout_offsets()
+            allocation = detail.get_allocation()
+            x, y = layout_x - allocation.x + ink.x, layout_y - allocation.y + ink.y
+            assert x >= 0 and y >= 0
+            assert x + ink.width <= allocation.width and y + ink.height <= allocation.height
+            minimum, _natural = detail.get_preferred_height_for_width(288)
+            assert allocation.height >= minimum
+            print(
+                "TRAY GEOMETRY",
+                locale,
+                theme,
+                320,
+                allocation.width,
+                allocation.height,
+                [x, y, ink.width, ink.height],
+                layout.get_line_count(),
+                flush=True,
+            )
+    tray.report(model_state)
+    tray.enabled.set_active(False)
+    await settled()
+    assert state["enabled"] is False and not tray.card.is_sensitive()
+    assert abs(tray.card.get_opacity() - 0.45) < 0.01
+    assert tray.enabled.is_sensitive() and tray.model_action.get_visible()
+    tray.enabled.set_active(True)
+    await settled()
+    assert state["enabled"] is True and tray.card.is_sensitive()
+    print(
+        "TRAY PANEL PASS: current app, bilingual light/dark, pause retains model actions",
+        flush=True,
+    )
+
+    # Showing A can itself synchronously open B. Only B may keep its focus
+    # handoff and launch the one current style read.
+    tray.hide_panel()
+    reopened = []
+    before = len(requests)
+
+    def reenter_panel(*_):
+        if reopened:
+            return
+        reopened.append(None)
+        tray.hide_panel()
+        tray.show_panel()
+        reopened[0] = tray.opening
+
+    watch = tray.window.connect("show", reenter_panel)
+    try:
+        tray.show_panel()
+    finally:
+        tray.window.disconnect(watch)
+    await settled()
+    assert len(reopened) == 1 and tray.opening is reopened[0]
+    assert tray.window.get_focus() is tray.enabled
+    assert sum(item["operation"] == "getStyleSettings" for item in requests[before:]) == 1
+
+    # Retiring a confirmation may close the entire tray, not merely reopen it.
+    # A's show caller must not resurrect a new opening or queue a style read.
+    await phase("failed")
+    await click(tray.model_action)
+    question = dialog()
+    question.connect("destroy", lambda *_: tray.close())
+    before = len(requests)
+    tray.show_panel()
+    assert tray.closed and tray.opening is None and not tray.window.get_visible()
+    await settled()
+    assert len(requests) == before
+    print("TRAY SHOW RETIREMENT PASS: reentrant opening kept; close never resurrected", flush=True)
+
+
 def main():
     import gi
 
     gi.require_version("Gtk", "3.0")
+    gi.require_version("Gdk", "3.0")
     from gi.events import GLibEventLoop
-    from gi.repository import Gio, GLib, Gtk
+    from gi.repository import Gdk, Gio, GLib, Gtk
     from link import Link
     from tray import Tray
     from ui import Settings
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package", type=Path, required=True)
-    package = parser.parse_args().package.resolve()
+    parser.add_argument("--model-action-only", action="store_true")
+    parser.add_argument("--panel-only", action="store_true")
+    parser.add_argument("--output", type=Path)
+    options = parser.parse_args()
+    package = options.package.resolve()
     assert Gtk.init_check([])[0], "GTK display unavailable"
 
     async def exercise():
@@ -331,10 +748,229 @@ def main():
             }
             assert await host.ask("settings", initial, timeout=3) is True
             assert not jobs, "rendering acknowledged settings wrote settings again"
+            if options.model_action_only or options.panel_only:
+                preparation_calls = {"install": [], "pause": [], "package": []}
+
+                def record_preparation(kind, *args, **kwargs):
+                    preparation_calls[kind].append((args, kwargs))
+                    if options.model_action_only:
+                        raise AssertionError("disabled Index action requested installation")
+
+                async def empty_support(_identity, action, **_kwargs):
+                    from registered_applications import list_managed_applications
+
+                    if action == "ListManagedApplications":
+                        return list_managed_applications()
+                    raise ValueError("No application connection is available in this test.")
+
+                settings_surface = Settings(
+                    host,
+                    tasks,
+                    lambda: None,
+                    lambda *args, **kwargs: record_preparation("install", *args, **kwargs),
+                    lambda *args, **kwargs: record_preparation("pause", *args, **kwargs),
+                    None,
+                    lambda: host.ask("applicationSupport", {"facts": []}),
+                    empty_support,
+                    None,
+                    package_requested=lambda request: record_preparation("package", request),
+                )
+                settings_surface.configure(state)
+                settings_surface.render_guidance(tray.guidance)
+                settings_surface.report(model_state)
+                tray.bind_model_owner(settings_surface)
+                await settled()
+                # Real empty inventory and no native availability attestation:
+                # the primary Index action must be shown, but remain disabled.
+                view = await host.ask(
+                    "translationPreparation", {"phase": "Idle", "failureCode": None}, timeout=3
+                )
+                primary = view["primaryAction"]
+                assert primary["id"] == "Prepare" and primary["enabled"] is False, view
+                assert model_state.get("modelReady") is False
+                before = (directory / "config/settings.json").read_bytes()
+                tray.show_panel()
+                await settled()
+                async with asyncio.timeout(3):
+                    while not tray.window.get_mapped() or not tray.window.is_active():
+                        await asyncio.sleep(0.02)
+                    painted = asyncio.Event()
+                    clock = tray.window.get_frame_clock()
+                    watch = clock.connect("after-paint", lambda *_: painted.set())
+                    try:
+                        tray.window.queue_draw()
+                        await painted.wait()
+                    finally:
+                        if clock.handler_is_connected(watch):
+                            clock.disconnect(watch)
+                buttons = []
+                pending_widgets = [tray.panel]
+                for _ in range(512):
+                    if not pending_widgets:
+                        break
+                    widget = pending_widgets.pop()
+                    if isinstance(widget, Gtk.Button) and widget.get_mapped():
+                        buttons.append(widget)
+                    if isinstance(widget, Gtk.Container):
+                        pending_widgets.extend(widget.get_children())
+                assert not pending_widgets, "quick panel traversal exceeded its finite bound"
+                metadata = {
+                    "primary": primary,
+                    "guidance": view["guidance"],
+                    "modelReady": model_state["modelReady"],
+                    "buttons": [button.get_accessible().get_name() for button in buttons],
+                }
+                print("TRAY EMPTY INVENTORY", json.dumps(metadata, ensure_ascii=False), flush=True)
+                if options.output:
+                    options.output.mkdir(parents=True, exist_ok=True)
+                    (options.output / "model-action.json").write_text(
+                        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n"
+                    )
+                    shot = Gdk.pixbuf_get_from_window(
+                        tray.window.get_window(), 0, 0, *tray.window.get_size()
+                    )
+                    assert shot is not None
+                    shot.savev(str(options.output / "tray-empty-inventory.png"), "png", [], [])
+                matches = [
+                    button
+                    for button in buttons
+                    if button.get_accessible().get_name() == primary["label"]
+                ]
+                assert len(matches) == 1, (
+                    "real empty-inventory model action is absent from quick panel"
+                )
+                assert matches[0].is_sensitive() is primary["enabled"]
+                assert matches[0].get_tooltip_text(), (
+                    "unavailable primary action needs an explanation"
+                )
+                control = matches[0]
+                ancestor = control.get_parent()
+                for _ in range(24):
+                    assert ancestor is not None and ancestor.get_mapped()
+                    position = control.translate_coordinates(ancestor, 0, 0)
+                    assert position is not None
+                    x, y = position
+                    assert (
+                        0 <= x
+                        and 0 <= y
+                        and x + control.get_allocated_width() <= ancestor.get_allocated_width()
+                        and y + control.get_allocated_height() <= ancestor.get_allocated_height()
+                    ), "current model action is clipped"
+                    if ancestor is tray.window:
+                        break
+                    ancestor = ancestor.get_parent()
+                else:
+                    raise AssertionError("current model action is outside the owned quick panel")
+                assert (directory / "config/settings.json").read_bytes() == before
+                assert not any(
+                    item["operation"] in ("activateModel", "prepareModel")
+                    for item in request_results
+                )
+                if panel_failure is not None:
+                    raise AssertionError(panel_failure)
+                print("PASS: current quick panel exposes the real unavailable Index action")
+                assert not any(preparation_calls.values())
+                if options.panel_only:
+                    await exercise_quick_panel(
+                        tray,
+                        settings_surface,
+                        host,
+                        state,
+                        model_state,
+                        settled,
+                        preparation_calls,
+                        request_results,
+                        options.output,
+                    )
+                return
             items = tray.actions
-            assert [row[1] for row in tray.parents["source"].get_model()] == ["auto", "zh", "en"]
-            assert [row[1] for row in tray.parents["target"].get_model()] == ["en", "zh"]
-            assert [row[0] for row in tray.parents["source"].get_model()] == [
+
+            async def language_options(key, choose=None):
+                tray.show_panel()
+                await settled()
+                opening, picker = tray.opening, tray.parents[key]
+                deadline = asyncio.get_running_loop().time() + 3
+
+                def current_control():
+                    assert tray.current(opening) and tray.parents[key] is picker
+                    if not (
+                        tray.window.is_active()
+                        and picker.get_mapped()
+                        and picker.is_sensitive()
+                        and picker.get_allocated_width() > 1
+                        and picker.get_allocated_height() > 1
+                    ):
+                        return False
+                    ancestor = picker.get_parent()
+                    for _ in range(24):
+                        if ancestor is None or not ancestor.get_mapped():
+                            return False
+                        point = picker.translate_coordinates(ancestor, 0, 0)
+                        if point is None:
+                            return False
+                        x, y = point
+                        if not (
+                            0 <= x
+                            and 0 <= y
+                            and x + picker.get_allocated_width() <= ancestor.get_allocated_width()
+                            and y + picker.get_allocated_height() <= ancestor.get_allocated_height()
+                        ):
+                            return False
+                        if ancestor is tray.window:
+                            return True
+                        ancestor = ancestor.get_parent()
+                    return False
+
+                async with asyncio.timeout_at(deadline):
+                    # A GtkButton clicked signal does not perform the native
+                    # button focus handoff. Finish retiring the previous popup,
+                    # then focus this exact current picker once before opening.
+                    while not current_control() or picker.popover.get_mapped():
+                        await asyncio.sleep(0.02)
+                    assert current_control() and asyncio.get_running_loop().time() < deadline
+                    picker.grab_focus()
+                    while not picker.has_focus():
+                        assert current_control()
+                        await asyncio.sleep(0.02)
+                    assert current_control() and asyncio.get_running_loop().time() < deadline
+                    picker.clicked()
+                    while not picker.popover.get_mapped() or not picker.search.has_focus():
+                        assert tray.current(opening) and tray.parents[key] is picker
+                        await asyncio.sleep(0.02)
+                    buttons = picker.listing.get_children()
+                    options = [row.get_child() for row in buttons]
+                    result = [
+                        (item.get_accessible().get_name(), item.get_accessible().get_description())
+                        for item in options
+                    ]
+                    assert all(item.get_mapped() and item.is_sensitive() for item in options)
+                    assert tray.current(opening) and tray.parents[key] is picker
+                    if choose is None:
+                        assert asyncio.get_running_loop().time() < deadline
+                        picker.popdown()
+                    else:
+                        selected = [
+                            item
+                            for item in options
+                            if item.get_accessible().get_name() == "语言选项：" + choose
+                        ]
+                        assert len(selected) == 1
+                        assert asyncio.get_running_loop().time() < deadline
+                        selected[0].clicked()
+                await settled()
+                return result
+
+            source_options = await language_options("source")
+            assert [item[0] for item in source_options] == [
+                "语言选项：auto",
+                "语言选项：zh",
+                "语言选项：en",
+            ]
+            assert [item[0] for item in await language_options("target")] == [
+                "语言选项：en",
+                "语言选项：zh",
+            ]
+            assert [item[1].split(" · ")[0] for item in source_options] == [
                 "自动识别",
                 "中文",
                 "英语",
@@ -440,7 +1076,7 @@ def main():
             tray.mode.buttons["OnDemand"].set_active(True)
             await settled()
             assert state["mode"] == "OnDemand"
-            tray.parents["source"].set_active_id("zh")
+            await language_options("source", "zh")
             await settled()
             tray.swap.clicked()
             await settled()
@@ -478,6 +1114,7 @@ def main():
                 None,
                 package_requested=package_requested,
             )
+            tray.bind_model_owner(settings_surface)
             settings_surface.configure(state)
             settings_surface.render_guidance(tray.guidance)
             settings_surface.report(model_state)
@@ -733,6 +1370,9 @@ def main():
             assert not preparation.package_widgets["index-translate-2b-q4-k-m"]["buttons"]
             for identity in ("argos-zh-en", "argos-en-zh"):
                 assert preparation.package_widgets[identity]["buttons"]["Install"].get_sensitive()
+            # Re-enter Settings after the preceding modal installation scenarios.
+            # Public presentation must obtain actual activation before any input.
+            settings_surface.show()
             settings_surface.pages.set_visible_child_name("language")
             await settled()
             assert model_state["modelReady"] is False
@@ -751,15 +1391,80 @@ def main():
             assert not jobs, "rendering catalog choices tried to save settings"
             assert settings_file.read_bytes() == before_refresh
 
-            def pick(picker, code):
-                picker.clicked()
-                assert picker.popover.get_visible()
-                button = next(
+            async def open_settings_picker(picker):
+                window = settings_surface.window
+                key = next(
+                    key for key in ("source", "target") if settings_surface.controls[key] is picker
+                )
+                deadline = asyncio.get_running_loop().time() + 3
+
+                def current_control():
+                    assert (
+                        settings_surface.window is window
+                        and settings_surface.controls[key] is picker
+                    )
+                    assert settings_surface.pages.get_visible_child_name() == "language"
+                    if not (
+                        window.is_active()
+                        and picker.get_mapped()
+                        and picker.is_sensitive()
+                        and not settings_surface.pages.get_transition_running()
+                        and picker.get_allocated_width() > 1
+                        and picker.get_allocated_height() > 1
+                    ):
+                        return False
+                    ancestor = picker.get_parent()
+                    for _ in range(24):
+                        if ancestor is None or not ancestor.get_mapped():
+                            return False
+                        point = picker.translate_coordinates(ancestor, 0, 0)
+                        if point is None:
+                            return False
+                        x, y = point
+                        if not (
+                            0 <= x
+                            and 0 <= y
+                            and x + picker.get_allocated_width() <= ancestor.get_allocated_width()
+                            and y + picker.get_allocated_height() <= ancestor.get_allocated_height()
+                        ):
+                            return False
+                        if ancestor is window:
+                            return True
+                        ancestor = ancestor.get_parent()
+                    return False
+
+                async with asyncio.timeout_at(deadline):
+                    while not current_control() or picker.popover.get_mapped():
+                        await asyncio.sleep(0.02)
+                    assert current_control() and asyncio.get_running_loop().time() < deadline
+                    picker.grab_focus()
+                    while not picker.has_focus():
+                        assert current_control()
+                        await asyncio.sleep(0.02)
+                    assert current_control() and asyncio.get_running_loop().time() < deadline
+                    picker.clicked()
+                    while not picker.popover.get_mapped() or not picker.search.has_focus():
+                        assert current_control()
+                        await asyncio.sleep(0.02)
+                return deadline
+
+            async def pick(picker, code):
+                deadline = await open_settings_picker(picker)
+                generation = picker.generation
+                matches = [
                     row.get_child()
                     for row in picker.listing.get_children()
                     if row.get_child().get_accessible().get_name() == "语言选项：" + code
+                ]
+                assert len(matches) == 1
+                button = matches[0]
+                assert button.get_mapped() and button.is_sensitive()
+                assert settings_surface.window.is_active()
+                assert settings_surface.pages.get_visible_child_name() == "language"
+                assert (
+                    picker.opened and picker.generation is generation and picker.search.has_focus()
                 )
-                assert button.get_sensitive()
+                assert asyncio.get_running_loop().time() < deadline
                 button.clicked()
 
             for key, replacement, label in (("source", "zh", "中文"), ("target", "en", "英语")):
@@ -789,7 +1494,7 @@ def main():
                 picker.search.connect("focus-out-event", observe_focus)
                 picker.popover.connect("closed", observe_focus)
                 picker.connect("unmap", observe_focus)
-                picker.clicked()
+                await open_settings_picker(picker)
                 editor = picker.search
                 assert editor.has_focus(), "language search did not take actual keyboard focus"
                 editor.set_text("zz")
@@ -849,7 +1554,7 @@ def main():
                 blocker.mkdir()
                 before_failure = settings_file.read_bytes()
                 try:
-                    pick(picker, original)
+                    await pick(picker, original)
                     await settled()
                     assert (
                         picker.get_active_id() == replacement and picker.caption.get_text() == label
@@ -859,7 +1564,7 @@ def main():
                     assert picker.has_focus()
                 finally:
                     blocker.rmdir()
-                pick(picker, original)
+                await pick(picker, original)
                 await settled()
                 assert state[key] == original and picker.get_active_id() == original
                 assert picker.has_focus()
@@ -868,9 +1573,8 @@ def main():
                 await settled()
             source_picker = settings_surface.controls["source"]
             target_picker = settings_surface.controls["target"]
-            target_picker.clicked()
+            await open_settings_picker(target_picker)
             target_editor = target_picker.search
-            target_editor.grab_focus()
             target_editor.set_text("zz")
             target_editor.select_region(0, 1)
             assert await host.ask("traySettings", {"source": "ja"}) is True
@@ -885,7 +1589,7 @@ def main():
             assert source_picker.get_active_id() == "en"
             assert target_editor.get_text() == "zz"
             target_picker.popdown()
-            pick(target_picker, "zh")
+            await pick(target_picker, "zh")
             assert not jobs, "selecting the already confirmed language saved the search"
             settings_surface.language_swap.clicked()
             await settled()

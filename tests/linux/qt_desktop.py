@@ -341,7 +341,7 @@ def run_qt(
                     )
                     click_rectangle(actual, actual["overlayControls"][name][geometry_key], name)
 
-                def click_motion_control():
+                def click_motion_control(*, tail_recording=None, expected_instance=None):
                     # Resolve the unchanged nested viewport before observing a
                     # moving button. No subprocess is launched after this fresh
                     # report; the native event evidence below still decides
@@ -355,15 +355,37 @@ def run_qt(
                         ).splitlines()
                     )
                     after = now_ms()
+
+                    def current_control():
+                        value = state()
+                        if value.get("observedAtMs", 0) <= after:
+                            return None
+                        control = value.get("overlayControls", {}).get("typelay-expand", {})
+                        if tail_recording is not None:
+                            # This is a pre-registered late-collapse reversal,
+                            # not a retry of an earlier missed high-speed click.
+                            assert value["motionRecordings"] == tail_recording, (
+                                "Qt late-collapse input window ended before its single click"
+                            )
+                            if not value["motionRecording"]:
+                                return None
+                            height = value["editorGeometry"]["height"]
+                            assert height >= 170, "Qt late-collapse input window was missed"
+                            assert control.get("instance") == expected_instance, (
+                                "Qt late-collapse control identity changed"
+                            )
+                            assert value["first"]["focused"], "Qt motion source lost focus"
+                            if height > 175:
+                                return None
+                        return value if control.get("visible") and control.get("enabled") else None
+
                     actual = wait_for(
-                        lambda: value
-                        if (value := state()).get("observedAtMs", 0) > after
-                        and value.get("overlayControls", {})
-                        .get("typelay-expand", {})
-                        .get("visible")
-                        and value["overlayControls"]["typelay-expand"]["enabled"]
-                        else None,
+                        current_control,
                         "fresh Qt motion control geometry was unavailable",
+                        # Only this short, pre-registered window needs reads
+                        # finer than the existing 20ms atomic state publication.
+                        # The original wait deadline and 800ms recording remain.
+                        poll_interval=0.005 if tail_recording is not None else 0.05,
                     )
                     assert actual["fullscreen"]
                     scale = actual["scale"]
@@ -385,6 +407,8 @@ def run_qt(
                                     "role": "typelay-expand",
                                     "instance": control["instance"],
                                     "geometry": bounds,
+                                    "editorHeight": actual["editorGeometry"]["height"],
+                                    "lateCollapseWindow": tail_recording is not None,
                                     "x": x,
                                     "y": y,
                                     "injection": timing,
@@ -1176,12 +1200,18 @@ def run_qt(
                     assert anchor == end["y"] + (end["height"] if above else 0)
                     assert footer["y"] >= bounds["y"]
                     assert footer["y"] + footer["height"] <= bounds["y"] + bounds["height"]
-                # Observe the actual reversal; XTest process scheduling alone
-                # is not proof that the second click beat the first deadline.
-                # The real host continues its ordinary 200ms renewals.
-                recording = start_motion("qt-motion-reverse")
-                recording[1].append(click_motion_control())
-                reverse_frames = finish_motion(recording, "qt-motion-reverse", clicks=2)
+                # Reversal is sampled late in the same real collapse, before
+                # its compact endpoint. The old immediate high-speed click can
+                # outrun the file observation; its recorded failure is not a
+                # product fix or permission to retry a missed point here.
+                # Normal host renewals and the first-click 800ms record remain.
+                recording = start_motion("qt-motion-reverse-tail")
+                recording[1].append(
+                    click_motion_control(
+                        tail_recording=recording[0], expected_instance=recording[1][0]
+                    )
+                )
+                reverse_frames = finish_motion(recording, "qt-motion-reverse-tail", clicks=2)
                 wait_for(
                     lambda: state()["editorGeometry"]["height"] == 360,
                     "Qt did not settle at the last requested expanded height",
@@ -1190,14 +1220,8 @@ def run_qt(
                 reversed_before_endpoint = 167 < min(reverse_heights) < 360 and any(
                     later > earlier for earlier, later in zip(reverse_heights, reverse_heights[1:])
                 )
-                evidence.append(
-                    "Qt6 observed reversal "
-                    + (
-                        "before reaching the compact endpoint"
-                        if reversed_before_endpoint
-                        else "with no captured pre-endpoint direction change; rapid-interruption timing is unverified"
-                    )
-                )
+                assert reversed_before_endpoint, reverse_heights
+                evidence.append("Qt6 late-collapse reversal before reaching the compact endpoint")
                 assert all(frame["sourceFocused"] for frame in reverse_frames)
                 command("application-motion", reduced=True)
                 wait_for(

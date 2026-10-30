@@ -1821,6 +1821,7 @@ public sealed partial class SessionController : IDisposable
                 ? new(observation, source, new(source.Target, _hook.CommandGeneration, _generation),
                     _configurationRevision, _settings.Revision, _hook.ConnectionId, _hook.WindowEpoch, _editTransitionUntil)
                 : null;
+        TraceEditorGlossaryHandoff(_editorGlossaryHandoff is null ? "not-created" : "pending");
         RevokeInput("begin-edit");
         _permitUntil = 0;
         Render();

@@ -126,7 +126,10 @@ public sealed partial class SettingsRenderingTests
                     Assert.True(SetCursorPos((int)center.X, (int)center.Y));
                     await PickerUntilAsync(() => option.IsMouseOver, ct);
                     AssertPickerSelectionPaint(dialog, surface, label);
-                    Render(dialog, $"application-picker-hover-{language}-{theme}.png", clientOnly: true);
+                    await Dispatcher.Yield(DispatcherPriority.Background);
+                    Current(center, hitOption: true);
+                    AssertPickerSelectionPaint(dialog, surface, label);
+                    CaptureApplicationSheetScreen(scene.Window, dialog, $"application-picker-hover-{language}-{theme}-screen.png", ct);
                     Current(outside, hitOption: false);
                     Assert.True(SetCursorPos((int)outside.X, (int)outside.Y));
                     await PickerUntilAsync(() => !option.IsMouseOver, ct);
@@ -139,7 +142,7 @@ public sealed partial class SettingsRenderingTests
                     Current(center, hitOption: true);
                     Assert.Same(option, Keyboard.FocusedElement);
                     AssertPickerSelectionPaint(dialog, surface, label);
-                    Render(dialog, $"application-picker-keyboard-{language}-{theme}.png", clientOnly: true);
+                    CaptureApplicationSheetScreen(scene.Window, dialog, $"application-picker-keyboard-{language}-{theme}-screen.png", ct);
                     CurrentDialog();
                     Assert.Same(search, ApplicationElement(dialog, "ApplicationPickerSearch"));
                     var searchPeer = new TextBoxAutomationPeer(search);
@@ -155,7 +158,10 @@ public sealed partial class SettingsRenderingTests
                     Assert.Equal(new Thickness(10), empty.Padding);
                     Assert.DoesNotContain(Descendants(dialog).OfType<Button>(), button => AutomationProperties.GetAutomationId(button).StartsWith("ApplicationPickerChoice_", StringComparison.Ordinal));
                     Assert.Equal(before, File.ReadAllText(scene.Path));
-                    Render(dialog, $"application-picker-empty-{language}-{theme}.png", clientOnly: true);
+                    await Dispatcher.Yield(DispatcherPriority.Background);
+                    CurrentDialog();
+                    Assert.Same(search, Keyboard.FocusedElement);
+                    CaptureApplicationSheetScreen(scene.Window, dialog, $"application-picker-empty-{language}-{theme}-screen.png", ct);
                     var cancel = ApplicationButton(dialog, "ApplicationPickerCancel");
                     var cancelPeer = ApplicationInvokeProvider(cancel);
                     CurrentDialog();

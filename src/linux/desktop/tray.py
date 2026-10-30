@@ -1,12 +1,35 @@
 """Wayland status-notifier quick panel; settings remain owned by the shared host."""
 
 import gi
-from design import Segments, Toast, app_icon, apply_theme, box, label, reduced_motion, style
+from design import (
+    Segments,
+    Toast,
+    app_icon,
+    apply_theme,
+    box,
+    design_icon,
+    label,
+    reduced_motion,
+    style,
+)
 from model_status import activity_status, model_notice, set_status_tone
 from status_notifier import StatusNotifier
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
+
+
+class ModelDetailLabel(Gtk.Label):
+    """Wrap the complete explanation within the quick panel's content width."""
+
+    def do_get_preferred_width(self):
+        minimum, natural = Gtk.Label.do_get_preferred_width(self)
+        # 320 panel - 2 * 10 outer padding - 2 * 6 model padding.
+        return minimum, max(minimum, min(natural, 288))
+
+    def do_get_preferred_width_for_height(self, height):
+        minimum, natural = Gtk.Label.do_get_preferred_width_for_height(self, height)
+        return minimum, max(minimum, min(natural, 288))
 
 
 class Tray:
@@ -21,6 +44,11 @@ class Tray:
         self.application_style = None
         self.style_load_revision = 0
         self.language_choices = None
+        self.opening = None
+        self.model_owner = self.model_listener = self.model_confirmation = None
+        self.model_intent = None
+        self.model_render = None
+        self.model_action_identity = None
         self.save_problem = None
         self.updating = self.pending = self.closed = False
         self.connected = False
@@ -49,6 +77,7 @@ class Tray:
         self.window.set_skip_pager_hint(True)
         self.window.connect("delete-event", lambda *_: self.hide_panel())
         self.window.connect("key-press-event", self.panel_key)
+        self.window.connect("unmap", lambda *_: self.retire_opening())
         self.style_provider = apply_theme(self.window, {})
         self.panel = box(8)
         self.panel.set_border_width(10)
@@ -86,20 +115,22 @@ class Tray:
         self.card.pack_start(self.mode, False, False, 0)
         direction = Gtk.Box(spacing=5)
         self.parents = {}
+        from ui import LanguagePicker
+
         for key in ("source", "target"):
-            picker = Gtk.ComboBoxText()
+            picker = LanguagePicker(
+                lambda code, name=key: self.change_language(name, code, self.opening),
+                capture_selection=lambda name=key: self.language_selection(name),
+            )
             picker.set_hexpand(True)
             picker.get_accessible().set_name("源语言" if key == "source" else "目标语言")
-            picker.connect(
-                "changed",
-                lambda item, name=key: self.change({name: item.get_active_id()})
-                if item.get_active_id()
-                else None,
-            )
+            style(picker, "quick-language")
+            style(picker.caption, "quick-language-name")
             self.parents[key] = picker
             direction.pack_start(picker, True, True, 0)
             if key == "source":
-                self.swap = style(Gtk.Button(label="⇄"), "flat")
+                self.swap = style(Gtk.Button(), "flat", "quick-swap")
+                self.swap.add(design_icon("swap", 16, symbolic=True))
                 self.swap.get_accessible().set_name("交换语言")
                 self.swap.connect("clicked", lambda *_: self.swap_languages())
                 direction.pack_start(self.swap, False, False, 0)
@@ -135,10 +166,31 @@ class Tray:
         self.style_row.pack_end(self.application_style_picker, False, False, 0)
         self.card.pack_start(self.style_row, False, False, 0)
         self.card.reorder_child(self.style_row, 2)
-        self.model = style(label("本地模型尚未就绪"), "quick-status")
+        self.model_card = style(box(7), "quick-model")
+        self.model_line = Gtk.Box(spacing=7)
+        self.model_dot = style(Gtk.Label(label="●"), "status-dot")
+        self.model_line.pack_start(self.model_dot, False, False, 0)
+        self.model = style(label("本地模型尚未就绪"), "quick-model-status")
+        self.model.set_line_wrap(True)
+        self.model.set_max_width_chars(24)
+        self.model.set_hexpand(True)
+        self.model_line.pack_start(self.model, True, True, 0)
+        self.model_action = None
+        self.model_card.pack_start(self.model_line, False, False, 0)
+        self.model_detail = style(ModelDetailLabel(xalign=0), "dim-label", "quick-model-detail")
+        self.model_detail.set_line_wrap(True)
+        self.model_detail.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        self.model_detail.set_max_width_chars(40)
+        self.model_detail.set_no_show_all(True)
+        self.model_card.pack_start(self.model_detail, False, False, 0)
+        self.model_activity = Gtk.Spinner()
+        self.model_activity.set_halign(Gtk.Align.START)
+        self.model_activity.set_no_show_all(True)
+        self.model_card.pack_start(self.model_activity, False, False, 0)
+        self.panel.pack_start(self.model_card, False, False, 0)
         self.operation = style(label(), "quick-status")
         self.save_notice = style(label(), "settings-warning")
-        for widget in (self.model, self.operation, self.save_notice):
+        for widget in (self.operation, self.save_notice):
             widget.set_no_show_all(True)
             self.panel.pack_start(widget, False, False, 0)
         self.panel.pack_start(Gtk.Separator(), False, False, 2)
@@ -147,9 +199,11 @@ class Tray:
             ("设置…", show_settings),
             ("退出 TypeLay", quit_requested),
         ):
-            button = style(Gtk.Button(label=title), "flat")
+            button = style(Gtk.Button(), "flat", "quick-action")
+            caption = Gtk.Label(label=title, xalign=0)
+            button.add(caption)
             button.set_halign(Gtk.Align.FILL)
-            button.get_child().set_xalign(0)
+            button.get_accessible().set_name(title)
             button.connect("clicked", lambda _button, callback=action: self.panel_action(callback))
             self.panel.pack_start(button, False, False, 0)
             self.actions[title] = button
@@ -166,16 +220,222 @@ class Tray:
         self.hide_panel()
         callback()
 
+    def retire_opening(self):
+        self.opening = None
+        self.model_intent = None
+        confirmation, self.model_confirmation = self.model_confirmation, None
+        for picker in self.parents.values():
+            picker.popdown()
+            if self.opening is not None:
+                break
+        if confirmation is not None:
+            confirmation.destroy()
+        return self.opening is None
+
+    def current(self, opening):
+        return (
+            opening is not None
+            and opening is self.opening
+            and not self.closed
+            and self.window.get_visible()
+            and self.window.get_mapped()
+        )
+
+    def language_selection(self, key):
+        opening = self.opening
+
+        def selected(code):
+            picker = self.parents[key]
+            if not (
+                self.current(opening)
+                and self.window.is_active()
+                and picker.get_mapped()
+                and picker.is_sensitive()
+            ):
+                return
+            picker.grab_focus()
+            self.change_language(key, code, opening)
+
+        return selected
+
+    def change_language(self, key, code, opening):
+        picker = self.parents[key]
+        if (
+            self.current(opening)
+            and self.window.is_active()
+            and picker.get_mapped()
+            and picker.is_sensitive()
+            and code != (self.value or {}).get(key)
+        ):
+            self.change({key: code})
+
+    def bind_model_owner(self, owner):
+        # Settings remains the sole owner of preparation inventory and requests.
+        # This one local observer has the same lifetime as this quick panel.
+        if (
+            self.model_owner is not None
+            and self.model_owner.preparation_changed is self.model_listener
+        ):
+            self.model_owner.preparation_changed = None
+        self.model_owner = owner
+
+        def changed():
+            if self.model_owner is owner and not self.closed:
+                self.refresh_model()
+
+        self.model_listener = changed
+        owner.preparation_changed = changed
+        self.refresh_model()
+
+    def refresh_model(self):
+        if self.closed:
+            return
+        render = self.model_render = object()
+        owner = self.model_owner
+        view = owner.preparation_view if owner is not None else None
+        revision = owner.preparation_revision if owner is not None else None
+        current = bool(view is not None and owner.preparation_view_revision == revision)
+        action = next(
+            (
+                item
+                for item in ([view["primaryAction"], *view["secondaryActions"]] if view else [])
+                if item["id"] not in ("NextStep", "CompleteDirections")
+            ),
+            None,
+        )
+        identity = (self.opening, id(view), revision, action["id"] if action else None)
+
+        def rendering_current():
+            return (
+                not self.closed
+                and self.model_render is render
+                and self.model_owner is owner
+                and self.opening is identity[0]
+                and (
+                    owner is None
+                    or owner.preparation_view is view
+                    and owner.preparation_revision == revision
+                )
+            )
+
+        if identity != self.model_action_identity:
+            self.model_intent = None
+            confirmation, self.model_confirmation = self.model_confirmation, None
+            old_button, self.model_action = self.model_action, None
+            self.model_action_identity = identity
+            if confirmation is not None:
+                confirmation.destroy()
+            if old_button is not None:
+                old_button.destroy()
+            if not rendering_current():
+                return
+            if action:
+                button = self.model_action = style(Gtk.Button(), "quick-model-action")
+                button.set_valign(Gtk.Align.CENTER)
+                self.model_line.pack_end(button, False, False, 0)
+                opening = self.opening
+
+                def valid():
+                    return (
+                        self.current(opening)
+                        and self.model_owner is owner
+                        and owner.preparation_view is view
+                        and owner.preparation_revision == revision
+                        and owner.preparation_view_revision == revision
+                        and self.model_action is button
+                        and action["enabled"] is True
+                    )
+
+                def activate(_button):
+                    if (
+                        not valid()
+                        or not button.get_mapped()
+                        or not button.is_sensitive()
+                        or not self.window.is_active()
+                    ):
+                        return
+                    intent = self.model_intent = object()
+
+                    def still_current():
+                        return self.model_intent is intent and valid()
+
+                    confirmation = owner.install_clicked(
+                        action=action["id"], guard=still_current, parent=self.window
+                    )
+                    # Showing a native modal can synchronously retire/reopen
+                    # the panel. Never attach A's returned dialog to opening B.
+                    if confirmation is not None:
+                        if still_current() and confirmation.get_visible():
+                            self.model_confirmation = confirmation
+                        else:
+                            confirmation.destroy()
+
+                button.connect("clicked", activate)
+                button.show()
+                if not rendering_current():
+                    return
+        detail = ""
+        if owner is not None:
+            detail = owner.preparation_error or owner.installation_message
+            if not detail and action and not action["enabled"]:
+                detail = view["guidance"]
+        button = self.model_action
+        if button is not None:
+            caption = {
+                "Prepare": "下载",
+                "Pause": "暂停",
+                "Resume": "继续下载",
+                "Retry": "重试",
+                "Repair": "修复",
+            }.get(action["id"], action["label"])
+            button.set_label(self.localizer.text(caption))
+            if not rendering_current():
+                return
+            button.get_accessible().set_name(self.localizer.text(action["label"]))
+            button.set_sensitive(current and action["enabled"] is True)
+            if not rendering_current():
+                return
+            button.set_tooltip_text(self.localizer.model_text(view["guidance"]) or None)
+        self.model_detail.set_text(self.localizer.model_text(detail))
+        if not rendering_current():
+            return
+        self.model_detail.set_visible(bool(detail))
+        if not rendering_current():
+            return
+        running = bool(owner is not None and owner.installation_state in ("running", "starting"))
+        self.model_activity.set_visible(running)
+        if not rendering_current():
+            return
+        self.model_activity.set_tooltip_text(
+            self.localizer.text("正在准备；总量和剩余时间尚不确定。") if running else None
+        )
+        if running and not reduced_motion(self.window, self.value or {}):
+            self.model_activity.start()
+        else:
+            self.model_activity.stop()
+
     def show_panel(self, _x=None, _y=None):
         if self.closed:
             return
+        if not self.retire_opening() or self.closed:
+            return
+        opening = self.opening = object()
         self.window.show_all()
+        if not self.current(opening):
+            return
         self.refresh()
+        if not self.current(opening):
+            return
         self.window.present()
+        if not self.current(opening):
+            return
         self.enabled.grab_focus()
-        self.tasks(self.load_application_style(self.last_application))
+        if self.current(opening):
+            self.tasks(self.load_application_style(self.last_application))
 
     def hide_panel(self):
+        if not self.retire_opening():
+            return True
         self.style_load_revision += 1
         self.window.hide()
         return True
@@ -194,13 +454,6 @@ class Tray:
         if not self.closed:
             self.value = value
             self.localizer.refresh()
-            self.updating = True
-            try:
-                for picker in self.parents.values():
-                    for row in picker.get_model():
-                        row[0] = self.localizer.text(row[0])
-            finally:
-                self.updating = False
             self.refresh()
 
     def render_guidance(self, value):
@@ -210,16 +463,6 @@ class Tray:
         choices = value["languageChoices"]
         if choices != self.language_choices:
             self.language_choices = choices
-            self.updating = True
-            try:
-                for key in ("source", "target"):
-                    self.parents[key].remove_all()
-                    for choice in choices[key]:
-                        self.parents[key].append(
-                            choice["code"], self.localizer.text(choice["label"])
-                        )
-            finally:
-                self.updating = False
         self.refresh()
 
     def refresh(self):
@@ -245,9 +488,17 @@ class Tray:
                 return
             enabled = self.value["enabled"]
             self.enabled.set_active(enabled)
+            self.card.set_sensitive(ready and enabled)
+            self.card.set_opacity(1 if enabled else 0.45)
             self.mode.set_active_id(self.value["mode"])
             for key, picker in self.parents.items():
-                picker.set_active_id(self.value[key])
+                picker.configure_choices(
+                    [
+                        {**choice, "label": self.localizer.text(choice["label"])}
+                        for choice in (self.language_choices or {}).get(key, [])
+                    ],
+                    self.value[key],
+                )
             english = (
                 self.value.get("uiLanguage") == "en"
                 or self.value.get("uiLanguage", "system") == "system"
@@ -256,10 +507,11 @@ class Tray:
             tone, chinese, translated = activity_status(enabled, self.model_ready)
             state = translated if english else chinese
             set_status_tone(self.status_dot, tone)
-            _tone, chinese, translated = model_notice(
+            model_tone, chinese, translated = model_notice(
                 self.model_ready, self.model_installed, self.installation_state
             )
             self.model.set_text(translated if english else chinese)
+            set_status_tone(self.model_dot, model_tone)
             self.model.set_tooltip_text(self.installation_message or self.model_status or None)
             self.current_application.set_text(
                 (
@@ -274,7 +526,8 @@ class Tray:
                 ("设置…", "Settings…"),
                 ("退出 TypeLay", "Quit TypeLay"),
             ):
-                self.actions[chinese].set_label(translated if english else chinese)
+                self.actions[chinese].get_child().set_text(translated if english else chinese)
+                self.actions[chinese].get_accessible().set_name(translated if english else chinese)
             self.application_enabled.set_active(
                 not self.last_application
                 or self.last_application.casefold()
@@ -283,6 +536,16 @@ class Tray:
             self.application_enabled.set_sensitive(
                 bool(self.last_application) and not self.application_pending
             )
+            for row in self.application_style_choices:
+                row[1] = self.localizer.text(
+                    {
+                        "inherit": "继承全局风格" if self.last_application else "未设置",
+                        "Natural": "自然",
+                        "Formal": "正式",
+                        "Concise": "简洁",
+                        "Casual": "口语",
+                    }[row[0]]
+                )
             self.application_style_picker.set_visible(True)
             self.style_title.set_text("Tone" if english else "风格")
             self.status.set_label(state)
@@ -292,6 +555,7 @@ class Tray:
             )
             self.indicator.update(enabled, "TypeLay · " + state)
             self.model.show()
+            self.refresh_model()
             self.operation.set_visible(bool(self.operation.get_text()))
         finally:
             self.updating = False
@@ -608,7 +872,16 @@ class Tray:
                 self.refresh()
 
     def close(self):
+        if self.closed:
+            return
         self.closed = True
+        self.retire_opening()
+        if (
+            self.model_owner is not None
+            and self.model_owner.preparation_changed is self.model_listener
+        ):
+            self.model_owner.preparation_changed = None
+        self.model_owner = self.model_listener = None
         self.connected = False
         if self.indicator is not None:
             self.indicator.close()

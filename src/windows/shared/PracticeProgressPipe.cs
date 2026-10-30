@@ -37,8 +37,10 @@ internal sealed record OwnedEditorControl(Guid Intent, OwnedCaptureDescriptor De
 
 // Old editor identity is retained only as provenance for its one reader-close fence.
 internal sealed record OwnedLocalDraftControl(Guid Opening, OwnedEditorControl Previous, long SourceEventSequence = 0);
+internal sealed record OwnedLocalReturnRelease(long InputSequence, long ObservedAtMs, uint NativeDownTime, uint NativeUpTime);
 internal sealed record OwnedLocalReturnControl(Guid Opening, Guid Intent, long PressedAtMs, long ExpiresAtMs,
-    long InputSequence, OwnedReturnKeyPress KeyPress, long SourceEventSequence = 0, OwnedCaptureDescriptor? Descriptor = null);
+    long InputSequence, OwnedReturnKeyPress KeyPress, OwnedLocalReturnRelease Release,
+    long SourceEventSequence = 0, OwnedCaptureDescriptor? Descriptor = null);
 
 internal enum OwnedReturnKind
 {
@@ -120,7 +122,12 @@ internal static class PracticeProgressPipe
             {
                 if (message.LocalDraft is not null || message.LocalReturn is not { } returned
                     || returned.Opening == Guid.Empty || returned.Intent == Guid.Empty || returned.InputSequence <= 0
-                    || returned.PressedAtMs <= 0 || returned.ExpiresAtMs - returned.PressedAtMs != 500
+                    || returned.PressedAtMs <= 0 || returned.PressedAtMs > long.MaxValue - 500
+                    || returned.ExpiresAtMs != returned.PressedAtMs + 500
+                    || returned.Release is not { } release || returned.InputSequence == long.MaxValue
+                    || release.InputSequence != returned.InputSequence + 1
+                    || release.ObservedAtMs < returned.PressedAtMs || release.ObservedAtMs >= returned.ExpiresAtMs
+                    || unchecked(release.NativeUpTime - release.NativeDownTime) >= 0x80000000u
                     || returned.KeyPress is not { VirtualKey: 9, Modifiers: ShortcutModifiers.None, ScanCode: > 0 and <= 255 }
                     || (message.Kind is "local-return-fence" or "local-return-resume" or "local-return-cancel"
                         ? returned.SourceEventSequence != 0 : returned.SourceEventSequence <= 0)

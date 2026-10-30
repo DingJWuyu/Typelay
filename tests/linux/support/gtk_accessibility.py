@@ -333,6 +333,7 @@ def focus_settings_control(pid, node, timeout=15):
                 Atspi.Role.SCROLL_PANE,
                 Atspi.Role.FRAME,
                 Atspi.Role.DIALOG,
+                Atspi.Role.ALERT,
             ):
                 clip = Atspi.Component.get_extents(
                     ancestor.get_component_iface(), Atspi.CoordType.SCREEN
@@ -346,8 +347,11 @@ def focus_settings_control(pid, node, timeout=15):
                     and clip.y <= area.y <= clip.y + clip.height - area.height
                 ):
                     return False
-                if role in (Atspi.Role.FRAME, Atspi.Role.DIALOG):
-                    assert role == Atspi.Role.DIALOG or ancestor.get_name() == "TypeLay 设置"
+                if role in (Atspi.Role.FRAME, Atspi.Role.DIALOG, Atspi.Role.ALERT):
+                    assert (
+                        role in (Atspi.Role.DIALOG, Atspi.Role.ALERT)
+                        or ancestor.get_name() == "TypeLay 设置"
+                    )
                     return True
             ancestor = ancestor.get_parent()
         raise AssertionError("settings control exceeds its bounded owned ancestry")

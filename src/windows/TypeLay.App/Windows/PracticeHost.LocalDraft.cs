@@ -18,7 +18,7 @@ internal sealed partial class PracticeHost
         public long Sequence { get; } = sequence;
         public bool FenceSent, Fenced, Cancelled, ReturnFenceSent, ReturnFenced, SourceReturned, OverlayLeft, Delivered, Bound;
         public long SourceBaseline;
-        public KeyboardHook.LocalDraftPress? Press;
+        public KeyboardHook.LocalDraftTap? Tap;
         public OwnedLocalDraftReturnRequest? Request;
         public OwnedLocalReturnControl? Returning;
         public OwnedMapping? Replacement;
@@ -105,20 +105,35 @@ internal sealed partial class PracticeHost
         && ReferenceEquals(local.Opening, opening) && LocalDraftIdentityCurrent(local)
         && _session!.ChangeOwnedLocalDraft(opening, text);
 
-    internal bool BeginLocalDraftReturn(OwnedLocalDraft opening, uint scan, bool extended)
+    internal void SetLocalDraftEditorFocus(OwnedLocalDraft opening, bool focused)
     {
-        if (!LocalDraftReady(opening) || _localDraftAttempt is not { } local || _editorOverlay?.LocalDraftEditorFocused(opening) != true
-            || _monitor!.BeginLocalDraftReturn(opening.Id, scan, extended) is not { } press)
+        if (LocalDraftPresentationCurrent(opening))
+            _monitor!.SetLocalDraftEditorFocus(opening.Id,
+                focused && _editorOverlay?.LocalDraftEditorFocused(opening) == true);
+    }
+
+    internal KeyboardHook.LocalDraftPress? CaptureLocalDraftReturnPress(OwnedLocalDraft opening,
+        uint scan, bool extended, uint nativeDownTime) => LocalDraftReady(opening)
+        && _editorOverlay?.LocalDraftEditorFocused(opening) == true
+        ? _monitor!.CaptureLocalDraftPress(opening.Id, scan, extended, nativeDownTime) : null;
+
+    internal bool BeginLocalDraftReturn(OwnedLocalDraft opening, KeyboardHook.LocalDraftPress press,
+        uint scan, bool extended, uint nativeUpTime)
+    {
+        if (press.Opening != opening.Id || !LocalDraftReady(opening) || _localDraftAttempt is not { } local
+            || _editorOverlay?.LocalDraftEditorFocused(opening) != true
+            || _monitor!.ClaimLocalDraftTap(press, scan, extended, nativeUpTime) is not { } tap)
             return false;
         var request = _session!.PrepareOwnedLocalReturn(opening, press.ReceivedAtMs);
-        if (request is null || !LocalDraftIdentityCurrent(local) || !_monitor.LocalDraftPressCurrent(press))
+        if (request is null || !LocalDraftIdentityCurrent(local) || !_monitor.LocalDraftTapCurrent(tap))
         {
             CancelOwnedLocalDraft(opening);
             return false;
         }
-        local.Press = press;
+        local.Tap = tap;
         local.Request = request;
-        local.Returning = new(opening.Id, request.Id, press.ReceivedAtMs, press.ExpiresAtMs, press.Sequence, press.Key);
+        local.Returning = new(opening.Id, request.Id, press.ReceivedAtMs, press.ExpiresAtMs, press.Sequence, press.Key,
+            new(tap.UpSequence, tap.ReleasedAtMs, press.NativeTime, tap.NativeUpTime));
         PollOwnedLocalDraft();
         return !local.Cancelled;
     }
@@ -140,7 +155,7 @@ internal sealed partial class PracticeHost
         if (_localDraftAttempt is not { Cancelled: false } local)
             return;
         if (!LocalDraftIdentityCurrent(local) || !_monitor!.LocalDraftAnchorCurrent(local.Opening.Id)
-            || !local.Delivered && local.Press is { } press && !_monitor.LocalDraftPressCurrent(press))
+            || !local.Delivered && local.Tap is { } tap && !_monitor.LocalDraftTapCurrent(tap))
         {
             CancelOwnedLocalDraft(local.Opening);
             return;
@@ -153,7 +168,7 @@ internal sealed partial class PracticeHost
         if (local.Fenced && local.Request is not null && !local.ReturnFenceSent)
         {
             var replacement = OwnedPracticeAcceptanceProtocol.CreateWitness(local.Child.Process.Handle);
-            if (!LocalDraftIdentityCurrent(local) || !_monitor.LocalDraftPressCurrent(local.Press!))
+            if (!LocalDraftIdentityCurrent(local) || !_monitor.LocalDraftTapCurrent(local.Tap!))
             {
                 replacement.CloseUndeliveredRemote(local.Child.Process.Handle);
                 replacement.Dispose();
@@ -232,7 +247,7 @@ internal sealed partial class PracticeHost
         {
             if (!local.ReturnFenceSent || local.ReturnFenced || local.Replacement is null
                 || message.LocalReturn!.SourceEventSequence != local.SourceBaseline + 1
-                || !_monitor!.LocalDraftPressCurrent(local.Press!))
+                || !_monitor!.LocalDraftTapCurrent(local.Tap!))
                 throw new InvalidDataException("practice-local-return-fence-order");
             local.ReturnFenced = true;
             local.SourceBaseline = message.LocalReturn.SourceEventSequence;
@@ -248,7 +263,7 @@ internal sealed partial class PracticeHost
                 return true;
             }
             Native.SetForegroundWindow((nint)local.Control.Previous.Descriptor.RootHwnd);
-            if (!LocalDraftIdentityCurrent(local) || !_monitor.LocalDraftPressCurrent(local.Press!))
+            if (!LocalDraftIdentityCurrent(local) || !_monitor.LocalDraftTapCurrent(local.Tap!))
             {
                 CancelOwnedLocalDraft(local.Opening);
                 return true;
@@ -283,7 +298,7 @@ internal sealed partial class PracticeHost
         if (local.Delivered || !local.SourceReturned || !local.OverlayLeft || local.Request is not { } request
             || local.Descriptor is not { } descriptor)
             return;
-        if (!LocalDraftIdentityCurrent(local) || !_monitor!.LocalDraftPressCurrent(local.Press!)
+        if (!LocalDraftIdentityCurrent(local) || !_monitor!.LocalDraftTapCurrent(local.Tap!)
             || !DescriptorCurrent(descriptor) || !KeyboardHook.OwnedFocus(descriptor))
         {
             CancelOwnedLocalDraft(local.Opening);

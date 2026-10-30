@@ -412,7 +412,8 @@ internal sealed partial class SettingsWindow
         var choices = KnownApplicationIds.Concat(_settings.Value.Managed).Concat(_settings.Value.Excluded)
             .Concat(_settings.Value.Styles?.Applications?.Keys ?? []).Distinct(StringComparer.OrdinalIgnoreCase)
             .Where(app => !visible.Contains(app, StringComparer.OrdinalIgnoreCase)).Order(StringComparer.OrdinalIgnoreCase).ToArray();
-        var dialog = ApplicationDialog(UiTheme.L("添加应用", "Add app"), "ApplicationPicker", 320);
+        using var sheet = ApplicationDialog(UiTheme.L("添加应用", "Add app"), "ApplicationPicker", 320);
+        var dialog = sheet.Dialog;
         dialog.Resources.MergedDictionaries.Add(UiTheme.ConfigurationScrollResources());
         dialog.Resources.MergedDictionaries.Add(ApplicationPickerResources());
         bool Current() => pageCurrent() && _settings.Revision == revision && ReferenceEquals(_closeDialog, dialog) && dialog.IsVisible;
@@ -494,8 +495,12 @@ internal sealed partial class SettingsWindow
         AutomationProperties.SetAutomationId(cancel, "ApplicationPickerCancel");
         actions.Children.Add(cancel);
         body.Children.Add(actions);
-        ((Border)dialog.Content).Child = body;
-        dialog.Loaded += (_, _) => search.Focus();
+        sheet.SetContent(body);
+        dialog.Loaded += (_, _) =>
+        {
+            if (Current())
+                search.Focus();
+        };
         _closeDialog = dialog;
         try
         {
@@ -518,11 +523,12 @@ internal sealed partial class SettingsWindow
         if (!pageCurrent() || _closeDialog is not null)
             return false;
         long revision = _settings.Revision;
-        var dialog = ApplicationDialog(UiTheme.L("移除应用", "Remove app"), "ApplicationRemovalConfirmation", 340);
+        using var sheet = ApplicationDialog(UiTheme.L("移除应用", "Remove app"), "ApplicationRemovalConfirmation", 340);
+        var dialog = sheet.Dialog;
         var body = new StackPanel();
         body.Children.Add(ApplicationDialogTitle(UiTheme.English ? "Remove " + ApplicationTitle(application) + "?" : "移除「" + ApplicationTitle(application) + "」？"));
         var explanation = UiTheme.Text(UiTheme.L("仅从列表移除，停用与风格设置保留。重新添加后仍使用这些设置，不会改变输入权限。", "Only removes it from this list. Disabled state and tone are kept when you add it again. Input permissions do not change."), 13, true);
-        explanation.Margin = new(0, 12, 0, 20);
+        explanation.Margin = new(0, 14, 0, 20);
         body.Children.Add(explanation);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         var cancel = UiTheme.Button(UiTheme.L("取消", "Cancel"), () => { if (ReferenceEquals(_closeDialog, dialog) && dialog.IsVisible) dialog.DialogResult = false; });
@@ -536,12 +542,19 @@ internal sealed partial class SettingsWindow
                 dialog.DialogResult = pageCurrent() && _settings.Revision == revision;
         });
         ApplicationActionSize(confirm);
+        confirm.SetResourceReference(StyleProperty, "ApplicationSheetPrimary");
+        confirm.Resources["ApplicationSheetButtonShadowColor"] = Colors.Black;
+        confirm.Resources["ApplicationSheetButtonShadowOpacity"] = .15;
         AutomationProperties.SetAutomationId(confirm, "ApplicationRemovalConfirm");
         actions.Children.Add(cancel);
         actions.Children.Add(confirm);
         body.Children.Add(actions);
-        ((Border)dialog.Content).Child = body;
-        dialog.Loaded += (_, _) => cancel.Focus();
+        sheet.SetContent(body);
+        dialog.Loaded += (_, _) =>
+        {
+            if (pageCurrent() && _settings.Revision == revision && ReferenceEquals(_closeDialog, dialog) && dialog.IsVisible)
+                cancel.Focus();
+        };
         _closeDialog = dialog;
         try
         {
@@ -554,6 +567,7 @@ internal sealed partial class SettingsWindow
     {
         var title = UiTheme.Text(value, 18);
         title.FontWeight = FontWeights.Medium;
+        title.LineHeight = 22.5;
         title.FontFamily = UiTheme.DisplayFontForSize(18);
         AutomationProperties.SetAutomationId(title, "ApplicationDialogTitle");
         return title;
@@ -566,28 +580,6 @@ internal sealed partial class SettingsWindow
         button.FontWeight = FontWeights.Medium;
         button.Padding = new(12, 0, 12, 0);
         button.VerticalAlignment = VerticalAlignment.Center;
-    }
-
-    private Window ApplicationDialog(string title, string id, double clientWidth)
-    {
-        // The supplied prototype width includes its padding, not the native
-        // Windows title bar and resize frame. Keep that shell separate.
-        var client = new Border { Width = clientWidth, Padding = new(22) };
-        client.SetResourceReference(Border.BackgroundProperty, "Panel");
-        AutomationProperties.SetAutomationId(client, "ApplicationDialogSurface");
-        var dialog = new Window
-        {
-            Owner = this,
-            Title = title,
-            Content = client,
-            SizeToContent = SizeToContent.WidthAndHeight,
-            ResizeMode = ResizeMode.NoResize,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            ShowInTaskbar = false
-        };
-        dialog.SetResourceReference(BackgroundProperty, "Panel");
-        AutomationProperties.SetAutomationId(dialog, id);
-        return dialog;
     }
 
     private Func<bool> CaptureApplicationUndo()

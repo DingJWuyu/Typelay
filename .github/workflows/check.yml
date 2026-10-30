@@ -115,6 +115,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Optional tool inventory for the bounded sheet material follow-up, not a product gate.
+      - name: Observe the existing Windows shader compiler
+        continue-on-error: true
+        timeout-minutes: 1
+        shell: pwsh
+        run: ./eng/windows/observe-shader-compiler.ps1 -OutputPath artifacts/shader-compiler/inventory.json
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
@@ -646,6 +652,7 @@ jobs:
           name: typelay-windows-${{ github.sha }}
           path: |
             artifacts/test-results/
+            artifacts/shader-compiler/inventory.json
             artifacts/source-ll-timeout/
             artifacts/source-keyboard-boundary/
             artifacts/source-synchronous-acceptance/
@@ -845,6 +852,7 @@ jobs:
           python tests/linux/test_input_notifications.py -v
           python tests/linux/test_gtk_geometry.py -v
           python tests/linux/test_gtk_accessibility_bounds.py -v
+          python tests/linux/test_gtk_settings_focus.py -v
           python tests/linux/test_gtk_shortcut_input.py -v
           python tests/linux/test_ordinary_desktop_lifecycle.py -v
           python tests/linux/test_gtk_preview_contract.py -v
@@ -869,6 +877,13 @@ jobs:
         run: |
           export DISPLAY=:99
           GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package
+      - name: Verify prototype tray panel without downloading models
+        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 1
+        run: |
+          export DISPLAY=:99
+          mkdir -p artifacts/linux/tray-panel
+          GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package --panel-only --output artifacts/linux/tray-panel > artifacts/linux/tray-panel/inside.log 2>&1
       - name: Verify native shortcut settings without downloading models
         if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
@@ -1316,6 +1331,9 @@ jobs:
             artifacts/linux/qt-desktop/*.jsonl
             artifacts/linux/qt-desktop/*.png
             artifacts/linux/qt-desktop/*.log
+            artifacts/linux/tray-panel/*.json
+            artifacts/linux/tray-panel/*.png
+            artifacts/linux/tray-panel/*.log
             artifacts/linux/settings-ui/*.json
             artifacts/linux/settings-ui/*.png
             artifacts/linux/settings-ui/*.log

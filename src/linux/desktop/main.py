@@ -845,6 +845,7 @@ async def desktop(paths, background, lock, tutorial=False):
             lambda: components["settings"].dismiss(quit_requested=stopping.set),
             components["settings"].report_tray,
         )
+        components["tray"].bind_model_owner(components["settings"])
 
         async def command(operation, value, caller_pid=None):
             if operation == "activateModel":

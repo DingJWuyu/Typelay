@@ -118,11 +118,13 @@ public sealed partial class SessionController
         var handoff = _editorGlossaryHandoff;
         if (handoff is null)
             return;
-        if (handoff.Observation.SourceEpoch is < 0 or long.MaxValue
-            || _hook.SourceUserEpoch != handoff.Observation.SourceEpoch + 1
-            || !EditorGlossaryHandoffCurrent(handoff))
+        string? problem = handoff.Observation.SourceEpoch is < 0 or long.MaxValue ? "source-epoch-range"
+            : _hook.SourceUserEpoch != handoff.Observation.SourceEpoch + 1 ? "source-epoch"
+            : EditorGlossaryHandoffProblem(handoff);
+        if (problem is not null)
         {
             _editorGlossaryHandoff = null;
+            TraceEditorGlossaryHandoff("pending-retired", problem);
             return;
         }
         // An older ordinary read can still be in flight when editor focus is
@@ -131,49 +133,102 @@ public sealed partial class SessionController
         if (_capturing)
             return;
         _editorGlossaryHandoff = null; // Consume once, immediately before the only recheck.
+        TraceEditorGlossaryHandoff("consumed");
         _ = RefreshEditorGlossarySourceAsync(handoff);
     }
 
-    private bool EditorGlossaryHandoffCurrent(EditorGlossaryHandoff handoff) => !_disposed
-        && _session.State == SessionState.EditingTranslation
-        && ReferenceEquals(_session.Current, handoff.Source) && _session.ManualSourceCurrent
-        && ReferenceEquals(_styleObservation, handoff.Observation)
-        && _configurationRevision == handoff.ConfigurationRevision && _settings.Revision == handoff.SettingsRevision
-        && !_settings.HasChanges(_settings.Value) && _hook.ConnectionId == handoff.ConnectionId
-        && _hook.WindowEpoch == handoff.WindowEpoch && _loop.NowMs <= handoff.Until
-        && GlossaryEntryTokenCurrent(handoff.Token) && ViewCommandIsCurrent(handoff.Token, true)
-        && _hook.GetFocus(handoff.Token.Target) == FocusMember.Overlay && !_overlay.EditingComposition
-        && _glossaryEntry is null && !TranslationSettingsBusy() && !_styleChangeRunning && !_glossaryChangeRunning;
+    private string? EditorGlossaryHandoffProblem(EditorGlossaryHandoff handoff) => _disposed ? "disposed"
+        : _session.State != SessionState.EditingTranslation ? "session-state"
+        : !ReferenceEquals(_session.Current, handoff.Source) ? "source-identity"
+        : !_session.ManualSourceCurrent ? "manual-source"
+        : !ReferenceEquals(_styleObservation, handoff.Observation) ? "observation-identity"
+        : _configurationRevision != handoff.ConfigurationRevision ? "configuration"
+        : _settings.Revision != handoff.SettingsRevision ? "settings-revision"
+        : _settings.HasChanges(_settings.Value) ? "settings-changed"
+        : _hook.ConnectionId != handoff.ConnectionId ? "connection"
+        : _hook.WindowEpoch != handoff.WindowEpoch ? "window"
+        : _loop.NowMs > handoff.Until ? "deadline"
+        : !GlossaryEntryTokenCurrent(handoff.Token) ? "entry-token"
+        : !ViewCommandIsCurrent(handoff.Token, true) ? "view-command"
+        : _hook.GetFocus(handoff.Token.Target) != FocusMember.Overlay ? "focus"
+        : _overlay.EditingComposition ? "composition"
+        : _glossaryEntry is not null ? "form-open"
+        : TranslationSettingsBusy() ? "settings-busy"
+        : _styleChangeRunning ? "style-busy"
+        : _glossaryChangeRunning ? "glossary-busy" : null;
+
+    private void TraceEditorGlossaryHandoff(string stage, string? reason = null,
+        long? requestedAtMs = null, long? observedAtMs = null, long? completedAtMs = null)
+    {
+        if (string.IsNullOrWhiteSpace(_tracePath))
+            return;
+        // One pending entry and one read: fixed stages/reasons and timestamps,
+        // never source/draft text or another focus/authority observation.
+        try
+        {
+            Trace("editor-glossary-handoff", detail: new
+            {
+                stage,
+                reason,
+                requestedAtMs,
+                observedAtMs,
+                completedAtMs
+            }, inspectFocus: false);
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            // Optional diagnostics cannot interrupt revocation or retirement.
+        }
+    }
 
     private async Task RefreshEditorGlossarySourceAsync(EditorGlossaryHandoff handoff)
     {
-        bool Current() => EditorGlossaryHandoffCurrent(handoff);
-        if (!Current())
+        if (EditorGlossaryHandoffProblem(handoff) is { } initialProblem)
+        {
+            TraceEditorGlossaryHandoff("capture-not-started", initialProblem);
             return;
+        }
         var request = Context();
         long content = _hook.ContentEpoch, requestedAt = _loop.NowMs;
         string draft = _session.Draft;
         _capturing = true;
         try
         {
+            TraceEditorGlossaryHandoff("capture-started", requestedAtMs: requestedAt);
             var capture = await _broker.CaptureAsync(request);
             long now = _loop.NowMs;
-            if (!Current() || _session.Draft != draft || content != _hook.ContentEpoch
-                || request.UserEpoch != _hook.UserEpoch || capture.UserEpoch != request.UserEpoch
-                || request.SourceUserEpoch != _hook.SourceUserEpoch
-                || request.ForegroundEpoch != _hook.ForegroundEpoch || capture.ForegroundEpoch != request.ForegroundEpoch
-                || capture.ForegroundExpired || capture.Focus != FocusMember.Overlay
-                || capture.OwnedSource is not null || capture.FencedPracticeRead is not null
-                || capture.Snapshot is not { IsUsable: true } source || source.Target != handoff.Source.Target
-                || source.Text != handoff.Source.Text || source.InputEpoch != handoff.Source.InputEpoch
-                || source.Selection != handoff.Source.Selection || source.TranslationScope != handoff.Source.TranslationScope
-                || source.Multiline != handoff.Source.Multiline || source.ObservedAtMs < requestedAt || now < source.ObservedAtMs
-                || source.ObservedAtMs < now - Limits.ObservationMaxAgeMs
-                || capture.SessionShortcuts is not { SourceReady: true, EditorReady: true } acknowledgement
-                || acknowledgement.Target != source.Target || acknowledgement.Generation != handoff.Token.CommandGeneration
-                || acknowledgement.Bindings != CurrentSessionBindings
-                || _settings.NormalizeStyleApplication(capture.Application) != handoff.Observation.Application)
+            string? problem = EditorGlossaryHandoffProblem(handoff)
+                ?? (_session.Draft != draft ? "draft"
+                : content != _hook.ContentEpoch ? "content-epoch"
+                : request.UserEpoch != _hook.UserEpoch ? "request-user-epoch"
+                : capture.UserEpoch != request.UserEpoch ? "capture-user-epoch"
+                : request.SourceUserEpoch != _hook.SourceUserEpoch ? "request-source-epoch"
+                : request.ForegroundEpoch != _hook.ForegroundEpoch ? "request-foreground-epoch"
+                : capture.ForegroundEpoch != request.ForegroundEpoch ? "capture-foreground-epoch"
+                : capture.ForegroundExpired ? "foreground-expired"
+                : capture.Focus != FocusMember.Overlay ? "capture-focus"
+                : capture.OwnedSource is not null ? "owned-source"
+                : capture.FencedPracticeRead is not null ? "fenced-practice"
+                : capture.Snapshot is not { IsUsable: true } source ? "snapshot"
+                : source.Target != handoff.Source.Target ? "target"
+                : source.Text != handoff.Source.Text ? "source-text"
+                : source.InputEpoch != handoff.Source.InputEpoch ? "input-epoch"
+                : source.Selection != handoff.Source.Selection ? "selection"
+                : source.TranslationScope != handoff.Source.TranslationScope ? "scope"
+                : source.Multiline != handoff.Source.Multiline ? "multiline"
+                : source.ObservedAtMs < requestedAt ? "observed-before-request"
+                : now < source.ObservedAtMs ? "observed-in-future"
+                : source.ObservedAtMs < now - Limits.ObservationMaxAgeMs ? "observation-expired"
+                : capture.SessionShortcuts is not { SourceReady: true, EditorReady: true } acknowledgement ? "shortcut-acknowledgement"
+                : acknowledgement.Target != source.Target ? "acknowledgement-target"
+                : acknowledgement.Generation != handoff.Token.CommandGeneration ? "acknowledgement-generation"
+                : acknowledgement.Bindings != CurrentSessionBindings ? "acknowledgement-bindings"
+                : _settings.NormalizeStyleApplication(capture.Application) != handoff.Observation.Application ? "application" : null);
+            if (problem is not null)
+            {
+                TraceEditorGlossaryHandoff("capture-refused", problem, requestedAt, capture.Snapshot?.ObservedAtMs, now);
                 return;
+            }
             // A confirmed editor transfer may change the source-focus epoch, not
             // its input revision. This rechecks settings management only: no Core
             // observation, shortcut ACK, timestamp, lease or acceptance is renewed.
@@ -181,10 +236,15 @@ public sealed partial class SessionController
             {
                 SourceEpoch = request.SourceUserEpoch
             };
+            TraceEditorGlossaryHandoff("capture-confirmed", requestedAtMs: requestedAt,
+                observedAtMs: capture.Snapshot?.ObservedAtMs, completedAtMs: now);
             if (_renderedTranslationMenu != GetTranslationMenuState())
                 Render();
         }
-        catch (Exception error) when (error is not OutOfMemoryException) { }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            TraceEditorGlossaryHandoff("capture-exception");
+        }
         finally { _capturing = false; }
     }
 

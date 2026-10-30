@@ -256,13 +256,13 @@ def settings_text_visible_point(character, clips):
     return point
 
 
-def wait_for(predicate, description, timeout=15):
+def wait_for(predicate, description, timeout=15, *, poll_interval=0.05):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         result = predicate()
         if result:
             return result
-        time.sleep(0.05)
+        time.sleep(poll_interval)
     raise AssertionError(description)
 
 
@@ -5594,7 +5594,20 @@ def run(arguments):
                         and details.get_state_set().contains(Atspi.StateType.EXPANDED)
                     )
 
-                wait_for(prepared_chooser, "prepared component did not enable its actual chooser")
+                chooser_deadline = time.monotonic() + 15
+                # The unified primary action no longer opens connection details.
+                # Use the existing public ancestor expansion and focus path;
+                # preparation itself is not permission to activate a hidden child.
+                activate_scrolled_setting(
+                    "选择应用…",
+                    activate=False,
+                    timeout=chooser_deadline - time.monotonic(),
+                )
+                wait_for(
+                    prepared_chooser,
+                    "prepared component did not enable its actual chooser",
+                    timeout=chooser_deadline - time.monotonic(),
+                )
                 assert not any(row["capabilities"].values()), row
                 assert not status()["setup"]["onboardingComplete"]
                 evidence.append(

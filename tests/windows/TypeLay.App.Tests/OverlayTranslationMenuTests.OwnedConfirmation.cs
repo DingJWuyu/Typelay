@@ -29,7 +29,16 @@ public sealed partial class OverlayTranslationMenuTests
     [Fact]
     public Task AnExpandedOwnedDraftFromANarrowFieldShowsTheFullSheetAndRestoresItsOriginalFrame() => OwnedKeepCase(true);
 
-    private Task OwnedKeepCase(bool expandedNarrow) => desktop.RunAsync(async () =>
+    [Fact]
+    public Task PromptTabNavigationDoesNotBecomeTheLaterEditorReturnPress() =>
+        OwnedKeepCase(expandedNarrow: false, promptTab: true);
+
+    [Theory]
+    [InlineData("draft")]
+    [InlineData("composition")]
+    public Task ALocalReturnDownCannotSurviveDraftOrCompositionAba(string change) => OwnedKeepCase(false, change);
+
+    private Task OwnedKeepCase(bool expandedNarrow, string? returnChange = null, bool promptTab = false) => desktop.RunAsync(async () =>
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(25));
@@ -193,6 +202,16 @@ public sealed partial class OverlayTranslationMenuTests
                 Assert.True(editor.CanUndo);
                 Assert.Null(host.CaptureDescriptor);
             }
+            if (promptTab)
+            {
+                var keep = RegenerateButton(overlay, "RegenerateKeep");
+                using var action = ActionDeadline();
+                await SendOwnedConfirmationKey(overlay, Key.Tab, keep, action.Token);
+                Assert.Same(keep, RegenerateButton(overlay, "RegenerateKeep"));
+                Assert.True(keep.IsKeyboardFocused);
+                Assert.Equal(draft, editor.Text);
+                Assert.True(editor.CanUndo);
+            }
             finishKeyboardObservation = ObserveOwnedKeyboardFlow(overlay, editor,
                 RegenerateButton(overlay, "RegenerateKeep"), controller, draft);
             using (var action = ActionDeadline())
@@ -220,29 +239,91 @@ public sealed partial class OverlayTranslationMenuTests
             Assert.Equal(sourceText, N.ReadText(field, Limits.MaxTextUnits));
             Assert.Equal(sourceSelection, N.ReadSelection(field));
 
-            using (var action = ActionDeadline())
-                await SendOwnedConfirmationKey(overlay, Key.Tab, editor, action.Token);
-            await Until(() => N.Focused() == (root, field) && host.CaptureDescriptor is { } fresh
-                && fresh.NativeFocusRevision > before.NativeFocusRevision && host.SourceReady(initialToken.Target)
-                && controller.AutomaticPracticeProgress is { AwaitingFreshSource: false }
-                && editor.IsReadOnly && editor.Text == draft);
-            var after = Assert.IsType<OwnedCaptureDescriptor>(host.CaptureDescriptor);
-            var returnedToken = Assert.IsType<SessionViewToken>(controller.GetStyleSettingsState().Session);
-            Assert.Equal(before.ProcessId, after.ProcessId);
-            Assert.Equal(before.ProcessStartUtcTicks, after.ProcessStartUtcTicks);
-            Assert.Equal(before.RootHwnd, after.RootHwnd);
-            Assert.Equal(before.ControlHwnd, after.ControlHwnd);
-            Assert.Equal(before.NativeCookie, after.NativeCookie);
-            Assert.Equal(before.BeginSequence, after.BeginSequence);
-            Assert.Equal(run, controller.AutomaticPracticeProgress!.RunId);
-            Assert.Equal(initialToken.Target, returnedToken.Target);
-            Assert.NotEqual(editedToken.CommandGeneration, returnedToken.CommandGeneration);
-            Assert.True(returnedToken.Revision > editedToken.Revision);
-            Assert.Equal(sourceText, N.ReadText(field, Limits.MaxTextUnits));
-            Assert.Equal(sourceSelection, N.ReadSelection(field));
-            Assert.Equal(modelCalls, model.Calls); // Keep + return never starts a new translation.
-            Assert.False(settings.Value.ExperimentalWriteback);
-            Assert.False(controller.AutomaticPracticeProgress!.AcceptanceCompleted);
+            if (returnChange is not null)
+            {
+                using var action = ActionDeadline();
+                uint mapped = MapOwnedConfirmationKey(9, 4);
+                Assert.InRange(mapped, 1u, 255u);
+                ushort scan = checked((ushort)mapped);
+                var seen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                KeyEventHandler down = (_, e) => { if (e.Key == Key.Tab) seen.TrySetResult(); };
+                overlay.AddHandler(Keyboard.PreviewKeyDownEvent, down, true);
+                bool held = false;
+                try
+                {
+                    Assert.Equal(overlay.Handle, Native.GetForegroundWindow());
+                    Assert.Same(editor, Keyboard.FocusedElement);
+                    Assert.False((MoreAsyncKeyState(9) & 0x8000) != 0);
+                    Assert.Equal(ModifierKeys.None, Keyboard.Modifiers);
+                    action.Token.ThrowIfCancellationRequested();
+                    uint sent = SendMoreInput(1, [new() { Type = 1, Scan = scan, Flags = 8 }], Marshal.SizeOf<MoreKeyInput>());
+                    held = sent == 1;
+                    Assert.Equal(1u, sent);
+                    await seen.Task.WaitAsync(action.Token);
+                    Assert.True(overlay.IsVisible);
+                    Assert.Same(editor, Keyboard.FocusedElement);
+                    Assert.Equal(draft, editor.Text);
+                    if (returnChange == "draft")
+                    {
+                        editor.AppendText(" changed during original Tab");
+                        editor.Text = draft; // Same final text cannot revive the retired input.
+                    }
+                    else
+                    {
+                        editor.RaiseEvent(new TextCompositionEventArgs(Keyboard.PrimaryDevice,
+                            new TextComposition(InputManager.Current, editor, ""))
+                        {
+                            RoutedEvent = TextCompositionManager.PreviewTextInputStartEvent
+                        });
+                        editor.RaiseEvent(new TextCompositionEventArgs(Keyboard.PrimaryDevice,
+                            new TextComposition(InputManager.Current, editor, ""))
+                        {
+                            RoutedEvent = TextCompositionManager.PreviewTextInputEvent
+                        });
+                    }
+                    Assert.False(overlay.IsVisible);
+                }
+                finally
+                {
+                    try
+                    {
+                        if (held)
+                            Assert.Equal(1u, SendMoreInput(1, [new() { Type = 1, Scan = scan, Flags = 10 }], Marshal.SizeOf<MoreKeyInput>()));
+                    }
+                    finally { overlay.RemoveHandler(Keyboard.PreviewKeyDownEvent, down); }
+                }
+                Assert.Null(host.CaptureDescriptor);
+                Assert.Null(controller.GetStyleSettingsState().Session);
+                Assert.Equal(sourceText, N.ReadText(field, Limits.MaxTextUnits));
+                Assert.Equal(sourceSelection, N.ReadSelection(field));
+                Assert.Equal(modelCalls, model.Calls);
+            }
+            else
+            {
+                using (var action = ActionDeadline())
+                    await SendOwnedConfirmationKey(overlay, Key.Tab, editor, action.Token);
+                await Until(() => N.Focused() == (root, field) && host.CaptureDescriptor is { } fresh
+                    && fresh.NativeFocusRevision > before.NativeFocusRevision && host.SourceReady(initialToken.Target)
+                    && controller.AutomaticPracticeProgress is { AwaitingFreshSource: false }
+                    && editor.IsReadOnly && editor.Text == draft);
+                var after = Assert.IsType<OwnedCaptureDescriptor>(host.CaptureDescriptor);
+                var returnedToken = Assert.IsType<SessionViewToken>(controller.GetStyleSettingsState().Session);
+                Assert.Equal(before.ProcessId, after.ProcessId);
+                Assert.Equal(before.ProcessStartUtcTicks, after.ProcessStartUtcTicks);
+                Assert.Equal(before.RootHwnd, after.RootHwnd);
+                Assert.Equal(before.ControlHwnd, after.ControlHwnd);
+                Assert.Equal(before.NativeCookie, after.NativeCookie);
+                Assert.Equal(before.BeginSequence, after.BeginSequence);
+                Assert.Equal(run, controller.AutomaticPracticeProgress!.RunId);
+                Assert.Equal(initialToken.Target, returnedToken.Target);
+                Assert.NotEqual(editedToken.CommandGeneration, returnedToken.CommandGeneration);
+                Assert.True(returnedToken.Revision > editedToken.Revision);
+                Assert.Equal(sourceText, N.ReadText(field, Limits.MaxTextUnits));
+                Assert.Equal(sourceSelection, N.ReadSelection(field));
+                Assert.Equal(modelCalls, model.Calls); // Keep + return never starts a new translation.
+                Assert.False(settings.Value.ExperimentalWriteback);
+                Assert.False(controller.AutomaticPracticeProgress!.AcceptanceCompleted);
+            }
 
             CancellationTokenSource ActionDeadline()
             {

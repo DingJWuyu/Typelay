@@ -311,18 +311,20 @@ public sealed partial class SettingsRenderingTests
                 Assert.IsType<System.Windows.Media.SolidColorBrush>(dot.Fill).Color);
         }
         Render(scene.Window, $"settings-applications-{language}-{theme}-{width}.png");
-        ApplicationRemovalDialog(scene.Window, "writer", dialog =>
+        ApplicationRemovalDialogAsync(scene.Window, "writer", (dialog, ct) =>
         {
             Assert.Same(ApplicationButton(dialog, "ApplicationRemovalCancel"), System.Windows.Input.Keyboard.FocusedElement);
-            Render(dialog, $"application-remove-{language}-{theme}-{width}.png", clientOnly: true);
+            CaptureApplicationSheetScreen(scene.Window, dialog, $"application-remove-{language}-{theme}-{width}-screen.png", ct);
             InvokeApplicationButton(ApplicationButton(dialog, "ApplicationRemovalCancel"));
+            return Task.CompletedTask;
         });
         Assert.Equal(before, File.ReadAllText(scene.Path));
-        ApplicationDialogAction(scene.Window, () => InvokeApplicationButton(ApplicationButton(scene.Window, "ApplicationAdd")), "ApplicationPicker", dialog =>
+        ApplicationDialogActionAsync(scene.Window, () => InvokeApplicationButton(ApplicationButton(scene.Window, "ApplicationAdd")), "ApplicationPicker", (dialog, ct) =>
         {
             Assert.Same(ApplicationElement(dialog, "ApplicationPickerSearch"), System.Windows.Input.Keyboard.FocusedElement);
-            Render(dialog, $"application-picker-{language}-{theme}-{width}.png", clientOnly: true);
+            CaptureApplicationSheetScreen(scene.Window, dialog, $"application-picker-{language}-{theme}-{width}-screen.png", ct);
             InvokeApplicationButton(ApplicationButton(dialog, "ApplicationPickerCancel"));
+            return Task.CompletedTask;
         });
         Assert.Equal(before, File.ReadAllText(scene.Path));
         var search = Assert.IsType<TextBox>(ApplicationElement(scene.Window, "ApplicationSearch"));
@@ -420,7 +422,7 @@ public sealed partial class SettingsRenderingTests
             return Task.CompletedTask;
         });
 
-    private static void ApplicationDialogActionAsync(SettingsWindow owner, Action open, string id, Func<Window, CancellationToken, Task> interact)
+    private static void ApplicationDialogActionAsync(SettingsWindow owner, Action open, string id, Func<Window, CancellationToken, Task> interact, bool awaitEntrance = true)
     {
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         limit.CancelAfter(TimeSpan.FromSeconds(3));
@@ -441,13 +443,18 @@ public sealed partial class SettingsRenderingTests
                 Assert.Equal(18, title.FontSize);
                 Assert.Equal(FontWeights.Medium, title.FontWeight);
                 Assert.Equal(UiTheme.DisplayFontForSize(18), title.FontFamily);
-                var surface = Assert.IsType<Border>(dialog.Content);
-                Assert.Equal("ApplicationDialogSurface", AutomationProperties.GetAutomationId(surface));
+                if (awaitEntrance)
+                    await AwaitApplicationSheetSettled(owner, dialog, ct);
+                var surface = Assert.IsType<Border>(ApplicationElement(dialog, "ApplicationDialogSurface"));
                 Assert.Equal(id == "ApplicationPicker" ? 320 : 340, surface.ActualWidth);
                 Assert.Equal(new Thickness(22), surface.Padding);
                 Assert.True(dialog.ActualWidth >= surface.ActualWidth);
-                Assert.Same(dialog.Background, surface.Background);
-                Assert.Equal(255, Assert.IsType<System.Windows.Media.SolidColorBrush>(surface.Background).Color.A);
+                Assert.Same(dialog.FindResource("GlassStrong"), surface.Background);
+                Assert.Equal(WindowStyle.None, dialog.WindowStyle);
+                Assert.True(dialog.AllowsTransparency);
+                Assert.False(dialog.Topmost);
+                Assert.Equal(1, dialog.Opacity);
+                Assert.Same(owner, dialog.Owner);
                 foreach (var button in Descendants(dialog).OfType<Button>().Where(button => AutomationProperties.GetAutomationId(button) is
                     "ApplicationPickerBrowse" or "ApplicationPickerCancel" or "ApplicationRemovalCancel" or "ApplicationRemovalConfirm"))
                     AssertApplicationActionSize(button);

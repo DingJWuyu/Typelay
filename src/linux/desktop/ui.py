@@ -1574,11 +1574,12 @@ class ApplicationSupportPane:
 class LanguagePicker(Gtk.Button):
     """A native direction button with a local, searchable catalog popover."""
 
-    def __init__(self, save):
+    def __init__(self, save, *, capture_selection=None):
         from design import box, design_icon, label, style
 
         super().__init__()
         self.save = save
+        self.capture_selection = capture_selection
         self.selection_code = None
         self.choices = []
         self.native_names = {}
@@ -1809,7 +1810,13 @@ class LanguagePicker(Gtk.Button):
                     return
                 # Retire this peer before delivering intent: a synchronous
                 # save callback may reopen another interaction instance.
+                selection = self.capture_selection() if self.capture_selection else None
                 self.popdown()
+                if selection is not None:
+                    # The consumer retains A's opening across popdown/focus
+                    # callbacks instead of borrowing a newly opened surface B.
+                    selection(identity)
+                    return
                 self.grab_focus()
                 self.set_active_id(identity)
 
@@ -3207,6 +3214,7 @@ class Settings:
         self.preparation_revision = 0
         self.preparation_pending = False
         self.preparation_error = ""
+        self.preparation_changed = None
         self.install_requested, self.pause_requested = install_requested, pause_requested
         self.package_requested = package_requested
         self.preparation_refresh = preparation_refresh
@@ -4503,7 +4511,7 @@ class Settings:
             answered = True
             valid = guard is None or guard()
             widget.destroy()
-            if not valid:
+            if not valid or guard is not None and not guard():
                 return
             if result == Gtk.ResponseType.OK:
                 proceed()
@@ -4512,6 +4520,9 @@ class Settings:
 
         dialog.connect("response", response)
         dialog.show_all()
+        if guard is not None and not guard():
+            dialog.destroy()
+            return None
         dialog.get_widget_for_response(Gtk.ResponseType.CANCEL).grab_focus()
         return dialog
 
@@ -4545,9 +4556,13 @@ class Settings:
         notice.set_visible(bool(message))
         if self.preparation_error:
             self.application_support.preparation_details.set_expanded(True)
+        if self.preparation_changed is not None:
+            self.preparation_changed()
 
     def refresh_preparation(self):
         self.preparation_revision += 1
+        if self.preparation_changed is not None:
+            self.preparation_changed()
         self.install_button.set_sensitive(False)
         self.application_support.complete_directions_button.set_sensitive(False)
         for choice in self.application_support.direction_choices.values():
@@ -4786,6 +4801,7 @@ class Settings:
             f"将从 Astral、PyPI 和 Argos 下载运行组件及{models}模型，需要网络及数 GB 空间。"
             "翻译在本机运行，输入内容不会上传。"
         )
+        dialog.set_default_response(Gtk.ResponseType.CANCEL)
 
         answered = False
 
@@ -4796,7 +4812,7 @@ class Settings:
             answered = True
             valid = guard is None or guard()
             widget.destroy()
-            if not valid:
+            if not valid or guard is not None and not guard():
                 return
             if result == Gtk.ResponseType.OK:
                 install()
@@ -4805,4 +4821,8 @@ class Settings:
 
         dialog.connect("response", response)
         dialog.show_all()
+        if guard is not None and not guard():
+            dialog.destroy()
+            return None
+        dialog.get_widget_for_response(Gtk.ResponseType.CANCEL).grab_focus()
         return dialog

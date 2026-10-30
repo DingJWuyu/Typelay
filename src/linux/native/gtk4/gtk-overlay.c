@@ -2224,6 +2224,25 @@ static gboolean language_configuration_contains(LanguageConfiguration *configura
     return configuration && configuration->popup && widget
         && (widget == configuration->popup || gtk_widget_is_ancestor(widget, configuration->popup));
 }
+/* Branch-local, bounded failure evidence on the existing opt-in trace channel.
+ * Never expose the opening id, source, search text or target identity. */
+static void language_configuration_trace(LanguageConfiguration *configuration, const char *stage) {
+    static guint count;
+    if (!g_getenv("TYPELAY_TRACE") || !configuration || count >= 32) return;
+    count++;
+    GtkWidget *focus = configuration->top ? gtk_window_get_focus(GTK_WINDOW(configuration->top)) : NULL;
+    const char *focus_kind = !focus ? "none" : focus == configuration->client ? "search"
+        : language_configuration_contains(configuration, focus) ? "inside" : "outside";
+    g_printerr("TypeLay GTK4 language-opening stage=%s atMs=%" G_GINT64_FORMAT
+        " deadlineMs=%" G_GINT64_FORMAT " same=%d retired=%d pending=%d opening=%d saving=%d"
+        " topMapped=%d topActive=%d popupMapped=%d popupVisible=%d focus=%s\n",
+        stage, tl_now(), configuration->expires, language_configuration == configuration,
+        configuration->retired, configuration->pending, configuration->opening, configuration->saving,
+        configuration->top && gtk_widget_get_mapped(configuration->top),
+        configuration->top && gtk_window_is_active(GTK_WINDOW(configuration->top)),
+        configuration->popup && gtk_widget_get_mapped(configuration->popup),
+        configuration->popup && gtk_widget_get_visible(configuration->popup), focus_kind);
+}
 static void language_configuration_emit(LanguageConfiguration *configuration, const char *operation,
         const char *source, const char *target) {
     JsonObject *event = json_object_new(), *value = json_object_new();
@@ -2239,6 +2258,7 @@ static void language_configuration_emit(LanguageConfiguration *configuration, co
 static void language_configuration_close(gboolean notify) {
     LanguageConfiguration *configuration = language_configuration;
     if (!configuration) return;
+    language_configuration_trace(configuration, notify ? "close-notify" : "close-silent");
     language_configuration = NULL;
     configuration->retired = TRUE; /* Before any GTK or transport callback. */
     if (configuration->timeout) g_source_remove(configuration->timeout);
@@ -2267,6 +2287,8 @@ static void language_configuration_changed(GtkWidget *widget, GParamSpec *spec, 
     LanguageConfiguration *configuration = language_configuration_ref(data);
     /* No pending ACK may reclaim focus after the user moved elsewhere. This
      * records retirement, not the original source widget or its authority. */
+    language_configuration_trace(configuration,
+        g_strcmp0(g_param_spec_get_name(spec), "focus-widget") == 0 ? "signal-focus" : "signal-active");
     gboolean pending_focus_change = configuration->pending && !configuration->opening
         && g_strcmp0(g_param_spec_get_name(spec), "focus-widget") == 0;
     if (language_configuration == configuration && (!language_configuration_current(configuration)
@@ -2280,12 +2302,14 @@ static void language_configuration_changed(GtkWidget *widget, GParamSpec *spec, 
 static void language_configuration_unmapped(GtkWidget *widget, gpointer data) {
     (void)widget;
     LanguageConfiguration *configuration = language_configuration_ref(data);
+    language_configuration_trace(configuration, widget == configuration->top ? "top-unmap" : "popup-closed");
     if (language_configuration == configuration) language_configuration_close(TRUE);
     language_configuration_unref(configuration);
 }
 static gboolean language_configuration_timeout(gpointer data) {
     LanguageConfiguration *configuration = data;
     configuration->timeout = 0;
+    language_configuration_trace(configuration, "timeout");
     if (language_configuration == configuration && configuration->pending) language_configuration_close(TRUE);
     return G_SOURCE_REMOVE;
 }
@@ -2460,6 +2484,8 @@ static gboolean language_configuration_text(JsonObject *value, const char *name,
     return text && *text && strlen(text) <= maximum && g_utf8_validate(text, -1, NULL);
 }
 static gboolean language_configuration_show(LanguageConfiguration *configuration, JsonObject *data) {
+    language_configuration_trace(configuration, "show-entry");
+    const char *stage = "default-keys";
     JsonNode *node = data ? json_object_get_member(data, "choices") : NULL;
     if (!language_configuration_current(configuration) || !configuration->pending || tl_now() > configuration->expires
         || !node || !JSON_NODE_HOLDS_ARRAY(node) || tl_integer(data, "settingsRevision", -1) < 0
@@ -2537,6 +2563,7 @@ static gboolean language_configuration_show(LanguageConfiguration *configuration
     gtk_css_provider_load_from_data(configuration->css, css, -1); g_free(css);
     configuration->display = g_object_ref(gtk_widget_get_display(configuration->top));
     gtk_style_context_add_provider_for_display(configuration->display, GTK_STYLE_PROVIDER(configuration->css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 2);
+    language_configuration_trace(configuration, "provider-return");
     if (!language_configuration_current(configuration) || !configuration->pending
         || tl_now() > configuration->expires) return FALSE;
     configuration->opening = TRUE;
@@ -2619,19 +2646,27 @@ static gboolean language_configuration_show(LanguageConfiguration *configuration
     gtk_box_append(GTK_BOX(box), configuration->feedback);
     language_configuration_signal(configuration->search, "changed", G_CALLBACK(language_configuration_filter), configuration);
     language_configuration_signal(popup, "closed", G_CALLBACK(language_configuration_unmapped), configuration);
+    stage = "before-parent";
+    language_configuration_trace(configuration, stage);
     if (!language_configuration_current(configuration) || !configuration->pending
         || tl_now() > configuration->expires) goto failed;
     gtk_widget_set_parent(popup, configuration->top);
+    stage = "parent-return";
+    language_configuration_trace(configuration, stage);
     if (!language_configuration_current(configuration) || !configuration->pending
         || tl_now() > configuration->expires
         || gtk_window_get_focus(GTK_WINDOW(configuration->top)) != opening_focus) goto failed;
     gtk_popover_popup(GTK_POPOVER(popup));
+    stage = "popup-return";
+    language_configuration_trace(configuration, stage);
     if (!language_configuration_current(configuration) || !configuration->pending
         || tl_now() > configuration->expires) goto failed;
     GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(configuration->top));
     if (focus != opening_focus && !language_configuration_contains(configuration, focus)) goto failed;
     gtk_widget_grab_focus(configuration->search);
     configuration->opening = FALSE;
+    stage = "focus-return";
+    language_configuration_trace(configuration, stage);
     if (!language_configuration_current(configuration) || !configuration->pending
         || tl_now() > configuration->expires || !gtk_widget_get_mapped(popup)
         || gtk_window_get_focus(GTK_WINDOW(configuration->top)) != configuration->client) goto failed;
@@ -2639,10 +2674,13 @@ static gboolean language_configuration_show(LanguageConfiguration *configuration
     if (configuration->timeout) g_source_remove(configuration->timeout);
     configuration->timeout = 0;
     (void)language_configuration_ime(configuration);
+    language_configuration_trace(configuration, "ime-return");
     gboolean current = language_configuration_current(configuration) && tl_now() <= configuration->expires;
     g_object_unref(popup);
     return current;
 failed:
+    language_configuration_trace(configuration, stage);
+    language_configuration_trace(configuration, "show-rejected");
     g_object_unref(popup);
     return FALSE;
 }
@@ -2651,9 +2689,11 @@ static JsonObject *language_configuration_command(const char *operation, JsonObj
     gboolean matches = configuration && g_strcmp0(configuration->id, tl_string(data, "openingId")) == 0;
     gboolean opened = FALSE;
     if (matches && strcmp(operation, "overlay-language-configuration-open") == 0) {
+        language_configuration_trace(configuration, "peer-open");
         opened = language_configuration_show(configuration, data);
         if (!opened && language_configuration == configuration) language_configuration_close(TRUE);
     } else if (matches && strcmp(operation, "overlay-language-configuration-close") == 0) {
+        language_configuration_trace(configuration, "peer-close");
         language_configuration_close(FALSE);
     } else if (matches && strcmp(operation, "overlay-language-configuration-result") == 0
         && language_configuration_current(configuration) && !configuration->pending && configuration->saving) {

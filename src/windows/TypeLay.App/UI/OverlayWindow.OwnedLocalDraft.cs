@@ -24,6 +24,8 @@ internal sealed partial class OverlayWindow
     private object? _localDraftPressedPrompt;
     private Button? _localDraftKeep, _localDraftReplace;
     private TranslationStyle _localDraftTone;
+    private sealed record LocalDraftTab(OwnedLocalDraft Opening, KeyboardHook.LocalDraftPress Press, TextBox Editor, string Draft);
+    private LocalDraftTab? _localDraftTab;
 
     private bool BeginOwnedLocalMenu() => _ownedEditor is { } editor && !EditingComposition
         && _editor.IsKeyboardFocused && _ownedEditorHost?.BeginOwnedLocalDraft(editor) is not null;
@@ -82,6 +84,7 @@ internal sealed partial class OverlayWindow
     {
         if (!ReferenceEquals(_ownedLocalOpening, opening))
             return;
+        _localDraftTab = null;
         _ownedLocalOpening = null; // Reentrant Stop/Hide cannot act on a newer opening.
         _localDraftReturning = _localDraftPrompt = _localDraftRestoring = false;
         _localDraftPromptKey = null;
@@ -98,6 +101,7 @@ internal sealed partial class OverlayWindow
     {
         if (!ReferenceEquals(_ownedLocalOpening, opening))
             return;
+        _localDraftTab = null;
         _ownedLocalOpening = null;
         _localDraftFrame = null;
         _localDraftReturning = false;
@@ -107,6 +111,19 @@ internal sealed partial class OverlayWindow
 
     private void InitializeOwnedLocalDraft()
     {
+        void RetirePendingTab()
+        {
+            if (_localDraftTab is { } pending)
+                RetireLocalDraft(pending.Opening);
+        }
+        _editor.GotKeyboardFocus += (_, _) =>
+        {
+            if (_ownedLocalOpening is { } opening)
+                _ownedEditorHost?.SetLocalDraftEditorFocus(opening, true);
+        };
+        _editor.TextChanged += (_, _) => RetirePendingTab();
+        TextCompositionManager.AddPreviewTextInputStartHandler(_editor, (_, _) => RetirePendingTab());
+        TextCompositionManager.AddPreviewTextInputUpdateHandler(_editor, (_, _) => RetirePendingTab());
         Closed += (_, _) => { if (_ownedLocalOpening is { } opening) RetireLocalDraft(opening); };
         Deactivated += (_, _) =>
         {
@@ -117,6 +134,13 @@ internal sealed partial class OverlayWindow
         {
             if (_ownedLocalOpening is not { } opening)
                 return;
+            if (!_localDraftReturning && ReferenceEquals(e.OldFocus, _editor))
+                _ownedEditorHost?.SetLocalDraftEditorFocus(opening, false);
+            if (_localDraftTab is not null)
+            {
+                RetireLocalDraft(opening);
+                return;
+            }
             if (_localDraftReturning)
             {
                 if (_localDraftRootLeft && !_localDraftFocusLeft && ReferenceEquals(e.OldFocus, _editor) && e.NewFocus is null)
@@ -170,15 +194,41 @@ internal sealed partial class OverlayWindow
             if (message.hwnd != _hwnd || message.message != 0x100 || message.wParam != (nint)9
                 || scan == 0 || (bits & 0xe0000000L) != 0)
                 return;
-            if (_ownedEditorHost?.BeginLocalDraftReturn(opening, scan, (bits & 0x01000000) != 0) != true)
+            if (_localDraftTab is not null
+                || _ownedEditorHost?.CaptureLocalDraftReturnPress(opening, scan, (bits & 0x01000000) != 0,
+                    unchecked((uint)message.time)) is not { } press)
+            {
                 RetireLocalDraft(opening);
+                return;
+            }
+            // No source transition on down. Only this original WPF up may
+            // claim the Hook's already matched LL release, within down+500.
+            _localDraftTab = new(opening, press, _editor, _editor.Text);
         };
         PreviewKeyUp += (_, e) =>
         {
             if (_ownedLocalOpening is null)
                 return;
             if (e.Key == Key.Tab)
+            {
                 e.Handled = true;
+                if (_localDraftTab is { } pending)
+                {
+                    _localDraftTab = null; // Consume before any synchronous focus/pipe callback.
+                    var message = ComponentDispatcher.CurrentKeyboardMessage;
+                    long bits = message.lParam.ToInt64();
+                    uint scan = (uint)(bits >> 16) & 255;
+                    bool current = ReferenceEquals(_ownedLocalOpening, pending.Opening)
+                        && ReferenceEquals(_editor, pending.Editor) && _editor.Text == pending.Draft
+                        && LocalDraftEditorFocused(pending.Opening) && Keyboard.Modifiers == ModifierKeys.None
+                        && message.hwnd == _hwnd && message.message == 0x101 && message.wParam == (nint)9
+                        && scan != 0 && (bits & 0xe0000000L) == 0xc0000000L;
+                    if (!current || _ownedEditorHost?.BeginLocalDraftReturn(pending.Opening, pending.Press,
+                        scan, (bits & 0x01000000) != 0, unchecked((uint)message.time)) != true)
+                        RetireLocalDraft(pending.Opening);
+                    return;
+                }
+            }
             if (_localDraftPromptKey != e.Key)
                 return;
             e.Handled = true;
@@ -193,9 +243,15 @@ internal sealed partial class OverlayWindow
 
     private void OpenLocalDraftMenu(Button anchor)
     {
+        if (_localDraftTab is { } pending)
+        {
+            RetireLocalDraft(pending.Opening);
+            return;
+        }
         if (!LocalDraftCurrent() || _localDraftReturning || EditingComposition || Native.GetForegroundWindow() != _hwnd)
             return;
         var opening = _ownedLocalOpening!;
+        _ownedEditorHost?.SetLocalDraftEditorFocus(opening, false);
         string draft = _editor.Text;
         var menu = new MoreContextMenu();
         bool selected = false, closed = false;
@@ -360,6 +416,7 @@ internal sealed partial class OverlayWindow
         _localDraftKeep = _localDraftReplace = null;
         DismissRegenerateConfirmation(reposition: false);
         PositionLocalDraft();
+        _ownedEditorHost?.SetLocalDraftEditorFocus(opening, true);
     }
 
     private void PositionLocalDraft()

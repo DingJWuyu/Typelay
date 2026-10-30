@@ -276,6 +276,7 @@ class BrowserContract(unittest.TestCase):
             in (
                 "test_source_command_activation_requires_release_proof_frozen_when_keys_were_observed",
                 "test_control_postmutation_focus_roundtrip_is_unknown_and_consumed",
+                "test_control_source_keeps_original_plan_and_release_ownership",
             )
             else ""
         )
@@ -1156,6 +1157,23 @@ class BrowserContract(unittest.TestCase):
         )
 
     def test_control_source_keeps_original_plan_and_release_ownership(self):
+        def save_lifetime():
+            # Read only after the original sequence: no publication or clock refresh.
+            evidence = self.page.evaluate("""() => ({rows: fixtureHeldAudit.rows,
+              omitted: fixtureHeldAudit.omitted, controlEvents: window.controlEvents ?? [],
+              sourceFocused: document.querySelector('#source').matches(':focus')})""")
+            output = Path(
+                os.environ.get(
+                    "TYPELAY_BROWSER_LIFETIME_OUTPUT",
+                    ROOT / "artifacts/linux/browser-native/overlay/lifetime",
+                )
+            )
+            output.mkdir(parents=True, exist_ok=True)
+            (output / (self._testMethodName + ".json")).write_text(
+                json.dumps(evidence, indent=2), encoding="utf-8"
+            )
+
+        self.addCleanup(save_lifetime)
         self.configure_control()
         snapshot = self.type_source()
         self.assertTrue(snapshot["sessionBindings"]["sourceReady"])

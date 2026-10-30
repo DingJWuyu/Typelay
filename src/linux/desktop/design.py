@@ -205,6 +205,16 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface .quick-card { background: rgba(20,20,19,.045); border: 1px solid rgba(20,20,19,.085); border-radius: 12px; padding: 10px; }
 .typelay-surface .quick-headline { font-size: 14px; font-weight: 600; }
 .typelay-surface .quick-status { color: #5c5b56; font-size: 12px; padding: 2px 6px; }
+.typelay-surface.quick-panel button.quick-language { min-height: 34px; padding: 0 10px; margin: 0; border: 0; border-radius: 8px; background: #fff; box-shadow: 0 1px 2px rgba(20,20,19,.04); }
+.typelay-surface.quick-panel.settings-dark button.quick-language { background: #302f2b; }
+.typelay-surface.quick-panel .quick-language .language-name { font-size: 13.5px; }
+.typelay-surface.quick-panel button.quick-swap { min-width: 30px; min-height: 30px; padding: 0; margin: 0; border: 0; }
+.typelay-surface.quick-panel .quick-model { padding: 2px 6px; }
+.typelay-surface.quick-panel .quick-model-status, .typelay-surface.quick-panel .quick-model-detail { font-size: 12px; color: #5c5b56; }
+.typelay-surface.quick-panel button.quick-model-action { min-height: 20px; padding: 0 9px; margin: 0; font-size: 11.5px; }
+.typelay-surface.quick-panel button.quick-action { min-height: 30px; padding: 0 8px; margin: 0; border: 0; border-radius: 7px; font-size: 13px; }
+.typelay-surface.quick-panel button, .typelay-surface.quick-panel label { text-shadow: none; }
+.typelay-surface.quick-panel.settings-dark .quick-model-status, .typelay-surface.quick-panel.settings-dark .quick-model-detail { color: #b5b3ab; }
 .typelay-surface .model-mark { background: linear-gradient(160deg,#4fae77,#2a7a4b); color: white; padding: 10px; border-radius: 11px; min-width: 24px; min-height: 24px; }
 .typelay-surface .connection-card { background: #fff; border: 1px solid rgba(20,20,19,.085); border-radius: 12px; padding: 12px 14px; }
 .typelay-surface .model-details { padding: 10px 0; }
@@ -549,6 +559,7 @@ def apply_theme(window, preferences, provider=None):
         "settings-page-title": 22,
         "welcome-title": 30,
         "language-name": 15,
+        "quick-language-name": 13.5,
         "applications-dialog-title": 18,
     }
     display_css = "".join(
