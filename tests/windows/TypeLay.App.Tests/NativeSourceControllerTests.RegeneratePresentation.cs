@@ -104,7 +104,10 @@ public sealed partial class NativeSourceControllerTests
             {
                 await Until(() => widths.Count >= 4 && widths.TakeLast(4).All(frame => frame.Width == sheetWidth), deadline.Token);
                 Assert.False(windowReadFailed);
-                Assert.True(widths.Count(frame => frame.Width > compactWidth && frame.Width < sheetWidth) >= 2);
+                Assert.True(widths.Count(frame => frame.Width > compactWidth && frame.Width < sheetWidth) >= 2,
+                    $"Expected intermediate widths between {compactWidth} and {sheetWidth}; "
+                    + $"anchor={anchor}, samples={widths.Count}, "
+                    + $"first={string.Join(";", widths.Take(12))}, last={string.Join(";", widths.TakeLast(4))}");
                 Assert.All(widths, frame => Assert.Equal(anchor, frame.Right));
                 widths.Clear();
             }
@@ -134,7 +137,10 @@ public sealed partial class NativeSourceControllerTests
             {
                 await Until(() => widths.Count >= 4 && widths.TakeLast(4).All(frame => frame.Width == compactWidth), deadline.Token);
                 Assert.False(windowReadFailed);
-                Assert.True(widths.Count(frame => frame.Width > compactWidth && frame.Width < sheetWidth) >= 2);
+                Assert.True(widths.Count(frame => frame.Width > compactWidth && frame.Width < sheetWidth) >= 2,
+                    $"Expected intermediate widths between {compactWidth} and {sheetWidth}; "
+                    + $"anchor={anchor}, samples={widths.Count}, "
+                    + $"first={string.Join(";", widths.Take(12))}, last={string.Join(";", widths.TakeLast(4))}");
                 Assert.All(widths, frame => Assert.Equal(anchor, frame.Right));
             }
             Assert.Equal("Hello - manual draft", editor.Text);

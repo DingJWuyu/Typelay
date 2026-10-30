@@ -77,7 +77,7 @@ public sealed partial class OfflineFontRenderingTests(WpfDesktopFixture desktop)
             foreach (var (choice, latin, chinese) in new[]
                 { ("claude", "TypeLaySerif-20-Medium.ttf", "NotoSerifSC-Medium.otf"), ("sans", "Inter-Medium.ttf", "NotoSansSC-Medium.otf") })
             {
-                var option = Descendants(window).OfType<Button>().Single(button => AutomationProperties.GetName(button) == "Font_" + choice);
+                var option = Descendants(window).OfType<Button>().Single(button => AutomationProperties.GetAutomationId(button) == "AppearanceFont_" + choice);
                 var preview = Assert.Single(Descendants(option).OfType<TextBlock>(), text => text.Text == "Aa 文");
                 var glyphs = RenderedGlyphs(preview);
                 Assert.Contains(glyphs, run => run.GlyphTypeface.FontUri.AbsoluteUri.EndsWith(latin, StringComparison.OrdinalIgnoreCase));

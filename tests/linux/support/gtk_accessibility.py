@@ -156,12 +156,16 @@ def bounds(node, pid, expected_size, *, expected_role=None, expected_name=None):
         raise AssertionError("owned GTK frame exceeds the bounded ancestry")
     assert frame.get_state_set().contains(Atspi.StateType.SHOWING)
     outer = Atspi.Component.get_extents(frame.get_component_iface(), Atspi.CoordType.SCREEN)
-    assert (outer.width, outer.height) == tuple(expected_size), (
-        "GTK frame differs from niri window: "
-        f"frame={(outer.x, outer.y, outer.width, outer.height)}, "
-        f"niriSize={tuple(expected_size)}, "
-        f"field={(area.x, area.y, area.width, area.height)}"
-    )
+    # An explicit None is for same-GTK-space containment only, not conversion
+    # to compositor pointer coordinates. CSD frame extents include shadows;
+    # Wayland window geometry excludes them. Pointer callers keep exact sizing.
+    if expected_size is not None:
+        assert (outer.width, outer.height) == tuple(expected_size), (
+            "GTK frame differs from niri window: "
+            f"frame={(outer.x, outer.y, outer.width, outer.height)}, "
+            f"niriSize={tuple(expected_size)}, "
+            f"field={(area.x, area.y, area.width, area.height)}"
+        )
     x, y = area.x - outer.x, area.y - outer.y
     assert 0 < area.width <= outer.width and 0 < area.height <= outer.height
     assert 0 <= x <= outer.width - area.width and 0 <= y <= outer.height - area.height

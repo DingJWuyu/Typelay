@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Automation;
@@ -37,24 +38,82 @@ public sealed partial class SetupRenderingTests
         var startImage = ThumbImage(scene.Window);
         BitmapSource? middleImage = null;
         var samples = new List<(double Spread, double SoftSpread, double Blur, double Offset, byte Alpha)>();
-        await WatchAppearanceRings(() => SelectAppearanceTile(old), () =>
+        bool diagnose = kind == "font" && value == "system";
+        long enqueued = 0;
+        double? invocationReturned = null, settingsChanged = null;
+        object? firstFrame = null, lastFrame = null;
+        double originalPanelWidth = (old.Parent as FrameworkElement)?.ActualWidth ?? 0;
+        void Changed()
         {
-            if (AppearanceSavedValue(scene, kind) != value)
-                return;
-            var current = AppearanceTile(scene.Window, kind, value);
-            Assert.NotSame(old, current);
-            var strong = AppearanceLayer(current, "selection");
-            var soft = AppearanceLayer(current, "selectionSoft");
-            Assert.False(strong.IsHitTestVisible);
-            Assert.False(soft.IsHitTestVisible);
-            Assert.False(strong.Focusable);
-            double spread = strong.BorderThickness.Left, softSpread = -soft.Margin.Left;
-            double blur = soft.Effect is BlurEffect effect ? effect.Radius : 0;
-            double offset = ((TranslateTransform)soft.RenderTransform).Y;
-            samples.Add((spread, softSpread, blur, offset, Assert.IsType<SolidColorBrush>(strong.BorderBrush).Color.A));
-            if (middleImage is null && spread is > .6 and < 2.4)
-                middleImage = ThumbImage(scene.Window);
-        });
+            if (enqueued != 0 && AppearanceSavedValue(scene, kind) == value)
+                settingsChanged ??= Stopwatch.GetElapsedTime(enqueued).TotalMilliseconds;
+        }
+        if (diagnose)
+            scene.Settings.Changed += Changed;
+        try
+        {
+            await WatchAppearanceRings(() =>
+            {
+                enqueued = Stopwatch.GetTimestamp();
+                SelectAppearanceTile(old);
+                invocationReturned = Stopwatch.GetElapsedTime(enqueued).TotalMilliseconds;
+            }, () =>
+            {
+                double observationStarted = Stopwatch.GetElapsedTime(enqueued).TotalMilliseconds;
+                if (AppearanceSavedValue(scene, kind) != value)
+                    return;
+                var current = AppearanceTile(scene.Window, kind, value);
+                Assert.NotSame(old, current);
+                var strong = AppearanceLayer(current, "selection");
+                var soft = AppearanceLayer(current, "selectionSoft");
+                Assert.False(strong.IsHitTestVisible);
+                Assert.False(soft.IsHitTestVisible);
+                Assert.False(strong.Focusable);
+                double spread = strong.BorderThickness.Left, softSpread = -soft.Margin.Left;
+                double blur = soft.Effect is BlurEffect effect ? effect.Radius : 0;
+                double offset = ((TranslateTransform)soft.RenderTransform).Y;
+                samples.Add((spread, softSpread, blur, offset, Assert.IsType<SolidColorBrush>(strong.BorderBrush).Color.A));
+                if (middleImage is null && spread is > .6 and < 2.4)
+                    middleImage = ThumbImage(scene.Window);
+                if (diagnose)
+                {
+                    var frame = new
+                    {
+                        ObservationStartedMs = observationStarted,
+                        ObservationFinishedMs = Stopwatch.GetElapsedTime(enqueued).TotalMilliseconds,
+                        WindowWidth = scene.Window.ActualWidth,
+                        WindowHeight = scene.Window.ActualHeight,
+                        TileWidth = current.ActualWidth,
+                        TileHeight = current.ActualHeight,
+                        PanelWidth = (current.Parent as FrameworkElement)?.ActualWidth,
+                        Spread = spread,
+                        SoftSpread = softSpread,
+                        Blur = blur,
+                        Offset = offset,
+                        HasLocalOutline = strong.ReadLocalValue(Border.BorderThicknessProperty) != DependencyProperty.UnsetValue,
+                        Reduced = UiTheme.ReduceMotion
+                    };
+                    firstFrame ??= frame;
+                    lastFrame = frame;
+                }
+            });
+        }
+        finally
+        {
+            if (diagnose)
+            {
+                scene.Settings.Changed -= Changed;
+                TestContext.Current.TestOutputHelper?.WriteLine("Appearance system selection boundary: " + System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    InvocationReturnedMs = invocationReturned,
+                    SettingsChangedMs = settingsChanged,
+                    OriginalPanelWidth = originalPanelWidth,
+                    Samples = samples.Count,
+                    FirstFrame = firstFrame,
+                    LastFrame = lastFrame
+                }));
+            }
+        }
         Assert.Contains(samples, sample => sample.Spread is > .6 and < 2.4 && sample.SoftSpread is > .1 and < 4.9
             && sample.Blur is > 0 and < 2 && sample.Offset is > 0 and < 1 && sample.Alpha < 255);
         var selected = AppearanceTile(scene.Window, kind, value);
@@ -168,7 +227,12 @@ public sealed partial class SetupRenderingTests
                 if (!retiredDuringLayout)
                     return;
                 Assert.NotNull(oldRing);
-                Assert.Equal(2.5, oldRing.BorderThickness.Left);
+                Assert.NotNull(retired);
+                Assert.False(retired.IsDescendantOf(scene.Window));
+                foreach (var property in new[] { FrameworkElement.MarginProperty, Border.CornerRadiusProperty,
+                    UIElement.VisibilityProperty, Border.BorderThicknessProperty, Border.BorderBrushProperty,
+                    Border.BackgroundProperty, UIElement.RenderTransformProperty, UIElement.EffectProperty })
+                    Assert.Same(DependencyProperty.UnsetValue, oldRing.ReadLocalValue(property));
                 var current = AppearanceTile(scene.Window, "font", "sans");
                 Assert.NotSame(retired, current);
                 Assert.Equal(2.5, AppearanceLayer(current, "selection").BorderThickness.Left);
@@ -325,8 +389,12 @@ public sealed partial class SetupRenderingTests
     {
         TimeSpan? first = null;
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool inCallback = false;
         void Frame(object? sender, EventArgs args)
         {
+            if (inCallback)
+                return;
+            inCallback = true;
             try
             {
                 var time = ((RenderingEventArgs)args).RenderingTime;
@@ -336,6 +404,7 @@ public sealed partial class SetupRenderingTests
                     done.TrySetResult();
             }
             catch (Exception error) { done.TrySetException(error); }
+            finally { inCallback = false; }
         }
         CompositionTarget.Rendering += Frame;
         try

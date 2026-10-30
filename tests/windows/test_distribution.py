@@ -506,7 +506,13 @@ class DistributionTests(unittest.TestCase):
                 if isinstance(reply, Exception):
                     raise reply
                 self.assertEqual(
-                    reply, command | {"Kind": "started" if kind == "begin" else "retired"}
+                    reply,
+                    command
+                    | {
+                        "Kind": "started" if kind == "begin" else "retired",
+                        "LocalDraft": None,
+                        "LocalReturn": None,
+                    },
                 )
 
             exchange("begin", 1)
@@ -545,6 +551,8 @@ class DistributionTests(unittest.TestCase):
                         "Exit": None,
                         "ExitResult": None,
                         "PrefixResult": None,
+                        "LocalDraft": None,
+                        "LocalReturn": None,
                     }
                 ],
             )

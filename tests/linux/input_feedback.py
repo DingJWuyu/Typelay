@@ -2511,6 +2511,253 @@ class InputFeedbackTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def connect_language_configuration_peer(self):
+        self.peer = self.connect_peer(backend="gtk4")
+
+        def description():
+            value = InputFeedbackTests.description(self)
+            value["geometry"]["space"] = "gtk4-toplevel"
+            return value
+
+        self.description = description
+
+    @staticmethod
+    def language_configuration_ack(owner):
+        # Controlled Host port reply, not a retirement/IME/UI acknowledgement.
+        return {
+            "opened": True,
+            "connectionId": owner["connectionId"],
+            "openingId": owner["openingId"],
+            "settingsRevision": 12,
+            "source": "en",
+            "target": "zh",
+            "sourceLabel": "English",
+            "targetLabel": "中文",
+            "swapAllowed": True,
+            "choices": [
+                {"code": "zh", "label": "Chinese", "nativeLabel": "中文", "selectable": True}
+            ],
+        }
+
+    def test_language_configuration_bridge_binds_peer_and_never_reuses_source_actions(self):
+        self.connect_language_configuration_peer()
+
+        async def exercise():
+            with patch("overlay.now_ms", return_value=1000):
+                overlay, jobs, token, _ = await self.overlay_scenario()
+                opening = str(uuid.uuid4())
+                event = {
+                    "operation": "languageConfigurationBegin",
+                    "value": {"openingId": opening},
+                    "target": token["target"]["value"],
+                    "generation": self.generation,
+                    "revision": overlay.revision,
+                }
+                requests = []
+
+                async def host(operation, value):
+                    requests.append((operation, value))
+                    if operation == "beginLanguageConfiguration":
+                        overlay.hide()  # The real Host's StopSession hide does not retire the shell.
+                        return self.language_configuration_ack(value)
+                    self.assertEqual(operation, "saveLanguageConfiguration")
+                    return {"saved": True}
+
+                self.host.ask = host
+                self.peer.event("ui", {**event, "revision": event["revision"] - 1})
+                self.assertIsNone(overlay.language_configuration)
+                self.peer.event("ui", event)
+                self.assertIsNone(overlay.value)
+                self.assertFalse(overlay.visible)
+                self.assertFalse(overlay.editing)
+                self.assertFalse(overlay.acceptance_ready)
+                frames = await self.settle_overlay(jobs)
+                self.assertEqual(
+                    requests,
+                    [
+                        (
+                            "beginLanguageConfiguration",
+                            {
+                                "connectionId": self.peer.connection_id,
+                                "openingId": opening,
+                                "token": token,
+                            },
+                        )
+                    ],
+                )
+                config = next(
+                    frame["data"]
+                    for frame in frames
+                    if frame["op"] == "overlay-language-configuration-open"
+                )
+                for key in ("token", "viewContext", "authority", "permit", "text", "targetId"):
+                    self.assertNotIn(key, config)
+                self.assertEqual(config["openingId"], opening)
+                self.assertEqual(config["settingsRevision"], 12)
+                before = list(self.host.events)
+                for operation in ("return", "escape", "regenerate", "beginEdit", "draft"):
+                    self.peer.event("ui", {**event, "operation": operation})
+                self.assertEqual(self.host.events, before)
+                self.peer.event(
+                    "ui",
+                    {
+                        "operation": "languageConfigurationSave",
+                        "value": {"openingId": opening, "source": "zh", "target": "en"},
+                    },
+                )
+                await self.settle_overlay(jobs)
+                self.assertEqual(
+                    requests[-1],
+                    (
+                        "saveLanguageConfiguration",
+                        {
+                            "openingId": opening,
+                            "connectionId": self.peer.connection_id,
+                            "expectedRevision": 12,
+                            "source": "zh",
+                            "target": "en",
+                        },
+                    ),
+                )
+                self.assertIsNone(overlay.language_configuration)
+                self.assertIsNone(overlay.value)
+                self.assertFalse(overlay.visible)
+
+        asyncio.run(exercise())
+
+    def test_language_configuration_cancel_before_task_dispatch_sends_no_old_request(self):
+        async def exercise():
+            original_ask = self.host.ask
+            for phase in ("begin", "save"):
+                with self.subTest(phase=phase), patch("overlay.now_ms", return_value=1000):
+                    self.host.ask = original_ask
+                    self.connect_language_configuration_peer()
+                    overlay, jobs, token, _ = await self.overlay_scenario()
+                    opening = str(uuid.uuid4())
+                    requests = []
+
+                    async def host(operation, value):
+                        requests.append((operation, value))
+                        self.assertEqual(operation, "beginLanguageConfiguration")
+                        return self.language_configuration_ack(value)
+
+                    self.host.ask = host
+                    self.peer.event(
+                        "ui",
+                        {
+                            "operation": "languageConfigurationBegin",
+                            "value": {"openingId": opening},
+                            "target": token["target"]["value"],
+                            "generation": self.generation,
+                            "revision": overlay.revision,
+                        },
+                    )
+                    if phase == "save":
+                        await self.settle_overlay(jobs)
+                        self.peer.event(
+                            "ui",
+                            {
+                                "operation": "languageConfigurationSave",
+                                "value": {"openingId": opening, "source": "zh", "target": "en"},
+                            },
+                        )
+                    # No event-loop yield between queuing the request and retiring it.
+                    self.peer.event(
+                        "ui",
+                        {
+                            "operation": "languageConfigurationCancel",
+                            "value": {"openingId": opening},
+                        },
+                    )
+                    frames = await self.settle_overlay(jobs)
+                    self.assertEqual(
+                        [operation for operation, _ in requests],
+                        [] if phase == "begin" else ["beginLanguageConfiguration"],
+                    )
+                    self.assertFalse(
+                        any(
+                            frame["op"] == "overlay-language-configuration-open" for frame in frames
+                        )
+                    )
+                    self.assertIsNone(overlay.language_configuration)
+                    self.assertIsNone(overlay.value)
+                    self.assertFalse(overlay.visible)
+
+        asyncio.run(exercise())
+
+    def test_language_configuration_bridge_cancel_lost_and_timeout_reject_late_ack(self):
+        # These are authenticated Peer/Link lifecycle and bounded clock ports,
+        # not evidence that the native search excludes real source discovery.
+        async def exercise():
+            original_ask = self.host.ask
+            for retirement in ("cancel", "lost", "timeout"):
+                self.host.ask = original_ask
+                with (
+                    self.subTest(retirement=retirement),
+                    patch("overlay.now_ms", return_value=1000) as clock,
+                ):
+                    self.connect_language_configuration_peer()
+                    overlay, jobs, token, _ = await self.overlay_scenario()
+                    opening = str(uuid.uuid4())
+                    pending = asyncio.get_running_loop().create_future()
+                    requests = []
+
+                    async def host(operation, value):
+                        self.assertEqual(operation, "beginLanguageConfiguration")
+                        requests.append(value)
+                        return await pending
+
+                    self.host.ask = host
+                    self.peer.event(
+                        "ui",
+                        {
+                            "operation": "languageConfigurationBegin",
+                            "value": {"openingId": opening},
+                            "target": token["target"]["value"],
+                            "generation": self.generation,
+                            "revision": overlay.revision,
+                        },
+                    )
+                    await asyncio.sleep(0)
+                    self.assertEqual(len(requests), 1)
+                    owner = {"connectionId": self.peer.connection_id, "openingId": opening}
+                    if retirement == "cancel":
+                        # A late cancellation for another opening cannot close this one.
+                        self.peer.event(
+                            "ui",
+                            {
+                                "operation": "languageConfigurationCancel",
+                                "value": {"openingId": str(uuid.uuid4())},
+                            },
+                        )
+                        self.assertIsNotNone(overlay.language_configuration)
+                        self.peer.event(
+                            "ui",
+                            {
+                                "operation": "languageConfigurationCancel",
+                                "value": {"openingId": opening},
+                            },
+                        )
+                    elif retirement == "lost":
+                        self.peer.link.disconnected()
+                    else:
+                        clock.return_value = (
+                            1601  # The original independent 600ms handshake expired.
+                        )
+                    pending.set_result(self.language_configuration_ack(owner))
+                    frames = await self.settle_overlay(jobs)
+                    self.assertIsNone(overlay.language_configuration)
+                    self.assertIn(("cancelLanguageConfiguration", owner), self.host.events)
+                    self.assertFalse(
+                        any(
+                            frame["op"] == "overlay-language-configuration-open" for frame in frames
+                        )
+                    )
+                    self.assertIsNone(overlay.value)
+                    self.assertFalse(overlay.visible)
+
+        asyncio.run(exercise())
+
     def test_overlay_appearance_forwarding_keeps_source_token_and_candidate(self):
         async def exercise():
             overlay, jobs, token, view = await self.overlay_scenario()
@@ -2585,6 +2832,13 @@ class InputFeedbackTests(unittest.TestCase):
                                     "editing": frame["data"]["view"]["state"]
                                     == "EditingTranslation",
                                 },
+                            }
+                        )
+                    elif frame["op"] == "overlay-language-configuration-open":
+                        self.peer.link.receive(
+                            {
+                                "id": frame["id"],
+                                "data": {"opened": True, "openingId": frame["data"]["openingId"]},
                             }
                         )
                     elif frame["op"] == "overlay-glossary-open" and "id" in frame:

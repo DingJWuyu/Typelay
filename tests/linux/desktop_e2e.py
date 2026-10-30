@@ -2100,9 +2100,12 @@ def run(arguments):
                                 "language-options",
                                 False,
                                 nested[0],
+                                language_configuration=gtk4,
                             )
                         evidence.append(
-                            "GTK renderer: catalog language choices preserve menu drafts and focus"
+                            "GTK4 configuration: source retired before search, keyboard navigation and explicit save/retry"
+                            if gtk4
+                            else "GTK renderer: catalog language choices preserve menu drafts and focus"
                         )
                         refusals = [
                             "body",
@@ -2130,9 +2133,12 @@ def run(arguments):
                                     "language-retention-" + refusal,
                                     False,
                                     nested[0],
+                                    language_configuration=gtk4,
                                 )
                         evidence.append(
-                            "GTK language preview: detached renewal rejects changed body, authority, "
+                            "GTK4 configuration: changed view, cancel, external focus and late ACK never restore the retired source"
+                            if gtk4
+                            else "GTK language preview: detached renewal rejects changed body, authority, "
                             "editing permission, external focus and source input"
                         )
                         fixture = subprocess.Popen(
@@ -6605,10 +6611,14 @@ def run(arguments):
                             "clipboard source did not gain actual native focus",
                         )
                         current = clipboard_window()
+                        assert current["id"] == fixture_window["id"] and current["is_focused"]
+                        # This keyboard-only paste uses no compositor point. Check
+                        # containment within the owned GTK frame, whose CSD shadow
+                        # is outside niri's visual window geometry.
                         bounds(
                             source,
                             clipboard_process.pid,
-                            current["layout"]["window_size"],
+                            None,
                             expected_name="TypeLay input contracts",
                         )
                         assert text(source) == "TypeLay clipboard target"

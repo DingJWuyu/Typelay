@@ -312,11 +312,16 @@ internal sealed class SessionScenario : IDisposable
             PublishedShortcuts.Add(lease);
             Shortcut = lease;
         }
+        public Action? Revoked
+        {
+            get; set;
+        }
         public void Revoke()
         {
             AcceptanceModifierTransition = null;
             Permit = null;
             Shortcut = null;
+            Revoked?.Invoke();
         }
         public void RevokeAcceptanceModifier(AcceptanceModifierTransition transition)
         {

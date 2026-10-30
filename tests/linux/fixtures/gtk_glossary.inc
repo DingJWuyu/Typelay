@@ -142,6 +142,107 @@ static void probe_more_action(const char *name, guint fire_at, gboolean refuse) 
         g_error("The selected real Clear More probe did not execute");
 }
 
+#if GTK_MAJOR_VERSION == 4
+typedef struct {
+    guint serial;
+    gint64 deadline;
+    GtkWidget *popup;
+    GtkNative *native;
+    GdkSurface *surface;
+    GdkFrameClock *clock;
+    GdkPaintable *paintable;
+    gulong after_paint, invalidated, unmapped;
+    gboolean ready, retired;
+} MoreCapture;
+static MoreCapture more_capture;
+static void glossary_capture_clear(void) {
+    MoreCapture *capture = &more_capture;
+    if (capture->after_paint) g_signal_handler_disconnect(capture->clock, capture->after_paint);
+    if (capture->invalidated) g_signal_handler_disconnect(capture->paintable, capture->invalidated);
+    if (capture->unmapped) g_signal_handler_disconnect(capture->popup, capture->unmapped);
+    g_clear_object(&capture->paintable); g_clear_object(&capture->clock);
+    g_clear_object(&capture->surface); g_clear_object(&capture->native);
+    g_clear_object(&capture->popup);
+    *capture = (MoreCapture){0};
+}
+static void more_capture_ready(GObject *object, gpointer unused) {
+    (void)object; (void)unused;
+    more_capture.ready = TRUE;
+}
+static void more_capture_unmapped(GtkWidget *widget, gpointer unused) {
+    (void)widget; (void)unused;
+    more_capture.retired = TRUE; /* Remapping the same object cannot revive this command. */
+}
+static void more_capture_require_current(void) {
+    MoreCapture *capture = &more_capture;
+    if (capture->retired || g_get_monotonic_time() / 1000 >= capture->deadline
+        || find_named_widget(report_window, "typelay-more-popup") != capture->popup
+        || !gtk_widget_get_mapped(capture->popup)
+        || gtk_widget_get_native(capture->popup) != capture->native
+        || gtk_native_get_surface(capture->native) != capture->surface
+        || gtk_widget_get_frame_clock(capture->popup) != capture->clock) {
+        glossary_capture_clear();
+        g_error("More capture retired or reached the original command deadline");
+    }
+}
+static gboolean capture_more_when_ready(guint serial, gint64 deadline, const char *path) {
+    MoreCapture *capture = &more_capture;
+    if (!capture->popup) {
+        GtkWidget *popup = find_named_widget(report_window, "typelay-more-popup");
+        GtkNative *native = popup ? gtk_widget_get_native(popup) : NULL;
+        GdkSurface *surface = native ? gtk_native_get_surface(native) : NULL;
+        GdkFrameClock *clock = popup ? gtk_widget_get_frame_clock(popup) : NULL;
+        if (deadline <= g_get_monotonic_time() / 1000 || !popup
+            || !gtk_widget_get_mapped(popup) || !surface || !clock)
+            g_error("Expected a live mapped More popup and original command deadline");
+        *capture = (MoreCapture){.serial = serial, .deadline = deadline,
+            .popup = g_object_ref(popup), .native = g_object_ref(native),
+            .surface = g_object_ref(surface), .clock = g_object_ref(clock), .ready = TRUE};
+        capture->unmapped = g_signal_connect(popup, "unmap", G_CALLBACK(more_capture_unmapped), NULL);
+        capture->paintable = gtk_widget_paintable_new(popup);
+        capture->after_paint = g_signal_connect(clock, "after-paint", G_CALLBACK(more_capture_ready), NULL);
+        capture->invalidated = g_signal_connect(capture->paintable, "invalidate-contents",
+            G_CALLBACK(more_capture_ready), NULL);
+    }
+    if (capture->serial != serial || capture->deadline != deadline) {
+        glossary_capture_clear();
+        g_error("More capture command identity changed while pending");
+    }
+    more_capture_require_current();
+    if (!capture->ready) return FALSE;
+    capture->ready = FALSE;
+    gint width = gtk_widget_get_width(capture->popup), height = gtk_widget_get_height(capture->popup);
+    if (width <= 0 || height <= 0) {
+        glossary_capture_clear();
+        g_error("More popup allocation missing");
+    }
+    GtkSnapshot *snapshot = gtk_snapshot_new();
+    /* Read the paintable's current natural widget image. A mapped/allocated
+     * widget may not have a render node yet. Never request a new frame here. */
+    gdk_paintable_snapshot(capture->paintable, GDK_SNAPSHOT(snapshot), width, height);
+    GskRenderNode *node = gtk_snapshot_free_to_node(snapshot);
+    more_capture_require_current();
+    if (!node) return FALSE;
+    GskRenderer *renderer = gtk_native_get_renderer(capture->native);
+    if (!renderer) {
+        gsk_render_node_unref(node); glossary_capture_clear();
+        g_error("More popup renderer missing after a nonempty snapshot");
+    }
+    /* Exactly one texture render/save after a real nonempty node, not a
+     * compositor screenshot or proof of physical input delivery. */
+    GdkTexture *texture = gsk_renderer_render_texture(renderer, node, NULL);
+    gsk_render_node_unref(node);
+    more_capture_require_current();
+    char *image = g_strdup_printf("%s.more.png", path);
+    gboolean saved = texture && gdk_texture_save_to_png(texture, image);
+    g_free(image); g_clear_object(&texture);
+    more_capture_require_current();
+    glossary_capture_clear();
+    if (!saved) g_error("Cannot capture the current More popup");
+    return TRUE;
+}
+#endif
+
 static void glossary_host_command(void) {
     const char *path = g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND");
     char *body = NULL;
@@ -149,6 +250,12 @@ static void glossary_host_command(void) {
     guint serial = 0;
     char action[32] = {0};
     if (sscanf(body, "%u %31s", &serial, action) == 2 && serial > glossary_command) {
+#if GTK_MAJOR_VERSION == 4
+        if (more_capture.popup && (more_capture.serial != serial || !g_str_equal(action, "capture-more"))) {
+            glossary_capture_clear();
+            g_error("More capture replaced before its original command completed");
+        }
+#endif
         GtkTextBuffer *text_buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(report_multiline));
         glossary_watch_buffer(text_buffer);
         if (g_str_equal(action, "prepare-textview")) {
@@ -184,8 +291,8 @@ static void glossary_host_command(void) {
 #endif
             g_clear_object(&saved_more_button);
         } else if (g_str_equal(action, "capture-more")) {
-            GtkWidget *popup = find_named_widget(report_window, "typelay-more-popup");
 #if GTK_MAJOR_VERSION == 3
+            GtkWidget *popup = find_named_widget(report_window, "typelay-more-popup");
             if (!popup || !gtk_widget_is_drawable(popup)) g_error("Expected a mapped more popup");
             gint width = gtk_widget_get_allocated_width(popup), height = gtk_widget_get_allocated_height(popup);
             if (width <= 0 || height <= 0) g_error("More popup allocation missing");
@@ -200,23 +307,13 @@ static void glossary_host_command(void) {
             cairo_surface_destroy(surface); g_free(image);
             if (status != CAIRO_STATUS_SUCCESS) g_error("Cannot capture the current more popup");
 #else
-            if (!popup || !gtk_widget_get_mapped(popup)) g_error("Expected a mapped more popup");
-            gint width = gtk_widget_get_width(popup), height = gtk_widget_get_height(popup);
-            if (width <= 0 || height <= 0) g_error("More popup allocation missing");
-            GdkPaintable *paintable = gtk_widget_paintable_new(popup);
-            GtkSnapshot *snapshot = gtk_snapshot_new();
-            /* Public snapshot of this real mapped widget, not a compositor
-             * screenshot or proof of physical input delivery. */
-            gdk_paintable_snapshot(paintable, GDK_SNAPSHOT(snapshot), width, height);
-            GskRenderNode *node = gtk_snapshot_free_to_node(snapshot);
-            GskRenderer *renderer = gtk_native_get_renderer(gtk_widget_get_native(popup));
-            if (!node || !renderer) g_error("More popup snapshot missing");
-            GdkTexture *texture = gsk_renderer_render_texture(renderer, node, NULL);
-            char *image = g_strdup_printf("%s.more.png", path);
-            gboolean saved = texture && gdk_texture_save_to_png(texture, image);
-            g_free(image); g_clear_object(&texture);
-            gsk_render_node_unref(node); g_object_unref(paintable);
-            if (!saved) g_error("Cannot capture the current more popup");
+            gint64 capture_deadline = 0;
+            if (sscanf(body, "%u %31s %" G_GINT64_FORMAT, &serial, action, &capture_deadline) != 3)
+                g_error("More capture requires the caller's original absolute deadline");
+            if (!capture_more_when_ready(serial, capture_deadline, path)) {
+                g_free(body);
+                return; /* Same command stays pending; no ACK or new input. */
+            }
 #endif
         } else if (g_str_equal(action, "reset-inactive-term")) {
             GtkWidget *term = find_named_widget(report_window, "typelay-glossary-source");

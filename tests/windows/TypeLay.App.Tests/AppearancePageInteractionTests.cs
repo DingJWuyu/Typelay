@@ -422,7 +422,7 @@ public sealed partial class SetupRenderingTests
             await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
             Assert.Equal(external, File.ReadAllText(scene.Path));
             Assert.Equal(17, GeneralElement<TextBlock>(scene.Window, "AppearanceTranslationPreview").FontSize);
-            Assert.Contains(Descendants(scene.Window).OfType<TextBlock>(), text => text.IsVisible && text.Text == "Settings changed. Review the current values and retry.");
+            Assert.Contains(Descendants(scene.Window).OfType<TextBlock>(), text => text.IsVisible && text.Text == "Settings were not saved\nSettings changed. Review the current values and retry.");
             Assert.DoesNotContain(Descendants(scene.Window).OfType<TextBlock>(), text => text.IsVisible && text.Text == "Saved. Reopen Settings to confirm its current state.");
         }
         finally
@@ -441,6 +441,9 @@ public sealed partial class SetupRenderingTests
         scene.Window.ShowPage("appearance");
         var old = GeneralElement<ComboBox>(scene.Window, "AppearanceMotion");
         old.BringIntoView();
+        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+        scene.Window.UpdateLayout();
+        AssertWithinViewport(scene.Window, old);
         var owner = UIElementAutomationPeer.CreatePeerForElement(old);
         Assert.IsAssignableFrom<IExpandCollapseProvider>(owner.GetPattern(PatternInterface.ExpandCollapse)).Expand();
         await Dispatcher.Yield(DispatcherPriority.ContextIdle);
@@ -625,7 +628,14 @@ public sealed partial class SetupRenderingTests
         Assert.IsAssignableFrom<IExpandCollapseProvider>(owner.GetPattern(PatternInterface.ExpandCollapse)).Expand();
         await Dispatcher.Yield(DispatcherPriority.ContextIdle);
         window.UpdateLayout();
-        var item = Assert.Single(owner.GetChildren(), child => child.GetName() == label && child.IsEnabled());
+        var children = owner.GetChildren();
+        Assert.NotNull(children);
+        var expectedLabels = id == "AppearanceMotion"
+            ? (AutomationProperties.GetName(input) == "Motion"
+                ? new[] { "Match system", "Full", "Reduced" } : new[] { "跟随系统", "完整", "减少" })
+            : new[] { AutomationProperties.GetName(input) == "Interface language" ? "Match system" : "跟随系统", "简体中文", "English" };
+        Assert.Equal(expectedLabels, children.Select(child => child.GetName()));
+        var item = Assert.Single(children, child => child.GetName() == label && child.IsEnabled());
         Assert.IsAssignableFrom<ISelectionItemProvider>(item.GetPattern(PatternInterface.SelectionItem)).Select();
         await Dispatcher.Yield(DispatcherPriority.ContextIdle);
         Assert.False(input.IsDropDownOpen);

@@ -83,8 +83,16 @@ public sealed partial class OverlayTranslationMenuTests
             Assert.Equal(root, N.GetAncestor(field, 2));
             if (expandedNarrow)
             {
-                Assert.True(N.GetWindowRect(field, out var fieldRect));
-                Assert.True(Native.SetWindowPos(field, 0, 0, 0, 180, fieldRect.Bottom - fieldRect.Top, 0x0016));
+                Assert.True(N.GetWindowRect(root, out var rootRect));
+                uint sourceDpi = Native.GetDpiForWindow(root);
+                Assert.NotEqual(0u, sourceDpi);
+                ObserveOwnedNarrowGeometry(root, field, overlay, "before-initial-resize");
+                deadline.Token.ThrowIfCancellationRequested();
+                // Resize the owned window once at its supported 360 DIP minimum.
+                // Child layout owns the field width, including later progress updates.
+                Assert.True(Native.SetWindowPos(root, 0, 0, 0, checked((int)Math.Round(360d * sourceDpi / 96)),
+                    rootRect.Bottom - rootRect.Top, 0x0016)); // No move, Z-order change or activation.
+                ObserveOwnedNarrowGeometry(root, field, overlay, "after-initial-resize");
             }
             // Public setup on this owned child only. No focus repair is allowed
             // after the initial preview, More, confirmation or return actions.
@@ -95,8 +103,18 @@ public sealed partial class OverlayTranslationMenuTests
                 && overlay.IsVisible && Descendants(overlay).OfType<TextBox>().Single().Text == translation);
             if (expandedNarrow)
             {
-                await Until(() => N.GetWindowRect(overlay.Handle, out var compact)
-                    && compact.Right - compact.Left == (int)(324 * VisualTreeHelper.GetDpi(overlay).DpiScaleX));
+                try
+                {
+                    await Until(() => N.GetWindowRect(overlay.Handle, out var compact)
+                        && compact.Right - compact.Left == (int)(324 * VisualTreeHelper.GetDpi(overlay).DpiScaleX));
+                }
+                finally { ObserveOwnedNarrowGeometry(root, field, overlay, "compact-width-wait-finished"); }
+                Assert.True(N.IsWindowVisible(field));
+                Assert.True(N.GetWindowRect(field, out var narrowField));
+                uint currentSourceDpi = Native.GetDpiForWindow(root);
+                Assert.NotEqual(0u, currentSourceDpi);
+                Assert.InRange((narrowField.Right - narrowField.Left) * 96d / currentSourceDpi, 1, 332);
+                Assert.Equal((root, field), N.Focused());
                 var expand = Descendants(overlay).OfType<Button>().Single(button => AutomationProperties.GetName(button) == "展开译文");
                 Assert.True(expand.IsEnabled);
                 var expandAction = Assert.IsAssignableFrom<IInvokeProvider>(new ButtonAutomationPeer(expand).GetPattern(PatternInterface.Invoke));
@@ -273,6 +291,33 @@ public sealed partial class OverlayTranslationMenuTests
         if (failure is not null)
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     });
+
+    private static void ObserveOwnedNarrowGeometry(nint root, nint field, OverlayWindow overlay, string stage)
+    {
+        try
+        {
+            bool rootRead = N.GetWindowRect(root, out var rootRect);
+            bool fieldRead = N.GetWindowRect(field, out var fieldRect);
+            bool overlayRead = N.GetWindowRect(overlay.Handle, out var overlayRect);
+            TestContext.Current.TestOutputHelper?.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
+            {
+                operation = "owned-confirmation-narrow-geometry",
+                stage,
+                sourceDpi = Native.GetDpiForWindow(root),
+                overlayDpi = overlay.Handle == 0 ? 0 : Native.GetDpiForWindow(overlay.Handle),
+                rootWidth = rootRead ? (int?)(rootRect.Right - rootRect.Left) : null,
+                rootHeight = rootRead ? (int?)(rootRect.Bottom - rootRect.Top) : null,
+                fieldWidth = fieldRead ? (int?)(fieldRect.Right - fieldRect.Left) : null,
+                fieldHeight = fieldRead ? (int?)(fieldRect.Bottom - fieldRect.Top) : null,
+                overlayWidth = overlayRead ? (int?)(overlayRect.Right - overlayRect.Left) : null,
+                overlayHeight = overlayRead ? (int?)(overlayRect.Bottom - overlayRect.Top) : null,
+                fieldVisible = N.IsWindowVisible(field),
+                fieldOwned = N.GetAncestor(field, 2) == root,
+                exactSourceFocus = N.Focused() == (root, field)
+            }));
+        }
+        catch { /* Read-only geometry must not replace the original test failure. */ }
+    }
 
     private static async Task ObserveOwnedMoreClick(OverlayWindow overlay, TextBox editor,
         Button more, string draft, CancellationToken cancellation)

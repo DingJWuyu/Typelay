@@ -2900,6 +2900,231 @@ while True:
         self.assertFalse(upgraded["editable"])
         self.assertFalse(upgraded["canAccept"])
 
+    async def language_configuration_source(self):
+        # The real production Host consumes these controlled input-port replies.
+        # This is not native focus, IME or acceptance evidence.
+        self.assertTrue((await self.ask("saveSettingsDraft", self.draft()))["saved"])
+        self.assertTrue(await self.ask("traySettings", {"source": "en", "target": "en"}))
+        target = {
+            "backend": "linux-gtk4",
+            "value": str(uuid.uuid4()),
+            "lifetime": str(uuid.uuid4()),
+        }
+        connection = str(uuid.uuid4())
+        acknowledgement = {
+            "target": target,
+            "generation": self.latest("shortcuts")["generation"],
+            "bindings": {"accept": "F7", "exit": "F8"},
+            "sourceReady": True,
+            "editorReady": True,
+        }
+        await self.send(
+            {
+                "event": "state",
+                "data": {
+                    "ready": True,
+                    "nativeReady": True,
+                    "target": target,
+                    "focus": "Source",
+                    "connectionId": connection,
+                    "userEpoch": 1,
+                    "sourceUserEpoch": 1,
+                    "foregroundEpoch": 1,
+                    "windowEpoch": 1,
+                    "contentEpoch": 1,
+                    "sessionShortcuts": acknowledgement,
+                },
+            }
+        )
+        self.language_capture_active = True
+
+        def capture(operation, _context):
+            self.assertEqual(operation, "capture")
+            if not self.language_capture_active:
+                return None
+            return {
+                "focus": "Source",
+                "application": "fixture",
+                "sessionShortcuts": acknowledgement,
+                "userEpoch": 1,
+                "foregroundEpoch": 1,
+                "snapshot": {
+                    "target": target,
+                    "text": "",
+                    "selection": {"start": 0, "end": 0},
+                    "bounds": {"x": 0, "y": 0, "width": 100, "height": 20},
+                    "multiline": False,
+                    "access": "Supported",
+                    "ime": "Clear",
+                    "inputEpoch": 1,
+                    "focusEpoch": 1,
+                    "observedAtMs": time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000,
+                    "writeSupported": True,
+                    "directWriteSupported": True,
+                },
+            }
+
+        self.input_reply = capture
+        self.assertTrue(await self.ask("start"))
+        rendered = (await self.receive_until(lambda item: item.get("event") == "render"))["data"]
+        self.assertEqual(rendered["viewContext"]["token"]["target"], target)
+        return {
+            "connectionId": connection,
+            "openingId": str(uuid.uuid4()),
+            "token": rendered["viewContext"]["token"],
+        }
+
+    async def configuration_focus(self, connection):
+        self.language_capture_active = False
+        # A configuration search is not a source or translation editor target.
+        await self.send(
+            {
+                "event": "state",
+                "data": {
+                    "ready": True,
+                    "nativeReady": True,
+                    "target": None,
+                    "focus": "Other",
+                    "connectionId": connection,
+                    "userEpoch": 2,
+                    "sourceUserEpoch": 1,
+                    "foregroundEpoch": 1,
+                    "windowEpoch": 1,
+                    "contentEpoch": 1,
+                },
+            }
+        )
+
+    async def test_language_configuration_retires_source_before_saving_direction(self):
+        opening = await self.language_configuration_source()
+        start = len(self.events)
+        result = await self.ask("beginLanguageConfiguration", opening)
+        self.assertIsInstance(result, dict)
+        self.assertIs(result["opened"], True)
+        self.assertEqual(
+            (result["connectionId"], result["openingId"]),
+            (opening["connectionId"], opening["openingId"]),
+        )
+        self.assertIs(type(result["settingsRevision"]), int)
+        self.assertTrue(any(item.get("event") == "hide" for item in self.events[start:]))
+        self.assertEqual((result["source"], result["target"]), ("en", "en"))
+        self.assertTrue(
+            next(item for item in result["choices"] if item["code"] == "en")["selectable"]
+        )
+        for field in ("token", "viewContext", "authority", "permit", "text"):
+            self.assertNotIn(field, result)
+        await self.configuration_focus(opening["connectionId"])
+        self.assertEqual(
+            await self.ask("beginEdit", opening["token"]), {"allowed": False, "token": None}
+        )
+        # Replaying A's retired source request cannot replace its configuration.
+        self.assertIs((await self.ask("beginLanguageConfiguration", opening))["opened"], False)
+        # An unrelated peer/opening cannot save or cancel this configuration.
+        self.assertIs(
+            (
+                await self.ask(
+                    "saveLanguageConfiguration",
+                    {
+                        "connectionId": str(uuid.uuid4()),
+                        "openingId": opening["openingId"],
+                        "expectedRevision": result["settingsRevision"],
+                        "source": "en",
+                        "target": "zh",
+                    },
+                )
+            )["saved"],
+            False,
+        )
+        await self.send(
+            {
+                "event": "cancelLanguageConfiguration",
+                "data": {
+                    "connectionId": opening["connectionId"],
+                    "openingId": str(uuid.uuid4()),
+                },
+            }
+        )
+        saved = await self.ask(
+            "saveLanguageConfiguration",
+            {
+                "connectionId": opening["connectionId"],
+                "openingId": opening["openingId"],
+                "expectedRevision": result["settingsRevision"],
+                "source": "en",
+                "target": "zh",
+            },
+        )
+        self.assertIs(saved["saved"], True)
+        self.assertEqual(
+            (self.latest("settings")["source"], self.latest("settings")["target"]), ("en", "zh")
+        )
+        persisted = json.loads((self.home / "config/settings.json").read_text())
+        self.assertEqual((persisted["Source"], persisted["Target"]), ("en", "zh"))
+
+    async def test_language_configuration_cancel_before_commit_preserves_settings(self):
+        opening = await self.language_configuration_source()
+        before = (self.home / "config/settings.json").read_bytes()
+        result = await self.ask("beginLanguageConfiguration", opening)
+        self.assertIsInstance(result, dict)
+        self.assertIs(result["opened"], True)
+        await self.configuration_focus(opening["connectionId"])
+        await self.send(
+            {
+                "event": "cancelLanguageConfiguration",
+                "data": {
+                    "connectionId": opening["connectionId"],
+                    "openingId": opening["openingId"],
+                },
+            }
+        )
+        # FIFO private pipe: this request follows the synchronous cancellation.
+        saved = await self.ask(
+            "saveLanguageConfiguration",
+            {
+                "connectionId": opening["connectionId"],
+                "openingId": opening["openingId"],
+                "expectedRevision": result["settingsRevision"],
+                "source": "en",
+                "target": "zh",
+            },
+        )
+        self.assertIs(saved["saved"], False)
+        self.assertEqual((self.home / "config/settings.json").read_bytes(), before)
+        self.assertEqual(
+            (self.latest("settings")["source"], self.latest("settings")["target"]), ("en", "en")
+        )
+
+    async def test_language_configuration_peer_replacement_permanently_retires_opening(self):
+        opening = await self.language_configuration_source()
+        before = (self.home / "config/settings.json").read_bytes()
+        result = await self.ask("beginLanguageConfiguration", opening)
+        self.assertIsInstance(result, dict)
+        self.assertIs(result["opened"], True)
+        await self.configuration_focus(opening["connectionId"])
+        # A -> B -> A on the same actual Host pipe must not revive A's opening.
+        # These are controlled input-port states, not a native reconnect proof.
+        await self.configuration_focus(str(uuid.uuid4()))
+        await self.configuration_focus(opening["connectionId"])
+        saved = await self.ask(
+            "saveLanguageConfiguration",
+            {
+                "connectionId": opening["connectionId"],
+                "openingId": opening["openingId"],
+                "expectedRevision": result["settingsRevision"],
+                "source": "en",
+                "target": "zh",
+            },
+        )
+        self.assertIs(saved["saved"], False)
+        closed = self.latest("languageConfigurationClosed")
+        self.assertEqual(closed["connectionId"], opening["connectionId"])
+        self.assertEqual(closed["openingId"], opening["openingId"])
+        self.assertEqual(closed["reason"], "connection-changed")
+        self.assertEqual((self.home / "config/settings.json").read_bytes(), before)
+        self.assertEqual(
+            (self.latest("settings")["source"], self.latest("settings")["target"]), ("en", "en")
+        )
+
     async def test_control_source_acknowledgement_does_not_grant_editor_capability(self):
         # Protocol/capability evidence only. The real GtkEntry route is exercised
         # by desktop_e2e with its production provider, host and model.

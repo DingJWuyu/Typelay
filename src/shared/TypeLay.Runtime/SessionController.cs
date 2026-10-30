@@ -2147,7 +2147,21 @@ public sealed partial class SessionController : IDisposable
     }
     // Hosts call this only after their existing install/revoke boundary changes.
     // It repaints the current candidate; it cannot issue a plan or update a lease.
-    public void RefreshAcceptancePresentation() => Render();
+    public void RefreshAcceptancePresentation()
+    {
+        // Revoke may synchronously request an acceptance-only repaint while
+        // the same local editor is being detached or its fresh return is being
+        // bound. It has no executable binding or permit to repaint. A real
+        // Render/Hide/configuration change still retires that local presentation.
+        if (_ownedLocalDraft is { } local && OwnedLocalDraftCurrent(local.Opening)
+            && ReferenceEquals(_ownedLocalDraft, local) && _ownedPractice is null
+            && _presentationPermit is null && _permitUntil == 0)
+        {
+            _renderedAcceptanceReady = false;
+            return;
+        }
+        Render();
+    }
     private bool CanPresentAcceptance(long nowMs)
     {
         if (_manualObservation is { UnavailableUntil: > 0 }

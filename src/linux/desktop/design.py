@@ -138,9 +138,9 @@ window.typelay-surface.quick-panel.settings-dark.reduce-transparency { backgroun
 .typelay-surface .translation-preview { font-family: 'TypeLay Serif 15', 'Noto Serif SC', serif; }
 .typelay-surface button.swatch { border: 0; border-radius: 50%; min-width: 20px; min-height: 20px; padding: 0; margin: 4px 0; box-shadow: inset 0 0 0 .5px rgba(0,0,0,.15); }
 .typelay-surface .translation-size { padding: 0; margin: 0; }
-.typelay-surface .translation-size trough { min-height: 4px; border: 0; border-radius: 2px; background: rgba(20,20,19,.14); }
-.typelay-surface .translation-size highlight { min-height: 4px; border: 0; border-radius: 2px; background: @accent; }
-.typelay-surface .translation-size slider { min-width: 20px; min-height: 20px; padding: 0; border: 0; margin: -8px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3), 0 0 0 .5px rgba(0,0,0,.08); }
+.typelay-surface .translation-size trough { min-height: 4px; padding: 0 10px; border: 0; border-radius: 2px; background: rgba(20,20,19,.14); }
+.typelay-surface .translation-size highlight { min-height: 4px; border: 0; border-radius: 2px; background: transparent; }
+.typelay-surface .translation-size slider { min-width: 20px; min-height: 20px; padding: 0; border: 0; margin: -8px 0; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3), 0 0 0 .5px rgba(0,0,0,.08); }
 .typelay-surface .size-small { font-size: 11px; font-weight: 500; color: #74726c; }
 .typelay-surface .size-large { font-size: 17px; font-weight: 500; color: #74726c; }
 .typelay-surface .keycap { background: rgba(20,20,19,.08); border: 0; border-bottom: 1px solid rgba(20,20,19,.16); min-width: 72px; min-height: 25px; padding: 0 10px; margin: 0; border-radius: 7px; font-size: 12.5px; font-weight: 500; }

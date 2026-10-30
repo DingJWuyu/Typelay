@@ -357,6 +357,10 @@ internal sealed partial class SettingsWindow
                 SelectedItem = values.Single(choice => choice.Value == selected)
             };
             input.SetResourceReference(StyleProperty, "AppearancePopup");
+            var itemStyle = new Style(typeof(ComboBoxItem), (Style)FindResource(typeof(ComboBoxItem)));
+            itemStyle.Setters.Add(new Setter(AutomationProperties.NameProperty,
+                new System.Windows.Data.Binding(nameof(PreferenceOption.Label))));
+            input.ItemContainerStyle = itemStyle;
             AutomationProperties.SetName(input, name);
             AutomationProperties.SetAutomationId(input, id);
             input.Unloaded += (_, _) => input.IsDropDownOpen = false;

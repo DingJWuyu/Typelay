@@ -6,6 +6,15 @@ namespace TypeLay.Linux;
 
 internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessionView
 {
+    internal sealed record LanguageConfigurationChoice(string Code, string Label, string NativeLabel, bool Selectable);
+    internal sealed record LanguageConfigurationPresentation(string Source, string Target,
+        string SourceLabel, string TargetLabel, bool SwapAllowed, LanguageConfigurationChoice[] Choices);
+    // A newly presented source retires an independent configuration opening.
+    // HideQuietly alone does not: capture-empty is normal while searching.
+    public Action? SourceViewPresented
+    {
+        get; set;
+    }
     private string? _last;
     private bool _editing;
     private bool _sourceGlossary;
@@ -185,6 +194,23 @@ internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessi
         };
         return new(choice.Code, label, names.LabelZh, names.LabelEn, names.NativeLabel);
     }
+    internal LanguageConfigurationPresentation PresentLanguageConfiguration(UserSettings settings)
+    {
+        var sourceChoices = LanguageChoices(settings.Source, source: true);
+        var targetChoices = LanguageChoices(settings.Target, source: false);
+        string language = settings.UiLanguage == "system"
+            ? System.Globalization.CultureInfo.CurrentUICulture.Name : settings.UiLanguage;
+        bool english = !language.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
+        string Label(PresentedLanguageChoice choice) => english ? choice.LabelEn : choice.LabelZh;
+        string Title(PresentedLanguageChoice[] choices, string code) => choices.FirstOrDefault(choice => choice.Code == code) is { } choice
+            ? Label(choice) : code;
+        return new(settings.Source, settings.Target, Title(sourceChoices, settings.Source), Title(targetChoices, settings.Target),
+            settings.Source != "auto" && ModelCatalog.IsSupportedSetting(settings.Target, settings.Source)
+                && sourceChoices.Any(choice => choice.Code == settings.Target)
+                && targetChoices.Any(choice => choice.Code == settings.Source),
+            targetChoices.Select(choice => new LanguageConfigurationChoice(choice.Code, Label(choice), choice.NativeLabel,
+                ModelCatalog.IsSupportedSetting(settings.Source, choice.Code))).ToArray());
+    }
     public void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null, SessionViewContext? context = null)
     {
         var presentation = Presentation.From(session.State, canAccept, session.Preview.Length > 0,
@@ -194,6 +220,7 @@ internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessi
             HideQuietly();
             return;
         }
+        SourceViewPresented?.Invoke();
         Token = context?.Token;
         _editing = session.State == SessionState.EditingTranslation;
         _sourceGlossary = session.State is SessionState.ValidTranslation or SessionState.EditedTranslationPending;
@@ -226,6 +253,7 @@ internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessi
     }
     public void RenderPaused(PauseAnchor anchor, long revision)
     {
+        SourceViewPresented?.Invoke();
         Token = null;
         _editing = _sourceGlossary = false;
         _glossaryFocus = null;

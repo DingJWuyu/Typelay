@@ -5,6 +5,7 @@ import copy
 import json
 import os
 import sys
+import uuid
 
 from wire import now_ms
 
@@ -26,12 +27,16 @@ class Overlay:
         self.pending = False
         self.glossary = None
         self.glossary_begin_pending = None
+        self.language_configuration = None
         self.lock = asyncio.Lock()
         self.input.ui_event = self.event
+        self.input.language_peer_lost = self.language_peer_lost
         self.input.glossary_focus_transfer = self.consume_glossary_focus_transfer
         self.timer = self.input.glib.timeout_add(200, self.renew)
 
     def configure(self, settings):
+        if self.language_configuration and settings != self.settings:
+            self.cancel_language_configuration()
         self.settings = settings
         if self.value:
             self.schedule()
@@ -111,6 +116,9 @@ class Overlay:
             self.tasks(self.update())
 
     def render(self, value):
+        # A new source presentation permanently retires the independent shell.
+        self.cancel_language_configuration()
+
         def editor_view(view):
             if not isinstance(view, dict) or not isinstance(view.get("viewContext"), dict):
                 return view
@@ -318,6 +326,12 @@ class Overlay:
             self.pending = False
 
     def renew(self):
+        configuration = self.language_configuration
+        if configuration and (
+            configuration["peer"] not in self.input.peers
+            or configuration["peer"] is not self.input.focused_peer()
+        ):
+            self.cancel_language_configuration()
         record = self.current_record()
         if self.value and record:
             if self.peer is record["peer"] and self.visible:
@@ -401,6 +415,12 @@ class Overlay:
         )
 
     def event(self, peer, event):
+        if isinstance(event, dict) and event.get("operation") in (
+            "languageConfigurationSave",
+            "languageConfigurationCancel",
+        ):
+            self.language_configuration_event(peer, event)
+            return  # Configuration messages can never fall through to source actions.
         if isinstance(event, dict) and event.get("operation") == "editClickDiagnostic":
             self.trace_edit_click(peer, event)
             return  # Even malformed diagnostics can never become an edit action.
@@ -516,6 +536,14 @@ class Overlay:
             self.tasks(self.begin_edit(peer, event["target"], token))
         elif operation == "settings":
             self.settings_requested()
+        elif operation == "languageConfigurationBegin":
+            if (
+                peer.backend == "gtk4"
+                and isinstance(value, dict)
+                and set(value) == {"openingId"}
+                and self.valid_opening_id(value["openingId"])
+            ):
+                self.start_language_configuration(peer, value["openingId"], copy.deepcopy(token))
         elif operation == "languagesPicker":
             # Opening a desktop picker retires this source session. It does not
             # transfer or manufacture source-field focus or write permission.
@@ -546,6 +574,247 @@ class Overlay:
             self.host.send(operation)
         elif operation in ("draft", "composition"):
             self.host.send(operation, value)
+
+    @staticmethod
+    def valid_opening_id(value):
+        try:
+            return (
+                isinstance(value, str)
+                and str(uuid.UUID(value)) == value
+                and uuid.UUID(value).int != 0
+            )
+        except ValueError:
+            return False
+
+    def language_owner(self, configuration):
+        # connection_id is minted by Peer, never accepted from native JSON.
+        return {
+            "connectionId": configuration["peer"].connection_id,
+            "openingId": configuration["openingId"],
+        }
+
+    def cancel_language_configuration(self, *, notify_host=True, notify_peer=True):
+        configuration, self.language_configuration = self.language_configuration, None
+        if not configuration:
+            return
+        configuration["phase"] = "Retired"  # Before callbacks or sending cancellation.
+        if notify_host:
+            try:
+                self.host.send("cancelLanguageConfiguration", self.language_owner(configuration))
+            except (OSError, EOFError):
+                pass  # This local opening is already retired; a dead Host link cannot save it.
+        peer = configuration["peer"]
+        if notify_peer and peer in self.input.peers and peer.link.channel.alive:
+            try:
+                peer.link.command(
+                    "overlay-language-configuration-close",
+                    {"openingId": configuration["openingId"]},
+                )
+            except (OSError, EOFError):
+                pass  # Transport teardown cannot restore the retired configuration.
+
+    def language_peer_lost(self, peer):
+        if self.language_configuration and self.language_configuration["peer"] is peer:
+            self.cancel_language_configuration(notify_peer=False)
+
+    def language_configuration_closed(self, value):
+        configuration = self.language_configuration
+        if (
+            configuration
+            and isinstance(value, dict)
+            and all(
+                value.get(key) == expected
+                for key, expected in self.language_owner(configuration).items()
+            )
+        ):
+            self.cancel_language_configuration(notify_host=False)
+
+    def language_configuration_current(self, configuration):
+        peer = configuration["peer"]
+        return (
+            self.language_configuration is configuration
+            and configuration["phase"] != "Retired"
+            and peer in self.input.peers
+            and peer.link.channel.alive
+            and self.input.focused_peer() is peer
+        )
+
+    def start_language_configuration(self, peer, opening_id, token):
+        self.cancel_language_configuration()
+        self.close_glossary()
+        configuration = {
+            "peer": peer,
+            "openingId": opening_id,
+            "phase": "Pending",
+            "expiresAtMs": now_ms() + 600,
+        }
+        self.language_configuration = configuration
+        # Native has synchronously retired its source view before emitting this
+        # request. Do not send overlay-hide back into the new pending opening.
+        self.revision += 1
+        self.value = self.peer = None
+        self.visible = self.editing = self.acceptance_ready = False
+        self.input.set_overlay_focus(False)
+        self.tasks(self.begin_language_configuration(configuration, token))
+
+    async def begin_language_configuration(self, configuration, token):
+        # The task may start after a synchronous cancel/peer loss. Do not send a
+        # request whose opening retired before dispatch, even on the same pipe.
+        if (
+            not self.language_configuration_current(configuration)
+            or configuration["phase"] != "Pending"
+            or now_ms() > configuration["expiresAtMs"]
+        ):
+            if self.language_configuration is configuration:
+                self.cancel_language_configuration()
+            return
+        try:
+            reply = await self.host.ask(
+                "beginLanguageConfiguration", {**self.language_owner(configuration), "token": token}
+            )
+            if not self.language_configuration_current(configuration):
+                if self.language_configuration is configuration:
+                    self.cancel_language_configuration()
+                return
+            if (
+                now_ms() > configuration["expiresAtMs"]
+                or not isinstance(reply, dict)
+                or reply.get("opened") is not True
+                or any(
+                    reply.get(key) != value
+                    for key, value in self.language_owner(configuration).items()
+                )
+                or type(reply.get("settingsRevision")) is not int
+                or not 0 <= reply["settingsRevision"] <= 9223372036854775807
+            ):
+                self.cancel_language_configuration()
+                return
+            configuration["settingsRevision"] = reply["settingsRevision"]
+            # No original target, token, candidate or permit is sent to the shell.
+            presentation = {
+                key: reply.get(key)
+                for key in (
+                    "openingId",
+                    "settingsRevision",
+                    "source",
+                    "target",
+                    "sourceLabel",
+                    "targetLabel",
+                    "swapAllowed",
+                    "choices",
+                )
+            }
+            presentation.update(
+                theme=(self.settings or {}).get("theme", "system"),
+                appearance={
+                    key: (self.settings or {}).get(key, default)
+                    for key, default in (
+                        ("font", "claude"),
+                        ("textSize", 15),
+                        ("accent", "clay"),
+                        ("uiLanguage", "system"),
+                        ("reduceMotion", False),
+                        ("reduceTransparency", False),
+                        ("motion", "system"),
+                    )
+                },
+            )
+            remaining = (configuration["expiresAtMs"] - now_ms()) / 1000
+            if remaining <= 0:
+                self.cancel_language_configuration()
+                return
+            shown = await configuration["peer"].link.ask(
+                "overlay-language-configuration-open", presentation, timeout=remaining
+            )
+            if not self.language_configuration_current(configuration):
+                if self.language_configuration is configuration:
+                    self.cancel_language_configuration()
+                return
+            if (
+                now_ms() > configuration["expiresAtMs"]
+                or not isinstance(shown, dict)
+                or shown.get("opened") is not True
+                or shown.get("openingId") != configuration["openingId"]
+            ):
+                self.cancel_language_configuration()
+                return
+            configuration["phase"] = "Open"
+        except (OSError, EOFError, TimeoutError):
+            if self.language_configuration is configuration:
+                self.cancel_language_configuration()
+
+    def language_configuration_event(self, peer, event):
+        configuration = self.language_configuration
+        value = event.get("value")
+        if (
+            not configuration
+            or configuration["peer"] is not peer
+            or not isinstance(value, dict)
+            or value.get("openingId") != configuration["openingId"]
+        ):
+            return
+        if event["operation"] == "languageConfigurationCancel":
+            if set(value) == {"openingId"}:
+                self.cancel_language_configuration(notify_peer=False)
+            return
+        if (
+            set(value) != {"openingId", "source", "target"}
+            or not self.language_configuration_current(configuration)
+            or configuration["phase"] != "Open"
+            or any(
+                not isinstance(value.get(key), str) or not 0 < len(value[key]) <= 16
+                for key in ("source", "target")
+            )
+        ):
+            return
+        configuration["phase"] = "Saving"
+        self.tasks(self.save_language_configuration(configuration, dict(value)))
+
+    async def save_language_configuration(self, configuration, value):
+        # The task may start after a synchronous cancel/peer loss. Do not send a
+        # request whose opening retired before dispatch, even on the same pipe.
+        if (
+            not self.language_configuration_current(configuration)
+            or configuration["phase"] != "Saving"
+        ):
+            if self.language_configuration is configuration:
+                self.cancel_language_configuration()
+            return
+        try:
+            reply = await self.host.ask(
+                "saveLanguageConfiguration",
+                {
+                    **value,
+                    **self.language_owner(configuration),
+                    "expectedRevision": configuration["settingsRevision"],
+                },
+            )
+            if self.language_configuration is not configuration:
+                return  # A committed save may already have retired via settings notification.
+            if not self.language_configuration_current(configuration):
+                self.cancel_language_configuration()
+                return
+            if isinstance(reply, dict) and reply.get("saved") is True:
+                self.cancel_language_configuration(notify_host=False)
+            elif isinstance(reply, dict) and reply.get("reason") in (
+                "unsupported-direction",
+                "save-unconfirmed",
+            ):
+                configuration["phase"] = "Open"
+                configuration["peer"].link.command(
+                    "overlay-language-configuration-result",
+                    {
+                        "openingId": configuration["openingId"],
+                        "saved": False,
+                        "reason": reply["reason"],
+                    },
+                )
+            else:
+                self.cancel_language_configuration()
+        except (OSError, EOFError, TimeoutError):
+            # Unknown persistence is not success, and never restores source authority.
+            if self.language_configuration is configuration:
+                self.cancel_language_configuration()
 
     async def begin_edit(self, peer, target, token):
         authorization = self.input.practice_authorization
@@ -1059,5 +1328,12 @@ class Overlay:
         self.input.set_overlay_focus(False)
 
     def hide(self):
+        if self.language_configuration:
+            # StopSession's hide acknowledges source retirement, not cancellation
+            # of the separately identified configuration request.
+            self.value = self.peer = None
+            self.visible = self.editing = self.acceptance_ready = False
+            self.input.set_overlay_focus(False)
+            return
         self.conceal("host-hide")
         self.value = None

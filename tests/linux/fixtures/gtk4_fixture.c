@@ -125,12 +125,51 @@ static gboolean ime_clear(const TlFcitxStateV1 *state) {
     return state->flags == (TL_FCITX_KNOWN | TL_FCITX_FOCUSED)
         && state->server_serial == state->applied_serial;
 }
+static guint language_instance(GObject *object);
+/* Only the owned configuration fixture reads its two existing source widgets.
+ * This does not install controllers, request paint or change their input state. */
+static void report_configuration_source(JsonBuilder *builder, GtkWidget *widget) {
+    const char *stage = g_getenv("TYPELAY_FIXTURE_REENTRY_STAGE");
+    if (!stage || (!g_str_equal(stage, "language-options")
+        && !g_str_has_prefix(stage, "language-retention-"))) return;
+    json_builder_set_member_name(builder, "instance");
+    json_builder_add_int_value(builder, language_instance(G_OBJECT(widget)));
+    json_builder_set_member_name(builder, "topInstance");
+    json_builder_add_int_value(builder, language_instance(G_OBJECT(report_window)));
+    json_builder_set_member_name(builder, "topActive");
+    json_builder_add_boolean_value(builder, gtk_window_is_active(GTK_WINDOW(report_window)));
+    json_builder_set_member_name(builder, "mapped");
+    json_builder_add_boolean_value(builder, gtk_widget_get_mapped(widget));
+    json_builder_set_member_name(builder, "enabled");
+    json_builder_add_boolean_value(builder, gtk_widget_is_sensitive(widget));
+    GtkNative *native = GTK_NATIVE(report_window);
+    GdkSurface *surface = gtk_native_get_surface(native);
+    GdkSeat *seat = gdk_display_get_default_seat(gtk_widget_get_display(report_window));
+    GdkDevice *pointer = seat ? gdk_seat_get_pointer(seat) : NULL;
+    double x = 0, y = 0;
+    GdkSurface *hit_surface = pointer ? gdk_device_get_surface_at_position(pointer, &x, &y) : NULL;
+    json_builder_set_member_name(builder, "sourceHit");
+    if (surface && hit_surface == surface && gtk_native_get_for_surface(surface) == native) {
+        double ox, oy;
+        gtk_native_get_surface_transform(native, &ox, &oy);
+        x += ox; y += oy;
+        GtkWidget *picked = gtk_widget_pick(report_window, x, y, GTK_PICK_DEFAULT);
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "x"); json_builder_add_double_value(builder, x);
+        json_builder_set_member_name(builder, "y"); json_builder_add_double_value(builder, y);
+        json_builder_set_member_name(builder, "isSource");
+        json_builder_add_boolean_value(builder, picked
+            && (picked == widget || gtk_widget_is_ancestor(picked, widget)));
+        json_builder_end_object(builder);
+    } else json_builder_add_null_value(builder);
+}
 /* These are observations of the real widgets, never inputs to the provider. */
 static void report_entry(JsonBuilder *builder, const char *name, GtkWidget *widget, const EntryEvidence *evidence) {
     gint start, end;
     gtk_editable_get_selection_bounds(GTK_EDITABLE(widget), &start, &end);
     json_builder_set_member_name(builder, name);
     json_builder_begin_object(builder);
+    report_configuration_source(builder, widget);
     json_builder_set_member_name(builder, "focused");
     json_builder_add_boolean_value(builder, gtk_widget_has_focus(entry_client(widget)));
     json_builder_set_member_name(builder, "start"); json_builder_add_int_value(builder, start);
@@ -459,6 +498,10 @@ static gboolean language_control(const char *name) {
         || g_strcmp0(name, "typelay-apply-languages") == 0
         || g_str_has_prefix(name, "typelay-style-")
         || g_strcmp0(name, "typelay-language-menu") == 0
+        || g_str_has_prefix(name, "typelay-language-configuration")
+        || g_str_has_prefix(name, "typelay-language-choice-")
+        || g_strcmp0(name, "typelay-language-search") == 0
+        || g_strcmp0(name, "typelay-language-swap") == 0
         || g_str_has_prefix(name, "typelay-glossary-");
 }
 typedef struct {
@@ -948,7 +991,8 @@ static void report_control_surface(JsonBuilder *builder, GtkWidget *widget) {
         json_builder_set_member_name(builder, "scrollValue");
         json_builder_add_double_value(builder, gtk_adjustment_get_value(adjustment));
     }
-    if (GTK_IS_POPOVER(widget) && g_strcmp0(gtk_widget_get_name(widget), "typelay-more-popup") == 0) {
+    if (GTK_IS_POPOVER(widget) && (g_strcmp0(gtk_widget_get_name(widget), "typelay-more-popup") == 0
+        || g_strcmp0(gtk_widget_get_name(widget), "typelay-language-configuration") == 0)) {
         json_builder_set_member_name(builder, "autohide");
         json_builder_add_boolean_value(builder, gtk_popover_get_autohide(GTK_POPOVER(widget)));
         json_builder_set_member_name(builder, "hasArrow");
@@ -971,14 +1015,18 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
     if (GTK_IS_LABEL(widget) && gtk_label_get_wrap(GTK_LABEL(widget)) && parent
         && g_strcmp0(gtk_widget_get_name(parent), "typelay-glossary-form") == 0)
         name = "fixture-glossary-feedback";
-    if (expand || language_control(name) || g_str_equal(name, "fixture-glossary-feedback")
+    if (GTK_IS_LABEL(widget) && gtk_widget_has_css_class(widget, "language-feedback"))
+        name = "fixture-language-feedback";
+    if (expand || language_control(name) || g_str_equal(name, "fixture-language-feedback")
+        || g_str_equal(name, "fixture-glossary-feedback")
         || g_str_equal(name, "typelay-dot") || g_str_equal(name, "typelay-skeleton")) {
         json_builder_set_member_name(builder, name);
         json_builder_begin_object(builder);
         const char *stage = g_getenv("TYPELAY_FIXTURE_REENTRY_STAGE");
         gboolean language_trigger = g_str_equal(name, "typelay-menu-trigger")
             && stage && (g_str_equal(stage, "language-options") || g_str_has_prefix(stage, "language-retention-"));
-        gboolean language_menu = stage && g_str_equal(stage, "language-options") && language_control(name);
+        gboolean language_menu = stage && (g_str_equal(stage, "language-options")
+            || g_str_has_prefix(stage, "language-retention-")) && language_control(name);
         if ((g_getenv("TYPELAY_FIXTURE_GLOSSARY_COMMAND") && language_control(name)) || language_trigger || language_menu)
             report_control_surface(builder, widget);
         if (expand) {
@@ -1012,6 +1060,8 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
         GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(report_window));
         json_builder_set_member_name(builder, "focused");
         json_builder_add_boolean_value(builder, focus && (focus == widget || gtk_widget_is_ancestor(focus, widget)));
+        json_builder_set_member_name(builder, "focusVisible");
+        json_builder_add_boolean_value(builder, (gtk_widget_get_state_flags(widget) & GTK_STATE_FLAG_FOCUS_VISIBLE) != 0);
         if (GTK_IS_LABEL(widget)) {
             json_builder_set_member_name(builder, "text");
             json_builder_add_string_value(builder, gtk_label_get_text(GTK_LABEL(widget)));
@@ -1503,6 +1553,7 @@ int main(void) {
         g_timeout_add(25, report_state, NULL);
     }
     g_main_loop_run(loop);
+    glossary_capture_clear();
     g_main_loop_unref(loop);
     g_free(last_report);
     g_free(motion_mode); g_free(motion_body);

@@ -16,7 +16,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from geometry import anchor_geometry
-from native_e2e import Native, glossary_painted_geometry, key, plan, snapshot
+from native_e2e import (
+    Native,
+    glossary_hover_current,
+    glossary_painted_geometry,
+    key,
+    plan,
+    snapshot,
+)
 from niri import contents, request
 from paths import peer_credentials, process_lineage
 from wire import now_ms, receive_sync
@@ -150,7 +157,18 @@ def run_reentry_checks(command, environment, output, send_accept, *, gtk4, neste
                 )
 
 
-def run_case(command, environment, output, send_accept, runtime, stage, change_generation, nested):
+def run_case(
+    command,
+    environment,
+    output,
+    send_accept,
+    runtime,
+    stage,
+    change_generation,
+    nested,
+    *,
+    language_configuration=False,
+):
     name = f"gtk-reentry-{stage}-{'changed' if change_generation else 'unchanged'}"
     state_path = output / f"{name}.json"
     state_path.unlink(missing_ok=True)
@@ -188,6 +206,17 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
     session.mkdir(mode=0o700)
     socket_path = session / "native.sock"
     assert len(os.fsencode(socket_path)) < 108
+    if language_configuration and stage.startswith("language-retention-"):
+        run_owned_language_options(
+            command,
+            child_environment,
+            socket_path,
+            state_path,
+            output,
+            nested,
+            configuration_stage=stage,
+        )
+        return
     if stage == "language-options":
         with tempfile.TemporaryDirectory(prefix="tl-language-dto-") as directory:
             run_case(
@@ -201,7 +230,13 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                 nested,
             )
         run_owned_language_options(
-            command, child_environment, socket_path, state_path, output, nested
+            command,
+            child_environment,
+            socket_path,
+            state_path,
+            output,
+            nested,
+            configuration_stage=stage if language_configuration else None,
         )
         return
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
@@ -1432,7 +1467,543 @@ async def language_key(value):
     await asyncio.sleep(0.025)  # Preserve key()'s original pacing, not a new retry/wait.
 
 
-def run_owned_language_options(command, environment, socket_path, state_path, output, nested):
+def language_configuration_preview(source, generation):
+    return {
+        "state": "ValidTranslation",
+        "source": source,
+        "editable": False,
+        "canAccept": False,
+        "text": "Read-only fixture preview.",
+        "status": "fixture preview",
+        "sourceLanguage": "en",
+        "targetLanguage": "ja",
+        "presentation": {
+            "visible": True,
+            "editorOwnsText": False,
+            "tabHint": "fixture read-only preview",
+            "dot": "Yellow",
+        },
+        "sessionShortcuts": {
+            "acceptHint": "fixture accept",
+            "passThroughHint": "fixture application key",
+            "exitHint": "fixture exit",
+        },
+        "viewContext": {
+            "token": {"target": source["target"], "commandGeneration": generation, "revision": 1},
+            "bindings": {"accept": "F1", "exit": "F24"},
+            "canEdit": False,
+        },
+    }
+
+
+async def check_language_configuration(
+    overlay,
+    peer,
+    preview,
+    source,
+    generation,
+    state,
+    initial,
+    nested,
+    dimensions,
+    evidence,
+    native_events,
+    calls,
+    begin_release,
+    stage,
+    environment,
+    output,
+    jobs,
+):
+    """GTK4 public UI over real Input/Overlay; controlled configuration Host only.
+
+    Host StopSession/persistence and stale connection/cancel replies have separate
+    real protocol contracts. This case does not manufacture a native focus ACK.
+    Each retention case is independently initialized, never a failed-case retry.
+    """
+    popup_name, search_name = "typelay-language-configuration", "typelay-language-search"
+    trigger = "typelay-menu-trigger"
+    started = time.monotonic_ns() // 1_000_000
+    actions = evidence["configurationActions"] = []
+    configuration = None
+    peer_lifetime, peer_connection = peer.lifetime, peer.connection_id
+    source_instances = {name: initial[name]["instance"] for name in ("firstEntry", "secondEntry")}
+    top_instance = initial["firstEntry"]["topInstance"]
+    focus_instances = {}
+
+    def owned(actual):
+        assert peer in overlay.input.peers and peer.link.channel.alive
+        assert peer.lifetime == peer_lifetime and peer.connection_id == peer_connection
+        assert overlay.input.focused_peer() is peer
+        assert parent_geometry_ready(actual, dimensions)
+        for name, instance in source_instances.items():
+            item = actual[name]
+            assert item["instance"] == instance and item["topInstance"] == top_instance
+            assert item["topActive"] and item["mapped"] and item["enabled"]
+        return actual
+
+    def observe():
+        actual = state()
+        assert actual["first"] == initial["first"] and actual["second"] == initial["second"]
+        return actual
+
+    def config_current():
+        assert overlay.language_configuration is configuration
+        assert configuration["phase"] == "Open"
+        assert overlay.language_configuration_current(configuration)
+        assert overlay.value is None and overlay.peer is None
+        assert not overlay.visible and not overlay.editing and not overlay.acceptance_ready
+        actual = owned(observe())
+        assert actual.get("candidate") is None
+        return actual
+
+    def input_target(name, *, composing=None, closed_source=False):
+        actual = owned(observe()) if closed_source else config_current()
+        if closed_source:
+            assert overlay.language_configuration is None and overlay.value is None
+            assert not overlay.visible and actual.get("candidate") is None
+            assert actual[name]["focused"]
+        else:
+            item = actual.get("overlayControls", {}).get(name, {})
+            assert item.get("instance") == focus_instances[name] and item.get("focused")
+            assert item.get("visible") is True and item.get("enabled") is True
+        if composing is not None:
+            assert actual.get("focusedImeComposing" if composing else "focusedImeClear")
+
+    async def config_key(key_name, target=search_name, *, composing=False):
+        input_target(target, composing=composing)
+        await language_key(key_name)
+
+    async def source_key(key_name):
+        input_target("firstEntry", closed_source=True)
+        await language_key(key_name)
+
+    async def search_type(text):
+        input_target(search_name, composing=False)
+        await language_command(
+            "xdotool", "type", "--clearmodifiers", "--delay", "0", text, timeout=3
+        )
+
+    def geometry(actual, name):
+        control = actual.get("overlayControls", {}).get(name, {})
+        if not parent_geometry_ready(actual, dimensions) or control.get("enabled") is not True:
+            return None
+        if not glossary_painted_geometry(control, actual.get("observedAtMs")):
+            return None
+        bounds = control["surfaceGeometry"]
+        if bounds["scale"] != actual["scale"] or bounds["width"] <= 1 or bounds["height"] <= 1:
+            return None
+        if not (
+            0 <= bounds["x"]
+            and bounds["x"] + bounds["width"] <= actual["width"]
+            and 0 <= bounds["y"]
+            and bounds["y"] + bounds["height"] <= actual["height"]
+        ):
+            return None
+        return click_point(
+            actual,
+            (bounds["x"] + bounds["width"] / 2, bounds["y"] + bounds["height"] / 2),
+            dimensions,
+        )
+
+    async def click(name, *, opening=False):
+        # Freeze one painted object and one point. The production owner's normal
+        # pre-begin display renewal is not a configuration/source capability.
+        def ready():
+            if not opening:
+                config_current()
+            actual = observe()
+            point = geometry(actual, name)
+            return (actual, point) if point else None
+
+        actual, point = await language_wait_for(ready, f"{name}: current painted geometry missing")
+        before = actual["overlayControls"][name]
+        if opening:
+            assert overlay.visible and overlay.current_record() is not None
+            assert now_ms() <= evidence["configurationRender"]["expiresAtMs"]
+        else:
+            assert (
+                before["surfaceGeometry"]["surfaceInstance"]
+                == actual["overlayControls"][popup_name]["surfaceGeometry"]["surfaceInstance"]
+            )
+        moved_start = time.monotonic_ns() // 1_000_000
+        await language_command(
+            "xdotool", "mousemove", "--window", nested, *map(str, point), timeout=3
+        )
+        moved = time.monotonic_ns() // 1_000_000
+        location = dict(
+            line.split("=", 1)
+            for line in (
+                await language_command("xdotool", "getmouselocation", "--shell", timeout=3)
+            ).splitlines()
+        )
+        pointer = {
+            "status": "captured",
+            "observedAtMonoMs": time.monotonic_ns() // 1_000_000,
+            "ownedNiri": int(nested),
+            **{key: int(location[key]) for key in ("X", "Y", "WINDOW")},
+        }
+
+        def hovered():
+            if not opening:
+                config_current()
+            actual = observe()
+            control = actual.get("overlayControls", {}).get(name, {})
+            return (
+                actual
+                if glossary_hover_current(
+                    control,
+                    actual.get("observedAtMs", 0),
+                    before,
+                    point,
+                    moved,
+                    pointer,
+                    evidence["nestedOrigin"],
+                    moved_start,
+                )
+                else None
+            )
+
+        actual = await language_wait_for(hovered, f"{name}: fixed-point current hover missing")
+        if opening:
+            assert overlay.visible and overlay.current_record() is not None
+            assert now_ms() <= evidence["configurationRender"]["expiresAtMs"]
+        owned(actual)
+        if opening:
+            assert actual["firstEntry"]["focused"]
+        else:
+            input_target(search_name)
+        phase = {
+            "name": name,
+            "instance": before["instance"],
+            "point": point,
+            "mapGeneration": before["paintObservation"]["mapGeneration"],
+            "clickStartedAtMs": now_ms(),
+        }
+        actions.append(phase)
+        assert len(actions) <= 4
+        await language_command("xdotool", "click", "1", timeout=3)
+        phase["clickFinishedAtMs"] = now_ms()
+
+    async def source_click(name):
+        actual = owned(observe())
+        bounds = actual[name]
+        assert bounds["width"] > 1 and bounds["height"] > 1
+        point = click_point(
+            actual,
+            (bounds["x"] + bounds["width"] / 2, bounds["y"] + bounds["height"] / 2),
+            dimensions,
+        )
+        frozen_bounds = tuple(bounds[key] for key in ("x", "y", "width", "height"))
+        await language_command(
+            "xdotool", "mousemove", "--window", nested, *map(str, point), timeout=3
+        )
+        moved = time.monotonic_ns() // 1_000_000
+
+        def source_hit():
+            current = owned(observe())
+            field = current[name]
+            assert tuple(field[key] for key in ("x", "y", "width", "height")) == frozen_bounds
+            hit = field.get("sourceHit")
+            return (
+                current["observedAtMs"] >= moved
+                and hit
+                and hit["isSource"]
+                and hit["x"] * current["scale"] == point[0]
+                and hit["y"] * current["scale"] == point[1]
+            )
+
+        await language_wait_for(source_hit, "fixed source point not currently owned by its source")
+        # One original click only, after the real device/pick and exact source
+        # identity check. No focus call, second point or conditional retry.
+        await language_command("xdotool", "click", "1", timeout=3)
+        await language_wait_for(
+            lambda: state().get("focus")
+            == ("fixture-first" if name == "firstEntry" else "fixture-second"),
+            "one real outside click did not focus its source field",
+        )
+
+    async def closed():
+        actual = await language_wait_for(
+            lambda: (value := state())
+            and overlay.language_configuration is None
+            and not value.get("overlayControls", {}).get(popup_name, {}).get("visible")
+            and value,
+            "configuration opening did not retire",
+        )
+        assert actual.get("candidate") is None
+        assert overlay.value is None and not overlay.visible and not overlay.acceptance_ready
+        return actual
+
+    async def image(label):
+        config_current()
+        path = output / f"gtk4-language-configuration-{label}.png"
+        await language_command("grim", str(path), timeout=3, environment=environment)
+        config_current()
+        evidence.setdefault("screenshots", []).append(path.name)
+
+    overlay.render_guidance(
+        {
+            "languageChoices": {
+                "source": [{"code": "en", "label": "English"}, {"code": "ja", "label": "日本語"}],
+                "target": [
+                    {"code": "en", "label": "English"},
+                    {"code": "ja", "label": "日本語"},
+                    {"code": "ko", "label": "한국어"},
+                ],
+            }
+        }
+    )
+    overlay.render(preview)
+    await language_wait_for(
+        lambda: observe() and not overlay.pending and overlay.visible,
+        "initial configuration trigger preview not rendered",
+    )
+    await click(trigger, opening=True)
+    await language_wait_for(lambda: calls["begin"], "real trigger did not request configuration")
+    old_render = json.loads(json.dumps(evidence["configurationRender"]))
+    configuration = overlay.language_configuration
+    assert configuration is not None and len(calls["begin"]) == 1
+    evidence["beginElapsedMs"] = now_ms() - actions[0]["clickStartedAtMs"]
+    evidence["handshakeExpiresAtMs"] = configuration["expiresAtMs"]
+    pending_case = stage in (
+        "language-retention-trigger-external-focus",
+        "language-retention-trigger-expired-render",
+    )
+    if pending_case:
+        assert configuration["phase"] == "Pending"
+        assert observe().get("candidate") is None and overlay.value is None
+        if stage.endswith("external-focus"):
+            await source_click("secondEntry")
+            assert now_ms() <= configuration["expiresAtMs"], (
+                "pending focus refusal masked by timeout"
+            )
+        await closed()
+        if stage.endswith("expired-render"):
+            assert now_ms() >= actions[0]["clickStartedAtMs"] + 600, (
+                "configuration retired before its native handshake deadline"
+            )
+        begin_release.set()  # Deliberately deliver the held old reply, not a new begin/ACK.
+        await language_wait_for(
+            lambda: all(
+                job.done()
+                for job in jobs
+                if job.get_coro().cr_code == overlay.begin_language_configuration.__func__.__code__
+            ),
+            "late controlled Host reply not drained",
+        )
+        await peer.link.ask("describe")
+        final = await closed()
+        if stage.endswith("external-focus"):
+            assert final.get("focus") == "fixture-second", "late ACK stole the new field's focus"
+        else:
+            await language_wait_for(
+                lambda: now_ms() > old_render["expiresAtMs"], "old source deadline not reached"
+            )
+            result = await peer.link.ask("overlay-render", old_render)
+            assert result == {"visible": False, "editing": False}
+            # As in the former expiry case, only an explicit new real source
+            # interaction/capture admits a new preview, never the expired request.
+            await source_click("firstEntry")
+            await language_wait_for(lambda: observe().get("imeClear"), "fresh source IME not Clear")
+            fresh = await overlay.input.request("capture", {})
+            assert fresh and fresh.get("snapshot") and fresh["snapshot"]["text"] == initial["first"]
+            assert fresh["snapshot"]["observedAtMs"] > source["observedAtMs"]
+            following = language_configuration_preview(fresh["snapshot"], generation)
+            following["viewContext"]["token"]["revision"] = 2
+            overlay.render(following)
+            await language_wait_for(
+                lambda: not overlay.pending and overlay.visible and observe().get("candidate"),
+                "fresh source preview not admitted after retirement",
+            )
+            assert not observe()["candidate"].get("editablePreview", False)
+            evidence["freshSourcePreview"] = True
+        assert not calls["save"] and calls["cancel"]
+        evidence["pendingRetired"] = True
+        return
+
+    actual = await language_wait_for(
+        lambda: (value := observe())
+        and configuration["phase"] == "Open"
+        and value.get("overlayControls", {}).get(search_name, {}).get("focused")
+        and value,
+        "configuration search did not acquire its own acknowledged focus",
+    )
+    assert now_ms() <= configuration["expiresAtMs"], "open observation crossed handshake deadline"
+    config_current()
+    controls = actual["overlayControls"]
+    opening_instance = controls[popup_name]["instance"]
+    focus_instances.update({name: item["instance"] for name, item in controls.items()})
+    assert controls[popup_name]["width"] == 264, controls[popup_name]
+    assert controls[popup_name]["autohide"] is True and controls[popup_name]["hasArrow"] is False
+    assert "typelay-source-language" not in controls and "typelay-apply-languages" not in controls
+    assert not actual["firstEntry"]["focused"] and not actual["imeClear"]
+    assert await overlay.input.request("capture", {}) is None, (
+        "configuration search became a source"
+    )
+    assert not calls["save"]
+
+    if stage == "language-options":
+        actual = await language_wait_for(
+            lambda: (value := observe())
+            and geometry(value, "typelay-language-choice-en")
+            and value,
+            "configuration list not painted",
+        )
+        controls = actual["overlayControls"]
+        assert controls["typelay-language-choice-en"]["enabled"], (
+            "same-language direction was filtered out"
+        )
+        assert controls["typelay-language-choice-fr"]["enabled"] is False
+        # GTK default focus traversal remains real after replacing only its
+        # unconditional Escape handler; keyboard focus must visibly follow Tab.
+        await config_key("Tab")
+        await language_wait_for(
+            lambda: (value := observe())
+            .get("overlayControls", {})
+            .get("typelay-language-choice-en", {})
+            .get("focused")
+            and value["overlayControls"]["typelay-language-choice-en"].get("focusVisible"),
+            "Tab did not show the first actual target row's focus ring",
+        )
+        await config_key("shift+Tab", "typelay-language-choice-en", composing=None)
+        await language_wait_for(
+            lambda: observe()["overlayControls"][search_name]["focused"],
+            "Shift+Tab did not return to the same search",
+        )
+        await image("open")
+        input_target(search_name)
+        await language_command("fcitx5-remote", "-s", "pinyin", timeout=3, environment=environment)
+        await language_wait_for(
+            lambda: observe().get("focusedImeClear"), "search pinyin context not Clear"
+        )
+        await search_type("nihao")
+        await language_wait_for(
+            lambda: observe().get("focusedImeComposing"), "real search preedit missing"
+        )
+        await click("typelay-language-choice-en")
+        await peer.link.ask("describe")
+        composed = observe()
+        assert (
+            composed["focusedImeComposing"] and composed["overlayControls"][search_name]["focused"]
+        )
+        assert composed["overlayControls"][search_name]["text"] == "" and not calls["save"]
+        await config_key(
+            "Escape", composing=True
+        )  # Delivered to the real IM, never a configuration cancel.
+        await language_wait_for(
+            lambda: observe().get("focusedImeClear"), "original preedit Escape was not delivered"
+        )
+        config_current()
+        assert observe()["overlayControls"][popup_name]["instance"] == opening_instance
+        assert not calls["save"] and not calls["cancel"]
+        input_target(search_name)
+        await language_command(
+            "fcitx5-remote", "-s", "keyboard-us", timeout=3, environment=environment
+        )
+        await language_wait_for(
+            lambda: observe().get("focusedImeClear"), "search keyboard context not Clear"
+        )
+        await search_type("ko")
+        filtered = await language_wait_for(
+            lambda: (value := observe())
+            and value["overlayControls"][search_name].get("text") == "ko"
+            and value["overlayControls"]["typelay-language-choice-ko"]["visible"]
+            and not value["overlayControls"]["typelay-language-choice-en"]["visible"]
+            and not value["overlayControls"]["typelay-language-choice-ja"]["visible"]
+            and value,
+            "search did not filter by its real code",
+        )
+        assert filtered["overlayControls"][popup_name]["instance"] == opening_instance
+        assert await overlay.input.request("capture", {}) is None
+        await image("search")
+        await click("typelay-language-choice-ko")
+        await language_wait_for(
+            lambda: len(calls["save"]) == 1
+            and configuration["phase"] == "Open"
+            and observe()["overlayControls"].get("fixture-language-feedback", {}).get("text"),
+            "explicit save failure did not return this opening to Open",
+        )
+        assert observe()["overlayControls"][popup_name]["instance"] == opening_instance
+        await image("save-failure")
+        await click("typelay-language-choice-ko")  # An explicit new user retry, never automatic.
+        await language_wait_for(lambda: len(calls["save"]) == 2, "second real choice was not sent")
+        await closed()
+        assert [(item["source"], item["target"]) for item in calls["save"]] == [
+            ("en", "ko"),
+            ("en", "ko"),
+        ]
+    elif stage in ("language-retention-external-focus", "language-retention-source-input"):
+        await source_click("secondEntry" if stage.endswith("external-focus") else "firstEntry")
+        await closed()
+        if stage.endswith("source-input"):
+            await source_key("End")
+            await source_key("x")
+            await language_wait_for(
+                lambda: state()["first"] == initial["first"] + "x", "new source input missing"
+            )
+            assert state()["second"] == initial["second"] and state().get("candidate") is None
+            assert not calls["save"]
+            return
+    elif stage in (
+        "language-retention-trigger-authority",
+        "language-retention-trigger-permissions",
+    ):
+        await config_key("Escape")
+        await closed()
+        # There is no collapsed live source-preview/trigger after cancellation.
+        # An ordinary source key cannot obtain the old editing/acceptance ticket.
+        await source_key("F1")
+        await peer.link.ask("describe")
+        assert observe().get("candidate") is None and not overlay.acceptance_ready
+        assert not any(event.get("operation") in ("accept", "beginEdit") for event in native_events)
+        rejected = json.loads(json.dumps(old_render))
+        rejected["revision"] += 1
+        if stage.endswith("authority"):
+            rejected["authority"]["inputRevision"] += 1
+        else:
+            rejected["view"]["editable"] = True
+            rejected["view"]["viewContext"]["canEdit"] = True
+        assert now_ms() <= old_render["expiresAtMs"], "closed-opening refusal masked by expiry"
+        assert await peer.link.ask("overlay-render", rejected) == {
+            "visible": False,
+            "editing": False,
+        }
+        assert observe().get("candidate") is None
+    else:
+        # The old detached-preview cases now receive an actual subsequent Host
+        # render. Every such view retires the configuration; it cannot retain the
+        # retired source's candidate behind the search or inherit editing rights.
+        changed = json.loads(json.dumps(old_render))
+        changed["revision"] += 1
+        if stage == "language-retention-body":
+            changed["view"]["text"] = "A different controlled candidate."
+        elif stage == "language-retention-host-token":
+            changed["view"]["viewContext"]["token"]["revision"] += 1
+        elif stage == "language-retention-state":
+            changed["view"]["state"] = "Translating"
+        elif stage == "language-retention-authority":
+            changed["authority"]["inputRevision"] += 1
+        elif stage == "language-retention-permissions":
+            changed["view"]["editable"] = True
+            changed["view"]["viewContext"]["canEdit"] = True
+        else:
+            raise AssertionError(f"unmapped GTK4 language lifecycle case: {stage}")
+        assert now_ms() <= old_render["expiresAtMs"], (
+            "new-view refusal masked by original display expiry"
+        )
+        result = await peer.link.ask("overlay-render", changed)
+        assert result == {"visible": False, "editing": False}
+        await closed()
+    assert observe().get("candidate") is None
+    assert not any(event.get("operation") in ("accept", "beginEdit") for event in native_events)
+    assert len(calls["save"]) == (2 if stage == "language-options" else 0)
+    evidence["elapsedMs"] = time.monotonic_ns() // 1_000_000 - started
+
+
+def run_owned_language_options(
+    command, environment, socket_path, state_path, output, nested, *, configuration_stage=None
+):
     """Real production renewal/IPC/foreground owner; only the host is controlled."""
     import gi
 
@@ -1444,16 +2015,33 @@ def run_owned_language_options(command, environment, socket_path, state_path, ou
 
     async def exercise():
         jobs, native_events, saves = [], [], []
+        begin_release = asyncio.Event()
+        pending_case = configuration_stage in (
+            "language-retention-trigger-external-focus",
+            "language-retention-trigger-expired-render",
+        )
+        if not pending_case:
+            begin_release.set()
+        configuration_calls = {"begin": [], "cancel": [], "save": saves}
         evidence = {
             "clock": "CLOCK_BOOTTIME",
             "owner": "production Input/Overlay",
             "displaySends": [],
             "renewalSendCount": 0,
         }
+        if configuration_stage:
+            evidence["configurationStage"] = configuration_stage
+            evidence["controlledHost"] = (
+                "configuration ACK/result only; real Host contracts are separate"
+            )
         observing = True
 
         class Host:
             def send(self, operation, data=None):
+                if configuration_stage and operation == "cancelLanguageConfiguration":
+                    configuration_calls["cancel"].append(dict(data))
+                    assert len(configuration_calls["cancel"]) <= 4
+                    return
                 if operation != "state":
                     evidence["unexpectedOperation"] = f"host notification: {operation}"
                     raise AssertionError(evidence["unexpectedOperation"])
@@ -1464,6 +2052,48 @@ def run_owned_language_options(command, environment, socket_path, state_path, ou
                     assert data.get("enabled") is True and data.get("password") is False
                     assert data.get("readOnly") is False and data.get("offscreen") is False
                     return True  # The one owned, focused fixture source, no model or settings I/O.
+                if configuration_stage and operation == "beginLanguageConfiguration":
+                    assert data["connectionId"] == peer.connection_id
+                    assert data["token"] == preview["viewContext"]["token"]
+                    configuration_calls["begin"].append(dict(data))
+                    assert len(configuration_calls["begin"]) == 1
+                    # The real Host stop/persistence contracts run separately.
+                    # Here its ordinary hide notification passes through the real bridge.
+                    overlay.hide()
+                    await begin_release.wait()
+                    return {
+                        "opened": True,
+                        "connectionId": data["connectionId"],
+                        "openingId": data["openingId"],
+                        "settingsRevision": 9,
+                        "source": "en",
+                        "target": "ja",
+                        "sourceLabel": "English",
+                        "targetLabel": "日本語",
+                        "swapAllowed": True,
+                        "choices": [
+                            {
+                                "code": code,
+                                "label": label,
+                                "nativeLabel": native,
+                                "selectable": selectable,
+                            }
+                            for code, label, native, selectable in (
+                                ("en", "英语", "English", True),
+                                ("ja", "日语", "日本語", True),
+                                ("ko", "韩语", "한국어", True),
+                                ("fr", "法语", "Français", False),
+                            )
+                        ],
+                    }
+                if configuration_stage and operation == "saveLanguageConfiguration":
+                    owner = configuration_calls["begin"][0]
+                    assert data["connectionId"] == owner["connectionId"]
+                    assert data["openingId"] == owner["openingId"]
+                    assert data["expectedRevision"] == 9
+                    saves.append(dict(data))
+                    assert len(saves) <= 2
+                    return {"saved": len(saves) == 2, "reason": "save-unconfirmed"}
                 if operation != "traySettings":
                     evidence["unexpectedOperation"] = f"host request: {operation}"
                     raise AssertionError(evidence["unexpectedOperation"])
@@ -1497,7 +2127,8 @@ def run_owned_language_options(command, environment, socket_path, state_path, ou
 
             def state():
                 assert fixture.returncode is None, "language fixture exited"
-                assert "retired" not in evidence, evidence.get("retired")
+                if not configuration_stage:
+                    assert "retired" not in evidence, evidence.get("retired")
                 assert "unexpectedOperation" not in evidence, evidence.get("unexpectedOperation")
                 for job in jobs:
                     if job.done():
@@ -1513,6 +2144,8 @@ def run_owned_language_options(command, environment, socket_path, state_path, ou
             )
             assert fixture.pid in process_lineage(peer.pid), "unexpected native test peer"
             assert peer.backend in ("gtk3", "gtk4")
+            if configuration_stage:
+                assert peer.backend == "gtk4", "configuration migration is GTK4-only"
             window = await language_wait_for(
                 lambda: next(
                     (item for item in input_service.niri.windows if item.get("pid") == peer.pid),
@@ -1538,6 +2171,7 @@ def run_owned_language_options(command, environment, socket_path, state_path, ou
             )
             dimensions = int(geometry["WIDTH"]), int(geometry["HEIGHT"])
             evidence["nestedSize"] = dimensions
+            evidence["nestedOrigin"] = [int(geometry["X"]), int(geometry["Y"])]
             initial = await language_wait_for(
                 lambda: (value := state())
                 and value.get("focus") == "fixture-first"
@@ -1557,6 +2191,9 @@ def run_owned_language_options(command, environment, socket_path, state_path, ou
             assert acknowledgement["sourceReady"] is True
             assert acknowledgement["editorReady"] is False
 
+            preview = (
+                language_configuration_preview(source, generation) if configuration_stage else None
+            )
             # Observe the single production sender without decoding, handling
             # replies, or changing frames. A send is not a native acknowledgement.
             send = peer.link.channel.send
@@ -1569,11 +2206,23 @@ def run_owned_language_options(command, environment, socket_path, state_path, ou
                     "overlay-renew",
                     "overlay-hide",
                     "revoke",
+                    *(
+                        {
+                            "overlay-language-configuration-open",
+                            "overlay-language-configuration-close",
+                            "overlay-language-configuration-result",
+                            "capture",
+                        }
+                        if configuration_stage
+                        else set()
+                    ),
                 }:
                     evidence["unexpectedOperation"] = f"native operation: {operation}"
                     raise AssertionError(evidence["unexpectedOperation"])
                 if observing and operation in ("overlay-render", "overlay-renew"):
                     data = frame["data"]
+                    if configuration_stage and operation == "overlay-render":
+                        evidence["configurationRender"] = json.loads(json.dumps(data))
                     sent = {
                         "operation": operation,
                         "sentAtMs": now_ms(),
@@ -1601,33 +2250,70 @@ def run_owned_language_options(command, environment, socket_path, state_path, ou
                     and event.get("value") is False
                 ):
                     evidence.setdefault("retired", {"reason": "native-hidden", "atMs": now_ms()})
-                if event.get("operation") == "languages":
+                if (
+                    event.get("operation") == "languages"
+                    or configuration_stage
+                    and event.get("operation")
+                    in (
+                        "languageConfigurationBegin",
+                        "languageConfigurationSave",
+                        "languageConfigurationCancel",
+                        "accept",
+                        "beginEdit",
+                    )
+                ):
                     native_events.append(dict(event))
+                    assert len(native_events) <= 12
                 overlay.event(owner, event)
 
             peer.link.channel.send = observed_send
             input_service.ui_event = ui_event
-            await check_language_options(
-                overlay,
-                source,
-                generation,
-                state,
-                initial,
-                nested,
-                dimensions,
-                evidence,
-                native_events,
-                saves,
-            )
-            assert saves == [{"source": "ko", "target": "en"}]
-            assert evidence["renewalSendCount"] > 0, (
-                "production owner did not renew the live preview"
-            )
-            state()  # A later render cannot hide an intermediate display retirement.
-            print(
-                "GTK language options: real production owner, menus and Apply checked without a model",
-                flush=True,
-            )
+            if configuration_stage:
+                await check_language_configuration(
+                    overlay,
+                    peer,
+                    preview,
+                    source,
+                    generation,
+                    state,
+                    initial,
+                    nested,
+                    dimensions,
+                    evidence,
+                    native_events,
+                    configuration_calls,
+                    begin_release,
+                    configuration_stage,
+                    environment,
+                    output,
+                    jobs,
+                )
+                print(
+                    f"GTK4 language configuration: {configuration_stage} public flow checked",
+                    flush=True,
+                )
+            else:
+                await check_language_options(
+                    overlay,
+                    source,
+                    generation,
+                    state,
+                    initial,
+                    nested,
+                    dimensions,
+                    evidence,
+                    native_events,
+                    saves,
+                )
+                assert saves == [{"source": "ko", "target": "en"}]
+                assert evidence["renewalSendCount"] > 0, (
+                    "production owner did not renew the live preview"
+                )
+                state()  # A later render cannot hide an intermediate display retirement.
+                print(
+                    "GTK language options: real production owner, menus and Apply checked without a model",
+                    flush=True,
+                )
         finally:
             try:
                 if fixture is not None:
@@ -1635,6 +2321,12 @@ def run_owned_language_options(command, environment, socket_path, state_path, ou
             except Exception:
                 pass  # A failed job's diagnostic must not mask the failure or skip cleanup.
             observing = False
+            if configuration_stage:
+                overlay.cancel_language_configuration()
+                evidence.pop("configurationRender", None)
+                evidence["configurationCallCounts"] = {
+                    key: len(value) for key, value in configuration_calls.items()
+                }
             overlay.hide()
             GLib.source_remove(overlay.timer)
             for job in jobs:

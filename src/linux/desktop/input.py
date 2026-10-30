@@ -188,6 +188,7 @@ class Input:
         self.settings_generation = 0
         self.overlay_focused = False
         self.ui_event = lambda *_: None
+        self.language_peer_lost = lambda *_: None
         self.glossary_focus_transfer = lambda *_: False
         self.source_glossary_return = None
         self.user_epoch = self.source_epoch = self.foreground_epoch = 0
@@ -277,6 +278,7 @@ class Input:
         )
 
     def lost(self, peer):
+        self.language_peer_lost(peer)
         practice = (
             self.practice_authorization
             or self.practice_pending

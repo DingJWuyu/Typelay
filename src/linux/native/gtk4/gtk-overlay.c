@@ -1,5 +1,6 @@
 #include "gtk-overlay.h"
 #include <string.h>
+#include <math.h>
 #include "../common/overlay-design.h"
 
 void tl_overlay_prepare_fonts(void) { (void)tl_overlay_font_map(); }
@@ -99,6 +100,8 @@ typedef struct {
 static GlossaryHandoff *glossary_handoff;
 static gboolean glossary_can_return(Target *target);
 static void hide_overlay(const char *reason);
+static void language_configuration_close(gboolean notify);
+static void begin_language_configuration(GtkWidget *trigger, JsonObject *view);
 
 /* Only a local editor command, never a source write permit. Borrowed identities
  * are compared while the current overlay owns them, never dereferenced later. */
@@ -1794,7 +1797,7 @@ static void hide_overlay(const char *reason) {
     if (authority) json_object_unref(authority);
     g_free(generation);
 }
-void tl_overlay_hide(void) { hide_overlay("external-revoke"); }
+void tl_overlay_hide(void) { language_configuration_close(TRUE); hide_overlay("external-revoke"); }
 void tl_overlay_forget(Target *target) {
     if (overlay.target == target) hide_overlay("target-forgotten");
 }
@@ -2030,24 +2033,7 @@ static void button_clicked(GtkButton *button, gpointer data) {
     if (strcmp(operation, "more") == 0) {
         if (GTK_WIDGET(button) == overlay.more) toggle_more(clicked_view);
     } else if (strcmp(operation, "menu") == 0) {
-        close_more(FALSE);
-        gboolean current = TRUE;
-        if (!gtk_widget_get_visible(overlay.menu)) {
-            freeze_translation_menu(clicked_view);
-            current = reset_language_selection(clicked_view) && render_translation_actions(clicked_view);
-        }
-        if (current && overlay.view == clicked_view) {
-            if (gtk_widget_get_visible(overlay.menu)) close_language_menu(clicked_view);
-            else {
-                gboolean trigger_owned = language_handoff_current(clicked_view)
-                    && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == overlay.language;
-                gtk_widget_set_visible(overlay.menu, TRUE);
-                if (trigger_owned && language_handoff_current(clicked_view)
-                    && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == overlay.language
-                    && overlay.source && gtk_widget_get_mapped(overlay.source))
-                    gtk_widget_grab_focus(overlay.source);
-            }
-        }
+        begin_language_configuration(GTK_WIDGET(button), clicked_view);
     } else if (strcmp(operation, "style-inherit") == 0 || strcmp(operation, "style-natural") == 0
         || strcmp(operation, "style-formal") == 0 || strcmp(operation, "alternative") == 0
         || strcmp(operation, "glossary") == 0) {
@@ -2176,7 +2162,10 @@ static GtkWidget *more_icon(const char *operation) {
         {"escape", "<path d='M3 3l18 18M10.6 5.2A9.6 9.6 0 0 1 12 5c5 0 8.5 4.5 9.5 7a13 13 0 0 1-2.9 4M6.4 6.5C4.4 7.8 3.1 9.8 2.5 12c1 2.5 4.5 7 9.5 7a9.4 9.4 0 0 0 4.6-1.2M9.9 9.9a3 3 0 0 0 4.2 4.2'/>"},
         {"exclude", "<circle cx='12' cy='12' r='8.5'/><path d='m6 6 12 12'/>"},
         {"lock", "<rect x='5' y='10.5' width='14' height='9.5' rx='2.5'/><path d='M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5'/>"},
-        {"style", "<path d='M4 19h4L19 8l-4-4L4 15Z'/><path d='m13 6 4 4'/>"}
+        {"style", "<path d='M4 19h4L19 8l-4-4L4 15Z'/><path d='m13 6 4 4'/>"},
+        {"language-swap", "<path d='M4 8h15m-4-4 4 4-4 4M20 16H5m4-4-4 4 4 4'/>"},
+        {"language-check", "<path d='m5 12.5 4.5 4.5L19 7.5'/>"},
+        {"language-search", "<circle cx='11' cy='11' r='6'/><path d='m20 20-4.5-4.5'/>"}
     };
     for (guint index = 0; index < G_N_ELEMENTS(icons); index++) if (strcmp(operation, icons[index].operation) == 0) {
         GtkWidget *widget = gtk_drawing_area_new();
@@ -2191,6 +2180,549 @@ static GtkWidget *more_icon(const char *operation) {
     }
     return NULL;
 }
+/* A configuration opening owns only its parent and numerical anchor. The source
+ * view, target, token, editor and key ticket were retired before this is sent. */
+typedef struct {
+    guint refs, timeout;
+    GtkWidget *top, *popup, *search, *client, *list, *feedback, *swap;
+    GtkCssProvider *css;
+    GdkDisplay *display;
+    GtkIMContext *context; /* weak existing provider binding, never our own IM */
+    gulong ime_handler;
+    GdkRectangle anchor;
+    JsonArray *choices;
+    char *id, *source, *target;
+    gint64 expires, settings_revision;
+    gboolean pending, saving, opening, retired, english, swap_allowed, clear, composing, probing;
+} LanguageConfiguration;
+static LanguageConfiguration *language_configuration;
+static LanguageConfiguration *language_configuration_ref(LanguageConfiguration *configuration) {
+    if (configuration) configuration->refs++;
+    return configuration;
+}
+static void language_configuration_unref(gpointer data) {
+    LanguageConfiguration *configuration = data;
+    if (!configuration || --configuration->refs) return;
+    if (configuration->choices) json_array_unref(configuration->choices);
+    g_clear_object(&configuration->top);
+    g_free(configuration->id); g_free(configuration->source); g_free(configuration->target);
+    g_free(configuration);
+}
+static void language_configuration_closure_unref(gpointer data, GClosure *closure) {
+    (void)closure; language_configuration_unref(data);
+}
+static void language_configuration_signal(gpointer instance, const char *signal, GCallback callback,
+        LanguageConfiguration *configuration) {
+    g_signal_connect_data(instance, signal, callback, language_configuration_ref(configuration),
+        language_configuration_closure_unref, 0);
+}
+static gboolean language_configuration_current(LanguageConfiguration *configuration) {
+    return configuration && language_configuration == configuration && !configuration->retired
+        && !overlay.popover && configuration->top && gtk_widget_get_mapped(configuration->top)
+        && gtk_window_is_active(GTK_WINDOW(configuration->top));
+}
+static gboolean language_configuration_contains(LanguageConfiguration *configuration, GtkWidget *widget) {
+    return configuration && configuration->popup && widget
+        && (widget == configuration->popup || gtk_widget_is_ancestor(widget, configuration->popup));
+}
+static void language_configuration_emit(LanguageConfiguration *configuration, const char *operation,
+        const char *source, const char *target) {
+    JsonObject *event = json_object_new(), *value = json_object_new();
+    json_object_set_string_member(event, "operation", operation);
+    json_object_set_string_member(value, "openingId", configuration->id);
+    if (source && target) {
+        json_object_set_string_member(value, "source", source);
+        json_object_set_string_member(value, "target", target);
+    }
+    json_object_set_object_member(event, "value", value);
+    tl_send_event("ui", event);
+}
+static void language_configuration_close(gboolean notify) {
+    LanguageConfiguration *configuration = language_configuration;
+    if (!configuration) return;
+    language_configuration = NULL;
+    configuration->retired = TRUE; /* Before any GTK or transport callback. */
+    if (configuration->timeout) g_source_remove(configuration->timeout);
+    configuration->timeout = 0;
+    g_signal_handlers_disconnect_by_data(configuration->top, configuration);
+    if (configuration->context) {
+        if (configuration->ime_handler) g_signal_handler_disconnect(configuration->context, configuration->ime_handler);
+        g_object_remove_weak_pointer(G_OBJECT(configuration->context), (gpointer *)&configuration->context);
+        configuration->context = NULL;
+    }
+    if (notify) language_configuration_emit(configuration, "languageConfigurationCancel", NULL, NULL);
+    if (configuration->popup) {
+        GtkWidget *popup = configuration->popup;
+        configuration->popup = NULL;
+        gtk_popover_popdown(GTK_POPOVER(popup));
+        if (gtk_widget_get_parent(popup)) gtk_widget_unparent(popup);
+        g_object_unref(popup);
+    }
+    if (configuration->css && configuration->display)
+        gtk_style_context_remove_provider_for_display(configuration->display, GTK_STYLE_PROVIDER(configuration->css));
+    g_clear_object(&configuration->css); g_clear_object(&configuration->display);
+    language_configuration_unref(configuration);
+}
+static void language_configuration_changed(GtkWidget *widget, GParamSpec *spec, gpointer data) {
+    (void)widget;
+    LanguageConfiguration *configuration = language_configuration_ref(data);
+    /* No pending ACK may reclaim focus after the user moved elsewhere. This
+     * records retirement, not the original source widget or its authority. */
+    gboolean pending_focus_change = configuration->pending && !configuration->opening
+        && g_strcmp0(g_param_spec_get_name(spec), "focus-widget") == 0;
+    if (language_configuration == configuration && (!language_configuration_current(configuration)
+        || pending_focus_change
+        || (!configuration->pending && !configuration->opening
+            && !language_configuration_contains(configuration,
+                gtk_window_get_focus(GTK_WINDOW(configuration->top))))))
+        language_configuration_close(TRUE);
+    language_configuration_unref(configuration);
+}
+static void language_configuration_unmapped(GtkWidget *widget, gpointer data) {
+    (void)widget;
+    LanguageConfiguration *configuration = language_configuration_ref(data);
+    if (language_configuration == configuration) language_configuration_close(TRUE);
+    language_configuration_unref(configuration);
+}
+static gboolean language_configuration_timeout(gpointer data) {
+    LanguageConfiguration *configuration = data;
+    configuration->timeout = 0;
+    if (language_configuration == configuration && configuration->pending) language_configuration_close(TRUE);
+    return G_SOURCE_REMOVE;
+}
+static void language_configuration_ime_changed(GtkIMContext *context, guint causes, gpointer data) {
+    LanguageConfiguration *configuration = data;
+    if (context == configuration->context && causes != TL_FCITX_CHANGE_FOCUS) configuration->clear = FALSE;
+}
+static gboolean language_configuration_ime(LanguageConfiguration *configuration) {
+    if (!language_configuration_current(configuration) || !configuration->client || configuration->probing) return FALSE;
+    GtkIMContext *context = g_object_get_data(G_OBJECT(configuration->client), TL_FCITX_CONTEXT_V1);
+    if (context != configuration->context) {
+        if (configuration->context) {
+            if (configuration->ime_handler) g_signal_handler_disconnect(configuration->context, configuration->ime_handler);
+            g_object_remove_weak_pointer(G_OBJECT(configuration->context), (gpointer *)&configuration->context);
+        }
+        configuration->context = context; configuration->ime_handler = 0; configuration->clear = FALSE;
+        if (context) {
+            g_object_add_weak_pointer(G_OBJECT(context), (gpointer *)&configuration->context);
+            guint signal = g_signal_lookup(TL_FCITX_CHANGED_V1, G_OBJECT_TYPE(context));
+            GSignalQuery query = {0};
+            if (signal) g_signal_query(signal, &query);
+            if (query.return_type == G_TYPE_NONE && query.n_params == 1 && query.param_types[0] == G_TYPE_UINT)
+                configuration->ime_handler = g_signal_connect(context, TL_FCITX_CHANGED_V1,
+                    G_CALLBACK(language_configuration_ime_changed), configuration);
+        }
+    }
+    GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(configuration->top));
+    if (focus == configuration->client) {
+        configuration->probing = TRUE;
+        gboolean clear = tl_widget_ime_clear(focus);
+        configuration->probing = FALSE;
+        configuration->clear = clear && language_configuration_current(configuration) && !configuration->composing
+            && gtk_window_get_focus(GTK_WINDOW(configuration->top)) == focus
+            && g_object_get_data(G_OBJECT(focus), TL_FCITX_CONTEXT_V1) == configuration->context;
+    }
+    return language_configuration_current(configuration) && !configuration->composing && configuration->clear
+        && configuration->context && configuration->ime_handler
+        && g_object_get_data(G_OBJECT(configuration->client), TL_FCITX_CONTEXT_V1) == configuration->context;
+}
+static void language_configuration_preedit(GtkWidget *client, const char *text, gpointer data) {
+    LanguageConfiguration *configuration = data;
+    if (language_configuration == configuration && configuration->client == client) {
+        configuration->composing = text && *text;
+        configuration->clear = FALSE;
+    }
+}
+static gboolean language_configuration_action_ready(LanguageConfiguration *configuration) {
+    if (!language_configuration_current(configuration) || configuration->pending || configuration->saving
+        || !configuration->popup || !gtk_widget_get_mapped(configuration->popup)) return FALSE;
+    GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(configuration->top));
+    if (!language_configuration_contains(configuration, focus)) return FALSE;
+    g_object_ref(focus);
+    gboolean ready = language_configuration_ime(configuration) && language_configuration_current(configuration)
+        && gtk_window_get_focus(GTK_WINDOW(configuration->top)) == focus;
+    g_object_unref(focus);
+    return ready;
+}
+static gboolean language_configuration_control_current(LanguageConfiguration *configuration, GtkWidget *control) {
+    return language_configuration_current(configuration) && gtk_widget_get_mapped(control)
+        && gtk_widget_is_sensitive(control)
+        && (control == configuration->swap ? configuration->swap_allowed
+            : configuration->list && gtk_widget_is_ancestor(control, configuration->list));
+}
+static void language_configuration_save(LanguageConfiguration *configuration, GtkWidget *control,
+        const char *source, const char *target) {
+    /* The real IME provider can synchronously filter or retire this row. Keep
+     * this activation's values and widget alive, then recheck the exact control. */
+    g_object_ref(control);
+    char *saved_source = g_strdup(source), *saved_target = g_strdup(target);
+    if (!language_configuration_action_ready(configuration)
+        || !language_configuration_control_current(configuration, control)) goto done;
+    configuration->saving = TRUE;
+    /* Do not disable the focused row: GTK would move focus during its own
+     * activation and cancel this opening before the save can be sent. The
+     * opening's saving gate rejects every further action without moving focus. */
+    gtk_widget_add_css_class(configuration->popup, "saving");
+    if (!language_configuration_control_current(configuration, control)) goto failed;
+    gtk_label_set_text(GTK_LABEL(configuration->feedback), configuration->english ? "Saving…" : "正在保存…");
+    if (!language_configuration_control_current(configuration, control)) goto failed;
+    language_configuration_emit(configuration, "languageConfigurationSave", saved_source, saved_target);
+    goto done;
+failed:
+    /* A synchronous callback may hide this control without replacing the
+     * opening. Do not leave its saving gate latched with no request in flight. */
+    if (language_configuration == configuration) language_configuration_close(TRUE);
+done:
+    g_free(saved_source); g_free(saved_target);
+    g_object_unref(control);
+}
+static void language_configuration_pick(GtkButton *control, gpointer data) {
+    LanguageConfiguration *configuration = language_configuration_ref(data);
+    if (language_configuration_control_current(configuration, GTK_WIDGET(control))
+        && GTK_WIDGET(control) != configuration->swap) {
+        const char *code = g_object_get_data(G_OBJECT(control), "typelay-language-code");
+        if (code) language_configuration_save(configuration, GTK_WIDGET(control), configuration->source, code);
+    }
+    language_configuration_unref(configuration);
+}
+static void language_configuration_swap(GtkButton *control, gpointer data) {
+    LanguageConfiguration *configuration = language_configuration_ref(data);
+    if (language_configuration_control_current(configuration, GTK_WIDGET(control))
+        && GTK_WIDGET(control) == configuration->swap)
+        language_configuration_save(configuration, GTK_WIDGET(control), configuration->target, configuration->source);
+    language_configuration_unref(configuration);
+}
+static void language_configuration_filter(GtkEditable *editable, gpointer data) {
+    LanguageConfiguration *configuration = language_configuration_ref(data);
+    if (!language_configuration_current(configuration) || GTK_WIDGET(editable) != configuration->search) goto done;
+    char *query = g_utf8_casefold(gtk_editable_get_text(editable), -1);
+    g_strstrip(query);
+    guint visible = 0;
+    for (GtkWidget *row = gtk_widget_get_first_child(configuration->list); row; row = gtk_widget_get_next_sibling(row)) {
+        const char *terms = g_object_get_data(G_OBJECT(row), "typelay-language-search");
+        gboolean match = terms && (!*query || strstr(terms, query));
+        gtk_widget_set_visible(row, match);
+        if (!language_configuration_current(configuration)) break;
+        if (match) visible++;
+    }
+    if (language_configuration_current(configuration) && !configuration->saving)
+        gtk_label_set_text(GTK_LABEL(configuration->feedback), visible ? ""
+            : configuration->english ? "No matching languages" : "没有匹配的语言");
+    g_free(query);
+done:
+    language_configuration_unref(configuration);
+}
+static gboolean language_configuration_key(GtkEventControllerKey *keys, guint keyval, guint keycode,
+        GdkModifierType modifiers, gpointer data) {
+    (void)keys; (void)keycode;
+    modifiers &= GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK | GDK_HYPER_MASK | GDK_META_MASK;
+    if (modifiers || (keyval != GDK_KEY_Escape && keyval != GDK_KEY_Return && keyval != GDK_KEY_KP_Enter)) return FALSE;
+    LanguageConfiguration *configuration = language_configuration_ref(data);
+    gboolean handled = FALSE;
+    GtkWidget *focus = configuration->top ? gtk_window_get_focus(GTK_WINDOW(configuration->top)) : NULL;
+    if (keyval != GDK_KEY_Escape && focus != configuration->client) goto done;
+    gboolean ready = language_configuration_action_ready(configuration);
+    if (language_configuration != configuration) { handled = TRUE; goto done; }
+    if (!ready) goto done; /* Unknown/preedit remains the original input's event. */
+    if (keyval == GDK_KEY_Escape) { language_configuration_close(TRUE); handled = TRUE; }
+    else {
+        for (GtkWidget *row = gtk_widget_get_first_child(configuration->list); row; row = gtk_widget_get_next_sibling(row))
+            if (gtk_widget_get_visible(row) && gtk_widget_is_sensitive(row)) {
+                language_configuration_pick(GTK_BUTTON(row), configuration); handled = TRUE; break;
+            }
+    }
+done:
+    language_configuration_unref(configuration);
+    return handled;
+}
+static gboolean language_configuration_replace_default_keys(GtkWidget *popup, LanguageConfiguration *configuration) {
+    /* GtkPopover 4.22's default bubble handler unconditionally closes on Escape.
+     * Replace only the unique key controller of this newly-owned, empty popup;
+     * do not touch Entry IM controllers, focus controllers or any host widget. */
+    GListModel *controllers = gtk_widget_observe_controllers(popup);
+    GtkEventController *original = NULL;
+    guint count = 0;
+    for (guint index = 0; index < g_list_model_get_n_items(controllers); index++) {
+        GObject *item = g_list_model_get_item(controllers, index);
+        if (GTK_IS_EVENT_CONTROLLER_KEY(item)) { count++; g_set_object(&original, GTK_EVENT_CONTROLLER(item)); }
+        g_object_unref(item);
+    }
+    g_object_unref(controllers);
+    if (count != 1) { g_clear_object(&original); return FALSE; }
+    gtk_widget_remove_controller(popup, original); g_object_unref(original);
+    GtkEventController *keys = gtk_event_controller_key_new();
+    gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_BUBBLE);
+    language_configuration_signal(keys, "key-pressed", G_CALLBACK(language_configuration_key), configuration);
+    gtk_widget_add_controller(popup, keys);
+    return TRUE;
+}
+static gboolean language_configuration_text(JsonObject *value, const char *name, gsize maximum) {
+    const char *text = tl_string(value, name);
+    return text && *text && strlen(text) <= maximum && g_utf8_validate(text, -1, NULL);
+}
+static gboolean language_configuration_show(LanguageConfiguration *configuration, JsonObject *data) {
+    JsonNode *node = data ? json_object_get_member(data, "choices") : NULL;
+    if (!language_configuration_current(configuration) || !configuration->pending || tl_now() > configuration->expires
+        || !node || !JSON_NODE_HOLDS_ARRAY(node) || tl_integer(data, "settingsRevision", -1) < 0
+        || !language_configuration_text(data, "source", 16) || !language_configuration_text(data, "target", 16)
+        || !language_configuration_text(data, "sourceLabel", 256) || !language_configuration_text(data, "targetLabel", 256)) return FALSE;
+    JsonArray *choices = json_node_get_array(node);
+    guint count = json_array_get_length(choices);
+    if (count == 0 || count > 32) return FALSE;
+    for (guint index = 0; index < count; index++) {
+        JsonNode *item = json_array_get_element(choices, index);
+        JsonObject *choice = item && JSON_NODE_HOLDS_OBJECT(item) ? json_node_get_object(item) : NULL;
+        JsonNode *selectable = choice ? json_object_get_member(choice, "selectable") : NULL;
+        if (!choice || !language_configuration_text(choice, "code", 16)
+            || !language_configuration_text(choice, "label", 256) || !language_configuration_text(choice, "nativeLabel", 256)
+            || !selectable || !JSON_NODE_HOLDS_VALUE(selectable) || json_node_get_value_type(selectable) != G_TYPE_BOOLEAN) return FALSE;
+        const char *code = tl_string(choice, "code");
+        for (const char *character = code; *character; character++)
+            if (!g_ascii_isalnum(*character) && *character != '-') return FALSE;
+        for (guint previous = 0; previous < index; previous++)
+            if (g_strcmp0(code, tl_string(json_array_get_object_element(choices, previous), "code")) == 0) return FALSE;
+    }
+    /* Construction may invoke synchronous widget callbacks. Hold only this
+     * invocation's focus reference; it is never retained by the config shell. */
+    g_autoptr(GtkWidget) opening_focus = gtk_window_get_focus(GTK_WINDOW(configuration->top));
+    if (opening_focus) g_object_ref(opening_focus);
+    configuration->source = g_strdup(tl_string(data, "source"));
+    configuration->target = g_strdup(tl_string(data, "target"));
+    configuration->choices = json_array_ref(choices);
+    configuration->settings_revision = tl_integer(data, "settingsRevision", -1);
+    configuration->swap_allowed = boolean(data, "swapAllowed");
+    JsonObject *appearance = tl_object(data, "appearance");
+    const char *language = text_or_empty(appearance, "uiLanguage");
+    if (!*language || strcmp(language, "system") == 0) language = g_get_language_names()[0];
+    configuration->english = !g_str_has_prefix(language, "zh");
+    gboolean dark = FALSE;
+    char *name = NULL;
+    g_object_get(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", &dark, "gtk-theme-name", &name, NULL);
+    const char *theme_name = text_or_empty(data, "theme");
+    if (*theme_name && strcmp(theme_name, "system") != 0) dark = strcmp(theme_name, "dark") == 0;
+    else if (name) { char *lower = g_ascii_strdown(name, -1); dark |= strstr(lower, "dark") != NULL; g_free(lower); }
+    g_free(name);
+    TlOverlayPalette palette = tl_overlay_palette(dark, tl_string(appearance, "accent"), boolean(appearance, "reduceTransparency"));
+    const char *font = tl_overlay_ui_font(tl_string(appearance, "font"));
+    char *font_css = font ? g_strdup_printf("font-family:%s;", font) : g_strdup("");
+    char *css = g_strdup_printf(
+        "#typelay-language-configuration {background:none;}"
+        "#typelay-language-configuration > contents {background:%s;color:%s;border:1px solid %s;border-radius:12px;padding:5px;box-shadow:0 8px 28px rgba(0,0,0,.18);%sfont-size:13px;}"
+        "#typelay-language-configuration button {background:none;background-image:none;box-shadow:none;border:0;min-height:30px;padding:0 10px;border-radius:7px;color:inherit;font-weight:400;}"
+        "#typelay-language-configuration button:hover:not(:disabled),#typelay-language-configuration button:focus-visible {background:%s;color:white;}"
+        "#typelay-language-configuration button:disabled {color:%s;}"
+        "#typelay-language-configuration .language-head {padding:6px 8px 8px 10px;font-weight:600;}"
+        "#typelay-language-configuration .language-swap {min-width:28px;min-height:28px;padding:0;}"
+        "#typelay-language-configuration .language-search {min-height:30px;border-radius:8px;background:%s;margin:2px 2px 6px;padding:0 8px;}"
+        "#typelay-language-configuration entry {background:none;border:0;box-shadow:none;min-height:30px;padding:0;font-size:13.5px;}"
+        "#typelay-language-configuration .language-native {font-size:12px;opacity:.55;}"
+        "#typelay-language-configuration.saving .language-choices {opacity:.55;}"
+        "#typelay-language-configuration .language-feedback {color:%s;font-size:12px;}",
+        palette.surface, palette.ink, palette.line, font_css, palette.accent, palette.tertiary, palette.hover, palette.secondary);
+    g_free(font_css);
+    configuration->css = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(configuration->css, css, -1); g_free(css);
+    configuration->display = g_object_ref(gtk_widget_get_display(configuration->top));
+    gtk_style_context_add_provider_for_display(configuration->display, GTK_STYLE_PROVIDER(configuration->css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 2);
+    if (!language_configuration_current(configuration) || !configuration->pending
+        || tl_now() > configuration->expires) return FALSE;
+    configuration->opening = TRUE;
+    GtkWidget *popup = gtk_popover_new();
+    configuration->popup = g_object_ref_sink(popup);
+    g_object_ref(popup); /* Local construction ref survives a synchronous retirement. */
+    gtk_widget_set_name(popup, "typelay-language-configuration");
+    g_object_set_data(G_OBJECT(popup), "typelay-overlay", GINT_TO_POINTER(1));
+    gtk_popover_set_has_arrow(GTK_POPOVER(popup), FALSE);
+    gtk_popover_set_autohide(GTK_POPOVER(popup), TRUE);
+    gtk_popover_set_pointing_to(GTK_POPOVER(popup), &configuration->anchor);
+    gtk_popover_set_position(GTK_POPOVER(popup), GTK_POS_BOTTOM);
+    if (!language_configuration_replace_default_keys(popup, configuration)) goto failed;
+    gtk_widget_set_font_map(popup, font ? tl_overlay_font_map() : NULL);
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_size_request(box, 252, -1); /* 264 total: 5px padding + 1px edge per side. */
+    gtk_popover_set_child(GTK_POPOVER(popup), box);
+    GtkWidget *head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_add_css_class(head, "language-head");
+    char *direction = g_strdup_printf("%s → %s", tl_string(data, "sourceLabel"), tl_string(data, "targetLabel"));
+    GtkWidget *label = gtk_label_new(direction); g_free(direction);
+    gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+    gtk_label_set_xalign(GTK_LABEL(label), 0); gtk_widget_set_hexpand(label, TRUE);
+    gtk_box_append(GTK_BOX(head), label);
+    configuration->swap = gtk_button_new();
+    gtk_widget_add_css_class(configuration->swap, "language-swap");
+    gtk_widget_set_name(configuration->swap, "typelay-language-swap");
+    gtk_button_set_child(GTK_BUTTON(configuration->swap), more_icon("language-swap"));
+    gtk_widget_set_focus_on_click(configuration->swap, FALSE);
+    gtk_widget_set_sensitive(configuration->swap, configuration->swap_allowed);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(configuration->swap), GTK_ACCESSIBLE_PROPERTY_LABEL,
+        configuration->english ? "Swap languages" : "交换语言", -1);
+    language_configuration_signal(configuration->swap, "clicked", G_CALLBACK(language_configuration_swap), configuration);
+    gtk_box_append(GTK_BOX(head), configuration->swap); gtk_box_append(GTK_BOX(box), head);
+    GtkWidget *search_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_add_css_class(search_row, "language-search");
+    gtk_box_append(GTK_BOX(search_row), more_icon("language-search"));
+    configuration->search = gtk_entry_new();
+    gtk_widget_set_name(configuration->search, "typelay-language-search");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(configuration->search), configuration->english ? "Search languages…" : "搜索语言…");
+    gtk_widget_set_hexpand(configuration->search, TRUE);
+    gtk_box_append(GTK_BOX(search_row), configuration->search); gtk_box_append(GTK_BOX(box), search_row);
+    configuration->client = GTK_WIDGET(gtk_editable_get_delegate(GTK_EDITABLE(configuration->search)));
+    language_configuration_signal(configuration->client, "preedit-changed", G_CALLBACK(language_configuration_preedit), configuration);
+    GtkWidget *scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(scroll), TRUE);
+    gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(scroll), 232);
+    configuration->list = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_name(configuration->list, "typelay-language-choices");
+    gtk_widget_add_css_class(configuration->list, "language-choices");
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), configuration->list);
+    gtk_box_append(GTK_BOX(box), scroll);
+    for (guint index = 0; index < count; index++) {
+        JsonObject *choice = json_array_get_object_element(choices, index);
+        const char *code = tl_string(choice, "code"), *title = tl_string(choice, "label"), *native = tl_string(choice, "nativeLabel");
+        GtkWidget *row = gtk_button_new(), *content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+        char *row_name = g_strdup_printf("typelay-language-choice-%s", code);
+        gtk_widget_set_name(row, row_name); g_free(row_name);
+        gtk_widget_set_focus_on_click(row, FALSE);
+        gtk_widget_set_sensitive(row, boolean(choice, "selectable"));
+        g_object_set_data_full(G_OBJECT(row), "typelay-language-code", g_strdup(code), g_free);
+        char *terms = g_strdup_printf("%s\n%s\n%s", code, title, native), *folded = g_utf8_casefold(terms, -1); g_free(terms);
+        g_object_set_data_full(G_OBJECT(row), "typelay-language-search", folded, g_free);
+        GtkWidget *tick = more_icon("language-check");
+        gtk_widget_set_opacity(tick, strcmp(code, configuration->target) == 0 ? 1 : 0);
+        gtk_box_append(GTK_BOX(content), tick);
+        GtkWidget *title_label = gtk_label_new(title), *native_label = gtk_label_new(native);
+        gtk_label_set_xalign(GTK_LABEL(title_label), 0); gtk_widget_set_hexpand(title_label, TRUE);
+        gtk_widget_add_css_class(native_label, "language-native");
+        gtk_box_append(GTK_BOX(content), title_label); gtk_box_append(GTK_BOX(content), native_label);
+        gtk_button_set_child(GTK_BUTTON(row), content);
+        gtk_accessible_update_property(GTK_ACCESSIBLE(row), GTK_ACCESSIBLE_PROPERTY_LABEL, title, -1);
+        language_configuration_signal(row, "clicked", G_CALLBACK(language_configuration_pick), configuration);
+        gtk_box_append(GTK_BOX(configuration->list), row);
+    }
+    configuration->feedback = gtk_label_new("");
+    gtk_widget_add_css_class(configuration->feedback, "language-feedback");
+    gtk_label_set_wrap(GTK_LABEL(configuration->feedback), TRUE);
+    gtk_box_append(GTK_BOX(box), configuration->feedback);
+    language_configuration_signal(configuration->search, "changed", G_CALLBACK(language_configuration_filter), configuration);
+    language_configuration_signal(popup, "closed", G_CALLBACK(language_configuration_unmapped), configuration);
+    if (!language_configuration_current(configuration) || !configuration->pending
+        || tl_now() > configuration->expires) goto failed;
+    gtk_widget_set_parent(popup, configuration->top);
+    if (!language_configuration_current(configuration) || !configuration->pending
+        || tl_now() > configuration->expires
+        || gtk_window_get_focus(GTK_WINDOW(configuration->top)) != opening_focus) goto failed;
+    gtk_popover_popup(GTK_POPOVER(popup));
+    if (!language_configuration_current(configuration) || !configuration->pending
+        || tl_now() > configuration->expires) goto failed;
+    GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(configuration->top));
+    if (focus != opening_focus && !language_configuration_contains(configuration, focus)) goto failed;
+    gtk_widget_grab_focus(configuration->search);
+    configuration->opening = FALSE;
+    if (!language_configuration_current(configuration) || !configuration->pending
+        || tl_now() > configuration->expires || !gtk_widget_get_mapped(popup)
+        || gtk_window_get_focus(GTK_WINDOW(configuration->top)) != configuration->client) goto failed;
+    configuration->pending = FALSE;
+    if (configuration->timeout) g_source_remove(configuration->timeout);
+    configuration->timeout = 0;
+    (void)language_configuration_ime(configuration);
+    gboolean current = language_configuration_current(configuration) && tl_now() <= configuration->expires;
+    g_object_unref(popup);
+    return current;
+failed:
+    g_object_unref(popup);
+    return FALSE;
+}
+static JsonObject *language_configuration_command(const char *operation, JsonObject *data) {
+    LanguageConfiguration *configuration = language_configuration_ref(language_configuration);
+    gboolean matches = configuration && g_strcmp0(configuration->id, tl_string(data, "openingId")) == 0;
+    gboolean opened = FALSE;
+    if (matches && strcmp(operation, "overlay-language-configuration-open") == 0) {
+        opened = language_configuration_show(configuration, data);
+        if (!opened && language_configuration == configuration) language_configuration_close(TRUE);
+    } else if (matches && strcmp(operation, "overlay-language-configuration-close") == 0) {
+        language_configuration_close(FALSE);
+    } else if (matches && strcmp(operation, "overlay-language-configuration-result") == 0
+        && language_configuration_current(configuration) && !configuration->pending && configuration->saving) {
+        configuration->saving = FALSE;
+        gtk_widget_remove_css_class(configuration->popup, "saving");
+        if (language_configuration_current(configuration)) gtk_label_set_text(GTK_LABEL(configuration->feedback),
+            configuration->english ? "Save not confirmed. Choose a language to retry." : "保存未确认，请重新选择语言。");
+    }
+    JsonObject *reply = json_object_new();
+    json_object_set_boolean_member(reply, "opened", opened);
+    if (configuration) json_object_set_string_member(reply, "openingId", configuration->id);
+    language_configuration_unref(configuration);
+    return reply;
+}
+static void begin_language_configuration(GtkWidget *trigger, JsonObject *view) {
+    if (language_configuration || overlay.view != view || trigger != overlay.language || !active()
+        || paused() || overlay.glossary || tl_now() > overlay.expires
+        || !tl_configuration_current(overlay.generation) || !tl_view_context_matches(overlay.target, view)) return;
+    Target *target = overlay.target;
+    GtkWidget *top = g_object_ref(overlay.top), *focus = gtk_window_get_focus(GTK_WINDOW(overlay.top));
+    gint64 revision = overlay.revision;
+    if (!focus) { g_object_unref(top); return; }
+    g_object_ref(focus);
+    graphene_rect_t rect;
+    gboolean located = gtk_widget_compute_bounds(trigger, top, &rect);
+    gboolean clear = focus == overlay.text ? !overlay.composing && tl_widget_ime_clear(focus)
+        : !target->dead && focus == target->client && tl_focused() == target && tl_ime_clear(target);
+    if (!located || !clear || overlay.view != view || overlay.target != target || overlay.revision != revision
+        || overlay.top != top || !active() || gtk_window_get_focus(GTK_WINDOW(top)) != focus
+        || (focus == overlay.text && overlay.composing) || tl_now() > overlay.expires
+        || !tl_configuration_current(overlay.generation) || !tl_view_context_matches(target, view)
+        || !isfinite(rect.origin.x) || !isfinite(rect.origin.y)
+        || !isfinite(rect.size.width) || !isfinite(rect.size.height)
+        || rect.origin.x < 0 || rect.origin.y < 0
+        || rect.origin.x > gtk_widget_get_width(top) || rect.origin.y > gtk_widget_get_height(top)
+        || rect.size.width <= 1 || rect.size.height <= 1
+        || rect.size.width > gtk_widget_get_width(top) || rect.size.height > gtk_widget_get_height(top)
+        || rect.origin.x + rect.size.width > gtk_widget_get_width(top)
+        || rect.origin.y + rect.size.height > gtk_widget_get_height(top)) goto done;
+    LanguageConfiguration *configuration = g_new0(LanguageConfiguration, 1);
+    configuration->refs = 1;
+    configuration->id = g_uuid_string_random();
+    configuration->top = g_object_ref(top);
+    configuration->anchor = (GdkRectangle){(int)rect.origin.x, (int)rect.origin.y, (int)rect.size.width, (int)rect.size.height};
+    configuration->expires = tl_now() + 600;
+    configuration->pending = TRUE;
+    JsonObject *event = json_object_new(), *value = json_object_new();
+    json_object_set_string_member(event, "operation", "languageConfigurationBegin");
+    json_object_set_string_member(event, "target", target->id);
+    json_object_set_string_member(event, "generation", overlay.generation);
+    json_object_set_int_member(event, "revision", revision);
+    json_object_set_string_member(value, "openingId", configuration->id);
+    json_object_set_object_member(event, "value", value);
+    tl_clear_permit();
+    if (overlay.view != view || overlay.target != target || overlay.revision != revision
+        || overlay.top != top || !active() || gtk_window_get_focus(GTK_WINDOW(top)) != focus
+        || (focus == overlay.text && overlay.composing) || tl_now() > overlay.expires
+        || !tl_configuration_current(overlay.generation) || !tl_view_context_matches(target, view)) {
+        json_object_unref(event); language_configuration_unref(configuration); goto done;
+    }
+    hide_overlay("language-configuration");
+    if (overlay.popover || language_configuration || !gtk_widget_get_mapped(top)
+        || !gtk_window_is_active(GTK_WINDOW(top)) || tl_now() > configuration->expires) {
+        json_object_unref(event); language_configuration_unref(configuration); goto done;
+    }
+    language_configuration = configuration;
+    language_configuration_signal(top, "notify::is-active", G_CALLBACK(language_configuration_changed), configuration);
+    language_configuration_signal(top, "notify::focus-widget", G_CALLBACK(language_configuration_changed), configuration);
+    language_configuration_signal(top, "unmap", G_CALLBACK(language_configuration_unmapped), configuration);
+    configuration->timeout = g_timeout_add_full(G_PRIORITY_DEFAULT,
+        (guint)MAX(1, configuration->expires - tl_now()), language_configuration_timeout,
+        language_configuration_ref(configuration), language_configuration_unref);
+    if (language_configuration_current(configuration) && configuration->pending
+        && tl_now() <= configuration->expires) tl_send_event("ui", event);
+    else {
+        json_object_unref(event);
+        if (language_configuration == configuration) language_configuration_close(TRUE);
+    }
+done:
+    g_object_unref(focus); g_object_unref(top);
+}
+
 static GtkWidget *more_item(GtkWidget *box, const char *label, const char *operation, const char *name) {
     const char *translated = tl_overlay_ui(label, overlay.english);
     GtkWidget *item = button(box, translated, operation);
@@ -2668,6 +3200,7 @@ static gboolean retained_language_preview(Target *target, JsonObject *data) {
     return current;
 }
 static gboolean render(Target *target, JsonObject *data) {
+    language_configuration_close(TRUE);
     JsonObject *value = tl_object(data, "view"), *presentation = tl_object(value, "presentation");
     JsonObject *authority = tl_object(data, "authority");
     gint64 until = tl_integer(data, "expiresAtMs", 0), now = tl_now();
@@ -2917,6 +3450,10 @@ done:
     json_object_unref(view);
 }
 JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject *data) {
+    if (strcmp(operation, "overlay-language-configuration-open") == 0
+        || strcmp(operation, "overlay-language-configuration-result") == 0
+        || strcmp(operation, "overlay-language-configuration-close") == 0)
+        return language_configuration_command(operation, data);
     gboolean visible = FALSE;
     if (strcmp(operation, "overlay-hide") != 0 && !tl_configuration_current(tl_string(data, "generation")))
         goto finished;

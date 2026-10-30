@@ -749,9 +749,22 @@ def _gtk_source_glossary(out, environment, deadline, toolkit):
                     nonlocal serial
                     serial += 1
                     temporary = command_path.with_suffix(".tmp")
-                    temporary.write_text(f"{serial} {action}\n")
+                    suffix = (
+                        f" {int(deadline * 1000)}"
+                        if toolkit == "gtk4" and action == "capture-more"
+                        else ""
+                    )
+                    temporary.write_text(f"{serial} {action}{suffix}\n")
                     temporary.replace(command_path)
-                    wait_for(lambda: state().get("glossaryCommand") == serial, action)
+
+                    def completed():
+                        status = process.poll()
+                        assert status is None, (
+                            f"GTK fixture exited {status} during {action}; see {toolkit}-glossary.log"
+                        )
+                        return state().get("glossaryCommand") == serial
+
+                    wait_for(completed, action)
 
                 clicks = []
                 click_path = out / f"{toolkit}-glossary-clicks.json"

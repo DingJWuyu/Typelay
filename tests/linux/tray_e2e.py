@@ -619,8 +619,9 @@ def main():
                 "the real saved long application list was not rendered"
             )
 
-            def entry_inside_viewports():
-                entry = preparation.next_button
+            def entry_inside_viewports(entry=None):
+                if entry is None:
+                    entry = preparation.next_button
                 if not entry.get_mapped():
                     return False
                 allocation = entry.get_allocation()
@@ -1172,9 +1173,35 @@ def main():
             assert any(item["operation"] == "changeGlossary" for item in request_results)
             # The same real save/failure/conflict/undo paths expose English
             # chrome without translating user content or changing the gate.
-            settings_surface.controls["uiLanguage"].set_active_id("en")
-            await settled()
-            assert state["uiLanguage"] == "en"
+            # Appearance rejects new events from hidden peers. Navigate and
+            # reveal the existing control instead of changing it from Glossary.
+            language = settings_surface.controls["uiLanguage"]
+            loop = asyncio.get_running_loop()
+            language_deadline = loop.time() + 3
+            async with asyncio.timeout_at(language_deadline):
+                settings_surface.sidebar.select_row(settings_surface.nav_rows["appearance"])
+                await settled()
+                while settings_surface.pages.get_transition_running() or not language.get_mapped():
+                    await asyncio.sleep(0.01)
+                scroll = settings_surface.page_scrolls["appearance"]
+                adjustment = scroll.get_vadjustment()
+                position = language.translate_coordinates(scroll, 0, 0)
+                assert position is not None
+                adjustment.set_value(
+                    adjustment.get_value()
+                    + position[1]
+                    - (scroll.get_allocated_height() - language.get_allocated_height()) / 2
+                )
+                while not entry_inside_viewports(language):
+                    await asyncio.sleep(0.01)
+                assert settings_surface.window.is_active()
+                assert settings_surface.pages.get_visible_child_name() == "appearance"
+                assert settings_surface.controls["uiLanguage"] is language
+                assert language.is_sensitive() and language.get_mapped()
+                assert loop.time() < language_deadline
+                language.set_active_id("en")
+                await settled()
+                assert state["uiLanguage"] == "en"
             settings_surface.pages.set_visible_child_name("glossary")
             translation.new_button.clicked()
             translation.source_term.set_text("关闭")

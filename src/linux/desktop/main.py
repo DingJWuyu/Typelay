@@ -515,6 +515,8 @@ async def desktop(paths, background, lock, tutorial=False):
             overlay.render(value)
         elif operation == "hide":
             overlay.hide()
+        elif operation == "languageConfigurationClosed":
+            overlay.language_configuration_closed(value)
         elif operation == "resumeEditor":
             overlay.resume()
         elif operation == "status":

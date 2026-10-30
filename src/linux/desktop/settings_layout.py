@@ -464,6 +464,23 @@ def build(
     size.set_round_digits(0)
     style(size, "translation-size")
     size.set_size_request(150, -1)
+    size_fill = Gtk.CssProvider()
+    size.get_style_context().add_provider(size_fill, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+
+    def paint_size_fill(item):
+        # The prototype paints a percentage of the whole 150px range, not
+        # GTK's native highlight ending at the inset thumb centre.
+        fill = max(0, min(100, (item.get_value() - 13) / 6 * 100))
+        accent = "@" + owner.window.typelay_theme_scope + "-accent"
+        size_fill.load_from_data(
+            (
+                "scale.translation-size trough { background-image: linear-gradient(to right, "
+                f"{accent} 0%, {accent} {fill:g}%, transparent {fill:g}%, transparent 100%); }}"
+            ).encode()
+        )
+
+    size.connect("value-changed", paint_size_fill)
+    paint_size_fill(size)
     size.connect(
         "value-changed",
         lambda item: owner.change_control("textSize", int(item.get_value()), widget=item),

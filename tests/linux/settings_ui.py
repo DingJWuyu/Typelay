@@ -44,6 +44,7 @@ def main(arguments=None):
     parser.add_argument("--shortcuts-reset-only", action="store_true")
     parser.add_argument("--shortcuts-only", action="store_true")
     parser.add_argument("--appearance-only", action="store_true")
+    parser.add_argument("--appearance-slider-only", action="store_true")
     parser.add_argument("--appearance-retired-only", action="store_true")
     parser.add_argument("--shortcuts-recording-only", action="store_true")
     options = parser.parse_args(arguments)
@@ -328,6 +329,73 @@ def main(arguments=None):
                 str(options.output / (name + ".png")), "png", [], []
             )
 
+        async def choose_visible_appearance(key, value):
+            control = (
+                surface.preference_options[key][value]
+                if key in surface.preference_options
+                else surface.controls[key]
+            )
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 8
+            async with asyncio.timeout_at(deadline):
+                assert not surface.search.get_text(), "navigation is hidden by an active query"
+                surface.window.present()
+                assert surface.nav_rows["appearance"].get_mapped()
+                surface.sidebar.select_row(surface.nav_rows["appearance"])
+                await settle(
+                    lambda: surface.window.is_active()
+                    and not jobs
+                    and not surface.pages.get_transition_running()
+                    and control.get_mapped()
+                )
+                scroll = surface.page_scrolls["appearance"]
+                adjustment = scroll.get_vadjustment()
+                position = control.translate_coordinates(scroll, 0, 0)
+                assert position is not None
+                adjustment.set_value(
+                    adjustment.get_value()
+                    + position[1]
+                    - (scroll.get_allocated_height() - control.get_allocated_height()) / 2
+                )
+                await paint(surface.window)
+                ancestor = control.get_parent()
+                viewports = 0
+                for _ in range(24):
+                    if ancestor is None:
+                        break
+                    if isinstance(ancestor, (Gtk.Viewport, Gtk.ScrolledWindow, Gtk.Window)):
+                        point = control.translate_coordinates(ancestor, 0, 0)
+                        assert point is not None
+                        assert (
+                            0
+                            <= point[0]
+                            <= ancestor.get_allocated_width() - control.get_allocated_width()
+                        )
+                        assert (
+                            0
+                            <= point[1]
+                            <= ancestor.get_allocated_height() - control.get_allocated_height()
+                        )
+                        viewports += 1
+                    ancestor = ancestor.get_parent()
+                assert ancestor is None and viewports >= 2
+                assert surface.window.is_active() and control.get_toplevel() is surface.window
+                assert surface.pages.get_visible_child_name() == "appearance"
+                assert control.get_mapped() and control.is_sensitive()
+                current = (
+                    surface.preference_options[key][value]
+                    if key in surface.preference_options
+                    else surface.controls[key]
+                )
+                assert current is control and loop.time() < deadline
+                if key in surface.preference_options:
+                    control.set_active(True)
+                else:
+                    control.set_active_id(value)
+                await settle(
+                    lambda: state.get(key) == value and not jobs and not surface.pending_settings
+                )
+
         async def exercise_appearance_retired():
             surface.sidebar.select_row(surface.nav_rows["appearance"])
             surface.window.present()
@@ -455,115 +523,206 @@ def main(arguments=None):
                 saved = json.loads((directory / "config/settings.json").read_text())
                 assert saved["Accent"] == color
             await select("accent", "clay")
-            system_family = Pango.FontDescription.from_string(
-                surface.window.get_settings().get_property("gtk-font-name")
-            ).get_family()
-            for choice in ("claude", "sans", "system"):
-                await select("font", choice)
-                for bound in (13, 19):
-                    await select("textSize", bound)
-                    await paint(surface.window)
-                    layout = surface.preview_text.get_layout()
-                    canvas = surface.preview_canvas
-                    bubble = surface.preview_overlay
-                    position = bubble.translate_coordinates(canvas, 0, 0)
-                    assert position is not None
-                    widths = (canvas.get_allocated_width(), bubble.get_allocated_width())
-                    heights = (canvas.get_allocated_height(), bubble.get_allocated_height())
-                    line_extents = [
-                        (line.get_pixel_extents()[0].height, line.get_pixel_extents()[1].height)
-                        for line in layout.get_lines_readonly()
-                    ]
-                    print(
-                        "APPEARANCE PREVIEW",
-                        choice,
-                        bound,
-                        {
-                            "position": position,
-                            "widths": widths,
-                            "heights": heights,
-                            "label": (
-                                surface.preview_text.get_allocated_width(),
-                                surface.preview_text.get_allocated_height(),
-                            ),
-                            "lines": line_extents,
-                        },
-                        flush=True,
+            # Observe the actual native thumb and unobscured painted trough.
+            # The fill boundary under the opaque thumb is not a pixel claim.
+            for theme, value, color in (
+                ("light", 13, "clay"),
+                ("light", 16, "clay"),
+                ("light", 19, "clay"),
+                ("dark", 13, "clay"),
+                ("dark", 16, "clay"),
+                ("dark", 19, "clay"),
+                ("dark", 16, "ocean"),
+                ("light", 16, "ocean"),
+            ):
+                await select("textSize", value)
+                # These changes occur after the value signal. The final light
+                # ocean case keeps 16 unchanged, testing theme-only repaint.
+                await select("accent", color)
+                await select("theme", theme)
+                await reveal(size)
+                expected_thumb = ((value - 13) * 130 // 6, (value - 13) * 130 // 6 + 20)
+                await paint(surface.window)
+                rectangle = size.get_range_rect()
+                thumb = tuple(size.get_slider_range())
+                assert (rectangle.x, rectangle.width) == (0, 150)
+                assert size.get_allocated_width() == 150
+                assert thumb == expected_thumb, (value, thumb, expected_thumb)
+                small, _scale, large = size.get_parent().get_children()
+                parent = size.get_parent()
+                left = small.translate_coordinates(parent, 0, 0)[0]
+                middle = size.translate_coordinates(parent, 0, 0)[0]
+                right = large.translate_coordinates(parent, 0, 0)[0]
+                assert middle - left - small.get_allocated_width() == 10
+                assert right - middle - size.get_allocated_width() == 10
+                sx, sy = size.translate_coordinates(surface.window, 0, 0)
+                y = sy + rectangle.y + rectangle.height // 2
+                pixbuf = Gdk.pixbuf_get_from_window(surface.window.get_window(), sx, y, 150, 1)
+                channels = pixbuf.get_n_channels()
+                pixels = pixbuf.get_pixels()
+                for x in range(thumb[0] + 2, thumb[1] - 2):
+                    assert min(pixels[x * channels : x * channels + 3]) >= 250
+                capture(f"appearance-slider-{theme}-{color}-{value}")
+                context = size.get_style_context()
+                found, accent = context.lookup_color(surface.window.typelay_theme_scope + "-accent")
+                assert found
+                accent_rgb = tuple(
+                    round(component * 255) for component in (accent.red, accent.green, accent.blue)
+                )
+                assert accent_rgb == ((217, 119, 87) if color == "clay" else (47, 127, 224))
+                fill_end = (value - 13) * 25
+                background = (222, 222, 222) if theme == "light" else (78, 77, 75)
+                observed = []
+                for x in range(2, 148):
+                    # Omit the opaque thumb and its existing 3px CSS blur
+                    # halo, plus the original 2px rounded track endcaps.
+                    if thumb[0] - 12 <= x < thumb[1] + 12:
+                        continue
+                    actual = tuple(pixels[x * channels : x * channels + 3])
+                    expected = accent_rgb if x < fill_end else background
+                    assert max(abs(a - b) for a, b in zip(actual, expected)) <= 2, (
+                        theme,
+                        value,
+                        x,
+                        actual,
+                        expected,
                     )
-                    assert widths[1] == min(330, widths[0] - 80), "preview exceeded its CSS width"
-                    assert position[0] + widths[1] == widths[0] - 40
-                    # Canonical CSS itself totals 108.9px at two 19px lines:
-                    # 2*19*1.55 + padding(13+8) + gap9 + fixed key20.
-                    # Its bottom80/188px canvas permits one rounded borderless
-                    # shell pixel above the canvas, never clipped text ink.
-                    assert position[1] >= -1, "preview exceeded canonical top rounding"
-                    preview_bar = bubble.get_children()[-1]
-                    preview_key = next(
-                        child
-                        for child in preview_bar.get_children()
-                        if isinstance(child, Gtk.Label) and child.get_text() == "Tab"
-                    )
-                    assert preview_bar.get_allocated_height() == 20
-                    assert preview_key.get_allocated_height() == 20
-                    assert (
-                        heights[1] == surface.preview_text.get_allocated_height() + 13 + 8 + 9 + 20
-                    )
-                    assert abs(layout.get_pixel_size()[1] - len(line_extents) * bound * 1.55) <= 1
-                    text_position = surface.preview_text.translate_coordinates(canvas, 0, 0)
-                    assert text_position is not None
-                    _layout_x, layout_y = surface.preview_text.get_layout_offsets()
-                    ink, _logical = layout.get_pixel_extents()
-                    # GtkLabel reports layout offsets in widget->window,
-                    # while translate_coordinates above is label-local.
-                    ink_top = (
-                        text_position[1]
-                        + layout_y
-                        - surface.preview_text.get_allocation().y
-                        + ink.y
-                    )
-                    assert 0 <= ink_top and ink_top + ink.height <= heights[0]
-                    print(
-                        "APPEARANCE PREVIEW CHROME",
-                        {
-                            "bar": preview_bar.get_allocated_height(),
-                            "key": preview_key.get_allocated_height(),
-                            "ink": (ink_top, ink.height),
-                        },
-                        flush=True,
-                    )
-                    assert position[1] + heights[1] == heights[0] - 80
-                    assert heights[0] == 188 and surface.preview_source.get_allocated_height() == 42
-                    assert layout.get_unknown_glyphs_count() == 0
-                    description = surface.preview_text.get_style_context().get_font(
-                        Gtk.StateFlags.NORMAL
-                    )
-                    expected = (
-                        f"TypeLay Serif {bound}"
-                        if choice == "claude"
-                        else "Inter"
-                        if choice == "sans"
-                        else system_family
-                    )
-                    assert expected in description.get_family(), (choice, description.to_string())
-                    assert round(description.get_size() / Pango.SCALE * 96 / 72, 3) == bound
-                    if choice != "system":
-                        # get_run_readonly returns borrowed data. Keep every
-                        # owning boxed wrapper alive while reading its font.
-                        iterator = layout.get_iter()
-                        run = iterator.get_run_readonly()
-                        assert run is not None
-                        item = run.item
-                        analysis = item.analysis
-                        actual = analysis.font
-                        assert not actual.get_face().is_synthesized()
-                        face = json.loads(actual.serialize().get_data())
-                        bundle = json.loads(
-                            (Path(os.environ["TYPELAY_UI_FONT_ROOT"]) / "manifest.json").read_text()
-                        )["files"]
-                        assert any(item.get("sha256") == face["checksum"] for item in bundle)
-                    adjustment.set_value(0)
-                    await paint(surface.window)
-                    capture(f"appearance-font-{choice}-{bound}")
+                    observed.append(x)
+                assert observed
+                print(
+                    "SLIDER PAINT",
+                    theme,
+                    value,
+                    thumb,
+                    fill_end,
+                    accent_rgb,
+                    (min(observed), max(observed)),
+                    flush=True,
+                )
+            await select("theme", "light")
+            if not options.appearance_slider_only:
+                system_family = Pango.FontDescription.from_string(
+                    surface.window.get_settings().get_property("gtk-font-name")
+                ).get_family()
+                for choice in ("claude", "sans", "system"):
+                    await select("font", choice)
+                    for bound in (13, 19):
+                        await select("textSize", bound)
+                        await paint(surface.window)
+                        layout = surface.preview_text.get_layout()
+                        canvas = surface.preview_canvas
+                        bubble = surface.preview_overlay
+                        position = bubble.translate_coordinates(canvas, 0, 0)
+                        assert position is not None
+                        widths = (canvas.get_allocated_width(), bubble.get_allocated_width())
+                        heights = (canvas.get_allocated_height(), bubble.get_allocated_height())
+                        line_extents = [
+                            (line.get_pixel_extents()[0].height, line.get_pixel_extents()[1].height)
+                            for line in layout.get_lines_readonly()
+                        ]
+                        print(
+                            "APPEARANCE PREVIEW",
+                            choice,
+                            bound,
+                            {
+                                "position": position,
+                                "widths": widths,
+                                "heights": heights,
+                                "label": (
+                                    surface.preview_text.get_allocated_width(),
+                                    surface.preview_text.get_allocated_height(),
+                                ),
+                                "lines": line_extents,
+                            },
+                            flush=True,
+                        )
+                        assert widths[1] == min(330, widths[0] - 80), (
+                            "preview exceeded its CSS width"
+                        )
+                        assert position[0] + widths[1] == widths[0] - 40
+                        # Canonical CSS itself totals 108.9px at two 19px lines:
+                        # 2*19*1.55 + padding(13+8) + gap9 + fixed key20.
+                        # Its bottom80/188px canvas permits one rounded borderless
+                        # shell pixel above the canvas, never clipped text ink.
+                        assert position[1] >= -1, "preview exceeded canonical top rounding"
+                        preview_bar = bubble.get_children()[-1]
+                        preview_key = next(
+                            child
+                            for child in preview_bar.get_children()
+                            if isinstance(child, Gtk.Label) and child.get_text() == "Tab"
+                        )
+                        assert preview_bar.get_allocated_height() == 20
+                        assert preview_key.get_allocated_height() == 20
+                        assert (
+                            heights[1]
+                            == surface.preview_text.get_allocated_height() + 13 + 8 + 9 + 20
+                        )
+                        assert (
+                            abs(layout.get_pixel_size()[1] - len(line_extents) * bound * 1.55) <= 1
+                        )
+                        text_position = surface.preview_text.translate_coordinates(canvas, 0, 0)
+                        assert text_position is not None
+                        _layout_x, layout_y = surface.preview_text.get_layout_offsets()
+                        ink, _logical = layout.get_pixel_extents()
+                        # GtkLabel reports layout offsets in widget->window,
+                        # while translate_coordinates above is label-local.
+                        ink_top = (
+                            text_position[1]
+                            + layout_y
+                            - surface.preview_text.get_allocation().y
+                            + ink.y
+                        )
+                        assert 0 <= ink_top and ink_top + ink.height <= heights[0]
+                        print(
+                            "APPEARANCE PREVIEW CHROME",
+                            {
+                                "bar": preview_bar.get_allocated_height(),
+                                "key": preview_key.get_allocated_height(),
+                                "ink": (ink_top, ink.height),
+                            },
+                            flush=True,
+                        )
+                        assert position[1] + heights[1] == heights[0] - 80
+                        assert (
+                            heights[0] == 188
+                            and surface.preview_source.get_allocated_height() == 42
+                        )
+                        assert layout.get_unknown_glyphs_count() == 0
+                        description = surface.preview_text.get_style_context().get_font(
+                            Gtk.StateFlags.NORMAL
+                        )
+                        expected = (
+                            f"TypeLay Serif {bound}"
+                            if choice == "claude"
+                            else "Inter"
+                            if choice == "sans"
+                            else system_family
+                        )
+                        assert expected in description.get_family(), (
+                            choice,
+                            description.to_string(),
+                        )
+                        assert round(description.get_size() / Pango.SCALE * 96 / 72, 3) == bound
+                        if choice != "system":
+                            # get_run_readonly returns borrowed data. Keep every
+                            # owning boxed wrapper alive while reading its font.
+                            iterator = layout.get_iter()
+                            run = iterator.get_run_readonly()
+                            assert run is not None
+                            item = run.item
+                            analysis = item.analysis
+                            actual = analysis.font
+                            assert not actual.get_face().is_synthesized()
+                            face = json.loads(actual.serialize().get_data())
+                            bundle = json.loads(
+                                (
+                                    Path(os.environ["TYPELAY_UI_FONT_ROOT"]) / "manifest.json"
+                                ).read_text()
+                            )["files"]
+                            assert any(item.get("sha256") == face["checksum"] for item in bundle)
+                        adjustment.set_value(0)
+                        await paint(surface.window)
+                        capture(f"appearance-font-{choice}-{bound}")
             await select("font", "claude")
             await select("textSize", 13)
             await reveal(size)
@@ -814,6 +973,12 @@ def main(arguments=None):
                         widget.disconnect(signal)
                     size.disconnect(press_signal)
                     size.disconnect(release_signal)
+            if options.appearance_slider_only:
+                await exercise_appearance_retired()
+                print(
+                    "APPEARANCE SLIDER PASS: endpoint/paint, real drag and retired peer", flush=True
+                )
+                return
             await select("textSize", 15)
             await select("reduceTransparency", True)
             assert surface.window.get_style_context().has_class("reduce-transparency")
@@ -2071,7 +2236,7 @@ def main(arguments=None):
             if options.appearance_retired_only:
                 await exercise_appearance_retired()
                 return
-            if options.appearance_only:
+            if options.appearance_only or options.appearance_slider_only:
                 await exercise_appearance()
                 return
             if options.shortcuts_recording_only:
@@ -2357,8 +2522,7 @@ def main(arguments=None):
                 .startswith("TypeLay Serif 22")
             ), "retired popup style overrode the saved Claude preference"
             # Actual control signals must commit through the host, then round-trip.
-            surface.preference_options["accent"]["ocean"].set_active(True)
-            await settle(lambda: state.get("accent") == "ocean")
+            await choose_visible_appearance("accent", "ocean")
             surface.pages.set_visible_child_name("language")
             source_picker = surface.controls["source"]
             await settle(lambda: source_picker.get_mapped())
@@ -2857,8 +3021,7 @@ def main(arguments=None):
             await settle(lambda: state.get("enabled") is True)
             tray.hide_panel()
             # Capture the same native controls in dark mode, including the tray.
-            surface.preference_options["theme"]["dark"].set_active(True)
-            await settle(lambda: state.get("theme") == "dark")
+            await choose_visible_appearance("theme", "dark")
             assert surface.window.get_style_context().has_class("settings-dark")
             for page in surface.page_headings:
                 surface.pages.set_visible_child_name(page)
@@ -2871,8 +3034,7 @@ def main(arguments=None):
                 str(options.output / "quick-panel-dark.png"), "png", [], []
             )
             tray.hide_panel()
-            surface.preference_options["theme"]["light"].set_active(True)
-            await settle(lambda: state.get("theme") == "light")
+            await choose_visible_appearance("theme", "light")
             await exercise_connection_focus()
             await exercise_tutorial()
             # Switching product chrome never translates user-provided terms.
@@ -2883,8 +3045,7 @@ def main(arguments=None):
             translation.target_term.set_text("Close")
             translation.target_term.emit("activate")
             await settle(lambda: not translation.saving and not translation.dirty)
-            surface.controls["uiLanguage"].set_active_id("en")
-            await settle(lambda: state.get("uiLanguage") == "en")
+            await choose_visible_appearance("uiLanguage", "en")
             assert surface.page_headings["general"].get_text() == "General"
             assert surface.tutorial.next.get_label() == "Continue"
             assert tray.actions["设置…"].get_label() == "Settings…"

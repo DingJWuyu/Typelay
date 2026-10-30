@@ -6,6 +6,26 @@ namespace TypeLay.Linux;
 
 internal static class Program
 {
+    private sealed class LanguageConfigurationOpening(DesktopLink link, Guid connection, Guid opening,
+        UserSettings expected, long revision, string catalog)
+    {
+        public DesktopLink Link { get; } = link;
+        public Guid Connection { get; } = connection;
+        public Guid Opening { get; } = opening;
+        public UserSettings Expected { get; } = expected;
+        public long Revision { get; } = revision;
+        public string Catalog { get; } = catalog;
+        public bool Retired, Ready, Saving;
+    }
+    private static bool LanguageOwner(JsonElement value, out Guid connection, out Guid opening)
+    {
+        connection = opening = Guid.Empty;
+        return value.ValueKind == JsonValueKind.Object
+            && value.TryGetProperty("connectionId", out var owner) && owner.ValueKind == JsonValueKind.String
+            && owner.TryGetGuid(out connection) && connection != Guid.Empty
+            && value.TryGetProperty("openingId", out var identity) && identity.ValueKind == JsonValueKind.String
+            && identity.TryGetGuid(out opening) && opening != Guid.Empty;
+    }
     private sealed record ModelActivationRequest(string Identity, string Generation);
     private sealed record SettingsDraftRequest(Guid Session, long Request, ShortcutSettingsDraft Shortcuts,
         ExclusionSettingsDraft? Exclusions = null, ShortcutSettingsDraft? ConfirmedShortcuts = null);
@@ -123,6 +143,175 @@ internal static class Program
             async binding => (await link.Ask("retireAutomaticPractice", binding, timeoutMs: 2000)).ValueKind == JsonValueKind.True);
         SettingsDraftRequest? pendingSettingsDraft = null;
         (TranslationSettingsRequest Request, CancellationTokenSource Cancellation)? translationChange = null;
+        LanguageConfigurationOpening? languageConfiguration = null;
+        string LanguageCatalog() => JsonSerializer.Serialize(view.PresentLanguageConfiguration(settings.Value), DesktopLink.Json);
+        void RetireLanguageConfiguration(string reason)
+        {
+            if (languageConfiguration is not { } opening)
+                return;
+            languageConfiguration = null;
+            opening.Retired = true; // Retire before notification or any other callback.
+            if (link.Alive)
+                link.Send("languageConfigurationClosed", new
+                {
+                    connectionId = opening.Connection,
+                    openingId = opening.Opening,
+                    reason
+                });
+        }
+        bool LanguageCurrent(LanguageConfigurationOpening opening) => ReferenceEquals(languageConfiguration, opening)
+            && ReferenceEquals(opening.Link, link) && link.Alive && !opening.Retired
+            && input.ConnectionId == opening.Connection
+            && ReferenceEquals(settings.Value, opening.Expected) && settings.Revision == opening.Revision
+            && view.Token is null && LanguageCatalog() == opening.Catalog;
+        view.SourceViewPresented = () => RetireLanguageConfiguration("source-changed");
+        settings.Changed += () => RetireLanguageConfiguration("settings-changed");
+
+        async Task<object> BeginLanguageConfiguration(JsonElement value)
+        {
+            if (!ExactObject(value, "connectionId", "openingId", "token")
+                || !LanguageOwner(value, out var connection, out var identity)
+                || !ValidSessionToken(value.GetProperty("token")))
+                return new
+                {
+                    opened = false,
+                    reason = "invalid-request"
+                };
+            var token = DesktopLink.Decode<SessionViewToken>(value.GetProperty("token"));
+            if (!link.Alive || !input.Ready || input.ConnectionId != connection || view.Token != token
+                || input.GetFocus(token.Target) is not (FocusMember.Source or FocusMember.Overlay)
+                || token.CommandGeneration != input.CommandGeneration || view.EditingComposition)
+                return new
+                {
+                    opened = false,
+                    reason = "source-changed"
+                };
+            // This identity is bound to this actual inherited pipe and Host peer.
+            // Never replace a current configuration on an invalid old source request.
+            RetireLanguageConfiguration("replaced");
+            var opening = new LanguageConfigurationOpening(link, connection, identity,
+                settings.Value, settings.Revision, LanguageCatalog());
+            languageConfiguration = opening;
+            // Revocation can run callbacks. Do not let an old request stop a new view.
+            if (!ReferenceEquals(languageConfiguration, opening) || view.Token != token
+                || !input.Ready || input.ConnectionId != connection
+                || input.GetFocus(token.Target) is not (FocusMember.Source or FocusMember.Overlay)
+                || token.CommandGeneration != input.CommandGeneration || view.EditingComposition)
+            {
+                if (ReferenceEquals(languageConfiguration, opening))
+                    RetireLanguageConfiguration("source-changed");
+                return new
+                {
+                    opened = false,
+                    reason = "source-changed"
+                };
+            }
+            controller.StopSession();
+            // StopSession starts owned retirement, whose real executor receipt is
+            // independent of ordinary controller/permit retirement. Broker.Clear
+            // is not claimed as an all-IO acknowledgement by this reply.
+            if (!await controller.RetireAutomaticPracticeAsync() || !LanguageCurrent(opening))
+            {
+                if (ReferenceEquals(languageConfiguration, opening))
+                    RetireLanguageConfiguration("retirement-unconfirmed");
+                return new
+                {
+                    opened = false,
+                    reason = "retirement-unconfirmed"
+                };
+            }
+            opening.Ready = true;
+            var presentation = view.PresentLanguageConfiguration(opening.Expected);
+            return new
+            {
+                opened = true,
+                connectionId = opening.Connection,
+                openingId = opening.Opening,
+                settingsRevision = opening.Revision,
+                presentation.Source,
+                presentation.Target,
+                presentation.SourceLabel,
+                presentation.TargetLabel,
+                presentation.SwapAllowed,
+                presentation.Choices
+            };
+        }
+        async Task<object> SaveLanguageConfiguration(JsonElement value)
+        {
+            if (!ExactObject(value, "connectionId", "openingId", "expectedRevision", "source", "target")
+                || !LanguageOwner(value, out var connection, out var identity)
+                || value.GetProperty("expectedRevision").ValueKind != JsonValueKind.Number
+                || !value.GetProperty("expectedRevision").TryGetInt64(out var revision)
+                || value.GetProperty("source").ValueKind != JsonValueKind.String
+                || value.GetProperty("target").ValueKind != JsonValueKind.String)
+                return new
+                {
+                    saved = false,
+                    reason = "invalid-request"
+                };
+            if (languageConfiguration is not { } opening || opening.Connection != connection
+                || opening.Opening != identity || opening.Revision != revision || !opening.Ready
+                || opening.Saving || !LanguageCurrent(opening))
+                return new
+                {
+                    saved = false,
+                    reason = "configuration-retired"
+                };
+            var patch = JsonSerializer.SerializeToElement(new
+            {
+                source = value.GetProperty("source").GetString(),
+                target = value.GetProperty("target").GetString()
+            }, DesktopLink.Json);
+            if (!TryApplyTraySettings(patch, opening.Expected, out var next))
+                return new
+                {
+                    saved = false,
+                    reason = "unsupported-direction"
+                };
+            opening.Saving = true;
+            try
+            {
+                if (!await controller.PrepareSettingsChangeAsync(next) || !LanguageCurrent(opening))
+                {
+                    if (ReferenceEquals(languageConfiguration, opening))
+                        RetireLanguageConfiguration("retirement-unconfirmed");
+                    return new
+                    {
+                        saved = false,
+                        reason = "configuration-retired"
+                    };
+                }
+                // No await between this final identity check and persistence.
+                settings.Update(opening.Revision, next);
+                if (ReferenceEquals(languageConfiguration, opening))
+                    RetireLanguageConfiguration("saved");
+                return new
+                {
+                    saved = true,
+                    reason = "saved"
+                };
+            }
+            catch (SettingsConflictException)
+            {
+                if (ReferenceEquals(languageConfiguration, opening))
+                    RetireLanguageConfiguration("settings-changed");
+                return new
+                {
+                    saved = false,
+                    reason = "configuration-retired"
+                };
+            }
+            catch (SettingsPersistenceException)
+            {
+                // Only a still-current configuration can offer an explicit retry.
+                return new
+                {
+                    saved = false,
+                    reason = "save-unconfirmed"
+                };
+            }
+            finally { opening.Saving = false; }
+        }
         settings.StyleChanged += () => link.Send("translationSettingsChanged");
         settings.GlossarySaved += () => link.Send("translationSettingsChanged");
 
@@ -229,7 +418,12 @@ internal static class Program
                 settings.Value.Source, settings.Value.Target, busy || activation is not null,
                 IndexRuntimeAvailable: indexRuntimeAvailable, IndexUnavailableReason: indexUnavailableReason);
         }
-        void RefreshPackageChoices() => view.ConfigureModelPackages(PackageFacts(), settings.Value);
+        void RefreshPackageChoices()
+        {
+            view.ConfigureModelPackages(PackageFacts(), settings.Value);
+            if (languageConfiguration is { } opening && LanguageCatalog() != opening.Catalog)
+                RetireLanguageConfiguration("catalog-changed");
+        }
 
         async Task<bool> ApplySettings(UserSettings next)
         {
@@ -276,9 +470,22 @@ internal static class Program
         {
             input.Receive(operation, value);
             if (operation == "state")
+            {
+                // Connection replacement is permanent for this opening, even if
+                // a later state happens to repeat the old connection identity.
+                if (languageConfiguration is { } language && input.ConnectionId != language.Connection)
+                    RetireLanguageConfiguration("connection-changed");
                 view.RefreshGlossaryFocus();
+            }
             switch (operation)
             {
+                case "cancelLanguageConfiguration":
+                    if (ExactObject(value, "connectionId", "openingId")
+                        && LanguageOwner(value, out var cancelConnection, out var cancelOpening)
+                        && languageConfiguration is { } cancellingLanguage
+                        && cancellingLanguage.Connection == cancelConnection && cancellingLanguage.Opening == cancelOpening)
+                        RetireLanguageConfiguration("cancelled");
+                    break;
                 case "sessionGlossaryFocus":
                     if (value.ValueKind == JsonValueKind.Null)
                         view.SetGlossaryFocus(null);
@@ -379,6 +586,10 @@ internal static class Program
                         allowed,
                         token = allowed ? view.Token : null
                     };
+                case "beginLanguageConfiguration":
+                    return await BeginLanguageConfiguration(value);
+                case "saveLanguageConfiguration":
+                    return await SaveLanguageConfiguration(value);
                 case "sessionGlossaryBegin":
                     return ValidSessionToken(value)
                         ? view.BeginGlossaryRequested?.Invoke(DesktopLink.Decode<SessionViewToken>(value)) : null;
@@ -903,7 +1114,7 @@ internal static class Program
             Console.Error.WriteLine("TypeLay: desktop session stopped safely.");
             return 1;
         }
-        finally { activation?.Cancellation.Cancel(); editorSnapshot?.Cancellation.Cancel(); translationChange?.Cancellation.Cancel(); }
+        finally { RetireLanguageConfiguration("disconnected"); activation?.Cancellation.Cancel(); editorSnapshot?.Cancellation.Cancel(); translationChange?.Cancellation.Cancel(); }
     }
     private static async Task<int> ActivateModel(string home, string data, string generation)
     {

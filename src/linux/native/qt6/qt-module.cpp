@@ -3101,7 +3101,10 @@ private:
                     }
                 }
                 if (!retainedSourceForm) {
-                    editor_->setReadOnly(!editing);
+                    // Qt emits ReadOnlyChange even for a same-value setter.
+                    // Keep an unchanged render from retiring the current ticket;
+                    // actual read-only transitions still take the normal gate.
+                    if (editor_->isReadOnly() != !editing) editor_->setReadOnly(!editing);
                     editor_->setFocusPolicy(editing ? Qt::StrongFocus : Qt::NoFocus);
                 }
                 const bool editable = !isPaused && view.value("editable").toBool()
